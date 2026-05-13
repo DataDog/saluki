@@ -489,7 +489,7 @@ fn endpoint_domain(endpoint: &url::Url) -> String {
 fn track_queue_drops(telemetry: &ComponentTelemetry, domain: &str, push_result: PushResult) {
     telemetry.track_dropped_items(push_result.items_dropped);
     telemetry.track_dropped_events(push_result.events_dropped);
-    telemetry.track_dropped_data_points(domain, push_result.data_points_dropped);
+    telemetry.track_data_points_dropped(domain, push_result.data_points_dropped);
 }
 
 async fn process_http_response(
@@ -872,6 +872,27 @@ mod tests {
         let telemetry = TransactionQueueTelemetry::from_builder(&builder, "https://example.com", shared.clone());
 
         (shared, telemetry)
+    }
+
+    #[test]
+    fn endpoint_domain_omits_default_port() {
+        let endpoint = url::Url::parse("https://api.datadoghq.com/").unwrap();
+
+        assert_eq!(endpoint_domain(&endpoint), "https://api.datadoghq.com");
+    }
+
+    #[test]
+    fn endpoint_domain_includes_explicit_non_default_port() {
+        let endpoint = url::Url::parse("https://api.datadoghq.com:8443/api/v2/series").unwrap();
+
+        assert_eq!(endpoint_domain(&endpoint), "https://api.datadoghq.com:8443");
+    }
+
+    #[test]
+    fn endpoint_domain_excludes_credentials_path_and_query() {
+        let endpoint = url::Url::parse("https://user:pass@api.datadoghq.com/api/v2/series?foo=bar").unwrap();
+
+        assert_eq!(endpoint_domain(&endpoint), "https://api.datadoghq.com");
     }
 
     #[test]

@@ -788,6 +788,10 @@ mod tests {
             self.uncompressed_size_limit
         }
 
+        fn input_data_point_count(&self, input: &Self::Input) -> usize {
+            input.len()
+        }
+
         fn encode(&mut self, input: &String, buffer: &mut Vec<u8>) -> Result<(), Self::EncodeError> {
             // We just write the input string to the buffer as-is.
             buffer.extend_from_slice(input.as_bytes());
@@ -912,6 +916,46 @@ mod tests {
             format!("{}{}", inputs[2], inputs[3]),
         ];
         flush_and_validate_requests(request_builder, expected_request_bodies).await;
+    }
+
+    #[tokio::test]
+    async fn split_oversized_request_tracks_data_points_written() {
+        let inputs = vec!["aaaa".to_string(), "bb".to_string(), "ccc".to_string(), "d".to_string()];
+
+        let encoder = TestEncoder::new(usize::MAX, usize::MAX, "/submit");
+        let mut request_builder = create_no_compression_request_builder(encoder).await;
+
+        for input in &inputs {
+            request_builder.encode(input.clone()).await.unwrap();
+        }
+
+        request_builder.set_custom_len_limits(usize::MAX, inputs.iter().map(|s| s.len()).sum::<usize>() - 1);
+
+        let requests = request_builder.flush().await;
+        assert_eq!(requests.len(), 2);
+
+        let mut actual = Vec::new();
+        for request in requests {
+            let (events, data_points, request) = request.expect("split request should be created");
+            let body = request.into_body().collect().await.unwrap().to_bytes();
+            actual.push((events, data_points, String::from_utf8(body.to_vec()).unwrap()));
+        }
+
+        assert_eq!(
+            actual,
+            vec![
+                (
+                    2,
+                    inputs[0].len() + inputs[1].len(),
+                    format!("{}{}", inputs[0], inputs[1])
+                ),
+                (
+                    2,
+                    inputs[2].len() + inputs[3].len(),
+                    format!("{}{}", inputs[2], inputs[3])
+                ),
+            ]
+        );
     }
 
     #[tokio::test]

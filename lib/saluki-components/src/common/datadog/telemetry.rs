@@ -156,11 +156,6 @@ impl ComponentTelemetry {
     pub fn track_dropped_events(&self, event_count: u64) {
         self.events_dropped_queue.increment(event_count);
     }
-
-    /// Tracks dropped data points from queue eviction.
-    pub fn track_dropped_data_points(&self, domain: &str, data_point_count: u64) {
-        self.track_data_points_dropped(domain, data_point_count);
-    }
 }
 
 /// Endpoint-specific transaction queue telemetry.
