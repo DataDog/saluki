@@ -23,9 +23,9 @@ impl MetricsState {
         data.clone()
     }
 
-    /// Merges the given series payload into the current metrics state.
-    pub fn merge_series_payload(&self, payload: MetricPayload) -> Result<(), GenericError> {
-        let metrics = Metric::try_from_series(payload)?;
+    /// Merges the given series v2 payload into the current metrics state.
+    pub fn merge_series_v2_payload(&self, payload: MetricPayload) -> Result<(), GenericError> {
+        let metrics = Metric::try_from_series_v2(payload)?;
 
         let mut data = self.metrics.lock().unwrap();
         data.extend(metrics);
@@ -36,6 +36,16 @@ impl MetricsState {
     /// Merges the given sketch payload into the current metrics state.
     pub fn merge_sketch_payload(&self, payload: SketchPayload) -> Result<(), GenericError> {
         let metrics = Metric::try_from_sketch(payload)?;
+
+        let mut data = self.metrics.lock().unwrap();
+        data.extend(metrics);
+
+        Ok(())
+    }
+
+    /// Merges the given series v1 payload into the current metrics state.
+    pub fn merge_series_v1_payload(&self, bytes: &[u8]) -> Result<(), GenericError> {
+        let metrics = Metric::try_from_series_v1(bytes)?;
 
         let mut data = self.metrics.lock().unwrap();
         data.extend(metrics);

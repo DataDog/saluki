@@ -34,6 +34,8 @@ impl fmt::Display for MetricType {
 /// # Normalization behavior
 ///
 /// - Tags are sorted and deduplicated in a case-sensitive fashion.
+/// - The host appears as a `host:<value>` tag (the stele parsers fold it in from each wire format's host field),
+///   so it participates in identity comparisons like any other tag.
 #[derive(Clone, Eq, Hash, PartialEq, Ord, PartialOrd)]
 pub struct NormalizedMetricContext {
     name: String,

@@ -567,7 +567,7 @@ test-correctness: ## Runs the complete correctness suite (all test cases in para
 test-correctness-case: build-panoramic
 test-correctness-case: ## Runs a single correctness test case by name (usage: make test-correctness-case CASE=dsd-plain)
 	@echo "[*] Running '$(CASE)' correctness test case..."
-	@target/release/panoramic run -d $(shell pwd)/test/correctness -t $(CASE)
+	@target/release/panoramic run -d $(shell pwd)/test/correctness -t $(CASE) --no-tui
 
 .PHONY: build-panoramic
 build-panoramic: check-rust-build-tools
