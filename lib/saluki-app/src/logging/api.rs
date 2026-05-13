@@ -1,4 +1,4 @@
-use std::{future::pending, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use saluki_api::{
@@ -217,15 +217,14 @@ impl Supervisable for LoggingOverrideWorker {
 
 async fn process_override_actions(state: &mut LoggingOverrideWorkerState, mut process_shutdown: ProcessShutdown) {
     // Seed the canonical base filter from the reload handle. If the underlying reload layer has been dropped, we
-    // cannot perform overrides or resets meaningfully -- bail out with an error so the operator notices.
+    // cannot perform overrides or resets meaningfully: just emit an error and wait for shutdown so that we don't
+    // exit prematurely and drive the supervisor into an infinite restart loop.
     let mut base_filter = match state.reload_handle.clone_current() {
         Some(filter) => filter,
         None => {
             error!("Logging subsystem is in an indeterminate state; dynamic log filtering will not be available.");
 
-            // Wait indefinitely since we don't want to just keep spinning the supervisor trying to restart when the
-            // reload layer is completely gone.
-            pending::<()>().await;
+            process_shutdown.wait_for_shutdown().await;
             return;
         }
     };
