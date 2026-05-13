@@ -488,14 +488,14 @@ mod tests {
                 Context::from_static_parts("adp.object_pool_in_use", &["pool_name:dsd_packet_bufs"]),
                 7.0,
             )),
-            Event::Metric(Metric::counter(
+            Event::Metric(Metric::gauge(
                 Context::from_static_parts(
                     "adp.component_data_points_sent_total",
                     &["domain:https://api.datadoghq.com"],
                 ),
                 12.0,
             )),
-            Event::Metric(Metric::counter(
+            Event::Metric(Metric::gauge(
                 Context::from_static_parts(
                     "adp.component_data_points_dropped_total",
                     &["domain:https://api.datadoghq.com"],
@@ -533,8 +533,8 @@ mod tests {
         // Should have TYPE headers.
         assert!(output.contains("# TYPE dogstatsd__packet_pool_get counter"));
         assert!(output.contains("# TYPE dogstatsd__packet_pool gauge"));
-        assert!(output.contains("# TYPE point__sent counter"));
-        assert!(output.contains("# TYPE point__dropped counter"));
+        assert!(output.contains("# TYPE point__sent gauge"));
+        assert!(output.contains("# TYPE point__dropped gauge"));
     }
 
     #[test]
