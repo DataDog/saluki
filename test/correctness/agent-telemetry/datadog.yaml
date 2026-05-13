@@ -22,6 +22,12 @@ dogstatsd_origin_detection: false
 # four updates ago, etc etc.
 dogstatsd_workers_count: 1
 
+# Disable the trace agent to eliminate its internal DogStatsD telemetry (datadog.trace_agent.*,
+# datadog.dogstatsd.client.*) from the series flush buckets. This reduces per-bucket context
+# count to just millstone load + a handful of agent internals, making point.sent cleaner.
+apm_config:
+  enabled: false
+
 # Allow the agent to connect to our self-signed HTTPS listener without certificate validation.
 # This is required because the agenttelemetry sender always uses HTTPS regardless of the configured URL scheme.
 skip_ssl_validation: true
