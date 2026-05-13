@@ -22,8 +22,8 @@ pub struct ComponentTelemetry {
     events_sent: Counter,
     events_sent_batch_size: Histogram,
     bytes_sent: Counter,
-    data_points_sent_by_domain: Arc<Mutex<HashMap<String, DataPointGauge>>>,
-    data_points_dropped_by_domain: Arc<Mutex<HashMap<String, DataPointGauge>>>,
+    data_points_sent_by_domain: Arc<Mutex<HashMap<String, Gauge>>>,
+    data_points_dropped_by_domain: Arc<Mutex<HashMap<String, Gauge>>>,
     events_dropped_http: Counter,
     events_dropped_encoder: Counter,
     events_dropped_queue: Counter,
@@ -31,22 +31,6 @@ pub struct ComponentTelemetry {
     http_failed_send: Counter,
     sent_request_errors: Counter,
     http_errors_by_code: Arc<Mutex<HashMap<StatusCode, Counter>>>,
-}
-
-struct DataPointGauge {
-    gauge: Gauge,
-    value: u64,
-}
-
-impl DataPointGauge {
-    fn new(gauge: Gauge) -> Self {
-        Self { gauge, value: 0 }
-    }
-
-    fn increment(&mut self, value: u64) {
-        self.value += value;
-        self.gauge.set(self.value as f64);
-    }
 }
 
 impl ComponentTelemetry {
@@ -109,12 +93,10 @@ impl ComponentTelemetry {
 
         let mut gauges = self.data_points_sent_by_domain.lock().unwrap();
         let gauge = gauges.entry(domain.to_string()).or_insert_with(|| {
-            DataPointGauge::new(
-                self.builder
-                    .register_gauge_with_tags("component_data_points_sent_total", [("domain", domain.to_string())]),
-            )
+            self.builder
+                .register_gauge_with_tags("component_data_points_sent_total", [("domain", domain.to_string())])
         });
-        gauge.increment(data_point_count);
+        gauge.increment(data_point_count as f64);
     }
 
     /// Tracks dropped metric data points.
@@ -125,12 +107,10 @@ impl ComponentTelemetry {
 
         let mut gauges = self.data_points_dropped_by_domain.lock().unwrap();
         let gauge = gauges.entry(domain.to_string()).or_insert_with(|| {
-            DataPointGauge::new(
-                self.builder
-                    .register_gauge_with_tags("component_data_points_dropped_total", [("domain", domain.to_string())]),
-            )
+            self.builder
+                .register_gauge_with_tags("component_data_points_dropped_total", [("domain", domain.to_string())])
         });
-        gauge.increment(data_point_count);
+        gauge.increment(data_point_count as f64);
     }
 
     /// Tracks a failed transaction.

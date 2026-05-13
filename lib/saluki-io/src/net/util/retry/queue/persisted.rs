@@ -301,8 +301,8 @@ where
             let entry = self.entries.remove(0);
 
             // Deserialize the entry, which gives us back the original event and removes the file from disk.
-            let (event_count, data_point_count) = match try_deserialize_entry::<T>(&entry).await {
-                Ok(Some(deserialized)) => (deserialized.event_count(), deserialized.data_point_count()),
+            let deserialized = match try_deserialize_entry::<T>(&entry).await {
+                Ok(Some(deserialized)) => deserialized,
                 Ok(None) => {
                     warn!(entry.path = %entry.path.display(), "Failed to find entry on disk. Persisted entry state may be inconsistent.");
                     continue;
@@ -325,7 +325,7 @@ where
 
             // Update our statistics.
             self.total_on_disk_bytes -= entry.size_bytes;
-            push_result.track_dropped_item(event_count, data_point_count);
+            push_result.track_dropped_item(&deserialized);
 
             warn!(entry.path = %entry.path.display(), entry.len = entry.size_bytes, "Dropped persisted entry.");
         }

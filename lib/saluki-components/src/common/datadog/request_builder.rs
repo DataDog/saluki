@@ -424,7 +424,7 @@ where
             return self.split_request().await;
         }
 
-        let data_points_written = self.encoded_data_point_count();
+        let data_points_written = self.encoded_data_point_count(&self.encoded_inputs);
         let inputs_written = self.clear_encoded_inputs();
         debug!(encoder = E::encoder_name(), endpoint = ?self.encoder.endpoint_uri(), uncompressed_len, compressed_len, inputs_written, data_points_written, "Flushing request.");
 
@@ -492,8 +492,8 @@ where
         len
     }
 
-    fn encoded_data_point_count(&self) -> usize {
-        self.encoded_inputs
+    fn encoded_data_point_count(&self, inputs: &[E::Input]) -> usize {
+        inputs
             .iter()
             .map(|input| self.encoder.input_data_point_count(input))
             .sum()
@@ -622,10 +622,7 @@ where
             }));
         }
 
-        let data_points_written = inputs
-            .iter()
-            .map(|input| self.encoder.input_data_point_count(input))
-            .sum();
+        let data_points_written = self.encoded_data_point_count(inputs);
 
         Some(
             self.create_request(compressed_buf)

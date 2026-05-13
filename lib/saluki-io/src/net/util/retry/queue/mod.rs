@@ -72,10 +72,10 @@ impl PushResult {
     }
 
     /// Tracks a single dropped item.
-    pub fn track_dropped_item(&mut self, event_count: u64, data_point_count: u64) {
+    pub fn track_dropped_item(&mut self, item: &dyn EventContainer) {
         self.items_dropped += 1;
-        self.events_dropped += event_count;
-        self.data_points_dropped += data_point_count;
+        self.events_dropped += item.event_count();
+        self.data_points_dropped += item.data_point_count();
     }
 }
 
@@ -206,7 +206,7 @@ where
                     "Dropped in-memory entry to increase available capacity."
                 );
 
-                push_result.track_dropped_item(oldest_entry.event_count(), oldest_entry.data_point_count());
+                push_result.track_dropped_item(&oldest_entry);
             }
 
             self.total_in_memory_bytes -= oldest_entry_size;
@@ -271,7 +271,7 @@ where
             } else {
                 debug!(entry.len = entry_size, "Dropped in-memory entry during flush.");
 
-                push_result.track_dropped_item(entry.event_count(), entry.data_point_count());
+                push_result.track_dropped_item(&entry);
             }
         }
 

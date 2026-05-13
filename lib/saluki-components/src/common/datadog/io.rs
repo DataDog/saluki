@@ -302,7 +302,7 @@ async fn run_endpoint_io_loop<B>(
 {
     let queue_id = generate_retry_queue_id(context, &endpoint);
     let endpoint_url = endpoint.endpoint().to_string();
-    let endpoint_domain = endpoint_domain(endpoint.endpoint());
+    let endpoint_domain = endpoint.endpoint().origin().ascii_serialization();
     debug!(
         endpoint_url,
         num_workers = config.endpoint_concurrency(),
@@ -471,19 +471,6 @@ fn generate_retry_queue_id(context: ComponentContext, endpoint: &ResolvedEndpoin
         .host_str()
         .expect("resolved endpoint must have a host");
     format!("{}/{}/{:x}", context.component_id(), endpoint_host, hash)
-}
-
-fn endpoint_domain(endpoint: &url::Url) -> String {
-    let mut domain = format!(
-        "{}://{}",
-        endpoint.scheme(),
-        endpoint.host_str().expect("resolved endpoint must have a host")
-    );
-    if let Some(port) = endpoint.port() {
-        domain.push(':');
-        domain.push_str(&port.to_string());
-    }
-    domain
 }
 
 fn track_queue_drops(telemetry: &ComponentTelemetry, domain: &str, push_result: PushResult) {
@@ -872,27 +859,6 @@ mod tests {
         let telemetry = TransactionQueueTelemetry::from_builder(&builder, "https://example.com", shared.clone());
 
         (shared, telemetry)
-    }
-
-    #[test]
-    fn endpoint_domain_omits_default_port() {
-        let endpoint = url::Url::parse("https://api.datadoghq.com/").unwrap();
-
-        assert_eq!(endpoint_domain(&endpoint), "https://api.datadoghq.com");
-    }
-
-    #[test]
-    fn endpoint_domain_includes_explicit_non_default_port() {
-        let endpoint = url::Url::parse("https://api.datadoghq.com:8443/api/v2/series").unwrap();
-
-        assert_eq!(endpoint_domain(&endpoint), "https://api.datadoghq.com:8443");
-    }
-
-    #[test]
-    fn endpoint_domain_excludes_credentials_path_and_query() {
-        let endpoint = url::Url::parse("https://user:pass@api.datadoghq.com/api/v2/series?foo=bar").unwrap();
-
-        assert_eq!(endpoint_domain(&endpoint), "https://api.datadoghq.com");
     }
 
     #[test]

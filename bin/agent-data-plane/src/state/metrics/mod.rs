@@ -520,12 +520,8 @@ mod tests {
         // Matched metrics should appear with remapped names.
         assert!(output.contains("dogstatsd__packet_pool_get "));
         assert!(output.contains("dogstatsd__packet_pool "));
-        assert!(
-            output.contains("point__sent{domain=\"https://api.datadoghq.com\",remote_agent=\"agent-data-plane\"} 12")
-        );
-        assert!(
-            output.contains("point__dropped{domain=\"https://api.datadoghq.com\",remote_agent=\"agent-data-plane\"} 3")
-        );
+        assert!(output.contains("point__sent{domain=\"https://api.datadoghq.com\"} 12"));
+        assert!(output.contains("point__dropped{domain=\"https://api.datadoghq.com\"} 3"));
 
         // Unmatched metrics should NOT appear.
         assert!(!output.contains("some_unrelated_metric"));
