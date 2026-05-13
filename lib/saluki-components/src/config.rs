@@ -135,6 +135,9 @@ pub const KEY_ALIASES: &[(&str, &str)] = &[
     // the only set of key aliases we use, so I'm adding it here _for now_ until we have a better way to unify these
     // sorts of things.
     ("agent_ipc.grpc_max_message_size", "agent_ipc_grpc_max_message_size"),
+    // `use_v2_api.series` lives at a nested YAML path but the Agent's env var is `DD_USE_V2_API_SERIES` (flat). This
+    // alias bridges the two so file and env var sources land on the same Figment key.
+    ("use_v2_api.series", "use_v2_api_series"),
 ];
 
 /// Remappings from environment variable names to canonical config keys.

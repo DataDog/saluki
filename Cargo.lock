@@ -4757,6 +4757,7 @@ dependencies = [
  "saluki-common",
  "saluki-error",
  "serde",
+ "serde_json",
  "serde_with",
  "stringtheory",
 ]

@@ -6,6 +6,33 @@ use float_cmp::ApproxEqRatio as _;
 use saluki_error::{generic_error, GenericError};
 use serde::{Deserialize, Serialize};
 
+/// JSON envelope for the legacy V1 series intake (`/api/v1/series`).
+#[derive(Deserialize)]
+struct V1SeriesEnvelope {
+    series: Vec<V1Serie>,
+}
+
+/// A single `Serie` entry in a V1 series payload.
+///
+/// Mirrors the Datadog Agent's wire format (see `pkg/metrics/series.go`). `omitempty` fields default to empty.
+// Other fields present in the JSON envelope (`host`, `source_type_name`, `unit`) are intentionally not
+// deserialized. Like the V2 protobuf path, the V2-equivalent stele representation does not store hostname or
+// metadata-derived fields directly on the metric — they're encoded into resource entries (V2) or dropped (V1).
+// serde silently ignores unknown JSON fields, so omitting them here is sufficient.
+#[derive(Deserialize)]
+struct V1Serie {
+    metric: String,
+    points: Vec<(i64, f64)>,
+    #[serde(default)]
+    tags: Vec<String>,
+    #[serde(default)]
+    device: String,
+    #[serde(rename = "type", default)]
+    mtype: String,
+    #[serde(default)]
+    interval: i64,
+}
+
 /// A metric's unique identifier.
 #[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct MetricContext {
@@ -155,12 +182,69 @@ impl PartialEq for MetricValue {
 impl Eq for MetricValue {}
 
 impl Metric {
-    /// Attempts to parse metrics from a series payload.
+    /// Attempts to parse metrics from a series v1 payload.
+    ///
+    /// V1 keeps a separate `device` JSON field rather than a `device:<value>` tag like the V2 protobuf encoder. To
+    /// keep the post-conversion `stele::Metric` representation comparable between V1 and V2 payloads, this re-injects
+    /// `device:<value>` into the tag list when the JSON `device` field is non-empty.
+    ///
+    /// # Errors
+    ///
+    /// If the JSON cannot be deserialized, contains invalid data (e.g. an unknown `type`), or has out-of-range
+    /// timestamps, an error is returned.
+    pub fn try_from_series_v1(payload: &[u8]) -> Result<Vec<Self>, GenericError> {
+        let envelope: V1SeriesEnvelope = serde_json::from_slice(payload)
+            .map_err(|e| generic_error!("Failed to parse V1 series JSON payload: {}", e))?;
+
+        let mut metrics = Vec::with_capacity(envelope.series.len());
+
+        for serie in envelope.series {
+            let mut tags = serie.tags;
+            if !serie.device.is_empty() {
+                tags.push(format!("device:{}", serie.device));
+            }
+
+            let mut values = Vec::with_capacity(serie.points.len());
+            for (ts, value) in serie.points {
+                let timestamp =
+                    u64::try_from(ts).map_err(|_| generic_error!("Invalid timestamp in V1 series payload: {}", ts))?;
+
+                let metric_value = match serie.mtype.as_str() {
+                    "count" => MetricValue::Count { value },
+                    "rate" => MetricValue::Rate {
+                        interval: serie.interval as u64,
+                        value,
+                    },
+                    "gauge" => MetricValue::Gauge { value },
+                    other => {
+                        return Err(generic_error!(
+                            "Unknown metric type '{}' in V1 series payload (metric '{}')",
+                            other,
+                            serie.metric
+                        ));
+                    }
+                };
+                values.push((timestamp, metric_value));
+            }
+
+            metrics.push(Metric {
+                context: MetricContext {
+                    name: serie.metric,
+                    tags,
+                },
+                values,
+            });
+        }
+
+        Ok(metrics)
+    }
+
+    /// Attempts to parse metrics from a series v2 payload.
     ///
     /// # Errors
     ///
     /// If the metric payload contains invalid data, an error will be returned.
-    pub fn try_from_series(payload: MetricPayload) -> Result<Vec<Self>, GenericError> {
+    pub fn try_from_series_v2(payload: MetricPayload) -> Result<Vec<Self>, GenericError> {
         let mut metrics = Vec::new();
 
         for series in payload.series {
@@ -246,5 +330,61 @@ fn approx_eq_ratio_optional(a: Option<f64>, b: Option<f64>, ratio: f64) -> bool 
         (Some(a), Some(b)) => a.approx_eq_ratio(&b, ratio),
         (None, None) => true,
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn try_from_series_v1_parses_count_gauge_rate() {
+        let body = br#"{"series":[
+            {"metric":"a.count","points":[[100,5.0]],"tags":["env:prod"],"host":"h","type":"count","interval":0},
+            {"metric":"a.gauge","points":[[101,12.0]],"tags":[],"host":"h","type":"gauge","interval":0},
+            {"metric":"a.rate","points":[[102,3.0]],"tags":[],"host":"h","type":"rate","interval":10}
+        ]}"#;
+
+        let metrics = Metric::try_from_series_v1(body).expect("parse should succeed");
+        assert_eq!(metrics.len(), 3);
+
+        assert_eq!(metrics[0].context.name, "a.count");
+        assert_eq!(metrics[0].context.tags, vec!["env:prod".to_string()]);
+        assert_eq!(metrics[0].values, vec![(100, MetricValue::Count { value: 5.0 })]);
+
+        assert_eq!(metrics[1].context.name, "a.gauge");
+        assert_eq!(metrics[1].values, vec![(101, MetricValue::Gauge { value: 12.0 })]);
+
+        assert_eq!(metrics[2].context.name, "a.rate");
+        assert_eq!(
+            metrics[2].values,
+            vec![(
+                102,
+                MetricValue::Rate {
+                    interval: 10,
+                    value: 3.0
+                }
+            )]
+        );
+    }
+
+    #[test]
+    fn try_from_series_v1_reinjects_device_tag() {
+        let body = br#"{"series":[
+            {"metric":"m","points":[[1,1.0]],"tags":["env:prod"],"host":"h","device":"eth0","type":"count","interval":0}
+        ]}"#;
+
+        let metrics = Metric::try_from_series_v1(body).expect("parse should succeed");
+        assert!(metrics[0].context.tags.contains(&"env:prod".to_string()));
+        assert!(metrics[0].context.tags.contains(&"device:eth0".to_string()));
+    }
+
+    #[test]
+    fn try_from_series_v1_rejects_unknown_type() {
+        let body = br#"{"series":[
+            {"metric":"m","points":[[1,1.0]],"tags":[],"host":"h","type":"weird","interval":0}
+        ]}"#;
+
+        assert!(Metric::try_from_series_v1(body).is_err());
     }
 }
