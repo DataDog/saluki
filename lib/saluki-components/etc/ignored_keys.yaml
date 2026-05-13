@@ -2762,8 +2762,6 @@
   reason: initial bulk
 - name: prometheus_scrape.version
   reason: initial bulk
-- name: provider_kind
-  reason: initial bulk
 - name: python3_linter_timeout
   reason: initial bulk
 - name: python_lazy_loading

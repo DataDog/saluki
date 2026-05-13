@@ -1630,7 +1630,6 @@
   "prometheus_scrape.enabled",
   "prometheus_scrape.service_endpoints",
   "prometheus_scrape.version",
-  "provider_kind",
   "python3_linter_timeout",
   "python_lazy_loading",
   "remote_agent.configstream.enabled",

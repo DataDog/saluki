@@ -448,6 +448,15 @@ pub struct DogStatsDConfiguration {
     /// Additional tags to add to all metrics.
     #[serde(rename = "dogstatsd_tags", default)]
     additional_tags: Vec<String>,
+
+    /// Provider kind tag appended to all metrics as `provider_kind:<value>`.
+    ///
+    /// Set via `DD_PROVIDER_KIND` by the Helm chart on GKE Autopilot (`gke-autopilot`) and GKE on
+    /// Google Distributed Cloud (`gke-gdc`). When empty or absent, no tag is added.
+    ///
+    /// Defaults to `""` (disabled).
+    #[serde(default)]
+    provider_kind: String,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -504,6 +513,17 @@ impl DogStatsDConfiguration {
     /// Creates a new `DogStatsDConfiguration` from the given configuration.
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
         Ok(config.as_typed()?)
+    }
+
+    /// Gets both the `additional_tags` and any others specified by other configuration fields, such as `provider_kind`.
+    fn additional_tags(&self) -> Vec<String> {
+        if self.provider_kind.is_empty() {
+            return self.additional_tags.clone();
+        }
+
+        let mut tags = self.additional_tags.clone();
+        tags.push(format!("provider_kind:{}", self.provider_kind.clone()));
+        tags
     }
 
     /// Returns the effective string interner size in bytes.
@@ -682,7 +702,7 @@ impl SourceBuilder for DogStatsDConfiguration {
             origin_detection_enabled,
             stream_log_too_big: self.stream_log_too_big,
             eol_required,
-            additional_tags: self.additional_tags.clone().into(),
+            additional_tags: self.additional_tags().into(),
         }))
     }
 

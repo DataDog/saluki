@@ -255,6 +255,17 @@ crate::declare_annotations! {
         test_json: None,
     };
 
+    /// `provider_kind` — appended as a static tag (`provider_kind:<value>`) to all DogStatsD metrics.
+    PROVIDER_KIND = SalukiAnnotation {
+        schema: &schema::PROVIDER_KIND,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: Some(&["DD_PROVIDER_KIND"]),
+        used_by: &[structs::DOGSTATSD_CONFIGURATION],
+        value_type_override: None,
+        test_json: None,
+    };
+
     /// `origin_detection_unified` — use unified entity ID resolution for origin enrichment.
     ORIGIN_DETECTION_UNIFIED = SalukiAnnotation {
         schema: &schema::ORIGIN_DETECTION_UNIFIED,
