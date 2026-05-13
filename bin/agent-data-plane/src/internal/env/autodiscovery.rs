@@ -4,42 +4,43 @@ use async_trait::async_trait;
 use datadog_agent_commons::ipc::client::RemoteAgentClient;
 use futures::StreamExt;
 use saluki_config::GenericConfiguration;
-use saluki_core::runtime::{InitializationError, ProcessShutdown, Supervisable, SupervisorFuture};
+use saluki_core::runtime::{InitializationError, ProcessShutdown, Supervisable, Supervisor, SupervisorFuture};
 use saluki_env::autodiscovery::AutodiscoveryEvent;
 use saluki_env::AutodiscoveryProvider;
 use saluki_error::GenericError;
 use tokio::select;
 use tokio::sync::broadcast::{self, Receiver, Sender};
 use tokio::time::sleep;
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
-/// An autodiscovery provider that uses the Datadog Agent's internal gRPC API to receive autodiscovery updates.
+/// Datadog Agent-based autodiscovery provider.
 ///
-/// The provider only exposes a broadcast subscription. The gRPC stream that feeds it is driven by a separate
-/// [`RemoteAgentAutodiscoveryListener`] worker so the work participates in the supervision tree. The listener is
-/// returned alongside the provider from [`RemoteAgentAutodiscoveryProvider::from_configuration`].
+/// This provider is based primarily on the remote autodiscovery API exposed by the Datadog Agent, which handles the
+/// bulk of the work by detecting changes to underlying environment (such as containers starting and stopping), and
+/// determing if they have services associated with them that require checks to be run against them. The remote
+/// autodiscovery API operates in a streaming fashion, which the provider uses to then broadcast updates to subscribers.
 #[derive(Clone)]
 pub struct RemoteAgentAutodiscoveryProvider {
     sender: Sender<AutodiscoveryEvent>,
 }
 
 impl RemoteAgentAutodiscoveryProvider {
-    /// Creates a new `RemoteAgentAutodiscoveryProvider` from the given configuration, along with the listener worker
-    /// that drives the upstream gRPC stream.
+    /// Creates a new `RemoteAgentAutodiscoveryProvider` based on the given configuration, along with a [`Supervisor`] that
+    /// drives the collection and broadcasting of autodiscovery events.
     ///
-    /// ## Errors
+    /// # Errors
     ///
     /// If the remote agent client could not be created, an error is returned.
-    pub async fn from_configuration(
-        config: &GenericConfiguration,
-    ) -> Result<(Self, RemoteAgentAutodiscoveryListener), GenericError> {
+    pub async fn from_configuration(config: &GenericConfiguration) -> Result<(Self, Supervisor), GenericError> {
         let client = RemoteAgentClient::from_configuration(config).await?;
         let (sender, _) = broadcast::channel::<AutodiscoveryEvent>(16);
 
         let provider = Self { sender: sender.clone() };
-        let listener = RemoteAgentAutodiscoveryListener { client, sender };
 
-        Ok((provider, listener))
+        let mut supervisor = Supervisor::new("autodiscovery")?;
+        supervisor.add_worker(AutodiscoveryEventBroadcaster { client, sender });
+
+        Ok((provider, supervisor))
     }
 }
 
@@ -50,35 +51,33 @@ impl AutodiscoveryProvider for RemoteAgentAutodiscoveryProvider {
     }
 }
 
-/// Supervised worker that reads autodiscovery events from the Datadog Agent's gRPC API and fans them out to all
-/// subscribers of the paired [`RemoteAgentAutodiscoveryProvider`].
-pub struct RemoteAgentAutodiscoveryListener {
+struct AutodiscoveryEventBroadcaster {
     client: RemoteAgentClient,
     sender: Sender<AutodiscoveryEvent>,
 }
 
 #[async_trait]
-impl Supervisable for RemoteAgentAutodiscoveryListener {
+impl Supervisable for AutodiscoveryEventBroadcaster {
     fn name(&self) -> &str {
-        "autodiscovery-listener"
+        "ad-event-broadcaster"
     }
 
-    async fn initialize(&self, mut process_shutdown: ProcessShutdown) -> Result<SupervisorFuture, InitializationError> {
+    async fn initialize(&self, process_shutdown: ProcessShutdown) -> Result<SupervisorFuture, InitializationError> {
         let client = self.client.clone();
         let sender = self.sender.clone();
 
         Ok(Box::pin(async move {
             select! {
-                _ = process_shutdown.wait_for_shutdown() => {},
-                _ = run_autodiscovery_listener(client, sender) => {},
+                _ = process_shutdown => {},
+                _ = run_ad_event_broadcaster(client, sender) => {},
             }
             Ok(())
         }))
     }
 }
 
-async fn run_autodiscovery_listener(mut client: RemoteAgentClient, sender: Sender<AutodiscoveryEvent>) {
-    info!("Listening to autodiscovery events from remote agent.");
+async fn run_ad_event_broadcaster(mut client: RemoteAgentClient, sender: Sender<AutodiscoveryEvent>) {
+    debug!("Listening to autodiscovery events from remote agent.");
 
     loop {
         let mut autodiscovery_stream = client.get_autodiscovery_stream();

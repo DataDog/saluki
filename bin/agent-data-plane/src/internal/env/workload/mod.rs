@@ -52,11 +52,11 @@ const DEFAULT_STRING_INTERNER_SIZE_BYTES: NonZeroUsize = NonZeroUsize::new(512 *
 /// the work by collecting and aggregating tags for container entities. This remote tagger API operates in a streaming
 /// fashion, which the provider uses to stream update operations to the tag store.
 ///
-/// Additionally, two collectors are optionally used: a `containerd` collector and a `cgroups-v2` collector. The
+/// Additionally, two collectors are optionally used: a `containerd` collector and a `cgroups` collector. The
 /// `containerd` collector will, if containerd is running, be used to collect metadata that allows mapping container
-/// PIDs (UDS-based Origin Detection) to container IDs. The `cgroups-v2` collector will collect metadata about the
-/// current set of cgroups v2 controllers, tracking any controllers which appear related to containers and storing a
-/// mapping of controller inodes to container IDs.
+/// PIDs (UDS-based Origin Detection) to container IDs. The `cgroups` collector will collect metadata about the current
+/// set of cgroups v1/v2 controllers, tracking any controllers which appear related to containers and storing a mapping
+/// of controller inodes to container IDs.
 ///
 /// These additional collectors are necessary to bridge the gap from container PID and cgroup controller inode, as the
 /// remote tagger API does not stream us these mappings itself and only deals with resolved container IDs.
@@ -70,6 +70,11 @@ pub struct RemoteAgentWorkloadProvider {
 impl RemoteAgentWorkloadProvider {
     /// Create a new `RemoteAgentWorkloadProvider` based on the given configuration, along with a [`Supervisor`] that
     /// drives the aggregator and all collector workers.
+    ///
+    /// # Errors
+    ///
+    /// If there is an issue with any of the provider configuration, or creating the underlying metadata collectors, an
+    /// error is returned.
     pub async fn from_configuration(
         config: &GenericConfiguration, component_registry: ComponentRegistry, health_registry: &HealthRegistry,
     ) -> Result<(Self, Supervisor), GenericError> {
@@ -87,7 +92,8 @@ impl RemoteAgentWorkloadProvider {
             .firm()
             .with_fixed_amount("string interner", string_interner_size_bytes.get());
 
-        // Construct our aggregator and capture the operations sender for distribution to each collector worker.
+        // Construct our metadata aggregator and any relevant metadata collectors based on the detected features we've
+        // been given.
         let aggregator_health = health_registry
             .register_component("env_provider.workload.remote_agent.aggregator")
             .ok_or_else(|| {
@@ -165,10 +171,6 @@ impl RemoteAgentWorkloadProvider {
         let api_worker = RemoteAgentWorkloadAPIWorker::from_state(tags_querier.clone(), eds_resolver);
 
         // Build the workload supervisor.
-        //
-        // We use one-for-one restart with a generous budget: the operations channel lives inside `MetadataAggregator`
-        // and is preserved across worker restarts via interior mutability, so restarts of any single worker don't
-        // invalidate the channel held by its siblings.
         let mut supervisor = Supervisor::new("workload")?
             .with_restart_strategy(RestartStrategy::one_to_one().with_intensity_and_period(5, Duration::from_secs(30)));
         supervisor.add_worker(aggregator);

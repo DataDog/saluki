@@ -186,14 +186,9 @@ pub async fn handle_run_command(
     .await
     .error_context("Failed to create internal supervisor.")?;
 
-    // Attach the bootstrap supervisor as a child so its workers (logging/metrics override processors,
-    // metrics flusher, runtime metrics collector) are driven and shut down alongside the rest of the
-    // internal supervision tree.
+    // Assemble our supervision tree.
     internal_supervisor.add_worker(bootstrap_supervisor);
 
-    // Attach the environment provider's supervisor as a child, if one was produced. This drives the workload
-    // aggregator/collectors and the autodiscovery listener; in standalone mode there is no background work and
-    // no supervisor is returned.
     if let Some(env_supervisor) = env_supervisor {
         internal_supervisor.add_worker(env_supervisor);
     }

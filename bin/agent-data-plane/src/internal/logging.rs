@@ -184,10 +184,9 @@ fn first_party_log_level_filter(level: &str) -> Result<LogLevel, GenericError> {
     LogLevel::try_from(filter).error_context("Failed to parse first-party log filter directives.")
 }
 
-/// A supervised worker that watches for updates to `log_level` and adjusts the logging stack's current filter
-/// directives to match.
+/// A worker that watches for updates to `log_level` and adjusts the logging stack's current filter directives to match.
 ///
-/// The watcher relies on dynamic configuration; if it is not enabled, the worker simply idles until shutdown.
+/// The worker relies on dynamic configuration; if it is not enabled, the worker simply idles until shutdown.
 pub struct DynamicLogLevelWorker {
     config: GenericConfiguration,
     controller: LoggingOverrideController,

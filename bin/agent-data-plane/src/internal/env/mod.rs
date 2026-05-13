@@ -42,12 +42,11 @@ pub struct ADPEnvironmentProvider {
 }
 
 impl ADPEnvironmentProvider {
-    /// Creates a new `ADPEnvironmentProvider` from configuration.
+    /// Creates a new `ADPEnvironmentProvider` from configuration, along with an optional [`Supervisor`] that
+    /// drives all of the provider's background work.
     ///
-    /// Returns the provider alongside an optional [`Supervisor`] that drives all of the provider's background
-    /// workers (workload aggregator + collectors, autodiscovery listener). The supervisor is `None` when no
-    /// background work is required (standalone mode); otherwise the caller must arrange for it to run, typically by
-    /// adding it as a child of a parent supervisor.
+    /// In standalone mode, no supervisor is returned as all behavior/functionality is either provided via
+    /// fixed configuration or operates in a no-op fashion.
     pub async fn from_configuration(
         config: &GenericConfiguration, dp_config: &DataPlaneConfiguration, component_registry: &ComponentRegistry,
         health_registry: &HealthRegistry,
@@ -81,9 +80,9 @@ impl ADPEnvironmentProvider {
         .await?;
         env_supervisor.add_worker(workload_supervisor);
 
-        let (autodiscovery_provider, autodiscovery_listener) =
+        let (autodiscovery_provider, autodiscovery_supervisor) =
             RemoteAgentAutodiscoveryProvider::from_configuration(config).await?;
-        env_supervisor.add_worker(autodiscovery_listener);
+        env_supervisor.add_worker(autodiscovery_supervisor);
 
         let env = Self {
             host_provider: BoxedHostProvider::from_provider(host_provider),
