@@ -55,13 +55,16 @@ where
 
             let ancillary = ancillary_data.bytes().to_vec();
 
-            let maybe_process_creds = ancillary_data.messages().find_map(|m| match m {
-                ControlMessage::Credentials(creds) => Some(ProcessCredentials {
-                    pid: creds.pid,
-                    uid: creds.uid,
-                    gid: creds.gid,
-                }),
-            });
+            let maybe_process_creds = ancillary_data
+                .messages()
+                .map(|m| match m {
+                    ControlMessage::Credentials(creds) => ProcessCredentials {
+                        pid: creds.pid,
+                        uid: creds.uid,
+                        gid: creds.gid,
+                    },
+                })
+                .next();
 
             (maybe_process_creds, ancillary)
         }
