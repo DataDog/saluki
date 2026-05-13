@@ -1,3 +1,11 @@
+//! DogStatsD source.
+//!
+//! # Missing
+//!
+//! - Create a health handle for each listener.
+//! - Handle UDS stream framing without treating EOF the same way as UDP and UDS datagram framing.
+//! - Track dispatch failures without depending on whether all events were already iterated.
+
 use std::{
     collections::VecDeque,
     num::NonZeroUsize,
@@ -40,11 +48,11 @@ use saluki_io::{
     buf::{BytesBuffer, ClearableIoBuffer as _, FixedSizeVec},
     deser::{
         codec::dogstatsd::*,
-        framing::{Framer as _, FramerExt as _, FramingError, LengthDelimitedFramer},
+        framing::{Framer as _, FramingError, LengthDelimitedFramer},
     },
     net::{
         listener::{Listener, ListenerError},
-        ConnectionAddress, ListenAddress, ReceiveResult, Stream,
+        ConnectionAddress, ListenAddress, ProcessIdentity, ReceiveResult, Stream,
     },
 };
 use saluki_metrics::MetricsBuilder;
@@ -133,6 +141,8 @@ const fn default_no_aggregation_pipeline_support() -> bool {
 const fn default_context_string_interner_entry_count() -> u64 {
     4096
 }
+
+const ERROR_TYPE_ORIGIN_DETECTION: &str = "origin_detection";
 
 /// Baseline byte cost per interner entry, used to convert the Core Agent's entry-count-based
 /// `dogstatsd_string_interner_size` to a byte size.
@@ -480,6 +490,15 @@ pub struct DogStatsDConfiguration {
     #[serde(skip, default)]
     #[cfg_attr(test, derive_where(skip))]
     capture_control: DogStatsDCaptureControl,
+
+    /// Provider kind tag appended to all metrics as `provider_kind:<value>`.
+    ///
+    /// Set via `DD_PROVIDER_KIND` by the Helm chart on GKE Autopilot (`gke-autopilot`) and GKE on
+    /// Google Distributed Cloud (`gke-gdc`). When empty or absent, no tag is added.
+    ///
+    /// Defaults to `""` (disabled).
+    #[serde(default)]
+    provider_kind: String,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -538,6 +557,17 @@ impl DogStatsDConfiguration {
         let mut dogstatsd_config: Self = config.as_typed()?;
         dogstatsd_config.fix_empty_capture_path(config);
         Ok(dogstatsd_config)
+    }
+
+    /// Gets both the `additional_tags` and any others specified by other configuration fields, such as `provider_kind`.
+    fn additional_tags(&self) -> Vec<String> {
+        if self.provider_kind.is_empty() {
+            return self.additional_tags.clone();
+        }
+
+        let mut tags = self.additional_tags.clone();
+        tags.push(format!("provider_kind:{}", self.provider_kind.clone()));
+        tags
     }
 
     /// Returns the effective string interner size in bytes.
@@ -734,6 +764,7 @@ impl SourceBuilder for DogStatsDConfiguration {
             ));
         }
 
+        let origin_detection_enabled = self.origin_enrichment.enabled();
         let maybe_origin_tags_resolver = self
             .workload_provider
             .clone()
@@ -770,9 +801,10 @@ impl SourceBuilder for DogStatsDConfiguration {
             codec,
             context_resolvers,
             enabled_filter: enable_payloads_filter,
+            origin_detection_enabled,
             stream_log_too_big: self.stream_log_too_big,
             eol_required,
-            additional_tags: self.additional_tags.clone().into(),
+            additional_tags: self.additional_tags().into(),
             capture_entity_resolver: self.capture_entity_resolver.clone(),
             traffic_capture,
         }))
@@ -818,6 +850,7 @@ pub struct DogStatsD {
     codec: DogStatsDCodec,
     context_resolvers: ContextResolvers,
     enabled_filter: EnablePayloadsFilter,
+    origin_detection_enabled: bool,
     stream_log_too_big: bool,
     eol_required: EolRequired,
     additional_tags: Arc<[String]>,
@@ -831,6 +864,7 @@ struct ListenerContext {
     io_buffer_pool: FixedSizeObjectPool<BytesBuffer>,
     codec: DogStatsDCodec,
     context_resolvers: ContextResolvers,
+    origin_detection_enabled: bool,
     stream_log_too_big: bool,
     eol_required: EolRequired,
     additional_tags: Arc<[String]>,
@@ -845,6 +879,7 @@ struct HandlerContext {
     io_buffer_pool: FixedSizeObjectPool<BytesBuffer>,
     metrics: Metrics,
     context_resolvers: ContextResolvers,
+    origin_detection_enabled: bool,
     stream_log_too_big: bool,
     additional_tags: Arc<[String]>,
     capture_entity_resolver: Option<Arc<dyn CaptureEntityResolver + Send + Sync>>,
@@ -861,6 +896,7 @@ struct Metrics {
     metric_decoder_errors: Counter,
     event_decoder_errors: Counter,
     service_check_decoder_errors: Counter,
+    origin_detection_errors: Counter,
     failed_context_resolve_total: Counter,
     connections_active: Gauge,
     packet_receive_success: Counter,
@@ -902,6 +938,10 @@ impl Metrics {
 
     fn service_check_decode_failed(&self) -> &Counter {
         &self.service_check_decoder_errors
+    }
+
+    fn origin_detection_errors(&self) -> &Counter {
+        &self.origin_detection_errors
     }
 
     fn failed_context_resolve_total(&self) -> &Counter {
@@ -976,6 +1016,8 @@ fn build_metrics(listen_addr: &ListenAddress, component_context: &ComponentConte
                 ("message_type", "service_checks"),
             ],
         ),
+        origin_detection_errors: builder
+            .register_counter_with_tags("component_errors_total", [("error_type", ERROR_TYPE_ORIGIN_DETECTION)]),
         connections_active: builder
             .register_gauge_with_tags("component_connections_active", [("listener_type", listener_type)]),
         packet_receive_success: builder.register_counter_with_tags(
@@ -1014,6 +1056,7 @@ impl Source for DogStatsD {
                 io_buffer_pool: self.io_buffer_pool.clone(),
                 codec: self.codec.clone(),
                 context_resolvers: self.context_resolvers.clone(),
+                origin_detection_enabled: self.origin_detection_enabled,
                 stream_log_too_big: self.stream_log_too_big,
                 eol_required: self.eol_required,
                 additional_tags: self.additional_tags.clone(),
@@ -1063,6 +1106,7 @@ async fn process_listener(
         io_buffer_pool,
         codec,
         context_resolvers,
+        origin_detection_enabled,
         stream_log_too_big,
         eol_required,
         additional_tags,
@@ -1094,6 +1138,7 @@ async fn process_listener(
                         io_buffer_pool: io_buffer_pool.clone(),
                         metrics: build_metrics(&listen_addr, source_context.component_context()),
                         context_resolvers: context_resolvers.clone(),
+                        origin_detection_enabled,
                         stream_log_too_big,
                         additional_tags: additional_tags.clone(),
                         capture_entity_resolver: capture_entity_resolver.clone(),
@@ -1146,6 +1191,7 @@ async fn drive_stream(
         io_buffer_pool,
         metrics,
         mut context_resolvers,
+        origin_detection_enabled,
         stream_log_too_big,
         additional_tags,
         capture_entity_resolver,
@@ -1187,6 +1233,8 @@ async fn drive_stream(
                         eof = true;
                     }
 
+                    let is_connectionless = stream.is_connectionless();
+
                     capture_uds_traffic(
                         &listen_addr,
                         &traffic_capture,
@@ -1197,25 +1245,23 @@ async fn drive_stream(
                         &mut stream_capture,
                     );
 
-                    // TODO: This is correct for UDP and UDS in SOCK_DGRAM mode, but not for UDS in SOCK_STREAM mode...
-                    // because to match the Datadog Agent, we would only want to increment the number of successful
-                    // packets for each length-delimited frame, but this is obviously being incremented before we do any
-                    // framing... and even further, with the nested framer, we don't have access to the signal that
-                    // we've gotten a full length-delimited outer frame, only each individual newline-delimited inner
-                    // frame.
-                    //
-                    // As such, we'll potentially be over-reporting this metric for UDS in SOCK_STREAM mode compared to
-                    // the Datadog Agent.
-                    metrics.packet_receive_success().increment(1);
+                    if is_connectionless {
+                        metrics.packet_receive_success().increment(1);
+                    }
                     metrics.bytes_received().increment(bytes_read as u64);
                     metrics.bytes_received_size().record(bytes_read as f64);
+                    let origin_detection_failed =
+                        origin_detection_enabled && bytes_read > 0 && peer_addr.has_process_credential_error();
+                    if origin_detection_failed && is_connectionless {
+                        metrics.origin_detection_errors().increment(1);
+                    }
 
                     // When we're actually at EOF, or we're dealing with a connectionless stream, we try to decode in EOF mode.
                     //
                     // For connectionless streams, we always try to decode the buffer as if it's EOF, since it effectively _is_
                     // always the end of file after a receive. For connection-oriented streams, we only want to do this once we've
                     // actually hit true EOF.
-                    let reached_eof = eof || stream.is_connectionless();
+                    let reached_eof = eof || is_connectionless;
 
                     trace!(
                         buffer_len = io_buffer.remaining(),
@@ -1227,10 +1273,18 @@ async fn drive_stream(
                         bytes_read
                     );
 
-                    let mut frames = io_buffer.framed(&mut framer, reached_eof);
                     'frame: loop {
-                        match frames.next(){
-                            Some(Ok(frame)) => {
+                        let frame_result = framer.next_frame(io_buffer, reached_eof);
+                        let completed_outer_frames = framer.take_completed_outer_frames();
+                        if !is_connectionless && completed_outer_frames > 0 {
+                            metrics.packet_receive_success().increment(completed_outer_frames as u64);
+                        }
+                        if origin_detection_failed && completed_outer_frames > 0 {
+                            metrics.origin_detection_errors().increment(completed_outer_frames as u64);
+                        }
+
+                        match frame_result {
+                            Ok(Some(frame)) => {
                                 trace!(%listen_addr, %peer_addr, ?frame, "Decoded frame.");
                                 match handle_frame(&frame[..], &codec, &mut context_resolvers, &metrics, &peer_addr, enabled_filter, &additional_tags) {
                                     Ok(Some(event)) => {
@@ -1252,7 +1306,7 @@ async fn drive_stream(
                                     },
                                 }
                             }
-                            Some(Err(e)) => {
+                            Err(e) => {
                                 metrics.framing_errors().increment(1);
                                 if should_warn_stream_log_too_big(&listen_addr, &e, stream_log_too_big) {
                                     warn!(
@@ -1274,7 +1328,7 @@ async fn drive_stream(
                                     break 'read;
                                 }
                             }
-                            None => {
+                            Ok(None) => {
                                 trace!(%listen_addr, %peer_addr, "Not enough data to decode another frame.");
                                 if eof && !stream.is_connectionless() {
                                     debug!(%listen_addr, %peer_addr, "Stream received EOF. Shutting down handler.");
@@ -1414,7 +1468,7 @@ fn resolve_capture_container_id(
 
 fn process_id_from_peer_addr(peer_addr: &ConnectionAddress) -> Option<i32> {
     match peer_addr {
-        ConnectionAddress::ProcessLike(Some(creds)) => Some(creds.pid),
+        ConnectionAddress::ProcessLike(ProcessIdentity::Credentials(creds)) => Some(creds.pid),
         _ => None,
     }
 }
@@ -1525,7 +1579,7 @@ fn handle_metric_packet(
     let well_known_tags = WellKnownTags::from_raw_tags(packet.tags.clone());
 
     let mut origin = origin_from_metric_packet(&packet, &well_known_tags);
-    if let ConnectionAddress::ProcessLike(Some(creds)) = &peer_addr {
+    if let Some(creds) = peer_addr.process_credentials() {
         origin.set_process_id(creds.pid as u32);
     }
 
@@ -1563,7 +1617,7 @@ fn handle_event_packet(
     let well_known_tags = WellKnownTags::from_raw_tags(packet.tags.clone());
 
     let mut origin = origin_from_event_packet(&packet, &well_known_tags);
-    if let ConnectionAddress::ProcessLike(Some(creds)) = &peer_addr {
+    if let Some(creds) = peer_addr.process_credentials() {
         origin.set_process_id(creds.pid as u32);
     }
     let origin_tags = tags_resolver.resolve_origin_tags(Some(origin));
@@ -1608,7 +1662,7 @@ fn handle_service_check_packet(
     let well_known_tags = WellKnownTags::from_raw_tags(packet.tags.clone());
 
     let mut origin = origin_from_service_check_packet(&packet, &well_known_tags);
-    if let ConnectionAddress::ProcessLike(Some(creds)) = &peer_addr {
+    if let Some(creds) = peer_addr.process_credentials() {
         origin.set_process_id(creds.pid as u32);
     }
     let origin_tags = tags_resolver.resolve_origin_tags(Some(origin));
@@ -1724,7 +1778,7 @@ mod tests {
     use saluki_env::workload::{CaptureEntityResolver, EntityId};
     use saluki_io::{
         deser::codec::dogstatsd::{DogStatsDCodec, DogStatsDCodecConfiguration, ParsedPacket},
-        net::{ConnectionAddress, ListenAddress},
+        net::{ConnectionAddress, ListenAddress, ProcessCredentials, ProcessIdentity},
     };
     use serde_json::json;
 
@@ -2301,14 +2355,14 @@ mod tests {
         let mut stream_capture = super::StreamCaptureState::new();
 
         stream_capture.update_peer_metadata(
-            &ConnectionAddress::ProcessLike(Some(saluki_io::net::ProcessCredentials {
+            &ConnectionAddress::ProcessLike(ProcessIdentity::Credentials(ProcessCredentials {
                 pid: 42,
                 uid: 0,
                 gid: 0,
             })),
             b"creds",
         );
-        stream_capture.update_peer_metadata(&ConnectionAddress::ProcessLike(None), &[]);
+        stream_capture.update_peer_metadata(&ConnectionAddress::ProcessLike(ProcessIdentity::Unavailable), &[]);
 
         assert_eq!(stream_capture.last_pid, Some(42));
         assert_eq!(stream_capture.last_ancillary_data, b"creds");

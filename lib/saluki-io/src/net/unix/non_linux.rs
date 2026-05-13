@@ -3,7 +3,7 @@ use std::io;
 use bytes::BufMut;
 use socket2::{MaybeUninitSlice, MsgHdrMut, SockAddr, SockAddrStorage, SockRef};
 
-use crate::net::{ConnectionAddress, ReceiveResult};
+use crate::net::{ConnectionAddress, ProcessCredentialsError, ProcessIdentity, ReceiveResult};
 
 pub fn enable_uds_socket_credentials<'sock, S>(_socket: &'sock S) -> io::Result<()>
 where
@@ -41,7 +41,7 @@ where
 
     Ok(ReceiveResult {
         bytes_read: n,
-        address: ConnectionAddress::ProcessLike(None),
+        address: ConnectionAddress::ProcessLike(ProcessIdentity::Error(ProcessCredentialsError::UnsupportedPlatform)),
         ancillary_data: Vec::new(),
     })
 }

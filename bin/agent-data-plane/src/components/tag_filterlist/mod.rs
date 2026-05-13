@@ -1,7 +1,7 @@
 //! Metric Tag Filterlist synchronous transform.
 //!
-//! Removes or retains specific tags from distribution metrics based on per-metric configuration.
-//! Supports both "exclude" (denylist) and "include" (allowlist) modes.
+//! Removes or retains specific tags from distribution and count metrics based on per-metric
+//! configuration. Supports both "exclude" (denylist) and "include" (allowlist) modes.
 //!
 //! Configuration is read from the `metric_tag_filterlist` key and can be updated at runtime via
 //! Remote Config.
@@ -22,7 +22,10 @@ use saluki_core::{
         transforms::{Transform, TransformBuilder, TransformContext},
         ComponentContext,
     },
-    data_model::event::{metric::Metric, EventType},
+    data_model::event::{
+        metric::{Metric, MetricValues},
+        EventType,
+    },
     observability::ComponentMetricsExt,
     topology::OutputDefinition,
 };
@@ -229,7 +232,9 @@ impl Transform for TagFilterlist {
                     Some(mut events) => {
                         for event in &mut events {
                             if let Some(metric) = event.try_as_metric_mut() {
-                                if metric.values().is_sketch() {
+                                if metric.values().is_sketch()
+                                    || matches!(metric.values(), MetricValues::Counter(_))
+                                {
                                     let original_context = metric.context().clone();
 
                                     if let Some(cached) = self.context_cache.get(&original_context) {
@@ -407,6 +412,74 @@ mod tests {
         let metric = counter_metric("my.counter", &["env:prod", "service:web"]);
         assert!(!metric.values().is_sketch(), "counter should not be a sketch");
         assert_eq!(tag_names(&metric), vec!["env:prod", "service:web"]);
+    }
+
+    #[test]
+    fn count_exclude_removes_listed_tags() {
+        let entries = vec![MetricTagFilterEntry {
+            metric_name: "my.counter".to_string(),
+            action: FilterAction::Exclude,
+            tags: vec!["env".to_string(), "host".to_string()],
+        }];
+        let filters = compile_filters(&entries);
+
+        let mut metric = counter_metric("my.counter", &["env:prod", "service:web", "host:h1"]);
+        let mut state = TagSetMutViewState::default();
+        let outcome = filter_metric_tags(&mut metric, &mut state, &filters);
+
+        assert_eq!(tag_names(&metric), vec!["service:web"]);
+        assert_eq!(outcome, FilterMetricTagsOutcome::Modified { removed_tags: 2 });
+    }
+
+    #[test]
+    fn count_include_keeps_only_listed_tags() {
+        let entries = vec![MetricTagFilterEntry {
+            metric_name: "my.counter".to_string(),
+            action: FilterAction::Include,
+            tags: vec!["env".to_string()],
+        }];
+        let filters = compile_filters(&entries);
+
+        let mut metric = counter_metric("my.counter", &["env:prod", "service:web", "host:h1"]);
+        let mut state = TagSetMutViewState::default();
+        let outcome = filter_metric_tags(&mut metric, &mut state, &filters);
+
+        assert_eq!(tag_names(&metric), vec!["env:prod"]);
+        assert_eq!(outcome, FilterMetricTagsOutcome::Modified { removed_tags: 2 });
+    }
+
+    #[test]
+    fn count_non_matching_metric_unchanged() {
+        let entries = vec![MetricTagFilterEntry {
+            metric_name: "other.counter".to_string(),
+            action: FilterAction::Exclude,
+            tags: vec!["env".to_string()],
+        }];
+        let filters = compile_filters(&entries);
+
+        let mut metric = counter_metric("my.counter", &["env:prod", "service:web"]);
+        let mut state = TagSetMutViewState::default();
+        let outcome = filter_metric_tags(&mut metric, &mut state, &filters);
+
+        assert_eq!(tag_names(&metric), vec!["env:prod", "service:web"]);
+        assert_eq!(outcome, FilterMetricTagsOutcome::RuleMiss);
+    }
+
+    #[test]
+    fn count_no_change_outcome_when_filter_matches_no_tags() {
+        let entries = vec![MetricTagFilterEntry {
+            metric_name: "my.counter".to_string(),
+            action: FilterAction::Exclude,
+            tags: vec!["region".to_string()],
+        }];
+        let filters = compile_filters(&entries);
+
+        let mut metric = counter_metric("my.counter", &["env:prod", "service:web"]);
+        let mut state = TagSetMutViewState::default();
+        let outcome = filter_metric_tags(&mut metric, &mut state, &filters);
+
+        assert_eq!(tag_names(&metric), vec!["env:prod", "service:web"]);
+        assert_eq!(outcome, FilterMetricTagsOutcome::NoChange);
     }
 
     #[test]

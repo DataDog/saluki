@@ -1,4 +1,4 @@
-use std::{sync::Mutex, time::Duration};
+use std::{sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use metrics::Level;
@@ -6,15 +6,19 @@ use saluki_api::{
     extract::{Query, State},
     response::IntoResponse,
     routing::{post, Router},
-    APIHandler, StatusCode,
+    APIHandler, DynamicRoute, EndpointType, StatusCode,
 };
 use saluki_core::{
     observability::metrics::FilterHandle,
-    runtime::{InitializationError, ProcessShutdown, Supervisable, SupervisorFuture},
+    runtime::{state::DataspaceRegistry, InitializationError, ProcessShutdown, Supervisable, SupervisorFuture},
 };
 use saluki_error::generic_error;
 use serde::Deserialize;
-use tokio::{select, sync::mpsc, time::sleep};
+use tokio::{
+    select,
+    sync::{mpsc, Mutex},
+    time::sleep,
+};
 use tracing::info;
 
 const MAXIMUM_OVERRIDE_LENGTH_SECS: u64 = 60 * 60;
@@ -46,27 +50,6 @@ pub struct MetricsAPIHandler {
 }
 
 impl MetricsAPIHandler {
-    /// Creates a new `MetricsAPIHandler` and a paired [`MetricsOverrideWorker`].
-    ///
-    /// The worker must be added to a [`Supervisor`][saluki_core::runtime::Supervisor] for the handler's
-    /// override/reset routes to take effect; without it, requests are accepted but never applied.
-    pub(super) fn new(filter_handle: FilterHandle) -> (Self, MetricsOverrideWorker) {
-        let (override_tx, override_rx) = mpsc::channel(1);
-        let worker = MetricsOverrideWorker {
-            state: Mutex::new(Some(MetricsOverrideWorkerState {
-                filter_handle,
-                override_rx,
-            })),
-        };
-
-        (
-            Self {
-                state: MetricsHandlerState { override_tx },
-            },
-            worker,
-        )
-    }
-
     async fn override_handler(
         State(state): State<MetricsHandlerState>, params: Query<OverrideQueryParams>, body: String,
     ) -> impl IntoResponse {
@@ -119,23 +102,35 @@ impl APIHandler for MetricsAPIHandler {
     }
 }
 
-/// A worker that processes dynamic metric filter override requests sent via [`MetricsAPIHandler`].
+/// A worker that processes dynamic metric filter override requests.
 ///
-/// Holds the receiving half of the override channel; the corresponding sender is held by the API handler
-/// (which is itself stored in a static after the metrics subsystem is initialized). The worker exits cleanly
-/// on either supervisor shutdown or channel close.
-///
-/// This worker is one-shot: a successful initialization consumes the receiver. Restart by the supervisor will
-/// fail with an initialization error, propagating up to bring the supervisor down. This matches the historical
-/// fire-and-forget semantics, since the corresponding sender held by [`MetricsAPIHandler`] would no longer have
-/// a live receiver to deliver to.
+/// When running, the worker asserts a set of routes (based on [`MetricsAPIHandler`]) that allow triggering
+/// an override of the current metrics filter directives as well as clearing (resetting) the active override.
 pub struct MetricsOverrideWorker {
-    state: Mutex<Option<MetricsOverrideWorkerState>>,
+    handler: MetricsAPIHandler,
+    state: Arc<Mutex<MetricsOverrideWorkerState>>,
 }
 
 struct MetricsOverrideWorkerState {
     filter_handle: FilterHandle,
     override_rx: mpsc::Receiver<Option<(Duration, Level)>>,
+}
+
+impl MetricsOverrideWorker {
+    /// Creates a new `MetricsOverrideWorker` driving the given filter handle.
+    pub(super) fn new(filter_handle: FilterHandle) -> Self {
+        let (override_tx, override_rx) = mpsc::channel(1);
+        let handler = MetricsAPIHandler {
+            state: MetricsHandlerState { override_tx },
+        };
+        Self {
+            handler,
+            state: Arc::new(Mutex::new(MetricsOverrideWorkerState {
+                filter_handle,
+                override_rx,
+            })),
+        }
+    }
 }
 
 #[async_trait]
@@ -145,29 +140,21 @@ impl Supervisable for MetricsOverrideWorker {
     }
 
     async fn initialize(&self, process_shutdown: ProcessShutdown) -> Result<SupervisorFuture, InitializationError> {
-        let MetricsOverrideWorkerState {
-            filter_handle,
-            override_rx,
-        } = self
-            .state
-            .lock()
-            .unwrap()
-            .take()
-            .ok_or_else(|| InitializationError::Failed {
-                source: generic_error!("metrics override worker has already been initialized"),
-            })?;
+        let mut state = self.state.clone().lock_owned().await;
+        let metrics_route = DynamicRoute::http(EndpointType::Privileged, &self.handler);
 
         Ok(Box::pin(async move {
-            process_override_requests(filter_handle, override_rx, process_shutdown).await;
+            DataspaceRegistry::try_current()
+                .ok_or_else(|| generic_error!("Dataspace not available."))?
+                .assert(metrics_route, "metrics-api");
+
+            process_override_requests(&mut state, process_shutdown).await;
             Ok(())
         }))
     }
 }
 
-async fn process_override_requests(
-    filter_handle: FilterHandle, mut rx: mpsc::Receiver<Option<(Duration, Level)>>,
-    mut process_shutdown: ProcessShutdown,
-) {
+async fn process_override_requests(state: &mut MetricsOverrideWorkerState, mut process_shutdown: ProcessShutdown) {
     let mut override_active = false;
     let override_timeout = sleep(Duration::MAX);
 
@@ -179,13 +166,13 @@ async fn process_override_requests(
     loop {
         select! {
             _ = &mut shutdown => break,
-            maybe_override = rx.recv() => match maybe_override {
+            maybe_override = state.override_rx.recv() => match maybe_override {
                 Some(Some((duration, new_level))) => {
                     // TODO: Using the `Debug` representation of `Level` is noisy, and we should add a method upstream to
                     // just get the stringified representation of the level instead.
                     info!(level = ?new_level, "Overriding existing metric filtering directive for {} seconds...", duration.as_secs());
 
-                    filter_handle.override_filter(new_level);
+                    state.filter_handle.override_filter(new_level);
 
                     // Mark ourselves as having an active override and update the override timeout.
                     override_active = true;
@@ -209,7 +196,7 @@ async fn process_override_requests(
                 if override_active {
                     override_active = false;
 
-                    filter_handle.reset_filter();
+                    state.filter_handle.reset_filter();
 
                     info!("Restored original metric filtering directive.");
                 }

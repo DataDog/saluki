@@ -1,5 +1,7 @@
 mod addr;
-pub use self::addr::{ConnectionAddress, GrpcTargetAddress, ListenAddress, ProcessCredentials};
+pub use self::addr::{
+    ConnectionAddress, GrpcTargetAddress, ListenAddress, ProcessCredentials, ProcessCredentialsError, ProcessIdentity,
+};
 
 pub mod client;
 pub mod dns;

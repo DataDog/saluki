@@ -1,6 +1,6 @@
 # Configuring DogStatsD on Agent Data Plane
 
-<!-- Last updated: 2026-05-06 -->
+<!-- Last updated: 2026-05-13 -->
 
 The DogStatsD implementation on ADP has been redesigned in Rust for better resource guarantees and
 efficiency. Because the architecture is different from the original implementation, certain
@@ -370,6 +370,7 @@ when the receiving syslog daemon expects the Agent's RFC-style header.
 | `metric_tag_filterlist`                   | Per-metric tag include/exclude   |
 | `no_proxy_nonexact_match`                 | Domain/CIDR no_proxy matching    |
 | `origin_detection_unified`                | Unified origin detection mode    |
+| `provider_kind`                           | Provider kind static tag         |
 | `proxy`                                   | HTTP/HTTPS proxy configuration   |
 | `run_path`                                | Runtime data directory path      |
 | `secret_backend_command`                  | Secret resolver executable path  |
@@ -421,3 +422,4 @@ when the receiving syslog daemon expects the Agent's RFC-style header.
 [#1468]: https://github.com/DataDog/saluki/issues/1468
 [#1476]: https://github.com/DataDog/saluki/issues/1476
 [#1586]: https://github.com/DataDog/saluki/issues/1586
+[#1640]: https://github.com/DataDog/saluki/issues/1640

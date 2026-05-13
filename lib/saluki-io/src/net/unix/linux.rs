@@ -4,7 +4,7 @@ use bytes::BufMut;
 use socket2::{Domain, MaybeUninitSlice, MsgHdrMut, Protocol, SockAddr, SockAddrStorage, SockRef, Socket, Type};
 
 use super::ancillary::{ControlMessage, SocketCredentialsAncillaryData};
-use crate::net::{ConnectionAddress, ProcessCredentials, ReceiveResult};
+use crate::net::{ConnectionAddress, ProcessCredentials, ProcessCredentialsError, ProcessIdentity, ReceiveResult};
 
 /// Enables the `SO_PASSCRED` option on the given socket.
 ///
@@ -49,28 +49,35 @@ where
     // If we got any socket credentials back, parse them.
     let control_len = msg_hdr.control_len();
 
-    let (maybe_process_creds, ancillary) = if control_len > 0 {
+    let (process_identity, ancillary) = if control_len > 0 {
         unsafe {
             ancillary_data.set_len(control_len);
 
             let ancillary = ancillary_data.bytes().to_vec();
 
-            let maybe_process_creds = ancillary_data
+            let process_identity = match ancillary_data
                 .messages()
                 .map(|m| match m {
-                    ControlMessage::Credentials(creds) => ProcessCredentials {
-                        pid: creds.pid,
-                        uid: creds.uid,
-                        gid: creds.gid,
-                    },
+                    ControlMessage::Credentials(creds) => creds,
                 })
-                .next();
+                .next()
+            {
+                Some(creds) if creds.pid == 0 => ProcessIdentity::Error(ProcessCredentialsError::ZeroPid),
+                Some(creds) => ProcessIdentity::Credentials(ProcessCredentials {
+                    pid: creds.pid,
+                    uid: creds.uid,
+                    gid: creds.gid,
+                }),
+                None => ProcessIdentity::Error(ProcessCredentialsError::InvalidCredentials),
+            };
 
-            (maybe_process_creds, ancillary)
+            (process_identity, ancillary)
         }
     } else {
-        (None, Vec::new())
+        (ProcessIdentity::Unavailable, Vec::new())
     };
+
+    let conn_addr = ConnectionAddress::ProcessLike(process_identity);
 
     // Finally, update our buffer to reflect the bytes we've read.
     unsafe {
@@ -79,7 +86,7 @@ where
 
     Ok(ReceiveResult {
         bytes_read: n,
-        address: ConnectionAddress::ProcessLike(maybe_process_creds),
+        address: conn_addr,
         ancillary_data: ancillary,
     })
 }

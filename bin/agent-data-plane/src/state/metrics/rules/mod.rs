@@ -2,6 +2,7 @@ use saluki_context::{tags::TagSet, Context};
 use stringtheory::MetaString;
 
 mod aggregation;
+mod compat;
 mod dogstatsd;
 mod transaction;
 
@@ -17,6 +18,11 @@ pub fn get_datadog_agent_remappings() -> Vec<RemapperRule> {
     rules
 }
 
+/// Returns remapper rules that expose ADP telemetry under Core Agent `go_expvar`-compatible names.
+pub fn get_compat_remappings() -> Vec<RemapperRule> {
+    self::compat::get_compat_remappings()
+}
+
 /// A metric remapping rule.
 ///
 /// Rules define the basic matching behavior -- metric name, and optionally tags -- as well as how to remap the new copy
@@ -28,6 +34,7 @@ pub struct RemapperRule {
     new_name: &'static str,
     remapped_tags: Vec<(&'static str, &'static str)>,
     additional_tags: Vec<MetaString>,
+    continue_matching: bool,
 }
 
 impl RemapperRule {
@@ -39,6 +46,7 @@ impl RemapperRule {
             new_name,
             remapped_tags: Vec::new(),
             additional_tags: Vec::new(),
+            continue_matching: false,
         }
     }
 
@@ -52,6 +60,7 @@ impl RemapperRule {
             new_name,
             remapped_tags: Vec::new(),
             additional_tags: Vec::new(),
+            continue_matching: false,
         }
     }
 
@@ -100,6 +109,22 @@ impl RemapperRule {
         self.additional_tags
             .extend(additional_tags.into_iter().map(MetaString::from_static));
         self
+    }
+
+    /// Allows later rules to also match the same source metric.
+    pub fn with_continued_matching(mut self) -> Self {
+        self.continue_matching = true;
+        self
+    }
+
+    /// Returns `true` if matching should continue after this rule matches.
+    pub const fn should_continue_matching(&self) -> bool {
+        self.continue_matching
+    }
+
+    /// Returns the remapped metric name produced by this rule.
+    pub const fn remapped_name(&self) -> &'static str {
+        self.new_name
     }
 
     /// Attempts to match the given context against this rule.

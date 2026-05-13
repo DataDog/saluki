@@ -81,6 +81,17 @@ crate::declare_annotations! {
         test_json: None,
     };
 
+    /// `use_v2_api.series` — when `false`, send series metrics to the legacy V1 JSON intake at `/api/v1/series`.
+    USE_V2_API_SERIES = SalukiAnnotation {
+        schema: &schema::USE_V2_API_SERIES,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::DATADOG_METRICS_CONFIGURATION],
+        value_type_override: None,
+        test_json: None,
+    };
+
     /// `env` — the environment name attached to all emitted telemetry.
     ENV = SalukiAnnotation {
         schema: &schema::ENV,

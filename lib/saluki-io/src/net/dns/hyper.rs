@@ -8,6 +8,7 @@ use std::{
 
 use hickory_resolver::{net::NetError, TokioResolver};
 use hyper_util::client::legacy::connect::{dns::Name, HttpConnector};
+use metrics::Counter;
 use saluki_error::{ErrorContext as _, GenericError};
 use tower::Service;
 
@@ -18,6 +19,7 @@ pub type HickoryHttpConnector = HttpConnector<HickoryResolver>;
 #[derive(Clone)]
 pub struct HickoryResolver {
     resolver: Arc<TokioResolver>,
+    lookup_errors: Option<Counter>,
 }
 
 impl HickoryResolver {
@@ -38,7 +40,14 @@ impl HickoryResolver {
 
         Ok(Self {
             resolver: Arc::new(resolver),
+            lookup_errors: None,
         })
+    }
+
+    /// Sets a counter that is incremented when DNS lookup fails.
+    pub fn with_lookup_errors_counter(mut self, counter: Counter) -> Self {
+        self.lookup_errors = Some(counter);
+        self
     }
 
     /// Consumes `self` and creates a new [`HickoryHttpConnector`] with this resolver.
@@ -59,9 +68,18 @@ impl Service<Name> for HickoryResolver {
 
     fn call(&mut self, name: Name) -> Self::Future {
         let resolver = self.resolver.clone();
+        let lookup_errors = self.lookup_errors.clone();
 
         Box::pin(async move {
-            let response = resolver.lookup_ip(name.as_str()).await?;
+            let response = match resolver.lookup_ip(name.as_str()).await {
+                Ok(response) => response,
+                Err(error) => {
+                    if let Some(lookup_errors) = lookup_errors {
+                        lookup_errors.increment(1);
+                    }
+                    return Err(error);
+                }
+            };
             Ok(response.iter().collect())
         })
     }

@@ -20,6 +20,18 @@ pub trait APIHandler {
     fn generate_routes(&self) -> Router<Self::State>;
 }
 
+impl<T: APIHandler> APIHandler for &T {
+    type State = T::State;
+
+    fn generate_initial_state(&self) -> Self::State {
+        (*self).generate_initial_state()
+    }
+
+    fn generate_routes(&self) -> Router<Self::State> {
+        (*self).generate_routes()
+    }
+}
+
 /// API endpoint type.
 ///
 /// Identifies whether or not a route should be exposed on the unprivileged or privileged API endpoint.

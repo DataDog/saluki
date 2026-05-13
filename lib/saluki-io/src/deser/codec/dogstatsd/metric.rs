@@ -167,7 +167,16 @@ pub fn parse_dogstatsd_metric<'a>(
         None
     };
 
-    let (num_points, mut metric_values) = metric_values_from_raw(raw_metric_values, metric_type, maybe_sample_rate)?;
+    let effective_sample_rate = if matches!(&metric_type, MetricType::Count) && maybe_timestamp.is_some() {
+        // Match the Datadog Agent no-aggregation pipeline: timestamped DogStatsD counts are forwarded as
+        // pre-aggregated points, so their sample rate is not used to reinflate the count value.
+        None
+    } else {
+        maybe_sample_rate
+    };
+
+    let (num_points, mut metric_values) =
+        metric_values_from_raw(raw_metric_values, metric_type, effective_sample_rate)?;
 
     // If we got a timestamp, apply it to all metric values.
     if let Some(timestamp) = maybe_timestamp {
@@ -444,6 +453,31 @@ mod tests {
     }
 
     #[test]
+    fn metric_timestamped_count_sample_rate_matches_no_aggregation_pipeline() {
+        let name = "my.counter";
+        let value = 2.0;
+        let sample_rate = 0.25;
+        let timestamp = 1234567890;
+        let raw = format!("{}:{}|c|@{}|T{}", name, value, sample_rate, timestamp);
+
+        let mut expected = Metric::counter(name, value);
+        expected.values_mut().set_timestamp(timestamp);
+
+        let actual = parse_dsd_metric(raw.as_bytes()).expect("should not fail to parse");
+        let actual = check_basic_metric_eq(expected, actual);
+        let values = match actual.values() {
+            MetricValues::Counter(values) => values
+                .into_iter()
+                .map(|(ts, v)| (ts.map(|v| v.get()).unwrap_or(0), v))
+                .collect::<Vec<_>>(),
+            _ => panic!("expected counter values"),
+        };
+
+        assert_eq!(values.len(), 1);
+        assert_eq!(values[0], (timestamp, value));
+    }
+
+    #[test]
     fn metric_local_data() {
         let name = "my.counter";
         let value = 1.0;
@@ -529,8 +563,7 @@ mod tests {
             timestamp
         );
 
-        let value_sample_rate_adjusted = value * (1.0 / sample_rate);
-        let mut expected = Metric::counter((name, &tags[..]), value_sample_rate_adjusted);
+        let mut expected = Metric::counter((name, &tags[..]), value);
         expected.values_mut().set_timestamp(timestamp);
 
         let actual = parse_dsd_metric(raw.as_bytes()).expect("should not fail to parse");
@@ -544,7 +577,7 @@ mod tests {
         };
 
         assert_eq!(values.len(), 1);
-        assert_eq!(values[0], (timestamp, value_sample_rate_adjusted));
+        assert_eq!(values[0], (timestamp, value));
 
         // We need client_origin_detection on in order to parse local_data, external_data, and cardinality fields
         let config = DogStatsDCodecConfiguration::default().with_client_origin_detection(true);

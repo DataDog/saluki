@@ -6,6 +6,7 @@
 
 use std::{
     convert::Infallible,
+    error::Error,
     future::Future,
     net::SocketAddr,
     panic::{catch_unwind, AssertUnwindSafe},
@@ -17,11 +18,11 @@ use std::{
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use axum::{body::Body as AxumBody, Router};
-use http::Response;
+use http::{Request, Response};
 use rcgen::{generate_simple_self_signed, CertifiedKey};
 use rustls::{pki_types::PrivateKeyDer, ServerConfig};
 use rustls_pki_types::PrivatePkcs8KeyDer;
-use saluki_api::{DynamicRoute, EndpointProtocol, EndpointType};
+use saluki_api::{APIHandler, DynamicRoute, EndpointProtocol, EndpointType};
 use saluki_common::collections::FastIndexMap;
 use saluki_core::runtime::{
     state::{AssertionUpdate, DataspaceRegistry, Identifier, IdentifierFilter, Subscription},
@@ -38,6 +39,7 @@ use saluki_io::net::{
     ListenAddress,
 };
 use tokio::{pin, select};
+use tonic::{body::Body as GrpcBody, server::NamedService, service::RoutesBuilder};
 use tower::Service;
 use tracing::{debug, info, warn};
 
@@ -61,6 +63,14 @@ pub struct BoundApiAddress(pub SocketAddr);
 ///
 /// If the dynamic API server is restarted, it will re-register any routes that were previously asserted.
 ///
+/// ## Static handlers and services
+///
+/// In addition to dynamic routes, callers can register static HTTP handlers and gRPC services up-front via
+/// [`with_handler`][Self::with_handler], [`with_optional_handler`][Self::with_optional_handler], and
+/// [`with_grpc_service`][Self::with_grpc_service]. These form a base router that is cloned on every rebuild and merged
+/// with the currently-asserted dynamic routes. Static routes take precedence on conflicts: a dynamic route whose path
+/// and method overlap with a static route is skipped (with a warning) until the conflict clears.
+///
 /// ## Assertions
 ///
 /// - `BoundApiAddress`: the actual listen address bound by the API server. Identifier is `"dynamic-<type>-api"`, where
@@ -69,6 +79,8 @@ pub struct DynamicAPIBuilder {
     endpoint_type: EndpointType,
     listen_address: ListenAddress,
     tls_config: Option<ServerConfig>,
+    http_router: Router,
+    grpc_router: RoutesBuilder,
 }
 
 impl DynamicAPIBuilder {
@@ -78,7 +90,54 @@ impl DynamicAPIBuilder {
             endpoint_type,
             listen_address,
             tls_config: None,
+            http_router: Router::new(),
+            grpc_router: RoutesBuilder::default(),
         }
+    }
+
+    /// Adds the given handler as a static HTTP handler.
+    ///
+    /// The handler's initial state and routes are merged into the base router. These routes are always served by the
+    /// API regardless of which dynamic routes are currently asserted.
+    pub fn with_handler<H>(mut self, handler: H) -> Self
+    where
+        H: APIHandler,
+    {
+        let handler_router = handler.generate_routes();
+        let handler_state = handler.generate_initial_state();
+        self.http_router = self.http_router.merge(handler_router.with_state(handler_state));
+        self
+    }
+
+    /// Adds the given optional handler as a static HTTP handler.
+    ///
+    /// If `handler` is `Some`, its initial state and routes are merged into the base router. Otherwise the builder is
+    /// returned unchanged.
+    pub fn with_optional_handler<H>(self, handler: Option<H>) -> Self
+    where
+        H: APIHandler,
+    {
+        if let Some(handler) = handler {
+            self.with_handler(handler)
+        } else {
+            self
+        }
+    }
+
+    /// Adds the given gRPC service as a static service on the base router.
+    pub fn with_grpc_service<S>(mut self, svc: S) -> Self
+    where
+        S: Service<Request<GrpcBody>, Response = Response<GrpcBody>, Error = Infallible>
+            + NamedService
+            + Clone
+            + Send
+            + Sync
+            + 'static,
+        S::Future: Send + 'static,
+        S::Error: Into<Box<dyn Error + Send + Sync>> + Send,
+    {
+        self.grpc_router.add_service(svc);
+        self
     }
 
     /// Sets the TLS configuration for the server.
@@ -112,9 +171,20 @@ impl Supervisable for DynamicAPIBuilder {
     }
 
     async fn initialize(&self, process_shutdown: ProcessShutdown) -> Result<SupervisorFuture, InitializationError> {
-        // Create dynamic inner routers for both HTTP and gRPC sides.
-        let (inner_http, outer_http) = create_dynamic_router();
-        let (inner_grpc, outer_grpc) = create_dynamic_router();
+        // Build the static base routers.
+        //
+        // We reset the fallback route of the base gRPC router as Tonic's `unimplemented` fallback handle will collide
+        // when merging additional gRPC service routers together. We do this for every gRPC service router that we merge
+        // and then we re-apply a fallback handler that returns a standard gRPC `UNIMPLEMENTED` response when we have
+        // our final, merged gRPC router.
+        let base_http = self.http_router.clone();
+        let base_grpc = self.grpc_router.clone().routes().into_axum_router().reset_fallback();
+
+        // Create dynamic inner routers for both HTTP and gRPC sides, seeded with the static base so that the static
+        // routes are served even before any dynamic routes are asserted. The gRPC seed gets the unimplemented fallback
+        // applied so unmatched gRPC requests return the correct status from the start.
+        let (inner_http, outer_http) = create_dynamic_router(base_http.clone());
+        let (inner_grpc, outer_grpc) = create_dynamic_router(grpc_post_process(base_grpc.clone()));
 
         let dataspace = DataspaceRegistry::try_current().ok_or_else(|| generic_error!("Dataspace not available."))?;
 
@@ -149,6 +219,8 @@ impl Supervisable for DynamicAPIBuilder {
             run_event_loop(
                 inner_http,
                 inner_grpc,
+                base_http,
+                base_grpc,
                 route_assertions,
                 endpoint_type,
                 process_shutdown,
@@ -195,8 +267,9 @@ impl Service<http::Request<AxumBody>> for DynamicRouterService {
 }
 
 /// Runs the event loop that listens for route assertions/retractions and hot-swaps the inner routers.
+#[allow(clippy::too_many_arguments)]
 async fn run_event_loop(
-    inner_http: Arc<ArcSwap<Router>>, inner_grpc: Arc<ArcSwap<Router>>,
+    inner_http: Arc<ArcSwap<Router>>, inner_grpc: Arc<ArcSwap<Router>>, base_http: Router, base_grpc: Router,
     mut route_assertions: Subscription<DynamicRoute>, endpoint_type: EndpointType,
     mut process_shutdown: ProcessShutdown, shutdown_handle: ShutdownHandle, error_handle: ErrorHandle,
 ) -> Result<(), GenericError> {
@@ -266,11 +339,16 @@ async fn run_event_loop(
                 }
 
                 if rebuild_http {
-                    rebuild_router(&inner_http, &http_handlers);
+                    rebuild_router(&inner_http, &base_http, &http_handlers, http_post_process);
                 }
 
                 if rebuild_grpc {
-                    rebuild_router(&inner_grpc, &grpc_handlers);
+                    rebuild_router(
+                        &inner_grpc,
+                        &base_grpc,
+                        &grpc_handlers,
+                        grpc_post_process,
+                    );
                 }
             }
         }
@@ -279,9 +357,10 @@ async fn run_event_loop(
     Ok(())
 }
 
-/// Creates a dynamic router pair: a swappable inner router and an outer router that delegates to it.
-fn create_dynamic_router() -> (Arc<ArcSwap<Router>>, Router) {
-    let inner = Arc::new(ArcSwap::from_pointee(Router::new()));
+/// Creates a dynamic router pair: a swappable inner router (seeded with `initial`) and an outer router that delegates
+/// to it.
+fn create_dynamic_router(initial: Router) -> (Arc<ArcSwap<Router>>, Router) {
+    let inner = Arc::new(ArcSwap::from_pointee(initial));
     let outer = Router::new().fallback_service(DynamicRouterService::from_inner(&inner));
     (inner, outer)
 }
@@ -317,13 +396,18 @@ fn try_merge_router(base: &Router, id: &Identifier, other: &Router) -> Result<Ro
     }
 }
 
-/// Rebuilds the merged inner router from all currently-registered handlers and stores it in the [`ArcSwap`].
-fn rebuild_router(inner_router: &Arc<ArcSwap<Router>>, handlers: &FastIndexMap<Identifier, Router>) {
-    let mut merged = Router::new();
+/// Rebuilds the merged inner router from the static `base` and all currently-registered dynamic handlers, applies
+/// `post_process` to the merged router, then stores the result in the [`ArcSwap`].
+fn rebuild_router(
+    inner_router: &Arc<ArcSwap<Router>>, base: &Router, handlers: &FastIndexMap<Identifier, Router>,
+    post_process: fn(Router) -> Router,
+) {
+    let mut merged = base.clone();
     let mut skipped = 0usize;
 
     for (id, router) in handlers.iter() {
-        match try_merge_router(&merged, id, router) {
+        let resetable = router.clone().reset_fallback();
+        match try_merge_router(&merged, id, &resetable) {
             Ok(new_merged) => merged = new_merged,
             Err(reason) => {
                 warn!(%reason, "Skipping dynamic handler due to overlapping route.");
@@ -332,8 +416,22 @@ fn rebuild_router(inner_router: &Arc<ArcSwap<Router>>, handlers: &FastIndexMap<I
         }
     }
 
+    let merged = post_process(merged);
     inner_router.store(Arc::new(merged));
     debug!(handler_count = handlers.len(), skipped, "Rebuilt inner router.");
+}
+
+fn http_post_process(router: Router) -> Router {
+    router
+}
+
+/// Adds a fallback handler that returns a standard gRPC `UNIMPLEMENTED` response when no other handler matches.
+fn grpc_post_process(router: Router) -> Router {
+    router.fallback(grpc_unimplemented)
+}
+
+async fn grpc_unimplemented() -> Response<AxumBody> {
+    tonic::Status::unimplemented("").into_http()
 }
 
 #[cfg(test)]
@@ -357,8 +455,6 @@ mod tests {
     };
 
     use super::*;
-
-    // -- Helpers -------------------------------------------------------------------------
 
     struct SimpleHandler {
         path: &'static str,
@@ -484,10 +580,17 @@ mod tests {
     }
 
     async fn setup_test_harness(endpoint_type: EndpointType) -> TestHarness {
+        setup_test_harness_with(endpoint_type, |b| b).await
+    }
+
+    async fn setup_test_harness_with<F>(endpoint_type: EndpointType, configure: F) -> TestHarness
+    where
+        F: FnOnce(DynamicAPIBuilder) -> DynamicAPIBuilder,
+    {
         let (commands_tx, commands_rx) = mpsc::channel(16);
         let (addr_tx, addr_rx) = oneshot::channel();
 
-        let api_builder = DynamicAPIBuilder::new(endpoint_type, ListenAddress::any_tcp(0));
+        let api_builder = configure(DynamicAPIBuilder::new(endpoint_type, ListenAddress::any_tcp(0)));
         let route_asserter = RouteAsserter {
             commands_rx: std::sync::Mutex::new(Some(commands_rx)),
             addr_tx: std::sync::Mutex::new(Some(addr_tx)),
@@ -524,6 +627,19 @@ mod tests {
         let body = resp.into_body().collect().await.unwrap().to_bytes();
         let body_str = String::from_utf8_lossy(&body).into_owned();
         (status, body_str)
+    }
+
+    async fn grpc_post(addr: SocketAddr, path: &str) -> (StatusCode, http::HeaderMap) {
+        let client: Client<_, Empty<Bytes>> = Client::builder(TokioExecutor::new()).build_http();
+        let uri: hyper::Uri = format!("http://{}{}", addr, path).parse().unwrap();
+        let req = hyper::Request::builder()
+            .uri(uri)
+            .method(hyper::Method::POST)
+            .header(hyper::header::CONTENT_TYPE, "application/grpc")
+            .body(Empty::<Bytes>::new())
+            .unwrap();
+        let resp = client.request(req).await.unwrap();
+        (resp.status(), resp.headers().clone())
     }
 
     async fn assert_status_eventually(addr: SocketAddr, path: &str, expected: StatusCode) -> String {
@@ -743,5 +859,101 @@ mod tests {
         harness.assert_route("ov-c", route_c).await;
         let body = assert_status_eventually(harness.addr, "/overlap", StatusCode::OK).await;
         assert_eq!(body, "c");
+    }
+
+    #[tokio::test]
+    async fn static_handler_served_without_dynamic_routes() {
+        let harness = setup_test_harness_with(EndpointType::Unprivileged, |b| {
+            b.with_handler(SimpleHandler {
+                path: "/static",
+                body: "static",
+            })
+        })
+        .await;
+
+        let body = assert_status_eventually(harness.addr, "/static", StatusCode::OK).await;
+        assert_eq!(body, "static");
+    }
+
+    #[tokio::test]
+    async fn static_and_dynamic_routes_coexist() {
+        let harness = setup_test_harness_with(EndpointType::Unprivileged, |b| {
+            b.with_handler(SimpleHandler {
+                path: "/static",
+                body: "static",
+            })
+        })
+        .await;
+
+        // Static route is served immediately.
+        let body = assert_status_eventually(harness.addr, "/static", StatusCode::OK).await;
+        assert_eq!(body, "static");
+
+        // Add a dynamic route on a different path -- both should serve.
+        let dynamic_route = DynamicRoute::http(
+            EndpointType::Unprivileged,
+            SimpleHandler {
+                path: "/dynamic",
+                body: "dynamic",
+            },
+        );
+        harness.assert_route("dyn", dynamic_route).await;
+
+        let body = assert_status_eventually(harness.addr, "/dynamic", StatusCode::OK).await;
+        assert_eq!(body, "dynamic");
+
+        let (status, body) = http_get(harness.addr, "/static").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, "static");
+
+        // Retracting the dynamic route leaves the static route untouched.
+        harness.retract_route("dyn").await;
+        assert_status_eventually(harness.addr, "/dynamic", StatusCode::NOT_FOUND).await;
+
+        let (status, body) = http_get(harness.addr, "/static").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, "static");
+    }
+
+    #[tokio::test]
+    async fn unknown_grpc_method_returns_unimplemented() {
+        let harness = setup_test_harness(EndpointType::Unprivileged).await;
+        let (status, headers) = grpc_post(harness.addr, "/some.Service/Method").await;
+
+        // gRPC errors are reported with HTTP 200 plus a `grpc-status` header. UNIMPLEMENTED is code 12.
+        assert_eq!(status, StatusCode::OK);
+        let grpc_status = headers.get("grpc-status").and_then(|v| v.to_str().ok());
+        assert_eq!(grpc_status, Some("12"));
+    }
+
+    #[tokio::test]
+    async fn static_route_wins_overlap_with_dynamic() {
+        let harness = setup_test_harness_with(EndpointType::Unprivileged, |b| {
+            b.with_handler(SimpleHandler {
+                path: "/overlap",
+                body: "static",
+            })
+        })
+        .await;
+
+        // Static route is served.
+        let body = assert_status_eventually(harness.addr, "/overlap", StatusCode::OK).await;
+        assert_eq!(body, "static");
+
+        // Asserting a dynamic route at the same path is skipped due to overlap -- static still wins.
+        let dynamic_route = DynamicRoute::http(
+            EndpointType::Unprivileged,
+            SimpleHandler {
+                path: "/overlap",
+                body: "dynamic",
+            },
+        );
+        harness.assert_route("dyn-overlap", dynamic_route).await;
+
+        sleep(Duration::from_millis(200)).await;
+
+        let (status, body) = http_get(harness.addr, "/overlap").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, "static");
     }
 }

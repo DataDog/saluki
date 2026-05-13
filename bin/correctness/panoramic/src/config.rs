@@ -218,13 +218,24 @@ pub enum AssertionConfig {
         stream: LogStream,
     },
 
-    /// Check an HTTP health endpoint.
-    HealthCheck {
-        /// The endpoint URL to check.
+    /// Probe an HTTP/HTTPS endpoint and assert on the response status code.
+    ///
+    /// HTTPS endpoints are supported with optional certificate verification skipping. The status
+    /// matcher accepts either "must equal" or "must not equal" semantics; the latter is useful for
+    /// asserting only that a route is registered without having to know what status code the
+    /// endpoint would otherwise return.
+    HttpCheck {
+        /// The endpoint URL to check. Both `http://` and `https://` schemes are accepted.
         endpoint: String,
-        /// The expected HTTP status code.
-        expected_status: u16,
-        /// Timeout for the health check to succeed.
+        /// Matcher applied to the response status code.
+        status: HttpStatusMatcher,
+        /// Whether to skip TLS certificate verification for `https://` endpoints.
+        ///
+        /// Defaults to `false`. Set to `true` when probing endpoints that serve self-signed
+        /// certificates (such as the ADP privileged API in integration tests).
+        #[serde(default)]
+        insecure_skip_verify: bool,
+        /// Timeout for the check to succeed.
         timeout: HumanDuration,
     },
 
@@ -253,6 +264,19 @@ pub enum LogStream {
     Both,
 }
 
+/// Matcher for the response status code of an [`AssertionConfig::HttpCheck`].
+///
+/// Exactly one variant is set at deserialization time, so the assertion either requires a specific
+/// status code or rejects a specific status code.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HttpStatusMatcher {
+    /// Assertion passes when the response status code equals this value.
+    Equal(u16),
+    /// Assertion passes when the response status code is anything other than this value.
+    NotEqual(u16),
+}
+
 impl AssertionConfig {
     /// Replaces `{{PANORAMIC_DYNAMIC_*}}` placeholders in string fields with resolved values.
     pub fn resolve_dynamic_vars(&mut self, vars: &HashMap<String, String>) {
@@ -260,7 +284,7 @@ impl AssertionConfig {
             AssertionConfig::LogContains { pattern, .. } | AssertionConfig::LogNotContains { pattern, .. } => {
                 crate::dynamic_vars::resolve_placeholders(pattern, vars);
             }
-            AssertionConfig::HealthCheck { endpoint, .. } => {
+            AssertionConfig::HttpCheck { endpoint, .. } => {
                 crate::dynamic_vars::resolve_placeholders(endpoint, vars);
             }
             AssertionConfig::PortListening { protocol, .. } => {
@@ -283,7 +307,7 @@ impl AssertionConfig {
             AssertionConfig::LogContains { pattern, .. } | AssertionConfig::LogNotContains { pattern, .. } => {
                 crate::dynamic_vars::find_unresolved(pattern, &mut out);
             }
-            AssertionConfig::HealthCheck { endpoint, .. } => {
+            AssertionConfig::HttpCheck { endpoint, .. } => {
                 crate::dynamic_vars::find_unresolved(endpoint, &mut out);
             }
             AssertionConfig::PortListening { protocol, .. } => {
