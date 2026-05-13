@@ -1,14 +1,15 @@
 //! Workload metadata aggregation.
 
+use std::sync::Arc;
+
+use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::health::Health;
-use tokio::{select, sync::mpsc};
+use saluki_core::runtime::{InitializationError, ProcessShutdown, Supervisable, SupervisorFuture};
+use tokio::{pin, select, sync::mpsc, sync::Mutex};
 use tracing::debug;
 
-use super::{
-    collectors::{MetadataCollector, MetadataCollectorWorker},
-    metadata::MetadataOperation,
-};
+use super::metadata::MetadataOperation;
 
 // TODO: Make this configurable.
 const OPERATIONS_CHANNEL_SIZE: usize = 128;
@@ -16,35 +17,38 @@ const OPERATIONS_CHANNEL_SIZE: usize = 128;
 /// Aggregates the metadata from multiple collectors.
 ///
 /// Metadata collectors are used to either scrape or listen for changes in workload metadata, and convert those into
-/// [`MetadataOperation`]s that are applied to a [`MetadataStore`]. [`MetadataAggregator`] is a simple manager type that
-/// controls the lifecycle of each collector added, and processes the metadata operations produced by them in order to
-/// update a set of [`MetadataStore`]s.
+/// [`MetadataOperation`]s that are applied to a [`MetadataStore`]. `MetadataAggregator` receives those operations on
+/// an mpsc channel created at construction time and applies them to all configured [`MetadataStore`]s.
+///
+/// The aggregator implements [`Supervisable`] and is intended to run alongside collector workers as peers under a
+/// single supervisor, so they share lifecycle. The sender returned from [`MetadataAggregator::new`] should be cloned
+/// into each collector worker.
 pub struct MetadataAggregator {
+    state: Arc<Mutex<MetadataAggregatorState>>,
+}
+
+struct MetadataAggregatorState {
     stores: Vec<Box<dyn MetadataStore + Send>>,
-    operations_tx: mpsc::Sender<MetadataOperation>,
     operations_rx: mpsc::Receiver<MetadataOperation>,
     health: Health,
 }
 
 impl MetadataAggregator {
-    /// Create a new `MetadataAggregator`.
-    pub fn new(health: Health) -> Self {
+    /// Creates a new `MetadataAggregator`, returning it along with the operations sender that should be cloned into
+    /// each collector worker.
+    pub fn new(health: Health) -> (Self, mpsc::Sender<MetadataOperation>) {
         let (operations_tx, operations_rx) = mpsc::channel(OPERATIONS_CHANNEL_SIZE);
-        Self {
+        let state = MetadataAggregatorState {
             stores: Vec::new(),
-            operations_tx,
             operations_rx,
             health,
-        }
-    }
-
-    /// Adds a metadata collector to the aggregator.
-    pub fn add_collector<C>(&mut self, collector: C)
-    where
-        C: MetadataCollector + Send + 'static,
-    {
-        let worker = MetadataCollectorWorker::new(collector);
-        tokio::spawn(worker.run(self.operations_tx.clone()));
+        };
+        (
+            Self {
+                state: Arc::new(Mutex::new(state)),
+            },
+            operations_tx,
+        )
     }
 
     /// Adds a metadata store to the aggregator.
@@ -55,44 +59,28 @@ impl MetadataAggregator {
     where
         S: MetadataStore + Send + 'static,
     {
-        self.stores.push(Box::new(store));
+        // Setup-time access: nothing else holds the lock yet, so this never contends.
+        let mut state = self
+            .state
+            .try_lock()
+            .expect("aggregator state should not be locked during setup");
+        state.stores.push(Box::new(store));
+    }
+}
+
+#[async_trait]
+impl Supervisable for MetadataAggregator {
+    fn name(&self) -> &str {
+        "workload-aggregator"
     }
 
-    /// Runs the aggregator.
-    ///
-    /// This method will run indefinitely, watching for metadata changes seen by the collectors and updating the
-    /// configured metadata stores based on those changes.
-    pub async fn run(mut self) {
-        debug!("Metadata aggregator started.");
-        self.health.mark_ready();
-
-        loop {
-            select! {
-                _ = self.health.live() => {},
-                maybe_operation = self.operations_rx.recv() => match maybe_operation {
-                    Some(operation) => {
-                        // Send the operation to all stores, taking care to only clone the operation if we have two or
-                        // more stores configured.
-                        let stores_to_clone_for = self.stores.len().saturating_sub(1);
-                        for store in self.stores.iter_mut().take(stores_to_clone_for) {
-                            store.process_operation(operation.clone());
-                        }
-
-                        if let Some(last_store) = self.stores.last_mut() {
-                            last_store.process_operation(operation);
-                        }
-                    },
-                    None => {
-                        debug!("Metadata aggregator operations channel closed. Stopping...");
-                        break
-                    },
-                },
-            }
-        }
-
-        self.health.mark_not_ready();
-
-        debug!("Metadata aggregator stopped.");
+    async fn initialize(&self, process_shutdown: ProcessShutdown) -> Result<SupervisorFuture, InitializationError> {
+        let state = Arc::clone(&self.state);
+        Ok(Box::pin(async move {
+            let mut state_guard = state.lock_owned().await;
+            run_aggregator(&mut state_guard, process_shutdown).await;
+            Ok(())
+        }))
     }
 }
 
@@ -103,10 +91,50 @@ impl MemoryBounds for MetadataAggregator {
             // Operations channel.
             .with_array::<MetadataOperation>("metadata ops channel", OPERATIONS_CHANNEL_SIZE);
 
-        for store in &self.stores {
+        let state = self
+            .state
+            .try_lock()
+            .expect("aggregator state should not be locked during bounds calculation");
+        for store in &state.stores {
             builder.with_subcomponent(store.name(), store);
         }
     }
+}
+
+async fn run_aggregator(state: &mut MetadataAggregatorState, mut process_shutdown: ProcessShutdown) {
+    debug!("Metadata aggregator started.");
+    state.health.mark_ready();
+
+    let shutdown = process_shutdown.wait_for_shutdown();
+    pin!(shutdown);
+
+    loop {
+        select! {
+            _ = &mut shutdown => break,
+            _ = state.health.live() => {},
+            maybe_operation = state.operations_rx.recv() => match maybe_operation {
+                Some(operation) => {
+                    // Send the operation to all stores, taking care to only clone the operation if we have two
+                    // or more stores configured.
+                    let stores_to_clone_for = state.stores.len().saturating_sub(1);
+                    for store in state.stores.iter_mut().take(stores_to_clone_for) {
+                        store.process_operation(operation.clone());
+                    }
+
+                    if let Some(last_store) = state.stores.last_mut() {
+                        last_store.process_operation(operation);
+                    }
+                },
+                None => {
+                    debug!("Metadata aggregator operations channel closed. Stopping...");
+                    break;
+                },
+            },
+        }
+    }
+
+    state.health.mark_not_ready();
+    debug!("Metadata aggregator stopped.");
 }
 
 /// A store which receives a stream of metadata operations.

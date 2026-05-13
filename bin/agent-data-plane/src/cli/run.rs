@@ -157,7 +157,7 @@ pub async fn handle_run_command(
     // Set up all of the building blocks for building our topologies and launching internal processes.
     let component_registry = ComponentRegistry::default();
     let health_registry = HealthRegistry::new();
-    let env_provider =
+    let (env_provider, env_supervisor) =
         ADPEnvironmentProvider::from_configuration(&config, &dp_config, &component_registry, &health_registry).await?;
 
     let dsd_stats_config = DogStatsDStatisticsConfiguration::new();
@@ -179,7 +179,6 @@ pub async fn handle_run_command(
         &dp_config,
         &component_registry,
         health_registry.clone(),
-        env_provider,
         DogStatsDControlPlaneConfiguration::new(dsd_stats_config, dsd_capture_api_handler),
         ra_bootstrap,
         bootstrap_guard.logging().controller(),
@@ -191,6 +190,13 @@ pub async fn handle_run_command(
     // metrics flusher, runtime metrics collector) are driven and shut down alongside the rest of the
     // internal supervision tree.
     internal_supervisor.add_worker(bootstrap_supervisor);
+
+    // Attach the environment provider's supervisor as a child, if one was produced. This drives the workload
+    // aggregator/collectors and the autodiscovery listener; in standalone mode there is no background work and
+    // no supervisor is returned.
+    if let Some(env_supervisor) = env_supervisor {
+        internal_supervisor.add_worker(env_supervisor);
+    }
 
     // Create shutdown channel for the internal supervisor - we'll drive it in the main select loop
     let (internal_shutdown_tx, internal_shutdown_rx) = tokio::sync::oneshot::channel();

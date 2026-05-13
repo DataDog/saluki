@@ -1,10 +1,15 @@
 //! Workload metadata collection.
 
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use async_trait::async_trait;
+use saluki_core::runtime::{InitializationError, ProcessShutdown, Supervisable, SupervisorFuture};
 use saluki_error::GenericError;
-use tokio::{sync::mpsc, time::sleep};
+use tokio::{
+    pin, select,
+    sync::{mpsc, Mutex},
+    time::sleep,
+};
 use tracing::{debug, error};
 
 use super::metadata::MetadataOperation;
@@ -31,41 +36,88 @@ pub trait MetadataCollector {
     async fn watch(&mut self, operations_tx: &mut mpsc::Sender<MetadataOperation>) -> Result<(), GenericError>;
 }
 
-/// A worker that runs a metadata collector.
+/// A supervised worker that drives a [`MetadataCollector`].
+///
+/// The worker holds the collector and its dedicated [`MetadataOperation`] sender, and on initialization runs
+/// `watch` in a loop. The loop retries internally on transient errors with a short backoff so that natural stream
+/// cycling against the upstream API doesn't trip the parent supervisor's restart budget; the supervisor retains
+/// responsibility for catching panics and restarting the worker as a whole.
 pub struct MetadataCollectorWorker {
+    name: &'static str,
+    state: Arc<Mutex<MetadataCollectorState>>,
+}
+
+struct MetadataCollectorState {
     collector: Box<dyn MetadataCollector + Send>,
+    operations_tx: mpsc::Sender<MetadataOperation>,
 }
 
 impl MetadataCollectorWorker {
-    /// Create a new `MetadataCollectorWorker` based on the given `collector`.
-    pub fn new<MC>(collector: MC) -> Self
+    /// Create a new `MetadataCollectorWorker` from the given `collector` and operations sender.
+    pub fn new<MC>(collector: MC, operations_tx: mpsc::Sender<MetadataOperation>) -> Self
     where
         MC: MetadataCollector + Send + 'static,
     {
+        let name = collector.name();
         Self {
-            collector: Box::new(collector),
+            name,
+            state: Arc::new(Mutex::new(MetadataCollectorState {
+                collector: Box::new(collector),
+                operations_tx,
+            })),
         }
     }
+}
 
-    /// Runs the collector, watching for metadata changes.
-    ///
-    /// This method will run indefinitely, watching for metadata changes and sending them to the given `operations_tx`. If
-    /// an error is encountered during the call to [`MetadataCollector::watch`], it will be logged. Watching is always
-    /// retried regardless of the return value.
-    pub async fn run(mut self, mut operations_tx: mpsc::Sender<MetadataOperation>) {
-        debug!(
-            collector_name = self.collector.name(),
-            "Starting metadata collector worker."
-        );
+#[async_trait]
+impl Supervisable for MetadataCollectorWorker {
+    fn name(&self) -> &str {
+        self.name
+    }
 
-        // We do this so that if the watch call happens to return in a retriable way (like if the stream ends
-        // prematurely but without a true _error_, so `Ok(())` is returned), we can just start watching again.
-        loop {
-            if let Err(e) = self.collector.watch(&mut operations_tx).await {
-                error!(error = %e, collector_name = self.collector.name(), "Failed to collect metadata. Sleeping for 2 seconds before retrying...");
+    async fn initialize(&self, process_shutdown: ProcessShutdown) -> Result<SupervisorFuture, InitializationError> {
+        let state = Arc::clone(&self.state);
+        Ok(Box::pin(async move {
+            let mut state_guard = state.lock_owned().await;
+            run_collector(&mut state_guard, process_shutdown).await;
+            Ok(())
+        }))
+    }
+}
 
-                sleep(Duration::from_secs(2)).await;
+async fn run_collector(state: &mut MetadataCollectorState, mut process_shutdown: ProcessShutdown) {
+    debug!(
+        collector_name = state.collector.name(),
+        "Starting metadata collector worker."
+    );
+
+    let shutdown = process_shutdown.wait_for_shutdown();
+    pin!(shutdown);
+
+    let MetadataCollectorState {
+        collector,
+        operations_tx,
+    } = state;
+
+    loop {
+        select! {
+            _ = &mut shutdown => break,
+            result = collector.watch(operations_tx) => {
+                if let Err(e) = result {
+                    error!(
+                        error = %e,
+                        collector_name = collector.name(),
+                        "Failed to collect metadata. Sleeping 2s before retrying...",
+                    );
+
+                    select! {
+                        _ = &mut shutdown => break,
+                        _ = sleep(Duration::from_secs(2)) => {},
+                    }
+                }
             }
         }
     }
+
+    debug!(collector_name = collector.name(), "Metadata collector worker stopped.");
 }

@@ -1,19 +1,24 @@
+use async_trait::async_trait;
 use saluki_api::{
     extract::State,
     response::IntoResponse,
     routing::{get, Router},
-    APIHandler,
+    APIHandler, DynamicRoute, EndpointType,
 };
 use saluki_common::collections::{FastHashMap, FastHashSet};
 use saluki_context::{
     origin::OriginTagCardinality,
     tags::{SharedTagSet, TagSet},
 };
+use saluki_core::runtime::{
+    state::DataspaceRegistry, InitializationError, ProcessShutdown, Supervisable, SupervisorFuture,
+};
 use saluki_env::workload::{
     entity::HighestPrecedenceEntityIdRef,
     stores::{ExternalDataStoreResolver, TagStoreQuerier},
     EntityId,
 };
+use saluki_error::generic_error;
 use serde::{ser::SerializeSeq as _, Serialize};
 
 #[derive(Serialize)]
@@ -154,6 +159,43 @@ impl APIHandler for RemoteAgentWorkloadAPIHandler {
         Router::new()
             .route("/workload/remote_agent/tags/dump", get(Self::tags_dump_handler))
             .route("/workload/remote_agent/external_data/dump", get(Self::eds_dump_handler))
+    }
+}
+
+/// A worker for exposing routes that allow introspecting the workload provider's data stores.
+///
+/// When running, the worker asserts a set of routes (based on [`RemoteAgentWorkloadAPIHandler`]) that expose the
+/// current contents of the tag store and external data store. As the data is workload-sensitive, these routes are
+/// only registered on the privileged API endpoint.
+pub struct RemoteAgentWorkloadAPIWorker {
+    handler: RemoteAgentWorkloadAPIHandler,
+}
+
+impl RemoteAgentWorkloadAPIWorker {
+    pub(crate) fn from_state(tag_querier: TagStoreQuerier, eds_resolver: ExternalDataStoreResolver) -> Self {
+        Self {
+            handler: RemoteAgentWorkloadAPIHandler::from_state(tag_querier, eds_resolver),
+        }
+    }
+}
+
+#[async_trait]
+impl Supervisable for RemoteAgentWorkloadAPIWorker {
+    fn name(&self) -> &str {
+        "workload-api"
+    }
+
+    async fn initialize(&self, process_shutdown: ProcessShutdown) -> Result<SupervisorFuture, InitializationError> {
+        let workload_route = DynamicRoute::http(EndpointType::Privileged, &self.handler);
+
+        Ok(Box::pin(async move {
+            DataspaceRegistry::try_current()
+                .ok_or_else(|| generic_error!("Dataspace not available."))?
+                .assert(workload_route, "workload-api");
+
+            process_shutdown.await;
+            Ok(())
+        }))
     }
 }
 
