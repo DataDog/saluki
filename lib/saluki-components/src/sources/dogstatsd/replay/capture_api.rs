@@ -1,11 +1,7 @@
 //! HTTP API handler for the DogStatsD capture control surface.
 //!
-//! Exposes two routes on the privileged API:
-//! - `POST /dogstatsd/capture/trigger` — start a capture session
-//! - `POST /dogstatsd/capture/tagger-state` — push a saved tagger snapshot into the running source
-//!   for replay (currently stubbed)
+//! Exposes `POST /dogstatsd/capture/trigger` on the privileged API to start a capture session.
 
-use std::collections::HashMap;
 use std::path::Path;
 
 use saluki_api::{
@@ -41,33 +37,6 @@ pub struct CaptureTriggerResponseBody {
     pub path: String,
 }
 
-/// Request body for `POST /dogstatsd/capture/tagger-state`.
-///
-/// Mirrors the `TaggerState` proto used inside capture files: a snapshot of the PID→entity
-/// mapping and the per-entity tag state, used during replay so that captured packets resolve
-/// to their historical tags rather than whatever the live host's tagger thinks.
-///
-/// The `Entity` shape is currently `serde_json::Value`; it will be replaced with a typed
-/// representation once the replay receive-side is implemented.
-#[derive(Deserialize)]
-pub struct SetTaggerStateBody {
-    /// Map of entity ID to the entity's serialized state (tags, metadata, etc.).
-    pub state: HashMap<String, serde_json::Value>,
-
-    /// Map of PID to the entity ID that owned it at capture time.
-    pub pid_map: HashMap<i32, String>,
-
-    /// Duration of the original capture, in milliseconds.
-    pub duration_ms: i64,
-}
-
-/// Response body for `POST /dogstatsd/capture/tagger-state`.
-#[derive(Serialize)]
-pub struct SetTaggerStateResponseBody {
-    /// Whether the tagger state was successfully loaded into the running source.
-    pub loaded: bool,
-}
-
 /// API handler for the DogStatsD capture control surface.
 #[derive(Clone)]
 pub struct DogStatsDCaptureAPIHandler {
@@ -94,20 +63,6 @@ impl DogStatsDCaptureAPIHandler {
             path: capture_path.display().to_string(),
         }))
     }
-
-    async fn set_tagger_state_handler(
-        State(_capture_control): State<DogStatsDCaptureControl>, Json(body): Json<SetTaggerStateBody>,
-    ) -> Result<Json<SetTaggerStateResponseBody>, (StatusCode, String)> {
-        Err((
-            StatusCode::NOT_IMPLEMENTED,
-            format!(
-                "DogStatsD set-tagger-state is not implemented yet (received {} entities, {} pid mappings, {}ms duration).",
-                body.state.len(),
-                body.pid_map.len(),
-                body.duration_ms,
-            ),
-        ))
-    }
 }
 
 impl APIHandler for DogStatsDCaptureAPIHandler {
@@ -118,8 +73,6 @@ impl APIHandler for DogStatsDCaptureAPIHandler {
     }
 
     fn generate_routes(&self) -> Router<Self::State> {
-        Router::new()
-            .route("/dogstatsd/capture/trigger", post(Self::trigger_handler))
-            .route("/dogstatsd/capture/tagger-state", post(Self::set_tagger_state_handler))
+        Router::new().route("/dogstatsd/capture/trigger", post(Self::trigger_handler))
     }
 }
