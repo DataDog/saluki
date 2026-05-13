@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"constant":["ALL","SYSLOG_RFC","SYSLOG_URI"]};
+window.SIDEBAR_ITEMS = {"constant":["ALL","CMD_PORT","SYSLOG_RFC","SYSLOG_URI"]};
