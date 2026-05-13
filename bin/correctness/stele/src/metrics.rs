@@ -15,9 +15,7 @@ struct V1SeriesEnvelope {
 /// A single `Serie` entry in a V1 series payload.
 ///
 /// Mirrors the Datadog Agent's wire format (see `pkg/metrics/series.go`). `omitempty` fields default to empty.
-// Other fields present in the JSON envelope (`host`, `source_type_name`, `unit`) are intentionally not
-// deserialized. Like the V2 protobuf path, the V2-equivalent stele representation does not store hostname or
-// metadata-derived fields directly on the metric — they're encoded into resource entries (V2) or dropped (V1).
+// Other fields present in the JSON envelope (`source_type_name`, `unit`) are intentionally not deserialized;
 // serde silently ignores unknown JSON fields, so omitting them here is sufficient.
 #[derive(Deserialize)]
 struct V1Serie {
@@ -25,6 +23,8 @@ struct V1Serie {
     points: Vec<(i64, f64)>,
     #[serde(default)]
     tags: Vec<String>,
+    #[serde(default)]
+    host: String,
     #[serde(default)]
     device: String,
     #[serde(rename = "type", default)]
@@ -34,6 +34,10 @@ struct V1Serie {
 }
 
 /// A metric's unique identifier.
+///
+/// The host is normalized into the tag list as a `host:<value>` tag rather than carried as a separate field; the
+/// Datadog backend treats host as a first-class dimension on the time series, equivalent to any other tag. This
+/// keeps comparison logic uniform regardless of which wire format the metric originated from.
 #[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct MetricContext {
     name: String,
@@ -47,6 +51,8 @@ impl MetricContext {
     }
 
     /// Returns the tags of the context.
+    ///
+    /// When the underlying payload carried a host, it appears here as a `host:<value>` tag.
     pub fn tags(&self) -> &[String] {
         &self.tags
     }
@@ -200,6 +206,9 @@ impl Metric {
 
         for serie in envelope.series {
             let mut tags = serie.tags;
+            if !serie.host.is_empty() {
+                tags.push(format!("host:{}", serie.host));
+            }
             if !serie.device.is_empty() {
                 tags.push(format!("device:{}", serie.device));
             }
@@ -249,7 +258,17 @@ impl Metric {
 
         for series in payload.series {
             let name = series.metric().to_string();
-            let tags = series.tags().iter().map(|tag| tag.to_string()).collect();
+            let mut tags: Vec<String> = series.tags().iter().map(|tag| tag.to_string()).collect();
+            // V2 protobuf encodes the hostname as a resource with type="host". The Datadog Agent's wire format
+            // contract requires at least one such resource per series, but we still tolerate its absence. The host
+            // is appended to the tag list (as `host:<value>`) to match the backend's representation and to keep
+            // comparison logic uniform with the V1 JSON path.
+            if let Some(host) = series.resources.iter().find(|r| r.type_() == "host") {
+                let host_name = host.name();
+                if !host_name.is_empty() {
+                    tags.push(format!("host:{}", host_name));
+                }
+            }
             let mut values = Vec::new();
 
             match series.type_() {
@@ -304,7 +323,13 @@ impl Metric {
 
         for sketch in payload.sketches {
             let name = sketch.metric().to_string();
-            let tags = sketch.tags().iter().map(|tag| tag.to_string()).collect();
+            let mut tags: Vec<String> = sketch.tags().iter().map(|tag| tag.to_string()).collect();
+            // V2 sketches carry the host on the sketch message itself rather than via a resources list. Fold it
+            // into the tag list (as `host:<value>`) for comparison parity with the V1 JSON / V2 series paths.
+            let host = sketch.host();
+            if !host.is_empty() {
+                tags.push(format!("host:{}", host));
+            }
             let mut values = Vec::new();
 
             for dogsketch in sketch.dogsketches {
@@ -349,13 +374,16 @@ mod tests {
         assert_eq!(metrics.len(), 3);
 
         assert_eq!(metrics[0].context.name, "a.count");
-        assert_eq!(metrics[0].context.tags, vec!["env:prod".to_string()]);
+        assert!(metrics[0].context.tags.contains(&"env:prod".to_string()));
+        assert!(metrics[0].context.tags.contains(&"host:h".to_string()));
         assert_eq!(metrics[0].values, vec![(100, MetricValue::Count { value: 5.0 })]);
 
         assert_eq!(metrics[1].context.name, "a.gauge");
+        assert_eq!(metrics[1].context.tags, vec!["host:h".to_string()]);
         assert_eq!(metrics[1].values, vec![(101, MetricValue::Gauge { value: 12.0 })]);
 
         assert_eq!(metrics[2].context.name, "a.rate");
+        assert_eq!(metrics[2].context.tags, vec!["host:h".to_string()]);
         assert_eq!(
             metrics[2].values,
             vec![(
@@ -366,6 +394,18 @@ mod tests {
                 }
             )]
         );
+    }
+
+    #[test]
+    fn try_from_series_v1_omits_host_tag_when_empty() {
+        // A payload without `host` is uncommon in practice but the parser must remain permissive — it omits the
+        // `host:` tag rather than emitting an empty one.
+        let body = br#"{"series":[
+            {"metric":"m","points":[[1,1.0]],"tags":[],"type":"count","interval":0}
+        ]}"#;
+
+        let metrics = Metric::try_from_series_v1(body).expect("parse should succeed");
+        assert!(!metrics[0].context.tags.iter().any(|t| t.starts_with("host:")));
     }
 
     #[test]
@@ -386,5 +426,62 @@ mod tests {
         ]}"#;
 
         assert!(Metric::try_from_series_v1(body).is_err());
+    }
+
+    #[test]
+    fn try_from_series_v2_folds_host_into_tags() {
+        use datadog_protos::metrics::metric_payload::{
+            MetricPoint, MetricSeries, MetricType as ProtoMetricType, Resource,
+        };
+        use datadog_protos::metrics::MetricPayload;
+
+        let mut payload = MetricPayload::new();
+
+        let mut series = MetricSeries::new();
+        series.set_metric("my.metric".into());
+        series.set_type(ProtoMetricType::COUNT);
+        series.tags.push("env:prod".into());
+
+        let mut host_res = Resource::new();
+        host_res.set_type("host".into());
+        host_res.set_name("server-1".into());
+        series.resources.push(host_res);
+
+        // Non-host resources must not be folded into tags.
+        let mut device_res = Resource::new();
+        device_res.set_type("device".into());
+        device_res.set_name("eth0".into());
+        series.resources.push(device_res);
+
+        let mut point = MetricPoint::new();
+        point.value = 1.0;
+        point.timestamp = 1;
+        series.points.push(point);
+
+        payload.series.push(series);
+
+        let metrics = Metric::try_from_series_v2(payload).expect("parse should succeed");
+        assert_eq!(metrics.len(), 1);
+        assert!(metrics[0].context.tags.contains(&"host:server-1".to_string()));
+        assert!(metrics[0].context.tags.contains(&"env:prod".to_string()));
+        assert!(!metrics[0].context.tags.iter().any(|t| t.starts_with("device:")));
+    }
+
+    #[test]
+    fn try_from_sketch_folds_host_into_tags() {
+        use datadog_protos::metrics::sketch_payload::Sketch;
+        use datadog_protos::metrics::SketchPayload;
+
+        let mut payload = SketchPayload::new();
+        let mut sketch = Sketch::new();
+        sketch.set_metric("my.metric".into());
+        sketch.set_host("server-1".into());
+        sketch.tags.push("env:prod".into());
+        payload.sketches.push(sketch);
+
+        let metrics = Metric::try_from_sketch(payload).expect("parse should succeed");
+        assert_eq!(metrics.len(), 1);
+        assert!(metrics[0].context.tags.contains(&"host:server-1".to_string()));
+        assert!(metrics[0].context.tags.contains(&"env:prod".to_string()));
     }
 }
