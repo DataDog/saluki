@@ -2,7 +2,7 @@ use datadog_agent_commons::ipc::{config::IpcAuthConfiguration, tls::build_ipc_se
 use memory_accounting::ComponentRegistry;
 use saluki_api::EndpointType;
 use saluki_app::{
-    config::ConfigAPIHandler, dynamic_api::DynamicAPIBuilder, logging::LoggingOverrideController,
+    config::ConfigWorker, dynamic_api::DynamicAPIBuilder, logging::LoggingOverrideController,
     memory::AllocationTelemetryWorker,
 };
 use saluki_components::destinations::DogStatsDStatisticsConfiguration;
@@ -41,6 +41,7 @@ pub async fn create_control_plane_supervisor(
     supervisor.add_worker(health_registry.worker());
     supervisor.add_worker(AllocationTelemetryWorker::new(component_registry));
     supervisor.add_worker(DynamicLogLevelWorker::new(config, logging_controller));
+    supervisor.add_worker(ConfigWorker::new(config.clone()));
 
     supervisor.add_worker(DynamicAPIBuilder::new(
         EndpointType::Unprivileged,
@@ -53,7 +54,6 @@ pub async fn create_control_plane_supervisor(
     let mut privileged_api =
         DynamicAPIBuilder::new(EndpointType::Privileged, dp_config.secure_api_listen_address().clone())
             .with_tls_config(tls_config)
-            .with_handler(ConfigAPIHandler::new(config.clone()))
             .with_optional_handler(env_provider.workload_api_handler())
             .with_handler(dsd_stats_config.api_handler());
 

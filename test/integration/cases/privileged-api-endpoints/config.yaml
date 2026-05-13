@@ -50,6 +50,12 @@ assertions:
           not_equal: 404
         insecure_skip_verify: true
         timeout: 20s
+      - type: http_check
+        endpoint: "https://localhost:5101/config"
+        status:
+          not_equal: 404
+        insecure_skip_verify: true
+        timeout: 20s
       - type: log_not_contains
         pattern: "panic|PANIC"
         regex: true
