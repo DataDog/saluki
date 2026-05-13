@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"struct":["ConfigAPIHandler","ConfigState"]};
+window.SIDEBAR_ITEMS = {"struct":["ConfigAPIHandler","ConfigState","ConfigWorker"]};
