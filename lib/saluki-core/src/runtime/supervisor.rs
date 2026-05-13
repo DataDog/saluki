@@ -652,6 +652,10 @@ struct ChildLifecycleState {
     /// Process identifier of the currently-running incarnation, if any.
     current_process_id: Option<ProcessId>,
 
+    /// Fully-scoped, sanitized name of the current incarnation. Captured from the `Process` itself so that snapshot
+    /// names match the names used to register allocation groups (which are also sanitized).
+    current_name: Option<String>,
+
     /// Current observable status.
     status: ProcessStatus,
 
@@ -676,6 +680,7 @@ impl ChildLifecycleState {
     fn new() -> Self {
         Self {
             current_process_id: None,
+            current_name: None,
             status: ProcessStatus::Running,
             ever_started: false,
             restart_count: 0,
@@ -728,6 +733,7 @@ impl WorkerState {
             .expect("worker_id must be a valid child spec index");
         let process = child_spec.create_process(&self.process)?;
         let new_process_id = *process.id();
+        let new_process_name = process.name().to_string();
 
         // Snapshot retraction for the previous incarnation (if any) happens before we rebind the slot. `ever_started`
         // captures whether this is a restart, independent of whether the slot is currently running -- it stays `true`
@@ -742,6 +748,7 @@ impl WorkerState {
 
         lifecycle.ever_started = true;
         lifecycle.current_process_id = Some(new_process_id);
+        lifecycle.current_name = Some(new_process_name);
         lifecycle.started_at = SystemTime::now();
         lifecycle.status = ProcessStatus::Running;
         if is_restart {
@@ -809,6 +816,9 @@ impl WorkerState {
             shutdown_strategy: ShutdownStrategyKind::Graceful { timeout_ms: u64::MAX },
             restart_strategy: Some(RestartStrategyKind::from(&self.own_restart_strategy)),
             runtime_mode: Some(self.own_runtime_mode_kind),
+            // `live_bytes` is populated by the in-process introspection consumer at materialization time. Supervisors
+            // themselves don't read the `AllocationGroupRegistry` from inside the publish path.
+            live_bytes: None,
         };
 
         self.process
@@ -828,10 +838,13 @@ impl WorkerState {
             .expect("worker_id must be a valid child spec index");
         let parent_id = *self.process.id();
 
-        let child_name = match child_spec {
-            ChildSpecification::Worker(worker) => format!("{}.{}", self.process.name(), worker.name()),
-            ChildSpecification::Supervisor(sup) => format!("{}.{}", self.process.name(), sup.supervisor_id),
-        };
+        // The lifecycle tracks the sanitized, fully-scoped process name captured at spawn time. Using it here keeps
+        // snapshot names byte-identical to the names used to register allocation groups, which is what the
+        // memory-enrichment lookup keys on.
+        let child_name = lifecycle
+            .current_name
+            .clone()
+            .expect("current_name must be set when current_process_id is set");
 
         let snapshot = ProcessSnapshot {
             id: process_id.as_usize() as u64,
@@ -846,6 +859,7 @@ impl WorkerState {
             shutdown_strategy: ShutdownStrategyKind::from(child_spec.shutdown_strategy()),
             restart_strategy: child_spec.restart_strategy_kind(),
             runtime_mode: child_spec.runtime_mode_kind(),
+            live_bytes: None,
         };
 
         self.process

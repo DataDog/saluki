@@ -146,11 +146,17 @@ impl Process {
 
     pub(crate) fn worker<N: AsRef<str>>(name: N, parent: &Process) -> Option<Self> {
         let name = Name::scoped(&parent.name, name)?;
+        // Each worker registers its own allocation group keyed by its fully-scoped name. This is what allows the
+        // supervision-tree introspection to surface a live per-process memory figure: callers look up the group by the
+        // process's `name` in the `AllocationGroupRegistry`. Group registration is idempotent: re-registering an
+        // existing name returns the existing token, so a worker that gets restarted (and thus re-creates its
+        // `Process`) attaches back to the same group rather than fragmenting the accounting.
+        let alloc_group_token = AllocationGroupRegistry::global().register_allocation_group(&*name);
         Some(Self::from_parts(
             Id::new(),
             Some(parent.id),
             name,
-            parent.alloc_group_token,
+            alloc_group_token,
             parent.dataspace.clone(),
         ))
     }

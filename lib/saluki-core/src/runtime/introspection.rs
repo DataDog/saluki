@@ -198,6 +198,14 @@ pub struct ProcessSnapshot {
 
     /// Runtime mode (supervisors only).
     pub runtime_mode: Option<RuntimeModeKind>,
+
+    /// Live memory usage of this process, in bytes.
+    ///
+    /// Sourced from the allocation group registered under this process's [`name`](Self::name) field. `None` when no
+    /// matching allocation group is found, or when the tracking allocator is not installed. Populated by the in-process
+    /// introspection consumer (such as `SupervisionIntrospectionWorker` in `saluki-app`) at materialization time;
+    /// supervisors themselves leave this field at `None` when publishing.
+    pub live_bytes: Option<u64>,
 }
 
 /// Reassembled supervision tree built from a collection of [`ProcessSnapshot`]s.
@@ -350,9 +358,14 @@ impl SupervisionTree {
         // Use the leaf-only name for tree display (the last segment of the dotted name) so deep trees stay readable.
         let leaf = snapshot.name.rsplit('.').next().unwrap_or(snapshot.name.as_str());
 
+        let memory = match snapshot.live_bytes {
+            Some(bytes) => format!(" mem={}", format_bytes(bytes)),
+            None => String::new(),
+        };
+
         writeln!(
             w,
-            "{prefix}{glyph}{leaf} [{kind}, {status}, restarts={} uptime={}]",
+            "{prefix}{glyph}{leaf} [{kind}, {status}, restarts={} uptime={}{memory}]",
             snapshot.restart_count, uptime
         )?;
 
@@ -373,7 +386,7 @@ impl SupervisionTree {
 
     /// Renders the tree as a `top`-style table into `w`.
     ///
-    /// Columns: PID, parent PID, name (fully-qualified), kind, status, restart count, uptime.
+    /// Columns: PID, parent PID, name (fully-qualified), kind, status, restart count, uptime, live memory.
     pub fn render_table(&self, w: &mut dyn fmt::Write, now: SystemTime) -> fmt::Result {
         const PID: &str = "PID";
         const PARENT: &str = "PARENT";
@@ -382,6 +395,7 @@ impl SupervisionTree {
         const STATUS: &str = "STATUS";
         const RESTARTS: &str = "RESTARTS";
         const UPTIME: &str = "UPTIME";
+        const MEMORY: &str = "MEMORY";
 
         let rows: Vec<TableRow<'_>> = self
             .walk()
@@ -404,6 +418,7 @@ impl SupervisionTree {
                 },
                 restarts: snapshot.restart_count.to_string(),
                 uptime: format_uptime(now.duration_since(snapshot.started_at).unwrap_or_default()),
+                memory: snapshot.live_bytes.map(format_bytes).unwrap_or_else(|| "-".to_string()),
             })
             .collect();
 
@@ -420,9 +435,10 @@ impl SupervisionTree {
                 .unwrap_or(0)
                 .max(RESTARTS.len()),
             uptime: rows.iter().map(|r| r.uptime.len()).max().unwrap_or(0).max(UPTIME.len()),
+            memory: rows.iter().map(|r| r.memory.len()).max().unwrap_or(0).max(MEMORY.len()),
         };
 
-        widths.write_row(w, PID, PARENT, NAME, KIND, STATUS, RESTARTS, UPTIME)?;
+        widths.write_row(w, PID, PARENT, NAME, KIND, STATUS, RESTARTS, UPTIME, MEMORY)?;
         for row in &rows {
             widths.write_row(
                 w,
@@ -433,6 +449,7 @@ impl SupervisionTree {
                 row.status,
                 &row.restarts,
                 &row.uptime,
+                &row.memory,
             )?;
         }
 
@@ -448,6 +465,7 @@ struct TableRow<'a> {
     status: &'a str,
     restarts: String,
     uptime: String,
+    memory: String,
 }
 
 struct TableWidths {
@@ -458,17 +476,18 @@ struct TableWidths {
     status: usize,
     restarts: usize,
     uptime: usize,
+    memory: usize,
 }
 
 impl TableWidths {
     #[allow(clippy::too_many_arguments)]
     fn write_row(
         &self, w: &mut dyn fmt::Write, pid: &str, parent: &str, name: &str, kind: &str, status: &str, restarts: &str,
-        uptime: &str,
+        uptime: &str, memory: &str,
     ) -> fmt::Result {
         writeln!(
             w,
-            "{:<pid$}  {:<parent$}  {:<name$}  {:<kind$}  {:<status$}  {:>restarts$}  {:>uptime$}",
+            "{:<pid$}  {:<parent$}  {:<name$}  {:<kind$}  {:<status$}  {:>restarts$}  {:>uptime$}  {:>memory$}",
             pid,
             parent,
             name,
@@ -476,6 +495,7 @@ impl TableWidths {
             status,
             restarts,
             uptime,
+            memory,
             pid = self.pid,
             parent = self.parent,
             name = self.name,
@@ -483,12 +503,32 @@ impl TableWidths {
             status = self.status,
             restarts = self.restarts,
             uptime = self.uptime,
+            memory = self.memory,
         )
     }
 }
 
 fn timeout_to_ms(d: Duration) -> u64 {
     u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
+}
+
+fn format_bytes(bytes: u64) -> String {
+    const KIB: u64 = 1 << 10;
+    const MIB: u64 = 1 << 20;
+    const GIB: u64 = 1 << 30;
+    const TIB: u64 = 1 << 40;
+
+    if bytes >= TIB {
+        format!("{:.2} TiB", bytes as f64 / TIB as f64)
+    } else if bytes >= GIB {
+        format!("{:.2} GiB", bytes as f64 / GIB as f64)
+    } else if bytes >= MIB {
+        format!("{:.2} MiB", bytes as f64 / MIB as f64)
+    } else if bytes >= KIB {
+        format!("{:.1} KiB", bytes as f64 / KIB as f64)
+    } else {
+        format!("{} B", bytes)
+    }
 }
 
 fn format_uptime(d: Duration) -> String {
@@ -578,6 +618,7 @@ mod tests {
             shutdown_strategy: ShutdownStrategyKind::Graceful { timeout_ms: 5000 },
             restart_strategy: None,
             runtime_mode: None,
+            live_bytes: None,
         }
     }
 
@@ -671,6 +712,7 @@ mod tests {
             shutdown_strategy: ShutdownStrategyKind::Graceful { timeout_ms: 5000 },
             restart_strategy: None,
             runtime_mode: None,
+            live_bytes: Some(1_234_567),
         };
 
         let json = serde_json::to_string(&snapshot).unwrap();
