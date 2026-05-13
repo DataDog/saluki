@@ -49,6 +49,13 @@
 //! grouping and control over which set of workers must be restarted if a related worker fails, and how those failures
 //! propagate up and down the supervision tree.
 //!
+//! # Introspection
+//!
+//! Each running supervisor publishes a [`ProcessSnapshot`][introspection::ProcessSnapshot] into the
+//! [`DataspaceRegistry`][state::DataspaceRegistry] for itself (if it is a root supervisor) and for every child it
+//! manages. Observers can reassemble those snapshots into a [`SupervisionTree`][introspection::SupervisionTree] for
+//! inspection or rendering, or subscribe to live updates. See the [`introspection`] module for details.
+//!
 //! # Examples
 //!
 //! See the `basic_supervisor` example which shows how supervisors and workers are composed together, as well as how
@@ -72,3 +79,5 @@ pub use self::supervisor::{
 
 mod shutdown;
 pub use self::shutdown::{ProcessShutdown, ShutdownHandle};
+
+pub mod introspection;

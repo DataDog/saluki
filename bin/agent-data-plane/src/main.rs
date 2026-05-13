@@ -153,6 +153,7 @@ async fn run_inner(
         Action::Debug(cmd) => handle_debug_command(&bootstrap_config, cmd).await,
         Action::Config(_) => handle_config_command(&bootstrap_config).await,
         Action::Dogstatsd(cmd) => handle_dogstatsd_command(&bootstrap_config, cmd).await,
+        Action::Top(cmd) => handle_top_command(&bootstrap_config, cmd).await,
     }
 
     Ok(None)

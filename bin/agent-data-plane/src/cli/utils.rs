@@ -12,10 +12,11 @@ use crate::config::DataPlaneConfiguration;
 pub struct DataPlaneAPIClient {
     client: HttpClient,
     authority: String,
+    scheme: &'static str,
 }
 
 impl DataPlaneAPIClient {
-    /// Creates a new `DataPlaneAPIClient` from the given generic configuration.
+    /// Creates a new `DataPlaneAPIClient` targeting the **privileged** (TLS) API endpoint.
     ///
     /// # Errors
     ///
@@ -54,7 +55,57 @@ impl DataPlaneAPIClient {
             .build()
             .error_context("Failed to construct API client for privileged API endpoint.")?;
 
-        Ok(Self { client, authority })
+        Ok(Self {
+            client,
+            authority,
+            scheme: "https",
+        })
+    }
+
+    /// Creates a new `DataPlaneAPIClient` targeting the **unprivileged** (plain HTTP) API endpoint.
+    ///
+    /// # Errors
+    ///
+    /// If the data plane configuration can't be deserialized, or the data plane API endpoints cannot be
+    /// determined, an error will be returned.
+    pub fn unprivileged_from_config(config: &GenericConfiguration) -> Result<Self, GenericError> {
+        let dp_config = DataPlaneConfiguration::from_configuration(config)?;
+
+        let listen_address = dp_config.api_listen_address();
+
+        let mut builder = HttpClient::builder();
+
+        let authority = match listen_address {
+            ListenAddress::Tcp(_) => {
+                let local_address = listen_address
+                    .as_local_connect_addr()
+                    .expect("should get local address for TCP");
+                local_address.to_string()
+            }
+
+            #[cfg(unix)]
+            ListenAddress::Unix(path) => {
+                builder = builder.with_unix_socket_path(path);
+                "127.0.0.1".to_string()
+            }
+
+            _ => {
+                return Err(generic_error!(
+                    "Expected connection-oriented address (TCP or UDS stream) for unprivileged API endpoint: {}",
+                    listen_address
+                ))
+            }
+        };
+
+        let client = builder
+            .build()
+            .error_context("Failed to construct API client for unprivileged API endpoint.")?;
+
+        Ok(Self {
+            client,
+            authority,
+            scheme: "http",
+        })
     }
 
     fn build_uri(&self, path: &str, query: Option<&str>) -> Uri {
@@ -65,11 +116,29 @@ impl DataPlaneAPIClient {
         }
 
         Uri::builder()
-            .scheme("https")
+            .scheme(self.scheme)
             .authority(self.authority.as_str())
             .path_and_query(pq.parse::<PathAndQuery>().expect("valid path and query"))
             .build()
             .expect("valid URI")
+    }
+
+    /// Retrieves a JSON snapshot of the current supervision tree.
+    ///
+    /// Requires the unprivileged endpoint client (see [`unprivileged_from_config`][Self::unprivileged_from_config]).
+    /// Returns the raw JSON response body so callers can parse it as they see fit.
+    ///
+    /// # Errors
+    ///
+    /// If the request fails, or the server responds with an unexpected status code, an error is returned.
+    pub async fn supervision_tree(&mut self) -> Result<String, GenericError> {
+        let uri = self.build_uri("/supervision/tree", None);
+        let req = Request::get(uri).body(String::new()).expect("valid request");
+        self.client
+            .send(req)
+            .and_then(process_response_body)
+            .await
+            .and_then(body_when_success)
     }
 
     /// Temporarily overrides the log level for the process.

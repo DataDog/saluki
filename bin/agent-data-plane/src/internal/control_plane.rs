@@ -10,6 +10,7 @@ use saluki_app::{
     logging::{acquire_logging_api_handler, LoggingOverrideController},
     memory::AllocationTelemetryWorker,
     metrics::acquire_metrics_api_handler,
+    supervision::SupervisionIntrospectionWorker,
 };
 use saluki_components::destinations::DogStatsDStatisticsConfiguration;
 use saluki_config::GenericConfiguration;
@@ -126,6 +127,7 @@ pub async fn create_control_plane_supervisor(
     supervisor.add_worker(health_registry.worker());
     supervisor.add_worker(AllocationTelemetryWorker::new(component_registry));
     supervisor.add_worker(DynamicLogLevelWorker::new(config, logging_controller));
+    supervisor.add_worker(SupervisionIntrospectionWorker::new());
 
     supervisor.add_worker(DynamicAPIBuilder::new(
         EndpointType::Unprivileged,

@@ -1,4 +1,9 @@
-use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
+use std::{
+    future::Future,
+    pin::Pin,
+    sync::Arc,
+    time::{Duration, SystemTime},
+};
 
 use async_trait::async_trait;
 use saluki_common::collections::FastIndexMap;
@@ -12,11 +17,15 @@ use tracing::{debug, error, warn};
 
 use super::{
     dedicated::{spawn_dedicated_runtime, RuntimeConfiguration, RuntimeMode},
+    introspection::{
+        snapshot_identifier, ProcessKind, ProcessSnapshot, ProcessStatus, RestartStrategyKind, RuntimeModeKind,
+        ShutdownStrategyKind,
+    },
     restart::{RestartAction, RestartMode, RestartState, RestartStrategy},
     shutdown::{ProcessShutdown, ShutdownHandle},
 };
 use crate::runtime::{
-    process::{Process, ProcessExt as _},
+    process::{Id as ProcessId, Process, ProcessExt as _},
     state::DataspaceRegistry,
 };
 
@@ -226,6 +235,30 @@ impl ChildSpecification {
         }
     }
 
+    fn kind(&self) -> ProcessKind {
+        match self {
+            Self::Worker(_) => ProcessKind::Worker,
+            Self::Supervisor(_) => ProcessKind::Supervisor,
+        }
+    }
+
+    fn restart_strategy_kind(&self) -> Option<RestartStrategyKind> {
+        match self {
+            Self::Worker(_) => None,
+            Self::Supervisor(sup) => Some(RestartStrategyKind::from(&sup.restart_strategy)),
+        }
+    }
+
+    fn runtime_mode_kind(&self) -> Option<RuntimeModeKind> {
+        match self {
+            Self::Worker(_) => None,
+            Self::Supervisor(sup) => Some(match sup.runtime_mode {
+                RuntimeMode::Ambient => RuntimeModeKind::Ambient,
+                RuntimeMode::Dedicated(_) => RuntimeModeKind::Dedicated,
+            }),
+        }
+    }
+
     fn create_worker_future(
         &self, process: Process, process_shutdown: ProcessShutdown,
     ) -> Result<WorkerFuture, SupervisorError> {
@@ -404,7 +437,7 @@ impl Supervisor {
     fn spawn_child(&self, child_spec_idx: usize, worker_state: &mut WorkerState) -> Result<(), SupervisorError> {
         let child_spec = self.get_child_spec(child_spec_idx);
         debug!(supervisor_id = %self.supervisor_id, "Spawning static child process #{} ({}).", child_spec_idx, child_spec.name());
-        worker_state.add_worker(child_spec_idx, child_spec)
+        worker_state.add_worker(child_spec_idx)
     }
 
     fn spawn_all_children(&self, worker_state: &mut WorkerState) -> Result<(), SupervisorError> {
@@ -422,7 +455,15 @@ impl Supervisor {
         }
 
         let mut restart_state = RestartState::new(self.restart_strategy);
-        let mut worker_state = WorkerState::new(process);
+        let mut worker_state = WorkerState::new(
+            process,
+            self.child_specs.clone(),
+            self.restart_strategy,
+            &self.runtime_mode,
+        );
+
+        // Publish the supervisor's own snapshot up-front. Children are published as they're spawned.
+        worker_state.publish_self_snapshot();
 
         // Spawn all child processes. Since initialization is folded into each worker's task, this returns immediately
         // after spawning -- children initialize concurrently in the background.
@@ -461,6 +502,11 @@ impl Supervisor {
                             };
 
                             error!(supervisor_id = %self.supervisor_id, worker_name = full_name, "Child process failed to initialize: {}", source);
+                            worker_state.mark_child_failed(
+                                child_spec_idx,
+                                Some(format!("init failure: {}", source)),
+                                true,
+                            );
                             worker_state.shutdown_workers().await;
                             return Err(SupervisorError::FailedToInitialize {
                                 child_name: full_name,
@@ -468,7 +514,9 @@ impl Supervisor {
                             });
                         }
 
-                        // Convert the worker result to a process error for restart evaluation.
+                        // Capture failure reason for the lifecycle record, then convert the result to a process
+                        // error for restart evaluation.
+                        let failure_reason = worker_result.as_ref().err().map(format_worker_error);
                         let worker_result = worker_result
                             .map_err(|e| match e {
                                 WorkerError::Runtime(e) => ProcessError::Terminated { source: e },
@@ -479,16 +527,19 @@ impl Supervisor {
                             RestartAction::Restart(mode) => match mode {
                                 RestartMode::OneForOne => {
                                     warn!(supervisor_id = %self.supervisor_id, worker_name = child_spec.name(), ?worker_result, "Child process terminated, restarting.");
+                                    worker_state.mark_child_failed(child_spec_idx, failure_reason, false);
                                     self.spawn_child(child_spec_idx, &mut worker_state)?;
                                 }
                                 RestartMode::OneForAll => {
                                     warn!(supervisor_id = %self.supervisor_id, worker_name = child_spec.name(), ?worker_result, "Child process terminated, restarting all processes.");
+                                    worker_state.mark_child_failed(child_spec_idx, failure_reason, false);
                                     worker_state.shutdown_workers().await;
                                     self.spawn_all_children(&mut worker_state)?;
                                 }
                             },
                             RestartAction::Shutdown => {
                                 error!(supervisor_id = %self.supervisor_id, worker_name = child_spec.name(), ?worker_result, "Supervisor shutting down due to restart limits.");
+                                worker_state.mark_child_failed(child_spec_idx, failure_reason, true);
                                 worker_state.shutdown_workers().await;
                                 return Err(SupervisorError::Shutdown);
                             }
@@ -594,24 +645,110 @@ struct ProcessState {
     abort_handle: AbortHandle,
 }
 
+/// Per-child lifecycle state, indexed by child specification index.
+///
+/// Persists across restarts so we can report cumulative restart counts and the most recent failure reason.
+struct ChildLifecycleState {
+    /// Process identifier of the currently-running incarnation, if any.
+    current_process_id: Option<ProcessId>,
+
+    /// Current observable status.
+    status: ProcessStatus,
+
+    /// `true` once this slot has been spawned at least once. Distinguishes the initial spawn (which is not a
+    /// restart) from subsequent restarts, regardless of whether the slot is currently running.
+    ever_started: bool,
+
+    /// Number of times this child has been restarted by the current supervisor instance.
+    restart_count: u64,
+
+    /// Wall-clock time the current incarnation started.
+    started_at: SystemTime,
+
+    /// Wall-clock time of the most recent restart, if any.
+    last_restarted_at: Option<SystemTime>,
+
+    /// Human-readable description of the most recent failure, if any.
+    last_failure: Option<String>,
+}
+
+impl ChildLifecycleState {
+    fn new() -> Self {
+        Self {
+            current_process_id: None,
+            status: ProcessStatus::Running,
+            ever_started: false,
+            restart_count: 0,
+            started_at: SystemTime::now(),
+            last_restarted_at: None,
+            last_failure: None,
+        }
+    }
+}
+
 struct WorkerState {
     process: Process,
+    own_started_at: SystemTime,
+    own_restart_strategy: RestartStrategy,
+    own_runtime_mode_kind: RuntimeModeKind,
     worker_tasks: JoinSet<Result<(), WorkerError>>,
     worker_map: FastIndexMap<Id, ProcessState>,
+    child_states: Vec<ChildLifecycleState>,
+    child_specs: Vec<ChildSpecification>,
 }
 
 impl WorkerState {
-    fn new(process: Process) -> Self {
+    fn new(
+        process: Process, child_specs: Vec<ChildSpecification>, restart_strategy: RestartStrategy,
+        runtime_mode: &RuntimeMode,
+    ) -> Self {
+        let child_states = (0..child_specs.len()).map(|_| ChildLifecycleState::new()).collect();
+        let own_runtime_mode_kind = match runtime_mode {
+            RuntimeMode::Ambient => RuntimeModeKind::Ambient,
+            RuntimeMode::Dedicated(_) => RuntimeModeKind::Dedicated,
+        };
+
         Self {
             process,
+            own_started_at: SystemTime::now(),
+            own_restart_strategy: restart_strategy,
+            own_runtime_mode_kind,
             worker_tasks: JoinSet::new(),
             worker_map: FastIndexMap::default(),
+            child_states,
+            child_specs,
         }
     }
 
-    fn add_worker(&mut self, worker_id: usize, child_spec: &ChildSpecification) -> Result<(), SupervisorError> {
+    fn add_worker(&mut self, worker_id: usize) -> Result<(), SupervisorError> {
         let (process_shutdown, shutdown_handle) = ProcessShutdown::paired();
+        let child_spec = self
+            .child_specs
+            .get(worker_id)
+            .expect("worker_id must be a valid child spec index");
         let process = child_spec.create_process(&self.process)?;
+        let new_process_id = *process.id();
+
+        // Snapshot retraction for the previous incarnation (if any) happens before we rebind the slot. `ever_started`
+        // captures whether this is a restart, independent of whether the slot is currently running -- it stays `true`
+        // even after `mark_child_failed` clears `current_process_id`, so the restart counter advances correctly.
+        let lifecycle = &mut self.child_states[worker_id];
+        let is_restart = lifecycle.ever_started;
+        if let Some(old_id) = lifecycle.current_process_id.take() {
+            self.process
+                .dataspace()
+                .retract::<ProcessSnapshot>(snapshot_identifier(old_id));
+        }
+
+        lifecycle.ever_started = true;
+        lifecycle.current_process_id = Some(new_process_id);
+        lifecycle.started_at = SystemTime::now();
+        lifecycle.status = ProcessStatus::Running;
+        if is_restart {
+            lifecycle.restart_count = lifecycle.restart_count.saturating_add(1);
+            lifecycle.last_restarted_at = Some(lifecycle.started_at);
+        }
+
         let worker_future = child_spec.create_worker_future(process.clone(), process_shutdown)?;
         let shutdown_strategy = child_spec.shutdown_strategy();
         let abort_handle = self.worker_tasks.spawn(worker_future.into_process_future(process));
@@ -624,7 +761,96 @@ impl WorkerState {
                 abort_handle,
             },
         );
+
+        // Publish the updated snapshot for this child immediately so observers see the new incarnation.
+        self.publish_child_snapshot(worker_id);
+
         Ok(())
+    }
+
+    /// Marks a child as no longer running and records the failure reason.
+    ///
+    /// Retracts the snapshot for the previous incarnation but leaves the lifecycle state intact so that a subsequent
+    /// restart can pick up the cumulative `restart_count`.
+    fn mark_child_failed(&mut self, worker_id: usize, reason: Option<String>, terminal: bool) {
+        let lifecycle = &mut self.child_states[worker_id];
+        if let Some(old_id) = lifecycle.current_process_id.take() {
+            self.process
+                .dataspace()
+                .retract::<ProcessSnapshot>(snapshot_identifier(old_id));
+        }
+        lifecycle.status = if terminal {
+            ProcessStatus::Failed
+        } else {
+            ProcessStatus::Restarting
+        };
+        if let Some(reason) = reason {
+            lifecycle.last_failure = Some(reason);
+        }
+    }
+
+    fn publish_self_snapshot(&self) {
+        // Root supervisors (no parent) own and publish their own snapshot. Nested supervisors are published by their
+        // parent supervisor, so we skip self-publication to avoid an ownership conflict in the dataspace.
+        if self.process.parent_id().is_some() {
+            return;
+        }
+
+        let snapshot = ProcessSnapshot {
+            id: self.process.id().as_usize() as u64,
+            parent_id: None,
+            name: self.process.name().to_string(),
+            kind: ProcessKind::Supervisor,
+            status: ProcessStatus::Running,
+            started_at: self.own_started_at,
+            restart_count: 0,
+            last_restarted_at: None,
+            last_failure: None,
+            shutdown_strategy: ShutdownStrategyKind::Graceful { timeout_ms: u64::MAX },
+            restart_strategy: Some(RestartStrategyKind::from(&self.own_restart_strategy)),
+            runtime_mode: Some(self.own_runtime_mode_kind),
+        };
+
+        self.process
+            .dataspace()
+            .assert(snapshot, snapshot_identifier(*self.process.id()));
+    }
+
+    fn publish_child_snapshot(&self, worker_id: usize) {
+        let lifecycle = &self.child_states[worker_id];
+        let Some(process_id) = lifecycle.current_process_id else {
+            return;
+        };
+
+        let child_spec = self
+            .child_specs
+            .get(worker_id)
+            .expect("worker_id must be a valid child spec index");
+        let parent_id = *self.process.id();
+
+        let child_name = match child_spec {
+            ChildSpecification::Worker(worker) => format!("{}.{}", self.process.name(), worker.name()),
+            ChildSpecification::Supervisor(sup) => format!("{}.{}", self.process.name(), sup.supervisor_id),
+        };
+
+        let snapshot = ProcessSnapshot {
+            id: process_id.as_usize() as u64,
+            parent_id: Some(parent_id.as_usize() as u64),
+            name: child_name,
+            kind: child_spec.kind(),
+            status: lifecycle.status,
+            started_at: lifecycle.started_at,
+            restart_count: lifecycle.restart_count,
+            last_restarted_at: lifecycle.last_restarted_at,
+            last_failure: lifecycle.last_failure.clone(),
+            shutdown_strategy: ShutdownStrategyKind::from(child_spec.shutdown_strategy()),
+            restart_strategy: child_spec.restart_strategy_kind(),
+            runtime_mode: child_spec.runtime_mode_kind(),
+        };
+
+        self.process
+            .dataspace()
+            .assert(snapshot, snapshot_identifier(process_id));
     }
 
     async fn wait_for_next_worker(&mut self) -> Option<(usize, Result<(), WorkerError>)> {
@@ -736,6 +962,13 @@ impl WorkerState {
             self.worker_tasks.is_empty(),
             "worker tasks should be empty after shutdown"
         );
+    }
+}
+
+fn format_worker_error(err: &WorkerError) -> String {
+    match err {
+        WorkerError::Initialization { source, .. } => format!("initialization failure: {}", source),
+        WorkerError::Runtime(e) => format!("runtime failure: {}", e),
     }
 }
 
@@ -1079,6 +1312,141 @@ mod tests {
         // Shutdown should complete well within 1 second (workers respond to shutdown signal immediately).
         let result = timeout(Duration::from_secs(1), handle).await;
         assert!(result.is_ok(), "shutdown should complete promptly");
+    }
+
+    // -- Supervision tree introspection tests ----------------------------------------------
+
+    /// Collects the current set of asserted `ProcessSnapshot`s by subscribing and draining for a short window.
+    ///
+    /// Subscribers receive the current values as the first batch of updates, so this is a sufficient (and the only)
+    /// way to read point-in-time state from a `DataspaceRegistry` from outside the registry.
+    async fn collect_current_snapshots(
+        dataspace: &crate::runtime::state::DataspaceRegistry,
+    ) -> std::collections::HashMap<crate::runtime::state::Identifier, crate::runtime::introspection::ProcessSnapshot>
+    {
+        use crate::runtime::introspection::ProcessSnapshot;
+        use crate::runtime::state::{AssertionUpdate, IdentifierFilter};
+
+        let mut sub = dataspace.subscribe::<ProcessSnapshot>(IdentifierFilter::All);
+        let mut out = std::collections::HashMap::new();
+
+        // The current set is replayed immediately; once the queue is empty, `recv` would block waiting for new
+        // updates. We use a short timeout to detect the empty steady state.
+        loop {
+            match tokio::time::timeout(Duration::from_millis(50), sub.recv()).await {
+                Ok(Some(AssertionUpdate::Asserted(id, snapshot))) => {
+                    out.insert(id, snapshot);
+                }
+                Ok(Some(AssertionUpdate::Retracted(id))) => {
+                    out.remove(&id);
+                }
+                Ok(None) | Err(_) => break,
+            }
+        }
+
+        out
+    }
+
+    #[tokio::test]
+    async fn snapshots_describe_root_and_children() {
+        use crate::runtime::introspection::{ProcessKind, ProcessSnapshot, SupervisionTree};
+        use crate::runtime::state::DataspaceRegistry;
+
+        let mut sup = Supervisor::new("test-sup").unwrap();
+        sup.add_worker(MockWorker::long_running("alpha"));
+        sup.add_worker(MockWorker::long_running("beta"));
+
+        let dataspace = DataspaceRegistry::new();
+        let supervisor_dataspace = dataspace.clone();
+
+        let (tx, rx) = oneshot::channel::<()>();
+        let process_shutdown = ProcessShutdown::wrapped(rx);
+        let handle = tokio::spawn(async move {
+            sup.run_with_process_shutdown(process_shutdown, Some(supervisor_dataspace))
+                .await
+        });
+
+        // Wait for snapshots to be published. Three processes total: root + 2 workers.
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let snapshots = loop {
+            let collected = collect_current_snapshots(&dataspace).await;
+            if collected.len() >= 3 {
+                break collected;
+            }
+            if std::time::Instant::now() > deadline {
+                panic!("snapshots never reached expected count (saw {})", collected.len());
+            }
+            sleep(Duration::from_millis(20)).await;
+        };
+
+        let snapshots: Vec<ProcessSnapshot> = snapshots.into_values().collect();
+        let tree = SupervisionTree::from_snapshots(snapshots);
+
+        assert_eq!(tree.len(), 3);
+
+        let roots: Vec<&ProcessSnapshot> = tree.iter().filter(|s| s.parent_id.is_none()).collect();
+        assert_eq!(roots.len(), 1);
+        let root = roots[0];
+        assert_eq!(root.kind, ProcessKind::Supervisor);
+
+        let children: Vec<&ProcessSnapshot> = tree.children_of(root.id).collect();
+        assert_eq!(children.len(), 2);
+        for child in &children {
+            assert_eq!(child.kind, ProcessKind::Worker);
+            assert_eq!(child.restart_count, 0);
+        }
+
+        // Shut down and ensure assertions are auto-retracted.
+        let _ = tx.send(());
+        let _ = timeout(Duration::from_secs(2), handle).await.unwrap();
+
+        let after_shutdown = collect_current_snapshots(&dataspace).await;
+        assert!(
+            after_shutdown.is_empty(),
+            "expected all snapshots to be retracted on shutdown; saw {} remaining",
+            after_shutdown.len()
+        );
+    }
+
+    #[tokio::test]
+    async fn snapshot_restart_count_tracks_restarts() {
+        use crate::runtime::state::DataspaceRegistry;
+
+        let mut sup = Supervisor::new("test-sup").unwrap().with_restart_strategy(
+            RestartStrategy::one_to_one().with_intensity_and_period(20, Duration::from_secs(10)),
+        );
+        sup.add_worker(MockWorker::failing("flaky", Duration::from_millis(50)));
+
+        let dataspace = DataspaceRegistry::new();
+        let supervisor_dataspace = dataspace.clone();
+
+        let (tx, rx) = oneshot::channel::<()>();
+        let process_shutdown = ProcessShutdown::wrapped(rx);
+        let handle = tokio::spawn(async move {
+            sup.run_with_process_shutdown(process_shutdown, Some(supervisor_dataspace))
+                .await
+        });
+
+        // Let several failures+restarts happen, then read the snapshot.
+        sleep(Duration::from_millis(400)).await;
+
+        let snapshots = collect_current_snapshots(&dataspace).await;
+        let worker_snapshot = snapshots
+            .values()
+            .find(|s| s.name.ends_with(".flaky"))
+            .cloned()
+            .expect("worker snapshot should be present");
+
+        assert!(
+            worker_snapshot.restart_count >= 2,
+            "expected several restarts, saw {}",
+            worker_snapshot.restart_count
+        );
+        assert!(worker_snapshot.last_restarted_at.is_some());
+        assert!(worker_snapshot.last_failure.is_some());
+
+        let _ = tx.send(());
+        let _ = timeout(Duration::from_secs(2), handle).await.unwrap();
     }
 
     #[tokio::test]

@@ -101,6 +101,7 @@ impl Deref for Name {
 #[derive(Clone)]
 pub struct Process {
     id: Id,
+    parent_id: Option<Id>,
     name: Name,
     alloc_group_token: AllocationGroupToken,
     dataspace: DataspaceRegistry,
@@ -113,7 +114,14 @@ impl Process {
             .or_else(|| Name::root(name))?;
         let alloc_group_token = AllocationGroupRegistry::global().register_allocation_group(&*name);
         let dataspace = parent.map(|p| p.dataspace.clone()).unwrap_or_default();
-        Some(Self::from_parts(Id::new(), name, alloc_group_token, dataspace))
+        let parent_id = parent.map(|p| p.id);
+        Some(Self::from_parts(
+            Id::new(),
+            parent_id,
+            name,
+            alloc_group_token,
+            dataspace,
+        ))
     }
 
     pub(crate) fn supervisor_with_dataspace<N: AsRef<str>>(
@@ -126,22 +134,34 @@ impl Process {
         let dataspace = dataspace
             .or_else(|| parent.map(|p| p.dataspace.clone()))
             .unwrap_or_default();
-        Some(Self::from_parts(Id::new(), name, alloc_group_token, dataspace))
+        let parent_id = parent.map(|p| p.id);
+        Some(Self::from_parts(
+            Id::new(),
+            parent_id,
+            name,
+            alloc_group_token,
+            dataspace,
+        ))
     }
 
     pub(crate) fn worker<N: AsRef<str>>(name: N, parent: &Process) -> Option<Self> {
         let name = Name::scoped(&parent.name, name)?;
         Some(Self::from_parts(
             Id::new(),
+            Some(parent.id),
             name,
             parent.alloc_group_token,
             parent.dataspace.clone(),
         ))
     }
 
-    fn from_parts(id: Id, name: Name, alloc_group_token: AllocationGroupToken, dataspace: DataspaceRegistry) -> Self {
+    fn from_parts(
+        id: Id, parent_id: Option<Id>, name: Name, alloc_group_token: AllocationGroupToken,
+        dataspace: DataspaceRegistry,
+    ) -> Self {
         Self {
             id,
+            parent_id,
             name,
             alloc_group_token,
             dataspace,
@@ -151,6 +171,21 @@ impl Process {
     /// Returns the process identifier.
     pub fn id(&self) -> &Id {
         &self.id
+    }
+
+    /// Returns the parent process identifier, if this process has a parent.
+    ///
+    /// Root supervisors (those created without a parent) return `None`; all other supervisors and workers carry the
+    /// process identifier of the supervisor that spawned them.
+    pub fn parent_id(&self) -> Option<&Id> {
+        self.parent_id.as_ref()
+    }
+
+    /// Returns the fully-scoped name of this process.
+    ///
+    /// Names are dot-separated and reflect the supervisor hierarchy (for example, `parent_sup.child_sup.worker`).
+    pub fn name(&self) -> &str {
+        &self.name
     }
 
     /// Returns the dataspace registry associated with this process.

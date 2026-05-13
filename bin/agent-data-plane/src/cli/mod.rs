@@ -18,6 +18,10 @@ mod run;
 pub use self::run::handle_run_command;
 use self::run::RunCommand;
 
+mod top;
+pub use self::top::handle_top_command;
+use self::top::TopCommand;
+
 mod utils;
 
 #[derive(FromArgs)]
@@ -42,4 +46,5 @@ pub enum Action {
     Debug(DebugCommand),
     Config(ConfigCommand),
     Dogstatsd(DogstatsdCommand),
+    Top(TopCommand),
 }

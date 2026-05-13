@@ -27,6 +27,7 @@ dependencies = [
  "chrono",
  "colored",
  "comfy-table",
+ "crossterm",
  "datadog-agent-commons",
  "datadog-protos",
  "derive-where",

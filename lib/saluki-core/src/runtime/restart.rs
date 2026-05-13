@@ -66,6 +66,21 @@ impl RestartStrategy {
         self.period = period;
         self
     }
+
+    /// Returns the restart mode.
+    pub const fn mode(&self) -> RestartMode {
+        self.mode
+    }
+
+    /// Returns the configured restart intensity (maximum allowed restarts within `period`).
+    pub const fn intensity(&self) -> usize {
+        self.intensity
+    }
+
+    /// Returns the configured restart period.
+    pub const fn period(&self) -> Duration {
+        self.period
+    }
 }
 
 impl Default for RestartStrategy {
