@@ -62,7 +62,7 @@ Check these facts against the Makefile as this is a fast-moving project.
   confusing experience for you and the user both.
 - Suite "correctness":
   - Build prerequisite containers:
-    `make build-correctness-tools-image build-datadog-agent-image build-datadog-agent-release`
+    `make build-correctness-tools-image build-datadog-agent-image build-datadog-agent-image-release`
   - Run tests: `make test-correctness` or one test case by name `make test-correctness-case CASE=dsd-mapper-blocklist`
 
 Alternatively, `panoramic` can be invoked directly, for example if the user requests certain command-line options like
