@@ -171,7 +171,7 @@ pub struct DatadogMetricsConfiguration {
     /// the V2 endpoint (`/api/beta/sketches`) regardless of this setting.
     ///
     /// Defaults to `true`.
-    #[serde(default = "default_use_v2_api_series", rename = "use_v2_api_series")]
+    #[serde(default = "default_use_v2_api_series")]
     use_v2_api_series: bool,
 
     /// Additional tags to apply to all forwarded metrics.
