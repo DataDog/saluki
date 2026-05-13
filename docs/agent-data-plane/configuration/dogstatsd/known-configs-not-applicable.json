@@ -443,7 +443,6 @@
   "cluster_trust_chain.enable_tls_verification",
   "cmd.check.fullsketches",
   "cmd_host",
-  "cmd_port",
   "collect_ccrid",
   "collect_ec2_instance_info",
   "collect_ec2_tags",
