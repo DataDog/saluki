@@ -21,7 +21,7 @@ use saluki_env::{
         stores::{ExternalDataStore, ExternalDataStoreResolver, TagStore, TagStoreQuerier},
         OnDemandPIDResolver,
     },
-    WorkloadProvider,
+    CaptureEntityResolver, WorkloadProvider,
 };
 use saluki_error::{generic_error, GenericError};
 use stringtheory::interning::GenericMapInterner;
@@ -200,8 +200,10 @@ impl WorkloadProvider for RemoteAgentWorkloadProvider {
     fn get_resolved_origin(&self, origin: RawOrigin<'_>) -> Option<ResolvedOrigin> {
         self.origin_resolver.get_resolved_origin(origin)
     }
+}
 
-    fn resolve_container_entity_for_pid(&self, process_id: u32) -> Option<EntityId> {
+impl CaptureEntityResolver for RemoteAgentWorkloadProvider {
+    fn resolve_container_entity_for_live_pid(&self, process_id: u32) -> Option<EntityId> {
         self.on_demand_pid_resolver.resolve(process_id)
     }
 }

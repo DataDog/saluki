@@ -1,5 +1,6 @@
 pub use axum::response;
 pub use axum::routing;
+pub use axum::Json;
 use axum::Router;
 pub use http::StatusCode;
 use tonic::service::Routes;

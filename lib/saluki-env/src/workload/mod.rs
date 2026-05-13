@@ -31,6 +31,27 @@ pub mod providers;
 
 pub mod stores;
 
+/// Resolves live process IDs observed during traffic capture to workload entities.
+///
+/// This is intentionally narrower than [`WorkloadProvider`]: callers should only use it for PIDs observed from the
+/// local operating system while capturing traffic. It is not a general-purpose historical PID lookup API.
+pub trait CaptureEntityResolver {
+    /// Resolves a live process ID to the container entity that owns it, if known.
+    fn resolve_container_entity_for_live_pid(&self, process_id: u32) -> Option<EntityId>;
+}
+
+impl<T> CaptureEntityResolver for Option<T>
+where
+    T: CaptureEntityResolver,
+{
+    fn resolve_container_entity_for_live_pid(&self, process_id: u32) -> Option<EntityId> {
+        match self.as_ref() {
+            Some(resolver) => resolver.resolve_container_entity_for_live_pid(process_id),
+            None => None,
+        }
+    }
+}
+
 /// Provides information about workloads running on the process host.
 pub trait WorkloadProvider {
     /// Gets the tags for an entity.
@@ -47,13 +68,6 @@ pub trait WorkloadProvider {
     ///  If the origin is empty, `None` is returned. Otherwise, `Some(ResolvedOrigin)` will be returned, which contains
     ///  fully resolved versions of the raw origin components.
     fn get_resolved_origin(&self, origin: RawOrigin<'_>) -> Option<ResolvedOrigin>;
-
-    /// Resolves a process ID to the container entity that owns it, if known.
-    ///
-    /// Providers that cannot map process IDs to containers return `None`.
-    fn resolve_container_entity_for_pid(&self, _process_id: u32) -> Option<EntityId> {
-        None
-    }
 }
 
 impl<T> WorkloadProvider for Option<T>
@@ -70,13 +84,6 @@ where
     fn get_resolved_origin(&self, origin: RawOrigin<'_>) -> Option<ResolvedOrigin> {
         match self.as_ref() {
             Some(provider) => provider.get_resolved_origin(origin),
-            None => None,
-        }
-    }
-
-    fn resolve_container_entity_for_pid(&self, process_id: u32) -> Option<EntityId> {
-        match self.as_ref() {
-            Some(provider) => provider.resolve_container_entity_for_pid(process_id),
             None => None,
         }
     }

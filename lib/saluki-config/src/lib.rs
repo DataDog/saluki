@@ -22,7 +22,7 @@ pub mod dynamic;
 mod provider;
 pub mod space_separated;
 
-pub use self::duration_string::{DurationString, ParseDurationError};
+pub use self::duration_string::{parse_duration, DurationString, ParseDurationError};
 pub use self::dynamic::FieldUpdateWatcher;
 use self::dynamic::{ConfigChangeEvent, ConfigUpdate};
 use self::provider::ResolvedProvider;

@@ -4,7 +4,7 @@ mod checks_ipc;
 pub use self::checks_ipc::ChecksIPCConfiguration;
 
 mod dogstatsd;
-pub use self::dogstatsd::{DogStatsDCaptureControl, DogStatsDConfiguration};
+pub use self::dogstatsd::{DogStatsDCaptureAPIHandler, DogStatsDConfiguration};
 
 mod internal_metrics;
 pub use self::internal_metrics::InternalMetricsConfiguration;

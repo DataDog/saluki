@@ -1,28 +1,13 @@
-use std::time::Duration;
-
-use datadog_agent_commons::ipc::{
-    client::BearerAuthInterceptor, config::IpcAuthConfiguration, tls::build_ipc_client_ipc_tls_config,
-};
-use datadog_protos::agent::{AgentSecureClient, CaptureTriggerRequest};
 use futures::TryFutureExt as _;
-use http::{uri::PathAndQuery, Request, Response, StatusCode, Uri};
+use http::{header::CONTENT_TYPE, uri::PathAndQuery, Request, Response, StatusCode, Uri};
 use http_body_util::BodyExt as _;
 use hyper::body::Incoming;
 use saluki_config::GenericConfiguration;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
-use saluki_io::net::{
-    client::http::{HttpClient, HttpsCapableConnectorBuilder},
-    GrpcTargetAddress, ListenAddress,
-};
-use tonic::{
-    service::interceptor::InterceptedService,
-    transport::{Channel, Endpoint},
-    Code, Status,
-};
+use saluki_io::net::{client::http::HttpClient, ListenAddress};
+use serde::{Deserialize, Serialize};
 
 use crate::config::DataPlaneConfiguration;
-
-type SecureDataPlaneService = InterceptedService<Channel, BearerAuthInterceptor>;
 
 /// Typed API client for interacting with the APIs exposed by ADP.
 pub struct DataPlaneAPIClient {
@@ -30,9 +15,17 @@ pub struct DataPlaneAPIClient {
     authority: String,
 }
 
-/// Typed gRPC client for interacting with the secure gRPC API exposed by ADP.
-pub struct DataPlaneSecureClient {
-    client: AgentSecureClient<SecureDataPlaneService>,
+#[derive(Serialize)]
+struct DogStatsDCaptureBody<'a> {
+    duration: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    path: Option<&'a str>,
+    compressed: bool,
+}
+
+#[derive(Deserialize)]
+struct DogStatsDCaptureResponseBody {
+    path: String,
 }
 
 impl DataPlaneAPIClient {
@@ -191,6 +184,38 @@ impl DataPlaneAPIClient {
             .and_then(body_when_success)
     }
 
+    /// Starts a DogStatsD traffic capture.
+    ///
+    /// # Errors
+    ///
+    /// If the request fails, if ADP rejects the capture request, or if the response body cannot be decoded, an error is
+    /// returned.
+    pub async fn dogstatsd_capture(
+        &mut self, duration: &str, path: Option<&str>, compressed: bool,
+    ) -> Result<String, GenericError> {
+        let uri = self.build_uri("/dogstatsd/capture/trigger", None);
+        let body = serde_json::to_string(&DogStatsDCaptureBody {
+            duration,
+            path,
+            compressed,
+        })
+        .error_context("Failed to serialize DogStatsD capture request.")?;
+        let req = Request::post(uri)
+            .header(CONTENT_TYPE, "application/json")
+            .body(body)
+            .expect("valid request");
+        let response_body = self
+            .client
+            .send(req)
+            .and_then(process_capture_response_body)
+            .await
+            .and_then(body_when_capture_success)?;
+        let response = serde_json::from_str::<DogStatsDCaptureResponseBody>(&response_body)
+            .error_context("Failed to deserialize DogStatsD capture response.")?;
+
+        Ok(response.path)
+    }
+
     /// Retrieves the configuration of the process.
     ///
     /// This is a point-in-time snapshot of the configuration, which could change over time if dynamic configuration is enabled.
@@ -251,85 +276,17 @@ impl DataPlaneAPIClient {
     }
 }
 
-impl DataPlaneSecureClient {
-    /// Creates a new `DataPlaneSecureClient` from the given generic configuration.
-    ///
-    /// # Errors
-    ///
-    /// If the data plane configuration can't be deserialized, or the secure gRPC client cannot be created, an error
-    /// will be returned.
-    pub async fn from_config(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        let dp_config = DataPlaneConfiguration::from_configuration(config)?;
-        let target_address = GrpcTargetAddress::try_from_listen_addr(dp_config.secure_api_listen_address())
-            .ok_or_else(|| {
-                generic_error!(
-                    "Expected connection-oriented address (TCP or UDS stream) for privileged API endpoint: {}",
-                    dp_config.secure_api_listen_address()
-                )
-            })?;
-
-        let ipc_config = IpcAuthConfiguration::from_configuration(config)?;
-        let auth_interceptor = BearerAuthInterceptor::from_file(ipc_config.auth_token_file_path()).await?;
-        let client_tls_config = build_ipc_client_ipc_tls_config(ipc_config.ipc_cert_file_path()).await?;
-
-        let mut connector_builder =
-            HttpsCapableConnectorBuilder::default().with_connect_timeout(Duration::from_secs(2));
-        let endpoint = match &target_address {
-            GrpcTargetAddress::Tcp(addr) => Endpoint::from_shared(format!("https://{addr}"))
-                .map_err(|e| generic_error!("Failed to construct ADP gRPC endpoint URI ({}).", e))?,
-            #[cfg(unix)]
-            GrpcTargetAddress::Unix(path) => {
-                connector_builder = connector_builder.with_unix_socket_path(path);
-                Endpoint::from_static("https://127.0.0.1")
-            }
-            #[cfg(not(unix))]
-            GrpcTargetAddress::Unix(_) => {
-                return Err(generic_error!(
-                    "Unix domain sockets are not supported for gRPC clients on this platform."
-                ))
-            }
-        };
-
-        let https_connector = connector_builder.build(client_tls_config)?;
-        let channel = endpoint
-            .connect_timeout(Duration::from_secs(2))
-            .connect_with_connector(https_connector)
-            .await
-            .with_error_context(|| format!("Failed to connect to Agent Data Plane API at '{}'.", target_address))?;
-
-        Ok(Self {
-            client: AgentSecureClient::new(InterceptedService::new(channel, auth_interceptor)),
-        })
-    }
-
-    /// Starts a DogStatsD traffic capture through the secure gRPC API.
-    ///
-    /// # Errors
-    ///
-    /// If the RPC fails, or if ADP rejects the capture request, an error is returned.
-    pub async fn dogstatsd_capture(
-        &mut self, duration: &str, path: Option<&str>, compressed: bool,
-    ) -> Result<String, GenericError> {
-        let response = self
-            .client
-            .dogstatsd_capture_trigger(CaptureTriggerRequest {
-                duration: duration.to_string(),
-                path: path.unwrap_or_default().to_string(),
-                compressed,
-            })
-            .await
-            .map_err(map_dogstatsd_capture_error)?
-            .into_inner();
-
-        Ok(response.path)
-    }
-}
-
 async fn collect_body(body: Incoming) -> Option<String> {
     // `Collected::to_bytes()` merges all frames. Do not use `Buf::chunk().to_vec()` on an aggregated body: `chunk()`
     // is only the first contiguous slice (often ~16 KiB), which truncates large JSON such as `/config` responses.
     let bytes = body.collect().await.ok()?.to_bytes();
     String::from_utf8(bytes.into()).ok()
+}
+
+async fn process_capture_response_body(response: Response<Incoming>) -> Result<Response<String>, GenericError> {
+    let (parts, body) = response.into_parts();
+    let body = collect_body(body).await.unwrap_or_else(|| String::from("<no body>"));
+    Ok(Response::from_parts(parts, body))
 }
 
 async fn process_response_body(response: Response<Incoming>) -> Result<Response<String>, GenericError> {
@@ -341,6 +298,18 @@ async fn process_response_body(response: Response<Incoming>) -> Result<Response<
         Ok(Response::from_parts(parts, body))
     } else {
         Err(generic_error!("Received non-success response ({}): {}.", status, body))
+    }
+}
+
+fn body_when_capture_success(resp: Response<String>) -> Result<String, GenericError> {
+    match resp.status() {
+        status if status.is_success() => Ok(resp.into_body()),
+        StatusCode::BAD_REQUEST | StatusCode::PRECONDITION_FAILED => Err(generic_error!("{}", resp.into_body())),
+        status => Err(generic_error!(
+            "Failed to start DogStatsD capture ({}): {}.",
+            status,
+            resp.into_body()
+        )),
     }
 }
 
@@ -368,43 +337,44 @@ fn empty_when_success(resp: Response<String>) -> Result<(), GenericError> {
     }
 }
 
-fn map_dogstatsd_capture_error(error: Status) -> GenericError {
-    match error.code() {
-        Code::FailedPrecondition | Code::InvalidArgument => generic_error!("{}", error.message()),
-        _ => generic_error!(
-            "Failed to start DogStatsD capture ({}): {}.",
-            error.code(),
-            error.message()
-        ),
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use tonic::{Code, Status};
+    use http::{Response, StatusCode};
 
-    use super::map_dogstatsd_capture_error;
+    use super::body_when_capture_success;
 
     #[test]
     fn dogstatsd_capture_failed_precondition_surfaces_server_message() {
-        let error = map_dogstatsd_capture_error(Status::new(Code::FailedPrecondition, "capture already in progress"));
+        let response = Response::builder()
+            .status(StatusCode::PRECONDITION_FAILED)
+            .body("capture already in progress".to_string())
+            .expect("valid response");
+        let error = body_when_capture_success(response).expect_err("precondition failure should be an error");
 
         assert_eq!(error.to_string(), "capture already in progress");
     }
 
     #[test]
     fn dogstatsd_capture_invalid_argument_surfaces_server_message() {
-        let error = map_dogstatsd_capture_error(Status::new(Code::InvalidArgument, "missing duration unit"));
+        let response = Response::builder()
+            .status(StatusCode::BAD_REQUEST)
+            .body("missing duration unit".to_string())
+            .expect("valid response");
+        let error = body_when_capture_success(response).expect_err("invalid arguments should be an error");
 
         assert_eq!(error.to_string(), "missing duration unit");
     }
 
     #[test]
     fn dogstatsd_capture_other_errors_keep_context() {
-        let error = map_dogstatsd_capture_error(Status::new(Code::Unavailable, "connection closed"));
+        let response = Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .body("route not found".to_string())
+            .expect("valid response");
+        let error = body_when_capture_success(response).expect_err("unexpected status should be an error");
 
         let message = error.to_string();
         assert!(message.contains("Failed to start DogStatsD capture"));
-        assert!(message.contains("connection closed"));
+        assert!(message.contains("route not found"));
     }
 }

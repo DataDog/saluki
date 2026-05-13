@@ -100,6 +100,28 @@ crate::declare_annotations! {
         test_json: None,
     };
 
+    /// `dogstatsd_capture_depth` - traffic capture channel depth.
+    DOGSTATSD_CAPTURE_DEPTH = SalukiAnnotation {
+        schema: &schema::DOGSTATSD_CAPTURE_DEPTH,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::DOGSTATSD_CONFIGURATION],
+        value_type_override: Some(ValueType::Integer),
+        test_json: None,
+    };
+
+    /// `dogstatsd_capture_path` - traffic capture file location.
+    DOGSTATSD_CAPTURE_PATH = SalukiAnnotation {
+        schema: &schema::DOGSTATSD_CAPTURE_PATH,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::DOGSTATSD_CONFIGURATION],
+        value_type_override: None,
+        test_json: None,
+    };
+
     /// `dogstatsd_entity_id_precedence` — client entity ID takes precedence over UDS origin.
     DOGSTATSD_ENTITY_ID_PRECEDENCE = SalukiAnnotation {
         schema: &schema::DOGSTATSD_ENTITY_ID_PRECEDENCE,

@@ -34,13 +34,13 @@ use saluki_core::{
         EventsBuffer, OutputDefinition,
     },
 };
-use saluki_env::{workload::EntityId, WorkloadProvider};
+use saluki_env::{workload::CaptureEntityResolver, WorkloadProvider};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_io::{
     buf::{BytesBuffer, ClearableIoBuffer as _, FixedSizeVec},
     deser::{
         codec::dogstatsd::*,
-        framing::{Framer as _, FramerExt as _, FramingError, LengthDelimitedFramer, NewlineFramer},
+        framing::{Framer as _, FramerExt as _, FramingError, LengthDelimitedFramer},
     },
     net::{
         listener::{Listener, ListenerError},
@@ -69,8 +69,8 @@ mod io_buffer;
 use self::io_buffer::IoBufferManager;
 
 mod replay;
-pub use self::replay::DogStatsDCaptureControl;
 use self::replay::{CaptureRecord, TrafficCapture};
+pub use self::replay::{DogStatsDCaptureAPIHandler, DogStatsDCaptureControl};
 
 mod origin;
 use self::origin::{
@@ -449,6 +449,11 @@ pub struct DogStatsDConfiguration {
     #[cfg_attr(test, derive_where(skip))]
     workload_provider: Option<Arc<dyn WorkloadProvider + Send + Sync>>,
 
+    /// Resolver to use for mapping live sender PIDs to container entities during traffic capture.
+    #[serde(skip, default)]
+    #[cfg_attr(test, derive_where(skip))]
+    capture_entity_resolver: Option<Arc<dyn CaptureEntityResolver + Send + Sync>>,
+
     /// Additional tags to add to all metrics.
     #[serde(rename = "dogstatsd_tags", default)]
     additional_tags: Vec<String>,
@@ -585,9 +590,28 @@ impl DogStatsDConfiguration {
         self
     }
 
+    /// Sets the resolver to use for mapping live sender PIDs while capturing DogStatsD traffic.
+    ///
+    /// This resolver is intentionally configured separately from the workload provider because capture only needs a
+    /// narrow live-PID lookup, while normal origin enrichment uses the broader workload provider contract.
+    ///
+    /// Defaults to unset.
+    pub fn with_capture_entity_resolver<R>(mut self, capture_entity_resolver: R) -> Self
+    where
+        R: CaptureEntityResolver + Send + Sync + 'static,
+    {
+        self.capture_entity_resolver = Some(Arc::new(capture_entity_resolver));
+        self
+    }
+
     /// Returns the shared control handle for DogStatsD traffic capture.
     pub fn capture_control(&self) -> DogStatsDCaptureControl {
         self.capture_control.clone()
+    }
+
+    /// Returns an HTTP API handler exposing the DogStatsD capture control surface.
+    pub fn capture_api_handler(&self) -> DogStatsDCaptureAPIHandler {
+        DogStatsDCaptureAPIHandler::new(self.capture_control.clone())
     }
 
     fn fix_empty_capture_path(&mut self, config: &GenericConfiguration) {
@@ -731,7 +755,11 @@ impl SourceBuilder for DogStatsDConfiguration {
             .with_allow_sketches(self.enable_payloads.sketches)
             .with_allow_events(self.enable_payloads.events)
             .with_allow_service_checks(self.enable_payloads.service_checks);
-        let traffic_capture = TrafficCapture::new(self.capture_path.clone(), self.capture_depth);
+        let traffic_capture = TrafficCapture::with_workload_provider(
+            self.capture_path.clone(),
+            self.capture_depth,
+            self.workload_provider.clone(),
+        );
         self.capture_control.bind(traffic_capture.clone());
 
         Ok(Box::new(DogStatsD {
@@ -745,7 +773,7 @@ impl SourceBuilder for DogStatsDConfiguration {
             stream_log_too_big: self.stream_log_too_big,
             eol_required,
             additional_tags: self.additional_tags.clone().into(),
-            workload_provider: self.workload_provider.clone(),
+            capture_entity_resolver: self.capture_entity_resolver.clone(),
             traffic_capture,
         }))
     }
@@ -793,7 +821,7 @@ pub struct DogStatsD {
     stream_log_too_big: bool,
     eol_required: EolRequired,
     additional_tags: Arc<[String]>,
-    workload_provider: Option<Arc<dyn WorkloadProvider + Send + Sync>>,
+    capture_entity_resolver: Option<Arc<dyn CaptureEntityResolver + Send + Sync>>,
     traffic_capture: TrafficCapture,
 }
 
@@ -806,7 +834,7 @@ struct ListenerContext {
     stream_log_too_big: bool,
     eol_required: EolRequired,
     additional_tags: Arc<[String]>,
-    workload_provider: Option<Arc<dyn WorkloadProvider + Send + Sync>>,
+    capture_entity_resolver: Option<Arc<dyn CaptureEntityResolver + Send + Sync>>,
     traffic_capture: TrafficCapture,
 }
 
@@ -819,28 +847,8 @@ struct HandlerContext {
     context_resolvers: ContextResolvers,
     stream_log_too_big: bool,
     additional_tags: Arc<[String]>,
-    workload_provider: Option<Arc<dyn WorkloadProvider + Send + Sync>>,
+    capture_entity_resolver: Option<Arc<dyn CaptureEntityResolver + Send + Sync>>,
     traffic_capture: TrafficCapture,
-}
-
-#[derive(Default)]
-struct StreamCapture {
-    outer_framer: LengthDelimitedFramer,
-    pending: VecDeque<u8>,
-    last_pid: Option<i32>,
-    last_ancillary_data: Vec<u8>,
-}
-
-impl StreamCapture {
-    fn push_received(&mut self, peer_addr: &ConnectionAddress, ancillary_data: &[u8], payload: &[u8]) {
-        if let Some(process_id) = process_id_from_peer_addr(peer_addr) {
-            self.last_pid = Some(process_id);
-        }
-        if !ancillary_data.is_empty() {
-            self.last_ancillary_data = ancillary_data.to_vec();
-        }
-        self.pending.extend(payload);
-    }
 }
 
 struct Metrics {
@@ -1009,7 +1017,7 @@ impl Source for DogStatsD {
                 stream_log_too_big: self.stream_log_too_big,
                 eol_required: self.eol_required,
                 additional_tags: self.additional_tags.clone(),
-                workload_provider: self.workload_provider.clone(),
+                capture_entity_resolver: self.capture_entity_resolver.clone(),
                 traffic_capture: self.traffic_capture.clone(),
             };
 
@@ -1058,7 +1066,7 @@ async fn process_listener(
         stream_log_too_big,
         eol_required,
         additional_tags,
-        workload_provider,
+        capture_entity_resolver,
         traffic_capture,
     } = listener_context;
     tokio::pin!(shutdown_handle);
@@ -1088,7 +1096,7 @@ async fn process_listener(
                         context_resolvers: context_resolvers.clone(),
                         stream_log_too_big,
                         additional_tags: additional_tags.clone(),
-                        workload_provider: workload_provider.clone(),
+                        capture_entity_resolver: capture_entity_resolver.clone(),
                         traffic_capture: traffic_capture.clone(),
                     };
 
@@ -1140,7 +1148,7 @@ async fn drive_stream(
         mut context_resolvers,
         stream_log_too_big,
         additional_tags,
-        workload_provider,
+        capture_entity_resolver,
         traffic_capture,
     } = handler_context;
 
@@ -1150,10 +1158,7 @@ async fn drive_stream(
         metrics.connections_active().increment(1);
     }
 
-    let mut stream_capture = match listen_addr {
-        ListenAddress::Unix(_) => Some(StreamCapture::default()),
-        _ => None,
-    };
+    let mut stream_capture = StreamCaptureState::new();
     // Set a buffer flush interval of 100ms, which will ensure we always flush buffered events at least every 100ms if
     // we're otherwise idle and not receiving packets from the client.
     let mut buffer_flush = interval(Duration::from_millis(100));
@@ -1185,12 +1190,11 @@ async fn drive_stream(
                     capture_uds_traffic(
                         &listen_addr,
                         &traffic_capture,
-                        workload_provider.as_deref(),
-                        &codec,
+                        capture_entity_resolver.as_deref(),
                         &peer_addr,
                         &ancillary_data,
-                        received_payload(&io_buffer, bytes_read),
-                        stream_capture.as_mut(),
+                        received_payload(io_buffer, bytes_read),
+                        &mut stream_capture,
                     );
 
                     // TODO: This is correct for UDP and UDS in SOCK_DGRAM mode, but not for UDS in SOCK_STREAM mode...
@@ -1322,8 +1326,8 @@ fn should_warn_stream_log_too_big(listen_addr: &ListenAddress, error: &FramingEr
 
 fn capture_uds_traffic(
     listen_addr: &ListenAddress, traffic_capture: &TrafficCapture,
-    workload_provider: Option<&(dyn WorkloadProvider + Send + Sync)>, codec: &DogStatsDCodec,
-    peer_addr: &ConnectionAddress, ancillary_data: &[u8], payload: &[u8], stream_capture: Option<&mut StreamCapture>,
+    capture_entity_resolver: Option<&(dyn CaptureEntityResolver + Send + Sync)>, peer_addr: &ConnectionAddress,
+    ancillary_data: &[u8], payload: &[u8], stream_capture: &mut StreamCaptureState,
 ) {
     if payload.is_empty() || !traffic_capture.is_ongoing() {
         return;
@@ -1332,29 +1336,24 @@ fn capture_uds_traffic(
     match listen_addr {
         ListenAddress::Unixgram(_) => {
             let _ = traffic_capture.enqueue(build_capture_record(
-                codec,
-                workload_provider,
+                capture_entity_resolver,
                 process_id_from_peer_addr(peer_addr),
                 ancillary_data,
                 payload,
             ));
         }
         ListenAddress::Unix(_) => {
-            let Some(stream_capture) = stream_capture else {
-                return;
-            };
-
-            stream_capture.push_received(peer_addr, ancillary_data, payload);
+            stream_capture.update_peer_metadata(peer_addr, ancillary_data);
+            stream_capture.pending.extend(payload);
 
             while let Ok(Some(outer_payload)) = stream_capture
                 .outer_framer
                 .next_frame(&mut stream_capture.pending, false)
             {
                 let _ = traffic_capture.enqueue(build_capture_record(
-                    codec,
-                    workload_provider,
+                    capture_entity_resolver,
                     stream_capture.last_pid,
-                    &stream_capture.last_ancillary_data,
+                    stream_capture.last_ancillary_data.as_slice(),
                     &outer_payload,
                 ));
             }
@@ -1363,8 +1362,36 @@ fn capture_uds_traffic(
     }
 }
 
+struct StreamCaptureState {
+    outer_framer: LengthDelimitedFramer,
+    pending: VecDeque<u8>,
+    last_pid: Option<i32>,
+    last_ancillary_data: Vec<u8>,
+}
+
+impl StreamCaptureState {
+    fn new() -> Self {
+        Self {
+            outer_framer: LengthDelimitedFramer,
+            pending: VecDeque::new(),
+            last_pid: None,
+            last_ancillary_data: Vec::new(),
+        }
+    }
+
+    fn update_peer_metadata(&mut self, peer_addr: &ConnectionAddress, ancillary_data: &[u8]) {
+        if let Some(process_id) = process_id_from_peer_addr(peer_addr) {
+            self.last_pid = Some(process_id);
+        }
+        if !ancillary_data.is_empty() {
+            self.last_ancillary_data.clear();
+            self.last_ancillary_data.extend_from_slice(ancillary_data);
+        }
+    }
+}
+
 fn build_capture_record(
-    codec: &DogStatsDCodec, workload_provider: Option<&(dyn WorkloadProvider + Send + Sync)>, process_id: Option<i32>,
+    capture_entity_resolver: Option<&(dyn CaptureEntityResolver + Send + Sync)>, process_id: Option<i32>,
     ancillary_data: &[u8], payload: &[u8],
 ) -> CaptureRecord {
     CaptureRecord {
@@ -1372,49 +1399,17 @@ fn build_capture_record(
         payload: payload.to_vec(),
         pid: process_id,
         ancillary: ancillary_data.to_vec(),
-        container_id: resolve_capture_container_id(codec, workload_provider, process_id, payload),
+        container_id: resolve_capture_container_id(capture_entity_resolver, process_id),
     }
 }
 
 fn resolve_capture_container_id(
-    codec: &DogStatsDCodec, workload_provider: Option<&(dyn WorkloadProvider + Send + Sync)>, process_id: Option<i32>,
-    payload: &[u8],
+    capture_entity_resolver: Option<&(dyn CaptureEntityResolver + Send + Sync)>, process_id: Option<i32>,
 ) -> Option<String> {
-    payload_local_container_id(codec, payload).or_else(|| {
-        let process_id = u32::try_from(process_id?).ok()?;
-        workload_provider
-            .and_then(|provider| provider.resolve_container_entity_for_pid(process_id))
-            .and_then(EntityId::try_into_container)
-            .map(|container_id| container_id.to_string())
-    })
-}
-
-fn payload_local_container_id(codec: &DogStatsDCodec, payload: &[u8]) -> Option<String> {
-    let mut framer = NewlineFramer::default().required_on_eof(false);
-    let mut remaining = payload;
-
-    while let Ok(Some(frame)) = framer.next_frame(&mut remaining, true) {
-        if let Ok(parsed) = codec.decode_packet(&frame) {
-            if let Some(container_id) = parsed_packet_local_container_id(parsed) {
-                return Some(container_id);
-            }
-        }
-    }
-
-    None
-}
-
-fn parsed_packet_local_container_id(parsed: ParsedPacket<'_>) -> Option<String> {
-    let maybe_local_data = match parsed {
-        ParsedPacket::Metric(packet) => packet.local_data,
-        ParsedPacket::Event(packet) => packet.local_data,
-        ParsedPacket::ServiceCheck(packet) => packet.local_data,
-    };
-
-    maybe_local_data
-        .and_then(EntityId::from_local_data)
-        .and_then(EntityId::try_into_container)
-        .map(|container_id| container_id.to_string())
+    let process_id = u32::try_from(process_id?).ok()?;
+    capture_entity_resolver
+        .and_then(|resolver| resolver.resolve_container_entity_for_live_pid(process_id))
+        .map(|entity_id| entity_id.to_string())
 }
 
 fn process_id_from_peer_addr(peer_addr: &ConnectionAddress) -> Option<i32> {
@@ -1725,12 +1720,8 @@ mod tests {
 
     use bytesize::ByteSize;
     use saluki_config::ConfigurationLoader;
-    use saluki_context::tags::SharedTagSet;
     use saluki_context::{ContextResolverBuilder, TagsResolverBuilder};
-    use saluki_env::{
-        workload::{origin::ResolvedOrigin, EntityId},
-        WorkloadProvider,
-    };
+    use saluki_env::workload::{CaptureEntityResolver, EntityId};
     use saluki_io::{
         deser::codec::dogstatsd::{DogStatsDCodec, DogStatsDCodecConfiguration, ParsedPacket},
         net::{ConnectionAddress, ListenAddress},
@@ -1738,16 +1729,16 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        handle_metric_packet, payload_local_container_id, resolve_capture_container_id, ContextResolvers,
-        DogStatsDConfiguration, DOGSTATSD_CAPTURE_DIR,
+        handle_metric_packet, resolve_capture_container_id, ContextResolvers, DogStatsDConfiguration,
+        DOGSTATSD_CAPTURE_DIR,
     };
 
     #[derive(Default)]
-    struct CaptureTestWorkloadProvider {
+    struct CaptureTestEntityResolver {
         pid_map: HashMap<u32, EntityId>,
     }
 
-    impl CaptureTestWorkloadProvider {
+    impl CaptureTestEntityResolver {
         fn with_pid_mapping(process_id: u32, entity_id: EntityId) -> Self {
             let mut pid_map = HashMap::new();
             pid_map.insert(process_id, entity_id);
@@ -1755,18 +1746,8 @@ mod tests {
         }
     }
 
-    impl WorkloadProvider for CaptureTestWorkloadProvider {
-        fn get_tags_for_entity(
-            &self, _entity_id: &EntityId, _cardinality: saluki_context::origin::OriginTagCardinality,
-        ) -> Option<SharedTagSet> {
-            None
-        }
-
-        fn get_resolved_origin(&self, _origin: saluki_context::origin::RawOrigin<'_>) -> Option<ResolvedOrigin> {
-            None
-        }
-
-        fn resolve_container_entity_for_pid(&self, process_id: u32) -> Option<EntityId> {
+    impl CaptureEntityResolver for CaptureTestEntityResolver {
+        fn resolve_container_entity_for_live_pid(&self, process_id: u32) -> Option<EntityId> {
             self.pid_map.get(&process_id).cloned()
         }
     }
@@ -2287,46 +2268,50 @@ mod tests {
     }
 
     #[test]
-    fn payload_local_container_id_reads_local_data() {
-        let codec = DogStatsDCodec::from_configuration(DogStatsDCodecConfiguration::default());
-        let payload = b"test.metric:1|c|c:ci-local-container\n";
+    fn capture_entity_resolver_is_configured_separately_from_workload_provider() {
+        let config =
+            DogStatsDConfiguration::default().with_capture_entity_resolver(CaptureTestEntityResolver::default());
 
-        assert_eq!(
-            payload_local_container_id(&codec, payload),
-            Some("local-container".to_string())
-        );
+        assert!(config.capture_entity_resolver.is_some());
+        assert!(config.workload_provider.is_none());
     }
 
     #[test]
-    fn resolve_capture_container_id_falls_back_to_pid_mapping() {
-        let codec = DogStatsDCodec::from_configuration(DogStatsDCodecConfiguration::default());
-        let workload_provider = CaptureTestWorkloadProvider::with_pid_mapping(
+    fn resolve_capture_container_id_uses_live_pid_mapping() {
+        let capture_entity_resolver = CaptureTestEntityResolver::with_pid_mapping(
             42,
             EntityId::from_local_data("ci-pid-container").expect("container entity"),
         );
 
         assert_eq!(
-            resolve_capture_container_id(&codec, Some(&workload_provider), Some(42), b"test.metric:1|c\n"),
-            Some("pid-container".to_string())
+            resolve_capture_container_id(Some(&capture_entity_resolver), Some(42)),
+            Some("container_id://pid-container".to_string())
         );
     }
 
     #[test]
-    fn stream_capture_preserves_last_pid_without_new_creds() {
-        let mut stream_capture = super::StreamCapture::default();
+    fn build_capture_record_ignores_payload_local_data() {
+        let record = super::build_capture_record(None, None, &[], b"test.metric:1|c|c:ci-local-container\n");
 
-        stream_capture.push_received(
+        assert_eq!(record.container_id, None);
+    }
+
+    #[test]
+    fn stream_capture_state_preserves_last_pid_without_new_creds() {
+        let mut stream_capture = super::StreamCaptureState::new();
+
+        stream_capture.update_peer_metadata(
             &ConnectionAddress::ProcessLike(Some(saluki_io::net::ProcessCredentials {
                 pid: 42,
                 uid: 0,
                 gid: 0,
             })),
-            &[],
-            b"first",
+            b"creds",
         );
-        stream_capture.push_received(&ConnectionAddress::ProcessLike(None), &[], b"second");
+        stream_capture.update_peer_metadata(&ConnectionAddress::ProcessLike(None), &[]);
 
         assert_eq!(stream_capture.last_pid, Some(42));
+        assert_eq!(stream_capture.last_ancillary_data, b"creds");
     }
 }
 

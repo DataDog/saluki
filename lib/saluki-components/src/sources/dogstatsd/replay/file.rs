@@ -1,23 +1,19 @@
-#![allow(dead_code)]
+//! Provides parsing and writing of Datadog capture file headers.
 
 use std::io::{self, Write};
 
+#[cfg(test)]
 use saluki_error::{generic_error, GenericError};
 
 /// Datadog capture file format version.
 pub(super) const DATADOG_FILE_VERSION: u8 = 3;
-
-/// Minimum file format version that includes trailing replay state.
-pub(super) const MIN_STATE_VERSION: u8 = 2;
-
-/// Minimum file format version that stores timestamps in nanoseconds.
-pub(super) const MIN_NANO_VERSION: u8 = 3;
 
 pub(super) const VERSION_INDEX: usize = 4;
 pub(super) const DATADOG_HEADER: [u8; 8] = [0xD4, 0x74, 0xD0, 0x60, 0xF0, 0xFF, 0x00, 0x00];
 const ERR_HEADER_WRITE: &str = "capture file header could not be fully written to buffer";
 
 /// Returns whether the buffer begins with a valid Datadog capture header.
+#[cfg(test)]
 pub(super) fn datadog_matcher(buf: &[u8]) -> bool {
     if buf.len() < DATADOG_HEADER.len() {
         return false;
@@ -38,6 +34,7 @@ pub(super) fn datadog_matcher(buf: &[u8]) -> bool {
 }
 
 /// Parses the Datadog capture file version from the given buffer.
+#[cfg(test)]
 pub(super) fn file_version(buf: &[u8]) -> Result<u8, GenericError> {
     if !datadog_matcher(buf) {
         return Err(generic_error!(
