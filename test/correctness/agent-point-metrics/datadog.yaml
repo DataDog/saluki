@@ -1,0 +1,32 @@
+# Using a fixed hostname is both required to avoid errors, and also will ensure consistent tags
+# between DSD/ADP.
+hostname: "correctness-testing"
+
+# Dummy API key.
+api_key: dummy-api-key-correctness-testing
+
+# We have to specifically configure the health port to use.
+health_port: 5555
+
+# Point ourselves at the datadog-intake service.
+dd_url: "http://datadog-intake:2049"
+
+# Turn off UDP and listen on a UDS socket instead.
+use_dogstatsd: true
+dogstatsd_port: 0
+dogstatsd_socket: /airlock/metrics.sock
+
+# Ensure origin detection is disabled since we can't support it with ADP in standalone mode.
+dogstatsd_origin_detection: false
+
+# Keep a single DSD worker so gauge last-write-wins ordering is deterministic.
+dogstatsd_workers_count: 1
+
+# Disable the APM agent to reduce noise from unrelated internal DSD contexts.
+apm_config:
+  enabled: false
+
+# Enable ADP's TelemetryProvider so the Go agent can collect ADP's point__sent gauge via the
+# Remote Agent Registry and merge it into the customer-facing datadog.agent.point.sent metric.
+data_plane:
+  telemetry_enabled: true
