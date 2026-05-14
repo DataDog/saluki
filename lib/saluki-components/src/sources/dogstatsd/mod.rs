@@ -52,7 +52,7 @@ use saluki_io::{
     },
     net::{
         listener::{Listener, ListenerError},
-        ConnectionAddress, ListenAddress, ProcessIdentity, ReceiveResult, Stream,
+        ConnectionAddress, ListenAddress, ProcessIdentity, Stream,
     },
 };
 use saluki_metrics::MetricsBuilder;
@@ -210,8 +210,10 @@ const fn default_true() -> bool {
     true
 }
 
+const MIN_CAPTURE_DEPTH: usize = 1024;
+
 const fn default_capture_depth() -> usize {
-    0
+    MIN_CAPTURE_DEPTH
 }
 
 const DOGSTATSD_CAPTURE_DIR: &str = "dsd_capture";
@@ -480,10 +482,11 @@ pub struct DogStatsDConfiguration {
 
     /// The maximum number of captured packets that can be queued for persistence.
     ///
-    /// This controls the depth of the in-process capture queue once the writer is fully implemented. A value of `0`
-    /// matches the Core Agent default and indicates no extra buffering.
+    /// This controls the depth of the in-process capture queue. Values below `1024` are raised to `1024` before the
+    /// capture writer starts, preventing a zero-depth rendezvous channel from serializing DogStatsD stream handlers
+    /// behind capture persistence.
     ///
-    /// Defaults to `0`.
+    /// Defaults to `1024`.
     #[serde(rename = "dogstatsd_capture_depth", default = "default_capture_depth")]
     capture_depth: usize,
 
@@ -556,6 +559,7 @@ impl DogStatsDConfiguration {
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
         let mut dogstatsd_config: Self = config.as_typed()?;
         dogstatsd_config.fix_empty_capture_path(config);
+        dogstatsd_config.fix_capture_depth();
         Ok(dogstatsd_config)
     }
 
@@ -568,6 +572,10 @@ impl DogStatsDConfiguration {
         let mut tags = self.additional_tags.clone();
         tags.push(format!("provider_kind:{}", self.provider_kind.clone()));
         tags
+    }
+
+    fn fix_capture_depth(&mut self) {
+        self.capture_depth = self.capture_depth.max(MIN_CAPTURE_DEPTH);
     }
 
     /// Returns the effective string interner size in bytes.
@@ -788,7 +796,7 @@ impl SourceBuilder for DogStatsDConfiguration {
             .with_allow_service_checks(self.enable_payloads.service_checks);
         let traffic_capture = TrafficCapture::with_workload_provider(
             self.capture_path.clone(),
-            self.capture_depth,
+            self.capture_depth.max(MIN_CAPTURE_DEPTH),
             self.workload_provider.clone(),
         );
         self.capture_control.bind(traffic_capture.clone());
@@ -1224,11 +1232,7 @@ async fn drive_stream(
         select! {
             // We read from the stream.
             read_result = stream.receive(&mut io_buffer) => match read_result {
-                Ok(ReceiveResult {
-                    bytes_read,
-                    address: peer_addr,
-                    ancillary_data,
-                }) => {
+                Ok((bytes_read, peer_addr)) => {
                     if bytes_read == 0 {
                         eof = true;
                     }
@@ -1240,7 +1244,6 @@ async fn drive_stream(
                         &traffic_capture,
                         capture_entity_resolver.as_deref(),
                         &peer_addr,
-                        &ancillary_data,
                         received_payload(io_buffer, bytes_read),
                         &mut stream_capture,
                     );
@@ -1381,7 +1384,7 @@ fn should_warn_stream_log_too_big(listen_addr: &ListenAddress, error: &FramingEr
 fn capture_uds_traffic(
     listen_addr: &ListenAddress, traffic_capture: &TrafficCapture,
     capture_entity_resolver: Option<&(dyn CaptureEntityResolver + Send + Sync)>, peer_addr: &ConnectionAddress,
-    ancillary_data: &[u8], payload: &[u8], stream_capture: &mut StreamCaptureState,
+    payload: &[u8], stream_capture: &mut StreamCaptureState,
 ) {
     if payload.is_empty() || !traffic_capture.is_ongoing() {
         return;
@@ -1392,12 +1395,11 @@ fn capture_uds_traffic(
             let _ = traffic_capture.enqueue(build_capture_record(
                 capture_entity_resolver,
                 process_id_from_peer_addr(peer_addr),
-                ancillary_data,
                 payload,
             ));
         }
         ListenAddress::Unix(_) => {
-            stream_capture.update_peer_metadata(peer_addr, ancillary_data);
+            stream_capture.update_peer_metadata(peer_addr);
             stream_capture.pending.extend(payload);
 
             while let Ok(Some(outer_payload)) = stream_capture
@@ -1407,7 +1409,6 @@ fn capture_uds_traffic(
                 let _ = traffic_capture.enqueue(build_capture_record(
                     capture_entity_resolver,
                     stream_capture.last_pid,
-                    stream_capture.last_ancillary_data.as_slice(),
                     &outer_payload,
                 ));
             }
@@ -1420,7 +1421,6 @@ struct StreamCaptureState {
     outer_framer: LengthDelimitedFramer,
     pending: VecDeque<u8>,
     last_pid: Option<i32>,
-    last_ancillary_data: Vec<u8>,
 }
 
 impl StreamCaptureState {
@@ -1429,30 +1429,25 @@ impl StreamCaptureState {
             outer_framer: LengthDelimitedFramer,
             pending: VecDeque::new(),
             last_pid: None,
-            last_ancillary_data: Vec::new(),
         }
     }
 
-    fn update_peer_metadata(&mut self, peer_addr: &ConnectionAddress, ancillary_data: &[u8]) {
+    fn update_peer_metadata(&mut self, peer_addr: &ConnectionAddress) {
         if let Some(process_id) = process_id_from_peer_addr(peer_addr) {
             self.last_pid = Some(process_id);
-        }
-        if !ancillary_data.is_empty() {
-            self.last_ancillary_data.clear();
-            self.last_ancillary_data.extend_from_slice(ancillary_data);
         }
     }
 }
 
 fn build_capture_record(
     capture_entity_resolver: Option<&(dyn CaptureEntityResolver + Send + Sync)>, process_id: Option<i32>,
-    ancillary_data: &[u8], payload: &[u8],
+    payload: &[u8],
 ) -> CaptureRecord {
     CaptureRecord {
         timestamp_ns: capture_timestamp_ns(),
         payload: payload.to_vec(),
         pid: process_id,
-        ancillary: ancillary_data.to_vec(),
+        ancillary: Vec::new(),
         container_id: resolve_capture_container_id(capture_entity_resolver, process_id),
     }
 }
@@ -1784,7 +1779,7 @@ mod tests {
 
     use super::{
         handle_metric_packet, resolve_capture_container_id, ContextResolvers, DogStatsDConfiguration,
-        DOGSTATSD_CAPTURE_DIR,
+        DOGSTATSD_CAPTURE_DIR, MIN_CAPTURE_DEPTH,
     };
 
     #[derive(Default)]
@@ -2321,6 +2316,22 @@ mod tests {
         assert_eq!(PathBuf::from(CAPTURE_PATH), dogstatsd_config.capture_path);
     }
 
+    #[tokio::test]
+    async fn from_configuration_normalizes_capture_depth() {
+        let cases = [
+            (json!({}), MIN_CAPTURE_DEPTH),
+            (json!({ "dogstatsd_capture_depth": 0 }), MIN_CAPTURE_DEPTH),
+            (json!({ "dogstatsd_capture_depth": 2048 }), 2048),
+        ];
+
+        for (base_config_values, expected_depth) in cases {
+            let (config, _) = ConfigurationLoader::for_tests(Some(base_config_values), None, false).await;
+            let dogstatsd_config = DogStatsDConfiguration::from_configuration(&config).expect("should deserialize");
+
+            assert_eq!(expected_depth, dogstatsd_config.capture_depth);
+        }
+    }
+
     #[test]
     fn capture_entity_resolver_is_configured_separately_from_workload_provider() {
         let config =
@@ -2345,27 +2356,26 @@ mod tests {
 
     #[test]
     fn build_capture_record_ignores_payload_local_data() {
-        let record = super::build_capture_record(None, None, &[], b"test.metric:1|c|c:ci-local-container\n");
+        let record = super::build_capture_record(None, None, b"test.metric:1|c|c:ci-local-container\n");
 
         assert_eq!(record.container_id, None);
+        assert!(record.ancillary.is_empty());
     }
 
     #[test]
     fn stream_capture_state_preserves_last_pid_without_new_creds() {
         let mut stream_capture = super::StreamCaptureState::new();
 
-        stream_capture.update_peer_metadata(
-            &ConnectionAddress::ProcessLike(ProcessIdentity::Credentials(ProcessCredentials {
+        stream_capture.update_peer_metadata(&ConnectionAddress::ProcessLike(ProcessIdentity::Credentials(
+            ProcessCredentials {
                 pid: 42,
                 uid: 0,
                 gid: 0,
-            })),
-            b"creds",
-        );
-        stream_capture.update_peer_metadata(&ConnectionAddress::ProcessLike(ProcessIdentity::Unavailable), &[]);
+            },
+        )));
+        stream_capture.update_peer_metadata(&ConnectionAddress::ProcessLike(ProcessIdentity::Unavailable));
 
         assert_eq!(stream_capture.last_pid, Some(42));
-        assert_eq!(stream_capture.last_ancillary_data, b"creds");
     }
 }
 

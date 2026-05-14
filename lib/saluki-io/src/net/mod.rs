@@ -9,7 +9,6 @@ pub mod listener;
 pub mod server;
 
 mod stream;
-pub use self::stream::ReceiveResult;
 pub use self::stream::{Connection, Stream};
 
 #[cfg(unix)]

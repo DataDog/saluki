@@ -26,7 +26,7 @@ mod non_linux;
 use self::non_linux::uds_recvmsg;
 #[cfg(not(target_os = "linux"))]
 pub use self::non_linux::{enable_uds_socket_credentials, socket_reuseport_supported};
-use super::stream::ReceiveResult;
+use super::addr::ConnectionAddress;
 
 /// Ensures that the given path is read for use as a UNIX socket.
 ///
@@ -91,7 +91,7 @@ pub(super) async fn set_unix_socket_write_only<P: AsRef<Path>>(path: P) -> io::R
 /// ## Errors
 ///
 /// If the underlying system call fails, an error is returned.
-pub async fn unix_recvmsg<B: BufMut>(socket: &mut UnixStream, buf: &mut B) -> io::Result<ReceiveResult> {
+pub async fn unix_recvmsg<B: BufMut>(socket: &mut UnixStream, buf: &mut B) -> io::Result<(usize, ConnectionAddress)> {
     // TODO: We technically don't need to do this for SOCK_STREAM because we can do it once when the
     // connection is accepted, and then just do "normal" reads after that. We do still need to do it
     // for SOCK_DGRAM, though... so we might want to actually consider updating our `socket2` PR to
@@ -116,7 +116,9 @@ pub async fn unix_recvmsg<B: BufMut>(socket: &mut UnixStream, buf: &mut B) -> io
 /// ## Errors
 ///
 /// If the underlying system call fails, an error is returned.
-pub async fn unixgram_recvmsg<B: BufMut>(socket: &mut UnixDatagram, buf: &mut B) -> io::Result<ReceiveResult> {
+pub async fn unixgram_recvmsg<B: BufMut>(
+    socket: &mut UnixDatagram, buf: &mut B,
+) -> io::Result<(usize, ConnectionAddress)> {
     // We manually call `recvmsg` on our domain socket as stdlib/`mio`/`tokio` don't yet expose a way to do out-of-band
     // reads to get ancillary data such as the socket credentials used to shuttle origin detection information.
     socket

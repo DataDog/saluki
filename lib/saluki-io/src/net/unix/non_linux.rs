@@ -3,7 +3,7 @@ use std::io;
 use bytes::BufMut;
 use socket2::{MaybeUninitSlice, MsgHdrMut, SockAddr, SockAddrStorage, SockRef};
 
-use crate::net::{ConnectionAddress, ProcessCredentialsError, ProcessIdentity, ReceiveResult};
+use crate::net::addr::{ConnectionAddress, ProcessCredentialsError, ProcessIdentity};
 
 pub fn enable_uds_socket_credentials<'sock, S>(_socket: &'sock S) -> io::Result<()>
 where
@@ -12,7 +12,7 @@ where
     Ok(())
 }
 
-pub(super) fn uds_recvmsg<'sock, S, B: BufMut>(socket: &'sock S, buf: &mut B) -> io::Result<ReceiveResult>
+pub(super) fn uds_recvmsg<'sock, S, B: BufMut>(socket: &'sock S, buf: &mut B) -> io::Result<(usize, ConnectionAddress)>
 where
     SockRef<'sock>: From<&'sock S>,
 {
@@ -39,11 +39,10 @@ where
         buf.advance_mut(n);
     }
 
-    Ok(ReceiveResult {
-        bytes_read: n,
-        address: ConnectionAddress::ProcessLike(ProcessIdentity::Error(ProcessCredentialsError::UnsupportedPlatform)),
-        ancillary_data: Vec::new(),
-    })
+    Ok((
+        n,
+        ConnectionAddress::ProcessLike(ProcessIdentity::Error(ProcessCredentialsError::UnsupportedPlatform)),
+    ))
 }
 
 /// Returns `true` if `SO_REUSEPORT` is supported for UDP sockets on the current platform.

@@ -8,18 +8,19 @@ use std::{
         Arc, Mutex,
     },
     thread,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::Duration,
 };
 
 use datadog_protos::agent::{Entity, EntityId as RemoteEntityId, TaggerState, UnixDogstatsdMsg};
 use prost::Message;
-use saluki_common::collections::FastHashMap;
+use saluki_common::{collections::FastHashMap, time::get_unix_timestamp};
 use saluki_context::{origin::OriginTagCardinality, tags::SharedTagSet};
 use saluki_env::{workload::EntityId, WorkloadProvider};
 use saluki_error::{generic_error, GenericError};
 use tracing::{debug, error, warn};
 use zstd::stream::write::Encoder as ZstdEncoder;
 
+use super::super::MIN_CAPTURE_DEPTH;
 use super::file::write_header;
 
 const FILE_TEMPLATE_PREFIX: &str = "datadog-capture";
@@ -111,7 +112,7 @@ impl TrafficCaptureWriter {
         queue_depth: usize, workload_provider: Option<Arc<dyn WorkloadProvider + Send + Sync>>,
     ) -> Self {
         Self {
-            queue_depth,
+            queue_depth: queue_depth.max(MIN_CAPTURE_DEPTH),
             workload_provider,
             state: Arc::new(Mutex::new(WriterState::default())),
         }
@@ -204,10 +205,7 @@ fn resolve_target_path(target_dir: &CaptureTargetDir) -> Result<PathBuf, Generic
 
     ensure_target_dir_exists(target_dir)?;
 
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|e| generic_error!("Failed to compute capture file timestamp: {}", e))?
-        .as_secs();
+    let timestamp = get_unix_timestamp();
 
     Ok(target_dir
         .as_path()
@@ -524,7 +522,9 @@ mod tests {
         WorkloadProvider,
     };
 
-    use super::{CaptureRecord, CaptureTargetDir, TaggerState, TrafficCaptureWriter, UnixDogstatsdMsg};
+    use super::{
+        CaptureRecord, CaptureTargetDir, TaggerState, TrafficCaptureWriter, UnixDogstatsdMsg, MIN_CAPTURE_DEPTH,
+    };
     use crate::sources::dogstatsd::replay::file::datadog_matcher;
 
     #[derive(Default)]
@@ -582,6 +582,18 @@ mod tests {
         fn get_resolved_origin(&self, _origin: saluki_context::origin::RawOrigin<'_>) -> Option<ResolvedOrigin> {
             None
         }
+    }
+
+    #[test]
+    fn queue_depth_is_raised_to_minimum() {
+        let writer = TrafficCaptureWriter::new(0);
+        assert_eq!(writer.queue_depth, MIN_CAPTURE_DEPTH);
+
+        let writer = TrafficCaptureWriter::new(MIN_CAPTURE_DEPTH - 1);
+        assert_eq!(writer.queue_depth, MIN_CAPTURE_DEPTH);
+
+        let writer = TrafficCaptureWriter::new(MIN_CAPTURE_DEPTH + 1);
+        assert_eq!(writer.queue_depth, MIN_CAPTURE_DEPTH + 1);
     }
 
     #[test]
@@ -755,8 +767,8 @@ mod tests {
         assert_eq!(record.payload, b"test");
         assert_eq!(record.payload_size, 4);
         assert_eq!(record.pid, 42);
-        assert_eq!(record.ancillary, b"oob");
-        assert_eq!(record.ancillary_size, 3);
+        assert!(record.ancillary.is_empty());
+        assert_eq!(record.ancillary_size, 0);
 
         assert_eq!(&bytes[record_end..record_end + 4], &[0, 0, 0, 0]);
 
@@ -778,7 +790,7 @@ mod tests {
             timestamp_ns: 123,
             payload: b"test".to_vec(),
             pid: Some(42),
-            ancillary: b"oob".to_vec(),
+            ancillary: Vec::new(),
             container_id: Some("container_id://container-123".to_string()),
         }
     }

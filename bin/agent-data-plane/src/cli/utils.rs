@@ -207,7 +207,7 @@ impl DataPlaneAPIClient {
         let response_body = self
             .client
             .send(req)
-            .and_then(process_capture_response_body)
+            .and_then(process_response_body)
             .await
             .and_then(body_when_capture_success)?;
         let response = serde_json::from_str::<DogStatsDCaptureResponseBody>(&response_body)
@@ -281,12 +281,6 @@ async fn collect_body(body: Incoming) -> Option<String> {
     // is only the first contiguous slice (often ~16 KiB), which truncates large JSON such as `/config` responses.
     let bytes = body.collect().await.ok()?.to_bytes();
     String::from_utf8(bytes.into()).ok()
-}
-
-async fn process_capture_response_body(response: Response<Incoming>) -> Result<Response<String>, GenericError> {
-    let (parts, body) = response.into_parts();
-    let body = collect_body(body).await.unwrap_or_else(|| String::from("<no body>"));
-    Ok(Response::from_parts(parts, body))
 }
 
 async fn process_response_body(response: Response<Incoming>) -> Result<Response<String>, GenericError> {

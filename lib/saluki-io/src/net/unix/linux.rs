@@ -4,7 +4,7 @@ use bytes::BufMut;
 use socket2::{Domain, MaybeUninitSlice, MsgHdrMut, Protocol, SockAddr, SockAddrStorage, SockRef, Socket, Type};
 
 use super::ancillary::{ControlMessage, SocketCredentialsAncillaryData};
-use crate::net::{ConnectionAddress, ProcessCredentials, ProcessCredentialsError, ProcessIdentity, ReceiveResult};
+use crate::net::addr::{ConnectionAddress, ProcessCredentials, ProcessCredentialsError, ProcessIdentity};
 
 /// Enables the `SO_PASSCRED` option on the given socket.
 ///
@@ -19,7 +19,7 @@ where
     sock_ref.set_passcred(true)
 }
 
-pub(super) fn uds_recvmsg<'sock, S, B: BufMut>(socket: &'sock S, buf: &mut B) -> io::Result<ReceiveResult>
+pub(super) fn uds_recvmsg<'sock, S, B: BufMut>(socket: &'sock S, buf: &mut B) -> io::Result<(usize, ConnectionAddress)>
 where
     SockRef<'sock>: From<&'sock S>,
 {
@@ -49,13 +49,11 @@ where
     // If we got any socket credentials back, parse them.
     let control_len = msg_hdr.control_len();
 
-    let (process_identity, ancillary) = if control_len > 0 {
+    let process_identity = if control_len > 0 {
         unsafe {
             ancillary_data.set_len(control_len);
 
-            let ancillary = ancillary_data.bytes().to_vec();
-
-            let process_identity = match ancillary_data
+            match ancillary_data
                 .messages()
                 .map(|m| match m {
                     ControlMessage::Credentials(creds) => creds,
@@ -69,12 +67,10 @@ where
                     gid: creds.gid,
                 }),
                 None => ProcessIdentity::Error(ProcessCredentialsError::InvalidCredentials),
-            };
-
-            (process_identity, ancillary)
+            }
         }
     } else {
-        (ProcessIdentity::Unavailable, Vec::new())
+        ProcessIdentity::Unavailable
     };
 
     let conn_addr = ConnectionAddress::ProcessLike(process_identity);
@@ -84,11 +80,7 @@ where
         buf.advance_mut(n);
     }
 
-    Ok(ReceiveResult {
-        bytes_read: n,
-        address: conn_addr,
-        ancillary_data: ancillary,
-    })
+    Ok((n, conn_addr))
 }
 
 /// Returns `true` if `SO_REUSEPORT` is supported for UDP sockets on the current platform.

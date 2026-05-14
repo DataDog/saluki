@@ -127,30 +127,22 @@ struct StatsResponse<'a> {
 
 /// Entrypoint for the `dogstatsd` commands.
 pub async fn handle_dogstatsd_command(bootstrap_config: &GenericConfiguration, cmd: DogstatsdCommand) {
+    let mut api_client = match DataPlaneAPIClient::from_config(bootstrap_config) {
+        Ok(client) => client,
+        Err(e) => {
+            error!("Failed to create data plane API client: {:#}", e);
+            std::process::exit(1);
+        }
+    };
+
     match cmd.subcommand {
         DogstatsdSubcommand::Stats(config) => {
-            let mut api_client = match DataPlaneAPIClient::from_config(bootstrap_config) {
-                Ok(client) => client,
-                Err(e) => {
-                    error!("Failed to create data plane API client: {:#}", e);
-                    std::process::exit(1);
-                }
-            };
-
             if let Err(e) = handle_dogstatsd_stats(&mut api_client, config).await {
                 error!("Failed to run stats subcommand: {:#}", e);
                 std::process::exit(1);
             }
         }
         DogstatsdSubcommand::Capture(config) => {
-            let mut api_client = match DataPlaneAPIClient::from_config(bootstrap_config) {
-                Ok(client) => client,
-                Err(e) => {
-                    error!("Failed to create data plane API client: {:#}", e);
-                    std::process::exit(1);
-                }
-            };
-
             if let Err(e) = handle_dogstatsd_capture(&mut api_client, config).await {
                 error!("Failed to start DogStatsD capture: {:#}", e);
                 std::process::exit(1);
@@ -193,14 +185,14 @@ async fn handle_dogstatsd_stats(api_client: &mut DataPlaneAPIClient, cmd: StatsC
 async fn handle_dogstatsd_capture(
     api_client: &mut DataPlaneAPIClient, cmd: CaptureCommand,
 ) -> Result<(), GenericError> {
-    println!("Starting a dogstatsd traffic capture session...\n");
+    info!("Starting a DogStatsD traffic capture session...");
 
     let capture_duration = cmd.capture_duration.to_string();
     let capture_path = api_client
         .dogstatsd_capture(&capture_duration, cmd.capture_path.as_deref(), cmd.compressed)
         .await?;
 
-    println!("Capture started, capture file being written to: {capture_path}");
+    info!("Capture started. Data will be written to '{capture_path}'.");
 
     Ok(())
 }

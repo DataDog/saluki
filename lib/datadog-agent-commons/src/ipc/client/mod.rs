@@ -23,7 +23,7 @@ use tracing::warn;
 use crate::ipc::{config::RemoteAgentClientConfiguration, session::SessionId, tls::build_ipc_client_ipc_tls_config};
 
 mod bearer_auth;
-pub use self::bearer_auth::BearerAuthInterceptor;
+use self::bearer_auth::BearerAuthInterceptor;
 
 mod streaming;
 pub use self::streaming::StreamingResponse;
