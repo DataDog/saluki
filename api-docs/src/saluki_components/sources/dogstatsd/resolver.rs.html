@@ -7,42 +7,42 @@
 <a href=#7 id=7 data-nosnippet>7</a>
 <a href=#8 id=8 data-nosnippet>8</a><span class="kw">use </span>super::{DogStatsDConfiguration, DogStatsDOriginTagResolver};
 <a href=#9 id=9 data-nosnippet>9</a>
-<a href=#10 id=10 data-nosnippet>10</a><span class="kw">const </span>RESOLVER_CACHE_EXPIRATION: Duration = Duration::from_secs(<span class="number">30</span>);
-<a href=#11 id=11 data-nosnippet>11</a>
-<a href=#12 id=12 data-nosnippet>12</a><span class="doccomment">/// Context resolvers for the DogStatsD source.
-<a href=#13 id=13 data-nosnippet>13</a></span><span class="attr">#[derive(Clone)]
-<a href=#14 id=14 data-nosnippet>14</a></span><span class="kw">pub struct </span>ContextResolvers {
-<a href=#15 id=15 data-nosnippet>15</a>    primary: ContextResolver,
-<a href=#16 id=16 data-nosnippet>16</a>    no_agg: ContextResolver,
-<a href=#17 id=17 data-nosnippet>17</a>    tags: TagsResolver,
-<a href=#18 id=18 data-nosnippet>18</a>}
-<a href=#19 id=19 data-nosnippet>19</a>
-<a href=#20 id=20 data-nosnippet>20</a><span class="kw">impl </span>ContextResolvers {
-<a href=#21 id=21 data-nosnippet>21</a>    <span class="doccomment">/// Creates a new `ContextResolvers` instance from the given configuration.
+<a href=#10 id=10 data-nosnippet>10</a><span class="doccomment">/// Context resolvers for the DogStatsD source.
+<a href=#11 id=11 data-nosnippet>11</a></span><span class="attr">#[derive(Clone)]
+<a href=#12 id=12 data-nosnippet>12</a></span><span class="kw">pub struct </span>ContextResolvers {
+<a href=#13 id=13 data-nosnippet>13</a>    primary: ContextResolver,
+<a href=#14 id=14 data-nosnippet>14</a>    no_agg: ContextResolver,
+<a href=#15 id=15 data-nosnippet>15</a>    tags: TagsResolver,
+<a href=#16 id=16 data-nosnippet>16</a>}
+<a href=#17 id=17 data-nosnippet>17</a>
+<a href=#18 id=18 data-nosnippet>18</a><span class="kw">impl </span>ContextResolvers {
+<a href=#19 id=19 data-nosnippet>19</a>    <span class="doccomment">/// Creates a new `ContextResolvers` instance from the given configuration.
+<a href=#20 id=20 data-nosnippet>20</a>    ///
+<a href=#21 id=21 data-nosnippet>21</a>    /// # Errors
 <a href=#22 id=22 data-nosnippet>22</a>    ///
-<a href=#23 id=23 data-nosnippet>23</a>    /// # Errors
-<a href=#24 id=24 data-nosnippet>24</a>    ///
-<a href=#25 id=25 data-nosnippet>25</a>    /// If the context resolver string interner size is invalid, or there is an error creating either of the context
-<a href=#26 id=26 data-nosnippet>26</a>    /// resolvers, an error is returned.
-<a href=#27 id=27 data-nosnippet>27</a>    </span><span class="kw">pub fn </span>new(
-<a href=#28 id=28 data-nosnippet>28</a>        config: <span class="kw-2">&amp;</span>DogStatsDConfiguration, context: <span class="kw-2">&amp;</span>ComponentContext,
-<a href=#29 id=29 data-nosnippet>29</a>        maybe_origin_tags_resolver: <span class="prelude-ty">Option</span>&lt;DogStatsDOriginTagResolver&gt;,
-<a href=#30 id=30 data-nosnippet>30</a>    ) -&gt; <span class="prelude-ty">Result</span>&lt;<span class="self">Self</span>, GenericError&gt; {
-<a href=#31 id=31 data-nosnippet>31</a>        <span class="comment">// We'll use the same string interner size for both context resolvers, which does mean double the usage, but
-<a href=#32 id=32 data-nosnippet>32</a>        // it's simpler this way for the moment.
-<a href=#33 id=33 data-nosnippet>33</a>        </span><span class="kw">let </span>context_string_interner_size =
-<a href=#34 id=34 data-nosnippet>34</a>            NonZeroUsize::new(config.effective_context_string_interner_bytes().as_u64() <span class="kw">as </span>usize)
-<a href=#35 id=35 data-nosnippet>35</a>                .ok_or_else(|| <span class="macro">generic_error!</span>(<span class="string">"context_string_interner_size must be greater than 0"</span>))<span class="question-mark">?</span>;
-<a href=#36 id=36 data-nosnippet>36</a>
-<a href=#37 id=37 data-nosnippet>37</a>        <span class="kw">let </span>cached_contexts_limit = config.cached_contexts_limit;
-<a href=#38 id=38 data-nosnippet>38</a>        <span class="kw">let </span>cached_tagsets_limit = config.cached_tagsets_limit;
+<a href=#23 id=23 data-nosnippet>23</a>    /// If the context resolver string interner size is invalid, or there is an error creating either of the context
+<a href=#24 id=24 data-nosnippet>24</a>    /// resolvers, an error is returned.
+<a href=#25 id=25 data-nosnippet>25</a>    </span><span class="kw">pub fn </span>new(
+<a href=#26 id=26 data-nosnippet>26</a>        config: <span class="kw-2">&amp;</span>DogStatsDConfiguration, context: <span class="kw-2">&amp;</span>ComponentContext,
+<a href=#27 id=27 data-nosnippet>27</a>        maybe_origin_tags_resolver: <span class="prelude-ty">Option</span>&lt;DogStatsDOriginTagResolver&gt;,
+<a href=#28 id=28 data-nosnippet>28</a>    ) -&gt; <span class="prelude-ty">Result</span>&lt;<span class="self">Self</span>, GenericError&gt; {
+<a href=#29 id=29 data-nosnippet>29</a>        <span class="comment">// We'll use the same string interner size for both context resolvers, which does mean double the usage, but
+<a href=#30 id=30 data-nosnippet>30</a>        // it's simpler this way for the moment.
+<a href=#31 id=31 data-nosnippet>31</a>        </span><span class="kw">let </span>context_string_interner_size =
+<a href=#32 id=32 data-nosnippet>32</a>            NonZeroUsize::new(config.effective_context_string_interner_bytes().as_u64() <span class="kw">as </span>usize)
+<a href=#33 id=33 data-nosnippet>33</a>                .ok_or_else(|| <span class="macro">generic_error!</span>(<span class="string">"context_string_interner_size must be greater than 0"</span>))<span class="question-mark">?</span>;
+<a href=#34 id=34 data-nosnippet>34</a>
+<a href=#35 id=35 data-nosnippet>35</a>        <span class="kw">let </span>cached_contexts_limit = config.cached_contexts_limit;
+<a href=#36 id=36 data-nosnippet>36</a>        <span class="kw">let </span>cached_tagsets_limit = config.cached_tagsets_limit;
+<a href=#37 id=37 data-nosnippet>37</a>        <span class="kw">let </span>context_expiry_seconds = Duration::from_secs(config.context_expiry_seconds);
+<a href=#38 id=38 data-nosnippet>38</a>        <span class="kw">let </span>allow_context_heap_allocations = config.allow_context_heap_allocations;
 <a href=#39 id=39 data-nosnippet>39</a>
 <a href=#40 id=40 data-nosnippet>40</a>        <span class="kw">let </span>interner = GenericMapInterner::new(context_string_interner_size);
 <a href=#41 id=41 data-nosnippet>41</a>
 <a href=#42 id=42 data-nosnippet>42</a>        <span class="kw">let </span>tags_resolver = TagsResolverBuilder::new(<span class="macro">format!</span>(<span class="string">"{}/dsd/tags"</span>, context.component_id()), interner.clone())<span class="question-mark">?
 <a href=#43 id=43 data-nosnippet>43</a>            </span>.with_cached_tagsets_limit(cached_tagsets_limit)
-<a href=#44 id=44 data-nosnippet>44</a>            .with_idle_tagsets_expiration(RESOLVER_CACHE_EXPIRATION)
-<a href=#45 id=45 data-nosnippet>45</a>            .with_heap_allocations(config.allow_context_heap_allocations)
+<a href=#44 id=44 data-nosnippet>44</a>            .with_idle_tagsets_expiration(context_expiry_seconds)
+<a href=#45 id=45 data-nosnippet>45</a>            .with_heap_allocations(allow_context_heap_allocations)
 <a href=#46 id=46 data-nosnippet>46</a>            .with_origin_tags_resolver(
 <a href=#47 id=47 data-nosnippet>47</a>                maybe_origin_tags_resolver
 <a href=#48 id=48 data-nosnippet>48</a>                    .map(|resolver| -&gt; Arc&lt;<span class="kw">dyn </span>saluki_context::origin::OriginTagsResolver&gt; { Arc::new(resolver) }),
@@ -52,8 +52,8 @@
 <a href=#52 id=52 data-nosnippet>52</a>        <span class="kw">let </span>primary_resolver = ContextResolverBuilder::from_name(<span class="macro">format!</span>(<span class="string">"{}/dsd/primary"</span>, context.component_id()))<span class="question-mark">?
 <a href=#53 id=53 data-nosnippet>53</a>            </span>.with_interner_capacity_bytes(context_string_interner_size)
 <a href=#54 id=54 data-nosnippet>54</a>            .with_cached_contexts_limit(cached_contexts_limit)
-<a href=#55 id=55 data-nosnippet>55</a>            .with_idle_context_expiration(RESOLVER_CACHE_EXPIRATION)
-<a href=#56 id=56 data-nosnippet>56</a>            .with_heap_allocations(config.allow_context_heap_allocations)
+<a href=#55 id=55 data-nosnippet>55</a>            .with_idle_context_expiration(context_expiry_seconds)
+<a href=#56 id=56 data-nosnippet>56</a>            .with_heap_allocations(allow_context_heap_allocations)
 <a href=#57 id=57 data-nosnippet>57</a>            .with_tags_resolver(<span class="prelude-val">Some</span>(tags_resolver.clone()))
 <a href=#58 id=58 data-nosnippet>58</a>            .with_interner(interner.clone())
 <a href=#59 id=59 data-nosnippet>59</a>            .build();
@@ -61,9 +61,9 @@
 <a href=#61 id=61 data-nosnippet>61</a>        <span class="kw">let </span>no_agg_resolver = ContextResolverBuilder::from_name(<span class="macro">format!</span>(<span class="string">"{}/dsd/no_agg"</span>, context.component_id()))<span class="question-mark">?
 <a href=#62 id=62 data-nosnippet>62</a>            </span>.with_interner_capacity_bytes(context_string_interner_size)
 <a href=#63 id=63 data-nosnippet>63</a>            .without_caching()
-<a href=#64 id=64 data-nosnippet>64</a>            .with_heap_allocations(config.allow_context_heap_allocations)
+<a href=#64 id=64 data-nosnippet>64</a>            .with_heap_allocations(allow_context_heap_allocations)
 <a href=#65 id=65 data-nosnippet>65</a>            .with_tags_resolver(<span class="prelude-val">Some</span>(tags_resolver.clone()))
-<a href=#66 id=66 data-nosnippet>66</a>            .with_interner(interner.clone())
+<a href=#66 id=66 data-nosnippet>66</a>            .with_interner(interner)
 <a href=#67 id=67 data-nosnippet>67</a>            .build();
 <a href=#68 id=68 data-nosnippet>68</a>
 <a href=#69 id=69 data-nosnippet>69</a>        <span class="prelude-val">Ok</span>(ContextResolvers {
