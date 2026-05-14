@@ -32,19 +32,31 @@ const fn default_forwarder_connection_reset_interval() -> u64 {
 #[derive(Clone, Default, Deserialize, Facet)]
 #[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
 pub(crate) struct OpwMetricsConfiguration {
-    /// Enables routing metrics to OPW through `observability_pipelines_worker.metrics.enabled`.
+    /// Enables routing all metrics to Observability Pipelines Worker.
+    ///
+    /// Defaults to `false`.
     #[serde(default, rename = "observability_pipelines_worker_metrics_enabled")]
     observability_pipelines_worker_enabled: bool,
 
-    /// OPW metrics endpoint URL from `observability_pipelines_worker.metrics.url`.
+    /// Endpoint of the Observability Pipelines Worker instance to route metrics to.
+    ///
+    /// Defaults to unset.
     #[serde(default, rename = "observability_pipelines_worker_metrics_url")]
     observability_pipelines_worker_url: String,
 
-    /// Enables routing metrics to OPW through legacy `vector.metrics.enabled`.
+    /// Enables routing all metrics to Vector.
+    ///
+    /// Deprecated in favor of `observability_pipelines_worker.metrics.enabled`.
+    ///
+    /// Defaults to `false`.
     #[serde(default, rename = "vector_metrics_enabled")]
     vector_enabled: bool,
 
-    /// OPW metrics endpoint URL from legacy `vector.metrics.url`.
+    /// Endpoint of the Vector instance to route metrics to.
+    ///
+    /// Deprecated in favor of `observability_pipelines_worker.metrics.url`.
+    ///
+    /// Defaults to unset.
     #[serde(default, rename = "vector_metrics_url")]
     vector_url: String,
 }
@@ -192,9 +204,8 @@ impl ForwarderConfiguration {
                 warn!(
                     enabled_key = selected.enabled_key,
                     url_key = selected.url_key,
-                    "{} is set to true, but {} is empty. Skipping OPW metrics endpoint override.",
-                    selected.enabled_key,
-                    selected.url_key,
+                    "OPW/Vector metrics override is enabled, but no override URL was provided: override will be \
+                     disabled. Continuing.",
                 );
             } else {
                 match self
@@ -210,7 +221,7 @@ impl ForwarderConfiguration {
                             url_key = selected.url_key,
                             url = trimmed_url,
                             error = %e,
-                            "Configured OPW metrics endpoint is invalid. Skipping OPW metrics endpoint override.",
+                            "Failed to configure OPW/Vector metrics override URL: override will be disabled. Continuing.",
                         );
                     }
                 }
