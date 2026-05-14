@@ -106,8 +106,11 @@ impl Default for IpcAuthConfiguration {
 pub struct RemoteAgentClientConfiguration {
     /// Datadog Agent IPC endpoint to connect to.
     ///
-    /// This is generally based on the configured `cmd_port` for the Datadog Agent, and must expose the `AgentSecure`
-    /// gRPC service.
+    /// Caution/weird: This is configuration is only available on agent-data-plane, and would allow
+    /// one to connect to an Agent at a URI other than localhost/127.0.0.1. However, the Datadog
+    /// configuration schema does not account for this and instead provides `cmd_port`. Therefore,
+    ///
+    /// **CAUTION**: if `cmd_port` is set, then `ipc_endpoint` is ignored.
     ///
     /// Defaults to `https://127.0.0.1:5001`.
     #[serde(
@@ -116,6 +119,11 @@ pub struct RemoteAgentClientConfiguration {
         default = "default_agent_ipc_endpoint"
     )]
     ipc_endpoint: Uri,
+
+    /// The port that will be used to connect to the Datadog Agent IPC on the local host.
+    ///
+    /// Takes precedence over `ipc_endpoint` if set.
+    cmd_port: Option<u16>,
 
     /// Authentication configuration for the IPC endpoint.
     #[serde(flatten, default)]
@@ -161,8 +169,16 @@ impl RemoteAgentClientConfiguration {
     }
 
     /// Returns the IPC endpoint URI.
-    pub fn endpoint(&self) -> &Uri {
-        &self.ipc_endpoint
+    ///
+    /// If `cmd_port` is set, the endpoint is built from it, ignoring `ipc_endpoint`.
+    pub fn endpoint(&self) -> Result<Uri, GenericError> {
+        if let Some(cmd_port) = self.cmd_port {
+            format!("https://127.0.0.1:{}", cmd_port)
+                .parse::<Uri>()
+                .with_error_context(|| format!("failed to build URI from cmd_port {cmd_port}"))
+        } else {
+            Ok(self.ipc_endpoint.clone())
+        }
     }
 
     /// Returns the maximum message size for gRPC.
@@ -290,5 +306,42 @@ mod tests {
             config.auth().ipc_cert_file_path().file_name().map(Path::new),
             Some(PlatformSettings::get_ipc_cert_filename())
         );
+    }
+
+    async fn config_from_values(values: serde_json::Map<String, serde_json::Value>) -> RemoteAgentClientConfiguration {
+        let (base_config, _) =
+            ConfigurationLoader::for_tests(Some(serde_json::Value::Object(values)), None, false).await;
+        RemoteAgentClientConfiguration::from_configuration(&base_config).unwrap()
+    }
+
+    #[tokio::test]
+    async fn endpoint_defaults_to_port_5001() {
+        let config = config_from_values(serde_json::Map::new()).await;
+        assert_eq!(config.endpoint().unwrap().to_string(), "https://127.0.0.1:5001/");
+    }
+
+    #[tokio::test]
+    async fn endpoint_uses_cmd_port() {
+        let mut values = serde_json::Map::new();
+        values.insert("cmd_port".to_string(), 7777.into());
+        let config = config_from_values(values).await;
+        assert_eq!(config.endpoint().unwrap().to_string(), "https://127.0.0.1:7777/");
+    }
+
+    #[tokio::test]
+    async fn cmd_port_takes_precedence_over_ipc_endpoint() {
+        let mut values = serde_json::Map::new();
+        values.insert("cmd_port".to_string(), 8888.into());
+        values.insert("agent_ipc_endpoint".to_string(), "https://10.0.0.1:3333".into());
+        let config = config_from_values(values).await;
+        assert_eq!(config.endpoint().unwrap().to_string(), "https://127.0.0.1:8888/");
+    }
+
+    #[tokio::test]
+    async fn ipc_endpoint_used_when_no_cmd_port() {
+        let mut values = serde_json::Map::new();
+        values.insert("agent_ipc_endpoint".to_string(), "https://10.0.0.1:3333".into());
+        let config = config_from_values(values).await;
+        assert_eq!(config.endpoint().unwrap().to_string(), "https://10.0.0.1:3333/");
     }
 }

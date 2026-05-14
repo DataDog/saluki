@@ -25,10 +25,9 @@ use saluki_context::{
     tags::{RawTags, RawTagsFilter},
     TagsResolver,
 };
-use saluki_core::data_model::event::metric::Metric;
 use saluki_core::data_model::event::{
     eventd::EventD,
-    metric::{MetricMetadata, MetricOrigin},
+    metric::{Metric, MetricMetadata, MetricOrigin},
     service_check::ServiceCheck,
     Event, EventType,
 };
@@ -110,6 +109,14 @@ enum Error {
     BindHostHasNoAddresses { host: String },
 }
 
+const ERROR_TYPE_ORIGIN_DETECTION: &str = "origin_detection";
+
+/// Baseline byte cost per interner entry, used to convert the Core Agent's entry-count-based
+/// `dogstatsd_string_interner_size` to a byte size.
+///
+/// 4096 entries × 512 bytes = 2 MiB, matching ADP's previous default.
+const INTERNER_BASELINE_BYTES_PER_ENTRY: u64 = 512;
+
 const fn default_buffer_size() -> usize {
     8192
 }
@@ -142,14 +149,6 @@ const fn default_context_string_interner_entry_count() -> u64 {
     4096
 }
 
-const ERROR_TYPE_ORIGIN_DETECTION: &str = "origin_detection";
-
-/// Baseline byte cost per interner entry, used to convert the Core Agent's entry-count-based
-/// `dogstatsd_string_interner_size` to a byte size.
-///
-/// 4096 entries × 512 bytes = 2 MiB, matching ADP's previous default.
-const INTERNER_BASELINE_BYTES_PER_ENTRY: u64 = 512;
-
 const fn default_cached_contexts_limit() -> usize {
     500_000
 }
@@ -158,12 +157,20 @@ const fn default_cached_tagsets_limit() -> usize {
     500_000
 }
 
+const fn default_context_expiry_seconds() -> u64 {
+    20
+}
+
 const fn default_dogstatsd_permissive_decoding() -> bool {
     true
 }
 
 const fn default_dogstatsd_minimum_sample_rate() -> f64 {
     0.000000003845
+}
+
+const fn default_true() -> bool {
+    true
 }
 
 /// Controls which payload types are forwarded to the backend.
@@ -204,10 +211,6 @@ impl Default for EnablePayloadsConfiguration {
             service_checks: true,
         }
     }
-}
-
-const fn default_true() -> bool {
-    true
 }
 
 const MIN_CAPTURE_DEPTH: usize = 1024;
@@ -420,6 +423,17 @@ pub struct DogStatsDConfiguration {
     /// Defaults to 500,000.
     #[serde(rename = "dogstatsd_cached_tagsets_limit", default = "default_cached_tagsets_limit")]
     cached_tagsets_limit: usize,
+
+    /// The number of seconds after which cached contexts will expire.
+    ///
+    /// Higher values allow for more effective caching for sparse metrics at the cost of increased memory usage.
+    ///
+    /// Defaults to 20 seconds.
+    #[serde(
+        rename = "dogstatsd_context_expiry_seconds",
+        default = "default_context_expiry_seconds"
+    )]
+    context_expiry_seconds: u64,
 
     /// Whether or not to enable permissive mode in the decoder.
     ///

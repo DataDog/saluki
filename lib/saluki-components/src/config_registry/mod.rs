@@ -133,6 +133,8 @@ pub mod structs {
     pub const OTLP_RELAY_CONFIGURATION: &str = "OtlpRelayConfiguration";
     /// Identifier for `TraceObfuscationConfiguration`.
     pub const TRACE_OBFUSCATION_CONFIGURATION: &str = "TraceObfuscationConfiguration";
+    /// Identifier for `RemoteAgentClientConfiguration`.
+    pub const REMOTE_AGENT_CLIENT_CONFIGURATION: &str = "RemoteAgentClientConfiguration";
     /// Keys read via `get_typed` / `try_get_typed` rather than struct deserialization.
     pub const GET_TYPED: &str = "get_typed";
 }

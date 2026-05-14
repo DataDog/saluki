@@ -768,8 +768,6 @@
   reason: initial bulk
 - name: cmd_host
   reason: initial bulk
-- name: cmd_port
-  reason: initial bulk
 - name: collect_ccrid
   reason: initial bulk
 - name: collect_ec2_instance_info

@@ -8,9 +8,6 @@ USER root
 # Avoid interactive prompts during package installation.
 ENV DEBIAN_FRONTEND=noninteractive
 
-RUN --mount=type=bind,source=.ci/configure-apt-mirror.sh,target=/tmp/configure-apt-mirror.sh \
-    sh /tmp/configure-apt-mirror.sh
-
 # Install system-level build dependencies.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
