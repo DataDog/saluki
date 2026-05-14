@@ -37,6 +37,50 @@ crate::declare_annotations! {
         test_json: None,
     };
 
+    /// `observability_pipelines_worker.metrics.enabled` — route metrics to OPW.
+    OBSERVABILITY_PIPELINES_WORKER_METRICS_ENABLED = SalukiAnnotation {
+        schema: &schema::OBSERVABILITY_PIPELINES_WORKER_METRICS_ENABLED,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: Some(&["DD_OBSERVABILITY_PIPELINES_WORKER_METRICS_ENABLED"]),
+        used_by: &[structs::FORWARDER_CONFIGURATION],
+        value_type_override: None,
+        test_json: None,
+    };
+
+    /// `observability_pipelines_worker.metrics.url` — OPW metrics intake URL.
+    OBSERVABILITY_PIPELINES_WORKER_METRICS_URL = SalukiAnnotation {
+        schema: &schema::OBSERVABILITY_PIPELINES_WORKER_METRICS_URL,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: Some(&["DD_OBSERVABILITY_PIPELINES_WORKER_METRICS_URL"]),
+        used_by: &[structs::FORWARDER_CONFIGURATION],
+        value_type_override: None,
+        test_json: None,
+    };
+
+    /// `vector.metrics.enabled` — route metrics to OPW (legacy alias).
+    VECTOR_METRICS_ENABLED = SalukiAnnotation {
+        schema: &schema::VECTOR_METRICS_ENABLED,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: Some(&["DD_VECTOR_METRICS_ENABLED"]),
+        used_by: &[structs::FORWARDER_CONFIGURATION],
+        value_type_override: None,
+        test_json: None,
+    };
+
+    /// `vector.metrics.url` — OPW metrics intake URL (legacy alias).
+    VECTOR_METRICS_URL = SalukiAnnotation {
+        schema: &schema::VECTOR_METRICS_URL,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: Some(&["DD_VECTOR_METRICS_URL"]),
+        used_by: &[structs::FORWARDER_CONFIGURATION],
+        value_type_override: None,
+        test_json: None,
+    };
+
     /// `additional_endpoints` — extra intake endpoints (JSON map of host → API keys).
     /// Uses a structured test_json because the field uses PickFirst<(DisplayFromStr, _)>.
     ADDITIONAL_ENDPOINTS = SalukiAnnotation {
