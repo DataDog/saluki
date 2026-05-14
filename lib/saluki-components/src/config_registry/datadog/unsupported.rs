@@ -38,18 +38,6 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `dogstatsd_context_expiry_seconds` - context cache TTL.
-    DOGSTATSD_CONTEXT_EXPIRY_SECONDS = SalukiAnnotation {
-        schema: &schema::DOGSTATSD_CONTEXT_EXPIRY_SECONDS,
-        // ADP hardcodes 30s, ignores this config key. #1340
-        support_level: SupportLevel::Incompatible(Severity::Low),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-    };
-
     /// `dogstatsd_disable_verbose_logs` - suppress noisy parse error logs.
     DOGSTATSD_DISABLE_VERBOSE_LOGS = SalukiAnnotation {
         schema: &schema::DOGSTATSD_DISABLE_VERBOSE_LOGS,
