@@ -100,6 +100,17 @@ crate::declare_annotations! {
         test_json: None,
     };
 
+    /// `dogstatsd_context_expiry_seconds` - context cache TTL.
+    DOGSTATSD_CONTEXT_EXPIRY_SECONDS = SalukiAnnotation {
+        schema: &schema::DOGSTATSD_CONTEXT_EXPIRY_SECONDS,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::DOGSTATSD_CONFIGURATION],
+        value_type_override: Some(ValueType::Integer),
+        test_json: None,
+    };
+
     /// `dogstatsd_entity_id_precedence` — client entity ID takes precedence over UDS origin.
     DOGSTATSD_ENTITY_ID_PRECEDENCE = SalukiAnnotation {
         schema: &schema::DOGSTATSD_ENTITY_ID_PRECEDENCE,
