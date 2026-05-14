@@ -22,6 +22,21 @@ pub const DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT: usize = 3_200_000; // 3 MiB
 /// Default uncompressed size limit for intake requests.
 pub const DEFAULT_INTAKE_UNCOMPRESSED_SIZE_LIMIT: usize = 62_914_560; // 60 MiB
 
+/// V1 metric series intake path.
+pub(crate) const METRICS_SERIES_V1_PATH: &str = "/api/v1/series";
+
+/// V2 metric series intake path.
+pub(crate) const METRICS_SERIES_V2_PATH: &str = "/api/v2/series";
+
+/// Metric sketches intake path.
+pub(crate) const METRICS_SKETCHES_PATH: &str = "/api/beta/sketches";
+
+/// Metric intake paths emitted by the encoder and matched by OPW routing.
+///
+/// Keep these paths in one place so metric encoding and OPW routing do not drift.
+pub(crate) const METRIC_INTAKE_PATHS: [&str; 3] =
+    [METRICS_SERIES_V1_PATH, METRICS_SERIES_V2_PATH, METRICS_SKETCHES_PATH];
+
 /// Metadata tag used to store the sampling decision maker (`_dd.p.dm`).
 pub const TAG_DECISION_MAKER: &str = "_dd.p.dm";
 

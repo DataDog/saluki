@@ -1432,20 +1432,20 @@
   },
   {
     "key": "observability_pipelines_worker.metrics.enabled",
-    "feature_state": "MISSING",
-    "action": "IMPLEMENT",
+    "feature_state": "PARITY",
+    "action": "NONE",
     "description": "Route metrics to OPW instance",
-    "reason": "ADP does not read this key. Metrics always flow to the Datadog backend regardless of this setting.",
-    "issue": "#1586",
+    "reason": "Implemented in ADP. When enabled with a valid URL, metric series and sketches use OPW as the primary endpoint.",
+    "issue": null,
     "adp_key": null
   },
   {
     "key": "observability_pipelines_worker.metrics.url",
-    "feature_state": "MISSING",
-    "action": "IMPLEMENT",
+    "feature_state": "PARITY",
+    "action": "NONE",
     "description": "OPW metrics intake URL",
-    "reason": "ADP does not read this key. Metrics always flow to the Datadog backend regardless of this setting.",
-    "issue": "#1586",
+    "reason": "Implemented in ADP. Used as the primary metrics endpoint when observability_pipelines_worker.metrics.enabled is true.",
+    "issue": null,
     "adp_key": null
   },
   {
@@ -1846,20 +1846,20 @@
   },
   {
     "key": "vector.metrics.enabled",
-    "feature_state": "MISSING",
-    "action": "IMPLEMENT",
+    "feature_state": "PARITY",
+    "action": "NONE",
     "description": "Route metrics to OPW (legacy alias)",
-    "reason": "Legacy alias for observability_pipelines_worker.metrics.enabled. ADP does not read either key.",
-    "issue": "#1586",
+    "reason": "Implemented in ADP as the legacy fallback when observability_pipelines_worker.metrics.enabled is false.",
+    "issue": null,
     "adp_key": null
   },
   {
     "key": "vector.metrics.url",
-    "feature_state": "MISSING",
-    "action": "IMPLEMENT",
+    "feature_state": "PARITY",
+    "action": "NONE",
     "description": "OPW metrics intake URL (legacy alias)",
-    "reason": "Legacy alias for observability_pipelines_worker.metrics.url. ADP does not read either key.",
-    "issue": "#1586",
+    "reason": "Implemented in ADP as the legacy fallback URL when observability_pipelines_worker.metrics.enabled is false.",
+    "issue": null,
     "adp_key": null
   }
 ]

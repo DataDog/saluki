@@ -65,6 +65,7 @@ impl DatadogConfiguration {
         endpoint.clear_additional_endpoints();
         endpoint.set_dd_url(dd_url);
         endpoint.set_api_key(api_key);
+        self.forwarder_config.clear_opw_metrics_endpoint();
 
         self
     }

@@ -1,6 +1,6 @@
 # Configuring DogStatsD on Agent Data Plane
 
-<!-- Last updated: 2026-05-13 -->
+<!-- Last updated: 2026-05-14 -->
 
 The DogStatsD implementation on ADP has been redesigned in Rust for better resource guarantees and
 efficiency. Because the architecture is different from the original implementation, certain
@@ -37,15 +37,11 @@ tracking.
 | `forwarder_outdated_file_in_days`                | Retry file retention (days)           | [#1360] |
 | `log_format_rfc3339`                             | Use RFC3339 timestamp format          | [#1373] |
 | `min_tls_version`                                | Minimum TLS version for HTTPS         | [#1370] |
-| `observability_pipelines_worker.metrics.enabled` | Route metrics to OPW instance         | [#1586] |
-| `observability_pipelines_worker.metrics.url`     | OPW metrics intake URL                | [#1586] |
 | `serializer_experimental_use_v3_api.*`           | V3 metrics API migration flags        | [#1468] |
 | `sslkeylogfile`                                  | TLS key log file path                 | [#1372] |
 | `statsd_forward_host`                            | Host for packet forwarding            | [#1476] |
 | `statsd_forward_port`                            | Port for packet forwarding            | [#1476] |
 | `tls_handshake_timeout`                          | HTTP TLS handshake timeout            | [#178]  |
-| `vector.metrics.enabled`                         | Route metrics to OPW (legacy alias)   | [#1586] |
-| `vector.metrics.url`                             | OPW metrics intake URL (legacy alias) | [#1586] |
 
 <!-- section:unsupported-not-planned -->
 ### Not Planned
@@ -370,6 +366,8 @@ when the receiving syslog daemon expects the Agent's RFC-style header.
 | `metric_filterlist_match_prefix`          | Blocklist uses prefix matching   |
 | `metric_tag_filterlist`                   | Per-metric tag include/exclude   |
 | `no_proxy_nonexact_match`                 | Domain/CIDR no_proxy matching    |
+| `observability_pipelines_worker.metrics.enabled` | Route metrics to OPW instance |
+| `observability_pipelines_worker.metrics.url` | OPW metrics intake URL |
 | `origin_detection_unified`                | Unified origin detection mode    |
 | `provider_kind`                           | Provider kind static tag         |
 | `proxy`                                   | HTTP/HTTPS proxy configuration   |
@@ -382,6 +380,8 @@ when the receiving syslog daemon expects the Agent's RFC-style header.
 | `syslog_uri`                              | Syslog destination URI           |
 | `tags`                                    | Global tags (DD_TAGS)            |
 | `use_proxy_for_cloud_metadata`            | Proxy cloud metadata endpoints   |
+| `vector.metrics.enabled`                  | Route metrics to OPW (legacy alias) |
+| `vector.metrics.url`                      | OPW metrics intake URL (legacy alias) |
 
 [#178]: https://github.com/DataDog/saluki/issues/178
 [#1330]: https://github.com/DataDog/saluki/issues/1330
@@ -421,5 +421,4 @@ when the receiving syslog daemon expects the Agent's RFC-style header.
 [#1466]: https://github.com/DataDog/saluki/issues/1466
 [#1468]: https://github.com/DataDog/saluki/issues/1468
 [#1476]: https://github.com/DataDog/saluki/issues/1476
-[#1586]: https://github.com/DataDog/saluki/issues/1586
 [#1640]: https://github.com/DataDog/saluki/issues/1640
