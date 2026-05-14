@@ -162,6 +162,7 @@ impl RemoteAgentBootstrap {
 struct RemoteAgentState {
     pid: u32,
     display_name: String,
+    flavor: String,
     api_listen_addr: String,
     session_id: SessionIdHandle,
     service_names: Vec<String>,
@@ -173,17 +174,15 @@ impl RemoteAgentState {
         api_listen_addr: GrpcTargetAddress, service_names: Vec<String>,
     ) -> (Self, oneshot::Receiver<Result<(), GenericError>>) {
         let app_details = saluki_metadata::get_app_details();
-        let display_name = app_details
-            .full_name()
-            .replace(" ", "-")
-            .replace("_", "-")
-            .to_lowercase();
+        let display_name = app_details.full_name().to_string();
+        let flavor = app_details.full_name().replace(" ", "_").to_lowercase();
 
         let (init_reg_tx, init_reg_rx) = oneshot::channel();
 
         let state = Self {
             pid: std::process::id(),
             display_name,
+            flavor,
             api_listen_addr: api_listen_addr.to_string(),
             session_id: SessionIdHandle::empty(),
             service_names,
@@ -220,6 +219,7 @@ async fn run_remote_agent_registration_loop(mut client: RemoteAgentClient, mut s
                     .register_remote_agent_request(
                         state.pid,
                         &state.display_name,
+                        &state.flavor,
                         &state.api_listen_addr,
                         state.service_names.clone(),
                     )
