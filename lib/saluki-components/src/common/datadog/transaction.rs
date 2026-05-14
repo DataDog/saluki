@@ -229,6 +229,11 @@ where
         Self { metadata, request }
     }
 
+    /// Returns a reference to the transaction metadata.
+    pub const fn metadata(&self) -> &Metadata {
+        &self.metadata
+    }
+
     /// Consumes the `Transaction` and returns the transaction metadata and original request.
     pub fn into_parts(self) -> (Metadata, http::Request<TransactionBody<B>>) {
         (self.metadata, self.request)

@@ -240,6 +240,7 @@ async fn run_io_loop<B>(
 
     for resolved_endpoint in resolved_endpoints {
         let endpoint_url = resolved_endpoint.endpoint().to_string();
+        let endpoint_domain = resolved_endpoint.endpoint().origin().ascii_serialization();
 
         let txnq_telemetry =
             TransactionQueueTelemetry::from_builder(&metrics_builder, &endpoint_url, shared_txnq_telemetry.clone());
@@ -262,13 +263,14 @@ async fn run_io_loop<B>(
             ),
         );
 
-        endpoint_txs.push((endpoint_url, endpoint_tx));
+        endpoint_txs.push((endpoint_url, endpoint_domain, endpoint_tx));
     }
 
     // Listen for transactions to forward, and send a copy of each one to each endpoint I/O task.
     while let Some(transaction) = transactions_rx.recv().await {
-        for (endpoint_url, endpoint_tx) in &endpoint_txs {
+        for (endpoint_url, endpoint_domain, endpoint_tx) in &endpoint_txs {
             if endpoint_tx.send(transaction.clone()).await.is_err() {
+                telemetry.track_permanently_failed_transaction(transaction.metadata(), None, endpoint_domain);
                 error!(
                     endpoint = endpoint_url,
                     "Failed to send request to endpoint I/O task: receiver dropped."
