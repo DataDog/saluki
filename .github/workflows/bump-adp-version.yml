@@ -38,9 +38,8 @@ jobs:
 
           MAJOR=$(echo $CURRENT_VERSION | cut -d '.' -f 1)
           MINOR=$(echo $CURRENT_VERSION | cut -d '.' -f 2)
-          PATCH=$(echo $CURRENT_VERSION | cut -d '.' -f 3)
-          NEW_PATCH=$((PATCH + 1))
-          NEW_VERSION="${MAJOR}.${MINOR}.${NEW_PATCH}"
+          NEW_MINOR=$((MINOR + 1))
+          NEW_VERSION="${MAJOR}.${NEW_MINOR}.0"
 
           echo "New version: $NEW_VERSION"
           echo "current_version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
