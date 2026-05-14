@@ -36,10 +36,11 @@ use tracing::{debug, error, warn};
 
 use super::{
     config::ForwarderConfiguration,
-    endpoints::ResolvedEndpoint,
+    endpoints::{EndpointRoute, ResolvedEndpoint, RoutableEndpoint},
     middleware::{for_resolved_endpoint, with_version_info},
     telemetry::{ComponentTelemetry, SharedTransactionQueueTelemetry, TransactionQueueTelemetry},
     transaction::{Metadata, Transaction, TransactionBody},
+    METRIC_INTAKE_PATHS,
 };
 
 /// Size of buffer chunks for request builder buffers.
@@ -97,7 +98,7 @@ pub struct TransactionForwarder<B> {
     telemetry: ComponentTelemetry,
     metrics_builder: MetricsBuilder,
     client: HttpClient,
-    endpoints: Vec<ResolvedEndpoint>,
+    endpoints: Vec<RoutableEndpoint>,
     _marker: std::marker::PhantomData<B>,
 }
 
@@ -157,7 +158,7 @@ where
     where
         F: Fn(&Uri) -> Option<MetaString> + Send + Sync + 'static,
     {
-        let endpoints = config.endpoint().build_resolved_endpoints(configuration)?;
+        let endpoints = config.build_routable_endpoints(configuration)?;
         let mut client_builder = HttpClient::builder()
             .with_request_timeout(config.request_timeout())
             .with_bytes_sent_counter(telemetry.bytes_sent().clone())
@@ -227,7 +228,7 @@ where
 async fn run_io_loop<B>(
     mut transactions_rx: mpsc::Receiver<Transaction<B>>, io_shutdown_tx: oneshot::Sender<()>,
     context: ComponentContext, config: ForwarderConfiguration, service: HttpClient, telemetry: ComponentTelemetry,
-    metrics_builder: MetricsBuilder, resolved_endpoints: Vec<ResolvedEndpoint>,
+    metrics_builder: MetricsBuilder, resolved_endpoints: Vec<RoutableEndpoint>,
 ) where
     B: Body + Buf + Clone + Send + Sync + 'static,
     B::Data: Send,
@@ -235,10 +236,14 @@ async fn run_io_loop<B>(
 {
     // Spawn an endpoint I/O task for each endpoint we're configured to send to, which we'll forward transactions to.
     let mut endpoint_txs = Vec::new();
+    let has_metrics_primary = resolved_endpoints
+        .iter()
+        .any(|endpoint| endpoint.route() == EndpointRoute::MetricsPrimary);
     let task_barrier = Arc::new(Barrier::new(resolved_endpoints.len() + 1));
     let shared_txnq_telemetry = SharedTransactionQueueTelemetry::from_builder(&metrics_builder);
 
-    for resolved_endpoint in resolved_endpoints {
+    for routable_endpoint in resolved_endpoints {
+        let (route, resolved_endpoint) = routable_endpoint.into_parts();
         let endpoint_url = resolved_endpoint.endpoint().to_string();
         let endpoint_domain = resolved_endpoint.endpoint().origin().ascii_serialization();
 
@@ -263,16 +268,30 @@ async fn run_io_loop<B>(
             ),
         );
 
-        endpoint_txs.push((endpoint_url, endpoint_domain, endpoint_tx));
+        endpoint_txs.push(EndpointSender {
+            endpoint_url,
+            endpoint_domain,
+            route,
+            tx: endpoint_tx,
+        });
     }
 
-    // Listen for transactions to forward, and send a copy of each one to each endpoint I/O task.
+    // Listen for transactions to forward, and send a copy of each one to the matching endpoint I/O tasks.
     while let Some(transaction) = transactions_rx.recv().await {
-        for (endpoint_url, endpoint_domain, endpoint_tx) in &endpoint_txs {
-            if endpoint_tx.send(transaction.clone()).await.is_err() {
-                telemetry.track_permanently_failed_transaction(transaction.metadata(), None, endpoint_domain);
+        let is_metrics_request = is_metrics_request_uri(transaction.request_uri());
+        for endpoint_sender in &endpoint_txs {
+            if !should_route_to_endpoint(is_metrics_request, has_metrics_primary, endpoint_sender.route) {
+                continue;
+            }
+
+            if endpoint_sender.tx.send(transaction.clone()).await.is_err() {
+                telemetry.track_permanently_failed_transaction(
+                    transaction.metadata(),
+                    None,
+                    &endpoint_sender.endpoint_domain,
+                );
                 error!(
-                    endpoint = endpoint_url,
+                    endpoint = %endpoint_sender.endpoint_url,
                     "Failed to send request to endpoint I/O task: receiver dropped."
                 );
             }
@@ -291,6 +310,29 @@ async fn run_io_loop<B>(
     debug!("All endpoint I/O tasks have stopped. Main I/O task shutting down.");
 
     let _ = io_shutdown_tx.send(());
+}
+
+struct EndpointSender<B>
+where
+    B: Buf + Clone,
+{
+    endpoint_url: String,
+    endpoint_domain: String,
+    route: EndpointRoute,
+    tx: mpsc::Sender<Transaction<B>>,
+}
+
+fn is_metrics_request_uri(uri: &Uri) -> bool {
+    METRIC_INTAKE_PATHS.contains(&uri.path())
+}
+
+fn should_route_to_endpoint(is_metrics_request: bool, has_metrics_primary: bool, route: EndpointRoute) -> bool {
+    match (is_metrics_request, has_metrics_primary, route) {
+        (true, true, EndpointRoute::Primary) => false,
+        (false, _, EndpointRoute::MetricsPrimary) => false,
+        (true, false, EndpointRoute::MetricsPrimary) => false,
+        _ => true,
+    }
 }
 
 async fn run_endpoint_io_loop<B>(
@@ -775,9 +817,44 @@ mod tests {
     use tokio_rustls::TlsAcceptor;
 
     use super::*;
+    use crate::common::datadog::{METRICS_SERIES_V1_PATH, METRICS_SERIES_V2_PATH, METRICS_SKETCHES_PATH};
+
+    fn uri(path: &'static str) -> Uri {
+        Uri::from_static(path)
+    }
 
     fn forwarder_config_from_value(value: serde_json::Value) -> ForwarderConfiguration {
         serde_json::from_value(value).expect("ForwarderConfiguration should deserialize")
+    }
+
+    #[test]
+    fn identifies_metrics_request_paths() {
+        assert!(is_metrics_request_uri(&uri(METRICS_SERIES_V1_PATH)));
+        assert!(is_metrics_request_uri(&uri(METRICS_SERIES_V2_PATH)));
+        assert!(is_metrics_request_uri(&uri(METRICS_SKETCHES_PATH)));
+        assert!(!is_metrics_request_uri(&uri("/api/v2/logs")));
+        assert!(!is_metrics_request_uri(&uri("/api/v0.2/traces")));
+    }
+
+    #[test]
+    fn routes_metric_payload_to_opw_and_additional_when_opw_exists() {
+        assert!(!should_route_to_endpoint(true, true, EndpointRoute::Primary));
+        assert!(should_route_to_endpoint(true, true, EndpointRoute::MetricsPrimary));
+        assert!(should_route_to_endpoint(true, true, EndpointRoute::Additional));
+    }
+
+    #[test]
+    fn routes_metric_payload_to_primary_and_additional_without_opw() {
+        assert!(should_route_to_endpoint(true, false, EndpointRoute::Primary));
+        assert!(!should_route_to_endpoint(true, false, EndpointRoute::MetricsPrimary));
+        assert!(should_route_to_endpoint(true, false, EndpointRoute::Additional));
+    }
+
+    #[test]
+    fn routes_non_metric_payload_to_primary_and_additional_only() {
+        assert!(should_route_to_endpoint(false, true, EndpointRoute::Primary));
+        assert!(!should_route_to_endpoint(false, true, EndpointRoute::MetricsPrimary));
+        assert!(should_route_to_endpoint(false, true, EndpointRoute::Additional));
     }
 
     fn init_tls_crypto_provider() {

@@ -34,7 +34,8 @@ use crate::common::datadog::{
     io::RB_BUFFER_CHUNK_SIZE,
     request_builder::{EndpointEncoder, RequestBuilder},
     telemetry::ComponentTelemetry,
-    DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT, DEFAULT_INTAKE_UNCOMPRESSED_SIZE_LIMIT,
+    DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT, DEFAULT_INTAKE_UNCOMPRESSED_SIZE_LIMIT, METRICS_SERIES_V1_PATH,
+    METRICS_SERIES_V2_PATH, METRICS_SKETCHES_PATH,
 };
 
 const SERIES_V2_COMPRESSED_SIZE_LIMIT: usize = 512_000; // 500 KiB
@@ -690,9 +691,9 @@ impl EndpointEncoder for MetricsEndpointEncoder {
 
     fn endpoint_uri(&self) -> Uri {
         match self.endpoint {
-            MetricsEndpoint::SeriesV1 => PathAndQuery::from_static("/api/v1/series").into(),
-            MetricsEndpoint::SeriesV2 => PathAndQuery::from_static("/api/v2/series").into(),
-            MetricsEndpoint::Sketches => PathAndQuery::from_static("/api/beta/sketches").into(),
+            MetricsEndpoint::SeriesV1 => PathAndQuery::from_static(METRICS_SERIES_V1_PATH).into(),
+            MetricsEndpoint::SeriesV2 => PathAndQuery::from_static(METRICS_SERIES_V2_PATH).into(),
+            MetricsEndpoint::Sketches => PathAndQuery::from_static(METRICS_SKETCHES_PATH).into(),
         }
     }
 

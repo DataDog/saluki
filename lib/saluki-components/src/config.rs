@@ -129,6 +129,19 @@ pub const KEY_ALIASES: &[(&str, &str)] = &[
         "otlp_config.traces.probabilistic_sampler.sampling_percentage",
         "otlp_config_traces_probabilistic_sampler_sampling_percentage",
     ),
+    // OPW metrics endpoint keys live in nested YAML sections, while env vars strip to flat keys. The flat fields are
+    // consumed by ForwarderConfiguration because this override is metrics-only and should not live in generic endpoint
+    // configuration.
+    (
+        "observability_pipelines_worker.metrics.enabled",
+        "observability_pipelines_worker_metrics_enabled",
+    ),
+    (
+        "observability_pipelines_worker.metrics.url",
+        "observability_pipelines_worker_metrics_url",
+    ),
+    ("vector.metrics.enabled", "vector_metrics_enabled"),
+    ("vector.metrics.url", "vector_metrics_url"),
     // Agent IPC relates to some of the Agent's IPC configuration options.
     //
     // We don't use them in this crate, but we still depend on them for stuff like the environment provider, and this is
