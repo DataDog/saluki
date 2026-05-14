@@ -1,5 +1,5 @@
 mod http;
-pub use self::http::StandardHttpClassifier;
+pub use self::http::{StandardHttpClassifier, StatusCodeRetryPredicate};
 
 /// Determines whether or not a request should be retried.
 ///

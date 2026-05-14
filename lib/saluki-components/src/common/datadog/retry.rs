@@ -1,11 +1,15 @@
 use std::{
     path::{Path, PathBuf},
+    sync::Arc,
     time::Duration,
 };
 
 use facet::Facet;
+use http::StatusCode;
 use saluki_config::GenericConfiguration;
-use saluki_io::net::util::retry::{DefaultHttpRetryPolicy, ExponentialBackoff};
+use saluki_io::net::util::retry::{
+    DefaultHttpRetryPolicy, ExponentialBackoff, StandardHttpClassifier, StatusCodeRetryPredicate,
+};
 use serde::Deserialize;
 use tracing::debug;
 
@@ -177,25 +181,89 @@ impl RetryConfiguration {
     }
 
     /// Creates a new [`DefaultHttpRetryPolicy`] based on the forwarder configuration.
-    pub fn to_default_http_retry_policy(&self) -> DefaultHttpRetryPolicy {
+    ///
+    /// If a [`GenericConfiguration`] is supplied, it is captured by the policy and consulted on every 403 Forbidden
+    /// response to decide whether the response should be treated as retriable. When secrets management is in use
+    /// (see [`is_secrets_in_use`]), 403 responses are retried because they may indicate that the Core Agent is in the
+    /// middle of refreshing the API key. If no configuration is supplied, 403 responses retain their default
+    /// non-retriable behavior.
+    pub fn to_default_http_retry_policy(&self, config: Option<GenericConfiguration>) -> DefaultHttpRetryPolicy {
         let retry_backoff = ExponentialBackoff::with_jitter(
             Duration::from_secs_f64(self.backoff_base),
             Duration::from_secs_f64(self.backoff_max),
             self.backoff_factor,
         );
 
+        let mut classifier = StandardHttpClassifier::new();
+        if let Some(config) = config {
+            let secrets_gate: StatusCodeRetryPredicate = Arc::new(move || is_secrets_in_use(&config));
+            classifier.set_status_code_predicate(StatusCode::FORBIDDEN, secrets_gate);
+        }
+
         let recovery_error_decrease_factor = (!self.recovery_reset).then_some(self.recovery_error_decrease_factor);
-        DefaultHttpRetryPolicy::with_backoff(retry_backoff)
+        DefaultHttpRetryPolicy::with_backoff_and_classifier(retry_backoff, classifier)
             .with_recovery_error_decrease_factor(recovery_error_decrease_factor)
     }
 }
 
+/// Returns `true` if the supplied configuration indicates that the Core Agent has secrets management in use.
+///
+/// This is computed dynamically from `config` so that runtime configuration updates (delivered over the dynamic
+/// configuration stream from the Core Agent) are reflected on every call. The gate is enabled when any of the
+/// following are true:
+///
+/// - `secret_refresh_on_api_key_failure_interval` is greater than zero
+/// - `secret_refresh_interval` is greater than zero
+/// - `secret_backend_type` is set to a non-empty string
+/// - `secret_backend_command` is set to a non-empty string
+pub fn is_secrets_in_use(config: &GenericConfiguration) -> bool {
+    matches!(config.try_get_typed::<u64>("secret_refresh_on_api_key_failure_interval"), Ok(Some(v)) if v > 0)
+        || matches!(config.try_get_typed::<u64>("secret_refresh_interval"), Ok(Some(v)) if v > 0)
+        || matches!(config.try_get_typed::<String>("secret_backend_type"), Ok(Some(s)) if !s.trim().is_empty())
+        || matches!(config.try_get_typed::<String>("secret_backend_command"), Ok(Some(s)) if !s.trim().is_empty())
+}
+
 #[cfg(test)]
 mod tests {
-    use saluki_config::ConfigurationLoader;
+    use std::time::Duration as StdDuration;
+
+    use http::{Request, Response};
+    use saluki_config::{dynamic::ConfigUpdate, ConfigurationLoader};
     use serde_json::json;
+    use tower::retry::Policy;
 
     use super::*;
+
+    type BoxError = Box<dyn std::error::Error + Send + Sync>;
+    type TestRequest = Request<()>;
+    type TestResponse = Result<Response<()>, BoxError>;
+
+    fn ok_response(status: StatusCode) -> TestResponse {
+        Ok(Response::builder().status(status).body(()).unwrap())
+    }
+
+    fn test_request() -> TestRequest {
+        Request::builder()
+            .method("POST")
+            .uri("http://localhost/intake")
+            .body(())
+            .unwrap()
+    }
+
+    fn test_retry_config() -> RetryConfiguration {
+        // Use small backoffs so that any returned `Sleep` futures are cheap; we never await them, but build them.
+        serde_json::from_value(json!({
+            "forwarder_backoff_base": 0.001,
+            "forwarder_backoff_max": 0.01,
+            "forwarder_backoff_factor": 2.0,
+        }))
+        .expect("RetryConfiguration should deserialize")
+    }
+
+    fn would_retry(policy: &mut DefaultHttpRetryPolicy, mut response: TestResponse) -> bool {
+        let mut request = test_request();
+        Policy::<TestRequest, Response<()>, BoxError>::retry(policy, &mut request, &mut response).is_some()
+    }
 
     #[tokio::test]
     async fn fix_empty_storage_path_sets_path_from_run_path() {
@@ -280,5 +348,131 @@ mod tests {
         let (config, _) = ConfigurationLoader::for_tests(Some(values), None, false).await;
         let retry_config: RetryConfiguration = config.as_typed().expect("should deserialize");
         assert_eq!(retry_config.queue_max_size_bytes(), OVERRIDE_PRIMARY_SIZE_BYTES);
+    }
+
+    #[tokio::test]
+    async fn is_secrets_in_use_returns_false_when_no_keys_set() {
+        let (config, _) = ConfigurationLoader::for_tests(None, None, false).await;
+        assert!(!is_secrets_in_use(&config));
+    }
+
+    #[tokio::test]
+    async fn is_secrets_in_use_returns_true_for_each_individual_key() {
+        let cases = [
+            json!({ "secret_refresh_on_api_key_failure_interval": 30u64 }),
+            json!({ "secret_refresh_interval": 60u64 }),
+            json!({ "secret_backend_type": "file.json" }),
+            json!({ "secret_backend_command": "/usr/local/bin/secret-helper" }),
+        ];
+
+        for values in cases {
+            let label = values.to_string();
+            let (config, _) = ConfigurationLoader::for_tests(Some(values), None, false).await;
+            assert!(
+                is_secrets_in_use(&config),
+                "expected secrets gate to be true for config {}",
+                label
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn is_secrets_in_use_returns_false_for_zero_intervals() {
+        let values = json!({
+            "secret_refresh_on_api_key_failure_interval": 0u64,
+            "secret_refresh_interval": 0u64,
+        });
+        let (config, _) = ConfigurationLoader::for_tests(Some(values), None, false).await;
+        assert!(!is_secrets_in_use(&config));
+    }
+
+    #[tokio::test]
+    async fn is_secrets_in_use_returns_false_for_empty_or_whitespace_strings() {
+        let values = json!({
+            "secret_backend_type": "",
+            "secret_backend_command": "   ",
+        });
+        let (config, _) = ConfigurationLoader::for_tests(Some(values), None, false).await;
+        assert!(!is_secrets_in_use(&config));
+    }
+
+    #[tokio::test]
+    async fn policy_with_no_config_does_not_retry_403() {
+        let retry_config = test_retry_config();
+        let mut policy = retry_config.to_default_http_retry_policy(None);
+
+        assert!(!would_retry(&mut policy, ok_response(StatusCode::FORBIDDEN)));
+    }
+
+    #[tokio::test]
+    async fn policy_with_config_but_no_secrets_does_not_retry_403() {
+        let (config, _) = ConfigurationLoader::for_tests(None, None, false).await;
+        let retry_config = test_retry_config();
+        let mut policy = retry_config.to_default_http_retry_policy(Some(config));
+
+        assert!(!would_retry(&mut policy, ok_response(StatusCode::FORBIDDEN)));
+    }
+
+    #[tokio::test]
+    async fn policy_with_config_and_secrets_retries_403() {
+        let values = json!({ "secret_backend_command": "/bin/true" });
+        let (config, _) = ConfigurationLoader::for_tests(Some(values), None, false).await;
+        let retry_config = test_retry_config();
+        let mut policy = retry_config.to_default_http_retry_policy(Some(config));
+
+        assert!(would_retry(&mut policy, ok_response(StatusCode::FORBIDDEN)));
+    }
+
+    #[tokio::test]
+    async fn policy_403_decision_reflects_dynamic_config_changes() {
+        let (config, sender) = ConfigurationLoader::for_tests(Some(json!({})), None, true).await;
+        let sender = sender.expect("dynamic configuration sender should be present");
+
+        // Apply an empty initial snapshot and wait for readiness so the figment is in a known state.
+        sender
+            .send(ConfigUpdate::Snapshot(json!({})))
+            .await
+            .expect("should send initial snapshot");
+        config.ready().await;
+
+        let retry_config = test_retry_config();
+        let mut policy = retry_config.to_default_http_retry_policy(Some(config.clone()));
+
+        // Before the dynamic update, the secrets gate is off, so 403 is not retried.
+        assert!(!would_retry(&mut policy, ok_response(StatusCode::FORBIDDEN)));
+
+        // Subscribe to changes for the secrets key, then push an update that flips the gate.
+        let mut watcher = config.watch_for_updates("secret_backend_command");
+        sender
+            .send(ConfigUpdate::Partial {
+                key: "secret_backend_command".to_string(),
+                value: json!("/bin/true"),
+            })
+            .await
+            .expect("should send partial update");
+
+        let (_, new) = tokio::time::timeout(StdDuration::from_secs(2), watcher.changed::<String>())
+            .await
+            .expect("timed out waiting for secret_backend_command update");
+        assert_eq!(new.as_deref(), Some("/bin/true"));
+
+        // The same policy instance now retries 403, proving the predicate consults live config rather than a snapshot.
+        assert!(would_retry(&mut policy, ok_response(StatusCode::FORBIDDEN)));
+    }
+
+    #[tokio::test]
+    async fn policy_does_not_change_other_status_codes() {
+        // Use a config that flips the secrets gate ON, to make sure the 403-only override does not bleed into others.
+        let values = json!({ "secret_backend_command": "/bin/true" });
+        let (config, _) = ConfigurationLoader::for_tests(Some(values), None, false).await;
+        let retry_config = test_retry_config();
+        let mut policy = retry_config.to_default_http_retry_policy(Some(config));
+
+        assert!(!would_retry(&mut policy, ok_response(StatusCode::OK)));
+        assert!(!would_retry(&mut policy, ok_response(StatusCode::BAD_REQUEST)));
+        assert!(!would_retry(&mut policy, ok_response(StatusCode::UNAUTHORIZED)));
+        assert!(!would_retry(&mut policy, ok_response(StatusCode::PAYLOAD_TOO_LARGE)));
+        assert!(would_retry(&mut policy, ok_response(StatusCode::INTERNAL_SERVER_ERROR)));
+        assert!(would_retry(&mut policy, ok_response(StatusCode::TOO_MANY_REQUESTS)));
     }
 }
