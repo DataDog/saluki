@@ -148,13 +148,13 @@
 <a href=#148 id=148 data-nosnippet>148</a>    ///
 <a href=#149 id=149 data-nosnippet>149</a>    /// If there is an error sending the request to the Agent API, an error will be returned.
 <a href=#150 id=150 data-nosnippet>150</a>    </span><span class="kw">pub async fn </span>register_remote_agent_request(
-<a href=#151 id=151 data-nosnippet>151</a>        <span class="kw-2">&amp;mut </span><span class="self">self</span>, pid: u32, display_name: <span class="kw-2">&amp;</span>str, api_endpoint: <span class="kw-2">&amp;</span>str, services: Vec&lt;String&gt;,
+<a href=#151 id=151 data-nosnippet>151</a>        <span class="kw-2">&amp;mut </span><span class="self">self</span>, pid: u32, display_name: <span class="kw-2">&amp;</span>str, flavor: <span class="kw-2">&amp;</span>str, api_endpoint: <span class="kw-2">&amp;</span>str, services: Vec&lt;String&gt;,
 <a href=#152 id=152 data-nosnippet>152</a>    ) -&gt; <span class="prelude-ty">Result</span>&lt;Response&lt;RegisterRemoteAgentResponse&gt;, GenericError&gt; {
 <a href=#153 id=153 data-nosnippet>153</a>        <span class="kw">let </span><span class="kw-2">mut </span>client = <span class="self">self</span>.secure_client.clone();
 <a href=#154 id=154 data-nosnippet>154</a>        <span class="kw">let </span>response = client
 <a href=#155 id=155 data-nosnippet>155</a>            .register_remote_agent(RegisterRemoteAgentRequest {
 <a href=#156 id=156 data-nosnippet>156</a>                pid: pid.to_string(),
-<a href=#157 id=157 data-nosnippet>157</a>                flavor: <span class="string">"agent-data-plane"</span>.to_string(),
+<a href=#157 id=157 data-nosnippet>157</a>                flavor: flavor.to_string(),
 <a href=#158 id=158 data-nosnippet>158</a>                display_name: display_name.to_string(),
 <a href=#159 id=159 data-nosnippet>159</a>                api_endpoint_uri: api_endpoint.to_string(),
 <a href=#160 id=160 data-nosnippet>160</a>                services,
