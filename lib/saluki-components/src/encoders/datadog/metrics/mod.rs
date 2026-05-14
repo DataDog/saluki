@@ -1288,7 +1288,7 @@ mod tests {
         let counter = Metric::counter("counter", [(123, 1.0), (124, 2.0)]);
         let histogram = Metric::histogram("histogram", [1.0, 2.0, 3.0]);
 
-        let series_endpoint = MetricsEndpointEncoder::from_endpoint(MetricsEndpoint::Series);
+        let series_endpoint = MetricsEndpointEncoder::from_endpoint(MetricsEndpoint::SeriesV2);
         let sketches_endpoint = MetricsEndpointEncoder::from_endpoint(MetricsEndpoint::Sketches);
 
         assert_eq!(series_endpoint.input_data_point_count(&counter), 2);
