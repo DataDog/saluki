@@ -2,6 +2,7 @@
 
 use std::sync::{Arc, Mutex, OnceLock};
 
+use facet::Facet;
 use rustls::{
     client::{
         danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},
@@ -9,7 +10,7 @@ use rustls::{
     },
     crypto::CryptoProvider,
     pki_types::{CertificateDer, ServerName, UnixTime},
-    ClientConfig, DigitallySignedStruct, RootCertStore, SignatureScheme,
+    version, ClientConfig, DigitallySignedStruct, RootCertStore, SignatureScheme, SupportedProtocolVersion,
 };
 use saluki_error::{generic_error, GenericError};
 use tracing::debug;
@@ -23,6 +24,39 @@ static DEFAULT_ROOT_CERT_STORE: OnceLock<Arc<RootCertStore>> = OnceLock::new();
 
 // Various defaults for TLS configuration.
 const DEFAULT_MAX_TLS12_RESUMPTION_SESSIONS: usize = 8;
+const TLS12_AND_NEWER: &[&SupportedProtocolVersion] = &[&version::TLS13, &version::TLS12];
+const TLS13_ONLY: &[&SupportedProtocolVersion] = &[&version::TLS13];
+
+/// Client-side minimum TLS protocol version.
+///
+/// This models the Datadog Agent `min_tls_version` values for outbound HTTPS clients. rustls 0.23 only supports TLS
+/// 1.2 and TLS 1.3, so floors below TLS 1.2 (`tlsv1.0` and `tlsv1.1`) map to the available TLS 1.2+ protocol set
+/// rather than enabling obsolete protocols.
+///
+/// The default is [`ClientTlsMinimumVersion::Tls12`].
+#[derive(Clone, Copy, Debug, Default, Eq, Facet, PartialEq)]
+#[repr(u8)]
+pub enum ClientTlsMinimumVersion {
+    /// TLS 1.0 floor. Maps to rustls' TLS 1.2+ client protocol set.
+    Tls10,
+    /// TLS 1.1 floor. Maps to rustls' TLS 1.2+ client protocol set.
+    Tls11,
+    /// TLS 1.2 floor. Enables TLS 1.2 and TLS 1.3.
+    #[default]
+    Tls12,
+    /// TLS 1.3 floor. Enables TLS 1.3 only.
+    Tls13,
+}
+
+impl ClientTlsMinimumVersion {
+    /// Returns the rustls client protocol versions enabled by this minimum version.
+    pub const fn enabled_rustls_versions(self) -> &'static [&'static SupportedProtocolVersion] {
+        match self {
+            Self::Tls10 | Self::Tls11 | Self::Tls12 => TLS12_AND_NEWER,
+            Self::Tls13 => TLS13_ONLY,
+        }
+    }
+}
 
 /// A certificate verifier that accepts all server certificates without validation.
 ///
@@ -71,6 +105,7 @@ pub struct ClientTLSConfigBuilder {
     max_tls12_resumption_sessions: Option<usize>,
     root_cert_store: Option<RootCertStore>,
     danger_accept_invalid_certs: bool,
+    minimum_tls_version: ClientTlsMinimumVersion,
 }
 
 impl ClientTLSConfigBuilder {
@@ -79,6 +114,7 @@ impl ClientTLSConfigBuilder {
             max_tls12_resumption_sessions: None,
             root_cert_store: None,
             danger_accept_invalid_certs: false,
+            minimum_tls_version: ClientTlsMinimumVersion::default(),
         }
     }
 
@@ -95,6 +131,15 @@ impl ClientTLSConfigBuilder {
     /// Defaults to the "default" root certificate store initialized from the platform. (See [`load_platform_root_certificates`].)
     pub fn with_root_cert_store(mut self, store: RootCertStore) -> Self {
         self.root_cert_store = Some(store);
+        self
+    }
+
+    /// Sets the minimum TLS protocol version for the client.
+    ///
+    /// Defaults to TLS 1.2. Floors below TLS 1.2 are accepted for Datadog Agent configuration compatibility, but rustls
+    /// only supports TLS 1.2 and TLS 1.3 and therefore still enables TLS 1.2+.
+    pub fn with_minimum_tls_version(mut self, minimum_version: ClientTlsMinimumVersion) -> Self {
+        self.minimum_tls_version = minimum_version;
         self
     }
 
@@ -120,6 +165,8 @@ impl ClientTLSConfigBuilder {
             .max_tls12_resumption_sessions
             .unwrap_or(DEFAULT_MAX_TLS12_RESUMPTION_SESSIONS);
 
+        let enabled_versions = self.minimum_tls_version.enabled_rustls_versions();
+
         let mut config = if self.danger_accept_invalid_certs {
             let crypto_provider = CryptoProvider::get_default()
                 .map(Arc::clone)
@@ -128,7 +175,7 @@ impl ClientTLSConfigBuilder {
                 provider: crypto_provider,
             });
 
-            ClientConfig::builder()
+            ClientConfig::builder_with_protocol_versions(enabled_versions)
                 .dangerous()
                 .with_custom_certificate_verifier(verifier)
                 .with_no_client_auth()
@@ -140,7 +187,7 @@ impl ClientTLSConfigBuilder {
                     .ok_or(generic_error!("Default TLS root certificate store not initialized."))
             })?;
 
-            ClientConfig::builder()
+            ClientConfig::builder_with_protocol_versions(enabled_versions)
                 .with_root_certificates(root_cert_store)
                 .with_no_client_auth()
         };
@@ -304,4 +351,22 @@ pub fn load_platform_root_certificates() -> Result<(), GenericError> {
         .expect("should be impossible for DEFAULT_ROOT_CERT_STORE to be initialized twice");
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ClientTlsMinimumVersion;
+
+    #[test]
+    fn client_tls_minimum_version_defaults_to_tls12() {
+        assert_eq!(ClientTlsMinimumVersion::default(), ClientTlsMinimumVersion::Tls12);
+    }
+
+    #[test]
+    fn client_tls_minimum_version_maps_agent_floors_to_rustls_versions() {
+        assert_eq!(ClientTlsMinimumVersion::Tls10.enabled_rustls_versions().len(), 2);
+        assert_eq!(ClientTlsMinimumVersion::Tls11.enabled_rustls_versions().len(), 2);
+        assert_eq!(ClientTlsMinimumVersion::Tls12.enabled_rustls_versions().len(), 2);
+        assert_eq!(ClientTlsMinimumVersion::Tls13.enabled_rustls_versions().len(), 1);
+    }
 }

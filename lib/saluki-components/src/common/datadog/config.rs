@@ -2,8 +2,9 @@ use std::time::Duration;
 
 use facet::Facet;
 use saluki_config::GenericConfiguration;
-use saluki_error::GenericError;
-use serde::Deserialize;
+use saluki_error::{generic_error, GenericError};
+use saluki_tls::ClientTlsMinimumVersion;
+use serde::{Deserialize, Deserializer};
 
 use super::{endpoints::EndpointConfiguration, proxy::ProxyConfiguration, retry::RetryConfiguration};
 
@@ -21,6 +22,30 @@ const fn default_endpoint_buffer_size() -> usize {
 
 const fn default_forwarder_connection_reset_interval() -> u64 {
     0
+}
+
+const MIN_TLS_VERSION_ACCEPTED_VALUES: &str = "tlsv1.0, tlsv1.1, tlsv1.2, tlsv1.3";
+
+fn deserialize_min_tls_version<'de, D>(deserializer: D) -> Result<ClientTlsMinimumVersion, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = String::deserialize(deserializer)?;
+    parse_min_tls_version(&value).map_err(serde::de::Error::custom)
+}
+
+fn parse_min_tls_version(value: &str) -> Result<ClientTlsMinimumVersion, GenericError> {
+    match value.to_ascii_lowercase().as_str() {
+        "tlsv1.0" => Ok(ClientTlsMinimumVersion::Tls10),
+        "tlsv1.1" => Ok(ClientTlsMinimumVersion::Tls11),
+        "tlsv1.2" => Ok(ClientTlsMinimumVersion::Tls12),
+        "tlsv1.3" => Ok(ClientTlsMinimumVersion::Tls13),
+        _ => Err(generic_error!(
+            "invalid min_tls_version '{}': accepted values are {}",
+            value,
+            MIN_TLS_VERSION_ACCEPTED_VALUES
+        )),
+    }
 }
 /// Forwarder configuration based on the Datadog Agent's forwarder configuration.
 ///
@@ -68,6 +93,19 @@ pub struct ForwarderConfiguration {
         rename = "forwarder_connection_reset_interval"
     )]
     connection_reset_interval_secs: u64,
+
+    /// Minimum TLS protocol version for outbound HTTPS forwarding.
+    ///
+    /// Defaults to `tlsv1.2`. Accepted values match the Datadog Agent: `tlsv1.0`, `tlsv1.1`, `tlsv1.2`, and
+    /// `tlsv1.3`, case-insensitively. Values below TLS 1.2 are accepted for Agent compatibility, but the underlying
+    /// rustls client only enables TLS 1.2 and TLS 1.3.
+    #[serde(
+        default,
+        rename = "min_tls_version",
+        deserialize_with = "deserialize_min_tls_version",
+        skip_serializing
+    )]
+    min_tls_version: ClientTlsMinimumVersion,
 
     /// Whether to disable TLS certificate validation for Datadog intake forwarding.
     ///
@@ -127,6 +165,11 @@ impl ForwarderConfiguration {
     /// Returns the connection reset interval.
     pub const fn connection_reset_interval(&self) -> Duration {
         Duration::from_secs(self.connection_reset_interval_secs)
+    }
+
+    /// Returns the minimum TLS protocol version for outbound HTTPS forwarding.
+    pub const fn min_tls_version(&self) -> ClientTlsMinimumVersion {
+        self.min_tls_version
     }
 
     /// Returns whether TLS certificate validation is disabled for Datadog intake forwarding.
@@ -217,6 +260,60 @@ mod tests {
 
         let proxies = config.proxy().as_ref().unwrap().build().unwrap();
         assert_eq!(proxies[0].uri().to_string(), PROXY_B_URI);
+    }
+
+    #[tokio::test]
+    async fn min_tls_version_defaults_to_tls12() {
+        let config = forwarder_config_from(base_config(), None).await;
+
+        assert_eq!(config.min_tls_version(), ClientTlsMinimumVersion::Tls12);
+    }
+
+    #[tokio::test]
+    async fn min_tls_version_accepts_agent_values_case_insensitively() {
+        let cases = [
+            ("tlsv1.0", ClientTlsMinimumVersion::Tls10),
+            ("TLSV1.1", ClientTlsMinimumVersion::Tls11),
+            ("TlsV1.2", ClientTlsMinimumVersion::Tls12),
+            ("tlsv1.3", ClientTlsMinimumVersion::Tls13),
+        ];
+
+        for (raw_value, expected) in cases {
+            let config =
+                forwarder_config_from(config_with(serde_json::json!({ "min_tls_version": raw_value })), None).await;
+            assert_eq!(config.min_tls_version(), expected, "raw value: {raw_value}");
+        }
+    }
+
+    #[tokio::test]
+    async fn min_tls_version_set_via_env_var() {
+        // MIN_TLS_VERSION simulates DD_MIN_TLS_VERSION: the test helper sets
+        // TEST_MIN_TLS_VERSION, which from_environment("TEST") reads as min_tls_version.
+        let env_vars = vec![("MIN_TLS_VERSION".to_string(), "TLSV1.3".to_string())];
+        let config = forwarder_config_from(base_config(), Some(&env_vars)).await;
+
+        assert_eq!(config.min_tls_version(), ClientTlsMinimumVersion::Tls13);
+    }
+
+    #[tokio::test]
+    async fn min_tls_version_rejects_invalid_values() {
+        let (cfg, _) = ConfigurationLoader::for_tests_with_provider_factory(
+            Some(config_with(serde_json::json!({ "min_tls_version": "tlsv1.4" }))),
+            None,
+            false,
+            KEY_ALIASES,
+            DatadogRemapper::new,
+        )
+        .await;
+        let error = ForwarderConfiguration::from_configuration(&cfg)
+            .expect_err("invalid min_tls_version should fail deserialization");
+        let message = error.to_string();
+
+        assert!(message.contains("min_tls_version"), "{message}");
+        assert!(message.contains("tlsv1.0"), "{message}");
+        assert!(message.contains("tlsv1.1"), "{message}");
+        assert!(message.contains("tlsv1.2"), "{message}");
+        assert!(message.contains("tlsv1.3"), "{message}");
     }
 
     #[tokio::test]

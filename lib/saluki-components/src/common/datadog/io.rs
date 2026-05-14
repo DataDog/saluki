@@ -170,6 +170,8 @@ where
             client_builder = client_builder.with_connection_age_limit(config.connection_reset_interval());
         }
 
+        client_builder =
+            client_builder.with_tls_config(|builder| builder.with_minimum_tls_version(config.min_tls_version()));
         client_builder = TlsCertificateValidation::from_forwarder_config(&config).apply_to(client_builder)?;
 
         let client = client_builder.build()?;
@@ -765,6 +767,7 @@ mod tests {
         pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer},
         RootCertStore, ServerConfig,
     };
+    use saluki_tls::ClientTlsMinimumVersion;
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
         sync::mpsc,
@@ -788,8 +791,17 @@ mod tests {
     }
 
     fn http_client_for_tls_validation(validation: TlsCertificateValidation) -> HttpClient {
-        let client_builder =
-            HttpClient::builder().with_tls_config(|builder| builder.with_root_cert_store(RootCertStore::empty()));
+        http_client_for_tls_validation_with_minimum_version(validation, ClientTlsMinimumVersion::Tls12)
+    }
+
+    fn http_client_for_tls_validation_with_minimum_version(
+        validation: TlsCertificateValidation, minimum_version: ClientTlsMinimumVersion,
+    ) -> HttpClient {
+        let client_builder = HttpClient::builder().with_tls_config(|builder| {
+            builder
+                .with_root_cert_store(RootCertStore::empty())
+                .with_minimum_tls_version(minimum_version)
+        });
 
         validation
             .apply_to(client_builder)
@@ -799,12 +811,18 @@ mod tests {
     }
 
     async fn start_self_signed_https_server() -> (String, mpsc::Receiver<String>) {
+        start_self_signed_https_server_with_versions(&[&rustls::version::TLS13, &rustls::version::TLS12]).await
+    }
+
+    async fn start_self_signed_https_server_with_versions(
+        versions: &[&'static rustls::SupportedProtocolVersion],
+    ) -> (String, mpsc::Receiver<String>) {
         init_tls_crypto_provider();
 
         let CertifiedKey { cert, signing_key } = generate_simple_self_signed(["localhost".to_string()]).unwrap();
         let cert_chain = vec![cert.der().clone()];
         let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(signing_key.serialize_der()));
-        let server_config = ServerConfig::builder()
+        let server_config = ServerConfig::builder_with_protocol_versions(versions)
             .with_no_client_auth()
             .with_single_cert(cert_chain, key)
             .unwrap();
@@ -964,5 +982,65 @@ mod tests {
             .expect("timed out waiting for HTTPS request")
             .expect("HTTPS request channel closed");
         assert!(received_request.starts_with("GET / HTTP/1.1"));
+    }
+
+    #[tokio::test]
+    async fn min_tls_version_tls12_floor_allows_tls12_only_https_endpoint() {
+        let (uri, mut request_rx) = start_self_signed_https_server_with_versions(&[&rustls::version::TLS12]).await;
+        let mut client = http_client_for_tls_validation_with_minimum_version(
+            TlsCertificateValidation::Disabled,
+            ClientTlsMinimumVersion::Tls12,
+        );
+        let request = http::Request::builder().uri(uri).body(Empty::<Bytes>::new()).unwrap();
+
+        let response = client
+            .send(request)
+            .await
+            .expect("TLS 1.2 floor should allow TLS 1.2 server");
+
+        assert_eq!(response.status(), http::StatusCode::OK);
+        timeout(Duration::from_secs(2), request_rx.recv())
+            .await
+            .expect("timed out waiting for HTTPS request")
+            .expect("HTTPS request channel closed");
+    }
+
+    #[tokio::test]
+    async fn min_tls_version_tls13_floor_rejects_tls12_only_https_endpoint() {
+        let (uri, mut request_rx) = start_self_signed_https_server_with_versions(&[&rustls::version::TLS12]).await;
+        let mut client = http_client_for_tls_validation_with_minimum_version(
+            TlsCertificateValidation::Disabled,
+            ClientTlsMinimumVersion::Tls13,
+        );
+        let request = http::Request::builder().uri(uri).body(Empty::<Bytes>::new()).unwrap();
+
+        let result = client.send(request).await;
+
+        assert!(result.is_err(), "TLS 1.3 floor should reject TLS 1.2-only server");
+        assert!(
+            timeout(Duration::from_millis(200), request_rx.recv()).await.is_err(),
+            "server should not receive an HTTP request when TLS version negotiation fails"
+        );
+    }
+
+    #[tokio::test]
+    async fn min_tls_version_tls13_floor_allows_tls13_only_https_endpoint() {
+        let (uri, mut request_rx) = start_self_signed_https_server_with_versions(&[&rustls::version::TLS13]).await;
+        let mut client = http_client_for_tls_validation_with_minimum_version(
+            TlsCertificateValidation::Disabled,
+            ClientTlsMinimumVersion::Tls13,
+        );
+        let request = http::Request::builder().uri(uri).body(Empty::<Bytes>::new()).unwrap();
+
+        let response = client
+            .send(request)
+            .await
+            .expect("TLS 1.3 floor should allow TLS 1.3 server");
+
+        assert_eq!(response.status(), http::StatusCode::OK);
+        timeout(Duration::from_secs(2), request_rx.recv())
+            .await
+            .expect("timed out waiting for HTTPS request")
+            .expect("HTTPS request channel closed");
     }
 }

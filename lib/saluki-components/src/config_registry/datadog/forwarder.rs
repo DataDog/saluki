@@ -95,6 +95,17 @@ crate::declare_annotations! {
         test_json: None,
     };
 
+    /// `min_tls_version` — minimum TLS version for outbound HTTPS forwarding.
+    MIN_TLS_VERSION = SalukiAnnotation {
+        schema: &schema::MIN_TLS_VERSION,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::FORWARDER_CONFIGURATION],
+        value_type_override: None,
+        test_json: Some(r#""tlsv1.3""#),
+    };
+
     /// `skip_ssl_validation` — disables TLS certificate validation for Datadog intake forwarding.
     SKIP_SSL_VALIDATION = SalukiAnnotation {
         schema: &schema::SKIP_SSL_VALIDATION,

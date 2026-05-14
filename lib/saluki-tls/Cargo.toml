@@ -13,6 +13,7 @@ default = []
 fips = ["rustls/fips"]
 
 [dependencies]
+facet = { workspace = true }
 rustls = { workspace = true, features = ["std"] }
 rustls-native-certs = { workspace = true }
 saluki-error = { workspace = true }

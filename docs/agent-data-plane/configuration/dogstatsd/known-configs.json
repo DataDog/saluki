@@ -1414,10 +1414,10 @@
   },
   {
     "key": "min_tls_version",
-    "feature_state": "MISSING",
-    "action": "IMPLEMENT",
+    "feature_state": "PARITY",
+    "action": "NONE",
     "description": "Minimum TLS version for HTTPS",
-    "reason": "Core agent supports min_tls_version to enforce a minimum TLS version. ADP does not support this.",
+    "reason": "ADP reads min_tls_version for outbound Datadog HTTPS forwarding with the same default and accepted values as the core agent.",
     "issue": "#1370",
     "adp_key": null
   },

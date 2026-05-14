@@ -36,7 +36,6 @@ tracking.
 | `forwarder_http_protocol`                        | HTTP version (auto/http1)             | [#1361] |
 | `forwarder_outdated_file_in_days`                | Retry file retention (days)           | [#1360] |
 | `log_format_rfc3339`                             | Use RFC3339 timestamp format          | [#1373] |
-| `min_tls_version`                                | Minimum TLS version for HTTPS         | [#1370] |
 | `observability_pipelines_worker.metrics.enabled` | Route metrics to OPW instance         | [#1586] |
 | `observability_pipelines_worker.metrics.url`     | OPW metrics intake URL                | [#1586] |
 | `serializer_experimental_use_v3_api.*`           | V3 metrics API migration flags        | [#1468] |
@@ -369,6 +368,7 @@ when the receiving syslog daemon expects the Agent's RFC-style header.
 | `metric_filterlist`                       | Metric name blocklist            |
 | `metric_filterlist_match_prefix`          | Blocklist uses prefix matching   |
 | `metric_tag_filterlist`                   | Per-metric tag include/exclude   |
+| `min_tls_version`                         | Minimum TLS version for HTTPS    |
 | `no_proxy_nonexact_match`                 | Domain/CIDR no_proxy matching    |
 | `origin_detection_unified`                | Unified origin detection mode    |
 | `provider_kind`                           | Provider kind static tag         |
