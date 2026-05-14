@@ -262,6 +262,16 @@ async fn process_override_actions(state: &mut LoggingOverrideWorkerState, mut pr
                 },
 
                 Some(LoggingOverrideAction::UpdateBase(new_base)) => {
+                    // Before replacing the base filter, check if the new base is different from the current one before we trigger a reload
+                    // and log a big, noisy message.
+                    //
+                    // We do this in a hacky way and compare the stringified version of each filter since `EnvFilter` can't be directly compared.
+                    let existing_base_filter_str = base_filter.to_string();
+                    let new_base_filter_str = new_base.to_string();
+                    if new_base_filter_str == existing_base_filter_str {
+                        continue;
+                    }
+
                     base_filter = new_base;
 
                     if override_active {
