@@ -60,11 +60,12 @@ impl RemoteAgentClient {
             let ipc_cert_file_path = config.auth().ipc_cert_file_path();
             let client_tls_config = build_ipc_client_ipc_tls_config(ipc_cert_file_path).await?;
             let https_connector = HttpsCapableConnectorBuilder::default().build(client_tls_config)?;
-            let channel = Endpoint::from(config.endpoint().clone())
+            let endpoint = config.endpoint()?;
+            let channel = Endpoint::from(endpoint.clone())
                 .connect_timeout(Duration::from_secs(2))
                 .connect_with_connector(https_connector)
                 .await
-                .with_error_context(|| format!("Failed to connect to Datadog Agent API at '{}'.", config.endpoint()))?;
+                .with_error_context(|| format!("Failed to connect to Datadog Agent API at '{}'.", endpoint))?;
 
             Ok::<_, GenericError>(InterceptedService::new(channel, auth_interceptor))
         };

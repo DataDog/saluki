@@ -1,0 +1,51 @@
+# Issue #1645: cmd_port support
+#
+# The core agent reads `cmd_port` from config to determine which port
+# the IPC/CMD API server listens on. ADP connects to this port for
+# remote agent registration and config streaming.
+#
+# When cmd_port is set to a non-default value (5101 instead of 5001),
+# ADP must read cmd_port and connect to the correct port. Without this
+# fix, ADP tries to connect to the hardcoded default (5001) and
+# crash-loops.
+
+type: integration
+name: "adp-cmd-port"
+description: "Verifies ADP connects to the correct port when cmd_port is set"
+timeout: 90s
+
+container:
+  image: "saluki-images/datadog-agent:testing-devel"
+  env:
+    DD_API_KEY: "test-api-key"
+    DD_HOSTNAME: "integration-test-cmd-port"
+    DD_DATA_PLANE_ENABLED: "true"
+    DD_DATA_PLANE_STANDALONE_MODE: "false"
+    DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+    DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT: "true"
+    DD_CMD_PORT: "7777"
+
+assertions:
+  # ADP should reach out for config from the core agent on the correct port.
+  - type: log_contains
+    pattern: "Waiting for initial configuration from Datadog Agent"
+    timeout: 10s
+  # The core agent should start its CMD API server on the non-default port.
+  - type: log_contains
+    pattern: "Started HTTP server 'CMD API Server' on 127.0.0.1:7777"
+    timeout: 15s
+  # ADP should successfully register with the core agent on that port.
+  - type: log_contains
+    pattern: "Successfully registered with the Datadog Agent."
+    timeout: 15s
+  # ADP should become healthy and stay up.
+  - parallel:
+      - type: process_stable_for
+        duration: 10s
+      - type: log_contains
+        pattern: "Topology healthy"
+        timeout: 10s
+      - type: log_not_contains
+        pattern: "panic|PANIC"
+        regex: true
+        during: 10s

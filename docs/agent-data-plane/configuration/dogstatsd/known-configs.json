@@ -144,6 +144,15 @@
     "adp_key": null
   },
   {
+    "key": "cmd_port",
+    "feature_state": "PARITY",
+    "action": "NONE",
+    "description": "Datadog Agent IPC/CMD API port",
+    "reason": "Read by RemoteAgentClientConfiguration to build the IPC endpoint URI. Takes precedence over agent_ipc_endpoint when set.",
+    "issue": "#1645",
+    "adp_key": null
+  },
+  {
     "key": "connect_retry_attempts",
     "feature_state": "ADP_ONLY",
     "action": "NONE",
@@ -352,10 +361,10 @@
   },
   {
     "key": "dogstatsd_context_expiry_seconds",
-    "feature_state": "DIVERGENT",
-    "action": "IMPLEMENT",
+    "feature_state": "PARITY",
+    "action": "NONE",
     "description": "Context cache TTL (seconds)",
-    "reason": "ADP hardcodes 30s; core agent defaults to 20s and makes it configurable.",
+    "reason": "ADP reads dogstatsd_context_expiry_seconds and defaults to 20s, matching the core agent. The value drives both the context resolver and tagset resolver idle expirations in ADP's layered cache architecture.",
     "issue": "#1340",
     "adp_key": null
   },
@@ -1455,6 +1464,15 @@
     "description": "OTLP context interner capacity",
     "reason": "ADP-only key controlling string interner memory budget for the OTLP pipeline. The core agent has no equivalent.",
     "issue": null,
+    "adp_key": null
+  },
+  {
+    "key": "provider_kind",
+    "feature_state": "PARITY",
+    "action": "NONE",
+    "description": "Provider kind static tag",
+    "reason": "Implemented in ADP. Appends provider_kind:<value> as a static tag to all DogStatsD metrics when set via DD_PROVIDER_KIND.",
+    "issue": "#1640",
     "adp_key": null
   },
   {

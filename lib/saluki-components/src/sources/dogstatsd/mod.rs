@@ -21,10 +21,9 @@ use saluki_context::{
     tags::{RawTags, RawTagsFilter},
     TagsResolver,
 };
-use saluki_core::data_model::event::metric::Metric;
 use saluki_core::data_model::event::{
     eventd::EventD,
-    metric::{MetricMetadata, MetricOrigin},
+    metric::{Metric, MetricMetadata, MetricOrigin},
     service_check::ServiceCheck,
     Event, EventType,
 };
@@ -102,6 +101,14 @@ enum Error {
     BindHostHasNoAddresses { host: String },
 }
 
+const ERROR_TYPE_ORIGIN_DETECTION: &str = "origin_detection";
+
+/// Baseline byte cost per interner entry, used to convert the Core Agent's entry-count-based
+/// `dogstatsd_string_interner_size` to a byte size.
+///
+/// 4096 entries × 512 bytes = 2 MiB, matching ADP's previous default.
+const INTERNER_BASELINE_BYTES_PER_ENTRY: u64 = 512;
+
 const fn default_buffer_size() -> usize {
     8192
 }
@@ -134,14 +141,6 @@ const fn default_context_string_interner_entry_count() -> u64 {
     4096
 }
 
-const ERROR_TYPE_ORIGIN_DETECTION: &str = "origin_detection";
-
-/// Baseline byte cost per interner entry, used to convert the Core Agent's entry-count-based
-/// `dogstatsd_string_interner_size` to a byte size.
-///
-/// 4096 entries × 512 bytes = 2 MiB, matching ADP's previous default.
-const INTERNER_BASELINE_BYTES_PER_ENTRY: u64 = 512;
-
 const fn default_cached_contexts_limit() -> usize {
     500_000
 }
@@ -150,12 +149,20 @@ const fn default_cached_tagsets_limit() -> usize {
     500_000
 }
 
+const fn default_context_expiry_seconds() -> u64 {
+    20
+}
+
 const fn default_dogstatsd_permissive_decoding() -> bool {
     true
 }
 
 const fn default_dogstatsd_minimum_sample_rate() -> f64 {
     0.000000003845
+}
+
+const fn default_true() -> bool {
+    true
 }
 
 /// Controls which payload types are forwarded to the backend.
@@ -196,10 +203,6 @@ impl Default for EnablePayloadsConfiguration {
             service_checks: true,
         }
     }
-}
-
-const fn default_true() -> bool {
-    true
 }
 
 /// DogStatsD source.
@@ -405,6 +408,17 @@ pub struct DogStatsDConfiguration {
     #[serde(rename = "dogstatsd_cached_tagsets_limit", default = "default_cached_tagsets_limit")]
     cached_tagsets_limit: usize,
 
+    /// The number of seconds after which cached contexts will expire.
+    ///
+    /// Higher values allow for more effective caching for sparse metrics at the cost of increased memory usage.
+    ///
+    /// Defaults to 20 seconds.
+    #[serde(
+        rename = "dogstatsd_context_expiry_seconds",
+        default = "default_context_expiry_seconds"
+    )]
+    context_expiry_seconds: u64,
+
     /// Whether or not to enable permissive mode in the decoder.
     ///
     /// Permissive mode allows the decoder to relax its strictness around the allowed payloads, which lets it match the
@@ -448,6 +462,15 @@ pub struct DogStatsDConfiguration {
     /// Additional tags to add to all metrics.
     #[serde(rename = "dogstatsd_tags", default)]
     additional_tags: Vec<String>,
+
+    /// Provider kind tag appended to all metrics as `provider_kind:<value>`.
+    ///
+    /// Set via `DD_PROVIDER_KIND` by the Helm chart on GKE Autopilot (`gke-autopilot`) and GKE on
+    /// Google Distributed Cloud (`gke-gdc`). When empty or absent, no tag is added.
+    ///
+    /// Defaults to `""` (disabled).
+    #[serde(default)]
+    provider_kind: String,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -504,6 +527,17 @@ impl DogStatsDConfiguration {
     /// Creates a new `DogStatsDConfiguration` from the given configuration.
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
         Ok(config.as_typed()?)
+    }
+
+    /// Gets both the `additional_tags` and any others specified by other configuration fields, such as `provider_kind`.
+    fn additional_tags(&self) -> Vec<String> {
+        if self.provider_kind.is_empty() {
+            return self.additional_tags.clone();
+        }
+
+        let mut tags = self.additional_tags.clone();
+        tags.push(format!("provider_kind:{}", self.provider_kind.clone()));
+        tags
     }
 
     /// Returns the effective string interner size in bytes.
@@ -682,7 +716,7 @@ impl SourceBuilder for DogStatsDConfiguration {
             origin_detection_enabled,
             stream_log_too_big: self.stream_log_too_big,
             eol_required,
-            additional_tags: self.additional_tags.clone().into(),
+            additional_tags: self.additional_tags().into(),
         }))
     }
 

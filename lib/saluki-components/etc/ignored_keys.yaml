@@ -768,8 +768,6 @@
   reason: initial bulk
 - name: cmd_host
   reason: initial bulk
-- name: cmd_port
-  reason: initial bulk
 - name: collect_ccrid
   reason: initial bulk
 - name: collect_ec2_instance_info
@@ -2762,8 +2760,6 @@
   reason: initial bulk
 - name: prometheus_scrape.version
   reason: initial bulk
-- name: provider_kind
-  reason: initial bulk
 - name: python3_linter_timeout
   reason: initial bulk
 - name: python_lazy_loading
@@ -3359,8 +3355,6 @@
 - name: use_improved_cgroup_parser
   reason: initial bulk
 - name: use_networkv2_check
-  reason: initial bulk
-- name: use_v2_api.series
   reason: initial bulk
 - name: vector.logs.enabled
   reason: initial bulk

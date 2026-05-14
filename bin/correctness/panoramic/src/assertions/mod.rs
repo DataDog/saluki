@@ -7,14 +7,14 @@ use tokio_util::sync::CancellationToken;
 use crate::config::{AssertionConfig, LogStream};
 
 mod file_contains;
-mod health_check;
+mod http_check;
 mod log_contains;
 mod port_listening;
 mod process_exits;
 mod process_stable;
 
 pub use file_contains::FileContainsAssertion;
-pub use health_check::HealthCheckAssertion;
+pub use http_check::HttpCheckAssertion;
 pub use log_contains::{LogContainsAssertion, LogNotContainsAssertion};
 pub use port_listening::PortListeningAssertion;
 pub use process_exits::ProcessExitsWithAssertion;
@@ -155,13 +155,15 @@ pub fn create_assertion(config: &AssertionConfig) -> Result<Box<dyn Assertion>, 
             during.0,
             stream.clone(),
         ))),
-        AssertionConfig::HealthCheck {
+        AssertionConfig::HttpCheck {
             endpoint,
-            expected_status,
+            status,
+            insecure_skip_verify,
             timeout,
-        } => Ok(Box::new(HealthCheckAssertion::new(
+        } => Ok(Box::new(HttpCheckAssertion::new(
             endpoint.clone(),
-            *expected_status,
+            status.clone(),
+            *insecure_skip_verify,
             timeout.0,
         ))),
         AssertionConfig::FileContains {

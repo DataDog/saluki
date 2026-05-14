@@ -42,7 +42,6 @@ dependencies = [
  "papaya",
  "prometheus-exposition",
  "prost-types",
- "rustls",
  "saluki-api",
  "saluki-app",
  "saluki-common",
@@ -2988,7 +2987,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "treediff",
- "url",
 ]
 
 [[package]]
@@ -4757,6 +4755,7 @@ dependencies = [
  "saluki-common",
  "saluki-error",
  "serde",
+ "serde_json",
  "serde_with",
  "stringtheory",
 ]
