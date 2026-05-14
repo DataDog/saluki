@@ -1,0 +1,81 @@
+# Using a fixed hostname is both required to avoid errors, and also will ensure consistent tags between DSD/ADP.
+hostname: "correctness-testing"
+
+# Dummy API key.
+api_key: dummy-api-key-correctness-testing
+
+# We have to specifically configure the health port to use.
+health_port: 5555
+
+# Point ourselves at the datadog-intake service.
+dd_url: "http://datadog-intake:2049"
+
+# Turn off UDP and listen on a UDS socket instead.
+# NOTE(temporary): newer agent images require use_dogstatsd: true to be explicit when
+# dogstatsd_port: 0 is set, otherwise the agent forces data_plane.dogstatsd.enabled=false.
+use_dogstatsd: true
+dogstatsd_port: 0
+dogstatsd_socket: /airlock/metrics.sock
+
+# Ensure origin detection is disabled since we can't support it with ADP in standalone mode.
+dogstatsd_origin_detection: false
+
+# Gauges can be processed out-of-order when multiple workers are used, while ADP does not use multiple workers, so ADP
+# always ends up with the correct (last seen) value, while DSD might return the last seen value... or the value seen
+# four updates ago, etc etc.
+dogstatsd_workers_count: 1
+dogstatsd_context_expiry_seconds: 120
+
+# Disable the trace agent to eliminate its internal DogStatsD telemetry (datadog.trace_agent.*,
+# datadog.dogstatsd.client.*) from the series flush buckets. This reduces per-bucket context
+# count to just millstone load + a handful of agent internals, making point.sent cleaner.
+apm_config:
+  enabled: false
+
+# Allow the agent to connect to our self-signed HTTPS listener without certificate validation.
+# This is required because the agenttelemetry sender always uses HTTPS regardless of the configured URL scheme.
+skip_ssl_validation: true
+
+# Route agent telemetry to our local intake's HTTPS listener (port 2050) instead of the default
+# instrumentation-telemetry-intake endpoint. The intake's TLS proxy decrypts the connection and
+# forwards to the plain HTTP intake on port 2049.
+#
+# The profile below is scoped to the forwarder metrics most relevant for ADP correctness testing.
+# Both the baseline (plain agent) and comparison (agent + ADP) should emit these, so any gap
+# surfaces a real difference in how ADP integrates with the agent's telemetry component.
+# Enable ADP's remote agent telemetry provider so the agent can gather ADP's Prometheus
+# metrics (including point__sent) via the Remote Agent Registry. Without this, ADP only
+# advertises StatusProvider and FlareProvider, and PR 50750's telemetry merge can't work.
+data_plane:
+  telemetry_enabled: true
+
+agent_telemetry:
+  enabled: true
+  logs_dd_url: "https://datadog-intake:2050"
+  profiles:
+    - name: adp-forwarder
+      metric:
+        metrics:
+          - name: point.sent
+          - name: point.dropped
+          - name: transactions.input_count
+          - name: transactions.dropped
+          # transactions.success and transactions.errors are excluded: baseline sends user+internal
+          # in one Go payload per flush cycle while comparison splits them across separate ADP and
+          # Go payloads. Transaction counts and per-error-type counters are structurally different
+          # by design and cannot be compared between the two sides.
+          - name: transactions.http_errors
+            aggregate_tags:
+              - code
+              - endpoint
+      schedule:
+        # Fire 37 seconds after agent start. Both Go and ADP flush every ~15s but are offset by
+        # ~4s from each other (ADP starts slightly after Go). The first user DSD flush on both
+        # sides lands at ~t=30s; ADP's second flush lands at ~t=44s and Go's at ~t=45s.
+        # t=37 sits safely after both first flushes and before either second flush, so the snapshot
+        # always captures exactly one user DSD flush cycle on each side, making point.sent
+        # directly comparable between baseline and comparison.
+        start_after: 37
+        # Exactly one snapshot per test run.
+        iterations: 1
+        period: 900

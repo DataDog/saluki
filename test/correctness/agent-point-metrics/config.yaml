@@ -1,0 +1,44 @@
+type: correctness
+runtime: docker
+analysis_mode: metrics
+
+# Restrict analysis to only the customer-facing agent point metrics.  All user DSD metrics and
+# other `datadog.*` internal metrics are discarded; only these two are compared between the
+# baseline and comparison targets.
+focus_metrics:
+  - datadog.agent.point.sent
+  - datadog.agent.point.dropped
+
+millstone:
+  image: saluki-images/correctness-tools:latest
+  config_path: millstone.yaml
+
+datadog_intake:
+  image: saluki-images/correctness-tools:latest
+  config_path: ../datadog-intake.yaml
+
+# Allow enough time after millstone exits for:
+#   1. The final aggregation flush cycle (~10 s) to deliver user metrics to the intake.
+#   2. The agent telemetry check to fire (~15 s collection interval) and submit
+#      `datadog.agent.point.sent` / `datadog.agent.point.dropped` via internal DSD.
+#   3. A second aggregation flush cycle (~10 s) to deliver those DSD metrics to the intake.
+# 45 s comfortably covers all three steps.
+flush_wait_secs: 45
+
+baseline:
+  image: saluki-images/datadog-agent:testing-release
+  files:
+    - datadog.yaml:/etc/datadog-agent/datadog.yaml
+    - conf.d/telemetry.d/conf.yaml:/etc/datadog-agent/conf.d/telemetry.d/conf.yaml
+  additional_env_vars:
+    - DD_API_KEY=correctness-test
+
+comparison:
+  image: saluki-images/datadog-agent:testing-release
+  files:
+    - datadog.yaml:/etc/datadog-agent/datadog.yaml
+    - conf.d/telemetry.d/conf.yaml:/etc/datadog-agent/conf.d/telemetry.d/conf.yaml
+  additional_env_vars:
+    - DD_API_KEY=correctness-test
+    - DD_DATA_PLANE_ENABLED=true
+    - DD_AGGREGATE_CONTEXT_LIMIT=500000

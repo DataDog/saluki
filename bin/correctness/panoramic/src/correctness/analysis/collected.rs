@@ -1,4 +1,5 @@
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
+use serde_json::Value;
 use stele::{ClientStatisticsAggregator, Event, Metric, ServiceCheck, Span};
 use tracing::debug;
 
@@ -6,6 +7,7 @@ use tracing::debug;
 ///
 /// Holds all telemetry data sent by the test target to the `datadog-intake` server spawned for the test run.
 pub struct CollectedData {
+    agent_telemetry_payloads: Vec<Value>,
     events: Vec<Event>,
     metrics: Vec<Metric>,
     service_checks: Vec<ServiceCheck>,
@@ -20,6 +22,7 @@ impl CollectedData {
     ///
     /// If the collected data cannot be retrieved from the `datadog-intake` server, an error is returned.
     pub async fn for_port(datadog_intake_port: u16) -> Result<Self, GenericError> {
+        let agent_telemetry_payloads = get_captured_agent_telemetry(datadog_intake_port).await?;
         let events = get_captured_events(datadog_intake_port).await?;
         let metrics = get_captured_metrics(datadog_intake_port).await?;
         let service_checks = get_captured_service_checks(datadog_intake_port).await?;
@@ -27,12 +30,18 @@ impl CollectedData {
         let trace_stats = get_captured_trace_stats(datadog_intake_port).await?;
 
         Ok(Self {
+            agent_telemetry_payloads,
             events,
             metrics,
             service_checks,
             spans,
             trace_stats,
         })
+    }
+
+    /// Returns a reference to the collected agent telemetry payloads.
+    pub fn agent_telemetry_payloads(&self) -> &[Value] {
+        &self.agent_telemetry_payloads
     }
 
     /// Returns a reference to the collected events.
@@ -59,6 +68,25 @@ impl CollectedData {
     pub fn trace_stats(&self) -> &ClientStatisticsAggregator {
         &self.trace_stats
     }
+}
+
+async fn get_captured_agent_telemetry(datadog_intake_port: u16) -> Result<Vec<Value>, GenericError> {
+    let client = reqwest::Client::new();
+    let payloads = client
+        .get(format!("http://localhost:{}/agent-telemetry/dump", datadog_intake_port))
+        .send()
+        .await
+        .error_context("Failed to call agent-telemetry dump endpoint on datadog-intake server.")?
+        .json::<Vec<Value>>()
+        .await
+        .error_context("Failed to decode dumped agent telemetry from datadog-intake response.")?;
+
+    debug!(
+        "Agent telemetry payloads dumped successfully ({} payload(s)).",
+        payloads.len()
+    );
+
+    Ok(payloads)
 }
 
 async fn get_captured_events(datadog_intake_port: u16) -> Result<Vec<Event>, GenericError> {

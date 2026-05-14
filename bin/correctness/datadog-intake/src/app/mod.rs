@@ -6,6 +6,7 @@ use axum::{
 use tower_http::{compression::CompressionLayer, decompression::RequestDecompressionLayer};
 use tracing::info;
 
+mod agent_telemetry;
 mod events;
 mod metrics;
 mod misc;
@@ -17,6 +18,7 @@ pub fn initialize_app_router() -> Router {
     let service_checks_state = service_checks::ServiceChecksState::new();
 
     Router::new()
+        .merge(agent_telemetry::build_agent_telemetry_router())
         .merge(events::build_events_router(events_state.clone()))
         .merge(metrics::build_metrics_router())
         .merge(service_checks::build_service_checks_router(service_checks_state))

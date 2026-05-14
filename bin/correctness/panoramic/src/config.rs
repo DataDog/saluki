@@ -495,6 +495,19 @@ pub struct MatrixConfig {
     #[serde(default)]
     pub additional_span_ignore_fields: Vec<String>,
 
+    /// How long to wait after millstone exits before collecting data, in seconds.
+    ///
+    /// Propagated unchanged to every expanded [`CorrectnessConfig`].
+    #[serde(default = "crate::correctness::config::default_flush_wait_secs")]
+    pub flush_wait_secs: u64,
+
+    /// Restrict metrics analysis to exactly these metric names.
+    ///
+    /// Propagated unchanged to every expanded [`CorrectnessConfig`]. See
+    /// [`CorrectnessConfig::focus_metrics`] for full semantics.
+    #[serde(default)]
+    pub focus_metrics: Vec<String>,
+
     /// Matrix variants. Each entry produces one expanded test case.
     pub variants: Vec<MatrixVariant>,
 
@@ -591,6 +604,8 @@ impl MatrixConfig {
                     },
                     otlp_direct_analysis_mode: self.otlp_direct_analysis_mode,
                     additional_span_ignore_fields: self.additional_span_ignore_fields.clone(),
+                    flush_wait_secs: self.flush_wait_secs,
+                    focus_metrics: self.focus_metrics.clone(),
                     base_config_path: PathBuf::new(),
                 }
             })

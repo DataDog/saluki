@@ -1,0 +1,52 @@
+seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 131]
+target: "unixgram:///$GROUP-airlock/metrics.sock"
+aggregation_bucket_width_secs: 10
+
+# Moderate volume: enough points to produce a clearly non-zero `datadog.agent.point.sent`
+# reading, but small enough for a fast test cycle.
+volume: 5000
+
+corpus:
+  size: 5000
+  payload:
+    dogstatsd:
+      # Fixed context count so that both sides send the same number of unique timeseries, which
+      # means the aggregator flushes the same number of series points on each side.
+      contexts:
+        constant: 500
+      name_length:
+        inclusive:
+          min: 4
+          max: 24
+      tag_length:
+        inclusive:
+          min: 3
+          max: 12
+      tags_per_msg:
+        inclusive:
+          min: 1
+          max: 4
+      value:
+        float_probability: 0.0
+        range:
+          inclusive:
+            min: 0
+            max: 9999
+      multivalue_count:
+        inclusive:
+          min: 1
+          max: 1
+      multivalue_pack_probability: 0.0
+      kind_weights:
+        metric: 100
+        event: 0
+        service_check: 0
+      # Counts only: no sketches (distributions/histograms) to keep the point arithmetic clean
+      # and avoid any sketch-vs-series type mismatches.
+      metric_weights:
+        count: 1
+        gauge: 0
+        timer: 0
+        distribution: 0
+        set: 0
+        histogram: 0

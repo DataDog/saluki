@@ -44,6 +44,10 @@ fn default_otlp_direct_analysis_mode() -> bool {
     false
 }
 
+pub(crate) fn default_flush_wait_secs() -> u64 {
+    32
+}
+
 #[derive(Clone, Deserialize)]
 pub struct Config {
     #[serde(skip)]
@@ -76,6 +80,34 @@ pub struct Config {
     /// Merged with the built-in list (SSI metadata, deprecated fields). Use for OTel vs ADP differences (for example, `agent_metadata.target_tps`, `metrics._top_level`, `metrics._dd.measured`).
     #[serde(default)]
     pub additional_span_ignore_fields: Vec<String>,
+
+    /// How long to wait after millstone exits before collecting data, in seconds.
+    ///
+    /// This gives agents time to flush any remaining aggregated metrics. Defaults to 32 seconds,
+    /// which covers approximately three 10-second aggregation flush cycles.
+    ///
+    /// Tests that need to capture metrics from periodic internal telemetry components (for example,
+    /// `analysis_mode: agent_telemetry`) should set this high enough that the telemetry fires at
+    /// least once after all traffic has been fully flushed. The `agent_telemetry.start_after` value
+    /// in `datadog.yaml` must be less than `(agent_startup_time + flush_wait_secs)` so the payload
+    /// arrives before data collection.
+    #[serde(default = "default_flush_wait_secs")]
+    pub flush_wait_secs: u64,
+
+    /// When non-empty and `analysis_mode` is `metrics`, restrict analysis to exactly these metric
+    /// names.
+    ///
+    /// Instead of applying the standard internal-telemetry filter (which removes `datadog.*`,
+    /// `system.*`, and similar prefixes), only metrics whose names appear in this list are kept.
+    /// All other metrics — including user-submitted ones — are discarded before comparison.
+    ///
+    /// This is useful when the test goal is to validate specific agent-emitted metrics such as
+    /// `datadog.agent.point.sent` and `datadog.agent.point.dropped`, which would otherwise be
+    /// stripped by the default filter.
+    ///
+    /// Defaults to empty (standard filtering applies).
+    #[serde(default)]
+    pub focus_metrics: Vec<String>,
 
     #[serde(skip, default = "PathBuf::new")]
     pub(crate) base_config_path: PathBuf,

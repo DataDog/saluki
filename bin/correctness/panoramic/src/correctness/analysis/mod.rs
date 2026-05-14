@@ -1,6 +1,7 @@
 use saluki_error::GenericError;
 use serde::Deserialize;
 
+mod agent_telemetry;
 mod collected;
 pub use self::collected::CollectedData;
 
@@ -13,6 +14,13 @@ mod traces;
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AnalysisMode {
+    /// Compares agent telemetry payloads between the baseline and comparison targets.
+    ///
+    /// Checks that both targets report the same set of metric names via the `agenttelemetry`
+    /// component. Requires the agent to be configured with `agent_telemetry.logs_dd_url` pointing
+    /// to the intake's HTTPS listener (port 2050) and `skip_ssl_validation: true`.
+    AgentTelemetry,
+
     /// Compares events between the baseline and comparison targets.
     Events,
 
@@ -41,21 +49,27 @@ pub struct AnalysisRunner {
     baseline_data: CollectedData,
     comparison_data: CollectedData,
     traces_options: Option<TracesAnalysisOptions>,
+    focus_metrics: Vec<String>,
 }
 
 impl AnalysisRunner {
     /// Creates a new `AnalysisRunner` with the given analysis mode, baseline data, and comparison data.
     ///
     /// When mode is `Traces`, `traces_options` should be `Some(...)`; otherwise it is ignored.
+    ///
+    /// `focus_metrics` is forwarded to `MetricsAnalyzer` when mode is `Metrics`: when non-empty,
+    /// only the named metrics are retained before comparison (bypassing the standard
+    /// internal-telemetry filter). Pass an empty `Vec` to use the default filter.
     pub fn new(
         mode: AnalysisMode, baseline_data: CollectedData, comparison_data: CollectedData,
-        traces_options: Option<TracesAnalysisOptions>,
+        traces_options: Option<TracesAnalysisOptions>, focus_metrics: Vec<String>,
     ) -> Self {
         Self {
             mode,
             baseline_data,
             comparison_data,
             traces_options,
+            focus_metrics,
         }
     }
 
@@ -67,13 +81,18 @@ impl AnalysisRunner {
     /// an error is returned alongside the full list of mismatch details (for log output).
     pub fn run_analysis(self) -> Result<(), (GenericError, Vec<String>)> {
         match self.mode {
+            AnalysisMode::AgentTelemetry => {
+                let analyzer = agent_telemetry::AgentTelemetryAnalyzer::new(&self.baseline_data, &self.comparison_data);
+                analyzer.run_analysis()
+            }
             AnalysisMode::Events => {
                 let analyzer = events::EventsAnalyzer::new(&self.baseline_data, &self.comparison_data);
                 analyzer.run_analysis()
             }
             AnalysisMode::Metrics => {
-                let analyzer = metrics::MetricsAnalyzer::new(&self.baseline_data, &self.comparison_data)
-                    .map_err(|e| (e, vec![]))?;
+                let analyzer =
+                    metrics::MetricsAnalyzer::new(&self.baseline_data, &self.comparison_data, self.focus_metrics)
+                        .map_err(|e| (e, vec![]))?;
                 analyzer.run_analysis()
             }
             AnalysisMode::ServiceChecks => {

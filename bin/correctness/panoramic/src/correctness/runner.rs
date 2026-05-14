@@ -34,12 +34,6 @@ use crate::{
 /// This mirrors the path used by the single-millstone setup so the same bind-mount machinery works.
 const MILLSTONE_CONFIG_INTERNAL: &str = "/etc/millstone/config.toml";
 
-/// How long to wait after millstone exits before querying datadog-intake for data.
-///
-/// This gives the agents time to flush any remaining aggregated metrics after millstone stops
-/// sending. The value is slightly longer than a full aggregation bucket width.
-const FLUSH_WAIT: Duration = Duration::from_secs(32);
-
 /// Run a single correctness test and return a panoramic `TestResult`.
 pub async fn run_correctness_test(name: String, config: Config, tctx: TestContext) -> TestResult {
     match config.runtime {
@@ -74,9 +68,17 @@ async fn run_docker_correctness_test(name: String, config: Config, tctx: TestCon
             otlp_direct_analysis_mode: config.otlp_direct_analysis_mode,
             additional_span_ignore_fields: config.additional_span_ignore_fields.clone(),
         }),
-        AnalysisMode::Events | AnalysisMode::Metrics | AnalysisMode::ServiceChecks => None,
+        AnalysisMode::AgentTelemetry | AnalysisMode::Events | AnalysisMode::Metrics | AnalysisMode::ServiceChecks => {
+            None
+        }
     };
-    let analysis_runner = AnalysisRunner::new(config.analysis_mode, baseline_data, comparison_data, traces_options);
+    let analysis_runner = AnalysisRunner::new(
+        config.analysis_mode,
+        baseline_data,
+        comparison_data,
+        traces_options,
+        config.focus_metrics,
+    );
     let analysis_result = analysis_runner.run_analysis();
     let analysis_duration = analysis_start.elapsed();
 
@@ -172,6 +174,7 @@ pub struct CorrectnessRunner {
     millstone_config: MillstoneConfig,
     baseline_target_driver_config: DriverConfig,
     comparison_target_driver_config: DriverConfig,
+    flush_wait: Duration,
     tctx: TestContext,
     baseline_coordinator: Coordinator,
     comparison_coordinator: Coordinator,
@@ -189,6 +192,7 @@ impl CorrectnessRunner {
             millstone_config: config.millstone_config(),
             baseline_target_driver_config: baseline,
             comparison_target_driver_config: comparison,
+            flush_wait: Duration::from_secs(config.flush_wait_secs),
             tctx,
             baseline_coordinator: Coordinator::new(),
             comparison_coordinator: Coordinator::new(),
@@ -454,16 +458,16 @@ impl CorrectnessRunner {
         }
         debug!(
             "Shared millstone completed. Waiting {:?} for agents to flush...",
-            FLUSH_WAIT
+            self.flush_wait
         );
 
         // Phase 6: Give agents time to flush all remaining aggregated metrics.
         //
-        // TODO: This should maybe be configurable, or perhaps we can figure out a better way to
-        // determine when the next flush has happened... and further, we might not need to care
-        // about this for particular analysis modes if the functionality we're testing doesn't rely
-        // on flushing like metrics does.
-        sleep(FLUSH_WAIT).await;
+        // The wait duration is controlled by `flush_wait_secs` in the test config. Tests that
+        // capture periodic internal telemetry (for example `agent_telemetry` analysis mode) need
+        // a longer wait so that the telemetry component fires at least once after all traffic has
+        // been fully flushed.
+        sleep(self.flush_wait).await;
 
         // Phase 7: Collect data from both datadog-intake containers, then shut everything down.
         info!("Collecting data from baseline and comparison intake containers...");

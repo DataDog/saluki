@@ -1,0 +1,27 @@
+type: correctness
+runtime: docker
+analysis_mode: agent_telemetry
+# Flush wait must exceed (start_after - agent_startup_time) so data collection happens after the
+# COAT snapshot arrives at the intake. With start_after=37 and agents ready ~2s before millstone,
+# the snapshot arrives at ~t=35s after millstone exits. 60s gives comfortable headroom.
+flush_wait_secs: 60
+millstone:
+  image: saluki-images/correctness-tools:latest
+  config_path: millstone.yaml
+datadog_intake:
+  image: saluki-images/correctness-tools:latest
+  config_path: ../datadog-intake.yaml
+baseline:
+  image: saluki-images/datadog-agent:testing-release
+  files:
+    - datadog.yaml:/etc/datadog-agent/datadog.yaml
+  additional_env_vars:
+    - DD_API_KEY=correctness-test
+comparison:
+  image: saluki-images/datadog-agent:testing-release
+  files:
+    - datadog.yaml:/etc/datadog-agent/datadog.yaml
+  additional_env_vars:
+    - DD_API_KEY=correctness-test
+    - DD_DATA_PLANE_ENABLED=true
+    - DD_AGGREGATE_CONTEXT_LIMIT=500000

@@ -15,8 +15,12 @@ COPY --from=adp /opt/datadog/agent-data-plane /opt/datadog/agent-data-plane
 # Add the s6 service files for Agent Data Plane.
 #
 # ADP will only run when the `DD_DATA_PLANE_ENABLED` environment variable is set to `true`.
+#
+# Newer agent images (>= v112974386) already include a built-in `data-plane` s6 service at
+# /etc/services.d/data-plane/ that starts the ADP binary. Copying our own s6-services entry
+# would create a second competing service and cause a startup crash, so only cont-init.d is
+# copied here; the built-in service handles ADP lifecycle.
 COPY docker/cont-init.d /etc/cont-init.d/
-COPY docker/s6-services /etc/services.d/
 
 COPY --chmod=755 docker/entrypoint.sh /entrypoint.sh
 
