@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 pub use self::autodiscovery::AutodiscoveryProvider;
 pub use self::host::HostProvider;
-pub use self::workload::WorkloadProvider;
+pub use self::workload::{CaptureEntityResolver, WorkloadProvider};
 
 /// Provides information about the environment in which the process is running.
 pub trait EnvironmentProvider {

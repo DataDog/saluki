@@ -31,6 +31,27 @@ pub mod providers;
 
 pub mod stores;
 
+/// Resolves live process IDs observed during traffic capture to workload entities.
+///
+/// This is intentionally narrower than [`WorkloadProvider`]: callers should only use it for PIDs observed from the
+/// local operating system while capturing traffic. It is not a general-purpose historical PID lookup API.
+pub trait CaptureEntityResolver {
+    /// Resolves a live process ID to the container entity that owns it, if known.
+    fn resolve_container_entity_for_live_pid(&self, process_id: u32) -> Option<EntityId>;
+}
+
+impl<T> CaptureEntityResolver for Option<T>
+where
+    T: CaptureEntityResolver,
+{
+    fn resolve_container_entity_for_live_pid(&self, process_id: u32) -> Option<EntityId> {
+        match self.as_ref() {
+            Some(resolver) => resolver.resolve_container_entity_for_live_pid(process_id),
+            None => None,
+        }
+    }
+}
+
 /// Provides information about workloads running on the process host.
 pub trait WorkloadProvider {
     /// Gets the tags for an entity.

@@ -24,7 +24,7 @@ use snafu::Snafu;
 /// Accepted inputs:
 ///
 /// - Strings with Go time-unit suffixes: `"30s"`, `"1h30m"`, `"250ms"`, `"2h45m30s"`, `"1.5h"`. Valid suffixes: `ns`,
-///   `us`, `µs`, `ms`, `s`, `m`, `h`.
+///   `us`, `µs`, `μs`, `ms`, `s`, `m`, `h`.
 ///
 /// - Strings containing only a bare integer: `"5"` is 5 **nanoseconds**. This matches vipers `cast.ToDurationE`'s
 ///   fallback for unit-less string values.
@@ -225,7 +225,7 @@ fn parse_string(s: &str) -> Result<Duration, ParseDurationError> {
 
 /// Parses a string in the exact format accepted by Go's `time.ParseDuration`, restricted to non-negative values
 /// (since [`std::time::Duration`] cannot represent negatives).
-fn parse_duration(s: &str) -> Result<Duration, ParseDurationError> {
+pub fn parse_duration(s: &str) -> Result<Duration, ParseDurationError> {
     let orig = s;
     let mut rest = s;
     let mut total_ns: u128 = 0;
@@ -272,7 +272,7 @@ fn parse_duration(s: &str) -> Result<Duration, ParseDurationError> {
 
         let unit_ns: u128 = match unit_str {
             "ns" => 1,
-            "us" | "µs" => 1_000,
+            "us" | "µs" | "μs" => 1_000,
             "ms" => 1_000_000,
             "s" => 1_000_000_000,
             "m" => 60 * 1_000_000_000,
@@ -327,7 +327,7 @@ fn consume_digits(s: &str) -> (&str, &str) {
 fn consume_unit(s: &str) -> &str {
     let mut end = 0;
     for (i, c) in s.char_indices() {
-        if c.is_ascii_alphabetic() || c == 'µ' {
+        if c.is_ascii_alphabetic() || c == 'µ' || c == 'μ' {
             end = i + c.len_utf8();
         } else {
             break;
@@ -424,6 +424,29 @@ mod tests {
     }
 
     #[test]
+    fn parse_duration_supports_go_style_units() {
+        assert_eq!(parse_duration("10s").unwrap(), Duration::from_secs(10));
+        assert_eq!(parse_duration("1m0s").unwrap(), Duration::from_secs(60));
+        assert_eq!(parse_duration("500ms").unwrap(), Duration::from_millis(500));
+        assert_eq!(
+            parse_duration("1h2m3.5s").unwrap(),
+            Duration::from_secs(3723) + Duration::from_millis(500)
+        );
+        assert_eq!(parse_duration("250us").unwrap(), Duration::from_micros(250));
+        assert_eq!(parse_duration("250µs").unwrap(), Duration::from_micros(250));
+        assert_eq!(parse_duration("250μs").unwrap(), Duration::from_micros(250));
+    }
+
+    #[test]
+    fn parse_duration_rejects_config_only_values() {
+        assert!(parse_duration("").is_err());
+        assert!(parse_duration("abc").is_err());
+        assert!(parse_duration("10").is_err());
+        assert!(parse_duration(" 10s").is_err());
+        assert!(parse_duration("1xs").is_err());
+    }
+
+    #[test]
     fn duration_string_success_cases() {
         let cases: &[(&str, Duration, &str)] = &[
             ("0", Duration::ZERO, "0s0ns"),
@@ -440,6 +463,7 @@ mod tests {
                 "9930s500000000ns",
             ),
             ("12µs", Duration::from_micros(12), "0s12000ns"),
+            ("12μs", Duration::from_micros(12), "0s12000ns"),
             ("0s", Duration::ZERO, "0s0ns"),
             ("1h1m1s1ms1us1ns", H + M + S + MS + (1000 * NS) + NS, "3661s1001001ns"),
             ("24h", Duration::from_hours(24), "86400s0ns"),

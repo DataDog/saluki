@@ -52,9 +52,9 @@ where
     let process_identity = if control_len > 0 {
         unsafe {
             ancillary_data.set_len(control_len);
-            let messages = ancillary_data.messages();
 
-            match messages
+            match ancillary_data
+                .messages()
                 .map(|m| match m {
                     ControlMessage::Credentials(creds) => creds,
                 })

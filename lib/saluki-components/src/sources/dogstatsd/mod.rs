@@ -6,9 +6,13 @@
 //! - Handle UDS stream framing without treating EOF the same way as UDP and UDS datagram framing.
 //! - Track dispatch failures without depending on whether all events were already iterated.
 
-use std::num::NonZeroUsize;
-use std::sync::{Arc, LazyLock};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::{
+    collections::VecDeque,
+    num::NonZeroUsize,
+    path::PathBuf,
+    sync::{Arc, LazyLock},
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 use async_trait::async_trait;
 use bytes::{Buf, BufMut};
@@ -37,17 +41,17 @@ use saluki_core::{
         EventsBuffer, OutputDefinition,
     },
 };
-use saluki_env::WorkloadProvider;
+use saluki_env::{workload::CaptureEntityResolver, WorkloadProvider};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_io::{
     buf::{BytesBuffer, ClearableIoBuffer as _, FixedSizeVec},
     deser::{
         codec::dogstatsd::*,
-        framing::{Framer as _, FramingError},
+        framing::{Framer as _, FramingError, LengthDelimitedFramer},
     },
     net::{
         listener::{Listener, ListenerError},
-        ConnectionAddress, ListenAddress, Stream,
+        ConnectionAddress, ListenAddress, ProcessIdentity, Stream,
     },
 };
 use saluki_metrics::MetricsBuilder;
@@ -70,6 +74,10 @@ use self::filters::EnablePayloadsFilter;
 
 mod io_buffer;
 use self::io_buffer::IoBufferManager;
+
+mod replay;
+use self::replay::{CaptureRecord, TrafficCapture};
+pub use self::replay::{DogStatsDCaptureAPIHandler, DogStatsDCaptureControl};
 
 mod origin;
 use self::origin::{
@@ -204,6 +212,14 @@ impl Default for EnablePayloadsConfiguration {
         }
     }
 }
+
+const MIN_CAPTURE_DEPTH: usize = 1024;
+
+const fn default_capture_depth() -> usize {
+    MIN_CAPTURE_DEPTH
+}
+
+const DOGSTATSD_CAPTURE_DIR: &str = "dsd_capture";
 
 /// DogStatsD source.
 ///
@@ -459,9 +475,38 @@ pub struct DogStatsDConfiguration {
     #[cfg_attr(test, derive_where(skip))]
     workload_provider: Option<Arc<dyn WorkloadProvider + Send + Sync>>,
 
+    /// Resolver to use for mapping live sender PIDs to container entities during traffic capture.
+    #[serde(skip, default)]
+    #[cfg_attr(test, derive_where(skip))]
+    capture_entity_resolver: Option<Arc<dyn CaptureEntityResolver + Send + Sync>>,
+
     /// Additional tags to add to all metrics.
     #[serde(rename = "dogstatsd_tags", default)]
     additional_tags: Vec<String>,
+
+    /// The directory where DogStatsD capture files are written by default.
+    ///
+    /// When set to an empty path, the source attempts to derive the directory from `run_path` by appending
+    /// `dsd_capture`. If neither value is available, callers must provide an explicit capture path when starting a
+    /// capture session.
+    ///
+    /// Defaults to empty.
+    #[serde(rename = "dogstatsd_capture_path", default)]
+    capture_path: PathBuf,
+
+    /// The maximum number of captured packets that can be queued for persistence.
+    ///
+    /// This controls the depth of the in-process capture queue. Values below `1024` are raised to `1024` before the
+    /// capture writer starts, preventing a zero-depth rendezvous channel from serializing DogStatsD stream handlers
+    /// behind capture persistence.
+    ///
+    /// Defaults to `1024`.
+    #[serde(rename = "dogstatsd_capture_depth", default = "default_capture_depth")]
+    capture_depth: usize,
+
+    #[serde(skip, default)]
+    #[cfg_attr(test, derive_where(skip))]
+    capture_control: DogStatsDCaptureControl,
 
     /// Provider kind tag appended to all metrics as `provider_kind:<value>`.
     ///
@@ -526,7 +571,10 @@ async fn resolve_bind_host(host: &str) -> Result<std::net::IpAddr, Error> {
 impl DogStatsDConfiguration {
     /// Creates a new `DogStatsDConfiguration` from the given configuration.
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        Ok(config.as_typed()?)
+        let mut dogstatsd_config: Self = config.as_typed()?;
+        dogstatsd_config.fix_empty_capture_path(config);
+        dogstatsd_config.fix_capture_depth();
+        Ok(dogstatsd_config)
     }
 
     /// Gets both the `additional_tags` and any others specified by other configuration fields, such as `provider_kind`.
@@ -538,6 +586,10 @@ impl DogStatsDConfiguration {
         let mut tags = self.additional_tags.clone();
         tags.push(format!("provider_kind:{}", self.provider_kind.clone()));
         tags
+    }
+
+    fn fix_capture_depth(&mut self) {
+        self.capture_depth = self.capture_depth.max(MIN_CAPTURE_DEPTH);
     }
 
     /// Returns the effective string interner size in bytes.
@@ -588,6 +640,58 @@ impl DogStatsDConfiguration {
     {
         self.workload_provider = Some(Arc::new(workload_provider));
         self
+    }
+
+    /// Sets the resolver to use for mapping live sender PIDs while capturing DogStatsD traffic.
+    ///
+    /// This resolver is intentionally configured separately from the workload provider because capture only needs a
+    /// narrow live-PID lookup, while normal origin enrichment uses the broader workload provider contract.
+    ///
+    /// Defaults to unset.
+    pub fn with_capture_entity_resolver<R>(mut self, capture_entity_resolver: R) -> Self
+    where
+        R: CaptureEntityResolver + Send + Sync + 'static,
+    {
+        self.capture_entity_resolver = Some(Arc::new(capture_entity_resolver));
+        self
+    }
+
+    /// Returns the shared control handle for DogStatsD traffic capture.
+    pub fn capture_control(&self) -> DogStatsDCaptureControl {
+        self.capture_control.clone()
+    }
+
+    /// Returns an HTTP API handler exposing the DogStatsD capture control surface.
+    pub fn capture_api_handler(&self) -> DogStatsDCaptureAPIHandler {
+        DogStatsDCaptureAPIHandler::new(self.capture_control.clone())
+    }
+
+    fn fix_empty_capture_path(&mut self, config: &GenericConfiguration) {
+        if self.capture_path.parent().is_some() {
+            return;
+        }
+
+        let capture_path = match config.try_get_typed::<PathBuf>("run_path") {
+            Ok(Some(mut run_path)) => {
+                run_path.push(DOGSTATSD_CAPTURE_DIR);
+                run_path
+            }
+            Ok(None) => {
+                debug!(
+                    "`dogstatsd_capture_path` and `run_path` were empty. Default DogStatsD capture path is unavailable."
+                );
+                return;
+            }
+            Err(e) => {
+                debug!(
+                    error = %e,
+                    "Failed to read `run_path` from configuration. Default DogStatsD capture path is unavailable."
+                );
+                return;
+            }
+        };
+
+        self.capture_path = capture_path;
     }
 
     /// Using the current configuration, determines which listeners should be created and adds an address for each into
@@ -704,6 +808,12 @@ impl SourceBuilder for DogStatsDConfiguration {
             .with_allow_sketches(self.enable_payloads.sketches)
             .with_allow_events(self.enable_payloads.events)
             .with_allow_service_checks(self.enable_payloads.service_checks);
+        let traffic_capture = TrafficCapture::with_workload_provider(
+            self.capture_path.clone(),
+            self.capture_depth.max(MIN_CAPTURE_DEPTH),
+            self.workload_provider.clone(),
+        );
+        self.capture_control.bind(traffic_capture.clone());
 
         Ok(Box::new(DogStatsD {
             listeners,
@@ -717,6 +827,8 @@ impl SourceBuilder for DogStatsDConfiguration {
             stream_log_too_big: self.stream_log_too_big,
             eol_required,
             additional_tags: self.additional_tags().into(),
+            capture_entity_resolver: self.capture_entity_resolver.clone(),
+            traffic_capture,
         }))
     }
 
@@ -764,6 +876,8 @@ pub struct DogStatsD {
     stream_log_too_big: bool,
     eol_required: EolRequired,
     additional_tags: Arc<[String]>,
+    capture_entity_resolver: Option<Arc<dyn CaptureEntityResolver + Send + Sync>>,
+    traffic_capture: TrafficCapture,
 }
 
 struct ListenerContext {
@@ -776,6 +890,8 @@ struct ListenerContext {
     stream_log_too_big: bool,
     eol_required: EolRequired,
     additional_tags: Arc<[String]>,
+    capture_entity_resolver: Option<Arc<dyn CaptureEntityResolver + Send + Sync>>,
+    traffic_capture: TrafficCapture,
 }
 
 struct HandlerContext {
@@ -788,6 +904,8 @@ struct HandlerContext {
     origin_detection_enabled: bool,
     stream_log_too_big: bool,
     additional_tags: Arc<[String]>,
+    capture_entity_resolver: Option<Arc<dyn CaptureEntityResolver + Send + Sync>>,
+    traffic_capture: TrafficCapture,
 }
 
 struct Metrics {
@@ -964,6 +1082,8 @@ impl Source for DogStatsD {
                 stream_log_too_big: self.stream_log_too_big,
                 eol_required: self.eol_required,
                 additional_tags: self.additional_tags.clone(),
+                capture_entity_resolver: self.capture_entity_resolver.clone(),
+                traffic_capture: self.traffic_capture.clone(),
             };
 
             spawn_traced_named(
@@ -1012,6 +1132,8 @@ async fn process_listener(
         stream_log_too_big,
         eol_required,
         additional_tags,
+        capture_entity_resolver,
+        traffic_capture,
     } = listener_context;
     tokio::pin!(shutdown_handle);
 
@@ -1041,6 +1163,8 @@ async fn process_listener(
                         origin_detection_enabled,
                         stream_log_too_big,
                         additional_tags: additional_tags.clone(),
+                        capture_entity_resolver: capture_entity_resolver.clone(),
+                        traffic_capture: traffic_capture.clone(),
                     };
 
                     let task_name = format!(
@@ -1092,6 +1216,8 @@ async fn drive_stream(
         origin_detection_enabled,
         stream_log_too_big,
         additional_tags,
+        capture_entity_resolver,
+        traffic_capture,
     } = handler_context;
 
     debug!(%listen_addr, "Stream handler started.");
@@ -1100,6 +1226,7 @@ async fn drive_stream(
         metrics.connections_active().increment(1);
     }
 
+    let mut stream_capture = StreamCaptureState::new();
     // Set a buffer flush interval of 100ms, which will ensure we always flush buffered events at least every 100ms if
     // we're otherwise idle and not receiving packets from the client.
     let mut buffer_flush = interval(Duration::from_millis(100));
@@ -1125,6 +1252,16 @@ async fn drive_stream(
                     }
 
                     let is_connectionless = stream.is_connectionless();
+
+                    capture_uds_traffic(
+                        &listen_addr,
+                        &traffic_capture,
+                        capture_entity_resolver.as_deref(),
+                        &peer_addr,
+                        received_payload(io_buffer, bytes_read),
+                        &mut stream_capture,
+                    );
+
                     if is_connectionless {
                         metrics.packet_receive_success().increment(1);
                     }
@@ -1256,6 +1393,106 @@ fn should_warn_stream_log_too_big(listen_addr: &ListenAddress, error: &FramingEr
     stream_log_too_big
         && matches!(listen_addr, ListenAddress::Unix(_))
         && matches!(error, FramingError::InvalidFrame { .. })
+}
+
+fn capture_uds_traffic(
+    listen_addr: &ListenAddress, traffic_capture: &TrafficCapture,
+    capture_entity_resolver: Option<&(dyn CaptureEntityResolver + Send + Sync)>, peer_addr: &ConnectionAddress,
+    payload: &[u8], stream_capture: &mut StreamCaptureState,
+) {
+    if payload.is_empty() || !traffic_capture.is_ongoing() {
+        return;
+    }
+
+    match listen_addr {
+        ListenAddress::Unixgram(_) => {
+            let _ = traffic_capture.enqueue(build_capture_record(
+                capture_entity_resolver,
+                process_id_from_peer_addr(peer_addr),
+                payload,
+            ));
+        }
+        ListenAddress::Unix(_) => {
+            stream_capture.update_peer_metadata(peer_addr);
+            stream_capture.pending.extend(payload);
+
+            while let Ok(Some(outer_payload)) = stream_capture
+                .outer_framer
+                .next_frame(&mut stream_capture.pending, false)
+            {
+                let _ = traffic_capture.enqueue(build_capture_record(
+                    capture_entity_resolver,
+                    stream_capture.last_pid,
+                    &outer_payload,
+                ));
+            }
+        }
+        _ => {}
+    }
+}
+
+struct StreamCaptureState {
+    outer_framer: LengthDelimitedFramer,
+    pending: VecDeque<u8>,
+    last_pid: Option<i32>,
+}
+
+impl StreamCaptureState {
+    fn new() -> Self {
+        Self {
+            outer_framer: LengthDelimitedFramer,
+            pending: VecDeque::new(),
+            last_pid: None,
+        }
+    }
+
+    fn update_peer_metadata(&mut self, peer_addr: &ConnectionAddress) {
+        if let Some(process_id) = process_id_from_peer_addr(peer_addr) {
+            self.last_pid = Some(process_id);
+        }
+    }
+}
+
+fn build_capture_record(
+    capture_entity_resolver: Option<&(dyn CaptureEntityResolver + Send + Sync)>, process_id: Option<i32>,
+    payload: &[u8],
+) -> CaptureRecord {
+    CaptureRecord {
+        timestamp_ns: capture_timestamp_ns(),
+        payload: payload.to_vec(),
+        pid: process_id,
+        ancillary: Vec::new(),
+        container_id: resolve_capture_container_id(capture_entity_resolver, process_id),
+    }
+}
+
+fn resolve_capture_container_id(
+    capture_entity_resolver: Option<&(dyn CaptureEntityResolver + Send + Sync)>, process_id: Option<i32>,
+) -> Option<String> {
+    let process_id = u32::try_from(process_id?).ok()?;
+    capture_entity_resolver
+        .and_then(|resolver| resolver.resolve_container_entity_for_live_pid(process_id))
+        .map(|entity_id| entity_id.to_string())
+}
+
+fn process_id_from_peer_addr(peer_addr: &ConnectionAddress) -> Option<i32> {
+    match peer_addr {
+        ConnectionAddress::ProcessLike(ProcessIdentity::Credentials(creds)) => Some(creds.pid),
+        _ => None,
+    }
+}
+
+fn received_payload(buffer: &BytesBuffer, bytes_read: usize) -> &[u8] {
+    let chunk = buffer.chunk();
+    let start = chunk.len().saturating_sub(bytes_read);
+    &chunk[start..]
+}
+
+fn capture_timestamp_ns() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos().min(i64::MAX as u128) as i64)
+        .unwrap_or_default()
 }
 
 fn handle_frame(
@@ -1538,16 +1775,45 @@ const fn get_adjusted_buffer_size(buffer_size: usize) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
-
-    use bytesize::ByteSize;
-    use saluki_context::{ContextResolverBuilder, TagsResolverBuilder};
-    use saluki_io::{
-        deser::codec::dogstatsd::{DogStatsDCodec, DogStatsDCodecConfiguration, ParsedPacket},
-        net::{ConnectionAddress, ListenAddress},
+    use std::{
+        collections::HashMap,
+        net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4},
+        path::PathBuf,
     };
 
-    use super::{handle_metric_packet, ContextResolvers, DogStatsDConfiguration};
+    use bytesize::ByteSize;
+    use saluki_config::ConfigurationLoader;
+    use saluki_context::{ContextResolverBuilder, TagsResolverBuilder};
+    use saluki_env::workload::{CaptureEntityResolver, EntityId};
+    use saluki_io::{
+        deser::codec::dogstatsd::{DogStatsDCodec, DogStatsDCodecConfiguration, ParsedPacket},
+        net::{ConnectionAddress, ListenAddress, ProcessCredentials, ProcessIdentity},
+    };
+    use serde_json::json;
+
+    use super::{
+        handle_metric_packet, resolve_capture_container_id, ContextResolvers, DogStatsDConfiguration,
+        DOGSTATSD_CAPTURE_DIR, MIN_CAPTURE_DEPTH,
+    };
+
+    #[derive(Default)]
+    struct CaptureTestEntityResolver {
+        pid_map: HashMap<u32, EntityId>,
+    }
+
+    impl CaptureTestEntityResolver {
+        fn with_pid_mapping(process_id: u32, entity_id: EntityId) -> Self {
+            let mut pid_map = HashMap::new();
+            pid_map.insert(process_id, entity_id);
+            Self { pid_map }
+        }
+    }
+
+    impl CaptureEntityResolver for CaptureTestEntityResolver {
+        fn resolve_container_entity_for_live_pid(&self, process_id: u32) -> Option<EntityId> {
+            self.pid_map.get(&process_id).cloned()
+        }
+    }
 
     #[test]
     fn no_metrics_when_interner_full_allocations_disallowed() {
@@ -2036,6 +2302,94 @@ mod tests {
                 _ => panic!("expected Metric packet"),
             }
         }
+    }
+
+    #[tokio::test]
+    async fn fix_empty_capture_path_sets_path_from_run_path() {
+        const RUN_PATH: &str = "/my/little/run_path";
+
+        let base_config_values = json!({ "run_path": RUN_PATH });
+        let (config, _) = ConfigurationLoader::for_tests(Some(base_config_values), None, false).await;
+
+        let dogstatsd_config = DogStatsDConfiguration::from_configuration(&config).expect("should deserialize");
+
+        let expected = PathBuf::from(RUN_PATH).join(DOGSTATSD_CAPTURE_DIR);
+        assert_eq!(expected, dogstatsd_config.capture_path);
+    }
+
+    #[tokio::test]
+    async fn fix_empty_capture_path_keeps_explicit_path() {
+        const RUN_PATH: &str = "/my/little/run_path";
+        const CAPTURE_PATH: &str = "/custom/path/to/capture";
+
+        let base_config_values = json!({ "run_path": RUN_PATH, "dogstatsd_capture_path": CAPTURE_PATH });
+        let (config, _) = ConfigurationLoader::for_tests(Some(base_config_values), None, false).await;
+
+        let dogstatsd_config = DogStatsDConfiguration::from_configuration(&config).expect("should deserialize");
+
+        assert_eq!(PathBuf::from(CAPTURE_PATH), dogstatsd_config.capture_path);
+    }
+
+    #[tokio::test]
+    async fn from_configuration_normalizes_capture_depth() {
+        let cases = [
+            (json!({}), MIN_CAPTURE_DEPTH),
+            (json!({ "dogstatsd_capture_depth": 0 }), MIN_CAPTURE_DEPTH),
+            (json!({ "dogstatsd_capture_depth": 2048 }), 2048),
+        ];
+
+        for (base_config_values, expected_depth) in cases {
+            let (config, _) = ConfigurationLoader::for_tests(Some(base_config_values), None, false).await;
+            let dogstatsd_config = DogStatsDConfiguration::from_configuration(&config).expect("should deserialize");
+
+            assert_eq!(expected_depth, dogstatsd_config.capture_depth);
+        }
+    }
+
+    #[test]
+    fn capture_entity_resolver_is_configured_separately_from_workload_provider() {
+        let config =
+            DogStatsDConfiguration::default().with_capture_entity_resolver(CaptureTestEntityResolver::default());
+
+        assert!(config.capture_entity_resolver.is_some());
+        assert!(config.workload_provider.is_none());
+    }
+
+    #[test]
+    fn resolve_capture_container_id_uses_live_pid_mapping() {
+        let capture_entity_resolver = CaptureTestEntityResolver::with_pid_mapping(
+            42,
+            EntityId::from_local_data("ci-pid-container").expect("container entity"),
+        );
+
+        assert_eq!(
+            resolve_capture_container_id(Some(&capture_entity_resolver), Some(42)),
+            Some("container_id://pid-container".to_string())
+        );
+    }
+
+    #[test]
+    fn build_capture_record_ignores_payload_local_data() {
+        let record = super::build_capture_record(None, None, b"test.metric:1|c|c:ci-local-container\n");
+
+        assert_eq!(record.container_id, None);
+        assert!(record.ancillary.is_empty());
+    }
+
+    #[test]
+    fn stream_capture_state_preserves_last_pid_without_new_creds() {
+        let mut stream_capture = super::StreamCaptureState::new();
+
+        stream_capture.update_peer_metadata(&ConnectionAddress::ProcessLike(ProcessIdentity::Credentials(
+            ProcessCredentials {
+                pid: 42,
+                uid: 0,
+                gid: 0,
+            },
+        )));
+        stream_capture.update_peer_metadata(&ConnectionAddress::ProcessLike(ProcessIdentity::Unavailable));
+
+        assert_eq!(stream_capture.last_pid, Some(42));
     }
 }
 

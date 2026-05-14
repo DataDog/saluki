@@ -38,30 +38,6 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `dogstatsd_capture_depth` - traffic capture channel depth.
-    DOGSTATSD_CAPTURE_DEPTH = SalukiAnnotation {
-        schema: &schema::DOGSTATSD_CAPTURE_DEPTH,
-        // Traffic capture not implemented. #1381
-        support_level: SupportLevel::Incompatible(Severity::Medium),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-    };
-
-    /// `dogstatsd_capture_path` - traffic capture file location.
-    DOGSTATSD_CAPTURE_PATH = SalukiAnnotation {
-        schema: &schema::DOGSTATSD_CAPTURE_PATH,
-        // Traffic capture not implemented. #1381
-        support_level: SupportLevel::Incompatible(Severity::Medium),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-    };
-
     /// `dogstatsd_disable_verbose_logs` - suppress noisy parse error logs.
     DOGSTATSD_DISABLE_VERBOSE_LOGS = SalukiAnnotation {
         schema: &schema::DOGSTATSD_DISABLE_VERBOSE_LOGS,

@@ -83,6 +83,7 @@ tracing = { workspace = true }
 tracing-appender = { workspace = true }
 tracing-rolling-file = { workspace = true }
 url = { workspace = true }
+zstd = { workspace = true }
 
 [dev-dependencies]
 derive-where = { workspace = true }

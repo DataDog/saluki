@@ -540,12 +540,12 @@ mod tests {
         );
 
         let mut buffer = BytesMut::with_capacity(TEST_PACKET.len());
-        let (received, _) = timeout(Duration::from_secs(1), stream.receive(&mut buffer))
+        let (bytes_read, _) = timeout(Duration::from_secs(1), stream.receive(&mut buffer))
             .await
             .expect("receive should not time out")
             .expect("packet should receive");
 
-        assert_eq!(received, TEST_PACKET.len());
+        assert_eq!(bytes_read, TEST_PACKET.len());
         assert_eq!(&buffer[..], TEST_PACKET);
     }
 
@@ -608,12 +608,12 @@ mod tests {
         );
 
         let mut buffer = BytesMut::with_capacity(TEST_PACKET.len());
-        let (received, _) = timeout(Duration::from_secs(1), stream.receive(&mut buffer))
+        let (bytes_read, _) = timeout(Duration::from_secs(1), stream.receive(&mut buffer))
             .await
             .expect("receive should not time out")
             .expect("packet should receive");
 
-        assert_eq!(received, TEST_PACKET.len());
+        assert_eq!(bytes_read, TEST_PACKET.len());
         assert_eq!(&buffer[..], TEST_PACKET);
     }
 
