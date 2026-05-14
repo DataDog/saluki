@@ -301,8 +301,8 @@
 <a href=#301 id=301 data-nosnippet>301</a>            <span class="kw">let </span>entry = <span class="self">self</span>.entries.remove(<span class="number">0</span>);
 <a href=#302 id=302 data-nosnippet>302</a>
 <a href=#303 id=303 data-nosnippet>303</a>            <span class="comment">// Deserialize the entry, which gives us back the original event and removes the file from disk.
-<a href=#304 id=304 data-nosnippet>304</a>            </span><span class="kw">let </span>event_count = <span class="kw">match </span>try_deserialize_entry::&lt;T&gt;(<span class="kw-2">&amp;</span>entry).<span class="kw">await </span>{
-<a href=#305 id=305 data-nosnippet>305</a>                <span class="prelude-val">Ok</span>(<span class="prelude-val">Some</span>(deserialized)) =&gt; deserialized.event_count(),
+<a href=#304 id=304 data-nosnippet>304</a>            </span><span class="kw">let </span>deserialized = <span class="kw">match </span>try_deserialize_entry::&lt;T&gt;(<span class="kw-2">&amp;</span>entry).<span class="kw">await </span>{
+<a href=#305 id=305 data-nosnippet>305</a>                <span class="prelude-val">Ok</span>(<span class="prelude-val">Some</span>(deserialized)) =&gt; deserialized,
 <a href=#306 id=306 data-nosnippet>306</a>                <span class="prelude-val">Ok</span>(<span class="prelude-val">None</span>) =&gt; {
 <a href=#307 id=307 data-nosnippet>307</a>                    <span class="macro">warn!</span>(entry.path = %entry.path.display(), <span class="string">"Failed to find entry on disk. Persisted entry state may be inconsistent."</span>);
 <a href=#308 id=308 data-nosnippet>308</a>                    <span class="kw">continue</span>;
@@ -325,7 +325,7 @@
 <a href=#325 id=325 data-nosnippet>325</a>
 <a href=#326 id=326 data-nosnippet>326</a>            <span class="comment">// Update our statistics.
 <a href=#327 id=327 data-nosnippet>327</a>            </span><span class="self">self</span>.total_on_disk_bytes -= entry.size_bytes;
-<a href=#328 id=328 data-nosnippet>328</a>            push_result.track_dropped_item(event_count);
+<a href=#328 id=328 data-nosnippet>328</a>            push_result.track_dropped_item(<span class="kw-2">&amp;</span>deserialized);
 <a href=#329 id=329 data-nosnippet>329</a>
 <a href=#330 id=330 data-nosnippet>330</a>            <span class="macro">warn!</span>(entry.path = %entry.path.display(), entry.len = entry.size_bytes, <span class="string">"Dropped persisted entry."</span>);
 <a href=#331 id=331 data-nosnippet>331</a>        }

@@ -155,7 +155,7 @@
 <a href=#155 id=155 data-nosnippet>155</a>        <span class="kw">let </span>maybe_requests = <span class="self">self</span>.request_builder.flush().<span class="kw">await</span>;
 <a href=#156 id=156 data-nosnippet>156</a>        <span class="kw">for </span>maybe_request <span class="kw">in </span>maybe_requests {
 <a href=#157 id=157 data-nosnippet>157</a>            <span class="kw">match </span>maybe_request {
-<a href=#158 id=158 data-nosnippet>158</a>                <span class="prelude-val">Ok</span>((events, request)) =&gt; {
+<a href=#158 id=158 data-nosnippet>158</a>                <span class="prelude-val">Ok</span>((events, _data_points, request)) =&gt; {
 <a href=#159 id=159 data-nosnippet>159</a>                    <span class="kw">let </span>payload_meta = PayloadMetadata::from_event_count(events);
 <a href=#160 id=160 data-nosnippet>160</a>                    <span class="kw">let </span>http_payload = HttpPayload::new(payload_meta, request);
 <a href=#161 id=161 data-nosnippet>161</a>                    <span class="kw">let </span>payload = Payload::Http(http_payload);

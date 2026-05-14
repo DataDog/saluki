@@ -150,35 +150,38 @@
 <a href=#150 id=150 data-nosnippet>150</a>                maybe_payload = context.payloads().next() =&gt; <span class="kw">match </span>maybe_payload {
 <a href=#151 id=151 data-nosnippet>151</a>                    <span class="prelude-val">Some</span>(payload) =&gt; <span class="kw">if let </span><span class="prelude-val">Some</span>(http_payload) = payload.try_into_http_payload() {
 <a href=#152 id=152 data-nosnippet>152</a>                        <span class="kw">let </span>(payload_meta, request) = http_payload.into_parts();
-<a href=#153 id=153 data-nosnippet>153</a>                        <span class="kw">let </span>transaction_meta = Metadata::from_event_count(payload_meta.event_count());
-<a href=#154 id=154 data-nosnippet>154</a>                        <span class="kw">let </span>transaction = Transaction::from_original(transaction_meta, request);
-<a href=#155 id=155 data-nosnippet>155</a>
-<a href=#156 id=156 data-nosnippet>156</a>                        forwarder.send_transaction(transaction).<span class="kw">await</span><span class="question-mark">?</span>;
-<a href=#157 id=157 data-nosnippet>157</a>                    }
-<a href=#158 id=158 data-nosnippet>158</a>                    <span class="prelude-val">None </span>=&gt; <span class="kw">break</span>,
-<a href=#159 id=159 data-nosnippet>159</a>                },
-<a href=#160 id=160 data-nosnippet>160</a>            }
-<a href=#161 id=161 data-nosnippet>161</a>        }
-<a href=#162 id=162 data-nosnippet>162</a>
-<a href=#163 id=163 data-nosnippet>163</a>        <span class="comment">// Shutdown the forwarder gracefully.
-<a href=#164 id=164 data-nosnippet>164</a>        </span>forwarder.shutdown().<span class="kw">await</span>;
+<a href=#153 id=153 data-nosnippet>153</a>                        <span class="kw">let </span>transaction_meta = Metadata::from_event_and_data_point_count(
+<a href=#154 id=154 data-nosnippet>154</a>                            payload_meta.event_count(),
+<a href=#155 id=155 data-nosnippet>155</a>                            payload_meta.data_point_count(),
+<a href=#156 id=156 data-nosnippet>156</a>                        );
+<a href=#157 id=157 data-nosnippet>157</a>                        <span class="kw">let </span>transaction = Transaction::from_original(transaction_meta, request);
+<a href=#158 id=158 data-nosnippet>158</a>
+<a href=#159 id=159 data-nosnippet>159</a>                        forwarder.send_transaction(transaction).<span class="kw">await</span><span class="question-mark">?</span>;
+<a href=#160 id=160 data-nosnippet>160</a>                    }
+<a href=#161 id=161 data-nosnippet>161</a>                    <span class="prelude-val">None </span>=&gt; <span class="kw">break</span>,
+<a href=#162 id=162 data-nosnippet>162</a>                },
+<a href=#163 id=163 data-nosnippet>163</a>            }
+<a href=#164 id=164 data-nosnippet>164</a>        }
 <a href=#165 id=165 data-nosnippet>165</a>
-<a href=#166 id=166 data-nosnippet>166</a>        <span class="macro">debug!</span>(<span class="string">"Datadog forwarder stopped."</span>);
-<a href=#167 id=167 data-nosnippet>167</a>
-<a href=#168 id=168 data-nosnippet>168</a>        <span class="prelude-val">Ok</span>(())
-<a href=#169 id=169 data-nosnippet>169</a>    }
-<a href=#170 id=170 data-nosnippet>170</a>}
-<a href=#171 id=171 data-nosnippet>171</a>
-<a href=#172 id=172 data-nosnippet>172</a><span class="kw">fn </span>get_dd_endpoint_name(uri: <span class="kw-2">&amp;</span>Uri) -&gt; <span class="prelude-ty">Option</span>&lt;MetaString&gt; {
-<a href=#173 id=173 data-nosnippet>173</a>    <span class="kw">match </span>uri.path() {
-<a href=#174 id=174 data-nosnippet>174</a>        <span class="string">"/api/v2/logs" </span>=&gt; <span class="prelude-val">Some</span>(MetaString::from_static(<span class="string">"logs_v2"</span>)),
-<a href=#175 id=175 data-nosnippet>175</a>        <span class="string">"/api/v1/series" </span>=&gt; <span class="prelude-val">Some</span>(MetaString::from_static(<span class="string">"series_v1"</span>)),
-<a href=#176 id=176 data-nosnippet>176</a>        <span class="string">"/api/v2/series" </span>=&gt; <span class="prelude-val">Some</span>(MetaString::from_static(<span class="string">"series_v2"</span>)),
-<a href=#177 id=177 data-nosnippet>177</a>        <span class="string">"/api/beta/sketches" </span>=&gt; <span class="prelude-val">Some</span>(MetaString::from_static(<span class="string">"sketches_v2"</span>)),
-<a href=#178 id=178 data-nosnippet>178</a>        <span class="string">"/api/v1/check_run" </span>=&gt; <span class="prelude-val">Some</span>(MetaString::from_static(<span class="string">"check_run_v1"</span>)),
-<a href=#179 id=179 data-nosnippet>179</a>        <span class="string">"/api/v1/events_batch" </span>=&gt; <span class="prelude-val">Some</span>(MetaString::from_static(<span class="string">"events_batch_v1"</span>)),
-<a href=#180 id=180 data-nosnippet>180</a>        <span class="string">"/api/v0.2/traces" </span>=&gt; <span class="prelude-val">Some</span>(MetaString::from_static(<span class="string">"traces_v0.2"</span>)),
-<a href=#181 id=181 data-nosnippet>181</a>        <span class="kw">_ </span>=&gt; <span class="prelude-val">None</span>,
-<a href=#182 id=182 data-nosnippet>182</a>    }
-<a href=#183 id=183 data-nosnippet>183</a>}
+<a href=#166 id=166 data-nosnippet>166</a>        <span class="comment">// Shutdown the forwarder gracefully.
+<a href=#167 id=167 data-nosnippet>167</a>        </span>forwarder.shutdown().<span class="kw">await</span>;
+<a href=#168 id=168 data-nosnippet>168</a>
+<a href=#169 id=169 data-nosnippet>169</a>        <span class="macro">debug!</span>(<span class="string">"Datadog forwarder stopped."</span>);
+<a href=#170 id=170 data-nosnippet>170</a>
+<a href=#171 id=171 data-nosnippet>171</a>        <span class="prelude-val">Ok</span>(())
+<a href=#172 id=172 data-nosnippet>172</a>    }
+<a href=#173 id=173 data-nosnippet>173</a>}
+<a href=#174 id=174 data-nosnippet>174</a>
+<a href=#175 id=175 data-nosnippet>175</a><span class="kw">fn </span>get_dd_endpoint_name(uri: <span class="kw-2">&amp;</span>Uri) -&gt; <span class="prelude-ty">Option</span>&lt;MetaString&gt; {
+<a href=#176 id=176 data-nosnippet>176</a>    <span class="kw">match </span>uri.path() {
+<a href=#177 id=177 data-nosnippet>177</a>        <span class="string">"/api/v2/logs" </span>=&gt; <span class="prelude-val">Some</span>(MetaString::from_static(<span class="string">"logs_v2"</span>)),
+<a href=#178 id=178 data-nosnippet>178</a>        <span class="string">"/api/v1/series" </span>=&gt; <span class="prelude-val">Some</span>(MetaString::from_static(<span class="string">"series_v1"</span>)),
+<a href=#179 id=179 data-nosnippet>179</a>        <span class="string">"/api/v2/series" </span>=&gt; <span class="prelude-val">Some</span>(MetaString::from_static(<span class="string">"series_v2"</span>)),
+<a href=#180 id=180 data-nosnippet>180</a>        <span class="string">"/api/beta/sketches" </span>=&gt; <span class="prelude-val">Some</span>(MetaString::from_static(<span class="string">"sketches_v2"</span>)),
+<a href=#181 id=181 data-nosnippet>181</a>        <span class="string">"/api/v1/check_run" </span>=&gt; <span class="prelude-val">Some</span>(MetaString::from_static(<span class="string">"check_run_v1"</span>)),
+<a href=#182 id=182 data-nosnippet>182</a>        <span class="string">"/api/v1/events_batch" </span>=&gt; <span class="prelude-val">Some</span>(MetaString::from_static(<span class="string">"events_batch_v1"</span>)),
+<a href=#183 id=183 data-nosnippet>183</a>        <span class="string">"/api/v0.2/traces" </span>=&gt; <span class="prelude-val">Some</span>(MetaString::from_static(<span class="string">"traces_v0.2"</span>)),
+<a href=#184 id=184 data-nosnippet>184</a>        <span class="kw">_ </span>=&gt; <span class="prelude-val">None</span>,
+<a href=#185 id=185 data-nosnippet>185</a>    }
+<a href=#186 id=186 data-nosnippet>186</a>}
 </code></pre></div></section></main></body></html>
