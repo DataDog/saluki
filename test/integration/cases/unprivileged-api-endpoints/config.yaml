@@ -12,24 +12,24 @@ container:
     DD_DATA_PLANE_STANDALONE_MODE: "true"
     DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
   exposed_ports:
-    - "5100/tcp"
+    - "5400/tcp"
 
 assertions:
   - parallel:
       - type: process_stable_for
         duration: 10s
       - type: http_check
-        endpoint: "http://localhost:5100/ready"
+        endpoint: "http://localhost:5400/ready"
         status:
           equal: 200
         timeout: 10s
       - type: http_check
-        endpoint: "http://localhost:5100/live"
+        endpoint: "http://localhost:5400/live"
         status:
           equal: 200
         timeout: 10s
       - type: http_check
-        endpoint: "http://localhost:5100/memory/status"
+        endpoint: "http://localhost:5400/memory/status"
         status:
           equal: 200
         timeout: 10s

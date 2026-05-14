@@ -122,7 +122,7 @@ container:
   # Ports to expose (port/protocol)
   exposed_ports:
     - "8125/udp"
-    - "5102/tcp"
+    - "5402/tcp"
 
 # Required: list of assertion steps to run (executed sequentially)
 # Each step is either a single assertion or a parallel block.
@@ -216,7 +216,7 @@ Probes an HTTP or HTTPS endpoint and asserts on the response status code. HTTPS 
 ```yaml
 # Assert the endpoint returns a specific status code.
 - type: http_check
-  endpoint: "http://localhost:5102/health"
+  endpoint: "http://localhost:5402/health"
   status:
     equal: 200
   timeout: 30s
@@ -224,7 +224,7 @@ Probes an HTTP or HTTPS endpoint and asserts on the response status code. HTTPS 
 # Probe an HTTPS endpoint served with a self-signed certificate, asserting only that the route is
 # registered (i.e. the response is anything other than 404).
 - type: http_check
-  endpoint: "https://localhost:5101/logging/override"
+  endpoint: "https://localhost:5401/logging/override"
   status:
     not_equal: 404
   insecure_skip_verify: true     # Optional: skip TLS certificate verification (default: false)

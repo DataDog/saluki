@@ -41,14 +41,14 @@ impl DataPlaneConfiguration {
             remote_agent_enabled: config.try_get_typed("data_plane.remote_agent_enabled")?.unwrap_or(true),
             api_listen_address: config
                 .try_get_typed("data_plane.api_listen_address")?
-                .unwrap_or_else(|| ListenAddress::any_tcp(5100)),
+                .unwrap_or_else(|| ListenAddress::any_tcp(5400)),
             secure_api_listen_address: config
                 .try_get_typed("data_plane.secure_api_listen_address")?
-                .unwrap_or_else(|| ListenAddress::any_tcp(5101)),
+                .unwrap_or_else(|| ListenAddress::any_tcp(5401)),
             telemetry_enabled: config.try_get_typed("data_plane.telemetry_enabled")?.unwrap_or(true),
             telemetry_listen_addr: config
                 .try_get_typed("data_plane.telemetry_listen_addr")?
-                .unwrap_or_else(|| ListenAddress::any_tcp(5102)),
+                .unwrap_or_else(|| ListenAddress::any_tcp(5402)),
             checks: DataPlaneChecksConfiguration::from_configuration(config)?,
             dogstatsd: DataPlaneDogStatsDConfiguration::from_configuration(config)?,
             otlp: DataPlaneOtlpConfiguration::from_configuration(config)?,

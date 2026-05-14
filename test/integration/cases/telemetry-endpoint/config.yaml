@@ -11,9 +11,9 @@ container:
     DD_DATA_PLANE_ENABLED: "true"
     DD_DATA_PLANE_STANDALONE_MODE: "true"
     DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
-    DD_DATA_PLANE_TELEMETRY_LISTEN_ADDR: "tcp://0.0.0.0:5102"
+    DD_DATA_PLANE_TELEMETRY_LISTEN_ADDR: "tcp://0.0.0.0:5402"
   exposed_ports:
-    - "5102/tcp"
+    - "5402/tcp"
 
 assertions:
   # Make sure the process becomes healthy, and stays up without errors, listening on the telemetry endpoint,
@@ -25,16 +25,16 @@ assertions:
         pattern: "Internal telemetry enabled."
         timeout: 10s
       - type: port_listening
-        port: 5102
+        port: 5402
         protocol: tcp
         timeout: 10s
       - type: http_check
-        endpoint: "http://localhost:5102/metrics"
+        endpoint: "http://localhost:5402/metrics"
         status:
           equal: 200
         timeout: 10s
       - type: http_check
-        endpoint: "http://localhost:5102/compat/metrics"
+        endpoint: "http://localhost:5402/compat/metrics"
         status:
           equal: 200
         timeout: 10s

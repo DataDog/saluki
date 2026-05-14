@@ -288,7 +288,7 @@ endif
 	@echo "[*] Running ADP..."
 	@DD_DATA_PLANE_ENABLED=true DD_DATA_PLANE_DOGSTATSD_ENABLED=true \
 	DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
-	DD_DATA_PLANE_TELEMETRY_ENABLED=true DD_DATA_PLANE_TELEMETRY_LISTEN_ADDR=tcp://127.0.0.1:5102 \
+	DD_DATA_PLANE_TELEMETRY_ENABLED=true DD_DATA_PLANE_TELEMETRY_LISTEN_ADDR=tcp://127.0.0.1:5402 \
 	DD_AUTH_TOKEN_FILE_PATH=/etc/datadog-agent/auth_token \
 	target/devel/agent-data-plane run
 
@@ -304,7 +304,7 @@ endif
 	@echo "[*] Running ADP..."
 	@DD_DATA_PLANE_ENABLED=true DD_DATA_PLANE_DOGSTATSD_ENABLED=true \
 	DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
-	DD_DATA_PLANE_TELEMETRY_ENABLED=true DD_DATA_PLANE_TELEMETRY_LISTEN_ADDR=tcp://127.0.0.1:5102 \
+	DD_DATA_PLANE_TELEMETRY_ENABLED=true DD_DATA_PLANE_TELEMETRY_LISTEN_ADDR=tcp://127.0.0.1:5402 \
 	DD_AUTH_TOKEN_FILE_PATH=/etc/datadog-agent/auth_token \
 	target/release/agent-data-plane run
 
@@ -315,7 +315,7 @@ run-adp-standalone: ## Runs ADP locally in standalone mode (debug)
 	@DD_DATA_PLANE_STANDALONE_MODE=true DD_DATA_PLANE_DOGSTATSD_ENABLED=true \
  	DD_API_KEY=api-key-adp-standalone DD_HOSTNAME=adp-standalone \
 	DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
-	DD_DATA_PLANE_TELEMETRY_ENABLED=true DD_DATA_PLANE_TELEMETRY_LISTEN_ADDR=tcp://127.0.0.1:5102 \
+	DD_DATA_PLANE_TELEMETRY_ENABLED=true DD_DATA_PLANE_TELEMETRY_LISTEN_ADDR=tcp://127.0.0.1:5402 \
 	DD_IPC_CERT_FILE_PATH=$(ADP_STANDALONE_IPC_CERT_FILE) \
 	target/devel/agent-data-plane --config /tmp/adp-empty-config.yaml run
 
@@ -326,7 +326,7 @@ run-adp-standalone-release: ## Runs ADP locally in standalone mode (release)
 	@DD_DATA_PLANE_STANDALONE_MODE=true DD_DATA_PLANE_DOGSTATSD_ENABLED=true \
 	DD_API_KEY=api-key-adp-standalone DD_HOSTNAME=adp-standalone \
 	DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
-	DD_DATA_PLANE_TELEMETRY_ENABLED=true DD_DATA_PLANE_TELEMETRY_LISTEN_ADDR=tcp://127.0.0.1:5102 \
+	DD_DATA_PLANE_TELEMETRY_ENABLED=true DD_DATA_PLANE_TELEMETRY_LISTEN_ADDR=tcp://127.0.0.1:5402 \
 	DD_IPC_CERT_FILE_PATH=$(ADP_STANDALONE_IPC_CERT_FILE) \
 	target/release/agent-data-plane --config /tmp/adp-empty-config.yaml run
 
@@ -621,7 +621,7 @@ endif
 	DD_DATA_PLANE_STANDALONE_MODE=true \
 	DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
 	DD_ADP_OTLP_ENABLED=true DD_OTLP_CONFIG="{}" \
-	DD_DATA_PLANE_TELEMETRY_ENABLED=true DD_DATA_PLANE_TELEMETRY_LISTEN_ADDR=tcp://127.0.0.1:5102 \
+	DD_DATA_PLANE_TELEMETRY_ENABLED=true DD_DATA_PLANE_TELEMETRY_LISTEN_ADDR=tcp://127.0.0.1:5402 \
 	./test/ddprof/bin/ddprof --service adp --environment local --service-version $(GIT_COMMIT) \
 	--url unix:///var/run/datadog/apm.socket \
 	--inlined-functions true --timeline --upload-period 10 --preset cpu_live_heap \
