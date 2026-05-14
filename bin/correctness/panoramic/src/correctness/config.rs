@@ -94,6 +94,21 @@ pub struct Config {
     #[serde(default = "default_flush_wait_secs")]
     pub flush_wait_secs: u64,
 
+    /// When non-empty and `analysis_mode` is `metrics`, restrict analysis to exactly these metric
+    /// names.
+    ///
+    /// Instead of applying the standard internal-telemetry filter (which removes `datadog.*`,
+    /// `system.*`, and similar prefixes), only metrics whose names appear in this list are kept.
+    /// All other metrics — including user-submitted ones — are discarded before comparison.
+    ///
+    /// This is useful when the test goal is to validate specific agent-emitted metrics such as
+    /// `datadog.agent.point.sent` and `datadog.agent.point.dropped`, which would otherwise be
+    /// stripped by the default filter.
+    ///
+    /// Defaults to empty (standard filtering applies).
+    #[serde(default)]
+    pub focus_metrics: Vec<String>,
+
     #[serde(skip, default = "PathBuf::new")]
     pub(crate) base_config_path: PathBuf,
 }

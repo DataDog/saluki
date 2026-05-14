@@ -49,21 +49,27 @@ pub struct AnalysisRunner {
     baseline_data: CollectedData,
     comparison_data: CollectedData,
     traces_options: Option<TracesAnalysisOptions>,
+    focus_metrics: Vec<String>,
 }
 
 impl AnalysisRunner {
     /// Creates a new `AnalysisRunner` with the given analysis mode, baseline data, and comparison data.
     ///
     /// When mode is `Traces`, `traces_options` should be `Some(...)`; otherwise it is ignored.
+    ///
+    /// `focus_metrics` is forwarded to `MetricsAnalyzer` when mode is `Metrics`: when non-empty,
+    /// only the named metrics are retained before comparison (bypassing the standard
+    /// internal-telemetry filter). Pass an empty `Vec` to use the default filter.
     pub fn new(
         mode: AnalysisMode, baseline_data: CollectedData, comparison_data: CollectedData,
-        traces_options: Option<TracesAnalysisOptions>,
+        traces_options: Option<TracesAnalysisOptions>, focus_metrics: Vec<String>,
     ) -> Self {
         Self {
             mode,
             baseline_data,
             comparison_data,
             traces_options,
+            focus_metrics,
         }
     }
 
@@ -84,8 +90,9 @@ impl AnalysisRunner {
                 analyzer.run_analysis()
             }
             AnalysisMode::Metrics => {
-                let analyzer = metrics::MetricsAnalyzer::new(&self.baseline_data, &self.comparison_data)
-                    .map_err(|e| (e, vec![]))?;
+                let analyzer =
+                    metrics::MetricsAnalyzer::new(&self.baseline_data, &self.comparison_data, self.focus_metrics)
+                        .map_err(|e| (e, vec![]))?;
                 analyzer.run_analysis()
             }
             AnalysisMode::ServiceChecks => {

@@ -10,11 +10,19 @@ use crate::correctness::analysis::collected::CollectedData;
 pub struct MetricsAnalyzer {
     baseline_metrics: NormalizedMetrics,
     comparison_metrics: NormalizedMetrics,
+    /// When non-empty, only metrics whose names appear in this list are retained.
+    focus_metrics: Vec<String>,
 }
 
 impl MetricsAnalyzer {
     /// Creates a new `MetricsAnalyzer` instance with the given baseline/comparison data.
-    pub fn new(baseline_data: &CollectedData, comparison_data: &CollectedData) -> Result<Self, GenericError> {
+    ///
+    /// When `focus_metrics` is non-empty, the standard internal-telemetry filter is replaced by an
+    /// allowlist filter that keeps only the named metrics. This allows validating `datadog.*`
+    /// metrics that would otherwise be stripped.
+    pub fn new(
+        baseline_data: &CollectedData, comparison_data: &CollectedData, focus_metrics: Vec<String>,
+    ) -> Result<Self, GenericError> {
         let baseline_metrics = NormalizedMetrics::try_from_stele_metrics(baseline_data.metrics())
             .error_context("Failed to normalize baseline metrics.")?;
 
@@ -24,6 +32,7 @@ impl MetricsAnalyzer {
         Ok(Self {
             baseline_metrics,
             comparison_metrics,
+            focus_metrics,
         })
     }
 
@@ -42,8 +51,14 @@ impl MetricsAnalyzer {
             comparison_metrics.len()
         );
 
-        // Filter out internal telemetry metrics.
-        filter_internal_telemetry_metrics(&mut baseline_metrics, &mut comparison_metrics);
+        // Filter metrics: focus list (allowlist) takes priority over the standard internal-telemetry
+        // filter.  When `focus_metrics` is non-empty we keep only the named metrics; otherwise the
+        // standard filter removes `datadog.*` and similar internal namespaces.
+        if !self.focus_metrics.is_empty() {
+            filter_to_focus_metrics(&mut baseline_metrics, &mut comparison_metrics, &self.focus_metrics);
+        } else {
+            filter_internal_telemetry_metrics(&mut baseline_metrics, &mut comparison_metrics);
+        }
 
         // Make sure both the baseline and comparison targets emitted the same unique set of metrics.
         //
@@ -140,6 +155,25 @@ fn compare_metric_values(
         }
         Err((generic_error!("{}", msg), all_details))
     }
+}
+
+fn filter_to_focus_metrics(
+    baseline_metrics: &mut NormalizedMetrics, comparison_metrics: &mut NormalizedMetrics, focus: &[String],
+) {
+    let baseline_before = baseline_metrics.len();
+    let comparison_before = comparison_metrics.len();
+
+    baseline_metrics.remove_matching(|m| !focus.contains(&m.context().name().to_string()));
+    comparison_metrics.remove_matching(|m| !focus.contains(&m.context().name().to_string()));
+
+    info!(
+        "Focus filter kept {}/{} baseline metric(s) and {}/{} comparison metric(s) (focus list: [{}]).",
+        baseline_metrics.len(),
+        baseline_before,
+        comparison_metrics.len(),
+        comparison_before,
+        focus.join(", "),
+    );
 }
 
 fn filter_internal_telemetry_metrics(

@@ -72,7 +72,13 @@ async fn run_docker_correctness_test(name: String, config: Config, tctx: TestCon
             None
         }
     };
-    let analysis_runner = AnalysisRunner::new(config.analysis_mode, baseline_data, comparison_data, traces_options);
+    let analysis_runner = AnalysisRunner::new(
+        config.analysis_mode,
+        baseline_data,
+        comparison_data,
+        traces_options,
+        config.focus_metrics,
+    );
     let analysis_result = analysis_runner.run_analysis();
     let analysis_duration = analysis_start.elapsed();
 
