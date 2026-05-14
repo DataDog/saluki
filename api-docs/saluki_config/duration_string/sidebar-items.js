@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"enum":["ParseDurationError"],"struct":["DurationString"]};
+window.SIDEBAR_ITEMS = {"enum":["ParseDurationError"],"fn":["parse_duration"],"struct":["DurationString"]};

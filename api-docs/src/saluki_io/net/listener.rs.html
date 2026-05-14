@@ -540,12 +540,12 @@
 <a href=#540 id=540 data-nosnippet>540</a>        </span>);
 <a href=#541 id=541 data-nosnippet>541</a>
 <a href=#542 id=542 data-nosnippet>542</a>        <span class="kw">let </span><span class="kw-2">mut </span>buffer = BytesMut::with_capacity(TEST_PACKET.len());
-<a href=#543 id=543 data-nosnippet>543</a>        <span class="kw">let </span>(received, <span class="kw">_</span>) = timeout(Duration::from_secs(<span class="number">1</span>), stream.receive(<span class="kw-2">&amp;mut </span>buffer))
+<a href=#543 id=543 data-nosnippet>543</a>        <span class="kw">let </span>(bytes_read, <span class="kw">_</span>) = timeout(Duration::from_secs(<span class="number">1</span>), stream.receive(<span class="kw-2">&amp;mut </span>buffer))
 <a href=#544 id=544 data-nosnippet>544</a>            .<span class="kw">await
 <a href=#545 id=545 data-nosnippet>545</a>            </span>.expect(<span class="string">"receive should not time out"</span>)
 <a href=#546 id=546 data-nosnippet>546</a>            .expect(<span class="string">"packet should receive"</span>);
 <a href=#547 id=547 data-nosnippet>547</a>
-<a href=#548 id=548 data-nosnippet>548</a>        <span class="macro">assert_eq!</span>(received, TEST_PACKET.len());
+<a href=#548 id=548 data-nosnippet>548</a>        <span class="macro">assert_eq!</span>(bytes_read, TEST_PACKET.len());
 <a href=#549 id=549 data-nosnippet>549</a>        <span class="macro">assert_eq!</span>(<span class="kw-2">&amp;</span>buffer[..], TEST_PACKET);
 <a href=#550 id=550 data-nosnippet>550</a>    }
 <a href=#551 id=551 data-nosnippet>551</a>
@@ -608,12 +608,12 @@
 <a href=#608 id=608 data-nosnippet>608</a>        </span>);
 <a href=#609 id=609 data-nosnippet>609</a>
 <a href=#610 id=610 data-nosnippet>610</a>        <span class="kw">let </span><span class="kw-2">mut </span>buffer = BytesMut::with_capacity(TEST_PACKET.len());
-<a href=#611 id=611 data-nosnippet>611</a>        <span class="kw">let </span>(received, <span class="kw">_</span>) = timeout(Duration::from_secs(<span class="number">1</span>), stream.receive(<span class="kw-2">&amp;mut </span>buffer))
+<a href=#611 id=611 data-nosnippet>611</a>        <span class="kw">let </span>(bytes_read, <span class="kw">_</span>) = timeout(Duration::from_secs(<span class="number">1</span>), stream.receive(<span class="kw-2">&amp;mut </span>buffer))
 <a href=#612 id=612 data-nosnippet>612</a>            .<span class="kw">await
 <a href=#613 id=613 data-nosnippet>613</a>            </span>.expect(<span class="string">"receive should not time out"</span>)
 <a href=#614 id=614 data-nosnippet>614</a>            .expect(<span class="string">"packet should receive"</span>);
 <a href=#615 id=615 data-nosnippet>615</a>
-<a href=#616 id=616 data-nosnippet>616</a>        <span class="macro">assert_eq!</span>(received, TEST_PACKET.len());
+<a href=#616 id=616 data-nosnippet>616</a>        <span class="macro">assert_eq!</span>(bytes_read, TEST_PACKET.len());
 <a href=#617 id=617 data-nosnippet>617</a>        <span class="macro">assert_eq!</span>(<span class="kw-2">&amp;</span>buffer[..], TEST_PACKET);
 <a href=#618 id=618 data-nosnippet>618</a>    }
 <a href=#619 id=619 data-nosnippet>619</a>

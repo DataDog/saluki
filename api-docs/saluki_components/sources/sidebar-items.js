@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"struct":["ChecksIPCConfiguration","DogStatsDConfiguration","HeartbeatConfiguration","InternalMetricsConfiguration","OtlpConfiguration"]};
+window.SIDEBAR_ITEMS = {"struct":["ChecksIPCConfiguration","DogStatsDCaptureAPIHandler","DogStatsDConfiguration","HeartbeatConfiguration","InternalMetricsConfiguration","OtlpConfiguration"]};
