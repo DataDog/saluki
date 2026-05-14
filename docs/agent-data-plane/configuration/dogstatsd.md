@@ -75,7 +75,6 @@ default values.
 
 | Config Key                          | Description                      | Agent Behavior                                 | ADP Behavior                                                   |
 | ----------------------------------- | -------------------------------- | ---------------------------------------------- | -------------------------------------------------------------- |
-| `dogstatsd_context_expiry_seconds`  | Context cache TTL (seconds)      | Default 20s, configurable                      | Hardcodes 30s ([#1340])                                        |
 | `dogstatsd_metrics_stats_enable`    | Enable per-metric debug stats    | Config toggle                                  | Gates debug log; stats API on-demand ([#1352], [#1356])        |
 | `dogstatsd_stats_enable`            | Enable internal stats endpoint   | Config toggle                                  | On-demand via API ([#1352])                                    |
 | `dogstatsd_stats_buffer`            | Internal stats buffer size       | Configurable                                   | On-demand via API ([#1352])                                    |
@@ -313,6 +312,7 @@ when the receiving syslog daemon expects the Agent's RFC-style header.
 | `data_plane.enabled`                      | Enable ADP globally              |
 | `dd_url`                                  | Override intake endpoint URL     |
 | `dogstatsd_buffer_size`                   | Receive buffer size (bytes)      |
+| `dogstatsd_context_expiry_seconds`        | Context cache TTL (seconds)      |
 | `dogstatsd_entity_id_precedence`          | Entity ID over auto-detection    |
 | `dogstatsd_eol_required`                  | Require newline-terminated messages |
 | `dogstatsd_expiry_seconds`                | Counter zero-value TTL (secs)    |
@@ -391,7 +391,6 @@ when the receiving syslog daemon expects the Agent's RFC-style header.
 [#1334]: https://github.com/DataDog/saluki/issues/1334
 [#1338]: https://github.com/DataDog/saluki/issues/1338
 [#1339]: https://github.com/DataDog/saluki/issues/1339
-[#1340]: https://github.com/DataDog/saluki/issues/1340
 [#1342]: https://github.com/DataDog/saluki/issues/1342
 [#1348]: https://github.com/DataDog/saluki/issues/1348
 [#1350]: https://github.com/DataDog/saluki/issues/1350

@@ -361,10 +361,10 @@
   },
   {
     "key": "dogstatsd_context_expiry_seconds",
-    "feature_state": "DIVERGENT",
-    "action": "IMPLEMENT",
+    "feature_state": "PARITY",
+    "action": "NONE",
     "description": "Context cache TTL (seconds)",
-    "reason": "ADP hardcodes 30s; core agent defaults to 20s and makes it configurable.",
+    "reason": "ADP reads dogstatsd_context_expiry_seconds and defaults to 20s, matching the core agent. The value drives both the context resolver and tagset resolver idle expirations in ADP's layered cache architecture.",
     "issue": "#1340",
     "adp_key": null
   },
