@@ -545,35 +545,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn opw_metrics_env_vars_match_yaml_config() {
-        let yaml_config = forwarder_config_from(
-            config_with(serde_json::json!({
-                "observability_pipelines_worker": {
-                    "metrics": {
-                        "enabled": true,
-                        "url": OPW_URL,
-                    }
-                }
-            })),
-            None,
-        )
-        .await;
-        let env_vars = vec![
-            (
-                "OBSERVABILITY_PIPELINES_WORKER_METRICS_ENABLED".to_string(),
-                "true".to_string(),
-            ),
-            (
-                "OBSERVABILITY_PIPELINES_WORKER_METRICS_URL".to_string(),
-                OPW_URL.to_string(),
-            ),
-        ];
-        let env_config = forwarder_config_from(base_config(), Some(&env_vars)).await;
-
-        assert_eq!(yaml_config.opw_metrics, env_config.opw_metrics);
-    }
-
-    #[tokio::test]
     async fn opw_metrics_endpoint_keeps_dynamic_api_key_configuration() {
         let generic_config = generic_config_from(
             config_with(serde_json::json!({

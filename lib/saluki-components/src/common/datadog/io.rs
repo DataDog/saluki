@@ -327,12 +327,12 @@ fn is_metrics_request_uri(uri: &Uri) -> bool {
 }
 
 fn should_route_to_endpoint(is_metrics_request: bool, has_metrics_primary: bool, route: EndpointRoute) -> bool {
-    match (is_metrics_request, has_metrics_primary, route) {
-        (true, true, EndpointRoute::Primary) => false,
-        (false, _, EndpointRoute::MetricsPrimary) => false,
-        (true, false, EndpointRoute::MetricsPrimary) => false,
-        _ => true,
-    }
+    !matches!(
+        (is_metrics_request, has_metrics_primary, route),
+        (true, true, EndpointRoute::Primary)
+            | (false, _, EndpointRoute::MetricsPrimary)
+            | (true, false, EndpointRoute::MetricsPrimary)
+    )
 }
 
 async fn run_endpoint_io_loop<B>(
