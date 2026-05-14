@@ -234,6 +234,11 @@ where
         &self.metadata
     }
 
+    /// Returns the transaction request URI.
+    pub fn request_uri(&self) -> &http::Uri {
+        self.request.uri()
+    }
+
     /// Consumes the `Transaction` and returns the transaction metadata and original request.
     pub fn into_parts(self) -> (Metadata, http::Request<TransactionBody<B>>) {
         (self.metadata, self.request)

@@ -230,10 +230,10 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `observability_pipelines_worker.metrics.enabled` - route metrics to OPW.
-    OBSERVABILITY_PIPELINES_WORKER_METRICS_ENABLED = SalukiAnnotation {
-        schema: &schema::OBSERVABILITY_PIPELINES_WORKER_METRICS_ENABLED,
-        // Not implemented. #1586
+    /// `observability_pipelines_worker.logs.enabled` - route logs to OPW.
+    OBSERVABILITY_PIPELINES_WORKER_LOGS_ENABLED = SalukiAnnotation {
+        schema: &schema::OBSERVABILITY_PIPELINES_WORKER_LOGS_ENABLED,
+        // Logs OPW routing is out of scope for ADP. #1586
         support_level: SupportLevel::Incompatible(Severity::High),
         additional_yaml_paths: &[],
         env_var_override: None,
@@ -242,10 +242,34 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `observability_pipelines_worker.metrics.url` - OPW metrics intake URL.
-    OBSERVABILITY_PIPELINES_WORKER_METRICS_URL = SalukiAnnotation {
-        schema: &schema::OBSERVABILITY_PIPELINES_WORKER_METRICS_URL,
-        // Not implemented. #1586
+    /// `observability_pipelines_worker.logs.url` - OPW logs intake URL.
+    OBSERVABILITY_PIPELINES_WORKER_LOGS_URL = SalukiAnnotation {
+        schema: &schema::OBSERVABILITY_PIPELINES_WORKER_LOGS_URL,
+        // Logs OPW routing is out of scope for ADP. #1586
+        support_level: SupportLevel::Incompatible(Severity::High),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+    };
+
+    /// `observability_pipelines_worker.traces.enabled` - route traces to OPW.
+    OBSERVABILITY_PIPELINES_WORKER_TRACES_ENABLED = SalukiAnnotation {
+        schema: &schema::OBSERVABILITY_PIPELINES_WORKER_TRACES_ENABLED,
+        // Traces OPW routing is out of scope for ADP. #1586
+        support_level: SupportLevel::Incompatible(Severity::High),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+    };
+
+    /// `observability_pipelines_worker.traces.url` - OPW traces intake URL.
+    OBSERVABILITY_PIPELINES_WORKER_TRACES_URL = SalukiAnnotation {
+        schema: &schema::OBSERVABILITY_PIPELINES_WORKER_TRACES_URL,
+        // Traces OPW routing is out of scope for ADP. #1586
         support_level: SupportLevel::Incompatible(Severity::High),
         additional_yaml_paths: &[],
         env_var_override: None,
@@ -434,10 +458,10 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `vector.metrics.enabled` - route metrics to OPW (legacy alias).
-    VECTOR_METRICS_ENABLED = SalukiAnnotation {
-        schema: &schema::VECTOR_METRICS_ENABLED,
-        // Legacy alias for OPW. Not implemented. #1586
+    /// `vector.logs.enabled` - route logs to OPW (legacy alias).
+    VECTOR_LOGS_ENABLED = SalukiAnnotation {
+        schema: &schema::VECTOR_LOGS_ENABLED,
+        // Logs OPW routing is out of scope for ADP. #1586
         support_level: SupportLevel::Incompatible(Severity::High),
         additional_yaml_paths: &[],
         env_var_override: None,
@@ -446,10 +470,34 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `vector.metrics.url` - OPW metrics intake URL (legacy alias).
-    VECTOR_METRICS_URL = SalukiAnnotation {
-        schema: &schema::VECTOR_METRICS_URL,
-        // Legacy alias for OPW. Not implemented. #1586
+    /// `vector.logs.url` - OPW logs intake URL (legacy alias).
+    VECTOR_LOGS_URL = SalukiAnnotation {
+        schema: &schema::VECTOR_LOGS_URL,
+        // Logs OPW routing is out of scope for ADP. #1586
+        support_level: SupportLevel::Incompatible(Severity::High),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+    };
+
+    /// `vector.traces.enabled` - route traces to OPW (legacy alias).
+    VECTOR_TRACES_ENABLED = SalukiAnnotation {
+        schema: &schema::VECTOR_TRACES_ENABLED,
+        // Traces OPW routing is out of scope for ADP. #1586
+        support_level: SupportLevel::Incompatible(Severity::High),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+    };
+
+    /// `vector.traces.url` - OPW traces intake URL (legacy alias).
+    VECTOR_TRACES_URL = SalukiAnnotation {
+        schema: &schema::VECTOR_TRACES_URL,
+        // Traces OPW routing is out of scope for ADP. #1586
         support_level: SupportLevel::Incompatible(Severity::High),
         additional_yaml_paths: &[],
         env_var_override: None,

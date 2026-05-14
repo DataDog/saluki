@@ -162,31 +162,38 @@ impl EndpointConfiguration {
         self.additional_endpoints = AdditionalEndpoints::default();
     }
 
-    /// Builds the resolved endpoints from the endpoint configuration.
-    ///
-    /// This will generate a `ResolvedEndpoint` for each unique endpoint/API key pair, which includes the "primary"
-    /// endpoint defined by `site`/`dd_url` and any additional endpoints defined in `additional_endpoints`.
+    /// Builds the resolved primary endpoint from `site`/`dd_url`.
     ///
     /// # Errors
     ///
-    /// If any of the additional endpoints are not valid URLs, or a valid URL could not be constructed after applying
-    /// the necessary normalization / modifications to a particular endpoint, an error will be returned.
-    pub fn build_resolved_endpoints(
+    /// If the primary endpoint is not a valid URL, or a valid URL could not be constructed after applying the
+    /// necessary normalization / modifications to the endpoint, an error will be returned.
+    pub(crate) fn build_primary_endpoint(
         &self, configuration: Option<GenericConfiguration>,
-    ) -> Result<Vec<ResolvedEndpoint>, GenericError> {
-        let primary_endpoint = calculate_resolved_endpoint(self.dd_url.as_deref(), &self.site, &self.api_key)
-            .error_context("Failed parsing/resolving the primary destination endpoint.")?
-            .with_configuration(configuration);
+    ) -> Result<ResolvedEndpoint, GenericError> {
+        calculate_resolved_endpoint(self.dd_url.as_deref(), &self.site, &self.api_key)
+            .error_context("Failed parsing/resolving the primary destination endpoint.")
+            .map(|endpoint| endpoint.with_configuration(configuration))
+    }
 
-        let additional_endpoints = self
-            .additional_endpoints
+    /// Builds the resolved primary endpoint from a URL override.
+    pub(crate) fn build_primary_endpoint_override(
+        &self, url: &str, configuration: Option<GenericConfiguration>,
+    ) -> Result<ResolvedEndpoint, EndpointError> {
+        calculate_resolved_endpoint(Some(url), &self.site, &self.api_key)
+            .map(|endpoint| endpoint.with_configuration(configuration))
+    }
+
+    /// Builds the resolved additional endpoints.
+    ///
+    /// # Errors
+    ///
+    /// If any additional endpoint is not a valid URL, or a valid URL could not be constructed after applying the
+    /// necessary normalization / modifications to a particular endpoint, an error will be returned.
+    pub(crate) fn build_additional_endpoints(&self) -> Result<Vec<ResolvedEndpoint>, GenericError> {
+        self.additional_endpoints
             .resolved_endpoints()
-            .error_context("Failed parsing/resolving the additional destination endpoints.")?;
-
-        let mut endpoints = additional_endpoints;
-        endpoints.insert(0, primary_endpoint);
-
-        Ok(endpoints)
+            .error_context("Failed parsing/resolving the additional destination endpoints.")
     }
 }
 
@@ -207,6 +214,47 @@ pub struct ResolvedEndpoint {
     traces_authority: Option<Authority>,
 }
 
+/// Routing role for a resolved endpoint.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum EndpointRoute {
+    /// The normal primary Datadog endpoint.
+    Primary,
+    /// The OPW metrics primary endpoint.
+    MetricsPrimary,
+    /// A configured dual-shipping endpoint.
+    Additional,
+}
+
+/// A resolved endpoint with routing metadata.
+#[derive(Clone, Debug)]
+pub(crate) struct RoutableEndpoint {
+    route: EndpointRoute,
+    endpoint: ResolvedEndpoint,
+}
+
+impl RoutableEndpoint {
+    /// Creates a new routable endpoint.
+    pub(crate) const fn new(route: EndpointRoute, endpoint: ResolvedEndpoint) -> Self {
+        Self { route, endpoint }
+    }
+
+    /// Returns the routing role.
+    pub(crate) const fn route(&self) -> EndpointRoute {
+        self.route
+    }
+
+    /// Returns the resolved endpoint.
+    #[cfg(test)]
+    pub(crate) const fn endpoint(&self) -> &ResolvedEndpoint {
+        &self.endpoint
+    }
+
+    /// Consumes the routable endpoint and returns its parts.
+    pub(crate) fn into_parts(self) -> (EndpointRoute, ResolvedEndpoint) {
+        (self.route, self.endpoint)
+    }
+}
+
 impl ResolvedEndpoint {
     /// Creates a new `ResolvedEndpoint` instance from the given endpoint and API key, normalizing and modifying the
     /// endpoint as necessary.
@@ -215,7 +263,7 @@ impl ResolvedEndpoint {
     ///
     /// If the given endpoint is not a valid URL, or a valid URL could not be constructed after applying the necessary
     /// normalization / modifications, an error will be returned.
-    fn from_raw_endpoint(raw_endpoint: &str, api_key: &str) -> Result<Self, EndpointError> {
+    pub(crate) fn from_raw_endpoint(raw_endpoint: &str, api_key: &str) -> Result<Self, EndpointError> {
         let endpoint = parse_and_normalize_endpoint(raw_endpoint)?;
         let logs_authority = compute_logs_authority(&endpoint);
         let traces_authority = compute_traces_authority(&endpoint);
@@ -268,6 +316,12 @@ impl ResolvedEndpoint {
     /// Returns the API key associated with the endpoint without refreshing it.
     pub fn cached_api_key(&self) -> &str {
         self.api_key.as_str()
+    }
+
+    /// Returns whether this endpoint can refresh its API key from dynamic configuration.
+    #[cfg(test)]
+    pub(crate) fn has_configuration(&self) -> bool {
+        self.config.is_some()
     }
 
     /// Returns the pre-computed logs intake authority, if available.

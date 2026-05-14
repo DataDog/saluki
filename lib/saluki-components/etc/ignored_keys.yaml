@@ -2484,14 +2484,6 @@
   reason: initial bulk
 - name: notable_events.enabled
   reason: initial bulk
-- name: observability_pipelines_worker.logs.enabled
-  reason: initial bulk
-- name: observability_pipelines_worker.logs.url
-  reason: initial bulk
-- name: observability_pipelines_worker.traces.enabled
-  reason: initial bulk
-- name: observability_pipelines_worker.traces.url
-  reason: initial bulk
 - name: ol_proxy_config.additional_endpoints
   reason: initial bulk
 - name: ol_proxy_config.api_key
@@ -3355,14 +3347,6 @@
 - name: use_improved_cgroup_parser
   reason: initial bulk
 - name: use_networkv2_check
-  reason: initial bulk
-- name: vector.logs.enabled
-  reason: initial bulk
-- name: vector.logs.url
-  reason: initial bulk
-- name: vector.traces.enabled
-  reason: initial bulk
-- name: vector.traces.url
   reason: initial bulk
 - name: vsock_addr
   reason: initial bulk
