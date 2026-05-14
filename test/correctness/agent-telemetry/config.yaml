@@ -1,10 +1,10 @@
 type: correctness
 runtime: docker
 analysis_mode: agent_telemetry
-# Longer flush wait so that the agenttelemetry component (start_after: 75 in datadog.yaml) fires
-# well after all DogStatsD traffic has been fully aggregated and forwarded. The telemetry snapshot
-# at t=75s captures a stable, deterministic view of point.sent and transaction counters.
-flush_wait_secs: 90
+# Flush wait must exceed (start_after - agent_startup_time) so data collection happens after the
+# COAT snapshot arrives at the intake. With start_after=37 and agents ready ~2s before millstone,
+# the snapshot arrives at ~t=35s after millstone exits. 60s gives comfortable headroom.
+flush_wait_secs: 60
 millstone:
   image: saluki-images/correctness-tools:latest
   config_path: millstone.yaml
@@ -24,6 +24,4 @@ comparison:
   additional_env_vars:
     - DD_API_KEY=correctness-test
     - DD_DATA_PLANE_ENABLED=true
-    - DD_DATA_PLANE_STANDALONE_MODE=true
-    - DD_DATA_PLANE_DOGSTATSD_ENABLED=true
     - DD_AGGREGATE_CONTEXT_LIMIT=500000

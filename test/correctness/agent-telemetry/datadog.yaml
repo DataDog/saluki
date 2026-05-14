@@ -11,6 +11,9 @@ health_port: 5555
 dd_url: "http://datadog-intake:2049"
 
 # Turn off UDP and listen on a UDS socket instead.
+# NOTE(temporary): newer agent images require use_dogstatsd: true to be explicit when
+# dogstatsd_port: 0 is set, otherwise the agent forces data_plane.dogstatsd.enabled=false.
+use_dogstatsd: true
 dogstatsd_port: 0
 dogstatsd_socket: /airlock/metrics.sock
 
@@ -21,6 +24,7 @@ dogstatsd_origin_detection: false
 # always ends up with the correct (last seen) value, while DSD might return the last seen value... or the value seen
 # four updates ago, etc etc.
 dogstatsd_workers_count: 1
+dogstatsd_context_expiry_seconds: 120
 
 # Disable the trace agent to eliminate its internal DogStatsD telemetry (datadog.trace_agent.*,
 # datadog.dogstatsd.client.*) from the series flush buckets. This reduces per-bucket context
@@ -39,6 +43,12 @@ skip_ssl_validation: true
 # The profile below is scoped to the forwarder metrics most relevant for ADP correctness testing.
 # Both the baseline (plain agent) and comparison (agent + ADP) should emit these, so any gap
 # surfaces a real difference in how ADP integrates with the agent's telemetry component.
+# Enable ADP's remote agent telemetry provider so the agent can gather ADP's Prometheus
+# metrics (including point__sent) via the Remote Agent Registry. Without this, ADP only
+# advertises StatusProvider and FlareProvider, and PR 50750's telemetry merge can't work.
+data_plane:
+  telemetry_enabled: true
+
 agent_telemetry:
   enabled: true
   logs_dd_url: "https://datadog-intake:2050"
@@ -50,28 +60,22 @@ agent_telemetry:
           - name: point.dropped
           - name: transactions.input_count
           - name: transactions.dropped
-          - name: transactions.success
-            aggregate_tags:
-              - domain
-              - endpoint
-          - name: transactions.errors
-            aggregate_tags:
-              - domain
-              - endpoint
-              - error_type
+          # transactions.success and transactions.errors are excluded: baseline sends user+internal
+          # in one Go payload per flush cycle while comparison splits them across separate ADP and
+          # Go payloads. Transaction counts and per-error-type counters are structurally different
+          # by design and cannot be compared between the two sides.
           - name: transactions.http_errors
             aggregate_tags:
               - code
               - endpoint
       schedule:
-        # Fire 67 seconds after agent start, chosen to land between the aggregator's 15-second
-        # flush boundaries. The aggregator (DefaultFlushInterval = 15s) first flushes at ~t=16s
-        # (driven by when the first check/DogStatsD data arrives) and then every 15s after that:
-        # t≈16, 31, 46, 61, 76, 91... The snapshot at t=67 sits safely between the flush at
-        # ~t=61 and the next at ~t=76, so it always captures exactly 4 complete flush cycles with
-        # no race condition. flush_wait_secs in config.yaml is 90s so data is collected at ~t=116s.
-        start_after: 67
-        # Exactly one snapshot per test run. With period: 900 the next firing would be at
-        # t=967s — well outside the test window — but iterations: 1 makes the intent explicit.
+        # Fire 37 seconds after agent start. Both Go and ADP flush every ~15s but are offset by
+        # ~4s from each other (ADP starts slightly after Go). The first user DSD flush on both
+        # sides lands at ~t=30s; ADP's second flush lands at ~t=44s and Go's at ~t=45s.
+        # t=37 sits safely after both first flushes and before either second flush, so the snapshot
+        # always captures exactly one user DSD flush cycle on each side, making point.sent
+        # directly comparable between baseline and comparison.
+        start_after: 37
+        # Exactly one snapshot per test run.
         iterations: 1
         period: 900
