@@ -12,6 +12,9 @@ pub fn get_transaction_remappings() -> Vec<RemapperRule> {
             "transactions.success_bytes",
         )
         .with_original_tags(["domain", "endpoint"]),
+        RemapperRule::by_name("adp.component_data_points_sent_total", "point.sent").with_original_tags(["domain"]),
+        RemapperRule::by_name("adp.component_data_points_dropped_total", "point.dropped")
+            .with_original_tags(["domain"]),
         RemapperRule::by_name_and_tags(
             "adp.network_http_requests_errors_total",
             &["error_type:client_error"],

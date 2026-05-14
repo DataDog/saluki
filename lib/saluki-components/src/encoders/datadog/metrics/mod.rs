@@ -395,8 +395,8 @@ async fn run_request_builder(
 
                     for maybe_request in maybe_requests {
                         match maybe_request {
-                            Ok((events, request)) => {
-                                let payload_meta = PayloadMetadata::from_event_count(events);
+                            Ok((events, data_points, request)) => {
+                                let payload_meta = PayloadMetadata::from_event_and_data_point_count(events, data_points);
                                 let http_payload = HttpPayload::new(payload_meta, request);
                                 let payload = Payload::Http(http_payload);
 
@@ -441,8 +441,8 @@ async fn run_request_builder(
                 let maybe_series_requests = series_request_builder.flush().await;
                 for maybe_request in maybe_series_requests {
                     match maybe_request {
-                        Ok((events, request)) => {
-                            let payload_meta = PayloadMetadata::from_event_count(events);
+                        Ok((events, data_points, request)) => {
+                            let payload_meta = PayloadMetadata::from_event_and_data_point_count(events, data_points);
                             let http_payload = HttpPayload::new(payload_meta, request);
                             let payload = Payload::Http(http_payload);
 
@@ -463,8 +463,8 @@ async fn run_request_builder(
                 let maybe_sketches_requests = sketches_request_builder.flush().await;
                 for maybe_request in maybe_sketches_requests {
                     match maybe_request {
-                        Ok((events, request)) => {
-                            let payload_meta = PayloadMetadata::from_event_count(events);
+                        Ok((events, data_points, request)) => {
+                            let payload_meta = PayloadMetadata::from_event_and_data_point_count(events, data_points);
                             let http_payload = HttpPayload::new(payload_meta, request);
                             let payload = Payload::Http(http_payload);
 
@@ -608,6 +608,10 @@ impl EndpointEncoder for MetricsEndpointEncoder {
             MetricsEndpoint::SeriesV2 => SERIES_V2_UNCOMPRESSED_SIZE_LIMIT,
             MetricsEndpoint::Sketches => DEFAULT_INTAKE_UNCOMPRESSED_SIZE_LIMIT,
         }
+    }
+
+    fn input_data_point_count(&self, input: &Self::Input) -> usize {
+        input.values().len()
     }
 
     fn is_valid_input(&self, input: &Self::Input) -> bool {
@@ -1277,6 +1281,18 @@ mod tests {
         assert!(!sketches_endpoint.is_valid_input(&set));
         assert!(sketches_endpoint.is_valid_input(&histogram));
         assert!(sketches_endpoint.is_valid_input(&distribution));
+    }
+
+    #[test]
+    fn input_data_point_count_tracks_metric_values() {
+        let counter = Metric::counter("counter", [(123, 1.0), (124, 2.0)]);
+        let histogram = Metric::histogram("histogram", [1.0, 2.0, 3.0]);
+
+        let series_endpoint = MetricsEndpointEncoder::from_endpoint(MetricsEndpoint::SeriesV2);
+        let sketches_endpoint = MetricsEndpointEncoder::from_endpoint(MetricsEndpoint::Sketches);
+
+        assert_eq!(series_endpoint.input_data_point_count(&counter), 2);
+        assert_eq!(sketches_endpoint.input_data_point_count(&histogram), 1);
     }
 
     #[test]

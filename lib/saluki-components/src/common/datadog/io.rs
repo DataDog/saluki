@@ -240,6 +240,7 @@ async fn run_io_loop<B>(
 
     for resolved_endpoint in resolved_endpoints {
         let endpoint_url = resolved_endpoint.endpoint().to_string();
+        let endpoint_domain = resolved_endpoint.endpoint().origin().ascii_serialization();
 
         let txnq_telemetry =
             TransactionQueueTelemetry::from_builder(&metrics_builder, &endpoint_url, shared_txnq_telemetry.clone());
@@ -262,13 +263,14 @@ async fn run_io_loop<B>(
             ),
         );
 
-        endpoint_txs.push((endpoint_url, endpoint_tx));
+        endpoint_txs.push((endpoint_url, endpoint_domain, endpoint_tx));
     }
 
     // Listen for transactions to forward, and send a copy of each one to each endpoint I/O task.
     while let Some(transaction) = transactions_rx.recv().await {
-        for (endpoint_url, endpoint_tx) in &endpoint_txs {
+        for (endpoint_url, endpoint_domain, endpoint_tx) in &endpoint_txs {
             if endpoint_tx.send(transaction.clone()).await.is_err() {
+                telemetry.track_permanently_failed_transaction(transaction.metadata(), None, endpoint_domain);
                 error!(
                     endpoint = endpoint_url,
                     "Failed to send request to endpoint I/O task: receiver dropped."
@@ -302,6 +304,7 @@ async fn run_endpoint_io_loop<B>(
 {
     let queue_id = generate_retry_queue_id(context, &endpoint);
     let endpoint_url = endpoint.endpoint().to_string();
+    let endpoint_domain = endpoint.endpoint().origin().ascii_serialization();
     debug!(
         endpoint_url,
         num_workers = config.endpoint_concurrency(),
@@ -357,10 +360,7 @@ async fn run_endpoint_io_loop<B>(
             // Try and drain the next transaction from our channel, and push it into the pending transactions queue.
             maybe_txn = txns_rx.recv(), if !done => match maybe_txn {
                 Some(txn) => match pending_txns.push_high_priority(txn).await {
-                    Ok(push_result) => {
-                        telemetry.track_dropped_items(push_result.items_dropped);
-                        telemetry.track_dropped_events(push_result.events_dropped);
-                    }
+                    Ok(push_result) => track_queue_drops(&telemetry, &endpoint_domain, push_result),
                     Err(e) => error!(endpoint_url, error = %e, "Failed to enqueue transaction. Events may be permanently lost."),
                 },
                 None => {
@@ -396,12 +396,12 @@ async fn run_endpoint_io_loop<B>(
                 match task_result {
                     Ok((metadata, result)) => match result {
                         // We got a response -- maybe successful, maybe not -- so just process that.
-                        Ok(http_response) => process_http_response(http_response, metadata, &telemetry, &endpoint_url).await,
+                        Ok(http_response) => process_http_response(http_response, metadata, &telemetry, &endpoint_url, &endpoint_domain).await,
 
                         // The service itself encountered an error while sending the request or receiving the response:
                         // connection reset by peer, I/O error, etc.
                         Err(RetryCircuitBreakerError::Service(e)) => {
-                            telemetry.track_failed_transaction(&metadata, None);
+                            telemetry.track_permanently_failed_transaction(&metadata, None, &endpoint_domain);
                             error!(endpoint_url, error = %e, error_source = ?e.source(), "Failed to send request.");
                         },
 
@@ -411,10 +411,7 @@ async fn run_endpoint_io_loop<B>(
                         Err(RetryCircuitBreakerError::Open(req)) => {
                             let reassembled_txn = Transaction::reassemble(metadata, req);
                             match pending_txns.push_low_priority(reassembled_txn).await {
-                                Ok(push_result) => {
-                                    telemetry.track_dropped_items(push_result.items_dropped);
-                                    telemetry.track_dropped_events(push_result.events_dropped);
-                                }
+                                Ok(push_result) => track_queue_drops(&telemetry, &endpoint_domain, push_result),
                                 Err(e) => error!(endpoint_url, error = %e, "Failed to re-enqueue failed transaction. Events may be permanently lost."),
                             }
                         },
@@ -441,8 +438,7 @@ async fn run_endpoint_io_loop<B>(
                 events_dropped = flush_result.events_dropped,
                 "Flushed pending transactions prior to shutdown."
             );
-            telemetry.track_dropped_items(flush_result.items_dropped);
-            telemetry.track_dropped_events(flush_result.events_dropped);
+            track_queue_drops(&telemetry, &endpoint_domain, flush_result);
         }
         Err(e) => {
             error!(endpoint_url, error = %e, "Failed to flush pending transactions. Events may be permanently lost.")
@@ -479,16 +475,22 @@ fn generate_retry_queue_id(context: ComponentContext, endpoint: &ResolvedEndpoin
     format!("{}/{}/{:x}", context.component_id(), endpoint_host, hash)
 }
 
+fn track_queue_drops(telemetry: &ComponentTelemetry, domain: &str, push_result: PushResult) {
+    telemetry.track_dropped_items(push_result.items_dropped);
+    telemetry.track_dropped_events(push_result.events_dropped);
+    telemetry.track_data_points_dropped(domain, push_result.data_points_dropped);
+}
+
 async fn process_http_response(
-    response: Response<Incoming>, metadata: Metadata, telemetry: &ComponentTelemetry, endpoint_url: &str,
+    response: Response<Incoming>, metadata: Metadata, telemetry: &ComponentTelemetry, endpoint_url: &str, domain: &str,
 ) {
     let status = response.status();
     if status.is_success() {
         debug!(endpoint_url, %status, "Request completed.");
 
-        telemetry.track_successful_transaction(&metadata);
+        telemetry.track_successful_transaction(&metadata, domain);
     } else {
-        telemetry.track_failed_transaction(&metadata, Some(status));
+        telemetry.track_permanently_failed_transaction(&metadata, Some(status), domain);
 
         match response.into_body().collect().await {
             Ok(body) => {

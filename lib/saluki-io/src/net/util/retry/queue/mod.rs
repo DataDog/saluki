@@ -16,6 +16,11 @@ use self::persisted::{DiskUsageRetriever, DiskUsageRetrieverWrapper, PersistedQu
 pub trait EventContainer {
     /// Returns the number of events represented by this container.
     fn event_count(&self) -> u64;
+
+    /// Returns the number of metric data points represented by this container.
+    fn data_point_count(&self) -> u64 {
+        0
+    }
 }
 
 /// A value that can be retried.
@@ -48,6 +53,9 @@ pub struct PushResult {
 
     /// Total number of events represented by the dropped items.
     pub events_dropped: u64,
+
+    /// Total number of metric data points represented by the dropped items.
+    pub data_points_dropped: u64,
 }
 
 impl PushResult {
@@ -60,12 +68,14 @@ impl PushResult {
     pub fn merge(&mut self, other: Self) {
         self.items_dropped += other.items_dropped;
         self.events_dropped += other.events_dropped;
+        self.data_points_dropped += other.data_points_dropped;
     }
 
     /// Tracks a single dropped item.
-    pub fn track_dropped_item(&mut self, event_count: u64) {
+    pub fn track_dropped_item(&mut self, item: &dyn EventContainer) {
         self.items_dropped += 1;
-        self.events_dropped += event_count;
+        self.events_dropped += item.event_count();
+        self.data_points_dropped += item.data_point_count();
     }
 }
 
@@ -196,7 +206,7 @@ where
                     "Dropped in-memory entry to increase available capacity."
                 );
 
-                push_result.track_dropped_item(oldest_entry.event_count());
+                push_result.track_dropped_item(&oldest_entry);
             }
 
             self.total_in_memory_bytes -= oldest_entry_size;
@@ -261,7 +271,7 @@ where
             } else {
                 debug!(entry.len = entry_size, "Dropped in-memory entry during flush.");
 
-                push_result.track_dropped_item(entry.event_count());
+                push_result.track_dropped_item(&entry);
             }
         }
 

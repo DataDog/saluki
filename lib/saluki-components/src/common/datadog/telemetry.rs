@@ -22,6 +22,8 @@ pub struct ComponentTelemetry {
     events_sent: Counter,
     events_sent_batch_size: Histogram,
     bytes_sent: Counter,
+    data_points_sent_by_domain: Arc<Mutex<HashMap<String, Gauge>>>,
+    data_points_dropped_by_domain: Arc<Mutex<HashMap<String, Gauge>>>,
     events_dropped_http: Counter,
     events_dropped_encoder: Counter,
     events_dropped_queue: Counter,
@@ -39,6 +41,8 @@ impl ComponentTelemetry {
             events_sent: builder.register_counter("component_events_sent_total"),
             events_sent_batch_size: builder.register_trace_histogram("component_events_sent_batch_size"),
             bytes_sent: builder.register_counter("component_bytes_sent_total"),
+            data_points_sent_by_domain: Arc::new(Mutex::new(HashMap::new())),
+            data_points_dropped_by_domain: Arc::new(Mutex::new(HashMap::new())),
             events_dropped_http: builder.register_counter_with_tags(
                 "component_events_dropped_total",
                 ["intentional:false", "drop_reason:http_failure"],
@@ -75,9 +79,38 @@ impl ComponentTelemetry {
     }
 
     /// Tracks a successful transaction.
-    pub fn track_successful_transaction(&self, metadata: &Metadata) {
+    pub fn track_successful_transaction(&self, metadata: &Metadata, domain: &str) {
         self.events_sent.increment(metadata.event_count as u64);
         self.events_sent_batch_size.record(metadata.event_count as f64);
+        self.track_data_points_sent(domain, metadata.data_point_count as u64);
+    }
+
+    /// Tracks sent metric data points.
+    pub fn track_data_points_sent(&self, domain: &str, data_point_count: u64) {
+        if data_point_count == 0 {
+            return;
+        }
+
+        let mut gauges = self.data_points_sent_by_domain.lock().unwrap();
+        let gauge = gauges.entry(domain.to_string()).or_insert_with(|| {
+            self.builder
+                .register_gauge_with_tags("component_data_points_sent_total", [("domain", domain.to_string())])
+        });
+        gauge.increment(data_point_count as f64);
+    }
+
+    /// Tracks dropped metric data points.
+    pub fn track_data_points_dropped(&self, domain: &str, data_point_count: u64) {
+        if data_point_count == 0 {
+            return;
+        }
+
+        let mut gauges = self.data_points_dropped_by_domain.lock().unwrap();
+        let gauge = gauges.entry(domain.to_string()).or_insert_with(|| {
+            self.builder
+                .register_gauge_with_tags("component_data_points_dropped_total", [("domain", domain.to_string())])
+        });
+        gauge.increment(data_point_count as f64);
     }
 
     /// Tracks a failed transaction.
@@ -101,6 +134,12 @@ impl ComponentTelemetry {
             }
         }
         self.events_dropped_http.increment(metadata.event_count as u64);
+    }
+
+    /// Tracks a permanently failed transaction.
+    pub fn track_permanently_failed_transaction(&self, metadata: &Metadata, status: Option<StatusCode>, domain: &str) {
+        self.track_failed_transaction(metadata, status);
+        self.track_data_points_dropped(domain, metadata.data_point_count as u64);
     }
 
     /// Tracks a failure before a transaction is submitted to the HTTP client.
