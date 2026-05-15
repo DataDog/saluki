@@ -742,7 +742,7 @@ async fn transform_and_push_metric(
                     .map(|(ts, hist)| {
                         let mut sketch = DDSketch::default();
                         for sample in hist.samples() {
-                            sketch.insert_n(sample.value.into_inner(), sample.weight);
+                            sketch.insert_n(sample.value.into_inner(), sample.weight.0 as u64);
                         }
                         (ts, sketch)
                     })

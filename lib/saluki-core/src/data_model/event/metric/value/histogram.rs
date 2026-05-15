@@ -17,23 +17,31 @@ pub struct WeightedSample {
     pub value: OrderedFloat<f64>,
 
     /// The sample weight.
-    pub weight: u64,
+    pub weight: OrderedFloat<f64>,
 }
 
 /// A basic histogram.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Histogram {
-    sum: OrderedFloat<f64>,
     samples: SmallVec<[WeightedSample; 3]>,
+    /// Weight shared by every sample so far; `0.0` means no samples have been inserted yet.
+    shared_weight: OrderedFloat<f64>,
+    /// Set to `true` on the first insertion whose weight differs from [`shared_weight`].
+    weights_vary: bool,
 }
 
 impl Histogram {
     /// Insert a sample into the histogram.
     pub fn insert(&mut self, value: f64, sample_rate: SampleRate) {
-        self.sum += value * sample_rate.raw_weight();
+        let weight = OrderedFloat(sample_rate.raw_weight());
+        if self.shared_weight == OrderedFloat(0.0) {
+            self.shared_weight = weight;
+        } else if weight != self.shared_weight {
+            self.weights_vary = true;
+        }
         self.samples.push(WeightedSample {
             value: OrderedFloat(value),
-            weight: sample_rate.weight(),
+            weight,
         });
     }
 
@@ -48,12 +56,32 @@ impl Histogram {
         // minimum and maximum, as well as quantile queries.
         self.samples.sort_unstable_by_key(|sample| sample.value);
 
-        let mut count = 0;
-        let mut sum = 0.0;
-        for sample in &self.samples {
-            count += sample.weight;
-            sum += sample.value.0 * sample.weight as f64;
-        }
+        // Compute count and sum in a single pass using compensated (Neumaier) summation.
+        // Four accumulators: (count_s, count_c) for the weight total and (sum_s, sum_c) for the
+        // value total, keeping one correction term per accumulator.
+        let (count, sum) = if self.weights_vary {
+            // Varying weights: accumulate value * weight for sum, weight for count.
+            let (cs, cc, ss, sc) =
+                self.samples
+                    .iter()
+                    .fold((0.0_f64, 0.0_f64, 0.0_f64, 0.0_f64), |(cs, cc, ss, sc), sample| {
+                        let (cs, cc) = neumaier_add(cs, cc, sample.weight.0);
+                        let (ss, sc) = neumaier_add(ss, sc, sample.value.0 * sample.weight.0);
+                        (cs, cc, ss, sc)
+                    });
+            (cs + cc, ss + sc)
+        } else {
+            // Uniform weights: accumulate raw values for sum (scaled once at the end), weight for count.
+            let (cs, cc, ss, sc) =
+                self.samples
+                    .iter()
+                    .fold((0.0_f64, 0.0_f64, 0.0_f64, 0.0_f64), |(cs, cc, ss, sc), sample| {
+                        let (cs, cc) = neumaier_add(cs, cc, sample.weight.0);
+                        let (ss, sc) = neumaier_add(ss, sc, sample.value.0);
+                        (cs, cc, ss, sc)
+                    });
+            (cs + cc, (ss + sc) * self.shared_weight.0)
+        };
 
         HistogramSummary {
             histogram: self,
@@ -64,7 +92,15 @@ impl Histogram {
 
     /// Merges another histogram into this one.
     pub fn merge(&mut self, other: &mut Histogram) {
-        self.sum += other.sum;
+        if !self.weights_vary {
+            if other.weights_vary {
+                self.weights_vary = true;
+            } else if self.shared_weight == OrderedFloat(0.0) {
+                self.shared_weight = other.shared_weight;
+            } else if other.shared_weight != OrderedFloat(0.0) && self.shared_weight != other.shared_weight {
+                self.weights_vary = true;
+            }
+        }
         self.samples.extend(other.samples.drain(..));
     }
 
@@ -77,7 +113,7 @@ impl Histogram {
 /// Summary view over a [`Histogram`].
 pub struct HistogramSummary<'a> {
     histogram: &'a Histogram,
-    count: u64,
+    count: f64,
     sum: f64,
 }
 
@@ -85,8 +121,14 @@ impl HistogramSummary<'_> {
     /// Returns the number of samples in the histogram.
     ///
     /// This is adjusted by the weight of each sample, based on the sample rate given during insertion.
+    ///
+    /// The underlying weight accumulation uses compensated (Neumaier) summation over float weights,
+    /// and the result is rounded to the nearest integer. For standard sample rates whose reciprocals
+    /// are exact integers (e.g. `0.1`, `0.25`, `0.5`, `1.0`) rounding has no effect; for
+    /// non-integer-reciprocal rates (e.g. `0.21` → weight ≈ 4.762) it gives a closer approximation
+    /// than truncation.
     pub fn count(&self) -> u64 {
-        self.count
+        self.count.round() as u64
     }
 
     /// Returns the sum of all samples in the histogram.
@@ -114,7 +156,7 @@ impl HistogramSummary<'_> {
 
     /// Returns the average value in the histogram.
     pub fn avg(&self) -> f64 {
-        self.sum / self.count as f64
+        self.sum / self.count
     }
 
     /// Returns the median value in the histogram.
@@ -132,13 +174,14 @@ impl HistogramSummary<'_> {
             return None;
         }
 
-        let scaled_quantile = (quantile * 1000.0) as u64 / 10;
-        let target = (scaled_quantile * self.count - 1) / 100;
+        // target is the cumulative weight threshold: walk samples until the running weight exceeds it.
+        let target = quantile * self.count - 0.01;
 
-        let mut weight = 0;
+        let mut ws = 0.0_f64;
+        let mut wc = 0.0_f64;
         for sample in &self.histogram.samples {
-            weight += sample.weight;
-            if weight > target {
+            (ws, wc) = neumaier_add(ws, wc, sample.weight.0);
+            if ws + wc > target {
                 return Some(sample.value.0);
             }
         }
@@ -381,5 +424,101 @@ impl<'a> Iterator for HistogramIterRefMut<'a> {
 
     fn next(&mut self) -> Option<Self::Item> {
         self.inner.next().map(|value| (value.timestamp, &mut value.value))
+    }
+}
+
+/// Performs a single Neumaier (compensated) addition step.
+///
+/// Returns the updated running sum `t` and the compensation term `c` that captures
+/// the rounding error lost when adding `x` to `s`.
+fn neumaier_add(s: f64, c: f64, x: f64) -> (f64, f64) {
+    let t = s + x;
+    let c = if s.abs() >= x.abs() {
+        c + ((s - t) + x)
+    } else {
+        c + ((x - t) + s)
+    };
+    (t, c)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn histogram_from_values(values: &[(f64, u64)]) -> Histogram {
+        let mut h = Histogram::default();
+        for &(value, weight) in values {
+            let weight = OrderedFloat(weight as f64);
+            if h.shared_weight == OrderedFloat(0.0) {
+                h.shared_weight = weight;
+            } else if weight != h.shared_weight {
+                h.weights_vary = true;
+            }
+            h.samples.push(WeightedSample {
+                value: OrderedFloat(value),
+                weight,
+            });
+        }
+        h
+    }
+
+    #[test]
+    fn compensated_sum_catastrophic_cancellation() {
+        // Naive summation: (1 + 1e100) + (1 - 1e100) = 0 due to float cancellation.
+        // Compensated summation must return 2.0.
+        let mut h = histogram_from_values(&[(1.0, 1), (1e100, 1), (1.0, 1), (-1e100, 1)]);
+        let view = h.summary_view();
+        assert_eq!(view.sum(), 2.0, "compensated sum should be 2.0, not 0.0");
+    }
+
+    #[test]
+    fn compensated_sum_empty() {
+        let mut h = Histogram::default();
+        let view = h.summary_view();
+        assert_eq!(view.sum(), 0.0);
+        assert_eq!(view.count(), 0);
+    }
+
+    #[test]
+    fn compensated_sum_uniform_weights_positives() {
+        let mut h = histogram_from_values(&[(1.0, 2), (2.0, 2), (3.0, 2)]);
+        let view = h.summary_view();
+        // sum = (1+2+3)*2 = 12, count = 6
+        assert_eq!(view.sum(), 12.0);
+        assert_eq!(view.count(), 6);
+    }
+
+    #[test]
+    fn compensated_sum_uniform_weights_negatives() {
+        let mut h = histogram_from_values(&[(-3.0, 1), (-2.0, 1), (-1.0, 1)]);
+        let view = h.summary_view();
+        assert_eq!(view.sum(), -6.0);
+        assert_eq!(view.count(), 3);
+    }
+
+    #[test]
+    fn compensated_sum_varying_weights() {
+        // Different weights trigger the fallback Neumaier path.
+        let mut h = histogram_from_values(&[(1.0, 1), (2.0, 2), (3.0, 4)]);
+        let view = h.summary_view();
+        // sum = 1*1 + 2*2 + 3*4 = 1 + 4 + 12 = 17, count = 7
+        assert_eq!(view.sum(), 17.0);
+        assert_eq!(view.count(), 7);
+    }
+
+    #[test]
+    fn compensated_sum_all_zeros() {
+        let mut h = histogram_from_values(&[(0.0, 1), (0.0, 1), (0.0, 1)]);
+        let view = h.summary_view();
+        assert_eq!(view.sum(), 0.0);
+        assert_eq!(view.count(), 3);
+    }
+
+    #[test]
+    fn compensated_sum_single_value() {
+        let mut h = histogram_from_values(&[(42.0, 5)]);
+        let view = h.summary_view();
+        assert_eq!(view.sum(), 210.0);
+        assert_eq!(view.count(), 5);
     }
 }
