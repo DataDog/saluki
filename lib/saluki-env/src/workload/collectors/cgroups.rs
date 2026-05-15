@@ -5,11 +5,11 @@ use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_common::collections::{FastHashMap, FastHashSet};
 use saluki_config::GenericConfiguration;
 use saluki_core::health::Health;
-use saluki_error::{generic_error, GenericError};
+use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use stringtheory::{interning::GenericMapInterner, MetaString};
 use tokio::{select, sync::mpsc};
 use tokio_util::task::AbortOnDropHandle;
-use tracing::{debug, error, warn};
+use tracing::{debug, warn};
 
 use super::MetadataCollector;
 use crate::{
@@ -65,40 +65,33 @@ impl MetadataCollector for CgroupsMetadataCollector {
     async fn watch(&mut self, operations_tx: &mut mpsc::Sender<MetadataOperation>) -> Result<(), GenericError> {
         self.health.mark_ready();
 
-        let mut poller_handle = None;
-
         // Drive a blocking background task that polls the cgroups hierarchy on a regular interval, and sends metadata
         // updates when cgroups are created or deleted. We do this in a blocking task since all of the I/O operations
         // are synchronous.
-        //
-        // Our loop here ensures that we always keep a single instance of the poller running.
-        loop {
-            // Ensure that we have a poller task running.
-            if poller_handle.is_none() {
-                let mut cgroups_manager = SynchronousCgroupsManager::from_reader(self.reader.clone());
-                let operations_tx = operations_tx.clone();
 
-                let raw_poller_handle = tokio::task::spawn_blocking(move || cgroups_manager.poll(operations_tx));
-                poller_handle = Some(AbortOnDropHandle::new(raw_poller_handle));
+        let mut cgroups_manager = SynchronousCgroupsManager::from_reader(self.reader.clone());
+        let operations_tx = operations_tx.clone();
 
-                debug!("Spawned cgroups background poller task.");
-            }
+        let raw_poller_handle = tokio::task::spawn_blocking(move || cgroups_manager.poll(operations_tx));
+        let poller_handle = AbortOnDropHandle::new(raw_poller_handle);
+        tokio::pin!(poller_handle);
 
+        debug!("Spawned cgroups background poller task.");
+
+        let final_result = loop {
             select! {
                 _ = self.health.live() => {},
-                result = poller_handle.as_mut().unwrap() => {
-                    // The poller task completed -- for some reason -- so drop our handle to signal that the next loop
-                    // iteration needs to recreate it, and provide some information on _why_ the previous task stopped.
-                    poller_handle = None;
-
-                    match result {
-                        Ok(Ok(())) => unreachable!("Cgroups background poller task should run indefinitely"),
-                        Ok(Err(e)) => error!(error = ?e, "Cgroups background poller task encountered an error."),
-                        Err(e) => error!(error = ?e, "Cgroups background poller task panicked."),
-                    }
+                result = &mut poller_handle => match result {
+                    Ok(Ok(())) => break Ok(()),
+                    Ok(Err(e)) => break Err(e).error_context("Cgroups background poller task encountered an error."),
+                    Err(e) => break Err(e).error_context("Cgroups background poller task panicked."),
                 }
             }
-        }
+        };
+
+        self.health.mark_not_ready();
+
+        final_result
     }
 }
 
