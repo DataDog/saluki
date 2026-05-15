@@ -32,11 +32,11 @@
 <a href=#32 id=32 data-nosnippet>32</a>    /// - A CIDR range: `192.168.0.0/24` or `2001:db8::/32`. Only used when
 <a href=#33 id=33 data-nosnippet>33</a>    ///   `no_proxy_nonexact_match` is true; ignored in exact mode.
 <a href=#34 id=34 data-nosnippet>34</a>    /// - A domain name: `example.com`. In exact mode, only the literal hostname matches. In
-<a href=#35 id=35 data-nosnippet>35</a>    ///   nonexact mode, the domain and all its subdomains match (e.g. `example.com` also matches
+<a href=#35 id=35 data-nosnippet>35</a>    ///   nonexact mode, the domain and all its subdomains match (for example, `example.com` also matches
 <a href=#36 id=36 data-nosnippet>36</a>    ///   `sub.example.com`). An optional port suffix (`example.com:443`) restricts the match to
 <a href=#37 id=37 data-nosnippet>37</a>    ///   that port.
 <a href=#38 id=38 data-nosnippet>38</a>    /// - A leading-dot domain: `.example.com`. Only used in nonexact mode; matches subdomains
-<a href=#39 id=39 data-nosnippet>39</a>    ///   only, not the domain itself (e.g. `.example.com` matches `sub.example.com` but not
+<a href=#39 id=39 data-nosnippet>39</a>    ///   only, not the domain itself (for example, `.example.com` matches `sub.example.com` but not
 <a href=#40 id=40 data-nosnippet>40</a>    ///   `example.com`).
 <a href=#41 id=41 data-nosnippet>41</a>    /// - A wildcard `*`: bypasses the proxy for all destinations. Only used in nonexact mode.
 <a href=#42 id=42 data-nosnippet>42</a>    </span><span class="attr">#[serde(
@@ -123,9 +123,9 @@
 <a href=#123 id=123 data-nosnippet>123</a></span><span class="kw">enum </span>NoProxyEntry {
 <a href=#124 id=124 data-nosnippet>124</a>    <span class="doccomment">/// `*`—bypass proxy for all destinations. Only used in nonexact mode.
 <a href=#125 id=125 data-nosnippet>125</a>    </span>Wildcard,
-<a href=#126 id=126 data-nosnippet>126</a>    <span class="doccomment">/// An IP address in CIDR notation (e.g. `192.168.0.0/24`). Only used in nonexact mode.
+<a href=#126 id=126 data-nosnippet>126</a>    <span class="doccomment">/// An IP address in CIDR notation (for example, `192.168.0.0/24`). Only used in nonexact mode.
 <a href=#127 id=127 data-nosnippet>127</a>    </span>IpCidr { addr: IpAddr, prefix_len: u8 },
-<a href=#128 id=128 data-nosnippet>128</a>    <span class="doccomment">/// An exact IP address, with an optional port constraint (e.g. `192.168.1.1` or `192.168.1.1:80`).
+<a href=#128 id=128 data-nosnippet>128</a>    <span class="doccomment">/// An exact IP address, with an optional port constraint (for example, `192.168.1.1` or `192.168.1.1:80`).
 <a href=#129 id=129 data-nosnippet>129</a>    </span>IpExact { addr: IpAddr, port: <span class="prelude-ty">Option</span>&lt;u16&gt; },
 <a href=#130 id=130 data-nosnippet>130</a>    <span class="doccomment">/// A domain name, with optional port constraint and a flag for suffix-only matching.
 <a href=#131 id=131 data-nosnippet>131</a>    ///
@@ -169,11 +169,11 @@
 <a href=#169 id=169 data-nosnippet>169</a>                <span class="kw">if </span>nonexact {
 <a href=#170 id=170 data-nosnippet>170</a>                    <span class="kw">if </span><span class="kw-2">*</span>suffix_only {
 <a href=#171 id=171 data-nosnippet>171</a>                        <span class="comment">// Leading-dot entry: only matches subdomains, not the domain itself.
-<a href=#172 id=172 data-nosnippet>172</a>                        // e.g. ".y.com" matches "x.y.com" but not "y.com".
+<a href=#172 id=172 data-nosnippet>172</a>                        // for example, ".y.com" matches "x.y.com" but not "y.com".
 <a href=#173 id=173 data-nosnippet>173</a>                        </span>host_lower.ends_with(<span class="kw-2">&amp;</span><span class="macro">format!</span>(<span class="string">".{}"</span>, name))
 <a href=#174 id=174 data-nosnippet>174</a>                    } <span class="kw">else </span>{
 <a href=#175 id=175 data-nosnippet>175</a>                        <span class="comment">// Plain domain: matches the domain and all subdomains.
-<a href=#176 id=176 data-nosnippet>176</a>                        // e.g. "foo.com" matches "foo.com" and "bar.foo.com".
+<a href=#176 id=176 data-nosnippet>176</a>                        // for example, "foo.com" matches "foo.com" and "bar.foo.com".
 <a href=#177 id=177 data-nosnippet>177</a>                        </span>host_lower == <span class="kw-2">*</span>name || host_lower.ends_with(<span class="kw-2">&amp;</span><span class="macro">format!</span>(<span class="string">".{}"</span>, name))
 <a href=#178 id=178 data-nosnippet>178</a>                    }
 <a href=#179 id=179 data-nosnippet>179</a>                } <span class="kw">else </span>{

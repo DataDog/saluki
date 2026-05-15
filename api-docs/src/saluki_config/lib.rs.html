@@ -422,7 +422,7 @@
 <a href=#422 id=422 data-nosnippet>422</a>    /// environment provider.
 <a href=#423 id=423 data-nosnippet>423</a>    ///
 <a href=#424 id=424 data-nosnippet>424</a>    /// The factory is called after test environment variables have been set, so any env var reads it performs
-<a href=#425 id=425 data-nosnippet>425</a>    /// (e.g. in `DatadogRemapper`) are consistent with the test's env setup.
+<a href=#425 id=425 data-nosnippet>425</a>    /// (for example, in `DatadogRemapper`) are consistent with the test's env setup.
 <a href=#426 id=426 data-nosnippet>426</a>    ///
 <a href=#427 id=427 data-nosnippet>427</a>    /// This is generally only useful for testing purposes, and is exposed publicly in order to be used in cross-crate testing scenarios.
 <a href=#428 id=428 data-nosnippet>428</a>    </span><span class="kw">pub async fn </span>for_tests_with_provider_factory&lt;P, F&gt;(
@@ -455,7 +455,7 @@
 <a href=#455 id=455 data-nosnippet>455</a>        <span class="kw">if let </span><span class="prelude-val">Some</span>(pairs) = env_vars.as_ref() {
 <a href=#456 id=456 data-nosnippet>456</a>            <span class="kw">for </span>(k, v) <span class="kw">in </span>pairs.iter() {
 <a href=#457 id=457 data-nosnippet>457</a>                <span class="comment">// Set under both the raw name and the TEST_ prefix:
-<a href=#458 id=458 data-nosnippet>458</a>                //   - Raw name: available to any env-reading providers (e.g. DatadogRemapper)
+<a href=#458 id=458 data-nosnippet>458</a>                //   - Raw name: available to any env-reading providers (for example, DatadogRemapper)
 <a href=#459 id=459 data-nosnippet>459</a>                //   - TEST_ prefix: read by from_environment("TEST") (simulates DD_ prefix)
 <a href=#460 id=460 data-nosnippet>460</a>                </span>std::env::set_var(k, v);
 <a href=#461 id=461 data-nosnippet>461</a>                std::env::set_var(<span class="macro">format!</span>(<span class="string">"TEST_{}"</span>, k), v);

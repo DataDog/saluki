@@ -37,7 +37,7 @@
 <a href=#37 id=37 data-nosnippet>37</a>    /// `wait_for_capacity` will observe waiting once the memory usage exceeds the configured limit threshold. The
 <a href=#38 id=38 data-nosnippet>38</a>    /// waiting time will scale progressively the closer the memory usage is to the configured limit.
 <a href=#39 id=39 data-nosnippet>39</a>    ///
-<a href=#40 id=40 data-nosnippet>40</a>    /// Defaults to a 95% threshold (i.e. threshold begins at 95% of the limit), a minimum backoff duration of 1ms, and
+<a href=#40 id=40 data-nosnippet>40</a>    /// Defaults to a 95% threshold (that is, threshold begins at 95% of the limit), a minimum backoff duration of 1ms, and
 <a href=#41 id=41 data-nosnippet>41</a>    /// a maximum backoff duration of 25ms. The effective limit of the grant is used as the memory limit.
 <a href=#42 id=42 data-nosnippet>42</a>    </span><span class="kw">pub fn </span>new(grant: MemoryGrant) -&gt; <span class="prelude-ty">Option</span>&lt;<span class="self">Self</span>&gt; {
 <a href=#43 id=43 data-nosnippet>43</a>        <span class="comment">// Smoke test to see if we can even collect memory stats on this system.

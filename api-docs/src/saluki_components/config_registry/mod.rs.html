@@ -224,7 +224,7 @@
 <a href=#224 id=224 data-nosnippet>224</a>    </span><span class="attr">#[allow(dead_code)]
 <a href=#225 id=225 data-nosnippet>225</a>    </span><span class="kw">pub</span>(<span class="kw">crate</span>) schema: Schema,
 <a href=#226 id=226 data-nosnippet>226</a>
-<a href=#227 id=227 data-nosnippet>227</a>    <span class="doccomment">/// Canonical dot-separated YAML path for this key (e.g. `"proxy.http"`).
+<a href=#227 id=227 data-nosnippet>227</a>    <span class="doccomment">/// Canonical dot-separated YAML path for this key (for example, `"proxy.http"`).
 <a href=#228 id=228 data-nosnippet>228</a>    </span><span class="kw">pub </span>yaml_path: <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str,
 <a href=#229 id=229 data-nosnippet>229</a>
 <a href=#230 id=230 data-nosnippet>230</a>    <span class="doccomment">/// Environment variables that deliver this value, as declared in the schema.
@@ -272,7 +272,7 @@
 <a href=#272 id=272 data-nosnippet>272</a>    <span class="doccomment">/// Overrides the schema's `env_vars` list entirely when `Some`.
 <a href=#273 id=273 data-nosnippet>273</a>    ///
 <a href=#274 id=274 data-nosnippet>274</a>    /// Use when the schema marks a key `no-env` but env vars are actually supported, or when
-<a href=#275 id=275 data-nosnippet>275</a>    /// the schema's list is incorrect or incomplete (e.g. the proxy sub-keys).
+<a href=#275 id=275 data-nosnippet>275</a>    /// the schema's list is incorrect or incomplete (for example, the proxy sub-keys).
 <a href=#276 id=276 data-nosnippet>276</a>    </span><span class="kw">pub </span>env_var_override: <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span><span class="lifetime">'static </span>[<span class="kw-2">&amp;</span><span class="lifetime">'static </span>str]&gt;,
 <a href=#277 id=277 data-nosnippet>277</a>
 <a href=#278 id=278 data-nosnippet>278</a>    <span class="doccomment">/// Config structs that incorporate this key, as [`structs`] constants.
@@ -289,9 +289,9 @@
 <a href=#289 id=289 data-nosnippet>289</a>
 <a href=#290 id=290 data-nosnippet>290</a>    <span class="doccomment">/// Overrides the smoke-test injected value entirely when `Some`.
 <a href=#291 id=291 data-nosnippet>291</a>    ///
-<a href=#292 id=292 data-nosnippet>292</a>    /// Must be a valid JSON literal (e.g. `Some("[{\"name\":\"test\"}]")`). Use when the field
+<a href=#292 id=292 data-nosnippet>292</a>    /// Must be a valid JSON literal (for example, `Some("[{\"name\":\"test\"}]")`). Use when the field
 <a href=#293 id=293 data-nosnippet>293</a>    /// requires a structured value that the generic `ValueType`-derived test values cannot satisfy
-<a href=#294 id=294 data-nosnippet>294</a>    /// (e.g. JSON-encoded arrays or objects).
+<a href=#294 id=294 data-nosnippet>294</a>    /// (for example, JSON-encoded arrays or objects).
 <a href=#295 id=295 data-nosnippet>295</a>    </span><span class="kw">pub </span>test_json: <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span><span class="lifetime">'static </span>str&gt;,
 <a href=#296 id=296 data-nosnippet>296</a>}
 <a href=#297 id=297 data-nosnippet>297</a>

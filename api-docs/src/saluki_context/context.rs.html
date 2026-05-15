@@ -223,7 +223,7 @@
 <a href=#223 id=223 data-nosnippet>223</a>
 <a href=#224 id=224 data-nosnippet>224</a>    <span class="doccomment">/// Creates a lazy copy-on-write mutable view over this context's tag sets.
 <a href=#225 id=225 data-nosnippet>225</a>    ///
-<a href=#226 id=226 data-nosnippet>226</a>    /// The returned view supports mutations (e.g. [`retain_tags`][TagSetMutView::retain_tags])
+<a href=#226 id=226 data-nosnippet>226</a>    /// The returned view supports mutations (for example, [`retain_tags`][TagSetMutView::retain_tags])
 <a href=#227 id=227 data-nosnippet>227</a>    /// without immediately triggering an `Arc` clone. The actual clone, mutation, and context key
 <a href=#228 id=228 data-nosnippet>228</a>    /// recomputation only happen when [`TagSetMutView::finish`] is called, and only if changes
 <a href=#229 id=229 data-nosnippet>229</a>    /// were actually recorded.
@@ -322,7 +322,7 @@
 <a href=#322 id=322 data-nosnippet>322</a>
 <a href=#323 id=323 data-nosnippet>323</a><span class="doccomment">/// A lazy copy-on-write mutable view over a [`Context`]'s tag sets.
 <a href=#324 id=324 data-nosnippet>324</a>///
-<a href=#325 id=325 data-nosnippet>325</a>/// Operations on this view (e.g. [`retain_tags`][Self::retain_tags]) are recorded but not
+<a href=#325 id=325 data-nosnippet>325</a>/// Operations on this view (for example, [`retain_tags`][Self::retain_tags]) are recorded but not
 <a href=#326 id=326 data-nosnippet>326</a>/// applied immediately. The actual `Arc` clone, mutation, and context key recomputation only
 <a href=#327 id=327 data-nosnippet>327</a>/// occur when [`finish`][Self::finish] is called, and only if changes were recorded.
 <a href=#328 id=328 data-nosnippet>328</a></span><span class="kw">pub struct </span>TagSetMutView&lt;<span class="lifetime">'a</span>, <span class="lifetime">'b</span>&gt; {

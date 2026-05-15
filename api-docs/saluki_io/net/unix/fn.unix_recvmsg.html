@@ -2,7 +2,7 @@
     socket: &amp;mut <a class="struct" href="https://docs.rs/tokio/1.52.2/tokio/net/unix/stream/struct.UnixStream.html" title="struct tokio::net::unix::stream::UnixStream">UnixStream</a>,
     buf: <a class="primitive" href="https://doc.rust-lang.org/nightly/std/primitive.reference.html">&amp;mut B</a>,
 ) -&gt; <a class="type" href="https://doc.rust-lang.org/nightly/std/io/error/type.Result.html" title="type std::io::error::Result">Result</a>&lt;(<a class="primitive" href="https://doc.rust-lang.org/nightly/std/primitive.usize.html">usize</a>, <a class="enum" href="../enum.ConnectionAddress.html" title="enum saluki_io::net::ConnectionAddress">ConnectionAddress</a>)&gt;</code></pre><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>Receives data from the Unix domain socket.</p>
-<p>This function is specifically for Unix domain sockets in stream mode (i.e. SOCK_STREAM), which are represented via
+<p>This function is specifically for Unix domain sockets in stream mode (that is, SOCK_STREAM), which are represented via
 <code>UnixStream</code> in <code>tokio</code>.</p>
 <p>On success, returns the number of bytes read and the address from whence the data came.</p>
 <h3 id="errors"><a class="doc-anchor" href="#errors">§</a>Errors</h3>

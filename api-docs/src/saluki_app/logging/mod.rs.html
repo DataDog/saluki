@@ -56,14 +56,14 @@
 <a href=#56 id=56 data-nosnippet>56</a>    /// expires). Worker guards for the previous outputs are dropped after the swap, which flushes any buffered log
 <a href=#57 id=57 data-nosnippet>57</a>    /// lines to their original destinations.
 <a href=#58 id=58 data-nosnippet>58</a>    ///
-<a href=#59 id=59 data-nosnippet>59</a>    /// This is the right entry point when the entire logging configuration may have changed (e.g., outputs,
+<a href=#59 id=59 data-nosnippet>59</a>    /// This is the right entry point when the entire logging configuration may have changed (for example, outputs,
 <a href=#60 id=60 data-nosnippet>60</a>    /// format, level). For runtime base-filter changes only -- such as following a `log_level` config update --
 <a href=#61 id=61 data-nosnippet>61</a>    /// use [`controller`][Self::controller] and call
 <a href=#62 id=62 data-nosnippet>62</a>    /// [`update_base`][LoggingOverrideController::update_base] directly.
 <a href=#63 id=63 data-nosnippet>63</a>    ///
 <a href=#64 id=64 data-nosnippet>64</a>    /// # Errors
 <a href=#65 id=65 data-nosnippet>65</a>    ///
-<a href=#66 id=66 data-nosnippet>66</a>    /// Returns an error if the new output layers cannot be constructed (e.g., the configured log file path is
+<a href=#66 id=66 data-nosnippet>66</a>    /// Returns an error if the new output layers cannot be constructed (for example, the configured log file path is
 <a href=#67 id=67 data-nosnippet>67</a>    /// inaccessible) or if the override worker is no longer running.
 <a href=#68 id=68 data-nosnippet>68</a>    </span><span class="kw">pub async fn </span>reload(<span class="kw-2">&amp;mut </span><span class="self">self</span>, config: LoggingConfiguration) -&gt; <span class="prelude-ty">Result</span>&lt;(), GenericError&gt; {
 <a href=#69 id=69 data-nosnippet>69</a>        <span class="kw">let </span>(new_stack, new_guards) = build_output_stack(<span class="kw-2">&amp;</span>config)<span class="question-mark">?</span>;
@@ -111,7 +111,7 @@
 <a href=#111 id=111 data-nosnippet>111</a>
 <a href=#112 id=112 data-nosnippet>112</a>    <span class="comment">// The override worker owns the canonical base filter -- the directives the system restores to after an override
 <a href=#113 id=113 data-nosnippet>113</a>    // expires or is reset. It seeds the base from the reload handle on startup and is updated via the controller,
-<a href=#114 id=114 data-nosnippet>114</a>    // both by `LoggingGuard::reload` once the Agent's configuration is applied and by any other caller (e.g. a
+<a href=#114 id=114 data-nosnippet>114</a>    // both by `LoggingGuard::reload` once the Agent's configuration is applied and by any other caller (for example, a
 <a href=#115 id=115 data-nosnippet>115</a>    // runtime `log_level` watcher) wired up via [`LoggingGuard::controller`].
 <a href=#116 id=116 data-nosnippet>116</a>    </span><span class="kw">let </span>(override_worker, controller) = LoggingOverrideWorker::new(filter_handle);
 <a href=#117 id=117 data-nosnippet>117</a>

@@ -36,7 +36,7 @@ the sole owner, the mutation happens in place.</p>
     &amp;'a mut self,
     state: &amp;'b mut <a class="struct" href="struct.TagSetMutViewState.html" title="struct saluki_context::TagSetMutViewState">TagSetMutViewState</a>,
 ) -&gt; <a class="struct" href="struct.TagSetMutView.html" title="struct saluki_context::TagSetMutView">TagSetMutView</a>&lt;'a, 'b&gt;</h4></section></summary><div class="docblock"><p>Creates a lazy copy-on-write mutable view over this context’s tag sets.</p>
-<p>The returned view supports mutations (e.g. <a href="struct.TagSetMutView.html#method.retain_tags" title="method saluki_context::TagSetMutView::retain_tags"><code>retain_tags</code></a>)
+<p>The returned view supports mutations (for example, <a href="struct.TagSetMutView.html#method.retain_tags" title="method saluki_context::TagSetMutView::retain_tags"><code>retain_tags</code></a>)
 without immediately triggering an <code>Arc</code> clone. The actual clone, mutation, and context key
 recomputation only happen when <a href="struct.TagSetMutView.html#method.finish" title="method saluki_context::TagSetMutView::finish"><code>TagSetMutView::finish</code></a> is called, and only if changes
 were actually recorded.</p>

@@ -16,7 +16,7 @@
 <a href=#16 id=16 data-nosnippet>16</a>///
 <a href=#17 id=17 data-nosnippet>17</a>/// [`simple`]: LoggingConfiguration::simple
 <a href=#18 id=18 data-nosnippet>18</a></span><span class="kw">pub struct </span>LoggingConfiguration {
-<a href=#19 id=19 data-nosnippet>19</a>    <span class="doccomment">/// Verbosity directives (e.g., `info`, `debug`, `saluki=trace`).
+<a href=#19 id=19 data-nosnippet>19</a>    <span class="doccomment">/// Verbosity directives (for example, `info`, `debug`, `saluki=trace`).
 <a href=#20 id=20 data-nosnippet>20</a>    </span><span class="kw">pub </span>log_level: LogLevel,
 <a href=#21 id=21 data-nosnippet>21</a>
 <a href=#22 id=22 data-nosnippet>22</a>    <span class="doccomment">/// Whether to emit log records as JSON instead of the default human-readable format.
@@ -98,7 +98,7 @@
 <a href=#98 id=98 data-nosnippet>98</a>
 <a href=#99 id=99 data-nosnippet>99</a><span class="doccomment">/// A parsed `tracing` log level filter.
 <a href=#100 id=100 data-nosnippet>100</a>///
-<a href=#101 id=101 data-nosnippet>101</a>/// Wraps [`EnvFilter`] so it can be deserialized from a string (e.g., `"info"`, `"saluki=trace,info"`).
+<a href=#101 id=101 data-nosnippet>101</a>/// Wraps [`EnvFilter`] so it can be deserialized from a string (for example, `"info"`, `"saluki=trace,info"`).
 <a href=#102 id=102 data-nosnippet>102</a></span><span class="attr">#[derive(Deserialize)]
 <a href=#103 id=103 data-nosnippet>103</a>#[serde(try_from = <span class="string">"String"</span>)]
 <a href=#104 id=104 data-nosnippet>104</a></span><span class="kw">pub struct </span>LogLevel(EnvFilter);
