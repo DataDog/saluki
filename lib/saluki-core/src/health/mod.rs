@@ -41,6 +41,7 @@ pub struct Health {
     shared: Arc<SharedComponentState>,
     request_rx: mpsc::Receiver<LivenessRequest>,
     response_tx: mpsc::Sender<LivenessResponse>,
+    readiness_notify: Arc<Notify>,
 }
 
 impl Health {
@@ -57,6 +58,11 @@ impl Health {
     fn update_readiness(&self, ready: bool) {
         self.shared.ready.store(ready, Relaxed);
         self.shared.telemetry.update_readiness(ready);
+
+        // Wake any tasks waiting in `HealthRegistry::all_ready` so they can re-check whether all components are ready.
+        if ready {
+            self.readiness_notify.notify_waiters();
+        }
     }
 
     /// Waits for a liveness probe to be sent to the component, and then responds to it.
@@ -128,7 +134,9 @@ struct ComponentState {
 }
 
 impl ComponentState {
-    fn new(name: MetaString, response_tx: mpsc::Sender<LivenessResponse>) -> (Self, Health) {
+    fn new(
+        name: MetaString, response_tx: mpsc::Sender<LivenessResponse>, readiness_notify: Arc<Notify>,
+    ) -> (Self, Health) {
         let shared = Arc::new(SharedComponentState {
             ready: AtomicBool::new(false),
             telemetry: Telemetry::from_name(&name),
@@ -148,6 +156,7 @@ impl ComponentState {
             shared,
             request_rx,
             response_tx,
+            readiness_notify,
         };
 
         (state, handle)
@@ -245,6 +254,7 @@ struct RegistryState {
     responses_rx: Option<mpsc::Receiver<LivenessResponse>>,
     pending_components: Vec<usize>,
     pending_components_notify: Arc<Notify>,
+    readiness_notify: Arc<Notify>,
 }
 
 impl RegistryState {
@@ -258,6 +268,7 @@ impl RegistryState {
             responses_rx: Some(responses_rx),
             pending_components: Vec::new(),
             pending_components_notify: Arc::new(Notify::new()),
+            readiness_notify: Arc::new(Notify::new()),
         }
     }
 }
@@ -311,7 +322,8 @@ impl HealthRegistry {
         }
 
         // Add the component state.
-        let (state, handle) = ComponentState::new(name.clone(), inner.responses_tx.clone());
+        let readiness_notify = Arc::clone(&inner.readiness_notify);
+        let (state, handle) = ComponentState::new(name.clone(), inner.responses_tx.clone(), readiness_notify);
         let component_id = inner.component_state.len();
         inner.component_state.push(state);
 
@@ -332,17 +344,34 @@ impl HealthRegistry {
         HealthAPIHandler::from_state(Arc::clone(&self.inner))
     }
 
-    /// Returns `true` if all components are ready.
-    pub fn all_ready(&self) -> bool {
-        let inner = self.inner.lock().unwrap();
+    /// Waits until all registered components are ready.
+    ///
+    /// If no components are registered, or all currently registered components are ready, the method returns immediately. Otherwise,
+    /// the method will return as soon as all registered components transition to ready.
+    ///
+    /// Note that components can be registered while this method is waiting, which will influence how long this method
+    /// takes to return. Callers should ensure that all components have been registered before calling this method.
+    pub async fn all_ready(&self) {
+        let readiness_notify = {
+            let inner = self.inner.lock().unwrap();
+            Arc::clone(&inner.readiness_notify)
+        };
 
-        for component in &inner.component_state {
-            if !component.is_ready() {
-                return false;
+        loop {
+            // Register as a waiter _before_ checking to avoid missing notifications during the check.
+            let notified = readiness_notify.notified();
+
+            if self.check_all_ready() {
+                return;
             }
-        }
 
-        true
+            notified.await;
+        }
+    }
+
+    fn check_all_ready(&self) -> bool {
+        let inner = self.inner.lock().unwrap();
+        inner.component_state.iter().all(|component| component.is_ready())
     }
 
     /// Creates a [`HealthRegistryWorker`] that can be added to a supervisor to run the health registry.
@@ -825,19 +854,32 @@ mod tests {
     #[test]
     fn readiness() {
         let registry = HealthRegistry::new();
-        assert!(registry.all_ready());
 
-        // Components should start out as not ready, so adding this component changes the registry to not ready overall:
+        // An empty registry is always ready, so `all_ready` resolves immediately:
+        let mut all_ready_fut = spawn(registry.all_ready());
+        assert_ready!(all_ready_fut.poll());
+
+        // Components start out as not ready, so adding this component changes the registry to not ready overall:
         let mut handle = registry.register_component(COMPONENT_ID).unwrap();
-        assert!(!registry.all_ready());
 
-        // Now mark the component as ready:
+        let mut all_ready_fut = spawn(registry.all_ready());
+        assert_pending!(all_ready_fut.poll());
+
+        // Now mark the component as ready. `all_ready` should resolve on the next poll:
         handle.mark_ready();
-        assert!(registry.all_ready());
 
-        // Now mark the component as not ready:
+        assert!(all_ready_fut.is_woken());
+        assert_ready!(all_ready_fut.poll());
+
+        // Ensure a fresh `all_ready` call immediately observes all components being ready:
+        let mut all_ready_fut = spawn(registry.all_ready());
+        assert_ready!(all_ready_fut.poll());
+
+        // Finally, make sure that the readiness state isn't latched, as `all_ready` should always reflect the current state:
         handle.mark_not_ready();
-        assert!(!registry.all_ready());
+
+        let mut all_ready_fut = spawn(registry.all_ready());
+        assert_pending!(all_ready_fut.poll());
     }
 
     #[tokio::test(start_paused = true)]
