@@ -394,7 +394,7 @@ impl HttpsCapableConnectorBuilder {
     /// Sets a Unix domain socket path to route all connections through.
     ///
     /// When set, the connector will connect to this Unix socket instead of performing DNS resolution
-    /// and TCP connection. The URI host is ignored in this case — all requests are sent through the
+    /// and TCP connection. The URI host is ignored in this case—all requests are sent through the
     /// configured socket.
     ///
     /// Defaults to unset (TCP connections via DNS).

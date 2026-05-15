@@ -15,7 +15,7 @@
 ///
 /// - `GenericError` requires that the error is `Send`, `Sync`, and `'static`.
 /// - `GenericError` guarantees that a backtrace is available, even if the underlying error type does not provide one.
-/// - `GenericError` is represented as a narrow pointer — exactly one word in size instead of two.
+/// - `GenericError` is represented as a narrow pointer—exactly one word in size instead of two.
 pub type GenericError = anyhow::Error;
 
 /// Macro for constructing a generic error.

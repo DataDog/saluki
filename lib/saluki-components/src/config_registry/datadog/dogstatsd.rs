@@ -78,7 +78,7 @@ static DOGSTATSD_TCP_PORT_SCHEMA: SchemaEntry = SchemaEntry {
 crate::declare_annotations! {
     // ── Schema-based ──────────────────────────────────────────────────────────
 
-    /// `bind_host` — host address to bind UDP/TCP listeners to.
+    /// `bind_host`—host address to bind UDP/TCP listeners to.
     BIND_HOST = SalukiAnnotation {
         schema: &schema::BIND_HOST,
         support_level: SupportLevel::Full,
@@ -89,7 +89,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `dogstatsd_buffer_size` — receive buffer size in bytes. Schema says Float; field is usize.
+    /// `dogstatsd_buffer_size`—receive buffer size in bytes. Schema says Float; field is usize.
     DOGSTATSD_BUFFER_SIZE = SalukiAnnotation {
         schema: &schema::DOGSTATSD_BUFFER_SIZE,
         support_level: SupportLevel::Full,
@@ -133,7 +133,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `dogstatsd_entity_id_precedence` — client entity ID takes precedence over UDS origin.
+    /// `dogstatsd_entity_id_precedence`—client entity ID takes precedence over UDS origin.
     DOGSTATSD_ENTITY_ID_PRECEDENCE = SalukiAnnotation {
         schema: &schema::DOGSTATSD_ENTITY_ID_PRECEDENCE,
         support_level: SupportLevel::Full,
@@ -144,7 +144,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `dogstatsd_eol_required` — require newline-terminated messages for selected listener types.
+    /// `dogstatsd_eol_required`—require newline-terminated messages for selected listener types.
     DOGSTATSD_EOL_REQUIRED = SalukiAnnotation {
         schema: &schema::DOGSTATSD_EOL_REQUIRED,
         support_level: SupportLevel::Full,
@@ -155,7 +155,7 @@ crate::declare_annotations! {
         test_json: Some(r#"["udp"]"#),
     };
 
-    /// `dogstatsd_non_local_traffic` — accept packets from non-localhost addresses.
+    /// `dogstatsd_non_local_traffic`—accept packets from non-localhost addresses.
     DOGSTATSD_NON_LOCAL_TRAFFIC = SalukiAnnotation {
         schema: &schema::DOGSTATSD_NON_LOCAL_TRAFFIC,
         support_level: SupportLevel::Full,
@@ -166,7 +166,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `dogstatsd_origin_detection` — enable UDS-based origin detection.
+    /// `dogstatsd_origin_detection`—enable UDS-based origin detection.
     DOGSTATSD_ORIGIN_DETECTION = SalukiAnnotation {
         schema: &schema::DOGSTATSD_ORIGIN_DETECTION,
         support_level: SupportLevel::Full,
@@ -177,7 +177,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `dogstatsd_origin_detection_client` — enable container enrichment fields.
+    /// `dogstatsd_origin_detection_client`—enable container enrichment fields.
     DOGSTATSD_ORIGIN_DETECTION_CLIENT = SalukiAnnotation {
         schema: &schema::DOGSTATSD_ORIGIN_DETECTION_CLIENT,
         support_level: SupportLevel::Full,
@@ -188,7 +188,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `dogstatsd_origin_optout_enabled` — skip enrichment when cardinality=none.
+    /// `dogstatsd_origin_optout_enabled`—skip enrichment when cardinality=none.
     DOGSTATSD_ORIGIN_OPTOUT_ENABLED = SalukiAnnotation {
         schema: &schema::DOGSTATSD_ORIGIN_OPTOUT_ENABLED,
         support_level: SupportLevel::Full,
@@ -199,7 +199,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `dogstatsd_port` — UDP port. Schema says Float; field is u16.
+    /// `dogstatsd_port`—UDP port. Schema says Float; field is u16.
     DOGSTATSD_PORT = SalukiAnnotation {
         schema: &schema::DOGSTATSD_PORT,
         support_level: SupportLevel::Full,
@@ -210,7 +210,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `dogstatsd_socket` — UDS datagram socket path.
+    /// `dogstatsd_socket`—UDS datagram socket path.
     DOGSTATSD_SOCKET = SalukiAnnotation {
         schema: &schema::DOGSTATSD_SOCKET,
         support_level: SupportLevel::Full,
@@ -221,7 +221,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `dogstatsd_so_rcvbuf` — DogStatsD UDP/UDS socket receive buffer size. Schema Float; field usize.
+    /// `dogstatsd_so_rcvbuf`—DogStatsD UDP/UDS socket receive buffer size. Schema Float; field usize.
     DOGSTATSD_SO_RCVBUF = SalukiAnnotation {
         schema: &schema::DOGSTATSD_SO_RCVBUF,
         support_level: SupportLevel::Full,
@@ -232,7 +232,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `dogstatsd_stream_socket` — UDS stream socket path.
+    /// `dogstatsd_stream_socket`—UDS stream socket path.
     DOGSTATSD_STREAM_SOCKET = SalukiAnnotation {
         schema: &schema::DOGSTATSD_STREAM_SOCKET,
         support_level: SupportLevel::Full,
@@ -243,7 +243,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `dogstatsd_stream_log_too_big` — log oversized UDS stream frames.
+    /// `dogstatsd_stream_log_too_big`—log oversized UDS stream frames.
     DOGSTATSD_STREAM_LOG_TOO_BIG = SalukiAnnotation {
         schema: &schema::DOGSTATSD_STREAM_LOG_TOO_BIG,
         support_level: SupportLevel::Full,
@@ -254,7 +254,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `dogstatsd_string_interner_size` — context interner entry count. Schema Float; field u64.
+    /// `dogstatsd_string_interner_size`—context interner entry count. Schema Float; field u64.
     DOGSTATSD_STRING_INTERNER_SIZE = SalukiAnnotation {
         schema: &schema::DOGSTATSD_STRING_INTERNER_SIZE,
         support_level: SupportLevel::Full,
@@ -265,7 +265,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `dogstatsd_tag_cardinality` — default tag cardinality for origin enrichment.
+    /// `dogstatsd_tag_cardinality`—default tag cardinality for origin enrichment.
     /// Default is "Low"; inject "high" as test value to differ from default.
     DOGSTATSD_TAG_CARDINALITY = SalukiAnnotation {
         schema: &schema::DOGSTATSD_TAG_CARDINALITY,
@@ -277,7 +277,7 @@ crate::declare_annotations! {
         test_json: Some(r#""high""#),
     };
 
-    /// `dogstatsd_tags` — additional tags applied to all ingested metrics.
+    /// `dogstatsd_tags`—additional tags applied to all ingested metrics.
     DOGSTATSD_TAGS = SalukiAnnotation {
         schema: &schema::DOGSTATSD_TAGS,
         support_level: SupportLevel::Full,
@@ -288,7 +288,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `provider_kind` — appended as a static tag (`provider_kind:<value>`) to all DogStatsD metrics.
+    /// `provider_kind`—appended as a static tag (`provider_kind:<value>`) to all DogStatsD metrics.
     PROVIDER_KIND = SalukiAnnotation {
         schema: &schema::PROVIDER_KIND,
         support_level: SupportLevel::Full,
@@ -299,7 +299,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `origin_detection_unified` — use unified entity ID resolution for origin enrichment.
+    /// `origin_detection_unified`—use unified entity ID resolution for origin enrichment.
     ORIGIN_DETECTION_UNIFIED = SalukiAnnotation {
         schema: &schema::ORIGIN_DETECTION_UNIFIED,
         support_level: SupportLevel::Full,
@@ -310,7 +310,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `dogstatsd_log_file` — path to the DogStatsD metric debug log file.
+    /// `dogstatsd_log_file`—path to the DogStatsD metric debug log file.
     DOGSTATSD_LOG_FILE = SalukiAnnotation {
         schema: &schema::DOGSTATSD_LOG_FILE,
         support_level: SupportLevel::Full,
@@ -321,7 +321,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `dogstatsd_log_file_max_rolls` — number of rotated debug log files to keep. Schema Float; field usize.
+    /// `dogstatsd_log_file_max_rolls`—number of rotated debug log files to keep. Schema Float; field usize.
     DOGSTATSD_LOG_FILE_MAX_ROLLS = SalukiAnnotation {
         schema: &schema::DOGSTATSD_LOG_FILE_MAX_ROLLS,
         support_level: SupportLevel::Full,
@@ -332,7 +332,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `dogstatsd_log_file_max_size` — max active debug log file size before rotation.
+    /// `dogstatsd_log_file_max_size`—max active debug log file size before rotation.
     DOGSTATSD_LOG_FILE_MAX_SIZE = SalukiAnnotation {
         schema: &schema::DOGSTATSD_LOG_FILE_MAX_SIZE,
         support_level: SupportLevel::Full,
@@ -343,7 +343,7 @@ crate::declare_annotations! {
         test_json: Some(r#""42MB""#),
     };
 
-    /// `dogstatsd_logging_enabled` — enable writing DogStatsD metric debug stats to a file.
+    /// `dogstatsd_logging_enabled`—enable writing DogStatsD metric debug stats to a file.
     DOGSTATSD_LOGGING_ENABLED = SalukiAnnotation {
         schema: &schema::DOGSTATSD_LOGGING_ENABLED,
         support_level: SupportLevel::Full,
@@ -354,7 +354,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `dogstatsd_metrics_stats_enable` — enable metric-level DogStatsD debug statistics.
+    /// `dogstatsd_metrics_stats_enable`—enable metric-level DogStatsD debug statistics.
     DOGSTATSD_METRICS_STATS_ENABLE = SalukiAnnotation {
         schema: &schema::DOGSTATSD_METRICS_STATS_ENABLE,
         support_level: SupportLevel::Partial,
@@ -367,7 +367,7 @@ crate::declare_annotations! {
 
     // ── ADP-specific ──────────────────────────────────────────────────────────
 
-    /// `dogstatsd_allow_context_heap_allocs` — allow heap allocations when interner is full.
+    /// `dogstatsd_allow_context_heap_allocs`—allow heap allocations when interner is full.
     DOGSTATSD_ALLOW_CONTEXT_HEAP_ALLOCS = SalukiAnnotation {
         schema: &DOGSTATSD_ALLOW_CONTEXT_HEAP_ALLOCS_SCHEMA,
         support_level: SupportLevel::Full,
@@ -378,7 +378,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `dogstatsd_autoscale_udp_listeners` — bind multiple UDP sockets with SO_REUSEPORT for kernel load balancing.
+    /// `dogstatsd_autoscale_udp_listeners`—bind multiple UDP sockets with SO_REUSEPORT for kernel load balancing.
     DOGSTATSD_AUTOSCALE_UDP_LISTENERS = SalukiAnnotation {
         schema: &DOGSTATSD_AUTOSCALE_UDP_LISTENERS_SCHEMA,
         support_level: SupportLevel::Full,
@@ -389,7 +389,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `dogstatsd_buffer_count` — number of message buffers to pre-allocate.
+    /// `dogstatsd_buffer_count`—number of message buffers to pre-allocate.
     DOGSTATSD_BUFFER_COUNT = SalukiAnnotation {
         schema: &DOGSTATSD_BUFFER_COUNT_SCHEMA,
         support_level: SupportLevel::Full,
@@ -400,7 +400,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `dogstatsd_cached_contexts_limit` — max cached metric contexts.
+    /// `dogstatsd_cached_contexts_limit`—max cached metric contexts.
     DOGSTATSD_CACHED_CONTEXTS_LIMIT = SalukiAnnotation {
         schema: &DOGSTATSD_CACHED_CONTEXTS_LIMIT_SCHEMA,
         support_level: SupportLevel::Full,
@@ -411,7 +411,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `dogstatsd_cached_tagsets_limit` — max cached tag sets.
+    /// `dogstatsd_cached_tagsets_limit`—max cached tag sets.
     DOGSTATSD_CACHED_TAGSETS_LIMIT = SalukiAnnotation {
         schema: &DOGSTATSD_CACHED_TAGSETS_LIMIT_SCHEMA,
         support_level: SupportLevel::Full,
@@ -422,7 +422,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `dogstatsd_minimum_sample_rate` — minimum allowed sample rate.
+    /// `dogstatsd_minimum_sample_rate`—minimum allowed sample rate.
     DOGSTATSD_MINIMUM_SAMPLE_RATE = SalukiAnnotation {
         schema: &DOGSTATSD_MINIMUM_SAMPLE_RATE_SCHEMA,
         support_level: SupportLevel::Full,
@@ -433,7 +433,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `dogstatsd_permissive_decoding` — relax decoding strictness for Agent compat.
+    /// `dogstatsd_permissive_decoding`—relax decoding strictness for Agent compat.
     DOGSTATSD_PERMISSIVE_DECODING = SalukiAnnotation {
         schema: &DOGSTATSD_PERMISSIVE_DECODING_SCHEMA,
         support_level: SupportLevel::Full,
@@ -444,7 +444,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `dogstatsd_string_interner_size_bytes` — explicit interner byte budget (overrides entry count).
+    /// `dogstatsd_string_interner_size_bytes`—explicit interner byte budget (overrides entry count).
     DOGSTATSD_STRING_INTERNER_SIZE_BYTES = SalukiAnnotation {
         schema: &DOGSTATSD_STRING_INTERNER_SIZE_BYTES_SCHEMA,
         support_level: SupportLevel::Full,
@@ -455,7 +455,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `dogstatsd_tcp_port` — TCP port (0 = disabled).
+    /// `dogstatsd_tcp_port`—TCP port (0 = disabled).
     DOGSTATSD_TCP_PORT = SalukiAnnotation {
         schema: &DOGSTATSD_TCP_PORT_SCHEMA,
         support_level: SupportLevel::Full,
@@ -466,7 +466,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `enable_payloads.events` — forward event payloads.
+    /// `enable_payloads.events`—forward event payloads.
     ENABLE_PAYLOADS_EVENTS = SalukiAnnotation {
         schema: &schema::ENABLE_PAYLOADS_EVENTS,
         support_level: SupportLevel::Full,
@@ -477,7 +477,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `enable_payloads.series` — forward series (counter/gauge/rate) payloads.
+    /// `enable_payloads.series`—forward series (counter/gauge/rate) payloads.
     ENABLE_PAYLOADS_SERIES = SalukiAnnotation {
         schema: &schema::ENABLE_PAYLOADS_SERIES,
         support_level: SupportLevel::Full,
@@ -488,7 +488,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `enable_payloads.service_checks` — forward service check payloads.
+    /// `enable_payloads.service_checks`—forward service check payloads.
     ENABLE_PAYLOADS_SERVICE_CHECKS = SalukiAnnotation {
         schema: &schema::ENABLE_PAYLOADS_SERVICE_CHECKS,
         support_level: SupportLevel::Full,
@@ -499,7 +499,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `enable_payloads.sketches` — forward sketch (distribution) payloads.
+    /// `enable_payloads.sketches`—forward sketch (distribution) payloads.
     ENABLE_PAYLOADS_SKETCHES = SalukiAnnotation {
         schema: &schema::ENABLE_PAYLOADS_SKETCHES,
         support_level: SupportLevel::Full,

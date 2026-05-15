@@ -93,7 +93,7 @@ impl SharedTagSet {
 
     /// Creates a mutable `TagSet` from this `SharedTagSet`.
     ///
-    /// This clones the `SharedTagSet` (cheap — just Arc pointer copies) and wraps it as the base
+    /// This clones the `SharedTagSet` (cheap—just Arc pointer copies) and wraps it as the base
     /// of a new `TagSet` that can be mutated.
     pub fn to_mutable(&self) -> TagSet {
         TagSet::from(self.clone())

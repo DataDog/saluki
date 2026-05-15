@@ -121,7 +121,7 @@ fn new_proxy(proxy_url: &str, intercept: Intercept) -> Result<Proxy, GenericErro
 
 /// Parsed representation of a single `no_proxy` entry.
 enum NoProxyEntry {
-    /// `*` — bypass proxy for all destinations. Only used in nonexact mode.
+    /// `*`—bypass proxy for all destinations. Only used in nonexact mode.
     Wildcard,
     /// An IP address in CIDR notation (e.g. `192.168.0.0/24`). Only used in nonexact mode.
     IpCidr { addr: IpAddr, prefix_len: u8 },
@@ -295,7 +295,7 @@ fn ip_in_cidr(network: IpAddr, prefix_len: u8, addr: IpAddr) -> bool {
             let shift = 128 - prefix_len;
             (u128::from(net) >> shift) == (u128::from(tgt) >> shift)
         }
-        // IPv4 vs IPv6 mismatch — never matches.
+        // IPv4 vs IPv6 mismatch—never matches.
         _ => false,
     }
 }
@@ -585,7 +585,7 @@ mod tests {
         let config = proxy_config_with_cloud_flag(true);
         let proxies = config.build().expect("should build");
         assert_eq!(proxies.len(), 1);
-        // With no no_proxy list and the flag enabled, nothing is excluded — proxies everything.
+        // With no no_proxy list and the flag enabled, nothing is excluded—proxies everything.
         assert!(proxies[0]
             .intercept()
             .matches(&"http://169.254.169.254/latest/meta-data".parse::<hyper::Uri>().unwrap()));

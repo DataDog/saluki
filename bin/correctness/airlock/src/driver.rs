@@ -286,7 +286,7 @@ impl DriverConfig {
     ///
     /// Unlike [`with_bind_mount`][Self::with_bind_mount], this references a named Docker volume
     /// rather than a host filesystem path. The volume must already exist when the container starts.
-    /// This is useful for mounting volumes that belong to other isolation groups — for example,
+    /// This is useful for mounting volumes that belong to other isolation groups—for example,
     /// a shared millstone container that needs to reach the DogStatsD sockets of both the baseline
     /// and comparison agent containers.
     pub fn with_volume_mount(mut self, volume_name: impl Into<String>, container_path: impl AsRef<Path>) -> Self {
@@ -966,7 +966,7 @@ impl Driver {
 
     /// Executes a command inside the running container and returns its stdout.
     ///
-    /// The command runs as root with no TTY. Stderr is discarded — only stdout is returned. If the command exits with a
+    /// The command runs as root with no TTY. Stderr is discarded—only stdout is returned. If the command exits with a
     /// nonzero status, an error is returned.
     ///
     /// # Errors

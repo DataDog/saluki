@@ -45,7 +45,7 @@ static AGGREGATE_PASSTHROUGH_IDLE_FLUSH_TIMEOUT_SCHEMA: SchemaEntry = SchemaEntr
 };
 
 crate::declare_annotations! {
-    /// `aggregate_window_duration` — size of each aggregation window.
+    /// `aggregate_window_duration`—size of each aggregation window.
     /// Duration fields serialize as {secs, nanos}; inject as object with test_json.
     AGGREGATE_WINDOW_DURATION = SalukiAnnotation {
         schema: &AGGREGATE_WINDOW_DURATION_SCHEMA,
@@ -57,7 +57,7 @@ crate::declare_annotations! {
         test_json: Some(r#"{"secs": 42, "nanos": 0}"#),
     };
 
-    /// `aggregate_flush_interval` — how often to flush aggregation buckets.
+    /// `aggregate_flush_interval`—how often to flush aggregation buckets.
     AGGREGATE_FLUSH_INTERVAL = SalukiAnnotation {
         schema: &AGGREGATE_FLUSH_INTERVAL_SCHEMA,
         support_level: SupportLevel::Full,
@@ -68,7 +68,7 @@ crate::declare_annotations! {
         test_json: Some(r#"{"secs": 42, "nanos": 0}"#),
     };
 
-    /// `aggregate_context_limit` — max distinct metric contexts per window.
+    /// `aggregate_context_limit`—max distinct metric contexts per window.
     AGGREGATE_CONTEXT_LIMIT = SalukiAnnotation {
         schema: &AGGREGATE_CONTEXT_LIMIT_SCHEMA,
         support_level: SupportLevel::Full,
@@ -79,7 +79,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `dogstatsd_flush_incomplete_buckets` — flush open buckets on shutdown.
+    /// `dogstatsd_flush_incomplete_buckets`—flush open buckets on shutdown.
     AGGREGATE_FLUSH_OPEN_WINDOWS = SalukiAnnotation {
         schema: &schema::DOGSTATSD_FLUSH_INCOMPLETE_BUCKETS,
         support_level: SupportLevel::Full,
@@ -90,7 +90,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `counter_expiry_seconds` — idle counter lifetime before removal.
+    /// `counter_expiry_seconds`—idle counter lifetime before removal.
     COUNTER_EXPIRY_SECONDS = SalukiAnnotation {
         schema: &COUNTER_EXPIRY_SECONDS_SCHEMA,
         support_level: SupportLevel::Full,
@@ -101,7 +101,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `dogstatsd_no_aggregation_pipeline` — pass through pre-timestamped metrics immediately.
+    /// `dogstatsd_no_aggregation_pipeline`—pass through pre-timestamped metrics immediately.
     DOGSTATSD_NO_AGGREGATION_PIPELINE = SalukiAnnotation {
         schema: &schema::DOGSTATSD_NO_AGGREGATION_PIPELINE,
         support_level: SupportLevel::Full,
@@ -112,7 +112,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `aggregate_passthrough_idle_flush_timeout` — max buffer time for passthrough metrics.
+    /// `aggregate_passthrough_idle_flush_timeout`—max buffer time for passthrough metrics.
     AGGREGATE_PASSTHROUGH_IDLE_FLUSH_TIMEOUT = SalukiAnnotation {
         schema: &AGGREGATE_PASSTHROUGH_IDLE_FLUSH_TIMEOUT_SCHEMA,
         support_level: SupportLevel::Full,
@@ -123,7 +123,7 @@ crate::declare_annotations! {
         test_json: Some(r#"{"secs": 42, "nanos": 0}"#),
     };
 
-    /// `histogram_aggregates` — list of aggregates to compute for histogram metrics.
+    /// `histogram_aggregates`—list of aggregates to compute for histogram metrics.
     HISTOGRAM_AGGREGATES = SalukiAnnotation {
         schema: &schema::HISTOGRAM_AGGREGATES,
         support_level: SupportLevel::Full,
@@ -134,7 +134,7 @@ crate::declare_annotations! {
         test_json: Some(r#"["count"]"#),
     };
 
-    /// `histogram_copy_to_distribution` — also emit histograms as distributions.
+    /// `histogram_copy_to_distribution`—also emit histograms as distributions.
     HISTOGRAM_COPY_TO_DISTRIBUTION = SalukiAnnotation {
         schema: &schema::HISTOGRAM_COPY_TO_DISTRIBUTION,
         support_level: SupportLevel::Full,
@@ -145,7 +145,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `histogram_copy_to_distribution_prefix` — prefix for distribution copies of histograms.
+    /// `histogram_copy_to_distribution_prefix`—prefix for distribution copies of histograms.
     HISTOGRAM_COPY_TO_DISTRIBUTION_PREFIX = SalukiAnnotation {
         schema: &schema::HISTOGRAM_COPY_TO_DISTRIBUTION_PREFIX,
         support_level: SupportLevel::Full,

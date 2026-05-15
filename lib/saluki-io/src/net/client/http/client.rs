@@ -236,7 +236,7 @@ impl HttpClientBuilder {
     /// Sets a Unix domain socket path to route all connections through.
     ///
     /// When set, the client will connect to this Unix socket instead of performing DNS resolution
-    /// and TCP connection. The URI host is ignored — all requests are sent through the configured
+    /// and TCP connection. The URI host is ignored—all requests are sent through the configured
     /// socket.
     ///
     /// Defaults to unset (TCP connections via DNS).

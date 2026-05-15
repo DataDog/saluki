@@ -3,7 +3,7 @@
 use crate::config_registry::{generated::schema, structs, SalukiAnnotation, SupportLevel};
 
 crate::declare_annotations! {
-    /// `cmd_port` — port for the Datadog Agent IPC/CMD API server.
+    /// `cmd_port`—port for the Datadog Agent IPC/CMD API server.
     CMD_PORT = SalukiAnnotation {
         schema: &schema::CMD_PORT,
         support_level: SupportLevel::Full,
@@ -14,7 +14,7 @@ crate::declare_annotations! {
         test_json: Some("5101"),
     };
 
-    /// `syslog_rfc` — use RFC 5424 syslog format when syslog logging is enabled.
+    /// `syslog_rfc`—use RFC 5424 syslog format when syslog logging is enabled.
     SYSLOG_RFC = SalukiAnnotation {
         schema: &schema::SYSLOG_RFC,
         support_level: SupportLevel::Full,
@@ -25,7 +25,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `syslog_uri` — destination URI for syslog output.
+    /// `syslog_uri`—destination URI for syslog output.
     SYSLOG_URI = SalukiAnnotation {
         schema: &schema::SYSLOG_URI,
         support_level: SupportLevel::Full,

@@ -11,7 +11,7 @@ pub struct ServiceCheck {
     /// Unix timestamp in seconds from the `d:` field, or None if not present.
     ///
     /// NOTE: Do not compare this field directly without first normalizing pipeline-generated
-    /// fill-in values — see `ServiceChecksAnalyzer` for details.
+    /// fill-in values—see `ServiceChecksAnalyzer` for details.
     pub timestamp: Option<u64>,
 }
 

@@ -13,7 +13,7 @@ static DOGSTATSD_MAPPER_STRING_INTERNER_SIZE_SCHEMA: SchemaEntry = SchemaEntry {
 };
 
 crate::declare_annotations! {
-    /// `dogstatsd_mapper_profiles` — JSON-encoded list of DogStatsD metric mapping profiles.
+    /// `dogstatsd_mapper_profiles`—JSON-encoded list of DogStatsD metric mapping profiles.
     /// Uses a custom test value since the generic String test value is not valid mapper JSON.
     DOGSTATSD_MAPPER_PROFILES = SalukiAnnotation {
         schema: &schema::DOGSTATSD_MAPPER_PROFILES,
@@ -25,7 +25,7 @@ crate::declare_annotations! {
         test_json: Some(r#"[{"name":"test","prefix":"test.","mappings":[]}]"#),
     };
 
-    /// `dogstatsd_mapper_string_interner_size` — interner byte budget for the mapper transform.
+    /// `dogstatsd_mapper_string_interner_size`—interner byte budget for the mapper transform.
     /// ADP-specific key, not in the Agent schema.
     DOGSTATSD_MAPPER_STRING_INTERNER_SIZE = SalukiAnnotation {
         schema: &DOGSTATSD_MAPPER_STRING_INTERNER_SIZE_SCHEMA,

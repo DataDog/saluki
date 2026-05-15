@@ -26,8 +26,8 @@ Describe the proposed approach in detail. Include enough information for someone
 
 List other approaches that were considered and explain why they were not chosen.
 
-* **Alternative 1** — description and why it was rejected.
-* **Alternative 2** — description and why it was rejected.
+* **Alternative 1**—description and why it was rejected.
+* **Alternative 2**—description and why it was rejected.
 * ...
 
 ## Open Questions

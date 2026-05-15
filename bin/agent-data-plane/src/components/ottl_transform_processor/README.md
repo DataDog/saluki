@@ -18,8 +18,8 @@ The OpenTelemetry Collector Contrib [transformprocessor](https://github.com/open
 
 | Aspect | OpenTelemetry transformprocessor | Saluki OTTL transform processor |
 |--------|----------------------------------|----------------------------------|
-| **Traces — span statements** | Supported (`context: span`) | **Supported** (via `trace_statements`) |
-| **Traces — span event statements** | Supported (`context: spanevent`) | **Not supported** |
+| **Traces—span statements** | Supported (`context: span`) | **Supported** (via `trace_statements`) |
+| **Traces—span event statements** | Supported (`context: spanevent`) | **Not supported** |
 | **Metrics** | Supported (`metric_statements`) | **Not supported** |
 | **Logs** | Supported (`log_statements`) | **Not supported** |
 | **Editor functions** | Full set (`set`, `delete_key`, `truncate_all`, `replace_match`, etc.) | **`set` only** |
@@ -65,14 +65,14 @@ The `set` function takes two arguments: a target path and a value. The value can
 
 Only **`attributes`** is a valid write target. **`resource.attributes`** is read-only and can be used in values and `where` conditions. For example:
 
-- `set(attributes["key"], "value")` — set a span attribute to a string literal.
-- `set(attributes["dst"], attributes["src"])` — copy one span attribute to another.
-- `set(attributes["x"], "v") where resource.attributes["host.name"] == "localhost"` — conditionally set based on a resource attribute.
+- `set(attributes["key"], "value")`—set a span attribute to a string literal.
+- `set(attributes["dst"], attributes["src"])`—copy one span attribute to another.
+- `set(attributes["x"], "v") where resource.attributes["host.name"] == "localhost"`—conditionally set based on a resource attribute.
 
 If `ottl_transform_config` is omitted, no transformation is applied (all spans pass through unchanged).
 
 ## References
 
-- [OpenTelemetry Collector Contrib — transformprocessor](https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/release/v0.144.x/processor/transformprocessor)
-- [OTTL — OpenTelemetry Transformation Language](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/pkg/ottl/README.md)
+- [OpenTelemetry Collector Contrib—transformprocessor](https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/release/v0.144.x/processor/transformprocessor)
+- [OTTL—OpenTelemetry Transformation Language](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/pkg/ottl/README.md)
 - [OTTL Span context](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/pkg/ottl/contexts/ottlspan/README.md) (reference for full Span field set; only a subset is implemented in this component)

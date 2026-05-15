@@ -4,7 +4,7 @@
 //! purely from the configuration system's perspective: its canonical YAML path, the environment
 //! variables that map to it, the shape of its value, and which internal config structs consume it.
 //!
-//! This registry is intentionally free of Rust field names and struct internals — it models the
+//! This registry is intentionally free of Rust field names and struct internals—it models the
 //! configuration surface as an operator would see it, and can be used at runtime to detect
 //! unknown or unsupported keys in a loaded configuration file.
 //!
@@ -155,7 +155,7 @@ pub enum Severity {
 /// How well saluki supports a given configuration key.
 ///
 /// Used in [`SalukiAnnotation`] to classify each key from saluki's perspective. `Ignored` is
-/// reserved for keys in the schema that have no annotation at all — it must not appear in any
+/// reserved for keys in the schema that have no annotation at all—it must not appear in any
 /// handwritten annotation.
 ///
 /// Invariants enforced at test time:
@@ -216,7 +216,7 @@ pub(crate) enum Schema {
 /// knows: the canonical YAML path, declared environment variables, and value type. Saluki-specific
 /// fields (`used_by`, etc.) live in [`SalukiAnnotation`] instead.
 ///
-/// Do not construct these manually — they are produced by `cargo xtask gen-config-schema` and
+/// Do not construct these manually—they are produced by `cargo xtask gen-config-schema` and
 /// live in `config_registry::generated::schema`.
 #[derive(Debug)]
 pub struct SchemaEntry {

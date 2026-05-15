@@ -1,6 +1,6 @@
 //! Runtime-resolved dynamic variables for panoramic integration tests.
 //!
-//! Some integration tests need values that only exist at container runtime — for example, the
+//! Some integration tests need values that only exist at container runtime—for example, the
 //! container's Docker-assigned IP address. These values aren't known when the test config is
 //! written, so they can't be hardcoded in YAML.
 //!
@@ -27,14 +27,14 @@
 //!
 //! Two independent resolvers perform the same substitution:
 //!
-//! **Inside the container** — the `00-panoramic-dynamic.sh` cont-init.d script runs before any
+//! **Inside the container**—the `00-panoramic-dynamic.sh` cont-init.d script runs before any
 //! services start. It is bind-mounted into the container by panoramic's read-only mounts overlay
 //! (see [`crate::mounts`]), not baked into the production ADP image. The script evaluates each
 //! `PANORAMIC_DYNAMIC_*` command, writes the result to `/airlock/dynamic/<KEY>`, resolves
 //! `{{PANORAMIC_DYNAMIC_*}}` references in `DD_*` env vars, and writes the resolved values to
 //! `/run/adp/env/` for s6-envdir. ADP never sees placeholder strings.
 //!
-//! **Outside the container** — after the container starts, panoramic polls for
+//! **Outside the container**—after the container starts, panoramic polls for
 //! `/airlock/dynamic/.ready`, reads resolved values from `/airlock/dynamic/<KEY>`, and substitutes
 //! `{{PANORAMIC_DYNAMIC_*}}` in assertion patterns before evaluating them.
 //!
@@ -42,9 +42,9 @@
 //!
 //! ## Naming conventions
 //!
-//! - `PANORAMIC_DYNAMIC_*` — test infrastructure, not application config. Consumed by the init
+//! - `PANORAMIC_DYNAMIC_*`—test infrastructure, not application config. Consumed by the init
 //!   script; never visible to ADP or the core agent.
-//! - `DD_*` — Datadog Agent and ADP config keys. May contain `{{PANORAMIC_DYNAMIC_*}}` references
+//! - `DD_*`—Datadog Agent and ADP config keys. May contain `{{PANORAMIC_DYNAMIC_*}}` references
 //!   that get resolved before ADP starts.
 //!
 //! ## Error handling

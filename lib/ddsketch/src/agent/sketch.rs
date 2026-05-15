@@ -704,7 +704,7 @@ fn trim_left(bins: &mut SmallVec<[Bin; 4]>, bin_limit: u16) {
     }
 
     // Fold the accumulated mass into the first kept bin, matching Go's `bins[newMinIndex] += n`.
-    // Any remainder that overflows u32::MAX is discarded — this requires >4B observations in a
+    // Any remainder that overflows u32::MAX is discarded—this requires >4B observations in a
     // single collapsed bin and is an intentional divergence from the Datadog Agent (which uses
     // float64 counts and never loses mass).
     bins[num_to_remove].increment(missing);
@@ -851,7 +851,7 @@ mod tests {
     /// Input:  [(0, u32::MAX), (1, 1)]  limit=1  →  remove 1 bin
     /// missing = u32::MAX; bins[1].increment(u32::MAX): next = u32::MAX+1 > u32::MAX
     /// → n = u32::MAX, remainder = 1 (discarded)
-    /// Final: [(1, u32::MAX)] — 1 observation lost
+    /// Final: [(1, u32::MAX)]—1 observation lost
     #[test]
     fn trim_left_saturates_first_kept_bin_and_discards_remainder() {
         let mut bins = make_bins(&[(0, u32::MAX), (1, 1)]);
@@ -881,7 +881,7 @@ mod tests {
     ///
     /// Input:  [(0,1),(1,1),(2,1),(3,1),(4,1),(5,1),(6,1),(7,1),(8,1),(9,1)]  limit=4
     /// num_to_remove=6; missing=6; bins[6].increment(6): 1+6=7 → n=7
-    /// Final: [(6,7),(7,1),(8,1),(9,1)]  — only top 4 keys kept, collapsed mass in first
+    /// Final: [(6,7),(7,1),(8,1),(9,1)] —only top 4 keys kept, collapsed mass in first
     #[test]
     fn trim_left_monotonic_ascending_keeps_top_keys() {
         let pairs: Vec<(i16, u32)> = (0..10).map(|i| (i, 1)).collect();

@@ -135,7 +135,7 @@ async fn make_config_from_env(
 
 /// Runs smoke tests for all annotations registered to `struct_name` against a deserialized config struct `T`.
 ///
-/// Annotations are discovered automatically from [`SUPPORTED_ANNOTATIONS`] by filtering on `used_by` —
+/// Annotations are discovered automatically from [`SUPPORTED_ANNOTATIONS`] by filtering on `used_by`—
 /// there is no need to pass a list of keys explicitly. Register an annotation for a struct by
 /// adding its name (from [`crate::config_registry::structs`]) to the annotation's `used_by` field.
 ///
@@ -146,7 +146,7 @@ async fn make_config_from_env(
 /// identical structs, and each must differ from the default (empty-config) struct.
 ///
 /// **Unsupported keys** (all other annotations in `ALL_ANNOTATIONS`): loading the struct with
-/// that key set must produce a struct identical to the default struct — i.e., the struct is
+/// that key set must produce a struct identical to the default struct—i.e., the struct is
 /// unaffected.
 ///
 /// **Full field coverage**: loading the struct with all supported keys set simultaneously must
@@ -193,7 +193,7 @@ pub async fn run_config_smoke_tests<T, Factory>(
 
         if reference == default_struct {
             failures.push(format!(
-                "yaml_path '{}': struct did not change from its default — \
+                "yaml_path '{}': struct did not change from its default—\
                  is the test value the same as the default, or is the key not wired up?",
                 canonical_path,
             ));

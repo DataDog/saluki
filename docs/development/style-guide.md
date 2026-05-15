@@ -90,7 +90,7 @@ like guidance from someone who genuinely wants to help you succeed.
 
 **What to avoid:**
 
-- "Please" in instructions — just tell the reader what to do ("Run `make fmt`", not "Please run `make fmt`")
+- "Please" in instructions—just tell the reader what to do ("Run `make fmt`", not "Please run `make fmt`")
 - Terms like "simply", "easy", "just", or "obviously": they minimize difficulty and can frustrate readers who find
   something challenging
 - Excessive exclamation marks: reserve them for genuinely exciting announcements
@@ -208,11 +208,11 @@ pub struct ContextResolver { /* ... */ }
 
 Use these sections as applicable:
 
-- `# Errors` — Document when errors are returned and what they mean
-- `# Panics` — Document conditions that cause panics
-- `# Examples` — Provide runnable examples for public APIs
-- `# Design` — Explain architectural decisions for complex items
-- `# Missing` — Document known limitations or planned future work
+- `# Errors`—Document when errors are returned and what they mean
+- `# Panics`—Document conditions that cause panics
+- `# Examples`—Provide runnable examples for public APIs
+- `# Design`—Explain architectural decisions for complex items
+- `# Missing`—Document known limitations or planned future work
 
 Example with an `# Errors` section:
 

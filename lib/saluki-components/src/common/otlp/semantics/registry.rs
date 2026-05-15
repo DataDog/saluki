@@ -1,4 +1,4 @@
-//! Semantic attribute registry — port of upstream `pkg/trace/semantics/registry.go`.
+//! Semantic attribute registry—port of upstream `pkg/trace/semantics/registry.go`.
 //!
 //! Loads the embedded `mappings.json` once at startup and exposes the fallback
 //! precedence list for each [`Concept`].
@@ -67,7 +67,7 @@ impl Registry {
     /// Parse a registry from JSON matching the upstream `mappings.json` schema.
     ///
     /// Any concept key that does not correspond to a known [`Concept`] variant
-    /// is treated as an error — keeping the enum and the embedded JSON in sync.
+    /// is treated as an error—keeping the enum and the embedded JSON in sync.
     pub fn from_json(json: &str) -> Result<Self, GenericError> {
         let data: RegistryData =
             serde_json::from_str(json).map_err(|e| generic_error!("failed to parse semantic mappings JSON: {}", e))?;

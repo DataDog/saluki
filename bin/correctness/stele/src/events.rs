@@ -15,7 +15,7 @@ pub struct Event {
     /// Unix timestamp in seconds from the `d:` field, or 0 if not present.
     ///
     /// NOTE: Do not compare this field directly without first normalizing pipeline-generated
-    /// fill-in values — see `EventsAnalyzer` for details.
+    /// fill-in values—see `EventsAnalyzer` for details.
     pub timestamp: i64,
 }
 

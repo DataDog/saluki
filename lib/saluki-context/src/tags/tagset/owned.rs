@@ -78,7 +78,7 @@ impl TagSet {
     /// Inserts a tag into the set.
     ///
     /// If the tag is already present in the set, this does nothing. Presence is checked by exact
-    /// tag value (both name and value), not just by name — multiple tags with the same name but
+    /// tag value (both name and value), not just by name—multiple tags with the same name but
     /// different values can coexist.
     pub fn insert_tag<T>(&mut self, tag: T)
     where
@@ -655,7 +655,7 @@ mod tests {
         let original = shared_from(&["a:1", "b:2", "c:3"]);
         let ts = TagSet::from(original.clone());
 
-        // No mutations — into_shared should return the base as-is.
+        // No mutations—into_shared should return the base as-is.
         assert!(!ts.is_modified());
         let result = ts.into_shared();
         assert_eq!(result, original);
@@ -700,7 +700,7 @@ mod tests {
         let mut ts = TagSet::from(base);
         ts.insert_tag(Tag::from("env:production"));
 
-        // Both env tags coexist — insert only deduplicates by exact value, not by name.
+        // Both env tags coexist—insert only deduplicates by exact value, not by name.
         assert_eq!(ts.len(), 3);
         assert!(ts.has_tag("env:staging"));
         assert!(ts.has_tag("env:production"));

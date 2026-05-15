@@ -185,8 +185,8 @@ fn is_yaml_file(path: &Path) -> bool {
 /// Scan and emit events based on configuration files in the directory.
 ///
 /// Supports two layouts:
-/// - `<search-path>/<check-name>.yaml` — flat YAML files.
-/// - `<search-path>/<check-name>.d/*.yaml` — directory-based configs; the check name is derived
+/// - `<search-path>/<check-name>.yaml`—flat YAML files.
+/// - `<search-path>/<check-name>.d/*.yaml`—directory-based configs; the check name is derived
 ///   from the directory stem (the `.d` suffix is stripped).
 async fn scan_and_emit_events(
     paths: &[PathBuf], known_configs: &mut HashSet<String>, sender: &Sender<AutodiscoveryEvent>,

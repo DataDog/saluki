@@ -137,7 +137,7 @@ async fn run_docker_correctness_test(name: String, config: Config, tctx: TestCon
 ///
 /// Containers are already removed by the coordinator waits on every exit path; this handles the
 /// volumes and networks that `Driver::cleanup` does not remove. Safe to call even if a group was
-/// never fully started — Docker returns 404 for unknown resources and we log and continue.
+/// never fully started—Docker returns 404 for unknown resources and we log and continue.
 async fn cleanup_groups(baseline_id: &str, comparison_id: &str, millstone_id: &str) {
     for id in [baseline_id, comparison_id, millstone_id] {
         if let Err(e) = Driver::clean_related_resources(id.to_string()).await {
@@ -165,8 +165,8 @@ pub(crate) fn make_error_result(name: String, started: Instant, phase: &str, e: 
 ///
 /// In a correctness test, two isolated groups of containers are created. One containing the Agent
 /// alone (baseline), and the other containing ADP and the Agent working together (comparison). A
-/// single shared millstone container runs two parallel millstone processes — one targeting each
-/// agent — to ensure both agents receive bitwise-identical inputs from the same seed.
+/// single shared millstone container runs two parallel millstone processes—one targeting each
+/// agent—to ensure both agents receive bitwise-identical inputs from the same seed.
 pub struct CorrectnessRunner {
     datadog_intake_config: DatadogIntakeConfig,
     millstone_config: MillstoneConfig,
@@ -251,8 +251,8 @@ impl CorrectnessRunner {
     ///
     /// The millstone container is set up identically to the original single-millstone setup:
     /// `millstone.yaml` is bind-mounted at the same path as before. The shell entrypoint then
-    /// uses `sed` to derive two per-target configs in `/tmp` — one with `baseline` addresses and
-    /// one with `comparison` addresses — before launching both millstone processes in parallel.
+    /// uses `sed` to derive two per-target configs in `/tmp`—one with `baseline` addresses and
+    /// one with `comparison` addresses—before launching both millstone processes in parallel.
     ///
     /// Two `sed` substitutions cover all target types:
     /// - DSD socket targets: `/airlock/` → `/{group}-airlock/`
@@ -286,7 +286,7 @@ impl CorrectnessRunner {
         let driver_config = DriverConfig::from_image("millstone", self.millstone_config.image.clone())
             .with_entrypoint(vec!["/bin/sh".to_string(), "-c".to_string()])
             .with_command(vec![cmd])
-            // Bind-mount the original millstone.yaml — same as the single-millstone setup.
+            // Bind-mount the original millstone.yaml—same as the single-millstone setup.
             .with_bind_mount(&self.millstone_config.config_path, MILLSTONE_CONFIG_INTERNAL)
             // Mount both agent isolation-group volumes so millstone can reach their DSD sockets.
             .with_volume_mount(format!("airlock-{}", baseline_isolation_group_id), "/baseline-airlock")
