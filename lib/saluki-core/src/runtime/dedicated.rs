@@ -69,7 +69,7 @@ impl RuntimeConfiguration {
 pub enum RuntimeMode {
     /// Run on the ambient runtime (default).
     ///
-    /// The supervisor runs on whatever Tokio runtime is currently active when it is spawned.
+    /// The supervisor runs on whatever Tokio runtime is currently active when it's spawned.
     #[default]
     Ambient,
 
@@ -150,7 +150,7 @@ impl Future for DedicatedRuntimeHandle {
 ///
 /// # Errors
 ///
-/// If the OS thread cannot be spawned, an error is returned.
+/// If the OS thread can't be spawned, an error is returned.
 pub(crate) fn spawn_dedicated_runtime(
     mut supervisor: Supervisor, config: RuntimeConfiguration, process_shutdown: ProcessShutdown,
     dataspace: DataspaceRegistry,

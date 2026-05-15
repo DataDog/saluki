@@ -66,12 +66,12 @@ const fn default_passthrough_idle_flush_timeout() -> Duration {
 ///
 /// ## Zero-value counters
 ///
-/// When metrics are aggregated and then flushed, they are typically removed entirely from the aggregation state. Unless
-/// they are updated again, they will not be emitted again. However, for counters, a slightly different approach is
+/// When metrics are aggregated and then flushed, they're typically removed entirely from the aggregation state. Unless
+/// they're updated again, they won't be emitted again. However, for counters, a slightly different approach is
 /// taken by tracking "zero-value" counters.
 ///
 /// Counters are aggregated and flushed normally. However, when flushed, counters are added to a list of "zero-value"
-/// counters, and if those counters are not updated again, the transform emits a copy of the counter with a value of
+/// counters, and if those counters aren't updated again, the transform emits a copy of the counter with a value of
 /// zero. It does this until the counter is updated again, or the zero-value counter expires (no updates), whichever
 /// comes first.
 ///
@@ -116,10 +116,10 @@ pub struct AggregateConfiguration {
 
     /// Whether to flush open buckets when stopping the transform.
     ///
-    /// Normally, open buckets (a bucket whose end has not yet occurred) are not flushed when the transform is stopped.
+    /// Normally, open buckets (a bucket whose end hasn't yet occurred) aren't flushed when the transform is stopped.
     /// This is done to avoid the chance of flushing a partial window, restarting the process, and then flushing the
-    /// same window again. Downstream systems sometimes cannot cope with this gracefully, as there is no way to
-    /// determine that it is an incremental update, and so they treat it as an absolute update, overwriting the
+    /// same window again. Downstream systems sometimes can't cope with this gracefully, as there is no way to
+    /// determine that it's an incremental update, and so they treat it as an absolute update, overwriting the
     /// previously flushed value.
     ///
     /// In cases where flushing all outstanding data is paramount, this can be enabled.
@@ -134,7 +134,7 @@ pub struct AggregateConfiguration {
 
     /// How long to keep idle counters alive after they've been flushed, in seconds.
     ///
-    /// When metrics are flushed, they are removed from the aggregation state. However, if a counter expiration is set,
+    /// When metrics are flushed, they're removed from the aggregation state. However, if a counter expiration is set,
     /// counters will be kept alive in an "idle" state. For as long as a counter is idle, but not yet expired, a zero
     /// value will be emitted for it during each flush. This allows more gracefully handling sparse counters, where
     /// updates are infrequent but leaving gaps in the time series would be undesirable from a user experience
@@ -163,7 +163,7 @@ pub struct AggregateConfiguration {
 
     /// How often to flush buffered passthrough metrics.
     ///
-    /// While passthrough metrics are not re-aggregated by the transform, they will still be temporarily buffered in
+    /// While passthrough metrics aren't re-aggregated by the transform, they will still be temporarily buffered in
     /// order to optimize the efficiency of processing them in the next component. This setting controls the maximum
     /// amount of time that passthrough metrics will be buffered before being forwarded.
     ///

@@ -75,7 +75,7 @@ pub struct DriverConfig {
     /// Additional Docker networks to connect this container to after creation.
     ///
     /// The primary network is set via `HostConfig.NetworkMode`. Each network listed here is joined
-    /// via a separate `docker network connect` call after the container is created but before it is
+    /// via a separate `docker network connect` call after the container is created but before it's
     /// started. Used to connect the shared millstone container to both agent networks so it can
     /// reach `baseline` and `comparison` by hostname.
     additional_networks: Vec<String>,
@@ -228,7 +228,7 @@ impl DriverConfig {
 
     /// Adds a read-only bind mount to the container.
     ///
-    /// Same as [`with_bind_mount`][Self::with_bind_mount] but the container cannot modify the mounted path.
+    /// Same as [`with_bind_mount`][Self::with_bind_mount] but the container can't modify the mounted path.
     pub fn with_readonly_bind_mount<HP, CP>(mut self, host_path: HP, container_path: CP) -> Self
     where
         HP: AsRef<Path>,
@@ -325,7 +325,7 @@ impl DriverDetails {
     /// Attempts to look up a mapped ephemeral port for the given exposed port.
     ///
     /// The same `protocol` and internal port values used to expose the port must be used here. If the given
-    /// protocol/port combination was not exposed, `None` is returned. Otherwise, the mapped ephemeral port is returned.
+    /// protocol/port combination wasn't exposed, `None` is returned. Otherwise, the mapped ephemeral port is returned.
     /// This port is exposed on `0.0.0.0` on the host side.
     pub fn try_get_exposed_port(&self, protocol: &str, internal_port: u16) -> Option<u16> {
         self.port_mappings
@@ -356,14 +356,14 @@ impl Driver {
     ///
     /// # Shared volume
     ///
-    /// The container will have a volume bind-mounted at `/airlock` that is shared between all containers in the same
+    /// The container will have a volume bind-mounted at `/airlock` that's shared between all containers in the same
     /// isolation group. This volume is mounted as world writeable (777) so all containers can freely read and write to
     /// it. This makes it easier for containers to share data between one another, but also means that care should be
     /// taken to avoid conflicts between trying to write to the same file, etc.
     ///
     /// # Errors
     ///
-    /// If the Docker client cannot be created/configured, an error will be returned.
+    /// If the Docker client can't be created/configured, an error will be returned.
     pub fn from_config(isolation_group_id: String, config: DriverConfig) -> Result<Self, GenericError> {
         let docker = crate::docker::connect()?;
 
@@ -400,7 +400,7 @@ impl Driver {
     ///
     /// # Errors
     ///
-    /// If the Docker client cannot be created/configured, or there is an error when finding or removing any of the
+    /// If the Docker client can't be created/configured, or there is an error when finding or removing any of the
     /// related resources, an error will be returned.
     pub async fn clean_related_resources(isolation_group_id: String) -> Result<(), GenericError> {
         let docker = crate::docker::connect()?;

@@ -146,7 +146,7 @@ async fn make_config_from_env(
 /// identical structs, and each must differ from the default (empty-config) struct.
 ///
 /// **Unsupported keys** (all other annotations in `ALL_ANNOTATIONS`): loading the struct with
-/// that key set must produce a struct identical to the default struct—that is, the struct is
+/// that key set must produce a struct identical to the default struct—that's, the struct is
 /// unaffected.
 ///
 /// **Full field coverage**: loading the struct with all supported keys set simultaneously must

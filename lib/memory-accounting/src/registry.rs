@@ -136,7 +136,7 @@ impl ComponentMetadata {
 /// destination within it could be subcomponents of the topology.
 ///
 /// Components are generally meant to be tied to something that has its own memory bounds and is somewhat "standalone",
-/// but this is not an absolute requirement and components can be nested more granularly for organizational/aesthetic
+/// but this isn't an absolute requirement and components can be nested more granularly for organizational/aesthetic
 /// purposes. Again, for example, one might opt to create a component in their topology for each component type --
 /// sources, transforms, and destinations -- and then add the actual instances of those components as subcomponents to
 /// each grouping, leading to a nested structure such as `topology/sources/source1`, `topology/transforms/transform1`,
@@ -147,7 +147,7 @@ impl ComponentMetadata {
 /// Every component is able to define memory bounds for itself and its subcomponents. A builder-style API is exposed to
 /// allow for ergonomically defining these bounds -- both minimum and firm -- for components, as well as extending the
 /// nestable aspect of the registry itself to the bounds builder, allowing for flexibility in where components are
-/// defined from and how they are nested.
+/// defined from and how they're nested.
 ///
 /// ## Allocation tracking
 ///
@@ -349,7 +349,7 @@ impl MemoryBoundsBuilder<'_> {
 
     /// Gets a builder object for defining the firm bounds of the current component.
     ///
-    /// The firm limit is additive with the minimum required memory, so entries that are added via `minimum` do not need
+    /// The firm limit is additive with the minimum required memory, so entries that are added via `minimum` don't need
     /// to be added again here.
     pub fn firm(&mut self) -> BoundsBuilder<'_, Firm> {
         let bounds = self.inner.inner.lock().unwrap();
@@ -411,7 +411,7 @@ impl<'a, S: BoundsMutator> BoundsBuilder<'a, S> {
     ///
     /// This is useful for tracking the expected memory usage of a single instance of a type if that type is heap
     /// allocated. For example, components that are spawned by a topology generally end up being boxed, which means a
-    /// heap allocation exists that is the size of the component type.
+    /// heap allocation exists that's the size of the component type.
     pub fn with_single_value<T>(&mut self, name: impl Into<String>) -> &mut Self {
         S::add_usage(&mut self.inner.bounds, UsageExpr::struct_size::<T>(name));
         self

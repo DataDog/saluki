@@ -10,7 +10,7 @@ pub struct ServiceCheck {
     tags: Vec<String>,
     /// Unix timestamp in seconds from the `d:` field, or None if not present.
     ///
-    /// NOTE: Do not compare this field directly without first normalizing pipeline-generated
+    /// NOTE: Don't compare this field directly without first normalizing pipeline-generated
     /// fill-in values—see `ServiceChecksAnalyzer` for details.
     pub timestamp: Option<u64>,
 }

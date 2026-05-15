@@ -197,7 +197,7 @@ impl Metadata {
 /// itself (headers, path, body, etc).
 ///
 /// `Transaction<B>` supports this by allowing for wrapping an in-memory body type `B` (for example, `ReadIoBuffer`) or wrapping
-/// a body that has been rehydrated from a string (for example, `Bytes`). This means that `B` can be a complex type that cannot
+/// a body that has been rehydrated from a string (for example, `Bytes`). This means that `B` can be a complex type that can't
 /// actually be rehydrated from a single string input (such as `FrozenChunkedBytesBuffer`) and we maintain optimal
 /// memory usage, and performance, regardless of which body type was used to construct `Transaction<B>`.
 #[derive(Clone, Deserialize, Serialize)]

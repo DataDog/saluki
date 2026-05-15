@@ -28,7 +28,7 @@
 //! Two independent resolvers perform the same substitution:
 //!
 //! **Inside the container**: the `00-panoramic-dynamic.sh` cont-init.d script runs before any
-//! services start. It is bind-mounted into the container by panoramic's read-only mounts overlay
+//! services start. It's bind-mounted into the container by panoramic's read-only mounts overlay
 //! (see [`crate::mounts`]), not baked into the production ADP image. The script evaluates each
 //! `PANORAMIC_DYNAMIC_*` command, writes the result to `/airlock/dynamic/<KEY>`, resolves
 //! `{{PANORAMIC_DYNAMIC_*}}` references in `DD_*` env vars, and writes the resolved values to

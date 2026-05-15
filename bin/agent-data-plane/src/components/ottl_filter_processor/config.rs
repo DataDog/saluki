@@ -16,7 +16,7 @@ pub enum ErrorMode {
     #[serde(alias = "ignore")]
     Ignore,
 
-    /// Ignore errors, do not log them, and continue.
+    /// Ignore errors, don't log them, and continue.
     #[serde(alias = "silent")]
     Silent,
 

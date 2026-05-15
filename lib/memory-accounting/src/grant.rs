@@ -59,7 +59,7 @@ impl MemoryGrant {
     /// slop factor of 0.1 would indicate that only 90% of the initial limit should be used, and a slop factor of 0.25
     /// would indicate that only 75% of the initial limit should be used, and so on.
     ///
-    /// If the slop factor is not valid (must be 0.0 < slop_factor <= 1.0), then `None` is returned.  If the effective
+    /// If the slop factor isn't valid (must be 0.0 < slop_factor <= 1.0), then `None` is returned.  If the effective
     /// limit is greater than 9007199254740992 bytes (2^53 bytes, or roughly 9 petabytes), then `None` is returned. This
     /// is a hardcoded limit.
     pub fn with_slop_factor(initial_limit_bytes: usize, slop_factor: f64) -> Result<Self, GrantError> {
@@ -83,7 +83,7 @@ impl MemoryGrant {
 
     /// Initial number of bytes granted.
     ///
-    /// This value is purely informational, and should not be used to calculating the memory available for use. For that
+    /// This value is purely informational, and shouldn't be used to calculating the memory available for use. For that
     /// value, see [`effective_limit_bytes`][Self::effective_limit_bytes].
     pub fn initial_limit_bytes(&self) -> usize {
         self.initial_limit_bytes

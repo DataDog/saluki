@@ -143,7 +143,7 @@ impl TopologyBlueprint {
     ///
     /// # Errors
     ///
-    /// If the component ID is invalid or the component cannot be added to the graph, an error is returned.
+    /// If the component ID is invalid or the component can't be added to the graph, an error is returned.
     pub fn add_source<I, B>(&mut self, component_id: I, builder: B) -> Result<&mut Self, GenericError>
     where
         I: AsRef<str>,
@@ -174,7 +174,7 @@ impl TopologyBlueprint {
     ///
     /// # Errors
     ///
-    /// If the component ID is invalid or the component cannot be added to the graph, an error is returned.
+    /// If the component ID is invalid or the component can't be added to the graph, an error is returned.
     pub fn add_relay<I, B>(&mut self, component_id: I, builder: B) -> Result<&mut Self, GenericError>
     where
         I: AsRef<str>,
@@ -205,7 +205,7 @@ impl TopologyBlueprint {
     ///
     /// # Errors
     ///
-    /// If the component ID is invalid or the component cannot be added to the graph, an error is returned.
+    /// If the component ID is invalid or the component can't be added to the graph, an error is returned.
     pub fn add_decoder<I, B>(&mut self, component_id: I, builder: B) -> Result<&mut Self, GenericError>
     where
         I: AsRef<str>,
@@ -236,7 +236,7 @@ impl TopologyBlueprint {
     ///
     /// # Errors
     ///
-    /// If the component ID is invalid or the component cannot be added to the graph, an error is returned.
+    /// If the component ID is invalid or the component can't be added to the graph, an error is returned.
     pub fn add_transform<I, B>(&mut self, component_id: I, builder: B) -> Result<&mut Self, GenericError>
     where
         I: AsRef<str>,
@@ -267,7 +267,7 @@ impl TopologyBlueprint {
     ///
     /// # Errors
     ///
-    /// If the component ID is invalid or the component cannot be added to the graph, an error is returned.
+    /// If the component ID is invalid or the component can't be added to the graph, an error is returned.
     pub fn add_destination<I, B>(&mut self, component_id: I, builder: B) -> Result<&mut Self, GenericError>
     where
         I: AsRef<str>,
@@ -298,7 +298,7 @@ impl TopologyBlueprint {
     ///
     /// # Errors
     ///
-    /// If the component ID is invalid or the component cannot be added to the graph, an error is returned.
+    /// If the component ID is invalid or the component can't be added to the graph, an error is returned.
     pub fn add_encoder<I, B>(&mut self, component_id: I, builder: B) -> Result<&mut Self, GenericError>
     where
         I: AsRef<str>,
@@ -329,7 +329,7 @@ impl TopologyBlueprint {
     ///
     /// # Errors
     ///
-    /// If the component ID is invalid or the component cannot be added to the graph, an error is returned.
+    /// If the component ID is invalid or the component can't be added to the graph, an error is returned.
     pub fn add_forwarder<I, B>(&mut self, component_id: I, builder: B) -> Result<&mut Self, GenericError>
     where
         I: AsRef<str>,
@@ -360,7 +360,7 @@ impl TopologyBlueprint {
     ///
     /// # Errors
     ///
-    /// If the destination component ID, or any of the source component IDs, are invalid or do not exist, or if the data
+    /// If the destination component ID, or any of the source component IDs, are invalid or don't exist, or if the data
     /// types between one of the source/destination component pairs is incompatible, an error is returned.
     pub fn connect_component<DI, SI, I>(
         &mut self, destination_component_id: DI, source_output_component_ids: SI,
@@ -383,7 +383,7 @@ impl TopologyBlueprint {
     ///
     /// # Errors
     ///
-    /// If any of the components could not be built, an error is returned.
+    /// If any of the components couldn't be built, an error is returned.
     pub async fn build(mut self) -> Result<BuiltTopology, GenericError> {
         self.graph.validate().error_context("Failed to build topology graph.")?;
 

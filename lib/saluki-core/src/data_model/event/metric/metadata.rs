@@ -9,7 +9,7 @@ const ORIGIN_PRODUCT_DETAIL_NONE: u32 = 0;
 
 /// Metric metadata.
 ///
-/// Metadata includes all information that is not specifically related to the context or value of the metric itself,
+/// Metadata includes all information that's not specifically related to the context or value of the metric itself,
 /// such as sample rate and timestamp.
 #[must_use]
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -156,7 +156,7 @@ pub enum MetricOrigin {
     /// Originated from a generic source.
     ///
     /// This is used to set the origin of a metric as the source component type itself, such as `dogstatsd` or `otel`,
-    /// when richer origin metadata is not available.
+    /// when richer origin metadata isn't available.
     SourceType(Arc<str>),
 
     /// Originated from a specific product, category, and/or service.

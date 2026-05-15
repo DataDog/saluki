@@ -149,7 +149,7 @@ impl AggregatedMetricsState {
     /// a certain facet. This method can allow re-aggregating the value of each different facet value into a single
     /// value.
     ///
-    /// If multiple metrics are found with a matching name, but they are not all counter metrics, or if no metrics are
+    /// If multiple metrics are found with a matching name, but they're not all counter metrics, or if no metrics are
     /// found with a matching name, `0.0` is returned.
     pub fn get_aggregated(&self, name: &str) -> f64 {
         self.get_aggregated_with_tags(name, &[])
@@ -162,7 +162,7 @@ impl AggregatedMetricsState {
     /// a certain facet. This method can allow re-aggregating the value of each different facet value into a single
     /// value.
     ///
-    /// If multiple metrics are found with a matching name, but they are not all counter metrics, or if no metrics are
+    /// If multiple metrics are found with a matching name, but they're not all counter metrics, or if no metrics are
     /// found with a matching name, `0.0` is returned.
     pub fn get_aggregated_with_tags(&self, name: &str, tags: &[&str]) -> f64 {
         let mut total = 0.0;
@@ -247,7 +247,7 @@ fn metric_values_to_aggregated(values: MetricValues) -> Option<AggregatedMetric>
 
 /// Gets the shared metrics state, which provides unified access to internal metrics in a simplified interface.
 ///
-/// This is lazily initialized and will only be created when it is first accessed.
+/// This is lazily initialized and will only be created when it's first accessed.
 pub async fn get_shared_metrics_state() -> Reflector<AggregatedMetricsProcessor> {
     static REFLECTOR: OnceCell<Reflector<AggregatedMetricsProcessor>> = OnceCell::const_new();
     REFLECTOR

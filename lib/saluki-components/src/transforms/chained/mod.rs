@@ -13,7 +13,7 @@ use tracing::{debug, error};
 /// Chained transform.
 ///
 /// Allows chaining multiple transforms together in a single component, which can avoid the overhead of receiving and
-/// sending events multiple times when concurrency is not required for processing.
+/// sending events multiple times when concurrency isn't required for processing.
 ///
 /// ## Synchronous transforms
 ///

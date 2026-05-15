@@ -59,7 +59,7 @@ const DEFAULT_STRING_INTERNER_SIZE_BYTES: NonZeroUsize = NonZeroUsize::new(512 *
 /// of controller inodes to container IDs.
 ///
 /// These additional collectors are necessary to bridge the gap from container PID and cgroup controller inode, as the
-/// remote tagger API does not stream us these mappings itself and only deals with resolved container IDs.
+/// remote tagger API doesn't stream us these mappings itself and only deals with resolved container IDs.
 #[derive(Clone)]
 pub struct RemoteAgentWorkloadProvider {
     tags_querier: TagStoreQuerier,

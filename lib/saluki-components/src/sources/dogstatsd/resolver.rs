@@ -87,7 +87,7 @@ impl ContextResolvers {
 
     /// Returns a mutable reference to the no-aggregation context resolver.
     ///
-    /// This context resolver should be used for metrics that do not require aggregation, which implies the metrics had
+    /// This context resolver should be used for metrics that don't require aggregation, which implies the metrics had
     /// a timestamp specified in the payload.
     pub fn no_agg(&mut self) -> &mut ContextResolver {
         &mut self.no_agg

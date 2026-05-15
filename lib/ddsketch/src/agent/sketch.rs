@@ -34,10 +34,10 @@ const MAX_BIN_WIDTH: u32 = u32::MAX;
 /// by the agent, handle them internally, merge them, and so on, without any loss of accuracy, eventually forwarding
 /// them to Datadog ourselves.
 ///
-/// As such, this implementation is constrained in the same ways: the configuration parameters cannot be changed, the
+/// As such, this implementation is constrained in the same ways: the configuration parameters can't be changed, the
 /// collapsing strategy is fixed, and we support a limited number of methods for inserting into the sketch.
 ///
-/// Importantly, we have a special function, again taken from the agent version, to allow us to interpolate histograms,
+/// Importantly, we've a special function, again taken from the agent version, to allow us to interpolate histograms,
 /// specifically our own aggregated histograms, into a sketch so that we can emit useful default quantiles, rather than
 /// having to ship the buckets -- upper bound and count -- to a downstream system that might have no native way to do
 /// the same thing, basically providing no value as they have no way to render useful data from them.
@@ -45,8 +45,8 @@ const MAX_BIN_WIDTH: u32 = u32::MAX;
 /// # Features
 ///
 /// This crate exposes a single feature, `serde`, which enables serialization and deserialization of `DDSketch` with
-/// `serde`. This feature is not enabled by default, as it can be slightly risky to use. This is primarily due to the
-/// fact that the format of `DDSketch` is not promised to be stable over time. If you enable this feature, you should
+/// `serde`. This feature isn't enabled by default, as it can be slightly risky to use. This is primarily due to the
+/// fact that the format of `DDSketch` isn't promised to be stable over time. If you enable this feature, you should
 /// take care to avoid storing serialized `DDSketch` data for long periods of time, as deserializing it in the future
 /// may work but could lead to incorrect/unexpected behavior or issues with correctness.
 ///

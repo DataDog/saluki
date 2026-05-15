@@ -66,7 +66,7 @@ pub trait EndpointEncoder: std::fmt::Debug {
     ///
     /// # Errors
     ///
-    /// If the input cannot otherwise be encoded for any reason, an error will be returned.
+    /// If the input can't otherwise be encoded for any reason, an error will be returned.
     fn encode(&mut self, input: &Self::Input, buffer: &mut Vec<u8>) -> Result<(), Self::EncodeError>;
 
     /// Returns the URI of the endpoint that this encoder is associated with.
@@ -289,7 +289,7 @@ where
     ///
     /// # Errors
     ///
-    /// If the given input is not valid for the configured encoder, or if there is an error during compression of the
+    /// If the given input isn't valid for the configured encoder, or if there is an error during compression of the
     /// encoded input, an error will be returned.
     pub async fn encode(&mut self, input: E::Input) -> Result<Option<E::Input>, RequestBuilderError<E>> {
         // Check if the input is valid for this encoder.
@@ -322,7 +322,7 @@ where
     /// Internal implementation of `encode`.
     ///
     /// This method excludes any specific edge case/error handling (such as if the input is valid, or asserting we
-    /// haven't hit input limits), and avoids any of the logic that supports request splitting. It is written this way
+    /// haven't hit input limits), and avoids any of the logic that supports request splitting. It's written this way
     /// so that it can be used in the request splitting logic itself without any thorny recursion issues.
     async fn encode_inner(&mut self, input: &E::Input) -> Result<bool, RequestBuilderError<E>> {
         // Write any configured prefix/input separator, if necessary.
@@ -436,7 +436,7 @@ where
     /// Internal implementation of `flush`.
     ///
     /// This method excludes any specific edge case/error handling (such as checking if the (un)compressed size limits
-    /// are exceeded), and does not handle request splitting, as it is meant to be used in the request splitting logic
+    /// are exceeded), and doesn't handle request splitting, as it's meant to be used in the request splitting logic
     /// itself.
     async fn flush_inner(&mut self) -> Result<(usize, FrozenChunkedBytesBuffer), RequestBuilderError<E>> {
         // If we have a payload suffix configured, write it now.

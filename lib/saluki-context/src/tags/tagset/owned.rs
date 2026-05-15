@@ -275,7 +275,7 @@ impl TagSet {
 
     /// Merges the tags from another set into this set.
     ///
-    /// If a tag from `other` is already present in this set, it will not be added.
+    /// If a tag from `other` is already present in this set, it won't be added.
     pub fn merge_missing(&mut self, other: Self) {
         for tag in other {
             self.insert_tag(tag);
@@ -284,7 +284,7 @@ impl TagSet {
 
     /// Merges the tags from a shared set into this set.
     ///
-    /// If a tag from `other` is already present in this set, it will not be added.
+    /// If a tag from `other` is already present in this set, it won't be added.
     pub fn merge_missing_shared(&mut self, other: &SharedTagSet) {
         for tag in other {
             if !self.has_tag(tag.as_str()) {
@@ -296,7 +296,7 @@ impl TagSet {
 
     /// Merges the tags from a shared set into this set.
     ///
-    /// This method does not attempt to avoid adding duplicate tags.
+    /// This method doesn't attempt to avoid adding duplicate tags.
     pub fn merge_shared(&mut self, other: &SharedTagSet) {
         self.base.extend_from_shared(other);
     }
@@ -318,7 +318,7 @@ impl TagSet {
     /// Returns the estimated size of the tag set, in bytes.
     ///
     /// This includes the size of the base `SharedTagSet`, additions, and removal tracking. The value returned is a rough
-    /// estimate and does not compensate for inlined, interned, or heap-allocated tags.
+    /// estimate and doesn't compensate for inlined, interned, or heap-allocated tags.
     pub fn size_of(&self) -> usize {
         let additions_size = self
             .overlay

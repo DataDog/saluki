@@ -33,7 +33,7 @@ use snafu::Snafu;
 ///
 /// - Floating-point numbers: `5.0` is 5 **nanoseconds** (truncated toward zero).
 ///
-/// Negative durations (for example `"-1h"`) are rejected because [`std::time::Duration`] cannot represent them.
+/// Negative durations (for example `"-1h"`) are rejected because [`std::time::Duration`] can't represent them.
 ///
 /// # Bare numbers are nanoseconds, not seconds (!!)
 ///
@@ -178,7 +178,7 @@ impl<'de> Visitor<'de> for DurationStringVisitor {
 /// `i64::MAX` nanoseconds is the largest representable value).
 const MAX_NANOS_U64: u64 = i64::MAX as u64;
 
-/// Error returned when a duration value cannot be parsed.
+/// Error returned when a duration value can't be parsed.
 #[derive(Debug, Snafu)]
 pub enum ParseDurationError {
     /// The value was syntactically invalid.
@@ -224,7 +224,7 @@ fn parse_string(s: &str) -> Result<Duration, ParseDurationError> {
 }
 
 /// Parses a string in the exact format accepted by Go's `time.ParseDuration`, restricted to non-negative values
-/// (since [`std::time::Duration`] cannot represent negatives).
+/// (since [`std::time::Duration`] can't represent negatives).
 pub fn parse_duration(s: &str) -> Result<Duration, ParseDurationError> {
     let orig = s;
     let mut rest = s;

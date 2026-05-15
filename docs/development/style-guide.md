@@ -27,7 +27,7 @@ Additionally, we use `cargo clippy` to catch common mistakes and suboptimal code
 suggestions of more idiomatic or succinct ways to write common code patterns, as well as potentially point out subtle
 bugs with certain usages. While Clippy _does_ support being able to automatically apply suggested fixes, doing so
 requires a clean working copy (no uncommitted changes), and we opt not to override that behavior as it could potentially
-overwrite changes that the developer has not yet fully worked through.
+overwrite changes that the developer hasn't yet fully worked through.
 
 As such, developers **MUST** run `make check-clippy` and apply the suggestions. Like the formatters, Clippy lints are
 checked and enforced in CI.
@@ -306,7 +306,7 @@ pub trait Source {
 
 ### Trade-off documentation
 
-When documenting performance, memory, or design trade-offs, be explicit about what is being traded and why:
+When documenting performance, memory, or design trade-offs, be explicit about what's being traded and why:
 
 - **Name both sides**: "This represents a trade-off between throughput and memory usage"
 - **Quantify when possible**: "Approximately 150–200 bytes per context based on typical metric names and tags"

@@ -173,7 +173,7 @@ pub struct EsObfuscationConfig {
     #[serde(default, rename = "apm_obfuscation_elasticsearch_enabled")]
     pub(crate) enabled: bool,
 
-    /// Keys whose values should not be obfuscated.
+    /// Keys whose values shouldn't be obfuscated.
     #[serde(
         default,
         deserialize_with = "deserialize_space_separated_or_seq",
@@ -198,7 +198,7 @@ pub struct MongoObfuscationConfig {
     #[serde(default, rename = "apm_obfuscation_mongodb_enabled")]
     pub(crate) enabled: bool,
 
-    /// Keys whose values should not be obfuscated.
+    /// Keys whose values shouldn't be obfuscated.
     #[serde(
         default,
         deserialize_with = "deserialize_space_separated_or_seq",
@@ -223,7 +223,7 @@ pub struct OpenSearchObfuscationConfig {
     #[serde(default, rename = "apm_obfuscation_opensearch_enabled")]
     pub(crate) enabled: bool,
 
-    /// Keys whose values should not be obfuscated.
+    /// Keys whose values shouldn't be obfuscated.
     #[serde(
         default,
         deserialize_with = "deserialize_space_separated_or_seq",

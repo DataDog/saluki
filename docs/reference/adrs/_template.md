@@ -11,7 +11,7 @@ Begin with the problem statement, for example, in free form using two to three s
 
 ## Context
 
-Provide context on problem, including why the current design is not sufficient for meeting requirements, or what has changed that necessitates a new approach.
+Provide context on problem, including why the current design isn't sufficient for meeting requirements, or what has changed that necessitates a new approach.
 
 ## Considered Options
 

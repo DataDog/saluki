@@ -1,13 +1,13 @@
 //! Rare sampler for traces.
 //!
 //! Samples traces for span signature combinations (env, service, name, resource, error type, http status)
-//! that are not caught by the priority sampler. This ensures that rare or low-traffic trace shapes
+//! that aren't caught by the priority sampler. This ensures that rare or low-traffic trace shapes
 //! are still represented in the sampled data.
 //!
 //! The sampler works by:
 //! 1. Iterating top-level and measured spans in the trace.
 //! 2. Computing a per-span signature (hashed from service, name, resource, error, etc.).
-//! 3. Keeping the trace if any span's signature has not been seen within the cooldown TTL.
+//! 3. Keeping the trace if any span's signature hasn't been seen within the cooldown TTL.
 //! 4. Using a token bucket to cap the overall rate of rare traces kept.
 //!
 //! Mirrors `datadog-agent/pkg/trace/sampler/rare_sampler.go`.
@@ -38,7 +38,7 @@ const KEY_TOP_LEVEL: &str = "_top_level";
 ///
 /// Modern Datadog tracers set this key instead of (or in addition to) `_top_level`. The Go agent
 /// normalizes it into `_top_level` via `UpdateTracerTopLevel` when `ClientComputedTopLevel` is
-/// true, but ADP does not run that normalization pass, so we check both keys directly.
+/// true, but ADP doesn't run that normalization pass, so we check both keys directly.
 const KEY_TRACER_TOP_LEVEL: &str = "_dd.top_level";
 
 /// Metric key indicating a span is explicitly marked for stats computation.
@@ -74,7 +74,7 @@ impl SeenSpans {
 
     /// Record an expiry for a span signature.
     ///
-    /// Skips the update if the stored entry is still live and the new expiry is not meaningfully
+    /// Skips the update if the stored entry is still live and the new expiry isn't meaningfully
     /// later (within `TTL_RENEWAL_PERIOD`). If the stored entry is already expired, always updates.
     /// This mirrors the Go agent's `ttlRenewalPeriod` check, which assumes `TTL > TTL_RENEWAL_PERIOD`.
     fn add(&mut self, now: Instant, expire: Instant, span_hash: u32) {
@@ -134,7 +134,7 @@ impl RareSampler {
 
     /// Sample a trace. Returns `true` if the trace should be kept by the rare sampler.
     ///
-    /// Iterates top-level and measured spans. If any span has a signature that has not been seen
+    /// Iterates top-level and measured spans. If any span has a signature that hasn't been seen
     /// within the TTL, the sampler attempts to consume a token and keep the trace.
     pub(super) fn sample(&mut self, trace: &mut Trace, root_span_idx: usize) -> bool {
         if !self.enabled {

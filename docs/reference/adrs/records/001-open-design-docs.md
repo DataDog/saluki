@@ -7,7 +7,7 @@ title: ADR 001 - Designing and planning in the open
 
 ## Problem Statement
 
-As Saluki grows, architectural decisions and design rationale are spread across pull requests, issues, and ad-hoc comments with no canonical, discoverable record. How should we capture and communicate design decisions so that current and future contributors can understand why the project is shaped the way it is?
+As Saluki grows, architectural decisions and design rationale are spread across pull requests, issues, and ad-hoc comments with no canonical, discoverable record. How should we capture and communicate design decisions so that current and future contributors can understand why the project is shaped the way it's?
 
 ## Context
 

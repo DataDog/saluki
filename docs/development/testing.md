@@ -2,7 +2,7 @@
 
 > **Note for developing on macOS**: Docker typically runs inside a Linux VM and the socket may not be at the standard
 > `/var/run/docker.sock` path. The test tooling automatically searches common non-standard socket locations when the
-> standard path is absent. If auto-detection does not find your socket, set the `DOCKER_HOST` environment variable.
+> standard path is absent. If auto-detection doesn't find your socket, set the `DOCKER_HOST` environment variable.
 
 The Saluki testing strategy consists of four main pillars:
 
@@ -15,7 +15,7 @@ The Saluki testing strategy consists of four main pillars:
 
 These are found throughout the Rust codebase as you would expect. You can run them with `cargo test` or you can use
 `make test` which will run them with `cargo nextest` for more parallelization. Platform-specific unit tests should be
-skipped or compiled-out for platforms they are incompatible with.
+skipped or compiled-out for platforms they're incompatible with.
 
 CI: `.gitlab/test.yml`—runs on both Linux (amd64/arm64) and macOS (amd64/arm64).
 
@@ -78,7 +78,7 @@ CI: `.gitlab/e2e.yml`—`e2e` stage, 10 min timeout, retry 2.
 
 Integration tests run a containerized ADP instance and assert high-level invariants: process stability, expected log
 output, port availability, exit behavior. They catch regressions from enabling new features or settings that cause
-crashes or early exits. They do not test output correctness. This type of test is often known as a "smoke test." For
+crashes or early exits. They don't test output correctness. This type of test is often known as a "smoke test." For
 integration tests that check system output, see [correctness tests](#correctness-tests-panoramic) above.
 
 ### Running
@@ -123,7 +123,7 @@ development, lean on CI.
 
 ## Fuzzing
 
-A fifth type of testing is fuzzing. We aren't doing a lot with fuzzing right now, but what we have uses `cargo-fuzz` and
+A fifth type of testing is fuzzing. We aren't doing a lot with fuzzing right now, but what we've uses `cargo-fuzz` and
 operates at the function-level. More fuzzing coverage will likely come in the future.
 
 ## Directory Index

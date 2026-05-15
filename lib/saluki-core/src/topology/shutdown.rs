@@ -71,7 +71,7 @@ pub struct DynamicShutdownCoordinator {
 
 /// A dynamic shutdown handle.
 ///
-/// This handle is a `Future` which resolves when the shutdown coordinator has triggered shutdown. Additionally, it is
+/// This handle is a `Future` which resolves when the shutdown coordinator has triggered shutdown. Additionally, it's
 /// used to signal to the coordinator, on drop, that the user of the handle has completed shutdown.
 pub struct DynamicShutdownHandle {
     state: Arc<State>,
@@ -98,7 +98,7 @@ impl DynamicShutdownCoordinator {
 
     /// Triggers shutdown and notifies all outstanding handles, waiting until all handles have been dropped.
     ///
-    /// If there are any outstanding handles, they are signaled to shutdown and this function will only return once all
+    /// If there are any outstanding handles, they're signaled to shutdown and this function will only return once all
     /// outstanding handles have been dropped. If there are no outstanding handles, the function returns immediately.
     pub async fn shutdown(self) {
         // Register ourselves for the shutdown notification here, which ensures that if we do have outstanding handles

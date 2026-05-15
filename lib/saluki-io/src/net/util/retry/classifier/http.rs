@@ -5,7 +5,7 @@ use super::RetryClassifier;
 /// A standard HTTP response classifier.
 ///
 /// Generally treats all client (4xx) and server (5xx) errors as retriable, with the exception of a few specific client
-/// errors that should not be retried:
+/// errors that shouldn't be retried:
 ///
 /// - 400 Bad Request (likely a client-side bug)
 /// - 401 Unauthorized (likely a client-side misconfiguration)

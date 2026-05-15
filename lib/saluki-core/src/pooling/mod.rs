@@ -20,7 +20,7 @@ pub trait Clearable {
     fn clear(&mut self) {}
 }
 
-/// An item that is poolable.
+/// An item that's poolable.
 ///
 /// This meta-trait is used to mark a type as being poolable, where the type itself wraps a piece of data
 /// (Self::Data), and the data itself is the actual value which gets pooled and reused.
@@ -28,10 +28,10 @@ pub trait Clearable {
 /// While somewhat incestuous, what this unlocks is the ability to use wrapping types to hide away the complexity of
 /// ensuring that data which is given from an object pool is eventually returned and not lost. Otherwise, trying to do
 /// something like using drop logic to send `T` back to an object pool would involve _replacing_ the value of `T` with a
-/// new value, which is not always possible, at least not without incurring additional allocations, which would negate
+/// new value, which isn't always possible, at least not without incurring additional allocations, which would negate
 /// the use of an object pool in the first place.
 pub trait Poolable {
-    /// The inner data value that is stored in the object pool.
+    /// The inner data value that's stored in the object pool.
     type Data: Clearable + Send + 'static;
 
     /// Creates a new `Self` from the object pool strategy and data value.

@@ -139,7 +139,7 @@ pub mod structs {
     pub const GET_TYPED: &str = "get_typed";
 }
 
-/// The `Severity` level of a config key that Saluki does not support.
+/// The `Severity` level of a config key that Saluki doesn't support.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Severity {
     /// Saluki's incompatibility with the key is considered minor.
@@ -167,16 +167,16 @@ pub enum SupportLevel {
     Full,
     /// Partially supported. The key is consumed by at least one struct, but support is incomplete.
     Partial,
-    /// Explicitly incompatible. Saluki does not support this key and may not behave as expected in
+    /// Explicitly incompatible. Saluki doesn't support this key and may not behave as expected in
     /// its presence; `used_by` must be empty. Support for the key may be added in the future but
-    /// tracking such intent is not encoded here.
+    /// tracking such intent isn't encoded here.
     Incompatible(Severity),
-    /// Intentionally ignored. The key is not relevant to Saluki. This assignment must be
+    /// Intentionally ignored. The key isn't relevant to Saluki. This assignment must be
     /// intentionally chosen and specified for a key. We never assume that a key is `Ignored` just
-    /// because we are unaware of it.
+    /// because we're unaware of it.
     #[allow(unused)]
     Ignored,
-    /// Unrecognized. The Saluki codebase is unaware of the existence of this key. It is not in our
+    /// Unrecognized. The Saluki codebase is unaware of the existence of this key. It's not in our
     /// vendored datadog config schema, nor is it annotated.
     #[allow(unused)]
     Unrecognized,
@@ -204,7 +204,7 @@ pub enum ValueType {
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
 #[repr(u8)]
 pub(crate) enum Schema {
-    /// Saluki defined the `SchemaEntry` and the key is not expected to exist in the vendored Datadog config schema.
+    /// Saluki defined the `SchemaEntry` and the key isn't expected to exist in the vendored Datadog config schema.
     Saluki,
     /// The vendored Datadog config schema defines the `SchemaEntry`.
     Datadog,
@@ -216,7 +216,7 @@ pub(crate) enum Schema {
 /// knows: the canonical YAML path, declared environment variables, and value type. Saluki-specific
 /// fields (`used_by`, etc.) live in [`SalukiAnnotation`] instead.
 ///
-/// Do not construct these manually—they are produced by `cargo xtask gen-config-schema` and
+/// Don't construct these manually—they're produced by `cargo xtask gen-config-schema` and
 /// live in `config_registry::generated::schema`.
 #[derive(Debug)]
 pub struct SchemaEntry {
@@ -251,7 +251,7 @@ pub struct SchemaEntry {
 /// schema's env var list.
 ///
 /// These are hand-written constants, one per key saluki cares about, and live in
-/// `config_registry::datadog::*` submodules. They are never overwritten by codegen.
+/// `config_registry::datadog::*` submodules. They're never overwritten by codegen.
 #[derive(Debug)]
 pub struct SalukiAnnotation {
     /// The schema entry this annotation enriches.
@@ -290,7 +290,7 @@ pub struct SalukiAnnotation {
     /// Overrides the smoke-test injected value entirely when `Some`.
     ///
     /// Must be a valid JSON literal (for example, `Some("[{\"name\":\"test\"}]")`). Use when the field
-    /// requires a structured value that the generic `ValueType`-derived test values cannot satisfy
+    /// requires a structured value that the generic `ValueType`-derived test values can't satisfy
     /// (for example, JSON-encoded arrays or objects).
     pub test_json: Option<&'static str>,
 }

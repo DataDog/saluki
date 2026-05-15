@@ -54,9 +54,9 @@ pub struct CacheBuilder<K, V, W = ItemCountWeighter, H = FastBuildHasher> {
 impl<K, V> CacheBuilder<K, V> {
     /// Creates a new `CacheBuilder` with the given cache identifier.
     ///
-    /// The cache identifier _should_ be unique, but it is not required to be. Metrics for the cache will be emitted
-    /// using the given identifier, so in cases where the identifier is not unique, those metrics will be aggregated
-    /// together and it will not be possible to distinguish between the different caches.
+    /// The cache identifier _should_ be unique, but it'sn't required to be. Metrics for the cache will be emitted
+    /// using the given identifier, so in cases where the identifier isn't unique, those metrics will be aggregated
+    /// together and it won't be possible to distinguish between the different caches.
     ///
     /// # Errors
     ///
@@ -80,7 +80,7 @@ impl<K, V> CacheBuilder<K, V> {
         })
     }
 
-    /// Configures a [`CacheBuilder`] that is suitable for tests.
+    /// Configures a [`CacheBuilder`] that's suitable for tests.
     ///
     /// This configures the builder with the following defaults:
     ///
@@ -113,7 +113,7 @@ impl<K, V, W, H> CacheBuilder<K, V, W, H> {
 
     /// Enables expiration of cached items based on how long since they were last accessed.
     ///
-    /// Items which have not been accessed within the configured duration will be marked for expiration, and be removed
+    /// Items which haven't been accessed within the configured duration will be marked for expiration, and be removed
     /// from the cache shortly thereafter. For the purposes of expiration, "accessed" is either when the item was first
     /// inserted or when it was last read.
     ///
@@ -134,7 +134,7 @@ impl<K, V, W, H> CacheBuilder<K, V, W, H> {
     /// Sets the interval at which the expiration process will run.
     ///
     /// This controls how often the expiration process will run to check for expired items. While items become
-    /// _eligible_ for expiration after the configured duration, they are not _guaranteed_ to be
+    /// _eligible_ for expiration after the configured duration, they're not _guaranteed_ to be
     /// removed immediately: the expiration process must still run to actually find the expired items and remove them.
     ///
     /// This means that the rough upper bound for how long an item may be kept alive is the sum of
@@ -157,7 +157,7 @@ impl<K, V, W, H> CacheBuilder<K, V, W, H> {
     /// For example, if the configured capacity is set to 10,000, and the "item count" weighter is used, then the cache
     /// will operate in a way that aims to simply ensure that no more than 10,000 items are held in the cache at any given
     /// time. This allows defining custom weighters that can be used to track other aspects of the items in the cache,
-    /// such as their size in bytes, or some other metric that is relevant to the intended caching behavior.
+    /// such as their size in bytes, or some other metric that's relevant to the intended caching behavior.
     ///
     /// Defaults to "item count" weighter.
     pub fn with_item_weighter<W2>(self, weighter: W2) -> CacheBuilder<K, V, W2, H> {
@@ -314,7 +314,7 @@ where
 
     /// Gets an item from the cache by its key.
     ///
-    /// If the item is found, it is cloned and `Some(value)` is returned. Otherwise, `None` is returned.
+    /// If the item is found, it's cloned and `Some(value)` is returned. Otherwise, `None` is returned.
     pub fn get(&self, key: &K) -> Option<V> {
         let value = self.inner.cache.get(key);
         if value.is_some() {

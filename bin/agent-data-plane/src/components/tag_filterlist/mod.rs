@@ -94,7 +94,7 @@ pub type CompiledFilters = HashMap<String, (bool, HashSet<String, FoldHashState>
 pub enum FilterMetricTagsOutcome {
     /// No rule existed for the metric name.
     RuleMiss,
-    /// A rule existed, but applying it did not change any tags.
+    /// A rule existed, but applying it didn't change any tags.
     NoChange,
     /// A rule existed and removed one or more tags.
     Modified {
@@ -293,7 +293,7 @@ fn should_keep_tag(tag: &Tag, is_exclude: bool, names: &HashSet<String, FoldHash
 /// Filter the tags of a distribution metric according to the compiled filter table.
 ///
 /// Both instrumented tags and origin tags are filtered using the same tag key list.
-/// If the metric name is not present in `filters`, the metric is left unchanged.
+/// If the metric name isn't present in `filters`, the metric is left unchanged.
 /// If filtering would not change any tags, the metric context is left untouched (zero allocations).
 #[inline]
 pub fn filter_metric_tags(

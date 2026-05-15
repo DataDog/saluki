@@ -71,7 +71,7 @@ impl ServerCertVerifier for DatadogAgentServerCertVerifier {
 ///
 /// ## Errors
 ///
-/// If there is an issue reading the IPC TLS certificate file, or if the file is not a valid PEM-encoded certificate, an
+/// If there is an issue reading the IPC TLS certificate file, or if the file isn't a valid PEM-encoded certificate, an
 /// error is returned.
 pub async fn build_ipc_client_ipc_tls_config<P: AsRef<Path>>(cert_path: P) -> Result<ClientConfig, GenericError> {
     // Read the certificate file, and extract the certificate and private key from it.
@@ -110,7 +110,7 @@ pub async fn build_ipc_client_ipc_tls_config<P: AsRef<Path>>(cert_path: P) -> Re
 ///
 /// ## Errors
 ///
-/// If there is an issue reading the IPC TLS certificate file, or if the file is not a valid PEM-encoded certificate, an
+/// If there is an issue reading the IPC TLS certificate file, or if the file isn't a valid PEM-encoded certificate, an
 /// error is returned.
 pub async fn build_ipc_server_tls_config<P: AsRef<Path>>(cert_path: P) -> Result<ServerConfig, GenericError> {
     // Read the certificate file, and extract the certificate and private key from it.
@@ -139,7 +139,7 @@ pub async fn build_ipc_server_tls_config<P: AsRef<Path>>(cert_path: P) -> Result
 ///
 /// ## Errors
 ///
-/// If the file cannot be read after the maximum number of retries, or if the file is not a valid certificate,
+/// If the file can't be read after the maximum number of retries, or if the file isn't a valid certificate,
 /// an error will be returned.
 async fn read_and_parse_certificate_file(
     cert_path: &Path, timeout: Duration, interval: Duration,

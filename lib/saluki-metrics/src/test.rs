@@ -94,7 +94,7 @@ struct RecorderState {
 /// A recorder implementation that stores metrics in memory for testing purposes.
 ///
 /// This recorder is exposes a simplistic API for querying the current values of specific counters, gauges, or
-/// histograms. It is intended for use in unit tests to verify that metrics are being recorded correctly.
+/// histograms. It's intended for use in unit tests to verify that metrics are being recorded correctly.
 #[derive(Default)]
 pub struct TestRecorder {
     state: Arc<Mutex<RecorderState>>,

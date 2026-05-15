@@ -50,7 +50,7 @@ impl MetadataAggregator {
 
     /// Adds a metadata store to the aggregator.
     ///
-    /// This store will receive a copy of every metadata operation that is emitted from the configured metadata
+    /// This store will receive a copy of every metadata operation that's emitted from the configured metadata
     /// collectors.
     pub fn add_store<S>(&mut self, store: S)
     where

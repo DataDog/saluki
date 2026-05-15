@@ -1,6 +1,6 @@
 # OTTL filter processor
 
-The OTTL filter processor is a Saluki data-plane component that drops spans when user-defined OTTL (OpenTelemetry Transformation Language) conditions evaluate to true. It is intended to align with the behavior and configuration style of the [OpenTelemetry Collector Contrib filterprocessor](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/release/v0.144.x/processor/filterprocessor/README.md). This document describes what the component does, how it compares to that reference implementation, and how to configure it.
+The OTTL filter processor is a Saluki data-plane component that drops spans when user-defined OTTL (OpenTelemetry Transformation Language) conditions evaluate to true. It's intended to align with the behavior and configuration style of the [OpenTelemetry Collector Contrib filterprocessor](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/release/v0.144.x/processor/filterprocessor/README.md). This document describes what the component does, how it compares to that reference implementation, and how to configure it.
 
 ## How it works
 

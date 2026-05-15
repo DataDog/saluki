@@ -165,7 +165,7 @@ pub struct ShutdownHandle(oneshot::Sender<()>);
 impl ShutdownHandle {
     /// Triggers the server to shutdown.
     ///
-    /// This method does not wait for shutdown to occur.
+    /// This method doesn't wait for shutdown to occur.
     pub fn shutdown(self) {
         let _ = self.0.send(());
     }

@@ -49,7 +49,7 @@ impl RemoteAgentWorkloadMetadataCollector {
     ///
     /// # Errors
     ///
-    /// If the Agent gRPC client cannot be created (invalid API endpoint, missing authentication token, etc), or if the
+    /// If the Agent gRPC client can't be created (invalid API endpoint, missing authentication token, etc), or if the
     /// authentication token is invalid, an error will be returned.
     pub async fn from_configuration(
         config: &GenericConfiguration, health: Health, interner: GenericMapInterner,

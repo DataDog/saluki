@@ -248,7 +248,7 @@ impl TraceSampler {
     /// `OTLPReceiver.createChunks` in DDA which runs before `runSamplersV1`.
     ///
     /// Returns `Some((priority, dm))` for OTLP traces when the probabilistic sampler is disabled,
-    /// or `None` if pre-sampling does not apply.
+    /// or `None` if pre-sampling doesn't apply.
     ///
     /// See: https://github.com/DataDog/datadog-agent/blob/be33ac1490c4a34602cbc65a211406b73ad6d00b/pkg/trace/api/otlp.go#L561-L585
     fn otlp_pre_sample(&mut self, trace: &mut Trace, root_span_idx: usize) -> Option<(i32, &'static str)> {
@@ -1022,7 +1022,7 @@ mod tests {
 
     /// Adapted from Go "rare-sampler-catch-sampled" (second trace same signature):
     ///
-    /// Within the TTL, the same signature is no longer "rare" and rare does not re-sample it.
+    /// Within the TTL, the same signature is no longer "rare" and rare doesn't re-sample it.
     /// With probabilistic at 0%, the trace should be dropped.
     #[test]
     fn rare_sampler_does_not_resample_within_ttl() {
@@ -1171,7 +1171,7 @@ mod tests {
     /// Adapted from Go "probabilistic-rare-100":
     ///
     /// Rare fires before probabilistic is consulted, so even at 100% sampling rate the decision
-    /// maker tag is not set—the trace is attributed to rare, not probabilistic.
+    /// maker tag isn't set—the trace is attributed to rare, not probabilistic.
     #[test]
     fn rare_wins_over_probabilistic_no_decision_maker_tag() {
         let mut sampler = create_sampler_with_rare_enabled();

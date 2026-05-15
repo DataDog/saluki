@@ -30,7 +30,7 @@ use super::addr::ConnectionAddress;
 
 /// Ensures that the given path is read for use as a UNIX socket.
 ///
-/// If the path already exists, and is a UNIX socket, it will be removed. If it is not a UNIX socket, an error will be
+/// If the path already exists, and is a UNIX socket, it will be removed. If it's not a UNIX socket, an error will be
 /// returned.
 ///
 /// ## Errors
@@ -83,7 +83,7 @@ pub(super) async fn set_unix_socket_write_only<P: AsRef<Path>>(path: P) -> io::R
 
 /// Receives data from the Unix domain socket.
 ///
-/// This function is specifically for Unix domain sockets in stream mode (that is, SOCK_STREAM), which are represented via
+/// This function is specifically for Unix domain sockets in stream mode (that's, SOCK_STREAM), which are represented via
 /// `UnixStream` in `tokio`.
 ///
 /// On success, returns the number of bytes read and the address from whence the data came.
@@ -108,7 +108,7 @@ pub async fn unix_recvmsg<B: BufMut>(socket: &mut UnixStream, buf: &mut B) -> io
 
 /// Receives data from the Unix domain socket.
 ///
-/// This function is specifically for Unix domain sockets in datagram mode (that is, SOCK_DGRAM), which are represented via
+/// This function is specifically for Unix domain sockets in datagram mode (that's, SOCK_DGRAM), which are represented via
 /// `UnixDatagram` in `tokio`.
 ///
 /// On success, returns the number of bytes read and the address from whence the data came.

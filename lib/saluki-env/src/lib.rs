@@ -1,6 +1,6 @@
 //! Helpers for querying environment-specific data.
 //!
-//! In many cases, a Saluki service will need to interact with the environment in which it is running. This may include
+//! In many cases, a Saluki service will need to interact with the environment in which it's running. This may include
 //! interacting with the operating system, introspecting workloads running on the host, and so on.
 //!
 //! This crate provides implementations of various "providers" -- specific facets of the environment that can be queried

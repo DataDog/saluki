@@ -189,7 +189,7 @@ impl PointsCache {
     }
 }
 
-/// isNotFirstPoint determines if this is NOT the first point on a cumulative series:
+/// isNotFirstPoint determines if this isn't the first point on a cumulative series:
 /// https://github.com/open-telemetry/opentelemetry-specification/blob/v1.19.0/specification/metrics/data-model.md#resets-and-gaps
 fn is_not_first_point(start_ts: u64, ts: u64, old_start_ts: u64) -> bool {
     if start_ts == 0 {

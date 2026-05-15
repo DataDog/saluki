@@ -135,7 +135,7 @@ impl RemoteAgentBootstrap {
 
     /// Creates a new `TelemetryProviderServer` tied to this remote agent.
     ///
-    /// Returns `None` if telemetry is not enabled.
+    /// Returns `None` if telemetry isn't enabled.
     pub fn create_telemetry_service(&self) -> Option<TelemetryProviderServer<RemoteAgentImpl>> {
         self.telemetry_enabled
             .then(|| TelemetryProviderServer::new(self.build_impl()))

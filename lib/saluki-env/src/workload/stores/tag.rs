@@ -82,7 +82,7 @@ impl TagStore {
     /// Creates a new `TagStore` with the given entity limit.
     ///
     /// The entity limit is the maximum number of unique entities that can be stored. Once the limit is reached, new
-    /// entities will not be added to the store.
+    /// entities won't be added to the store.
     pub fn with_entity_limit(entity_limit: NonZeroUsize) -> Self {
         let telemetry = Telemetry::new();
         telemetry.entity_limit().set(entity_limit.get() as f64);
@@ -256,7 +256,7 @@ impl TagStoreQuerier {
     /// When an entity is aliased, the tags for the aliased entity will be visited instead of any tags for the entity itself.
     ///
     /// Returns `Some(SharedTagSet)` with all tags for the entity at the requested cardinality level, or `None` if the
-    /// entity has no tags at the requested cardinality level or if the entity does not exist.
+    /// entity has no tags at the requested cardinality level or if the entity doesn't exist.
     pub fn get_entity_tags(&self, entity_id: &EntityId, cardinality: OriginTagCardinality) -> Option<SharedTagSet> {
         const CARDINALITY_LEVELS: [OriginTagCardinality; 3] = [
             OriginTagCardinality::Low,
@@ -302,7 +302,7 @@ impl TagStoreQuerier {
 
     /// Gets the exact tags for an entity at the specific cardinality.
     ///
-    /// Unlike `visit_entity_tags`, this method does not visit tags at lower cardinalities, and it does not visit tags
+    /// Unlike `visit_entity_tags`, this method doesn't visit tags at lower cardinalities, and it doesn't visit tags
     /// for an aliased entity.
     ///
     /// If no tags can be found for the entity, or at the given cardinality, `None` is returned.

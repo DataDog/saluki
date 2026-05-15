@@ -69,7 +69,7 @@ pub struct MemoryBoundsConfiguration {
     /// memory limit, such that we account for the "known unknowns" -- memory that hasn't yet been accounted for -- by
     /// simply ensuring that we can fit within a portion of the overall limit.
     ///
-    /// Values between 0 to 1 are allowed, and represent the percentage of `memory_limit` that is held back. This means
+    /// Values between 0 to 1 are allowed, and represent the percentage of `memory_limit` that's held back. This means
     /// that a slop factor of 0.25, for example, will cause 25% of `memory_limit` to be withheld. If `memory_limit` was
     /// 100MB, we would then verify that the memory bounds can fit within 75MB (100MB * (1 - 0.25) => 75MB).
     #[serde(default = "default_memory_slop_factor")]
@@ -144,7 +144,7 @@ impl MemoryBoundsConfiguration {
 ///
 /// # Errors
 ///
-/// If the bounds could not be validated under [`MemoryMode::Strict`], or if the configured grant is invalid, an error
+/// If the bounds couldn't be validated under [`MemoryMode::Strict`], or if the configured grant is invalid, an error
 /// is returned.
 pub fn initialize_memory_bounds(
     configuration: MemoryBoundsConfiguration, component_registry: ComponentRegistryHandle,

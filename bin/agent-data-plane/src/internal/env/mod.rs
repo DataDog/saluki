@@ -29,7 +29,7 @@ pub use self::workload::RemoteAgentWorkloadProvider;
 ///
 /// # Opting out for testing/benchmarking
 ///
-/// In order to facilitate testing/benchmarking where running the Datadog Agent is not desirable, the underlying
+/// In order to facilitate testing/benchmarking where running the Datadog Agent isn't desirable, the underlying
 /// providers can be effectively disabled by setting the `adp.use_fixed_host_provider` configuration value to `true`.
 ///
 /// This will effectively disable origin enrichment (no entity tags) and cause metrics to be tagged with a fixed

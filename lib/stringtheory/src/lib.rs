@@ -357,9 +357,9 @@ impl DiscriminantUnion {
 /// This code depends on a number of invariants in order to work correctly:
 ///
 /// 1. Only used on 64-bit little-endian platforms. (checked at compile-time via _INVARIANTS_CHECK)
-/// 2. The data pointers for `String` and `&'static str` cannot ever be null when the strings are non-empty.
+/// 2. The data pointers for `String` and `&'static str` can't ever be null when the strings are non-empty.
 /// 3. Allocations can never be larger than `isize::MAX` (see [here][rust_isize_alloc_limit]), meaning that any
-///    length/capacity field for a string cannot ever be larger than `isize::MAX`, implying the 64th bit (top-most bit)
+///    length/capacity field for a string can't ever be larger than `isize::MAX`, implying the 64th bit (top-most bit)
 ///    for length/capacity should always be 0.
 /// 4. An inlined string can only hold up to 23 bytes of data, meaning that the length byte for that string can never
 ///    have a value greater than 23. (_We_ have to provide this invariant, which is handled in `Inner::try_inlined`.)
@@ -673,7 +673,7 @@ unsafe impl Sync for Inner {}
 /// ### Owned and borrowed strings
 ///
 /// `MetaString` can be created from `String` and `&str` directly. For owned scenarios (`String`), the string value is
-/// simply wrapped. For borrowed strings, we attempt to inline them (see more below) or, if they cannot be inlined, they
+/// simply wrapped. For borrowed strings, we attempt to inline them (see more below) or, if they can't be inlined, they
 /// are copied into a new `String`.
 ///
 /// ### Static strings
@@ -693,7 +693,7 @@ unsafe impl Sync for Inner {}
 /// ### Shared strings
 ///
 /// `MetaString` can be created from `Arc<str>`, which is a string slice that can be atomically shared between threads.
-/// This is a simpler version of interned strings where strict memory control and re-use is not required.
+/// This is a simpler version of interned strings where strict memory control and re-use isn't required.
 ///
 /// ### Inlined strings
 ///
@@ -707,7 +707,7 @@ unsafe impl Sync for Inner {}
 /// ## Conversion methods
 ///
 /// Implementations of `From<T>` exist for all of the aforementioned types to allow for easily converting to
-/// `MetaString`. Once a caller has a `MetaString` value, they are generally expected to interact with the string in a
+/// `MetaString`. Once a caller has a `MetaString` value, they're generally expected to interact with the string in a
 /// read-only way, as `MetaString` can be dereferenced directly to `&str`.
 ///
 /// If a caller needs to be able to modify the string data, they can call `into_owned` to get an owned version of the
@@ -720,14 +720,14 @@ pub struct MetaString {
 impl MetaString {
     /// Creates an empty `MetaString`.
     ///
-    /// This does not allocate.
+    /// This doesn't allocate.
     pub const fn empty() -> Self {
         Self { inner: Inner::empty() }
     }
 
     /// Creates a new `MetaString` from the given static string.
     ///
-    /// This does not allocate.
+    /// This doesn't allocate.
     pub const fn from_static(s: &'static str) -> Self {
         Self {
             inner: Inner::static_str(s),
@@ -741,7 +741,7 @@ impl MetaString {
 
     /// Creates a new `MetaString` from the given string, using the provided interner.
     ///
-    /// The string is inlined if possible. If it cannot be inlined, the interner is tried. If interning fails, an owned
+    /// The string is inlined if possible. If it can't be inlined, the interner is tried. If interning fails, an owned
     /// string is allocated.
     pub fn from_interner<I>(s: &str, interner: &I) -> Self
     where

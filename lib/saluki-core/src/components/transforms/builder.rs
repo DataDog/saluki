@@ -22,23 +22,23 @@ pub trait TransformBuilder: MemoryBounds {
     ///
     /// ## Errors
     ///
-    /// If the transform cannot be built for any reason, an error is returned.
+    /// If the transform can't be built for any reason, an error is returned.
     async fn build(&self, context: ComponentContext) -> Result<Box<dyn Transform + Send>, GenericError>;
 }
 
 /// A synchronous transform builder.
 ///
-/// Synchronous transforms are a special case of transforms that are executed synchronously, meaning that they do not
-/// run as their own task. This is used for certain transforms, typically those where it is more efficient to run
+/// Synchronous transforms are a special case of transforms that are executed synchronously, meaning that they don't
+/// run as their own task. This is used for certain transforms, typically those where it's more efficient to run
 /// multiple transformation steps in a single task.
 #[async_trait]
 pub trait SynchronousTransformBuilder: MemoryBounds {
     /// Builds an instance of the synchronous transform.
     ///
-    /// The provided context is relative to the parent component that is building this synchronous transform.
+    /// The provided context is relative to the parent component that's building this synchronous transform.
     ///
     /// ## Errors
     ///
-    /// If the synchronous transform cannot be built for any reason, an error is returned.
+    /// If the synchronous transform can't be built for any reason, an error is returned.
     async fn build(&self, context: ComponentContext) -> Result<Box<dyn SynchronousTransform + Send>, GenericError>;
 }

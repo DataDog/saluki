@@ -67,7 +67,7 @@ pub struct BoundApiAddress(pub SocketAddr);
 ///
 /// In addition to dynamic routes, callers can register static HTTP handlers and gRPC services up-front via
 /// [`with_handler`][Self::with_handler], [`with_optional_handler`][Self::with_optional_handler], and
-/// [`with_grpc_service`][Self::with_grpc_service]. These form a base router that is cloned on every rebuild and merged
+/// [`with_grpc_service`][Self::with_grpc_service]. These form a base router that's cloned on every rebuild and merged
 /// with the currently-asserted dynamic routes. Static routes take precedence on conflicts: a dynamic route whose path
 /// and method overlap with a static route is skipped (with a warning) until the conflict clears.
 ///
@@ -369,7 +369,7 @@ fn create_dynamic_router(initial: Router) -> (Arc<ArcSwap<Router>>, Router) {
 ///
 /// `Router::merge` panics when two routers define overlapping routes (same path and HTTP method) and axum exposes no
 /// fallible alternative. Since `Router` is opaque -- there is no public API to inspect which paths/methods a router
-/// carries -- we cannot detect conflicts ahead of time.
+/// carries -- we can't detect conflicts ahead of time.
 ///
 /// To recover from the panic without losing the accumulated router state, we clone `base` before the merge attempt.
 /// The clone is passed into `catch_unwind`: if the merge panics, only the clone is in a partially-mutated state and it

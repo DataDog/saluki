@@ -27,7 +27,7 @@ pub trait EncoderBuilder: MemoryBounds {
     ///
     /// # Errors
     ///
-    /// If the encoder cannot be built for any reason, an error is returned.
+    /// If the encoder can't be built for any reason, an error is returned.
     async fn build(&self, context: ComponentContext) -> Result<Box<dyn Encoder + Send>, GenericError>;
 }
 
@@ -51,6 +51,6 @@ pub trait IncrementalEncoderBuilder: MemoryBounds {
     ///
     /// # Errors
     ///
-    /// If the incremental encoder cannot be built for any reason, an error is returned.
+    /// If the incremental encoder can't be built for any reason, an error is returned.
     async fn build(&self, context: ComponentContext) -> Result<Self::Output, GenericError>;
 }

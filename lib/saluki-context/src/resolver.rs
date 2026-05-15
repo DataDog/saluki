@@ -72,9 +72,9 @@ pub struct ContextResolverBuilder {
 impl ContextResolverBuilder {
     /// Creates a new `ContextResolverBuilder` with the given resolver name.
     ///
-    /// The resolver name _should_ be unique, but it is not required to be. Metrics for the resolver will be
-    /// emitted using the given name, so in cases where the name is not unique, those metrics will be aggregated
-    /// together and it will not be possible to distinguish between the different resolvers.
+    /// The resolver name _should_ be unique, but it'sn't required to be. Metrics for the resolver will be
+    /// emitted using the given name, so in cases where the name isn't unique, those metrics will be aggregated
+    /// together and it won't be possible to distinguish between the different resolvers.
     ///
     /// # Errors
     ///
@@ -103,12 +103,12 @@ impl ContextResolverBuilder {
     ///
     /// [`ContextResolver`] provides two main benefits: consistent behavior for resolving contexts (interning, origin
     /// tags, etc), and the caching of those resolved contexts to speed up future resolutions. However, caching contexts
-    /// means that we pay a memory cost for the cache itself, even if the contexts are not ever reused or are seen
-    /// infrequently. While expiration can help free up cache capacity, it cannot help recover the memory used by the
+    /// means that we pay a memory cost for the cache itself, even if the contexts aren't ever reused or are seen
+    /// infrequently. While expiration can help free up cache capacity, it can't help recover the memory used by the
     /// underlying cache data structure once they have expanded to hold the contexts.
     ///
     /// Disabling caching allows normal resolving to take place without the overhead of caching the contexts. This can
-    /// lead to lower average memory usage, as contexts will only live as long as they are needed, but it will reduce
+    /// lead to lower average memory usage, as contexts will only live as long as they're needed, but it will reduce
     /// memory determinism as memory will be allocated for every resolved context (minus interned strings), which means
     /// that resolving the same context ten times in a row will result in ten separate allocations, and so on.
     ///
@@ -121,11 +121,11 @@ impl ContextResolverBuilder {
 
     /// Sets the limit on the number of cached contexts.
     ///
-    /// This is the maximum number of resolved contexts that can be cached at any given time. This limit does not affect
+    /// This is the maximum number of resolved contexts that can be cached at any given time. This limit doesn't affect
     /// the total number of contexts that can be _alive_ at any given time, which is dependent on the interner capacity
     /// and whether or not heap allocations are allowed.
     ///
-    /// Caching contexts is beneficial when the same context is resolved frequently, and it is generally worth
+    /// Caching contexts is beneficial when the same context is resolved frequently, and it's generally worth
     /// allowing for higher limits on cached contexts when heap allocations are allowed, as this can better amortize the
     /// cost of those heap allocations.
     ///
@@ -160,7 +160,7 @@ impl ContextResolverBuilder {
     ///
     /// This is the maximum number of bytes that the interner will use for interning strings that are present in
     /// contexts being resolved. This capacity may or may not be allocated entirely when the resolver is built, but the
-    /// interner will not exceed the configured capacity when allocating any backing storage.
+    /// interner won't exceed the configured capacity when allocating any backing storage.
     ///
     /// This value directly impacts the number of contexts that can be resolved when heap allocations are disabled, as
     /// all resolved contexts must either have values (name or tags) that can be inlined or interned. Once the interner
@@ -180,7 +180,7 @@ impl ContextResolverBuilder {
     ///
     /// In cases where the interner is full, this setting determines whether or not we refuse to resolve a context, or
     /// if we allow it be resolved by allocating strings on the heap. When heap allocations are enabled, the amount of
-    /// memory that can be used by the interner is effectively unlimited, as contexts that cannot be interned will be
+    /// memory that can be used by the interner is effectively unlimited, as contexts that can't be interned will be
     /// simply spill to the heap instead of being limited in any way.
     ///
     /// Defaults to `true`.
@@ -212,13 +212,13 @@ impl ContextResolverBuilder {
 
     /// Sets the interner to use for this resolver.
     ///
-    /// If an interner is not provided, an interner will be created in [`ContextResolverBuilder::build`]
+    /// If an interner isn't provided, an interner will be created in [`ContextResolverBuilder::build`]
     pub fn with_interner(mut self, interner: GenericMapInterner) -> Self {
         self.interner = Some(interner);
         self
     }
 
-    /// Configures a [`ContextResolverBuilder`] that is suitable for tests.
+    /// Configures a [`ContextResolverBuilder`] that's suitable for tests.
     ///
     /// This configures the builder with the following defaults:
     ///
@@ -304,8 +304,8 @@ impl ContextResolverBuilder {
 
 /// A centralized store for resolved contexts.
 ///
-/// Contexts are the combination of a name and a set of tags. They are used to identify a specific metric series. As contexts
-/// are constructed entirely of strings, they are expensive to construct in a way that allows sending between tasks, as
+/// Contexts are the combination of a name and a set of tags. They're used to identify a specific metric series. As contexts
+/// are constructed entirely of strings, they're expensive to construct in a way that allows sending between tasks, as
 /// this usually requires allocations. Even further, the same context may be "hot", used frequently by the
 /// applications/services sending us metrics.
 ///
@@ -386,7 +386,7 @@ impl ContextResolver {
 
     /// Resolves the given context.
     ///
-    /// If the context has not yet been resolved, the name and tags are interned and a new context is created and
+    /// If the context hasn't yet been resolved, the name and tags are interned and a new context is created and
     /// stored. Otherwise, the existing context is returned. If an origin tags resolver is configured, and origin info
     /// is available, any enriched tags will be added to the context.
     ///
@@ -406,7 +406,7 @@ impl ContextResolver {
 
     /// Resolves the given context using the provided origin tags.
     ///
-    /// If the context has not yet been resolved, the name and tags are interned and a new context is created and
+    /// If the context hasn't yet been resolved, the name and tags are interned and a new context is created and
     /// stored. Otherwise, the existing context is returned. The provided origin tags are used to enrich the context.
     ///
     /// `None` may be returned if the interner is full and outside allocations are disallowed. See
@@ -415,7 +415,7 @@ impl ContextResolver {
     /// ## Origin tags resolver mismatch
     ///
     /// When passing in origin tags, they will be inherently tied to a specific `OriginTagsResolver`, which may
-    /// differ from the configured origin tags resolver in this context resolver. This means that the context that is
+    /// differ from the configured origin tags resolver in this context resolver. This means that the context that's
     /// generated and cached may not be reused in the future if an attempt is made to resolve it using the raw origin
     /// information instead.
     ///
@@ -558,12 +558,12 @@ impl TagsResolverBuilder {
     ///
     /// [`TagsResolver`] provides two main benefits: consistent behavior for resolving tag sets (interning, origin
     /// tags, etc), and the caching of those resolved tag sets to speed up future resolutions. However, caching tag
-    /// sets means that we pay a memory cost for the cache itself, even if the tag sets are not ever reused or are seen
-    /// infrequently. While expiration can help free up cache capacity, it cannot help recover the memory used by the
+    /// sets means that we pay a memory cost for the cache itself, even if the tag sets aren't ever reused or are seen
+    /// infrequently. While expiration can help free up cache capacity, it can't help recover the memory used by the
     /// underlying cache data structure once they have expanded to hold the tag sets.
     ///
     /// Disabling caching allows normal resolving to take place without the overhead of caching the tag sets. This can
-    /// lead to lower average memory usage, as tag sets will only live as long as they are needed, but it will reduce
+    /// lead to lower average memory usage, as tag sets will only live as long as they're needed, but it will reduce
     /// memory determinism as memory will be allocated for every resolved tag set (minus interned strings), which means
     /// that resolving the same tag set ten times in a row will result in ten separate allocations, and so on.
     ///
@@ -576,11 +576,11 @@ impl TagsResolverBuilder {
 
     /// Sets the limit on the number of cached tagsets.
     ///
-    /// This is the maximum number of resolved tag sets that can be cached at any given time. This limit does not affect
+    /// This is the maximum number of resolved tag sets that can be cached at any given time. This limit doesn't affect
     /// the total number of tag sets that can be _alive_ at any given time, which is dependent on the interner capacity
     /// and whether or not heap allocations are allowed.
     ///
-    /// Caching tag sets is beneficial when the same tag set is resolved frequently, and it is generally worth
+    /// Caching tag sets is beneficial when the same tag set is resolved frequently, and it's generally worth
     /// allowing for higher limits on cached tag sets when heap allocations are allowed, as this can better amortize the
     /// cost of those heap allocations.
     ///
@@ -615,7 +615,7 @@ impl TagsResolverBuilder {
     ///
     /// In cases where the interner is full, this setting determines whether or not we refuse to resolve a context, or
     /// if we allow it be resolved by allocating strings on the heap. When heap allocations are enabled, the amount of
-    /// memory that can be used by the interner is effectively unlimited, as contexts that cannot be interned will be
+    /// memory that can be used by the interner is effectively unlimited, as contexts that can't be interned will be
     /// simply spill to the heap instead of being limited in any way.
     ///
     /// Defaults to `true`.
@@ -628,7 +628,7 @@ impl TagsResolverBuilder {
     ///
     /// In some cases, metrics, events, and service checks may have enriched tags based on their origin -- the
     /// application/host/container/etc that emitted the metric -- which has to be considered when building the context
-    /// itself. As this can be expensive, it is useful to split the logic of actually grabbing the enriched tags based
+    /// itself. As this can be expensive, it's useful to split the logic of actually grabbing the enriched tags based
     /// on the available origin info into a separate phase, and implementation, that can run separately from the
     /// initial hash-based approach of checking if a context has already been resolved.
     ///
@@ -685,7 +685,7 @@ impl TagsResolverBuilder {
         }
     }
 
-    /// Configures a [`TagsResolverBuilder`] that is suitable for tests.
+    /// Configures a [`TagsResolverBuilder`] that's suitable for tests.
     ///
     /// This configures the builder with the following defaults:
     ///

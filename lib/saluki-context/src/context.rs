@@ -180,7 +180,7 @@ impl Context {
     /// Mutates the instrumented tags of this context via a closure.
     ///
     /// Uses copy-on-write semantics: if this context shares its inner data with other clones, the
-    /// inner data is cloned first so that mutations do not affect other holders. If this context is
+    /// inner data is cloned first so that mutations don't affect other holders. If this context is
     /// the sole owner, the mutation happens in place.
     ///
     /// The context key is automatically recomputed after the closure returns.
@@ -191,7 +191,7 @@ impl Context {
     /// Mutates the origin tags of this context via a closure.
     ///
     /// Uses copy-on-write semantics: if this context shares its inner data with other clones, the
-    /// inner data is cloned first so that mutations do not affect other holders. If this context is
+    /// inner data is cloned first so that mutations don't affect other holders. If this context is
     /// the sole owner, the mutation happens in place.
     ///
     /// The context key is automatically recomputed after the closure returns.
@@ -202,7 +202,7 @@ impl Context {
     /// Mutates both instrumented tags and origin tags via a single closure.
     ///
     /// Uses copy-on-write semantics: if this context shares its inner data with other clones, the
-    /// inner data is cloned first so that mutations do not affect other holders. If this context is
+    /// inner data is cloned first so that mutations don't affect other holders. If this context is
     /// the sole owner, the mutation happens in place.
     ///
     /// The context key is recomputed once after the closure returns.
@@ -244,7 +244,7 @@ impl Context {
     /// Since origin tags can potentially be expensive to calculate, this method will cache the size of the origin tags
     /// when this method is first called.
     ///
-    /// Additionally, the value returned by this method does not compensate for externalities such as origin tags
+    /// Additionally, the value returned by this method doesn't compensate for externalities such as origin tags
     /// potentially being shared by multiple contexts, or whether or not tags are inlined, interned, or heap
     /// allocated. This means that the value returned is essentially the worst-case usage, and should be used as a rough
     /// estimate.

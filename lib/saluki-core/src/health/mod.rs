@@ -61,7 +61,7 @@ impl Health {
 
     /// Waits for a liveness probe to be sent to the component, and then responds to it.
     ///
-    /// This should generally be polled as part of a `select!` block to ensure it is checked alongside other
+    /// This should generally be polled as part of a `select!` block to ensure it's checked alongside other
     /// asynchronous operations.
     pub async fn live(&mut self) {
         // Simply wait for the health registry to send us a liveness probe, and if we receive one, we respond back to it
@@ -265,7 +265,7 @@ impl RegistryState {
 /// A registry of components and their health.
 ///
 /// `HealthRegistry` is responsible for tracking the health of all registered components, by storing both their
-/// readiness, which indicates whether or not they are initialized and generally ready to process data, as well as
+/// readiness, which indicates whether or not they're initialized and generally ready to process data, as well as
 /// probing their liveness, which indicates if they're currently responding, or able to respond, to requests.
 ///
 /// # Telemetry

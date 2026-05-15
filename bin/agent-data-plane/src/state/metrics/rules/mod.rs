@@ -67,7 +67,7 @@ impl RemapperRule {
     /// Adds a set of tags to remap from the source metric by changing their name.
     ///
     /// Remapped tags must be given in the form of `(source_tag, destination_tag)`. If a tag by the name `source_tag` is
-    /// found in the source metric, it is copied to the remapped metric with a name of `destination_tag`.
+    /// found in the source metric, it's copied to the remapped metric with a name of `destination_tag`.
     ///
     /// This method is additive, so it can be called multiple times to add more remapped tags. Tag remapping is
     /// order-dependent, so if a tag is configured to be remapped, or copied, multiple times, then the first match will
@@ -83,7 +83,7 @@ impl RemapperRule {
     /// Adds a set of tags to remap from the source metric without changing their name.
     ///
     /// Remapped tags must be given in the form of `source_tag`. If a tag by the name `source_tag` is found in the
-    /// source metric, it is copied to the remapped metric with the same name.
+    /// source metric, it's copied to the remapped metric with the same name.
     ///
     /// This method is additive, so it can be called multiple times to add more original tags. Tag remapping is
     /// order-dependent, so if a tag is configured to be copied, or remapped, multiple times, then the first match will

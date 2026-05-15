@@ -113,11 +113,11 @@ impl Supervisable for InternalTelemetryWorker {
 ///
 /// It runs on a dedicated single-threaded runtime.
 ///
-/// Returns `Ok(None)` if telemetry is not enabled.
+/// Returns `Ok(None)` if telemetry isn't enabled.
 ///
 /// # Errors
 ///
-/// If the supervisor cannot be created, an error is returned.
+/// If the supervisor can't be created, an error is returned.
 pub fn create_observability_supervisor(
     dp_config: &DataPlaneConfiguration, component_registry: &ComponentRegistry, health_registry: HealthRegistry,
 ) -> Result<Option<Supervisor>, GenericError> {

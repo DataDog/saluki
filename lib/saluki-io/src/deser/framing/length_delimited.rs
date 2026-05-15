@@ -8,7 +8,7 @@ use crate::buf::ReadIoBuffer;
 ///
 /// All frames are prepended with a 4-byte integer, in little endian order, which indicates how much additional data is
 /// included in the frame. This framer only supports frame lengths that fit within the given buffer, which is to say
-/// that if the length described in the delimiter would exceed the current buffer, it is considered an invalid frame.
+/// that if the length described in the delimiter would exceed the current buffer, it's considered an invalid frame.
 #[derive(Default)]
 pub struct LengthDelimitedFramer;
 

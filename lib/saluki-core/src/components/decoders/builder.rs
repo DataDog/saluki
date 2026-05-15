@@ -27,6 +27,6 @@ pub trait DecoderBuilder: MemoryBounds {
     ///
     /// # Errors
     ///
-    /// If the decoder cannot be built for any reason, an error is returned.
+    /// If the decoder can't be built for any reason, an error is returned.
     async fn build(&self, context: ComponentContext) -> Result<Box<dyn Decoder + Send>, GenericError>;
 }

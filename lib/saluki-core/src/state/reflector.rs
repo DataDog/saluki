@@ -73,10 +73,10 @@ impl<P: Processor> Clone for Store<P> {
     }
 }
 
-/// `Reflector` composes a source of data with a processor that is used to transform the data, and then stores the
+/// `Reflector` composes a source of data with a processor that's used to transform the data, and then stores the
 /// results and allows for shared access by multiple callers.
 ///
-/// Reflectors are a term often found in the context of custom Kubernetes controllers, where they are used to reduce the
+/// Reflectors are a term often found in the context of custom Kubernetes controllers, where they're used to reduce the
 /// load on the Kubernetes API server by caching the state of resources in memory. `Reflector` provides comparable
 /// functionality, allowing for a single data source to be consumed, and then shared amongst multiple callers. However,
 ///
@@ -91,7 +91,7 @@ pub struct Reflector<P: Processor> {
 impl<P: Processor> Reflector<P> {
     /// Creates a new reflector with the given data source and processor.
     ///
-    /// A reflector composes a source of data with a processor that is used to transform the data, and then stores the
+    /// A reflector composes a source of data with a processor that's used to transform the data, and then stores the
     /// the processed results. It can be listened to for updates, and cheaply shared. This allows multiple interested
     /// components to subscribe to the same data source without having to duplicate the processing or storage of the
     /// data.

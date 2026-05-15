@@ -28,7 +28,7 @@ pub enum AnalysisMode {
 
 /// Options for traces analysis. Used when `AnalysisMode` is `Traces`.
 pub struct TracesAnalysisOptions {
-    /// If true, use OTLP-direct analysis (baseline is OTel-based): skip trace stats comparison and do not require baseline SSI metadata.
+    /// If true, use OTLP-direct analysis (baseline is OTel-based): skip trace stats comparison and don't require baseline SSI metadata.
     pub otlp_direct_analysis_mode: bool,
 
     /// Additional span field paths to ignore when diffing baseline vs comparison. Merged with the built-in list.
@@ -46,7 +46,7 @@ pub struct AnalysisRunner {
 impl AnalysisRunner {
     /// Creates a new `AnalysisRunner` with the given analysis mode, baseline data, and comparison data.
     ///
-    /// When mode is `Traces`, `traces_options` should be `Some(...)`; otherwise it is ignored.
+    /// When mode is `Traces`, `traces_options` should be `Some(...)`; otherwise it's ignored.
     pub fn new(
         mode: AnalysisMode, baseline_data: CollectedData, comparison_data: CollectedData,
         traces_options: Option<TracesAnalysisOptions>,

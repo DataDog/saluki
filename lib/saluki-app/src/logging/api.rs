@@ -179,8 +179,8 @@ impl LoggingOverrideWorker {
     /// Creates a new `LoggingOverrideWorker` driving the given reload handle.
     ///
     /// When the worker starts, the filter directives present in the reload handle will be used as the "base" filter:
-    /// the filter that is reapplied after an override expires or is reset. This base filter can then be subsequently
-    /// updated through the [`LoggingOverrideController`] handle that is returned.
+    /// the filter that's reapplied after an override expires or is reset. This base filter can then be subsequently
+    /// updated through the [`LoggingOverrideController`] handle that's returned.
     pub(super) fn new(reload_handle: Handle<EnvFilter, Registry>) -> (Self, LoggingOverrideController) {
         let (tx, rx) = mpsc::channel(1);
         let controller = LoggingOverrideController { tx };

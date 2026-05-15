@@ -51,7 +51,7 @@ impl DDSketch<LogarithmicMapping, CollapsingLowestDenseStore> {
     ///
     /// # Errors
     ///
-    /// If the relative accuracy is not between `0` and `1`, an error is returned.
+    /// If the relative accuracy isn't between `0` and `1`, an error is returned.
     pub fn with_relative_accuracy(relative_accuracy: f64) -> Result<Self, &'static str> {
         let mapping = LogarithmicMapping::new(relative_accuracy)?;
         Ok(Self::new(
@@ -213,10 +213,10 @@ impl<M: IndexMapping, S: Store> DDSketch<M, S> {
     ///
     /// # Note
     ///
-    /// The protobuf `DDSketch` does not include `sum`, `min`, `max`, or `count` fields.
+    /// The protobuf `DDSketch` doesn't include `sum`, `min`, `max`, or `count` fields.
     /// These are computed or set to defaults:
     /// - `count`: sum of all bin counts plus zero_count
-    /// - `sum`, `min`, `max`: set to sentinel defaults (cannot be recovered from proto)
+    /// - `sum`, `min`, `max`: set to sentinel defaults (can't be recovered from proto)
     pub fn from_proto(proto: &ProtoDDSketch, mapping: M) -> Result<Self, ProtoConversionError>
     where
         S: Default,
@@ -256,7 +256,7 @@ impl<M: IndexMapping, S: Store> DDSketch<M, S> {
     ///
     /// # Note
     ///
-    /// The protobuf `DDSketch` does not include `sum`, `min`, `max`, or `count` fields.
+    /// The protobuf `DDSketch` doesn't include `sum`, `min`, `max`, or `count` fields.
     /// This information is lost in the conversion.
     pub fn to_proto(&self) -> ProtoDDSketch {
         let mut proto = ProtoDDSketch::new();

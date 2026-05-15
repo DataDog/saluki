@@ -526,7 +526,7 @@ async fn prepare_millstone_group(
 /// Replaces the `$GROUP` placeholder in the millstone config with the given value.
 ///
 /// For socket targets, `group_value` is `"baseline"` or `"comparison"` (the directory-name
-/// component of the HostPath airlock volume). For TCP/gRPC targets it is the agent pod's
+/// component of the HostPath airlock volume). For TCP/gRPC targets it's the agent pod's
 /// cluster IP, which millstone uses to reach the agent across pod boundaries.
 fn make_millstone_config_for_group(template: &str, group_value: &str) -> String {
     template.replace("$GROUP", group_value)
@@ -733,7 +733,7 @@ struct MillstonePodConfig<'a> {
     ///
     /// For TCP/gRPC/UDP targets the agent pod has reached Running phase but may not yet have
     /// bound its port. The socket-file check implicitly gates DSD readiness; for network
-    /// targets we add an explicit port-open check so millstone does not attempt a connection
+    /// targets we add an explicit port-open check so millstone doesn't attempt a connection
     /// (which fails hard for gRPC or drops silently for UDP) before the agent is ready.
     tcp_readiness_checks: Vec<(String, u16)>,
 }
@@ -1231,7 +1231,7 @@ async fn gather_pod_origin_data(pods: &Api<Pod>, pod_name: &str) -> Result<PodOr
 /// Replaces `{{POD_UID}}` and `{{CONTAINER_ID}}` placeholder tokens in the millstone config
 /// template with the real runtime values from the pod.
 ///
-/// Tests that do not use these placeholders are unaffected: the substitution is a no-op.
+/// Tests that don't use these placeholders are unaffected: the substitution is a no-op.
 fn substitute_origin_placeholders(template: &str, origin: &PodOriginData) -> String {
     template
         .replace("{{POD_UID}}", &origin.pod_uid)

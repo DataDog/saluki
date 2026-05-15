@@ -65,7 +65,7 @@ pub struct Trace {
     /// Trace-level sampling metadata.
     ///
     /// This field contains sampling decision information (priority, decision maker, rates)
-    /// that applies to the entire trace. It is set by the trace sampler component and consumed
+    /// that applies to the entire trace. It's set by the trace sampler component and consumed
     /// by the encoder to populate trace chunk metadata.
     sampling: Option<TraceSampling>,
 }

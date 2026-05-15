@@ -41,7 +41,7 @@
 //! # Feature Flags
 //!
 //! - `serde`: Enables serialization/deserialization for the agent implementation.
-//!   **Warning**: The serialization format is not guaranteed to be stable.
+//!   **Warning**: The serialization format isn't guaranteed to be stable.
 
 #![deny(warnings)]
 #![deny(missing_docs)]

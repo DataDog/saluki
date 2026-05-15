@@ -57,7 +57,7 @@ pub trait IndexMapping: Clone + Send + Sync {
     ///
     /// # Errors
     ///
-    /// If the given protobuf mapping parameters do not match this mapping's configuration, an error describing the
+    /// If the given protobuf mapping parameters don't match this mapping's configuration, an error describing the
     /// mismatch is returned.
     fn validate_proto_mapping(&self, proto: &ProtoIndexMapping) -> Result<(), ProtoConversionError>;
 

@@ -1,4 +1,4 @@
-//! Annotations for configuration keys that Saluki does not support.
+//! Annotations for configuration keys that Saluki doesn't support.
 use crate::config_registry::{generated::schema, SalukiAnnotation, Severity, SupportLevel};
 
 crate::declare_annotations! {

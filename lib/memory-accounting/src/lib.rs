@@ -27,7 +27,7 @@
 //!
 //! Memory bounds are a way for components to declare their expected memory usage, categorized into
 //! both a minimum required amount and a firm limit. The minimum required amount is the amount of
-//! memory that is required for the component to function correctly, which generally encompasses
+//! memory that's required for the component to function correctly, which generally encompasses
 //! things like pre-allocated buffers. The firm limit is meant to indicate the maximum amount of
 //! memory that the component should use, regardless of the workload.
 //!
@@ -162,17 +162,17 @@ pub enum UsageExpr {
 }
 
 impl UsageExpr {
-    /// Creates a new usage expression that is a config value.
+    /// Creates a new usage expression that's a config value.
     pub fn config(s: impl Into<String>, value: usize) -> Self {
         Self::Config { name: s.into(), value }
     }
 
-    /// Creates a new usage expression that is a constant value.
+    /// Creates a new usage expression that's a constant value.
     pub fn constant(s: impl Into<String>, value: usize) -> Self {
         Self::Constant { name: s.into(), value }
     }
 
-    /// Creates a new usage expression that is a struct size.
+    /// Creates a new usage expression that's a struct size.
     pub fn struct_size<T>(s: impl Into<String>) -> Self {
         Self::StructSize {
             name: s.into(),
@@ -180,12 +180,12 @@ impl UsageExpr {
         }
     }
 
-    /// Creates a new usage expression that is the product of two subexpressions.
+    /// Creates a new usage expression that's the product of two subexpressions.
     pub fn product(_s: impl Into<String>, lhs: UsageExpr, rhs: UsageExpr) -> Self {
         Self::Product { values: vec![lhs, rhs] }
     }
 
-    /// Creates a new usage expression that is the sum of two subexpressions.
+    /// Creates a new usage expression that's the sum of two subexpressions.
     pub fn sum(_s: impl Into<String>, lhs: UsageExpr, rhs: UsageExpr) -> Self {
         Self::Sum { values: vec![lhs, rhs] }
     }

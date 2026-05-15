@@ -21,7 +21,7 @@ pub struct KindLifecycle {
 
 impl KindLifecycle {
     /// Ensures a kind cluster with the given name is running, then pulls and loads
-    /// all required images into it. Creates the cluster if it does not already exist.
+    /// all required images into it. Creates the cluster if it doesn't already exist.
     pub async fn ensure(
         cluster_name: String, images: Vec<String>, event_tx: mpsc::UnboundedSender<TestEvent>,
     ) -> Result<Self, GenericError> {

@@ -28,12 +28,12 @@ use crate::net::dns::{HickoryHttpConnector, HickoryResolver};
 
 /// Imposes a limit on the age of a connection.
 ///
-/// In many cases, it is undesirable to hold onto a connection indefinitely, even if it can be theoretically reused.
+/// In many cases, it's undesirable to hold onto a connection indefinitely, even if it can be theoretically reused.
 /// Doing so can make it more difficult to perform maintenance on infrastructure, as the expectation of old connections
-/// being eventually closed and replaced is not upheld.
+/// being eventually closed and replaced isn't upheld.
 ///
 /// This extension allows tracking the age of a connection (based on when the connector creates the connection) and
-/// checking if it is expired, or past the configured limit. Callers can then decide how to handle the expiration, such
+/// checking if it's expired, or past the configured limit. Callers can then decide how to handle the expiration, such
 /// as by closing the connection.
 #[derive(Clone)]
 struct ConnectionAgeLimit {
@@ -360,7 +360,7 @@ impl HttpsCapableConnectorBuilder {
         self
     }
 
-    /// Sets the maximum age of a connection before it is closed.
+    /// Sets the maximum age of a connection before it's closed.
     ///
     /// This is distinct from the maximum idle time: if any connection's age exceeds `limit`, it will be closed rather
     /// than being reused and added to the idle connection pool.
@@ -376,7 +376,7 @@ impl HttpsCapableConnectorBuilder {
 
     /// Sets a counter that gets incremented with the number of bytes sent over the connection.
     ///
-    /// This tracks bytes sent at the HTTP client level, which includes headers and body but does not include underlying
+    /// This tracks bytes sent at the HTTP client level, which includes headers and body but doesn't include underlying
     /// transport overhead, such as TLS handshaking, and so on.
     ///
     /// Defaults to unset.

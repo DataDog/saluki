@@ -8,7 +8,7 @@ use figment::{
 /// Key aliases to pass to [`ConfigurationLoader::with_key_aliases`][saluki_config::ConfigurationLoader::with_key_aliases].
 ///
 /// Each entry maps a nested dot-separated path to a flat key name. When the nested path is found in a loaded
-/// config file, its value is also emitted under the flat key—but only if the flat key is not already
+/// config file, its value is also emitted under the flat key—but only if the flat key isn't already
 /// explicitly set. This ensures both YAML nested format and flat env var format produce the same Figment key,
 /// so source precedence (env vars > file) works correctly.
 pub const KEY_ALIASES: &[(&str, &str)] = &[
@@ -169,7 +169,7 @@ const ENV_REMAPPINGS: &[(&str, &str)] = &[("http_proxy", "proxy_http"), ("https_
 ///
 /// For YAML key aliasing (for example, `proxy.http` → `proxy_http`), pass [`KEY_ALIASES`] to
 /// [`ConfigurationLoader::with_key_aliases`][saluki_config::ConfigurationLoader::with_key_aliases] instead—
-/// that is handled at file-load time.
+/// that's handled at file-load time.
 pub struct DatadogRemapper {
     values: serde_json::Map<String, serde_json::Value>,
 }

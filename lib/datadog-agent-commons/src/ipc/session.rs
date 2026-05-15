@@ -23,7 +23,7 @@ impl SessionId {
     ///
     /// # Errors
     ///
-    /// If the given string is not valid ASCII, an error is returned.
+    /// If the given string isn't valid ASCII, an error is returned.
     pub fn new(session_id: &str) -> Result<Self, GenericError> {
         MetadataValue::try_from(session_id)
             .map(Self)

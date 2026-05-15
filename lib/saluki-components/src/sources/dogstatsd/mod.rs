@@ -231,7 +231,7 @@ const DOGSTATSD_CAPTURE_DIR: &str = "dsd_capture";
 pub struct DogStatsDConfiguration {
     /// The size of the buffer used to receive messages into, in bytes.
     ///
-    /// Payloads cannot exceed this size, or they will be truncated, leading to discarded messages.
+    /// Payloads can't exceed this size, or they will be truncated, leading to discarded messages.
     ///
     /// Defaults to 8192 bytes.
     #[serde(rename = "dogstatsd_buffer_size", default = "default_buffer_size")]
@@ -249,7 +249,7 @@ pub struct DogStatsDConfiguration {
 
     /// The port to listen on in UDP mode.
     ///
-    /// If set to `0`, UDP is not used.
+    /// If set to `0`, UDP isn't used.
     ///
     /// Defaults to 8125.
     #[serde(rename = "dogstatsd_port", default = "default_port")]
@@ -265,7 +265,7 @@ pub struct DogStatsDConfiguration {
 
     /// The port to listen on in TCP mode.
     ///
-    /// If set to `0`, TCP is not used.
+    /// If set to `0`, TCP isn't used.
     ///
     /// Defaults to 0.
     #[serde(rename = "dogstatsd_tcp_port", default = "default_tcp_port")]
@@ -273,7 +273,7 @@ pub struct DogStatsDConfiguration {
 
     /// The Unix domain socket path to listen on, in datagram mode.
     ///
-    /// If not set, UDS (in datagram mode) is not used.
+    /// If not set, UDS (in datagram mode) isn't used.
     ///
     /// Defaults to unset.
     #[serde(rename = "dogstatsd_socket", default)]
@@ -282,7 +282,7 @@ pub struct DogStatsDConfiguration {
 
     /// The Unix domain socket path to listen on, in stream mode.
     ///
-    /// If not set, UDS (in stream mode) is not used.
+    /// If not set, UDS (in stream mode) isn't used.
     ///
     /// Defaults to unset.
     #[serde(rename = "dogstatsd_stream_socket", default)]
@@ -305,7 +305,7 @@ pub struct DogStatsDConfiguration {
     /// Valid values are `udp`, `uds`, and `named_pipe`. ADP accepts `named_pipe` for compatibility, but it has no effect
     /// until named pipe listeners are supported. Invalid values are ignored.
     ///
-    /// Enable this when DogStatsD clients must reject packets or stream frames that do not end with a newline.
+    /// Enable this when DogStatsD clients must reject packets or stream frames that don't end with a newline.
     ///
     /// Defaults to unset, which accepts the final message without a newline.
     #[serde(
@@ -329,7 +329,7 @@ pub struct DogStatsDConfiguration {
     /// Whether or not to listen for non-local traffic in UDP mode.
     ///
     /// If set to `true`, the listener will accept packets from any interface/address. Otherwise, the source will only
-    /// listen on the address specified by `bind_host`, or `127.0.0.1` if `bind_host` is not set.
+    /// listen on the address specified by `bind_host`, or `127.0.0.1` if `bind_host` isn't set.
     ///
     /// Defaults to `false`.
     #[serde(rename = "dogstatsd_non_local_traffic", default)]
@@ -342,7 +342,7 @@ pub struct DogStatsDConfiguration {
     /// tasks. The number of sockets scales with available vCPUs: one stream handler base, plus one additional
     /// per 8 vCPUs, capped at 4 total.
     ///
-    /// Has no effect on non-Linux platforms because `SO_REUSEPORT` does not provide kernel-level load balancing
+    /// Has no effect on non-Linux platforms because `SO_REUSEPORT` doesn't provide kernel-level load balancing
     /// there; a warning is logged at startup if enabled outside of Linux.
     ///
     /// Enable this on multi-vCPU Linux deployments where UDP DogStatsD throughput is bottlenecked on a single
@@ -357,7 +357,7 @@ pub struct DogStatsDConfiguration {
     /// When resolving contexts during parsing, the metric name and tags are interned to reduce memory usage. The
     /// interner has a fixed size, however, which means some strings can fail to be interned if the interner is full.
     /// When set to `true`, we allow these strings to be allocated on the heap like normal, but this can lead to
-    /// increased (unbounded) memory usage. When set to `false`, if the metric name and all of its tags cannot be
+    /// increased (unbounded) memory usage. When set to `false`, if the metric name and all of its tags can't be
     /// interned, the metric is skipped.
     ///
     /// Defaults to `true`.
@@ -370,7 +370,7 @@ pub struct DogStatsDConfiguration {
     /// Whether or not to enable support for no-aggregation pipelines.
     ///
     /// When enabled, this influences how metrics are parsed, specifically around user-provided metric timestamps. When
-    /// metric timestamps are present, it is used as a signal to any aggregation transforms that the metric should not
+    /// metric timestamps are present, it's used as a signal to any aggregation transforms that the metric shouldn't
     /// be aggregated.
     ///
     /// Defaults to `true`.
@@ -382,7 +382,7 @@ pub struct DogStatsDConfiguration {
 
     /// Number of entries for the string interner, as interpreted by the Core Datadog Agent.
     ///
-    /// When `dogstatsd_string_interner_size_bytes` is not set, this value is multiplied by 512 bytes per entry to
+    /// When `dogstatsd_string_interner_size_bytes` isn't set, this value is multiplied by 512 bytes per entry to
     /// derive the interner byte size. This provides backwards compatibility for customers migrating configurations
     /// from the Core Agent, where this setting represents an entry count rather than a byte size.
     ///
@@ -396,14 +396,14 @@ pub struct DogStatsDConfiguration {
     /// Total size of the string interner used for contexts, in bytes.
     ///
     /// When set, this takes priority over `dogstatsd_string_interner_size`. This controls the amount of memory that
-    /// can be used to intern metric names and tags. If the interner is full, metrics with contexts that have not
+    /// can be used to intern metric names and tags. If the interner is full, metrics with contexts that haven't
     /// already been resolved may or may not be dropped, depending on the value of `allow_context_heap_allocations`.
     #[serde(rename = "dogstatsd_string_interner_size_bytes", default)]
     context_string_interner_size_bytes: Option<ByteSize>,
 
     /// The maximum number of cached contexts to allow.
     ///
-    /// This is the maximum number of resolved contexts that can be cached at any given time. This limit does not affect
+    /// This is the maximum number of resolved contexts that can be cached at any given time. This limit doesn't affect
     /// the total number of contexts that can be _alive_ at any given time, which is dependent on the interner capacity
     /// and whether or not heap allocations are allowed.
     ///
@@ -416,7 +416,7 @@ pub struct DogStatsDConfiguration {
 
     /// The maximum number of cached tagsets to allow.
     ///
-    /// This is the maximum number of resolved tagsets that can be cached at any given time. This limit does not affect
+    /// This is the maximum number of resolved tagsets that can be cached at any given time. This limit doesn't affect
     /// the total number of tagsets that can be _alive_ at any given time, which is dependent on the interner capacity
     /// and whether or not heap allocations are allowed.
     ///
@@ -594,7 +594,7 @@ impl DogStatsDConfiguration {
 
     /// Returns the effective string interner size in bytes.
     ///
-    /// If `dogstatsd_string_interner_size_bytes` is set, it is used directly. Otherwise,
+    /// If `dogstatsd_string_interner_size_bytes` is set, it's used directly. Otherwise,
     /// `dogstatsd_string_interner_size` (an entry count) is multiplied by 512 bytes per entry to derive the byte
     /// size.
     fn effective_context_string_interner_bytes(&self) -> ByteSize {
@@ -631,7 +631,7 @@ impl DogStatsDConfiguration {
 
     /// Sets the workload provider to use for configuring origin detection/enrichment.
     ///
-    /// A workload provider must be set otherwise origin detection/enrichment will not be enabled.
+    /// A workload provider must be set otherwise origin detection/enrichment won't be enabled.
     ///
     /// Defaults to unset.
     pub fn with_workload_provider<W>(mut self, workload_provider: W) -> Self

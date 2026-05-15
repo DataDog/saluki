@@ -74,7 +74,7 @@ pub struct OtlpConfiguration {
     /// Total size of the string interner used for contexts.
     ///
     /// This controls the amount of memory that can be used to intern metric names and tags. If the interner is full,
-    /// metrics with contexts that have not already been resolved may or may not be dropped, depending on the value of
+    /// metrics with contexts that haven't already been resolved may or may not be dropped, depending on the value of
     /// `allow_context_heap_allocations`.
     #[serde(
         rename = "otlp_string_interner_size",
@@ -84,7 +84,7 @@ pub struct OtlpConfiguration {
 
     /// The maximum number of cached contexts to allow.
     ///
-    /// This is the maximum number of resolved contexts that can be cached at any given time. This limit does not affect
+    /// This is the maximum number of resolved contexts that can be cached at any given time. This limit doesn't affect
     /// the total number of contexts that can be _alive_ at any given time, which is dependent on the interner capacity
     /// and whether or not heap allocations are allowed.
     ///
@@ -94,7 +94,7 @@ pub struct OtlpConfiguration {
 
     /// The maximum number of cached tagsets to allow.
     ///
-    /// This is the maximum number of resolved tagsets that can be cached at any given time. This limit does not affect
+    /// This is the maximum number of resolved tagsets that can be cached at any given time. This limit doesn't affect
     /// the total number of tagsets that can be _alive_ at any given time, which is dependent on the interner capacity
     /// and whether or not heap allocations are allowed.
     ///
@@ -107,7 +107,7 @@ pub struct OtlpConfiguration {
     /// When resolving contexts during parsing, the metric name and tags are interned to reduce memory usage. The
     /// interner has a fixed size, however, which means some strings can fail to be interned if the interner is full.
     /// When set to `true`, we allow these strings to be allocated on the heap like normal, but this can lead to
-    /// increased (unbounded) memory usage. When set to `false`, if the metric name and all of its tags cannot be
+    /// increased (unbounded) memory usage. When set to `false`, if the metric name and all of its tags can't be
     /// interned, the metric is skipped.
     ///
     /// Defaults to `true`.
@@ -133,7 +133,7 @@ impl OtlpConfiguration {
 
     /// Sets the workload provider to use for configuring origin detection/enrichment.
     ///
-    /// A workload provider must be set otherwise origin detection/enrichment will not be enabled.
+    /// A workload provider must be set otherwise origin detection/enrichment won't be enabled.
     ///
     /// Defaults to unset.
     pub fn with_workload_provider<W>(mut self, workload_provider: W) -> Self

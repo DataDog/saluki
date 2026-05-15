@@ -121,7 +121,7 @@ impl CollapsingLowestDenseStore {
 
     /// Returns the index into the bins array for the given logical index.
     ///
-    /// If the index is below our range, it is mapped to the lowest bin. If the index is above our range, `None` is
+    /// If the index is below our range, it's mapped to the lowest bin. If the index is above our range, `None` is
     /// returned.
     #[inline]
     fn bin_index(&self, index: i32) -> Option<usize> {

@@ -115,8 +115,8 @@ fn register_scoped_error(builder: &MetricsBuilder, error_type: &'static str, err
 /// ### Success bytes calculation
 ///
 /// We calculate the number of bytes sent by examining the body length itself, which is done via [`Body::size_hint`].
-/// This requires that an exact body size is known, which is not always the case. If the body size is not known, this
-/// metric will not be emitted on a successful response.
+/// This requires that an exact body size is known, which isn't always the case. If the body size isn't known, this
+/// metric won't be emitted on a successful response.
 ///
 /// For common body types, like [`FrozenChunkedBytesBuffer`][saluki_common::buf::FrozenChunkedBytesBuffer], the size
 /// hint is always exact and so this functionality should work as intended.
@@ -130,7 +130,7 @@ pub struct EndpointTelemetryLayer {
 impl EndpointTelemetryLayer {
     /// Create a new `EndpointTelemetryLayer` with the given `ComponentContext`.
     ///
-    /// The component context is used when creating metrics, which ensures they are tagged in a consistent way that
+    /// The component context is used when creating metrics, which ensures they're tagged in a consistent way that
     /// attributes the metrics to the component issuing the HTTP requests.
     pub fn with_metrics_builder(mut self, builder: MetricsBuilder) -> Self {
         self.builder = builder;
@@ -148,7 +148,7 @@ impl EndpointTelemetryLayer {
     /// to: ASCII alphanumerics, hyphens, underscores, slashes, and periods. Any non-conforming character will be
     /// replaced with an underscore. Characters will be converted to lowercase.
     ///
-    /// The value returned by this function is also cached for the given URI, and so the function should not rely on
+    /// The value returned by this function is also cached for the given URI, and so the function shouldn't rely on
     /// non-deterministic behavior, or state, that could change the generated endpoint name for subsequent calls with
     /// the same input URI.
     pub fn with_endpoint_name_fn<F>(mut self, endpoint_name_fn: F) -> Self

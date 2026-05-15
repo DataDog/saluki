@@ -181,7 +181,7 @@ pub enum MetricValues {
     /// A gauge.
     ///
     /// Gauges represent the latest value of a quantity, such as the current number of active connections. This value
-    /// can go up or down, but gauges do not track the individual changes to the value, only the latest value.
+    /// can go up or down, but gauges don't track the individual changes to the value, only the latest value.
     Gauge(ScalarPoints),
 
     /// A set.
@@ -193,7 +193,7 @@ pub enum MetricValues {
     ///
     /// Histograms represent the distribution of a quantity, such as the response times for a service, with forced
     /// client-side aggregation. Individual samples are stored locally, in full fidelity, and aggregate statistics
-    /// can be queried against the sample set, but the individual samples cannot be accessed.
+    /// can be queried against the sample set, but the individual samples can't be accessed.
     Histogram(HistogramPoints),
 
     /// A distribution.
@@ -203,7 +203,7 @@ pub enum MetricValues {
     /// with other sketches server-side to facilitate global aggregation.
     ///
     /// Like histograms, sketches also provide the ability to be queried for aggregate statistics but the individual
-    /// samples cannot be accessed.
+    /// samples can't be accessed.
     Distribution(SketchPoints),
 }
 
@@ -364,7 +364,7 @@ impl MetricValues {
 
     /// Sets the timestamp for all values in this metric.
     ///
-    /// This overrides all existing timestamps whether they are set or not. If `timestamp` is zero, all existing
+    /// This overrides all existing timestamps whether they're set or not. If `timestamp` is zero, all existing
     /// timestamps will be cleared.
     pub fn set_timestamp(&mut self, timestamp: u64) {
         match self {
@@ -425,7 +425,7 @@ impl MetricValues {
     /// Merges another set of metric values into this one.
     ///
     /// If both `self` and `other` are the same metric type, their values will be merged appropriately. If the metric
-    /// types are different, or a specific precondition for the metric type is not met, the incoming values will override
+    /// types are different, or a specific precondition for the metric type isn't met, the incoming values will override
     /// the existing values instead.
     ///
     /// For rates, the interval of both rates must match to be merged. For gauges, the incoming value will override the

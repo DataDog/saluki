@@ -554,7 +554,7 @@ async fn process_http_response(
 ///
 /// This queue is split into two parts: a high-priority queue and a low-priority queue. The high-priority queue is used
 /// for brand-new transactions that are waiting to be processed for the first time. The low-priority queue contains
-/// transactions that have either been requeued to be retried again at a later time, or that could not fit in the
+/// transactions that have either been requeued to be retried again at a later time, or that couldn't fit in the
 /// high-priority queue due to it being full.
 ///
 /// Ultimately, we use this construction to provide a fast path for new transactions, while limiting the overall number
@@ -760,7 +760,7 @@ impl<T: Retryable> PendingTransactions<T> {
     /// low-priority queue, which will persist any transactions that are still in the queue to disk if the retry queue
     /// has disk persistence enabled.
     ///
-    /// If disk persistence is not enabled, all pending transactions will be dropped.
+    /// If disk persistence isn't enabled, all pending transactions will be dropped.
     ///
     /// # Errors
     ///

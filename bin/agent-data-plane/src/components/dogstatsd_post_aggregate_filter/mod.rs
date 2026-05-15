@@ -91,7 +91,7 @@ impl DogStatsDPostAggregateFilterConfiguration {
     ///
     /// # Errors
     ///
-    /// If the configuration cannot be deserialized, an error is returned.
+    /// If the configuration can't be deserialized, an error is returned.
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
         let mut typed_config: Self = config.as_typed()?;
         typed_config.configuration = Some(config.clone());

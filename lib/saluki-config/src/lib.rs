@@ -76,7 +76,7 @@ pub enum ConfigurationError {
         field: Cow<'static, str>,
     },
 
-    /// Requested field's data type was not the unexpected data type.
+    /// Requested field's data type wasn't the unexpected data type.
     #[snafu(display(
         "Expected value for field '{}' to be '{}', got '{}' instead.",
         field,
@@ -160,7 +160,7 @@ impl ConfigurationLoader {
     ///
     /// Each entry is `(nested_path, flat_key)`. When a YAML or JSON file contains a value at `nested_path`
     /// (dot-separated), that value is also emitted under `flat_key` at the top level—but only if `flat_key`
-    /// is not already explicitly set at the top level. This ensures that both YAML nested format and flat env var
+    /// isn't already explicitly set at the top level. This ensures that both YAML nested format and flat env var
     /// format produce the same Figment key, so source precedence (env vars > file) works correctly.
     ///
     /// Must be called before any file-loading methods ([`from_yaml`][Self::from_yaml], etc.) to take effect.
@@ -171,7 +171,7 @@ impl ConfigurationLoader {
 
     /// Appends one or more providers to the configuration chain.
     ///
-    /// Sources are merged in the order they are added: later sources take precedence over earlier ones. Call
+    /// Sources are merged in the order they're added: later sources take precedence over earlier ones. Call
     /// this method after any file-loading methods and before [`from_environment`][Self::from_environment] to
     /// place the added providers at the correct intermediate precedence level:
     ///
@@ -194,7 +194,7 @@ impl ConfigurationLoader {
     ///
     /// # Errors
     ///
-    /// If the file could not be read, or if the file is not valid YAML, an error will be returned.
+    /// If the file couldn't be read, or if the file isn't valid YAML, an error will be returned.
     pub fn from_yaml<P>(mut self, path: P) -> Result<Self, ConfigurationError>
     where
         P: AsRef<std::path::Path>,
@@ -232,7 +232,7 @@ impl ConfigurationLoader {
     ///
     /// # Errors
     ///
-    /// If the file could not be read, or if the file is not valid JSON, an error will be returned.
+    /// If the file couldn't be read, or if the file isn't valid JSON, an error will be returned.
     pub fn from_json<P>(mut self, path: P) -> Result<Self, ConfigurationError>
     where
         P: AsRef<std::path::Path>,
@@ -268,11 +268,11 @@ impl ConfigurationLoader {
 
     /// Loads configuration from environment variables.
     ///
-    /// The prefix given will have an underscore appended to it if it does not already end with one. For
+    /// The prefix given will have an underscore appended to it if it doesn't already end with one. For
     /// example, with a prefix of `app`, any environment variable starting with `app_` would be matched. The
     /// prefix is case-insensitive.
     ///
-    /// Sources are merged in the order they are added, with later sources taking precedence over earlier ones.
+    /// Sources are merged in the order they're added, with later sources taking precedence over earlier ones.
     /// Sources added after this call will have higher precedence than environment variables.
     ///
     /// # Errors
@@ -314,7 +314,7 @@ impl ConfigurationLoader {
     ///
     /// ## Errors
     ///
-    /// If the configuration could not be deserialized into `T`, an error will be returned.
+    /// If the configuration couldn't be deserialized into `T`, an error will be returned.
     pub fn into_typed<'a, T>(self) -> Result<T, ConfigurationError>
     where
         T: Deserialize<'a>,
@@ -397,7 +397,7 @@ impl ConfigurationLoader {
         }
     }
 
-    /// Configures a [`GenericConfiguration`] that is suitable for tests.
+    /// Configures a [`GenericConfiguration`] that's suitable for tests.
     ///
     /// This configures the loader with the following defaults:
     ///
@@ -690,7 +690,7 @@ impl GenericConfiguration {
     /// If dynamic configuration is in use, this method will asynchronously wait until the first snapshot has been
     /// received and applied.
     ///
-    /// If dynamic configuration is not used, it returns immediately.
+    /// If dynamic configuration isn't used, it returns immediately.
     pub async fn ready(&self) {
         // We need a lock to both ensure that multiple callers can race against this,
         // and to allow us mutable access to consume the receiver.
@@ -733,7 +733,7 @@ impl GenericConfiguration {
     ///
     /// ## Errors
     ///
-    /// If the key does not exist in the configuration, or if the value could not be deserialized into `T`, an error
+    /// If the key doesn't exist in the configuration, or if the value couldn't be deserialized into `T`, an error
     /// variant will be returned.
     pub fn get_typed<'a, T>(&self, key: &str) -> Result<T, ConfigurationError>
     where
@@ -742,9 +742,9 @@ impl GenericConfiguration {
         self.get(key)
     }
 
-    /// Gets a configuration value by key, or the default value if a key does not exist or could not be deserialized.
+    /// Gets a configuration value by key, or the default value if a key doesn't exist or couldn't be deserialized.
     ///
-    /// The `Default` implementation of `T` will be used both if the key could not be found, as well as for any error
+    /// The `Default` implementation of `T` will be used both if the key couldn't be found, as well as for any error
     /// during deserialization. This effectively swallows any errors and should generally be used sparingly.
     ///
     /// The key must be in the form of `a.b.c`, where periods (`.`) are used to indicate a nested lookup.
@@ -764,7 +764,7 @@ impl GenericConfiguration {
     ///
     /// ## Errors
     ///
-    /// If the value could not be deserialized into `T`, an error will be returned.
+    /// If the value couldn't be deserialized into `T`, an error will be returned.
     pub fn try_get_typed<'a, T>(&self, key: &str) -> Result<Option<T>, ConfigurationError>
     where
         T: Deserialize<'a>,
@@ -780,7 +780,7 @@ impl GenericConfiguration {
     ///
     /// ## Errors
     ///
-    /// If the value could not be deserialized into `T`, an error will be returned.
+    /// If the value couldn't be deserialized into `T`, an error will be returned.
     pub fn as_typed<'a, T>(&self) -> Result<T, ConfigurationError>
     where
         T: Deserialize<'a>,
@@ -806,7 +806,7 @@ impl GenericConfiguration {
     ///
     /// ## Errors
     ///
-    /// If the configuration could not be serialized to JSON, an error will be returned.
+    /// If the configuration couldn't be serialized to JSON, an error will be returned.
     pub fn flattened_keys(&self) -> Result<Vec<(String, serde_json::Value)>, ConfigurationError> {
         let root: serde_json::Value = self.as_typed()?;
         let mut out = Vec::new();

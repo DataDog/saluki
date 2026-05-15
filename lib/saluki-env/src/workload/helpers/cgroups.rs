@@ -41,8 +41,8 @@ impl CgroupsConfiguration {
     ///
     /// # Errors
     ///
-    /// If any of the paths in the configuration are not valid, an error will be returned. This does not include,
-    /// however, if any of the configured paths do not _exist_.
+    /// If any of the paths in the configuration aren't valid, an error will be returned. This doesn't include,
+    /// however, if any of the configured paths don't _exist_.
     pub fn from_configuration(
         config: &GenericConfiguration, feature_detector: FeatureDetector,
     ) -> Result<Self, GenericError> {
@@ -154,7 +154,7 @@ impl CgroupsReader {
     /// Gets a cgroup for the given process ID.
     ///
     /// This method will attempt to find the cgroup for the given process ID by looking at the `/proc/<pid>/cgroup`
-    /// file. If the process ID does not exist or is not attached to a cgroup, `None` will be returned.
+    /// file. If the process ID doesn't exist or isn't attached to a cgroup, `None` will be returned.
     pub fn get_cgroup_by_pid(&self, pid: u32) -> Option<Cgroup> {
         // See if the given process ID exists in the proc filesystem _and_ if there's a cgroup path for it.
         let proc_pid_cgroup_path = self.procfs_path.join(pid.to_string()).join("cgroup");

@@ -35,7 +35,7 @@ pub(crate) static SUPPORTED_ANNOTATIONS: LazyLock<Vec<&'static SalukiAnnotation>
     v
 });
 
-/// Annotations for keys that Saluki intentionally does not support.
+/// Annotations for keys that Saluki intentionally doesn't support.
 ///
 /// All entries have [`Incompatible`](super::SupportLevel::Incompatible) and empty `used_by`.
 pub(crate) static UNSUPPORTED_ANNOTATIONS: LazyLock<Vec<&'static SalukiAnnotation>> = LazyLock::new(|| {
@@ -114,7 +114,7 @@ mod registry_tests {
         }
     }
 
-    /// This test ensures that the same config key does not appear in both the supported and unsupported lists of
+    /// This test ensures that the same config key doesn't appear in both the supported and unsupported lists of
     /// `SalukiAnnotations`.
     #[test]
     fn no_overlap_between_supported_and_unsupported() {

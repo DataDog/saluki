@@ -17,7 +17,7 @@ const COARSE_TIME_UPDATE_INTERVAL: Duration = Duration::from_millis(250);
 ///
 /// This function is accurate, as it always retrieves the current time for each call. In scenarios where this function
 /// is being called frequently, it may pose an unacceptable performance overhead. In such cases, consider using
-/// `get_coarse_unix_timestamp`, which provides a cached value that is updated periodically.
+/// `get_coarse_unix_timestamp`, which provides a cached value that's updated periodically.
 pub fn get_unix_timestamp() -> u64 {
     let since_unix_epoch = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
@@ -27,7 +27,7 @@ pub fn get_unix_timestamp() -> u64 {
 
 /// Get the current coarse Unix timestamp, in seconds.
 ///
-/// In scenarios where the current Unix timestamp is needed frequently, this function provides a cached value that is
+/// In scenarios where the current Unix timestamp is needed frequently, this function provides a cached value that's
 /// updated periodically. As the precision of the timestamp is one second, this function allows trading off accuracy
 /// (see below) for reduced overhead. The resulting value is considered "coarse", because it might be off by significant
 /// percentage of the overall precision.

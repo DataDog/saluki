@@ -14,7 +14,7 @@ pub struct Event {
     tags: Vec<String>,
     /// Unix timestamp in seconds from the `d:` field, or 0 if not present.
     ///
-    /// NOTE: Do not compare this field directly without first normalizing pipeline-generated
+    /// NOTE: Don't compare this field directly without first normalizing pipeline-generated
     /// fill-in values—see `EventsAnalyzer` for details.
     pub timestamp: i64,
 }

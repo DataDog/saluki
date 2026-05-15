@@ -23,7 +23,7 @@ impl DataPlaneConfiguration {
     ///
     /// # Errors
     ///
-    /// If the configuration cannot be deserialized, an error is returned.
+    /// If the configuration can't be deserialized, an error is returned.
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
         // TODO: We're explicitly querying each individual field from the configuration because if we don't, then our
         // environment variable overrides end up requiring double underscores to indicate nesting (i.e. we have to do
@@ -176,7 +176,7 @@ impl DataPlaneConfiguration {
 pub struct DataPlaneChecksConfiguration {
     /// Whether Checks is enabled.
     ///
-    /// When disabled, Checks will not be started.
+    /// When disabled, Checks won't be started.
     ///
     /// Defaults to `false`.
     enabled: bool,
@@ -200,7 +200,7 @@ impl DataPlaneChecksConfiguration {
 pub struct DataPlaneDogStatsDConfiguration {
     /// Whether DogStatsD is enabled.
     ///
-    /// When disabled, DogStatsD will not be started.
+    /// When disabled, DogStatsD won't be started.
     ///
     /// Defaults to `true`.
     enabled: bool,
@@ -259,7 +259,7 @@ impl DataPlaneOtlpConfiguration {
 pub struct DataPlaneOtlpProxyConfiguration {
     /// Whether or not to proxy all signals to the Agent.
     ///
-    /// When enabled, OTLP signals which are not supported by ADP will be proxied to the Agent. Depending on the signal
+    /// When enabled, OTLP signals which aren't supported by ADP will be proxied to the Agent. Depending on the signal
     /// type, they may be proxied to either the Core Agent or Trace Agent.
     ///
     /// Defaults to `true`.

@@ -30,7 +30,7 @@ use self::remote_agent::RemoteAgentBootstrap;
 ///
 /// # Errors
 ///
-/// If the supervisor cannot be created, an error is returned.
+/// If the supervisor can't be created, an error is returned.
 pub async fn create_internal_supervisor(
     config: &GenericConfiguration, dp_config: &DataPlaneConfiguration, component_registry: &ComponentRegistry,
     health_registry: HealthRegistry, dsd_config: DogStatsDControlPlaneConfiguration,

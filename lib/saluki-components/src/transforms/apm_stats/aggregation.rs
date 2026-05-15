@@ -43,7 +43,7 @@ pub enum SpanKind {
 impl SpanKind {
     /// Parses a span kind from a string in a case-insensitive fashion.
     ///
-    /// If the span kind is not recognized, `SpanKind::Unspecified` is returned.
+    /// If the span kind isn't recognized, `SpanKind::Unspecified` is returned.
     pub const fn from_str(s: &str) -> Self {
         if s.eq_ignore_ascii_case("client") {
             Self::Client
@@ -162,7 +162,7 @@ impl GrpcStatusCode {
 
     /// Parses a gRPC status code from a string, either in numeric or the canonical form.
     ///
-    /// If the status code is not recognized, or is out of range, `GrpcStatusCode::Unset` is returned.
+    /// If the status code isn't recognized, or is out of range, `GrpcStatusCode::Unset` is returned.
     pub fn from_str(s: &str) -> Self {
         if let Ok(code) = s.parse::<u8>() {
             return Self::from_code(code);
@@ -260,7 +260,7 @@ pub enum HttpMethod {
 impl HttpMethod {
     /// Parses an HTTP method from a string in a case-insensitive fashion.
     ///
-    /// If the HTTP method is not recognized, `HttpMethod::Unspecified` is returned.
+    /// If the HTTP method isn't recognized, `HttpMethod::Unspecified` is returned.
     pub const fn from_str(s: &str) -> Self {
         if s.eq_ignore_ascii_case("GET") {
             Self::Get

@@ -96,7 +96,7 @@ impl DogStatsDCaptureControl {
     ///
     /// # Errors
     ///
-    /// Returns an error if the DogStatsD source has not been built and bound to this control handle yet.
+    /// Returns an error if the DogStatsD source hasn't been built and bound to this control handle yet.
     pub fn is_ongoing(&self) -> Result<bool, GenericError> {
         Ok(self.bound_capture()?.is_ongoing())
     }
@@ -105,7 +105,7 @@ impl DogStatsDCaptureControl {
     ///
     /// # Errors
     ///
-    /// Returns an error if the DogStatsD source has not been built yet, or if the underlying capture runtime rejects
+    /// Returns an error if the DogStatsD source hasn't been built yet, or if the underlying capture runtime rejects
     /// the start request.
     pub fn start_capture(
         &self, requested_dir: Option<&Path>, duration: Duration, compressed: bool,
@@ -117,7 +117,7 @@ impl DogStatsDCaptureControl {
     ///
     /// # Errors
     ///
-    /// Returns an error if the DogStatsD source has not been built yet.
+    /// Returns an error if the DogStatsD source hasn't been built yet.
     pub fn stop_capture(&self) -> Result<(), GenericError> {
         self.bound_capture()?.stop_capture();
         Ok(())

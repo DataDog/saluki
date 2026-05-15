@@ -1,14 +1,14 @@
 //! Read-only file overlays applied to every target container panoramic launches.
 //!
 //! Panoramic's `--mounts-dir` is treated as a virtual container root: every regular file
-//! found beneath it is bind-mounted read-only at the same path inside the target
+//! found beneath it's bind-mounted read-only at the same path inside the target
 //! container. For example, `<mounts-dir>/etc/cont-init.d/00-foo.sh` is mounted at
 //! `/etc/cont-init.d/00-foo.sh`.
 //!
 //! Mounts are applied to *target* containers only—not to the millstone or
 //! datadog-intake containers panoramic spawns as test infrastructure.
 //!
-//! If the mounts directory does not exist, no mounts are applied (with a warning); this
+//! If the mounts directory doesn't exist, no mounts are applied (with a warning); this
 //! lets the panoramic binary run in environments where the compile-time default path
 //! isn't present.
 

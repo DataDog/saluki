@@ -28,7 +28,7 @@ impl ContainerdTopic {
 
     /// Attempts to parse a topic string into a `ContainerdTopic`.
     ///
-    /// Returns `None` if the topic string is not recognized/supported.
+    /// Returns `None` if the topic string isn't recognized/supported.
     pub fn from_topic_str(topic: &str) -> Option<Self> {
         match topic {
             "/tasks/start" => Some(Self::TaskStarted),
@@ -40,7 +40,7 @@ impl ContainerdTopic {
 
 /// A containerd event.
 ///
-/// This is a minimal unified representation of all envelope events that we have decoding support for. Generally, the
+/// This is a minimal unified representation of all envelope events that we've decoding support for. Generally, the
 /// event includes only the necessary information to allow a subscriber to react to the event, such as the container ID
 /// for any container-specific events, which then allows the subscriber to fetch additional information about the
 /// container, and so on.
@@ -55,11 +55,11 @@ pub enum ContainerdEvent {
 
 /// Decodes an event envelope into a minimal internal representation.
 ///
-/// If the topic of the event is not recognized/supported, `Ok(None)` is returned.
+/// If the topic of the event isn't recognized/supported, `Ok(None)` is returned.
 ///
 /// ## Errors
 ///
-/// If the envelope payload cannot be decoded, `Err` is returned with the decoder error.
+/// If the envelope payload can't be decoded, `Err` is returned with the decoder error.
 pub fn decode_envelope_to_event(mut envelope: Envelope) -> Result<Option<ContainerdEvent>, DecodeError> {
     let topic = match ContainerdTopic::from_topic_str(envelope.topic.as_str()) {
         Some(topic) => topic,

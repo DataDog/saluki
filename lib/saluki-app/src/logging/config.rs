@@ -50,7 +50,7 @@ pub struct LoggingConfiguration {
     /// Path to the log file to write to, or empty to disable file logging.
     pub log_file: String,
 
-    /// Maximum size of a log file before it is rolled over.
+    /// Maximum size of a log file before it's rolled over.
     pub log_file_max_size: ByteSize,
 
     /// Maximum number of rolled-over log files to retain.
@@ -60,7 +60,7 @@ pub struct LoggingConfiguration {
 impl LoggingConfiguration {
     /// Returns a configuration that writes only to the console in human-readable format at INFO level.
     ///
-    /// Used as a safe default when an application has not yet supplied an explicit configuration.
+    /// Used as a safe default when an application hasn't yet supplied an explicit configuration.
     pub fn simple() -> Self {
         Self {
             log_level: LevelFilter::INFO.into(),

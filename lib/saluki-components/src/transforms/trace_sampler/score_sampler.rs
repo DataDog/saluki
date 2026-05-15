@@ -69,7 +69,7 @@ impl ScoreSampler {
         }
     }
 
-    /// Sample counts an incoming trace and tells if it is a sample which has to be kept
+    /// Sample counts an incoming trace and tells if it's a sample which has to be kept
     pub fn sample(&mut self, now: SystemTime, trace: &mut Trace, root_idx: usize) -> bool {
         // logic taken from here: https://github.com/DataDog/datadog-agent/blob/main/pkg/trace/sampler/scoresampler.go#L71
         if self.disabled {

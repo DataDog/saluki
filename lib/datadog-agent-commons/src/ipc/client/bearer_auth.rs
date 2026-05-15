@@ -20,7 +20,7 @@ impl BearerAuthInterceptor {
     ///
     /// # Errors
     ///
-    /// If the file path is invalid, if the file cannot be read, or if the bearer token is not valid ASCII, an error
+    /// If the file path is invalid, if the file can't be read, or if the bearer token isn't valid ASCII, an error
     /// variant will be returned.
     pub async fn from_file<P>(file_path: P) -> Result<Self, GenericError>
     where

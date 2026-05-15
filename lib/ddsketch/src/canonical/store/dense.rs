@@ -10,7 +10,7 @@ use crate::canonical::error::ProtoConversionError;
 ///
 /// Use this store when:
 /// - You have a bounded range of input values
-/// - Memory usage is not a concern
+/// - Memory usage isn't a concern
 /// - You need the fastest possible insertion performance
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DenseStore {
