@@ -8,6 +8,7 @@ use saluki_core::health::Health;
 use saluki_error::{generic_error, GenericError};
 use stringtheory::{interning::GenericMapInterner, MetaString};
 use tokio::{select, sync::mpsc};
+use tokio_util::task::AbortOnDropHandle;
 use tracing::{debug, error, warn};
 
 use super::MetadataCollector;
@@ -77,7 +78,8 @@ impl MetadataCollector for CgroupsMetadataCollector {
                 let mut cgroups_manager = SynchronousCgroupsManager::from_reader(self.reader.clone());
                 let operations_tx = operations_tx.clone();
 
-                poller_handle = Some(tokio::task::spawn_blocking(move || cgroups_manager.poll(operations_tx)));
+                let raw_poller_handle = tokio::task::spawn_blocking(move || cgroups_manager.poll(operations_tx));
+                poller_handle = Some(AbortOnDropHandle::new(raw_poller_handle));
 
                 debug!("Spawned cgroups background poller task.");
             }

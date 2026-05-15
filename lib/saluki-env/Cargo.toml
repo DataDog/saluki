@@ -33,6 +33,7 @@ snafu = { workspace = true }
 socket2 = { workspace = true }
 stringtheory = { workspace = true }
 tokio = { workspace = true, features = ["fs", "macros", "sync"] }
+tokio-util = { workspace = true, features = ["rt"] }
 tonic = { workspace = true, features = ["channel"] }
 tower = { workspace = true, features = ["util"] }
 tracing = { workspace = true }
