@@ -69,7 +69,7 @@ impl Inner {
 /// On Linux platforms, PIDs are resolved by querying procfs to find the cgroup of the process, if one exists, the cgroup
 /// hierarchy is queried to discover the container ID that owns the process, if possible.
 ///
-/// On all other platforms, `OnDemandPIDResolver` is a no-op and does not perform any resolution.
+/// On all other platforms, `OnDemandPIDResolver` is a no-op and doesn't perform any resolution.
 #[derive(Clone)]
 pub struct OnDemandPIDResolver {
     inner: Arc<Inner>,
@@ -91,7 +91,7 @@ impl OnDemandPIDResolver {
     ///
     /// ## Errors
     ///
-    /// If a cgroups hierarchy cannot be found, or the internal cache cannot be created, an error is returned.
+    /// If a cgroups hierarchy can't be found, or the internal cache can't be created, an error is returned.
     #[cfg(target_os = "linux")]
     pub fn from_configuration(
         config: &GenericConfiguration, feature_detector: FeatureDetector, interner: GenericMapInterner,
@@ -127,7 +127,7 @@ impl OnDemandPIDResolver {
 
     /// Resolves a process ID to the container ID of the container is part of.
     ///
-    /// If the process ID is not part of a container, or cannot be found, `None` is returned.
+    /// If the process ID isn't part of a container, or can't be found, `None` is returned.
     pub fn resolve(&self, process_id: u32) -> Option<EntityId> {
         self.inner.resolve(process_id)
     }

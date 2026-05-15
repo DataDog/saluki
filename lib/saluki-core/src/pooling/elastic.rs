@@ -29,7 +29,7 @@ const SHRINKER_SLEEP_DURATION: Duration = Duration::from_secs(1);
 /// An elastic object pool.
 ///
 /// Pools are configured with a minimum and maximum size, and allocate the minimum number of items up front. When an
-/// item is requested and the pool is empty, but has not yet reached its maximum size, it will allocate the item on
+/// item is requested and the pool is empty, but hasn't yet reached its maximum size, it will allocate the item on
 /// demand.
 ///
 /// Periodically, a background task will evaluate the utilization of the pool and shrink the pool size in order to

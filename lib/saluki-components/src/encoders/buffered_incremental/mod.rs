@@ -25,7 +25,7 @@ const DEFAULT_FLUSH_TIMEOUT: Duration = Duration::from_secs(2);
 pub struct BufferedIncrementalConfiguration<EB> {
     /// Flush timeout for pending requests.
     ///
-    /// When the encoder has written events to the in-flight request payload, but it has not yet reached the
+    /// When the encoder has written events to the in-flight request payload, but it hasn't yet reached the
     /// payload size limits that would force the payload to be flushed, the encoder will wait for a period of time
     /// before flushing the in-flight request payload. This allows for the possibility of other events to be processed
     /// and written into the request payload, thereby maximizing the payload size and reducing the number of requests

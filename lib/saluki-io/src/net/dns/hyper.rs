@@ -44,7 +44,7 @@ impl HickoryResolver {
         })
     }
 
-    /// Sets a counter that is incremented when DNS lookup fails.
+    /// Sets a counter that's incremented when DNS lookup fails.
     pub fn with_lookup_errors_counter(mut self, counter: Counter) -> Self {
         self.lookup_errors = Some(counter);
         self

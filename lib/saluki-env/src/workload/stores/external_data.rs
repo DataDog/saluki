@@ -24,11 +24,11 @@ static_metrics!(
 
 /// A store for External Data entity mappings.
 ///
-/// "External Data" is a concept that is used to aid origin detection of workloads running in Kubernetes environments
-/// where introspection is not possible or may return incorrect information. Origin detection generally centers around
+/// "External Data" is a concept that's used to aid origin detection of workloads running in Kubernetes environments
+/// where introspection isn't possible or may return incorrect information. Origin detection generally centers around
 /// determining the container where a metric originates from, and then enriching the metric with tags that describe that
 /// container, as well as the pod the container is running within, and so on. In some cases, the origin of a metric
-/// cannot be detected from the outside (such as by using peer credentials over Unix Domain sockets) and cannot be
+/// can't be detected from the outside (such as by using peer credentials over Unix Domain sockets) and can't be
 /// detected by the workload itself (such as when running in nested virtualization environments). In these cases, we
 /// need a mechanism to attach metadata to the workload such that it can send the necessary information to allow for the
 /// origin of a metric to be correctly detected.
@@ -52,7 +52,7 @@ impl ExternalDataStore {
     /// Creates a new `ExternalDataStore` with the given entity limit.
     ///
     /// The entity limit is the maximum number of unique entities that can be stored. Once the limit is reached, new
-    /// entities will not be added to the store.
+    /// entities won't be added to the store.
     pub fn with_entity_limit(entity_limit: NonZeroUsize) -> Self {
         let telemetry = Telemetry::new();
         telemetry.entity_limit().set(entity_limit.get() as f64);

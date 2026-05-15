@@ -61,7 +61,7 @@ fn default_env() -> String {
 pub struct DatadogApmStatsEncoderConfiguration {
     /// Flush timeout for pending requests, in seconds.
     ///
-    /// When the encoder has written traces to the in-flight request payload, but it has not yet reached the
+    /// When the encoder has written traces to the in-flight request payload, but it hasn't yet reached the
     /// payload size limits that would force the payload to be flushed, the encoder will wait for a period of time
     /// before flushing the in-flight request payload.
     ///

@@ -33,7 +33,7 @@ impl DataPlaneAPIClient {
     ///
     /// # Errors
     ///
-    /// If the data plane configuration can't be deserialized, or the data plane API endpoints cannot be
+    /// If the data plane configuration can't be deserialized, or the data plane API endpoints can't be
     /// determined, an error will be returned.
     pub fn from_config(config: &GenericConfiguration) -> Result<Self, GenericError> {
         let dp_config = DataPlaneConfiguration::from_configuration(config)?;
@@ -188,7 +188,7 @@ impl DataPlaneAPIClient {
     ///
     /// # Errors
     ///
-    /// If the request fails, if ADP rejects the capture request, or if the response body cannot be decoded, an error is
+    /// If the request fails, if ADP rejects the capture request, or if the response body can't be decoded, an error is
     /// returned.
     pub async fn dogstatsd_capture(
         &mut self, duration: &str, path: Option<&str>, compressed: bool,
@@ -241,7 +241,7 @@ impl DataPlaneAPIClient {
     ///
     /// # Errors
     ///
-    /// If the request fails, or if the server responds with an unexpected status code, or if a workload provider is not
+    /// If the request fails, or if the server responds with an unexpected status code, or if a workload provider isn't
     /// configured, an error is returned.
     pub async fn workload_tags(&mut self) -> Result<String, GenericError> {
         let uri = self.build_uri("/workload/remote_agent/tags/dump", None);
@@ -260,7 +260,7 @@ impl DataPlaneAPIClient {
     ///
     /// # Errors
     ///
-    /// If the request fails, or if the server responds with an unexpected status code, or if a workload provider is not
+    /// If the request fails, or if the server responds with an unexpected status code, or if a workload provider isn't
     /// configured, an error is returned.
     pub async fn workload_external_data(&mut self) -> Result<String, GenericError> {
         let uri = self.build_uri("/workload/remote_agent/external_data/dump", None);

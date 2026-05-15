@@ -39,13 +39,13 @@ thread_local! {
 ///
 /// Allocation (and deallocations) are tracked by **allocation group**. When this allocator is used, every allocation is
 /// associated with an allocation group. Allocation groups are user-defined, except for the default "root" allocation
-/// group which acts as a catch-all for allocations when a user-defined group is not entered.
+/// group which acts as a catch-all for allocations when a user-defined group isn't entered.
 ///
 /// ## Token guard
 ///
 /// When an allocation group is registered, an `AllocationGroupToken` is returned. This token can be used to "enter" the
 /// group, which attribute all allocations on the current thread to that group. Entering the group returns a drop guard
-/// that restores the previously entered allocation when it is dropped.
+/// that restores the previously entered allocation when it's dropped.
 ///
 /// This allows for arbitrarily nested allocation groups.
 ///
@@ -54,7 +54,7 @@ thread_local! {
 /// In order to associate an allocation with the current allocation group, a small trailer is added to the requested
 /// allocation layout, in the form of a pointer to the statistics for the allocation group. This allows updating the
 /// statistics directly when an allocation is deallocated, without having to externally keep track of what group a given
-/// allocation belongs to. These statistics are updated directly when the allocation is initially made, and when it is
+/// allocation belongs to. These statistics are updated directly when the allocation is initially made, and when it's
 /// deallocated.
 ///
 /// This means that all requested allocations end up being one machine word larger: 4 bytes on 32-bit systems, and 8

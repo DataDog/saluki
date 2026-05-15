@@ -26,7 +26,7 @@ struct PersistedEntry {
 impl PersistedEntry {
     /// Attempts to create a `PersistedEntry` from the given path.
     ///
-    /// If the given path is not recognized as the path to a valid persisted entry, `None` is returned.
+    /// If the given path isn't recognized as the path to a valid persisted entry, `None` is returned.
     fn try_from_path(path: PathBuf, size_bytes: u64) -> Option<Self> {
         let timestamp = decode_timestamped_filename(&path)?;
         Some(Self {
@@ -102,7 +102,7 @@ where
 {
     /// Creates a new `PersistedQueue` instance from the given root path and maximum size.
     ///
-    /// The root path is created if it does not already exist, and is scanned for existing persisted entries. Entries
+    /// The root path is created if it doesn't already exist, and is scanned for existing persisted entries. Entries
     /// are removed (oldest first) until the total size of all scanned entries is within the given maximum size.
     ///
     /// # Errors

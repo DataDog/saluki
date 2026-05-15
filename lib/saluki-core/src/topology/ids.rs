@@ -50,7 +50,7 @@ impl ComponentOutputId {
     ///
     /// # Errors
     ///
-    /// If generated component output ID is not valid (identifier or output definition containing invalid characters,
+    /// If generated component output ID isn't valid (identifier or output definition containing invalid characters,
     /// etc), an error is returned.
     pub fn from_definition<T: Copy>(
         component_id: ComponentId, output_def: &OutputDefinition<T>,

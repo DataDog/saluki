@@ -60,8 +60,8 @@ impl ContainerdClient {
     ///
     /// ## Errors
     ///
-    /// If the containerd socket path was not present in the configuration or could not be detected, or if the gRPC
-    /// transport to containerd could not be created, an error will be returned.
+    /// If the containerd socket path wasn't present in the configuration or couldn't be detected, or if the gRPC
+    /// transport to containerd couldn't be created, an error will be returned.
     pub async fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
         let socket_path = ContainerdDetector::detect_grpc_socket_path(config)
             .ok_or(generic_error!(

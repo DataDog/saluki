@@ -1,7 +1,7 @@
 //! Translation between the Datadog Agent's [`GenericConfiguration`] and ADP's [`LoggingConfiguration`].
 //!
 //! ADP's logging behavior must follow the Datadog Agent's logging configuration for the settings that are sensibly
-//! shared (level, format, console output, rotation), but it must use its own per-subagent destination so it does not
+//! shared (level, format, console output, rotation), but it must use its own per-subagent destination so it doesn't
 //! collide with the Core Agent's own log file. This module owns those rules in one place.
 
 use async_trait::async_trait;
@@ -62,7 +62,7 @@ impl LoggingConfigurationTranslator {
     ///
     /// # Errors
     ///
-    /// Returns an error if any of the consulted keys is present but cannot be parsed into the expected type.
+    /// Returns an error if any of the consulted keys is present but can't be parsed into the expected type.
     pub fn translate(config: &GenericConfiguration) -> Result<LoggingConfiguration, GenericError> {
         let mut logging = LoggingConfiguration::simple();
 
@@ -186,7 +186,7 @@ fn first_party_log_level_filter(level: &str) -> Result<LogLevel, GenericError> {
 
 /// A worker that watches for updates to `log_level` and adjusts the logging stack's current filter directives to match.
 ///
-/// The worker relies on dynamic configuration; if it is not enabled, the worker simply idles until shutdown.
+/// The worker relies on dynamic configuration; if it's not enabled, the worker simply idles until shutdown.
 pub struct DynamicLogLevelWorker {
     config: GenericConfiguration,
     controller: LoggingOverrideController,

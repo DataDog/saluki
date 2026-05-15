@@ -15,7 +15,7 @@ pub struct Querier {
 impl Querier {
     /// Gets the resident set size of this process, in bytes.
     ///
-    /// If the resident set size cannot be determined, `None` is returned. This could be for a number of underlying
+    /// If the resident set size can't be determined, `None` is returned. This could be for a number of underlying
     /// reasons, but should generally be considered an incredibly rare/unlikely event.
     pub fn resident_set_size(&mut self) -> Option<usize> {
         // Prepare a holding struct for the task info.

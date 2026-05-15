@@ -50,7 +50,7 @@ impl ContainerdMetadataCollector {
     ///
     /// # Errors
     ///
-    /// If the containerd gRPC client cannot be created, or listing the namespaces in the containerd runtime fails, an
+    /// If the containerd gRPC client can't be created, or listing the namespaces in the containerd runtime fails, an
     /// error will be returned.
     pub async fn from_configuration(
         config: &GenericConfiguration, health: Health, tag_interner: GenericMapInterner,

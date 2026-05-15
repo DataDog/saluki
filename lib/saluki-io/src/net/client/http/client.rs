@@ -170,7 +170,7 @@ impl HttpClientBuilder {
         self
     }
 
-    /// Sets the maximum age of a connection before it is closed.
+    /// Sets the maximum age of a connection before it's closed.
     ///
     /// This is distinct from the maximum idle time: if any connection's age exceeds `limit`, it will be closed rather
     /// than being reused and added to the idle connection pool.
@@ -271,7 +271,7 @@ impl HttpClientBuilder {
 
     /// Sets a counter that gets incremented with the number of bytes sent over the connection.
     ///
-    /// This tracks bytes sent at the HTTP client level, which includes headers and body but does not include underlying
+    /// This tracks bytes sent at the HTTP client level, which includes headers and body but doesn't include underlying
     /// transport overhead, such as TLS handshaking, and so on.
     ///
     /// Defaults to unset.

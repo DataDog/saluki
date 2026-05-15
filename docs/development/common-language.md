@@ -16,7 +16,7 @@ processes. You're encouraged to read the RFC, but here's a quick rundown:
 - **MUST**/**SHALL**: this is an absolute requirement
 - **MUST NOT**/**SHALL NOT**: this is an absolute prohibition
 - **SHOULD**/**RECOMMENDED**: you really should do this, but there may be valid reasons not to
-- **SHOULD NOT**/**NOT RECOMMENDED**: you really should not do this, but there may be valid reasons to do so
+- **Shouldn't**/**NOT RECOMMENDED**: you really shouldn't do this, but there may be valid reasons to do so
 - **MAY**/**OPTIONAL**: this is legitimately optional ("dealer's choice")
 
 Like RFC 2119 mentions, these should be used sparingly and only when necessary to clarify expectations... so if you see

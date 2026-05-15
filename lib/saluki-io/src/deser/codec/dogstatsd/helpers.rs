@@ -35,7 +35,7 @@ pub const CARDINALITY_PREFIX: &[u8] = b"card:";
 
 /// Parses the given raw payload and returns the DogStatsD message type.
 ///
-/// If the payload is not an event or service check, it is assumed to be a metric.
+/// If the payload isn't an event or service check, it's assumed to be a metric.
 #[inline]
 pub fn parse_message_type(data: &[u8]) -> MessageType {
     if data.starts_with(EVENT_PREFIX) {
@@ -48,7 +48,7 @@ pub fn parse_message_type(data: &[u8]) -> MessageType {
 
 /// Splits the input buffer at the given delimiter.
 ///
-/// If the delimiter is not found, or the input buffer is empty, `None` is returned. Otherwise, the buffer is
+/// If the delimiter isn't found, or the input buffer is empty, `None` is returned. Otherwise, the buffer is
 /// split into two parts at the delimiter, and the delimiter is _not_ included.
 #[inline]
 pub fn split_at_delimiter(input: &[u8], delimiter: u8) -> Option<(&[u8], &[u8])> {
@@ -68,7 +68,7 @@ pub fn split_at_delimiter(input: &[u8], delimiter: u8) -> Option<(&[u8], &[u8])>
 ///
 /// # Errors
 ///
-/// If the input slice is not valid UTF-8, an error is returned.
+/// If the input slice isn't valid UTF-8, an error is returned.
 #[inline]
 pub fn utf8(input: &[u8]) -> IResult<&[u8], &str> {
     match simdutf8::basic::from_utf8(input) {
@@ -83,7 +83,7 @@ pub fn utf8(input: &[u8]) -> IResult<&[u8], &str> {
 ///
 /// # Errors
 ///
-/// If the input slice does not at least one byte of valid characters, an error is returned.
+/// If the input slice doesn't at least one byte of valid characters, an error is returned.
 #[inline]
 pub fn ascii_alphanum_and_seps(input: &[u8]) -> IResult<&[u8], &str> {
     let valid_char = |c: u8| c.is_ascii_alphanumeric() || c == b' ' || c == b'_' || c == b'-' || c == b'.';
@@ -97,12 +97,12 @@ pub fn ascii_alphanum_and_seps(input: &[u8]) -> IResult<&[u8], &str> {
 
 /// Extracts as many raw tags from the input slice as possible, up to the configured limit.
 ///
-/// Tags can be limited by length as well as count. If any tags exceed the maximum length, they are dropped. If the number
-/// of tags exceeds the maximum count, the excess tags are dropped. The remaining slice does not contain any dropped tags.
+/// Tags can be limited by length as well as count. If any tags exceed the maximum length, they're dropped. If the number
+/// of tags exceeds the maximum count, the excess tags are dropped. The remaining slice doesn't contain any dropped tags.
 ///
 /// # Errors
 ///
-/// If the input slice is not at least one byte long, or if it is not valid UTF-8, an error is returned.
+/// If the input slice isn't at least one byte long, or if it's not valid UTF-8, an error is returned.
 #[inline]
 pub fn tags(config: &DogStatsDCodecConfiguration) -> impl Fn(&[u8]) -> IResult<&[u8], RawTags<'_>> {
     let max_tag_count = config.maximum_tag_count;
@@ -118,7 +118,7 @@ pub fn tags(config: &DogStatsDCodecConfiguration) -> impl Fn(&[u8]) -> IResult<&
 ///
 /// # Errors
 ///
-/// If the input slice is not a valid unsigned 64-bit integer, an error is returned.
+/// If the input slice isn't a valid unsigned 64-bit integer, an error is returned.
 #[inline]
 pub fn unix_timestamp(input: &[u8]) -> IResult<&[u8], u64> {
     parse_u64(input)
@@ -128,7 +128,7 @@ pub fn unix_timestamp(input: &[u8]) -> IResult<&[u8], u64> {
 ///
 /// # Errors
 ///
-/// If the input slice does not contain at least one byte of valid characters, an error is returned.
+/// If the input slice doesn't contain at least one byte of valid characters, an error is returned.
 #[inline]
 pub fn local_data(input: &[u8]) -> IResult<&[u8], &str> {
     // Local Data is only meant to be able to represent container IDs (which arelong hexadecimal strings), or in special
@@ -149,7 +149,7 @@ pub fn local_data(input: &[u8]) -> IResult<&[u8], &str> {
 ///
 /// # Errors
 ///
-/// If the input slice does not contain at least one byte of valid characters, an error is returned.
+/// If the input slice doesn't contain at least one byte of valid characters, an error is returned.
 #[inline]
 pub fn external_data(input: &[u8]) -> IResult<&[u8], &str> {
     // External Data is only meant to be able to represent origin information, which includes container names, pod UIDs,

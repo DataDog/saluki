@@ -63,7 +63,7 @@ impl LoggingGuard {
     ///
     /// # Errors
     ///
-    /// Returns an error if the new output layers cannot be constructed (for example, the configured log file path is
+    /// Returns an error if the new output layers can't be constructed (for example, the configured log file path is
     /// inaccessible) or if the override worker is no longer running.
     pub async fn reload(&mut self, config: LoggingConfiguration) -> Result<(), GenericError> {
         let (new_stack, new_guards) = build_output_stack(&config)?;

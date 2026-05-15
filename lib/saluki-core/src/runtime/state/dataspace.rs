@@ -54,7 +54,7 @@ tokio::task_local! {
 /// An update received by a subscription, indicating that a value was asserted or retracted.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AssertionUpdate<T> {
-    /// A value was asserted (made available), along with the identifier it is associated with.
+    /// A value was asserted (made available), along with the identifier it's associated with.
     Asserted(Identifier, T),
 
     /// The value associated with the given identifier was retracted (withdrawn).

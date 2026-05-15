@@ -32,7 +32,7 @@ type WorkerFuture = Pin<Box<dyn Future<Output = Result<(), WorkerError>> + Send>
 
 /// Worker lifecycle errors.
 ///
-/// Distinguishes between initialization failures (which should NOT trigger restart logic) and runtime failures (which
+/// Distinguishes between initialization failures (which shouldn't trigger restart logic) and runtime failures (which
 /// are eligible for restart).
 #[derive(Debug)]
 enum WorkerError {
@@ -86,13 +86,13 @@ pub enum ProcessError {
 
 /// Initialization errors.
 ///
-/// Initialization errors are distinct from runtime errors: they indicate that a process could not be started at all
-/// (for example, failed to bind a port, missing configuration). These errors do NOT trigger restart logic; instead, they
+/// Initialization errors are distinct from runtime errors: they indicate that a process couldn't be started at all
+/// (for example, failed to bind a port, missing configuration). These errors don't trigger restart logic; instead, they
 /// immediately propagate up and fail the supervisor.
 #[derive(Debug, Snafu)]
 #[snafu(context(suffix(false)))]
 pub enum InitializationError {
-    /// The process could not be initialized due to an error.
+    /// The process couldn't be initialized due to an error.
     #[snafu(display("Process failed to initialize: {}", source))]
     Failed {
         /// The underlying error that caused initialization to fail.
@@ -129,7 +129,7 @@ pub trait Supervisable: Send + Sync {
     /// Initializes the process asynchronously.
     ///
     /// During initialization, any resources or configuration for the process can be created asynchronously, and the
-    /// same runtime that is used for running the process is used for initialization. The resulting future is expected
+    /// same runtime that's used for running the process is used for initialization. The resulting future is expected
     /// to complete as soon as reasonably possible after `process_shutdown` resolves.
     ///
     /// **Important:** The `process_shutdown` signal must be moved into the returned [`SupervisorFuture`] so the
@@ -138,7 +138,7 @@ pub trait Supervisable: Send + Sync {
     ///
     /// # Errors
     ///
-    /// If the process cannot be initialized, an error is returned.
+    /// If the process can't be initialized, an error is returned.
     async fn initialize(&self, process_shutdown: ProcessShutdown) -> Result<SupervisorFuture, InitializationError>;
 }
 
@@ -159,8 +159,8 @@ pub enum SupervisorError {
 
     /// A child process failed to initialize.
     ///
-    /// This error indicates that a child could not complete its async initialization. This is distinct from runtime
-    /// failures and does NOT trigger restart logic.
+    /// This error indicates that a child couldn't complete its async initialization. This is distinct from runtime
+    /// failures and doesn't trigger restart logic.
     #[snafu(display("Child process '{}' failed to initialize: {}", child_name, source))]
     FailedToInitialize {
         /// The name of the child that failed to initialize.
@@ -299,7 +299,7 @@ where
 /// # Workers
 ///
 /// All workers are defined through implementation of the [`Supervisable`] trait, which provides the logic for both
-/// creating the underlying worker future that is spawned, as well as other metadata, such as the worker's name, how the
+/// creating the underlying worker future that's spawned, as well as other metadata, such as the worker's name, how the
 /// worker should be shutdown, and so on.
 ///
 /// Supervisors also (indirectly) implement the [`Supervisable`] trait, allowing them to be supervised by other

@@ -11,7 +11,7 @@ use self::persisted::{DiskUsageRetriever, DiskUsageRetrieverWrapper, PersistedQu
 /// A container that holds events.
 ///
 /// This trait is used as an incredibly generic way to expose the number of events within a "container", which we
-/// loosely define to be anything that is holding events in some form. This is primarily used to track the number of
+/// loosely define to be anything that's holding events in some form. This is primarily used to track the number of
 /// events dropped by `RetryQueue` (and `PersistedQueue`) when entries have to be dropped due to size limits.
 pub trait EventContainer {
     /// Returns the number of events represented by this container.
@@ -110,7 +110,7 @@ where
     /// Configures the queue to persist pending entries to disk.
     ///
     /// Disk persistence is used as a fallback to in-memory storage when the queue is full. When attempting to add a new
-    /// entry to the queue, and the queue cannot fit the entry in-memory, in-memory entries will be persisted to disk,
+    /// entry to the queue, and the queue can't fit the entry in-memory, in-memory entries will be persisted to disk,
     /// oldest first.
     ///
     /// When reading entries from the queue, in-memory entries are read first, followed by persisted entries. This
@@ -161,14 +161,14 @@ where
     /// Returns the number of persisted entries that have been permanently dropped due to errors since the last call
     /// to this method, resetting the counter.
     ///
-    /// Always returns 0 if disk persistence is not enabled.
+    /// Always returns 0 if disk persistence isn't enabled.
     pub fn take_persisted_entries_dropped(&mut self) -> u64 {
         self.persisted_pending.as_mut().map_or(0, |p| p.take_entries_dropped())
     }
 
     /// Enqueues an entry.
     ///
-    /// If the queue is full and the entry cannot be enqueue in-memory, and disk persistence is enabled, in-memory
+    /// If the queue is full and the entry can't be enqueue in-memory, and disk persistence is enabled, in-memory
     /// entries will be moved to disk (oldest first) until enough capacity is available to enqueue the new entry
     /// in-memory.
     ///
@@ -251,7 +251,7 @@ where
     /// Flushes all entries, potentially persisting them to disk.
     ///
     /// When disk persistence is configured, this will flush all in-memory entries to disk. Flushing to disk still obeys
-    /// the normal limiting behavior in terms of maximum on-disk size. When disk persistence is not enabled, all
+    /// the normal limiting behavior in terms of maximum on-disk size. When disk persistence isn't enabled, all
     /// in-memory entries will be dropped.
     ///
     /// # Errors

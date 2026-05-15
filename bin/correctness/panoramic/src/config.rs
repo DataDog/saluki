@@ -204,9 +204,9 @@ pub enum AssertionConfig {
         stream: LogStream,
     },
 
-    /// Check that a pattern does NOT appear in the logs for a duration.
+    /// Check that a pattern doesn't appear in the logs for a duration.
     LogNotContains {
-        /// The pattern that should not appear.
+        /// The pattern that shouldn't appear.
         pattern: String,
         /// Whether to interpret the pattern as a regex.
         #[serde(default)]

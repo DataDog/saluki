@@ -136,7 +136,7 @@ async fn run_docker_correctness_test(name: String, config: Config, tctx: TestCon
 /// Cleans up Docker volumes and networks for all three isolation groups.
 ///
 /// Containers are already removed by the coordinator waits on every exit path; this handles the
-/// volumes and networks that `Driver::cleanup` does not remove. Safe to call even if a group was
+/// volumes and networks that `Driver::cleanup` doesn't remove. Safe to call even if a group was
 /// never fully started: Docker returns 404 for unknown resources and we log and continue.
 async fn cleanup_groups(baseline_id: &str, comparison_id: &str, millstone_id: &str) {
     for id in [baseline_id, comparison_id, millstone_id] {

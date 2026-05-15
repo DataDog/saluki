@@ -25,7 +25,7 @@ impl<'a> RawTags<'a> {
     ///
     /// The maximum tag count and maximum tag length control how many tags are returned from the iterator and their
     /// length. If the iterator encounters more tags than the maximum count, it will simply stop returning tags. If the
-    /// iterator encounters any tag that is longer than the maximum length, it will truncate the tag to configured
+    /// iterator encounters any tag that's longer than the maximum length, it will truncate the tag to configured
     /// length, or to a smaller length, whichever is closer to a valid UTF-8 character boundary.
     pub const fn new(raw_tags: &'a str, max_tag_count: usize, max_tag_len: usize) -> Self {
         Self {

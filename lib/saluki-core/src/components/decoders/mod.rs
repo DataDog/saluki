@@ -11,10 +11,10 @@ pub use self::context::DecoderContext;
 
 /// A decoder.
 ///
-/// Decoders are the bridge between relays and the rest of the topology. They are responsible for decoding payloads into
+/// Decoders are the bridge between relays and the rest of the topology. They're responsible for decoding payloads into
 /// events that the rest of the topology can operate on. Decoders are generally specific to a particular
 /// system/protocol: while the _codec_ used by one decoder might be the same as another decoder, the format of the
-/// payload is likely to be highly contextual and so decoders cannot easily be swapped in and out.
+/// payload is likely to be highly contextual and so decoders can't easily be swapped in and out.
 ///
 /// Examples of typical decoders include OTLP and DogStatsD.
 #[async_trait]

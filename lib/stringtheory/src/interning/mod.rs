@@ -25,7 +25,7 @@ pub trait Interner {
 
     /// Attempts to intern the given string.
     ///
-    /// Returns `None` if the interner is full or the string cannot fit.
+    /// Returns `None` if the interner is full or the string can't fit.
     fn try_intern(&self, s: &str) -> Option<InternedString>;
 }
 
@@ -84,8 +84,8 @@ impl From<self::map::StringState> for InternedStringState {
 
 /// An interned string.
 ///
-/// This string type is read-only, and dereferences to `&str` for ergonomic usage. It is cheap to clone (16 bytes), but
-/// generally will not be interacted with directly. Instead, most usages should be wrapped in `MetaString`.
+/// This string type is read-only, and dereferences to `&str` for ergonomic usage. It's cheap to clone (16 bytes), but
+/// generally won't be interacted with directly. Instead, most usages should be wrapped in `MetaString`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct InternedString {
     state: InternedStringState,

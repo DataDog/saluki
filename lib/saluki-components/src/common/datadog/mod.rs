@@ -33,7 +33,7 @@ pub(crate) const METRICS_SKETCHES_PATH: &str = "/api/beta/sketches";
 
 /// Metric intake paths emitted by the encoder and matched by OPW routing.
 ///
-/// Keep these paths in one place so metric encoding and OPW routing do not drift.
+/// Keep these paths in one place so metric encoding and OPW routing don't drift.
 pub(crate) const METRIC_INTAKE_PATHS: [&str; 3] =
     [METRICS_SERIES_V1_PATH, METRICS_SERIES_V2_PATH, METRICS_SKETCHES_PATH];
 

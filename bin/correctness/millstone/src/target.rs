@@ -91,7 +91,7 @@ impl TargetSender {
     /// Sends a single payload to the target.
     ///
     /// Attempts to send the entire payload to the target, but may only partially write a payload if the underlying
-    /// target transport does not support ordered delivery of messages and fragmented sends cannot be achieved.
+    /// target transport doesn't support ordered delivery of messages and fragmented sends can't be achieved.
     ///
     /// On success, `Ok(n)` is returned, where `n` is the number of bytes sent.
     ///
@@ -161,7 +161,7 @@ fn send_grpc_payload(
 ///
 /// # Errors
 ///
-/// Returns an error if the runtime cannot be created or the connection cannot be established.
+/// Returns an error if the runtime can't be created or the connection can't be established.
 fn create_grpc_client(url: &str) -> Result<(TargetBackend, Option<tokio::runtime::Runtime>), GenericError> {
     // Split the URL into host:port and service/method path
     let (host_and_port, path) = url

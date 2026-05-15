@@ -62,7 +62,7 @@ impl ListenAddress {
     ///
     /// When the listen address is a TCP or UDP address, this method returns a socket address that can be used to
     /// connect to the listener bound to this listen address, such that if the listen address is unspecified
-    /// (`0.0.0.0`), the client will connect locally using "localhost". When the listen address is not "unspecified" or
+    /// (`0.0.0.0`), the client will connect locally using "localhost". When the listen address isn't "unspecified" or
     /// already uses "localhost", this method returns the listen address as-is.
     ///
     /// If the address is a Unix domain socket, this method returns `None`.
@@ -212,13 +212,13 @@ pub struct ProcessCredentials {
 #[cfg(unix)]
 #[derive(Clone, Copy)]
 pub enum ProcessCredentialsError {
-    /// Ancillary data was present but did not contain usable process credentials.
+    /// Ancillary data was present but didn't contain usable process credentials.
     InvalidCredentials,
 
     /// Process credentials were present, but the PID was zero.
     ZeroPid,
 
-    /// UDS process credential detection is not supported on this platform.
+    /// UDS process credential detection isn't supported on this platform.
     UnsupportedPlatform,
 }
 
@@ -255,7 +255,7 @@ pub enum ProcessIdentity {
     /// Process credential detection failed.
     Error(ProcessCredentialsError),
 
-    /// Process identity is not available for this peer.
+    /// Process identity isn't available for this peer.
     Unavailable,
 }
 
@@ -364,7 +364,7 @@ impl GrpcTargetAddress {
     /// For TCP addresses, this method converts unspecified addresses (`0.0.0.0` or `::`) to localhost
     /// (`127.0.0.1` or `::1`) to ensure the advertised address matches TLS certificates.
     ///
-    /// Returns `None` if the listen address is not a connection-oriented transport.
+    /// Returns `None` if the listen address isn't a connection-oriented transport.
     pub fn try_from_listen_addr(listen_address: &ListenAddress) -> Option<Self> {
         match listen_address {
             ListenAddress::Tcp(_) => {

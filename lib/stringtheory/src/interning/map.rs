@@ -85,32 +85,32 @@ impl Drop for StringState {
 
 /// Metadata about an interner entry.
 ///
-/// `EntryHeader` represents the smallest amount of information about an interned entry that is needed to support both
+/// `EntryHeader` represents the smallest amount of information about an interned entry that's needed to support both
 /// lookup of existing interned strings, as well as the ability to reclaim space in the interner when an entry is no
 /// longer in use.
 struct EntryHeader {
     /// The number of active references to this entry.
     ///
-    /// Only incremented by the interner itself, and decremented by `InternedString` when it is dropped.
+    /// Only incremented by the interner itself, and decremented by `InternedString` when it's dropped.
     refs: AtomicUsize,
 
     /// Combined length/capacity of the entry, in terms of the string itself.
     ///
     /// Notably, this does _not_ include the length of the header itself. For example, an entry holding the string
-    /// "hello, world!" has a string length of 13 bytes, but since we have to pad out to meet our alignment requirements
+    /// "hello, world!" has a string length of 13 bytes, but since we've to pad out to meet our alignment requirements
     /// for `EntryHeader`, we would end up with a capacity of 16 bytes. As such, `EntryHeader::len` would report `13`,
     /// while `EntryHeader::capacity` would report `16`. Likewise, `EntryHeader::entry_len` would report `40`,
     /// accounting for the string capacity (16) as well as the header length itself (24).
     ///
     /// As explained in the description of `PackedLengthCapacity`, this does mean strings can't be larger than ~4GB on
-    /// 64-bit platforms, which is not a problem we have.
+    /// 64-bit platforms, which isn't a problem we've.
     len_cap: PackedLengthCapacity,
 }
 
 impl EntryHeader {
     /// Creates a tombstone entry with the given capacity.
     ///
-    /// This is to allow for updating a region in the data buffer, which has been reclaimed, such that it is
+    /// This is to allow for updating a region in the data buffer, which has been reclaimed, such that it's
     /// identifiable as being unused.
     fn tombstone(entry: ReclaimedEntry) -> Self {
         // The usable capacity for a reclaimed entry is the full capacity minus the size of `EntryHeader` itself, as
@@ -527,8 +527,8 @@ unsafe impl Sync for InternerState {}
 /// ## Overview
 ///
 /// This interner uses a single, fixed-size backing buffer where interned strings are stored contiguously. This provides
-/// bounded memory usage, and the interner will not allocate additional memory for new strings once the buffer is full.
-/// Since interned strings are not likely to need to live for the life of the program, the interner supports
+/// bounded memory usage, and the interner won't allocate additional memory for new strings once the buffer is full.
+/// Since interned strings aren't likely to need to live for the life of the program, the interner supports
 /// reclamation. Once all references to an interned string have been dropped, the storage for that string is reclaimed
 /// and can be used to hold new strings.
 ///
@@ -563,7 +563,7 @@ unsafe impl Sync for InternerState {}
 ///
 /// ## `InternedString`
 ///
-/// The `InternedString` type is a handle to the entry header, and thus the string data, for an interned string. It is
+/// The `InternedString` type is a handle to the entry header, and thus the string data, for an interned string. It's
 /// designed to be small -- 8 bytes! -- and cheap to clone, as it contains an atomic reference to the entry header and a
 /// reference to the interner that owns the string. It dereferences to the underlying string with relatively low
 /// overhead: two pointer indirections.
@@ -583,7 +583,7 @@ unsafe impl Sync for InternerState {}
 ///
 /// Reclaimed entries are simple markers -- start and end position in the data buffer -- which are stored in a freelist.
 /// When attempting to intern a new string, this freelist is searched to see if there's an entry large enough to fit the
-/// new string, and if so, it is used.
+/// new string, and if so, it's used.
 ///
 /// Additionally, when entries are reclaimed, adjacent entries are merged together where possible. This helps to avoid
 /// unnecessary fragmentation over time, although not as effectively as reconstructing the data buffer to re-pack

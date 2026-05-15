@@ -97,7 +97,7 @@ impl Assertion for LogContainsAssertion {
     }
 }
 
-/// Assertion that checks a pattern does NOT appear in the logs for a duration.
+/// Assertion that checks a pattern doesn't appear in the logs for a duration.
 pub struct LogNotContainsAssertion {
     pattern: String,
     is_regex: bool,

@@ -9,7 +9,7 @@
 //! immutable reference to the resource tags.
 //!
 //! `attributes` supports both read and write via [`SpanAttributesAccessor`].
-//! `resource.attributes` is read-only because [`TagSet`] does not expose mutable access.
+//! `resource.attributes` is read-only because [`TagSet`] doesn't expose mutable access.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -115,7 +115,7 @@ impl PathAccessor<SpanTransformFamily> for SpanAttributesAccessor {
 
 /// Path accessor for `resource.attributes` (trace resource tags).
 ///
-/// Read-only: [`TagSet`] does not expose mutable access, so `set` returns an error.
+/// Read-only: [`TagSet`] doesn't expose mutable access, so `set` returns an error.
 #[derive(Debug)]
 pub struct ResourceAttributesAccessor;
 
@@ -137,7 +137,7 @@ impl PathAccessor<SpanTransformFamily> for ResourceAttributesAccessor {
     }
 
     /// Always returns an error: `TagSet` is an Arc-based immutable type and `Trace`
-    /// does not expose yet mutable way to access resource_tags, so there is no way to write changes
+    /// doesn't expose yet mutable way to access resource_tags, so there is no way to write changes
     /// back to the trace's resource tags.
     fn set<'a>(&self, _ctx: &mut SpanTransformContext<'a>, fields: &[Field], _value: &Value) -> ottl::Result<()> {
         let path_str: String = fields.iter().map(|f| f.name.as_str()).collect::<Vec<_>>().join(".");

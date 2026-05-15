@@ -18,7 +18,7 @@ impl CollectedData {
     ///
     /// # Errors
     ///
-    /// If the collected data cannot be retrieved from the `datadog-intake` server, an error is returned.
+    /// If the collected data can't be retrieved from the `datadog-intake` server, an error is returned.
     pub async fn for_port(datadog_intake_port: u16) -> Result<Self, GenericError> {
         let events = get_captured_events(datadog_intake_port).await?;
         let metrics = get_captured_metrics(datadog_intake_port).await?;

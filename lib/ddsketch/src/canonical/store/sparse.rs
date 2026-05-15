@@ -8,7 +8,7 @@ use crate::canonical::error::ProtoConversionError;
 /// A sparse store using a sorted map for bin storage.
 ///
 /// This store only keeps track of non-empty bins, making it memory-efficient for data with widely scattered indices.
-/// However, it does not support collapsing, so memory usage can grow unbounded.
+/// However, it doesn't support collapsing, so memory usage can grow unbounded.
 ///
 /// Use this store when:
 /// - Input values span a wide range with gaps

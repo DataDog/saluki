@@ -29,7 +29,7 @@
 //!   reached. Best for when higher quantiles (p95, p99) matter most.
 //! - [`CollapsingHighestDenseStore`][store::CollapsingHighestDenseStore]: Collapses highest bins when limit is
 //!   reached. Best for when lower quantiles (p1, p5) matter most.
-//! - [`DenseStore`][store::DenseStore]: Unbounded dense storage. Best when memory is not a concern.
+//! - [`DenseStore`][store::DenseStore]: Unbounded dense storage. Best when memory isn't a concern.
 //! - [`SparseStore`][store::SparseStore]: Hash-based storage. Best for widely scattered values.
 
 mod error;

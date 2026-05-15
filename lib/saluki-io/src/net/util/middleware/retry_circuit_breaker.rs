@@ -175,7 +175,7 @@ where
 /// Wraps a service in a [circuit breaker][circuit_breaker] and signals when a request must be retried at a later time.
 ///
 /// This circuit breaker implementation is specific to retrying requests. In many cases, a request can fail in two
-/// ways: unrecoverable errors, which should not be retried, and recoverable errors, which should be retried after a
+/// ways: unrecoverable errors, which shouldn't be retried, and recoverable errors, which should be retried after a
 /// some period of time. When a request can be retried, it may not be advantageous to wait for the given request to
 /// be retried successfully, as the request should perhaps be stored in a queue and retried at a later time,
 /// potentially to avoid applying backpressure to the client.

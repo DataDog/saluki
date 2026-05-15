@@ -2,14 +2,14 @@ use crate::MetaString;
 
 /// A string type that can be cheaply cloned into a `MetaString`.
 ///
-/// While callers working directly with `MetaString` already have access to determine if it is cheaply cloneable, there
-/// are a number of use cases where `MetaString` is not directly accessible. This trait allows types wrapping
+/// While callers working directly with `MetaString` already have access to determine if it's cheaply cloneable, there
+/// are a number of use cases where `MetaString` isn't directly accessible. This trait allows types wrapping
 /// `MetaString` to expose the ability to cheaply clone the inner `MetaString` when possible, without having to expose
 /// it directly.
 pub trait CheapMetaString {
     /// Attempts to cheaply clone the string.
     ///
-    /// If the string is not cheaply cloneable, `None` is returned.
+    /// If the string isn't cheaply cloneable, `None` is returned.
     fn try_cheap_clone(&self) -> Option<MetaString>;
 }
 

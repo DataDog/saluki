@@ -52,7 +52,7 @@ pub trait DispatchBuffer: Dispatchable + Default {
 
     /// Attempts to push an item into the buffer.
     ///
-    /// Returns `Some(item)` if the buffer is full and the item could not be pushed.
+    /// Returns `Some(item)` if the buffer is full and the item couldn't be pushed.
     fn try_push(&mut self, item: Self::Item) -> Option<Self::Item>;
 }
 
@@ -283,7 +283,7 @@ where
     ///
     /// # Errors
     ///
-    /// If the output does not exist, an error is returned.
+    /// If the output doesn't exist, an error is returned.
     pub fn attach_sender_to_output(
         &mut self, output_name: &OutputName, sender: mpsc::Sender<T>,
     ) -> Result<(), GenericError> {
@@ -328,7 +328,7 @@ where
     ///
     /// # Errors
     ///
-    /// If the default output is not set, or there is an error sending to the default output, an error is returned.
+    /// If the default output isn't set, or there is an error sending to the default output, an error is returned.
     pub async fn dispatch(&self, item: T) -> Result<(), GenericError> {
         self.dispatch_inner(None, item).await
     }
@@ -337,7 +337,7 @@ where
     ///
     /// # Errors
     ///
-    /// If a output of the given name is not set, or there is an error sending to the output, an error is returned.
+    /// If a output of the given name isn't set, or there is an error sending to the output, an error is returned.
     pub async fn dispatch_named<N>(&self, output_name: N, item: T) -> Result<(), GenericError>
     where
         N: AsRef<str>,
@@ -363,26 +363,26 @@ where
 {
     /// Creates a buffered dispatcher for the default output.
     ///
-    /// This should generally be used if the items being dispatched are not already collected in a container, or exposed
+    /// This should generally be used if the items being dispatched aren't already collected in a container, or exposed
     /// via an iterable type. It allows for efficiently buffering items one-by-one before dispatching them to the
     /// underlying output.
     ///
     /// # Errors
     ///
-    /// If the default output has not been configured, an error will be returned.
+    /// If the default output hasn't been configured, an error will be returned.
     pub fn buffered(&self) -> Result<BufferedDispatcher<'_, T>, GenericError> {
         self.get_default_output().map(BufferedDispatcher::new)
     }
 
     /// Creates a buffered dispatcher for the given named output.
     ///
-    /// This should generally be used if the items being dispatched are not already collected in a container, or exposed
+    /// This should generally be used if the items being dispatched aren't already collected in a container, or exposed
     /// via an iterable type. It allows for efficiently buffering items one-by-one before dispatching them to the
     /// underlying output.
     ///
     /// # Errors
     ///
-    /// If the given named output has not been configured, an error will be returned.
+    /// If the given named output hasn't been configured, an error will be returned.
     pub fn buffered_named<N>(&self, output_name: N) -> Result<BufferedDispatcher<'_, T>, GenericError>
     where
         N: AsRef<str>,
@@ -394,7 +394,7 @@ where
     ///
     /// # Errors
     ///
-    /// If the default output is not set, or there is an error sending to the default output, an error is returned.
+    /// If the default output isn't set, or there is an error sending to the default output, an error is returned.
     pub async fn dispatch_one(&self, item: T::Item) -> Result<(), GenericError> {
         self.dispatch_one_inner(None, item).await
     }
@@ -403,7 +403,7 @@ where
     ///
     /// # Errors
     ///
-    /// If an output of the given name is not set, or there is an error sending to the output, an error is returned.
+    /// If an output of the given name isn't set, or there is an error sending to the output, an error is returned.
     pub async fn dispatch_one_named<N>(&self, output_name: N, item: T::Item) -> Result<(), GenericError>
     where
         N: AsRef<str>,

@@ -66,7 +66,7 @@ impl AppBootstrapper {
     ///
     /// # Errors
     ///
-    /// This currently does not fail, but the signature returns `Result` to leave room for future failures.
+    /// This currently doesn't fail, but the signature returns `Result` to leave room for future failures.
     pub fn from_configuration(_config: &GenericConfiguration) -> Result<Self, GenericError> {
         Ok(Self {
             logging_config: LoggingConfiguration::simple(),

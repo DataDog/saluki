@@ -119,13 +119,13 @@ impl Listener {
     ///
     /// When `Some(N)` with N > 1 is requested on Linux, the listener binds N sockets with `SO_REUSEPORT` set before
     /// `bind`, so the kernel will hash-load-balance incoming datagrams across them. On non-Linux platforms,
-    /// `SO_REUSEPORT` does not provide load balancing, so the request is downgraded to a single socket.
+    /// `SO_REUSEPORT` doesn't provide load balancing, so the request is downgraded to a single socket.
     ///
     /// For non-UDP listen addresses, `udp_streams` is ignored.
     ///
     /// ## Errors
     ///
-    /// If the listen address cannot be bound, or if the listener cannot be configured correctly, an error is returned.
+    /// If the listen address can't be bound, or if the listener can't be configured correctly, an error is returned.
     pub async fn from_listen_address(
         listen_address: ListenAddress, mut udp_streams: Option<NonZeroUsize>,
     ) -> Result<Self, ListenerError> {
@@ -232,13 +232,13 @@ impl Listener {
 
     /// Accepts a new stream from the listener.
     ///
-    /// For connection-oriented address families, this will accept a new connection and return a `Stream` that is bound
+    /// For connection-oriented address families, this will accept a new connection and return a `Stream` that's bound
     /// to that remote peer. For connectionless address families, this will yield up to the configured number of
     /// pre-bound `Stream`s—one per call—before returning pending forever.
     ///
     /// ## Errors
     ///
-    /// If the listener fails to accept a new stream, or if the accepted stream cannot be configured correctly, an error
+    /// If the listener fails to accept a new stream, or if the accepted stream can't be configured correctly, an error
     /// is returned.
     pub async fn accept(&mut self) -> Result<Stream, ListenerError> {
         let stream_type = self.listen_address.listener_type();
@@ -378,8 +378,8 @@ impl ConnectionOrientedListener {
     ///
     /// ## Errors
     ///
-    /// If the listen address is not a connection-oriented address family, or if the listen address cannot be bound, or
-    /// if the listener cannot be configured correctly, an error is returned.
+    /// If the listen address isn't a connection-oriented address family, or if the listen address can't be bound, or
+    /// if the listener can't be configured correctly, an error is returned.
     pub async fn from_listen_address(listen_address: ListenAddress) -> Result<Self, ListenerError> {
         let inner = match &listen_address {
             ListenAddress::Tcp(addr) => TcpListener::bind(addr)
@@ -443,7 +443,7 @@ impl ConnectionOrientedListener {
     ///
     /// ## Errors
     ///
-    /// If the listener fails to accept a new connection, or if the accepted connection cannot be configured correctly,
+    /// If the listener fails to accept a new connection, or if the accepted connection can't be configured correctly,
     /// an error is returned.
     pub async fn accept(&mut self) -> Result<Connection, ListenerError> {
         match &mut self.inner {

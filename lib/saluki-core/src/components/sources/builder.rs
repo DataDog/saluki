@@ -18,6 +18,6 @@ pub trait SourceBuilder: MemoryBounds {
     ///
     /// ## Errors
     ///
-    /// If the source cannot be built for any reason, an error is returned.
+    /// If the source can't be built for any reason, an error is returned.
     async fn build(&self, context: ComponentContext) -> Result<Box<dyn Source + Send>, GenericError>;
 }

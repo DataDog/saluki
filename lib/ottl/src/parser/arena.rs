@@ -364,7 +364,7 @@ fn convert_value_expr<F: EvalContextFamily>(
 ///
 /// - Converts all arguments (positional and named) to arena value refs via [`convert_value_expr`].
 /// - Preserves `name`, `is_editor`, `indexes`, and the pre-resolved `callback` from the source AST.
-/// - Does not resolve callbacks here; the parser is expected to have attached [`CallbackFn`] when applicable.
+/// - Doesn't resolve callbacks here; the parser is expected to have attached [`CallbackFn`] when applicable.
 fn convert_function_call<F: EvalContextFamily>(
     fc: &FunctionCall, arena: &mut AstArena<F>, path_resolvers: &PathResolverMap<F>,
 ) -> Result<FunctionCallRef> {

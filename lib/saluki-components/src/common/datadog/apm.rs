@@ -281,7 +281,7 @@ impl ApmConfig {
         &self.hostname
     }
 
-    /// Sets the hostname if it is currently empty.
+    /// Sets the hostname if it's currently empty.
     pub fn set_hostname_if_empty(&mut self, hostname: impl Into<MetaString>) {
         if self.hostname.is_empty() {
             self.hostname = hostname.into();

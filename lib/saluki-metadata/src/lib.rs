@@ -34,14 +34,14 @@ pub fn get_app_details() -> &'static AppDetails {
 /// This struct is generated at build time and contains information about the detected application name and version
 /// based on detected environment variables. The following environment variables are used:
 ///
-/// - `APP_FULL_NAME`: Application's full name. If this is not set, the default value is "unknown".
-/// - `APP_SHORT_NAME`: Application's short name. If this is not set, the default value is "unknown".
-/// - `APP_IDENTIFIER`: Application's identifier. If this is not set, the default value is "unknown".
-/// - `APP_VERSION`: Version of the application. If this is not set, the default value is "0.0.0".
-/// - `APP_GIT_HASH`: Git hash of the application. If this is not set, the default value is "unknown".
-/// - `APP_BUILD_TIME`: Build time of the application. If this is not set, the default value is "0000-00-00 00:00:00".
-/// - `APP_DEV_BUILD`: Whether the application is a development build. If this is not set, the default value is `true`.
-/// - `TARGET`: Target architecture of the application. If this is not set, the default value is "unknown-arch".
+/// - `APP_FULL_NAME`: Application's full name. If this isn't set, the default value is "unknown".
+/// - `APP_SHORT_NAME`: Application's short name. If this isn't set, the default value is "unknown".
+/// - `APP_IDENTIFIER`: Application's identifier. If this isn't set, the default value is "unknown".
+/// - `APP_VERSION`: Version of the application. If this isn't set, the default value is "0.0.0".
+/// - `APP_GIT_HASH`: Git hash of the application. If this isn't set, the default value is "unknown".
+/// - `APP_BUILD_TIME`: Build time of the application. If this isn't set, the default value is "0000-00-00 00:00:00".
+/// - `APP_DEV_BUILD`: Whether the application is a development build. If this isn't set, the default value is `true`.
+/// - `TARGET`: Target architecture of the application. If this isn't set, the default value is "unknown-arch".
 ///
 /// Environment variables prefixed with `APP_` are expected to be set by the build script/tooling, while others are
 /// provided automatically by Cargo.
@@ -65,7 +65,7 @@ impl AppDetails {
     ///
     /// This is typically a human-friendly/"pretty" name of the binary/executable, such as "Agent Data Plane".
     ///
-    /// If the full name could not be detected, this will return "unknown".
+    /// If the full name couldn't be detected, this will return "unknown".
     pub fn full_name(&self) -> &'static str {
         self.full_name
     }
@@ -75,7 +75,7 @@ impl AppDetails {
     /// This is typically a shorter version of the name of the binary/executable, such as "Data Plane" or
     /// "DATAPLANE".
     ///
-    /// If the short name could not be detected, this will return "unknown".
+    /// If the short name couldn't be detected, this will return "unknown".
     pub fn short_name(&self) -> &'static str {
         self.short_name
     }
@@ -85,38 +85,38 @@ impl AppDetails {
     /// This is typically a very condensed form of the name of the binary/executable, like an acronym, such as "adp" or
     /// "ADP".
     ///
-    /// If the identifier could not be detected, this will return "unknown".
+    /// If the identifier couldn't be detected, this will return "unknown".
     pub fn identifier(&self) -> &'static str {
         self.identifier
     }
 
     /// Returns the Git hash used to build the application.
     ///
-    /// If the Git hash could not be detected, this will return "unknown".
+    /// If the Git hash couldn't be detected, this will return "unknown".
     pub fn git_hash(&self) -> &'static str {
         self.git_hash
     }
 
     /// Returns the application's version.
     ///
-    /// If the version could not be detected, this will return a version equivalent to `0.0.0`.
+    /// If the version couldn't be detected, this will return a version equivalent to `0.0.0`.
     pub fn version(&self) -> &Version {
         &self.version
     }
 
     /// Returns the build time of the application.
     ///
-    /// If the build time could not be detected, this will return "0000-00-00 00:00:00".
+    /// If the build time couldn't be detected, this will return "0000-00-00 00:00:00".
     pub fn build_time(&self) -> &'static str {
         self.build_time
     }
 
     /// Returns `true` if this application is a development build.
     ///
-    /// Development builds generally encompass all local builds, and any CI builds which are not related to versioned
+    /// Development builds generally encompass all local builds, and any CI builds which aren't related to versioned
     /// artifacts intended for public release.
     ///
-    /// If the development build flag could not be detected, this will return `true`.
+    /// If the development build flag couldn't be detected, this will return `true`.
     pub fn is_dev_build(&self) -> bool {
         self.dev_build
     }
@@ -130,7 +130,7 @@ impl AppDetails {
     /// The environment/ABI component can sometimes be omitted in scenarios where there are no meaningful distinctions
     /// for the given operating system.
     ///
-    /// If the target architecture could not be detected, this will return "unknown-arch".
+    /// If the target architecture couldn't be detected, this will return "unknown-arch".
     pub fn target_arch(&self) -> &'static str {
         self.target_arch
     }
@@ -161,21 +161,21 @@ impl Version {
 
     /// Returns the major version number.
     ///
-    /// If the major version number is not present in the version string, this will return `0`.
+    /// If the major version number isn't present in the version string, this will return `0`.
     pub fn major(&self) -> u32 {
         self.major
     }
 
     /// Returns the minor version number.
     ///
-    /// If the minor version number is not present in the version string, this will return `0`.
+    /// If the minor version number isn't present in the version string, this will return `0`.
     pub fn minor(&self) -> u32 {
         self.minor
     }
 
     /// Returns the patch version number.
     ///
-    /// If the patch version number is not present in the version string, this will return `0`.
+    /// If the patch version number isn't present in the version string, this will return `0`.
     pub fn patch(&self) -> u32 {
         self.patch
     }

@@ -17,7 +17,7 @@ pub enum ProcessResult {
     /// The encoder processed the event successfully and is ready to process more events.
     Continue,
 
-    /// The encoder cannot process the event without flushing first.
+    /// The encoder can't process the event without flushing first.
     ///
     /// The caller should flush the encoder and try again to process the event.
     FlushRequired(Event),
@@ -25,7 +25,7 @@ pub enum ProcessResult {
 
 /// An encoder.
 ///
-/// Encoders are the bridge between forwarders and the rest of the topology. They are responsible for encoding
+/// Encoders are the bridge between forwarders and the rest of the topology. They're responsible for encoding
 /// telemetry events into output payloads that can then be forwarded. Most encoders are specific to a particular system
 /// and not simply equivalent to a certain encoding or serialization format: while two encoders may both produce JSON,
 /// they may produce different JSON formats such that one format only works for product A and the other only works for
@@ -52,7 +52,7 @@ pub trait Encoder {
 /// An incremental encoder.
 ///
 /// Incremental encoders represent the essential operations of a encoder: adding events and flushing the resulting
-/// payloads. Generally, encoders should not need to concern themselves with the high-level details of being a
+/// payloads. Generally, encoders shouldn't need to concern themselves with the high-level details of being a
 /// component within a topology, such as responding to health probes, handling graceful shutdown, and so on. Through
 /// separating out the core encoder functionality from the component functionality, we can make it easier to implement
 /// various encoder implementations while only maintaining a few common encoder components that actually _drive_ the
@@ -63,17 +63,17 @@ pub trait IncrementalEncoder {
     ///
     /// The encoder will process the event, attempting to add it to the current payload. If the encoder is unable to
     /// process the event without flushing first, `Ok(ProcessResult::FlushRequired(event))` is returned, containing the
-    /// event that could not be processed. Otherwise, `Ok(ProcessResult::Continue)` is returned.
+    /// event that couldn't be processed. Otherwise, `Ok(ProcessResult::Continue)` is returned.
     ///
     /// # Errors
     ///
-    /// If the encoder cannot process the event due to an unrecoverable error, an error is returned.
+    /// If the encoder can't process the event due to an unrecoverable error, an error is returned.
     async fn process_event(&mut self, event: Event) -> Result<ProcessResult, GenericError>;
 
     /// Flush the encoder, finalizing all current payloads and sending them to the dispatcher.
     ///
     /// # Errors
     ///
-    /// If the encoder cannot flush the payloads, an error is returned.
+    /// If the encoder can't flush the payloads, an error is returned.
     async fn flush(&mut self, dispatcher: &PayloadsDispatcher) -> Result<(), GenericError>;
 }

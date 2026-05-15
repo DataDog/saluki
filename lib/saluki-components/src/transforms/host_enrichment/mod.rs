@@ -12,7 +12,7 @@ use saluki_error::GenericError;
 
 /// Host Enrichment synchronous transform.
 ///
-/// Enriches metrics with a hostname if one is not already present. Calculates the hostname to use based on the
+/// Enriches metrics with a hostname if one isn't already present. Calculates the hostname to use based on the
 /// configured environment provider, allowing for a high degree of accuracy around what qualifies as a hostname, and how
 /// to query it.
 pub struct HostEnrichmentConfiguration<E> {

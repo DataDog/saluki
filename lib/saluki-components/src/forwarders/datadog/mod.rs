@@ -56,7 +56,7 @@ impl DatadogConfiguration {
     ///
     /// # Errors
     ///
-    /// If the given request path is not valid, an error is returned.
+    /// If the given request path isn't valid, an error is returned.
     pub fn with_endpoint_override(mut self, dd_url: String, api_key: String) -> Self {
         // Clear any existing additional endpoints, and set the new DD URL and API key.
         //

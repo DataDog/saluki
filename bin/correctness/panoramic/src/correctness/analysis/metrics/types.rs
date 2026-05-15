@@ -108,7 +108,7 @@ impl NormalizedMetric {
     ///
     /// # Errors
     ///
-    /// If the raw values are empty, or if the values cannot be normalized, an error is returned.
+    /// If the raw values are empty, or if the values can't be normalized, an error is returned.
     pub fn try_from_values(
         context: NormalizedMetricContext, mut raw_values: Vec<(u64, MetricValue)>,
     ) -> Result<Self, GenericError> {
@@ -159,7 +159,7 @@ impl NormalizedMetric {
 /// - Context tags are sorted lexicographically, in ascending order, and deduplicated.
 /// - Tag sorting/deduplication is case-sensitive.
 /// - Raw values for the same context, split across multiple metric entries, are combined. Duplicate values with the
-///   same timestamp are not allowed.
+///   same timestamp aren't allowed.
 /// - Raw values are sorted by timestamp in ascending order.
 /// - Normalized value is the latest seen value for gauges, the accumulated sum of values for counters, rates, and
 ///   sketches.
@@ -172,7 +172,7 @@ impl NormalizedMetrics {
     ///
     /// # Errors
     ///
-    /// If the set of metrics is empty, or if any of the metrics cannot be normalized, an error is returned.
+    /// If the set of metrics is empty, or if any of the metrics can't be normalized, an error is returned.
     pub fn try_from_stele_metrics(metrics: &[Metric]) -> Result<Self, GenericError> {
         if metrics.is_empty() {
             return Err(generic_error!("Cannot normalize an empty set of metrics."));

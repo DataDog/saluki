@@ -17,7 +17,7 @@ mod private {
 /// Marker trait for types which can support being used as a metric tag, in order to optimize their internal
 /// representation to avoid unnecessary allocations.
 ///
-/// This trait is sealed and cannot be implemented outside of this crate.
+/// This trait is sealed and can't be implemented outside of this crate.
 pub trait MetricTag: private::Sealed {
     /// Consumes `self` and converts it to a tag.
     ///

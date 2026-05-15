@@ -14,7 +14,7 @@ static DOGSTATSD_MAPPER_STRING_INTERNER_SIZE_SCHEMA: SchemaEntry = SchemaEntry {
 
 crate::declare_annotations! {
     /// `dogstatsd_mapper_profiles`—JSON-encoded list of DogStatsD metric mapping profiles.
-    /// Uses a custom test value since the generic String test value is not valid mapper JSON.
+    /// Uses a custom test value since the generic String test value isn't valid mapper JSON.
     DOGSTATSD_MAPPER_PROFILES = SalukiAnnotation {
         schema: &schema::DOGSTATSD_MAPPER_PROFILES,
         support_level: SupportLevel::Full,

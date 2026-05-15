@@ -1,6 +1,6 @@
 use saluki_io::deser::codec::dogstatsd::{EventPacket, MetricPacket, ServiceCheckPacket};
 
-/// Filters payloads based on whether or not they are enabled.
+/// Filters payloads based on whether or not they're enabled.
 ///
 /// All payloads are allowed by default.
 #[derive(Copy, Clone)]

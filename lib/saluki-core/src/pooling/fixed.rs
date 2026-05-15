@@ -32,7 +32,7 @@ where
 {
     /// Creates a new `FixedSizeObjectPool` with the given capacity.
     ///
-    /// Metrics are emitted for the pool with a tag (`pool_name`) that is set to the value of the given pool name.
+    /// Metrics are emitted for the pool with a tag (`pool_name`) that's set to the value of the given pool name.
     pub fn with_capacity<S>(pool_name: S, capacity: usize) -> Self
     where
         S: Into<String>,
@@ -48,7 +48,7 @@ impl<T: Poolable> FixedSizeObjectPool<T> {
     ///
     /// `builder` is called to construct each item.
     ///
-    /// Metrics are emitted for the pool with a tag (`pool_name`) that is set to the value of the given pool name.
+    /// Metrics are emitted for the pool with a tag (`pool_name`) that's set to the value of the given pool name.
     pub fn with_builder<S, B>(pool_name: S, capacity: usize, builder: B) -> Self
     where
         S: Into<String>,

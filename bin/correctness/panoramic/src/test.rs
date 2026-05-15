@@ -88,7 +88,7 @@ pub(crate) trait Test: Send + Sync {
     /// A description of the test for reporting and documentation purposes.
     fn description(&self) -> Option<String>;
 
-    /// How long the test should be allowed to run for before it is considered a failure.
+    /// How long the test should be allowed to run for before it's considered a failure.
     fn timeout(&self) -> Duration;
 
     /// Returns the list of images that this test depends on as a map of `name -> image`.
@@ -104,7 +104,7 @@ pub(crate) trait Test: Send + Sync {
         "docker".to_string()
     }
 
-    /// Run the test and return the `TestResult`. Note that we do not return an error here. It is expected that you
+    /// Run the test and return the `TestResult`. Note that we don't return an error here. It's expected that you
     /// should handle errors and turn them into a failed `TestResult` and try not to panic.
     ///
     /// `TestContext` carries a `CancelToken`. created by the `Runner` which a test should watch in a `tokio::select!`

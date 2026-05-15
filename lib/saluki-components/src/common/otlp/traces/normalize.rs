@@ -160,7 +160,7 @@ pub(super) fn normalize_service_into<I>(service: &str, out: &mut StringBuilder<I
 
 /// Normalizes `value` into `out`, clearing any existing contents first.
 ///
-/// Use this when the caller has already determined `value` is not normalized, so we
+/// Use this when the caller has already determined `value` isn't normalized, so we
 /// can skip a separate normalized fast-path check.
 pub(super) fn normalize_tag_value_into_unchecked<I>(value: &str, out: &mut StringBuilder<I>) {
     out.clear();
@@ -184,7 +184,7 @@ pub(super) fn is_normalized_tag_value(value: &str) -> bool {
 
 /// Normalization function that writes directly into a [`StringBuilder`].
 ///
-/// Characters are emitted as they are processed: valid characters are pushed directly,
+/// Characters are emitted as they're processed: valid characters are pushed directly,
 /// runs of illegal characters are collapsed into a single `_`, and trailing illegal
 /// characters are dropped.
 fn normalize_unchecked<I>(value: &str, remove_digit_start_char: bool, out: &mut StringBuilder<I>) {

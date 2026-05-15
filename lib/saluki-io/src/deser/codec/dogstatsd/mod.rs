@@ -89,8 +89,8 @@ impl DogStatsDCodecConfiguration {
     /// payload. This allows for decoding payloads with invalid contents (for example, characters that are valid UTF-8, but
     /// aren't within ASCII bounds, etc) such that the data plane can attempt to process them further.
     ///
-    /// Permissive mode does not allow for decoding payloads with structural errors (for example, missing delimiters, etc) or
-    /// that cannot be safely handled internally (for example, invalid UTF-8 characters for the metric name or tags).
+    /// Permissive mode doesn't allow for decoding payloads with structural errors (for example, missing delimiters, etc) or
+    /// that can't be safely handled internally (for example, invalid UTF-8 characters for the metric name or tags).
     ///
     /// Defaults to `false`.
     pub fn with_permissive_mode(mut self, permissive: bool) -> Self {
@@ -100,7 +100,7 @@ impl DogStatsDCodecConfiguration {
 
     /// Sets the maximum tag length.
     ///
-    /// This controls the number of bytes that are allowed for a single tag. If a tag exceeds this limit, it is
+    /// This controls the number of bytes that are allowed for a single tag. If a tag exceeds this limit, it's
     /// truncated to the closest previous UTF-8 character boundary, in order to preserve UTF-8 validity.
     ///
     /// Defaults to no limit.
@@ -133,7 +133,7 @@ impl DogStatsDCodecConfiguration {
 
     /// Sets the minimum sample rate.
     ///
-    /// This is the minimum sample rate that is allowed for a metric payload. If the sample rate is less than this limit,
+    /// This is the minimum sample rate that's allowed for a metric payload. If the sample rate is less than this limit,
     /// the sample rate is clamped to this value and a log message is emitted.
     ///
     /// Defaults to `0.000000003845`.
@@ -192,7 +192,7 @@ impl DogStatsDCodec {
     ///
     /// # Errors
     ///
-    /// If the raw data is not a valid DogStatsD packet, an error is returned.
+    /// If the raw data isn't a valid DogStatsD packet, an error is returned.
     pub fn decode_packet<'a>(&self, data: &'a [u8]) -> Result<ParsedPacket<'a>, ParseError> {
         match parse_message_type(data) {
             MessageType::Event => self.decode_event(data).map(ParsedPacket::Event),

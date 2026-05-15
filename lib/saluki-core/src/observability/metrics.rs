@@ -346,7 +346,7 @@ impl MetricsContextResolver {
 ///
 /// Returns a [`FilterHandle`] for adjusting the runtime metrics filter, plus a [`MetricsFlusherWorker`]
 /// that must be added to a [`Supervisor`][crate::runtime::Supervisor] in order to drive the periodic
-/// flush loop. Internal metrics are not propagated to subscribers until the worker is running.
+/// flush loop. Internal metrics aren't propagated to subscribers until the worker is running.
 ///
 /// # Errors
 ///

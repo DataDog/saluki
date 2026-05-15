@@ -71,7 +71,7 @@ pub struct ExponentialBackoff {
 impl ExponentialBackoff {
     /// Creates a new `ExponentialBackoff` with the given minimum and maximum backoff durations.
     ///
-    /// Jitter is not applied to the calculated backoff durations.
+    /// Jitter isn't applied to the calculated backoff durations.
     pub fn new(min_backoff: Duration, max_backoff: Duration) -> Self {
         Self {
             min_backoff,

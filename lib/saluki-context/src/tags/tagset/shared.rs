@@ -10,13 +10,13 @@ use crate::tags::Tag;
 ///
 /// # Structural sharing
 ///
-/// In many cases, it is useful to extend a set of tags with additional tags, without needing to clone the additional
+/// In many cases, it's useful to extend a set of tags with additional tags, without needing to clone the additional
 /// tags or re-allocate the underlying storage to fit the entire set of tags. `SharedTagSet` supports this by utilizing
 /// "structural sharing", where `SharedTagSet` is internally represented by a set of smart pointers to `FrozenTagSet`.
 ///
 /// This allows `SharedTagSet` to be cheaply extended with additional `SharedTagSet` instances, without needing to
 /// allocate enough underlying storage to hold all of the individual tags. Extending a `SharedTagSet` will allocate a
-/// small amount of memory (8 bytes) for each additional `SharedTagSet` that is chained after the first additional one:
+/// small amount of memory (8 bytes) for each additional `SharedTagSet` that's chained after the first additional one:
 /// this means that all new `SharedTagSet` instances can be extended once with no allocations whatsoever.
 #[derive(Clone, Debug, Default)]
 pub struct SharedTagSet(SmallVec<[Arc<FrozenTagSet>; 2]>);
@@ -55,8 +55,8 @@ impl SharedTagSet {
 
     /// Extends `self` with the tags from the `other`.
     ///
-    /// If any of the individual `FrozenTagSet` instances in `other` are already present in `self`, they will not be added
-    /// again. This method does not avoid duplicates across different `SharedTagSet` instances, so if the same tag is
+    /// If any of the individual `FrozenTagSet` instances in `other` are already present in `self`, they won't be added
+    /// again. This method doesn't avoid duplicates across different `SharedTagSet` instances, so if the same tag is
     /// present in both `self` and `other`, it will be present when querying the resulting `SharedTagSet`.
     pub fn extend_from_shared(&mut self, other: &SharedTagSet) {
         // For each underlying `FrozenTagSet` in the other `SharedTagSet`, check if it is already present in this one, and if
@@ -103,7 +103,7 @@ impl SharedTagSet {
     ///
     /// This includes the size of the vector holding any chained tagsets as well as each individual tag.
     ///
-    /// Additionally, the value returned by this method does not compensate for externalities such as whether or not
+    /// Additionally, the value returned by this method doesn't compensate for externalities such as whether or not
     /// tags are inlined, interned, or heap allocated. This means that the value returned is essentially the
     /// worst-case usage, and should be used as a rough estimate.
     pub fn size_of(&self) -> usize {

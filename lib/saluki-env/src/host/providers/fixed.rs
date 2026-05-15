@@ -18,7 +18,7 @@ impl FixedHostProvider {
     ///
     /// # Errors
     ///
-    /// If the hostname is not specified in the configuration, an error is returned.
+    /// If the hostname isn't specified in the configuration, an error is returned.
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
         let hostname = config.get_typed::<String>("hostname")?;
 

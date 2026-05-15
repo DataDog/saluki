@@ -34,7 +34,7 @@ pub mod stores;
 /// Resolves live process IDs observed during traffic capture to workload entities.
 ///
 /// This is intentionally narrower than [`WorkloadProvider`]: callers should only use it for PIDs observed from the
-/// local operating system while capturing traffic. It is not a general-purpose historical PID lookup API.
+/// local operating system while capturing traffic. It's not a general-purpose historical PID lookup API.
 pub trait CaptureEntityResolver {
     /// Resolves a live process ID to the container entity that owns it, if known.
     fn resolve_container_entity_for_live_pid(&self, process_id: u32) -> Option<EntityId>;
@@ -59,8 +59,8 @@ pub trait WorkloadProvider {
     /// Entities are workload resources running on the process host, such as containers or pods. The cardinality of the
     /// tags to get can be controlled via `cardinality`.
     ///
-    /// Returns `Some(SharedTagSet)` if the entity has tags, or `None` if the entity does not have any tags or if the
-    /// entity was not found.
+    /// Returns `Some(SharedTagSet)` if the entity has tags, or `None` if the entity doesn't have any tags or if the
+    /// entity wasn't found.
     fn get_tags_for_entity(&self, entity_id: &EntityId, cardinality: OriginTagCardinality) -> Option<SharedTagSet>;
 
     /// Resolves a raw origin.

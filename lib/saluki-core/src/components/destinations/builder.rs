@@ -18,6 +18,6 @@ pub trait DestinationBuilder: MemoryBounds {
     ///
     /// ## Errors
     ///
-    /// If the destination cannot be built for any reason, an error is returned.
+    /// If the destination can't be built for any reason, an error is returned.
     async fn build(&self, context: ComponentContext) -> Result<Box<dyn Destination + Send>, GenericError>;
 }

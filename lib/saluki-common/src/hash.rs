@@ -5,7 +5,7 @@ use std::{
 
 use sha3::digest::{ExtendableOutput as _, Update as _};
 
-/// A fast, non-cryptographic hash implementation that is optimized for quality.
+/// A fast, non-cryptographic hash implementation that's optimized for quality.
 ///
 /// The implementation is reasonably suitable for hash tables and other data structures that require fast hashing and
 /// some degree of collision resistance.
@@ -66,7 +66,7 @@ impl BuildHasher for NoopU64BuildHasher {
 
 /// Returns a fresh [`FastBuildHasher`] instance.
 ///
-/// This instance should not be used to generate hashes that will be compared against hashes generated either with a
+/// This instance shouldn't be used to generate hashes that will be compared against hashes generated either with a
 /// hasher acquired from [`get_fast_hasher`] or [`hash_single_fast`], and those methods use a shared global state to both
 /// speed up hashing and ensure that the hashes are consistent across runs of those functions in particular.
 #[inline]
@@ -77,7 +77,7 @@ pub fn get_fast_build_hasher() -> FastBuildHasher {
 /// Returns a [`FastHasher`] instance backed by a shared, global state.
 ///
 /// Values hashed with a `FastHasher`instance created with this method will be consistent within the same process, but
-/// will not be consistent across different runs of the application. Additionally, values hashed with this instance will
+/// won't be consistent across different runs of the application. Additionally, values hashed with this instance will
 /// not be consistent with those hashed by [`get_fast_build_hasher`], as that function returns a randomly-seeded state for
 /// each call.
 #[inline]
@@ -106,15 +106,15 @@ pub fn hash_single_stable<H: std::hash::Hash>(value: H) -> u64 {
     hasher.finish()
 }
 
-/// A non-cryptographic hash implementation that is meant to be stable over time.
+/// A non-cryptographic hash implementation that's meant to be stable over time.
 ///
 /// The implementation is intended to be stable over time and across different runs of the applications, such that it
 /// can be depended on across different builds/versions of Saluki.
 ///
-/// At a minimum, the hasher implementation will not change within major versions of Saluki, including v0 and v1.
+/// At a minimum, the hasher implementation won't change within major versions of Saluki, including v0 and v1.
 ///
 /// Currently, [`sha3`][sha3] (specifically SHAKE128) is used as the underlying implementation. While SHAKE128 is a
-/// cryptographic hash algorithm, the way it is used effectively makes it a non-cryptographic hash algorithm given how
+/// cryptographic hash algorithm, the way it's used effectively makes it a non-cryptographic hash algorithm given how
 /// much the output is truncated.
 ///
 /// [sha3]: https://crates.io/crates/sha3

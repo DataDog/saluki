@@ -13,7 +13,7 @@ use stringtheory::{interning::Interner, MetaString};
 ///
 /// # Interning
 ///
-/// The builder supports providing an interner that is used to intern the finalized string. This allows for
+/// The builder supports providing an interner that's used to intern the finalized string. This allows for
 /// efficiently building strings, reusing the intermediate buffer in between before eventually interning the string.
 ///
 /// # Formatting
@@ -118,7 +118,7 @@ where
 {
     /// Attempts to build and intern the string.
     ///
-    /// Returns `None` if the string exceeds the configured limit or if it cannot be interned.
+    /// Returns `None` if the string exceeds the configured limit or if it can't be interned.
     pub fn try_intern(&mut self) -> Option<MetaString> {
         self.interner.try_intern(self.as_str()).map(MetaString::from)
     }
@@ -140,7 +140,7 @@ impl std::fmt::Write for StringBuilder {
 
 /// Sanitizes the input string by ensuring all characters are lowercase ASCII alphanumeric or underscores.
 ///
-/// All characters that are not ASCII alphanumeric or underscores are replaced with underscores, and alphanumerics will
+/// All characters that aren't ASCII alphanumeric or underscores are replaced with underscores, and alphanumerics will
 /// be lowercased.
 pub fn lower_alphanumeric(s: &str) -> String {
     s.chars()

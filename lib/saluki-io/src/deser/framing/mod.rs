@@ -19,7 +19,7 @@ pub enum FramingError {
     /// This generally occurs if the frame is corrupted in some way, due to a bug in how the frame was encoded or
     /// sent/received. For example, if a length-delimited frame indicates that the frame is larger than the buffer can
     /// handle, it generally indicates that frame was created incorrectly by not respecting the maximum frame length
-    /// limitations, or the buffer is corrupt and spurious bytes are contributing to a decoded frame length that is
+    /// limitations, or the buffer is corrupt and spurious bytes are contributing to a decoded frame length that's
     /// nonsensical.
     #[snafu(display("invalid frame (frame length: {}, {})", frame_len, reason))]
     InvalidFrame { frame_len: usize, reason: &'static str },
@@ -41,10 +41,10 @@ pub trait Framer {
     /// Attempt to extract the next frame from the buffer.
     ///
     /// If enough data was present to extract a frame, `Ok(Some(frame))` is returned. If not enough data was present, and
-    /// EOF has not been reached, `Ok(None)` is returned.
+    /// EOF hasn't been reached, `Ok(None)` is returned.
     ///
     /// Behavior when EOF is reached is framer-specific and in some cases may allow for decoding a frame even when the
-    /// inherent delimiting data is not present.
+    /// inherent delimiting data isn't present.
     ///
     /// # Errors
     ///

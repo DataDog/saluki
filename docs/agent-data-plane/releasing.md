@@ -90,5 +90,5 @@ regular CI builds. The relevant build arguments are all prefixed with `APP_` and
 - `APP_VERSION`: the version of the application (set to `version` field in `bin/agent-data-plane/Cargo.toml`)
 - `APP_BUILD_DATE`: the date the build was performed (set to the creation time of the Gitlab CI pipeline)
 
-This build metadata should not need to be manually changed on a per-release basis, and so this section is mostly
+This build metadata shouldn't need to be manually changed on a per-release basis, and so this section is mostly
 informational and not relevant to the release process itself.

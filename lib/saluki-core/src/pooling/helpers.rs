@@ -8,7 +8,7 @@ use super::{Poolable, ReclaimStrategy};
 ///
 /// In order to store a value in an object pool, the item must implement the [`Poolable`] trait. This trait, and overall
 /// design of [`ObjectPool`][super::ObjectPool], dictates that a pooled data type actually holds an inner value, which
-/// is the value that is actually pooled, while the outer struct is simply a wrapper around the data that ensures it is
+/// is the value that's actually pooled, while the outer struct is simply a wrapper around the data that ensures it's
 /// returned to the object pool when no longer in use.
 ///
 /// In practice, this means that if you wanted to create some struct that could be pooled (for example,
@@ -25,11 +25,11 @@ use super::{Poolable, ReclaimStrategy};
 ///
 /// ## Clearing
 ///
-/// All poolable types must provide logic for "clearing" the pooled item before it is returned to the object pool.
+/// All poolable types must provide logic for "clearing" the pooled item before it's returned to the object pool.
 /// This is passed in as the `clear` parameter to the macro, and must be a closure that takes a mutable reference to
 /// the inner struct.
 ///
-/// Note that due to macro hygiene, the closure's only parameter _cannot_ be named `self`. In the usage example below, you can
+/// Note that due to macro hygiene, the closure's only parameter _can't_ be named `self`. In the usage example below, you can
 /// see how this is named `this` instead to avoid conflicts.
 ///
 /// ## Usage
@@ -135,10 +135,10 @@ macro_rules! pooled {
 ///
 /// In order to store a value in an object pool, the item must implement the [`Poolable`] trait. This trait, and overall
 /// design of [`ObjectPool`][super::ObjectPool], dictates that a pooled data type actually holds an inner value, which
-/// is the value that is actually pooled, while the outer struct is simply a wrapper around the data that ensures it is
+/// is the value that's actually pooled, while the outer struct is simply a wrapper around the data that ensures it's
 /// returned to the object pool when no longer in use.
 ///
-/// In many cases, the "inner value" might be either an existing type that cannot be modified, or there might be a need
+/// In many cases, the "inner value" might be either an existing type that can't be modified, or there might be a need
 /// to define that struct further, such as defining struct methods or trait implementations which would be
 /// cumbersome/confusing to do on the auto-generated inner type from [`pooled!`]. In these cases, `pooled_newtype!`
 /// provides the simplest possible wrapper over an existing struct definition to create a Poolable version.

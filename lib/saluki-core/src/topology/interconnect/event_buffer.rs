@@ -185,7 +185,7 @@ impl<'a, const N: usize> IntoIterator for &'a mut FixedSizeEventBuffer<N> {
 /// new buffer, as well as holding the event around until they acquire the new buffer.
 ///
 /// `EventBufferManager` provides a simple, ergonomic wrapper over a basic pattern of treating the current buffer as an
-/// optional value, and handling the logic of ensuring we have a buffer to write into only when actually attempting a
+/// optional value, and handling the logic of ensuring we've a buffer to write into only when actually attempting a
 /// write, rather than always holding on to one.
 #[derive(Default)]
 pub struct EventBufferManager<const N: usize> {
@@ -195,7 +195,7 @@ pub struct EventBufferManager<const N: usize> {
 impl<const N: usize> EventBufferManager<N> {
     /// Attempts to push an event into the current event buffer.
     ///
-    /// If the event buffer is full, it is replaced with a new event buffer before pushing the event, and `Some(buffer)`
+    /// If the event buffer is full, it's replaced with a new event buffer before pushing the event, and `Some(buffer)`
     /// is returned containing the old event buffer. Otherwise, `None` is returned.
     pub fn try_push(&mut self, event: Event) -> Option<FixedSizeEventBuffer<N>> {
         let buffer = self.current.get_or_insert_default();

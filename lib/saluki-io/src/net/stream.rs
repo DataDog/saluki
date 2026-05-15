@@ -115,8 +115,8 @@ enum StreamInner {
 
 /// A network stream.
 ///
-/// `Stream` provides an abstraction over connectionless and connection-oriented network sockets. In many cases, it is
-/// not required to know the exact socket family (for example, TCP, UDP, Unix domain socket) that is being used, and it can be
+/// `Stream` provides an abstraction over connectionless and connection-oriented network sockets. In many cases, it's
+/// not required to know the exact socket family (for example, TCP, UDP, Unix domain socket) that's being used, and it can be
 /// beneficial to allow abstracting over the differences to facilitate simpler code.
 ///
 /// ## Connection-oriented mode
@@ -128,10 +128,10 @@ enum StreamInner {
 ///
 /// ## Connectionless mode
 ///
-/// In connectionless mode, the stream is backed by a socket that operates in a connectionless manner, which does not
+/// In connectionless mode, the stream is backed by a socket that operates in a connectionless manner, which doesn't
 /// provide any assurances around reliability and ordering of messages to and from the remote peer. While a stream might
-/// be backed by a Unix domain socket in datagram mode, which _does_ provide reliability of messages, this cannot and
-/// should not be relied upon when using `Stream`.
+/// be backed by a Unix domain socket in datagram mode, which _does_ provide reliability of messages, this can't and
+/// shouldn't be relied upon when using `Stream`.
 pub struct Stream {
     inner: StreamInner,
 }

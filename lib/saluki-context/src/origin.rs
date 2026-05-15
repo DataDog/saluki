@@ -111,7 +111,7 @@ pub struct RawOrigin<'a> {
     /// Local Data of the sender.
     ///
     /// This will typically be either the container ID, or the inode of the container's cgroups controller, or both. It
-    /// may or may not have a special prefix that indicates which of the two it is.
+    /// may or may not have a special prefix that indicates which of the two it's.
     local_data: Option<&'a str>,
 
     /// Pod UID of the sender.
@@ -147,7 +147,7 @@ impl<'a> RawOrigin<'a> {
 
     /// Sets the process ID of the sender.
     ///
-    /// Must be a non-zero value. If the value is zero, it is silently ignored.
+    /// Must be a non-zero value. If the value is zero, it's silently ignored.
     pub fn set_process_id(&mut self, process_id: u32) {
         self.process_id = NonZeroU32::new(process_id);
     }
@@ -274,11 +274,11 @@ where
 
 /// External Data associated with an origin.
 ///
-/// "External Data" is a concept that is used to aid origin detection of workloads running in Kubernetes environments
-/// where introspection is not possible or may return incorrect information. Origin detection generally centers around
+/// "External Data" is a concept that's used to aid origin detection of workloads running in Kubernetes environments
+/// where introspection isn't possible or may return incorrect information. Origin detection generally centers around
 /// determining the container where a metric originates from, and then enriching the metric with tags that describe that
 /// container, as well as the pod the container is running within, and so on. In some cases, the origin of a metric
-/// cannot be detected from the outside (such as by using peer credentials over Unix Domain sockets) and cannot be
+/// can't be detected from the outside (such as by using peer credentials over Unix Domain sockets) and can't be
 /// detected by the workload itself (such as when running in nested virtualization environments). In these cases, we
 /// need a mechanism that allows passing the necessary information to the client, who then passes it on to us, so that
 /// we can correctly resolve the origin.
@@ -353,7 +353,7 @@ pub struct RawExternalData<'a> {
 impl<'a> RawExternalData<'a> {
     /// Creates a new `RawExternalData` from a raw string.
     ///
-    /// If the external data is not valid, `None` is returned.
+    /// If the external data isn't valid, `None` is returned.
     pub fn try_from_str(raw: &'a str) -> Option<Self> {
         if raw.is_empty() {
             return None;

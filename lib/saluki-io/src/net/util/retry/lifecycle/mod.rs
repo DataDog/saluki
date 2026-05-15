@@ -14,7 +14,7 @@ pub trait RetryLifecycle<Req, Res, Error> {
 ///
 /// This lifecycle emits an extremely minimal amount of information, and is generally only useful for debugging purposes
 /// to understand if/when retries are happening, but gives no information about the request/response, why a retry
-/// decision was made, the code that is ultimately using this retry logic, and so on.
+/// decision was made, the code that's ultimately using this retry logic, and so on.
 #[derive(Clone)]
 pub struct DefaultDebugRetryLifecycle;
 

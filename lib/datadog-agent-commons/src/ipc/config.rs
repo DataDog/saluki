@@ -108,7 +108,7 @@ pub struct RemoteAgentClientConfiguration {
     ///
     /// Caution/weird: This is configuration is only available on agent-data-plane, and would allow
     /// one to connect to an Agent at a URI other than localhost/127.0.0.1. However, the Datadog
-    /// configuration schema does not account for this and instead provides `cmd_port`. Therefore,
+    /// configuration schema doesn't account for this and instead provides `cmd_port`. Therefore,
     ///
     /// **CAUTION**: if `cmd_port` is set, then `ipc_endpoint` is ignored.
     ///
