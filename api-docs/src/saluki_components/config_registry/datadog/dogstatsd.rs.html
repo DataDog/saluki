@@ -1,4 +1,4 @@
-<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Source of the Rust file `lib/saluki-components/src/config_registry/datadog/dogstatsd.rs`."><title>dogstatsd.rs - source</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../../../static.files/rustdoc-17e0aaed.css"><meta name="rustdoc-vars" data-root-path="../../../../" data-static-root-path="../../../../static.files/" data-current-crate="saluki_components" data-themes="" data-resource-suffix="" data-rustdoc-version="1.97.0-nightly (ff9a9ea07 2026-05-13)" data-channel="nightly" data-search-js="search-b5634cc7.js" data-stringdex-js="stringdex-2da4960a.js" data-settings-js="settings-170eb4bf.js" ><script src="../../../../static.files/storage-41dd4d93.js"></script><script defer src="../../../../static.files/src-script-813739b1.js"></script><script defer src="../../../../src-files.js"></script><script defer src="../../../../static.files/main-aa4d37ac.js"></script><noscript><link rel="stylesheet" href="../../../../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../../../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../../../static.files/favicon-044be391.svg"></head><body class="rustdoc src"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><nav class="sidebar"><div class="src-sidebar-title"><h2>Files</h2></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><h1><div class="sub-heading">saluki_components/config_registry/datadog/</div>dogstatsd.rs</h1><rustdoc-toolbar></rustdoc-toolbar></div><div class="example-wrap digits-3"><pre class="rust"><code><a href=#1 id=1 data-nosnippet>1</a><span class="doccomment">//! Annotations for DogStatsD source configuration keys.
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Source of the Rust file `lib/saluki-components/src/config_registry/datadog/dogstatsd.rs`."><title>dogstatsd.rs - source</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../../../static.files/rustdoc-17e0aaed.css"><meta name="rustdoc-vars" data-root-path="../../../../" data-static-root-path="../../../../static.files/" data-current-crate="saluki_components" data-themes="" data-resource-suffix="" data-rustdoc-version="1.97.0-nightly (7c3c88f42 2026-05-14)" data-channel="nightly" data-search-js="search-b5634cc7.js" data-stringdex-js="stringdex-2da4960a.js" data-settings-js="settings-170eb4bf.js" ><script src="../../../../static.files/storage-41dd4d93.js"></script><script defer src="../../../../static.files/src-script-813739b1.js"></script><script defer src="../../../../src-files.js"></script><script defer src="../../../../static.files/main-aa4d37ac.js"></script><noscript><link rel="stylesheet" href="../../../../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../../../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../../../static.files/favicon-044be391.svg"></head><body class="rustdoc src"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><nav class="sidebar"><div class="src-sidebar-title"><h2>Files</h2></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><h1><div class="sub-heading">saluki_components/config_registry/datadog/</div>dogstatsd.rs</h1><rustdoc-toolbar></rustdoc-toolbar></div><div class="example-wrap digits-3"><pre class="rust"><code><a href=#1 id=1 data-nosnippet>1</a><span class="doccomment">//! Annotations for DogStatsD source configuration keys.
 <a href=#2 id=2 data-nosnippet>2</a></span><span class="kw">use </span><span class="kw">crate</span>::config_registry::{
 <a href=#3 id=3 data-nosnippet>3</a>    generated::schema, structs, SalukiAnnotation, Schema, SchemaEntry, SupportLevel, ValueType,
 <a href=#4 id=4 data-nosnippet>4</a>};
@@ -78,7 +78,7 @@
 <a href=#78 id=78 data-nosnippet>78</a><span class="macro">crate::declare_annotations!</span> {
 <a href=#79 id=79 data-nosnippet>79</a>    <span class="comment">// ── Schema-based ──────────────────────────────────────────────────────────
 <a href=#80 id=80 data-nosnippet>80</a>
-<a href=#81 id=81 data-nosnippet>81</a>    </span><span class="doccomment">/// `bind_host` — host address to bind UDP/TCP listeners to.
+<a href=#81 id=81 data-nosnippet>81</a>    </span><span class="doccomment">/// `bind_host`—host address to bind UDP/TCP listeners to.
 <a href=#82 id=82 data-nosnippet>82</a>    </span>BIND_HOST = SalukiAnnotation {
 <a href=#83 id=83 data-nosnippet>83</a>        schema: <span class="kw-2">&amp;</span>schema::BIND_HOST,
 <a href=#84 id=84 data-nosnippet>84</a>        support_level: SupportLevel::Full,
@@ -89,7 +89,7 @@
 <a href=#89 id=89 data-nosnippet>89</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#90 id=90 data-nosnippet>90</a>    };
 <a href=#91 id=91 data-nosnippet>91</a>
-<a href=#92 id=92 data-nosnippet>92</a>    <span class="doccomment">/// `dogstatsd_buffer_size` — receive buffer size in bytes. Schema says Float; field is usize.
+<a href=#92 id=92 data-nosnippet>92</a>    <span class="doccomment">/// `dogstatsd_buffer_size`—receive buffer size in bytes. Schema says Float; field is usize.
 <a href=#93 id=93 data-nosnippet>93</a>    </span>DOGSTATSD_BUFFER_SIZE = SalukiAnnotation {
 <a href=#94 id=94 data-nosnippet>94</a>        schema: <span class="kw-2">&amp;</span>schema::DOGSTATSD_BUFFER_SIZE,
 <a href=#95 id=95 data-nosnippet>95</a>        support_level: SupportLevel::Full,
@@ -133,7 +133,7 @@
 <a href=#133 id=133 data-nosnippet>133</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#134 id=134 data-nosnippet>134</a>    };
 <a href=#135 id=135 data-nosnippet>135</a>
-<a href=#136 id=136 data-nosnippet>136</a>    <span class="doccomment">/// `dogstatsd_entity_id_precedence` — client entity ID takes precedence over UDS origin.
+<a href=#136 id=136 data-nosnippet>136</a>    <span class="doccomment">/// `dogstatsd_entity_id_precedence`—client entity ID takes precedence over UDS origin.
 <a href=#137 id=137 data-nosnippet>137</a>    </span>DOGSTATSD_ENTITY_ID_PRECEDENCE = SalukiAnnotation {
 <a href=#138 id=138 data-nosnippet>138</a>        schema: <span class="kw-2">&amp;</span>schema::DOGSTATSD_ENTITY_ID_PRECEDENCE,
 <a href=#139 id=139 data-nosnippet>139</a>        support_level: SupportLevel::Full,
@@ -144,7 +144,7 @@
 <a href=#144 id=144 data-nosnippet>144</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#145 id=145 data-nosnippet>145</a>    };
 <a href=#146 id=146 data-nosnippet>146</a>
-<a href=#147 id=147 data-nosnippet>147</a>    <span class="doccomment">/// `dogstatsd_eol_required` — require newline-terminated messages for selected listener types.
+<a href=#147 id=147 data-nosnippet>147</a>    <span class="doccomment">/// `dogstatsd_eol_required`—require newline-terminated messages for selected listener types.
 <a href=#148 id=148 data-nosnippet>148</a>    </span>DOGSTATSD_EOL_REQUIRED = SalukiAnnotation {
 <a href=#149 id=149 data-nosnippet>149</a>        schema: <span class="kw-2">&amp;</span>schema::DOGSTATSD_EOL_REQUIRED,
 <a href=#150 id=150 data-nosnippet>150</a>        support_level: SupportLevel::Full,
@@ -155,7 +155,7 @@
 <a href=#155 id=155 data-nosnippet>155</a>        test_json: <span class="prelude-val">Some</span>(<span class="string">r#"["udp"]"#</span>),
 <a href=#156 id=156 data-nosnippet>156</a>    };
 <a href=#157 id=157 data-nosnippet>157</a>
-<a href=#158 id=158 data-nosnippet>158</a>    <span class="doccomment">/// `dogstatsd_non_local_traffic` — accept packets from non-localhost addresses.
+<a href=#158 id=158 data-nosnippet>158</a>    <span class="doccomment">/// `dogstatsd_non_local_traffic`—accept packets from non-localhost addresses.
 <a href=#159 id=159 data-nosnippet>159</a>    </span>DOGSTATSD_NON_LOCAL_TRAFFIC = SalukiAnnotation {
 <a href=#160 id=160 data-nosnippet>160</a>        schema: <span class="kw-2">&amp;</span>schema::DOGSTATSD_NON_LOCAL_TRAFFIC,
 <a href=#161 id=161 data-nosnippet>161</a>        support_level: SupportLevel::Full,
@@ -166,7 +166,7 @@
 <a href=#166 id=166 data-nosnippet>166</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#167 id=167 data-nosnippet>167</a>    };
 <a href=#168 id=168 data-nosnippet>168</a>
-<a href=#169 id=169 data-nosnippet>169</a>    <span class="doccomment">/// `dogstatsd_origin_detection` — enable UDS-based origin detection.
+<a href=#169 id=169 data-nosnippet>169</a>    <span class="doccomment">/// `dogstatsd_origin_detection`—enable UDS-based origin detection.
 <a href=#170 id=170 data-nosnippet>170</a>    </span>DOGSTATSD_ORIGIN_DETECTION = SalukiAnnotation {
 <a href=#171 id=171 data-nosnippet>171</a>        schema: <span class="kw-2">&amp;</span>schema::DOGSTATSD_ORIGIN_DETECTION,
 <a href=#172 id=172 data-nosnippet>172</a>        support_level: SupportLevel::Full,
@@ -177,7 +177,7 @@
 <a href=#177 id=177 data-nosnippet>177</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#178 id=178 data-nosnippet>178</a>    };
 <a href=#179 id=179 data-nosnippet>179</a>
-<a href=#180 id=180 data-nosnippet>180</a>    <span class="doccomment">/// `dogstatsd_origin_detection_client` — enable container enrichment fields.
+<a href=#180 id=180 data-nosnippet>180</a>    <span class="doccomment">/// `dogstatsd_origin_detection_client`—enable container enrichment fields.
 <a href=#181 id=181 data-nosnippet>181</a>    </span>DOGSTATSD_ORIGIN_DETECTION_CLIENT = SalukiAnnotation {
 <a href=#182 id=182 data-nosnippet>182</a>        schema: <span class="kw-2">&amp;</span>schema::DOGSTATSD_ORIGIN_DETECTION_CLIENT,
 <a href=#183 id=183 data-nosnippet>183</a>        support_level: SupportLevel::Full,
@@ -188,7 +188,7 @@
 <a href=#188 id=188 data-nosnippet>188</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#189 id=189 data-nosnippet>189</a>    };
 <a href=#190 id=190 data-nosnippet>190</a>
-<a href=#191 id=191 data-nosnippet>191</a>    <span class="doccomment">/// `dogstatsd_origin_optout_enabled` — skip enrichment when cardinality=none.
+<a href=#191 id=191 data-nosnippet>191</a>    <span class="doccomment">/// `dogstatsd_origin_optout_enabled`—skip enrichment when cardinality=none.
 <a href=#192 id=192 data-nosnippet>192</a>    </span>DOGSTATSD_ORIGIN_OPTOUT_ENABLED = SalukiAnnotation {
 <a href=#193 id=193 data-nosnippet>193</a>        schema: <span class="kw-2">&amp;</span>schema::DOGSTATSD_ORIGIN_OPTOUT_ENABLED,
 <a href=#194 id=194 data-nosnippet>194</a>        support_level: SupportLevel::Full,
@@ -199,7 +199,7 @@
 <a href=#199 id=199 data-nosnippet>199</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#200 id=200 data-nosnippet>200</a>    };
 <a href=#201 id=201 data-nosnippet>201</a>
-<a href=#202 id=202 data-nosnippet>202</a>    <span class="doccomment">/// `dogstatsd_port` — UDP port. Schema says Float; field is u16.
+<a href=#202 id=202 data-nosnippet>202</a>    <span class="doccomment">/// `dogstatsd_port`—UDP port. Schema says Float; field is u16.
 <a href=#203 id=203 data-nosnippet>203</a>    </span>DOGSTATSD_PORT = SalukiAnnotation {
 <a href=#204 id=204 data-nosnippet>204</a>        schema: <span class="kw-2">&amp;</span>schema::DOGSTATSD_PORT,
 <a href=#205 id=205 data-nosnippet>205</a>        support_level: SupportLevel::Full,
@@ -210,7 +210,7 @@
 <a href=#210 id=210 data-nosnippet>210</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#211 id=211 data-nosnippet>211</a>    };
 <a href=#212 id=212 data-nosnippet>212</a>
-<a href=#213 id=213 data-nosnippet>213</a>    <span class="doccomment">/// `dogstatsd_socket` — UDS datagram socket path.
+<a href=#213 id=213 data-nosnippet>213</a>    <span class="doccomment">/// `dogstatsd_socket`—UDS datagram socket path.
 <a href=#214 id=214 data-nosnippet>214</a>    </span>DOGSTATSD_SOCKET = SalukiAnnotation {
 <a href=#215 id=215 data-nosnippet>215</a>        schema: <span class="kw-2">&amp;</span>schema::DOGSTATSD_SOCKET,
 <a href=#216 id=216 data-nosnippet>216</a>        support_level: SupportLevel::Full,
@@ -221,7 +221,7 @@
 <a href=#221 id=221 data-nosnippet>221</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#222 id=222 data-nosnippet>222</a>    };
 <a href=#223 id=223 data-nosnippet>223</a>
-<a href=#224 id=224 data-nosnippet>224</a>    <span class="doccomment">/// `dogstatsd_so_rcvbuf` — DogStatsD UDP/UDS socket receive buffer size. Schema Float; field usize.
+<a href=#224 id=224 data-nosnippet>224</a>    <span class="doccomment">/// `dogstatsd_so_rcvbuf`—DogStatsD UDP/UDS socket receive buffer size. Schema Float; field usize.
 <a href=#225 id=225 data-nosnippet>225</a>    </span>DOGSTATSD_SO_RCVBUF = SalukiAnnotation {
 <a href=#226 id=226 data-nosnippet>226</a>        schema: <span class="kw-2">&amp;</span>schema::DOGSTATSD_SO_RCVBUF,
 <a href=#227 id=227 data-nosnippet>227</a>        support_level: SupportLevel::Full,
@@ -232,7 +232,7 @@
 <a href=#232 id=232 data-nosnippet>232</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#233 id=233 data-nosnippet>233</a>    };
 <a href=#234 id=234 data-nosnippet>234</a>
-<a href=#235 id=235 data-nosnippet>235</a>    <span class="doccomment">/// `dogstatsd_stream_socket` — UDS stream socket path.
+<a href=#235 id=235 data-nosnippet>235</a>    <span class="doccomment">/// `dogstatsd_stream_socket`—UDS stream socket path.
 <a href=#236 id=236 data-nosnippet>236</a>    </span>DOGSTATSD_STREAM_SOCKET = SalukiAnnotation {
 <a href=#237 id=237 data-nosnippet>237</a>        schema: <span class="kw-2">&amp;</span>schema::DOGSTATSD_STREAM_SOCKET,
 <a href=#238 id=238 data-nosnippet>238</a>        support_level: SupportLevel::Full,
@@ -243,7 +243,7 @@
 <a href=#243 id=243 data-nosnippet>243</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#244 id=244 data-nosnippet>244</a>    };
 <a href=#245 id=245 data-nosnippet>245</a>
-<a href=#246 id=246 data-nosnippet>246</a>    <span class="doccomment">/// `dogstatsd_stream_log_too_big` — log oversized UDS stream frames.
+<a href=#246 id=246 data-nosnippet>246</a>    <span class="doccomment">/// `dogstatsd_stream_log_too_big`—log oversized UDS stream frames.
 <a href=#247 id=247 data-nosnippet>247</a>    </span>DOGSTATSD_STREAM_LOG_TOO_BIG = SalukiAnnotation {
 <a href=#248 id=248 data-nosnippet>248</a>        schema: <span class="kw-2">&amp;</span>schema::DOGSTATSD_STREAM_LOG_TOO_BIG,
 <a href=#249 id=249 data-nosnippet>249</a>        support_level: SupportLevel::Full,
@@ -254,7 +254,7 @@
 <a href=#254 id=254 data-nosnippet>254</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#255 id=255 data-nosnippet>255</a>    };
 <a href=#256 id=256 data-nosnippet>256</a>
-<a href=#257 id=257 data-nosnippet>257</a>    <span class="doccomment">/// `dogstatsd_string_interner_size` — context interner entry count. Schema Float; field u64.
+<a href=#257 id=257 data-nosnippet>257</a>    <span class="doccomment">/// `dogstatsd_string_interner_size`—context interner entry count. Schema Float; field u64.
 <a href=#258 id=258 data-nosnippet>258</a>    </span>DOGSTATSD_STRING_INTERNER_SIZE = SalukiAnnotation {
 <a href=#259 id=259 data-nosnippet>259</a>        schema: <span class="kw-2">&amp;</span>schema::DOGSTATSD_STRING_INTERNER_SIZE,
 <a href=#260 id=260 data-nosnippet>260</a>        support_level: SupportLevel::Full,
@@ -265,7 +265,7 @@
 <a href=#265 id=265 data-nosnippet>265</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#266 id=266 data-nosnippet>266</a>    };
 <a href=#267 id=267 data-nosnippet>267</a>
-<a href=#268 id=268 data-nosnippet>268</a>    <span class="doccomment">/// `dogstatsd_tag_cardinality` — default tag cardinality for origin enrichment.
+<a href=#268 id=268 data-nosnippet>268</a>    <span class="doccomment">/// `dogstatsd_tag_cardinality`—default tag cardinality for origin enrichment.
 <a href=#269 id=269 data-nosnippet>269</a>    /// Default is "Low"; inject "high" as test value to differ from default.
 <a href=#270 id=270 data-nosnippet>270</a>    </span>DOGSTATSD_TAG_CARDINALITY = SalukiAnnotation {
 <a href=#271 id=271 data-nosnippet>271</a>        schema: <span class="kw-2">&amp;</span>schema::DOGSTATSD_TAG_CARDINALITY,
@@ -277,7 +277,7 @@
 <a href=#277 id=277 data-nosnippet>277</a>        test_json: <span class="prelude-val">Some</span>(<span class="string">r#""high""#</span>),
 <a href=#278 id=278 data-nosnippet>278</a>    };
 <a href=#279 id=279 data-nosnippet>279</a>
-<a href=#280 id=280 data-nosnippet>280</a>    <span class="doccomment">/// `dogstatsd_tags` — additional tags applied to all ingested metrics.
+<a href=#280 id=280 data-nosnippet>280</a>    <span class="doccomment">/// `dogstatsd_tags`—additional tags applied to all ingested metrics.
 <a href=#281 id=281 data-nosnippet>281</a>    </span>DOGSTATSD_TAGS = SalukiAnnotation {
 <a href=#282 id=282 data-nosnippet>282</a>        schema: <span class="kw-2">&amp;</span>schema::DOGSTATSD_TAGS,
 <a href=#283 id=283 data-nosnippet>283</a>        support_level: SupportLevel::Full,
@@ -288,7 +288,7 @@
 <a href=#288 id=288 data-nosnippet>288</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#289 id=289 data-nosnippet>289</a>    };
 <a href=#290 id=290 data-nosnippet>290</a>
-<a href=#291 id=291 data-nosnippet>291</a>    <span class="doccomment">/// `provider_kind` — appended as a static tag (`provider_kind:&lt;value&gt;`) to all DogStatsD metrics.
+<a href=#291 id=291 data-nosnippet>291</a>    <span class="doccomment">/// `provider_kind`—appended as a static tag (`provider_kind:&lt;value&gt;`) to all DogStatsD metrics.
 <a href=#292 id=292 data-nosnippet>292</a>    </span>PROVIDER_KIND = SalukiAnnotation {
 <a href=#293 id=293 data-nosnippet>293</a>        schema: <span class="kw-2">&amp;</span>schema::PROVIDER_KIND,
 <a href=#294 id=294 data-nosnippet>294</a>        support_level: SupportLevel::Full,
@@ -299,7 +299,7 @@
 <a href=#299 id=299 data-nosnippet>299</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#300 id=300 data-nosnippet>300</a>    };
 <a href=#301 id=301 data-nosnippet>301</a>
-<a href=#302 id=302 data-nosnippet>302</a>    <span class="doccomment">/// `origin_detection_unified` — use unified entity ID resolution for origin enrichment.
+<a href=#302 id=302 data-nosnippet>302</a>    <span class="doccomment">/// `origin_detection_unified`—use unified entity ID resolution for origin enrichment.
 <a href=#303 id=303 data-nosnippet>303</a>    </span>ORIGIN_DETECTION_UNIFIED = SalukiAnnotation {
 <a href=#304 id=304 data-nosnippet>304</a>        schema: <span class="kw-2">&amp;</span>schema::ORIGIN_DETECTION_UNIFIED,
 <a href=#305 id=305 data-nosnippet>305</a>        support_level: SupportLevel::Full,
@@ -310,7 +310,7 @@
 <a href=#310 id=310 data-nosnippet>310</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#311 id=311 data-nosnippet>311</a>    };
 <a href=#312 id=312 data-nosnippet>312</a>
-<a href=#313 id=313 data-nosnippet>313</a>    <span class="doccomment">/// `dogstatsd_log_file` — path to the DogStatsD metric debug log file.
+<a href=#313 id=313 data-nosnippet>313</a>    <span class="doccomment">/// `dogstatsd_log_file`—path to the DogStatsD metric debug log file.
 <a href=#314 id=314 data-nosnippet>314</a>    </span>DOGSTATSD_LOG_FILE = SalukiAnnotation {
 <a href=#315 id=315 data-nosnippet>315</a>        schema: <span class="kw-2">&amp;</span>schema::DOGSTATSD_LOG_FILE,
 <a href=#316 id=316 data-nosnippet>316</a>        support_level: SupportLevel::Full,
@@ -321,7 +321,7 @@
 <a href=#321 id=321 data-nosnippet>321</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#322 id=322 data-nosnippet>322</a>    };
 <a href=#323 id=323 data-nosnippet>323</a>
-<a href=#324 id=324 data-nosnippet>324</a>    <span class="doccomment">/// `dogstatsd_log_file_max_rolls` — number of rotated debug log files to keep. Schema Float; field usize.
+<a href=#324 id=324 data-nosnippet>324</a>    <span class="doccomment">/// `dogstatsd_log_file_max_rolls`—number of rotated debug log files to keep. Schema Float; field usize.
 <a href=#325 id=325 data-nosnippet>325</a>    </span>DOGSTATSD_LOG_FILE_MAX_ROLLS = SalukiAnnotation {
 <a href=#326 id=326 data-nosnippet>326</a>        schema: <span class="kw-2">&amp;</span>schema::DOGSTATSD_LOG_FILE_MAX_ROLLS,
 <a href=#327 id=327 data-nosnippet>327</a>        support_level: SupportLevel::Full,
@@ -332,7 +332,7 @@
 <a href=#332 id=332 data-nosnippet>332</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#333 id=333 data-nosnippet>333</a>    };
 <a href=#334 id=334 data-nosnippet>334</a>
-<a href=#335 id=335 data-nosnippet>335</a>    <span class="doccomment">/// `dogstatsd_log_file_max_size` — max active debug log file size before rotation.
+<a href=#335 id=335 data-nosnippet>335</a>    <span class="doccomment">/// `dogstatsd_log_file_max_size`—max active debug log file size before rotation.
 <a href=#336 id=336 data-nosnippet>336</a>    </span>DOGSTATSD_LOG_FILE_MAX_SIZE = SalukiAnnotation {
 <a href=#337 id=337 data-nosnippet>337</a>        schema: <span class="kw-2">&amp;</span>schema::DOGSTATSD_LOG_FILE_MAX_SIZE,
 <a href=#338 id=338 data-nosnippet>338</a>        support_level: SupportLevel::Full,
@@ -343,7 +343,7 @@
 <a href=#343 id=343 data-nosnippet>343</a>        test_json: <span class="prelude-val">Some</span>(<span class="string">r#""42MB""#</span>),
 <a href=#344 id=344 data-nosnippet>344</a>    };
 <a href=#345 id=345 data-nosnippet>345</a>
-<a href=#346 id=346 data-nosnippet>346</a>    <span class="doccomment">/// `dogstatsd_logging_enabled` — enable writing DogStatsD metric debug stats to a file.
+<a href=#346 id=346 data-nosnippet>346</a>    <span class="doccomment">/// `dogstatsd_logging_enabled`—enable writing DogStatsD metric debug stats to a file.
 <a href=#347 id=347 data-nosnippet>347</a>    </span>DOGSTATSD_LOGGING_ENABLED = SalukiAnnotation {
 <a href=#348 id=348 data-nosnippet>348</a>        schema: <span class="kw-2">&amp;</span>schema::DOGSTATSD_LOGGING_ENABLED,
 <a href=#349 id=349 data-nosnippet>349</a>        support_level: SupportLevel::Full,
@@ -354,7 +354,7 @@
 <a href=#354 id=354 data-nosnippet>354</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#355 id=355 data-nosnippet>355</a>    };
 <a href=#356 id=356 data-nosnippet>356</a>
-<a href=#357 id=357 data-nosnippet>357</a>    <span class="doccomment">/// `dogstatsd_metrics_stats_enable` — enable metric-level DogStatsD debug statistics.
+<a href=#357 id=357 data-nosnippet>357</a>    <span class="doccomment">/// `dogstatsd_metrics_stats_enable`—enable metric-level DogStatsD debug statistics.
 <a href=#358 id=358 data-nosnippet>358</a>    </span>DOGSTATSD_METRICS_STATS_ENABLE = SalukiAnnotation {
 <a href=#359 id=359 data-nosnippet>359</a>        schema: <span class="kw-2">&amp;</span>schema::DOGSTATSD_METRICS_STATS_ENABLE,
 <a href=#360 id=360 data-nosnippet>360</a>        support_level: SupportLevel::Partial,
@@ -367,7 +367,7 @@
 <a href=#367 id=367 data-nosnippet>367</a>
 <a href=#368 id=368 data-nosnippet>368</a>    <span class="comment">// ── ADP-specific ──────────────────────────────────────────────────────────
 <a href=#369 id=369 data-nosnippet>369</a>
-<a href=#370 id=370 data-nosnippet>370</a>    </span><span class="doccomment">/// `dogstatsd_allow_context_heap_allocs` — allow heap allocations when interner is full.
+<a href=#370 id=370 data-nosnippet>370</a>    </span><span class="doccomment">/// `dogstatsd_allow_context_heap_allocs`—allow heap allocations when interner is full.
 <a href=#371 id=371 data-nosnippet>371</a>    </span>DOGSTATSD_ALLOW_CONTEXT_HEAP_ALLOCS = SalukiAnnotation {
 <a href=#372 id=372 data-nosnippet>372</a>        schema: <span class="kw-2">&amp;</span>DOGSTATSD_ALLOW_CONTEXT_HEAP_ALLOCS_SCHEMA,
 <a href=#373 id=373 data-nosnippet>373</a>        support_level: SupportLevel::Full,
@@ -378,7 +378,7 @@
 <a href=#378 id=378 data-nosnippet>378</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#379 id=379 data-nosnippet>379</a>    };
 <a href=#380 id=380 data-nosnippet>380</a>
-<a href=#381 id=381 data-nosnippet>381</a>    <span class="doccomment">/// `dogstatsd_autoscale_udp_listeners` — bind multiple UDP sockets with SO_REUSEPORT for kernel load balancing.
+<a href=#381 id=381 data-nosnippet>381</a>    <span class="doccomment">/// `dogstatsd_autoscale_udp_listeners`—bind multiple UDP sockets with SO_REUSEPORT for kernel load balancing.
 <a href=#382 id=382 data-nosnippet>382</a>    </span>DOGSTATSD_AUTOSCALE_UDP_LISTENERS = SalukiAnnotation {
 <a href=#383 id=383 data-nosnippet>383</a>        schema: <span class="kw-2">&amp;</span>DOGSTATSD_AUTOSCALE_UDP_LISTENERS_SCHEMA,
 <a href=#384 id=384 data-nosnippet>384</a>        support_level: SupportLevel::Full,
@@ -389,7 +389,7 @@
 <a href=#389 id=389 data-nosnippet>389</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#390 id=390 data-nosnippet>390</a>    };
 <a href=#391 id=391 data-nosnippet>391</a>
-<a href=#392 id=392 data-nosnippet>392</a>    <span class="doccomment">/// `dogstatsd_buffer_count` — number of message buffers to pre-allocate.
+<a href=#392 id=392 data-nosnippet>392</a>    <span class="doccomment">/// `dogstatsd_buffer_count`—number of message buffers to pre-allocate.
 <a href=#393 id=393 data-nosnippet>393</a>    </span>DOGSTATSD_BUFFER_COUNT = SalukiAnnotation {
 <a href=#394 id=394 data-nosnippet>394</a>        schema: <span class="kw-2">&amp;</span>DOGSTATSD_BUFFER_COUNT_SCHEMA,
 <a href=#395 id=395 data-nosnippet>395</a>        support_level: SupportLevel::Full,
@@ -400,7 +400,7 @@
 <a href=#400 id=400 data-nosnippet>400</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#401 id=401 data-nosnippet>401</a>    };
 <a href=#402 id=402 data-nosnippet>402</a>
-<a href=#403 id=403 data-nosnippet>403</a>    <span class="doccomment">/// `dogstatsd_cached_contexts_limit` — max cached metric contexts.
+<a href=#403 id=403 data-nosnippet>403</a>    <span class="doccomment">/// `dogstatsd_cached_contexts_limit`—max cached metric contexts.
 <a href=#404 id=404 data-nosnippet>404</a>    </span>DOGSTATSD_CACHED_CONTEXTS_LIMIT = SalukiAnnotation {
 <a href=#405 id=405 data-nosnippet>405</a>        schema: <span class="kw-2">&amp;</span>DOGSTATSD_CACHED_CONTEXTS_LIMIT_SCHEMA,
 <a href=#406 id=406 data-nosnippet>406</a>        support_level: SupportLevel::Full,
@@ -411,7 +411,7 @@
 <a href=#411 id=411 data-nosnippet>411</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#412 id=412 data-nosnippet>412</a>    };
 <a href=#413 id=413 data-nosnippet>413</a>
-<a href=#414 id=414 data-nosnippet>414</a>    <span class="doccomment">/// `dogstatsd_cached_tagsets_limit` — max cached tag sets.
+<a href=#414 id=414 data-nosnippet>414</a>    <span class="doccomment">/// `dogstatsd_cached_tagsets_limit`—max cached tag sets.
 <a href=#415 id=415 data-nosnippet>415</a>    </span>DOGSTATSD_CACHED_TAGSETS_LIMIT = SalukiAnnotation {
 <a href=#416 id=416 data-nosnippet>416</a>        schema: <span class="kw-2">&amp;</span>DOGSTATSD_CACHED_TAGSETS_LIMIT_SCHEMA,
 <a href=#417 id=417 data-nosnippet>417</a>        support_level: SupportLevel::Full,
@@ -422,7 +422,7 @@
 <a href=#422 id=422 data-nosnippet>422</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#423 id=423 data-nosnippet>423</a>    };
 <a href=#424 id=424 data-nosnippet>424</a>
-<a href=#425 id=425 data-nosnippet>425</a>    <span class="doccomment">/// `dogstatsd_minimum_sample_rate` — minimum allowed sample rate.
+<a href=#425 id=425 data-nosnippet>425</a>    <span class="doccomment">/// `dogstatsd_minimum_sample_rate`—minimum allowed sample rate.
 <a href=#426 id=426 data-nosnippet>426</a>    </span>DOGSTATSD_MINIMUM_SAMPLE_RATE = SalukiAnnotation {
 <a href=#427 id=427 data-nosnippet>427</a>        schema: <span class="kw-2">&amp;</span>DOGSTATSD_MINIMUM_SAMPLE_RATE_SCHEMA,
 <a href=#428 id=428 data-nosnippet>428</a>        support_level: SupportLevel::Full,
@@ -433,7 +433,7 @@
 <a href=#433 id=433 data-nosnippet>433</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#434 id=434 data-nosnippet>434</a>    };
 <a href=#435 id=435 data-nosnippet>435</a>
-<a href=#436 id=436 data-nosnippet>436</a>    <span class="doccomment">/// `dogstatsd_permissive_decoding` — relax decoding strictness for Agent compat.
+<a href=#436 id=436 data-nosnippet>436</a>    <span class="doccomment">/// `dogstatsd_permissive_decoding`—relax decoding strictness for Agent compat.
 <a href=#437 id=437 data-nosnippet>437</a>    </span>DOGSTATSD_PERMISSIVE_DECODING = SalukiAnnotation {
 <a href=#438 id=438 data-nosnippet>438</a>        schema: <span class="kw-2">&amp;</span>DOGSTATSD_PERMISSIVE_DECODING_SCHEMA,
 <a href=#439 id=439 data-nosnippet>439</a>        support_level: SupportLevel::Full,
@@ -444,7 +444,7 @@
 <a href=#444 id=444 data-nosnippet>444</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#445 id=445 data-nosnippet>445</a>    };
 <a href=#446 id=446 data-nosnippet>446</a>
-<a href=#447 id=447 data-nosnippet>447</a>    <span class="doccomment">/// `dogstatsd_string_interner_size_bytes` — explicit interner byte budget (overrides entry count).
+<a href=#447 id=447 data-nosnippet>447</a>    <span class="doccomment">/// `dogstatsd_string_interner_size_bytes`—explicit interner byte budget (overrides entry count).
 <a href=#448 id=448 data-nosnippet>448</a>    </span>DOGSTATSD_STRING_INTERNER_SIZE_BYTES = SalukiAnnotation {
 <a href=#449 id=449 data-nosnippet>449</a>        schema: <span class="kw-2">&amp;</span>DOGSTATSD_STRING_INTERNER_SIZE_BYTES_SCHEMA,
 <a href=#450 id=450 data-nosnippet>450</a>        support_level: SupportLevel::Full,
@@ -455,7 +455,7 @@
 <a href=#455 id=455 data-nosnippet>455</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#456 id=456 data-nosnippet>456</a>    };
 <a href=#457 id=457 data-nosnippet>457</a>
-<a href=#458 id=458 data-nosnippet>458</a>    <span class="doccomment">/// `dogstatsd_tcp_port` — TCP port (0 = disabled).
+<a href=#458 id=458 data-nosnippet>458</a>    <span class="doccomment">/// `dogstatsd_tcp_port`—TCP port (0 = disabled).
 <a href=#459 id=459 data-nosnippet>459</a>    </span>DOGSTATSD_TCP_PORT = SalukiAnnotation {
 <a href=#460 id=460 data-nosnippet>460</a>        schema: <span class="kw-2">&amp;</span>DOGSTATSD_TCP_PORT_SCHEMA,
 <a href=#461 id=461 data-nosnippet>461</a>        support_level: SupportLevel::Full,
@@ -466,7 +466,7 @@
 <a href=#466 id=466 data-nosnippet>466</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#467 id=467 data-nosnippet>467</a>    };
 <a href=#468 id=468 data-nosnippet>468</a>
-<a href=#469 id=469 data-nosnippet>469</a>    <span class="doccomment">/// `enable_payloads.events` — forward event payloads.
+<a href=#469 id=469 data-nosnippet>469</a>    <span class="doccomment">/// `enable_payloads.events`—forward event payloads.
 <a href=#470 id=470 data-nosnippet>470</a>    </span>ENABLE_PAYLOADS_EVENTS = SalukiAnnotation {
 <a href=#471 id=471 data-nosnippet>471</a>        schema: <span class="kw-2">&amp;</span>schema::ENABLE_PAYLOADS_EVENTS,
 <a href=#472 id=472 data-nosnippet>472</a>        support_level: SupportLevel::Full,
@@ -477,7 +477,7 @@
 <a href=#477 id=477 data-nosnippet>477</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#478 id=478 data-nosnippet>478</a>    };
 <a href=#479 id=479 data-nosnippet>479</a>
-<a href=#480 id=480 data-nosnippet>480</a>    <span class="doccomment">/// `enable_payloads.series` — forward series (counter/gauge/rate) payloads.
+<a href=#480 id=480 data-nosnippet>480</a>    <span class="doccomment">/// `enable_payloads.series`—forward series (counter/gauge/rate) payloads.
 <a href=#481 id=481 data-nosnippet>481</a>    </span>ENABLE_PAYLOADS_SERIES = SalukiAnnotation {
 <a href=#482 id=482 data-nosnippet>482</a>        schema: <span class="kw-2">&amp;</span>schema::ENABLE_PAYLOADS_SERIES,
 <a href=#483 id=483 data-nosnippet>483</a>        support_level: SupportLevel::Full,
@@ -488,7 +488,7 @@
 <a href=#488 id=488 data-nosnippet>488</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#489 id=489 data-nosnippet>489</a>    };
 <a href=#490 id=490 data-nosnippet>490</a>
-<a href=#491 id=491 data-nosnippet>491</a>    <span class="doccomment">/// `enable_payloads.service_checks` — forward service check payloads.
+<a href=#491 id=491 data-nosnippet>491</a>    <span class="doccomment">/// `enable_payloads.service_checks`—forward service check payloads.
 <a href=#492 id=492 data-nosnippet>492</a>    </span>ENABLE_PAYLOADS_SERVICE_CHECKS = SalukiAnnotation {
 <a href=#493 id=493 data-nosnippet>493</a>        schema: <span class="kw-2">&amp;</span>schema::ENABLE_PAYLOADS_SERVICE_CHECKS,
 <a href=#494 id=494 data-nosnippet>494</a>        support_level: SupportLevel::Full,
@@ -499,7 +499,7 @@
 <a href=#499 id=499 data-nosnippet>499</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#500 id=500 data-nosnippet>500</a>    };
 <a href=#501 id=501 data-nosnippet>501</a>
-<a href=#502 id=502 data-nosnippet>502</a>    <span class="doccomment">/// `enable_payloads.sketches` — forward sketch (distribution) payloads.
+<a href=#502 id=502 data-nosnippet>502</a>    <span class="doccomment">/// `enable_payloads.sketches`—forward sketch (distribution) payloads.
 <a href=#503 id=503 data-nosnippet>503</a>    </span>ENABLE_PAYLOADS_SKETCHES = SalukiAnnotation {
 <a href=#504 id=504 data-nosnippet>504</a>        schema: <span class="kw-2">&amp;</span>schema::ENABLE_PAYLOADS_SKETCHES,
 <a href=#505 id=505 data-nosnippet>505</a>        support_level: SupportLevel::Full,
