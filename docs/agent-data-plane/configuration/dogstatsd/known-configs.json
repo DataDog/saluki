@@ -1926,6 +1926,15 @@
     "adp_key": null
   },
   {
+    "key": "use_v2_api.series",
+    "feature_state": "PARITY",
+    "action": "NONE",
+    "description": "Send series via V2 protobuf endpoint",
+    "reason": "ADP reads use_v2_api.series via alias use_v2_api_series. Both default to true (V2 protobuf /api/v2/series). When false, both fall back to V1 JSON /api/v1/series.",
+    "issue": null,
+    "adp_key": null
+  },
+  {
     "key": "vector.metrics.enabled",
     "feature_state": "PARITY",
     "action": "NONE",

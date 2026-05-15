@@ -2316,8 +2316,6 @@
   "use_improved_cgroup_parser",
   "use_networkv2_check",
   "use_v2_api",
-  "use_v2_api.series",
-  "use_v2_api_series",
   "vector.logs.enabled",
   "vector.logs.url",
   "vector_metrics_enabled",
