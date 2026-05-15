@@ -69,7 +69,7 @@
 <a href=#69 id=69 data-nosnippet>69</a>    /// memory limit, such that we account for the "known unknowns" -- memory that hasn't yet been accounted for -- by
 <a href=#70 id=70 data-nosnippet>70</a>    /// simply ensuring that we can fit within a portion of the overall limit.
 <a href=#71 id=71 data-nosnippet>71</a>    ///
-<a href=#72 id=72 data-nosnippet>72</a>    /// Values between 0 to 1 are allowed, and represent the percentage of `memory_limit` that is held back. This means
+<a href=#72 id=72 data-nosnippet>72</a>    /// Values between 0 to 1 are allowed, and represent the percentage of `memory_limit` that's held back. This means
 <a href=#73 id=73 data-nosnippet>73</a>    /// that a slop factor of 0.25, for example, will cause 25% of `memory_limit` to be withheld. If `memory_limit` was
 <a href=#74 id=74 data-nosnippet>74</a>    /// 100MB, we would then verify that the memory bounds can fit within 75MB (100MB * (1 - 0.25) =&gt; 75MB).
 <a href=#75 id=75 data-nosnippet>75</a>    </span><span class="attr">#[serde(default = <span class="string">"default_memory_slop_factor"</span>)]
@@ -144,7 +144,7 @@
 <a href=#144 id=144 data-nosnippet>144</a>///
 <a href=#145 id=145 data-nosnippet>145</a>/// # Errors
 <a href=#146 id=146 data-nosnippet>146</a>///
-<a href=#147 id=147 data-nosnippet>147</a>/// If the bounds could not be validated under [`MemoryMode::Strict`], or if the configured grant is invalid, an error
+<a href=#147 id=147 data-nosnippet>147</a>/// If the bounds couldn't be validated under [`MemoryMode::Strict`], or if the configured grant is invalid, an error
 <a href=#148 id=148 data-nosnippet>148</a>/// is returned.
 <a href=#149 id=149 data-nosnippet>149</a></span><span class="kw">pub fn </span>initialize_memory_bounds(
 <a href=#150 id=150 data-nosnippet>150</a>    configuration: MemoryBoundsConfiguration, component_registry: ComponentRegistryHandle,

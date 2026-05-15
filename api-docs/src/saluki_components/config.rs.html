@@ -8,7 +8,7 @@
 <a href=#8 id=8 data-nosnippet>8</a><span class="doccomment">/// Key aliases to pass to [`ConfigurationLoader::with_key_aliases`][saluki_config::ConfigurationLoader::with_key_aliases].
 <a href=#9 id=9 data-nosnippet>9</a>///
 <a href=#10 id=10 data-nosnippet>10</a>/// Each entry maps a nested dot-separated path to a flat key name. When the nested path is found in a loaded
-<a href=#11 id=11 data-nosnippet>11</a>/// config file, its value is also emitted under the flat key—but only if the flat key is not already
+<a href=#11 id=11 data-nosnippet>11</a>/// config file, its value is also emitted under the flat key—but only if the flat key isn't already
 <a href=#12 id=12 data-nosnippet>12</a>/// explicitly set. This ensures both YAML nested format and flat env var format produce the same Figment key,
 <a href=#13 id=13 data-nosnippet>13</a>/// so source precedence (env vars &gt; file) works correctly.
 <a href=#14 id=14 data-nosnippet>14</a></span><span class="kw">pub const </span>KEY_ALIASES: <span class="kw-2">&amp;</span>[(<span class="kw-2">&amp;</span>str, <span class="kw-2">&amp;</span>str)] = <span class="kw-2">&amp;</span>[
@@ -169,7 +169,7 @@
 <a href=#169 id=169 data-nosnippet>169</a>///
 <a href=#170 id=170 data-nosnippet>170</a>/// For YAML key aliasing (for example, `proxy.http` → `proxy_http`), pass [`KEY_ALIASES`] to
 <a href=#171 id=171 data-nosnippet>171</a>/// [`ConfigurationLoader::with_key_aliases`][saluki_config::ConfigurationLoader::with_key_aliases] instead—
-<a href=#172 id=172 data-nosnippet>172</a>/// that is handled at file-load time.
+<a href=#172 id=172 data-nosnippet>172</a>/// that's handled at file-load time.
 <a href=#173 id=173 data-nosnippet>173</a></span><span class="kw">pub struct </span>DatadogRemapper {
 <a href=#174 id=174 data-nosnippet>174</a>    values: serde_json::Map&lt;String, serde_json::Value&gt;,
 <a href=#175 id=175 data-nosnippet>175</a>}

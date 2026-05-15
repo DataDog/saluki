@@ -197,7 +197,7 @@
 <a href=#197 id=197 data-nosnippet>197</a>/// itself (headers, path, body, etc).
 <a href=#198 id=198 data-nosnippet>198</a>///
 <a href=#199 id=199 data-nosnippet>199</a>/// `Transaction&lt;B&gt;` supports this by allowing for wrapping an in-memory body type `B` (for example, `ReadIoBuffer`) or wrapping
-<a href=#200 id=200 data-nosnippet>200</a>/// a body that has been rehydrated from a string (for example, `Bytes`). This means that `B` can be a complex type that cannot
+<a href=#200 id=200 data-nosnippet>200</a>/// a body that has been rehydrated from a string (for example, `Bytes`). This means that `B` can be a complex type that can't
 <a href=#201 id=201 data-nosnippet>201</a>/// actually be rehydrated from a single string input (such as `FrozenChunkedBytesBuffer`) and we maintain optimal
 <a href=#202 id=202 data-nosnippet>202</a>/// memory usage, and performance, regardless of which body type was used to construct `Transaction&lt;B&gt;`.
 <a href=#203 id=203 data-nosnippet>203</a></span><span class="attr">#[derive(Clone, Deserialize, Serialize)]

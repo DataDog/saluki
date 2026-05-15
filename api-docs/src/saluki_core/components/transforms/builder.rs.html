@@ -22,24 +22,24 @@
 <a href=#22 id=22 data-nosnippet>22</a>    ///
 <a href=#23 id=23 data-nosnippet>23</a>    /// ## Errors
 <a href=#24 id=24 data-nosnippet>24</a>    ///
-<a href=#25 id=25 data-nosnippet>25</a>    /// If the transform cannot be built for any reason, an error is returned.
+<a href=#25 id=25 data-nosnippet>25</a>    /// If the transform can't be built for any reason, an error is returned.
 <a href=#26 id=26 data-nosnippet>26</a>    </span><span class="kw">async fn </span>build(<span class="kw-2">&amp;</span><span class="self">self</span>, context: ComponentContext) -&gt; <span class="prelude-ty">Result</span>&lt;Box&lt;<span class="kw">dyn </span>Transform + Send&gt;, GenericError&gt;;
 <a href=#27 id=27 data-nosnippet>27</a>}
 <a href=#28 id=28 data-nosnippet>28</a>
 <a href=#29 id=29 data-nosnippet>29</a><span class="doccomment">/// A synchronous transform builder.
 <a href=#30 id=30 data-nosnippet>30</a>///
-<a href=#31 id=31 data-nosnippet>31</a>/// Synchronous transforms are a special case of transforms that are executed synchronously, meaning that they do not
-<a href=#32 id=32 data-nosnippet>32</a>/// run as their own task. This is used for certain transforms, typically those where it is more efficient to run
+<a href=#31 id=31 data-nosnippet>31</a>/// Synchronous transforms are a special case of transforms that are executed synchronously, meaning that they don't
+<a href=#32 id=32 data-nosnippet>32</a>/// run as their own task. This is used for certain transforms, typically those where it's more efficient to run
 <a href=#33 id=33 data-nosnippet>33</a>/// multiple transformation steps in a single task.
 <a href=#34 id=34 data-nosnippet>34</a></span><span class="attr">#[async_trait]
 <a href=#35 id=35 data-nosnippet>35</a></span><span class="kw">pub trait </span>SynchronousTransformBuilder: MemoryBounds {
 <a href=#36 id=36 data-nosnippet>36</a>    <span class="doccomment">/// Builds an instance of the synchronous transform.
 <a href=#37 id=37 data-nosnippet>37</a>    ///
-<a href=#38 id=38 data-nosnippet>38</a>    /// The provided context is relative to the parent component that is building this synchronous transform.
+<a href=#38 id=38 data-nosnippet>38</a>    /// The provided context is relative to the parent component that's building this synchronous transform.
 <a href=#39 id=39 data-nosnippet>39</a>    ///
 <a href=#40 id=40 data-nosnippet>40</a>    /// ## Errors
 <a href=#41 id=41 data-nosnippet>41</a>    ///
-<a href=#42 id=42 data-nosnippet>42</a>    /// If the synchronous transform cannot be built for any reason, an error is returned.
+<a href=#42 id=42 data-nosnippet>42</a>    /// If the synchronous transform can't be built for any reason, an error is returned.
 <a href=#43 id=43 data-nosnippet>43</a>    </span><span class="kw">async fn </span>build(<span class="kw-2">&amp;</span><span class="self">self</span>, context: ComponentContext) -&gt; <span class="prelude-ty">Result</span>&lt;Box&lt;<span class="kw">dyn </span>SynchronousTransform + Send&gt;, GenericError&gt;;
 <a href=#44 id=44 data-nosnippet>44</a>}
 </code></pre></div></section></main></body></html>

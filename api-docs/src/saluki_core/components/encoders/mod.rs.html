@@ -17,7 +17,7 @@
 <a href=#17 id=17 data-nosnippet>17</a>    <span class="doccomment">/// The encoder processed the event successfully and is ready to process more events.
 <a href=#18 id=18 data-nosnippet>18</a>    </span>Continue,
 <a href=#19 id=19 data-nosnippet>19</a>
-<a href=#20 id=20 data-nosnippet>20</a>    <span class="doccomment">/// The encoder cannot process the event without flushing first.
+<a href=#20 id=20 data-nosnippet>20</a>    <span class="doccomment">/// The encoder can't process the event without flushing first.
 <a href=#21 id=21 data-nosnippet>21</a>    ///
 <a href=#22 id=22 data-nosnippet>22</a>    /// The caller should flush the encoder and try again to process the event.
 <a href=#23 id=23 data-nosnippet>23</a>    </span>FlushRequired(Event),
@@ -25,7 +25,7 @@
 <a href=#25 id=25 data-nosnippet>25</a>
 <a href=#26 id=26 data-nosnippet>26</a><span class="doccomment">/// An encoder.
 <a href=#27 id=27 data-nosnippet>27</a>///
-<a href=#28 id=28 data-nosnippet>28</a>/// Encoders are the bridge between forwarders and the rest of the topology. They are responsible for encoding
+<a href=#28 id=28 data-nosnippet>28</a>/// Encoders are the bridge between forwarders and the rest of the topology. They're responsible for encoding
 <a href=#29 id=29 data-nosnippet>29</a>/// telemetry events into output payloads that can then be forwarded. Most encoders are specific to a particular system
 <a href=#30 id=30 data-nosnippet>30</a>/// and not simply equivalent to a certain encoding or serialization format: while two encoders may both produce JSON,
 <a href=#31 id=31 data-nosnippet>31</a>/// they may produce different JSON formats such that one format only works for product A and the other only works for
@@ -52,7 +52,7 @@
 <a href=#52 id=52 data-nosnippet>52</a><span class="doccomment">/// An incremental encoder.
 <a href=#53 id=53 data-nosnippet>53</a>///
 <a href=#54 id=54 data-nosnippet>54</a>/// Incremental encoders represent the essential operations of a encoder: adding events and flushing the resulting
-<a href=#55 id=55 data-nosnippet>55</a>/// payloads. Generally, encoders should not need to concern themselves with the high-level details of being a
+<a href=#55 id=55 data-nosnippet>55</a>/// payloads. Generally, encoders shouldn't need to concern themselves with the high-level details of being a
 <a href=#56 id=56 data-nosnippet>56</a>/// component within a topology, such as responding to health probes, handling graceful shutdown, and so on. Through
 <a href=#57 id=57 data-nosnippet>57</a>/// separating out the core encoder functionality from the component functionality, we can make it easier to implement
 <a href=#58 id=58 data-nosnippet>58</a>/// various encoder implementations while only maintaining a few common encoder components that actually _drive_ the
@@ -63,18 +63,18 @@
 <a href=#63 id=63 data-nosnippet>63</a>    ///
 <a href=#64 id=64 data-nosnippet>64</a>    /// The encoder will process the event, attempting to add it to the current payload. If the encoder is unable to
 <a href=#65 id=65 data-nosnippet>65</a>    /// process the event without flushing first, `Ok(ProcessResult::FlushRequired(event))` is returned, containing the
-<a href=#66 id=66 data-nosnippet>66</a>    /// event that could not be processed. Otherwise, `Ok(ProcessResult::Continue)` is returned.
+<a href=#66 id=66 data-nosnippet>66</a>    /// event that couldn't be processed. Otherwise, `Ok(ProcessResult::Continue)` is returned.
 <a href=#67 id=67 data-nosnippet>67</a>    ///
 <a href=#68 id=68 data-nosnippet>68</a>    /// # Errors
 <a href=#69 id=69 data-nosnippet>69</a>    ///
-<a href=#70 id=70 data-nosnippet>70</a>    /// If the encoder cannot process the event due to an unrecoverable error, an error is returned.
+<a href=#70 id=70 data-nosnippet>70</a>    /// If the encoder can't process the event due to an unrecoverable error, an error is returned.
 <a href=#71 id=71 data-nosnippet>71</a>    </span><span class="kw">async fn </span>process_event(<span class="kw-2">&amp;mut </span><span class="self">self</span>, event: Event) -&gt; <span class="prelude-ty">Result</span>&lt;ProcessResult, GenericError&gt;;
 <a href=#72 id=72 data-nosnippet>72</a>
 <a href=#73 id=73 data-nosnippet>73</a>    <span class="doccomment">/// Flush the encoder, finalizing all current payloads and sending them to the dispatcher.
 <a href=#74 id=74 data-nosnippet>74</a>    ///
 <a href=#75 id=75 data-nosnippet>75</a>    /// # Errors
 <a href=#76 id=76 data-nosnippet>76</a>    ///
-<a href=#77 id=77 data-nosnippet>77</a>    /// If the encoder cannot flush the payloads, an error is returned.
+<a href=#77 id=77 data-nosnippet>77</a>    /// If the encoder can't flush the payloads, an error is returned.
 <a href=#78 id=78 data-nosnippet>78</a>    </span><span class="kw">async fn </span>flush(<span class="kw-2">&amp;mut </span><span class="self">self</span>, dispatcher: <span class="kw-2">&amp;</span>PayloadsDispatcher) -&gt; <span class="prelude-ty">Result</span>&lt;(), GenericError&gt;;
 <a href=#79 id=79 data-nosnippet>79</a>}
 </code></pre></div></section></main></body></html>

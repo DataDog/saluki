@@ -89,8 +89,8 @@
 <a href=#89 id=89 data-nosnippet>89</a>    /// payload. This allows for decoding payloads with invalid contents (for example, characters that are valid UTF-8, but
 <a href=#90 id=90 data-nosnippet>90</a>    /// aren't within ASCII bounds, etc) such that the data plane can attempt to process them further.
 <a href=#91 id=91 data-nosnippet>91</a>    ///
-<a href=#92 id=92 data-nosnippet>92</a>    /// Permissive mode does not allow for decoding payloads with structural errors (for example, missing delimiters, etc) or
-<a href=#93 id=93 data-nosnippet>93</a>    /// that cannot be safely handled internally (for example, invalid UTF-8 characters for the metric name or tags).
+<a href=#92 id=92 data-nosnippet>92</a>    /// Permissive mode doesn't allow for decoding payloads with structural errors (for example, missing delimiters, etc) or
+<a href=#93 id=93 data-nosnippet>93</a>    /// that can't be safely handled internally (for example, invalid UTF-8 characters for the metric name or tags).
 <a href=#94 id=94 data-nosnippet>94</a>    ///
 <a href=#95 id=95 data-nosnippet>95</a>    /// Defaults to `false`.
 <a href=#96 id=96 data-nosnippet>96</a>    </span><span class="kw">pub fn </span>with_permissive_mode(<span class="kw-2">mut </span><span class="self">self</span>, permissive: bool) -&gt; <span class="self">Self </span>{
@@ -100,7 +100,7 @@
 <a href=#100 id=100 data-nosnippet>100</a>
 <a href=#101 id=101 data-nosnippet>101</a>    <span class="doccomment">/// Sets the maximum tag length.
 <a href=#102 id=102 data-nosnippet>102</a>    ///
-<a href=#103 id=103 data-nosnippet>103</a>    /// This controls the number of bytes that are allowed for a single tag. If a tag exceeds this limit, it is
+<a href=#103 id=103 data-nosnippet>103</a>    /// This controls the number of bytes that are allowed for a single tag. If a tag exceeds this limit, it's
 <a href=#104 id=104 data-nosnippet>104</a>    /// truncated to the closest previous UTF-8 character boundary, in order to preserve UTF-8 validity.
 <a href=#105 id=105 data-nosnippet>105</a>    ///
 <a href=#106 id=106 data-nosnippet>106</a>    /// Defaults to no limit.
@@ -133,7 +133,7 @@
 <a href=#133 id=133 data-nosnippet>133</a>
 <a href=#134 id=134 data-nosnippet>134</a>    <span class="doccomment">/// Sets the minimum sample rate.
 <a href=#135 id=135 data-nosnippet>135</a>    ///
-<a href=#136 id=136 data-nosnippet>136</a>    /// This is the minimum sample rate that is allowed for a metric payload. If the sample rate is less than this limit,
+<a href=#136 id=136 data-nosnippet>136</a>    /// This is the minimum sample rate that's allowed for a metric payload. If the sample rate is less than this limit,
 <a href=#137 id=137 data-nosnippet>137</a>    /// the sample rate is clamped to this value and a log message is emitted.
 <a href=#138 id=138 data-nosnippet>138</a>    ///
 <a href=#139 id=139 data-nosnippet>139</a>    /// Defaults to `0.000000003845`.
@@ -192,7 +192,7 @@
 <a href=#192 id=192 data-nosnippet>192</a>    ///
 <a href=#193 id=193 data-nosnippet>193</a>    /// # Errors
 <a href=#194 id=194 data-nosnippet>194</a>    ///
-<a href=#195 id=195 data-nosnippet>195</a>    /// If the raw data is not a valid DogStatsD packet, an error is returned.
+<a href=#195 id=195 data-nosnippet>195</a>    /// If the raw data isn't a valid DogStatsD packet, an error is returned.
 <a href=#196 id=196 data-nosnippet>196</a>    </span><span class="kw">pub fn </span>decode_packet&lt;<span class="lifetime">'a</span>&gt;(<span class="kw-2">&amp;</span><span class="self">self</span>, data: <span class="kw-2">&amp;</span><span class="lifetime">'a </span>[u8]) -&gt; <span class="prelude-ty">Result</span>&lt;ParsedPacket&lt;<span class="lifetime">'a</span>&gt;, ParseError&gt; {
 <a href=#197 id=197 data-nosnippet>197</a>        <span class="kw">match </span>parse_message_type(data) {
 <a href=#198 id=198 data-nosnippet>198</a>            MessageType::Event =&gt; <span class="self">self</span>.decode_event(data).map(ParsedPacket::Event),

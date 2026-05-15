@@ -75,7 +75,7 @@
 <a href=#75 id=75 data-nosnippet>75</a>    <span class="doccomment">/// Additional Docker networks to connect this container to after creation.
 <a href=#76 id=76 data-nosnippet>76</a>    ///
 <a href=#77 id=77 data-nosnippet>77</a>    /// The primary network is set via `HostConfig.NetworkMode`. Each network listed here is joined
-<a href=#78 id=78 data-nosnippet>78</a>    /// via a separate `docker network connect` call after the container is created but before it is
+<a href=#78 id=78 data-nosnippet>78</a>    /// via a separate `docker network connect` call after the container is created but before it's
 <a href=#79 id=79 data-nosnippet>79</a>    /// started. Used to connect the shared millstone container to both agent networks so it can
 <a href=#80 id=80 data-nosnippet>80</a>    /// reach `baseline` and `comparison` by hostname.
 <a href=#81 id=81 data-nosnippet>81</a>    </span>additional_networks: Vec&lt;String&gt;,
@@ -228,7 +228,7 @@
 <a href=#228 id=228 data-nosnippet>228</a>
 <a href=#229 id=229 data-nosnippet>229</a>    <span class="doccomment">/// Adds a read-only bind mount to the container.
 <a href=#230 id=230 data-nosnippet>230</a>    ///
-<a href=#231 id=231 data-nosnippet>231</a>    /// Same as [`with_bind_mount`][Self::with_bind_mount] but the container cannot modify the mounted path.
+<a href=#231 id=231 data-nosnippet>231</a>    /// Same as [`with_bind_mount`][Self::with_bind_mount] but the container can't modify the mounted path.
 <a href=#232 id=232 data-nosnippet>232</a>    </span><span class="kw">pub fn </span>with_readonly_bind_mount&lt;HP, CP&gt;(<span class="kw-2">mut </span><span class="self">self</span>, host_path: HP, container_path: CP) -&gt; <span class="self">Self
 <a href=#233 id=233 data-nosnippet>233</a>    </span><span class="kw">where
 <a href=#234 id=234 data-nosnippet>234</a>        </span>HP: AsRef&lt;Path&gt;,
@@ -325,7 +325,7 @@
 <a href=#325 id=325 data-nosnippet>325</a>    <span class="doccomment">/// Attempts to look up a mapped ephemeral port for the given exposed port.
 <a href=#326 id=326 data-nosnippet>326</a>    ///
 <a href=#327 id=327 data-nosnippet>327</a>    /// The same `protocol` and internal port values used to expose the port must be used here. If the given
-<a href=#328 id=328 data-nosnippet>328</a>    /// protocol/port combination was not exposed, `None` is returned. Otherwise, the mapped ephemeral port is returned.
+<a href=#328 id=328 data-nosnippet>328</a>    /// protocol/port combination wasn't exposed, `None` is returned. Otherwise, the mapped ephemeral port is returned.
 <a href=#329 id=329 data-nosnippet>329</a>    /// This port is exposed on `0.0.0.0` on the host side.
 <a href=#330 id=330 data-nosnippet>330</a>    </span><span class="kw">pub fn </span>try_get_exposed_port(<span class="kw-2">&amp;</span><span class="self">self</span>, protocol: <span class="kw-2">&amp;</span>str, internal_port: u16) -&gt; <span class="prelude-ty">Option</span>&lt;u16&gt; {
 <a href=#331 id=331 data-nosnippet>331</a>        <span class="self">self</span>.port_mappings
@@ -356,14 +356,14 @@
 <a href=#356 id=356 data-nosnippet>356</a>    ///
 <a href=#357 id=357 data-nosnippet>357</a>    /// # Shared volume
 <a href=#358 id=358 data-nosnippet>358</a>    ///
-<a href=#359 id=359 data-nosnippet>359</a>    /// The container will have a volume bind-mounted at `/airlock` that is shared between all containers in the same
+<a href=#359 id=359 data-nosnippet>359</a>    /// The container will have a volume bind-mounted at `/airlock` that's shared between all containers in the same
 <a href=#360 id=360 data-nosnippet>360</a>    /// isolation group. This volume is mounted as world writeable (777) so all containers can freely read and write to
 <a href=#361 id=361 data-nosnippet>361</a>    /// it. This makes it easier for containers to share data between one another, but also means that care should be
 <a href=#362 id=362 data-nosnippet>362</a>    /// taken to avoid conflicts between trying to write to the same file, etc.
 <a href=#363 id=363 data-nosnippet>363</a>    ///
 <a href=#364 id=364 data-nosnippet>364</a>    /// # Errors
 <a href=#365 id=365 data-nosnippet>365</a>    ///
-<a href=#366 id=366 data-nosnippet>366</a>    /// If the Docker client cannot be created/configured, an error will be returned.
+<a href=#366 id=366 data-nosnippet>366</a>    /// If the Docker client can't be created/configured, an error will be returned.
 <a href=#367 id=367 data-nosnippet>367</a>    </span><span class="kw">pub fn </span>from_config(isolation_group_id: String, config: DriverConfig) -&gt; <span class="prelude-ty">Result</span>&lt;<span class="self">Self</span>, GenericError&gt; {
 <a href=#368 id=368 data-nosnippet>368</a>        <span class="kw">let </span>docker = <span class="kw">crate</span>::docker::connect()<span class="question-mark">?</span>;
 <a href=#369 id=369 data-nosnippet>369</a>
@@ -400,7 +400,7 @@
 <a href=#400 id=400 data-nosnippet>400</a>    ///
 <a href=#401 id=401 data-nosnippet>401</a>    /// # Errors
 <a href=#402 id=402 data-nosnippet>402</a>    ///
-<a href=#403 id=403 data-nosnippet>403</a>    /// If the Docker client cannot be created/configured, or there is an error when finding or removing any of the
+<a href=#403 id=403 data-nosnippet>403</a>    /// If the Docker client can't be created/configured, or there is an error when finding or removing any of the
 <a href=#404 id=404 data-nosnippet>404</a>    /// related resources, an error will be returned.
 <a href=#405 id=405 data-nosnippet>405</a>    </span><span class="kw">pub async fn </span>clean_related_resources(isolation_group_id: String) -&gt; <span class="prelude-ty">Result</span>&lt;(), GenericError&gt; {
 <a href=#406 id=406 data-nosnippet>406</a>        <span class="kw">let </span>docker = <span class="kw">crate</span>::docker::connect()<span class="question-mark">?</span>;

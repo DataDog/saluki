@@ -2,7 +2,7 @@
 <a href=#2 id=2 data-nosnippet>2</a>
 <a href=#3 id=3 data-nosnippet>3</a><span class="doccomment">/// Compares two floating-point values for approximate equality using a ratio-based approach.
 <a href=#4 id=4 data-nosnippet>4</a>///
-<a href=#5 id=5 data-nosnippet>5</a>/// When comparing two values, the smaller value cannot deviate by more than 0.0000001% of the larger value.
+<a href=#5 id=5 data-nosnippet>5</a>/// When comparing two values, the smaller value can't deviate by more than 0.0000001% of the larger value.
 <a href=#6 id=6 data-nosnippet>6</a>/// This handles NaN values by considering two NaN values as equal.
 <a href=#7 id=7 data-nosnippet>7</a></span><span class="kw">pub fn </span>float_eq(l_value: f64, r_value: f64) -&gt; bool {
 <a href=#8 id=8 data-nosnippet>8</a>    <span class="kw">const </span>RATIO_ERROR: f64 = <span class="number">0.00000001</span>;

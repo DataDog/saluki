@@ -185,7 +185,7 @@
 <a href=#185 id=185 data-nosnippet>185</a>/// new buffer, as well as holding the event around until they acquire the new buffer.
 <a href=#186 id=186 data-nosnippet>186</a>///
 <a href=#187 id=187 data-nosnippet>187</a>/// `EventBufferManager` provides a simple, ergonomic wrapper over a basic pattern of treating the current buffer as an
-<a href=#188 id=188 data-nosnippet>188</a>/// optional value, and handling the logic of ensuring we have a buffer to write into only when actually attempting a
+<a href=#188 id=188 data-nosnippet>188</a>/// optional value, and handling the logic of ensuring we've a buffer to write into only when actually attempting a
 <a href=#189 id=189 data-nosnippet>189</a>/// write, rather than always holding on to one.
 <a href=#190 id=190 data-nosnippet>190</a></span><span class="attr">#[derive(Default)]
 <a href=#191 id=191 data-nosnippet>191</a></span><span class="kw">pub struct </span>EventBufferManager&lt;<span class="kw">const </span>N: usize&gt; {
@@ -195,7 +195,7 @@
 <a href=#195 id=195 data-nosnippet>195</a><span class="kw">impl</span>&lt;<span class="kw">const </span>N: usize&gt; EventBufferManager&lt;N&gt; {
 <a href=#196 id=196 data-nosnippet>196</a>    <span class="doccomment">/// Attempts to push an event into the current event buffer.
 <a href=#197 id=197 data-nosnippet>197</a>    ///
-<a href=#198 id=198 data-nosnippet>198</a>    /// If the event buffer is full, it is replaced with a new event buffer before pushing the event, and `Some(buffer)`
+<a href=#198 id=198 data-nosnippet>198</a>    /// If the event buffer is full, it's replaced with a new event buffer before pushing the event, and `Some(buffer)`
 <a href=#199 id=199 data-nosnippet>199</a>    /// is returned containing the old event buffer. Otherwise, `None` is returned.
 <a href=#200 id=200 data-nosnippet>200</a>    </span><span class="kw">pub fn </span>try_push(<span class="kw-2">&amp;mut </span><span class="self">self</span>, event: Event) -&gt; <span class="prelude-ty">Option</span>&lt;FixedSizeEventBuffer&lt;N&gt;&gt; {
 <a href=#201 id=201 data-nosnippet>201</a>        <span class="kw">let </span>buffer = <span class="self">self</span>.current.get_or_insert_default();

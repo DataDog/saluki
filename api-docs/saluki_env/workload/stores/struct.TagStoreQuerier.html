@@ -13,13 +13,13 @@ visited. The cardinality levels, in order of precedence (lowest to highest), are
 </ul>
 <p>When an entity is aliased, the tags for the aliased entity will be visited instead of any tags for the entity itself.</p>
 <p>Returns <code>Some(SharedTagSet)</code> with all tags for the entity at the requested cardinality level, or <code>None</code> if the
-entity has no tags at the requested cardinality level or if the entity does not exist.</p>
+entity has no tags at the requested cardinality level or if the entity doesn’t exist.</p>
 </div></details><details class="toggle method-toggle" open><summary><section id="method.get_exact_entity_tags" class="method"><a class="src rightside" href="../../../src/saluki_env/workload/stores/tag.rs.html#309-313">Source</a><h4 class="code-header">pub fn <a href="#method.get_exact_entity_tags" class="fn">get_exact_entity_tags</a>(
     &amp;self,
     entity_id: &amp;<a class="enum" href="../entity/enum.EntityId.html" title="enum saluki_env::workload::entity::EntityId">EntityId</a>,
     cardinality: OriginTagCardinality,
 ) -&gt; <a class="enum" href="https://doc.rust-lang.org/nightly/core/option/enum.Option.html" title="enum core::option::Option">Option</a>&lt;SharedTagSet&gt;</h4></section></summary><div class="docblock"><p>Gets the exact tags for an entity at the specific cardinality.</p>
-<p>Unlike <code>visit_entity_tags</code>, this method does not visit tags at lower cardinalities, and it does not visit tags
+<p>Unlike <code>visit_entity_tags</code>, this method doesn’t visit tags at lower cardinalities, and it doesn’t visit tags
 for an aliased entity.</p>
 <p>If no tags can be found for the entity, or at the given cardinality, <code>None</code> is returned.</p>
 </div></details><details class="toggle method-toggle" open><summary><section id="method.visit_active_entities" class="method"><a class="src rightside" href="../../../src/saluki_env/workload/stores/tag.rs.html#316-323">Source</a><h4 class="code-header">pub fn <a href="#method.visit_active_entities" class="fn">visit_active_entities</a>&lt;F&gt;(&amp;self, visitor: F)<div class="where">where

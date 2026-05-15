@@ -66,7 +66,7 @@
 <a href=#66 id=66 data-nosnippet>66</a><span class="kw">impl </span>Registry {
 <a href=#67 id=67 data-nosnippet>67</a>    <span class="doccomment">/// Parse a registry from JSON matching the upstream `mappings.json` schema.
 <a href=#68 id=68 data-nosnippet>68</a>    ///
-<a href=#69 id=69 data-nosnippet>69</a>    /// Any concept key that does not correspond to a known [`Concept`] variant
+<a href=#69 id=69 data-nosnippet>69</a>    /// Any concept key that doesn't correspond to a known [`Concept`] variant
 <a href=#70 id=70 data-nosnippet>70</a>    /// is treated as an error—keeping the enum and the embedded JSON in sync.
 <a href=#71 id=71 data-nosnippet>71</a>    </span><span class="kw">pub fn </span>from_json(json: <span class="kw-2">&amp;</span>str) -&gt; <span class="prelude-ty">Result</span>&lt;<span class="self">Self</span>, GenericError&gt; {
 <a href=#72 id=72 data-nosnippet>72</a>        <span class="kw">let </span>data: RegistryData =

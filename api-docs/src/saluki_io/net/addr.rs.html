@@ -62,7 +62,7 @@
 <a href=#62 id=62 data-nosnippet>62</a>    ///
 <a href=#63 id=63 data-nosnippet>63</a>    /// When the listen address is a TCP or UDP address, this method returns a socket address that can be used to
 <a href=#64 id=64 data-nosnippet>64</a>    /// connect to the listener bound to this listen address, such that if the listen address is unspecified
-<a href=#65 id=65 data-nosnippet>65</a>    /// (`0.0.0.0`), the client will connect locally using "localhost". When the listen address is not "unspecified" or
+<a href=#65 id=65 data-nosnippet>65</a>    /// (`0.0.0.0`), the client will connect locally using "localhost". When the listen address isn't "unspecified" or
 <a href=#66 id=66 data-nosnippet>66</a>    /// already uses "localhost", this method returns the listen address as-is.
 <a href=#67 id=67 data-nosnippet>67</a>    ///
 <a href=#68 id=68 data-nosnippet>68</a>    /// If the address is a Unix domain socket, this method returns `None`.
@@ -212,13 +212,13 @@
 <a href=#212 id=212 data-nosnippet>212</a></span><span class="attr">#[cfg(unix)]
 <a href=#213 id=213 data-nosnippet>213</a>#[derive(Clone, Copy)]
 <a href=#214 id=214 data-nosnippet>214</a></span><span class="kw">pub enum </span>ProcessCredentialsError {
-<a href=#215 id=215 data-nosnippet>215</a>    <span class="doccomment">/// Ancillary data was present but did not contain usable process credentials.
+<a href=#215 id=215 data-nosnippet>215</a>    <span class="doccomment">/// Ancillary data was present but didn't contain usable process credentials.
 <a href=#216 id=216 data-nosnippet>216</a>    </span>InvalidCredentials,
 <a href=#217 id=217 data-nosnippet>217</a>
 <a href=#218 id=218 data-nosnippet>218</a>    <span class="doccomment">/// Process credentials were present, but the PID was zero.
 <a href=#219 id=219 data-nosnippet>219</a>    </span>ZeroPid,
 <a href=#220 id=220 data-nosnippet>220</a>
-<a href=#221 id=221 data-nosnippet>221</a>    <span class="doccomment">/// UDS process credential detection is not supported on this platform.
+<a href=#221 id=221 data-nosnippet>221</a>    <span class="doccomment">/// UDS process credential detection isn't supported on this platform.
 <a href=#222 id=222 data-nosnippet>222</a>    </span>UnsupportedPlatform,
 <a href=#223 id=223 data-nosnippet>223</a>}
 <a href=#224 id=224 data-nosnippet>224</a>
@@ -255,7 +255,7 @@
 <a href=#255 id=255 data-nosnippet>255</a>    <span class="doccomment">/// Process credential detection failed.
 <a href=#256 id=256 data-nosnippet>256</a>    </span>Error(ProcessCredentialsError),
 <a href=#257 id=257 data-nosnippet>257</a>
-<a href=#258 id=258 data-nosnippet>258</a>    <span class="doccomment">/// Process identity is not available for this peer.
+<a href=#258 id=258 data-nosnippet>258</a>    <span class="doccomment">/// Process identity isn't available for this peer.
 <a href=#259 id=259 data-nosnippet>259</a>    </span>Unavailable,
 <a href=#260 id=260 data-nosnippet>260</a>}
 <a href=#261 id=261 data-nosnippet>261</a>
@@ -364,7 +364,7 @@
 <a href=#364 id=364 data-nosnippet>364</a>    /// For TCP addresses, this method converts unspecified addresses (`0.0.0.0` or `::`) to localhost
 <a href=#365 id=365 data-nosnippet>365</a>    /// (`127.0.0.1` or `::1`) to ensure the advertised address matches TLS certificates.
 <a href=#366 id=366 data-nosnippet>366</a>    ///
-<a href=#367 id=367 data-nosnippet>367</a>    /// Returns `None` if the listen address is not a connection-oriented transport.
+<a href=#367 id=367 data-nosnippet>367</a>    /// Returns `None` if the listen address isn't a connection-oriented transport.
 <a href=#368 id=368 data-nosnippet>368</a>    </span><span class="kw">pub fn </span>try_from_listen_addr(listen_address: <span class="kw-2">&amp;</span>ListenAddress) -&gt; <span class="prelude-ty">Option</span>&lt;<span class="self">Self</span>&gt; {
 <a href=#369 id=369 data-nosnippet>369</a>        <span class="kw">match </span>listen_address {
 <a href=#370 id=370 data-nosnippet>370</a>            ListenAddress::Tcp(<span class="kw">_</span>) =&gt; {

@@ -51,7 +51,7 @@
 <a href=#51 id=51 data-nosnippet>51</a>    ///
 <a href=#52 id=52 data-nosnippet>52</a>    /// # Errors
 <a href=#53 id=53 data-nosnippet>53</a>    ///
-<a href=#54 id=54 data-nosnippet>54</a>    /// If the relative accuracy is not between `0` and `1`, an error is returned.
+<a href=#54 id=54 data-nosnippet>54</a>    /// If the relative accuracy isn't between `0` and `1`, an error is returned.
 <a href=#55 id=55 data-nosnippet>55</a>    </span><span class="kw">pub fn </span>with_relative_accuracy(relative_accuracy: f64) -&gt; <span class="prelude-ty">Result</span>&lt;<span class="self">Self</span>, <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str&gt; {
 <a href=#56 id=56 data-nosnippet>56</a>        <span class="kw">let </span>mapping = LogarithmicMapping::new(relative_accuracy)<span class="question-mark">?</span>;
 <a href=#57 id=57 data-nosnippet>57</a>        <span class="prelude-val">Ok</span>(<span class="self">Self</span>::new(
@@ -213,10 +213,10 @@
 <a href=#213 id=213 data-nosnippet>213</a>    ///
 <a href=#214 id=214 data-nosnippet>214</a>    /// # Note
 <a href=#215 id=215 data-nosnippet>215</a>    ///
-<a href=#216 id=216 data-nosnippet>216</a>    /// The protobuf `DDSketch` does not include `sum`, `min`, `max`, or `count` fields.
+<a href=#216 id=216 data-nosnippet>216</a>    /// The protobuf `DDSketch` doesn't include `sum`, `min`, `max`, or `count` fields.
 <a href=#217 id=217 data-nosnippet>217</a>    /// These are computed or set to defaults:
 <a href=#218 id=218 data-nosnippet>218</a>    /// - `count`: sum of all bin counts plus zero_count
-<a href=#219 id=219 data-nosnippet>219</a>    /// - `sum`, `min`, `max`: set to sentinel defaults (cannot be recovered from proto)
+<a href=#219 id=219 data-nosnippet>219</a>    /// - `sum`, `min`, `max`: set to sentinel defaults (can't be recovered from proto)
 <a href=#220 id=220 data-nosnippet>220</a>    </span><span class="kw">pub fn </span>from_proto(proto: <span class="kw-2">&amp;</span>ProtoDDSketch, mapping: M) -&gt; <span class="prelude-ty">Result</span>&lt;<span class="self">Self</span>, ProtoConversionError&gt;
 <a href=#221 id=221 data-nosnippet>221</a>    <span class="kw">where
 <a href=#222 id=222 data-nosnippet>222</a>        </span>S: Default,
@@ -256,7 +256,7 @@
 <a href=#256 id=256 data-nosnippet>256</a>    ///
 <a href=#257 id=257 data-nosnippet>257</a>    /// # Note
 <a href=#258 id=258 data-nosnippet>258</a>    ///
-<a href=#259 id=259 data-nosnippet>259</a>    /// The protobuf `DDSketch` does not include `sum`, `min`, `max`, or `count` fields.
+<a href=#259 id=259 data-nosnippet>259</a>    /// The protobuf `DDSketch` doesn't include `sum`, `min`, `max`, or `count` fields.
 <a href=#260 id=260 data-nosnippet>260</a>    /// This information is lost in the conversion.
 <a href=#261 id=261 data-nosnippet>261</a>    </span><span class="kw">pub fn </span>to_proto(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; ProtoDDSketch {
 <a href=#262 id=262 data-nosnippet>262</a>        <span class="kw">let </span><span class="kw-2">mut </span>proto = ProtoDDSketch::new();

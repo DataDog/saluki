@@ -181,7 +181,7 @@
 <a href=#181 id=181 data-nosnippet>181</a>    <span class="doccomment">/// A gauge.
 <a href=#182 id=182 data-nosnippet>182</a>    ///
 <a href=#183 id=183 data-nosnippet>183</a>    /// Gauges represent the latest value of a quantity, such as the current number of active connections. This value
-<a href=#184 id=184 data-nosnippet>184</a>    /// can go up or down, but gauges do not track the individual changes to the value, only the latest value.
+<a href=#184 id=184 data-nosnippet>184</a>    /// can go up or down, but gauges don't track the individual changes to the value, only the latest value.
 <a href=#185 id=185 data-nosnippet>185</a>    </span>Gauge(ScalarPoints),
 <a href=#186 id=186 data-nosnippet>186</a>
 <a href=#187 id=187 data-nosnippet>187</a>    <span class="doccomment">/// A set.
@@ -193,7 +193,7 @@
 <a href=#193 id=193 data-nosnippet>193</a>    ///
 <a href=#194 id=194 data-nosnippet>194</a>    /// Histograms represent the distribution of a quantity, such as the response times for a service, with forced
 <a href=#195 id=195 data-nosnippet>195</a>    /// client-side aggregation. Individual samples are stored locally, in full fidelity, and aggregate statistics
-<a href=#196 id=196 data-nosnippet>196</a>    /// can be queried against the sample set, but the individual samples cannot be accessed.
+<a href=#196 id=196 data-nosnippet>196</a>    /// can be queried against the sample set, but the individual samples can't be accessed.
 <a href=#197 id=197 data-nosnippet>197</a>    </span>Histogram(HistogramPoints),
 <a href=#198 id=198 data-nosnippet>198</a>
 <a href=#199 id=199 data-nosnippet>199</a>    <span class="doccomment">/// A distribution.
@@ -203,7 +203,7 @@
 <a href=#203 id=203 data-nosnippet>203</a>    /// with other sketches server-side to facilitate global aggregation.
 <a href=#204 id=204 data-nosnippet>204</a>    ///
 <a href=#205 id=205 data-nosnippet>205</a>    /// Like histograms, sketches also provide the ability to be queried for aggregate statistics but the individual
-<a href=#206 id=206 data-nosnippet>206</a>    /// samples cannot be accessed.
+<a href=#206 id=206 data-nosnippet>206</a>    /// samples can't be accessed.
 <a href=#207 id=207 data-nosnippet>207</a>    </span>Distribution(SketchPoints),
 <a href=#208 id=208 data-nosnippet>208</a>}
 <a href=#209 id=209 data-nosnippet>209</a>
@@ -364,7 +364,7 @@
 <a href=#364 id=364 data-nosnippet>364</a>
 <a href=#365 id=365 data-nosnippet>365</a>    <span class="doccomment">/// Sets the timestamp for all values in this metric.
 <a href=#366 id=366 data-nosnippet>366</a>    ///
-<a href=#367 id=367 data-nosnippet>367</a>    /// This overrides all existing timestamps whether they are set or not. If `timestamp` is zero, all existing
+<a href=#367 id=367 data-nosnippet>367</a>    /// This overrides all existing timestamps whether they're set or not. If `timestamp` is zero, all existing
 <a href=#368 id=368 data-nosnippet>368</a>    /// timestamps will be cleared.
 <a href=#369 id=369 data-nosnippet>369</a>    </span><span class="kw">pub fn </span>set_timestamp(<span class="kw-2">&amp;mut </span><span class="self">self</span>, timestamp: u64) {
 <a href=#370 id=370 data-nosnippet>370</a>        <span class="kw">match </span><span class="self">self </span>{
@@ -425,7 +425,7 @@
 <a href=#425 id=425 data-nosnippet>425</a>    <span class="doccomment">/// Merges another set of metric values into this one.
 <a href=#426 id=426 data-nosnippet>426</a>    ///
 <a href=#427 id=427 data-nosnippet>427</a>    /// If both `self` and `other` are the same metric type, their values will be merged appropriately. If the metric
-<a href=#428 id=428 data-nosnippet>428</a>    /// types are different, or a specific precondition for the metric type is not met, the incoming values will override
+<a href=#428 id=428 data-nosnippet>428</a>    /// types are different, or a specific precondition for the metric type isn't met, the incoming values will override
 <a href=#429 id=429 data-nosnippet>429</a>    /// the existing values instead.
 <a href=#430 id=430 data-nosnippet>430</a>    ///
 <a href=#431 id=431 data-nosnippet>431</a>    /// For rates, the interval of both rates must match to be merged. For gauges, the incoming value will override the

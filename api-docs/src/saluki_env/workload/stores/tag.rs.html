@@ -82,7 +82,7 @@
 <a href=#82 id=82 data-nosnippet>82</a>    <span class="doccomment">/// Creates a new `TagStore` with the given entity limit.
 <a href=#83 id=83 data-nosnippet>83</a>    ///
 <a href=#84 id=84 data-nosnippet>84</a>    /// The entity limit is the maximum number of unique entities that can be stored. Once the limit is reached, new
-<a href=#85 id=85 data-nosnippet>85</a>    /// entities will not be added to the store.
+<a href=#85 id=85 data-nosnippet>85</a>    /// entities won't be added to the store.
 <a href=#86 id=86 data-nosnippet>86</a>    </span><span class="kw">pub fn </span>with_entity_limit(entity_limit: NonZeroUsize) -&gt; <span class="self">Self </span>{
 <a href=#87 id=87 data-nosnippet>87</a>        <span class="kw">let </span>telemetry = Telemetry::new();
 <a href=#88 id=88 data-nosnippet>88</a>        telemetry.entity_limit().set(entity_limit.get() <span class="kw">as </span>f64);
@@ -256,7 +256,7 @@
 <a href=#256 id=256 data-nosnippet>256</a>    /// When an entity is aliased, the tags for the aliased entity will be visited instead of any tags for the entity itself.
 <a href=#257 id=257 data-nosnippet>257</a>    ///
 <a href=#258 id=258 data-nosnippet>258</a>    /// Returns `Some(SharedTagSet)` with all tags for the entity at the requested cardinality level, or `None` if the
-<a href=#259 id=259 data-nosnippet>259</a>    /// entity has no tags at the requested cardinality level or if the entity does not exist.
+<a href=#259 id=259 data-nosnippet>259</a>    /// entity has no tags at the requested cardinality level or if the entity doesn't exist.
 <a href=#260 id=260 data-nosnippet>260</a>    </span><span class="kw">pub fn </span>get_entity_tags(<span class="kw-2">&amp;</span><span class="self">self</span>, entity_id: <span class="kw-2">&amp;</span>EntityId, cardinality: OriginTagCardinality) -&gt; <span class="prelude-ty">Option</span>&lt;SharedTagSet&gt; {
 <a href=#261 id=261 data-nosnippet>261</a>        <span class="kw">const </span>CARDINALITY_LEVELS: [OriginTagCardinality; <span class="number">3</span>] = [
 <a href=#262 id=262 data-nosnippet>262</a>            OriginTagCardinality::Low,
@@ -302,7 +302,7 @@
 <a href=#302 id=302 data-nosnippet>302</a>
 <a href=#303 id=303 data-nosnippet>303</a>    <span class="doccomment">/// Gets the exact tags for an entity at the specific cardinality.
 <a href=#304 id=304 data-nosnippet>304</a>    ///
-<a href=#305 id=305 data-nosnippet>305</a>    /// Unlike `visit_entity_tags`, this method does not visit tags at lower cardinalities, and it does not visit tags
+<a href=#305 id=305 data-nosnippet>305</a>    /// Unlike `visit_entity_tags`, this method doesn't visit tags at lower cardinalities, and it doesn't visit tags
 <a href=#306 id=306 data-nosnippet>306</a>    /// for an aliased entity.
 <a href=#307 id=307 data-nosnippet>307</a>    ///
 <a href=#308 id=308 data-nosnippet>308</a>    /// If no tags can be found for the entity, or at the given cardinality, `None` is returned.

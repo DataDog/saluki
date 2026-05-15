@@ -20,7 +20,7 @@
 <a href=#20 id=20 data-nosnippet>20</a>    <span class="doccomment">/// The global entity.
 <a href=#21 id=21 data-nosnippet>21</a>    ///
 <a href=#22 id=22 data-nosnippet>22</a>    /// Represents the root of the entity hierarchy, which is equivalent to a "global" scope. This is generally used
-<a href=#23 id=23 data-nosnippet>23</a>    /// to represent a collection of metadata entries that are not associated with any specific entity, but with
+<a href=#23 id=23 data-nosnippet>23</a>    /// to represent a collection of metadata entries that aren't associated with any specific entity, but with
 <a href=#24 id=24 data-nosnippet>24</a>    /// anything within the workload, such as host or cluster tags.
 <a href=#25 id=25 data-nosnippet>25</a>    </span>Global,
 <a href=#26 id=26 data-nosnippet>26</a>
@@ -56,7 +56,7 @@
 <a href=#56 id=56 data-nosnippet>56</a>    /// - If the input starts with `cid-`, we treat it as a container ID.
 <a href=#57 id=57 data-nosnippet>57</a>    /// - If none of the above conditions are met, we assume the entire input is a container ID.
 <a href=#58 id=58 data-nosnippet>58</a>    ///
-<a href=#59 id=59 data-nosnippet>59</a>    /// If the input fails to be parsed in a valid fashion (for example, `in-` prefix but the remainder is not a valid
+<a href=#59 id=59 data-nosnippet>59</a>    /// If the input fails to be parsed in a valid fashion (for example, `in-` prefix but the remainder isn't a valid
 <a href=#60 id=60 data-nosnippet>60</a>    /// integer), or is empty, `None` is returned.
 <a href=#61 id=61 data-nosnippet>61</a>    </span><span class="kw">pub fn </span>from_local_data&lt;S&gt;(raw_local_data: S) -&gt; <span class="prelude-ty">Option</span>&lt;<span class="self">Self</span>&gt;
 <a href=#62 id=62 data-nosnippet>62</a>    <span class="kw">where
@@ -174,7 +174,7 @@
 <a href=#174 id=174 data-nosnippet>174</a>/// - container inode
 <a href=#175 id=175 data-nosnippet>175</a>/// - container PID (lowest precedence)
 <a href=#176 id=176 data-nosnippet>176</a>///
-<a href=#177 id=177 data-nosnippet>177</a>/// Wrapped entity IDs are be sorted highest to lowest precedence. For entity IDs with the same precedence, they are
+<a href=#177 id=177 data-nosnippet>177</a>/// Wrapped entity IDs are be sorted highest to lowest precedence. For entity IDs with the same precedence, they're
 <a href=#178 id=178 data-nosnippet>178</a>/// further ordered by their internal value. For entity IDs with a string identifier, lexicographical ordering is used.
 <a href=#179 id=179 data-nosnippet>179</a>/// For entity IDs with a numeric identifier, numerical ordering is used.
 <a href=#180 id=180 data-nosnippet>180</a></span><span class="attr">#[derive(Eq, PartialEq)]

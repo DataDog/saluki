@@ -4,17 +4,17 @@ different, user-defined allocation groups.</p>
 <h3 id="allocation-groups"><a class="doc-anchor" href="#allocation-groups">§</a>Allocation groups</h3>
 <p>Allocation (and deallocations) are tracked by <strong>allocation group</strong>. When this allocator is used, every allocation is
 associated with an allocation group. Allocation groups are user-defined, except for the default “root” allocation
-group which acts as a catch-all for allocations when a user-defined group is not entered.</p>
+group which acts as a catch-all for allocations when a user-defined group isn’t entered.</p>
 <h3 id="token-guard"><a class="doc-anchor" href="#token-guard">§</a>Token guard</h3>
 <p>When an allocation group is registered, an <code>AllocationGroupToken</code> is returned. This token can be used to “enter” the
 group, which attribute all allocations on the current thread to that group. Entering the group returns a drop guard
-that restores the previously entered allocation when it is dropped.</p>
+that restores the previously entered allocation when it’s dropped.</p>
 <p>This allows for arbitrarily nested allocation groups.</p>
 <h3 id="changes-to-memory-layout"><a class="doc-anchor" href="#changes-to-memory-layout">§</a>Changes to memory layout</h3>
 <p>In order to associate an allocation with the current allocation group, a small trailer is added to the requested
 allocation layout, in the form of a pointer to the statistics for the allocation group. This allows updating the
 statistics directly when an allocation is deallocated, without having to externally keep track of what group a given
-allocation belongs to. These statistics are updated directly when the allocation is initially made, and when it is
+allocation belongs to. These statistics are updated directly when the allocation is initially made, and when it’s
 deallocated.</p>
 <p>This means that all requested allocations end up being one machine word larger: 4 bytes on 32-bit systems, and 8
 bytes on 64-bit systems.</p>

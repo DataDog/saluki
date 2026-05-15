@@ -63,7 +63,7 @@
 <a href=#63 id=63 data-nosnippet>63</a>    ///
 <a href=#64 id=64 data-nosnippet>64</a>    /// # Errors
 <a href=#65 id=65 data-nosnippet>65</a>    ///
-<a href=#66 id=66 data-nosnippet>66</a>    /// Returns an error if the new output layers cannot be constructed (for example, the configured log file path is
+<a href=#66 id=66 data-nosnippet>66</a>    /// Returns an error if the new output layers can't be constructed (for example, the configured log file path is
 <a href=#67 id=67 data-nosnippet>67</a>    /// inaccessible) or if the override worker is no longer running.
 <a href=#68 id=68 data-nosnippet>68</a>    </span><span class="kw">pub async fn </span>reload(<span class="kw-2">&amp;mut </span><span class="self">self</span>, config: LoggingConfiguration) -&gt; <span class="prelude-ty">Result</span>&lt;(), GenericError&gt; {
 <a href=#69 id=69 data-nosnippet>69</a>        <span class="kw">let </span>(new_stack, new_guards) = build_output_stack(<span class="kw-2">&amp;</span>config)<span class="question-mark">?</span>;

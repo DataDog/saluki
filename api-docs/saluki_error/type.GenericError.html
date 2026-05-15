@@ -2,7 +2,7 @@
 <p><code>GenericError</code> works a lot like <code>Box&lt;dyn std::error::Error&gt;</code>, but with these differences:</p>
 <ul>
 <li><code>GenericError</code> requires that the error is <code>Send</code>, <code>Sync</code>, and <code>'static</code>.</li>
-<li><code>GenericError</code> guarantees that a backtrace is available, even if the underlying error type does not provide one.</li>
+<li><code>GenericError</code> guarantees that a backtrace is available, even if the underlying error type doesn’t provide one.</li>
 <li><code>GenericError</code> is represented as a narrow pointer—exactly one word in size instead of two.</li>
 </ul>
 </div></details><h2 id="aliased-type" class="section-header">Aliased Type<a href="#aliased-type" class="anchor">§</a></h2><pre class="rust item-decl"><code>pub struct GenericError { <span class="comment">/* private fields */</span> }</code></pre><script src="../type.impl/anyhow/struct.Error.js" data-self-path="saluki_error::GenericError" async></script></section></div></main></body></html>

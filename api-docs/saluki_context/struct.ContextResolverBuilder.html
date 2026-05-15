@@ -4,27 +4,27 @@
 <li>Support for configuring the size limit of cached contexts.</li>
 </ul>
 </div></details><h2 id="implementations" class="section-header">Implementations<a href="#implementations" class="anchor">§</a></h2><div id="implementations-list"><details class="toggle implementors-toggle" open><summary><section id="impl-ContextResolverBuilder" class="impl"><a class="src rightside" href="../src/saluki_context/resolver.rs.html#72-303">Source</a><a href="#impl-ContextResolverBuilder" class="anchor">§</a><h3 class="code-header">impl <a class="struct" href="struct.ContextResolverBuilder.html" title="struct saluki_context::ContextResolverBuilder">ContextResolverBuilder</a></h3></section></summary><div class="impl-items"><details class="toggle method-toggle" open><summary><section id="method.from_name" class="method"><a class="src rightside" href="../src/saluki_context/resolver.rs.html#82-100">Source</a><h4 class="code-header">pub fn <a href="#method.from_name" class="fn">from_name</a>&lt;S: <a class="trait" href="https://doc.rust-lang.org/nightly/core/convert/trait.Into.html" title="trait core::convert::Into">Into</a>&lt;<a class="struct" href="https://doc.rust-lang.org/nightly/alloc/string/struct.String.html" title="struct alloc::string::String">String</a>&gt;&gt;(name: S) -&gt; <a class="enum" href="https://doc.rust-lang.org/nightly/core/result/enum.Result.html" title="enum core::result::Result">Result</a>&lt;Self, GenericError&gt;</h4></section></summary><div class="docblock"><p>Creates a new <code>ContextResolverBuilder</code> with the given resolver name.</p>
-<p>The resolver name <em>should</em> be unique, but it is not required to be. Metrics for the resolver will be
-emitted using the given name, so in cases where the name is not unique, those metrics will be aggregated
-together and it will not be possible to distinguish between the different resolvers.</p>
+<p>The resolver name <em>should</em> be unique, but it’sn’t required to be. Metrics for the resolver will be
+emitted using the given name, so in cases where the name isn’t unique, those metrics will be aggregated
+together and it won’t be possible to distinguish between the different resolvers.</p>
 <h5 id="errors"><a class="doc-anchor" href="#errors">§</a>Errors</h5>
 <p>If the given resolver name is empty, an error is returned.</p>
 </div></details><details class="toggle method-toggle" open><summary><section id="method.without_caching" class="method"><a class="src rightside" href="../src/saluki_context/resolver.rs.html#116-120">Source</a><h4 class="code-header">pub fn <a href="#method.without_caching" class="fn">without_caching</a>(self) -&gt; Self</h4></section></summary><div class="docblock"><p>Sets whether or not to enable caching of resolved contexts.</p>
 <p><a href="struct.ContextResolver.html" title="struct saluki_context::ContextResolver"><code>ContextResolver</code></a> provides two main benefits: consistent behavior for resolving contexts (interning, origin
 tags, etc), and the caching of those resolved contexts to speed up future resolutions. However, caching contexts
-means that we pay a memory cost for the cache itself, even if the contexts are not ever reused or are seen
-infrequently. While expiration can help free up cache capacity, it cannot help recover the memory used by the
+means that we pay a memory cost for the cache itself, even if the contexts aren’t ever reused or are seen
+infrequently. While expiration can help free up cache capacity, it can’t help recover the memory used by the
 underlying cache data structure once they have expanded to hold the contexts.</p>
 <p>Disabling caching allows normal resolving to take place without the overhead of caching the contexts. This can
-lead to lower average memory usage, as contexts will only live as long as they are needed, but it will reduce
+lead to lower average memory usage, as contexts will only live as long as they’re needed, but it will reduce
 memory determinism as memory will be allocated for every resolved context (minus interned strings), which means
 that resolving the same context ten times in a row will result in ten separate allocations, and so on.</p>
 <p>Defaults to caching enabled.</p>
 </div></details><details class="toggle method-toggle" open><summary><section id="method.with_cached_contexts_limit" class="method"><a class="src rightside" href="../src/saluki_context/resolver.rs.html#136-144">Source</a><h4 class="code-header">pub fn <a href="#method.with_cached_contexts_limit" class="fn">with_cached_contexts_limit</a>(self, limit: <a class="primitive" href="https://doc.rust-lang.org/nightly/std/primitive.usize.html">usize</a>) -&gt; Self</h4></section></summary><div class="docblock"><p>Sets the limit on the number of cached contexts.</p>
-<p>This is the maximum number of resolved contexts that can be cached at any given time. This limit does not affect
+<p>This is the maximum number of resolved contexts that can be cached at any given time. This limit doesn’t affect
 the total number of contexts that can be <em>alive</em> at any given time, which is dependent on the interner capacity
 and whether or not heap allocations are allowed.</p>
-<p>Caching contexts is beneficial when the same context is resolved frequently, and it is generally worth
+<p>Caching contexts is beneficial when the same context is resolved frequently, and it’s generally worth
 allowing for higher limits on cached contexts when heap allocations are allowed, as this can better amortize the
 cost of those heap allocations.</p>
 <p>If value is zero, caching will be disabled, and no contexts will be cached. This is equivalent to calling
@@ -39,7 +39,7 @@ context.</p>
 </div></details><details class="toggle method-toggle" open><summary><section id="method.with_interner_capacity_bytes" class="method"><a class="src rightside" href="../src/saluki_context/resolver.rs.html#174-177">Source</a><h4 class="code-header">pub fn <a href="#method.with_interner_capacity_bytes" class="fn">with_interner_capacity_bytes</a>(self, capacity: <a class="type" href="https://doc.rust-lang.org/nightly/core/num/nonzero/type.NonZeroUsize.html" title="type core::num::nonzero::NonZeroUsize">NonZeroUsize</a>) -&gt; Self</h4></section></summary><div class="docblock"><p>Sets the capacity of the string interner, in bytes.</p>
 <p>This is the maximum number of bytes that the interner will use for interning strings that are present in
 contexts being resolved. This capacity may or may not be allocated entirely when the resolver is built, but the
-interner will not exceed the configured capacity when allocating any backing storage.</p>
+interner won’t exceed the configured capacity when allocating any backing storage.</p>
 <p>This value directly impacts the number of contexts that can be resolved when heap allocations are disabled, as
 all resolved contexts must either have values (name or tags) that can be inlined or interned. Once the interner
 is full, contexts may fail to be resolved if heap allocations are disabled.</p>
@@ -50,7 +50,7 @@ translate to around 5000 unique contexts per 1MB of interner size.</p>
 </div></details><details class="toggle method-toggle" open><summary><section id="method.with_heap_allocations" class="method"><a class="src rightside" href="../src/saluki_context/resolver.rs.html#187-190">Source</a><h4 class="code-header">pub fn <a href="#method.with_heap_allocations" class="fn">with_heap_allocations</a>(self, allow: <a class="primitive" href="https://doc.rust-lang.org/nightly/std/primitive.bool.html">bool</a>) -&gt; Self</h4></section></summary><div class="docblock"><p>Sets whether or not to allow heap allocations when interning strings.</p>
 <p>In cases where the interner is full, this setting determines whether or not we refuse to resolve a context, or
 if we allow it be resolved by allocating strings on the heap. When heap allocations are enabled, the amount of
-memory that can be used by the interner is effectively unlimited, as contexts that cannot be interned will be
+memory that can be used by the interner is effectively unlimited, as contexts that can’t be interned will be
 simply spill to the heap instead of being limited in any way.</p>
 <p>Defaults to <code>true</code>.</p>
 </div></details><details class="toggle method-toggle" open><summary><section id="method.with_tags_resolver" class="method"><a class="src rightside" href="../src/saluki_context/resolver.rs.html#195-198">Source</a><h4 class="code-header">pub fn <a href="#method.with_tags_resolver" class="fn">with_tags_resolver</a>(self, resolver: <a class="enum" href="https://doc.rust-lang.org/nightly/core/option/enum.Option.html" title="enum core::option::Option">Option</a>&lt;<a class="struct" href="struct.TagsResolver.html" title="struct saluki_context::TagsResolver">TagsResolver</a>&gt;) -&gt; Self</h4></section></summary><div class="docblock"><p>Sets the tags resolver.</p>
@@ -62,8 +62,8 @@ resolver in an asynchronous context so that the telemetry task can be spawned. T
 telemetry reporting in those cases.</p>
 <p>Defaults to telemetry enabled.</p>
 </div></details><details class="toggle method-toggle" open><summary><section id="method.with_interner" class="method"><a class="src rightside" href="../src/saluki_context/resolver.rs.html#216-219">Source</a><h4 class="code-header">pub fn <a href="#method.with_interner" class="fn">with_interner</a>(self, interner: GenericMapInterner) -&gt; Self</h4></section></summary><div class="docblock"><p>Sets the interner to use for this resolver.</p>
-<p>If an interner is not provided, an interner will be created in <a href="struct.ContextResolverBuilder.html#method.build" title="method saluki_context::ContextResolverBuilder::build"><code>ContextResolverBuilder::build</code></a></p>
-</div></details><details class="toggle method-toggle" open><summary><section id="method.for_tests" class="method"><a class="src rightside" href="../src/saluki_context/resolver.rs.html#233-241">Source</a><h4 class="code-header">pub fn <a href="#method.for_tests" class="fn">for_tests</a>() -&gt; Self</h4></section></summary><div class="docblock"><p>Configures a <a href="struct.ContextResolverBuilder.html" title="struct saluki_context::ContextResolverBuilder"><code>ContextResolverBuilder</code></a> that is suitable for tests.</p>
+<p>If an interner isn’t provided, an interner will be created in <a href="struct.ContextResolverBuilder.html#method.build" title="method saluki_context::ContextResolverBuilder::build"><code>ContextResolverBuilder::build</code></a></p>
+</div></details><details class="toggle method-toggle" open><summary><section id="method.for_tests" class="method"><a class="src rightside" href="../src/saluki_context/resolver.rs.html#233-241">Source</a><h4 class="code-header">pub fn <a href="#method.for_tests" class="fn">for_tests</a>() -&gt; Self</h4></section></summary><div class="docblock"><p>Configures a <a href="struct.ContextResolverBuilder.html" title="struct saluki_context::ContextResolverBuilder"><code>ContextResolverBuilder</code></a> that’s suitable for tests.</p>
 <p>This configures the builder with the following defaults:</p>
 <ul>
 <li>resolver name of “noop”</li>

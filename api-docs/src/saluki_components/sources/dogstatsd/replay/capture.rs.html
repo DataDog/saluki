@@ -96,7 +96,7 @@
 <a href=#96 id=96 data-nosnippet>96</a>    ///
 <a href=#97 id=97 data-nosnippet>97</a>    /// # Errors
 <a href=#98 id=98 data-nosnippet>98</a>    ///
-<a href=#99 id=99 data-nosnippet>99</a>    /// Returns an error if the DogStatsD source has not been built and bound to this control handle yet.
+<a href=#99 id=99 data-nosnippet>99</a>    /// Returns an error if the DogStatsD source hasn't been built and bound to this control handle yet.
 <a href=#100 id=100 data-nosnippet>100</a>    </span><span class="kw">pub fn </span>is_ongoing(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="prelude-ty">Result</span>&lt;bool, GenericError&gt; {
 <a href=#101 id=101 data-nosnippet>101</a>        <span class="prelude-val">Ok</span>(<span class="self">self</span>.bound_capture()<span class="question-mark">?</span>.is_ongoing())
 <a href=#102 id=102 data-nosnippet>102</a>    }
@@ -105,7 +105,7 @@
 <a href=#105 id=105 data-nosnippet>105</a>    ///
 <a href=#106 id=106 data-nosnippet>106</a>    /// # Errors
 <a href=#107 id=107 data-nosnippet>107</a>    ///
-<a href=#108 id=108 data-nosnippet>108</a>    /// Returns an error if the DogStatsD source has not been built yet, or if the underlying capture runtime rejects
+<a href=#108 id=108 data-nosnippet>108</a>    /// Returns an error if the DogStatsD source hasn't been built yet, or if the underlying capture runtime rejects
 <a href=#109 id=109 data-nosnippet>109</a>    /// the start request.
 <a href=#110 id=110 data-nosnippet>110</a>    </span><span class="kw">pub fn </span>start_capture(
 <a href=#111 id=111 data-nosnippet>111</a>        <span class="kw-2">&amp;</span><span class="self">self</span>, requested_dir: <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span>Path&gt;, duration: Duration, compressed: bool,
@@ -117,7 +117,7 @@
 <a href=#117 id=117 data-nosnippet>117</a>    ///
 <a href=#118 id=118 data-nosnippet>118</a>    /// # Errors
 <a href=#119 id=119 data-nosnippet>119</a>    ///
-<a href=#120 id=120 data-nosnippet>120</a>    /// Returns an error if the DogStatsD source has not been built yet.
+<a href=#120 id=120 data-nosnippet>120</a>    /// Returns an error if the DogStatsD source hasn't been built yet.
 <a href=#121 id=121 data-nosnippet>121</a>    </span><span class="kw">pub fn </span>stop_capture(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="prelude-ty">Result</span>&lt;(), GenericError&gt; {
 <a href=#122 id=122 data-nosnippet>122</a>        <span class="self">self</span>.bound_capture()<span class="question-mark">?</span>.stop_capture();
 <a href=#123 id=123 data-nosnippet>123</a>        <span class="prelude-val">Ok</span>(())

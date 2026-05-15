@@ -11,7 +11,7 @@
 <a href=#11 id=11 data-nosnippet>11</a><span class="doccomment">/// A container that holds events.
 <a href=#12 id=12 data-nosnippet>12</a>///
 <a href=#13 id=13 data-nosnippet>13</a>/// This trait is used as an incredibly generic way to expose the number of events within a "container", which we
-<a href=#14 id=14 data-nosnippet>14</a>/// loosely define to be anything that is holding events in some form. This is primarily used to track the number of
+<a href=#14 id=14 data-nosnippet>14</a>/// loosely define to be anything that's holding events in some form. This is primarily used to track the number of
 <a href=#15 id=15 data-nosnippet>15</a>/// events dropped by `RetryQueue` (and `PersistedQueue`) when entries have to be dropped due to size limits.
 <a href=#16 id=16 data-nosnippet>16</a></span><span class="kw">pub trait </span>EventContainer {
 <a href=#17 id=17 data-nosnippet>17</a>    <span class="doccomment">/// Returns the number of events represented by this container.
@@ -110,7 +110,7 @@
 <a href=#110 id=110 data-nosnippet>110</a>    <span class="doccomment">/// Configures the queue to persist pending entries to disk.
 <a href=#111 id=111 data-nosnippet>111</a>    ///
 <a href=#112 id=112 data-nosnippet>112</a>    /// Disk persistence is used as a fallback to in-memory storage when the queue is full. When attempting to add a new
-<a href=#113 id=113 data-nosnippet>113</a>    /// entry to the queue, and the queue cannot fit the entry in-memory, in-memory entries will be persisted to disk,
+<a href=#113 id=113 data-nosnippet>113</a>    /// entry to the queue, and the queue can't fit the entry in-memory, in-memory entries will be persisted to disk,
 <a href=#114 id=114 data-nosnippet>114</a>    /// oldest first.
 <a href=#115 id=115 data-nosnippet>115</a>    ///
 <a href=#116 id=116 data-nosnippet>116</a>    /// When reading entries from the queue, in-memory entries are read first, followed by persisted entries. This
@@ -161,14 +161,14 @@
 <a href=#161 id=161 data-nosnippet>161</a>    <span class="doccomment">/// Returns the number of persisted entries that have been permanently dropped due to errors since the last call
 <a href=#162 id=162 data-nosnippet>162</a>    /// to this method, resetting the counter.
 <a href=#163 id=163 data-nosnippet>163</a>    ///
-<a href=#164 id=164 data-nosnippet>164</a>    /// Always returns 0 if disk persistence is not enabled.
+<a href=#164 id=164 data-nosnippet>164</a>    /// Always returns 0 if disk persistence isn't enabled.
 <a href=#165 id=165 data-nosnippet>165</a>    </span><span class="kw">pub fn </span>take_persisted_entries_dropped(<span class="kw-2">&amp;mut </span><span class="self">self</span>) -&gt; u64 {
 <a href=#166 id=166 data-nosnippet>166</a>        <span class="self">self</span>.persisted_pending.as_mut().map_or(<span class="number">0</span>, |p| p.take_entries_dropped())
 <a href=#167 id=167 data-nosnippet>167</a>    }
 <a href=#168 id=168 data-nosnippet>168</a>
 <a href=#169 id=169 data-nosnippet>169</a>    <span class="doccomment">/// Enqueues an entry.
 <a href=#170 id=170 data-nosnippet>170</a>    ///
-<a href=#171 id=171 data-nosnippet>171</a>    /// If the queue is full and the entry cannot be enqueue in-memory, and disk persistence is enabled, in-memory
+<a href=#171 id=171 data-nosnippet>171</a>    /// If the queue is full and the entry can't be enqueue in-memory, and disk persistence is enabled, in-memory
 <a href=#172 id=172 data-nosnippet>172</a>    /// entries will be moved to disk (oldest first) until enough capacity is available to enqueue the new entry
 <a href=#173 id=173 data-nosnippet>173</a>    /// in-memory.
 <a href=#174 id=174 data-nosnippet>174</a>    ///
@@ -251,7 +251,7 @@
 <a href=#251 id=251 data-nosnippet>251</a>    <span class="doccomment">/// Flushes all entries, potentially persisting them to disk.
 <a href=#252 id=252 data-nosnippet>252</a>    ///
 <a href=#253 id=253 data-nosnippet>253</a>    /// When disk persistence is configured, this will flush all in-memory entries to disk. Flushing to disk still obeys
-<a href=#254 id=254 data-nosnippet>254</a>    /// the normal limiting behavior in terms of maximum on-disk size. When disk persistence is not enabled, all
+<a href=#254 id=254 data-nosnippet>254</a>    /// the normal limiting behavior in terms of maximum on-disk size. When disk persistence isn't enabled, all
 <a href=#255 id=255 data-nosnippet>255</a>    /// in-memory entries will be dropped.
 <a href=#256 id=256 data-nosnippet>256</a>    ///
 <a href=#257 id=257 data-nosnippet>257</a>    /// # Errors

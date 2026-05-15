@@ -17,7 +17,7 @@
 <a href=#17 id=17 data-nosnippet>17</a>/// Marker trait for types which can support being used as a metric tag, in order to optimize their internal
 <a href=#18 id=18 data-nosnippet>18</a>/// representation to avoid unnecessary allocations.
 <a href=#19 id=19 data-nosnippet>19</a>///
-<a href=#20 id=20 data-nosnippet>20</a>/// This trait is sealed and cannot be implemented outside of this crate.
+<a href=#20 id=20 data-nosnippet>20</a>/// This trait is sealed and can't be implemented outside of this crate.
 <a href=#21 id=21 data-nosnippet>21</a></span><span class="kw">pub trait </span>MetricTag: private::Sealed {
 <a href=#22 id=22 data-nosnippet>22</a>    <span class="doccomment">/// Consumes `self` and converts it to a tag.
 <a href=#23 id=23 data-nosnippet>23</a>    ///

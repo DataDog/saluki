@@ -28,12 +28,12 @@
 <a href=#28 id=28 data-nosnippet>28</a>
 <a href=#29 id=29 data-nosnippet>29</a><span class="doccomment">/// Imposes a limit on the age of a connection.
 <a href=#30 id=30 data-nosnippet>30</a>///
-<a href=#31 id=31 data-nosnippet>31</a>/// In many cases, it is undesirable to hold onto a connection indefinitely, even if it can be theoretically reused.
+<a href=#31 id=31 data-nosnippet>31</a>/// In many cases, it's undesirable to hold onto a connection indefinitely, even if it can be theoretically reused.
 <a href=#32 id=32 data-nosnippet>32</a>/// Doing so can make it more difficult to perform maintenance on infrastructure, as the expectation of old connections
-<a href=#33 id=33 data-nosnippet>33</a>/// being eventually closed and replaced is not upheld.
+<a href=#33 id=33 data-nosnippet>33</a>/// being eventually closed and replaced isn't upheld.
 <a href=#34 id=34 data-nosnippet>34</a>///
 <a href=#35 id=35 data-nosnippet>35</a>/// This extension allows tracking the age of a connection (based on when the connector creates the connection) and
-<a href=#36 id=36 data-nosnippet>36</a>/// checking if it is expired, or past the configured limit. Callers can then decide how to handle the expiration, such
+<a href=#36 id=36 data-nosnippet>36</a>/// checking if it's expired, or past the configured limit. Callers can then decide how to handle the expiration, such
 <a href=#37 id=37 data-nosnippet>37</a>/// as by closing the connection.
 <a href=#38 id=38 data-nosnippet>38</a></span><span class="attr">#[derive(Clone)]
 <a href=#39 id=39 data-nosnippet>39</a></span><span class="kw">struct </span>ConnectionAgeLimit {
@@ -360,7 +360,7 @@
 <a href=#360 id=360 data-nosnippet>360</a>        <span class="self">self
 <a href=#361 id=361 data-nosnippet>361</a>    </span>}
 <a href=#362 id=362 data-nosnippet>362</a>
-<a href=#363 id=363 data-nosnippet>363</a>    <span class="doccomment">/// Sets the maximum age of a connection before it is closed.
+<a href=#363 id=363 data-nosnippet>363</a>    <span class="doccomment">/// Sets the maximum age of a connection before it's closed.
 <a href=#364 id=364 data-nosnippet>364</a>    ///
 <a href=#365 id=365 data-nosnippet>365</a>    /// This is distinct from the maximum idle time: if any connection's age exceeds `limit`, it will be closed rather
 <a href=#366 id=366 data-nosnippet>366</a>    /// than being reused and added to the idle connection pool.
@@ -376,7 +376,7 @@
 <a href=#376 id=376 data-nosnippet>376</a>
 <a href=#377 id=377 data-nosnippet>377</a>    <span class="doccomment">/// Sets a counter that gets incremented with the number of bytes sent over the connection.
 <a href=#378 id=378 data-nosnippet>378</a>    ///
-<a href=#379 id=379 data-nosnippet>379</a>    /// This tracks bytes sent at the HTTP client level, which includes headers and body but does not include underlying
+<a href=#379 id=379 data-nosnippet>379</a>    /// This tracks bytes sent at the HTTP client level, which includes headers and body but doesn't include underlying
 <a href=#380 id=380 data-nosnippet>380</a>    /// transport overhead, such as TLS handshaking, and so on.
 <a href=#381 id=381 data-nosnippet>381</a>    ///
 <a href=#382 id=382 data-nosnippet>382</a>    /// Defaults to unset.

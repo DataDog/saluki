@@ -19,12 +19,12 @@
 <a href=#19 id=19 data-nosnippet>19</a>///
 <a href=#20 id=20 data-nosnippet>20</a>/// `MemoryLimiter` watches the process's physical memory usage (Resident Set Size/Working Set) and keeps track of when
 <a href=#21 id=21 data-nosnippet>21</a>/// the usage exceeds the configured limit. Cooperating tasks call `wait_for_capacity` to participate in accepting
-<a href=#22 id=22 data-nosnippet>22</a>/// backpressure that can be used to throttle work that is responsible for allocating memory.
+<a href=#22 id=22 data-nosnippet>22</a>/// backpressure that can be used to throttle work that's responsible for allocating memory.
 <a href=#23 id=23 data-nosnippet>23</a>///
 <a href=#24 id=24 data-nosnippet>24</a>/// The backpressure is scaled based on how close the memory usage is to the configured limit, with a minimum and
-<a href=#25 id=25 data-nosnippet>25</a>/// maximum backoff duration that is applied. This means that until we are using a certain percentage of the configured
+<a href=#25 id=25 data-nosnippet>25</a>/// maximum backoff duration that's applied. This means that until we're using a certain percentage of the configured
 <a href=#26 id=26 data-nosnippet>26</a>/// limit, no backpressure is applied. Once that threshold is crossed, backpressure is applied proportionally to how
-<a href=#27 id=27 data-nosnippet>27</a>/// close to the limit we are. Callers are never fully blocked even if the limit is reached.
+<a href=#27 id=27 data-nosnippet>27</a>/// close to the limit we're. Callers are never fully blocked even if the limit is reached.
 <a href=#28 id=28 data-nosnippet>28</a></span><span class="attr">#[derive(Clone)]
 <a href=#29 id=29 data-nosnippet>29</a></span><span class="kw">pub struct </span>MemoryLimiter {
 <a href=#30 id=30 data-nosnippet>30</a>    active_backoff_nanos: Arc&lt;AtomicU64&gt;,
@@ -37,7 +37,7 @@
 <a href=#37 id=37 data-nosnippet>37</a>    /// `wait_for_capacity` will observe waiting once the memory usage exceeds the configured limit threshold. The
 <a href=#38 id=38 data-nosnippet>38</a>    /// waiting time will scale progressively the closer the memory usage is to the configured limit.
 <a href=#39 id=39 data-nosnippet>39</a>    ///
-<a href=#40 id=40 data-nosnippet>40</a>    /// Defaults to a 95% threshold (that is, threshold begins at 95% of the limit), a minimum backoff duration of 1ms, and
+<a href=#40 id=40 data-nosnippet>40</a>    /// Defaults to a 95% threshold (that's, threshold begins at 95% of the limit), a minimum backoff duration of 1ms, and
 <a href=#41 id=41 data-nosnippet>41</a>    /// a maximum backoff duration of 25ms. The effective limit of the grant is used as the memory limit.
 <a href=#42 id=42 data-nosnippet>42</a>    </span><span class="kw">pub fn </span>new(grant: MemoryGrant) -&gt; <span class="prelude-ty">Option</span>&lt;<span class="self">Self</span>&gt; {
 <a href=#43 id=43 data-nosnippet>43</a>        <span class="comment">// Smoke test to see if we can even collect memory stats on this system.
@@ -67,7 +67,7 @@
 <a href=#67 id=67 data-nosnippet>67</a>        <span class="prelude-val">Some</span>(<span class="self">Self </span>{ active_backoff_nanos })
 <a href=#68 id=68 data-nosnippet>68</a>    }
 <a href=#69 id=69 data-nosnippet>69</a>
-<a href=#70 id=70 data-nosnippet>70</a>    <span class="doccomment">/// Creates a no-op `MemoryLimiter` that does not perform any limiting.
+<a href=#70 id=70 data-nosnippet>70</a>    <span class="doccomment">/// Creates a no-op `MemoryLimiter` that doesn't perform any limiting.
 <a href=#71 id=71 data-nosnippet>71</a>    ///
 <a href=#72 id=72 data-nosnippet>72</a>    /// All calls to `wait_for_capacity` will return immediately.
 <a href=#73 id=73 data-nosnippet>73</a>    </span><span class="kw">pub fn </span>noop() -&gt; <span class="self">Self </span>{
@@ -78,7 +78,7 @@
 <a href=#78 id=78 data-nosnippet>78</a>
 <a href=#79 id=79 data-nosnippet>79</a>    <span class="doccomment">/// Waits a short period of time based on the available memory.
 <a href=#80 id=80 data-nosnippet>80</a>    ///
-<a href=#81 id=81 data-nosnippet>81</a>    /// If the used memory is not within the threshold of the configured limit, no waiting will occur. Otherwise, the
+<a href=#81 id=81 data-nosnippet>81</a>    /// If the used memory isn't within the threshold of the configured limit, no waiting will occur. Otherwise, the
 <a href=#82 id=82 data-nosnippet>82</a>    /// call will wait a variable amount of time depending on how close to the configured limit the process is.
 <a href=#83 id=83 data-nosnippet>83</a>    </span><span class="kw">pub async fn </span>wait_for_capacity(<span class="kw-2">&amp;</span><span class="self">self</span>) {
 <a href=#84 id=84 data-nosnippet>84</a>        <span class="kw">let </span>active_backoff_nanos = <span class="self">self</span>.active_backoff_nanos.load(Relaxed);

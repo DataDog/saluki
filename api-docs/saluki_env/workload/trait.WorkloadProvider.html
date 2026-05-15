@@ -17,8 +17,8 @@
 ) -&gt; <a class="enum" href="https://doc.rust-lang.org/nightly/core/option/enum.Option.html" title="enum core::option::Option">Option</a>&lt;SharedTagSet&gt;</h4></section></summary><div class="docblock"><p>Gets the tags for an entity.</p>
 <p>Entities are workload resources running on the process host, such as containers or pods. The cardinality of the
 tags to get can be controlled via <code>cardinality</code>.</p>
-<p>Returns <code>Some(SharedTagSet)</code> if the entity has tags, or <code>None</code> if the entity does not have any tags or if the
-entity was not found.</p>
+<p>Returns <code>Some(SharedTagSet)</code> if the entity has tags, or <code>None</code> if the entity doesn’t have any tags or if the
+entity wasn’t found.</p>
 </div></details><details class="toggle method-toggle" open><summary><section id="tymethod.get_resolved_origin" class="method"><a class="src rightside" href="../../src/saluki_env/workload/mod.rs.html#70">Source</a><h4 class="code-header">fn <a href="#tymethod.get_resolved_origin" class="fn">get_resolved_origin</a>(&amp;self, origin: RawOrigin&lt;'_&gt;) -&gt; <a class="enum" href="https://doc.rust-lang.org/nightly/core/option/enum.Option.html" title="enum core::option::Option">Option</a>&lt;<a class="struct" href="origin/struct.ResolvedOrigin.html" title="struct saluki_env::workload::origin::ResolvedOrigin">ResolvedOrigin</a>&gt;</h4></section></summary><div class="docblock"><p>Resolves a raw origin.</p>
 <p>If the origin is empty, <code>None</code> is returned. Otherwise, <code>Some(ResolvedOrigin)</code> will be returned, which contains
 fully resolved versions of the raw origin components.</p>

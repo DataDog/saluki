@@ -24,11 +24,11 @@
 <a href=#24 id=24 data-nosnippet>24</a>
 <a href=#25 id=25 data-nosnippet>25</a><span class="doccomment">/// A store for External Data entity mappings.
 <a href=#26 id=26 data-nosnippet>26</a>///
-<a href=#27 id=27 data-nosnippet>27</a>/// "External Data" is a concept that is used to aid origin detection of workloads running in Kubernetes environments
-<a href=#28 id=28 data-nosnippet>28</a>/// where introspection is not possible or may return incorrect information. Origin detection generally centers around
+<a href=#27 id=27 data-nosnippet>27</a>/// "External Data" is a concept that's used to aid origin detection of workloads running in Kubernetes environments
+<a href=#28 id=28 data-nosnippet>28</a>/// where introspection isn't possible or may return incorrect information. Origin detection generally centers around
 <a href=#29 id=29 data-nosnippet>29</a>/// determining the container where a metric originates from, and then enriching the metric with tags that describe that
 <a href=#30 id=30 data-nosnippet>30</a>/// container, as well as the pod the container is running within, and so on. In some cases, the origin of a metric
-<a href=#31 id=31 data-nosnippet>31</a>/// cannot be detected from the outside (such as by using peer credentials over Unix Domain sockets) and cannot be
+<a href=#31 id=31 data-nosnippet>31</a>/// can't be detected from the outside (such as by using peer credentials over Unix Domain sockets) and can't be
 <a href=#32 id=32 data-nosnippet>32</a>/// detected by the workload itself (such as when running in nested virtualization environments). In these cases, we
 <a href=#33 id=33 data-nosnippet>33</a>/// need a mechanism to attach metadata to the workload such that it can send the necessary information to allow for the
 <a href=#34 id=34 data-nosnippet>34</a>/// origin of a metric to be correctly detected.
@@ -52,7 +52,7 @@
 <a href=#52 id=52 data-nosnippet>52</a>    <span class="doccomment">/// Creates a new `ExternalDataStore` with the given entity limit.
 <a href=#53 id=53 data-nosnippet>53</a>    ///
 <a href=#54 id=54 data-nosnippet>54</a>    /// The entity limit is the maximum number of unique entities that can be stored. Once the limit is reached, new
-<a href=#55 id=55 data-nosnippet>55</a>    /// entities will not be added to the store.
+<a href=#55 id=55 data-nosnippet>55</a>    /// entities won't be added to the store.
 <a href=#56 id=56 data-nosnippet>56</a>    </span><span class="kw">pub fn </span>with_entity_limit(entity_limit: NonZeroUsize) -&gt; <span class="self">Self </span>{
 <a href=#57 id=57 data-nosnippet>57</a>        <span class="kw">let </span>telemetry = Telemetry::new();
 <a href=#58 id=58 data-nosnippet>58</a>        telemetry.entity_limit().set(entity_limit.get() <span class="kw">as </span>f64);

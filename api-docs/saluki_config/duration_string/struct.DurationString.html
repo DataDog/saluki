@@ -17,7 +17,7 @@ fallback for unit-less string values.</p>
 <p>Floating-point numbers: <code>5.0</code> is 5 <strong>nanoseconds</strong> (truncated toward zero).</p>
 </li>
 </ul>
-<p>Negative durations (for example <code>"-1h"</code>) are rejected because <a href="https://doc.rust-lang.org/nightly/core/time/struct.Duration.html" title="struct core::time::Duration"><code>std::time::Duration</code></a> cannot represent them.</p>
+<p>Negative durations (for example <code>"-1h"</code>) are rejected because <a href="https://doc.rust-lang.org/nightly/core/time/struct.Duration.html" title="struct core::time::Duration"><code>std::time::Duration</code></a> can’t represent them.</p>
 <h2 id="bare-numbers-are-nanoseconds-not-seconds-"><a class="doc-anchor" href="#bare-numbers-are-nanoseconds-not-seconds-">§</a>Bare numbers are nanoseconds, not seconds (!!)</h2>
 <p>A configuration value like <code>expected_tags_duration: 30</code> means 30 <strong>nanoseconds</strong>, not 30 seconds. Use <code>"30s"</code> for
 30 seconds. This matches the Agent’s <code>time.Duration</code> coercion.</p>

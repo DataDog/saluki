@@ -61,7 +61,7 @@
 <a href=#61 id=61 data-nosnippet>61</a>
 <a href=#62 id=62 data-nosnippet>62</a>    <span class="doccomment">/// Waits for a liveness probe to be sent to the component, and then responds to it.
 <a href=#63 id=63 data-nosnippet>63</a>    ///
-<a href=#64 id=64 data-nosnippet>64</a>    /// This should generally be polled as part of a `select!` block to ensure it is checked alongside other
+<a href=#64 id=64 data-nosnippet>64</a>    /// This should generally be polled as part of a `select!` block to ensure it's checked alongside other
 <a href=#65 id=65 data-nosnippet>65</a>    /// asynchronous operations.
 <a href=#66 id=66 data-nosnippet>66</a>    </span><span class="kw">pub async fn </span>live(<span class="kw-2">&amp;mut </span><span class="self">self</span>) {
 <a href=#67 id=67 data-nosnippet>67</a>        <span class="comment">// Simply wait for the health registry to send us a liveness probe, and if we receive one, we respond back to it
@@ -265,7 +265,7 @@
 <a href=#265 id=265 data-nosnippet>265</a><span class="doccomment">/// A registry of components and their health.
 <a href=#266 id=266 data-nosnippet>266</a>///
 <a href=#267 id=267 data-nosnippet>267</a>/// `HealthRegistry` is responsible for tracking the health of all registered components, by storing both their
-<a href=#268 id=268 data-nosnippet>268</a>/// readiness, which indicates whether or not they are initialized and generally ready to process data, as well as
+<a href=#268 id=268 data-nosnippet>268</a>/// readiness, which indicates whether or not they're initialized and generally ready to process data, as well as
 <a href=#269 id=269 data-nosnippet>269</a>/// probing their liveness, which indicates if they're currently responding, or able to respond, to requests.
 <a href=#270 id=270 data-nosnippet>270</a>///
 <a href=#271 id=271 data-nosnippet>271</a>/// # Telemetry

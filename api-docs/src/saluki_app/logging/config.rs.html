@@ -50,7 +50,7 @@
 <a href=#50 id=50 data-nosnippet>50</a>    <span class="doccomment">/// Path to the log file to write to, or empty to disable file logging.
 <a href=#51 id=51 data-nosnippet>51</a>    </span><span class="kw">pub </span>log_file: String,
 <a href=#52 id=52 data-nosnippet>52</a>
-<a href=#53 id=53 data-nosnippet>53</a>    <span class="doccomment">/// Maximum size of a log file before it is rolled over.
+<a href=#53 id=53 data-nosnippet>53</a>    <span class="doccomment">/// Maximum size of a log file before it's rolled over.
 <a href=#54 id=54 data-nosnippet>54</a>    </span><span class="kw">pub </span>log_file_max_size: ByteSize,
 <a href=#55 id=55 data-nosnippet>55</a>
 <a href=#56 id=56 data-nosnippet>56</a>    <span class="doccomment">/// Maximum number of rolled-over log files to retain.
@@ -60,7 +60,7 @@
 <a href=#60 id=60 data-nosnippet>60</a><span class="kw">impl </span>LoggingConfiguration {
 <a href=#61 id=61 data-nosnippet>61</a>    <span class="doccomment">/// Returns a configuration that writes only to the console in human-readable format at INFO level.
 <a href=#62 id=62 data-nosnippet>62</a>    ///
-<a href=#63 id=63 data-nosnippet>63</a>    /// Used as a safe default when an application has not yet supplied an explicit configuration.
+<a href=#63 id=63 data-nosnippet>63</a>    /// Used as a safe default when an application hasn't yet supplied an explicit configuration.
 <a href=#64 id=64 data-nosnippet>64</a>    </span><span class="kw">pub fn </span>simple() -&gt; <span class="self">Self </span>{
 <a href=#65 id=65 data-nosnippet>65</a>        <span class="self">Self </span>{
 <a href=#66 id=66 data-nosnippet>66</a>            log_level: LevelFilter::INFO.into(),

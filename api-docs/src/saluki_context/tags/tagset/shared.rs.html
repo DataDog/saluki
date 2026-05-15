@@ -10,13 +10,13 @@
 <a href=#10 id=10 data-nosnippet>10</a>///
 <a href=#11 id=11 data-nosnippet>11</a>/// # Structural sharing
 <a href=#12 id=12 data-nosnippet>12</a>///
-<a href=#13 id=13 data-nosnippet>13</a>/// In many cases, it is useful to extend a set of tags with additional tags, without needing to clone the additional
+<a href=#13 id=13 data-nosnippet>13</a>/// In many cases, it's useful to extend a set of tags with additional tags, without needing to clone the additional
 <a href=#14 id=14 data-nosnippet>14</a>/// tags or re-allocate the underlying storage to fit the entire set of tags. `SharedTagSet` supports this by utilizing
 <a href=#15 id=15 data-nosnippet>15</a>/// "structural sharing", where `SharedTagSet` is internally represented by a set of smart pointers to `FrozenTagSet`.
 <a href=#16 id=16 data-nosnippet>16</a>///
 <a href=#17 id=17 data-nosnippet>17</a>/// This allows `SharedTagSet` to be cheaply extended with additional `SharedTagSet` instances, without needing to
 <a href=#18 id=18 data-nosnippet>18</a>/// allocate enough underlying storage to hold all of the individual tags. Extending a `SharedTagSet` will allocate a
-<a href=#19 id=19 data-nosnippet>19</a>/// small amount of memory (8 bytes) for each additional `SharedTagSet` that is chained after the first additional one:
+<a href=#19 id=19 data-nosnippet>19</a>/// small amount of memory (8 bytes) for each additional `SharedTagSet` that's chained after the first additional one:
 <a href=#20 id=20 data-nosnippet>20</a>/// this means that all new `SharedTagSet` instances can be extended once with no allocations whatsoever.
 <a href=#21 id=21 data-nosnippet>21</a></span><span class="attr">#[derive(Clone, Debug, Default)]
 <a href=#22 id=22 data-nosnippet>22</a></span><span class="kw">pub struct </span>SharedTagSet(SmallVec&lt;[Arc&lt;FrozenTagSet&gt;; <span class="number">2</span>]&gt;);
@@ -55,8 +55,8 @@
 <a href=#55 id=55 data-nosnippet>55</a>
 <a href=#56 id=56 data-nosnippet>56</a>    <span class="doccomment">/// Extends `self` with the tags from the `other`.
 <a href=#57 id=57 data-nosnippet>57</a>    ///
-<a href=#58 id=58 data-nosnippet>58</a>    /// If any of the individual `FrozenTagSet` instances in `other` are already present in `self`, they will not be added
-<a href=#59 id=59 data-nosnippet>59</a>    /// again. This method does not avoid duplicates across different `SharedTagSet` instances, so if the same tag is
+<a href=#58 id=58 data-nosnippet>58</a>    /// If any of the individual `FrozenTagSet` instances in `other` are already present in `self`, they won't be added
+<a href=#59 id=59 data-nosnippet>59</a>    /// again. This method doesn't avoid duplicates across different `SharedTagSet` instances, so if the same tag is
 <a href=#60 id=60 data-nosnippet>60</a>    /// present in both `self` and `other`, it will be present when querying the resulting `SharedTagSet`.
 <a href=#61 id=61 data-nosnippet>61</a>    </span><span class="kw">pub fn </span>extend_from_shared(<span class="kw-2">&amp;mut </span><span class="self">self</span>, other: <span class="kw-2">&amp;</span>SharedTagSet) {
 <a href=#62 id=62 data-nosnippet>62</a>        <span class="comment">// For each underlying `FrozenTagSet` in the other `SharedTagSet`, check if it is already present in this one, and if
@@ -103,7 +103,7 @@
 <a href=#103 id=103 data-nosnippet>103</a>    ///
 <a href=#104 id=104 data-nosnippet>104</a>    /// This includes the size of the vector holding any chained tagsets as well as each individual tag.
 <a href=#105 id=105 data-nosnippet>105</a>    ///
-<a href=#106 id=106 data-nosnippet>106</a>    /// Additionally, the value returned by this method does not compensate for externalities such as whether or not
+<a href=#106 id=106 data-nosnippet>106</a>    /// Additionally, the value returned by this method doesn't compensate for externalities such as whether or not
 <a href=#107 id=107 data-nosnippet>107</a>    /// tags are inlined, interned, or heap allocated. This means that the value returned is essentially the
 <a href=#108 id=108 data-nosnippet>108</a>    /// worst-case usage, and should be used as a rough estimate.
 <a href=#109 id=109 data-nosnippet>109</a>    </span><span class="kw">pub fn </span>size_of(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; usize {

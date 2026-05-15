@@ -18,7 +18,7 @@
 <a href=#18 id=18 data-nosnippet>18</a>    ///
 <a href=#19 id=19 data-nosnippet>19</a>    /// # Errors
 <a href=#20 id=20 data-nosnippet>20</a>    ///
-<a href=#21 id=21 data-nosnippet>21</a>    /// If the hostname is not specified in the configuration, an error is returned.
+<a href=#21 id=21 data-nosnippet>21</a>    /// If the hostname isn't specified in the configuration, an error is returned.
 <a href=#22 id=22 data-nosnippet>22</a>    </span><span class="kw">pub fn </span>from_configuration(config: <span class="kw-2">&amp;</span>GenericConfiguration) -&gt; <span class="prelude-ty">Result</span>&lt;<span class="self">Self</span>, GenericError&gt; {
 <a href=#23 id=23 data-nosnippet>23</a>        <span class="kw">let </span>hostname = config.get_typed::&lt;String&gt;(<span class="string">"hostname"</span>)<span class="question-mark">?</span>;
 <a href=#24 id=24 data-nosnippet>24</a>

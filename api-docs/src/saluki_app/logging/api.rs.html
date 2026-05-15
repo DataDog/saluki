@@ -179,8 +179,8 @@
 <a href=#179 id=179 data-nosnippet>179</a>    <span class="doccomment">/// Creates a new `LoggingOverrideWorker` driving the given reload handle.
 <a href=#180 id=180 data-nosnippet>180</a>    ///
 <a href=#181 id=181 data-nosnippet>181</a>    /// When the worker starts, the filter directives present in the reload handle will be used as the "base" filter:
-<a href=#182 id=182 data-nosnippet>182</a>    /// the filter that is reapplied after an override expires or is reset. This base filter can then be subsequently
-<a href=#183 id=183 data-nosnippet>183</a>    /// updated through the [`LoggingOverrideController`] handle that is returned.
+<a href=#182 id=182 data-nosnippet>182</a>    /// the filter that's reapplied after an override expires or is reset. This base filter can then be subsequently
+<a href=#183 id=183 data-nosnippet>183</a>    /// updated through the [`LoggingOverrideController`] handle that's returned.
 <a href=#184 id=184 data-nosnippet>184</a>    </span><span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">fn </span>new(reload_handle: Handle&lt;EnvFilter, Registry&gt;) -&gt; (<span class="self">Self</span>, LoggingOverrideController) {
 <a href=#185 id=185 data-nosnippet>185</a>        <span class="kw">let </span>(tx, rx) = mpsc::channel(<span class="number">1</span>);
 <a href=#186 id=186 data-nosnippet>186</a>        <span class="kw">let </span>controller = LoggingOverrideController { tx };

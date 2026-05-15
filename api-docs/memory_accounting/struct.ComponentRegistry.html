@@ -7,7 +7,7 @@ that component for runtime memory usage tracking when using the tracking allocat
 forward data. The topology itself could be considered a component, and each individual source, transform, and
 destination within it could be subcomponents of the topology.</p>
 <p>Components are generally meant to be tied to something that has its own memory bounds and is somewhat “standalone”,
-but this is not an absolute requirement and components can be nested more granularly for organizational/aesthetic
+but this isn’t an absolute requirement and components can be nested more granularly for organizational/aesthetic
 purposes. Again, for example, one might opt to create a component in their topology for each component type –
 sources, transforms, and destinations – and then add the actual instances of those components as subcomponents to
 each grouping, leading to a nested structure such as <code>topology/sources/source1</code>, <code>topology/transforms/transform1</code>,
@@ -16,7 +16,7 @@ and so on.</p>
 <p>Every component is able to define memory bounds for itself and its subcomponents. A builder-style API is exposed to
 allow for ergonomically defining these bounds – both minimum and firm – for components, as well as extending the
 nestable aspect of the registry itself to the bounds builder, allowing for flexibility in where components are
-defined from and how they are nested.</p>
+defined from and how they’re nested.</p>
 <h3 id="allocation-tracking"><a class="doc-anchor" href="#allocation-tracking">§</a>Allocation tracking</h3>
 <p>Every component is also able to be registered with its own allocation group when using the tracking allocator
 implementation. This is done on demand when the component’s token is requested, which avoids polluting the tracking

@@ -2,12 +2,12 @@
 </div></details><h2 id="implementations" class="section-header">Implementations<a href="#implementations" class="anchor">§</a></h2><div id="implementations-list"><details class="toggle implementors-toggle" open><summary><section id="impl-CacheBuilder%3CK,+V%3E" class="impl"><a class="src rightside" href="../../src/saluki_common/cache/mod.rs.html#54-98">Source</a><a href="#impl-CacheBuilder%3CK,+V%3E" class="anchor">§</a><h3 class="code-header">impl&lt;K, V&gt; <a class="struct" href="struct.CacheBuilder.html" title="struct saluki_common::cache::CacheBuilder">CacheBuilder</a>&lt;K, V&gt;</h3></section></summary><div class="impl-items"><details class="toggle method-toggle" open><summary><section id="method.from_identifier" class="method"><a class="src rightside" href="../../src/saluki_common/cache/mod.rs.html#64-81">Source</a><h4 class="code-header">pub fn <a href="#method.from_identifier" class="fn">from_identifier</a>&lt;N: <a class="trait" href="https://doc.rust-lang.org/nightly/core/convert/trait.Into.html" title="trait core::convert::Into">Into</a>&lt;<a class="struct" href="https://doc.rust-lang.org/nightly/alloc/string/struct.String.html" title="struct alloc::string::String">String</a>&gt;&gt;(
     identifier: N,
 ) -&gt; <a class="enum" href="https://doc.rust-lang.org/nightly/core/result/enum.Result.html" title="enum core::result::Result">Result</a>&lt;<a class="struct" href="struct.CacheBuilder.html" title="struct saluki_common::cache::CacheBuilder">CacheBuilder</a>&lt;K, V&gt;, GenericError&gt;</h4></section></summary><div class="docblock"><p>Creates a new <code>CacheBuilder</code> with the given cache identifier.</p>
-<p>The cache identifier <em>should</em> be unique, but it is not required to be. Metrics for the cache will be emitted
-using the given identifier, so in cases where the identifier is not unique, those metrics will be aggregated
-together and it will not be possible to distinguish between the different caches.</p>
+<p>The cache identifier <em>should</em> be unique, but it’sn’t required to be. Metrics for the cache will be emitted
+using the given identifier, so in cases where the identifier isn’t unique, those metrics will be aggregated
+together and it won’t be possible to distinguish between the different caches.</p>
 <h5 id="errors"><a class="doc-anchor" href="#errors">§</a>Errors</h5>
 <p>If the given cache identifier is empty, an error is returned.</p>
-</div></details><details class="toggle method-toggle" open><summary><section id="method.for_tests" class="method"><a class="src rightside" href="../../src/saluki_common/cache/mod.rs.html#93-97">Source</a><h4 class="code-header">pub fn <a href="#method.for_tests" class="fn">for_tests</a>() -&gt; <a class="struct" href="struct.CacheBuilder.html" title="struct saluki_common::cache::CacheBuilder">CacheBuilder</a>&lt;K, V&gt;</h4></section></summary><div class="docblock"><p>Configures a <a href="struct.CacheBuilder.html" title="struct saluki_common::cache::CacheBuilder"><code>CacheBuilder</code></a> that is suitable for tests.</p>
+</div></details><details class="toggle method-toggle" open><summary><section id="method.for_tests" class="method"><a class="src rightside" href="../../src/saluki_common/cache/mod.rs.html#93-97">Source</a><h4 class="code-header">pub fn <a href="#method.for_tests" class="fn">for_tests</a>() -&gt; <a class="struct" href="struct.CacheBuilder.html" title="struct saluki_common::cache::CacheBuilder">CacheBuilder</a>&lt;K, V&gt;</h4></section></summary><div class="docblock"><p>Configures a <a href="struct.CacheBuilder.html" title="struct saluki_common::cache::CacheBuilder"><code>CacheBuilder</code></a> that’s suitable for tests.</p>
 <p>This configures the builder with the following defaults:</p>
 <ul>
 <li>cache identifier of “noop”</li>
@@ -22,14 +22,14 @@ cache and when items should be evicted to make room for new items.</p>
 <p>See <a href="struct.CacheBuilder.html#method.with_item_weighter" title="method saluki_common::cache::CacheBuilder::with_item_weighter"><code>with_item_weighter</code></a> for more information on how the item weighter is used.</p>
 <p>Defaults to unlimited capacity.</p>
 </div></details><details class="toggle method-toggle" open><summary><section id="method.with_time_to_idle" class="method"><a class="src rightside" href="../../src/saluki_common/cache/mod.rs.html#123-132">Source</a><h4 class="code-header">pub fn <a href="#method.with_time_to_idle" class="fn">with_time_to_idle</a>(self, idle_period: <a class="enum" href="https://doc.rust-lang.org/nightly/core/option/enum.Option.html" title="enum core::option::Option">Option</a>&lt;<a class="struct" href="https://doc.rust-lang.org/nightly/core/time/struct.Duration.html" title="struct core::time::Duration">Duration</a>&gt;) -&gt; Self</h4></section></summary><div class="docblock"><p>Enables expiration of cached items based on how long since they were last accessed.</p>
-<p>Items which have not been accessed within the configured duration will be marked for expiration, and be removed
+<p>Items which haven’t been accessed within the configured duration will be marked for expiration, and be removed
 from the cache shortly thereafter. For the purposes of expiration, “accessed” is either when the item was first
 inserted or when it was last read.</p>
 <p>If the given value is <code>None</code>, expiration is disabled.</p>
 <p>Defaults to no expiration.</p>
 </div></details><details class="toggle method-toggle" open><summary><section id="method.with_expiration_interval" class="method"><a class="src rightside" href="../../src/saluki_common/cache/mod.rs.html#146-149">Source</a><h4 class="code-header">pub fn <a href="#method.with_expiration_interval" class="fn">with_expiration_interval</a>(self, expiration_interval: <a class="struct" href="https://doc.rust-lang.org/nightly/core/time/struct.Duration.html" title="struct core::time::Duration">Duration</a>) -&gt; Self</h4></section></summary><div class="docblock"><p>Sets the interval at which the expiration process will run.</p>
 <p>This controls how often the expiration process will run to check for expired items. While items become
-<em>eligible</em> for expiration after the configured duration, they are not <em>guaranteed</em> to be
+<em>eligible</em> for expiration after the configured duration, they’re not <em>guaranteed</em> to be
 removed immediately: the expiration process must still run to actually find the expired items and remove them.</p>
 <p>This means that the rough upper bound for how long an item may be kept alive is the sum of
 both the configured expiration duration and the expiration interval.</p>
@@ -42,7 +42,7 @@ stay within the configured capacity.</p>
 <p>For example, if the configured capacity is set to 10,000, and the “item count” weighter is used, then the cache
 will operate in a way that aims to simply ensure that no more than 10,000 items are held in the cache at any given
 time. This allows defining custom weighters that can be used to track other aspects of the items in the cache,
-such as their size in bytes, or some other metric that is relevant to the intended caching behavior.</p>
+such as their size in bytes, or some other metric that’s relevant to the intended caching behavior.</p>
 <p>Defaults to “item count” weighter.</p>
 </div></details><details class="toggle method-toggle" open><summary><section id="method.with_hasher" class="method"><a class="src rightside" href="../../src/saluki_common/cache/mod.rs.html#184-196">Source</a><h4 class="code-header">pub fn <a href="#method.with_hasher" class="fn">with_hasher</a>&lt;H2&gt;(self) -&gt; <a class="struct" href="struct.CacheBuilder.html" title="struct saluki_common::cache::CacheBuilder">CacheBuilder</a>&lt;K, V, W, H2&gt;</h4></section></summary><div class="docblock"><p>Sets the item hasher for the cache.</p>
 <p>As cache keys are hashed before performing any reads or writes, the chosen hasher can potentially impact the

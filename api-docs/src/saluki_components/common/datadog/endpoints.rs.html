@@ -78,7 +78,7 @@
 <a href=#78 id=78 data-nosnippet>78</a>    ///
 <a href=#79 id=79 data-nosnippet>79</a>    /// # Errors
 <a href=#80 id=80 data-nosnippet>80</a>    ///
-<a href=#81 id=81 data-nosnippet>81</a>    /// If any of the additional endpoints are not valid URLs, or a valid URL could not be constructed after applying
+<a href=#81 id=81 data-nosnippet>81</a>    /// If any of the additional endpoints aren't valid URLs, or a valid URL couldn't be constructed after applying
 <a href=#82 id=82 data-nosnippet>82</a>    /// the necessary normalization / modifications, an error will be returned.
 <a href=#83 id=83 data-nosnippet>83</a>    </span><span class="kw">pub fn </span>resolved_endpoints(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="prelude-ty">Result</span>&lt;Vec&lt;ResolvedEndpoint&gt;, EndpointError&gt; {
 <a href=#84 id=84 data-nosnippet>84</a>        <span class="kw">let </span><span class="kw-2">mut </span>resolved = Vec::new();
@@ -131,7 +131,7 @@
 <a href=#131 id=131 data-nosnippet>131</a>
 <a href=#132 id=132 data-nosnippet>132</a>    <span class="doccomment">/// The full URL base to send metrics to.
 <a href=#133 id=133 data-nosnippet>133</a>    ///
-<a href=#134 id=134 data-nosnippet>134</a>    /// This takes precedence over `site`, and is not altered in any way. This can be useful to specifying the exact
+<a href=#134 id=134 data-nosnippet>134</a>    /// This takes precedence over `site`, and isn't altered in any way. This can be useful to specifying the exact
 <a href=#135 id=135 data-nosnippet>135</a>    /// endpoint used, such as when looking to change the scheme (for example, `http` vs `https`) or specifying a custom port,
 <a href=#136 id=136 data-nosnippet>136</a>    /// which are both useful when proxying traffic to an intermediate destination before forwarding to Datadog.
 <a href=#137 id=137 data-nosnippet>137</a>    ///
@@ -166,7 +166,7 @@
 <a href=#166 id=166 data-nosnippet>166</a>    ///
 <a href=#167 id=167 data-nosnippet>167</a>    /// # Errors
 <a href=#168 id=168 data-nosnippet>168</a>    ///
-<a href=#169 id=169 data-nosnippet>169</a>    /// If the primary endpoint is not a valid URL, or a valid URL could not be constructed after applying the
+<a href=#169 id=169 data-nosnippet>169</a>    /// If the primary endpoint isn't a valid URL, or a valid URL couldn't be constructed after applying the
 <a href=#170 id=170 data-nosnippet>170</a>    /// necessary normalization / modifications to the endpoint, an error will be returned.
 <a href=#171 id=171 data-nosnippet>171</a>    </span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>build_primary_endpoint(
 <a href=#172 id=172 data-nosnippet>172</a>        <span class="kw-2">&amp;</span><span class="self">self</span>, configuration: <span class="prelude-ty">Option</span>&lt;GenericConfiguration&gt;,
@@ -188,7 +188,7 @@
 <a href=#188 id=188 data-nosnippet>188</a>    ///
 <a href=#189 id=189 data-nosnippet>189</a>    /// # Errors
 <a href=#190 id=190 data-nosnippet>190</a>    ///
-<a href=#191 id=191 data-nosnippet>191</a>    /// If any additional endpoint is not a valid URL, or a valid URL could not be constructed after applying the
+<a href=#191 id=191 data-nosnippet>191</a>    /// If any additional endpoint isn't a valid URL, or a valid URL couldn't be constructed after applying the
 <a href=#192 id=192 data-nosnippet>192</a>    /// necessary normalization / modifications to a particular endpoint, an error will be returned.
 <a href=#193 id=193 data-nosnippet>193</a>    </span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>build_additional_endpoints(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="prelude-ty">Result</span>&lt;Vec&lt;ResolvedEndpoint&gt;, GenericError&gt; {
 <a href=#194 id=194 data-nosnippet>194</a>        <span class="self">self</span>.additional_endpoints
@@ -261,7 +261,7 @@
 <a href=#261 id=261 data-nosnippet>261</a>    ///
 <a href=#262 id=262 data-nosnippet>262</a>    /// # Errors
 <a href=#263 id=263 data-nosnippet>263</a>    ///
-<a href=#264 id=264 data-nosnippet>264</a>    /// If the given endpoint is not a valid URL, or a valid URL could not be constructed after applying the necessary
+<a href=#264 id=264 data-nosnippet>264</a>    /// If the given endpoint isn't a valid URL, or a valid URL couldn't be constructed after applying the necessary
 <a href=#265 id=265 data-nosnippet>265</a>    /// normalization / modifications, an error will be returned.
 <a href=#266 id=266 data-nosnippet>266</a>    </span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>from_raw_endpoint(raw_endpoint: <span class="kw-2">&amp;</span>str, api_key: <span class="kw-2">&amp;</span>str) -&gt; <span class="prelude-ty">Result</span>&lt;<span class="self">Self</span>, EndpointError&gt; {
 <a href=#267 id=267 data-nosnippet>267</a>        <span class="kw">let </span>endpoint = parse_and_normalize_endpoint(raw_endpoint)<span class="question-mark">?</span>;
@@ -359,7 +359,7 @@
 <a href=#359 id=359 data-nosnippet>359</a>
 <a href=#360 id=360 data-nosnippet>360</a><span class="doccomment">/// Returns a specialized domain prefix based on the versioning of the current application.
 <a href=#361 id=361 data-nosnippet>361</a>///
-<a href=#362 id=362 data-nosnippet>362</a>/// This generates a prefix that is similar in format to the one generated by Datadog Agent for determining the endpoint
+<a href=#362 id=362 data-nosnippet>362</a>/// This generates a prefix that's similar in format to the one generated by Datadog Agent for determining the endpoint
 <a href=#363 id=363 data-nosnippet>363</a>/// to send metrics to.
 <a href=#364 id=364 data-nosnippet>364</a></span><span class="kw">fn </span>get_data_plane_version_prefix() -&gt; String {
 <a href=#365 id=365 data-nosnippet>365</a>    <span class="kw">let </span>app_details = saluki_metadata::get_app_details();
@@ -375,12 +375,12 @@
 <a href=#375 id=375 data-nosnippet>375</a>
 <a href=#376 id=376 data-nosnippet>376</a><span class="doccomment">/// Prefixes the given API endpoint with the version of the data plane process.
 <a href=#377 id=377 data-nosnippet>377</a>///
-<a href=#378 id=378 data-nosnippet>378</a>/// If the given API endpoint does not include a scheme, `https` is assumed. As well, if the endpoint does not represent
-<a href=#379 id=379 data-nosnippet>379</a>/// an official Datadog API endpoint, it will not be modified.
+<a href=#378 id=378 data-nosnippet>378</a>/// If the given API endpoint doesn't include a scheme, `https` is assumed. As well, if the endpoint doesn't represent
+<a href=#379 id=379 data-nosnippet>379</a>/// an official Datadog API endpoint, it won't be modified.
 <a href=#380 id=380 data-nosnippet>380</a>///
 <a href=#381 id=381 data-nosnippet>381</a>/// # Errors
 <a href=#382 id=382 data-nosnippet>382</a>///
-<a href=#383 id=383 data-nosnippet>383</a>/// If the given API endpoint cannot be parsed as a valid URL, an error will be returned.
+<a href=#383 id=383 data-nosnippet>383</a>/// If the given API endpoint can't be parsed as a valid URL, an error will be returned.
 <a href=#384 id=384 data-nosnippet>384</a></span><span class="kw">fn </span>add_data_plane_version_prefix(<span class="kw-2">mut </span>endpoint: Url) -&gt; <span class="prelude-ty">Result</span>&lt;Url, EndpointError&gt; {
 <a href=#385 id=385 data-nosnippet>385</a>    <span class="kw">let </span>new_host = <span class="kw">match </span>endpoint.host_str() {
 <a href=#386 id=386 data-nosnippet>386</a>        <span class="prelude-val">Some</span>(host) =&gt; {
@@ -419,7 +419,7 @@
 <a href=#419 id=419 data-nosnippet>419</a>///
 <a href=#420 id=420 data-nosnippet>420</a>/// # Errors
 <a href=#421 id=421 data-nosnippet>421</a>///
-<a href=#422 id=422 data-nosnippet>422</a>/// If an override URL is provided and cannot be parsed, or if a valid endpoint cannot be constructed from the given
+<a href=#422 id=422 data-nosnippet>422</a>/// If an override URL is provided and can't be parsed, or if a valid endpoint can't be constructed from the given
 <a href=#423 id=423 data-nosnippet>423</a>/// site, an error will be returned.
 <a href=#424 id=424 data-nosnippet>424</a></span><span class="kw">fn </span>calculate_resolved_endpoint(
 <a href=#425 id=425 data-nosnippet>425</a>    override_url: <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span>str&gt;, site: <span class="kw-2">&amp;</span>str, api_key: <span class="kw-2">&amp;</span>str,
@@ -445,7 +445,7 @@
 <a href=#445 id=445 data-nosnippet>445</a>/// this extracts the site suffix and constructs the logs intake host in the form
 <a href=#446 id=446 data-nosnippet>446</a>/// `agent-http-intake.logs.{site}`.
 <a href=#447 id=447 data-nosnippet>447</a>///
-<a href=#448 id=448 data-nosnippet>448</a>/// Returns `None` if the host doesn't contain the marker or if the authority cannot be parsed.
+<a href=#448 id=448 data-nosnippet>448</a>/// Returns `None` if the host doesn't contain the marker or if the authority can't be parsed.
 <a href=#449 id=449 data-nosnippet>449</a></span><span class="kw">fn </span>compute_logs_authority(endpoint: <span class="kw-2">&amp;</span>Url) -&gt; <span class="prelude-ty">Option</span>&lt;Authority&gt; {
 <a href=#450 id=450 data-nosnippet>450</a>    <span class="kw">const </span>AGENT_HOST_MARKER: <span class="kw-2">&amp;</span>str = <span class="string">".agent."</span>;
 <a href=#451 id=451 data-nosnippet>451</a>
@@ -458,7 +458,7 @@
 <a href=#458 id=458 data-nosnippet>458</a>}
 <a href=#459 id=459 data-nosnippet>459</a>
 <a href=#460 id=460 data-nosnippet>460</a><span class="doccomment">/// Computes the traces intake authority from a resolved endpoint URL.
-<a href=#461 id=461 data-nosnippet>461</a>/// Returns `None` if the host doesn't contain the marker or if the authority cannot be parsed.
+<a href=#461 id=461 data-nosnippet>461</a>/// Returns `None` if the host doesn't contain the marker or if the authority can't be parsed.
 <a href=#462 id=462 data-nosnippet>462</a></span><span class="kw">fn </span>compute_traces_authority(endpoint: <span class="kw-2">&amp;</span>Url) -&gt; <span class="prelude-ty">Option</span>&lt;Authority&gt; {
 <a href=#463 id=463 data-nosnippet>463</a>    <span class="kw">const </span>AGENT_HOST_MARKER: <span class="kw-2">&amp;</span>str = <span class="string">".agent."</span>;
 <a href=#464 id=464 data-nosnippet>464</a>

@@ -27,7 +27,7 @@
 <a href=#27 id=27 data-nosnippet>27</a>//!
 <a href=#28 id=28 data-nosnippet>28</a>//! Memory bounds are a way for components to declare their expected memory usage, categorized into
 <a href=#29 id=29 data-nosnippet>29</a>//! both a minimum required amount and a firm limit. The minimum required amount is the amount of
-<a href=#30 id=30 data-nosnippet>30</a>//! memory that is required for the component to function correctly, which generally encompasses
+<a href=#30 id=30 data-nosnippet>30</a>//! memory that's required for the component to function correctly, which generally encompasses
 <a href=#31 id=31 data-nosnippet>31</a>//! things like pre-allocated buffers. The firm limit is meant to indicate the maximum amount of
 <a href=#32 id=32 data-nosnippet>32</a>//! memory that the component should use, regardless of the workload.
 <a href=#33 id=33 data-nosnippet>33</a>//!
@@ -162,17 +162,17 @@
 <a href=#162 id=162 data-nosnippet>162</a>}
 <a href=#163 id=163 data-nosnippet>163</a>
 <a href=#164 id=164 data-nosnippet>164</a><span class="kw">impl </span>UsageExpr {
-<a href=#165 id=165 data-nosnippet>165</a>    <span class="doccomment">/// Creates a new usage expression that is a config value.
+<a href=#165 id=165 data-nosnippet>165</a>    <span class="doccomment">/// Creates a new usage expression that's a config value.
 <a href=#166 id=166 data-nosnippet>166</a>    </span><span class="kw">pub fn </span>config(s: <span class="kw">impl </span>Into&lt;String&gt;, value: usize) -&gt; <span class="self">Self </span>{
 <a href=#167 id=167 data-nosnippet>167</a>        <span class="self">Self</span>::Config { name: s.into(), value }
 <a href=#168 id=168 data-nosnippet>168</a>    }
 <a href=#169 id=169 data-nosnippet>169</a>
-<a href=#170 id=170 data-nosnippet>170</a>    <span class="doccomment">/// Creates a new usage expression that is a constant value.
+<a href=#170 id=170 data-nosnippet>170</a>    <span class="doccomment">/// Creates a new usage expression that's a constant value.
 <a href=#171 id=171 data-nosnippet>171</a>    </span><span class="kw">pub fn </span>constant(s: <span class="kw">impl </span>Into&lt;String&gt;, value: usize) -&gt; <span class="self">Self </span>{
 <a href=#172 id=172 data-nosnippet>172</a>        <span class="self">Self</span>::Constant { name: s.into(), value }
 <a href=#173 id=173 data-nosnippet>173</a>    }
 <a href=#174 id=174 data-nosnippet>174</a>
-<a href=#175 id=175 data-nosnippet>175</a>    <span class="doccomment">/// Creates a new usage expression that is a struct size.
+<a href=#175 id=175 data-nosnippet>175</a>    <span class="doccomment">/// Creates a new usage expression that's a struct size.
 <a href=#176 id=176 data-nosnippet>176</a>    </span><span class="kw">pub fn </span>struct_size&lt;T&gt;(s: <span class="kw">impl </span>Into&lt;String&gt;) -&gt; <span class="self">Self </span>{
 <a href=#177 id=177 data-nosnippet>177</a>        <span class="self">Self</span>::StructSize {
 <a href=#178 id=178 data-nosnippet>178</a>            name: s.into(),
@@ -180,12 +180,12 @@
 <a href=#180 id=180 data-nosnippet>180</a>        }
 <a href=#181 id=181 data-nosnippet>181</a>    }
 <a href=#182 id=182 data-nosnippet>182</a>
-<a href=#183 id=183 data-nosnippet>183</a>    <span class="doccomment">/// Creates a new usage expression that is the product of two subexpressions.
+<a href=#183 id=183 data-nosnippet>183</a>    <span class="doccomment">/// Creates a new usage expression that's the product of two subexpressions.
 <a href=#184 id=184 data-nosnippet>184</a>    </span><span class="kw">pub fn </span>product(_s: <span class="kw">impl </span>Into&lt;String&gt;, lhs: UsageExpr, rhs: UsageExpr) -&gt; <span class="self">Self </span>{
 <a href=#185 id=185 data-nosnippet>185</a>        <span class="self">Self</span>::Product { values: <span class="macro">vec!</span>[lhs, rhs] }
 <a href=#186 id=186 data-nosnippet>186</a>    }
 <a href=#187 id=187 data-nosnippet>187</a>
-<a href=#188 id=188 data-nosnippet>188</a>    <span class="doccomment">/// Creates a new usage expression that is the sum of two subexpressions.
+<a href=#188 id=188 data-nosnippet>188</a>    <span class="doccomment">/// Creates a new usage expression that's the sum of two subexpressions.
 <a href=#189 id=189 data-nosnippet>189</a>    </span><span class="kw">pub fn </span>sum(_s: <span class="kw">impl </span>Into&lt;String&gt;, lhs: UsageExpr, rhs: UsageExpr) -&gt; <span class="self">Self </span>{
 <a href=#190 id=190 data-nosnippet>190</a>        <span class="self">Self</span>::Sum { values: <span class="macro">vec!</span>[lhs, rhs] }
 <a href=#191 id=191 data-nosnippet>191</a>    }

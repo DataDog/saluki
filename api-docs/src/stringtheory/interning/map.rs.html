@@ -85,32 +85,32 @@
 <a href=#85 id=85 data-nosnippet>85</a>
 <a href=#86 id=86 data-nosnippet>86</a><span class="doccomment">/// Metadata about an interner entry.
 <a href=#87 id=87 data-nosnippet>87</a>///
-<a href=#88 id=88 data-nosnippet>88</a>/// `EntryHeader` represents the smallest amount of information about an interned entry that is needed to support both
+<a href=#88 id=88 data-nosnippet>88</a>/// `EntryHeader` represents the smallest amount of information about an interned entry that's needed to support both
 <a href=#89 id=89 data-nosnippet>89</a>/// lookup of existing interned strings, as well as the ability to reclaim space in the interner when an entry is no
 <a href=#90 id=90 data-nosnippet>90</a>/// longer in use.
 <a href=#91 id=91 data-nosnippet>91</a></span><span class="kw">struct </span>EntryHeader {
 <a href=#92 id=92 data-nosnippet>92</a>    <span class="doccomment">/// The number of active references to this entry.
 <a href=#93 id=93 data-nosnippet>93</a>    ///
-<a href=#94 id=94 data-nosnippet>94</a>    /// Only incremented by the interner itself, and decremented by `InternedString` when it is dropped.
+<a href=#94 id=94 data-nosnippet>94</a>    /// Only incremented by the interner itself, and decremented by `InternedString` when it's dropped.
 <a href=#95 id=95 data-nosnippet>95</a>    </span>refs: AtomicUsize,
 <a href=#96 id=96 data-nosnippet>96</a>
 <a href=#97 id=97 data-nosnippet>97</a>    <span class="doccomment">/// Combined length/capacity of the entry, in terms of the string itself.
 <a href=#98 id=98 data-nosnippet>98</a>    ///
 <a href=#99 id=99 data-nosnippet>99</a>    /// Notably, this does _not_ include the length of the header itself. For example, an entry holding the string
-<a href=#100 id=100 data-nosnippet>100</a>    /// "hello, world!" has a string length of 13 bytes, but since we have to pad out to meet our alignment requirements
+<a href=#100 id=100 data-nosnippet>100</a>    /// "hello, world!" has a string length of 13 bytes, but since we've to pad out to meet our alignment requirements
 <a href=#101 id=101 data-nosnippet>101</a>    /// for `EntryHeader`, we would end up with a capacity of 16 bytes. As such, `EntryHeader::len` would report `13`,
 <a href=#102 id=102 data-nosnippet>102</a>    /// while `EntryHeader::capacity` would report `16`. Likewise, `EntryHeader::entry_len` would report `40`,
 <a href=#103 id=103 data-nosnippet>103</a>    /// accounting for the string capacity (16) as well as the header length itself (24).
 <a href=#104 id=104 data-nosnippet>104</a>    ///
 <a href=#105 id=105 data-nosnippet>105</a>    /// As explained in the description of `PackedLengthCapacity`, this does mean strings can't be larger than ~4GB on
-<a href=#106 id=106 data-nosnippet>106</a>    /// 64-bit platforms, which is not a problem we have.
+<a href=#106 id=106 data-nosnippet>106</a>    /// 64-bit platforms, which isn't a problem we've.
 <a href=#107 id=107 data-nosnippet>107</a>    </span>len_cap: PackedLengthCapacity,
 <a href=#108 id=108 data-nosnippet>108</a>}
 <a href=#109 id=109 data-nosnippet>109</a>
 <a href=#110 id=110 data-nosnippet>110</a><span class="kw">impl </span>EntryHeader {
 <a href=#111 id=111 data-nosnippet>111</a>    <span class="doccomment">/// Creates a tombstone entry with the given capacity.
 <a href=#112 id=112 data-nosnippet>112</a>    ///
-<a href=#113 id=113 data-nosnippet>113</a>    /// This is to allow for updating a region in the data buffer, which has been reclaimed, such that it is
+<a href=#113 id=113 data-nosnippet>113</a>    /// This is to allow for updating a region in the data buffer, which has been reclaimed, such that it's
 <a href=#114 id=114 data-nosnippet>114</a>    /// identifiable as being unused.
 <a href=#115 id=115 data-nosnippet>115</a>    </span><span class="kw">fn </span>tombstone(entry: ReclaimedEntry) -&gt; <span class="self">Self </span>{
 <a href=#116 id=116 data-nosnippet>116</a>        <span class="comment">// The usable capacity for a reclaimed entry is the full capacity minus the size of `EntryHeader` itself, as
@@ -527,8 +527,8 @@
 <a href=#527 id=527 data-nosnippet>527</a>/// ## Overview
 <a href=#528 id=528 data-nosnippet>528</a>///
 <a href=#529 id=529 data-nosnippet>529</a>/// This interner uses a single, fixed-size backing buffer where interned strings are stored contiguously. This provides
-<a href=#530 id=530 data-nosnippet>530</a>/// bounded memory usage, and the interner will not allocate additional memory for new strings once the buffer is full.
-<a href=#531 id=531 data-nosnippet>531</a>/// Since interned strings are not likely to need to live for the life of the program, the interner supports
+<a href=#530 id=530 data-nosnippet>530</a>/// bounded memory usage, and the interner won't allocate additional memory for new strings once the buffer is full.
+<a href=#531 id=531 data-nosnippet>531</a>/// Since interned strings aren't likely to need to live for the life of the program, the interner supports
 <a href=#532 id=532 data-nosnippet>532</a>/// reclamation. Once all references to an interned string have been dropped, the storage for that string is reclaimed
 <a href=#533 id=533 data-nosnippet>533</a>/// and can be used to hold new strings.
 <a href=#534 id=534 data-nosnippet>534</a>///
@@ -563,7 +563,7 @@
 <a href=#563 id=563 data-nosnippet>563</a>///
 <a href=#564 id=564 data-nosnippet>564</a>/// ## `InternedString`
 <a href=#565 id=565 data-nosnippet>565</a>///
-<a href=#566 id=566 data-nosnippet>566</a>/// The `InternedString` type is a handle to the entry header, and thus the string data, for an interned string. It is
+<a href=#566 id=566 data-nosnippet>566</a>/// The `InternedString` type is a handle to the entry header, and thus the string data, for an interned string. It's
 <a href=#567 id=567 data-nosnippet>567</a>/// designed to be small -- 8 bytes! -- and cheap to clone, as it contains an atomic reference to the entry header and a
 <a href=#568 id=568 data-nosnippet>568</a>/// reference to the interner that owns the string. It dereferences to the underlying string with relatively low
 <a href=#569 id=569 data-nosnippet>569</a>/// overhead: two pointer indirections.
@@ -583,7 +583,7 @@
 <a href=#583 id=583 data-nosnippet>583</a>///
 <a href=#584 id=584 data-nosnippet>584</a>/// Reclaimed entries are simple markers -- start and end position in the data buffer -- which are stored in a freelist.
 <a href=#585 id=585 data-nosnippet>585</a>/// When attempting to intern a new string, this freelist is searched to see if there's an entry large enough to fit the
-<a href=#586 id=586 data-nosnippet>586</a>/// new string, and if so, it is used.
+<a href=#586 id=586 data-nosnippet>586</a>/// new string, and if so, it's used.
 <a href=#587 id=587 data-nosnippet>587</a>///
 <a href=#588 id=588 data-nosnippet>588</a>/// Additionally, when entries are reclaimed, adjacent entries are merged together where possible. This helps to avoid
 <a href=#589 id=589 data-nosnippet>589</a>/// unnecessary fragmentation over time, although not as effectively as reconstructing the data buffer to re-pack

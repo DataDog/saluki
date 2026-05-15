@@ -7,8 +7,8 @@
        <span class="where">where Self: 'async_trait,
              'life0: 'async_trait</span>;
 }</code></pre><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>A synchronous transform builder.</p>
-<p>Synchronous transforms are a special case of transforms that are executed synchronously, meaning that they do not
-run as their own task. This is used for certain transforms, typically those where it is more efficient to run
+<p>Synchronous transforms are a special case of transforms that are executed synchronously, meaning that they don’t
+run as their own task. This is used for certain transforms, typically those where it’s more efficient to run
 multiple transformation steps in a single task.</p>
 </div></details><h2 id="required-methods" class="section-header">Required Methods<a href="#required-methods" class="anchor">§</a></h2><div class="methods"><details class="toggle method-toggle" open><summary><section id="tymethod.build" class="method"><a class="src rightside" href="../../../src/saluki_core/components/transforms/builder.rs.html#43">Source</a><h4 class="code-header">fn <a href="#tymethod.build" class="fn">build</a>&lt;'life0, 'async_trait&gt;(
     &amp;'life0 self,
@@ -16,7 +16,7 @@ multiple transformation steps in a single task.</p>
 ) -&gt; <a class="struct" href="https://doc.rust-lang.org/nightly/core/pin/struct.Pin.html" title="struct core::pin::Pin">Pin</a>&lt;<a class="struct" href="https://doc.rust-lang.org/nightly/alloc/boxed/struct.Box.html" title="struct alloc::boxed::Box">Box</a>&lt;dyn <a class="trait" href="https://doc.rust-lang.org/nightly/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="enum" href="https://doc.rust-lang.org/nightly/core/result/enum.Result.html" title="enum core::result::Result">Result</a>&lt;<a class="struct" href="https://doc.rust-lang.org/nightly/alloc/boxed/struct.Box.html" title="struct alloc::boxed::Box">Box</a>&lt;dyn <a class="trait" href="trait.SynchronousTransform.html" title="trait saluki_core::components::transforms::SynchronousTransform">SynchronousTransform</a> + <a class="trait" href="https://doc.rust-lang.org/nightly/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a>&gt;, GenericError&gt;&gt; + <a class="trait" href="https://doc.rust-lang.org/nightly/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a> + 'async_trait&gt;&gt;<div class="where">where
     Self: 'async_trait,
     'life0: 'async_trait,</div></h4></section></summary><div class="docblock"><p>Builds an instance of the synchronous transform.</p>
-<p>The provided context is relative to the parent component that is building this synchronous transform.</p>
+<p>The provided context is relative to the parent component that’s building this synchronous transform.</p>
 <h6 id="errors"><a class="doc-anchor" href="#errors">§</a>Errors</h6>
-<p>If the synchronous transform cannot be built for any reason, an error is returned.</p>
+<p>If the synchronous transform can’t be built for any reason, an error is returned.</p>
 </div></details></div><h2 id="implementors" class="section-header">Implementors<a href="#implementors" class="anchor">§</a></h2><div id="implementors-list"></div><script src="../../../trait.impl/saluki_core/components/transforms/builder/trait.SynchronousTransformBuilder.js" async></script></section></div></main></body></html>

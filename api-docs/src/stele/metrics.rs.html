@@ -196,7 +196,7 @@
 <a href=#196 id=196 data-nosnippet>196</a>    ///
 <a href=#197 id=197 data-nosnippet>197</a>    /// # Errors
 <a href=#198 id=198 data-nosnippet>198</a>    ///
-<a href=#199 id=199 data-nosnippet>199</a>    /// If the JSON cannot be deserialized, contains invalid data (for example, an unknown `type`), or has out-of-range
+<a href=#199 id=199 data-nosnippet>199</a>    /// If the JSON can't be deserialized, contains invalid data (for example, an unknown `type`), or has out-of-range
 <a href=#200 id=200 data-nosnippet>200</a>    /// timestamps, an error is returned.
 <a href=#201 id=201 data-nosnippet>201</a>    </span><span class="kw">pub fn </span>try_from_series_v1(payload: <span class="kw-2">&amp;</span>[u8]) -&gt; <span class="prelude-ty">Result</span>&lt;Vec&lt;<span class="self">Self</span>&gt;, GenericError&gt; {
 <a href=#202 id=202 data-nosnippet>202</a>        <span class="kw">let </span>envelope: V1SeriesEnvelope = serde_json::from_slice(payload)

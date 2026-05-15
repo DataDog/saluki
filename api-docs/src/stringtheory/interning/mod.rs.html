@@ -25,7 +25,7 @@
 <a href=#25 id=25 data-nosnippet>25</a>
 <a href=#26 id=26 data-nosnippet>26</a>    <span class="doccomment">/// Attempts to intern the given string.
 <a href=#27 id=27 data-nosnippet>27</a>    ///
-<a href=#28 id=28 data-nosnippet>28</a>    /// Returns `None` if the interner is full or the string cannot fit.
+<a href=#28 id=28 data-nosnippet>28</a>    /// Returns `None` if the interner is full or the string can't fit.
 <a href=#29 id=29 data-nosnippet>29</a>    </span><span class="kw">fn </span>try_intern(<span class="kw-2">&amp;</span><span class="self">self</span>, s: <span class="kw-2">&amp;</span>str) -&gt; <span class="prelude-ty">Option</span>&lt;InternedString&gt;;
 <a href=#30 id=30 data-nosnippet>30</a>}
 <a href=#31 id=31 data-nosnippet>31</a>
@@ -84,8 +84,8 @@
 <a href=#84 id=84 data-nosnippet>84</a>
 <a href=#85 id=85 data-nosnippet>85</a><span class="doccomment">/// An interned string.
 <a href=#86 id=86 data-nosnippet>86</a>///
-<a href=#87 id=87 data-nosnippet>87</a>/// This string type is read-only, and dereferences to `&amp;str` for ergonomic usage. It is cheap to clone (16 bytes), but
-<a href=#88 id=88 data-nosnippet>88</a>/// generally will not be interacted with directly. Instead, most usages should be wrapped in `MetaString`.
+<a href=#87 id=87 data-nosnippet>87</a>/// This string type is read-only, and dereferences to `&amp;str` for ergonomic usage. It's cheap to clone (16 bytes), but
+<a href=#88 id=88 data-nosnippet>88</a>/// generally won't be interacted with directly. Instead, most usages should be wrapped in `MetaString`.
 <a href=#89 id=89 data-nosnippet>89</a></span><span class="attr">#[derive(Clone, Debug, PartialEq)]
 <a href=#90 id=90 data-nosnippet>90</a></span><span class="kw">pub struct </span>InternedString {
 <a href=#91 id=91 data-nosnippet>91</a>    state: InternedStringState,

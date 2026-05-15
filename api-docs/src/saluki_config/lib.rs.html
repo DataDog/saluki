@@ -76,7 +76,7 @@
 <a href=#76 id=76 data-nosnippet>76</a>        </span>field: Cow&lt;<span class="lifetime">'static</span>, str&gt;,
 <a href=#77 id=77 data-nosnippet>77</a>    },
 <a href=#78 id=78 data-nosnippet>78</a>
-<a href=#79 id=79 data-nosnippet>79</a>    <span class="doccomment">/// Requested field's data type was not the unexpected data type.
+<a href=#79 id=79 data-nosnippet>79</a>    <span class="doccomment">/// Requested field's data type wasn't the unexpected data type.
 <a href=#80 id=80 data-nosnippet>80</a>    </span><span class="attr">#[snafu(display(
 <a href=#81 id=81 data-nosnippet>81</a>        <span class="string">"Expected value for field '{}' to be '{}', got '{}' instead."</span>,
 <a href=#82 id=82 data-nosnippet>82</a>        field,
@@ -160,7 +160,7 @@
 <a href=#160 id=160 data-nosnippet>160</a>    ///
 <a href=#161 id=161 data-nosnippet>161</a>    /// Each entry is `(nested_path, flat_key)`. When a YAML or JSON file contains a value at `nested_path`
 <a href=#162 id=162 data-nosnippet>162</a>    /// (dot-separated), that value is also emitted under `flat_key` at the top level—but only if `flat_key`
-<a href=#163 id=163 data-nosnippet>163</a>    /// is not already explicitly set at the top level. This ensures that both YAML nested format and flat env var
+<a href=#163 id=163 data-nosnippet>163</a>    /// isn't already explicitly set at the top level. This ensures that both YAML nested format and flat env var
 <a href=#164 id=164 data-nosnippet>164</a>    /// format produce the same Figment key, so source precedence (env vars &gt; file) works correctly.
 <a href=#165 id=165 data-nosnippet>165</a>    ///
 <a href=#166 id=166 data-nosnippet>166</a>    /// Must be called before any file-loading methods ([`from_yaml`][Self::from_yaml], etc.) to take effect.
@@ -171,7 +171,7 @@
 <a href=#171 id=171 data-nosnippet>171</a>
 <a href=#172 id=172 data-nosnippet>172</a>    <span class="doccomment">/// Appends one or more providers to the configuration chain.
 <a href=#173 id=173 data-nosnippet>173</a>    ///
-<a href=#174 id=174 data-nosnippet>174</a>    /// Sources are merged in the order they are added: later sources take precedence over earlier ones. Call
+<a href=#174 id=174 data-nosnippet>174</a>    /// Sources are merged in the order they're added: later sources take precedence over earlier ones. Call
 <a href=#175 id=175 data-nosnippet>175</a>    /// this method after any file-loading methods and before [`from_environment`][Self::from_environment] to
 <a href=#176 id=176 data-nosnippet>176</a>    /// place the added providers at the correct intermediate precedence level:
 <a href=#177 id=177 data-nosnippet>177</a>    ///
@@ -194,7 +194,7 @@
 <a href=#194 id=194 data-nosnippet>194</a>    ///
 <a href=#195 id=195 data-nosnippet>195</a>    /// # Errors
 <a href=#196 id=196 data-nosnippet>196</a>    ///
-<a href=#197 id=197 data-nosnippet>197</a>    /// If the file could not be read, or if the file is not valid YAML, an error will be returned.
+<a href=#197 id=197 data-nosnippet>197</a>    /// If the file couldn't be read, or if the file isn't valid YAML, an error will be returned.
 <a href=#198 id=198 data-nosnippet>198</a>    </span><span class="kw">pub fn </span>from_yaml&lt;P&gt;(<span class="kw-2">mut </span><span class="self">self</span>, path: P) -&gt; <span class="prelude-ty">Result</span>&lt;<span class="self">Self</span>, ConfigurationError&gt;
 <a href=#199 id=199 data-nosnippet>199</a>    <span class="kw">where
 <a href=#200 id=200 data-nosnippet>200</a>        </span>P: AsRef&lt;std::path::Path&gt;,
@@ -232,7 +232,7 @@
 <a href=#232 id=232 data-nosnippet>232</a>    ///
 <a href=#233 id=233 data-nosnippet>233</a>    /// # Errors
 <a href=#234 id=234 data-nosnippet>234</a>    ///
-<a href=#235 id=235 data-nosnippet>235</a>    /// If the file could not be read, or if the file is not valid JSON, an error will be returned.
+<a href=#235 id=235 data-nosnippet>235</a>    /// If the file couldn't be read, or if the file isn't valid JSON, an error will be returned.
 <a href=#236 id=236 data-nosnippet>236</a>    </span><span class="kw">pub fn </span>from_json&lt;P&gt;(<span class="kw-2">mut </span><span class="self">self</span>, path: P) -&gt; <span class="prelude-ty">Result</span>&lt;<span class="self">Self</span>, ConfigurationError&gt;
 <a href=#237 id=237 data-nosnippet>237</a>    <span class="kw">where
 <a href=#238 id=238 data-nosnippet>238</a>        </span>P: AsRef&lt;std::path::Path&gt;,
@@ -268,11 +268,11 @@
 <a href=#268 id=268 data-nosnippet>268</a>
 <a href=#269 id=269 data-nosnippet>269</a>    <span class="doccomment">/// Loads configuration from environment variables.
 <a href=#270 id=270 data-nosnippet>270</a>    ///
-<a href=#271 id=271 data-nosnippet>271</a>    /// The prefix given will have an underscore appended to it if it does not already end with one. For
+<a href=#271 id=271 data-nosnippet>271</a>    /// The prefix given will have an underscore appended to it if it doesn't already end with one. For
 <a href=#272 id=272 data-nosnippet>272</a>    /// example, with a prefix of `app`, any environment variable starting with `app_` would be matched. The
 <a href=#273 id=273 data-nosnippet>273</a>    /// prefix is case-insensitive.
 <a href=#274 id=274 data-nosnippet>274</a>    ///
-<a href=#275 id=275 data-nosnippet>275</a>    /// Sources are merged in the order they are added, with later sources taking precedence over earlier ones.
+<a href=#275 id=275 data-nosnippet>275</a>    /// Sources are merged in the order they're added, with later sources taking precedence over earlier ones.
 <a href=#276 id=276 data-nosnippet>276</a>    /// Sources added after this call will have higher precedence than environment variables.
 <a href=#277 id=277 data-nosnippet>277</a>    ///
 <a href=#278 id=278 data-nosnippet>278</a>    /// # Errors
@@ -314,7 +314,7 @@
 <a href=#314 id=314 data-nosnippet>314</a>    ///
 <a href=#315 id=315 data-nosnippet>315</a>    /// ## Errors
 <a href=#316 id=316 data-nosnippet>316</a>    ///
-<a href=#317 id=317 data-nosnippet>317</a>    /// If the configuration could not be deserialized into `T`, an error will be returned.
+<a href=#317 id=317 data-nosnippet>317</a>    /// If the configuration couldn't be deserialized into `T`, an error will be returned.
 <a href=#318 id=318 data-nosnippet>318</a>    </span><span class="kw">pub fn </span>into_typed&lt;<span class="lifetime">'a</span>, T&gt;(<span class="self">self</span>) -&gt; <span class="prelude-ty">Result</span>&lt;T, ConfigurationError&gt;
 <a href=#319 id=319 data-nosnippet>319</a>    <span class="kw">where
 <a href=#320 id=320 data-nosnippet>320</a>        </span>T: Deserialize&lt;<span class="lifetime">'a</span>&gt;,
@@ -397,7 +397,7 @@
 <a href=#397 id=397 data-nosnippet>397</a>        }
 <a href=#398 id=398 data-nosnippet>398</a>    }
 <a href=#399 id=399 data-nosnippet>399</a>
-<a href=#400 id=400 data-nosnippet>400</a>    <span class="doccomment">/// Configures a [`GenericConfiguration`] that is suitable for tests.
+<a href=#400 id=400 data-nosnippet>400</a>    <span class="doccomment">/// Configures a [`GenericConfiguration`] that's suitable for tests.
 <a href=#401 id=401 data-nosnippet>401</a>    ///
 <a href=#402 id=402 data-nosnippet>402</a>    /// This configures the loader with the following defaults:
 <a href=#403 id=403 data-nosnippet>403</a>    ///
@@ -690,7 +690,7 @@
 <a href=#690 id=690 data-nosnippet>690</a>    /// If dynamic configuration is in use, this method will asynchronously wait until the first snapshot has been
 <a href=#691 id=691 data-nosnippet>691</a>    /// received and applied.
 <a href=#692 id=692 data-nosnippet>692</a>    ///
-<a href=#693 id=693 data-nosnippet>693</a>    /// If dynamic configuration is not used, it returns immediately.
+<a href=#693 id=693 data-nosnippet>693</a>    /// If dynamic configuration isn't used, it returns immediately.
 <a href=#694 id=694 data-nosnippet>694</a>    </span><span class="kw">pub async fn </span>ready(<span class="kw-2">&amp;</span><span class="self">self</span>) {
 <a href=#695 id=695 data-nosnippet>695</a>        <span class="comment">// We need a lock to both ensure that multiple callers can race against this,
 <a href=#696 id=696 data-nosnippet>696</a>        // and to allow us mutable access to consume the receiver.
@@ -733,7 +733,7 @@
 <a href=#733 id=733 data-nosnippet>733</a>    ///
 <a href=#734 id=734 data-nosnippet>734</a>    /// ## Errors
 <a href=#735 id=735 data-nosnippet>735</a>    ///
-<a href=#736 id=736 data-nosnippet>736</a>    /// If the key does not exist in the configuration, or if the value could not be deserialized into `T`, an error
+<a href=#736 id=736 data-nosnippet>736</a>    /// If the key doesn't exist in the configuration, or if the value couldn't be deserialized into `T`, an error
 <a href=#737 id=737 data-nosnippet>737</a>    /// variant will be returned.
 <a href=#738 id=738 data-nosnippet>738</a>    </span><span class="kw">pub fn </span>get_typed&lt;<span class="lifetime">'a</span>, T&gt;(<span class="kw-2">&amp;</span><span class="self">self</span>, key: <span class="kw-2">&amp;</span>str) -&gt; <span class="prelude-ty">Result</span>&lt;T, ConfigurationError&gt;
 <a href=#739 id=739 data-nosnippet>739</a>    <span class="kw">where
@@ -742,9 +742,9 @@
 <a href=#742 id=742 data-nosnippet>742</a>        <span class="self">self</span>.get(key)
 <a href=#743 id=743 data-nosnippet>743</a>    }
 <a href=#744 id=744 data-nosnippet>744</a>
-<a href=#745 id=745 data-nosnippet>745</a>    <span class="doccomment">/// Gets a configuration value by key, or the default value if a key does not exist or could not be deserialized.
+<a href=#745 id=745 data-nosnippet>745</a>    <span class="doccomment">/// Gets a configuration value by key, or the default value if a key doesn't exist or couldn't be deserialized.
 <a href=#746 id=746 data-nosnippet>746</a>    ///
-<a href=#747 id=747 data-nosnippet>747</a>    /// The `Default` implementation of `T` will be used both if the key could not be found, as well as for any error
+<a href=#747 id=747 data-nosnippet>747</a>    /// The `Default` implementation of `T` will be used both if the key couldn't be found, as well as for any error
 <a href=#748 id=748 data-nosnippet>748</a>    /// during deserialization. This effectively swallows any errors and should generally be used sparingly.
 <a href=#749 id=749 data-nosnippet>749</a>    ///
 <a href=#750 id=750 data-nosnippet>750</a>    /// The key must be in the form of `a.b.c`, where periods (`.`) are used to indicate a nested lookup.
@@ -764,7 +764,7 @@
 <a href=#764 id=764 data-nosnippet>764</a>    ///
 <a href=#765 id=765 data-nosnippet>765</a>    /// ## Errors
 <a href=#766 id=766 data-nosnippet>766</a>    ///
-<a href=#767 id=767 data-nosnippet>767</a>    /// If the value could not be deserialized into `T`, an error will be returned.
+<a href=#767 id=767 data-nosnippet>767</a>    /// If the value couldn't be deserialized into `T`, an error will be returned.
 <a href=#768 id=768 data-nosnippet>768</a>    </span><span class="kw">pub fn </span>try_get_typed&lt;<span class="lifetime">'a</span>, T&gt;(<span class="kw-2">&amp;</span><span class="self">self</span>, key: <span class="kw-2">&amp;</span>str) -&gt; <span class="prelude-ty">Result</span>&lt;<span class="prelude-ty">Option</span>&lt;T&gt;, ConfigurationError&gt;
 <a href=#769 id=769 data-nosnippet>769</a>    <span class="kw">where
 <a href=#770 id=770 data-nosnippet>770</a>        </span>T: Deserialize&lt;<span class="lifetime">'a</span>&gt;,
@@ -780,7 +780,7 @@
 <a href=#780 id=780 data-nosnippet>780</a>    ///
 <a href=#781 id=781 data-nosnippet>781</a>    /// ## Errors
 <a href=#782 id=782 data-nosnippet>782</a>    ///
-<a href=#783 id=783 data-nosnippet>783</a>    /// If the value could not be deserialized into `T`, an error will be returned.
+<a href=#783 id=783 data-nosnippet>783</a>    /// If the value couldn't be deserialized into `T`, an error will be returned.
 <a href=#784 id=784 data-nosnippet>784</a>    </span><span class="kw">pub fn </span>as_typed&lt;<span class="lifetime">'a</span>, T&gt;(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="prelude-ty">Result</span>&lt;T, ConfigurationError&gt;
 <a href=#785 id=785 data-nosnippet>785</a>    <span class="kw">where
 <a href=#786 id=786 data-nosnippet>786</a>        </span>T: Deserialize&lt;<span class="lifetime">'a</span>&gt;,
@@ -806,7 +806,7 @@
 <a href=#806 id=806 data-nosnippet>806</a>    ///
 <a href=#807 id=807 data-nosnippet>807</a>    /// ## Errors
 <a href=#808 id=808 data-nosnippet>808</a>    ///
-<a href=#809 id=809 data-nosnippet>809</a>    /// If the configuration could not be serialized to JSON, an error will be returned.
+<a href=#809 id=809 data-nosnippet>809</a>    /// If the configuration couldn't be serialized to JSON, an error will be returned.
 <a href=#810 id=810 data-nosnippet>810</a>    </span><span class="kw">pub fn </span>flattened_keys(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="prelude-ty">Result</span>&lt;Vec&lt;(String, serde_json::Value)&gt;, ConfigurationError&gt; {
 <a href=#811 id=811 data-nosnippet>811</a>        <span class="kw">let </span>root: serde_json::Value = <span class="self">self</span>.as_typed()<span class="question-mark">?</span>;
 <a href=#812 id=812 data-nosnippet>812</a>        <span class="kw">let </span><span class="kw-2">mut </span>out = Vec::new();

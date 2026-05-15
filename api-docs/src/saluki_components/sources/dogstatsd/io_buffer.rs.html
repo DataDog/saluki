@@ -23,7 +23,7 @@
 <a href=#23 id=23 data-nosnippet>23</a>///
 <a href=#24 id=24 data-nosnippet>24</a>/// This wrapper provides two basic behaviors:
 <a href=#25 id=25 data-nosnippet>25</a>///
-<a href=#26 id=26 data-nosnippet>26</a>/// - acquire a new buffer when the current buffer does not exist
+<a href=#26 id=26 data-nosnippet>26</a>/// - acquire a new buffer when the current buffer doesn't exist
 <a href=#27 id=27 data-nosnippet>27</a>/// - retain the current buffer (and collapse it) if there is remaining data, _or_ release it if there is no remaining data
 <a href=#28 id=28 data-nosnippet>28</a>///
 <a href=#29 id=29 data-nosnippet>29</a>/// When the current buffer still has remaining data, we must preserve the buffer and its data as we could otherwise be
@@ -38,8 +38,8 @@
 <a href=#38 id=38 data-nosnippet>38</a>///
 <a href=#39 id=39 data-nosnippet>39</a>/// For connectionless streams, the current buffer is never released and is always reused. This is because
 <a href=#40 id=40 data-nosnippet>40</a>/// connectionless streams are often higher volume in terms of the number of socket reads that occur, and are a fixed
-<a href=#41 id=41 data-nosnippet>41</a>/// number that does not change with the amount of traffic that is being sent. This allows us to reduce the overhead
-<a href=#42 id=42 data-nosnippet>42</a>/// related to acquiring and releasing buffers, ensuring that these inherently lossy streams are not introducing
+<a href=#41 id=41 data-nosnippet>41</a>/// number that doesn't change with the amount of traffic that's being sent. This allows us to reduce the overhead
+<a href=#42 id=42 data-nosnippet>42</a>/// related to acquiring and releasing buffers, ensuring that these inherently lossy streams aren't introducing
 <a href=#43 id=43 data-nosnippet>43</a>/// additional overhead that might cause unnecessary packet loss.
 <a href=#44 id=44 data-nosnippet>44</a></span><span class="kw">pub struct </span>IoBufferManager&lt;<span class="lifetime">'a</span>, O&gt;
 <a href=#45 id=45 data-nosnippet>45</a><span class="kw">where

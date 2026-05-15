@@ -60,8 +60,8 @@
 <a href=#60 id=60 data-nosnippet>60</a>    ///
 <a href=#61 id=61 data-nosnippet>61</a>    /// ## Errors
 <a href=#62 id=62 data-nosnippet>62</a>    ///
-<a href=#63 id=63 data-nosnippet>63</a>    /// If the containerd socket path was not present in the configuration or could not be detected, or if the gRPC
-<a href=#64 id=64 data-nosnippet>64</a>    /// transport to containerd could not be created, an error will be returned.
+<a href=#63 id=63 data-nosnippet>63</a>    /// If the containerd socket path wasn't present in the configuration or couldn't be detected, or if the gRPC
+<a href=#64 id=64 data-nosnippet>64</a>    /// transport to containerd couldn't be created, an error will be returned.
 <a href=#65 id=65 data-nosnippet>65</a>    </span><span class="kw">pub async fn </span>from_configuration(config: <span class="kw-2">&amp;</span>GenericConfiguration) -&gt; <span class="prelude-ty">Result</span>&lt;<span class="self">Self</span>, GenericError&gt; {
 <a href=#66 id=66 data-nosnippet>66</a>        <span class="kw">let </span>socket_path = ContainerdDetector::detect_grpc_socket_path(config)
 <a href=#67 id=67 data-nosnippet>67</a>            .ok_or(<span class="macro">generic_error!</span>(

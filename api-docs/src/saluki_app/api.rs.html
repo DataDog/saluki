@@ -28,7 +28,7 @@
 <a href=#28 id=28 data-nosnippet>28</a>///
 <a href=#29 id=29 data-nosnippet>29</a>/// - TLS support
 <a href=#30 id=30 data-nosnippet>30</a>/// - API-wide authentication support (can be added at the per-handler level)
-<a href=#31 id=31 data-nosnippet>31</a>/// - graceful shutdown (shutdown stops new connections, but does not wait for existing connections to close)
+<a href=#31 id=31 data-nosnippet>31</a>/// - graceful shutdown (shutdown stops new connections, but doesn't wait for existing connections to close)
 <a href=#32 id=32 data-nosnippet>32</a></span><span class="attr">#[derive(Default)]
 <a href=#33 id=33 data-nosnippet>33</a></span><span class="kw">pub struct </span>APIBuilder {
 <a href=#34 id=34 data-nosnippet>34</a>    http_router: Router,
@@ -125,7 +125,7 @@
 <a href=#125 id=125 data-nosnippet>125</a>    ///
 <a href=#126 id=126 data-nosnippet>126</a>    /// # Errors
 <a href=#127 id=127 data-nosnippet>127</a>    ///
-<a href=#128 id=128 data-nosnippet>128</a>    /// If the given listen address is not connection-oriented, or if the server fails to bind to the address, or if
+<a href=#128 id=128 data-nosnippet>128</a>    /// If the given listen address isn't connection-oriented, or if the server fails to bind to the address, or if
 <a href=#129 id=129 data-nosnippet>129</a>    /// there is an error while accepting for new connections, an error will be returned.
 <a href=#130 id=130 data-nosnippet>130</a>    </span><span class="kw">pub async fn </span>serve&lt;F&gt;(<span class="self">self</span>, listen_address: ListenAddress, shutdown: F) -&gt; <span class="prelude-ty">Result</span>&lt;(), GenericError&gt;
 <a href=#131 id=131 data-nosnippet>131</a>    <span class="kw">where

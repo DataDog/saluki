@@ -59,7 +59,7 @@
 <a href=#59 id=59 data-nosnippet>59</a>    /// slop factor of 0.1 would indicate that only 90% of the initial limit should be used, and a slop factor of 0.25
 <a href=#60 id=60 data-nosnippet>60</a>    /// would indicate that only 75% of the initial limit should be used, and so on.
 <a href=#61 id=61 data-nosnippet>61</a>    ///
-<a href=#62 id=62 data-nosnippet>62</a>    /// If the slop factor is not valid (must be 0.0 &lt; slop_factor &lt;= 1.0), then `None` is returned.  If the effective
+<a href=#62 id=62 data-nosnippet>62</a>    /// If the slop factor isn't valid (must be 0.0 &lt; slop_factor &lt;= 1.0), then `None` is returned.  If the effective
 <a href=#63 id=63 data-nosnippet>63</a>    /// limit is greater than 9007199254740992 bytes (2^53 bytes, or roughly 9 petabytes), then `None` is returned. This
 <a href=#64 id=64 data-nosnippet>64</a>    /// is a hardcoded limit.
 <a href=#65 id=65 data-nosnippet>65</a>    </span><span class="kw">pub fn </span>with_slop_factor(initial_limit_bytes: usize, slop_factor: f64) -&gt; <span class="prelude-ty">Result</span>&lt;<span class="self">Self</span>, GrantError&gt; {
@@ -83,7 +83,7 @@
 <a href=#83 id=83 data-nosnippet>83</a>
 <a href=#84 id=84 data-nosnippet>84</a>    <span class="doccomment">/// Initial number of bytes granted.
 <a href=#85 id=85 data-nosnippet>85</a>    ///
-<a href=#86 id=86 data-nosnippet>86</a>    /// This value is purely informational, and should not be used to calculating the memory available for use. For that
+<a href=#86 id=86 data-nosnippet>86</a>    /// This value is purely informational, and shouldn't be used to calculating the memory available for use. For that
 <a href=#87 id=87 data-nosnippet>87</a>    /// value, see [`effective_limit_bytes`][Self::effective_limit_bytes].
 <a href=#88 id=88 data-nosnippet>88</a>    </span><span class="kw">pub fn </span>initial_limit_bytes(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; usize {
 <a href=#89 id=89 data-nosnippet>89</a>        <span class="self">self</span>.initial_limit_bytes

@@ -357,9 +357,9 @@
 <a href=#357 id=357 data-nosnippet>357</a>/// This code depends on a number of invariants in order to work correctly:
 <a href=#358 id=358 data-nosnippet>358</a>///
 <a href=#359 id=359 data-nosnippet>359</a>/// 1. Only used on 64-bit little-endian platforms. (checked at compile-time via _INVARIANTS_CHECK)
-<a href=#360 id=360 data-nosnippet>360</a>/// 2. The data pointers for `String` and `&amp;'static str` cannot ever be null when the strings are non-empty.
+<a href=#360 id=360 data-nosnippet>360</a>/// 2. The data pointers for `String` and `&amp;'static str` can't ever be null when the strings are non-empty.
 <a href=#361 id=361 data-nosnippet>361</a>/// 3. Allocations can never be larger than `isize::MAX` (see [here][rust_isize_alloc_limit]), meaning that any
-<a href=#362 id=362 data-nosnippet>362</a>///    length/capacity field for a string cannot ever be larger than `isize::MAX`, implying the 64th bit (top-most bit)
+<a href=#362 id=362 data-nosnippet>362</a>///    length/capacity field for a string can't ever be larger than `isize::MAX`, implying the 64th bit (top-most bit)
 <a href=#363 id=363 data-nosnippet>363</a>///    for length/capacity should always be 0.
 <a href=#364 id=364 data-nosnippet>364</a>/// 4. An inlined string can only hold up to 23 bytes of data, meaning that the length byte for that string can never
 <a href=#365 id=365 data-nosnippet>365</a>///    have a value greater than 23. (_We_ have to provide this invariant, which is handled in `Inner::try_inlined`.)
@@ -673,7 +673,7 @@
 <a href=#673 id=673 data-nosnippet>673</a>/// ### Owned and borrowed strings
 <a href=#674 id=674 data-nosnippet>674</a>///
 <a href=#675 id=675 data-nosnippet>675</a>/// `MetaString` can be created from `String` and `&amp;str` directly. For owned scenarios (`String`), the string value is
-<a href=#676 id=676 data-nosnippet>676</a>/// simply wrapped. For borrowed strings, we attempt to inline them (see more below) or, if they cannot be inlined, they
+<a href=#676 id=676 data-nosnippet>676</a>/// simply wrapped. For borrowed strings, we attempt to inline them (see more below) or, if they can't be inlined, they
 <a href=#677 id=677 data-nosnippet>677</a>/// are copied into a new `String`.
 <a href=#678 id=678 data-nosnippet>678</a>///
 <a href=#679 id=679 data-nosnippet>679</a>/// ### Static strings
@@ -693,7 +693,7 @@
 <a href=#693 id=693 data-nosnippet>693</a>/// ### Shared strings
 <a href=#694 id=694 data-nosnippet>694</a>///
 <a href=#695 id=695 data-nosnippet>695</a>/// `MetaString` can be created from `Arc&lt;str&gt;`, which is a string slice that can be atomically shared between threads.
-<a href=#696 id=696 data-nosnippet>696</a>/// This is a simpler version of interned strings where strict memory control and re-use is not required.
+<a href=#696 id=696 data-nosnippet>696</a>/// This is a simpler version of interned strings where strict memory control and re-use isn't required.
 <a href=#697 id=697 data-nosnippet>697</a>///
 <a href=#698 id=698 data-nosnippet>698</a>/// ### Inlined strings
 <a href=#699 id=699 data-nosnippet>699</a>///
@@ -707,7 +707,7 @@
 <a href=#707 id=707 data-nosnippet>707</a>/// ## Conversion methods
 <a href=#708 id=708 data-nosnippet>708</a>///
 <a href=#709 id=709 data-nosnippet>709</a>/// Implementations of `From&lt;T&gt;` exist for all of the aforementioned types to allow for easily converting to
-<a href=#710 id=710 data-nosnippet>710</a>/// `MetaString`. Once a caller has a `MetaString` value, they are generally expected to interact with the string in a
+<a href=#710 id=710 data-nosnippet>710</a>/// `MetaString`. Once a caller has a `MetaString` value, they're generally expected to interact with the string in a
 <a href=#711 id=711 data-nosnippet>711</a>/// read-only way, as `MetaString` can be dereferenced directly to `&amp;str`.
 <a href=#712 id=712 data-nosnippet>712</a>///
 <a href=#713 id=713 data-nosnippet>713</a>/// If a caller needs to be able to modify the string data, they can call `into_owned` to get an owned version of the
@@ -720,14 +720,14 @@
 <a href=#720 id=720 data-nosnippet>720</a><span class="kw">impl </span>MetaString {
 <a href=#721 id=721 data-nosnippet>721</a>    <span class="doccomment">/// Creates an empty `MetaString`.
 <a href=#722 id=722 data-nosnippet>722</a>    ///
-<a href=#723 id=723 data-nosnippet>723</a>    /// This does not allocate.
+<a href=#723 id=723 data-nosnippet>723</a>    /// This doesn't allocate.
 <a href=#724 id=724 data-nosnippet>724</a>    </span><span class="kw">pub const fn </span>empty() -&gt; <span class="self">Self </span>{
 <a href=#725 id=725 data-nosnippet>725</a>        <span class="self">Self </span>{ inner: Inner::empty() }
 <a href=#726 id=726 data-nosnippet>726</a>    }
 <a href=#727 id=727 data-nosnippet>727</a>
 <a href=#728 id=728 data-nosnippet>728</a>    <span class="doccomment">/// Creates a new `MetaString` from the given static string.
 <a href=#729 id=729 data-nosnippet>729</a>    ///
-<a href=#730 id=730 data-nosnippet>730</a>    /// This does not allocate.
+<a href=#730 id=730 data-nosnippet>730</a>    /// This doesn't allocate.
 <a href=#731 id=731 data-nosnippet>731</a>    </span><span class="kw">pub const fn </span>from_static(s: <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str) -&gt; <span class="self">Self </span>{
 <a href=#732 id=732 data-nosnippet>732</a>        <span class="self">Self </span>{
 <a href=#733 id=733 data-nosnippet>733</a>            inner: Inner::static_str(s),
@@ -741,7 +741,7 @@
 <a href=#741 id=741 data-nosnippet>741</a>
 <a href=#742 id=742 data-nosnippet>742</a>    <span class="doccomment">/// Creates a new `MetaString` from the given string, using the provided interner.
 <a href=#743 id=743 data-nosnippet>743</a>    ///
-<a href=#744 id=744 data-nosnippet>744</a>    /// The string is inlined if possible. If it cannot be inlined, the interner is tried. If interning fails, an owned
+<a href=#744 id=744 data-nosnippet>744</a>    /// The string is inlined if possible. If it can't be inlined, the interner is tried. If interning fails, an owned
 <a href=#745 id=745 data-nosnippet>745</a>    /// string is allocated.
 <a href=#746 id=746 data-nosnippet>746</a>    </span><span class="kw">pub fn </span>from_interner&lt;I&gt;(s: <span class="kw-2">&amp;</span>str, interner: <span class="kw-2">&amp;</span>I) -&gt; <span class="self">Self
 <a href=#747 id=747 data-nosnippet>747</a>    </span><span class="kw">where

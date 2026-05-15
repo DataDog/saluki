@@ -139,7 +139,7 @@
 <a href=#139 id=139 data-nosnippet>139</a>    </span><span class="kw">pub const </span>GET_TYPED: <span class="kw-2">&amp;</span>str = <span class="string">"get_typed"</span>;
 <a href=#140 id=140 data-nosnippet>140</a>}
 <a href=#141 id=141 data-nosnippet>141</a>
-<a href=#142 id=142 data-nosnippet>142</a><span class="doccomment">/// The `Severity` level of a config key that Saluki does not support.
+<a href=#142 id=142 data-nosnippet>142</a><span class="doccomment">/// The `Severity` level of a config key that Saluki doesn't support.
 <a href=#143 id=143 data-nosnippet>143</a></span><span class="attr">#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 <a href=#144 id=144 data-nosnippet>144</a></span><span class="kw">pub enum </span>Severity {
 <a href=#145 id=145 data-nosnippet>145</a>    <span class="doccomment">/// Saluki's incompatibility with the key is considered minor.
@@ -167,16 +167,16 @@
 <a href=#167 id=167 data-nosnippet>167</a>    </span>Full,
 <a href=#168 id=168 data-nosnippet>168</a>    <span class="doccomment">/// Partially supported. The key is consumed by at least one struct, but support is incomplete.
 <a href=#169 id=169 data-nosnippet>169</a>    </span>Partial,
-<a href=#170 id=170 data-nosnippet>170</a>    <span class="doccomment">/// Explicitly incompatible. Saluki does not support this key and may not behave as expected in
+<a href=#170 id=170 data-nosnippet>170</a>    <span class="doccomment">/// Explicitly incompatible. Saluki doesn't support this key and may not behave as expected in
 <a href=#171 id=171 data-nosnippet>171</a>    /// its presence; `used_by` must be empty. Support for the key may be added in the future but
-<a href=#172 id=172 data-nosnippet>172</a>    /// tracking such intent is not encoded here.
+<a href=#172 id=172 data-nosnippet>172</a>    /// tracking such intent isn't encoded here.
 <a href=#173 id=173 data-nosnippet>173</a>    </span>Incompatible(Severity),
-<a href=#174 id=174 data-nosnippet>174</a>    <span class="doccomment">/// Intentionally ignored. The key is not relevant to Saluki. This assignment must be
+<a href=#174 id=174 data-nosnippet>174</a>    <span class="doccomment">/// Intentionally ignored. The key isn't relevant to Saluki. This assignment must be
 <a href=#175 id=175 data-nosnippet>175</a>    /// intentionally chosen and specified for a key. We never assume that a key is `Ignored` just
-<a href=#176 id=176 data-nosnippet>176</a>    /// because we are unaware of it.
+<a href=#176 id=176 data-nosnippet>176</a>    /// because we're unaware of it.
 <a href=#177 id=177 data-nosnippet>177</a>    </span><span class="attr">#[allow(unused)]
 <a href=#178 id=178 data-nosnippet>178</a>    </span>Ignored,
-<a href=#179 id=179 data-nosnippet>179</a>    <span class="doccomment">/// Unrecognized. The Saluki codebase is unaware of the existence of this key. It is not in our
+<a href=#179 id=179 data-nosnippet>179</a>    <span class="doccomment">/// Unrecognized. The Saluki codebase is unaware of the existence of this key. It's not in our
 <a href=#180 id=180 data-nosnippet>180</a>    /// vendored datadog config schema, nor is it annotated.
 <a href=#181 id=181 data-nosnippet>181</a>    </span><span class="attr">#[allow(unused)]
 <a href=#182 id=182 data-nosnippet>182</a>    </span>Unrecognized,
@@ -204,7 +204,7 @@
 <a href=#204 id=204 data-nosnippet>204</a></span><span class="attr">#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
 <a href=#205 id=205 data-nosnippet>205</a>#[repr(u8)]
 <a href=#206 id=206 data-nosnippet>206</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">enum </span>Schema {
-<a href=#207 id=207 data-nosnippet>207</a>    <span class="doccomment">/// Saluki defined the `SchemaEntry` and the key is not expected to exist in the vendored Datadog config schema.
+<a href=#207 id=207 data-nosnippet>207</a>    <span class="doccomment">/// Saluki defined the `SchemaEntry` and the key isn't expected to exist in the vendored Datadog config schema.
 <a href=#208 id=208 data-nosnippet>208</a>    </span>Saluki,
 <a href=#209 id=209 data-nosnippet>209</a>    <span class="doccomment">/// The vendored Datadog config schema defines the `SchemaEntry`.
 <a href=#210 id=210 data-nosnippet>210</a>    </span>Datadog,
@@ -216,7 +216,7 @@
 <a href=#216 id=216 data-nosnippet>216</a>/// knows: the canonical YAML path, declared environment variables, and value type. Saluki-specific
 <a href=#217 id=217 data-nosnippet>217</a>/// fields (`used_by`, etc.) live in [`SalukiAnnotation`] instead.
 <a href=#218 id=218 data-nosnippet>218</a>///
-<a href=#219 id=219 data-nosnippet>219</a>/// Do not construct these manually—they are produced by `cargo xtask gen-config-schema` and
+<a href=#219 id=219 data-nosnippet>219</a>/// Don't construct these manually—they're produced by `cargo xtask gen-config-schema` and
 <a href=#220 id=220 data-nosnippet>220</a>/// live in `config_registry::generated::schema`.
 <a href=#221 id=221 data-nosnippet>221</a></span><span class="attr">#[derive(Debug)]
 <a href=#222 id=222 data-nosnippet>222</a></span><span class="kw">pub struct </span>SchemaEntry {
@@ -251,7 +251,7 @@
 <a href=#251 id=251 data-nosnippet>251</a>/// schema's env var list.
 <a href=#252 id=252 data-nosnippet>252</a>///
 <a href=#253 id=253 data-nosnippet>253</a>/// These are hand-written constants, one per key saluki cares about, and live in
-<a href=#254 id=254 data-nosnippet>254</a>/// `config_registry::datadog::*` submodules. They are never overwritten by codegen.
+<a href=#254 id=254 data-nosnippet>254</a>/// `config_registry::datadog::*` submodules. They're never overwritten by codegen.
 <a href=#255 id=255 data-nosnippet>255</a></span><span class="attr">#[derive(Debug)]
 <a href=#256 id=256 data-nosnippet>256</a></span><span class="kw">pub struct </span>SalukiAnnotation {
 <a href=#257 id=257 data-nosnippet>257</a>    <span class="doccomment">/// The schema entry this annotation enriches.
@@ -290,7 +290,7 @@
 <a href=#290 id=290 data-nosnippet>290</a>    <span class="doccomment">/// Overrides the smoke-test injected value entirely when `Some`.
 <a href=#291 id=291 data-nosnippet>291</a>    ///
 <a href=#292 id=292 data-nosnippet>292</a>    /// Must be a valid JSON literal (for example, `Some("[{\"name\":\"test\"}]")`). Use when the field
-<a href=#293 id=293 data-nosnippet>293</a>    /// requires a structured value that the generic `ValueType`-derived test values cannot satisfy
+<a href=#293 id=293 data-nosnippet>293</a>    /// requires a structured value that the generic `ValueType`-derived test values can't satisfy
 <a href=#294 id=294 data-nosnippet>294</a>    /// (for example, JSON-encoded arrays or objects).
 <a href=#295 id=295 data-nosnippet>295</a>    </span><span class="kw">pub </span>test_json: <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span><span class="lifetime">'static </span>str&gt;,
 <a href=#296 id=296 data-nosnippet>296</a>}

@@ -2,7 +2,7 @@
     (name =&gt; $name:ident, prefix =&gt; $prefix:ident, metrics =&gt; [$($metric_type:ident($metric_name:ident)),+ $(,)?] $(,)?) =&gt; { ... };
     (name =&gt; $name:ident, prefix =&gt; $prefix:ident, labels =&gt; [$($label_key:ident: $label_ty:ty),*], metrics =&gt; [$($metric_type:ident($metric_name:ident)),+ $(,)?] $(,)?) =&gt; { ... };
 }</code></pre><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>Creates statically defined metrics within a dedicated container struct.</p>
-<p>In some cases, the metrics needed for a component are well-established and do not require a high-level of dynamism:
+<p>In some cases, the metrics needed for a component are well-established and don’t require a high-level of dynamism:
 perhaps only a single label is needed for all metrics, and the value is known ahead of time. In these cases, it can
 be useful to declare the metrics up front, and in a contained way, to avoid having to deal with the string-y metric
 names (and any labels) at each and every callsite.</p>
@@ -17,7 +17,7 @@ being able to handle them in a strong-typed way right up until the moment where 
 <h2 id="levels"><a class="doc-anchor" href="#levels">§</a>Levels</h2>
 <p>In <code>metrics</code>, metrics have an inherent “level”, similar to logs: trace, debug, info, warn, and error.  Levels can be
 used to filter metrics based on their importance or severity. For example, a trace-level metric might be only be
-required for debugging and should not be sent all the time, while warn- or error-level metrics should be sent all the
+required for debugging and shouldn’t be sent all the time, while warn- or error-level metrics should be sent all the
 time.</p>
 <p>We expose the ability to specify the level to use for a metric by specifying it as a prefix to the metric type. See the
 below examples for more details. Metrics can be defined at the trace, debug, or info level, and will default to the info

@@ -231,7 +231,7 @@
 <a href=#231 id=231 data-nosnippet>231</a></span><span class="kw">pub struct </span>DogStatsDConfiguration {
 <a href=#232 id=232 data-nosnippet>232</a>    <span class="doccomment">/// The size of the buffer used to receive messages into, in bytes.
 <a href=#233 id=233 data-nosnippet>233</a>    ///
-<a href=#234 id=234 data-nosnippet>234</a>    /// Payloads cannot exceed this size, or they will be truncated, leading to discarded messages.
+<a href=#234 id=234 data-nosnippet>234</a>    /// Payloads can't exceed this size, or they will be truncated, leading to discarded messages.
 <a href=#235 id=235 data-nosnippet>235</a>    ///
 <a href=#236 id=236 data-nosnippet>236</a>    /// Defaults to 8192 bytes.
 <a href=#237 id=237 data-nosnippet>237</a>    </span><span class="attr">#[serde(rename = <span class="string">"dogstatsd_buffer_size"</span>, default = <span class="string">"default_buffer_size"</span>)]
@@ -249,7 +249,7 @@
 <a href=#249 id=249 data-nosnippet>249</a>
 <a href=#250 id=250 data-nosnippet>250</a>    <span class="doccomment">/// The port to listen on in UDP mode.
 <a href=#251 id=251 data-nosnippet>251</a>    ///
-<a href=#252 id=252 data-nosnippet>252</a>    /// If set to `0`, UDP is not used.
+<a href=#252 id=252 data-nosnippet>252</a>    /// If set to `0`, UDP isn't used.
 <a href=#253 id=253 data-nosnippet>253</a>    ///
 <a href=#254 id=254 data-nosnippet>254</a>    /// Defaults to 8125.
 <a href=#255 id=255 data-nosnippet>255</a>    </span><span class="attr">#[serde(rename = <span class="string">"dogstatsd_port"</span>, default = <span class="string">"default_port"</span>)]
@@ -265,7 +265,7 @@
 <a href=#265 id=265 data-nosnippet>265</a>
 <a href=#266 id=266 data-nosnippet>266</a>    <span class="doccomment">/// The port to listen on in TCP mode.
 <a href=#267 id=267 data-nosnippet>267</a>    ///
-<a href=#268 id=268 data-nosnippet>268</a>    /// If set to `0`, TCP is not used.
+<a href=#268 id=268 data-nosnippet>268</a>    /// If set to `0`, TCP isn't used.
 <a href=#269 id=269 data-nosnippet>269</a>    ///
 <a href=#270 id=270 data-nosnippet>270</a>    /// Defaults to 0.
 <a href=#271 id=271 data-nosnippet>271</a>    </span><span class="attr">#[serde(rename = <span class="string">"dogstatsd_tcp_port"</span>, default = <span class="string">"default_tcp_port"</span>)]
@@ -273,7 +273,7 @@
 <a href=#273 id=273 data-nosnippet>273</a>
 <a href=#274 id=274 data-nosnippet>274</a>    <span class="doccomment">/// The Unix domain socket path to listen on, in datagram mode.
 <a href=#275 id=275 data-nosnippet>275</a>    ///
-<a href=#276 id=276 data-nosnippet>276</a>    /// If not set, UDS (in datagram mode) is not used.
+<a href=#276 id=276 data-nosnippet>276</a>    /// If not set, UDS (in datagram mode) isn't used.
 <a href=#277 id=277 data-nosnippet>277</a>    ///
 <a href=#278 id=278 data-nosnippet>278</a>    /// Defaults to unset.
 <a href=#279 id=279 data-nosnippet>279</a>    </span><span class="attr">#[serde(rename = <span class="string">"dogstatsd_socket"</span>, default)]
@@ -282,7 +282,7 @@
 <a href=#282 id=282 data-nosnippet>282</a>
 <a href=#283 id=283 data-nosnippet>283</a>    <span class="doccomment">/// The Unix domain socket path to listen on, in stream mode.
 <a href=#284 id=284 data-nosnippet>284</a>    ///
-<a href=#285 id=285 data-nosnippet>285</a>    /// If not set, UDS (in stream mode) is not used.
+<a href=#285 id=285 data-nosnippet>285</a>    /// If not set, UDS (in stream mode) isn't used.
 <a href=#286 id=286 data-nosnippet>286</a>    ///
 <a href=#287 id=287 data-nosnippet>287</a>    /// Defaults to unset.
 <a href=#288 id=288 data-nosnippet>288</a>    </span><span class="attr">#[serde(rename = <span class="string">"dogstatsd_stream_socket"</span>, default)]
@@ -305,7 +305,7 @@
 <a href=#305 id=305 data-nosnippet>305</a>    /// Valid values are `udp`, `uds`, and `named_pipe`. ADP accepts `named_pipe` for compatibility, but it has no effect
 <a href=#306 id=306 data-nosnippet>306</a>    /// until named pipe listeners are supported. Invalid values are ignored.
 <a href=#307 id=307 data-nosnippet>307</a>    ///
-<a href=#308 id=308 data-nosnippet>308</a>    /// Enable this when DogStatsD clients must reject packets or stream frames that do not end with a newline.
+<a href=#308 id=308 data-nosnippet>308</a>    /// Enable this when DogStatsD clients must reject packets or stream frames that don't end with a newline.
 <a href=#309 id=309 data-nosnippet>309</a>    ///
 <a href=#310 id=310 data-nosnippet>310</a>    /// Defaults to unset, which accepts the final message without a newline.
 <a href=#311 id=311 data-nosnippet>311</a>    </span><span class="attr">#[serde(
@@ -329,7 +329,7 @@
 <a href=#329 id=329 data-nosnippet>329</a>    <span class="doccomment">/// Whether or not to listen for non-local traffic in UDP mode.
 <a href=#330 id=330 data-nosnippet>330</a>    ///
 <a href=#331 id=331 data-nosnippet>331</a>    /// If set to `true`, the listener will accept packets from any interface/address. Otherwise, the source will only
-<a href=#332 id=332 data-nosnippet>332</a>    /// listen on the address specified by `bind_host`, or `127.0.0.1` if `bind_host` is not set.
+<a href=#332 id=332 data-nosnippet>332</a>    /// listen on the address specified by `bind_host`, or `127.0.0.1` if `bind_host` isn't set.
 <a href=#333 id=333 data-nosnippet>333</a>    ///
 <a href=#334 id=334 data-nosnippet>334</a>    /// Defaults to `false`.
 <a href=#335 id=335 data-nosnippet>335</a>    </span><span class="attr">#[serde(rename = <span class="string">"dogstatsd_non_local_traffic"</span>, default)]
@@ -342,7 +342,7 @@
 <a href=#342 id=342 data-nosnippet>342</a>    /// tasks. The number of sockets scales with available vCPUs: one stream handler base, plus one additional
 <a href=#343 id=343 data-nosnippet>343</a>    /// per 8 vCPUs, capped at 4 total.
 <a href=#344 id=344 data-nosnippet>344</a>    ///
-<a href=#345 id=345 data-nosnippet>345</a>    /// Has no effect on non-Linux platforms because `SO_REUSEPORT` does not provide kernel-level load balancing
+<a href=#345 id=345 data-nosnippet>345</a>    /// Has no effect on non-Linux platforms because `SO_REUSEPORT` doesn't provide kernel-level load balancing
 <a href=#346 id=346 data-nosnippet>346</a>    /// there; a warning is logged at startup if enabled outside of Linux.
 <a href=#347 id=347 data-nosnippet>347</a>    ///
 <a href=#348 id=348 data-nosnippet>348</a>    /// Enable this on multi-vCPU Linux deployments where UDP DogStatsD throughput is bottlenecked on a single
@@ -357,7 +357,7 @@
 <a href=#357 id=357 data-nosnippet>357</a>    /// When resolving contexts during parsing, the metric name and tags are interned to reduce memory usage. The
 <a href=#358 id=358 data-nosnippet>358</a>    /// interner has a fixed size, however, which means some strings can fail to be interned if the interner is full.
 <a href=#359 id=359 data-nosnippet>359</a>    /// When set to `true`, we allow these strings to be allocated on the heap like normal, but this can lead to
-<a href=#360 id=360 data-nosnippet>360</a>    /// increased (unbounded) memory usage. When set to `false`, if the metric name and all of its tags cannot be
+<a href=#360 id=360 data-nosnippet>360</a>    /// increased (unbounded) memory usage. When set to `false`, if the metric name and all of its tags can't be
 <a href=#361 id=361 data-nosnippet>361</a>    /// interned, the metric is skipped.
 <a href=#362 id=362 data-nosnippet>362</a>    ///
 <a href=#363 id=363 data-nosnippet>363</a>    /// Defaults to `true`.
@@ -370,7 +370,7 @@
 <a href=#370 id=370 data-nosnippet>370</a>    <span class="doccomment">/// Whether or not to enable support for no-aggregation pipelines.
 <a href=#371 id=371 data-nosnippet>371</a>    ///
 <a href=#372 id=372 data-nosnippet>372</a>    /// When enabled, this influences how metrics are parsed, specifically around user-provided metric timestamps. When
-<a href=#373 id=373 data-nosnippet>373</a>    /// metric timestamps are present, it is used as a signal to any aggregation transforms that the metric should not
+<a href=#373 id=373 data-nosnippet>373</a>    /// metric timestamps are present, it's used as a signal to any aggregation transforms that the metric shouldn't
 <a href=#374 id=374 data-nosnippet>374</a>    /// be aggregated.
 <a href=#375 id=375 data-nosnippet>375</a>    ///
 <a href=#376 id=376 data-nosnippet>376</a>    /// Defaults to `true`.
@@ -382,7 +382,7 @@
 <a href=#382 id=382 data-nosnippet>382</a>
 <a href=#383 id=383 data-nosnippet>383</a>    <span class="doccomment">/// Number of entries for the string interner, as interpreted by the Core Datadog Agent.
 <a href=#384 id=384 data-nosnippet>384</a>    ///
-<a href=#385 id=385 data-nosnippet>385</a>    /// When `dogstatsd_string_interner_size_bytes` is not set, this value is multiplied by 512 bytes per entry to
+<a href=#385 id=385 data-nosnippet>385</a>    /// When `dogstatsd_string_interner_size_bytes` isn't set, this value is multiplied by 512 bytes per entry to
 <a href=#386 id=386 data-nosnippet>386</a>    /// derive the interner byte size. This provides backwards compatibility for customers migrating configurations
 <a href=#387 id=387 data-nosnippet>387</a>    /// from the Core Agent, where this setting represents an entry count rather than a byte size.
 <a href=#388 id=388 data-nosnippet>388</a>    ///
@@ -396,14 +396,14 @@
 <a href=#396 id=396 data-nosnippet>396</a>    <span class="doccomment">/// Total size of the string interner used for contexts, in bytes.
 <a href=#397 id=397 data-nosnippet>397</a>    ///
 <a href=#398 id=398 data-nosnippet>398</a>    /// When set, this takes priority over `dogstatsd_string_interner_size`. This controls the amount of memory that
-<a href=#399 id=399 data-nosnippet>399</a>    /// can be used to intern metric names and tags. If the interner is full, metrics with contexts that have not
+<a href=#399 id=399 data-nosnippet>399</a>    /// can be used to intern metric names and tags. If the interner is full, metrics with contexts that haven't
 <a href=#400 id=400 data-nosnippet>400</a>    /// already been resolved may or may not be dropped, depending on the value of `allow_context_heap_allocations`.
 <a href=#401 id=401 data-nosnippet>401</a>    </span><span class="attr">#[serde(rename = <span class="string">"dogstatsd_string_interner_size_bytes"</span>, default)]
 <a href=#402 id=402 data-nosnippet>402</a>    </span>context_string_interner_size_bytes: <span class="prelude-ty">Option</span>&lt;ByteSize&gt;,
 <a href=#403 id=403 data-nosnippet>403</a>
 <a href=#404 id=404 data-nosnippet>404</a>    <span class="doccomment">/// The maximum number of cached contexts to allow.
 <a href=#405 id=405 data-nosnippet>405</a>    ///
-<a href=#406 id=406 data-nosnippet>406</a>    /// This is the maximum number of resolved contexts that can be cached at any given time. This limit does not affect
+<a href=#406 id=406 data-nosnippet>406</a>    /// This is the maximum number of resolved contexts that can be cached at any given time. This limit doesn't affect
 <a href=#407 id=407 data-nosnippet>407</a>    /// the total number of contexts that can be _alive_ at any given time, which is dependent on the interner capacity
 <a href=#408 id=408 data-nosnippet>408</a>    /// and whether or not heap allocations are allowed.
 <a href=#409 id=409 data-nosnippet>409</a>    ///
@@ -416,7 +416,7 @@
 <a href=#416 id=416 data-nosnippet>416</a>
 <a href=#417 id=417 data-nosnippet>417</a>    <span class="doccomment">/// The maximum number of cached tagsets to allow.
 <a href=#418 id=418 data-nosnippet>418</a>    ///
-<a href=#419 id=419 data-nosnippet>419</a>    /// This is the maximum number of resolved tagsets that can be cached at any given time. This limit does not affect
+<a href=#419 id=419 data-nosnippet>419</a>    /// This is the maximum number of resolved tagsets that can be cached at any given time. This limit doesn't affect
 <a href=#420 id=420 data-nosnippet>420</a>    /// the total number of tagsets that can be _alive_ at any given time, which is dependent on the interner capacity
 <a href=#421 id=421 data-nosnippet>421</a>    /// and whether or not heap allocations are allowed.
 <a href=#422 id=422 data-nosnippet>422</a>    ///
@@ -594,7 +594,7 @@
 <a href=#594 id=594 data-nosnippet>594</a>
 <a href=#595 id=595 data-nosnippet>595</a>    <span class="doccomment">/// Returns the effective string interner size in bytes.
 <a href=#596 id=596 data-nosnippet>596</a>    ///
-<a href=#597 id=597 data-nosnippet>597</a>    /// If `dogstatsd_string_interner_size_bytes` is set, it is used directly. Otherwise,
+<a href=#597 id=597 data-nosnippet>597</a>    /// If `dogstatsd_string_interner_size_bytes` is set, it's used directly. Otherwise,
 <a href=#598 id=598 data-nosnippet>598</a>    /// `dogstatsd_string_interner_size` (an entry count) is multiplied by 512 bytes per entry to derive the byte
 <a href=#599 id=599 data-nosnippet>599</a>    /// size.
 <a href=#600 id=600 data-nosnippet>600</a>    </span><span class="kw">fn </span>effective_context_string_interner_bytes(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; ByteSize {
@@ -631,7 +631,7 @@
 <a href=#631 id=631 data-nosnippet>631</a>
 <a href=#632 id=632 data-nosnippet>632</a>    <span class="doccomment">/// Sets the workload provider to use for configuring origin detection/enrichment.
 <a href=#633 id=633 data-nosnippet>633</a>    ///
-<a href=#634 id=634 data-nosnippet>634</a>    /// A workload provider must be set otherwise origin detection/enrichment will not be enabled.
+<a href=#634 id=634 data-nosnippet>634</a>    /// A workload provider must be set otherwise origin detection/enrichment won't be enabled.
 <a href=#635 id=635 data-nosnippet>635</a>    ///
 <a href=#636 id=636 data-nosnippet>636</a>    /// Defaults to unset.
 <a href=#637 id=637 data-nosnippet>637</a>    </span><span class="kw">pub fn </span>with_workload_provider&lt;W&gt;(<span class="kw-2">mut </span><span class="self">self</span>, workload_provider: W) -&gt; <span class="self">Self

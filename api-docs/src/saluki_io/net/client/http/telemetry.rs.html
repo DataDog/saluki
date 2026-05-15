@@ -115,8 +115,8 @@
 <a href=#115 id=115 data-nosnippet>115</a>/// ### Success bytes calculation
 <a href=#116 id=116 data-nosnippet>116</a>///
 <a href=#117 id=117 data-nosnippet>117</a>/// We calculate the number of bytes sent by examining the body length itself, which is done via [`Body::size_hint`].
-<a href=#118 id=118 data-nosnippet>118</a>/// This requires that an exact body size is known, which is not always the case. If the body size is not known, this
-<a href=#119 id=119 data-nosnippet>119</a>/// metric will not be emitted on a successful response.
+<a href=#118 id=118 data-nosnippet>118</a>/// This requires that an exact body size is known, which isn't always the case. If the body size isn't known, this
+<a href=#119 id=119 data-nosnippet>119</a>/// metric won't be emitted on a successful response.
 <a href=#120 id=120 data-nosnippet>120</a>///
 <a href=#121 id=121 data-nosnippet>121</a>/// For common body types, like [`FrozenChunkedBytesBuffer`][saluki_common::buf::FrozenChunkedBytesBuffer], the size
 <a href=#122 id=122 data-nosnippet>122</a>/// hint is always exact and so this functionality should work as intended.
@@ -130,7 +130,7 @@
 <a href=#130 id=130 data-nosnippet>130</a><span class="kw">impl </span>EndpointTelemetryLayer {
 <a href=#131 id=131 data-nosnippet>131</a>    <span class="doccomment">/// Create a new `EndpointTelemetryLayer` with the given `ComponentContext`.
 <a href=#132 id=132 data-nosnippet>132</a>    ///
-<a href=#133 id=133 data-nosnippet>133</a>    /// The component context is used when creating metrics, which ensures they are tagged in a consistent way that
+<a href=#133 id=133 data-nosnippet>133</a>    /// The component context is used when creating metrics, which ensures they're tagged in a consistent way that
 <a href=#134 id=134 data-nosnippet>134</a>    /// attributes the metrics to the component issuing the HTTP requests.
 <a href=#135 id=135 data-nosnippet>135</a>    </span><span class="kw">pub fn </span>with_metrics_builder(<span class="kw-2">mut </span><span class="self">self</span>, builder: MetricsBuilder) -&gt; <span class="self">Self </span>{
 <a href=#136 id=136 data-nosnippet>136</a>        <span class="self">self</span>.builder = builder;
@@ -148,7 +148,7 @@
 <a href=#148 id=148 data-nosnippet>148</a>    /// to: ASCII alphanumerics, hyphens, underscores, slashes, and periods. Any non-conforming character will be
 <a href=#149 id=149 data-nosnippet>149</a>    /// replaced with an underscore. Characters will be converted to lowercase.
 <a href=#150 id=150 data-nosnippet>150</a>    ///
-<a href=#151 id=151 data-nosnippet>151</a>    /// The value returned by this function is also cached for the given URI, and so the function should not rely on
+<a href=#151 id=151 data-nosnippet>151</a>    /// The value returned by this function is also cached for the given URI, and so the function shouldn't rely on
 <a href=#152 id=152 data-nosnippet>152</a>    /// non-deterministic behavior, or state, that could change the generated endpoint name for subsequent calls with
 <a href=#153 id=153 data-nosnippet>153</a>    /// the same input URI.
 <a href=#154 id=154 data-nosnippet>154</a>    </span><span class="kw">pub fn </span>with_endpoint_name_fn&lt;F&gt;(<span class="kw-2">mut </span><span class="self">self</span>, endpoint_name_fn: F) -&gt; <span class="self">Self

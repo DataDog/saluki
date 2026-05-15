@@ -54,7 +54,7 @@
 <a href=#54 id=54 data-nosnippet>54</a><span class="doccomment">/// An update received by a subscription, indicating that a value was asserted or retracted.
 <a href=#55 id=55 data-nosnippet>55</a></span><span class="attr">#[derive(Clone, Debug, PartialEq, Eq)]
 <a href=#56 id=56 data-nosnippet>56</a></span><span class="kw">pub enum </span>AssertionUpdate&lt;T&gt; {
-<a href=#57 id=57 data-nosnippet>57</a>    <span class="doccomment">/// A value was asserted (made available), along with the identifier it is associated with.
+<a href=#57 id=57 data-nosnippet>57</a>    <span class="doccomment">/// A value was asserted (made available), along with the identifier it's associated with.
 <a href=#58 id=58 data-nosnippet>58</a>    </span>Asserted(Identifier, T),
 <a href=#59 id=59 data-nosnippet>59</a>
 <a href=#60 id=60 data-nosnippet>60</a>    <span class="doccomment">/// The value associated with the given identifier was retracted (withdrawn).

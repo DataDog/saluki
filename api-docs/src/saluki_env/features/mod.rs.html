@@ -24,7 +24,7 @@
 <a href=#24 id=24 data-nosnippet>24</a><span class="kw">const </span>CONTAINER_HOST_MOUNT_PATH: <span class="kw-2">&amp;</span>str = <span class="string">"/host"</span>;
 <a href=#25 id=25 data-nosnippet>25</a><span class="kw">const </span>SOCKET_CHECK_CONNECT_TIMEOUT: Duration = Duration::from_millis(<span class="number">500</span>);
 <a href=#26 id=26 data-nosnippet>26</a>
-<a href=#27 id=27 data-nosnippet>27</a><span class="doccomment">/// Features are distinct markers or indicators of a particular technology or platform that is present.
+<a href=#27 id=27 data-nosnippet>27</a><span class="doccomment">/// Features are distinct markers or indicators of a particular technology or platform that's present.
 <a href=#28 id=28 data-nosnippet>28</a>///
 <a href=#29 id=29 data-nosnippet>29</a>/// In general, features represent the type of environment that the application is running in, such as the Kubernetes
 <a href=#30 id=30 data-nosnippet>30</a>/// feature being present indicating that the application is running in Kubernetes, and so on.
@@ -78,8 +78,8 @@
 <a href=#78 id=78 data-nosnippet>78</a>
 <a href=#79 id=79 data-nosnippet>79</a><span class="doccomment">/// Checks to see if a Unix domain sockets exists, and is reachable, at the given path.
 <a href=#80 id=80 data-nosnippet>80</a>///
-<a href=#81 id=81 data-nosnippet>81</a>/// If there is no file at the given path, or if the file is not of the socket type, `None` is returned. If the socket
-<a href=#82 id=82 data-nosnippet>82</a>/// at the given path is not reachable, `Some(false)` is returned. Otherwise, `Some(true)` is returned.
+<a href=#81 id=81 data-nosnippet>81</a>/// If there is no file at the given path, or if the file isn't of the socket type, `None` is returned. If the socket
+<a href=#82 id=82 data-nosnippet>82</a>/// at the given path isn't reachable, `Some(false)` is returned. Otherwise, `Some(true)` is returned.
 <a href=#83 id=83 data-nosnippet>83</a>///
 <a href=#84 id=84 data-nosnippet>84</a>/// Reachability is determined as either being able to connect or having the permissions to do so. We do this because it
 <a href=#85 id=85 data-nosnippet>85</a>/// is likely that if no process is _currently_ listening on the socket, one will likely be in the future.

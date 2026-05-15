@@ -275,7 +275,7 @@
 <a href=#275 id=275 data-nosnippet>275</a>
 <a href=#276 id=276 data-nosnippet>276</a>    <span class="doccomment">/// Merges the tags from another set into this set.
 <a href=#277 id=277 data-nosnippet>277</a>    ///
-<a href=#278 id=278 data-nosnippet>278</a>    /// If a tag from `other` is already present in this set, it will not be added.
+<a href=#278 id=278 data-nosnippet>278</a>    /// If a tag from `other` is already present in this set, it won't be added.
 <a href=#279 id=279 data-nosnippet>279</a>    </span><span class="kw">pub fn </span>merge_missing(<span class="kw-2">&amp;mut </span><span class="self">self</span>, other: <span class="self">Self</span>) {
 <a href=#280 id=280 data-nosnippet>280</a>        <span class="kw">for </span>tag <span class="kw">in </span>other {
 <a href=#281 id=281 data-nosnippet>281</a>            <span class="self">self</span>.insert_tag(tag);
@@ -284,7 +284,7 @@
 <a href=#284 id=284 data-nosnippet>284</a>
 <a href=#285 id=285 data-nosnippet>285</a>    <span class="doccomment">/// Merges the tags from a shared set into this set.
 <a href=#286 id=286 data-nosnippet>286</a>    ///
-<a href=#287 id=287 data-nosnippet>287</a>    /// If a tag from `other` is already present in this set, it will not be added.
+<a href=#287 id=287 data-nosnippet>287</a>    /// If a tag from `other` is already present in this set, it won't be added.
 <a href=#288 id=288 data-nosnippet>288</a>    </span><span class="kw">pub fn </span>merge_missing_shared(<span class="kw-2">&amp;mut </span><span class="self">self</span>, other: <span class="kw-2">&amp;</span>SharedTagSet) {
 <a href=#289 id=289 data-nosnippet>289</a>        <span class="kw">for </span>tag <span class="kw">in </span>other {
 <a href=#290 id=290 data-nosnippet>290</a>            <span class="kw">if </span>!<span class="self">self</span>.has_tag(tag.as_str()) {
@@ -296,7 +296,7 @@
 <a href=#296 id=296 data-nosnippet>296</a>
 <a href=#297 id=297 data-nosnippet>297</a>    <span class="doccomment">/// Merges the tags from a shared set into this set.
 <a href=#298 id=298 data-nosnippet>298</a>    ///
-<a href=#299 id=299 data-nosnippet>299</a>    /// This method does not attempt to avoid adding duplicate tags.
+<a href=#299 id=299 data-nosnippet>299</a>    /// This method doesn't attempt to avoid adding duplicate tags.
 <a href=#300 id=300 data-nosnippet>300</a>    </span><span class="kw">pub fn </span>merge_shared(<span class="kw-2">&amp;mut </span><span class="self">self</span>, other: <span class="kw-2">&amp;</span>SharedTagSet) {
 <a href=#301 id=301 data-nosnippet>301</a>        <span class="self">self</span>.base.extend_from_shared(other);
 <a href=#302 id=302 data-nosnippet>302</a>    }
@@ -318,7 +318,7 @@
 <a href=#318 id=318 data-nosnippet>318</a>    <span class="doccomment">/// Returns the estimated size of the tag set, in bytes.
 <a href=#319 id=319 data-nosnippet>319</a>    ///
 <a href=#320 id=320 data-nosnippet>320</a>    /// This includes the size of the base `SharedTagSet`, additions, and removal tracking. The value returned is a rough
-<a href=#321 id=321 data-nosnippet>321</a>    /// estimate and does not compensate for inlined, interned, or heap-allocated tags.
+<a href=#321 id=321 data-nosnippet>321</a>    /// estimate and doesn't compensate for inlined, interned, or heap-allocated tags.
 <a href=#322 id=322 data-nosnippet>322</a>    </span><span class="kw">pub fn </span>size_of(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; usize {
 <a href=#323 id=323 data-nosnippet>323</a>        <span class="kw">let </span>additions_size = <span class="self">self
 <a href=#324 id=324 data-nosnippet>324</a>            </span>.overlay

@@ -17,7 +17,7 @@ different variants behind a single concrete type.</p>
 </ul>
 <h4 id="owned-and-borrowed-strings"><a class="doc-anchor" href="#owned-and-borrowed-strings">§</a>Owned and borrowed strings</h4>
 <p><code>MetaString</code> can be created from <code>String</code> and <code>&amp;str</code> directly. For owned scenarios (<code>String</code>), the string value is
-simply wrapped. For borrowed strings, we attempt to inline them (see more below) or, if they cannot be inlined, they
+simply wrapped. For borrowed strings, we attempt to inline them (see more below) or, if they can’t be inlined, they
 are copied into a new <code>String</code>.</p>
 <h4 id="static-strings"><a class="doc-anchor" href="#static-strings">§</a>Static strings</h4>
 <p><code>MetaString</code> can be created from <code>&amp;'static str</code> directly. This is useful for string literals and other static
@@ -31,7 +31,7 @@ buffer, where we allocate one large buffer, and write many small strings into it
 strings through <code>InternedString</code>.</p>
 <h4 id="shared-strings"><a class="doc-anchor" href="#shared-strings">§</a>Shared strings</h4>
 <p><code>MetaString</code> can be created from <code>Arc&lt;str&gt;</code>, which is a string slice that can be atomically shared between threads.
-This is a simpler version of interned strings where strict memory control and re-use is not required.</p>
+This is a simpler version of interned strings where strict memory control and re-use isn’t required.</p>
 <h4 id="inlined-strings"><a class="doc-anchor" href="#inlined-strings">§</a>Inlined strings</h4>
 <p>Finally, <code>MetaString</code> can also be created by inlining small strings into <code>MetaString</code> itself, avoiding the need for
 any backing allocation. “Small string optimization” is a common optimization for string types where small strings
@@ -40,18 +40,18 @@ can be stored directly in a string type itself by utilizing a “union”-style 
 bytes in length.</p>
 <h3 id="conversion-methods"><a class="doc-anchor" href="#conversion-methods">§</a>Conversion methods</h3>
 <p>Implementations of <code>From&lt;T&gt;</code> exist for all of the aforementioned types to allow for easily converting to
-<code>MetaString</code>. Once a caller has a <code>MetaString</code> value, they are generally expected to interact with the string in a
+<code>MetaString</code>. Once a caller has a <code>MetaString</code> value, they’re generally expected to interact with the string in a
 read-only way, as <code>MetaString</code> can be dereferenced directly to <code>&amp;str</code>.</p>
 <p>If a caller needs to be able to modify the string data, they can call <code>into_owned</code> to get an owned version of the
 string, make their modifications to the owned version, and then convert that back to <code>MetaString</code>.</p>
 </div></details><h2 id="implementations" class="section-header">Implementations<a href="#implementations" class="anchor">§</a></h2><div id="implementations-list"><details class="toggle implementors-toggle" open><summary><section id="impl-MetaString" class="impl"><a class="src rightside" href="../src/stringtheory/lib.rs.html#720-777">Source</a><a href="#impl-MetaString" class="anchor">§</a><h3 class="code-header">impl <a class="struct" href="struct.MetaString.html" title="struct stringtheory::MetaString">MetaString</a></h3></section></summary><div class="impl-items"><details class="toggle method-toggle" open><summary><section id="method.empty" class="method"><a class="src rightside" href="../src/stringtheory/lib.rs.html#724-726">Source</a><h4 class="code-header">pub const fn <a href="#method.empty" class="fn">empty</a>() -&gt; Self</h4></section></summary><div class="docblock"><p>Creates an empty <code>MetaString</code>.</p>
-<p>This does not allocate.</p>
+<p>This doesn’t allocate.</p>
 </div></details><details class="toggle method-toggle" open><summary><section id="method.from_static" class="method"><a class="src rightside" href="../src/stringtheory/lib.rs.html#731-735">Source</a><h4 class="code-header">pub const fn <a href="#method.from_static" class="fn">from_static</a>(s: &amp;'static <a class="primitive" href="https://doc.rust-lang.org/nightly/std/primitive.str.html">str</a>) -&gt; Self</h4></section></summary><div class="docblock"><p>Creates a new <code>MetaString</code> from the given static string.</p>
-<p>This does not allocate.</p>
+<p>This doesn’t allocate.</p>
 </div></details><details class="toggle method-toggle" open><summary><section id="method.try_inline" class="method"><a class="src rightside" href="../src/stringtheory/lib.rs.html#738-740">Source</a><h4 class="code-header">pub fn <a href="#method.try_inline" class="fn">try_inline</a>(s: &amp;<a class="primitive" href="https://doc.rust-lang.org/nightly/std/primitive.str.html">str</a>) -&gt; <a class="enum" href="https://doc.rust-lang.org/nightly/core/option/enum.Option.html" title="enum core::option::Option">Option</a>&lt;Self&gt;</h4></section></summary><div class="docblock"><p>Attempts to create a new <code>MetaString</code> from the given string if it can be inlined.</p>
 </div></details><details class="toggle method-toggle" open><summary><section id="method.from_interner" class="method"><a class="src rightside" href="../src/stringtheory/lib.rs.html#746-757">Source</a><h4 class="code-header">pub fn <a href="#method.from_interner" class="fn">from_interner</a>&lt;I&gt;(s: &amp;<a class="primitive" href="https://doc.rust-lang.org/nightly/std/primitive.str.html">str</a>, interner: <a class="primitive" href="https://doc.rust-lang.org/nightly/std/primitive.reference.html">&amp;I</a>) -&gt; Self<div class="where">where
     I: <a class="trait" href="interning/trait.Interner.html" title="trait stringtheory::interning::Interner">Interner</a>,</div></h4></section></summary><div class="docblock"><p>Creates a new <code>MetaString</code> from the given string, using the provided interner.</p>
-<p>The string is inlined if possible. If it cannot be inlined, the interner is tried. If interning fails, an owned
+<p>The string is inlined if possible. If it can’t be inlined, the interner is tried. If interning fails, an owned
 string is allocated.</p>
 </div></details><details class="toggle method-toggle" open><summary><section id="method.is_empty" class="method"><a class="src rightside" href="../src/stringtheory/lib.rs.html#760-762">Source</a><h4 class="code-header">pub fn <a href="#method.is_empty" class="fn">is_empty</a>(&amp;self) -&gt; <a class="primitive" href="https://doc.rust-lang.org/nightly/std/primitive.bool.html">bool</a></h4></section></summary><div class="docblock"><p>Returns <code>true</code> if <code>self</code> has a length of zero bytes.</p>
 </div></details><details class="toggle method-toggle" open><summary><section id="method.is_cheaply_cloneable" class="method"><a class="src rightside" href="../src/stringtheory/lib.rs.html#765-768">Source</a><h4 class="code-header">pub const fn <a href="#method.is_cheaply_cloneable" class="fn">is_cheaply_cloneable</a>(&amp;self) -&gt; <a class="primitive" href="https://doc.rust-lang.org/nightly/std/primitive.bool.html">bool</a></h4></section></summary><div class="docblock"><p>Returns <code>true</code> if <code>self</code> can be cheaply cloned.</p>

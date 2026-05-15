@@ -19,7 +19,7 @@
 <a href=#19 id=19 data-nosnippet>19</a>/// have heavy, compute-bound tasks that they need to execute, they should generally be spawned on the worker pool (also known as the "global thread pool") to
 <a href=#20 id=20 data-nosnippet>20</a>/// avoid scheduling contention/starvation with the core component tasks.
 <a href=#21 id=21 data-nosnippet>21</a></span><span class="kw">pub enum </span>WorkerPoolConfiguration {
-<a href=#22 id=22 data-nosnippet>22</a>    <span class="doccomment">/// Use the ambient Tokio runtime (that is, `Handle::current()`).
+<a href=#22 id=22 data-nosnippet>22</a>    <span class="doccomment">/// Use the ambient Tokio runtime (that's, `Handle::current()`).
 <a href=#23 id=23 data-nosnippet>23</a>    ///
 <a href=#24 id=24 data-nosnippet>24</a>    /// Component subtasks are spawned on whatever runtime is currently active.
 <a href=#25 id=25 data-nosnippet>25</a>    /// Useful when the topology is embedded in an application that already

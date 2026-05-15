@@ -9,12 +9,12 @@ the shared resources that are created and attached to the container. If two driv
 group ID, the containers they spawn will be located in the same network namespace, have access to the same
 shared Airlock volume, etc.</p>
 <h5 id="shared-volume"><a class="doc-anchor" href="#shared-volume">§</a>Shared volume</h5>
-<p>The container will have a volume bind-mounted at <code>/airlock</code> that is shared between all containers in the same
+<p>The container will have a volume bind-mounted at <code>/airlock</code> that’s shared between all containers in the same
 isolation group. This volume is mounted as world writeable (777) so all containers can freely read and write to
 it. This makes it easier for containers to share data between one another, but also means that care should be
 taken to avoid conflicts between trying to write to the same file, etc.</p>
 <h5 id="errors"><a class="doc-anchor" href="#errors">§</a>Errors</h5>
-<p>If the Docker client cannot be created/configured, an error will be returned.</p>
+<p>If the Docker client can’t be created/configured, an error will be returned.</p>
 </div></details><details class="toggle method-toggle" open><summary><section id="method.with_logging" class="method"><a class="src rightside" href="../../src/airlock/driver.rs.html#385-388">Source</a><h4 class="code-header">pub fn <a href="#method.with_logging" class="fn">with_logging</a>(self, log_dir: <a class="struct" href="https://doc.rust-lang.org/nightly/std/path/struct.PathBuf.html" title="struct std::path::PathBuf">PathBuf</a>) -&gt; Self</h4></section></summary><div class="docblock"><p>Configures the driver to capture container logs.</p>
 <p>The logs will be stored in the given directory, under a subdirectory named after the isolation group ID. Each
 container will get a log for standard output and standard error, following the pattern of <code>&lt;container name&gt;.[stdout|stderr].log</code>.</p>
@@ -25,7 +25,7 @@ container will get a log for standard output and standard error, following the p
 ) -&gt; <a class="enum" href="https://doc.rust-lang.org/nightly/core/result/enum.Result.html" title="enum core::result::Result">Result</a>&lt;<a class="primitive" href="https://doc.rust-lang.org/nightly/std/primitive.unit.html">()</a>, GenericError&gt;</h4></section></summary><div class="docblock"><p>Clean up any containers, networks, and volumes related to the given isolation group ID.</p>
 <p>This is a free function to facilitate cleaning up resources after a number of drivers are run.</p>
 <h5 id="errors-1"><a class="doc-anchor" href="#errors-1">§</a>Errors</h5>
-<p>If the Docker client cannot be created/configured, or there is an error when finding or removing any of the
+<p>If the Docker client can’t be created/configured, or there is an error when finding or removing any of the
 related resources, an error will be returned.</p>
 </div></details><details class="toggle method-toggle" open><summary><section id="method.start" class="method"><a class="src rightside" href="../../src/airlock/driver.rs.html#836-845">Source</a><h4 class="code-header">pub async fn <a href="#method.start" class="fn">start</a>(&amp;mut self) -&gt; <a class="enum" href="https://doc.rust-lang.org/nightly/core/result/enum.Result.html" title="enum core::result::Result">Result</a>&lt;<a class="struct" href="struct.DriverDetails.html" title="struct airlock::driver::DriverDetails">DriverDetails</a>, GenericError&gt;</h4></section></summary><div class="docblock"><p>Starts the container, creating any necessary resources.</p>
 <h5 id="errors-2"><a class="doc-anchor" href="#errors-2">§</a>Errors</h5>

@@ -5,16 +5,16 @@ agent.</p>
 <p>We’ve mimicked the agent version of <code>DDSketch</code> here in order to support a future where we can take sketches shipped
 by the agent, handle them internally, merge them, and so on, without any loss of accuracy, eventually forwarding
 them to Datadog ourselves.</p>
-<p>As such, this implementation is constrained in the same ways: the configuration parameters cannot be changed, the
+<p>As such, this implementation is constrained in the same ways: the configuration parameters can’t be changed, the
 collapsing strategy is fixed, and we support a limited number of methods for inserting into the sketch.</p>
-<p>Importantly, we have a special function, again taken from the agent version, to allow us to interpolate histograms,
+<p>Importantly, we’ve a special function, again taken from the agent version, to allow us to interpolate histograms,
 specifically our own aggregated histograms, into a sketch so that we can emit useful default quantiles, rather than
 having to ship the buckets – upper bound and count – to a downstream system that might have no native way to do
 the same thing, basically providing no value as they have no way to render useful data from them.</p>
 <h2 id="features"><a class="doc-anchor" href="#features">§</a>Features</h2>
 <p>This crate exposes a single feature, <code>serde</code>, which enables serialization and deserialization of <code>DDSketch</code> with
-<code>serde</code>. This feature is not enabled by default, as it can be slightly risky to use. This is primarily due to the
-fact that the format of <code>DDSketch</code> is not promised to be stable over time. If you enable this feature, you should
+<code>serde</code>. This feature isn’t enabled by default, as it can be slightly risky to use. This is primarily due to the
+fact that the format of <code>DDSketch</code> isn’t promised to be stable over time. If you enable this feature, you should
 take care to avoid storing serialized <code>DDSketch</code> data for long periods of time, as deserializing it in the future
 may work but could lead to incorrect/unexpected behavior or issues with correctness.</p>
 </div></details><h2 id="implementations" class="section-header">Implementations<a href="#implementations" class="anchor">§</a></h2><div id="implementations-list"><details class="toggle implementors-toggle" open><summary><section id="impl-DDSketch" class="impl"><a class="src rightside" href="../../src/ddsketch/agent/sketch.rs.html#77-603">Source</a><a href="#impl-DDSketch" class="anchor">§</a><h3 class="code-header">impl <a class="struct" href="struct.DDSketch.html" title="struct ddsketch::agent::DDSketch">DDSketch</a></h3></section></summary><div class="impl-items"><details class="toggle method-toggle" open><summary><section id="method.remap_mapping" class="method"><a class="src rightside" href="../../src/ddsketch/agent/sketch.rs.html#79-82">Source</a><h4 class="code-header">pub fn <a href="#method.remap_mapping" class="fn">remap_mapping</a>() -&gt; <a class="struct" href="../canonical/mapping/struct.LogarithmicMapping.html" title="struct ddsketch::canonical::mapping::LogarithmicMapping">LogarithmicMapping</a></h4></section></summary><div class="docblock"><p>Returns the canonical DDSketch mapping that aligns with the agent sketch’s key space.</p>

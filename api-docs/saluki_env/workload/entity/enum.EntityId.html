@@ -7,7 +7,7 @@
 }</code></pre><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>An entity identifier.</p>
 </div></details><h2 id="variants" class="variants section-header">Variants<a href="#variants" class="anchor">§</a></h2><div class="variants"><section id="variant.Global" class="variant"><a href="#variant.Global" class="anchor">§</a><h3 class="code-header">Global</h3></section><div class="docblock"><p>The global entity.</p>
 <p>Represents the root of the entity hierarchy, which is equivalent to a “global” scope. This is generally used
-to represent a collection of metadata entries that are not associated with any specific entity, but with
+to represent a collection of metadata entries that aren’t associated with any specific entity, but with
 anything within the workload, such as host or cluster tags.</p>
 </div><section id="variant.PodUid" class="variant"><a href="#variant.PodUid" class="anchor">§</a><h3 class="code-header">PodUid(MetaString)</h3></section><div class="docblock"><p>A Kubernetes pod UID.</p>
 <p>Represents the UUID of a specific Kubernetes pod.</p>
@@ -28,7 +28,7 @@ inode. If both are present, we use the container ID.</li>
 <li>If the input starts with <code>cid-</code>, we treat it as a container ID.</li>
 <li>If none of the above conditions are met, we assume the entire input is a container ID.</li>
 </ul>
-<p>If the input fails to be parsed in a valid fashion (for example, <code>in-</code> prefix but the remainder is not a valid
+<p>If the input fails to be parsed in a valid fashion (for example, <code>in-</code> prefix but the remainder isn’t a valid
 integer), or is empty, <code>None</code> is returned.</p>
 </div></details><details class="toggle method-toggle" open><summary><section id="method.from_pod_uid" class="method"><a class="src rightside" href="../../../src/saluki_env/workload/entity.rs.html#113-121">Source</a><h4 class="code-header">pub fn <a href="#method.from_pod_uid" class="fn">from_pod_uid</a>&lt;S&gt;(pod_uid: S) -&gt; <a class="enum" href="https://doc.rust-lang.org/nightly/core/option/enum.Option.html" title="enum core::option::Option">Option</a>&lt;Self&gt;<div class="where">where
     S: <a class="trait" href="https://doc.rust-lang.org/nightly/core/convert/trait.AsRef.html" title="trait core::convert::AsRef">AsRef</a>&lt;<a class="primitive" href="https://doc.rust-lang.org/nightly/std/primitive.str.html">str</a>&gt; + <a class="trait" href="https://doc.rust-lang.org/nightly/core/convert/trait.Into.html" title="trait core::convert::Into">Into</a>&lt;MetaString&gt;,</div></h4></section></summary><div class="docblock"><p>Creates an <code>EntityId</code> from a Kubernetes pod UID.</p>

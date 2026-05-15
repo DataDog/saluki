@@ -6,7 +6,7 @@
     ) -&gt; <a class="enum" href="https://doc.rust-lang.org/nightly/core/option/enum.Option.html" title="enum core::option::Option">Option</a>&lt;<a class="enum" href="entity/enum.EntityId.html" title="enum saluki_env::workload::entity::EntityId">EntityId</a>&gt;;
 }</code></pre><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>Resolves live process IDs observed during traffic capture to workload entities.</p>
 <p>This is intentionally narrower than <a href="trait.WorkloadProvider.html" title="trait saluki_env::workload::WorkloadProvider"><code>WorkloadProvider</code></a>: callers should only use it for PIDs observed from the
-local operating system while capturing traffic. It is not a general-purpose historical PID lookup API.</p>
+local operating system while capturing traffic. It’s not a general-purpose historical PID lookup API.</p>
 </div></details><h2 id="required-methods" class="section-header">Required Methods<a href="#required-methods" class="anchor">§</a></h2><div class="methods"><details class="toggle method-toggle" open><summary><section id="tymethod.resolve_container_entity_for_live_pid" class="method"><a class="src rightside" href="../../src/saluki_env/workload/mod.rs.html#40">Source</a><h4 class="code-header">fn <a href="#tymethod.resolve_container_entity_for_live_pid" class="fn">resolve_container_entity_for_live_pid</a>(
     &amp;self,
     process_id: <a class="primitive" href="https://doc.rust-lang.org/nightly/std/primitive.u32.html">u32</a>,

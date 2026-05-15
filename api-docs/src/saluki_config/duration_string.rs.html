@@ -33,7 +33,7 @@
 <a href=#33 id=33 data-nosnippet>33</a>///
 <a href=#34 id=34 data-nosnippet>34</a>/// - Floating-point numbers: `5.0` is 5 **nanoseconds** (truncated toward zero).
 <a href=#35 id=35 data-nosnippet>35</a>///
-<a href=#36 id=36 data-nosnippet>36</a>/// Negative durations (for example `"-1h"`) are rejected because [`std::time::Duration`] cannot represent them.
+<a href=#36 id=36 data-nosnippet>36</a>/// Negative durations (for example `"-1h"`) are rejected because [`std::time::Duration`] can't represent them.
 <a href=#37 id=37 data-nosnippet>37</a>///
 <a href=#38 id=38 data-nosnippet>38</a>/// # Bare numbers are nanoseconds, not seconds (!!)
 <a href=#39 id=39 data-nosnippet>39</a>///
@@ -178,7 +178,7 @@
 <a href=#178 id=178 data-nosnippet>178</a>/// `i64::MAX` nanoseconds is the largest representable value).
 <a href=#179 id=179 data-nosnippet>179</a></span><span class="kw">const </span>MAX_NANOS_U64: u64 = i64::MAX <span class="kw">as </span>u64;
 <a href=#180 id=180 data-nosnippet>180</a>
-<a href=#181 id=181 data-nosnippet>181</a><span class="doccomment">/// Error returned when a duration value cannot be parsed.
+<a href=#181 id=181 data-nosnippet>181</a><span class="doccomment">/// Error returned when a duration value can't be parsed.
 <a href=#182 id=182 data-nosnippet>182</a></span><span class="attr">#[derive(Debug, Snafu)]
 <a href=#183 id=183 data-nosnippet>183</a></span><span class="kw">pub enum </span>ParseDurationError {
 <a href=#184 id=184 data-nosnippet>184</a>    <span class="doccomment">/// The value was syntactically invalid.
@@ -224,7 +224,7 @@
 <a href=#224 id=224 data-nosnippet>224</a>}
 <a href=#225 id=225 data-nosnippet>225</a>
 <a href=#226 id=226 data-nosnippet>226</a><span class="doccomment">/// Parses a string in the exact format accepted by Go's `time.ParseDuration`, restricted to non-negative values
-<a href=#227 id=227 data-nosnippet>227</a>/// (since [`std::time::Duration`] cannot represent negatives).
+<a href=#227 id=227 data-nosnippet>227</a>/// (since [`std::time::Duration`] can't represent negatives).
 <a href=#228 id=228 data-nosnippet>228</a></span><span class="kw">pub fn </span>parse_duration(s: <span class="kw-2">&amp;</span>str) -&gt; <span class="prelude-ty">Result</span>&lt;Duration, ParseDurationError&gt; {
 <a href=#229 id=229 data-nosnippet>229</a>    <span class="kw">let </span>orig = s;
 <a href=#230 id=230 data-nosnippet>230</a>    <span class="kw">let </span><span class="kw-2">mut </span>rest = s;

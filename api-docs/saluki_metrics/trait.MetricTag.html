@@ -4,7 +4,7 @@
 }</code></pre><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>A metric tag.</p>
 <p>Marker trait for types which can support being used as a metric tag, in order to optimize their internal
 representation to avoid unnecessary allocations.</p>
-<p>This trait is sealed and cannot be implemented outside of this crate.</p>
+<p>This trait is sealed and can’t be implemented outside of this crate.</p>
 </div></details><h2 id="required-methods" class="section-header">Required Methods<a href="#required-methods" class="anchor">§</a></h2><div class="methods"><details class="toggle method-toggle" open><summary><section id="tymethod.into_label" class="method"><a class="src rightside" href="../src/saluki_metrics/builder.rs.html#28">Source</a><h4 class="code-header">fn <a href="#tymethod.into_label" class="fn">into_label</a>(self) -&gt; <a class="struct" href="https://docs.rs/metrics/0.24.3/metrics/label/struct.Label.html" title="struct metrics::label::Label">Label</a></h4></section></summary><div class="docblock"><p>Consumes <code>self</code> and converts it to a tag.</p>
 <p>Under the hood, the <a href="https://docs.rs/metrics"><code>metrics</code></a> crate is used, which calls tags “labels” instead, which is where the
 return type naming comes from.</p>

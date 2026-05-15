@@ -19,17 +19,17 @@ be replaced, as it halves the number of <code>Arc</code> allocations.</p>
 </div></details><details class="toggle method-toggle" open><summary><section id="method.origin_tags" class="method"><a class="src rightside" href="../src/saluki_context/context.rs.html#176-178">Source</a><h4 class="code-header">pub fn <a href="#method.origin_tags" class="fn">origin_tags</a>(&amp;self) -&gt; &amp;<a class="struct" href="tags/struct.TagSet.html" title="struct saluki_context::tags::TagSet">TagSet</a></h4></section></summary><div class="docblock"><p>Returns the origin tags of this context.</p>
 </div></details><details class="toggle method-toggle" open><summary><section id="method.mutate_tags" class="method"><a class="src rightside" href="../src/saluki_context/context.rs.html#187-189">Source</a><h4 class="code-header">pub fn <a href="#method.mutate_tags" class="fn">mutate_tags</a>(&amp;mut self, f: impl <a class="trait" href="https://doc.rust-lang.org/nightly/core/ops/function/trait.FnOnce.html" title="trait core::ops::function::FnOnce">FnOnce</a>(&amp;mut <a class="struct" href="tags/struct.TagSet.html" title="struct saluki_context::tags::TagSet">TagSet</a>))</h4></section></summary><div class="docblock"><p>Mutates the instrumented tags of this context via a closure.</p>
 <p>Uses copy-on-write semantics: if this context shares its inner data with other clones, the
-inner data is cloned first so that mutations do not affect other holders. If this context is
+inner data is cloned first so that mutations don’t affect other holders. If this context is
 the sole owner, the mutation happens in place.</p>
 <p>The context key is automatically recomputed after the closure returns.</p>
 </div></details><details class="toggle method-toggle" open><summary><section id="method.mutate_origin_tags" class="method"><a class="src rightside" href="../src/saluki_context/context.rs.html#198-200">Source</a><h4 class="code-header">pub fn <a href="#method.mutate_origin_tags" class="fn">mutate_origin_tags</a>(&amp;mut self, f: impl <a class="trait" href="https://doc.rust-lang.org/nightly/core/ops/function/trait.FnOnce.html" title="trait core::ops::function::FnOnce">FnOnce</a>(&amp;mut <a class="struct" href="tags/struct.TagSet.html" title="struct saluki_context::tags::TagSet">TagSet</a>))</h4></section></summary><div class="docblock"><p>Mutates the origin tags of this context via a closure.</p>
 <p>Uses copy-on-write semantics: if this context shares its inner data with other clones, the
-inner data is cloned first so that mutations do not affect other holders. If this context is
+inner data is cloned first so that mutations don’t affect other holders. If this context is
 the sole owner, the mutation happens in place.</p>
 <p>The context key is automatically recomputed after the closure returns.</p>
 </div></details><details class="toggle method-toggle" open><summary><section id="method.with_tag_sets_mut" class="method"><a class="src rightside" href="../src/saluki_context/context.rs.html#209-211">Source</a><h4 class="code-header">pub fn <a href="#method.with_tag_sets_mut" class="fn">with_tag_sets_mut</a>(&amp;mut self, f: impl <a class="trait" href="https://doc.rust-lang.org/nightly/core/ops/function/trait.FnOnce.html" title="trait core::ops::function::FnOnce">FnOnce</a>(&amp;mut <a class="struct" href="tags/struct.TagSet.html" title="struct saluki_context::tags::TagSet">TagSet</a>, &amp;mut <a class="struct" href="tags/struct.TagSet.html" title="struct saluki_context::tags::TagSet">TagSet</a>))</h4></section></summary><div class="docblock"><p>Mutates both instrumented tags and origin tags via a single closure.</p>
 <p>Uses copy-on-write semantics: if this context shares its inner data with other clones, the
-inner data is cloned first so that mutations do not affect other holders. If this context is
+inner data is cloned first so that mutations don’t affect other holders. If this context is
 the sole owner, the mutation happens in place.</p>
 <p>The context key is recomputed once after the closure returns.</p>
 </div></details><details class="toggle method-toggle" open><summary><section id="method.tags_mut_view" class="method"><a class="src rightside" href="../src/saluki_context/context.rs.html#233-235">Source</a><h4 class="code-header">pub fn <a href="#method.tags_mut_view" class="fn">tags_mut_view</a>&lt;'a, 'b&gt;(
@@ -51,7 +51,7 @@ includes:</p>
 </ul>
 <p>Since origin tags can potentially be expensive to calculate, this method will cache the size of the origin tags
 when this method is first called.</p>
-<p>Additionally, the value returned by this method does not compensate for externalities such as origin tags
+<p>Additionally, the value returned by this method doesn’t compensate for externalities such as origin tags
 potentially being shared by multiple contexts, or whether or not tags are inlined, interned, or heap
 allocated. This means that the value returned is essentially the worst-case usage, and should be used as a rough
 estimate.</p>

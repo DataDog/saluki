@@ -4,7 +4,7 @@
 <a href=#4 id=4 data-nosnippet>4</a>//! with helper extension traits and macros for ergonomically converting errors into `GenericError`.
 <a href=#5 id=5 data-nosnippet>5</a>//!
 <a href=#6 id=6 data-nosnippet>6</a>//! This crate is still interoperable with `anyhow`, but is meant to be used as part of the comprehensive set of
-<a href=#7 id=7 data-nosnippet>7</a>//! Saluki-specific crates so that engineers do not need to necessarily know or care deeply about which specific
+<a href=#7 id=7 data-nosnippet>7</a>//! Saluki-specific crates so that engineers don't need to necessarily know or care deeply about which specific
 <a href=#8 id=8 data-nosnippet>8</a>//! third-party crate to use for error handling.
 <a href=#9 id=9 data-nosnippet>9</a></span><span class="attr">#![deny(warnings)]
 <a href=#10 id=10 data-nosnippet>10</a>#![deny(missing_docs)]
@@ -14,7 +14,7 @@
 <a href=#14 id=14 data-nosnippet>14</a>/// `GenericError` works a lot like `Box&lt;dyn std::error::Error&gt;`, but with these differences:
 <a href=#15 id=15 data-nosnippet>15</a>///
 <a href=#16 id=16 data-nosnippet>16</a>/// - `GenericError` requires that the error is `Send`, `Sync`, and `'static`.
-<a href=#17 id=17 data-nosnippet>17</a>/// - `GenericError` guarantees that a backtrace is available, even if the underlying error type does not provide one.
+<a href=#17 id=17 data-nosnippet>17</a>/// - `GenericError` guarantees that a backtrace is available, even if the underlying error type doesn't provide one.
 <a href=#18 id=18 data-nosnippet>18</a>/// - `GenericError` is represented as a narrow pointer—exactly one word in size instead of two.
 <a href=#19 id=19 data-nosnippet>19</a></span><span class="kw">pub type </span>GenericError = anyhow::Error;
 <a href=#20 id=20 data-nosnippet>20</a>
@@ -57,7 +57,7 @@
 <a href=#57 id=57 data-nosnippet>57</a>    <span class="kw">where
 <a href=#58 id=58 data-nosnippet>58</a>        </span>C: Display + Send + Sync + <span class="lifetime">'static</span>;
 <a href=#59 id=59 data-nosnippet>59</a>
-<a href=#60 id=60 data-nosnippet>60</a>    <span class="doccomment">/// Wrap the error value with additional context that is evaluated lazily only once an error does occur.
+<a href=#60 id=60 data-nosnippet>60</a>    <span class="doccomment">/// Wrap the error value with additional context that's evaluated lazily only once an error does occur.
 <a href=#61 id=61 data-nosnippet>61</a>    </span><span class="kw">fn </span>with_error_context&lt;C, F&gt;(<span class="self">self</span>, f: F) -&gt; <span class="prelude-ty">Result</span>&lt;T, GenericError&gt;
 <a href=#62 id=62 data-nosnippet>62</a>    <span class="kw">where
 <a href=#63 id=63 data-nosnippet>63</a>        </span>C: Display + Send + Sync + <span class="lifetime">'static</span>,

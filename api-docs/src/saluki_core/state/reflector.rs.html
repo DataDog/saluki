@@ -73,10 +73,10 @@
 <a href=#73 id=73 data-nosnippet>73</a>    }
 <a href=#74 id=74 data-nosnippet>74</a>}
 <a href=#75 id=75 data-nosnippet>75</a>
-<a href=#76 id=76 data-nosnippet>76</a><span class="doccomment">/// `Reflector` composes a source of data with a processor that is used to transform the data, and then stores the
+<a href=#76 id=76 data-nosnippet>76</a><span class="doccomment">/// `Reflector` composes a source of data with a processor that's used to transform the data, and then stores the
 <a href=#77 id=77 data-nosnippet>77</a>/// results and allows for shared access by multiple callers.
 <a href=#78 id=78 data-nosnippet>78</a>///
-<a href=#79 id=79 data-nosnippet>79</a>/// Reflectors are a term often found in the context of custom Kubernetes controllers, where they are used to reduce the
+<a href=#79 id=79 data-nosnippet>79</a>/// Reflectors are a term often found in the context of custom Kubernetes controllers, where they're used to reduce the
 <a href=#80 id=80 data-nosnippet>80</a>/// load on the Kubernetes API server by caching the state of resources in memory. `Reflector` provides comparable
 <a href=#81 id=81 data-nosnippet>81</a>/// functionality, allowing for a single data source to be consumed, and then shared amongst multiple callers. However,
 <a href=#82 id=82 data-nosnippet>82</a>///
@@ -91,7 +91,7 @@
 <a href=#91 id=91 data-nosnippet>91</a><span class="kw">impl</span>&lt;P: Processor&gt; Reflector&lt;P&gt; {
 <a href=#92 id=92 data-nosnippet>92</a>    <span class="doccomment">/// Creates a new reflector with the given data source and processor.
 <a href=#93 id=93 data-nosnippet>93</a>    ///
-<a href=#94 id=94 data-nosnippet>94</a>    /// A reflector composes a source of data with a processor that is used to transform the data, and then stores the
+<a href=#94 id=94 data-nosnippet>94</a>    /// A reflector composes a source of data with a processor that's used to transform the data, and then stores the
 <a href=#95 id=95 data-nosnippet>95</a>    /// the processed results. It can be listened to for updates, and cheaply shared. This allows multiple interested
 <a href=#96 id=96 data-nosnippet>96</a>    /// components to subscribe to the same data source without having to duplicate the processing or storage of the
 <a href=#97 id=97 data-nosnippet>97</a>    /// data.

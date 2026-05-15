@@ -17,7 +17,7 @@
 <a href=#17 id=17 data-nosnippet>17</a>///
 <a href=#18 id=18 data-nosnippet>18</a>/// This function is accurate, as it always retrieves the current time for each call. In scenarios where this function
 <a href=#19 id=19 data-nosnippet>19</a>/// is being called frequently, it may pose an unacceptable performance overhead. In such cases, consider using
-<a href=#20 id=20 data-nosnippet>20</a>/// `get_coarse_unix_timestamp`, which provides a cached value that is updated periodically.
+<a href=#20 id=20 data-nosnippet>20</a>/// `get_coarse_unix_timestamp`, which provides a cached value that's updated periodically.
 <a href=#21 id=21 data-nosnippet>21</a></span><span class="kw">pub fn </span>get_unix_timestamp() -&gt; u64 {
 <a href=#22 id=22 data-nosnippet>22</a>    <span class="kw">let </span>since_unix_epoch = SystemTime::now()
 <a href=#23 id=23 data-nosnippet>23</a>        .duration_since(SystemTime::UNIX_EPOCH)
@@ -27,7 +27,7 @@
 <a href=#27 id=27 data-nosnippet>27</a>
 <a href=#28 id=28 data-nosnippet>28</a><span class="doccomment">/// Get the current coarse Unix timestamp, in seconds.
 <a href=#29 id=29 data-nosnippet>29</a>///
-<a href=#30 id=30 data-nosnippet>30</a>/// In scenarios where the current Unix timestamp is needed frequently, this function provides a cached value that is
+<a href=#30 id=30 data-nosnippet>30</a>/// In scenarios where the current Unix timestamp is needed frequently, this function provides a cached value that's
 <a href=#31 id=31 data-nosnippet>31</a>/// updated periodically. As the precision of the timestamp is one second, this function allows trading off accuracy
 <a href=#32 id=32 data-nosnippet>32</a>/// (see below) for reduced overhead. The resulting value is considered "coarse", because it might be off by significant
 <a href=#33 id=33 data-nosnippet>33</a>/// percentage of the overall precision.

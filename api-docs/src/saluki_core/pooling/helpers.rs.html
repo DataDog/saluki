@@ -8,7 +8,7 @@
 <a href=#8 id=8 data-nosnippet>8</a>///
 <a href=#9 id=9 data-nosnippet>9</a>/// In order to store a value in an object pool, the item must implement the [`Poolable`] trait. This trait, and overall
 <a href=#10 id=10 data-nosnippet>10</a>/// design of [`ObjectPool`][super::ObjectPool], dictates that a pooled data type actually holds an inner value, which
-<a href=#11 id=11 data-nosnippet>11</a>/// is the value that is actually pooled, while the outer struct is simply a wrapper around the data that ensures it is
+<a href=#11 id=11 data-nosnippet>11</a>/// is the value that's actually pooled, while the outer struct is simply a wrapper around the data that ensures it's
 <a href=#12 id=12 data-nosnippet>12</a>/// returned to the object pool when no longer in use.
 <a href=#13 id=13 data-nosnippet>13</a>///
 <a href=#14 id=14 data-nosnippet>14</a>/// In practice, this means that if you wanted to create some struct that could be pooled (for example,
@@ -25,11 +25,11 @@
 <a href=#25 id=25 data-nosnippet>25</a>///
 <a href=#26 id=26 data-nosnippet>26</a>/// ## Clearing
 <a href=#27 id=27 data-nosnippet>27</a>///
-<a href=#28 id=28 data-nosnippet>28</a>/// All poolable types must provide logic for "clearing" the pooled item before it is returned to the object pool.
+<a href=#28 id=28 data-nosnippet>28</a>/// All poolable types must provide logic for "clearing" the pooled item before it's returned to the object pool.
 <a href=#29 id=29 data-nosnippet>29</a>/// This is passed in as the `clear` parameter to the macro, and must be a closure that takes a mutable reference to
 <a href=#30 id=30 data-nosnippet>30</a>/// the inner struct.
 <a href=#31 id=31 data-nosnippet>31</a>///
-<a href=#32 id=32 data-nosnippet>32</a>/// Note that due to macro hygiene, the closure's only parameter _cannot_ be named `self`. In the usage example below, you can
+<a href=#32 id=32 data-nosnippet>32</a>/// Note that due to macro hygiene, the closure's only parameter _can't_ be named `self`. In the usage example below, you can
 <a href=#33 id=33 data-nosnippet>33</a>/// see how this is named `this` instead to avoid conflicts.
 <a href=#34 id=34 data-nosnippet>34</a>///
 <a href=#35 id=35 data-nosnippet>35</a>/// ## Usage
@@ -135,10 +135,10 @@
 <a href=#135 id=135 data-nosnippet>135</a>///
 <a href=#136 id=136 data-nosnippet>136</a>/// In order to store a value in an object pool, the item must implement the [`Poolable`] trait. This trait, and overall
 <a href=#137 id=137 data-nosnippet>137</a>/// design of [`ObjectPool`][super::ObjectPool], dictates that a pooled data type actually holds an inner value, which
-<a href=#138 id=138 data-nosnippet>138</a>/// is the value that is actually pooled, while the outer struct is simply a wrapper around the data that ensures it is
+<a href=#138 id=138 data-nosnippet>138</a>/// is the value that's actually pooled, while the outer struct is simply a wrapper around the data that ensures it's
 <a href=#139 id=139 data-nosnippet>139</a>/// returned to the object pool when no longer in use.
 <a href=#140 id=140 data-nosnippet>140</a>///
-<a href=#141 id=141 data-nosnippet>141</a>/// In many cases, the "inner value" might be either an existing type that cannot be modified, or there might be a need
+<a href=#141 id=141 data-nosnippet>141</a>/// In many cases, the "inner value" might be either an existing type that can't be modified, or there might be a need
 <a href=#142 id=142 data-nosnippet>142</a>/// to define that struct further, such as defining struct methods or trait implementations which would be
 <a href=#143 id=143 data-nosnippet>143</a>/// cumbersome/confusing to do on the auto-generated inner type from [`pooled!`]. In these cases, `pooled_newtype!`
 <a href=#144 id=144 data-nosnippet>144</a>/// provides the simplest possible wrapper over an existing struct definition to create a Poolable version.

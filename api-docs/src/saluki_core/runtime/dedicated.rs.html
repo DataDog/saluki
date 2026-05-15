@@ -69,7 +69,7 @@
 <a href=#69 id=69 data-nosnippet>69</a></span><span class="kw">pub enum </span>RuntimeMode {
 <a href=#70 id=70 data-nosnippet>70</a>    <span class="doccomment">/// Run on the ambient runtime (default).
 <a href=#71 id=71 data-nosnippet>71</a>    ///
-<a href=#72 id=72 data-nosnippet>72</a>    /// The supervisor runs on whatever Tokio runtime is currently active when it is spawned.
+<a href=#72 id=72 data-nosnippet>72</a>    /// The supervisor runs on whatever Tokio runtime is currently active when it's spawned.
 <a href=#73 id=73 data-nosnippet>73</a>    </span><span class="attr">#[default]
 <a href=#74 id=74 data-nosnippet>74</a>    </span>Ambient,
 <a href=#75 id=75 data-nosnippet>75</a>
@@ -150,7 +150,7 @@
 <a href=#150 id=150 data-nosnippet>150</a>///
 <a href=#151 id=151 data-nosnippet>151</a>/// # Errors
 <a href=#152 id=152 data-nosnippet>152</a>///
-<a href=#153 id=153 data-nosnippet>153</a>/// If the OS thread cannot be spawned, an error is returned.
+<a href=#153 id=153 data-nosnippet>153</a>/// If the OS thread can't be spawned, an error is returned.
 <a href=#154 id=154 data-nosnippet>154</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>spawn_dedicated_runtime(
 <a href=#155 id=155 data-nosnippet>155</a>    <span class="kw-2">mut </span>supervisor: Supervisor, config: RuntimeConfiguration, process_shutdown: ProcessShutdown,
 <a href=#156 id=156 data-nosnippet>156</a>    dataspace: DataspaceRegistry,

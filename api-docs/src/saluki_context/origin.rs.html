@@ -111,7 +111,7 @@
 <a href=#111 id=111 data-nosnippet>111</a>    <span class="doccomment">/// Local Data of the sender.
 <a href=#112 id=112 data-nosnippet>112</a>    ///
 <a href=#113 id=113 data-nosnippet>113</a>    /// This will typically be either the container ID, or the inode of the container's cgroups controller, or both. It
-<a href=#114 id=114 data-nosnippet>114</a>    /// may or may not have a special prefix that indicates which of the two it is.
+<a href=#114 id=114 data-nosnippet>114</a>    /// may or may not have a special prefix that indicates which of the two it's.
 <a href=#115 id=115 data-nosnippet>115</a>    </span>local_data: <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span><span class="lifetime">'a </span>str&gt;,
 <a href=#116 id=116 data-nosnippet>116</a>
 <a href=#117 id=117 data-nosnippet>117</a>    <span class="doccomment">/// Pod UID of the sender.
@@ -147,7 +147,7 @@
 <a href=#147 id=147 data-nosnippet>147</a>
 <a href=#148 id=148 data-nosnippet>148</a>    <span class="doccomment">/// Sets the process ID of the sender.
 <a href=#149 id=149 data-nosnippet>149</a>    ///
-<a href=#150 id=150 data-nosnippet>150</a>    /// Must be a non-zero value. If the value is zero, it is silently ignored.
+<a href=#150 id=150 data-nosnippet>150</a>    /// Must be a non-zero value. If the value is zero, it's silently ignored.
 <a href=#151 id=151 data-nosnippet>151</a>    </span><span class="kw">pub fn </span>set_process_id(<span class="kw-2">&amp;mut </span><span class="self">self</span>, process_id: u32) {
 <a href=#152 id=152 data-nosnippet>152</a>        <span class="self">self</span>.process_id = NonZeroU32::new(process_id);
 <a href=#153 id=153 data-nosnippet>153</a>    }
@@ -274,11 +274,11 @@
 <a href=#274 id=274 data-nosnippet>274</a>
 <a href=#275 id=275 data-nosnippet>275</a><span class="doccomment">/// External Data associated with an origin.
 <a href=#276 id=276 data-nosnippet>276</a>///
-<a href=#277 id=277 data-nosnippet>277</a>/// "External Data" is a concept that is used to aid origin detection of workloads running in Kubernetes environments
-<a href=#278 id=278 data-nosnippet>278</a>/// where introspection is not possible or may return incorrect information. Origin detection generally centers around
+<a href=#277 id=277 data-nosnippet>277</a>/// "External Data" is a concept that's used to aid origin detection of workloads running in Kubernetes environments
+<a href=#278 id=278 data-nosnippet>278</a>/// where introspection isn't possible or may return incorrect information. Origin detection generally centers around
 <a href=#279 id=279 data-nosnippet>279</a>/// determining the container where a metric originates from, and then enriching the metric with tags that describe that
 <a href=#280 id=280 data-nosnippet>280</a>/// container, as well as the pod the container is running within, and so on. In some cases, the origin of a metric
-<a href=#281 id=281 data-nosnippet>281</a>/// cannot be detected from the outside (such as by using peer credentials over Unix Domain sockets) and cannot be
+<a href=#281 id=281 data-nosnippet>281</a>/// can't be detected from the outside (such as by using peer credentials over Unix Domain sockets) and can't be
 <a href=#282 id=282 data-nosnippet>282</a>/// detected by the workload itself (such as when running in nested virtualization environments). In these cases, we
 <a href=#283 id=283 data-nosnippet>283</a>/// need a mechanism that allows passing the necessary information to the client, who then passes it on to us, so that
 <a href=#284 id=284 data-nosnippet>284</a>/// we can correctly resolve the origin.
@@ -353,7 +353,7 @@
 <a href=#353 id=353 data-nosnippet>353</a><span class="kw">impl</span>&lt;<span class="lifetime">'a</span>&gt; RawExternalData&lt;<span class="lifetime">'a</span>&gt; {
 <a href=#354 id=354 data-nosnippet>354</a>    <span class="doccomment">/// Creates a new `RawExternalData` from a raw string.
 <a href=#355 id=355 data-nosnippet>355</a>    ///
-<a href=#356 id=356 data-nosnippet>356</a>    /// If the external data is not valid, `None` is returned.
+<a href=#356 id=356 data-nosnippet>356</a>    /// If the external data isn't valid, `None` is returned.
 <a href=#357 id=357 data-nosnippet>357</a>    </span><span class="kw">pub fn </span>try_from_str(raw: <span class="kw-2">&amp;</span><span class="lifetime">'a </span>str) -&gt; <span class="prelude-ty">Option</span>&lt;<span class="self">Self</span>&gt; {
 <a href=#358 id=358 data-nosnippet>358</a>        <span class="kw">if </span>raw.is_empty() {
 <a href=#359 id=359 data-nosnippet>359</a>            <span class="kw">return </span><span class="prelude-val">None</span>;

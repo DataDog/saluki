@@ -136,7 +136,7 @@
 <a href=#136 id=136 data-nosnippet>136</a>/// destination within it could be subcomponents of the topology.
 <a href=#137 id=137 data-nosnippet>137</a>///
 <a href=#138 id=138 data-nosnippet>138</a>/// Components are generally meant to be tied to something that has its own memory bounds and is somewhat "standalone",
-<a href=#139 id=139 data-nosnippet>139</a>/// but this is not an absolute requirement and components can be nested more granularly for organizational/aesthetic
+<a href=#139 id=139 data-nosnippet>139</a>/// but this isn't an absolute requirement and components can be nested more granularly for organizational/aesthetic
 <a href=#140 id=140 data-nosnippet>140</a>/// purposes. Again, for example, one might opt to create a component in their topology for each component type --
 <a href=#141 id=141 data-nosnippet>141</a>/// sources, transforms, and destinations -- and then add the actual instances of those components as subcomponents to
 <a href=#142 id=142 data-nosnippet>142</a>/// each grouping, leading to a nested structure such as `topology/sources/source1`, `topology/transforms/transform1`,
@@ -147,7 +147,7 @@
 <a href=#147 id=147 data-nosnippet>147</a>/// Every component is able to define memory bounds for itself and its subcomponents. A builder-style API is exposed to
 <a href=#148 id=148 data-nosnippet>148</a>/// allow for ergonomically defining these bounds -- both minimum and firm -- for components, as well as extending the
 <a href=#149 id=149 data-nosnippet>149</a>/// nestable aspect of the registry itself to the bounds builder, allowing for flexibility in where components are
-<a href=#150 id=150 data-nosnippet>150</a>/// defined from and how they are nested.
+<a href=#150 id=150 data-nosnippet>150</a>/// defined from and how they're nested.
 <a href=#151 id=151 data-nosnippet>151</a>///
 <a href=#152 id=152 data-nosnippet>152</a>/// ## Allocation tracking
 <a href=#153 id=153 data-nosnippet>153</a>///
@@ -349,7 +349,7 @@
 <a href=#349 id=349 data-nosnippet>349</a>
 <a href=#350 id=350 data-nosnippet>350</a>    <span class="doccomment">/// Gets a builder object for defining the firm bounds of the current component.
 <a href=#351 id=351 data-nosnippet>351</a>    ///
-<a href=#352 id=352 data-nosnippet>352</a>    /// The firm limit is additive with the minimum required memory, so entries that are added via `minimum` do not need
+<a href=#352 id=352 data-nosnippet>352</a>    /// The firm limit is additive with the minimum required memory, so entries that are added via `minimum` don't need
 <a href=#353 id=353 data-nosnippet>353</a>    /// to be added again here.
 <a href=#354 id=354 data-nosnippet>354</a>    </span><span class="kw">pub fn </span>firm(<span class="kw-2">&amp;mut </span><span class="self">self</span>) -&gt; BoundsBuilder&lt;<span class="lifetime">'_</span>, Firm&gt; {
 <a href=#355 id=355 data-nosnippet>355</a>        <span class="kw">let </span>bounds = <span class="self">self</span>.inner.inner.lock().unwrap();
@@ -411,7 +411,7 @@
 <a href=#411 id=411 data-nosnippet>411</a>    ///
 <a href=#412 id=412 data-nosnippet>412</a>    /// This is useful for tracking the expected memory usage of a single instance of a type if that type is heap
 <a href=#413 id=413 data-nosnippet>413</a>    /// allocated. For example, components that are spawned by a topology generally end up being boxed, which means a
-<a href=#414 id=414 data-nosnippet>414</a>    /// heap allocation exists that is the size of the component type.
+<a href=#414 id=414 data-nosnippet>414</a>    /// heap allocation exists that's the size of the component type.
 <a href=#415 id=415 data-nosnippet>415</a>    </span><span class="kw">pub fn </span>with_single_value&lt;T&gt;(<span class="kw-2">&amp;mut </span><span class="self">self</span>, name: <span class="kw">impl </span>Into&lt;String&gt;) -&gt; <span class="kw-2">&amp;mut </span><span class="self">Self </span>{
 <a href=#416 id=416 data-nosnippet>416</a>        S::add_usage(<span class="kw-2">&amp;mut </span><span class="self">self</span>.inner.bounds, UsageExpr::struct_size::&lt;T&gt;(name));
 <a href=#417 id=417 data-nosnippet>417</a>        <span class="self">self

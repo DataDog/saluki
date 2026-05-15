@@ -248,7 +248,7 @@
 <a href=#248 id=248 data-nosnippet>248</a>    /// `OTLPReceiver.createChunks` in DDA which runs before `runSamplersV1`.
 <a href=#249 id=249 data-nosnippet>249</a>    ///
 <a href=#250 id=250 data-nosnippet>250</a>    /// Returns `Some((priority, dm))` for OTLP traces when the probabilistic sampler is disabled,
-<a href=#251 id=251 data-nosnippet>251</a>    /// or `None` if pre-sampling does not apply.
+<a href=#251 id=251 data-nosnippet>251</a>    /// or `None` if pre-sampling doesn't apply.
 <a href=#252 id=252 data-nosnippet>252</a>    ///
 <a href=#253 id=253 data-nosnippet>253</a>    /// See: https://github.com/DataDog/datadog-agent/blob/be33ac1490c4a34602cbc65a211406b73ad6d00b/pkg/trace/api/otlp.go#L561-L585
 <a href=#254 id=254 data-nosnippet>254</a>    </span><span class="kw">fn </span>otlp_pre_sample(<span class="kw-2">&amp;mut </span><span class="self">self</span>, trace: <span class="kw-2">&amp;mut </span>Trace, root_span_idx: usize) -&gt; <span class="prelude-ty">Option</span>&lt;(i32, <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str)&gt; {
@@ -1022,7 +1022,7 @@
 <a href=#1022 id=1022 data-nosnippet>1022</a>
 <a href=#1023 id=1023 data-nosnippet>1023</a>    <span class="doccomment">/// Adapted from Go "rare-sampler-catch-sampled" (second trace same signature):
 <a href=#1024 id=1024 data-nosnippet>1024</a>    ///
-<a href=#1025 id=1025 data-nosnippet>1025</a>    /// Within the TTL, the same signature is no longer "rare" and rare does not re-sample it.
+<a href=#1025 id=1025 data-nosnippet>1025</a>    /// Within the TTL, the same signature is no longer "rare" and rare doesn't re-sample it.
 <a href=#1026 id=1026 data-nosnippet>1026</a>    /// With probabilistic at 0%, the trace should be dropped.
 <a href=#1027 id=1027 data-nosnippet>1027</a>    </span><span class="attr">#[test]
 <a href=#1028 id=1028 data-nosnippet>1028</a>    </span><span class="kw">fn </span>rare_sampler_does_not_resample_within_ttl() {
@@ -1171,7 +1171,7 @@
 <a href=#1171 id=1171 data-nosnippet>1171</a>    <span class="doccomment">/// Adapted from Go "probabilistic-rare-100":
 <a href=#1172 id=1172 data-nosnippet>1172</a>    ///
 <a href=#1173 id=1173 data-nosnippet>1173</a>    /// Rare fires before probabilistic is consulted, so even at 100% sampling rate the decision
-<a href=#1174 id=1174 data-nosnippet>1174</a>    /// maker tag is not set—the trace is attributed to rare, not probabilistic.
+<a href=#1174 id=1174 data-nosnippet>1174</a>    /// maker tag isn't set—the trace is attributed to rare, not probabilistic.
 <a href=#1175 id=1175 data-nosnippet>1175</a>    </span><span class="attr">#[test]
 <a href=#1176 id=1176 data-nosnippet>1176</a>    </span><span class="kw">fn </span>rare_wins_over_probabilistic_no_decision_maker_tag() {
 <a href=#1177 id=1177 data-nosnippet>1177</a>        <span class="kw">let </span><span class="kw-2">mut </span>sampler = create_sampler_with_rare_enabled();

@@ -5,7 +5,7 @@
 <a href=#5 id=5 data-nosnippet>5</a>
 <a href=#6 id=6 data-nosnippet>6</a><span class="kw">use </span>sha3::digest::{ExtendableOutput <span class="kw">as _</span>, Update <span class="kw">as _</span>};
 <a href=#7 id=7 data-nosnippet>7</a>
-<a href=#8 id=8 data-nosnippet>8</a><span class="doccomment">/// A fast, non-cryptographic hash implementation that is optimized for quality.
+<a href=#8 id=8 data-nosnippet>8</a><span class="doccomment">/// A fast, non-cryptographic hash implementation that's optimized for quality.
 <a href=#9 id=9 data-nosnippet>9</a>///
 <a href=#10 id=10 data-nosnippet>10</a>/// The implementation is reasonably suitable for hash tables and other data structures that require fast hashing and
 <a href=#11 id=11 data-nosnippet>11</a>/// some degree of collision resistance.
@@ -66,7 +66,7 @@
 <a href=#66 id=66 data-nosnippet>66</a>
 <a href=#67 id=67 data-nosnippet>67</a><span class="doccomment">/// Returns a fresh [`FastBuildHasher`] instance.
 <a href=#68 id=68 data-nosnippet>68</a>///
-<a href=#69 id=69 data-nosnippet>69</a>/// This instance should not be used to generate hashes that will be compared against hashes generated either with a
+<a href=#69 id=69 data-nosnippet>69</a>/// This instance shouldn't be used to generate hashes that will be compared against hashes generated either with a
 <a href=#70 id=70 data-nosnippet>70</a>/// hasher acquired from [`get_fast_hasher`] or [`hash_single_fast`], and those methods use a shared global state to both
 <a href=#71 id=71 data-nosnippet>71</a>/// speed up hashing and ensure that the hashes are consistent across runs of those functions in particular.
 <a href=#72 id=72 data-nosnippet>72</a></span><span class="attr">#[inline]
@@ -77,7 +77,7 @@
 <a href=#77 id=77 data-nosnippet>77</a><span class="doccomment">/// Returns a [`FastHasher`] instance backed by a shared, global state.
 <a href=#78 id=78 data-nosnippet>78</a>///
 <a href=#79 id=79 data-nosnippet>79</a>/// Values hashed with a `FastHasher`instance created with this method will be consistent within the same process, but
-<a href=#80 id=80 data-nosnippet>80</a>/// will not be consistent across different runs of the application. Additionally, values hashed with this instance will
+<a href=#80 id=80 data-nosnippet>80</a>/// won't be consistent across different runs of the application. Additionally, values hashed with this instance will
 <a href=#81 id=81 data-nosnippet>81</a>/// not be consistent with those hashed by [`get_fast_build_hasher`], as that function returns a randomly-seeded state for
 <a href=#82 id=82 data-nosnippet>82</a>/// each call.
 <a href=#83 id=83 data-nosnippet>83</a></span><span class="attr">#[inline]
@@ -106,15 +106,15 @@
 <a href=#106 id=106 data-nosnippet>106</a>    hasher.finish()
 <a href=#107 id=107 data-nosnippet>107</a>}
 <a href=#108 id=108 data-nosnippet>108</a>
-<a href=#109 id=109 data-nosnippet>109</a><span class="doccomment">/// A non-cryptographic hash implementation that is meant to be stable over time.
+<a href=#109 id=109 data-nosnippet>109</a><span class="doccomment">/// A non-cryptographic hash implementation that's meant to be stable over time.
 <a href=#110 id=110 data-nosnippet>110</a>///
 <a href=#111 id=111 data-nosnippet>111</a>/// The implementation is intended to be stable over time and across different runs of the applications, such that it
 <a href=#112 id=112 data-nosnippet>112</a>/// can be depended on across different builds/versions of Saluki.
 <a href=#113 id=113 data-nosnippet>113</a>///
-<a href=#114 id=114 data-nosnippet>114</a>/// At a minimum, the hasher implementation will not change within major versions of Saluki, including v0 and v1.
+<a href=#114 id=114 data-nosnippet>114</a>/// At a minimum, the hasher implementation won't change within major versions of Saluki, including v0 and v1.
 <a href=#115 id=115 data-nosnippet>115</a>///
 <a href=#116 id=116 data-nosnippet>116</a>/// Currently, [`sha3`][sha3] (specifically SHAKE128) is used as the underlying implementation. While SHAKE128 is a
-<a href=#117 id=117 data-nosnippet>117</a>/// cryptographic hash algorithm, the way it is used effectively makes it a non-cryptographic hash algorithm given how
+<a href=#117 id=117 data-nosnippet>117</a>/// cryptographic hash algorithm, the way it's used effectively makes it a non-cryptographic hash algorithm given how
 <a href=#118 id=118 data-nosnippet>118</a>/// much the output is truncated.
 <a href=#119 id=119 data-nosnippet>119</a>///
 <a href=#120 id=120 data-nosnippet>120</a>/// [sha3]: https://crates.io/crates/sha3

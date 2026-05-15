@@ -4,11 +4,11 @@
 structural markers (specific delimiting characters) to determine the boundaries of different parts of the
 payload. This allows for decoding payloads with invalid contents (for example, characters that are valid UTF-8, but
 aren’t within ASCII bounds, etc) such that the data plane can attempt to process them further.</p>
-<p>Permissive mode does not allow for decoding payloads with structural errors (for example, missing delimiters, etc) or
-that cannot be safely handled internally (for example, invalid UTF-8 characters for the metric name or tags).</p>
+<p>Permissive mode doesn’t allow for decoding payloads with structural errors (for example, missing delimiters, etc) or
+that can’t be safely handled internally (for example, invalid UTF-8 characters for the metric name or tags).</p>
 <p>Defaults to <code>false</code>.</p>
 </div></details><details class="toggle method-toggle" open><summary><section id="method.with_maximum_tag_length" class="method"><a class="src rightside" href="../../../../src/saluki_io/deser/codec/dogstatsd/mod.rs.html#107-110">Source</a><h4 class="code-header">pub fn <a href="#method.with_maximum_tag_length" class="fn">with_maximum_tag_length</a>(self, maximum_tag_length: <a class="primitive" href="https://doc.rust-lang.org/nightly/std/primitive.usize.html">usize</a>) -&gt; Self</h4></section></summary><div class="docblock"><p>Sets the maximum tag length.</p>
-<p>This controls the number of bytes that are allowed for a single tag. If a tag exceeds this limit, it is
+<p>This controls the number of bytes that are allowed for a single tag. If a tag exceeds this limit, it’s
 truncated to the closest previous UTF-8 character boundary, in order to preserve UTF-8 validity.</p>
 <p>Defaults to no limit.</p>
 </div></details><details class="toggle method-toggle" open><summary><section id="method.with_maximum_tag_count" class="method"><a class="src rightside" href="../../../../src/saluki_io/deser/codec/dogstatsd/mod.rs.html#118-121">Source</a><h4 class="code-header">pub fn <a href="#method.with_maximum_tag_count" class="fn">with_maximum_tag_count</a>(self, maximum_tag_count: <a class="primitive" href="https://doc.rust-lang.org/nightly/std/primitive.usize.html">usize</a>) -&gt; Self</h4></section></summary><div class="docblock"><p>Sets the maximum tag count.</p>
@@ -20,7 +20,7 @@ remaining tags are simply ignored.</p>
 able to specify their own timestamp in order to be forwarded immediately without aggregation.</p>
 <p>Defaults to <code>true</code>.</p>
 </div></details><details class="toggle method-toggle" open><summary><section id="method.with_minimum_sample_rate" class="method"><a class="src rightside" href="../../../../src/saluki_io/deser/codec/dogstatsd/mod.rs.html#140-143">Source</a><h4 class="code-header">pub fn <a href="#method.with_minimum_sample_rate" class="fn">with_minimum_sample_rate</a>(self, minimum_sample_rate: <a class="primitive" href="https://doc.rust-lang.org/nightly/std/primitive.f64.html">f64</a>) -&gt; Self</h4></section></summary><div class="docblock"><p>Sets the minimum sample rate.</p>
-<p>This is the minimum sample rate that is allowed for a metric payload. If the sample rate is less than this limit,
+<p>This is the minimum sample rate that’s allowed for a metric payload. If the sample rate is less than this limit,
 the sample rate is clamped to this value and a log message is emitted.</p>
 <p>Defaults to <code>0.000000003845</code>.</p>
 </div></details><details class="toggle method-toggle" open><summary><section id="method.with_client_origin_detection" class="method"><a class="src rightside" href="../../../../src/saluki_io/deser/codec/dogstatsd/mod.rs.html#151-154">Source</a><h4 class="code-header">pub fn <a href="#method.with_client_origin_detection" class="fn">with_client_origin_detection</a>(self, enabled: <a class="primitive" href="https://doc.rust-lang.org/nightly/std/primitive.bool.html">bool</a>) -&gt; Self</h4></section></summary><div class="docblock"><p>Sets whether client-provided origin detection fields are parsed.</p>

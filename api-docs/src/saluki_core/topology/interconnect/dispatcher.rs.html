@@ -52,7 +52,7 @@
 <a href=#52 id=52 data-nosnippet>52</a>
 <a href=#53 id=53 data-nosnippet>53</a>    <span class="doccomment">/// Attempts to push an item into the buffer.
 <a href=#54 id=54 data-nosnippet>54</a>    ///
-<a href=#55 id=55 data-nosnippet>55</a>    /// Returns `Some(item)` if the buffer is full and the item could not be pushed.
+<a href=#55 id=55 data-nosnippet>55</a>    /// Returns `Some(item)` if the buffer is full and the item couldn't be pushed.
 <a href=#56 id=56 data-nosnippet>56</a>    </span><span class="kw">fn </span>try_push(<span class="kw-2">&amp;mut </span><span class="self">self</span>, item: <span class="self">Self</span>::Item) -&gt; <span class="prelude-ty">Option</span>&lt;<span class="self">Self</span>::Item&gt;;
 <a href=#57 id=57 data-nosnippet>57</a>}
 <a href=#58 id=58 data-nosnippet>58</a>
@@ -283,7 +283,7 @@
 <a href=#283 id=283 data-nosnippet>283</a>    ///
 <a href=#284 id=284 data-nosnippet>284</a>    /// # Errors
 <a href=#285 id=285 data-nosnippet>285</a>    ///
-<a href=#286 id=286 data-nosnippet>286</a>    /// If the output does not exist, an error is returned.
+<a href=#286 id=286 data-nosnippet>286</a>    /// If the output doesn't exist, an error is returned.
 <a href=#287 id=287 data-nosnippet>287</a>    </span><span class="kw">pub fn </span>attach_sender_to_output(
 <a href=#288 id=288 data-nosnippet>288</a>        <span class="kw-2">&amp;mut </span><span class="self">self</span>, output_name: <span class="kw-2">&amp;</span>OutputName, sender: mpsc::Sender&lt;T&gt;,
 <a href=#289 id=289 data-nosnippet>289</a>    ) -&gt; <span class="prelude-ty">Result</span>&lt;(), GenericError&gt; {
@@ -328,7 +328,7 @@
 <a href=#328 id=328 data-nosnippet>328</a>    ///
 <a href=#329 id=329 data-nosnippet>329</a>    /// # Errors
 <a href=#330 id=330 data-nosnippet>330</a>    ///
-<a href=#331 id=331 data-nosnippet>331</a>    /// If the default output is not set, or there is an error sending to the default output, an error is returned.
+<a href=#331 id=331 data-nosnippet>331</a>    /// If the default output isn't set, or there is an error sending to the default output, an error is returned.
 <a href=#332 id=332 data-nosnippet>332</a>    </span><span class="kw">pub async fn </span>dispatch(<span class="kw-2">&amp;</span><span class="self">self</span>, item: T) -&gt; <span class="prelude-ty">Result</span>&lt;(), GenericError&gt; {
 <a href=#333 id=333 data-nosnippet>333</a>        <span class="self">self</span>.dispatch_inner(<span class="prelude-val">None</span>, item).<span class="kw">await
 <a href=#334 id=334 data-nosnippet>334</a>    </span>}
@@ -337,7 +337,7 @@
 <a href=#337 id=337 data-nosnippet>337</a>    ///
 <a href=#338 id=338 data-nosnippet>338</a>    /// # Errors
 <a href=#339 id=339 data-nosnippet>339</a>    ///
-<a href=#340 id=340 data-nosnippet>340</a>    /// If a output of the given name is not set, or there is an error sending to the output, an error is returned.
+<a href=#340 id=340 data-nosnippet>340</a>    /// If a output of the given name isn't set, or there is an error sending to the output, an error is returned.
 <a href=#341 id=341 data-nosnippet>341</a>    </span><span class="kw">pub async fn </span>dispatch_named&lt;N&gt;(<span class="kw-2">&amp;</span><span class="self">self</span>, output_name: N, item: T) -&gt; <span class="prelude-ty">Result</span>&lt;(), GenericError&gt;
 <a href=#342 id=342 data-nosnippet>342</a>    <span class="kw">where
 <a href=#343 id=343 data-nosnippet>343</a>        </span>N: AsRef&lt;str&gt;,
@@ -363,26 +363,26 @@
 <a href=#363 id=363 data-nosnippet>363</a>{
 <a href=#364 id=364 data-nosnippet>364</a>    <span class="doccomment">/// Creates a buffered dispatcher for the default output.
 <a href=#365 id=365 data-nosnippet>365</a>    ///
-<a href=#366 id=366 data-nosnippet>366</a>    /// This should generally be used if the items being dispatched are not already collected in a container, or exposed
+<a href=#366 id=366 data-nosnippet>366</a>    /// This should generally be used if the items being dispatched aren't already collected in a container, or exposed
 <a href=#367 id=367 data-nosnippet>367</a>    /// via an iterable type. It allows for efficiently buffering items one-by-one before dispatching them to the
 <a href=#368 id=368 data-nosnippet>368</a>    /// underlying output.
 <a href=#369 id=369 data-nosnippet>369</a>    ///
 <a href=#370 id=370 data-nosnippet>370</a>    /// # Errors
 <a href=#371 id=371 data-nosnippet>371</a>    ///
-<a href=#372 id=372 data-nosnippet>372</a>    /// If the default output has not been configured, an error will be returned.
+<a href=#372 id=372 data-nosnippet>372</a>    /// If the default output hasn't been configured, an error will be returned.
 <a href=#373 id=373 data-nosnippet>373</a>    </span><span class="kw">pub fn </span>buffered(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="prelude-ty">Result</span>&lt;BufferedDispatcher&lt;<span class="lifetime">'_</span>, T&gt;, GenericError&gt; {
 <a href=#374 id=374 data-nosnippet>374</a>        <span class="self">self</span>.get_default_output().map(BufferedDispatcher::new)
 <a href=#375 id=375 data-nosnippet>375</a>    }
 <a href=#376 id=376 data-nosnippet>376</a>
 <a href=#377 id=377 data-nosnippet>377</a>    <span class="doccomment">/// Creates a buffered dispatcher for the given named output.
 <a href=#378 id=378 data-nosnippet>378</a>    ///
-<a href=#379 id=379 data-nosnippet>379</a>    /// This should generally be used if the items being dispatched are not already collected in a container, or exposed
+<a href=#379 id=379 data-nosnippet>379</a>    /// This should generally be used if the items being dispatched aren't already collected in a container, or exposed
 <a href=#380 id=380 data-nosnippet>380</a>    /// via an iterable type. It allows for efficiently buffering items one-by-one before dispatching them to the
 <a href=#381 id=381 data-nosnippet>381</a>    /// underlying output.
 <a href=#382 id=382 data-nosnippet>382</a>    ///
 <a href=#383 id=383 data-nosnippet>383</a>    /// # Errors
 <a href=#384 id=384 data-nosnippet>384</a>    ///
-<a href=#385 id=385 data-nosnippet>385</a>    /// If the given named output has not been configured, an error will be returned.
+<a href=#385 id=385 data-nosnippet>385</a>    /// If the given named output hasn't been configured, an error will be returned.
 <a href=#386 id=386 data-nosnippet>386</a>    </span><span class="kw">pub fn </span>buffered_named&lt;N&gt;(<span class="kw-2">&amp;</span><span class="self">self</span>, output_name: N) -&gt; <span class="prelude-ty">Result</span>&lt;BufferedDispatcher&lt;<span class="lifetime">'_</span>, T&gt;, GenericError&gt;
 <a href=#387 id=387 data-nosnippet>387</a>    <span class="kw">where
 <a href=#388 id=388 data-nosnippet>388</a>        </span>N: AsRef&lt;str&gt;,
@@ -394,7 +394,7 @@
 <a href=#394 id=394 data-nosnippet>394</a>    ///
 <a href=#395 id=395 data-nosnippet>395</a>    /// # Errors
 <a href=#396 id=396 data-nosnippet>396</a>    ///
-<a href=#397 id=397 data-nosnippet>397</a>    /// If the default output is not set, or there is an error sending to the default output, an error is returned.
+<a href=#397 id=397 data-nosnippet>397</a>    /// If the default output isn't set, or there is an error sending to the default output, an error is returned.
 <a href=#398 id=398 data-nosnippet>398</a>    </span><span class="kw">pub async fn </span>dispatch_one(<span class="kw-2">&amp;</span><span class="self">self</span>, item: T::Item) -&gt; <span class="prelude-ty">Result</span>&lt;(), GenericError&gt; {
 <a href=#399 id=399 data-nosnippet>399</a>        <span class="self">self</span>.dispatch_one_inner(<span class="prelude-val">None</span>, item).<span class="kw">await
 <a href=#400 id=400 data-nosnippet>400</a>    </span>}
@@ -403,7 +403,7 @@
 <a href=#403 id=403 data-nosnippet>403</a>    ///
 <a href=#404 id=404 data-nosnippet>404</a>    /// # Errors
 <a href=#405 id=405 data-nosnippet>405</a>    ///
-<a href=#406 id=406 data-nosnippet>406</a>    /// If an output of the given name is not set, or there is an error sending to the output, an error is returned.
+<a href=#406 id=406 data-nosnippet>406</a>    /// If an output of the given name isn't set, or there is an error sending to the output, an error is returned.
 <a href=#407 id=407 data-nosnippet>407</a>    </span><span class="kw">pub async fn </span>dispatch_one_named&lt;N&gt;(<span class="kw-2">&amp;</span><span class="self">self</span>, output_name: N, item: T::Item) -&gt; <span class="prelude-ty">Result</span>&lt;(), GenericError&gt;
 <a href=#408 id=408 data-nosnippet>408</a>    <span class="kw">where
 <a href=#409 id=409 data-nosnippet>409</a>        </span>N: AsRef&lt;str&gt;,

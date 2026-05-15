@@ -40,7 +40,7 @@
 <a href=#40 id=40 data-nosnippet>40</a>    ///
 <a href=#41 id=41 data-nosnippet>41</a>    /// # Errors
 <a href=#42 id=42 data-nosnippet>42</a>    ///
-<a href=#43 id=43 data-nosnippet>43</a>    /// If the Agent gRPC client cannot be created (invalid API endpoint, missing authentication token, etc), or if the
+<a href=#43 id=43 data-nosnippet>43</a>    /// If the Agent gRPC client can't be created (invalid API endpoint, missing authentication token, etc), or if the
 <a href=#44 id=44 data-nosnippet>44</a>    /// authentication token is invalid, an error will be returned.
 <a href=#45 id=45 data-nosnippet>45</a>    </span><span class="kw">pub async fn </span>from_configuration(config: <span class="kw-2">&amp;</span>GenericConfiguration) -&gt; <span class="prelude-ty">Result</span>&lt;<span class="self">Self</span>, GenericError&gt; {
 <a href=#46 id=46 data-nosnippet>46</a>        <span class="kw">let </span>config = RemoteAgentClientConfiguration::from_configuration(config)<span class="question-mark">?</span>;

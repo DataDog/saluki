@@ -74,7 +74,7 @@
 <a href=#74 id=74 data-nosnippet>74</a>    <span class="doccomment">/// Total size of the string interner used for contexts.
 <a href=#75 id=75 data-nosnippet>75</a>    ///
 <a href=#76 id=76 data-nosnippet>76</a>    /// This controls the amount of memory that can be used to intern metric names and tags. If the interner is full,
-<a href=#77 id=77 data-nosnippet>77</a>    /// metrics with contexts that have not already been resolved may or may not be dropped, depending on the value of
+<a href=#77 id=77 data-nosnippet>77</a>    /// metrics with contexts that haven't already been resolved may or may not be dropped, depending on the value of
 <a href=#78 id=78 data-nosnippet>78</a>    /// `allow_context_heap_allocations`.
 <a href=#79 id=79 data-nosnippet>79</a>    </span><span class="attr">#[serde(
 <a href=#80 id=80 data-nosnippet>80</a>        rename = <span class="string">"otlp_string_interner_size"</span>,
@@ -84,7 +84,7 @@
 <a href=#84 id=84 data-nosnippet>84</a>
 <a href=#85 id=85 data-nosnippet>85</a>    <span class="doccomment">/// The maximum number of cached contexts to allow.
 <a href=#86 id=86 data-nosnippet>86</a>    ///
-<a href=#87 id=87 data-nosnippet>87</a>    /// This is the maximum number of resolved contexts that can be cached at any given time. This limit does not affect
+<a href=#87 id=87 data-nosnippet>87</a>    /// This is the maximum number of resolved contexts that can be cached at any given time. This limit doesn't affect
 <a href=#88 id=88 data-nosnippet>88</a>    /// the total number of contexts that can be _alive_ at any given time, which is dependent on the interner capacity
 <a href=#89 id=89 data-nosnippet>89</a>    /// and whether or not heap allocations are allowed.
 <a href=#90 id=90 data-nosnippet>90</a>    ///
@@ -94,7 +94,7 @@
 <a href=#94 id=94 data-nosnippet>94</a>
 <a href=#95 id=95 data-nosnippet>95</a>    <span class="doccomment">/// The maximum number of cached tagsets to allow.
 <a href=#96 id=96 data-nosnippet>96</a>    ///
-<a href=#97 id=97 data-nosnippet>97</a>    /// This is the maximum number of resolved tagsets that can be cached at any given time. This limit does not affect
+<a href=#97 id=97 data-nosnippet>97</a>    /// This is the maximum number of resolved tagsets that can be cached at any given time. This limit doesn't affect
 <a href=#98 id=98 data-nosnippet>98</a>    /// the total number of tagsets that can be _alive_ at any given time, which is dependent on the interner capacity
 <a href=#99 id=99 data-nosnippet>99</a>    /// and whether or not heap allocations are allowed.
 <a href=#100 id=100 data-nosnippet>100</a>    ///
@@ -107,7 +107,7 @@
 <a href=#107 id=107 data-nosnippet>107</a>    /// When resolving contexts during parsing, the metric name and tags are interned to reduce memory usage. The
 <a href=#108 id=108 data-nosnippet>108</a>    /// interner has a fixed size, however, which means some strings can fail to be interned if the interner is full.
 <a href=#109 id=109 data-nosnippet>109</a>    /// When set to `true`, we allow these strings to be allocated on the heap like normal, but this can lead to
-<a href=#110 id=110 data-nosnippet>110</a>    /// increased (unbounded) memory usage. When set to `false`, if the metric name and all of its tags cannot be
+<a href=#110 id=110 data-nosnippet>110</a>    /// increased (unbounded) memory usage. When set to `false`, if the metric name and all of its tags can't be
 <a href=#111 id=111 data-nosnippet>111</a>    /// interned, the metric is skipped.
 <a href=#112 id=112 data-nosnippet>112</a>    ///
 <a href=#113 id=113 data-nosnippet>113</a>    /// Defaults to `true`.
@@ -133,7 +133,7 @@
 <a href=#133 id=133 data-nosnippet>133</a>
 <a href=#134 id=134 data-nosnippet>134</a>    <span class="doccomment">/// Sets the workload provider to use for configuring origin detection/enrichment.
 <a href=#135 id=135 data-nosnippet>135</a>    ///
-<a href=#136 id=136 data-nosnippet>136</a>    /// A workload provider must be set otherwise origin detection/enrichment will not be enabled.
+<a href=#136 id=136 data-nosnippet>136</a>    /// A workload provider must be set otherwise origin detection/enrichment won't be enabled.
 <a href=#137 id=137 data-nosnippet>137</a>    ///
 <a href=#138 id=138 data-nosnippet>138</a>    /// Defaults to unset.
 <a href=#139 id=139 data-nosnippet>139</a>    </span><span class="kw">pub fn </span>with_workload_provider&lt;W&gt;(<span class="kw-2">mut </span><span class="self">self</span>, workload_provider: W) -&gt; <span class="self">Self

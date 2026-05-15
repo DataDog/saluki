@@ -209,7 +209,7 @@
 <a href=#209 id=209 data-nosnippet>209</a>}
 <a href=#210 id=210 data-nosnippet>210</a>
 <a href=#211 id=211 data-nosnippet>211</a><span class="kw">impl </span>BucketedClientStatistics {
-<a href=#212 id=212 data-nosnippet>212</a>    <span class="doccomment">/// Merge the given stats into the given bucket, creating the bucket if it does not already exist.
+<a href=#212 id=212 data-nosnippet>212</a>    <span class="doccomment">/// Merge the given stats into the given bucket, creating the bucket if it doesn't already exist.
 <a href=#213 id=213 data-nosnippet>213</a>    </span><span class="kw">pub fn </span>merge(<span class="kw-2">&amp;mut </span><span class="self">self</span>, bucket_timeframe: BucketTimeframe, stats: ClientStatistics) -&gt; <span class="prelude-ty">Result</span>&lt;(), GenericError&gt; {
 <a href=#214 id=214 data-nosnippet>214</a>        <span class="kw">match </span><span class="self">self</span>.buckets.entry(bucket_timeframe) {
 <a href=#215 id=215 data-nosnippet>215</a>            Entry::Occupied(<span class="kw-2">mut </span>entry) =&gt; {
@@ -230,7 +230,7 @@
 <a href=#230 id=230 data-nosnippet>230</a>    ///
 <a href=#231 id=231 data-nosnippet>231</a>    /// # Errors
 <a href=#232 id=232 data-nosnippet>232</a>    ///
-<a href=#233 id=233 data-nosnippet>233</a>    /// If the buckets cannot be merged for any reason, an error is returned.
+<a href=#233 id=233 data-nosnippet>233</a>    /// If the buckets can't be merged for any reason, an error is returned.
 <a href=#234 id=234 data-nosnippet>234</a>    </span><span class="kw">pub fn </span>merged(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="prelude-ty">Result</span>&lt;<span class="prelude-ty">Option</span>&lt;ClientStatistics&gt;, GenericError&gt; {
 <a href=#235 id=235 data-nosnippet>235</a>        <span class="kw">let </span><span class="kw-2">mut </span>bucket_stats = <span class="self">self</span>.buckets.values().cloned();
 <a href=#236 id=236 data-nosnippet>236</a>
@@ -279,7 +279,7 @@
 <a href=#279 id=279 data-nosnippet>279</a><span class="kw">impl </span>ClientStatistics {
 <a href=#280 id=280 data-nosnippet>280</a>    <span class="doccomment">/// Merges `other` into `self`.
 <a href=#281 id=281 data-nosnippet>281</a>    ///
-<a href=#282 id=282 data-nosnippet>282</a>    /// If `other` does not have the same aggregation key as `self` (essentially: if any of the string fields differ),
+<a href=#282 id=282 data-nosnippet>282</a>    /// If `other` doesn't have the same aggregation key as `self` (essentially: if any of the string fields differ),
 <a href=#283 id=283 data-nosnippet>283</a>    /// an error is returned.
 <a href=#284 id=284 data-nosnippet>284</a>    </span><span class="kw">pub fn </span>merge(<span class="kw-2">&amp;mut </span><span class="self">self</span>, other: <span class="self">Self</span>) -&gt; <span class="prelude-ty">Result</span>&lt;(), GenericError&gt; {
 <a href=#285 id=285 data-nosnippet>285</a>        <span class="comment">// Check all "fixed" fields and ensure they're identical.

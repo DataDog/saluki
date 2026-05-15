@@ -364,7 +364,7 @@
 <a href=#364 id=364 data-nosnippet>364</a>///
 <a href=#365 id=365 data-nosnippet>365</a>/// - Converts all arguments (positional and named) to arena value refs via [`convert_value_expr`].
 <a href=#366 id=366 data-nosnippet>366</a>/// - Preserves `name`, `is_editor`, `indexes`, and the pre-resolved `callback` from the source AST.
-<a href=#367 id=367 data-nosnippet>367</a>/// - Does not resolve callbacks here; the parser is expected to have attached [`CallbackFn`] when applicable.
+<a href=#367 id=367 data-nosnippet>367</a>/// - Doesn't resolve callbacks here; the parser is expected to have attached [`CallbackFn`] when applicable.
 <a href=#368 id=368 data-nosnippet>368</a></span><span class="kw">fn </span>convert_function_call&lt;F: EvalContextFamily&gt;(
 <a href=#369 id=369 data-nosnippet>369</a>    fc: <span class="kw-2">&amp;</span>FunctionCall, arena: <span class="kw-2">&amp;mut </span>AstArena&lt;F&gt;, path_resolvers: <span class="kw-2">&amp;</span>PathResolverMap&lt;F&gt;,
 <a href=#370 id=370 data-nosnippet>370</a>) -&gt; <span class="prelude-ty">Result</span>&lt;FunctionCallRef&gt; {

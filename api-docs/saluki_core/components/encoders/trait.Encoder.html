@@ -6,7 +6,7 @@
     ) -&gt; <a class="struct" href="https://doc.rust-lang.org/nightly/core/pin/struct.Pin.html" title="struct core::pin::Pin">Pin</a>&lt;<a class="struct" href="https://doc.rust-lang.org/nightly/alloc/boxed/struct.Box.html" title="struct alloc::boxed::Box">Box</a>&lt;dyn <a class="trait" href="https://doc.rust-lang.org/nightly/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="enum" href="https://doc.rust-lang.org/nightly/core/result/enum.Result.html" title="enum core::result::Result">Result</a>&lt;<a class="primitive" href="https://doc.rust-lang.org/nightly/std/primitive.unit.html">()</a>, GenericError&gt;&gt; + <a class="trait" href="https://doc.rust-lang.org/nightly/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a> + 'async_trait&gt;&gt;
        <span class="where">where Self: 'async_trait</span>;
 }</code></pre><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>An encoder.</p>
-<p>Encoders are the bridge between forwarders and the rest of the topology. They are responsible for encoding
+<p>Encoders are the bridge between forwarders and the rest of the topology. They’re responsible for encoding
 telemetry events into output payloads that can then be forwarded. Most encoders are specific to a particular system
 and not simply equivalent to a certain encoding or serialization format: while two encoders may both produce JSON,
 they may produce different JSON formats such that one format only works for product A and the other only works for

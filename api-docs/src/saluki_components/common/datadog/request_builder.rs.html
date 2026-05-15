@@ -66,7 +66,7 @@
 <a href=#66 id=66 data-nosnippet>66</a>    ///
 <a href=#67 id=67 data-nosnippet>67</a>    /// # Errors
 <a href=#68 id=68 data-nosnippet>68</a>    ///
-<a href=#69 id=69 data-nosnippet>69</a>    /// If the input cannot otherwise be encoded for any reason, an error will be returned.
+<a href=#69 id=69 data-nosnippet>69</a>    /// If the input can't otherwise be encoded for any reason, an error will be returned.
 <a href=#70 id=70 data-nosnippet>70</a>    </span><span class="kw">fn </span>encode(<span class="kw-2">&amp;mut </span><span class="self">self</span>, input: <span class="kw-2">&amp;</span><span class="self">Self</span>::Input, buffer: <span class="kw-2">&amp;mut </span>Vec&lt;u8&gt;) -&gt; <span class="prelude-ty">Result</span>&lt;(), <span class="self">Self</span>::EncodeError&gt;;
 <a href=#71 id=71 data-nosnippet>71</a>
 <a href=#72 id=72 data-nosnippet>72</a>    <span class="doccomment">/// Returns the URI of the endpoint that this encoder is associated with.
@@ -289,7 +289,7 @@
 <a href=#289 id=289 data-nosnippet>289</a>    ///
 <a href=#290 id=290 data-nosnippet>290</a>    /// # Errors
 <a href=#291 id=291 data-nosnippet>291</a>    ///
-<a href=#292 id=292 data-nosnippet>292</a>    /// If the given input is not valid for the configured encoder, or if there is an error during compression of the
+<a href=#292 id=292 data-nosnippet>292</a>    /// If the given input isn't valid for the configured encoder, or if there is an error during compression of the
 <a href=#293 id=293 data-nosnippet>293</a>    /// encoded input, an error will be returned.
 <a href=#294 id=294 data-nosnippet>294</a>    </span><span class="kw">pub async fn </span>encode(<span class="kw-2">&amp;mut </span><span class="self">self</span>, input: E::Input) -&gt; <span class="prelude-ty">Result</span>&lt;<span class="prelude-ty">Option</span>&lt;E::Input&gt;, RequestBuilderError&lt;E&gt;&gt; {
 <a href=#295 id=295 data-nosnippet>295</a>        <span class="comment">// Check if the input is valid for this encoder.
@@ -322,7 +322,7 @@
 <a href=#322 id=322 data-nosnippet>322</a>    <span class="doccomment">/// Internal implementation of `encode`.
 <a href=#323 id=323 data-nosnippet>323</a>    ///
 <a href=#324 id=324 data-nosnippet>324</a>    /// This method excludes any specific edge case/error handling (such as if the input is valid, or asserting we
-<a href=#325 id=325 data-nosnippet>325</a>    /// haven't hit input limits), and avoids any of the logic that supports request splitting. It is written this way
+<a href=#325 id=325 data-nosnippet>325</a>    /// haven't hit input limits), and avoids any of the logic that supports request splitting. It's written this way
 <a href=#326 id=326 data-nosnippet>326</a>    /// so that it can be used in the request splitting logic itself without any thorny recursion issues.
 <a href=#327 id=327 data-nosnippet>327</a>    </span><span class="kw">async fn </span>encode_inner(<span class="kw-2">&amp;mut </span><span class="self">self</span>, input: <span class="kw-2">&amp;</span>E::Input) -&gt; <span class="prelude-ty">Result</span>&lt;bool, RequestBuilderError&lt;E&gt;&gt; {
 <a href=#328 id=328 data-nosnippet>328</a>        <span class="comment">// Write any configured prefix/input separator, if necessary.
@@ -436,7 +436,7 @@
 <a href=#436 id=436 data-nosnippet>436</a>    <span class="doccomment">/// Internal implementation of `flush`.
 <a href=#437 id=437 data-nosnippet>437</a>    ///
 <a href=#438 id=438 data-nosnippet>438</a>    /// This method excludes any specific edge case/error handling (such as checking if the (un)compressed size limits
-<a href=#439 id=439 data-nosnippet>439</a>    /// are exceeded), and does not handle request splitting, as it is meant to be used in the request splitting logic
+<a href=#439 id=439 data-nosnippet>439</a>    /// are exceeded), and doesn't handle request splitting, as it's meant to be used in the request splitting logic
 <a href=#440 id=440 data-nosnippet>440</a>    /// itself.
 <a href=#441 id=441 data-nosnippet>441</a>    </span><span class="kw">async fn </span>flush_inner(<span class="kw-2">&amp;mut </span><span class="self">self</span>) -&gt; <span class="prelude-ty">Result</span>&lt;(usize, FrozenChunkedBytesBuffer), RequestBuilderError&lt;E&gt;&gt; {
 <a href=#442 id=442 data-nosnippet>442</a>        <span class="comment">// If we have a payload suffix configured, write it now.

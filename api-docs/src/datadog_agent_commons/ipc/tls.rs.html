@@ -71,7 +71,7 @@
 <a href=#71 id=71 data-nosnippet>71</a>///
 <a href=#72 id=72 data-nosnippet>72</a>/// ## Errors
 <a href=#73 id=73 data-nosnippet>73</a>///
-<a href=#74 id=74 data-nosnippet>74</a>/// If there is an issue reading the IPC TLS certificate file, or if the file is not a valid PEM-encoded certificate, an
+<a href=#74 id=74 data-nosnippet>74</a>/// If there is an issue reading the IPC TLS certificate file, or if the file isn't a valid PEM-encoded certificate, an
 <a href=#75 id=75 data-nosnippet>75</a>/// error is returned.
 <a href=#76 id=76 data-nosnippet>76</a></span><span class="kw">pub async fn </span>build_ipc_client_ipc_tls_config&lt;P: AsRef&lt;Path&gt;&gt;(cert_path: P) -&gt; <span class="prelude-ty">Result</span>&lt;ClientConfig, GenericError&gt; {
 <a href=#77 id=77 data-nosnippet>77</a>    <span class="comment">// Read the certificate file, and extract the certificate and private key from it.
@@ -110,7 +110,7 @@
 <a href=#110 id=110 data-nosnippet>110</a>///
 <a href=#111 id=111 data-nosnippet>111</a>/// ## Errors
 <a href=#112 id=112 data-nosnippet>112</a>///
-<a href=#113 id=113 data-nosnippet>113</a>/// If there is an issue reading the IPC TLS certificate file, or if the file is not a valid PEM-encoded certificate, an
+<a href=#113 id=113 data-nosnippet>113</a>/// If there is an issue reading the IPC TLS certificate file, or if the file isn't a valid PEM-encoded certificate, an
 <a href=#114 id=114 data-nosnippet>114</a>/// error is returned.
 <a href=#115 id=115 data-nosnippet>115</a></span><span class="kw">pub async fn </span>build_ipc_server_tls_config&lt;P: AsRef&lt;Path&gt;&gt;(cert_path: P) -&gt; <span class="prelude-ty">Result</span>&lt;ServerConfig, GenericError&gt; {
 <a href=#116 id=116 data-nosnippet>116</a>    <span class="comment">// Read the certificate file, and extract the certificate and private key from it.
@@ -139,7 +139,7 @@
 <a href=#139 id=139 data-nosnippet>139</a>///
 <a href=#140 id=140 data-nosnippet>140</a>/// ## Errors
 <a href=#141 id=141 data-nosnippet>141</a>///
-<a href=#142 id=142 data-nosnippet>142</a>/// If the file cannot be read after the maximum number of retries, or if the file is not a valid certificate,
+<a href=#142 id=142 data-nosnippet>142</a>/// If the file can't be read after the maximum number of retries, or if the file isn't a valid certificate,
 <a href=#143 id=143 data-nosnippet>143</a>/// an error will be returned.
 <a href=#144 id=144 data-nosnippet>144</a></span><span class="kw">async fn </span>read_and_parse_certificate_file(
 <a href=#145 id=145 data-nosnippet>145</a>    cert_path: <span class="kw-2">&amp;</span>Path, timeout: Duration, interval: Duration,

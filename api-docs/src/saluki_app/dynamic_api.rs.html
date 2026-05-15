@@ -67,7 +67,7 @@
 <a href=#67 id=67 data-nosnippet>67</a>///
 <a href=#68 id=68 data-nosnippet>68</a>/// In addition to dynamic routes, callers can register static HTTP handlers and gRPC services up-front via
 <a href=#69 id=69 data-nosnippet>69</a>/// [`with_handler`][Self::with_handler], [`with_optional_handler`][Self::with_optional_handler], and
-<a href=#70 id=70 data-nosnippet>70</a>/// [`with_grpc_service`][Self::with_grpc_service]. These form a base router that is cloned on every rebuild and merged
+<a href=#70 id=70 data-nosnippet>70</a>/// [`with_grpc_service`][Self::with_grpc_service]. These form a base router that's cloned on every rebuild and merged
 <a href=#71 id=71 data-nosnippet>71</a>/// with the currently-asserted dynamic routes. Static routes take precedence on conflicts: a dynamic route whose path
 <a href=#72 id=72 data-nosnippet>72</a>/// and method overlap with a static route is skipped (with a warning) until the conflict clears.
 <a href=#73 id=73 data-nosnippet>73</a>///
@@ -369,7 +369,7 @@
 <a href=#369 id=369 data-nosnippet>369</a>///
 <a href=#370 id=370 data-nosnippet>370</a>/// `Router::merge` panics when two routers define overlapping routes (same path and HTTP method) and axum exposes no
 <a href=#371 id=371 data-nosnippet>371</a>/// fallible alternative. Since `Router` is opaque -- there is no public API to inspect which paths/methods a router
-<a href=#372 id=372 data-nosnippet>372</a>/// carries -- we cannot detect conflicts ahead of time.
+<a href=#372 id=372 data-nosnippet>372</a>/// carries -- we can't detect conflicts ahead of time.
 <a href=#373 id=373 data-nosnippet>373</a>///
 <a href=#374 id=374 data-nosnippet>374</a>/// To recover from the panic without losing the accumulated router state, we clone `base` before the merge attempt.
 <a href=#375 id=375 data-nosnippet>375</a>/// The clone is passed into `catch_unwind`: if the merge panics, only the clone is in a partially-mutated state and it

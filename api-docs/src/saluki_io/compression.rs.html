@@ -217,10 +217,10 @@
 <a href=#217 id=217 data-nosnippet>217</a>/// as amortize how often they write compressed data to the output stream, increasing the potential efficiency of the
 <a href=#218 id=218 data-nosnippet>218</a>/// related function or system calls to do so.
 <a href=#219 id=219 data-nosnippet>219</a>///
-<a href=#220 id=220 data-nosnippet>220</a>/// However, this presents a problem when there is a need to ensure that the size of the compressed data does not exceed
+<a href=#220 id=220 data-nosnippet>220</a>/// However, this presents a problem when there is a need to ensure that the size of the compressed data doesn't exceed
 <a href=#221 id=221 data-nosnippet>221</a>/// a certain threshold. As many inputs can be written to the compressor before the next chunk of compressed data is
-<a href=#222 id=222 data-nosnippet>222</a>/// output, it is possible to write enough data that the compressed output exceeds the threshold. Further, many
-<a href=#223 id=223 data-nosnippet>223</a>/// compression algorithms/implementations do not provide a way to query the size of the compressed data without
+<a href=#222 id=222 data-nosnippet>222</a>/// output, it's possible to write enough data that the compressed output exceeds the threshold. Further, many
+<a href=#223 id=223 data-nosnippet>223</a>/// compression algorithms/implementations don't provide a way to query the size of the compressed data without
 <a href=#224 id=224 data-nosnippet>224</a>/// expensive operations that either require doing multiple compression passes on different slices of the data, or early
 <a href=#225 id=225 data-nosnippet>225</a>/// flushing of compressed data, potentially leading to abnormally low compression ratios.
 <a href=#226 id=226 data-nosnippet>226</a>///

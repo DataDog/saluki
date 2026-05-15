@@ -7,7 +7,7 @@
 until a runtime override is applied via <a href="struct.FilterHandle.html#method.override_filter" title="method saluki_core::observability::metrics::FilterHandle::override_filter"><code>FilterHandle::override_filter</code></a>.</p>
 <p>Returns a <a href="struct.FilterHandle.html" title="struct saluki_core::observability::metrics::FilterHandle"><code>FilterHandle</code></a> for adjusting the runtime metrics filter, plus a <a href="struct.MetricsFlusherWorker.html" title="struct saluki_core::observability::metrics::MetricsFlusherWorker"><code>MetricsFlusherWorker</code></a>
 that must be added to a <a href="../../runtime/struct.Supervisor.html" title="struct saluki_core::runtime::Supervisor"><code>Supervisor</code></a> in order to drive the periodic
-flush loop. Internal metrics are not propagated to subscribers until the worker is running.</p>
+flush loop. Internal metrics aren’t propagated to subscribers until the worker is running.</p>
 <h2 id="errors"><a class="doc-anchor" href="#errors">§</a>Errors</h2>
 <p>If a global recorder was already installed, an error will be returned.</p>
 </div></details></section></div></main></body></html>

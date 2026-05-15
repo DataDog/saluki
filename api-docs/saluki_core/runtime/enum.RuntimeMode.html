@@ -3,7 +3,7 @@
     Dedicated(<a class="struct" href="struct.RuntimeConfiguration.html" title="struct saluki_core::runtime::RuntimeConfiguration">RuntimeConfiguration</a>),
 }</code></pre><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>Controls which runtime a supervisor runs on.</p>
 </div></details><h2 id="variants" class="variants section-header">Variants<a href="#variants" class="anchor">§</a></h2><div class="variants"><section id="variant.Ambient" class="variant"><a href="#variant.Ambient" class="anchor">§</a><h3 class="code-header">Ambient</h3></section><div class="docblock"><p>Run on the ambient runtime (default).</p>
-<p>The supervisor runs on whatever Tokio runtime is currently active when it is spawned.</p>
+<p>The supervisor runs on whatever Tokio runtime is currently active when it’s spawned.</p>
 </div><section id="variant.Dedicated" class="variant"><a href="#variant.Dedicated" class="anchor">§</a><h3 class="code-header">Dedicated(<a class="struct" href="struct.RuntimeConfiguration.html" title="struct saluki_core::runtime::RuntimeConfiguration">RuntimeConfiguration</a>)</h3></section><div class="docblock"><p>Run on a dedicated runtime with the given configuration.</p>
 <p>The supervisor spawns its own OS thread(s) and Tokio runtime, providing runtime isolation from the parent
 supervisor.</p>

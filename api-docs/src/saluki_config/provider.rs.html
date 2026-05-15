@@ -110,7 +110,7 @@
 <a href=#110 id=110 data-nosnippet>110</a><span class="doccomment">/// Adds a flat top-level key for each alias entry whose nested path exists in `value`.
 <a href=#111 id=111 data-nosnippet>111</a>///
 <a href=#112 id=112 data-nosnippet>112</a>/// For each `(from_path, to_key)` pair: if `from_path` (dot-separated) resolves to a value,
-<a href=#113 id=113 data-nosnippet>113</a>/// that value is written under `to_key` at the top level—but only if `to_key` is not already
+<a href=#113 id=113 data-nosnippet>113</a>/// that value is written under `to_key` at the top level—but only if `to_key` isn't already
 <a href=#114 id=114 data-nosnippet>114</a>/// present. This lets both `proxy: http: &lt;url&gt;` (YAML-nested) and `proxy_http: &lt;url&gt;` (flat)
 <a href=#115 id=115 data-nosnippet>115</a>/// produce the same canonical Figment key without dropping either representation.
 <a href=#116 id=116 data-nosnippet>116</a></span><span class="kw">fn </span>apply_key_aliases(value: <span class="kw-2">&amp;mut </span>JsonValue, aliases: <span class="kw-2">&amp;</span>[(<span class="kw-2">&amp;</span>str, <span class="kw-2">&amp;</span>str)]) {

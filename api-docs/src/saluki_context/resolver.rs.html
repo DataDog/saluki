@@ -72,9 +72,9 @@
 <a href=#72 id=72 data-nosnippet>72</a><span class="kw">impl </span>ContextResolverBuilder {
 <a href=#73 id=73 data-nosnippet>73</a>    <span class="doccomment">/// Creates a new `ContextResolverBuilder` with the given resolver name.
 <a href=#74 id=74 data-nosnippet>74</a>    ///
-<a href=#75 id=75 data-nosnippet>75</a>    /// The resolver name _should_ be unique, but it is not required to be. Metrics for the resolver will be
-<a href=#76 id=76 data-nosnippet>76</a>    /// emitted using the given name, so in cases where the name is not unique, those metrics will be aggregated
-<a href=#77 id=77 data-nosnippet>77</a>    /// together and it will not be possible to distinguish between the different resolvers.
+<a href=#75 id=75 data-nosnippet>75</a>    /// The resolver name _should_ be unique, but it'sn't required to be. Metrics for the resolver will be
+<a href=#76 id=76 data-nosnippet>76</a>    /// emitted using the given name, so in cases where the name isn't unique, those metrics will be aggregated
+<a href=#77 id=77 data-nosnippet>77</a>    /// together and it won't be possible to distinguish between the different resolvers.
 <a href=#78 id=78 data-nosnippet>78</a>    ///
 <a href=#79 id=79 data-nosnippet>79</a>    /// # Errors
 <a href=#80 id=80 data-nosnippet>80</a>    ///
@@ -103,12 +103,12 @@
 <a href=#103 id=103 data-nosnippet>103</a>    ///
 <a href=#104 id=104 data-nosnippet>104</a>    /// [`ContextResolver`] provides two main benefits: consistent behavior for resolving contexts (interning, origin
 <a href=#105 id=105 data-nosnippet>105</a>    /// tags, etc), and the caching of those resolved contexts to speed up future resolutions. However, caching contexts
-<a href=#106 id=106 data-nosnippet>106</a>    /// means that we pay a memory cost for the cache itself, even if the contexts are not ever reused or are seen
-<a href=#107 id=107 data-nosnippet>107</a>    /// infrequently. While expiration can help free up cache capacity, it cannot help recover the memory used by the
+<a href=#106 id=106 data-nosnippet>106</a>    /// means that we pay a memory cost for the cache itself, even if the contexts aren't ever reused or are seen
+<a href=#107 id=107 data-nosnippet>107</a>    /// infrequently. While expiration can help free up cache capacity, it can't help recover the memory used by the
 <a href=#108 id=108 data-nosnippet>108</a>    /// underlying cache data structure once they have expanded to hold the contexts.
 <a href=#109 id=109 data-nosnippet>109</a>    ///
 <a href=#110 id=110 data-nosnippet>110</a>    /// Disabling caching allows normal resolving to take place without the overhead of caching the contexts. This can
-<a href=#111 id=111 data-nosnippet>111</a>    /// lead to lower average memory usage, as contexts will only live as long as they are needed, but it will reduce
+<a href=#111 id=111 data-nosnippet>111</a>    /// lead to lower average memory usage, as contexts will only live as long as they're needed, but it will reduce
 <a href=#112 id=112 data-nosnippet>112</a>    /// memory determinism as memory will be allocated for every resolved context (minus interned strings), which means
 <a href=#113 id=113 data-nosnippet>113</a>    /// that resolving the same context ten times in a row will result in ten separate allocations, and so on.
 <a href=#114 id=114 data-nosnippet>114</a>    ///
@@ -121,11 +121,11 @@
 <a href=#121 id=121 data-nosnippet>121</a>
 <a href=#122 id=122 data-nosnippet>122</a>    <span class="doccomment">/// Sets the limit on the number of cached contexts.
 <a href=#123 id=123 data-nosnippet>123</a>    ///
-<a href=#124 id=124 data-nosnippet>124</a>    /// This is the maximum number of resolved contexts that can be cached at any given time. This limit does not affect
+<a href=#124 id=124 data-nosnippet>124</a>    /// This is the maximum number of resolved contexts that can be cached at any given time. This limit doesn't affect
 <a href=#125 id=125 data-nosnippet>125</a>    /// the total number of contexts that can be _alive_ at any given time, which is dependent on the interner capacity
 <a href=#126 id=126 data-nosnippet>126</a>    /// and whether or not heap allocations are allowed.
 <a href=#127 id=127 data-nosnippet>127</a>    ///
-<a href=#128 id=128 data-nosnippet>128</a>    /// Caching contexts is beneficial when the same context is resolved frequently, and it is generally worth
+<a href=#128 id=128 data-nosnippet>128</a>    /// Caching contexts is beneficial when the same context is resolved frequently, and it's generally worth
 <a href=#129 id=129 data-nosnippet>129</a>    /// allowing for higher limits on cached contexts when heap allocations are allowed, as this can better amortize the
 <a href=#130 id=130 data-nosnippet>130</a>    /// cost of those heap allocations.
 <a href=#131 id=131 data-nosnippet>131</a>    ///
@@ -160,7 +160,7 @@
 <a href=#160 id=160 data-nosnippet>160</a>    ///
 <a href=#161 id=161 data-nosnippet>161</a>    /// This is the maximum number of bytes that the interner will use for interning strings that are present in
 <a href=#162 id=162 data-nosnippet>162</a>    /// contexts being resolved. This capacity may or may not be allocated entirely when the resolver is built, but the
-<a href=#163 id=163 data-nosnippet>163</a>    /// interner will not exceed the configured capacity when allocating any backing storage.
+<a href=#163 id=163 data-nosnippet>163</a>    /// interner won't exceed the configured capacity when allocating any backing storage.
 <a href=#164 id=164 data-nosnippet>164</a>    ///
 <a href=#165 id=165 data-nosnippet>165</a>    /// This value directly impacts the number of contexts that can be resolved when heap allocations are disabled, as
 <a href=#166 id=166 data-nosnippet>166</a>    /// all resolved contexts must either have values (name or tags) that can be inlined or interned. Once the interner
@@ -180,7 +180,7 @@
 <a href=#180 id=180 data-nosnippet>180</a>    ///
 <a href=#181 id=181 data-nosnippet>181</a>    /// In cases where the interner is full, this setting determines whether or not we refuse to resolve a context, or
 <a href=#182 id=182 data-nosnippet>182</a>    /// if we allow it be resolved by allocating strings on the heap. When heap allocations are enabled, the amount of
-<a href=#183 id=183 data-nosnippet>183</a>    /// memory that can be used by the interner is effectively unlimited, as contexts that cannot be interned will be
+<a href=#183 id=183 data-nosnippet>183</a>    /// memory that can be used by the interner is effectively unlimited, as contexts that can't be interned will be
 <a href=#184 id=184 data-nosnippet>184</a>    /// simply spill to the heap instead of being limited in any way.
 <a href=#185 id=185 data-nosnippet>185</a>    ///
 <a href=#186 id=186 data-nosnippet>186</a>    /// Defaults to `true`.
@@ -212,13 +212,13 @@
 <a href=#212 id=212 data-nosnippet>212</a>
 <a href=#213 id=213 data-nosnippet>213</a>    <span class="doccomment">/// Sets the interner to use for this resolver.
 <a href=#214 id=214 data-nosnippet>214</a>    ///
-<a href=#215 id=215 data-nosnippet>215</a>    /// If an interner is not provided, an interner will be created in [`ContextResolverBuilder::build`]
+<a href=#215 id=215 data-nosnippet>215</a>    /// If an interner isn't provided, an interner will be created in [`ContextResolverBuilder::build`]
 <a href=#216 id=216 data-nosnippet>216</a>    </span><span class="kw">pub fn </span>with_interner(<span class="kw-2">mut </span><span class="self">self</span>, interner: GenericMapInterner) -&gt; <span class="self">Self </span>{
 <a href=#217 id=217 data-nosnippet>217</a>        <span class="self">self</span>.interner = <span class="prelude-val">Some</span>(interner);
 <a href=#218 id=218 data-nosnippet>218</a>        <span class="self">self
 <a href=#219 id=219 data-nosnippet>219</a>    </span>}
 <a href=#220 id=220 data-nosnippet>220</a>
-<a href=#221 id=221 data-nosnippet>221</a>    <span class="doccomment">/// Configures a [`ContextResolverBuilder`] that is suitable for tests.
+<a href=#221 id=221 data-nosnippet>221</a>    <span class="doccomment">/// Configures a [`ContextResolverBuilder`] that's suitable for tests.
 <a href=#222 id=222 data-nosnippet>222</a>    ///
 <a href=#223 id=223 data-nosnippet>223</a>    /// This configures the builder with the following defaults:
 <a href=#224 id=224 data-nosnippet>224</a>    ///
@@ -304,8 +304,8 @@
 <a href=#304 id=304 data-nosnippet>304</a>
 <a href=#305 id=305 data-nosnippet>305</a><span class="doccomment">/// A centralized store for resolved contexts.
 <a href=#306 id=306 data-nosnippet>306</a>///
-<a href=#307 id=307 data-nosnippet>307</a>/// Contexts are the combination of a name and a set of tags. They are used to identify a specific metric series. As contexts
-<a href=#308 id=308 data-nosnippet>308</a>/// are constructed entirely of strings, they are expensive to construct in a way that allows sending between tasks, as
+<a href=#307 id=307 data-nosnippet>307</a>/// Contexts are the combination of a name and a set of tags. They're used to identify a specific metric series. As contexts
+<a href=#308 id=308 data-nosnippet>308</a>/// are constructed entirely of strings, they're expensive to construct in a way that allows sending between tasks, as
 <a href=#309 id=309 data-nosnippet>309</a>/// this usually requires allocations. Even further, the same context may be "hot", used frequently by the
 <a href=#310 id=310 data-nosnippet>310</a>/// applications/services sending us metrics.
 <a href=#311 id=311 data-nosnippet>311</a>///
@@ -386,7 +386,7 @@
 <a href=#386 id=386 data-nosnippet>386</a>
 <a href=#387 id=387 data-nosnippet>387</a>    <span class="doccomment">/// Resolves the given context.
 <a href=#388 id=388 data-nosnippet>388</a>    ///
-<a href=#389 id=389 data-nosnippet>389</a>    /// If the context has not yet been resolved, the name and tags are interned and a new context is created and
+<a href=#389 id=389 data-nosnippet>389</a>    /// If the context hasn't yet been resolved, the name and tags are interned and a new context is created and
 <a href=#390 id=390 data-nosnippet>390</a>    /// stored. Otherwise, the existing context is returned. If an origin tags resolver is configured, and origin info
 <a href=#391 id=391 data-nosnippet>391</a>    /// is available, any enriched tags will be added to the context.
 <a href=#392 id=392 data-nosnippet>392</a>    ///
@@ -406,7 +406,7 @@
 <a href=#406 id=406 data-nosnippet>406</a>
 <a href=#407 id=407 data-nosnippet>407</a>    <span class="doccomment">/// Resolves the given context using the provided origin tags.
 <a href=#408 id=408 data-nosnippet>408</a>    ///
-<a href=#409 id=409 data-nosnippet>409</a>    /// If the context has not yet been resolved, the name and tags are interned and a new context is created and
+<a href=#409 id=409 data-nosnippet>409</a>    /// If the context hasn't yet been resolved, the name and tags are interned and a new context is created and
 <a href=#410 id=410 data-nosnippet>410</a>    /// stored. Otherwise, the existing context is returned. The provided origin tags are used to enrich the context.
 <a href=#411 id=411 data-nosnippet>411</a>    ///
 <a href=#412 id=412 data-nosnippet>412</a>    /// `None` may be returned if the interner is full and outside allocations are disallowed. See
@@ -415,7 +415,7 @@
 <a href=#415 id=415 data-nosnippet>415</a>    /// ## Origin tags resolver mismatch
 <a href=#416 id=416 data-nosnippet>416</a>    ///
 <a href=#417 id=417 data-nosnippet>417</a>    /// When passing in origin tags, they will be inherently tied to a specific `OriginTagsResolver`, which may
-<a href=#418 id=418 data-nosnippet>418</a>    /// differ from the configured origin tags resolver in this context resolver. This means that the context that is
+<a href=#418 id=418 data-nosnippet>418</a>    /// differ from the configured origin tags resolver in this context resolver. This means that the context that's
 <a href=#419 id=419 data-nosnippet>419</a>    /// generated and cached may not be reused in the future if an attempt is made to resolve it using the raw origin
 <a href=#420 id=420 data-nosnippet>420</a>    /// information instead.
 <a href=#421 id=421 data-nosnippet>421</a>    ///
@@ -558,12 +558,12 @@
 <a href=#558 id=558 data-nosnippet>558</a>    ///
 <a href=#559 id=559 data-nosnippet>559</a>    /// [`TagsResolver`] provides two main benefits: consistent behavior for resolving tag sets (interning, origin
 <a href=#560 id=560 data-nosnippet>560</a>    /// tags, etc), and the caching of those resolved tag sets to speed up future resolutions. However, caching tag
-<a href=#561 id=561 data-nosnippet>561</a>    /// sets means that we pay a memory cost for the cache itself, even if the tag sets are not ever reused or are seen
-<a href=#562 id=562 data-nosnippet>562</a>    /// infrequently. While expiration can help free up cache capacity, it cannot help recover the memory used by the
+<a href=#561 id=561 data-nosnippet>561</a>    /// sets means that we pay a memory cost for the cache itself, even if the tag sets aren't ever reused or are seen
+<a href=#562 id=562 data-nosnippet>562</a>    /// infrequently. While expiration can help free up cache capacity, it can't help recover the memory used by the
 <a href=#563 id=563 data-nosnippet>563</a>    /// underlying cache data structure once they have expanded to hold the tag sets.
 <a href=#564 id=564 data-nosnippet>564</a>    ///
 <a href=#565 id=565 data-nosnippet>565</a>    /// Disabling caching allows normal resolving to take place without the overhead of caching the tag sets. This can
-<a href=#566 id=566 data-nosnippet>566</a>    /// lead to lower average memory usage, as tag sets will only live as long as they are needed, but it will reduce
+<a href=#566 id=566 data-nosnippet>566</a>    /// lead to lower average memory usage, as tag sets will only live as long as they're needed, but it will reduce
 <a href=#567 id=567 data-nosnippet>567</a>    /// memory determinism as memory will be allocated for every resolved tag set (minus interned strings), which means
 <a href=#568 id=568 data-nosnippet>568</a>    /// that resolving the same tag set ten times in a row will result in ten separate allocations, and so on.
 <a href=#569 id=569 data-nosnippet>569</a>    ///
@@ -576,11 +576,11 @@
 <a href=#576 id=576 data-nosnippet>576</a>
 <a href=#577 id=577 data-nosnippet>577</a>    <span class="doccomment">/// Sets the limit on the number of cached tagsets.
 <a href=#578 id=578 data-nosnippet>578</a>    ///
-<a href=#579 id=579 data-nosnippet>579</a>    /// This is the maximum number of resolved tag sets that can be cached at any given time. This limit does not affect
+<a href=#579 id=579 data-nosnippet>579</a>    /// This is the maximum number of resolved tag sets that can be cached at any given time. This limit doesn't affect
 <a href=#580 id=580 data-nosnippet>580</a>    /// the total number of tag sets that can be _alive_ at any given time, which is dependent on the interner capacity
 <a href=#581 id=581 data-nosnippet>581</a>    /// and whether or not heap allocations are allowed.
 <a href=#582 id=582 data-nosnippet>582</a>    ///
-<a href=#583 id=583 data-nosnippet>583</a>    /// Caching tag sets is beneficial when the same tag set is resolved frequently, and it is generally worth
+<a href=#583 id=583 data-nosnippet>583</a>    /// Caching tag sets is beneficial when the same tag set is resolved frequently, and it's generally worth
 <a href=#584 id=584 data-nosnippet>584</a>    /// allowing for higher limits on cached tag sets when heap allocations are allowed, as this can better amortize the
 <a href=#585 id=585 data-nosnippet>585</a>    /// cost of those heap allocations.
 <a href=#586 id=586 data-nosnippet>586</a>    ///
@@ -615,7 +615,7 @@
 <a href=#615 id=615 data-nosnippet>615</a>    ///
 <a href=#616 id=616 data-nosnippet>616</a>    /// In cases where the interner is full, this setting determines whether or not we refuse to resolve a context, or
 <a href=#617 id=617 data-nosnippet>617</a>    /// if we allow it be resolved by allocating strings on the heap. When heap allocations are enabled, the amount of
-<a href=#618 id=618 data-nosnippet>618</a>    /// memory that can be used by the interner is effectively unlimited, as contexts that cannot be interned will be
+<a href=#618 id=618 data-nosnippet>618</a>    /// memory that can be used by the interner is effectively unlimited, as contexts that can't be interned will be
 <a href=#619 id=619 data-nosnippet>619</a>    /// simply spill to the heap instead of being limited in any way.
 <a href=#620 id=620 data-nosnippet>620</a>    ///
 <a href=#621 id=621 data-nosnippet>621</a>    /// Defaults to `true`.
@@ -628,7 +628,7 @@
 <a href=#628 id=628 data-nosnippet>628</a>    ///
 <a href=#629 id=629 data-nosnippet>629</a>    /// In some cases, metrics, events, and service checks may have enriched tags based on their origin -- the
 <a href=#630 id=630 data-nosnippet>630</a>    /// application/host/container/etc that emitted the metric -- which has to be considered when building the context
-<a href=#631 id=631 data-nosnippet>631</a>    /// itself. As this can be expensive, it is useful to split the logic of actually grabbing the enriched tags based
+<a href=#631 id=631 data-nosnippet>631</a>    /// itself. As this can be expensive, it's useful to split the logic of actually grabbing the enriched tags based
 <a href=#632 id=632 data-nosnippet>632</a>    /// on the available origin info into a separate phase, and implementation, that can run separately from the
 <a href=#633 id=633 data-nosnippet>633</a>    /// initial hash-based approach of checking if a context has already been resolved.
 <a href=#634 id=634 data-nosnippet>634</a>    ///
@@ -685,7 +685,7 @@
 <a href=#685 id=685 data-nosnippet>685</a>        }
 <a href=#686 id=686 data-nosnippet>686</a>    }
 <a href=#687 id=687 data-nosnippet>687</a>
-<a href=#688 id=688 data-nosnippet>688</a>    <span class="doccomment">/// Configures a [`TagsResolverBuilder`] that is suitable for tests.
+<a href=#688 id=688 data-nosnippet>688</a>    <span class="doccomment">/// Configures a [`TagsResolverBuilder`] that's suitable for tests.
 <a href=#689 id=689 data-nosnippet>689</a>    ///
 <a href=#690 id=690 data-nosnippet>690</a>    /// This configures the builder with the following defaults:
 <a href=#691 id=691 data-nosnippet>691</a>    ///
