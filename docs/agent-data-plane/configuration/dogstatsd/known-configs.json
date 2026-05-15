@@ -1494,24 +1494,6 @@
     "adp_key": null
   },
   {
-    "key": "observability_pipelines_worker_metrics_enabled",
-    "feature_state": "PARITY",
-    "action": "NONE",
-    "description": "Flat env-var alias: enable OPW metric routing",
-    "reason": "ADP flat alias: enables OPW metric routing",
-    "issue": null,
-    "adp_key": null
-  },
-  {
-    "key": "observability_pipelines_worker_metrics_url",
-    "feature_state": "PARITY",
-    "action": "NONE",
-    "description": "Flat env-var alias: OPW metrics endpoint URL",
-    "reason": "ADP flat alias: OPW endpoint URL for metrics",
-    "issue": null,
-    "adp_key": null
-  },
-  {
     "key": "origin_detection_unified",
     "feature_state": "PARITY",
     "action": "NONE",
@@ -1944,15 +1926,6 @@
     "adp_key": null
   },
   {
-    "key": "use_v2_api_series",
-    "feature_state": "PARITY",
-    "action": "NONE",
-    "description": "Use V2 protobuf series intake endpoint",
-    "reason": "ADP: selects V1 vs V2 series API endpoint for metrics",
-    "issue": null,
-    "adp_key": null
-  },
-  {
     "key": "vector.metrics.enabled",
     "feature_state": "PARITY",
     "action": "NONE",
@@ -1967,24 +1940,6 @@
     "action": "NONE",
     "description": "OPW metrics intake URL (legacy alias)",
     "reason": "Implemented in ADP as the legacy fallback URL when observability_pipelines_worker.metrics.enabled is false.",
-    "issue": null,
-    "adp_key": null
-  },
-  {
-    "key": "vector_metrics_enabled",
-    "feature_state": "PARITY",
-    "action": "NONE",
-    "description": "Route metrics to OPW (legacy alias)",
-    "reason": "ADP flat alias: enables Vector metric routing",
-    "issue": null,
-    "adp_key": null
-  },
-  {
-    "key": "vector_metrics_url",
-    "feature_state": "PARITY",
-    "action": "NONE",
-    "description": "OPW metrics intake URL (legacy alias)",
-    "reason": "ADP flat alias: Vector endpoint URL for metrics",
     "issue": null,
     "adp_key": null
   }

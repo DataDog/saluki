@@ -385,7 +385,6 @@ when the receiving syslog daemon expects the Agent's RFC-style header.
 | `syslog_uri`                                     | Syslog destination URI                |
 | `tags`                                           | Global tags (DD_TAGS)                 |
 | `use_proxy_for_cloud_metadata`                   | Proxy cloud metadata endpoints        |
-| `use_v2_api_series`                              | Use V2 protobuf series intake         |
 | `vector.metrics.enabled`                         | Route metrics to OPW (legacy alias)   |
 | `vector.metrics.url`                             | OPW metrics intake URL (legacy alias) |
 
