@@ -115,7 +115,7 @@ pub fn get_string_attribute<'a>(attributes: &'a [otlp_common::KeyValue], key: &s
 
 /// Extracts container tags from OTLP resource attributes and inserts them into the provided TagSet.
 /// This function is based on the agent implementation here
-/// <https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/attributes/attributes.go#L277>
+/// https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/attributes/attributes.go#L277
 pub fn extract_container_tags_from_resource_attributes(attributes: &[otlp_common::KeyValue], tags: &mut TagSet) {
     let mut extracted_tags = FastHashSet::default();
 
