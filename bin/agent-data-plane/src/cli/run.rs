@@ -215,35 +215,32 @@ pub async fn handle_run_command(
     tokio::pin!(internal_supervisor_handle);
 
     info!("Waiting for internal supervisor to become healthy...");
-    health_registry.all_ready().await;
-    info!(
-        sup_ready_ms = started.elapsed().as_millis(),
-        "Internal supervisor healthy."
-    );
+    select! {
+        _ = health_registry.all_ready() => {
+            info!(sup_ready_ms = started.elapsed().as_millis(), "Internal supervisor healthy.");
+        },
+        early_result = &mut internal_supervisor_handle => {
+            return Err(generic_error!("Internal supervisor completed unexpectedly: {:?}", early_result))
+        }
+    }
 
     // Now that all of our dependencies are ready, we can build and spawn the topology.
     let built_topology = blueprint.build().await?;
     let mut running_topology = built_topology.spawn(&health_registry, memory_limiter).await?;
 
     info!("Waiting for topology to become healthy...");
-    health_registry.all_ready().await;
-    info!(
-        topology_ready_ms = started.elapsed().as_millis(),
-        "Topology healthy. Waiting for interrupt..."
-    );
 
-    // Emit the startup metrics for the application now that everything is running.
-    emit_startup_metrics();
-
+    let mut topology_started = false;
     let mut topology_failed = false;
     let mut internal_supervisor_failed = false;
     select! {
-        result = &mut internal_supervisor_handle => {
-            match result {
-                Ok(Err(SupervisorError::FailedToInitialize { child_name, source })) => {
+        result = &mut internal_supervisor_handle => match result {
+            Ok(Err(e)) => match e {
+                SupervisorError::FailedToInitialize { child_name, source } => {
                     error!(child_name, "Internal supervisor failed to initialize: {}. Shutting down...", source);
                     internal_supervisor_failed = true;
-                }
+                },
+
                 // If we haven't hit an initialization error -- which implies an error we can't really recover from --
                 // then just log for now, until we fully migrate everything over to the supervisor-based approach and
                 // can dial in our supervisor configuration.
@@ -251,18 +248,27 @@ pub async fn handle_run_command(
                 // For right now, this matches the previous behavior where the process would exit if we couldn't
                 // configure/spawn the control plane or internal observability pipeline, but the process is unaffected
                 // if either of those components fail at _runtime_.
-                Ok(Err(e)) => {
-                    warn!("Internal supervisor exited: {}", e);
-                }
-                Ok(Ok(())) => {
-                    warn!("Internal supervisor exited unexpectedly.");
-                }
-                Err(join_err) => {
-                    error!(error = %join_err, "Internal supervisor task panicked or was cancelled. Shutting down...");
-                    internal_supervisor_failed = true;
-                }
-            }
-        }
+                e => warn!("Internal supervisor exited: {}", e),
+            },
+            Ok(Ok(())) => {
+                warn!("Internal supervisor exited unexpectedly.");
+            },
+            Err(join_err) => {
+                error!(error = %join_err, "Internal supervisor task panicked or was cancelled. Shutting down...");
+                internal_supervisor_failed = true;
+            },
+        },
+        _ = health_registry.all_ready(), if !topology_started => {
+            info!(
+                topology_ready_ms = started.elapsed().as_millis(),
+                "Topology healthy. Waiting for interrupt..."
+            );
+
+            // Emit our startup metrics now that everything is running.
+            emit_startup_metrics();
+
+            topology_started = true;
+        },
         _ = running_topology.wait_for_unexpected_finish() => {
             error!("Topology component unexpectedly finished. Shutting down...");
             topology_failed = true;
@@ -270,6 +276,10 @@ pub async fn handle_run_command(
         _ = tokio::signal::ctrl_c() => {
             info!("Received SIGINT, shutting down...");
         }
+    }
+
+    if !topology_started {
+        warn!("Topology failed to start successfully.")
     }
 
     // Trigger shutdown on the primary topology and wait up to 30 seconds for it to complete.
