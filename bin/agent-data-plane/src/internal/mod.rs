@@ -11,7 +11,6 @@ mod control_plane;
 pub use self::control_plane::{create_control_plane_supervisor, DogStatsDControlPlaneConfiguration};
 
 pub mod env;
-use self::env::ADPEnvironmentProvider;
 
 pub mod logging;
 
@@ -34,9 +33,8 @@ use self::remote_agent::RemoteAgentBootstrap;
 /// If the supervisor cannot be created, an error is returned.
 pub async fn create_internal_supervisor(
     config: &GenericConfiguration, dp_config: &DataPlaneConfiguration, component_registry: &ComponentRegistry,
-    health_registry: HealthRegistry, env_provider: ADPEnvironmentProvider,
-    dsd_config: DogStatsDControlPlaneConfiguration, ra_bootstrap: Option<RemoteAgentBootstrap>,
-    logging_controller: LoggingOverrideController,
+    health_registry: HealthRegistry, dsd_config: DogStatsDControlPlaneConfiguration,
+    ra_bootstrap: Option<RemoteAgentBootstrap>, logging_controller: LoggingOverrideController,
 ) -> Result<Supervisor, GenericError> {
     // The root supervisor runs in ambient mode (caller's runtime) since its children each have their own
     // dedicated runtimes. The default restart strategy (one-for-one, 1 restart per 5s) applies to the child
@@ -50,7 +48,6 @@ pub async fn create_internal_supervisor(
             dp_config,
             component_registry,
             health_registry.clone(),
-            env_provider,
             dsd_config,
             ra_bootstrap,
             logging_controller,

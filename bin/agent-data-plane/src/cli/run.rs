@@ -5,7 +5,6 @@ use std::{
 
 use argh::FromArgs;
 use datadog_agent_commons::platform::PlatformSettings;
-use futures::FutureExt as _;
 use memory_accounting::{ComponentBounds, ComponentRegistry};
 use saluki_app::{
     bootstrap::BootstrapGuard,
@@ -157,7 +156,7 @@ pub async fn handle_run_command(
     // Set up all of the building blocks for building our topologies and launching internal processes.
     let component_registry = ComponentRegistry::default();
     let health_registry = HealthRegistry::new();
-    let env_provider =
+    let (env_provider, env_supervisor) =
         ADPEnvironmentProvider::from_configuration(&config, &dp_config, &component_registry, &health_registry).await?;
 
     let dsd_stats_config = DogStatsDStatisticsConfiguration::new();
@@ -179,7 +178,6 @@ pub async fn handle_run_command(
         &dp_config,
         &component_registry,
         health_registry.clone(),
-        env_provider,
         DogStatsDControlPlaneConfiguration::new(dsd_stats_config, dsd_capture_api_handler),
         ra_bootstrap,
         bootstrap_guard.logging().controller(),
@@ -187,15 +185,12 @@ pub async fn handle_run_command(
     .await
     .error_context("Failed to create internal supervisor.")?;
 
-    // Attach the bootstrap supervisor as a child so its workers (logging/metrics override processors,
-    // metrics flusher, runtime metrics collector) are driven and shut down alongside the rest of the
-    // internal supervision tree.
+    // Assemble our supervision tree.
     internal_supervisor.add_worker(bootstrap_supervisor);
 
-    // Create shutdown channel for the internal supervisor - we'll drive it in the main select loop
-    let (internal_shutdown_tx, internal_shutdown_rx) = tokio::sync::oneshot::channel();
-    let internal_supervisor_fut = internal_supervisor.run_with_shutdown(internal_shutdown_rx).fuse();
-    tokio::pin!(internal_supervisor_fut);
+    if let Some(env_supervisor) = env_supervisor {
+        internal_supervisor.add_worker(env_supervisor);
+    }
 
     // Run memory bounds validation to ensure that we can launch the topology with our configured memory limit, if any.
     let bounds_config = MemoryBoundsConfiguration::try_from_config(&config)?;
@@ -211,7 +206,18 @@ pub async fn handle_run_command(
         }
     }
 
-    // Bounds validation succeeded, so now we'll build and spawn the topology.
+    // Spawn the internal supervisor as a Tokio task so its children begin initializing immediately,
+    // in parallel with topology setup. This is important for the workload metadata collectors:
+    // they need a head start populating the tag store before the DogStatsD source goes hot,
+    // otherwise the first wave of metrics is processed without resolved origin tags.
+    let (internal_shutdown_tx, internal_shutdown_rx) = tokio::sync::oneshot::channel();
+    let internal_supervisor_handle =
+        tokio::spawn(async move { internal_supervisor.run_with_shutdown(internal_shutdown_rx).await });
+    tokio::pin!(internal_supervisor_handle);
+
+    // Build and spawn the topology. The supervisor task gets scheduling opportunities at every
+    // `.await` here, so by the time the DogStatsD listener is live the collectors have typically
+    // had a chance to connect and stream initial state.
     let built_topology = blueprint.build().await?;
     let mut running_topology = built_topology.spawn(&health_registry, memory_limiter).await?;
 
@@ -251,9 +257,9 @@ pub async fn handle_run_command(
     let mut topology_failed = false;
     let mut internal_supervisor_failed = false;
     select! {
-        result = &mut internal_supervisor_fut => {
+        result = &mut internal_supervisor_handle => {
             match result {
-                Err(SupervisorError::FailedToInitialize { child_name, source }) => {
+                Ok(Err(SupervisorError::FailedToInitialize { child_name, source })) => {
                     error!(child_name, "Internal supervisor failed to initialize: {}. Shutting down...", source);
                     internal_supervisor_failed = true;
                 }
@@ -264,11 +270,15 @@ pub async fn handle_run_command(
                 // For right now, this matches the previous behavior where the process would exit if we couldn't
                 // configure/spawn the control plane or internal observability pipeline, but the process is unaffected
                 // if either of those components fail at _runtime_.
-                Err(e) => {
+                Ok(Err(e)) => {
                     warn!("Internal supervisor exited: {}", e);
                 }
-                Ok(()) => {
+                Ok(Ok(())) => {
                     warn!("Internal supervisor exited unexpectedly.");
+                }
+                Err(join_err) => {
+                    error!(error = %join_err, "Internal supervisor task panicked or was cancelled. Shutting down...");
+                    internal_supervisor_failed = true;
                 }
             }
         }
@@ -286,9 +296,9 @@ pub async fn handle_run_command(
 
     // Signal the internal supervisor to shutdown (if still running) and drive it to completion.
     // If the supervisor already exited (i.e., the select! above matched its branch), both the send
-    // and await resolve immediately — the send is a no-op and the future is already complete.
+    // and await resolve immediately — the send is a no-op and the JoinHandle is already ready.
     let _ = internal_shutdown_tx.send(());
-    let _ = internal_supervisor_fut.await;
+    let _ = internal_supervisor_handle.await;
 
     // Figure out the final "result" of this run: did something fail? did we stop cleanly?
     //

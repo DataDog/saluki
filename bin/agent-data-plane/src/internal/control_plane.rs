@@ -15,7 +15,7 @@ use saluki_error::GenericError;
 
 use crate::{
     config::DataPlaneConfiguration,
-    internal::{env::ADPEnvironmentProvider, logging::DynamicLogLevelWorker, remote_agent::RemoteAgentBootstrap},
+    internal::{logging::DynamicLogLevelWorker, remote_agent::RemoteAgentBootstrap},
 };
 
 /// DogStatsD-specific control plane integrations.
@@ -49,9 +49,8 @@ impl DogStatsDControlPlaneConfiguration {
 /// If the supervisor cannot be created, an error is returned.
 pub async fn create_control_plane_supervisor(
     config: &GenericConfiguration, dp_config: &DataPlaneConfiguration, component_registry: &ComponentRegistry,
-    health_registry: HealthRegistry, env_provider: ADPEnvironmentProvider,
-    dsd_config: DogStatsDControlPlaneConfiguration, ra_bootstrap: Option<RemoteAgentBootstrap>,
-    logging_controller: LoggingOverrideController,
+    health_registry: HealthRegistry, dsd_config: DogStatsDControlPlaneConfiguration,
+    ra_bootstrap: Option<RemoteAgentBootstrap>, logging_controller: LoggingOverrideController,
 ) -> Result<Supervisor, GenericError> {
     let mut supervisor = Supervisor::new("ctrl-pln")?
         .with_dedicated_runtime(RuntimeConfiguration::single_threaded())
@@ -76,7 +75,6 @@ pub async fn create_control_plane_supervisor(
     let mut privileged_api =
         DynamicAPIBuilder::new(EndpointType::Privileged, dp_config.secure_api_listen_address().clone())
             .with_tls_config(tls_config)
-            .with_optional_handler(env_provider.workload_api_handler())
             .with_handler(stats_config.api_handler())
             .with_optional_handler(capture_api_handler);
 
