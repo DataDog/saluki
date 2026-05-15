@@ -11,13 +11,13 @@ use serde::Deserialize;
 pub enum TargetAddress {
     /// TCP socket.
     ///
-    /// Stored as a `host:port` string so that Docker network aliases (e.g. `baseline:8125`)
+    /// Stored as a `host:port` string so that Docker network aliases (for example, `baseline:8125`)
     /// are resolved at connection time rather than at config-parse time.
     Tcp(String),
 
     /// UDP socket.
     ///
-    /// Stored as a `host:port` string so that Docker network aliases (e.g. `baseline:8125`)
+    /// Stored as a `host:port` string so that Docker network aliases (for example, `baseline:8125`)
     /// are resolved at connection time rather than at config-parse time.
     Udp(String),
 

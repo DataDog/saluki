@@ -134,7 +134,7 @@ impl Assertion for FileContainsAssertion {
 /// Reads a file from inside the container via `docker exec cat <path>`.
 ///
 /// Returns `Ok(Some(contents))` when the file exists and is readable, `Ok(None)` when the file is missing or
-/// unreadable (`cat` exits non-zero), and `Err` for any other failure (e.g., loss of Docker connectivity).
+/// unreadable (`cat` exits non-zero), and `Err` for any other failure (for example, loss of Docker connectivity).
 async fn read_file_in_container(container_name: &str, path: &str) -> Result<Option<String>, String> {
     let docker = docker::connect().map_err(|e| format!("Failed to connect to Docker: {}", e))?;
 

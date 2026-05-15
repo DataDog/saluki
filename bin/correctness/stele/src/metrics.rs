@@ -196,7 +196,7 @@ impl Metric {
     ///
     /// # Errors
     ///
-    /// If the JSON cannot be deserialized, contains invalid data (e.g. an unknown `type`), or has out-of-range
+    /// If the JSON cannot be deserialized, contains invalid data (for example, an unknown `type`), or has out-of-range
     /// timestamps, an error is returned.
     pub fn try_from_series_v1(payload: &[u8]) -> Result<Vec<Self>, GenericError> {
         let envelope: V1SeriesEnvelope = serde_json::from_slice(payload)

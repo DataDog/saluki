@@ -422,7 +422,7 @@ impl ConfigurationLoader {
     /// environment provider.
     ///
     /// The factory is called after test environment variables have been set, so any env var reads it performs
-    /// (e.g. in `DatadogRemapper`) are consistent with the test's env setup.
+    /// (for example, in `DatadogRemapper`) are consistent with the test's env setup.
     ///
     /// This is generally only useful for testing purposes, and is exposed publicly in order to be used in cross-crate testing scenarios.
     pub async fn for_tests_with_provider_factory<P, F>(
@@ -455,7 +455,7 @@ impl ConfigurationLoader {
         if let Some(pairs) = env_vars.as_ref() {
             for (k, v) in pairs.iter() {
                 // Set under both the raw name and the TEST_ prefix:
-                //   - Raw name: available to any env-reading providers (e.g. DatadogRemapper)
+                //   - Raw name: available to any env-reading providers (for example, DatadogRemapper)
                 //   - TEST_ prefix: read by from_environment("TEST") (simulates DD_ prefix)
                 std::env::set_var(k, v);
                 std::env::set_var(format!("TEST_{}", k), v);

@@ -317,8 +317,8 @@ pub struct DogStatsDConfiguration {
 
     /// The host address to bind DogStatsD UDP and TCP listeners to.
     ///
-    /// When set, UDP and TCP listeners bind to this address. Accepts either an IP literal (e.g.
-    /// `192.168.1.50`, `::1`) or a hostname that resolves via DNS (e.g. `agent.internal`).
+    /// When set, UDP and TCP listeners bind to this address. Accepts either an IP literal (for example,
+    /// `192.168.1.50`, `::1`) or a hostname that resolves via DNS (for example, `agent.internal`).
     /// Ignored when `dogstatsd_non_local_traffic` is `true`.
     ///
     /// Defaults to unset, which binds to `127.0.0.1`.
@@ -2288,7 +2288,7 @@ mod tests {
 
     #[test]
     fn non_finite_metric_values_are_silently_dropped() {
-        // The Datadog Agent sends NaN gauges (e.g. encode_ms.avg computed as 0.0/0.0 in Go).
+        // The Datadog Agent sends NaN gauges (for example, encode_ms.avg computed as 0.0/0.0 in Go).
         // FloatIter skips non-finite values with a debug log, so decode_packet returns Ok with
         // num_points == 0. handle_frame then returns Ok(None) for zero-point packets, which is
         // the existing silent-drop path (no warning emitted).

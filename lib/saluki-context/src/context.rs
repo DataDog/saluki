@@ -223,7 +223,7 @@ impl Context {
 
     /// Creates a lazy copy-on-write mutable view over this context's tag sets.
     ///
-    /// The returned view supports mutations (e.g. [`retain_tags`][TagSetMutView::retain_tags])
+    /// The returned view supports mutations (for example, [`retain_tags`][TagSetMutView::retain_tags])
     /// without immediately triggering an `Arc` clone. The actual clone, mutation, and context key
     /// recomputation only happen when [`TagSetMutView::finish`] is called, and only if changes
     /// were actually recorded.
@@ -322,7 +322,7 @@ impl TagSetMutViewState {
 
 /// A lazy copy-on-write mutable view over a [`Context`]'s tag sets.
 ///
-/// Operations on this view (e.g. [`retain_tags`][Self::retain_tags]) are recorded but not
+/// Operations on this view (for example, [`retain_tags`][Self::retain_tags]) are recorded but not
 /// applied immediately. The actual `Arc` clone, mutation, and context key recomputation only
 /// occur when [`finish`][Self::finish] is called, and only if changes were recorded.
 pub struct TagSetMutView<'a, 'b> {

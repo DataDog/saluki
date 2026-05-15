@@ -103,7 +103,7 @@ pub struct OttlTransform {
 impl OttlTransform {
     /// Applies all configured OTTL statements to a single span.
     ///
-    /// Each statement is executed in order. For editor statements (e.g. `set`), the `where`
+    /// Each statement is executed in order. For editor statements (for example, `set`), the `where`
     /// clause is evaluated first; if it matches (or is absent), the editor function runs.
     /// Errors are handled according to `error_mode`.
     fn transform_span(&self, span: &mut Span, resource_tags: &TagSet) {

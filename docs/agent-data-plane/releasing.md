@@ -24,7 +24,7 @@ The release process for ADP roughly looks like this:
 - Fill in the appropriate Git tag (see ["Determining the version"](#determining-the-version) below) and click `Create
   new tag ... on publish`.
 - Leave `Previous tag` at `auto`, and change `Release title` to `Agent Data Plane <version>`, where `<version>` is the
-  Git tag being created. (e.g., `Agent Data Plane 0.2.0`)
+  Git tag being created. (for example, `Agent Data Plane 0.2.0`)
 - Click the `Generate release notes` to automatically populate the relevant changes since the last release.
 - If there are any additional notes that should be included, add a new section, called `Additional Notes`, at the top of
   the release notes. (above the auto-generated `What's Changed` section)

@@ -83,7 +83,7 @@ pub(super) async fn set_unix_socket_write_only<P: AsRef<Path>>(path: P) -> io::R
 
 /// Receives data from the Unix domain socket.
 ///
-/// This function is specifically for Unix domain sockets in stream mode (i.e. SOCK_STREAM), which are represented via
+/// This function is specifically for Unix domain sockets in stream mode (that is, SOCK_STREAM), which are represented via
 /// `UnixStream` in `tokio`.
 ///
 /// On success, returns the number of bytes read and the address from whence the data came.
@@ -108,7 +108,7 @@ pub async fn unix_recvmsg<B: BufMut>(socket: &mut UnixStream, buf: &mut B) -> io
 
 /// Receives data from the Unix domain socket.
 ///
-/// This function is specifically for Unix domain sockets in datagram mode (i.e. SOCK_DGRAM), which are represented via
+/// This function is specifically for Unix domain sockets in datagram mode (that is, SOCK_DGRAM), which are represented via
 /// `UnixDatagram` in `tokio`.
 ///
 /// On success, returns the number of bytes read and the address from whence the data came.

@@ -15,7 +15,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `site`—Datadog site domain (e.g. `datadoghq.com`).
+    /// `site`—Datadog site domain (for example, `datadoghq.com`).
     SITE = SalukiAnnotation {
         schema: &schema::SITE,
         support_level: SupportLevel::Full,

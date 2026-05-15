@@ -1,7 +1,7 @@
 //! Serde deserializer for space-separated string lists.
 //!
 //! The Datadog Agent passes some list-typed configuration values as space-separated strings when
-//! using environment variables (e.g. `DD_PROXY_NO_PROXY="host1 host2"`), while the same keys
+//! using environment variables (for example, `DD_PROXY_NO_PROXY="host1 host2"`), while the same keys
 //! appear as YAML sequences in config files. This module provides a deserializer that accepts
 //! both representations.
 

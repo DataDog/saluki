@@ -43,7 +43,7 @@ All binaries live under `bin/correctness/`:
 | **datadog-intake** | Mock Datadog API: receives test output                                                   |
 | **airlock**        | Library for running containers in isolated groups.                                       |
 
-Test case configs live in `test/correctness/` (e.g. `test/correctness/dsd-plain/config.yaml`).
+Test case configs live in `test/correctness/` (for example, `test/correctness/dsd-plain/config.yaml`).
 
 ### Program Flow
 

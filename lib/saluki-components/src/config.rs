@@ -160,14 +160,14 @@ const ENV_REMAPPINGS: &[(&str, &str)] = &[("http_proxy", "proxy_http"), ("https_
 
 /// A Figment provider that remaps canonical environment variable names to our desired config keys.
 ///
-/// Reads environment variables case-insensitively and maps them to config keys (e.g. `HTTP_PROXY` →
+/// Reads environment variables case-insensitively and maps them to config keys (for example, `HTTP_PROXY` →
 /// `proxy_http`). Values are snapshotted at construction time.
 ///
 /// Add this provider to a [`ConfigurationLoader`][saluki_config::ConfigurationLoader] *after* file-based
-/// providers and *before* vendor-prefixed env providers (e.g. `DD_`) to achieve the correct precedence:
+/// providers and *before* vendor-prefixed env providers (for example, `DD_`) to achieve the correct precedence:
 /// file < remapped env vars < `DD_`-prefixed.
 ///
-/// For YAML key aliasing (e.g. `proxy.http` → `proxy_http`), pass [`KEY_ALIASES`] to
+/// For YAML key aliasing (for example, `proxy.http` → `proxy_http`), pass [`KEY_ALIASES`] to
 /// [`ConfigurationLoader::with_key_aliases`][saluki_config::ConfigurationLoader::with_key_aliases] instead—
 /// that is handled at file-load time.
 pub struct DatadogRemapper {

@@ -63,7 +63,7 @@ impl ProcessShutdown {
     /// immediately for all subsequent calls.
     ///
     /// `ProcessShutdown` also implements [`Future`] directly, which can be useful when passing it to APIs
-    /// that accept a generic future (e.g., as a shutdown signal parameter).
+    /// that accept a generic future (for example, as a shutdown signal parameter).
     pub async fn wait_for_shutdown(&mut self) {
         if let Some(shutdown_rx) = self.shutdown.take() {
             let _ = shutdown_rx.await;

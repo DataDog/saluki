@@ -267,7 +267,7 @@ limiter begins exerting backpressure (see `enable_global_limiter`).
 
 ADP enforces a minimum sample rate on incoming metrics to prevent memory exhaustion from extremely
 low sample rates on histograms and sketches. Sending metrics with a very high inverse sample rate
-(e.g. `@0.0000001`) can cause unbounded memory growth in a sketch; this setting prevents that. The
+(for example, `@0.0000001`) can cause unbounded memory growth in a sketch; this setting prevents that. The
 default is conservative enough that normal clients are unaffected.
 
 ### `dogstatsd_permissive_decoding`
