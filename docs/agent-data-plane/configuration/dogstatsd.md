@@ -1,6 +1,6 @@
 # Configuring DogStatsD on Agent Data Plane
 
-<!-- Last updated: 2026-05-14 -->
+<!-- Last updated: 2026-05-15 -->
 
 The DogStatsD implementation on ADP has been redesigned in Rust for better resource guarantees and
 efficiency. Because the architecture is different from the original implementation, certain
@@ -79,7 +79,6 @@ default values.
 | `logging_frequency`                 | Transaction success log interval | Throttles success logs                         | Intentionally unused                                           |
 | `serializer_zstd_compressor_level`  | Zstd compression level           | Default level 1                                | Default level 3 (intentional)                                  |
 | `skip_ssl_validation`               | Skip TLS cert validation         | Disables validation for outbound HTTPS clients | Applies to the shared Datadog forwarder; rejected in FIPS mode |
-| `statsd_metric_namespace_blacklist` | Prefixes exempt from namespace   | `_blacklist` key                               | Use `_blocklist` key ([#1353])                                 |
 | `telemetry.enabled`                 | Global telemetry toggle          | Agent toggle                                   | Use `data_plane.telemetry_enabled` ([#1338])                   |
 
 ### Datadog intake TLS validation (`skip_ssl_validation`)
@@ -202,21 +201,19 @@ ways that are not yet fully characterized.
 
 | Config Key                                         | Description                      | Issue   |
 | -------------------------------------------------- | -------------------------------- | ------- |
-| `dogstatsd_disable_verbose_logs`                   | Suppress noisy parse error logs  |         |
-| `forwarder_apikey_validation_interval`             | API key check interval (mins)    |         |
-| `forwarder_flush_to_disk_mem_ratio`                | Mem-to-disk flush threshold      |         |
-| `forwarder_high_prio_buffer_size`                  | High-priority request queue size |         |
-| `forwarder_low_prio_buffer_size`                   | Low-priority request queue size  |         |
-| `forwarder_max_concurrent_requests`                | Max concurrent HTTP requests     |         |
-| `forwarder_retry_queue_capacity_time_interval_sec` | Retry queue time-based capacity  |         |
-| `serializer_max_payload_size`                      | Max compressed payload size      |         |
-| `serializer_max_series_payload_size`               | Max series compressed size       |         |
-| `serializer_max_series_points_per_payload`         | Max series points per payload    |         |
-| `serializer_max_series_uncompressed_payload_size`  | Max series uncompressed size     |         |
-| `serializer_max_uncompressed_payload_size`         | Max uncompressed payload size    |         |
-| `statsd_metric_blocklist`                          | Metric name blocklist            | [#1433] |
-| `statsd_metric_blocklist_match_prefix`             | Blocklist matches by prefix      | [#1434] |
-| `statsd_metric_namespace`                          | Prefix prepended to all metrics  |         |
+| `aggregator_tag_filter_cache_capacity`             | Tag-filter dedup cache size      |         |
+| `dogstatsd_disable_verbose_logs`                   | Suppress noisy parse error logs  | [#1350] |
+| `forwarder_apikey_validation_interval`             | API key check interval (mins)    | [#1357] |
+| `forwarder_flush_to_disk_mem_ratio`                | Mem-to-disk flush threshold      | [#1364] |
+| `forwarder_high_prio_buffer_size`                  | High-priority request queue size | [#1362] |
+| `forwarder_low_prio_buffer_size`                   | Low-priority request queue size  | [#1362] |
+| `forwarder_max_concurrent_requests`                | Max concurrent HTTP requests     | [#1363] |
+| `forwarder_retry_queue_capacity_time_interval_sec` | Retry queue time-based capacity  | [#1365] |
+| `serializer_max_payload_size`                      | Max compressed payload size      | [#1354] |
+| `serializer_max_series_payload_size`               | Max series compressed size       | [#1354] |
+| `serializer_max_series_points_per_payload`         | Max series points per payload    | [#1354] |
+| `serializer_max_series_uncompressed_payload_size`  | Max series uncompressed size     | [#1354] |
+| `serializer_max_uncompressed_payload_size`         | Max uncompressed payload size    | [#1354] |
 
 ## ADP-Only Settings
 
@@ -240,17 +237,21 @@ The following settings are specific to ADP and have no equivalent in the core ag
 | `data_plane.standalone_mode`                | ADP standalone mode toggle       |         |
 | `data_plane.use_new_config_stream_endpoint` | Use new config stream endpoint   |         |
 | `dogstatsd_allow_context_heap_allocs`       | Allow heap allocs for contexts   |         |
+| `dogstatsd_autoscale_udp_listeners`         | Bind multiple UDP sockets via SO_REUSEPORT |     |
 | `dogstatsd_buffer_count`                    | Number of receive buffers        |         |
 | `dogstatsd_cached_contexts_limit`           | Max cached metric contexts       |         |
 | `dogstatsd_cached_tagsets_limit`            | Max cached tagsets               |         |
 | `dogstatsd_mapper_string_interner_size`     | Mapper string interner capacity  |         |
 | `dogstatsd_minimum_sample_rate`             | Floor for metric sample rates    |         |
 | `dogstatsd_permissive_decoding`             | Relaxes decoder strictness       | true    |
+| `dogstatsd_string_interner_size_bytes`      | Explicit byte budget for context interner |      |
 | `dogstatsd_tcp_port`                        | TCP listen port for DSD          |         |
 | `enable_global_limiter`                     | Toggle global memory limiter     |         |
 | `flush_timeout_secs`                        | Encoder flush timeout (secs)     |         |
 | `memory_limit`                              | Process memory limit (bytes)     |         |
+| `memory_mode`                               | ADP global memory limiter mode   |         |
 | `memory_slop_factor`                        | Memory headroom fraction         |         |
+| `metrics_level`                             | ADP internal metrics emission level |      |
 | `otlp_string_interner_size`                 | OTLP context interner capacity   |         |
 | `remote_agent_string_interner_size_bytes`   | Tag string interner capacity     | 512 KB  |
 | `serializer_max_metrics_per_payload`        | Max metrics per payload          |         |
@@ -376,10 +377,15 @@ when the receiving syslog daemon expects the Agent's RFC-style header.
 | `secret_backend_timeout`                  | Secret backend timeout (seconds) |
 | `serializer_compressor_kind`              | Payload compression algorithm    |
 | `site`                                    | Datadog site domain              |
+| `statsd_metric_blocklist`                 | Metric name blocklist            |
+| `statsd_metric_blocklist_match_prefix`    | Blocklist uses prefix matching   |
+| `statsd_metric_namespace`                 | Prefix prepended to all metrics  |
+| `statsd_metric_namespace_blacklist`       | Namespace prefixes exempt (alias)|
 | `syslog_rfc`                              | Use RFC-style syslog header      |
 | `syslog_uri`                              | Syslog destination URI           |
 | `tags`                                    | Global tags (DD_TAGS)            |
 | `use_proxy_for_cloud_metadata`            | Proxy cloud metadata endpoints   |
+| `use_v2_api_series`                       | Use V2 protobuf series intake    |
 | `vector.metrics.enabled`                  | Route metrics to OPW (legacy alias) |
 | `vector.metrics.url`                      | OPW metrics intake URL (legacy alias) |
 
@@ -422,3 +428,4 @@ when the receiving syslog daemon expects the Agent's RFC-style header.
 [#1468]: https://github.com/DataDog/saluki/issues/1468
 [#1476]: https://github.com/DataDog/saluki/issues/1476
 [#1640]: https://github.com/DataDog/saluki/issues/1640
+[#1667]: https://github.com/DataDog/saluki/issues/1667
