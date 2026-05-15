@@ -202,7 +202,7 @@ pub struct ContextResolver { /* ... */ }
 
 1. **First line**: A complete sentence summarizing what the item is or does
 2. **Body**: Detailed explanation, design rationale, and usage notes (after a blank line)
-3. **Sections**: Formal sections using markdown headers (see below)
+3. **Sections**: Formal sections using Markdown headers (see below)
 
 #### Documentation sections
 

@@ -3,11 +3,63 @@ message: Use '%s' instead of '%s'.
 level: error
 ignorecase: true
 swap:
+  # Brand and project names
   datadog: Datadog
   dogstatsd: DogStatsD
-  grpc: gRPC
+  saluki: Saluki
+
+  # Project-specific acronyms
+  adp: ADP
+  otlp: OTLP
+  ottl: OTTL
+  opw: OPW
+  ddsketch: DDSketch
+
+  # Architecture/documentation
+  adr: ADR
+
+  # Networking and protocols
+  '\btls\b': TLS
+  '\btcp\b': TCP
+  '\budp\b': UDP
+  '\buds\b': UDS
+  '\bipc\b': IPC
+  '\bdns\b': DNS
+  '\bgrpc\b': gRPC
+
+  # General technical acronyms
+  '\bcli\b': CLI
+  '\bcpu\b': CPU
+  '\bram\b': RAM
+  '\bsql\b': SQL
+  '\buid\b': UID
+  '\bast\b': AST
+  '\bapm\b': APM
+
+  # URL-prone terms: require a trailing space so the rule fires on the standalone word in
+  # prose (`uses http to ...`) but not inside URLs (`https://github.com`) or identifiers
+  # (`api_key`). The leading `\b` suppresses Vale's auto-wrapping of `\b...\b`, which would
+  # otherwise reject matches preceded by a non-word char like a comma (e.g., `, http `).
+  # The trade-off is missing usages adjacent to punctuation like `http.` at sentence end,
+  # since Vale substitutions can't preserve a captured trailing char in the replacement.
+  '\bhttps ': 'HTTPS '
+  '\bhttp ': 'HTTP '
+  '\bssh ': 'SSH '
+  '\bssl ': 'SSL '
+  '\bapis ': 'APIs '
+  '\bapi ': 'API '
+
+  # Tools and ecosystems
+  otel: OTel
+  github: GitHub
+  gitlab: GitLab
+
+  # File formats and serialization
   yaml: YAML
   json: JSON
+  markdown: Markdown
   urls: URLs
   uris: URIs
-  markdown: Markdown
+
+  # OS names
+  linux: Linux

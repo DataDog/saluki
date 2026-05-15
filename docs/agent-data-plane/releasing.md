@@ -8,7 +8,7 @@ collected/generated, and more.
 
 The release process for ADP roughly looks like this:
 
-- create a Github release, which tags `main` at a particular point
+- create a GitHub release, which tags `main` at a particular point
 - creation of the Git tag triggers a CI pipeline that additionally unlocks jobs to publish release artifacts
 - the additional CI jobs, once manually triggered, will publish ADP container images to various public container image
   registries
@@ -19,7 +19,7 @@ The release process for ADP roughly looks like this:
 
 - Ensure that `main` is up-to-date with all of the intended changes that should be present, and that CI tests are
   passing cleanly (this will get checked in the actual release CI pipeline, but easier to catch problems early)
-- Go to the [Releases](https://github.com/DataDog/saluki/releases) page on Github and click the `Draft a new release`
+- Go to the [Releases](https://github.com/DataDog/saluki/releases) page on GitHub and click the `Draft a new release`
   button.
 - Fill in the appropriate Git tag (see ["Determining the version"](#determining-the-version) below) and click `Create
   new tag ... on publish`.
@@ -29,7 +29,7 @@ The release process for ADP roughly looks like this:
 - If there are any additional notes that should be included, add a new section, called `Additional Notes`, at the top of
   the release notes. (above the auto-generated `What's Changed` section)
 - Click `Publish release`.
-- Go to the [Gitlab CI pipelines dashboard](https://gitlab.ddbuild.io/DataDog/saluki/-/pipelines) for the repository and
+- Go to the [GitLab CI pipelines dashboard](https://gitlab.ddbuild.io/DataDog/saluki/-/pipelines) for the repository and
   find the pipeline that was triggered for the newly-created Git tag. It may take a minute or two for the repository
   sync and pipeline creation to occur.
 - The pipeline should progress through the `test`, `build`, `correctness`, and `release` stages without issue.
@@ -88,7 +88,7 @@ regular CI builds. The relevant build arguments are all prefixed with `APP_` and
 - `APP_SHORT_NAME`: the short name of the application (hard-coded to `data-plane`)
 - `APP_IDENTIFIER`: a short identifier for the application (hard-coded to `adp`)
 - `APP_VERSION`: the version of the application (set to `version` field in `bin/agent-data-plane/Cargo.toml`)
-- `APP_BUILD_DATE`: the date the build was performed (set to the creation time of the Gitlab CI pipeline)
+- `APP_BUILD_DATE`: the date the build was performed (set to the creation time of the GitLab CI pipeline)
 
 This build metadata shouldn't need to be manually changed on a per-release basis, and so this section is mostly
 informational and not relevant to the release process itself.

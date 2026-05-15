@@ -171,7 +171,7 @@ impl Default for DogStatsDCodecConfiguration {
 ///
 /// This codec is used to parse the DogStatsD protocol, which is a superset of the StatsD protocol. DogStatsD adds a
 /// number of additional features, such as the ability to specify tags, send histograms directly, send service checks
-/// and events (DataDog-specific), and more.
+/// and events (Datadog-specific), and more.
 ///
 /// [dsd]: https://docs.datadoghq.com/developers/dogstatsd/
 #[derive(Clone, Debug)]

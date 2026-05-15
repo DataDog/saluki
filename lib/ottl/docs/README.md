@@ -352,7 +352,7 @@ Lexical analyzer based on the [logos](https://crates.io/crates/logos) library.
 | Literals | `StringLiteral`, `IntLiteral`, `FloatLiteral`, `BytesLiteral` |
 | Identifiers | `LowerIdent`, `UpperIdent` |
 
-### `parser/` (parser, ast, arena, eval)
+### `parser/` (`parser`, `ast`, `arena`, `eval`)
 
 Syntax analyzer based on [chumsky 0.12](https://crates.io/crates/chumsky). Parsing produces boxed AST types; they're then converted to an arena-based representation for cache-friendly execution.
 

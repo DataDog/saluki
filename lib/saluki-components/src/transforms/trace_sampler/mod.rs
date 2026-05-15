@@ -250,7 +250,7 @@ impl TraceSampler {
     /// Returns `Some((priority, dm))` for OTLP traces when the probabilistic sampler is disabled,
     /// or `None` if pre-sampling doesn't apply.
     ///
-    /// See: https://github.com/DataDog/datadog-agent/blob/be33ac1490c4a34602cbc65a211406b73ad6d00b/pkg/trace/api/otlp.go#L561-L585
+    /// See: <https://github.com/DataDog/datadog-agent/blob/be33ac1490c4a34602cbc65a211406b73ad6d00b/pkg/trace/api/otlp.go#L561-L585>
     fn otlp_pre_sample(&mut self, trace: &mut Trace, root_span_idx: usize) -> Option<(i32, &'static str)> {
         if self.probabilistic_sampler_enabled || !self.is_otlp_trace(trace, root_span_idx) {
             return None;
@@ -1135,7 +1135,7 @@ mod tests {
     }
 
     /// Rare sampler should catch OTLP traces without a sampling priority on their first occurrence,
-    /// matching the Go agent behavior: https://github.com/DataDog/datadog-agent/blob/main/pkg/trace/agent/agent.go#L1129-L1140
+    /// matching the Go agent behavior: <https://github.com/DataDog/datadog-agent/blob/main/pkg/trace/agent/agent.go#L1129-L1140>
     #[test]
     fn rare_sampler_catches_otlp_no_priority_trace() {
         let mut sampler = create_sampler_with_rare_enabled();
