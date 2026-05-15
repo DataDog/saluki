@@ -137,7 +137,7 @@ async fn run_docker_correctness_test(name: String, config: Config, tctx: TestCon
 ///
 /// Containers are already removed by the coordinator waits on every exit path; this handles the
 /// volumes and networks that `Driver::cleanup` does not remove. Safe to call even if a group was
-/// never fully started—Docker returns 404 for unknown resources and we log and continue.
+/// never fully started: Docker returns 404 for unknown resources and we log and continue.
 async fn cleanup_groups(baseline_id: &str, comparison_id: &str, millstone_id: &str) {
     for id in [baseline_id, comparison_id, millstone_id] {
         if let Err(e) = Driver::clean_related_resources(id.to_string()).await {

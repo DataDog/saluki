@@ -15,8 +15,8 @@ The OpenTelemetry Collector Contrib [filterprocessor](https://github.com/open-te
 
 | Aspect | OpenTelemetry filterprocessor | Saluki OTTL filter processor |
 |--------|-------------------------------|------------------------------|
-| **Traces—span conditions** | Supported (`traces.span`, [Span](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/pkg/ottl/contexts/ottlspan/README.md) context) | **Supported** (`traces.span`) |
-| **Traces—span event conditions** | Supported (`traces.spanevent`) | **Not supported** |
+| **Traces (span conditions)** | Supported (`traces.span`, [Span](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/pkg/ottl/contexts/ottlspan/README.md) context) | **Supported** (`traces.span`) |
+| **Traces (span event conditions)** | Supported (`traces.spanevent`) | **Not supported** |
 | **Metrics** | Supported (`metrics.metric`, `metrics.datapoint`) | **Not supported** |
 | **Logs** | Supported (`logs.log_record`) | **Not supported** |
 | **Profiles** | Supported (`profiles.profile`) | **Not supported** |
@@ -54,13 +54,13 @@ ottl_filter_config:
 
 Only **`attributes`** and **`resource.attributes`** are valid paths in conditions with the current implementation. For example:
 
-- `attributes["container.name"] == "app_container_1"`—span-level attribute.
-- `resource.attributes["host.name"] == "localhost"`—resource-level attribute.
+- `attributes["container.name"] == "app_container_1"` references a span-level attribute.
+- `resource.attributes["host.name"] == "localhost"` references a resource-level attribute.
 
 Conditions can use OTTL boolean expressions (`and`, `or`, parentheses) as supported by the OTTL parser. If `ottl_filter_config` is omitted, no filtering is applied (all spans are kept).
 
 ## References
 
-- [OpenTelemetry Collector Contrib—filterprocessor](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/release/v0.144.x/processor/filterprocessor/README.md)
-- [OTTL—OpenTelemetry Transformation Language](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/pkg/ottl/README.md)
-- [OTTL Span context](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/pkg/ottl/contexts/ottlspan/README.md) (reference for full Span field set; only a subset is implemented in this component)
+- [Filter Processor](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/release/v0.144.x/processor/filterprocessor/README.md)
+- [OpenTelemetry Transformation Language](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/pkg/ottl/README.md)
+- [Span Context](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/pkg/ottl/contexts/ottlspan/README.md) (reference for full Span field set; only a subset is implemented in this component)

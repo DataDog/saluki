@@ -68,7 +68,7 @@ pub struct DriverConfig {
     ///
     /// Set via `NetworkingConfig.EndpointsConfig` at container creation time. Other containers on
     /// the same network can reach this container using any of these aliases in addition to its
-    /// hostname. Used to give agent containers unambiguous names (e.g. `"baseline"`, `"comparison"`)
+    /// hostname. Used to give agent containers unambiguous names (for example, `"baseline"`, `"comparison"`)
     /// that the shared millstone can use to address each one independently.
     network_aliases: Vec<String>,
 
@@ -286,7 +286,7 @@ impl DriverConfig {
     ///
     /// Unlike [`with_bind_mount`][Self::with_bind_mount], this references a named Docker volume
     /// rather than a host filesystem path. The volume must already exist when the container starts.
-    /// This is useful for mounting volumes that belong to other isolation groups—for example,
+    /// This is useful for mounting volumes that belong to other isolation groups: for example,
     /// a shared millstone container that needs to reach the DogStatsD sockets of both the baseline
     /// and comparison agent containers.
     pub fn with_volume_mount(mut self, volume_name: impl Into<String>, container_path: impl AsRef<Path>) -> Self {
@@ -637,7 +637,7 @@ impl Driver {
         binds.push("/sys/fs/cgroup:/host/sys/fs/cgroup:ro".to_string());
         binds.push("/var/run/docker.sock:/var/run/docker.sock:ro".to_string());
 
-        // Append any additional named volume mounts (e.g., cross-group volumes for shared millstone).
+        // Append any additional named volume mounts (for example, cross-group volumes for shared millstone).
         for mount in &self.config.additional_volume_mounts {
             binds.push(mount.clone());
         }
@@ -966,7 +966,7 @@ impl Driver {
 
     /// Executes a command inside the running container and returns its stdout.
     ///
-    /// The command runs as root with no TTY. Stderr is discarded—only stdout is returned. If the command exits with a
+    /// The command runs as root with no TTY. Stderr is discarded, and only stdout is returned. If the command exits with a
     /// nonzero status, an error is returned.
     ///
     /// # Errors
@@ -1156,7 +1156,7 @@ fn strip_ansi_codes(input: &[u8]) -> Vec<u8> {
 }
 
 fn get_alpine_container_image() -> String {
-    // Normally, we would just use `alpine:latest` and let Docker figure out the registry to pull it from (i.e., Docker
+    // Normally, we would just use `alpine:latest` and let Docker figure out the registry to pull it from (that is, Docker
     // Hub) but in CI, we don't have Docker Hub available to us, so we need to use an internal registry.
     //
     // Rather than threading through this information from the top level, we simply look for an override environment
