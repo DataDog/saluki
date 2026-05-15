@@ -29,7 +29,7 @@ static FAST_BUILD_HASHER: LazyLock<FastBuildHasher> = LazyLock::new(get_fast_bui
 ///
 /// `NoopU64Hasher` is a hash implementation that simply forwards `u64` values to the internal state and uses that as
 /// the final hashed value. It can used to hash a `u64` value directly, or to hash a value that wraps a `u64` value,
-/// such as a newtype (e.g., `struct HashKey(u64)`).
+/// such as a newtype (for example, `struct HashKey(u64)`).
 ///
 /// # Behavior
 ///

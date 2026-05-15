@@ -8,7 +8,7 @@ use serde::Deserialize;
 ///
 /// Sub-struct fields use `#[serde(flatten)]` so that serde reads directly from the flat
 /// `apm_obfuscation_*` keys produced by `DD_APM_OBFUSCATION_*` env vars. `KEY_ALIASES` in
-/// `crate::config` bridges the nested YAML paths (e.g. `apm_config.obfuscation.credit_cards.enabled`)
+/// `crate::config` bridges the nested YAML paths (for example, `apm_config.obfuscation.credit_cards.enabled`)
 /// to these same flat keys so both sources are handled identically.
 #[derive(Clone, Debug, Default, Deserialize, Facet)]
 #[cfg_attr(test, derive(PartialEq, serde::Serialize))]

@@ -443,7 +443,7 @@ impl IntegrationConfig {
 pub struct MatrixVariant {
     /// Name suffix for this variant.
     ///
-    /// The expanded test name is `{base_name}/{variant_name}`, e.g.
+    /// The expanded test name is `{base_name}/{variant_name}`, for example,
     /// `dsd-origin-detection-matrix/unified`.
     pub name: String,
 

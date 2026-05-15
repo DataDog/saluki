@@ -97,7 +97,7 @@ pub(crate) trait Test: Send + Sync {
     /// so we offer a command by which a build process can see these.
     fn images(&self) -> BTreeMap<&str, String>;
 
-    /// The runtime identifier for this test (e.g. `"docker"`, `"kubernetes_in_docker"`).
+    /// The runtime identifier for this test (for example, `"docker"`, `"kubernetes_in_docker"`).
     ///
     /// Used by the CI pipeline generator to select the appropriate job template. Defaults to `"docker"`.
     fn runtime(&self) -> String {

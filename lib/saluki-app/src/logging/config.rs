@@ -16,7 +16,7 @@ const DEFAULT_LOG_FILE_MAX_ROLLS: usize = 1;
 ///
 /// [`simple`]: LoggingConfiguration::simple
 pub struct LoggingConfiguration {
-    /// Verbosity directives (e.g., `info`, `debug`, `saluki=trace`).
+    /// Verbosity directives (for example, `info`, `debug`, `saluki=trace`).
     pub log_level: LogLevel,
 
     /// Whether to emit log records as JSON instead of the default human-readable format.
@@ -98,7 +98,7 @@ mod tests {
 
 /// A parsed `tracing` log level filter.
 ///
-/// Wraps [`EnvFilter`] so it can be deserialized from a string (e.g., `"info"`, `"saluki=trace,info"`).
+/// Wraps [`EnvFilter`] so it can be deserialized from a string (for example, `"info"`, `"saluki=trace,info"`).
 #[derive(Deserialize)]
 #[serde(try_from = "String")]
 pub struct LogLevel(EnvFilter);

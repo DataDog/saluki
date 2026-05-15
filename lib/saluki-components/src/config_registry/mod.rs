@@ -224,7 +224,7 @@ pub struct SchemaEntry {
     #[allow(dead_code)]
     pub(crate) schema: Schema,
 
-    /// Canonical dot-separated YAML path for this key (e.g. `"proxy.http"`).
+    /// Canonical dot-separated YAML path for this key (for example, `"proxy.http"`).
     pub yaml_path: &'static str,
 
     /// Environment variables that deliver this value, as declared in the schema.
@@ -272,7 +272,7 @@ pub struct SalukiAnnotation {
     /// Overrides the schema's `env_vars` list entirely when `Some`.
     ///
     /// Use when the schema marks a key `no-env` but env vars are actually supported, or when
-    /// the schema's list is incorrect or incomplete (e.g. the proxy sub-keys).
+    /// the schema's list is incorrect or incomplete (for example, the proxy sub-keys).
     pub env_var_override: Option<&'static [&'static str]>,
 
     /// Config structs that incorporate this key, as [`structs`] constants.
@@ -289,9 +289,9 @@ pub struct SalukiAnnotation {
 
     /// Overrides the smoke-test injected value entirely when `Some`.
     ///
-    /// Must be a valid JSON literal (e.g. `Some("[{\"name\":\"test\"}]")`). Use when the field
+    /// Must be a valid JSON literal (for example, `Some("[{\"name\":\"test\"}]")`). Use when the field
     /// requires a structured value that the generic `ValueType`-derived test values cannot satisfy
-    /// (e.g. JSON-encoded arrays or objects).
+    /// (for example, JSON-encoded arrays or objects).
     pub test_json: Option<&'static str>,
 }
 

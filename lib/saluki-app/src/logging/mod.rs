@@ -56,14 +56,14 @@ impl LoggingGuard {
     /// expires). Worker guards for the previous outputs are dropped after the swap, which flushes any buffered log
     /// lines to their original destinations.
     ///
-    /// This is the right entry point when the entire logging configuration may have changed (e.g., outputs,
+    /// This is the right entry point when the entire logging configuration may have changed (for example, outputs,
     /// format, level). For runtime base-filter changes only -- such as following a `log_level` config update --
     /// use [`controller`][Self::controller] and call
     /// [`update_base`][LoggingOverrideController::update_base] directly.
     ///
     /// # Errors
     ///
-    /// Returns an error if the new output layers cannot be constructed (e.g., the configured log file path is
+    /// Returns an error if the new output layers cannot be constructed (for example, the configured log file path is
     /// inaccessible) or if the override worker is no longer running.
     pub async fn reload(&mut self, config: LoggingConfiguration) -> Result<(), GenericError> {
         let (new_stack, new_guards) = build_output_stack(&config)?;
@@ -111,7 +111,7 @@ pub(crate) async fn initialize_logging(
 
     // The override worker owns the canonical base filter -- the directives the system restores to after an override
     // expires or is reset. It seeds the base from the reload handle on startup and is updated via the controller,
-    // both by `LoggingGuard::reload` once the Agent's configuration is applied and by any other caller (e.g. a
+    // both by `LoggingGuard::reload` once the Agent's configuration is applied and by any other caller (for example, a
     // runtime `log_level` watcher) wired up via [`LoggingGuard::controller`].
     let (override_worker, controller) = LoggingOverrideWorker::new(filter_handle);
 

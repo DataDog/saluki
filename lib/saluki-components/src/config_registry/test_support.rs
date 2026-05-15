@@ -146,17 +146,17 @@ async fn make_config_from_env(
 /// identical structs, and each must differ from the default (empty-config) struct.
 ///
 /// **Unsupported keys** (all other annotations in `ALL_ANNOTATIONS`): loading the struct with
-/// that key set must produce a struct identical to the default struct—i.e., the struct is
+/// that key set must produce a struct identical to the default struct—that is, the struct is
 /// unaffected.
 ///
 /// **Full field coverage**: loading the struct with all supported keys set simultaneously must
 /// produce a struct where every serialized leaf field differs from the default. This catches fields
 /// that exist in the struct but have no registered annotation exercising them. Fields that are
-/// intentionally not configuration-driven (e.g. populated from runtime state) can be excluded by
-/// passing their serialized paths in `non_config_fields` (e.g. `&["workload_provider"]`).
+/// intentionally not configuration-driven (for example, populated from runtime state) can be excluded by
+/// passing their serialized paths in `non_config_fields` (for example, `&["workload_provider"]`).
 ///
 /// `base_config` is merged into every config load before test values are applied. Use this to
-/// supply fields that are required for the struct to deserialize at all (e.g. `api_key`). Pass
+/// supply fields that are required for the struct to deserialize at all (for example, `api_key`). Pass
 /// `json!({})` when no required fields are needed.
 ///
 /// `config_factory` converts a raw `GenericConfiguration` into the typed struct under test.
@@ -275,7 +275,7 @@ pub async fn run_config_smoke_tests<T, Factory>(
         failures.push(format!(
             "{} serialized field(s) are never changed by any registered config key: [{}]\n  \
              Fix: add a SalukiAnnotation for each field and include '{}' in its used_by list.\n  \
-             Fix: if a field is intentionally not config-driven (e.g. injected at runtime), \
+             Fix: if a field is intentionally not config-driven (for example, injected at runtime), \
              add its serialized name to the `non_config_fields` slice in this test call.",
             unchanged.len(),
             unchanged.join(", "),

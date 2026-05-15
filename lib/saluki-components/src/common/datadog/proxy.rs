@@ -32,11 +32,11 @@ pub struct ProxyConfiguration {
     /// - A CIDR range: `192.168.0.0/24` or `2001:db8::/32`. Only used when
     ///   `no_proxy_nonexact_match` is true; ignored in exact mode.
     /// - A domain name: `example.com`. In exact mode, only the literal hostname matches. In
-    ///   nonexact mode, the domain and all its subdomains match (e.g. `example.com` also matches
+    ///   nonexact mode, the domain and all its subdomains match (for example, `example.com` also matches
     ///   `sub.example.com`). An optional port suffix (`example.com:443`) restricts the match to
     ///   that port.
     /// - A leading-dot domain: `.example.com`. Only used in nonexact mode; matches subdomains
-    ///   only, not the domain itself (e.g. `.example.com` matches `sub.example.com` but not
+    ///   only, not the domain itself (for example, `.example.com` matches `sub.example.com` but not
     ///   `example.com`).
     /// - A wildcard `*`: bypasses the proxy for all destinations. Only used in nonexact mode.
     #[serde(
@@ -123,9 +123,9 @@ fn new_proxy(proxy_url: &str, intercept: Intercept) -> Result<Proxy, GenericErro
 enum NoProxyEntry {
     /// `*`—bypass proxy for all destinations. Only used in nonexact mode.
     Wildcard,
-    /// An IP address in CIDR notation (e.g. `192.168.0.0/24`). Only used in nonexact mode.
+    /// An IP address in CIDR notation (for example, `192.168.0.0/24`). Only used in nonexact mode.
     IpCidr { addr: IpAddr, prefix_len: u8 },
-    /// An exact IP address, with an optional port constraint (e.g. `192.168.1.1` or `192.168.1.1:80`).
+    /// An exact IP address, with an optional port constraint (for example, `192.168.1.1` or `192.168.1.1:80`).
     IpExact { addr: IpAddr, port: Option<u16> },
     /// A domain name, with optional port constraint and a flag for suffix-only matching.
     ///
@@ -169,11 +169,11 @@ impl NoProxyEntry {
                 if nonexact {
                     if *suffix_only {
                         // Leading-dot entry: only matches subdomains, not the domain itself.
-                        // e.g. ".y.com" matches "x.y.com" but not "y.com".
+                        // for example, ".y.com" matches "x.y.com" but not "y.com".
                         host_lower.ends_with(&format!(".{}", name))
                     } else {
                         // Plain domain: matches the domain and all subdomains.
-                        // e.g. "foo.com" matches "foo.com" and "bar.foo.com".
+                        // for example, "foo.com" matches "foo.com" and "bar.foo.com".
                         host_lower == *name || host_lower.ends_with(&format!(".{}", name))
                     }
                 } else {

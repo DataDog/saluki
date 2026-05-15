@@ -17,7 +17,7 @@ use super::DogStatsDCaptureControl;
 /// Request body for `POST /dogstatsd/capture/trigger`.
 #[derive(Deserialize)]
 pub struct CaptureTriggerBody {
-    /// Duration of the capture, parsed by `parse_duration` (e.g. `"10s"`, `"500ms"`).
+    /// Duration of the capture, parsed by `parse_duration` (for example, `"10s"`, `"500ms"`).
     pub duration: String,
 
     /// Optional override for the capture output directory. When omitted, the source's
