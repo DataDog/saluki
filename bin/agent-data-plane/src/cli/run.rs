@@ -35,7 +35,7 @@ use saluki_core::runtime::{Supervisor, SupervisorError};
 use saluki_core::topology::TopologyBlueprint;
 use saluki_env::EnvironmentProvider as _;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
-use tokio::{select, time::interval};
+use tokio::{select, sync::oneshot};
 use tracing::{debug, error, info, trace, warn};
 
 use crate::{
@@ -161,8 +161,7 @@ pub async fn handle_run_command(
 
     let dsd_stats_config = DogStatsDStatisticsConfiguration::new();
 
-    // Create our primary data topology and spawn any internal processes, which will ensure all relevant components are
-    // registered and accounted for in terms of memory usage.
+    // Create the blueprint for our primary topology.
     let (blueprint, dsd_capture_api_handler) = create_topology(
         &config,
         &dp_config,
@@ -172,7 +171,7 @@ pub async fn handle_run_command(
     )
     .await?;
 
-    // Create the internal supervisor (control plane + observability)
+    // Create the internal supervisor which drives our control plane and internal observability.
     let mut internal_supervisor = create_internal_supervisor(
         &config,
         &dp_config,
@@ -206,63 +205,51 @@ pub async fn handle_run_command(
         }
     }
 
-    // Spawn the internal supervisor as a Tokio task so its children begin initializing immediately,
-    // in parallel with topology setup. This is important for the workload metadata collectors:
-    // they need a head start populating the tag store before the DogStatsD source goes hot,
-    // otherwise the first wave of metrics is processed without resolved origin tags.
-    let (internal_shutdown_tx, internal_shutdown_rx) = tokio::sync::oneshot::channel();
-    let internal_supervisor_handle =
-        tokio::spawn(async move { internal_supervisor.run_with_shutdown(internal_shutdown_rx).await });
+    // Spawn the internal supervisor and wait for it to become ready before spawning the topology.
+    let (internal_supervisor_shutdown_tx, internal_supervisor_shutdown_rx) = oneshot::channel();
+    let internal_supervisor_handle = tokio::spawn(async move {
+        internal_supervisor
+            .run_with_shutdown(internal_supervisor_shutdown_rx)
+            .await
+    });
     tokio::pin!(internal_supervisor_handle);
 
-    // Build and spawn the topology. The supervisor task gets scheduling opportunities at every
-    // `.await` here, so by the time the DogStatsD listener is live the collectors have typically
-    // had a chance to connect and stream initial state.
+    info!("Waiting for internal supervisor to become healthy...");
+    select! {
+        _ = health_registry.all_ready() => {
+            info!(sup_ready_ms = started.elapsed().as_millis(), "Internal supervisor healthy.");
+        },
+        early_result = &mut internal_supervisor_handle => {
+            return Err(generic_error!("Internal supervisor completed unexpectedly: {:?}", early_result))
+        }
+    }
+
+    // Now that all of our dependencies are ready, we can build and spawn the topology.
     let built_topology = blueprint.build().await?;
     let mut running_topology = built_topology.spawn(&health_registry, memory_limiter).await?;
 
-    let startup_time = started.elapsed();
-
-    // Emit the startup metrics for the application.
-    emit_startup_metrics();
-
-    info!(
-        init_time_ms = startup_time.as_millis(),
-        "Topology running. Waiting for interrupt..."
-    );
-
-    // Wait for all components to become ready.
+    info!("Waiting for topology to become healthy...");
     tokio::spawn(async move {
-        let mut check_interval = interval(Duration::from_millis(100));
+        health_registry.all_ready().await;
+        info!(
+            topology_ready_ms = started.elapsed().as_millis(),
+            "Topology healthy. Waiting for interrupt..."
+        );
 
-        let mut report_interval = interval(Duration::from_millis(1000));
-        report_interval.tick().await;
-
-        loop {
-            select! {
-                _ = check_interval.tick() => {
-                    if health_registry.all_ready() {
-                        break;
-                    }
-                },
-                _ = report_interval.tick() => {
-                    info!("Topology still not healthy...");
-                }
-            }
-        }
-
-        info!(ready_time_ms = started.elapsed().as_millis(), "Topology healthy.");
+        // Emit our startup metrics now that everything is running.
+        emit_startup_metrics();
     });
 
     let mut topology_failed = false;
     let mut internal_supervisor_failed = false;
     select! {
-        result = &mut internal_supervisor_handle => {
-            match result {
-                Ok(Err(SupervisorError::FailedToInitialize { child_name, source })) => {
+        result = &mut internal_supervisor_handle => match result {
+            Ok(Err(e)) => match e {
+                SupervisorError::FailedToInitialize { child_name, source } => {
                     error!(child_name, "Internal supervisor failed to initialize: {}. Shutting down...", source);
                     internal_supervisor_failed = true;
-                }
+                },
+
                 // If we haven't hit an initialization error -- which implies an error we can't really recover from --
                 // then just log for now, until we fully migrate everything over to the supervisor-based approach and
                 // can dial in our supervisor configuration.
@@ -270,18 +257,16 @@ pub async fn handle_run_command(
                 // For right now, this matches the previous behavior where the process would exit if we couldn't
                 // configure/spawn the control plane or internal observability pipeline, but the process is unaffected
                 // if either of those components fail at _runtime_.
-                Ok(Err(e)) => {
-                    warn!("Internal supervisor exited: {}", e);
-                }
-                Ok(Ok(())) => {
-                    warn!("Internal supervisor exited unexpectedly.");
-                }
-                Err(join_err) => {
-                    error!(error = %join_err, "Internal supervisor task panicked or was cancelled. Shutting down...");
-                    internal_supervisor_failed = true;
-                }
-            }
-        }
+                e => warn!("Internal supervisor exited: {}", e),
+            },
+            Ok(Ok(())) => {
+                warn!("Internal supervisor exited unexpectedly.");
+            },
+            Err(join_err) => {
+                error!(error = %join_err, "Internal supervisor task panicked or was cancelled. Shutting down...");
+                internal_supervisor_failed = true;
+            },
+        },
         _ = running_topology.wait_for_unexpected_finish() => {
             error!("Topology component unexpectedly finished. Shutting down...");
             topology_failed = true;
@@ -291,13 +276,11 @@ pub async fn handle_run_command(
         }
     }
 
-    // Shutdown the primary topology
+    // Trigger shutdown on the primary topology and wait up to 30 seconds for it to complete.
     let topology_result = running_topology.shutdown_with_timeout(Duration::from_secs(30)).await;
 
-    // Signal the internal supervisor to shutdown (if still running) and drive it to completion.
-    // If the supervisor already exited (i.e., the select! above matched its branch), both the send
-    // and await resolve immediately — the send is a no-op and the JoinHandle is already ready.
-    let _ = internal_shutdown_tx.send(());
+    // Trigger the internal supervisor to shutdown and wait for it to complete.
+    let _ = internal_supervisor_shutdown_tx.send(());
     let _ = internal_supervisor_handle.await;
 
     // Figure out the final "result" of this run: did something fail? did we stop cleanly?
