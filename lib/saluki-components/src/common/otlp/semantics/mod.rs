@@ -9,7 +9,7 @@ pub use accessor::{Accessor, OtelSpanAccessor, OtlpAttributesAccessor};
 pub use lookup::{lookup_float64, lookup_int64, lookup_string};
 pub use registry::{Registry, REGISTRY};
 
-/// A named semantic concept — the canonical identity of an attribute that may
+/// A named semantic concept—the canonical identity of an attribute that may
 /// have multiple representations across OpenTelemetry versions and Datadog
 /// legacy conventions.
 ///
@@ -237,7 +237,7 @@ impl Concept {
     /// Parse a concept identifier from its canonical string form.
     ///
     /// Used by the registry loader to reject `mappings.json` entries that have
-    /// no corresponding variant — keeping the enum and the JSON in sync.
+    /// no corresponding variant—keeping the enum and the JSON in sync.
     pub fn from_str(s: &str) -> Option<Concept> {
         Concept::ALL.iter().copied().find(|c| c.as_str() == s)
     }

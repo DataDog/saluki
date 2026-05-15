@@ -81,7 +81,7 @@ during the build process and is used to drive a number of behaviors:
 - outputting the version of ADP, when it was built, the build architecture, etc, as a log at startup
 - special constant identifiers that are used to populate things like HTTP request headers (user agent, etc)
 
-This build metadata is calculated with a Make target — `emit-build-metadata` — which populates it during local builds or
+This build metadata is calculated with a Make target—`emit-build-metadata`—which populates it during local builds or
 regular CI builds. The relevant build arguments are all prefixed with `APP_` and are as follows:
 
 - `APP_FULL_NAME`: the full name of the application (hard-coded to `agent-data-plane`)

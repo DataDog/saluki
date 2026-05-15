@@ -18,7 +18,7 @@ const STANDARD_SOCKET: &str = "/var/run/docker.sock";
 /// Resolution order:
 ///
 /// 1. If `DOCKER_HOST` is set **or** `/var/run/docker.sock` exists on disk, defer to bollard's
-///    default connection logic — no extra work needed.
+///    default connection logic: no extra work needed.
 /// 2. Otherwise, try each candidate socket path in order and use the first that exists.
 /// 3. If no candidate is found, fall back to `Docker::connect_with_defaults()` so the error
 ///    message comes from bollard rather than from us.
@@ -71,6 +71,6 @@ pub fn connect() -> Result<Docker, GenericError> {
         }
     }
 
-    // Nothing found — let bollard try (and fail with its own error message).
+    // Nothing found: let bollard try (and fail with its own error message).
     Ok(Docker::connect_with_defaults()?)
 }

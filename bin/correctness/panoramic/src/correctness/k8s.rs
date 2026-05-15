@@ -44,7 +44,7 @@ pub async fn run_k8s_correctness_test(name: String, config: Config, tctx: TestCo
     let started = Instant::now();
 
     // Wait for the kind cluster to be ready. The runner already waited before acquiring a concurrency
-    // slot, so this is a fast-path check — the value should already be Some by the time we get here.
+    // slot, so this is a fast-path check: the value should already be Some by the time we get here.
     if let Some(ref rx) = tctx.kind_ready {
         let status: Option<Result<(), String>> = rx.borrow().clone();
         match status {
@@ -85,7 +85,7 @@ pub async fn run_k8s_correctness_test(name: String, config: Config, tctx: TestCo
     let comparison_ns = format!("airlock-{}-comparison", run_id);
     let millstone_ns = format!("airlock-{}-millstone", run_id);
 
-    // Socket directories are created on the kind node via DirectoryOrCreate HostPath volumes —
+    // Socket directories are created on the kind node via DirectoryOrCreate HostPath volumes:
     // no manual setup required. Both agent pods and the shared millstone pod mount these paths,
     // giving millstone access to both agent sockets without any cross-pod coordination.
     //
@@ -160,7 +160,7 @@ pub async fn run_k8s_correctness_test(name: String, config: Config, tctx: TestCo
     // Phase 1b: For TCP/gRPC/UDP targets, fetch the agent pod IPs now that both pods are Running
     // so the millstone pod can include a port-readiness check in its startup wait condition.
     // For socket targets, the -S check already gates readiness, so we start millstone immediately
-    // in parallel with the agent pods (which is fine — the socket won't appear until the agent is
+    // in parallel with the agent pods (which is fine, as the socket won't appear until the agent is
     // ready regardless).
     let tcp_readiness_checks = if !use_socket_wait {
         if let Some(port) = extract_target_port(&millstone_template) {
@@ -203,7 +203,7 @@ pub async fn run_k8s_correctness_test(name: String, config: Config, tctx: TestCo
 
     // Phase 2: All pods are Running. Gather origin data from the millstone pod and write both
     // configs. Both runs use the same container ID and pod UID so both agents resolve identical
-    // enrichment — even though the origin actually belongs to the millstone pod, not the agents.
+    // enrichment, even though the origin actually belongs to the millstone pod, not the agents.
     let millstone_pod_api: Api<Pod> = Api::namespaced(client.clone(), &millstone_ns);
 
     let origin_data = match gather_pod_origin_data(&millstone_pod_api, POD_NAME).await {
@@ -455,7 +455,7 @@ async fn prepare_agent_group(
 /// background log streaming.
 ///
 /// The millstone pod mounts both agent socket directories and waits for both config files and
-/// both sockets before launching two parallel millstone processes — one targeting each agent.
+/// both sockets before launching two parallel millstone processes each targeting one agent.
 /// Arguments for [`prepare_millstone_group`], bundled to stay within the argument-count lint.
 struct MillstoneGroupConfig<'a> {
     millstone_image: &'a str,
@@ -1175,10 +1175,10 @@ async fn start_port_forward(
 /// Runtime origin data extracted from a running pod, used to substitute placeholders in the
 /// millstone config template before writing it into the pod.
 struct PodOriginData {
-    /// Kubernetes UID of the pod (e.g. `"a1b2c3d4-..."`).
+    /// Kubernetes UID of the pod (for example, `"a1b2c3d4-..."`).
     pod_uid: String,
     /// Container ID of the millstone container, with the `containerd://` scheme stripped
-    /// (e.g. `"abc123..."`). This is the ID the agent resolves via the containerd socket.
+    /// (for example, `"abc123..."`). This is the ID the agent resolves via the containerd socket.
     millstone_container_id: String,
 }
 

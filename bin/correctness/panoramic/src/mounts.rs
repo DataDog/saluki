@@ -5,7 +5,7 @@
 //! container. For example, `<mounts-dir>/etc/cont-init.d/00-foo.sh` is mounted at
 //! `/etc/cont-init.d/00-foo.sh`.
 //!
-//! Mounts are applied to *target* containers only — not to the millstone or
+//! Mounts are applied to *target* containers only—not to the millstone or
 //! datadog-intake containers panoramic spawns as test infrastructure.
 //!
 //! If the mounts directory does not exist, no mounts are applied (with a warning); this

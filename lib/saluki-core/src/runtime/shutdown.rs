@@ -73,7 +73,7 @@ impl ProcessShutdown {
 
 /// Implements [`Future`] for direct use in `select!` or as a generic shutdown signal.
 ///
-/// This is equivalent to calling [`ProcessShutdown::wait_for_shutdown`] — once the shutdown signal is received
+/// This is equivalent to calling [`ProcessShutdown::wait_for_shutdown`]—once the shutdown signal is received
 /// (or has been received previously), the future resolves immediately.
 impl Future for ProcessShutdown {
     type Output = ();

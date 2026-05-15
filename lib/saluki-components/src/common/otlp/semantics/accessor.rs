@@ -1,4 +1,4 @@
-//! Type-strict attribute accessors — port of upstream `pkg/trace/semantics/lookup_pdata.go`.
+//! Type-strict attribute accessors—port of upstream `pkg/trace/semantics/lookup_pdata.go`.
 //!
 //! Accessors separate the lookup algorithm from the underlying storage. Each
 //! getter returns a value only when the stored OTLP attribute matches the
@@ -59,7 +59,7 @@ impl<'a> Accessor for OtlpAttributesAccessor<'a> {
 
 /// Composite accessor for span + resource attributes with span precedence.
 ///
-/// Mirrors upstream's `OTelSpanAccessor` — for each getter, the span's
+/// Mirrors upstream's `OTelSpanAccessor`—for each getter, the span's
 /// attributes are checked first, then the resource's attributes as a fallback.
 #[derive(Clone, Copy)]
 pub struct OtelSpanAccessor<'a> {

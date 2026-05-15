@@ -17,7 +17,7 @@ These are found throughout the Rust codebase as you would expect. You can run th
 `make test` which will run them with `cargo nextest` for more parallelization. Platform-specific unit tests should be
 skipped or compiled-out for platforms they are incompatible with.
 
-CI: `.gitlab/test.yml` — runs on both Linux (amd64/arm64) and macOS (amd64/arm64).
+CI: `.gitlab/test.yml`—runs on both Linux (amd64/arm64) and macOS (amd64/arm64).
 
 ## Correctness Tests (panoramic)
 
@@ -72,7 +72,7 @@ make test-correctness-case CASE=dsd-plain
 
 The `correctness-tools` image bundles the **correctness tools suite** -- both `datadog-intake` and `millstone` -- into a single image used by every correctness test case.
 
-CI: `.gitlab/e2e.yml` — `e2e` stage, 10 min timeout, retry 2.
+CI: `.gitlab/e2e.yml`—`e2e` stage, 10 min timeout, retry 2.
 
 ## Integration Tests (panoramic)
 
@@ -97,7 +97,7 @@ Test cases live in `test/integration/cases/` as `config.yaml` files. The runner 
 Each test defines a container and a list of high-level assertions. Assertions run sequentially by default but can also
 be configured to run in `parallel`.
 
-CI: `.gitlab/e2e.yml` — same file as correctness, `e2e` stage, 10 min timeout, retry 2.
+CI: `.gitlab/e2e.yml`—same file as correctness, `e2e` stage, 10 min timeout, retry 2.
 
 ## Benchmark Tests: Single Machine Performance (SMP)
 
@@ -107,7 +107,7 @@ in GitLab CI (`.gitlab/benchmark.yml`).
 
 Each experiment pairs a **target** (ADP container) with **Lading** (deterministic load generator). Lading sends payloads
 (DogStatsD, OTLP, logs, etc.) at configured rates using seeded generators for reproducibility. SMP measures CPU, memory,
-throughput — not output correctness.
+throughput—not output correctness.
 
 ### Experiments
 
@@ -115,10 +115,10 @@ Defined in `test/smp/regression/adp/experiments.yaml`. Run `make generate-smp-ex
 in `test/smp/regression/adp/cases/`. Each case gets an `experiment.yaml` (target config) and `lading/lading.yaml` (load
 config).
 
-CI compares current branch against merge-base of main — purely "has your change regressed or improved?"
+CI compares current branch against merge-base of main—purely "has your change regressed or improved?"
 
 You can run experiments locally with `smp local-run` to debug experiment configs without waiting for CI (single
-replicate, no statistical analysis). This is mainly useful when iterating on a new or broken experiment — for normal
+replicate, no statistical analysis). This is mainly useful when iterating on a new or broken experiment—for normal
 development, lean on CI.
 
 ## Fuzzing

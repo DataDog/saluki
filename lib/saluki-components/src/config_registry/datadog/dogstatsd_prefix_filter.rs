@@ -2,7 +2,7 @@
 use crate::config_registry::{generated::schema, structs, SalukiAnnotation, SupportLevel};
 
 crate::declare_annotations! {
-    /// `metric_filterlist` — explicit list of metric names to allow through the filter.
+    /// `metric_filterlist`—explicit list of metric names to allow through the filter.
     METRIC_FILTERLIST = SalukiAnnotation {
         schema: &schema::METRIC_FILTERLIST,
         support_level: SupportLevel::Full,
@@ -13,7 +13,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `metric_filterlist_match_prefix` — whether filterlist entries match as prefixes.
+    /// `metric_filterlist_match_prefix`—whether filterlist entries match as prefixes.
     METRIC_FILTERLIST_MATCH_PREFIX = SalukiAnnotation {
         schema: &schema::METRIC_FILTERLIST_MATCH_PREFIX,
         support_level: SupportLevel::Full,
@@ -24,7 +24,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `statsd_metric_blocklist` — metric names to block.
+    /// `statsd_metric_blocklist`—metric names to block.
     STATSD_METRIC_BLOCKLIST = SalukiAnnotation {
         schema: &schema::STATSD_METRIC_BLOCKLIST,
         support_level: SupportLevel::Full,
@@ -35,7 +35,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `statsd_metric_blocklist_match_prefix` — whether blocklist entries match as prefixes.
+    /// `statsd_metric_blocklist_match_prefix`—whether blocklist entries match as prefixes.
     STATSD_METRIC_BLOCKLIST_MATCH_PREFIX = SalukiAnnotation {
         schema: &schema::STATSD_METRIC_BLOCKLIST_MATCH_PREFIX,
         support_level: SupportLevel::Full,
@@ -46,7 +46,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `statsd_metric_namespace` — prefix to prepend to every metric name.
+    /// `statsd_metric_namespace`—prefix to prepend to every metric name.
     STATSD_METRIC_NAMESPACE = SalukiAnnotation {
         schema: &schema::STATSD_METRIC_NAMESPACE,
         support_level: SupportLevel::Full,
@@ -57,7 +57,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `statsd_metric_namespace_blacklist` / `statsd_metric_namespace_blocklist` — namespace prefixes to block from forwarding.
+    /// `statsd_metric_namespace_blacklist` / `statsd_metric_namespace_blocklist`—namespace prefixes to block from forwarding.
     STATSD_METRIC_NAMESPACE_BLOCKLIST = SalukiAnnotation {
         schema: &schema::STATSD_METRIC_NAMESPACE_BLACKLIST,
         support_level: SupportLevel::Full,

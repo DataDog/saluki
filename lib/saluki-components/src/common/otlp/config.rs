@@ -276,7 +276,7 @@ impl TracesConfig {
     ///
     /// `DD_OTLP_CONFIG_TRACES_PROBABILISTIC_SAMPLER_SAMPLING_PERCENTAGE` strips to flat Figment key
     /// `otlp_config_traces_probabilistic_sampler_sampling_percentage`. KEY_ALIASES ensures YAML and
-    /// env var land on the same key, but a nested struct can't see a flat key — so we read it
+    /// env var land on the same key, but a nested struct can't see a flat key—so we read it
     /// explicitly and override.
     pub(crate) fn apply_env_overrides(&mut self, config: &GenericConfiguration) -> Result<(), GenericError> {
         if let Some(pct) =

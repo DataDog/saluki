@@ -159,7 +159,7 @@ impl ConfigurationLoader {
     /// Sets key aliases to apply when loading file-based configuration sources.
     ///
     /// Each entry is `(nested_path, flat_key)`. When a YAML or JSON file contains a value at `nested_path`
-    /// (dot-separated), that value is also emitted under `flat_key` at the top level — but only if `flat_key`
+    /// (dot-separated), that value is also emitted under `flat_key` at the top level—but only if `flat_key`
     /// is not already explicitly set at the top level. This ensures that both YAML nested format and flat env var
     /// format produce the same Figment key, so source precedence (env vars > file) works correctly.
     ///

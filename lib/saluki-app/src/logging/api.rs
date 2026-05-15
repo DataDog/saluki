@@ -45,7 +45,7 @@ enum LoggingOverrideAction {
 
 /// Controls the dynamic logging filter at runtime.
 ///
-/// All filter mutations — temporary overrides, resets, and base updates — flow through here to the
+/// All filter mutations—temporary overrides, resets, and base updates—flow through here to the
 /// [`LoggingOverrideWorker`] that owns the underlying `tracing` reload handle. Cloning is cheap; hand clones to
 /// any caller that needs to drive filter changes (HTTP handlers, configuration watchers, etc.).
 #[derive(Clone)]

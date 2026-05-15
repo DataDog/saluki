@@ -4,7 +4,7 @@ use crate::config_registry::{generated::schema, structs, SalukiAnnotation, Suppo
 crate::declare_annotations! {
     // ── Endpoint ──────────────────────────────────────────────────────────────
 
-    /// `api_key` — Datadog API key for authentication.
+    /// `api_key`—Datadog API key for authentication.
     API_KEY = SalukiAnnotation {
         schema: &schema::API_KEY,
         support_level: SupportLevel::Full,
@@ -15,7 +15,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `site` — Datadog site domain (e.g. `datadoghq.com`).
+    /// `site`—Datadog site domain (e.g. `datadoghq.com`).
     SITE = SalukiAnnotation {
         schema: &schema::SITE,
         support_level: SupportLevel::Full,
@@ -26,7 +26,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `dd_url` — explicit intake URL, overrides `site`.
+    /// `dd_url`—explicit intake URL, overrides `site`.
     DD_URL = SalukiAnnotation {
         schema: &schema::DD_URL,
         support_level: SupportLevel::Full,
@@ -37,7 +37,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `observability_pipelines_worker.metrics.enabled` — route metrics to OPW.
+    /// `observability_pipelines_worker.metrics.enabled`—route metrics to OPW.
     OBSERVABILITY_PIPELINES_WORKER_METRICS_ENABLED = SalukiAnnotation {
         schema: &schema::OBSERVABILITY_PIPELINES_WORKER_METRICS_ENABLED,
         support_level: SupportLevel::Full,
@@ -48,7 +48,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `observability_pipelines_worker.metrics.url` — OPW metrics intake URL.
+    /// `observability_pipelines_worker.metrics.url`—OPW metrics intake URL.
     OBSERVABILITY_PIPELINES_WORKER_METRICS_URL = SalukiAnnotation {
         schema: &schema::OBSERVABILITY_PIPELINES_WORKER_METRICS_URL,
         support_level: SupportLevel::Full,
@@ -59,7 +59,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `vector.metrics.enabled` — route metrics to OPW (legacy alias).
+    /// `vector.metrics.enabled`—route metrics to OPW (legacy alias).
     VECTOR_METRICS_ENABLED = SalukiAnnotation {
         schema: &schema::VECTOR_METRICS_ENABLED,
         support_level: SupportLevel::Full,
@@ -70,7 +70,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `vector.metrics.url` — OPW metrics intake URL (legacy alias).
+    /// `vector.metrics.url`—OPW metrics intake URL (legacy alias).
     VECTOR_METRICS_URL = SalukiAnnotation {
         schema: &schema::VECTOR_METRICS_URL,
         support_level: SupportLevel::Full,
@@ -81,7 +81,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `additional_endpoints` — extra intake endpoints (JSON map of host → API keys).
+    /// `additional_endpoints`—extra intake endpoints (JSON map of host → API keys).
     /// Uses a structured test_json because the field uses PickFirst<(DisplayFromStr, _)>.
     ADDITIONAL_ENDPOINTS = SalukiAnnotation {
         schema: &schema::ADDITIONAL_ENDPOINTS,
@@ -95,7 +95,7 @@ crate::declare_annotations! {
 
     // ── ForwarderConfiguration direct fields ──────────────────────────────────
 
-    /// `forwarder_num_workers` — max concurrent requests per endpoint. Schema Float; field usize.
+    /// `forwarder_num_workers`—max concurrent requests per endpoint. Schema Float; field usize.
     FORWARDER_NUM_WORKERS = SalukiAnnotation {
         schema: &schema::FORWARDER_NUM_WORKERS,
         support_level: SupportLevel::Full,
@@ -106,7 +106,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `forwarder_timeout` — request timeout in seconds. Schema Float; field u64.
+    /// `forwarder_timeout`—request timeout in seconds. Schema Float; field u64.
     FORWARDER_TIMEOUT = SalukiAnnotation {
         schema: &schema::FORWARDER_TIMEOUT,
         support_level: SupportLevel::Full,
@@ -117,7 +117,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `forwarder_high_prio_buffer_size` — max pending requests per endpoint. Schema Float; field usize.
+    /// `forwarder_high_prio_buffer_size`—max pending requests per endpoint. Schema Float; field usize.
     FORWARDER_HIGH_PRIO_BUFFER_SIZE = SalukiAnnotation {
         schema: &schema::FORWARDER_HIGH_PRIO_BUFFER_SIZE,
         support_level: SupportLevel::Full,
@@ -128,7 +128,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `forwarder_connection_reset_interval` — seconds between connection resets. Schema Float; field u64.
+    /// `forwarder_connection_reset_interval`—seconds between connection resets. Schema Float; field u64.
     FORWARDER_CONNECTION_RESET_INTERVAL = SalukiAnnotation {
         schema: &schema::FORWARDER_CONNECTION_RESET_INTERVAL,
         support_level: SupportLevel::Full,
@@ -139,7 +139,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `skip_ssl_validation` — disables TLS certificate validation for Datadog intake forwarding.
+    /// `skip_ssl_validation`—disables TLS certificate validation for Datadog intake forwarding.
     SKIP_SSL_VALIDATION = SalukiAnnotation {
         schema: &schema::SKIP_SSL_VALIDATION,
         support_level: SupportLevel::Full,
@@ -152,7 +152,7 @@ crate::declare_annotations! {
 
     // ── RetryConfiguration fields ─────────────────────────────────────────────
 
-    /// `forwarder_backoff_base` — base growth rate for retry backoff in seconds.
+    /// `forwarder_backoff_base`—base growth rate for retry backoff in seconds.
     FORWARDER_BACKOFF_BASE = SalukiAnnotation {
         schema: &schema::FORWARDER_BACKOFF_BASE,
         support_level: SupportLevel::Full,
@@ -163,7 +163,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `forwarder_backoff_factor` — jitter factor for retry backoff.
+    /// `forwarder_backoff_factor`—jitter factor for retry backoff.
     FORWARDER_BACKOFF_FACTOR = SalukiAnnotation {
         schema: &schema::FORWARDER_BACKOFF_FACTOR,
         support_level: SupportLevel::Full,
@@ -174,7 +174,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `forwarder_backoff_max` — maximum retry backoff duration in seconds.
+    /// `forwarder_backoff_max`—maximum retry backoff duration in seconds.
     FORWARDER_BACKOFF_MAX = SalukiAnnotation {
         schema: &schema::FORWARDER_BACKOFF_MAX,
         support_level: SupportLevel::Full,
@@ -185,7 +185,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `forwarder_recovery_interval` — error count decrease on success. Schema Float; field u32.
+    /// `forwarder_recovery_interval`—error count decrease on success. Schema Float; field u32.
     FORWARDER_RECOVERY_INTERVAL = SalukiAnnotation {
         schema: &schema::FORWARDER_RECOVERY_INTERVAL,
         support_level: SupportLevel::Full,
@@ -196,7 +196,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `forwarder_recovery_reset` — reset error count on successful request.
+    /// `forwarder_recovery_reset`—reset error count on successful request.
     FORWARDER_RECOVERY_RESET = SalukiAnnotation {
         schema: &schema::FORWARDER_RECOVERY_RESET,
         support_level: SupportLevel::Full,
@@ -207,7 +207,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `forwarder_retry_queue_max_size` — (deprecated) max in-memory retry queue size in bytes. Schema Float; field `Option<u64>`.
+    /// `forwarder_retry_queue_max_size`—(deprecated) max in-memory retry queue size in bytes. Schema Float; field `Option<u64>`.
     FORWARDER_RETRY_QUEUE_MAX_SIZE = SalukiAnnotation {
         schema: &schema::FORWARDER_RETRY_QUEUE_MAX_SIZE,
         support_level: SupportLevel::Full,
@@ -218,7 +218,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `forwarder_retry_queue_payloads_max_size` — max in-memory retry queue size in bytes. Schema Float; field `Option<u64>`.
+    /// `forwarder_retry_queue_payloads_max_size`—max in-memory retry queue size in bytes. Schema Float; field `Option<u64>`.
     FORWARDER_RETRY_QUEUE_PAYLOADS_MAX_SIZE = SalukiAnnotation {
         schema: &schema::FORWARDER_RETRY_QUEUE_PAYLOADS_MAX_SIZE,
         support_level: SupportLevel::Full,
@@ -229,7 +229,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `forwarder_storage_max_disk_ratio` — max disk usage fraction before stopping on-disk queue.
+    /// `forwarder_storage_max_disk_ratio`—max disk usage fraction before stopping on-disk queue.
     FORWARDER_STORAGE_MAX_DISK_RATIO = SalukiAnnotation {
         schema: &schema::FORWARDER_STORAGE_MAX_DISK_RATIO,
         support_level: SupportLevel::Full,
@@ -240,7 +240,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `forwarder_storage_max_size_in_bytes` — max on-disk retry queue size. Schema Float; field u64.
+    /// `forwarder_storage_max_size_in_bytes`—max on-disk retry queue size. Schema Float; field u64.
     FORWARDER_STORAGE_MAX_SIZE_IN_BYTES = SalukiAnnotation {
         schema: &schema::FORWARDER_STORAGE_MAX_SIZE_IN_BYTES,
         support_level: SupportLevel::Full,
@@ -251,7 +251,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `forwarder_storage_path` — directory for on-disk retry queue.
+    /// `forwarder_storage_path`—directory for on-disk retry queue.
     FORWARDER_STORAGE_PATH = SalukiAnnotation {
         schema: &schema::FORWARDER_STORAGE_PATH,
         support_level: SupportLevel::Full,

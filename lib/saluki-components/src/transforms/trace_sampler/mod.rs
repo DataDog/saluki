@@ -1000,7 +1000,7 @@ mod tests {
 
     /// Adapted from Go "rare-sampler-catch-sampled" (first trace):
     ///
-    /// Rare is enabled, first occurrence — trace is kept and `_dd.rare` is set on the span.
+    /// Rare is enabled, first occurrence—trace is kept and `_dd.rare` is set on the span.
     #[test]
     fn rare_sampler_sets_rare_metric_on_first_occurrence() {
         let mut sampler = create_sampler_with_rare_enabled();
@@ -1171,7 +1171,7 @@ mod tests {
     /// Adapted from Go "probabilistic-rare-100":
     ///
     /// Rare fires before probabilistic is consulted, so even at 100% sampling rate the decision
-    /// maker tag is not set — the trace is attributed to rare, not probabilistic.
+    /// maker tag is not set—the trace is attributed to rare, not probabilistic.
     #[test]
     fn rare_wins_over_probabilistic_no_decision_maker_tag() {
         let mut sampler = create_sampler_with_rare_enabled();
@@ -1184,7 +1184,7 @@ mod tests {
         let (keep, priority, decision_maker, _) = sampler.run_samplers(&mut trace);
         assert!(keep);
         assert_eq!(priority, PRIORITY_AUTO_KEEP);
-        assert_eq!(decision_maker, "", "rare takes precedence — _dd.p.dm must not be set");
+        assert_eq!(decision_maker, "", "rare takes precedence—_dd.p.dm must not be set");
     }
 
     /// Adapted from Go "error-sampled-prio-unsampled":
@@ -1269,7 +1269,7 @@ mod tests {
     fn ets_forwards_dropped_trace_with_dropped_flag() {
         let mut sampler = create_sampler_with_ets();
 
-        // Span with SSS metric — would trigger single span sampling in non-ETS mode.
+        // Span with SSS metric—would trigger single span sampling in non-ETS mode.
         let mut metrics = saluki_common::collections::FastHashMap::default();
         metrics.insert(MetaString::from(KEY_SPAN_SAMPLING_MECHANISM), 8.0);
         let span = create_test_span(102, 1, 0).with_metrics(metrics);
@@ -1390,7 +1390,7 @@ mod tests {
         assert_eq!(dm, "", "no dm when probabilistic path active");
     }
 
-    /// ETS + non-OTLP trace (legacy sampler path): behavior unchanged — no pre-sampling.
+    /// ETS + non-OTLP trace (legacy sampler path): behavior unchanged—no pre-sampling.
     #[test]
     fn ets_non_otlp_unaffected_by_presample() {
         let mut sampler = create_sampler_with_ets_legacy();

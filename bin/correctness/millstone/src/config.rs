@@ -154,9 +154,9 @@ pub struct Config {
     /// receiver has a chance to drain it.
     ///
     /// For example, a value of `500` (500 µs) limits the send rate to ~2,000 payloads/s, which is well within
-    /// what a DogStatsD agent can drain. At 8 KiB per payload, that is ~16 MB/s — low enough that the 208 KiB
+    /// what a DogStatsD agent can drain. At 8 KiB per payload, that is ~16 MB/s—low enough that the 208 KiB
     /// buffer never accumulates more than a handful of packets at any moment, and all 10,000 payloads are
-    /// delivered in ~5 seconds — well within a single 10-second aggregation bucket.
+    /// delivered in ~5 seconds—well within a single 10-second aggregation bucket.
     ///
     /// Defaults to `0` (no delay).
     #[serde(default)]

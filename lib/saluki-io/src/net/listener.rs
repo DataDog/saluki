@@ -234,7 +234,7 @@ impl Listener {
     ///
     /// For connection-oriented address families, this will accept a new connection and return a `Stream` that is bound
     /// to that remote peer. For connectionless address families, this will yield up to the configured number of
-    /// pre-bound `Stream`s — one per call — before returning pending forever.
+    /// pre-bound `Stream`s—one per call—before returning pending forever.
     ///
     /// ## Errors
     ///

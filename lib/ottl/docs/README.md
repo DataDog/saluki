@@ -1,4 +1,4 @@
-# ottl — Rust OTTL Parser Library
+# ottl—Rust OTTL Parser Library
 
 **ottl** is a Rust library for parsing and executing [OpenTelemetry Transformation Language (OTTL)](https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/pkg/ottl) expressions.
 
@@ -19,9 +19,9 @@
 
 The library provides a complete pipeline for working with OTTL:
 
-1. **Lexical Analysis** — tokenization of the input string (`lexer` module)
-2. **Syntax Analysis** — AST construction with callback binding at parse time (`parser` module)
-3. **Execution** — AST interpretation with support for conditions, mathematical and logical expressions
+1. **Lexical Analysis**—tokenization of the input string (`lexer` module)
+2. **Syntax Analysis**—AST construction with callback binding at parse time (`parser` module)
+3. **Execution**—AST interpretation with support for conditions, mathematical and logical expressions
 
 ### Key Features
 
@@ -95,7 +95,7 @@ pub enum Argument {
 The context type is a generic parameter `C` so that no type erasure or `'static` is required; you can use context types that hold references.
 
 ```rust
-// Lazy argument evaluation — arguments are evaluated only when requested (zero allocation)
+// Lazy argument evaluation—arguments are evaluated only when requested (zero allocation)
 // C is the evaluation context type.
 pub trait Args<C> {
     fn ctx(&mut self) -> &mut C;
@@ -337,9 +337,9 @@ Lexical analyzer based on the [logos](https://crates.io/crates/logos) library.
 
 **Main Components:**
 
-- `Token<'a>` — enum of all OTTL tokens
-- `Lexer` — wrapper over logos lexer
-- `LexerError` — error with position information
+- `Token<'a>`—enum of all OTTL tokens
+- `Lexer`—wrapper over logos lexer
+- `LexerError`—error with position information
 
 **Tokens:**
 
@@ -402,13 +402,13 @@ Execution uses **arena-based** types (`ArenaRootExpr`, `ArenaBoolExpr`, `ArenaMa
 
 Main library module, exports the public API:
 
-- `Parser` — main parser
-- `OttlParser` — public API trait
-- `Value`, `Argument` — data types
-- `Args` — trait for lazy argument evaluation in callbacks
-- `CallbackFn`, `CallbackMap`, `EnumMap` — callback types
-- `PathAccessor`, `PathResolver`, `PathResolverMap` — path handling; `IndexExpr` — index type for `get` and converter result; path index interpretation is the integrator's responsibility
-- `BoxError`, `Result` — error types
+- `Parser`—main parser
+- `OttlParser`—public API trait
+- `Value`, `Argument`—data types
+- `Args`—trait for lazy argument evaluation in callbacks
+- `CallbackFn`, `CallbackMap`, `EnumMap`—callback types
+- `PathAccessor`, `PathResolver`, `PathResolverMap`—path handling; `IndexExpr`—index type for `get` and converter result; path index interpretation is the integrator's responsibility
+- `BoxError`, `Result`—error types
 
 ### `tests.rs`
 

@@ -115,7 +115,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `otlp_config.receiver.protocols.http.transport` — ADP-specific, not in Agent schema.
+    /// `otlp_config.receiver.protocols.http.transport`—ADP-specific, not in Agent schema.
     OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TRANSPORT = SalukiAnnotation {
         schema: &OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TRANSPORT_SCHEMA,
         support_level: SupportLevel::Full,
@@ -139,7 +139,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `otlp_config.traces.ignore_missing_datadog_fields` — ADP-specific, default false.
+    /// `otlp_config.traces.ignore_missing_datadog_fields`—ADP-specific, default false.
     OTLP_CONFIG_TRACES_IGNORE_MISSING_DATADOG_FIELDS = SalukiAnnotation {
         schema: &OTLP_CONFIG_TRACES_IGNORE_MISSING_DATADOG_FIELDS_SCHEMA,
         support_level: SupportLevel::Full,
@@ -161,7 +161,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `otlp_config.traces.internal_port` — schema says Float but field is u16.
+    /// `otlp_config.traces.internal_port`—schema says Float but field is u16.
     OTLP_CONFIG_TRACES_INTERNAL_PORT = SalukiAnnotation {
         schema: &schema::OTLP_CONFIG_TRACES_INTERNAL_PORT,
         support_level: SupportLevel::Full,
@@ -172,7 +172,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `otlp_config.traces.probabilistic_sampler.sampling_percentage` — default 100.0.
+    /// `otlp_config.traces.probabilistic_sampler.sampling_percentage`—default 100.0.
     OTLP_CONFIG_TRACES_PROBABILISTIC_SAMPLER_SAMPLING_PERCENTAGE = SalukiAnnotation {
         schema: &schema::OTLP_CONFIG_TRACES_PROBABILISTIC_SAMPLER_SAMPLING_PERCENTAGE,
         support_level: SupportLevel::Full,
@@ -183,7 +183,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `otlp_config.traces.string_interner_size` — ADP-specific; default 512 KiB.
+    /// `otlp_config.traces.string_interner_size`—ADP-specific; default 512 KiB.
     OTLP_CONFIG_TRACES_STRING_INTERNER_SIZE = SalukiAnnotation {
         schema: &OTLP_CONFIG_TRACES_STRING_INTERNER_SIZE_SCHEMA,
         support_level: SupportLevel::Full,
@@ -196,7 +196,7 @@ crate::declare_annotations! {
 
     // ── Logs / Metrics ────────────────────────────────────────────────────────
 
-    /// `otlp_config.logs.enabled` — schema default is false but saluki defaults to true; test_json injects false explicitly.
+    /// `otlp_config.logs.enabled`—schema default is false but saluki defaults to true; test_json injects false explicitly.
     OTLP_CONFIG_LOGS_ENABLED = SalukiAnnotation {
         schema: &schema::OTLP_CONFIG_LOGS_ENABLED,
         support_level: SupportLevel::Full,
@@ -231,7 +231,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `otlp_cached_contexts_limit` — ADP-specific, default 500,000.
+    /// `otlp_cached_contexts_limit`—ADP-specific, default 500,000.
     OTLP_CACHED_CONTEXTS_LIMIT = SalukiAnnotation {
         schema: &OTLP_CACHED_CONTEXTS_LIMIT_SCHEMA,
         support_level: SupportLevel::Full,
@@ -242,7 +242,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `otlp_cached_tagsets_limit` — ADP-specific, default 500,000.
+    /// `otlp_cached_tagsets_limit`—ADP-specific, default 500,000.
     OTLP_CACHED_TAGSETS_LIMIT = SalukiAnnotation {
         schema: &OTLP_CACHED_TAGSETS_LIMIT_SCHEMA,
         support_level: SupportLevel::Full,
@@ -253,7 +253,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `otlp_string_interner_size` — ADP-specific; default 2 MiB.
+    /// `otlp_string_interner_size`—ADP-specific; default 2 MiB.
     OTLP_STRING_INTERNER_SIZE = SalukiAnnotation {
         schema: &OTLP_STRING_INTERNER_SIZE_SCHEMA,
         support_level: SupportLevel::Full,

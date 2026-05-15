@@ -612,7 +612,7 @@ impl DogStatsDConfiguration {
     /// the number of available vCPUs.
     ///
     /// Returns `None` when autoscaling is disabled, which keeps the legacy single-socket behavior. The platform
-    /// gate for `SO_REUSEPORT` lives inside the listener — this method intentionally stays platform-agnostic.
+    /// gate for `SO_REUSEPORT` lives inside the listener—this method intentionally stays platform-agnostic.
     fn udp_streams_to_yield(&self) -> Option<NonZeroUsize> {
         if !self.autoscale_udp_listeners {
             return None;
@@ -734,7 +734,7 @@ impl DogStatsDConfiguration {
     /// Builds the appropriate `Listener` objects.
     async fn build_listeners(&self) -> Result<Vec<Listener>, Error> {
         // Resolve `bind_host` to an IP (via DNS if needed). Skip the lookup when
-        // `non_local_traffic=true` since `bind_host` is ignored in that branch — matches Go's
+        // `non_local_traffic=true` since `bind_host` is ignored in that branch—matches Go's
         // laziness and avoids failing startup on an unresolvable hostname that wouldn't be used.
         let bind_host: Option<std::net::IpAddr> = if self.non_local_traffic {
             None
@@ -1634,7 +1634,7 @@ fn handle_event_packet(
     let tags = get_filtered_tags_iterator(packet.tags, additional_tags);
     let tags = tags_resolver.create_tag_set(tags)?;
 
-    // When no d: field is present, backfill the current time — matching the stock Datadog Agent's
+    // When no d: field is present, backfill the current time—matching the stock Datadog Agent's
     // behavior in pkg/aggregator/aggregator.go (addEvent), which sets e.Ts = time.Now().Unix()
     // for any event with Ts == 0.
     let timestamp = packet
@@ -1647,7 +1647,7 @@ fn handle_event_packet(
         .with_aggregation_key(packet.aggregation_key.map(|s| s.into()))
         .with_alert_type(packet.alert_type)
         .with_priority(packet.priority)
-        // When no source type is provided, default to "api" — the same default the stock Datadog
+        // When no source type is provided, default to "api"—the same default the stock Datadog
         // Agent applies when serializing DogStatsD events to the intake JSON format. The agent
         // groups events by source type name and uses "api" as the key for events without an
         // explicit `s:` field. See: pkg/serializer/internal/metrics/events.go (writeItem).
@@ -1679,7 +1679,7 @@ fn handle_service_check_packet(
     let tags = get_filtered_tags_iterator(packet.tags, additional_tags);
     let tags = tags_resolver.create_tag_set(tags)?;
 
-    // When no d: field is present, backfill the current time — matching the stock Datadog Agent's
+    // When no d: field is present, backfill the current time—matching the stock Datadog Agent's
     // behavior, which sets the timestamp to time.Now().Unix() for any service check with a zero
     // timestamp.
     let timestamp = packet

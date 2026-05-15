@@ -13,7 +13,7 @@ use crate::reporter::TestResult;
 ///
 /// The receiver holds `None` until setup completes, then `Some(Ok(()))` on success or
 /// `Some(Err(message))` on failure. `watch::Receiver` implements `Clone`, so each task
-/// gets its own independent receiver with its own "last seen" mark — no mutex needed.
+/// gets its own independent receiver with its own "last seen" mark—no mutex needed.
 pub(crate) type KindReadyReceiver = watch::Receiver<Option<Result<(), String>>>;
 
 #[derive(Debug, Default, Clone, Copy, Eq, Ord, PartialOrd, PartialEq, Hash, Serialize, Deserialize)]

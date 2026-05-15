@@ -661,7 +661,7 @@ pub fn discover_tests(dirs: &[PathBuf]) -> Result<Vec<Box<dyn Test>>, GenericErr
 /// Load one or more test cases from a config file, dispatching on the top-level `type` field.
 ///
 /// Returns a `Vec` because a `correctness_matrix` config expands into multiple independent test
-/// cases — one per variant — while `integration` and `correctness` configs each produce exactly
+/// cases—one per variant—while `integration` and `correctness` configs each produce exactly
 /// one test case.
 fn try_load_test(config_path: &Path, dir_path: &Path) -> Result<Vec<Box<dyn Test>>, GenericError> {
     let content = std::fs::read_to_string(config_path)

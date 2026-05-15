@@ -20,7 +20,7 @@ static SERIALIZER_MAX_METRICS_PER_PAYLOAD_SCHEMA: SchemaEntry = SchemaEntry {
 };
 
 crate::declare_annotations! {
-    /// `serializer_compressor_kind` — compression algorithm for encoder request payloads.
+    /// `serializer_compressor_kind`—compression algorithm for encoder request payloads.
     SERIALIZER_COMPRESSOR_KIND = SalukiAnnotation {
         schema: &schema::SERIALIZER_COMPRESSOR_KIND,
         support_level: SupportLevel::Full,
@@ -37,7 +37,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `serializer_zstd_compressor_level` — zstd compression level for encoder request payloads.
+    /// `serializer_zstd_compressor_level`—zstd compression level for encoder request payloads.
     /// Schema declares Float; field is i32.
     SERIALIZER_ZSTD_COMPRESSOR_LEVEL = SalukiAnnotation {
         schema: &schema::SERIALIZER_ZSTD_COMPRESSOR_LEVEL,
@@ -55,7 +55,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `flush_timeout_secs` — how long to wait before force-flushing an in-flight payload. ADP-specific.
+    /// `flush_timeout_secs`—how long to wait before force-flushing an in-flight payload. ADP-specific.
     FLUSH_TIMEOUT_SECS = SalukiAnnotation {
         schema: &FLUSH_TIMEOUT_SECS_SCHEMA,
         support_level: SupportLevel::Full,
@@ -70,7 +70,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `serializer_max_metrics_per_payload` — max metrics per encoded request payload. ADP-specific.
+    /// `serializer_max_metrics_per_payload`—max metrics per encoded request payload. ADP-specific.
     SERIALIZER_MAX_METRICS_PER_PAYLOAD = SalukiAnnotation {
         schema: &SERIALIZER_MAX_METRICS_PER_PAYLOAD_SCHEMA,
         support_level: SupportLevel::Full,
@@ -81,7 +81,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `use_v2_api.series` — when `false`, send series metrics to the legacy V1 JSON intake at `/api/v1/series`.
+    /// `use_v2_api.series`—when `false`, send series metrics to the legacy V1 JSON intake at `/api/v1/series`.
     USE_V2_API_SERIES = SalukiAnnotation {
         schema: &schema::USE_V2_API_SERIES,
         support_level: SupportLevel::Full,
@@ -92,7 +92,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `env` — the environment name attached to all emitted telemetry.
+    /// `env`—the environment name attached to all emitted telemetry.
     ENV = SalukiAnnotation {
         schema: &schema::ENV,
         support_level: SupportLevel::Full,
