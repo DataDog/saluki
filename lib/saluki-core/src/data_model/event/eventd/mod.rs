@@ -118,7 +118,7 @@ impl Priority {
     }
 }
 
-/// EventD is an object that can be posted to the DataDog event stream.
+/// EventD is an object that can be posted to the Datadog event stream.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct EventD {
     title: MetaString,

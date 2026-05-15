@@ -3,11 +3,62 @@ message: Use '%s' instead of '%s'.
 level: error
 ignorecase: true
 swap:
-  datadog: Datadog
+  # Brand and project names. The negative lookaheads exclude matches inside URLs and
+  # package/path identifiers such as `github.com/DataDog/datadog-agent/...`.
+  'datadog(?![-/]|\.[a-z])': Datadog
   dogstatsd: DogStatsD
+  saluki: Saluki
+
+  # Project-specific acronyms. The negative lookahead excludes URL path segments and file
+  # extensions (e.g., `pkg/.../otlp/...`, `otlp.go`).
+  adp: ADP
+  'otlp(?!/|\.[a-z])': OTLP
+  'ottl(?!/|\.[a-z])': OTTL
+  opw: OPW
+  ddsketch: DDSketch
+
+  # Architecture/documentation
+  adr: ADR
+
+  # Networking and protocols
+  tls: TLS
+  tcp: TCP
+  udp: UDP
+  uds: UDS
+  ipc: IPC
+  dns: DNS
   grpc: gRPC
+
+  # General technical acronyms
+  cli: CLI
+  cpu: CPU
+  ram: RAM
+  sql: SQL
+  uid: UID
+  ast: AST
+  apm: APM
+
+  # URL-prone terms: negative lookahead excludes URL-scheme matches (`http://`, `api://`),
+  # URL path segments (`/api/`), code-reference dotted forms (`http.status`, `api.foo.com`),
+  # and plural overlaps (`https` matching inside `http`).
+  'https(?!:|\.[a-z])': HTTPS
+  'http(?!:|s|\.[a-z])': HTTP
+  'ssh(?!:|\.[a-z])': SSH
+  'ssl(?!:|\.[a-z])': SSL
+  'apis(?!:)': APIs
+  'api(?!:|s|/|\.[a-z])': API
+
+  # Tools and ecosystems
+  otel: OTel
+  github: GitHub
+  gitlab: GitLab
+
+  # File formats and serialization
   yaml: YAML
   json: JSON
+  markdown: Markdown
   urls: URLs
   uris: URIs
-  markdown: Markdown
+
+  # OS names
+  linux: Linux

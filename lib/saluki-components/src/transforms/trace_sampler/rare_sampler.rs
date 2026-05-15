@@ -1,6 +1,6 @@
 //! Rare sampler for traces.
 //!
-//! Samples traces for span signature combinations (env, service, name, resource, error type, http status)
+//! Samples traces for span signature combinations (env, service, name, resource, error type, HTTP status)
 //! that aren't caught by the priority sampler. This ensures that rare or low-traffic trace shapes
 //! are still represented in the sampled data.
 //!
