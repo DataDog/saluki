@@ -229,8 +229,17 @@ pub async fn handle_run_command(
     let mut running_topology = built_topology.spawn(&health_registry, memory_limiter).await?;
 
     info!("Waiting for topology to become healthy...");
+    tokio::spawn(async move {
+        health_registry.all_ready().await;
+        info!(
+            topology_ready_ms = started.elapsed().as_millis(),
+            "Topology healthy. Waiting for interrupt..."
+        );
 
-    let mut topology_started = false;
+        // Emit our startup metrics now that everything is running.
+        emit_startup_metrics();
+    });
+
     let mut topology_failed = false;
     let mut internal_supervisor_failed = false;
     select! {
@@ -258,17 +267,6 @@ pub async fn handle_run_command(
                 internal_supervisor_failed = true;
             },
         },
-        _ = health_registry.all_ready(), if !topology_started => {
-            info!(
-                topology_ready_ms = started.elapsed().as_millis(),
-                "Topology healthy. Waiting for interrupt..."
-            );
-
-            // Emit our startup metrics now that everything is running.
-            emit_startup_metrics();
-
-            topology_started = true;
-        },
         _ = running_topology.wait_for_unexpected_finish() => {
             error!("Topology component unexpectedly finished. Shutting down...");
             topology_failed = true;
@@ -276,10 +274,6 @@ pub async fn handle_run_command(
         _ = tokio::signal::ctrl_c() => {
             info!("Received SIGINT, shutting down...");
         }
-    }
-
-    if !topology_started {
-        warn!("Topology failed to start successfully.")
     }
 
     // Trigger shutdown on the primary topology and wait up to 30 seconds for it to complete.
