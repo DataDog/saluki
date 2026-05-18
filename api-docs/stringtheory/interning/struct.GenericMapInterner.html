@@ -28,7 +28,7 @@ entry is properly aligned for <code>EntryHeader</code>. In the worst case, up to
 this alignment padding.</p>
 <h3 id="internedstring"><a class="doc-anchor" href="#internedstring">§</a><code>InternedString</code></h3>
 <p>The <code>InternedString</code> type is a handle to the entry header, and thus the string data, for an interned string. It’s
-designed to be small – 8 bytes! – and cheap to clone, as it contains an atomic reference to the entry header and a
+designed to be small – 8 bytes. – and cheap to clone, as it contains an atomic reference to the entry header and a
 reference to the interner that owns the string. It dereferences to the underlying string with relatively low
 overhead: two pointer indirections.</p>
 <p>When an <code>InternedString</code> is dropped, it decrements the reference count for the entry it points to. If the reference

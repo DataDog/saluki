@@ -27,9 +27,9 @@
 <a href=#27 id=27 data-nosnippet>27</a>/// be reduced over time but never fully eliminated, and so on.
 <a href=#28 id=28 data-nosnippet>28</a>///
 <a href=#29 id=29 data-nosnippet>29</a>/// In order to protect against this issue, we utilize a slop factor when calculating the effective limits that we
-<a href=#30 id=30 data-nosnippet>30</a>/// should verify memory bounds again. For example, if we seek to use no more than 64MB of memory from the OS
-<a href=#31 id=31 data-nosnippet>31</a>/// perspective (RSS), then intuitively we know that we might only be able to allocate 55-60MB of memory before
-<a href=#32 id=32 data-nosnippet>32</a>/// allocator fragmentation causes us to reach 64MB RSS.
+<a href=#30 id=30 data-nosnippet>30</a>/// should verify memory bounds again. For example, if we seek to use no more than 64 MB of memory from the OS
+<a href=#31 id=31 data-nosnippet>31</a>/// perspective (RSS), then intuitively we know that we might only be able to allocate 55-60 MB of memory before
+<a href=#32 id=32 data-nosnippet>32</a>/// allocator fragmentation causes us to reach 64 MB RSS.
 <a href=#33 id=33 data-nosnippet>33</a>///
 <a href=#34 id=34 data-nosnippet>34</a>/// By specifying a slop factor, we can provide ourselves breathing room to ensure that we don't try to allocate every
 <a href=#35 id=35 data-nosnippet>35</a>/// last byte of the given global limit, inevitably leading to _exceeding_ that limit and potentially causing
@@ -59,7 +59,7 @@
 <a href=#59 id=59 data-nosnippet>59</a>    /// slop factor of 0.1 would indicate that only 90% of the initial limit should be used, and a slop factor of 0.25
 <a href=#60 id=60 data-nosnippet>60</a>    /// would indicate that only 75% of the initial limit should be used, and so on.
 <a href=#61 id=61 data-nosnippet>61</a>    ///
-<a href=#62 id=62 data-nosnippet>62</a>    /// If the slop factor isn't valid (must be 0.0 &lt; slop_factor &lt;= 1.0), then `None` is returned.  If the effective
+<a href=#62 id=62 data-nosnippet>62</a>    /// If the slop factor isn't valid (must be 0.0 &lt; slop_factor &lt;= 1.0), then `None` is returned. If the effective
 <a href=#63 id=63 data-nosnippet>63</a>    /// limit is greater than 9007199254740992 bytes (2^53 bytes, or roughly 9 petabytes), then `None` is returned. This
 <a href=#64 id=64 data-nosnippet>64</a>    /// is a hardcoded limit.
 <a href=#65 id=65 data-nosnippet>65</a>    </span><span class="kw">pub fn </span>with_slop_factor(initial_limit_bytes: usize, slop_factor: f64) -&gt; <span class="prelude-ty">Result</span>&lt;<span class="self">Self</span>, GrantError&gt; {

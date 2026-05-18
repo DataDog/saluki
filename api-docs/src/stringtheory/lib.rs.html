@@ -359,8 +359,8 @@
 <a href=#359 id=359 data-nosnippet>359</a>/// 1. Only used on 64-bit little-endian platforms. (checked at compile-time via _INVARIANTS_CHECK)
 <a href=#360 id=360 data-nosnippet>360</a>/// 2. The data pointers for `String` and `&amp;'static str` can't ever be null when the strings are non-empty.
 <a href=#361 id=361 data-nosnippet>361</a>/// 3. Allocations can never be larger than `isize::MAX` (see [here][rust_isize_alloc_limit]), meaning that any
-<a href=#362 id=362 data-nosnippet>362</a>///    length/capacity field for a string can't ever be larger than `isize::MAX`, implying the 64th bit (top-most bit)
-<a href=#363 id=363 data-nosnippet>363</a>///    for length/capacity should always be 0.
+<a href=#362 id=362 data-nosnippet>362</a>///    length/capacity field for a string can't ever be larger than `isize::MAX`, implying the highest bit for
+<a href=#363 id=363 data-nosnippet>363</a>///    length/capacity should always be 0.
 <a href=#364 id=364 data-nosnippet>364</a>/// 4. An inlined string can only hold up to 23 bytes of data, meaning that the length byte for that string can never
 <a href=#365 id=365 data-nosnippet>365</a>///    have a value greater than 23. (_We_ have to provide this invariant, which is handled in `Inner::try_inlined`.)
 <a href=#366 id=366 data-nosnippet>366</a>///

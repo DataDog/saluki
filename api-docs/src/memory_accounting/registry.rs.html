@@ -205,7 +205,7 @@
 <a href=#205 id=205 data-nosnippet>205</a>
 <a href=#206 id=206 data-nosnippet>206</a>    <span class="doccomment">/// Gets the tracking token for the component scoped to this registry.
 <a href=#207 id=207 data-nosnippet>207</a>    ///
-<a href=#208 id=208 data-nosnippet>208</a>    /// If the component is the root component (has no name), the root allocation token is returned.  Otherwise, the
+<a href=#208 id=208 data-nosnippet>208</a>    /// If the component is the root component (has no name), the root allocation token is returned. Otherwise, the
 <a href=#209 id=209 data-nosnippet>209</a>    /// component is registered (using its full name) if it hasn't already been, and that token is returned.
 <a href=#210 id=210 data-nosnippet>210</a>    </span><span class="kw">pub fn </span>token(<span class="kw-2">&amp;mut </span><span class="self">self</span>) -&gt; AllocationGroupToken {
 <a href=#211 id=211 data-nosnippet>211</a>        <span class="kw">let </span><span class="kw-2">mut </span>inner = <span class="self">self</span>.inner.lock().unwrap();

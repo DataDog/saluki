@@ -971,7 +971,7 @@
 <a href=#971 id=971 data-nosnippet>971</a>        <span class="doccomment">/// Total count is preserved exactly when no u32 overflow occurs.
 <a href=#972 id=972 data-nosnippet>972</a>        ///
 <a href=#973 id=973 data-nosnippet>973</a>        /// This is the key invariant from sketches-go's assertEncodeBins:
-<a href=#974 id=974 data-nosnippet>974</a>        /// store.TotalCount() must equal the sum of all inserted counts.
+<a href=#974 id=974 data-nosnippet>974</a>        /// `store.TotalCount()` must equal the sum of all inserted counts.
 <a href=#975 id=975 data-nosnippet>975</a>        /// We restrict counts to keep the collapsed sum safely below u32::MAX
 <a href=#976 id=976 data-nosnippet>976</a>        /// (sketches-go never loses mass because it uses float64; we match that
 <a href=#977 id=977 data-nosnippet>977</a>        /// guarantee for all inputs where the collapsed bin doesn't overflow u32).

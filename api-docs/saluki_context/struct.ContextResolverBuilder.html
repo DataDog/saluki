@@ -45,8 +45,8 @@ all resolved contexts must either have values (name or tags) that can be inlined
 is full, contexts may fail to be resolved if heap allocations are disabled.</p>
 <p>The optimal value will almost always be workload-dependent, but a good starting point can be to estimate around
 150 - 200 bytes per context based on empirical measurements around common metric name and tag lengths. This
-translate to around 5000 unique contexts per 1MB of interner size.</p>
-<p>Defaults to 2MB.</p>
+translate to around 5000 unique contexts per 1 MB of interner size.</p>
+<p>Defaults to 2 MB.</p>
 </div></details><details class="toggle method-toggle" open><summary><section id="method.with_heap_allocations" class="method"><a class="src rightside" href="../src/saluki_context/resolver.rs.html#187-190">Source</a><h4 class="code-header">pub fn <a href="#method.with_heap_allocations" class="fn">with_heap_allocations</a>(self, allow: <a class="primitive" href="https://doc.rust-lang.org/nightly/std/primitive.bool.html">bool</a>) -&gt; Self</h4></section></summary><div class="docblock"><p>Sets whether or not to allow heap allocations when interning strings.</p>
 <p>In cases where the interner is full, this setting determines whether or not we refuse to resolve a context, or
 if we allow it be resolved by allocating strings on the heap. When heap allocations are enabled, the amount of

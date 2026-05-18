@@ -89,9 +89,9 @@
 <a href=#89 id=89 data-nosnippet>89</a>    /// for the given external error count. If the minimum backoff factor is set to 1.0 or less, then jitter will be
 <a href=#90 id=90 data-nosnippet>90</a>    /// disabled.
 <a href=#91 id=91 data-nosnippet>91</a>    ///
-<a href=#92 id=92 data-nosnippet>92</a>    /// Concretely, this means that with a minimum backoff duration of 10ms, and a minimum backoff factor of 2.0, the
-<a href=#93 id=93 data-nosnippet>93</a>    /// duration for an error count of one would be 20ms without jitter, but anywhere between 10ms and 20ms with jitter.
-<a href=#94 id=94 data-nosnippet>94</a>    /// For an error count of two, it be 40ms without jitter, but anywhere between 20ms and 40ms with jitter.
+<a href=#92 id=92 data-nosnippet>92</a>    /// Concretely, this means that with a minimum backoff duration of 10 ms, and a minimum backoff factor of 2.0, the
+<a href=#93 id=93 data-nosnippet>93</a>    /// duration for an error count of one would be 20 ms without jitter, but anywhere between 10 ms and 20 ms with jitter.
+<a href=#94 id=94 data-nosnippet>94</a>    /// For an error count of two, it be 40 ms without jitter, but anywhere between 20 ms and 40 ms with jitter.
 <a href=#95 id=95 data-nosnippet>95</a>    </span><span class="kw">pub fn </span>with_jitter(min_backoff: Duration, max_backoff: Duration, min_backoff_factor: f64) -&gt; <span class="self">Self </span>{
 <a href=#96 id=96 data-nosnippet>96</a>        <span class="self">Self </span>{
 <a href=#97 id=97 data-nosnippet>97</a>            min_backoff,

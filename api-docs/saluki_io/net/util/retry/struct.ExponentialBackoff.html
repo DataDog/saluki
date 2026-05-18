@@ -14,9 +14,9 @@ factor.</p>
 backoff duration will be between <code>D/min_backoff_factor</code> and <code>D</code>, where <code>D</code> is the calculated backoff duration
 for the given external error count. If the minimum backoff factor is set to 1.0 or less, then jitter will be
 disabled.</p>
-<p>Concretely, this means that with a minimum backoff duration of 10ms, and a minimum backoff factor of 2.0, the
-duration for an error count of one would be 20ms without jitter, but anywhere between 10ms and 20ms with jitter.
-For an error count of two, it be 40ms without jitter, but anywhere between 20ms and 40ms with jitter.</p>
+<p>Concretely, this means that with a minimum backoff duration of 10 ms, and a minimum backoff factor of 2.0, the
+duration for an error count of one would be 20 ms without jitter, but anywhere between 10 ms and 20 ms with jitter.
+For an error count of two, it be 40 ms without jitter, but anywhere between 20 ms and 40 ms with jitter.</p>
 </div></details><details class="toggle method-toggle" open><summary><section id="method.with_rng" class="method"><a class="src rightside" href="../../../../src/saluki_io/net/util/retry/backoff.rs.html#110-120">Source</a><h4 class="code-header">pub fn <a href="#method.with_rng" class="fn">with_rng</a>&lt;R&gt;(self, rng: R) -&gt; Self<div class="where">where
     R: <a class="trait" href="https://docs.rs/rand_core/0.9.5/rand_core/trait.TryRng.html" title="trait rand_core::TryRng">TryRng</a>&lt;Error = <a class="enum" href="https://doc.rust-lang.org/nightly/core/convert/enum.Infallible.html" title="enum core::convert::Infallible">Infallible</a>&gt; + <a class="trait" href="https://doc.rust-lang.org/nightly/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a> + <a class="trait" href="https://doc.rust-lang.org/nightly/core/marker/trait.Sync.html" title="trait core::marker::Sync">Sync</a> + 'static,</div></h4></section></summary><div class="docblock"><p>Sets the random number generator to use for calculating jittered backoff durations.</p>
 <p>Useful for testing purposes, where the RNG must be overridden to add determinism. The RNG is shared atomically

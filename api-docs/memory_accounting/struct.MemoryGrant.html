@@ -5,9 +5,9 @@
 Not all components can effectively track their true firm/hard limit, memory allocators have fragmentation that may
 be reduced over time but never fully eliminated, and so on.</p>
 <p>In order to protect against this issue, we utilize a slop factor when calculating the effective limits that we
-should verify memory bounds again. For example, if we seek to use no more than 64MB of memory from the OS
-perspective (RSS), then intuitively we know that we might only be able to allocate 55-60MB of memory before
-allocator fragmentation causes us to reach 64MB RSS.</p>
+should verify memory bounds again. For example, if we seek to use no more than 64 MB of memory from the OS
+perspective (RSS), then intuitively we know that we might only be able to allocate 55-60 MB of memory before
+allocator fragmentation causes us to reach 64 MB RSS.</p>
 <p>By specifying a slop factor, we can provide ourselves breathing room to ensure that we don’t try to allocate every
 last byte of the given global limit, inevitably leading to <em>exceeding</em> that limit and potentially causing
 out-of-memory crashes, etc.</p>
@@ -23,7 +23,7 @@ is returned. This is a hardcoded limit.</p>
 <p>The slop factor accounts for the percentage of the initial limit that can effectively be used. For example, a
 slop factor of 0.1 would indicate that only 90% of the initial limit should be used, and a slop factor of 0.25
 would indicate that only 75% of the initial limit should be used, and so on.</p>
-<p>If the slop factor isn’t valid (must be 0.0 &lt; slop_factor &lt;= 1.0), then <code>None</code> is returned.  If the effective
+<p>If the slop factor isn’t valid (must be 0.0 &lt; slop_factor &lt;= 1.0), then <code>None</code> is returned. If the effective
 limit is greater than 9007199254740992 bytes (2^53 bytes, or roughly 9 petabytes), then <code>None</code> is returned. This
 is a hardcoded limit.</p>
 </div></details><details class="toggle method-toggle" open><summary><section id="method.initial_limit_bytes" class="method"><a class="src rightside" href="../src/memory_accounting/grant.rs.html#88-90">Source</a><h4 class="code-header">pub fn <a href="#method.initial_limit_bytes" class="fn">initial_limit_bytes</a>(&amp;self) -&gt; <a class="primitive" href="https://doc.rust-lang.org/nightly/std/primitive.usize.html">usize</a></h4></section></summary><div class="docblock"><p>Initial number of bytes granted.</p>

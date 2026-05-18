@@ -208,7 +208,7 @@
 <a href=#208 id=208 data-nosnippet>208</a>}
 <a href=#209 id=209 data-nosnippet>209</a>
 <a href=#210 id=210 data-nosnippet>210</a><span class="kw">impl </span>MetricValues {
-<a href=#211 id=211 data-nosnippet>211</a>    <span class="doccomment">/// Creates a set of counter values from the given value(s).
+<a href=#211 id=211 data-nosnippet>211</a>    <span class="doccomment">/// Creates a set of counter values from the given values.
 <a href=#212 id=212 data-nosnippet>212</a>    </span><span class="kw">pub fn </span>counter&lt;V&gt;(values: V) -&gt; <span class="self">Self
 <a href=#213 id=213 data-nosnippet>213</a>    </span><span class="kw">where
 <a href=#214 id=214 data-nosnippet>214</a>        </span>V: Into&lt;ScalarPoints&gt;,
@@ -234,7 +234,7 @@
 <a href=#234 id=234 data-nosnippet>234</a>        <span class="prelude-val">Ok</span>(<span class="self">Self</span>::Counter(points))
 <a href=#235 id=235 data-nosnippet>235</a>    }
 <a href=#236 id=236 data-nosnippet>236</a>
-<a href=#237 id=237 data-nosnippet>237</a>    <span class="doccomment">/// Creates a set of gauge values from the given value(s).
+<a href=#237 id=237 data-nosnippet>237</a>    <span class="doccomment">/// Creates a set of gauge values from the given values.
 <a href=#238 id=238 data-nosnippet>238</a>    </span><span class="kw">pub fn </span>gauge&lt;V&gt;(values: V) -&gt; <span class="self">Self
 <a href=#239 id=239 data-nosnippet>239</a>    </span><span class="kw">where
 <a href=#240 id=240 data-nosnippet>240</a>        </span>V: Into&lt;ScalarPoints&gt;,
@@ -262,7 +262,7 @@
 <a href=#262 id=262 data-nosnippet>262</a>        <span class="self">Self</span>::Set(values.into())
 <a href=#263 id=263 data-nosnippet>263</a>    }
 <a href=#264 id=264 data-nosnippet>264</a>
-<a href=#265 id=265 data-nosnippet>265</a>    <span class="doccomment">/// Creates a set of histogram values from the given value(s).
+<a href=#265 id=265 data-nosnippet>265</a>    <span class="doccomment">/// Creates a set of histogram values from the given values.
 <a href=#266 id=266 data-nosnippet>266</a>    </span><span class="kw">pub fn </span>histogram&lt;V&gt;(values: V) -&gt; <span class="self">Self
 <a href=#267 id=267 data-nosnippet>267</a>    </span><span class="kw">where
 <a href=#268 id=268 data-nosnippet>268</a>        </span>V: Into&lt;HistogramPoints&gt;,
@@ -288,7 +288,7 @@
 <a href=#288 id=288 data-nosnippet>288</a>        <span class="prelude-val">Ok</span>(<span class="self">Self</span>::Histogram(histogram.into()))
 <a href=#289 id=289 data-nosnippet>289</a>    }
 <a href=#290 id=290 data-nosnippet>290</a>
-<a href=#291 id=291 data-nosnippet>291</a>    <span class="doccomment">/// Creates a set of distribution values from the given value(s).
+<a href=#291 id=291 data-nosnippet>291</a>    <span class="doccomment">/// Creates a set of distribution values from the given values.
 <a href=#292 id=292 data-nosnippet>292</a>    </span><span class="kw">pub fn </span>distribution&lt;V&gt;(values: V) -&gt; <span class="self">Self
 <a href=#293 id=293 data-nosnippet>293</a>    </span><span class="kw">where
 <a href=#294 id=294 data-nosnippet>294</a>        </span>V: Into&lt;SketchPoints&gt;,
@@ -314,7 +314,7 @@
 <a href=#314 id=314 data-nosnippet>314</a>        <span class="prelude-val">Ok</span>(<span class="self">Self</span>::Distribution(sketch.into()))
 <a href=#315 id=315 data-nosnippet>315</a>    }
 <a href=#316 id=316 data-nosnippet>316</a>
-<a href=#317 id=317 data-nosnippet>317</a>    <span class="doccomment">/// Creates a set of rate values from the given value(s) and interval.
+<a href=#317 id=317 data-nosnippet>317</a>    <span class="doccomment">/// Creates a set of rate values from the given values and interval.
 <a href=#318 id=318 data-nosnippet>318</a>    </span><span class="kw">pub fn </span>rate&lt;V&gt;(values: V, interval: Duration) -&gt; <span class="self">Self
 <a href=#319 id=319 data-nosnippet>319</a>    </span><span class="kw">where
 <a href=#320 id=320 data-nosnippet>320</a>        </span>V: Into&lt;ScalarPoints&gt;,

@@ -103,7 +103,7 @@
 <a href=#103 id=103 data-nosnippet>103</a>    /// while `EntryHeader::capacity` would report `16`. Likewise, `EntryHeader::entry_len` would report `40`,
 <a href=#104 id=104 data-nosnippet>104</a>    /// accounting for the string capacity (16) as well as the header length itself (24).
 <a href=#105 id=105 data-nosnippet>105</a>    ///
-<a href=#106 id=106 data-nosnippet>106</a>    /// As explained in the description of `PackedLengthCapacity`, this does mean strings can't be larger than ~4GB on
+<a href=#106 id=106 data-nosnippet>106</a>    /// As explained in the description of `PackedLengthCapacity`, this does mean strings can't be larger than ~4 GB on
 <a href=#107 id=107 data-nosnippet>107</a>    /// 64-bit platforms, which isn't a problem we've.
 <a href=#108 id=108 data-nosnippet>108</a>    </span>len_cap: PackedLengthCapacity,
 <a href=#109 id=109 data-nosnippet>109</a>}
@@ -617,7 +617,7 @@
 <a href=#617 id=617 data-nosnippet>617</a>/// ## `InternedString`
 <a href=#618 id=618 data-nosnippet>618</a>///
 <a href=#619 id=619 data-nosnippet>619</a>/// The `InternedString` type is a handle to the entry header, and thus the string data, for an interned string. It's
-<a href=#620 id=620 data-nosnippet>620</a>/// designed to be small -- 8 bytes! -- and cheap to clone, as it contains an atomic reference to the entry header and a
+<a href=#620 id=620 data-nosnippet>620</a>/// designed to be small -- 8 bytes. -- and cheap to clone, as it contains an atomic reference to the entry header and a
 <a href=#621 id=621 data-nosnippet>621</a>/// reference to the interner that owns the string. It dereferences to the underlying string with relatively low
 <a href=#622 id=622 data-nosnippet>622</a>/// overhead: two pointer indirections.
 <a href=#623 id=623 data-nosnippet>623</a>///

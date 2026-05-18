@@ -11,7 +11,7 @@ process owning the route assertions exits.</p>
 <p>In addition to dynamic routes, callers can register static HTTP handlers and gRPC services up-front via
 <a href="struct.DynamicAPIBuilder.html#method.with_handler" title="method saluki_app::dynamic_api::DynamicAPIBuilder::with_handler"><code>with_handler</code></a>, <a href="struct.DynamicAPIBuilder.html#method.with_optional_handler" title="method saluki_app::dynamic_api::DynamicAPIBuilder::with_optional_handler"><code>with_optional_handler</code></a>, and
 <a href="struct.DynamicAPIBuilder.html#method.with_grpc_service" title="method saluki_app::dynamic_api::DynamicAPIBuilder::with_grpc_service"><code>with_grpc_service</code></a>. These form a base router that’s cloned on every rebuild and merged
-with the currently-asserted dynamic routes. Static routes take precedence on conflicts: a dynamic route whose path
+with the currently asserted dynamic routes. Static routes take precedence on conflicts: a dynamic route whose path
 and method overlap with a static route is skipped (with a warning) until the conflict clears.</p>
 <h3 id="assertions"><a class="doc-anchor" href="#assertions">§</a>Assertions</h3>
 <ul>

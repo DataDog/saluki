@@ -357,7 +357,7 @@
 <a href=#357 id=357 data-nosnippet>357</a>        <span class="macro">assert_eq!</span>(deserialized.value.as_duration(), <span class="number">15 </span>* NS);
 <a href=#358 id=358 data-nosnippet>358</a>    }
 <a href=#359 id=359 data-nosnippet>359</a>
-<a href=#360 id=360 data-nosnippet>360</a>    <span class="doccomment">/// Interesting test case because the 1.5 is interpreted as nanoseconds then truncated to 1ns in the Duration
+<a href=#360 id=360 data-nosnippet>360</a>    <span class="doccomment">/// Interesting test case because the 1.5 is interpreted as nanoseconds then truncated to 1 ns in the Duration
 <a href=#361 id=361 data-nosnippet>361</a>    </span><span class="attr">#[test]
 <a href=#362 id=362 data-nosnippet>362</a>    </span><span class="kw">fn </span>deserialize_float_succeeds() {
 <a href=#363 id=363 data-nosnippet>363</a>        <span class="kw">let </span>json = <span class="string">r#"{ "value": 1.5 }"#</span>;

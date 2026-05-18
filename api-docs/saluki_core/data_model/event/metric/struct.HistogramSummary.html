@@ -3,8 +3,8 @@
 <p>This is adjusted by the weight of each sample, based on the sample rate given during insertion.</p>
 <p>The underlying weight accumulation uses compensated (Neumaier) summation over float weights,
 and the result is rounded to the nearest integer. For standard sample rates whose reciprocals
-are exact integers (e.g. <code>0.1</code>, <code>0.25</code>, <code>0.5</code>, <code>1.0</code>) rounding has no effect; for
-non-integer-reciprocal rates (e.g. <code>0.21</code> → weight ≈ 4.762) it gives a closer approximation
+are exact integers (for example, <code>0.1</code>, <code>0.25</code>, <code>0.5</code>, <code>1.0</code>) rounding has no effect; for
+non-integer-reciprocal rates (for example, <code>0.21</code> → weight ≈ 4.762) it gives a closer approximation
 than truncation.</p>
 </div></details><details class="toggle method-toggle" open><summary><section id="method.sum" class="method"><a class="src rightside" href="../../../../src/saluki_core/data_model/event/metric/value/histogram.rs.html#137-139">Source</a><h4 class="code-header">pub fn <a href="#method.sum" class="fn">sum</a>(&amp;self) -&gt; <a class="primitive" href="https://doc.rust-lang.org/nightly/std/primitive.f64.html">f64</a></h4></section></summary><div class="docblock"><p>Returns the sum of all samples in the histogram.</p>
 <p>This is adjusted by the weight of each sample, based on the sample rate given during insertion.</p>

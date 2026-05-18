@@ -12,8 +12,8 @@ close to the limit we’re. Callers are never fully blocked even if the limit is
 <p>A background task is spawned that frequently checks the used memory for the entire process, and callers of
 <code>wait_for_capacity</code> will observe waiting once the memory usage exceeds the configured limit threshold. The
 waiting time will scale progressively the closer the memory usage is to the configured limit.</p>
-<p>Defaults to a 95% threshold (that’s, threshold begins at 95% of the limit), a minimum backoff duration of 1ms, and
-a maximum backoff duration of 25ms. The effective limit of the grant is used as the memory limit.</p>
+<p>Defaults to a 95% threshold (that’s, threshold begins at 95% of the limit), a minimum backoff duration of 1 ms, and
+a maximum backoff duration of 25 ms. The effective limit of the grant is used as the memory limit.</p>
 </div></details><details class="toggle method-toggle" open><summary><section id="method.noop" class="method"><a class="src rightside" href="../src/memory_accounting/limiter.rs.html#73-77">Source</a><h4 class="code-header">pub fn <a href="#method.noop" class="fn">noop</a>() -&gt; Self</h4></section></summary><div class="docblock"><p>Creates a no-op <code>MemoryLimiter</code> that doesn’t perform any limiting.</p>
 <p>All calls to <code>wait_for_capacity</code> will return immediately.</p>
 </div></details><details class="toggle method-toggle" open><summary><section id="method.wait_for_capacity" class="method"><a class="src rightside" href="../src/memory_accounting/limiter.rs.html#83-88">Source</a><h4 class="code-header">pub async fn <a href="#method.wait_for_capacity" class="fn">wait_for_capacity</a>(&amp;self)</h4></section></summary><div class="docblock"><p>Waits a short period of time based on the available memory.</p>
