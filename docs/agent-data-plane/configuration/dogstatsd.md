@@ -1,6 +1,6 @@
 # Configuring DogStatsD on Agent Data Plane
 
-<!-- Last updated: 2026-05-15 -->
+<!-- Last updated: 2026-05-18 -->
 
 The DogStatsD implementation on ADP has been redesigned in Rust for better resource guarantees and
 efficiency. Because the architecture is different from the original implementation, certain
@@ -8,7 +8,7 @@ configuration values may behave differently, be planned but not yet implemented,
 all. This page documents those nuances.
 
 ADP is designed to be transparent: customers configure DogStatsD the same way they always have. The
-sections below call out the cases where that's either not yet true, or not quite possible.
+sections below call out the cases where that is either not yet true, or not quite possible.
 
 If you find an error on this page, please [open an issue].
 
@@ -21,7 +21,7 @@ If you find an error on this page, please [open an issue].
 <!-- section:unsupported-in-progress -->
 ### Being Worked On
 
-The following settings aren't yet supported in ADP but are planned with GitHub issue links for
+The following settings are not yet supported in ADP but are planned with GitHub issue links for
 tracking.
 
 | Config Key                                       | Description                           | Issue   |
@@ -46,7 +46,7 @@ tracking.
 <!-- section:unsupported-not-planned -->
 ### Not Planned
 
-The following settings exist in the core agent but aren't planned for ADP, typically because ADP's
+The following settings exist in the core agent but are not planned for ADP, typically because ADP's
 architecture is fundamentally different or the feature is platform-specific.
 
 | Config Key                                     | Description                    | Reason                                                       |
@@ -95,9 +95,9 @@ and service checks that flow through the shared forwarder.
 > Setting `skip_ssl_validation: true` disables TLS server certificate validation for Datadog intake
 > forwarding. Use it only when you understand and accept that risk.
 
-This setting doesn't affect ADP IPC, local privileged APIs, ADP control-plane clients, OTLP
+This setting does not affect ADP IPC, local privileged APIs, ADP control-plane clients, OTLP
 proxying to the core agent, or unrelated HTTP clients. In FIPS builds, ADP rejects
-`skip_ssl_validation: true` because disabling TLS certificate validation isn't FIPS-compliant.
+`skip_ssl_validation: true` because disabling TLS certificate validation is not FIPS-compliant.
 
 ### Logging verbosity (`log_level` / `logging_frequency`)
 
@@ -133,8 +133,8 @@ enables runtime-toggleable metric-level debug statistics that track count and la
 unique metric and tag combination. That data powers the core agent's `dogstatsd-stats` CLI command
 and HTTP endpoint.
 
-ADP doesn't mirror the packet-level statistics config path. Instead, ADP provides an on-demand
-metric-level view through a DogStatsD statistics destination that's always wired into the
+ADP does not mirror the packet-level statistics config path. Instead, ADP provides an on-demand
+metric-level view through a DogStatsD statistics destination that is always wired into the
 topology, but only collects data during a time-bounded request. To collect statistics, run
 `agent-data-plane dogstatsd stats --duration-secs N` or call the privileged
 `/dogstatsd/stats?collection_duration_secs=N` API. The handler waits for the requested collection
@@ -144,12 +144,12 @@ same API and renders the result as either summary or cardinality analysis.
 ADP also exposes internal DogStatsD telemetry through its OpenMetrics endpoint when
 `data_plane.telemetry_enabled` is enabled. Scrape `data_plane.telemetry_listen_addr` to collect
 aggregate DogStatsD counters such as processed message counts, packet and byte counts, packet pool
-usage, and channel latency. This telemetry endpoint is separate from `/dogstatsd/stats`: it doesn't
-return the per-metric count and last-seen map, and it's not controlled by the core agent's
+usage, and channel latency. This telemetry endpoint is separate from `/dogstatsd/stats`: it does not
+return the per-metric count and last-seen map, and it is not controlled by the core agent's
 `dogstatsd_stats_*` keys.
 
-ADP doesn't expose the core agent's packet-per-second expvar endpoint or a persistent per-metric
-DogStatsD statistics endpoint to scrape. You don't need to set up scraper configuration for this
+ADP does not expose the core agent's packet-per-second expvar endpoint or a persistent per-metric
+DogStatsD statistics endpoint to scrape. You do not need to set up scraper configuration for this
 per-metric data. The config keys `dogstatsd_stats_enable`, `dogstatsd_stats_buffer`, and
 `dogstatsd_stats_port` have no effect in ADP. See [#1352].
 
@@ -164,8 +164,8 @@ decoded metric stream. The destination writes one line per metric sample with th
 count, and last-seen time while `dogstatsd_metrics_stats_enable` is `true`. When
 `dogstatsd_metrics_stats_enable` is `false`, the destination drains decoded metrics and drops them.
 This lets runtime configuration changes start and stop the debug log without rebuilding the
-topology. This feature is for support and troubleshooting. It doesn't change normal metric
-forwarding, and it doesn't replace the on-demand `/dogstatsd/stats` API.
+topology. This feature is for support and troubleshooting. It does not change normal metric
+forwarding, and it does not replace the on-demand `/dogstatsd/stats` API.
 
 Use these settings to control the file:
 
@@ -197,23 +197,51 @@ configure a separate OpenMetrics check pointed at ADP's endpoint. See [#1338].
 <!-- section:compatibility-unknown -->
 
 The following settings need further investigation. ADP behavior may differ from the core agent in
-ways that aren't yet fully characterized.
+ways that are not yet fully characterized.
 
-| Config Key                                         | Description                      | Issue   |
-| -------------------------------------------------- | -------------------------------- | ------- |
-| `aggregator_tag_filter_cache_capacity`             | Tag-filter dedup cache size      |         |
-| `dogstatsd_disable_verbose_logs`                   | Suppress noisy parse error logs  | [#1350] |
-| `forwarder_apikey_validation_interval`             | API key check interval (mins)    | [#1357] |
-| `forwarder_flush_to_disk_mem_ratio`                | Mem-to-disk flush threshold      | [#1364] |
-| `forwarder_high_prio_buffer_size`                  | High-priority request queue size | [#1362] |
-| `forwarder_low_prio_buffer_size`                   | Low-priority request queue size  | [#1362] |
-| `forwarder_max_concurrent_requests`                | Max concurrent HTTP requests     | [#1363] |
-| `forwarder_retry_queue_capacity_time_interval_sec` | Retry queue time-based capacity  | [#1365] |
-| `serializer_max_payload_size`                      | Max compressed payload size      | [#1354] |
-| `serializer_max_series_payload_size`               | Max series compressed size       | [#1354] |
-| `serializer_max_series_points_per_payload`         | Max series points per payload    | [#1354] |
-| `serializer_max_series_uncompressed_payload_size`  | Max series uncompressed size     | [#1354] |
-| `serializer_max_uncompressed_payload_size`         | Max uncompressed payload size    | [#1354] |
+| Config Key                                                       | Description                                   | Issue   |
+| ---------------------------------------------------------------- | --------------------------------------------- | ------- |
+| `aggregator_buffer_size`                                         | Channel buffer depth for aggregator queues    |         |
+| `aggregator_flush_metrics_and_serialize_in_parallel_buffer_size` | Parallel flush: series/sketch buffer size     |         |
+| `aggregator_flush_metrics_and_serialize_in_parallel_chan_size`   | Parallel flush: channel size                  |         |
+| `aggregator_stop_timeout`                                        | Timeout (s) for aggregator flush on stop      |         |
+| `aggregator_tag_filter_cache_capacity`                           | Tag-filter dedup cache size                   | [#1667] |
+| `aggregator_use_tags_store`                                      | Enable shared tag deduplication store         |         |
+| `anomaly_detection.enabled`                                      | Enable anomaly detection observer pipeline    |         |
+| `anomaly_detection.metrics.enabled`                              | Enable metric ingestion for anomaly detection |         |
+| `autoscaling.failover.enabled`                                   | Enable autoscaling failover metric routing    |         |
+| `autoscaling.failover.metrics`                                   | Metric names forwarded to DCA for failover    |         |
+| `config_id`                                                      | Fleet Automation config ID tag for agent      |         |
+| `dogstatsd_disable_verbose_logs`                                 | Suppress noisy parse error logs               | [#1350] |
+| `dogstatsd_experimental_http.enabled`                            | Enable experimental HTTP/H2C DSD listener     |         |
+| `dogstatsd_experimental_http.listen_address`                     | Bind addr for experimental HTTP DSD listener  |         |
+| `dogstatsd_host_socket_path`                                     | Host UDS socket dir (admission controller)    |         |
+| `dogstatsd_mapper_cache_size`                                    | LRU cache size for mapper regex match results |         |
+| `enable_json_stream_shared_compressor_buffers`                   | Pre-allocate shared compressor buffers        |         |
+| `enable_payloads.json_to_v1_intake`                              | Enable JSON payload to /api/v1/intake         |         |
+| `entity_id`                                                      | Agent's own pod entity ID (DCA webhook)       |         |
+| `forwarder_apikey_validation_interval`                           | API key check interval (mins)                 | [#1357] |
+| `forwarder_flush_to_disk_mem_ratio`                              | Mem-to-disk flush threshold                   | [#1364] |
+| `forwarder_high_prio_buffer_size`                                | High-priority request queue size              | [#1362] |
+| `forwarder_low_prio_buffer_size`                                 | Low-priority request queue size               | [#1362] |
+| `forwarder_max_concurrent_requests`                              | Max concurrent HTTP requests                  | [#1363] |
+| `forwarder_requeue_buffer_size`                                  | In-memory requeue buffer size                 |         |
+| `forwarder_retry_queue_capacity_time_interval_sec`               | Retry queue time-based capacity               | [#1365] |
+| `forwarder_stop_timeout`                                         | Timeout (s) for forwarder graceful stop       |         |
+| `heroku_dyno`                                                    | Override agent name for Heroku telemetry      |         |
+| `log_payloads`                                                   | Debug-log serialized payloads before send     |         |
+| `multi_region_failover.enabled`                                  | Enable multi-region failover mode             |         |
+| `multi_region_failover.failover_metrics`                         | Enable metrics forwarding to failover region  |         |
+| `multi_region_failover.metric_allowlist`                         | Metric name allowlist for MRF forwarding      |         |
+| `serializer_max_payload_size`                                    | Max compressed payload size                   | [#1354] |
+| `serializer_max_series_payload_size`                             | Max series compressed size                    | [#1354] |
+| `serializer_max_series_points_per_payload`                       | Max series points per payload                 | [#1354] |
+| `serializer_max_series_uncompressed_payload_size`                | Max series uncompressed size                  | [#1354] |
+| `serializer_max_uncompressed_payload_size`                       | Max uncompressed payload size                 | [#1354] |
+| `telemetry.dogstatsd.aggregator_channel_latency_buckets`         | Histogram buckets: DSD aggregator channel lag |         |
+| `telemetry.dogstatsd.listeners_channel_latency_buckets`          | Histogram buckets: listener channel latency   |         |
+| `telemetry.dogstatsd.listeners_latency_buckets`                  | Histogram buckets: listener processing        |         |
+| `telemetry.dogstatsd_origin`                                     | Per-origin processed-metrics telemetry        |         |
 
 ## ADP-Only Settings
 
@@ -268,19 +296,19 @@ limiter begins exerting backpressure (see `enable_global_limiter`).
 
 ADP enforces a minimum sample rate on incoming metrics to prevent memory exhaustion from extremely
 low sample rates on histograms and sketches. Sending metrics with a very high inverse sample rate
-(for example, `@0.0000001`) can cause unbounded memory growth in a sketch; this setting prevents that. The
+(e.g. `@0.0000001`) can cause unbounded memory growth in a sketch; this setting prevents that. The
 default is conservative enough that normal clients are unaffected.
 
 ### `dogstatsd_permissive_decoding`
 
 By default, ADP parses DogStatsD packets with the same leniency as the core agent, accepting packets
 that technically violate the spec. Setting this to `false` enables strict mode, which rejects
-non-conformant packets. Strict mode isn't available in the core agent.
+non-conformant packets. Strict mode is not available in the core agent.
 
 ### `data_plane.remote_agent_enabled` / `data_plane.use_new_config_stream_endpoint`
 
 These two keys are transitional flags being phased out. Both will be implied by
-`data_plane.standalone_mode=false` in a future release. Don't rely on them for new deployments.
+`data_plane.standalone_mode=false` in a future release. Do not rely on them for new deployments.
 
 ## Transparent Settings
 
@@ -289,7 +317,7 @@ These two keys are transitional flags being phased out. Both will be implied by
 The following settings work in ADP with the same behavior as the core agent.
 
 To enable syslog logging, set `log_to_syslog: true`. Console logging remains controlled by
-`log_to_console`; enabling syslog doesn't disable console or file logging. If `syslog_uri` is empty
+`log_to_console`; enabling syslog does not disable console or file logging. If `syslog_uri` is empty
 while syslog logging is enabled, ADP uses the platform default local syslog socket:
 `unixgram:///dev/log` on Linux and `unixgram:///var/run/syslog` on macOS. Set `syslog_rfc: true`
 when the receiving syslog daemon expects the Agent's RFC-style header.
