@@ -640,8 +640,6 @@
   reason: initial bulk
 - name: cluster_agent.collect_kubernetes_tags
   reason: initial bulk
-- name: cluster_agent.enabled
-  reason: initial bulk
 - name: cluster_agent.isolation_segments_tags
   reason: initial bulk
 - name: cluster_agent.kube_metadata_collection.enabled
