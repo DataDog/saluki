@@ -16,7 +16,7 @@ pub struct MetadataOperation {
     /// The entity ID this operation is associated with.
     pub entity_id: EntityId,
 
-    /// The action(s) to perform.
+    /// The actions to perform.
     pub actions: OneOrMany<MetadataAction>,
 }
 

@@ -20,4 +20,4 @@ Adding a new proposal is a straightforward process:
     <a :href="record.url" v-html="record.pretty_title" />
   </li>
 </ul>
-<p v-else><b>No proposals defined yet!</b></p>
+<p v-else><b>No proposals defined yet.</b></p>

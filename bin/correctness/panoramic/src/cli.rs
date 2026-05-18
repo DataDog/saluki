@@ -26,7 +26,7 @@ pub struct RunCommand {
     #[argh(option, short = 'd')]
     pub test_dirs: Vec<PathBuf>,
 
-    /// run only specific test(s) by name (comma-separated)
+    /// run only specific tests by name (comma-separated)
     #[argh(option, short = 't')]
     pub tests: Option<String>,
 

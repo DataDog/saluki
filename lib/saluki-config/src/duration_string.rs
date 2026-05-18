@@ -357,7 +357,7 @@ mod tests {
         assert_eq!(deserialized.value.as_duration(), 15 * NS);
     }
 
-    /// Interesting test case because the 1.5 is interpreted as nanoseconds then truncated to 1ns in the Duration
+    /// Interesting test case because the 1.5 is interpreted as nanoseconds then truncated to 1 ns in the Duration
     #[test]
     fn deserialize_float_succeeds() {
         let json = r#"{ "value": 1.5 }"#;

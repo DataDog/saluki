@@ -311,7 +311,7 @@ When documenting performance, memory, or design trade-offs, be explicit about wh
 - **Name both sides**: "This represents a trade-off between throughput and memory usage"
 - **Quantify when possible**: "Approximately 150–200 bytes per context based on typical metric names and tags"
 - **Acknowledge variability**: "The optimal value is workload-dependent"
-- **Provide guidance**: "A good starting point is 1MB per 5000 unique contexts"
+- **Provide guidance**: "A good starting point is 1 MB per 5000 unique contexts"
 
 Example:
 

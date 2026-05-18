@@ -168,9 +168,9 @@ impl ContextResolverBuilder {
     ///
     /// The optimal value will almost always be workload-dependent, but a good starting point can be to estimate around
     /// 150 - 200 bytes per context based on empirical measurements around common metric name and tag lengths. This
-    /// translate to around 5000 unique contexts per 1MB of interner size.
+    /// translate to around 5000 unique contexts per 1 MB of interner size.
     ///
-    /// Defaults to 2MB.
+    /// Defaults to 2 MB.
     pub fn with_interner_capacity_bytes(mut self, capacity: NonZeroUsize) -> Self {
         self.interner_capacity_bytes = Some(capacity);
         self

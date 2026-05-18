@@ -49,7 +49,7 @@ impl OttlTransformConfiguration {
 
 #[async_trait]
 impl SynchronousTransformBuilder for OttlTransformConfiguration {
-    /// Builds the OTTL Transform transform from the current configuration.
+    /// Builds the OTTL `Transform` from the current configuration.
     ///
     /// Registers the `set` editor function, parses each trace statement, and returns
     /// the transform. Statements may be editor calls like `set(attributes["key"], "value")`
