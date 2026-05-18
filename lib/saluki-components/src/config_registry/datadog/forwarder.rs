@@ -82,7 +82,7 @@ crate::declare_annotations! {
     };
 
     /// `additional_endpoints`—extra intake endpoints (JSON map of host → API keys).
-    /// Uses a structured test_json because the field uses PickFirst<(DisplayFromStr, _)>.
+    /// Uses a structured `test_json` because the field uses PickFirst<(DisplayFromStr, _)>.
     ADDITIONAL_ENDPOINTS = SalukiAnnotation {
         schema: &schema::ADDITIONAL_ENDPOINTS,
         support_level: SupportLevel::Full,

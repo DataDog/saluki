@@ -1645,7 +1645,7 @@ mod tests {
 
     /// TestGetOTelEnv - Tests GetOTelEnv function
     /// Note: The Rust implementation doesn't have a direct GetOTelEnv function,
-    /// but the logic is embedded in otel_span_to_dd_span. This test verifies
+    /// but the logic is embedded in `otel_span_to_dd_span`. This test verifies
     /// the expected behavior based on Go's test cases.
     #[test]
     fn test_get_otel_env() {

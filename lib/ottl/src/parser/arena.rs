@@ -156,7 +156,7 @@ pub fn convert_to_arena<F: EvalContextFamily>(
 // Constant Folding Helpers
 // =====================================================================================================================
 
-/// Check if a ValueExpr is a literal and get its value
+/// Returns `Some(v)` if `expr` is a literal, `None` otherwise.
 fn try_get_literal(expr: &ValueExpr) -> Option<&Value> {
     match expr {
         ValueExpr::Literal(v) => Some(v),
@@ -164,7 +164,7 @@ fn try_get_literal(expr: &ValueExpr) -> Option<&Value> {
     }
 }
 
-/// Check if arena bool expr is a literal
+/// Returns `Some(true)` if `r` is a boolean literal, `None` otherwise.
 fn arena_bool_is_literal<F: EvalContextFamily>(arena: &AstArena<F>, r: BoolExprRef) -> Option<bool> {
     match arena.get_bool(r) {
         ArenaBoolExpr::Literal(b) => Some(*b),
@@ -172,7 +172,7 @@ fn arena_bool_is_literal<F: EvalContextFamily>(arena: &AstArena<F>, r: BoolExprR
     }
 }
 
-/// Try to get literal value from a MathExpr
+/// Returns `Some(v)` if `expr` is a literal, `None` otherwise.
 fn try_get_math_literal(expr: &MathExpr) -> Option<&Value> {
     match expr {
         MathExpr::Primary(ValueExpr::Literal(v)) => Some(v),

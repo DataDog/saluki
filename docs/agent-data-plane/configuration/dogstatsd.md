@@ -49,18 +49,18 @@ tracking.
 The following settings exist in the core agent but aren't planned for ADP, typically because ADP's
 architecture is fundamentally different or the feature is platform-specific.
 
-| Config Key                                     | Description                    | Reason                                                       |
-| ---------------------------------------------- | ------------------------------ | ------------------------------------------------------------ |
-| `dogstatsd_mem_based_rate_limiter.enabled`     | Enable memory rate limiter     | Go GC specific; use `memory_limit`                           |
-| `dogstatsd_no_aggregation_pipeline_batch_size` | No-agg pipeline batch size     | Fixed in ADP topology                                        |
-| `dogstatsd_packet_buffer_flush_timeout`        | Packet buffer flush timeout    | ADP decodes inline                                           |
-| `dogstatsd_packet_buffer_size`                 | Datagrams per packet buffer    | ADP decodes inline                                           |
-| `dogstatsd_pipeline_autoadjust`                | Auto-adjust pipeline workers   | ADP uses async tasks                                         |
-| `dogstatsd_pipeline_count`                     | Parallel processing pipelines  | ADP uses async tasks                                         |
-| `dogstatsd_queue_size`                         | Packet channel buffer size     | ADP uses async tasks                                         |
-| `dogstatsd_telemetry_enabled_listener_id`      | Per-listener telemetry tagging | Not feasible to thread through                               |
-| `dogstatsd_workers_count`                      | Num DSD processing workers     | ADP uses async tasks                                         |
-| `use_dogstatsd`                                | Master DogStatsD enable toggle | Core Agent evaluates and sets `data_plane.dogstatsd.enabled` |
+| Config Key                                     | Description                      | Reason                                                       |
+| ---------------------------------------------- | -------------------------------- | ------------------------------------------------------------ |
+| `dogstatsd_mem_based_rate_limiter.enabled`     | Enable memory rate limiter       | Go GC specific; use `memory_limit`                           |
+| `dogstatsd_no_aggregation_pipeline_batch_size` | No-agg pipeline batch size       | Fixed in ADP topology                                        |
+| `dogstatsd_packet_buffer_flush_timeout`        | Packet buffer flush timeout      | ADP decodes inline                                           |
+| `dogstatsd_packet_buffer_size`                 | Datagrams per packet buffer      | ADP decodes inline                                           |
+| `dogstatsd_pipeline_autoadjust`                | Auto-adjust pipeline workers     | ADP uses async tasks                                         |
+| `dogstatsd_pipeline_count`                     | Parallel processing pipelines    | ADP uses async tasks                                         |
+| `dogstatsd_queue_size`                         | Packet channel buffer size       | ADP uses async tasks                                         |
+| `dogstatsd_telemetry_enabled_listener_id`      | Per-listener telemetry tagging   | Not feasible to thread through                               |
+| `dogstatsd_workers_count`                      | Number of DSD processing workers | ADP uses async tasks                                         |
+| `use_dogstatsd`                                | Master DogStatsD enable toggle   | Core Agent evaluates and sets `data_plane.dogstatsd.enabled` |
 
 ## Behavioral Differences
 
@@ -201,9 +201,9 @@ ways that aren't yet fully characterized.
 
 | Config Key                                         | Description                      | Issue   |
 | -------------------------------------------------- | -------------------------------- | ------- |
-| `aggregator_tag_filter_cache_capacity`             | Tag-filter dedup cache size      |         |
+| `aggregator_tag_filter_cache_capacity`             | Tag-filter `dedup` cache size    |         |
 | `dogstatsd_disable_verbose_logs`                   | Suppress noisy parse error logs  | [#1350] |
-| `forwarder_apikey_validation_interval`             | API key check interval (mins)    | [#1357] |
+| `forwarder_apikey_validation_interval`             | API key check interval (`mins`)  | [#1357] |
 | `forwarder_flush_to_disk_mem_ratio`                | Mem-to-disk flush threshold      | [#1364] |
 | `forwarder_high_prio_buffer_size`                  | High-priority request queue size | [#1362] |
 | `forwarder_low_prio_buffer_size`                   | Low-priority request queue size  | [#1362] |
@@ -236,7 +236,7 @@ The following settings are specific to ADP and have no equivalent in the core ag
 | `data_plane.secure_api_listen_address`      | ADP privileged API address                 |         |
 | `data_plane.standalone_mode`                | ADP standalone mode toggle                 |         |
 | `data_plane.use_new_config_stream_endpoint` | Use new config stream endpoint             |         |
-| `dogstatsd_allow_context_heap_allocs`       | Allow heap allocs for contexts             |         |
+| `dogstatsd_allow_context_heap_allocs`       | Allow heap `allocs` for contexts           |         |
 | `dogstatsd_autoscale_udp_listeners`         | Bind multiple UDP sockets via SO_REUSEPORT |         |
 | `dogstatsd_buffer_count`                    | Number of receive buffers                  |         |
 | `dogstatsd_cached_contexts_limit`           | Max cached metric contexts                 |         |
@@ -297,7 +297,7 @@ when the receiving syslog daemon expects the Agent's RFC-style header.
 | Config Key                                       | Description                           |
 | ------------------------------------------------ | ------------------------------------- |
 | `additional_endpoints`                           | Dual-ship to extra endpoints          |
-| `aggregate_context_limit`                        | Max contexts per agg window           |
+| `aggregate_context_limit`                        | Max contexts per `agg` window         |
 | `api_key`                                        | API key for endpoint auth             |
 | `auth_token_file_path`                           | IPC auth token file path              |
 | `bind_host`                                      | Global listen host fallback           |
@@ -318,7 +318,7 @@ when the receiving syslog daemon expects the Agent's RFC-style header.
 | `dogstatsd_log_file_max_rolls`                   | Max rotated DSD debug log files       |
 | `dogstatsd_log_file_max_size`                    | Max DSD debug log file size           |
 | `dogstatsd_logging_enabled`                      | Enable DSD metric debug logging       |
-| `dogstatsd_mapper_profiles`                      | Metric mapping profile defs           |
+| `dogstatsd_mapper_profiles`                      | Metric mapping profile `defs`         |
 | `dogstatsd_no_aggregation_pipeline`              | Enable no-agg timestamped path        |
 | `dogstatsd_non_local_traffic`                    | Accept non-localhost UDP/TCP          |
 | `dogstatsd_origin_detection`                     | Enable UDS origin detection           |
@@ -334,7 +334,7 @@ when the receiving syslog daemon expects the Agent's RFC-style header.
 | `dogstatsd_tags`                                 | Extra tags added to all DSD data      |
 | `enable_payloads.events`                         | Allow sending event payloads          |
 | `enable_payloads.series`                         | Allow sending series payloads         |
-| `enable_payloads.service_checks`                 | Allow sending svc check payloads      |
+| `enable_payloads.service_checks`                 | Allow sending `svc` check payloads    |
 | `enable_payloads.sketches`                       | Allow sending sketch payloads         |
 | `expected_tags_duration`                         | Host tag enrichment duration          |
 | `extra_tags`                                     | Additional static tags                |
@@ -345,7 +345,7 @@ when the receiving syslog daemon expects the Agent's RFC-style header.
 | `forwarder_num_workers`                          | Concurrent forwarder workers          |
 | `forwarder_recovery_interval`                    | Backoff recovery decrease factor      |
 | `forwarder_recovery_reset`                       | Reset errors on success               |
-| `forwarder_retry_queue_max_size`                 | Retry queue max size (depr.)          |
+| `forwarder_retry_queue_max_size`                 | Retry queue max size (deprecated)     |
 | `forwarder_retry_queue_payloads_max_size`        | Retry queue max size (bytes)          |
 | `forwarder_storage_max_disk_ratio`               | Max disk usage ratio for retry        |
 | `forwarder_storage_max_size_in_bytes`            | Max on-disk retry storage size        |
@@ -366,7 +366,7 @@ when the receiving syslog daemon expects the Agent's RFC-style header.
 | `metric_filterlist`                              | Metric name blocklist                 |
 | `metric_filterlist_match_prefix`                 | Blocklist uses prefix matching        |
 | `metric_tag_filterlist`                          | Per-metric tag include/exclude        |
-| `no_proxy_nonexact_match`                        | Domain/CIDR no_proxy matching         |
+| `no_proxy_nonexact_match`                        | Domain/CIDR `no_proxy` matching       |
 | `observability_pipelines_worker.metrics.enabled` | Route metrics to OPW instance         |
 | `observability_pipelines_worker.metrics.url`     | OPW metrics intake URL                |
 | `origin_detection_unified`                       | Unified origin detection mode         |

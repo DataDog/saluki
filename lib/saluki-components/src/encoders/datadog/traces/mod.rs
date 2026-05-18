@@ -145,7 +145,7 @@ impl DatadogTraceConfiguration {
 }
 
 impl DatadogTraceConfiguration {
-    /// Sets the default_hostname using the environment provider
+    /// Sets the `default_hostname` using the environment provider
     pub async fn with_environment_provider<E>(mut self, environment_provider: E) -> Result<Self, GenericError>
     where
         E: EnvironmentProvider<Host = BoxedHostProvider>,
