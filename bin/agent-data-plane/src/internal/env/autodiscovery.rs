@@ -8,8 +8,10 @@ use saluki_core::runtime::{InitializationError, ProcessShutdown, Supervisable, S
 use saluki_env::autodiscovery::AutodiscoveryEvent;
 use saluki_env::AutodiscoveryProvider;
 use saluki_error::GenericError;
+use std::sync::Arc;
 use tokio::select;
-use tokio::sync::broadcast::{self, Receiver, Sender};
+use tokio::sync::mpsc::{self, Receiver, Sender};
+use tokio::sync::Mutex;
 use tokio::time::sleep;
 use tracing::{debug, warn};
 
@@ -22,6 +24,7 @@ use tracing::{debug, warn};
 #[derive(Clone)]
 pub struct RemoteAgentAutodiscoveryProvider {
     sender: Sender<AutodiscoveryEvent>,
+    receiver: Arc<Mutex<Option<Receiver<AutodiscoveryEvent>>>>,
 }
 
 impl RemoteAgentAutodiscoveryProvider {
@@ -33,9 +36,12 @@ impl RemoteAgentAutodiscoveryProvider {
     /// If the remote agent client couldn't be created, an error is returned.
     pub async fn from_configuration(config: &GenericConfiguration) -> Result<(Self, Supervisor), GenericError> {
         let client = RemoteAgentClient::from_configuration(config).await?;
-        let (sender, _) = broadcast::channel::<AutodiscoveryEvent>(16);
+        let (sender, receiver) = mpsc::channel::<AutodiscoveryEvent>(16);
 
-        let provider = Self { sender: sender.clone() };
+        let provider = Self {
+            sender: sender.clone(),
+            receiver: Arc::new(Mutex::new(Some(receiver))),
+        };
 
         let mut supervisor = Supervisor::new("autodiscovery")?;
         supervisor.add_worker(AutodiscoveryEventBroadcaster { client, sender });
@@ -47,7 +53,7 @@ impl RemoteAgentAutodiscoveryProvider {
 #[async_trait]
 impl AutodiscoveryProvider for RemoteAgentAutodiscoveryProvider {
     async fn subscribe(&self) -> Option<Receiver<AutodiscoveryEvent>> {
-        Some(self.sender.subscribe())
+        self.receiver.lock().await.take()
     }
 }
 
@@ -89,7 +95,7 @@ async fn run_ad_event_broadcaster(mut client: RemoteAgentClient, sender: Sender<
                 Ok(response) => {
                     for proto_config in response.configs {
                         let event = AutodiscoveryEvent::from(proto_config);
-                        let _ = sender.send(event);
+                        let _ = sender.send(event).await;
                     }
                 }
                 Err(status) => {

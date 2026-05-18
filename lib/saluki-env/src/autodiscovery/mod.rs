@@ -13,7 +13,7 @@ use datadog_protos::agent::{
 use fnv::FnvHasher;
 use saluki_error::GenericError;
 use stringtheory::MetaString;
-use tokio::sync::broadcast::Receiver;
+use tokio::sync::mpsc::Receiver;
 use twox_hash::XxHash64;
 
 pub mod providers;
@@ -367,6 +367,8 @@ pub enum AutodiscoveryEvent {
 #[async_trait]
 pub trait AutodiscoveryProvider {
     /// Subscribe to autodiscovery events.
+    ///
+    /// Returns `None` when no provider is configured, or when the provider's event receiver has already been taken.
     async fn subscribe(&self) -> Option<Receiver<AutodiscoveryEvent>>;
 }
 

@@ -1,14 +1,15 @@
 use std::collections::BTreeMap;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use saluki_error::GenericError;
 use serde::Deserialize;
 use stringtheory::MetaString;
 use tokio::fs;
-use tokio::sync::broadcast::{self, Receiver, Sender};
-use tokio::sync::OnceCell;
+use tokio::sync::mpsc::{self, Receiver, Sender};
+use tokio::sync::{Mutex, OnceCell};
 use tokio::time::{interval, Duration};
 use tracing::{debug, info, warn};
 
@@ -20,6 +21,7 @@ const BG_MONITOR_INTERVAL: u64 = 30;
 pub struct LocalAutodiscoveryProvider {
     search_paths: Vec<PathBuf>,
     sender: Sender<AutodiscoveryEvent>,
+    receiver: Arc<Mutex<Option<Receiver<AutodiscoveryEvent>>>>,
     listener_init: OnceCell<()>,
 }
 
@@ -41,11 +43,12 @@ impl LocalAutodiscoveryProvider {
             })
             .collect();
 
-        let (sender, _) = broadcast::channel::<AutodiscoveryEvent>(16);
+        let (sender, receiver) = mpsc::channel::<AutodiscoveryEvent>(16);
 
         Self {
             search_paths,
             sender,
+            receiver: Arc::new(Mutex::new(Some(receiver))),
             listener_init: OnceCell::new(),
         }
     }
@@ -157,7 +160,7 @@ async fn process_yaml_file(
             if !known_configs.contains(&config_id) {
                 debug!("New configuration found: {}", config_id);
                 let event = AutodiscoveryEvent::CheckSchedule { config: config.clone() };
-                let _ = sender.send(event);
+                let _ = sender.send(event).await;
                 known_configs.insert(config_id.clone());
                 configs.insert(config_id, config);
             } else {
@@ -167,7 +170,7 @@ async fn process_yaml_file(
                     configs.insert(config_id.clone(), config.clone());
                     debug!("Configuration updated: {}", config_id);
                     let event = AutodiscoveryEvent::CheckSchedule { config };
-                    let _ = sender.send(event);
+                    let _ = sender.send(event).await;
                 }
             }
         }
@@ -238,7 +241,7 @@ async fn scan_and_emit_events(
 
         // Create an unschedule Config event
         let event = AutodiscoveryEvent::CheckUnscheduled { config };
-        let _ = sender.send(event);
+        let _ = sender.send(event).await;
     }
 
     Ok(())
@@ -253,7 +256,7 @@ impl AutodiscoveryProvider for LocalAutodiscoveryProvider {
             })
             .await;
 
-        Some(self.sender.subscribe())
+        self.receiver.lock().await.take()
     }
 }
 
@@ -305,6 +308,21 @@ mod tests {
         target_path
     }
 
+    // Copy a file from test_data to the temp directory with a different target name.
+    async fn copy_test_file_as(source_name: &str, target_name: &str, temp_dir: &Path) -> PathBuf {
+        let source_path = test_data_path().join(source_name);
+        let target_path = temp_dir.join(target_name);
+
+        let content = fs::read_to_string(&source_path)
+            .await
+            .unwrap_or_else(|_| panic!("Failed to read test file: {:?}", source_path));
+
+        let mut file = fs::File::create(&target_path).await.unwrap();
+        file.write_all(content.as_bytes()).await.unwrap();
+
+        target_path
+    }
+
     #[tokio::test]
     async fn test_parse_config_file() {
         let test_file = test_data_path().join("test-config.yaml");
@@ -337,7 +355,7 @@ mod tests {
 
         let mut known_configs = HashSet::new();
         let mut configs = BTreeMap::new();
-        let (sender, mut receiver) = broadcast::channel::<AutodiscoveryEvent>(10);
+        let (sender, mut receiver) = mpsc::channel::<AutodiscoveryEvent>(10);
 
         scan_and_emit_events(&[dir.path().to_path_buf()], &mut known_configs, &sender, &mut configs)
             .await
@@ -371,6 +389,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_scan_and_emit_events_preserves_bursts() {
+        let dir = tempdir().unwrap();
+        let _test_file1 = copy_test_file_as("config1.yaml", "config1.yaml", dir.path()).await;
+        let _test_file2 = copy_test_file_as("config1.yaml", "config2.yaml", dir.path()).await;
+
+        let (sender, mut receiver) = mpsc::channel::<AutodiscoveryEvent>(1);
+        let search_path = dir.path().to_path_buf();
+
+        let scan = tokio::spawn(async move {
+            let mut known_configs = HashSet::new();
+            let mut configs = BTreeMap::new();
+
+            scan_and_emit_events(&[search_path], &mut known_configs, &sender, &mut configs).await
+        });
+
+        let event1 = tokio::time::timeout(Duration::from_secs(1), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let event2 = tokio::time::timeout(Duration::from_secs(1), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        scan.await.unwrap().unwrap();
+
+        assert!(matches!(event1, AutodiscoveryEvent::CheckSchedule { .. }));
+        assert!(matches!(event2, AutodiscoveryEvent::CheckSchedule { .. }));
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[tokio::test]
     async fn test_scan_and_emit_events_removed_config() {
         let dir = tempdir().unwrap();
 
@@ -387,7 +437,7 @@ mod tests {
             },
         );
 
-        let (sender, mut receiver) = broadcast::channel::<AutodiscoveryEvent>(10);
+        let (sender, mut receiver) = mpsc::channel::<AutodiscoveryEvent>(10);
 
         scan_and_emit_events(&[dir.path().to_path_buf()], &mut known_configs, &sender, &mut configs)
             .await
@@ -408,7 +458,7 @@ mod tests {
 
         let mut known_configs = HashSet::new();
         let mut configs = BTreeMap::new();
-        let (sender, mut receiver) = broadcast::channel::<AutodiscoveryEvent>(10);
+        let (sender, mut receiver) = mpsc::channel::<AutodiscoveryEvent>(10);
 
         scan_and_emit_events(&[dir.path().to_path_buf()], &mut known_configs, &sender, &mut configs)
             .await
