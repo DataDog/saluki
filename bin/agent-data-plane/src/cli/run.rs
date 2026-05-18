@@ -162,7 +162,7 @@ pub async fn handle_run_command(
     let dsd_stats_config = DogStatsDStatisticsConfiguration::new();
 
     // Create the blueprint for our primary topology.
-    let (blueprint, dsd_capture_api_handler) = create_topology(
+    let (blueprint, control_surfaces) = create_topology(
         &config,
         &dp_config,
         &env_provider,
@@ -170,6 +170,7 @@ pub async fn handle_run_command(
         dsd_stats_config.clone(),
     )
     .await?;
+    let dsd_capture_api_handler = control_surfaces.dogstatsd.map(|s| s.capture_api_handler);
 
     // Create the internal supervisor which drives our control plane and internal observability.
     let mut internal_supervisor = create_internal_supervisor(
@@ -380,12 +381,21 @@ fn check_and_warn_config(config: &GenericConfiguration) -> Result<(), GenericErr
     Ok(())
 }
 
+#[derive(Default)]
+struct TopologyControlSurfaces {
+    dogstatsd: Option<DogStatsDControlSurface>,
+}
+
+struct DogStatsDControlSurface {
+    capture_api_handler: DogStatsDCaptureAPIHandler,
+}
+
 async fn create_topology(
     config: &GenericConfiguration, dp_config: &DataPlaneConfiguration, env_provider: &ADPEnvironmentProvider,
     component_registry: &ComponentRegistry, dsd_stats_config: DogStatsDStatisticsConfiguration,
-) -> Result<(TopologyBlueprint, Option<DogStatsDCaptureAPIHandler>), GenericError> {
+) -> Result<(TopologyBlueprint, TopologyControlSurfaces), GenericError> {
     let mut blueprint = TopologyBlueprint::new("primary", component_registry);
-    let mut dsd_capture_api_handler = None;
+    let mut control_surfaces = TopologyControlSurfaces::default();
 
     // If no data pipelines are enabled, then there's nothing for us to do.
     if !dp_config.data_pipelines_enabled() {
@@ -438,15 +448,16 @@ async fn create_topology(
     }
 
     if dp_config.dogstatsd().enabled() {
-        dsd_capture_api_handler =
-            Some(add_dsd_pipeline_to_blueprint(&mut blueprint, config, env_provider, dsd_stats_config).await?);
+        let capture_api_handler =
+            add_dsd_pipeline_to_blueprint(&mut blueprint, config, env_provider, dsd_stats_config).await?;
+        control_surfaces.dogstatsd = Some(DogStatsDControlSurface { capture_api_handler });
     }
 
     if dp_config.otlp().enabled() {
         add_otlp_pipeline_to_blueprint(&mut blueprint, config, dp_config, env_provider)?;
     }
 
-    Ok((blueprint, dsd_capture_api_handler))
+    Ok((blueprint, control_surfaces))
 }
 
 async fn add_checks_pipeline_to_blueprint(
