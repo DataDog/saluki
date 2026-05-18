@@ -201,47 +201,47 @@ ways that are not yet fully characterized.
 
 | Config Key                                                       | Description                                   | Issue   |
 | ---------------------------------------------------------------- | --------------------------------------------- | ------- |
-| `aggregator_buffer_size`                                         | Channel buffer depth for aggregator queues    |         |
-| `aggregator_flush_metrics_and_serialize_in_parallel_buffer_size` | Parallel flush: series/sketch buffer size     |         |
-| `aggregator_flush_metrics_and_serialize_in_parallel_chan_size`   | Parallel flush: channel size                  |         |
-| `aggregator_stop_timeout`                                        | Timeout (s) for aggregator flush on stop      |         |
+| `aggregator_buffer_size`                                         | Channel buffer depth for aggregator queues    | [#1681] |
+| `aggregator_flush_metrics_and_serialize_in_parallel_buffer_size` | Parallel flush: series/sketch buffer size     | [#1681] |
+| `aggregator_flush_metrics_and_serialize_in_parallel_chan_size`   | Parallel flush: channel size                  | [#1681] |
+| `aggregator_stop_timeout`                                        | Timeout (s) for aggregator flush on stop      | [#1681] |
 | `aggregator_tag_filter_cache_capacity`                           | Tag-filter dedup cache size                   | [#1667] |
-| `aggregator_use_tags_store`                                      | Enable shared tag deduplication store         |         |
-| `anomaly_detection.enabled`                                      | Enable anomaly detection observer pipeline    |         |
-| `anomaly_detection.metrics.enabled`                              | Enable metric ingestion for anomaly detection |         |
-| `autoscaling.failover.enabled`                                   | Enable autoscaling failover metric routing    |         |
-| `autoscaling.failover.metrics`                                   | Metric names forwarded to DCA for failover    |         |
-| `config_id`                                                      | Fleet Automation config ID tag for agent      |         |
+| `aggregator_use_tags_store`                                      | Enable shared tag deduplication store         | [#1681] |
+| `anomaly_detection.enabled`                                      | Enable anomaly detection observer pipeline    | [#1683] |
+| `anomaly_detection.metrics.enabled`                              | Enable metric ingestion for anomaly detection | [#1683] |
+| `autoscaling.failover.enabled`                                   | Enable autoscaling failover metric routing    | [#1684] |
+| `autoscaling.failover.metrics`                                   | Metric names forwarded to DCA for failover    | [#1684] |
+| `config_id`                                                      | Fleet Automation config ID tag for agent      | [#1685] |
 | `dogstatsd_disable_verbose_logs`                                 | Suppress noisy parse error logs               | [#1350] |
-| `dogstatsd_experimental_http.enabled`                            | Enable experimental HTTP/H2C DSD listener     |         |
-| `dogstatsd_experimental_http.listen_address`                     | Bind addr for experimental HTTP DSD listener  |         |
-| `dogstatsd_host_socket_path`                                     | Host UDS socket dir (admission controller)    |         |
-| `dogstatsd_mapper_cache_size`                                    | LRU cache size for mapper regex match results |         |
-| `enable_json_stream_shared_compressor_buffers`                   | Pre-allocate shared compressor buffers        |         |
-| `enable_payloads.json_to_v1_intake`                              | Enable JSON payload to /api/v1/intake         |         |
-| `entity_id`                                                      | Agent's own pod entity ID (DCA webhook)       |         |
+| `dogstatsd_experimental_http.enabled`                            | Enable experimental HTTP/H2C DSD listener     | [#1682] |
+| `dogstatsd_experimental_http.listen_address`                     | Bind addr for experimental HTTP DSD listener  | [#1682] |
+| `dogstatsd_host_socket_path`                                     | Host UDS socket dir (admission controller)    | [#1687] |
+| `dogstatsd_mapper_cache_size`                                    | LRU cache size for mapper regex match results | [#1687] |
+| `enable_json_stream_shared_compressor_buffers`                   | Pre-allocate shared compressor buffers        | [#1686] |
+| `enable_payloads.json_to_v1_intake`                              | Enable JSON payload to /api/v1/intake         | [#1686] |
+| `entity_id`                                                      | Agent's own pod entity ID (DCA webhook)       | [#1685] |
 | `forwarder_apikey_validation_interval`                           | API key check interval (mins)                 | [#1357] |
 | `forwarder_flush_to_disk_mem_ratio`                              | Mem-to-disk flush threshold                   | [#1364] |
 | `forwarder_high_prio_buffer_size`                                | High-priority request queue size              | [#1362] |
 | `forwarder_low_prio_buffer_size`                                 | Low-priority request queue size               | [#1362] |
 | `forwarder_max_concurrent_requests`                              | Max concurrent HTTP requests                  | [#1363] |
-| `forwarder_requeue_buffer_size`                                  | In-memory requeue buffer size                 |         |
+| `forwarder_requeue_buffer_size`                                  | In-memory requeue buffer size                 | [#1680] |
 | `forwarder_retry_queue_capacity_time_interval_sec`               | Retry queue time-based capacity               | [#1365] |
-| `forwarder_stop_timeout`                                         | Timeout (s) for forwarder graceful stop       |         |
-| `heroku_dyno`                                                    | Override agent name for Heroku telemetry      |         |
-| `log_payloads`                                                   | Debug-log serialized payloads before send     |         |
-| `multi_region_failover.enabled`                                  | Enable multi-region failover mode             |         |
-| `multi_region_failover.failover_metrics`                         | Enable metrics forwarding to failover region  |         |
-| `multi_region_failover.metric_allowlist`                         | Metric name allowlist for MRF forwarding      |         |
+| `forwarder_stop_timeout`                                         | Timeout (s) for forwarder graceful stop       | [#1680] |
+| `heroku_dyno`                                                    | Override agent name for Heroku telemetry      | [#1685] |
+| `log_payloads`                                                   | Debug-log serialized payloads before send     | [#1686] |
+| `multi_region_failover.enabled`                                  | Enable multi-region failover mode             | [#1678] |
+| `multi_region_failover.failover_metrics`                         | Enable metrics forwarding to failover region  | [#1678] |
+| `multi_region_failover.metric_allowlist`                         | Metric name allowlist for MRF forwarding      | [#1678] |
 | `serializer_max_payload_size`                                    | Max compressed payload size                   | [#1354] |
 | `serializer_max_series_payload_size`                             | Max series compressed size                    | [#1354] |
 | `serializer_max_series_points_per_payload`                       | Max series points per payload                 | [#1354] |
 | `serializer_max_series_uncompressed_payload_size`                | Max series uncompressed size                  | [#1354] |
 | `serializer_max_uncompressed_payload_size`                       | Max uncompressed payload size                 | [#1354] |
-| `telemetry.dogstatsd.aggregator_channel_latency_buckets`         | Histogram buckets: DSD aggregator channel lag |         |
-| `telemetry.dogstatsd.listeners_channel_latency_buckets`          | Histogram buckets: listener channel latency   |         |
-| `telemetry.dogstatsd.listeners_latency_buckets`                  | Histogram buckets: listener processing        |         |
-| `telemetry.dogstatsd_origin`                                     | Per-origin processed-metrics telemetry        |         |
+| `telemetry.dogstatsd.aggregator_channel_latency_buckets`         | Histogram buckets: DSD aggregator channel lag | [#1679] |
+| `telemetry.dogstatsd.listeners_channel_latency_buckets`          | Histogram buckets: listener channel latency   | [#1679] |
+| `telemetry.dogstatsd.listeners_latency_buckets`                  | Histogram buckets: listener processing        | [#1679] |
+| `telemetry.dogstatsd_origin`                                     | Per-origin processed-metrics telemetry        | [#1679] |
 
 ## ADP-Only Settings
 
@@ -457,3 +457,13 @@ when the receiving syslog daemon expects the Agent's RFC-style header.
 [#1476]: https://github.com/DataDog/saluki/issues/1476
 [#1640]: https://github.com/DataDog/saluki/issues/1640
 [#1667]: https://github.com/DataDog/saluki/issues/1667
+[#1678]: https://github.com/DataDog/saluki/issues/1678
+[#1679]: https://github.com/DataDog/saluki/issues/1679
+[#1680]: https://github.com/DataDog/saluki/issues/1680
+[#1681]: https://github.com/DataDog/saluki/issues/1681
+[#1682]: https://github.com/DataDog/saluki/issues/1682
+[#1683]: https://github.com/DataDog/saluki/issues/1683
+[#1684]: https://github.com/DataDog/saluki/issues/1684
+[#1685]: https://github.com/DataDog/saluki/issues/1685
+[#1686]: https://github.com/DataDog/saluki/issues/1686
+[#1687]: https://github.com/DataDog/saluki/issues/1687
