@@ -463,7 +463,7 @@ impl MetricValues {
         }
     }
 
-    /// Returns `true` if this metric is a serie.
+    /// Returns `true` if this metric is a series.
     pub fn is_serie(&self) -> bool {
         matches!(
             self,

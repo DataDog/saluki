@@ -3,7 +3,7 @@
 //! Provides cache-friendly AST storage and optimizations like:
 //! - Path resolution at parse time
 //! - Constant folding for literals
-//! - linear memory with less inderections
+//! - linear memory with less indirections
 
 use std::marker::PhantomData;
 
