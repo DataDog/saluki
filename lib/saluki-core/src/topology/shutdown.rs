@@ -18,7 +18,7 @@ use tokio::sync::{
 /// A component-specific shutdown coordinator.
 ///
 /// This coordinator is designed for use by the topology to signal components to shutdown. Once a handle is registered,
-/// it can not be unregistered. If you required the ability to unregister handles, consider using [`DynamicShutdownCoordinator`].
+/// it can not be unregistered. If you require the ability to unregister handles, consider using [`DynamicShutdownCoordinator`].
 #[derive(Default)]
 pub struct ComponentShutdownCoordinator {
     handles: Vec<Sender<()>>,
