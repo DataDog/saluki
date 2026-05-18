@@ -596,13 +596,14 @@ mod tests {
     #[test]
     fn test_new_aggregation() {
         // Helper to create a span with given service, meta, and metrics
-        let make_span =
-            |service: &str, meta: FastHashMap<MetaString, MetaString>, metrics: FastHashMap<MetaString, f64>| {
-                Span::default()
-                    .with_service(service)
-                    .with_meta(meta)
-                    .with_metrics(metrics)
-            };
+        let make_span = |service: &str,
+                         meta: FastHashMap<MetaString, MetaString>,
+                         metrics: FastHashMap<MetaString, f64>| {
+            let mut attrs: FastHashMap<MetaString, AV> =
+                meta.into_iter().map(|(k, v)| (k, AV::String(v))).collect();
+            attrs.extend(metrics.into_iter().map(|(k, v)| (k, AV::Float(v))));
+            Span::default().with_service(service).with_attributes(attrs)
+        };
 
         // Helper to add _dd.measured metric
         let with_measured = |mut metrics: FastHashMap<MetaString, f64>| {
@@ -713,12 +714,11 @@ mod tests {
         let peer_tags = vec![MetaString::from("server.address"), MetaString::from("_dd.base_service")];
 
         let make_span_with_kind = |kind: &str| {
-            let mut meta = FastHashMap::default();
-            meta.insert(MetaString::from("span.kind"), MetaString::from(kind));
-            meta.insert(MetaString::from("server.address"), MetaString::from("test-server"));
-            let mut metrics = FastHashMap::default();
-            metrics.insert(MetaString::from("_dd.measured"), 1.0);
-            Span::default().with_meta(meta).with_metrics(metrics)
+            let mut attrs: FastHashMap<MetaString, AV> = FastHashMap::default();
+            attrs.insert(MetaString::from("span.kind"), AV::String(MetaString::from(kind)));
+            attrs.insert(MetaString::from("server.address"), AV::String(MetaString::from("test-server")));
+            attrs.insert(MetaString::from("_dd.measured"), AV::Float(1.0));
+            Span::default().with_attributes(attrs)
         };
 
         let concentrator = SpanConcentrator::new(true, true, &peer_tags, 0);
@@ -787,9 +787,9 @@ mod tests {
 
         // Span with parent_id = 0 -> is_trace_root = true
         {
-            let mut metrics = FastHashMap::default();
-            metrics.insert(MetaString::from("_dd.measured"), 1.0);
-            let span = Span::default().with_parent_id(0).with_metrics(metrics);
+            let mut attrs: FastHashMap<MetaString, AV> = FastHashMap::default();
+            attrs.insert(MetaString::from("_dd.measured"), AV::Float(1.0));
+            let span = Span::default().with_parent_id(0).with_attributes(attrs);
             if let Some(stat_span) = concentrator.new_stat_span_from_span(&span) {
                 let agg = new_aggregation_from_span(&stat_span, "", PayloadAggregationKey::default());
                 assert_eq!(agg.bucket_key.is_trace_root, Some(true));
@@ -798,9 +798,9 @@ mod tests {
 
         // Span with parent_id != 0 -> is_trace_root = false
         {
-            let mut metrics = FastHashMap::default();
-            metrics.insert(MetaString::from("_dd.measured"), 1.0);
-            let span = Span::default().with_parent_id(123).with_metrics(metrics);
+            let mut attrs: FastHashMap<MetaString, AV> = FastHashMap::default();
+            attrs.insert(MetaString::from("_dd.measured"), AV::Float(1.0));
+            let span = Span::default().with_parent_id(123).with_attributes(attrs);
             if let Some(stat_span) = concentrator.new_stat_span_from_span(&span) {
                 let agg = new_aggregation_from_span(&stat_span, "", PayloadAggregationKey::default());
                 assert_eq!(agg.bucket_key.is_trace_root, Some(false));

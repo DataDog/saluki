@@ -227,6 +227,8 @@ mod tests {
     fn make_span_with_metrics(
         service: &str, name: &str, resource: &str, metrics: FastHashMap<MetaString, f64>,
     ) -> DdSpan {
+        let attrs: FastHashMap<MetaString, AttributeValue> =
+            metrics.into_iter().map(|(k, v)| (k, AttributeValue::Float(v))).collect();
         DdSpan::new(
             MetaString::from(service),
             MetaString::from(name),
@@ -238,7 +240,7 @@ mod tests {
             1000,
             0,
         )
-        .with_metrics(metrics)
+        .with_attributes(attrs)
     }
 
     fn make_top_level_span(service: &str, name: &str, resource: &str) -> DdSpan {

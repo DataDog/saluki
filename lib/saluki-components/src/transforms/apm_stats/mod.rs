@@ -465,8 +465,9 @@ fn extract_process_tags(trace: &Trace) -> MetaString {
 mod tests {
     use proptest::prelude::*;
     use saluki_common::collections::FastHashMap;
+    use saluki_core::data_model::event::trace::{AttributeValue, Span};
     use saluki_core::data_model::event::trace_stats::ClientStatsBucket;
-    use saluki_core::data_model::event::{trace::Span, trace_stats::ClientGroupedStats};
+    use saluki_core::data_model::event::trace_stats::ClientGroupedStats;
 
     use super::aggregation::BUCKET_DURATION_NS;
     use super::span_concentrator::METRIC_PARTIAL_VERSION;
@@ -484,25 +485,25 @@ mod tests {
         resource: &str, error: i32, meta: Option<FastHashMap<MetaString, MetaString>>,
         metrics: Option<FastHashMap<MetaString, f64>>,
     ) -> Span {
-        // Calculate start time so that span ends in the correct bucket
-        // End time = start + duration, and we want end time to be in bucket (aligned_now - offset * bsize)
-        // Use BUCKET_DURATION_NS as the bucket size (matches the concentrator)
         let bucket_start = aligned_now - bucket_offset * BUCKET_DURATION_NS;
         let start = bucket_start - duration;
 
-        Span::new(
-            service, "query", resource, "db", span_id, parent_id, start, duration, error,
-        )
-        .with_meta(meta)
-        .with_metrics(metrics)
+        let mut attrs: FastHashMap<MetaString, AttributeValue> = FastHashMap::default();
+        if let Some(m) = meta {
+            attrs.extend(m.into_iter().map(|(k, v)| (k, AttributeValue::String(v))));
+        }
+        if let Some(m) = metrics {
+            attrs.extend(m.into_iter().map(|(k, v)| (k, AttributeValue::Float(v))));
+        }
+        Span::new(service, "query", resource, "db", span_id, parent_id, start, duration, error)
+            .with_attributes(attrs)
     }
 
     /// Creates a simple measured span for basic tests
     fn make_test_span(service: &str, name: &str, resource: &str) -> Span {
-        let mut metrics = FastHashMap::default();
-        metrics.insert(MetaString::from("_dd.measured"), 1.0);
-
-        Span::new(service, name, resource, "web", 1, 0, 1000000000, 100000000, 0).with_metrics(metrics)
+        let mut attrs = FastHashMap::default();
+        attrs.insert(MetaString::from("_dd.measured"), AttributeValue::Float(1.0));
+        Span::new(service, name, resource, "web", 1, 0, 1000000000, 100000000, 0).with_attributes(attrs)
     }
 
     /// Creates a top-level span (`parent_id` = 0, has `_top_level` metric)
@@ -563,9 +564,9 @@ mod tests {
         };
 
         // Create a span with 0.5 sample rate (weight = 2.0)
-        let mut metrics = FastHashMap::default();
-        metrics.insert(MetaString::from("_dd.measured"), 1.0);
-        metrics.insert(MetaString::from("_sample_rate"), 0.5);
+        let mut attrs = FastHashMap::default();
+        attrs.insert(MetaString::from("_dd.measured"), AttributeValue::Float(1.0));
+        attrs.insert(MetaString::from("_sample_rate"), AttributeValue::Float(0.5));
 
         let span = Span::new(
             "test-service",
@@ -578,7 +579,7 @@ mod tests {
             100000000,
             0,
         )
-        .with_metrics(metrics);
+        .with_attributes(attrs);
 
         let trace = Trace::new(vec![span]);
         transform.process_trace(&trace);
@@ -815,10 +816,9 @@ mod tests {
         {
             let mut concentrator = SpanConcentrator::new(false, true, &[], now);
 
-            // Create a simple top-level span using the same pattern as make_test_span (which works)
-            let mut metrics = FastHashMap::default();
-            metrics.insert(MetaString::from("_top_level"), 1.0);
-            let span = Span::new("myservice", "query", "GET /users", "web", 1, 0, now, 500, 0).with_metrics(metrics);
+            let mut attrs = FastHashMap::default();
+            attrs.insert(MetaString::from("_top_level"), AttributeValue::Float(1.0));
+            let span = Span::new("myservice", "query", "GET /users", "web", 1, 0, now, 500, 0).with_attributes(attrs);
 
             let payload_key = PayloadAggregationKey {
                 env: MetaString::from("test"),
@@ -832,10 +832,10 @@ mod tests {
 
             // Client span with span.kind=client but no _top_level or _dd.measured
             // Should NOT produce stats when compute_stats_by_span_kind is disabled
-            let mut client_meta = FastHashMap::default();
-            client_meta.insert(MetaString::from("span.kind"), MetaString::from("client"));
+            let mut client_attrs = FastHashMap::default();
+            client_attrs.insert(MetaString::from("span.kind"), AttributeValue::String(MetaString::from("client")));
             let client_span = Span::new("myservice", "postgres.query", "SELECT ...", "db", 2, 1, now, 75, 0)
-                .with_meta(client_meta);
+                .with_attributes(client_attrs);
 
             if let Some(stat_span) = concentrator.new_stat_span_from_span(&client_span) {
                 concentrator.add_span(&stat_span, 1.0, &payload_key, &infra_tags, "");
@@ -858,10 +858,9 @@ mod tests {
         {
             let mut concentrator = SpanConcentrator::new(true, true, &[], now);
 
-            // Create a simple top-level span
-            let mut metrics = FastHashMap::default();
-            metrics.insert(MetaString::from("_top_level"), 1.0);
-            let span = Span::new("myservice", "query", "GET /users", "web", 1, 0, now, 500, 0).with_metrics(metrics);
+            let mut attrs = FastHashMap::default();
+            attrs.insert(MetaString::from("_top_level"), AttributeValue::Float(1.0));
+            let span = Span::new("myservice", "query", "GET /users", "web", 1, 0, now, 500, 0).with_attributes(attrs);
 
             let payload_key = PayloadAggregationKey {
                 env: MetaString::from("test"),
@@ -875,10 +874,10 @@ mod tests {
 
             // Client span with span.kind=client
             // SHOULD produce stats when compute_stats_by_span_kind is enabled
-            let mut client_meta = FastHashMap::default();
-            client_meta.insert(MetaString::from("span.kind"), MetaString::from("client"));
+            let mut client_attrs = FastHashMap::default();
+            client_attrs.insert(MetaString::from("span.kind"), AttributeValue::String(MetaString::from("client")));
             let client_span = Span::new("myservice", "postgres.query", "SELECT ...", "db", 2, 1, now, 75, 0)
-                .with_meta(client_meta);
+                .with_attributes(client_attrs);
 
             if let Some(stat_span) = concentrator.new_stat_span_from_span(&client_span) {
                 concentrator.add_span(&stat_span, 1.0, &payload_key, &infra_tags, "");
@@ -906,16 +905,13 @@ mod tests {
         {
             let mut concentrator = SpanConcentrator::new(true, false, &[], now);
 
-            // Client span with db tags and _dd.measured
-            let mut client_meta = FastHashMap::default();
-            client_meta.insert(MetaString::from("span.kind"), MetaString::from("client"));
-            client_meta.insert(MetaString::from("db.instance"), MetaString::from("i-1234"));
-            client_meta.insert(MetaString::from("db.system"), MetaString::from("postgres"));
-            let mut client_metrics = FastHashMap::default();
-            client_metrics.insert(MetaString::from("_dd.measured"), 1.0);
+            let mut attrs = FastHashMap::default();
+            attrs.insert(MetaString::from("span.kind"), AttributeValue::String(MetaString::from("client")));
+            attrs.insert(MetaString::from("db.instance"), AttributeValue::String(MetaString::from("i-1234")));
+            attrs.insert(MetaString::from("db.system"), AttributeValue::String(MetaString::from("postgres")));
+            attrs.insert(MetaString::from("_dd.measured"), AttributeValue::Float(1.0));
             let client_span = Span::new("myservice", "postgres.query", "SELECT ...", "db", 2, 1, now, 75, 0)
-                .with_meta(client_meta)
-                .with_metrics(client_metrics);
+                .with_attributes(attrs);
 
             let payload_key = PayloadAggregationKey {
                 env: MetaString::from("test"),
@@ -947,16 +943,13 @@ mod tests {
             // Note: BASE_PEER_TAGS already includes db.instance and db.system
             let mut concentrator = SpanConcentrator::new(true, true, &[], now);
 
-            // Client span with db tags and _dd.measured
-            let mut client_meta = FastHashMap::default();
-            client_meta.insert(MetaString::from("span.kind"), MetaString::from("client"));
-            client_meta.insert(MetaString::from("db.instance"), MetaString::from("i-1234"));
-            client_meta.insert(MetaString::from("db.system"), MetaString::from("postgres"));
-            let mut client_metrics = FastHashMap::default();
-            client_metrics.insert(MetaString::from("_dd.measured"), 1.0);
+            let mut attrs = FastHashMap::default();
+            attrs.insert(MetaString::from("span.kind"), AttributeValue::String(MetaString::from("client")));
+            attrs.insert(MetaString::from("db.instance"), AttributeValue::String(MetaString::from("i-1234")));
+            attrs.insert(MetaString::from("db.system"), AttributeValue::String(MetaString::from("postgres")));
+            attrs.insert(MetaString::from("_dd.measured"), AttributeValue::Float(1.0));
             let client_span = Span::new("myservice", "postgres.query", "SELECT ...", "db", 2, 1, now, 75, 0)
-                .with_meta(client_meta)
-                .with_metrics(client_metrics);
+                .with_attributes(attrs);
 
             let payload_key = PayloadAggregationKey {
                 env: MetaString::from("test"),
@@ -1107,9 +1100,9 @@ mod tests {
 
         // Test with process tags in first span meta
         {
-            let mut meta = FastHashMap::default();
-            meta.insert(MetaString::from(TAG_PROCESS_TAGS), MetaString::from("a:1,b:2,c:3"));
-            let span = Span::default().with_meta(meta);
+            let mut attrs = FastHashMap::default();
+            attrs.insert(MetaString::from(TAG_PROCESS_TAGS), AttributeValue::String(MetaString::from("a:1,b:2,c:3")));
+            let span = Span::default().with_attributes(attrs);
             let trace = Trace::new(vec![span]);
             let process_tags = extract_process_tags(&trace);
             assert_eq!(process_tags, "a:1,b:2,c:3");
@@ -1117,9 +1110,9 @@ mod tests {
 
         // Test with empty process tags
         {
-            let mut meta = FastHashMap::default();
-            meta.insert(MetaString::from(TAG_PROCESS_TAGS), MetaString::from(""));
-            let span = Span::default().with_meta(meta);
+            let mut attrs = FastHashMap::default();
+            attrs.insert(MetaString::from(TAG_PROCESS_TAGS), AttributeValue::String(MetaString::from("")));
+            let span = Span::default().with_attributes(attrs);
             let trace = Trace::new(vec![span]);
             let process_tags = extract_process_tags(&trace);
             assert!(

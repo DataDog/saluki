@@ -16,6 +16,7 @@ pub(super) fn weight(span: &Span) -> f64 {
 #[cfg(test)]
 mod tests {
     use saluki_common::collections::FastHashMap;
+    use saluki_core::data_model::event::trace::AttributeValue;
     use stringtheory::MetaString;
 
     use super::*;
@@ -27,33 +28,33 @@ mod tests {
         assert_eq!(weight(&span), 1.0);
 
         // Negative rate - should use default
-        let mut metrics = FastHashMap::default();
-        metrics.insert(MetaString::from(KEY_SAMPLING_RATE_GLOBAL), -1.0);
-        let span = Span::default().with_metrics(metrics);
+        let mut attrs = FastHashMap::default();
+        attrs.insert(MetaString::from(KEY_SAMPLING_RATE_GLOBAL), AttributeValue::Float(-1.0));
+        let span = Span::default().with_attributes(attrs);
         assert_eq!(weight(&span), 1.0);
 
         // Zero rate - should use default
-        let mut metrics = FastHashMap::default();
-        metrics.insert(MetaString::from(KEY_SAMPLING_RATE_GLOBAL), 0.0);
-        let span = Span::default().with_metrics(metrics);
+        let mut attrs = FastHashMap::default();
+        attrs.insert(MetaString::from(KEY_SAMPLING_RATE_GLOBAL), AttributeValue::Float(0.0));
+        let span = Span::default().with_attributes(attrs);
         assert_eq!(weight(&span), 1.0);
 
         // Valid rate 0.25 - weight should be 4.0
-        let mut metrics = FastHashMap::default();
-        metrics.insert(MetaString::from(KEY_SAMPLING_RATE_GLOBAL), 0.25);
-        let span = Span::default().with_metrics(metrics);
+        let mut attrs = FastHashMap::default();
+        attrs.insert(MetaString::from(KEY_SAMPLING_RATE_GLOBAL), AttributeValue::Float(0.25));
+        let span = Span::default().with_attributes(attrs);
         assert_eq!(weight(&span), 4.0);
 
         // Rate = 1.0 - weight should be 1.0
-        let mut metrics = FastHashMap::default();
-        metrics.insert(MetaString::from(KEY_SAMPLING_RATE_GLOBAL), 1.0);
-        let span = Span::default().with_metrics(metrics);
+        let mut attrs = FastHashMap::default();
+        attrs.insert(MetaString::from(KEY_SAMPLING_RATE_GLOBAL), AttributeValue::Float(1.0));
+        let span = Span::default().with_attributes(attrs);
         assert_eq!(weight(&span), 1.0);
 
         // Rate > 1 - should use default
-        let mut metrics = FastHashMap::default();
-        metrics.insert(MetaString::from(KEY_SAMPLING_RATE_GLOBAL), 1.5);
-        let span = Span::default().with_metrics(metrics);
+        let mut attrs = FastHashMap::default();
+        attrs.insert(MetaString::from(KEY_SAMPLING_RATE_GLOBAL), AttributeValue::Float(1.5));
+        let span = Span::default().with_attributes(attrs);
         assert_eq!(weight(&span), 1.0);
     }
 }

@@ -314,45 +314,9 @@ impl Span {
         self
     }
 
-    /// Inserts string-valued entries into the unified attributes map.
-    ///
-    /// Entries are merged into `attributes`; passing `None` is a no-op. Keys must be unique across
-    /// `with_meta`, `with_metrics`, and `with_meta_struct` — a key present in more than one call
-    /// will be overwritten by the last call.
-    pub fn with_meta(mut self, meta: impl Into<Option<FastHashMap<MetaString, MetaString>>>) -> Self {
-        if let Some(m) = meta.into() {
-            for (k, v) in m {
-                self.attributes.insert(k, AttributeValue::String(v));
-            }
-        }
-        self
-    }
-
-    /// Inserts float-valued entries into the unified attributes map.
-    ///
-    /// Entries are merged into `attributes`; passing `None` is a no-op. Keys must be unique across
-    /// `with_meta`, `with_metrics`, and `with_meta_struct` — a key present in more than one call
-    /// will be overwritten by the last call.
-    pub fn with_metrics(mut self, metrics: impl Into<Option<FastHashMap<MetaString, f64>>>) -> Self {
-        if let Some(m) = metrics.into() {
-            for (k, v) in m {
-                self.attributes.insert(k, AttributeValue::Float(v));
-            }
-        }
-        self
-    }
-
-    /// Inserts bytes-valued entries into the unified attributes map.
-    ///
-    /// Entries are merged into `attributes`; passing `None` is a no-op. Keys must be unique across
-    /// `with_meta`, `with_metrics`, and `with_meta_struct` — a key present in more than one call
-    /// will be overwritten by the last call.
-    pub fn with_meta_struct(mut self, meta_struct: impl Into<Option<FastHashMap<MetaString, Vec<u8>>>>) -> Self {
-        if let Some(m) = meta_struct.into() {
-            for (k, v) in m {
-                self.attributes.insert(k, AttributeValue::Bytes(v));
-            }
-        }
+    /// Replaces the span attributes map.
+    pub fn with_attributes(mut self, attributes: FastHashMap<MetaString, AttributeValue>) -> Self {
+        self.attributes = attributes;
         self
     }
 
