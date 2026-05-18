@@ -189,6 +189,15 @@
     "adp_key": null
   },
   {
+    "key": "cluster_agent.enabled",
+    "feature_state": "MISSING",
+    "action": "INVESTIGATE",
+    "description": "Enable Cluster Agent connectivity",
+    "reason": "Required for autoscaling failover routing decisions. Investigated under #1684.",
+    "issue": "#1684",
+    "adp_key": null
+  },
+  {
     "key": "cmd_port",
     "feature_state": "PARITY",
     "action": "NONE",

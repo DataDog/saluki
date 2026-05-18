@@ -211,6 +211,7 @@ ways that are not yet fully characterized.
 | `anomaly_detection.metrics.enabled`                              | Enable metric ingestion for anomaly detection | [#1683] |
 | `autoscaling.failover.enabled`                                   | Enable autoscaling failover metric routing    | [#1684] |
 | `autoscaling.failover.metrics`                                   | Metric names forwarded to DCA for failover    | [#1684] |
+| `cluster_agent.enabled`                                          | Enable Cluster Agent connectivity             | [#1684] |
 | `config_id`                                                      | Fleet Automation config ID tag for agent      | [#1685] |
 | `dogstatsd_disable_verbose_logs`                                 | Suppress noisy parse error logs               | [#1350] |
 | `dogstatsd_experimental_http.enabled`                            | Enable experimental HTTP/H2C DSD listener     | [#1682] |
