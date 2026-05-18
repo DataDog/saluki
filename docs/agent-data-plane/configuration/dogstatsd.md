@@ -230,9 +230,12 @@ ways that are not yet fully characterized.
 | `forwarder_stop_timeout`                                         | Timeout (s) for forwarder graceful stop       | [#1680] |
 | `heroku_dyno`                                                    | Override agent name for Heroku telemetry      | [#1685] |
 | `log_payloads`                                                   | Debug-log serialized payloads before send     | [#1686] |
+| `multi_region_failover.api_key`                                  | API key for the MRF failover region           | [#1678] |
+| `multi_region_failover.dd_url`                                   | Intake URL for the MRF failover region        | [#1678] |
 | `multi_region_failover.enabled`                                  | Enable multi-region failover mode             | [#1678] |
 | `multi_region_failover.failover_metrics`                         | Enable metrics forwarding to failover region  | [#1678] |
 | `multi_region_failover.metric_allowlist`                         | Metric name allowlist for MRF forwarding      | [#1678] |
+| `multi_region_failover.site`                                     | Datadog site for the MRF failover region      | [#1678] |
 | `serializer_max_payload_size`                                    | Max compressed payload size                   | [#1354] |
 | `serializer_max_series_payload_size`                             | Max series compressed size                    | [#1354] |
 | `serializer_max_series_points_per_payload`                       | Max series points per payload                 | [#1354] |

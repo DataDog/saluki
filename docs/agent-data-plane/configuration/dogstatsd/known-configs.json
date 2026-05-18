@@ -1575,6 +1575,24 @@
     "adp_key": null
   },
   {
+    "key": "multi_region_failover.api_key",
+    "feature_state": "MISSING",
+    "action": "INVESTIGATE",
+    "description": "API key for the MRF failover region",
+    "reason": "Companion MRF credential/endpoint keys; investigated under issue #1678.",
+    "issue": "#1678",
+    "adp_key": null
+  },
+  {
+    "key": "multi_region_failover.dd_url",
+    "feature_state": "MISSING",
+    "action": "INVESTIGATE",
+    "description": "Intake URL for the MRF failover region",
+    "reason": "Companion MRF credential/endpoint keys; investigated under issue #1678.",
+    "issue": "#1678",
+    "adp_key": null
+  },
+  {
     "key": "multi_region_failover.enabled",
     "feature_state": "MISSING",
     "action": "INVESTIGATE",
@@ -1598,6 +1616,15 @@
     "action": "INVESTIGATE",
     "description": "Metric name allowlist for MRF forwarding",
     "reason": "Marked for investigation; previously dismissed as not-applicable.",
+    "issue": "#1678",
+    "adp_key": null
+  },
+  {
+    "key": "multi_region_failover.site",
+    "feature_state": "MISSING",
+    "action": "INVESTIGATE",
+    "description": "Datadog site for the MRF failover region",
+    "reason": "Companion MRF credential/endpoint keys; investigated under issue #1678.",
     "issue": "#1678",
     "adp_key": null
   },
