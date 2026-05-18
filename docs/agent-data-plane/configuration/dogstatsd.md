@@ -1,6 +1,6 @@
 # Configuring DogStatsD on Agent Data Plane
 
-<!-- Last updated: 2026-05-15 -->
+<!-- Last updated: 2026-05-18 -->
 
 The DogStatsD implementation on ADP has been redesigned in Rust for better resource guarantees and
 efficiency. Because the architecture is different from the original implementation, certain
@@ -199,21 +199,49 @@ configure a separate OpenMetrics check pointed at ADP's endpoint. See [#1338].
 The following settings need further investigation. ADP behavior may differ from the core agent in
 ways that are not yet fully characterized.
 
-| Config Key                                         | Description                      | Issue   |
-| -------------------------------------------------- | -------------------------------- | ------- |
-| `aggregator_tag_filter_cache_capacity`             | Tag-filter dedup cache size      |         |
-| `dogstatsd_disable_verbose_logs`                   | Suppress noisy parse error logs  | [#1350] |
-| `forwarder_apikey_validation_interval`             | API key check interval (mins)    | [#1357] |
-| `forwarder_flush_to_disk_mem_ratio`                | Mem-to-disk flush threshold      | [#1364] |
-| `forwarder_high_prio_buffer_size`                  | High-priority request queue size | [#1362] |
-| `forwarder_low_prio_buffer_size`                   | Low-priority request queue size  | [#1362] |
-| `forwarder_max_concurrent_requests`                | Max concurrent HTTP requests     | [#1363] |
-| `forwarder_retry_queue_capacity_time_interval_sec` | Retry queue time-based capacity  | [#1365] |
-| `serializer_max_payload_size`                      | Max compressed payload size      | [#1354] |
-| `serializer_max_series_payload_size`               | Max series compressed size       | [#1354] |
-| `serializer_max_series_points_per_payload`         | Max series points per payload    | [#1354] |
-| `serializer_max_series_uncompressed_payload_size`  | Max series uncompressed size     | [#1354] |
-| `serializer_max_uncompressed_payload_size`         | Max uncompressed payload size    | [#1354] |
+| Config Key                                                       | Description                                   | Issue   |
+| ---------------------------------------------------------------- | --------------------------------------------- | ------- |
+| `aggregator_buffer_size`                                         | Channel buffer depth for aggregator queues    |         |
+| `aggregator_flush_metrics_and_serialize_in_parallel_buffer_size` | Parallel flush: series/sketch buffer size     |         |
+| `aggregator_flush_metrics_and_serialize_in_parallel_chan_size`   | Parallel flush: channel size                  |         |
+| `aggregator_stop_timeout`                                        | Timeout (s) for aggregator flush on stop      |         |
+| `aggregator_tag_filter_cache_capacity`                           | Tag-filter dedup cache size                   | [#1667] |
+| `aggregator_use_tags_store`                                      | Enable shared tag deduplication store         |         |
+| `anomaly_detection.enabled`                                      | Enable anomaly detection observer pipeline    |         |
+| `anomaly_detection.metrics.enabled`                              | Enable metric ingestion for anomaly detection |         |
+| `autoscaling.failover.enabled`                                   | Enable autoscaling failover metric routing    |         |
+| `autoscaling.failover.metrics`                                   | Metric names forwarded to DCA for failover    |         |
+| `config_id`                                                      | Fleet Automation config ID tag for agent      |         |
+| `dogstatsd_disable_verbose_logs`                                 | Suppress noisy parse error logs               | [#1350] |
+| `dogstatsd_experimental_http.enabled`                            | Enable experimental HTTP/H2C DSD listener     |         |
+| `dogstatsd_experimental_http.listen_address`                     | Bind addr for experimental HTTP DSD listener  |         |
+| `dogstatsd_host_socket_path`                                     | Host UDS socket dir (admission controller)    |         |
+| `dogstatsd_mapper_cache_size`                                    | LRU cache size for mapper regex match results |         |
+| `enable_json_stream_shared_compressor_buffers`                   | Pre-allocate shared compressor buffers        |         |
+| `enable_payloads.json_to_v1_intake`                              | Enable JSON payload to /api/v1/intake         |         |
+| `entity_id`                                                      | Agent's own pod entity ID (DCA webhook)       |         |
+| `forwarder_apikey_validation_interval`                           | API key check interval (mins)                 | [#1357] |
+| `forwarder_flush_to_disk_mem_ratio`                              | Mem-to-disk flush threshold                   | [#1364] |
+| `forwarder_high_prio_buffer_size`                                | High-priority request queue size              | [#1362] |
+| `forwarder_low_prio_buffer_size`                                 | Low-priority request queue size               | [#1362] |
+| `forwarder_max_concurrent_requests`                              | Max concurrent HTTP requests                  | [#1363] |
+| `forwarder_requeue_buffer_size`                                  | In-memory requeue buffer size                 |         |
+| `forwarder_retry_queue_capacity_time_interval_sec`               | Retry queue time-based capacity               | [#1365] |
+| `forwarder_stop_timeout`                                         | Timeout (s) for forwarder graceful stop       |         |
+| `heroku_dyno`                                                    | Override agent name for Heroku telemetry      |         |
+| `log_payloads`                                                   | Debug-log serialized payloads before send     |         |
+| `multi_region_failover.enabled`                                  | Enable multi-region failover mode             |         |
+| `multi_region_failover.failover_metrics`                         | Enable metrics forwarding to failover region  |         |
+| `multi_region_failover.metric_allowlist`                         | Metric name allowlist for MRF forwarding      |         |
+| `serializer_max_payload_size`                                    | Max compressed payload size                   | [#1354] |
+| `serializer_max_series_payload_size`                             | Max series compressed size                    | [#1354] |
+| `serializer_max_series_points_per_payload`                       | Max series points per payload                 | [#1354] |
+| `serializer_max_series_uncompressed_payload_size`                | Max series uncompressed size                  | [#1354] |
+| `serializer_max_uncompressed_payload_size`                       | Max uncompressed payload size                 | [#1354] |
+| `telemetry.dogstatsd.aggregator_channel_latency_buckets`         | Histogram buckets: DSD aggregator channel lag |         |
+| `telemetry.dogstatsd.listeners_channel_latency_buckets`          | Histogram buckets: listener channel latency   |         |
+| `telemetry.dogstatsd.listeners_latency_buckets`                  | Histogram buckets: listener processing        |         |
+| `telemetry.dogstatsd_origin`                                     | Per-origin processed-metrics telemetry        |         |
 
 ## ADP-Only Settings
 
