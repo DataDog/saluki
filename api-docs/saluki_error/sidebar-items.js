@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"macro":["generic_error"],"trait":["ErrorContext"],"type":["GenericError"]};
+window.SIDEBAR_ITEMS = {"macro":[["generic_error",1]],"trait":["ErrorContext"],"type":["GenericError"]};
