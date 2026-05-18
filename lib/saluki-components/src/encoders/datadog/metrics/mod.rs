@@ -959,7 +959,7 @@ fn encode_sketch_metric(
                 // We convert histograms to sketches to be able to write them out in the payload.
                 let mut ddsketch = DDSketch::default();
                 for sample in histogram.samples() {
-                    ddsketch.insert_n(sample.value.into_inner(), sample.weight);
+                    ddsketch.insert_n(sample.value.into_inner(), sample.weight.0 as u64);
                 }
 
                 write_dogsketch(output_stream, scratch_buf, packed_scratch_buf, timestamp, &ddsketch)?;

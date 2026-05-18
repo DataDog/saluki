@@ -507,7 +507,7 @@ impl PrometheusHistogram {
 
     fn merge_histogram(&mut self, histogram: &Histogram) {
         for sample in histogram.samples() {
-            self.add_sample(sample.value.into_inner(), sample.weight);
+            self.add_sample(sample.value.into_inner(), sample.weight.0 as u64);
         }
     }
 
