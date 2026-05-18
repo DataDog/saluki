@@ -10,7 +10,7 @@ mod retry;
 pub mod telemetry;
 pub mod transaction;
 
-use saluki_core::data_model::event::trace::Trace;
+use saluki_core::data_model::event::trace::{AttributeValue, Trace};
 use stringtheory::MetaString;
 
 /// Metric key used to store Datadog sampling priority (`_sampling_priority_v1`).
@@ -88,16 +88,21 @@ pub fn sample_by_rate(trace_id: u64, rate: f64) -> bool {
 
 pub fn get_trace_env(trace: &Trace, root_span_idx: usize) -> Option<&MetaString> {
     // logic taken from here: https://github.com/DataDog/datadog-agent/blob/main/pkg/trace/traceutil/trace.go#L19-L20
-    let env = trace.spans().get(root_span_idx).and_then(|span| span.meta().get("env"));
-    match env {
-        Some(env) => Some(env),
-        None => {
-            for span in trace.spans().iter() {
-                if let Some(env) = span.meta().get("env") {
-                    return Some(env);
-                }
-            }
-            None
+    let env = trace
+        .spans()
+        .get(root_span_idx)
+        .and_then(|span| span.attributes.get("env").and_then(AttributeValue::as_string));
+    if let Some(env) = env {
+        return Some(env);
+    }
+    for span in trace.spans().iter() {
+        if let Some(env) = span.attributes.get("env").and_then(AttributeValue::as_string) {
+            return Some(env);
         }
     }
+    // Fall back to the payload-level env (set from tracer payload headers or OTLP resource attributes).
+    if !trace.payload.env.is_empty() {
+        return Some(&trace.payload.env);
+    }
+    None
 }

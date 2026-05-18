@@ -40,7 +40,6 @@ mod tests {
     // logic for these tests are taken from here: https://github.com/DataDog/datadog-agent/blob/main/pkg/trace/sampler/scoresampler_test.go#L23
     use std::time::{Duration, SystemTime};
 
-    use saluki_context::tags::TagSet;
     use saluki_core::data_model::event::trace::{Span, Trace};
     use stringtheory::MetaString;
 
@@ -63,7 +62,6 @@ mod tests {
             MetaString::from("GET /api"),
             MetaString::from("resource"),
             MetaString::from("web"),
-            trace_id,
             1,       // span_id
             0,       // parent_id
             42,      // start
@@ -77,7 +75,6 @@ mod tests {
             MetaString::from("SELECT * FROM users"),
             MetaString::from("resource"),
             MetaString::from("sql"),
-            trace_id,
             2,      // span_id
             1,      // parent_id
             100,    // start
@@ -85,7 +82,8 @@ mod tests {
             0,      // error
         );
 
-        let trace = Trace::new(vec![root, child], TagSet::default());
+        let mut trace = Trace::new(vec![root, child]);
+        trace.trace_id_low = trace_id;
         (trace, 0) // Root is at index 0
     }
 
@@ -97,7 +95,6 @@ mod tests {
             MetaString::from("GET /api"),
             MetaString::from("resource"),
             MetaString::from("web"),
-            trace_id,
             1,       // span_id
             0,       // parent_id
             42,      // start
@@ -111,7 +108,6 @@ mod tests {
             MetaString::from("SELECT * FROM users"),
             MetaString::from("resource"),
             MetaString::from("sql"),
-            trace_id,
             2,      // span_id
             1,      // parent_id
             100,    // start
@@ -119,7 +115,8 @@ mod tests {
             0,      // error
         );
 
-        let trace = Trace::new(vec![root, child], TagSet::default());
+        let mut trace = Trace::new(vec![root, child]);
+        trace.trace_id_low = trace_id;
         (trace, 0) // Root is at index 0
     }
 

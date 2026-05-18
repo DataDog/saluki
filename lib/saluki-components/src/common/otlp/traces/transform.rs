@@ -32,7 +32,7 @@ use crate::common::otlp::traces::normalize::{
     normalize_tag_value_into_unchecked,
 };
 use crate::common::otlp::traces::normalize::{truncate_utf8, MAX_RESOURCE_LEN};
-use crate::common::otlp::traces::translator::{convert_span_id, convert_trace_id};
+use crate::common::otlp::traces::translator::convert_span_id;
 use crate::common::otlp::util::get_string_attribute;
 use crate::common::otlp::util::{
     DEPLOYMENT_ENVIRONMENT_KEY, KEY_DATADOG_CONTAINER_ID, KEY_DATADOG_ENVIRONMENT, KEY_DATADOG_VERSION,
@@ -293,7 +293,6 @@ pub fn otel_to_dd_span_minimal(
     let resource_attributes = &otel_resource.attributes;
     let mut dd_span = DdSpan::default();
 
-    let trace_id = convert_trace_id(&otel_span.trace_id);
     let span_id = convert_span_id(&otel_span.span_id);
     let parent_id = convert_span_id(&otel_span.parent_span_id);
     let start = otel_span.start_time_unix_nano;
@@ -431,7 +430,6 @@ pub fn otel_to_dd_span_minimal(
         .with_name(name)
         .with_resource(resource)
         .with_span_type(span_type)
-        .with_trace_id(trace_id)
         .with_span_id(span_id)
         .with_parent_id(parent_id)
         .with_start(start)
@@ -1429,7 +1427,7 @@ fn use_both_maps_key_list(
     None
 }
 
-fn get_otel_env(
+pub(crate) fn get_otel_env(
     span_attributes: &[KeyValue], resource_attributes: &[KeyValue], ignore_missing_fields: bool,
     interner: &GenericMapInterner, string_builder: &mut StringBuilder<GenericMapInterner>,
 ) -> MetaString {
@@ -1463,7 +1461,7 @@ fn get_otel_env(
 }
 
 // GetOTelVersion returns the version based on OTel span and resource attributes, with span taking precedence.
-fn get_otel_version(
+pub(crate) fn get_otel_version(
     span_attributes: &[KeyValue], resource_attributes: &[KeyValue], ignore_missing_fields: bool,
     interner: &GenericMapInterner, string_builder: &mut StringBuilder<GenericMapInterner>,
 ) -> MetaString {
@@ -1496,7 +1494,7 @@ fn get_otel_version(
     MetaString::empty()
 }
 
-fn get_otel_container_id(
+pub(crate) fn get_otel_container_id(
     span_attributes: &[KeyValue], resource_attributes: &[KeyValue], ignore_missing_fields: bool,
     interner: &GenericMapInterner, string_builder: &mut StringBuilder<GenericMapInterner>,
 ) -> MetaString {
@@ -2184,25 +2182,24 @@ mod tests {
                 &mut string_builder,
                 None,
             );
-            let meta = dd_span.meta();
-
+            use saluki_core::data_model::event::trace::AttributeValue;
             if tc.should_map {
                 assert_eq!(
-                    meta.get("db.name").map(|s| s.as_ref()),
+                    dd_span.attributes.get("db.name").and_then(AttributeValue::as_string).map(|s| s.as_ref()),
                     Some(tc.expected_name),
                     "test case: {}",
                     tc.name
                 );
             } else if !tc.expected_name.is_empty() {
                 assert_eq!(
-                    meta.get("db.name").map(|s| s.as_ref()),
+                    dd_span.attributes.get("db.name").and_then(AttributeValue::as_string).map(|s| s.as_ref()),
                     Some(tc.expected_name),
                     "test case: {}",
                     tc.name
                 );
             } else {
                 assert!(
-                    meta.get("db.name").is_none() || meta.get("db.name").map(|s| s.as_ref()) == Some(""),
+                    dd_span.attributes.get("db.name").and_then(AttributeValue::as_string).map(|s| s.as_ref()).unwrap_or("").is_empty(),
                     "test case: {}",
                     tc.name
                 );

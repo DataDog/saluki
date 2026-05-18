@@ -8,13 +8,14 @@ use opentelemetry_semantic_conventions::resource::*;
 use otlp_protos::opentelemetry::proto::common::v1::{self as otlp_common, any_value::Value};
 use saluki_common::collections::{FastHashMap, FastHashSet};
 use saluki_context::tags::TagSet;
+use saluki_core::data_model::event::trace::AttributeValue;
+use stringtheory::MetaString;
 
 // ============================================================================
 // Datadog attribute key constants shared across the encoder and translator
 // ============================================================================
 
 pub const KEY_DATADOG_VERSION: &str = "datadog.version";
-pub const KEY_DATADOG_HOST: &str = "datadog.host";
 pub const KEY_DATADOG_ENVIRONMENT: &str = "datadog.env";
 pub const KEY_DATADOG_CONTAINER_ID: &str = "datadog.container_id";
 pub const KEY_DATADOG_CONTAINER_TAGS: &str = "datadog.container_tags";
@@ -142,31 +143,30 @@ pub fn extract_container_tags_from_resource_attributes(attributes: &[otlp_common
     }
 }
 
-/// Extracts container tags from a resource tagset and inserts them into the provided TagSet.
-///
-/// This mirrors `extract_container_tags_from_resource_attributes`, but operates on a `TagSet` representation of
-/// the resource.
-pub fn extract_container_tags_from_resource_tagset(resource_tags: &TagSet, tags: &mut TagSet) {
+/// Extracts container tags from a typed attributes map and inserts them into the provided TagSet.
+pub fn extract_container_tags_from_attributes_map(
+    attributes: &FastHashMap<MetaString, AttributeValue>, tags: &mut TagSet,
+) {
     let mut extracted_tags = FastHashSet::default();
 
-    for tag in resource_tags {
-        let Some(value) = tag.value() else {
+    for (key, value) in attributes {
+        let Some(str_val) = value.as_string() else {
             continue;
         };
 
         // Semantic Conventions
-        if let Some(datadog_key) = CONTAINER_MAPPINGS.get(tag.name()) {
-            tags.insert_tag(format!("{}:{}", datadog_key, value));
+        if let Some(datadog_key) = CONTAINER_MAPPINGS.get(key.as_ref()) {
+            tags.insert_tag(format!("{}:{}", datadog_key, str_val));
             extracted_tags.insert(*datadog_key);
         }
 
         // Custom (datadog.container.tag namespace)
-        if tag.name().starts_with(CUSTOM_CONTAINER_TAG_PREFIX) {
-            if let Some(custom_key) = tag.name().get(CUSTOM_CONTAINER_TAG_PREFIX.len()..) {
+        if key.starts_with(CUSTOM_CONTAINER_TAG_PREFIX) {
+            if let Some(custom_key) = key.get(CUSTOM_CONTAINER_TAG_PREFIX.len()..) {
                 if !custom_key.is_empty() {
                     // Do not replace if set via semantic conventions mappings.
                     if !extracted_tags.insert(custom_key) {
-                        tags.insert_tag(format!("{}:{}", custom_key, value));
+                        tags.insert_tag(format!("{}:{}", custom_key, str_val));
                     }
                 }
             }
@@ -208,11 +208,14 @@ pub fn resource_to_source(resource: &otlp_protos::opentelemetry::proto::resource
     None
 }
 
-/// Resolves the source metadata from a resource `TagSet`.
+/// Resolves the source metadata from a typed attributes map.
 ///
-/// This is equivalent to `resource_to_source`, but avoids the OTLP protobuf resource type.
-pub fn tags_to_source(resource_tags: &TagSet) -> Option<Source> {
-    let get = |key: &str| -> Option<&str> { resource_tags.get_single_tag(key).and_then(|t| t.value()) };
+/// This is equivalent to `resource_to_source`, but works on the unified trace attribute map
+/// instead of the OTLP protobuf resource type.
+pub fn attributes_to_source(attributes: &FastHashMap<MetaString, AttributeValue>) -> Option<Source> {
+    let get = |key: &str| -> Option<&str> {
+        attributes.get(key).and_then(AttributeValue::as_string).map(|s| s.as_ref())
+    };
 
     // AWS ECS Fargate
     if get(CLOUD_PROVIDER) == Some("aws")
@@ -237,3 +240,4 @@ pub fn tags_to_source(resource_tags: &TagSet) -> Option<Source> {
 
     None
 }
+

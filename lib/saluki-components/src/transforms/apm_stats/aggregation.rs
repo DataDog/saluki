@@ -8,6 +8,7 @@ use std::{
 
 use fnv::FnvHasher;
 use saluki_common::collections::{FastHashMap, PrehashedHashMap};
+use saluki_core::data_model::event::trace::AttributeValue;
 use stringtheory::MetaString;
 
 pub const BUCKET_DURATION_NS: u64 = 10_000_000_000;
@@ -464,12 +465,12 @@ pub fn process_tags_hash(process_tags: &str) -> u64 {
     tags_fnv_hash(process_tags.split(','))
 }
 
-pub fn get_status_code(meta: &FastHashMap<MetaString, MetaString>, metrics: &FastHashMap<MetaString, f64>) -> u32 {
-    if let Some(&code) = metrics.get(TAG_STATUS_CODE) {
+pub fn get_status_code(attributes: &FastHashMap<MetaString, AttributeValue>) -> u32 {
+    if let Some(code) = attributes.get(TAG_STATUS_CODE).and_then(AttributeValue::as_float) {
         return code as u32;
     }
 
-    if let Some(code_str) = meta.get(TAG_STATUS_CODE) {
+    if let Some(code_str) = attributes.get(TAG_STATUS_CODE).and_then(AttributeValue::as_string) {
         if let Ok(code) = code_str.as_ref().parse::<u32>() {
             return code;
         }
@@ -478,9 +479,7 @@ pub fn get_status_code(meta: &FastHashMap<MetaString, MetaString>, metrics: &Fas
     0
 }
 
-pub fn get_grpc_status_code(
-    meta: &FastHashMap<MetaString, MetaString>, metrics: &FastHashMap<MetaString, f64>,
-) -> GrpcStatusCode {
+pub fn get_grpc_status_code(attributes: &FastHashMap<MetaString, AttributeValue>) -> GrpcStatusCode {
     const STATUS_CODE_FIELDS: &[&str] = &[
         "rpc.grpc.status_code",
         "grpc.code",
@@ -489,7 +488,7 @@ pub fn get_grpc_status_code(
     ];
 
     for key in STATUS_CODE_FIELDS {
-        if let Some(value) = meta.get(*key) {
+        if let Some(value) = attributes.get(*key).and_then(AttributeValue::as_string) {
             if value.is_empty() {
                 continue;
             }
@@ -499,7 +498,7 @@ pub fn get_grpc_status_code(
     }
 
     for key in STATUS_CODE_FIELDS {
-        if let Some(&code) = metrics.get(*key) {
+        if let Some(code) = attributes.get(*key).and_then(AttributeValue::as_float) {
             return GrpcStatusCode::from_code(code as u8);
         }
     }
@@ -509,7 +508,7 @@ pub fn get_grpc_status_code(
 
 #[cfg(test)]
 mod tests {
-    use saluki_core::data_model::event::trace::Span;
+    use saluki_core::data_model::event::trace::{AttributeValue as AV, Span};
 
     use super::*;
     use crate::transforms::apm_stats::span_concentrator::SpanConcentrator;
@@ -517,107 +516,81 @@ mod tests {
 
     #[test]
     fn test_get_status_code() {
-        // Empty span
-        let meta = FastHashMap::default();
-        let metrics = FastHashMap::default();
-        assert_eq!(get_status_code(&meta, &metrics), 0);
+        // Empty attrs
+        let attrs: FastHashMap<MetaString, AV> = FastHashMap::default();
+        assert_eq!(get_status_code(&attrs), 0);
 
-        // Meta only
-        let mut meta = FastHashMap::default();
-        meta.insert(MetaString::from("http.status_code"), MetaString::from("200"));
-        let metrics = FastHashMap::default();
-        assert_eq!(get_status_code(&meta, &metrics), 200);
+        // String value only
+        let mut attrs: FastHashMap<MetaString, AV> = FastHashMap::default();
+        attrs.insert(MetaString::from("http.status_code"), AV::String(MetaString::from("200")));
+        assert_eq!(get_status_code(&attrs), 200);
 
-        // Metrics only
-        let meta = FastHashMap::default();
-        let mut metrics = FastHashMap::default();
-        metrics.insert(MetaString::from("http.status_code"), 302.0);
-        assert_eq!(get_status_code(&meta, &metrics), 302);
+        // Float value only
+        let mut attrs: FastHashMap<MetaString, AV> = FastHashMap::default();
+        attrs.insert(MetaString::from("http.status_code"), AV::Float(302.0));
+        assert_eq!(get_status_code(&attrs), 302);
 
-        // Both meta and metrics - metrics takes precedence
-        let mut meta = FastHashMap::default();
-        meta.insert(MetaString::from("http.status_code"), MetaString::from("200"));
-        let mut metrics = FastHashMap::default();
-        metrics.insert(MetaString::from("http.status_code"), 302.0);
-        assert_eq!(get_status_code(&meta, &metrics), 302);
+        // Both string and float in same map — float takes precedence (checked first)
+        let mut attrs: FastHashMap<MetaString, AV> = FastHashMap::default();
+        attrs.insert(MetaString::from("http.status_code"), AV::Float(302.0));
+        assert_eq!(get_status_code(&attrs), 302);
 
-        // Invalid meta value
-        let mut meta = FastHashMap::default();
-        meta.insert(MetaString::from("http.status_code"), MetaString::from("x"));
-        let metrics = FastHashMap::default();
-        assert_eq!(get_status_code(&meta, &metrics), 0);
+        // Invalid string value
+        let mut attrs: FastHashMap<MetaString, AV> = FastHashMap::default();
+        attrs.insert(MetaString::from("http.status_code"), AV::String(MetaString::from("x")));
+        assert_eq!(get_status_code(&attrs), 0);
     }
 
     #[test]
     fn test_get_grpc_status_code() {
-        // Empty span
-        let meta = FastHashMap::default();
-        let metrics = FastHashMap::default();
-        assert_eq!(get_grpc_status_code(&meta, &metrics), GrpcStatusCode::Unset);
+        // Empty attrs
+        let attrs: FastHashMap<MetaString, AV> = FastHashMap::default();
+        assert_eq!(get_grpc_status_code(&attrs), GrpcStatusCode::Unset);
 
-        // Meta with lowercase name "aborted"
-        let mut meta = FastHashMap::default();
-        meta.insert(MetaString::from("rpc.grpc.status_code"), MetaString::from("aborted"));
-        let metrics = FastHashMap::default();
-        assert_eq!(get_grpc_status_code(&meta, &metrics), GrpcStatusCode::Aborted);
+        // String with lowercase name "aborted"
+        let mut attrs: FastHashMap<MetaString, AV> = FastHashMap::default();
+        attrs.insert(MetaString::from("rpc.grpc.status_code"), AV::String(MetaString::from("aborted")));
+        assert_eq!(get_grpc_status_code(&attrs), GrpcStatusCode::Aborted);
 
-        // Metrics with numeric code
-        let meta = FastHashMap::default();
-        let mut metrics = FastHashMap::default();
-        metrics.insert(MetaString::from("grpc.code"), 1.0);
-        assert_eq!(get_grpc_status_code(&meta, &metrics), GrpcStatusCode::Cancelled);
+        // Float with numeric code
+        let mut attrs: FastHashMap<MetaString, AV> = FastHashMap::default();
+        attrs.insert(MetaString::from("grpc.code"), AV::Float(1.0));
+        assert_eq!(get_grpc_status_code(&attrs), GrpcStatusCode::Cancelled);
 
-        // Both meta and metrics - meta takes precedence
-        let mut meta = FastHashMap::default();
-        meta.insert(MetaString::from("grpc.status.code"), MetaString::from("0"));
-        let mut metrics = FastHashMap::default();
-        metrics.insert(MetaString::from("grpc.status.code"), 1.0);
-        assert_eq!(get_grpc_status_code(&meta, &metrics), GrpcStatusCode::Ok);
+        // String takes precedence over float (string path is checked first)
+        let mut attrs: FastHashMap<MetaString, AV> = FastHashMap::default();
+        attrs.insert(MetaString::from("grpc.status.code"), AV::String(MetaString::from("0")));
+        assert_eq!(get_grpc_status_code(&attrs), GrpcStatusCode::Ok);
 
-        // Numeric string in meta
-        let mut meta = FastHashMap::default();
-        meta.insert(MetaString::from("rpc.grpc.status.code"), MetaString::from("15"));
-        let metrics = FastHashMap::default();
-        assert_eq!(get_grpc_status_code(&meta, &metrics), GrpcStatusCode::DataLoss);
+        // Numeric string in attrs
+        let mut attrs: FastHashMap<MetaString, AV> = FastHashMap::default();
+        attrs.insert(MetaString::from("rpc.grpc.status.code"), AV::String(MetaString::from("15")));
+        assert_eq!(get_grpc_status_code(&attrs), GrpcStatusCode::DataLoss);
 
         // "Canceled" (mixed case)
-        let mut meta = FastHashMap::default();
-        meta.insert(MetaString::from("rpc.grpc.status.code"), MetaString::from("Canceled"));
-        let metrics = FastHashMap::default();
-        assert_eq!(get_grpc_status_code(&meta, &metrics), GrpcStatusCode::Cancelled);
+        let mut attrs: FastHashMap<MetaString, AV> = FastHashMap::default();
+        attrs.insert(MetaString::from("rpc.grpc.status.code"), AV::String(MetaString::from("Canceled")));
+        assert_eq!(get_grpc_status_code(&attrs), GrpcStatusCode::Cancelled);
 
         // "CANCELLED" (uppercase)
-        let mut meta = FastHashMap::default();
-        meta.insert(MetaString::from("rpc.grpc.status.code"), MetaString::from("CANCELLED"));
-        let metrics = FastHashMap::default();
-        assert_eq!(get_grpc_status_code(&meta, &metrics), GrpcStatusCode::Cancelled);
+        let mut attrs: FastHashMap<MetaString, AV> = FastHashMap::default();
+        attrs.insert(MetaString::from("rpc.grpc.status.code"), AV::String(MetaString::from("CANCELLED")));
+        assert_eq!(get_grpc_status_code(&attrs), GrpcStatusCode::Cancelled);
 
         // With "StatusCode." prefix
-        let mut meta = FastHashMap::default();
-        meta.insert(
-            MetaString::from("grpc.status.code"),
-            MetaString::from("StatusCode.ABORTED"),
-        );
-        let metrics = FastHashMap::default();
-        assert_eq!(get_grpc_status_code(&meta, &metrics), GrpcStatusCode::Aborted);
+        let mut attrs: FastHashMap<MetaString, AV> = FastHashMap::default();
+        attrs.insert(MetaString::from("grpc.status.code"), AV::String(MetaString::from("StatusCode.ABORTED")));
+        assert_eq!(get_grpc_status_code(&attrs), GrpcStatusCode::Aborted);
 
         // Invalid prefix (typo)
-        let mut meta = FastHashMap::default();
-        meta.insert(
-            MetaString::from("grpc.status.code"),
-            MetaString::from("StatusCodee.ABORTED"),
-        );
-        let metrics = FastHashMap::default();
-        assert_eq!(get_grpc_status_code(&meta, &metrics), GrpcStatusCode::Unset);
+        let mut attrs: FastHashMap<MetaString, AV> = FastHashMap::default();
+        attrs.insert(MetaString::from("grpc.status.code"), AV::String(MetaString::from("StatusCodee.ABORTED")));
+        assert_eq!(get_grpc_status_code(&attrs), GrpcStatusCode::Unset);
 
         // "InvalidArgument" (PascalCase)
-        let mut meta = FastHashMap::default();
-        meta.insert(
-            MetaString::from("rpc.grpc.status_code"),
-            MetaString::from("InvalidArgument"),
-        );
-        let metrics = FastHashMap::default();
-        assert_eq!(get_grpc_status_code(&meta, &metrics), GrpcStatusCode::InvalidArgument);
+        let mut attrs: FastHashMap<MetaString, AV> = FastHashMap::default();
+        attrs.insert(MetaString::from("rpc.grpc.status_code"), AV::String(MetaString::from("InvalidArgument")));
+        assert_eq!(get_grpc_status_code(&attrs), GrpcStatusCode::InvalidArgument);
     }
 
     #[test]

@@ -15,7 +15,7 @@
 use std::time::{Duration, Instant};
 
 use saluki_common::{collections::FastHashMap, rate::TokenBucket};
-use saluki_core::data_model::event::trace::{Span, Trace};
+use saluki_core::data_model::event::trace::{AttributeValue, Span, Trace};
 use stringtheory::MetaString;
 
 use super::signature::{span_hash_for_rare, ServiceSignature, Signature};
@@ -160,7 +160,7 @@ impl RareSampler {
 
         // Now safe to mutably borrow trace.
         if let Some(span) = trace.spans_mut().get_mut(sampled_idx) {
-            span.metrics_mut().insert(MetaString::from_static(RARE_KEY), 1.0);
+            span.attributes.insert(MetaString::from_static(RARE_KEY), AttributeValue::Float(1.0));
         }
 
         true
@@ -209,9 +209,9 @@ impl RareSampler {
 /// Checks `_top_level` (agent-set), `_dd.top_level` (tracer-set), and `_dd.measured`, mirroring
 /// `HasTopLevel` + `IsMeasured` in the Go agent's `traceutil` package.
 fn is_top_level_or_measured(span: &Span) -> bool {
-    span.metrics().get(KEY_TOP_LEVEL).is_some_and(|v| *v == 1.0)
-        || span.metrics().get(KEY_TRACER_TOP_LEVEL).is_some_and(|v| *v == 1.0)
-        || span.metrics().get(KEY_MEASURED).is_some_and(|v| *v == 1.0)
+    span.attributes.get(KEY_TOP_LEVEL).and_then(AttributeValue::as_float).is_some_and(|v| v == 1.0)
+        || span.attributes.get(KEY_TRACER_TOP_LEVEL).and_then(AttributeValue::as_float).is_some_and(|v| v == 1.0)
+        || span.attributes.get(KEY_MEASURED).and_then(AttributeValue::as_float).is_some_and(|v| v == 1.0)
 }
 
 #[cfg(test)]
@@ -219,8 +219,7 @@ mod tests {
     use std::time::Duration;
 
     use saluki_common::collections::FastHashMap;
-    use saluki_context::tags::TagSet;
-    use saluki_core::data_model::event::trace::{Span as DdSpan, Trace};
+    use saluki_core::data_model::event::trace::{AttributeValue, Span as DdSpan, Trace};
     use stringtheory::MetaString;
 
     use super::{RareSampler, KEY_MEASURED, KEY_TOP_LEVEL, KEY_TRACER_TOP_LEVEL, RARE_KEY};
@@ -233,7 +232,6 @@ mod tests {
             MetaString::from(name),
             MetaString::from(resource),
             MetaString::from("web"),
-            1,
             1,
             0,
             0,
@@ -260,7 +258,7 @@ mod tests {
     }
 
     fn make_trace(spans: Vec<DdSpan>) -> Trace {
-        Trace::new(spans, TagSet::default())
+        Trace::new(spans)
     }
 
     #[test]
@@ -276,7 +274,7 @@ mod tests {
         let mut trace = make_trace(vec![make_top_level_span("svc", "op", "res")]);
         assert!(sampler.sample(&mut trace, 0));
         // The rare key should be set on the sampled span.
-        assert_eq!(trace.spans()[0].metrics().get(RARE_KEY).copied(), Some(1.0));
+        assert_eq!(trace.spans()[0].attributes.get(RARE_KEY).and_then(AttributeValue::as_float), Some(1.0));
     }
 
     #[test]
@@ -411,7 +409,7 @@ mod tests {
 
         let mut trace1 = make_trace(vec![make_top_level_span("s1", "op", "r1")]);
         assert!(sampler.sample(&mut trace1, 0));
-        assert_eq!(trace1.spans()[0].metrics().get(RARE_KEY).copied(), Some(1.0));
+        assert_eq!(trace1.spans()[0].attributes.get(RARE_KEY).and_then(AttributeValue::as_float), Some(1.0));
 
         let mut trace2 = make_trace(vec![
             make_top_level_span("s1", "op", "r1"),
@@ -419,12 +417,12 @@ mod tests {
         ]);
         assert!(sampler.sample(&mut trace2, 0));
         assert_eq!(
-            trace2.spans()[0].metrics().get(RARE_KEY).copied(),
+            trace2.spans()[0].attributes.get(RARE_KEY).and_then(AttributeValue::as_float),
             None,
             "r1 should not get rare flag"
         );
         assert_eq!(
-            trace2.spans()[1].metrics().get(RARE_KEY).copied(),
+            trace2.spans()[1].attributes.get(RARE_KEY).and_then(AttributeValue::as_float),
             Some(1.0),
             "r2 should get rare flag"
         );
