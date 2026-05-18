@@ -19,7 +19,7 @@ pub trait Relay {
     /// Runs the relay.
     ///
     /// The relay context provides access primarily to the payloads dispatcher, used to send raw payloads
-    /// to the next component(s) in the topology, as well as other information such as the component context.
+    /// to the next components in the topology, as well as other information such as the component context.
     ///
     /// Relays are expected to run indefinitely until their shutdown is triggered by the topology, or an error occurs.
     ///

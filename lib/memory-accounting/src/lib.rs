@@ -9,7 +9,7 @@
 //! - memory limiting (enforcing _maximum_ memory usage)
 //!
 //! Through this approach, data planes can be vastly more resilient to memory exhaustion or
-//! exceeding externally-applied memory limits.
+//! exceeding externally applied memory limits.
 //!
 //! ## Memory bounds
 //!

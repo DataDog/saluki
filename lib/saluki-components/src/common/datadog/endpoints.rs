@@ -199,7 +199,7 @@ impl EndpointConfiguration {
 
 /// A single API endpoint and its associated API key.
 ///
-/// An endpoint is defined as a unique, fully-qualified domain name that metrics will be sent to, such as
+/// An endpoint is defined as a unique, fully qualified domain name that metrics will be sent to, such as
 /// `https://app.datadoghq.com`.
 #[derive(Clone, Debug)]
 pub struct ResolvedEndpoint {

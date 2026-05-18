@@ -971,7 +971,7 @@ mod property_tests {
         /// Total count is preserved exactly when no u32 overflow occurs.
         ///
         /// This is the key invariant from sketches-go's assertEncodeBins:
-        /// store.TotalCount() must equal the sum of all inserted counts.
+        /// `store.TotalCount()` must equal the sum of all inserted counts.
         /// We restrict counts to keep the collapsed sum safely below u32::MAX
         /// (sketches-go never loses mass because it uses float64; we match that
         /// guarantee for all inputs where the collapsed bin doesn't overflow u32).

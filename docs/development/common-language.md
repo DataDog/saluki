@@ -20,4 +20,4 @@ processes. You're encouraged to read the RFC, but here's a quick rundown:
 - **MAY**/**OPTIONAL**: this is legitimately optional ("dealer's choice")
 
 Like RFC 2119 mentions, these should be used sparingly and only when necessary to clarify expectations... so if you see
-them, pay attention!
+them, pay attention.

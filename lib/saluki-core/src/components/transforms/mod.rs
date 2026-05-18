@@ -14,14 +14,14 @@ pub use self::context::TransformContext;
 /// A transform.
 ///
 /// Transforms sit in the middle of a topology, where events can be manipulated (for example, sampled, filtered, enriched)
-/// before being sent to the next component(s) in the topology. Examples of typical transforms include origin
+/// before being sent to the next components in the topology. Examples of typical transforms include origin
 /// enrichment, aggregation, and sampling.
 #[async_trait]
 pub trait Transform {
     /// Runs the transform.
     ///
     /// The transform context provides access primarily to the event stream, used to receive events sent to the
-    /// transforms, and the forwarder, used to send events to the next component(s) in the topology, as well as other
+    /// transforms, and the forwarder, used to send events to the next components in the topology, as well as other
     /// information such as the component context.
     ///
     /// Transforms are expected to run indefinitely until their event stream is terminated, or an error occurs.

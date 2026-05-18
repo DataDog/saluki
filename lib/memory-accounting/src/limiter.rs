@@ -37,8 +37,8 @@ impl MemoryLimiter {
     /// `wait_for_capacity` will observe waiting once the memory usage exceeds the configured limit threshold. The
     /// waiting time will scale progressively the closer the memory usage is to the configured limit.
     ///
-    /// Defaults to a 95% threshold (that's, threshold begins at 95% of the limit), a minimum backoff duration of 1ms, and
-    /// a maximum backoff duration of 25ms. The effective limit of the grant is used as the memory limit.
+    /// Defaults to a 95% threshold (that's, threshold begins at 95% of the limit), a minimum backoff duration of 1 ms, and
+    /// a maximum backoff duration of 25 ms. The effective limit of the grant is used as the memory limit.
     pub fn new(grant: MemoryGrant) -> Option<Self> {
         // Smoke test to see if we can even collect memory stats on this system.
         Querier::default().resident_set_size()?;

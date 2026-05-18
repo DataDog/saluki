@@ -18,7 +18,7 @@ pub type FastHasher = foldhash::quality::FoldHasher<'static>;
 /// [`BuildHasher`] implementation for [`FastHasher`].
 pub type FastBuildHasher = foldhash::quality::RandomState;
 
-// Single global instance of the fast hasher state since we need a consistently-seeded state for `hash_single_fast` to
+// Single global instance of the fast hasher state since we need a consistently seeded state for `hash_single_fast` to
 // consistently hash things across the application.
 static FAST_BUILD_HASHER: LazyLock<FastBuildHasher> = LazyLock::new(get_fast_build_hasher);
 
@@ -78,7 +78,7 @@ pub fn get_fast_build_hasher() -> FastBuildHasher {
 ///
 /// Values hashed with a `FastHasher`instance created with this method will be consistent within the same process, but
 /// won't be consistent across different runs of the application. Additionally, values hashed with this instance will
-/// not be consistent with those hashed by [`get_fast_build_hasher`], as that function returns a randomly-seeded state for
+/// not be consistent with those hashed by [`get_fast_build_hasher`], as that function returns a randomly seeded state for
 /// each call.
 #[inline]
 pub fn get_fast_hasher() -> FastHasher {

@@ -205,7 +205,7 @@ impl ComponentRegistry {
 
     /// Gets the tracking token for the component scoped to this registry.
     ///
-    /// If the component is the root component (has no name), the root allocation token is returned.  Otherwise, the
+    /// If the component is the root component (has no name), the root allocation token is returned. Otherwise, the
     /// component is registered (using its full name) if it hasn't already been, and that token is returned.
     pub fn token(&mut self) -> AllocationGroupToken {
         let mut inner = self.inner.lock().unwrap();

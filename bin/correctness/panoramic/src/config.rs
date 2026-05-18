@@ -254,7 +254,7 @@ pub enum AssertionConfig {
     },
 }
 
-/// Which log stream(s) to check.
+/// Which log streams to check.
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum LogStream {

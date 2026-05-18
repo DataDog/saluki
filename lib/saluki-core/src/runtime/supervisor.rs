@@ -361,7 +361,7 @@ impl Supervisor {
 
     /// Configures this supervisor to run in a dedicated runtime.
     ///
-    /// When this supervisor is added as a child to another supervisor, it will spawn its own OS thread(s) and Tokio
+    /// When this supervisor is added as a child to another supervisor, it will spawn its own OS threads and Tokio
     /// runtime instead of running on the parent's ambient runtime.
     ///
     /// This provides runtime isolation, which can be useful for:

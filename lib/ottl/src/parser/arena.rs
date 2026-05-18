@@ -125,7 +125,7 @@ fn resolve_path<F: EvalContextFamily>(path: &PathExpr, path_resolvers: &PathReso
 }
 
 /// Convert boxed AST to arena-based AST for cache-friendly execution.
-/// Path resolution happens HERE (once at parse time), not at each execution!
+/// Path resolution happens HERE (once at parse time), not at each execution.
 pub fn convert_to_arena<F: EvalContextFamily>(
     root: &RootExpr, arena: &mut AstArena<F>, path_resolvers: &PathResolverMap<F>,
 ) -> Result<ArenaRootExpr> {

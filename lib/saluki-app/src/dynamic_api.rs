@@ -68,7 +68,7 @@ pub struct BoundApiAddress(pub SocketAddr);
 /// In addition to dynamic routes, callers can register static HTTP handlers and gRPC services up-front via
 /// [`with_handler`][Self::with_handler], [`with_optional_handler`][Self::with_optional_handler], and
 /// [`with_grpc_service`][Self::with_grpc_service]. These form a base router that's cloned on every rebuild and merged
-/// with the currently-asserted dynamic routes. Static routes take precedence on conflicts: a dynamic route whose path
+/// with the currently asserted dynamic routes. Static routes take precedence on conflicts: a dynamic route whose path
 /// and method overlap with a static route is skipped (with a warning) until the conflict clears.
 ///
 /// ## Assertions
@@ -232,7 +232,7 @@ impl Supervisable for DynamicAPIBuilder {
     }
 }
 
-/// A [`tower::Service`] that routes a request based on a dynamically-updated [`Router`].
+/// A [`tower::Service`] that routes a request based on a dynamically updated [`Router`].
 ///
 /// When installed as the fallback service for a top-level [`Router`], `DynamicRouterService` dynamically routing
 /// requests based on the current defined "inner" router, which itself can be hot-swapped at runtime. This allows for
@@ -372,7 +372,7 @@ fn create_dynamic_router(initial: Router) -> (Arc<ArcSwap<Router>>, Router) {
 /// carries -- we can't detect conflicts ahead of time.
 ///
 /// To recover from the panic without losing the accumulated router state, we clone `base` before the merge attempt.
-/// The clone is passed into `catch_unwind`: if the merge panics, only the clone is in a partially-mutated state and it
+/// The clone is passed into `catch_unwind`: if the merge panics, only the clone is in a partially mutated state and it
 /// is simply dropped. The original `base` remains intact and is returned as-is. `AssertUnwindSafe` is sound here
 /// because:
 ///
@@ -396,7 +396,7 @@ fn try_merge_router(base: &Router, id: &Identifier, other: &Router) -> Result<Ro
     }
 }
 
-/// Rebuilds the merged inner router from the static `base` and all currently-registered dynamic handlers, applies
+/// Rebuilds the merged inner router from the static `base` and all currently registered dynamic handlers, applies
 /// `post_process` to the merged router, then stores the result in the [`ArcSwap`].
 fn rebuild_router(
     inner_router: &Arc<ArcSwap<Router>>, base: &Router, handlers: &FastIndexMap<Identifier, Router>,
@@ -810,7 +810,7 @@ mod tests {
         let body = assert_status_eventually(harness.addr, "/info", StatusCode::OK).await;
         assert_eq!(body, "info");
 
-        // Retract the first /health handler -- the previously-skipped second handler should now
+        // Retract the first /health handler -- the previously skipped second handler should now
         // become active since the conflict no longer exists.
         harness.retract_route("health-1").await;
         let body = assert_status_eventually(harness.addr, "/health", StatusCode::OK).await;
