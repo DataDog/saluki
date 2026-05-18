@@ -51,6 +51,9 @@ async fn main() -> Result<(), GenericError> {
         .add_providers([DatadogRemapper::new()])
         .from_environment(PlatformSettings::get_env_var_prefix())
         .error_context("Environment variable prefix should not be empty.")?
+        .with_default_secrets_resolution()
+        .await
+        .error_context("Failed to load secrets resolution configuration during bootstrap.")?
         .bootstrap_generic();
 
     // Translate the bootstrap configuration into ADP's logging configuration, applying ADP-specific rules

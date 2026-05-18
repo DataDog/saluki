@@ -110,6 +110,8 @@ pub async fn handle_run_command(
                 .with_dynamic_configuration(ra_bootstrap.create_config_stream())
                 .add_providers([DatadogRemapper::new()])
                 .from_environment(PlatformSettings::get_env_var_prefix())?
+                .with_default_secrets_resolution()
+                .await?
                 .into_generic()
                 .await?;
 
