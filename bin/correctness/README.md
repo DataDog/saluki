@@ -25,14 +25,8 @@ and `millstone` -- by running `make build-correctness-tools-image`.
 
 ## Running correctness tests
 
-To run the correctness tests, you must first build the related container images (the correctness tools suite and ADP
-itself) before you can run the tests. This can be done by running `make build-correctness-tools-image
-build-datadog-agent-image`. We avoid automatically building the container images when running the test because this can
-lead to unnecessary rebuilds, and it's quicker to simply run `make build-datadog-agent-image` after making actual
-changes to ADP. Once this is done, you can run the correctness test itself by running `make test-correctness`.
-
-If updates to `datadog-intake` or `millstone` are made, rebuild the suite image by running
-`make build-correctness-tools-image`. Panoramic will be rebuilt automatically when running `make test-correctness`.
+Run all correctness tests with `make test-correctness`, or a single test case with
+`make test-correctness-case CASE=<test-name>`.
 
 [fakeintake_gh]: https://github.com/DataDog/datadog-agent/tree/main/test/fakeintake
 [lading_gh]: https://github.com/DataDog/lading
