@@ -230,10 +230,6 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-
-
-
-
     /// `serializer_experimental_use_v3_api.compression_level` - V3 API compression level.
     SERIALIZER_EXPERIMENTAL_USE_V3_API_COMPRESSION_LEVEL = SalukiAnnotation {
         schema: &schema::SERIALIZER_EXPERIMENTAL_USE_V3_API_COMPRESSION_LEVEL,
@@ -413,10 +409,6 @@ crate::declare_annotations! {
         value_type_override: None,
         test_json: None,
     };
-
-
-
-
 
     /// `aggregator_buffer_size` - aggregator input channel depth.
     AGGREGATOR_BUFFER_SIZE = SalukiAnnotation {
@@ -609,7 +601,7 @@ crate::declare_annotations! {
     LOG_PAYLOADS = SalukiAnnotation {
         schema: &schema::LOG_PAYLOADS,
         // Not implemented. #1686
-        support_level: SupportLevel::Incompatible(Severity::Medium),
+        support_level: SupportLevel::Incompatible(Severity::Low),
         additional_yaml_paths: &[],
         env_var_override: None,
         used_by: &[],
