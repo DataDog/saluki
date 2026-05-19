@@ -69,7 +69,7 @@ pub(super) fn write_header<W: Write>(writer: &mut W) -> io::Result<()> {
 mod tests {
     use std::io::{self, ErrorKind};
 
-    use super::{valid_header, file_version, write_header, DATADOG_FILE_VERSION, DATADOG_HEADER, VERSION_INDEX};
+    use super::{file_version, valid_header, write_header, DATADOG_FILE_VERSION, DATADOG_HEADER, VERSION_INDEX};
 
     #[test]
     fn test_header_format() {

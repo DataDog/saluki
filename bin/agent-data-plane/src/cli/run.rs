@@ -23,7 +23,10 @@ use saluki_components::{
     },
     forwarders::{DatadogConfiguration, OtlpForwarderConfiguration},
     relays::otlp::OtlpRelayConfiguration,
-    sources::{ChecksIPCConfiguration, DogStatsDCaptureAPIHandler, DogStatsDConfiguration, OtlpConfiguration},
+    sources::{
+        ChecksIPCConfiguration, DogStatsDCaptureAPIHandler, DogStatsDConfiguration, DogStatsDReplayAPIHandler,
+        OtlpConfiguration,
+    },
     transforms::{
         AggregateConfiguration, ApmStatsTransformConfiguration, ChainedConfiguration, DogStatsDMapperConfiguration,
         HostEnrichmentConfiguration, TraceObfuscationConfiguration, TraceSamplerConfiguration,
@@ -170,7 +173,13 @@ pub async fn handle_run_command(
         dsd_stats_config.clone(),
     )
     .await?;
-    let dsd_capture_api_handler = control_surfaces.dogstatsd.map(|s| s.capture_api_handler);
+    let (dsd_capture_api_handler, dsd_replay_api_handler) = match control_surfaces.dogstatsd {
+        Some(DogStatsDControlSurface {
+            capture_api_handler,
+            replay_api_handler,
+        }) => (Some(capture_api_handler), Some(replay_api_handler)),
+        None => (None, None),
+    };
 
     // Create the internal supervisor which drives our control plane and internal observability.
     let mut internal_supervisor = create_internal_supervisor(
@@ -178,7 +187,7 @@ pub async fn handle_run_command(
         &dp_config,
         &component_registry,
         health_registry.clone(),
-        DogStatsDControlPlaneConfiguration::new(dsd_stats_config, dsd_capture_api_handler),
+        DogStatsDControlPlaneConfiguration::new(dsd_stats_config, dsd_capture_api_handler, dsd_replay_api_handler),
         ra_bootstrap,
         bootstrap_guard.logging().controller(),
     )
@@ -388,6 +397,7 @@ struct TopologyControlSurfaces {
 
 struct DogStatsDControlSurface {
     capture_api_handler: DogStatsDCaptureAPIHandler,
+    replay_api_handler: DogStatsDReplayAPIHandler,
 }
 
 async fn create_topology(
@@ -448,9 +458,12 @@ async fn create_topology(
     }
 
     if dp_config.dogstatsd().enabled() {
-        let capture_api_handler =
+        let (capture_api_handler, replay_api_handler) =
             add_dsd_pipeline_to_blueprint(&mut blueprint, config, env_provider, dsd_stats_config).await?;
-        control_surfaces.dogstatsd = Some(DogStatsDControlSurface { capture_api_handler });
+        control_surfaces.dogstatsd = Some(DogStatsDControlSurface {
+            capture_api_handler,
+            replay_api_handler,
+        });
     }
 
     if dp_config.otlp().enabled() {
@@ -594,7 +607,7 @@ async fn add_baseline_traces_pipeline_to_blueprint(
 async fn add_dsd_pipeline_to_blueprint(
     blueprint: &mut TopologyBlueprint, config: &GenericConfiguration, env_provider: &ADPEnvironmentProvider,
     dsd_stats_config: DogStatsDStatisticsConfiguration,
-) -> Result<DogStatsDCaptureAPIHandler, GenericError> {
+) -> Result<(DogStatsDCaptureAPIHandler, DogStatsDReplayAPIHandler), GenericError> {
     // We're creating the "front half" of the DogStatsD pipeline, which deals solely with accepting DogStatsD payloads,
     // and enriching/processing them in DSD-specific ways, relevant to how the Datadog Agent is expected to behave.
     //
@@ -635,6 +648,7 @@ async fn add_dsd_pipeline_to_blueprint(
         .with_workload_provider(env_provider.workload().clone())
         .with_capture_entity_resolver(env_provider.workload().clone());
     let dsd_capture_api_handler = dsd_config.capture_api_handler();
+    let dsd_replay_api_handler = dsd_config.replay_api_handler();
     let dsd_prefix_filter_configuration = DogStatsDPrefixFilterConfiguration::from_configuration(config)?;
     let dsd_mapper_config = DogStatsDMapperConfiguration::from_configuration(config)?;
     let dsd_enrich_config =
@@ -691,7 +705,7 @@ async fn add_dsd_pipeline_to_blueprint(
             .add_destination("dsd_debug_log_out", dsd_debug_log_config)?
             .connect_component("dsd_debug_log_out", ["dsd_in.metrics"])?;
     }
-    Ok(dsd_capture_api_handler)
+    Ok((dsd_capture_api_handler, dsd_replay_api_handler))
 }
 
 fn add_otlp_pipeline_to_blueprint(

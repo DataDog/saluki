@@ -21,7 +21,7 @@ use tracing::{debug, error, warn};
 use zstd::stream::write::Encoder as ZstdEncoder;
 
 use super::super::MIN_CAPTURE_DEPTH;
-use super::file::write_header;
+use super::file_header::write_header;
 
 const FILE_TEMPLATE_PREFIX: &str = "datadog-capture";
 
@@ -525,7 +525,7 @@ mod tests {
     use super::{
         CaptureRecord, CaptureTargetDir, TaggerState, TrafficCaptureWriter, UnixDogstatsdMsg, MIN_CAPTURE_DEPTH,
     };
-    use crate::sources::dogstatsd::replay::file::valid_header;
+    use crate::sources::dogstatsd::replay::file_header::valid_header;
 
     #[derive(Default)]
     struct MockWorkloadProvider {

@@ -9,7 +9,7 @@ use datadog_protos::agent::{TaggerState, UnixDogstatsdMsg};
 use prost::Message;
 use saluki_error::{generic_error, GenericError};
 
-use super::file::{valid_header, file_version, DATADOG_HEADER, MIN_NANO_VERSION, MIN_STATE_VERSION};
+use super::file_header::{file_version, valid_header, DATADOG_HEADER, MIN_NANO_VERSION, MIN_STATE_VERSION};
 
 const ZSTD_MAGIC: [u8; 4] = [0x28, 0xB5, 0x2F, 0xFD];
 const LENGTH_PREFIX_SIZE: usize = 4;

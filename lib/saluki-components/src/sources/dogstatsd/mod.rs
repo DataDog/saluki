@@ -76,9 +76,10 @@ mod io_buffer;
 use self::io_buffer::IoBufferManager;
 
 mod replay;
-use self::replay::{CaptureRecord, TrafficCapture};
+use self::replay::{CaptureRecord, TrafficCapture, TrafficReplay};
 pub use self::replay::{
-    DogStatsDCaptureAPIHandler, DogStatsDCaptureControl, TimestampResolution, TrafficCaptureReader,
+    DogStatsDCaptureAPIHandler, DogStatsDCaptureControl, DogStatsDReplayAPIHandler, DogStatsDReplayControl,
+    ReplayHandle, ReplayOptions, TimestampResolution, TrafficCaptureReader, DEFAULT_REPLAY_LOOPS,
     REPLAY_CREDENTIALS_GID,
 };
 
@@ -511,6 +512,10 @@ pub struct DogStatsDConfiguration {
     #[cfg_attr(test, derive_where(skip))]
     capture_control: DogStatsDCaptureControl,
 
+    #[serde(skip, default)]
+    #[cfg_attr(test, derive_where(skip))]
+    replay_control: DogStatsDReplayControl,
+
     /// Provider kind tag appended to all metrics as `provider_kind:<value>`.
     ///
     /// Set via `DD_PROVIDER_KIND` by the Helm chart on GKE Autopilot (`gke-autopilot`) and GKE on
@@ -669,6 +674,16 @@ impl DogStatsDConfiguration {
         DogStatsDCaptureAPIHandler::new(self.capture_control.clone())
     }
 
+    /// Returns the shared control handle for DogStatsD traffic replay.
+    pub fn replay_control(&self) -> DogStatsDReplayControl {
+        self.replay_control.clone()
+    }
+
+    /// Returns an HTTP API handler exposing the DogStatsD replay control surface.
+    pub fn replay_api_handler(&self) -> DogStatsDReplayAPIHandler {
+        DogStatsDReplayAPIHandler::new(self.replay_control.clone())
+    }
+
     fn fix_empty_capture_path(&mut self, config: &GenericConfiguration) {
         if self.capture_path.parent().is_some() {
             return;
@@ -817,6 +832,9 @@ impl SourceBuilder for DogStatsDConfiguration {
             self.workload_provider.clone(),
         );
         self.capture_control.bind(traffic_capture.clone());
+
+        let traffic_replay = TrafficReplay::new();
+        self.replay_control.bind(traffic_replay);
 
         Ok(Box::new(DogStatsD {
             listeners,
