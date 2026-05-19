@@ -525,7 +525,7 @@ mod tests {
     use super::{
         CaptureRecord, CaptureTargetDir, TaggerState, TrafficCaptureWriter, UnixDogstatsdMsg, MIN_CAPTURE_DEPTH,
     };
-    use crate::sources::dogstatsd::replay::file::datadog_matcher;
+    use crate::sources::dogstatsd::replay::file::valid_header;
 
     #[derive(Default)]
     struct MockWorkloadProvider {
@@ -754,7 +754,7 @@ mod tests {
     }
 
     fn assert_capture_contents(bytes: &[u8]) {
-        assert!(datadog_matcher(bytes));
+        assert!(valid_header(bytes));
 
         let header_len = 8;
         let record_size =
