@@ -104,12 +104,13 @@ pub async fn handle_run_command(
         Some(ra_bootstrap) if use_new_config_stream_endpoint => {
             // Build a new configuration that uses the configuration sent by the control plane as the authoritative
             // configuration source, but with environment variables on top of that to allow for ADP-specific overriding: log
-            // level, etc.
+            // level, IPC paths, etc. ConfigurationLoader applies sources in the order they're added, with later sources
+            // taking precedence — so the dynamic provider must be added before `from_environment` for env vars to win.
             let dynamic_config = ConfigurationLoader::default()
                 .with_key_aliases(KEY_ALIASES)
                 .add_providers([DatadogRemapper::new()])
-                .from_environment(PlatformSettings::get_env_var_prefix())?
                 .with_dynamic_configuration(ra_bootstrap.create_config_stream())
+                .from_environment(PlatformSettings::get_env_var_prefix())?
                 .into_generic()
                 .await?;
 
