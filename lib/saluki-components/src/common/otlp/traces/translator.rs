@@ -67,7 +67,7 @@ struct OtlpResourceMeta {
     /// Resolved tracer SDK version.
     tracer_version: MetaString,
     /// All resource attributes as a typed map (for `Trace::attributes`).
-    attributes: FastHashMap<MetaString, AttributeValue>,
+    attributes: Arc<FastHashMap<MetaString, AttributeValue>>,
 }
 
 /// Extracts unified trace-level fields from OTLP resource attributes.
@@ -122,13 +122,14 @@ fn extract_resource_meta(
         let Some(wrapper) = &kv.value else { continue };
         let Some(value) = &wrapper.value else { continue };
 
+        // Scalar types are stored in their native AttributeValue variant so downstream
+        // code (e.g. the encoder) can coerce at the output boundary. Arrays and KVLists
+        // are stringified via JSON because no wire format accepts them natively.
         let attr_value = match value {
             OtlpValue::StringValue(s) => AttributeValue::String(MetaString::from_interner(s.as_str(), interner)),
-            OtlpValue::IntValue(i) => AttributeValue::Float(*i as f64),
+            OtlpValue::IntValue(i) => AttributeValue::Int(*i),
             OtlpValue::DoubleValue(d) => AttributeValue::Float(*d),
-            OtlpValue::BoolValue(b) => {
-                AttributeValue::String(MetaString::from_static(if *b { "true" } else { "false" }))
-            }
+            OtlpValue::BoolValue(b) => AttributeValue::Bool(*b),
             OtlpValue::BytesValue(b) => AttributeValue::Bytes(b.clone()),
             _ => {
                 // Arrays and KVLists are stringified via JSON.
@@ -151,7 +152,7 @@ fn extract_resource_meta(
         app_version,
         language_name,
         tracer_version,
-        attributes: attr_map,
+        attributes: Arc::new(attr_map),
     }
 }
 
@@ -268,7 +269,7 @@ impl Iterator for OtlpTraceEventsIter {
             trace.payload.app_version = self.resource_meta.app_version.clone();
             trace.payload.language_name = self.resource_meta.language_name.clone();
             trace.payload.tracer_version = self.resource_meta.tracer_version.clone();
-            trace.attributes = self.resource_meta.attributes.clone();
+            trace.attributes = Arc::clone(&self.resource_meta.attributes);
 
             return Some(Event::Trace(trace));
         }

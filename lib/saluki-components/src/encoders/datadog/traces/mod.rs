@@ -524,8 +524,14 @@ impl TraceEndpointEncoder {
                         {
                             let mut meta = s.meta();
                             for (k, v) in &span.attributes {
-                                if let AttributeValue::String(str_val) = v {
-                                    meta.write_entry(k.as_ref(), str_val.as_ref())?;
+                                match v {
+                                    AttributeValue::String(str_val) => {
+                                        meta.write_entry(k.as_ref(), str_val.as_ref())?;
+                                    }
+                                    AttributeValue::Bool(b) => {
+                                        meta.write_entry(k.as_ref(), if *b { "true" } else { "false" })?;
+                                    }
+                                    _ => {}
                                 }
                             }
                         }
@@ -533,8 +539,10 @@ impl TraceEndpointEncoder {
                         {
                             let mut metrics = s.metrics();
                             for (k, v) in &span.attributes {
-                                if let AttributeValue::Float(f) = v {
-                                    metrics.write_entry(k.as_ref(), *f)?;
+                                match v {
+                                    AttributeValue::Float(f) => metrics.write_entry(k.as_ref(), *f)?,
+                                    AttributeValue::Int(i) => metrics.write_entry(k.as_ref(), *i as f64)?,
+                                    _ => {}
                                 }
                             }
                         }
@@ -544,8 +552,11 @@ impl TraceEndpointEncoder {
                         {
                             let mut ms = s.meta_struct();
                             for (k, v) in &span.attributes {
-                                if let AttributeValue::Bytes(bytes) = v {
-                                    ms.write_entry(k.as_ref(), bytes.as_slice())?;
+                                match v {
+                                    AttributeValue::Bytes(bytes) => ms.write_entry(k.as_ref(), bytes.as_slice())?,
+                                    // TODO: Array and KeyValueList could be JSON-serialized into meta_struct;
+                                    // skipped until a caller needs them for span-level attributes.
+                                    _ => {}
                                 }
                             }
                         }

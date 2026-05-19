@@ -1,5 +1,7 @@
 //! Traces.
 
+use std::sync::Arc;
+
 use saluki_common::collections::FastHashMap;
 use stringtheory::MetaString;
 
@@ -102,7 +104,7 @@ pub struct Trace {
 
     /// Chunk-level or resource-level attributes (replaces `resource_tags` and
     /// `V1TraceChunk.attributes` once downstream consumers are migrated).
-    pub attributes: FastHashMap<MetaString, AttributeValue>,
+    pub attributes: Arc<FastHashMap<MetaString, AttributeValue>>,
 
     // Flat sampling fields.
     /// Sampling priority set by the tracer or a sampler.
@@ -129,7 +131,7 @@ impl Trace {
             trace_id_low: 0,
             origin: MetaString::empty(),
             payload: PayloadFields::default(),
-            attributes: FastHashMap::default(),
+            attributes: Arc::new(FastHashMap::default()),
             priority: None,
             dropped_trace: false,
             sampling_mechanism: 0,

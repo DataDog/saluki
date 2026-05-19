@@ -205,9 +205,20 @@ impl ApmStats {
             .find(|s| s.parent_id() == 0)
             .or_else(|| trace.spans().first());
 
+        // env fallback order mirrors get_trace_env (Go agent pkg/trace/traceutil/trace.go:GetEnv):
+        // root span attrs → all span attrs → trace.payload.env (ADP extension) → agent_env.
         let env = root_span
             .and_then(|s| s.attributes.get("env").and_then(AttributeValue::as_string).filter(|s| !s.is_empty()))
             .cloned()
+            .or_else(|| {
+                trace.spans().iter().find_map(|s| {
+                    s.attributes
+                        .get("env")
+                        .and_then(AttributeValue::as_string)
+                        .filter(|s| !s.is_empty())
+                        .cloned()
+                })
+            })
             .unwrap_or_else(|| {
                 if !trace.payload.env.is_empty() {
                     trace.payload.env.clone()
