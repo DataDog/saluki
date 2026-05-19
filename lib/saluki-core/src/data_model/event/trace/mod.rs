@@ -46,6 +46,18 @@ impl AttributeValue {
         }
     }
 
+    /// Returns a numeric value as `f64` for either `Float` or `Int` variants.
+    ///
+    /// Use this when the caller only needs a number and doesn't care whether
+    /// the stored type is integral or floating-point (e.g. sampling priority).
+    pub fn as_num(&self) -> Option<f64> {
+        match self {
+            AttributeValue::Float(f) => Some(*f),
+            AttributeValue::Int(i) => Some(*i as f64),
+            _ => None,
+        }
+    }
+
     /// Returns the inner bytes if this is a `Bytes` variant.
     pub fn as_bytes(&self) -> Option<&[u8]> {
         if let AttributeValue::Bytes(b) = self {

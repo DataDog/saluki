@@ -203,7 +203,7 @@ impl TraceSampler {
         let spans = trace.spans();
         spans
             .iter()
-            .find_map(|span| span.attributes.get(SAMPLING_PRIORITY_METRIC_KEY).and_then(AttributeValue::as_float).map(|p| p as i32))
+            .find_map(|span| span.attributes.get(SAMPLING_PRIORITY_METRIC_KEY).and_then(AttributeValue::as_num).map(|p| p as i32))
     }
 
     /// Returns `true` if the given trace ID should be probabilistically sampled.

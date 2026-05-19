@@ -970,7 +970,7 @@ fn map_attribute_generic(
         OtlpValue::BoolValue(b) => {
             conditionally_map_otlp_attribute(
                 attribute.key.as_str(),
-                AttributeValue::String(MetaString::from_static(if *b { "true" } else { "false" })),
+                AttributeValue::Bool(*b),
                 attrs,
                 ignore_missing_fields,
                 interner,
@@ -978,10 +978,9 @@ fn map_attribute_generic(
             );
         }
         OtlpValue::BytesValue(bytes) => {
-            let placeholder = format!("<{} bytes>", bytes.len());
             conditionally_map_otlp_attribute(
                 attribute.key.as_str(),
-                AttributeValue::String(MetaString::from_interner(&placeholder, interner)),
+                AttributeValue::Bytes(bytes.clone()),
                 attrs,
                 ignore_missing_fields,
                 interner,
@@ -991,7 +990,7 @@ fn map_attribute_generic(
         OtlpValue::IntValue(i) => {
             conditionally_map_otlp_attribute(
                 attribute.key.as_str(),
-                AttributeValue::Float(*i as f64),
+                AttributeValue::Int(*i),
                 attrs,
                 ignore_missing_fields,
                 interner,
@@ -1274,12 +1273,15 @@ fn conditionally_map_otlp_attribute(
         }
         ANALYTICS_EVENT_KEY => {
             if !attrs.contains_key(EVENT_EXTRACTION_METRIC_KEY) {
-                if let AttributeValue::String(s) = &value {
-                    if let Some(parsed) = parse_bool(s.as_ref()) {
-                        attrs
-                            .entry(MetaString::from_static(EVENT_EXTRACTION_METRIC_KEY))
-                            .or_insert(AttributeValue::Float(if parsed { 1.0 } else { 0.0 }));
-                    }
+                let parsed = match &value {
+                    AttributeValue::Bool(b) => Some(*b),
+                    AttributeValue::String(s) => parse_bool(s.as_ref()),
+                    _ => None,
+                };
+                if let Some(parsed) = parsed {
+                    attrs
+                        .entry(MetaString::from_static(EVENT_EXTRACTION_METRIC_KEY))
+                        .or_insert(AttributeValue::Float(if parsed { 1.0 } else { 0.0 }));
                 }
             }
         }
@@ -1762,7 +1764,7 @@ mod tests {
             &mut string_builder,
         );
         assert_eq!(
-            attrs.get(SAMPLING_PRIORITY_METRIC_KEY).and_then(AttributeValue::as_float),
+            attrs.get(SAMPLING_PRIORITY_METRIC_KEY).and_then(AttributeValue::as_num),
             Some(2.0)
         );
 
