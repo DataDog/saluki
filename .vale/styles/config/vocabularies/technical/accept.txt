@@ -13,7 +13,7 @@ deduplicated
 sut(s?)
 hasher
 newtype
-boolean
+boolean(s?)
 ddsketch
 datadog
 otel
@@ -49,7 +49,7 @@ bitmask
 async
 tagset(s?)
 noop
-bitset
+bitset(s?)
 uuid(s?)
 fargate
 mysql
@@ -61,7 +61,7 @@ etcd
 valkey
 memcached
 redis
-iter(able?)
+iter(able)?
 adr(s?)
 github
 gitlab
@@ -72,8 +72,9 @@ rustdoc
 mutex
 rpc(s?)
 autodiscovery
-config
-remapper
+config(s?)
+remapper(s?)
+remapping(s?)
 proxying
 subcomponent(s?)
 accessor(s?)
@@ -84,7 +85,7 @@ interner
 dereferences
 prepended
 middleware
-weighter
+weighter(s?)
 deduplication
 deduplicates
 inlining
@@ -97,7 +98,7 @@ misconfiguration
 connectionless
 alphanumeric(s?)
 monomorphization
-datagram
+datagram(s?)
 loopback
 superset
 subset
@@ -216,3 +217,6 @@ DDA
 subproduct
 asc
 desc
+tokenizer
+deduplicating
+impactful

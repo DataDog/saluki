@@ -16,7 +16,7 @@ impl EvalContextFamily for SpanTransformFamily {
     type Context<'a> = SpanTransformContext<'a>;
 }
 
-/// Span context for for Saluki trace events.
+/// Span context for Saluki trace events.
 pub struct SpanTransformContext<'a> {
     /// Mutable reference to the span being transformed.
     pub(super) span: &'a mut Span,

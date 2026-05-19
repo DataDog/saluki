@@ -72,7 +72,7 @@ pub struct ContextResolverBuilder {
 impl ContextResolverBuilder {
     /// Creates a new `ContextResolverBuilder` with the given resolver name.
     ///
-    /// The resolver name _should_ be unique, but it'sn't required to be. Metrics for the resolver will be
+    /// The resolver name _should_ be unique, but it isn't required to be. Metrics for the resolver will be
     /// emitted using the given name, so in cases where the name isn't unique, those metrics will be aggregated
     /// together and it won't be possible to distinguish between the different resolvers.
     ///
