@@ -51,6 +51,7 @@ architecture is fundamentally different or the feature is platform-specific.
 
 | Config Key                                     | Description                    | Reason                                                       |
 | ---------------------------------------------- | ------------------------------ | ------------------------------------------------------------ |
+| `dogstatsd_host_socket_path`                   | Host UDS socket dir for DSD    | Not read by DSD server; admission controller only            |
 | `dogstatsd_mem_based_rate_limiter.enabled`     | Enable memory rate limiter     | Go GC specific; use `memory_limit`                           |
 | `dogstatsd_no_aggregation_pipeline_batch_size` | No-agg pipeline batch size     | Fixed in ADP topology                                        |
 | `dogstatsd_packet_buffer_flush_timeout`        | Packet buffer flush timeout    | ADP decodes inline                                           |
@@ -215,7 +216,6 @@ ways that are not yet fully characterized.
 | `dogstatsd_disable_verbose_logs`                                 | Suppress noisy parse error logs               | [#1350] |
 | `dogstatsd_experimental_http.enabled`                            | Enable experimental HTTP/H2C DSD listener     |         |
 | `dogstatsd_experimental_http.listen_address`                     | Bind addr for experimental HTTP DSD listener  |         |
-| `dogstatsd_host_socket_path`                                     | Host UDS socket dir (admission controller)    |         |
 | `dogstatsd_mapper_cache_size`                                    | LRU cache size for mapper regex match results |         |
 | `enable_json_stream_shared_compressor_buffers`                   | Pre-allocate shared compressor buffers        |         |
 | `enable_payloads.json_to_v1_intake`                              | Enable JSON payload to /api/v1/intake         |         |
