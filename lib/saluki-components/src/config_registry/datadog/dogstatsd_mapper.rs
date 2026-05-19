@@ -13,6 +13,18 @@ static DOGSTATSD_MAPPER_STRING_INTERNER_SIZE_SCHEMA: SchemaEntry = SchemaEntry {
 };
 
 crate::declare_annotations! {
+    /// `dogstatsd_mapper_cache_size`—per-name result cache capacity for the mapper transform.
+    /// Schema Float; field usize.
+    DOGSTATSD_MAPPER_CACHE_SIZE = SalukiAnnotation {
+        schema: &schema::DOGSTATSD_MAPPER_CACHE_SIZE,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::DOGSTATSD_MAPPER_CONFIGURATION],
+        value_type_override: Some(ValueType::Integer),
+        test_json: None,
+    };
+
     /// `dogstatsd_mapper_profiles`—JSON-encoded list of DogStatsD metric mapping profiles.
     /// Uses a custom test value since the generic String test value isn't valid mapper JSON.
     DOGSTATSD_MAPPER_PROFILES = SalukiAnnotation {
