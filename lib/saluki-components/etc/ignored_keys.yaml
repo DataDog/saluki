@@ -1238,6 +1238,7 @@
   reason: initial bulk
 - name: dogstatsd_expiry_seconds
   reason: initial bulk
+- name: dogstatsd_host_socket_path
 - name: dogstatsd_mem_based_rate_limiter.enabled
   reason: initial bulk
 - name: dogstatsd_mem_based_rate_limiter.go_gc

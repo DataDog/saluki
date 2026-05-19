@@ -528,17 +528,6 @@ crate::declare_annotations! {
         value_type_override: None,
         test_json: None,
     };
-    /// `dogstatsd_host_socket_path` - host UDS socket dir for admission controller.
-    DOGSTATSD_HOST_SOCKET_PATH = SalukiAnnotation {
-        schema: &schema::DOGSTATSD_HOST_SOCKET_PATH,
-        // Not implemented. #1687
-        support_level: SupportLevel::Incompatible(Severity::High),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-    };
     /// `dogstatsd_mapper_cache_size` - LRU cache size for mapper regex results.
     DOGSTATSD_MAPPER_CACHE_SIZE = SalukiAnnotation {
         schema: &schema::DOGSTATSD_MAPPER_CACHE_SIZE,
