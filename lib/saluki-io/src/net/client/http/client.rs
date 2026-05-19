@@ -19,7 +19,7 @@ use hyper_util::{
 use metrics::Counter;
 use saluki_error::GenericError;
 use saluki_metrics::MetricsBuilder;
-use saluki_tls::ClientTLSConfigBuilder;
+use saluki_tls::{ClientTLSConfigBuilder, TlsMinimumVersion};
 use stringtheory::MetaString;
 use tower::{timeout::TimeoutLayer, util::BoxCloneService, BoxError, Service, ServiceBuilder, ServiceExt as _};
 
@@ -254,6 +254,14 @@ impl HttpClientBuilder {
         F: FnOnce(ClientTLSConfigBuilder) -> ClientTLSConfigBuilder,
     {
         self.tls_builder = f(self.tls_builder);
+        self
+    }
+
+    /// Sets the minimum TLS protocol version for HTTPS connections.
+    ///
+    /// Defaults to TLS 1.2.
+    pub fn with_min_tls_version(mut self, version: TlsMinimumVersion) -> Self {
+        self.tls_builder = self.tls_builder.with_min_tls_version(version);
         self
     }
 

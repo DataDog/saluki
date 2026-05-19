@@ -150,6 +150,17 @@ crate::declare_annotations! {
         test_json: None,
     };
 
+    /// `min_tls_version`—minimum TLS version for Datadog intake forwarding.
+    MIN_TLS_VERSION = SalukiAnnotation {
+        schema: &schema::MIN_TLS_VERSION,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::FORWARDER_CONFIGURATION],
+        value_type_override: None,
+        test_json: None,
+    };
+
     // ── RetryConfiguration fields ─────────────────────────────────────────────
 
     /// `forwarder_backoff_base`—base growth rate for retry backoff in seconds.

@@ -1459,11 +1459,11 @@
   },
   {
     "key": "min_tls_version",
-    "feature_state": "MISSING",
-    "action": "IMPLEMENT",
+    "feature_state": "PARITY",
+    "action": "NONE",
     "description": "Minimum TLS version for HTTPS connections",
-    "reason": "Core agent supports min_tls_version to enforce a minimum TLS version. ADP does not support this.",
-    "issue": "#1370",
+    "reason": "Implemented for Datadog intake forwarding. TLS 1.0 and TLS 1.1 values are accepted for core agent config compatibility and clamped to TLS 1.2 because rustls does not support older protocol versions.",
+    "issue": null,
     "adp_key": null
   },
   {

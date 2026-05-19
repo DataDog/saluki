@@ -3,6 +3,7 @@ use std::time::Duration;
 use facet::Facet;
 use saluki_config::GenericConfiguration;
 use saluki_error::GenericError;
+use saluki_io::net::client::http::TlsMinimumVersion;
 use serde::Deserialize;
 use tracing::warn;
 
@@ -26,6 +27,39 @@ const fn default_endpoint_buffer_size() -> usize {
 
 const fn default_forwarder_connection_reset_interval() -> u64 {
     0
+}
+
+const MIN_TLS_VERSION_TLS10: &str = "tlsv1.0";
+const MIN_TLS_VERSION_TLS11: &str = "tlsv1.1";
+const MIN_TLS_VERSION_TLS12: &str = "tlsv1.2";
+const MIN_TLS_VERSION_TLS13: &str = "tlsv1.3";
+
+fn default_min_tls_version() -> String {
+    MIN_TLS_VERSION_TLS12.to_string()
+}
+
+fn min_tls_version_from_config_value(value: &str) -> TlsMinimumVersion {
+    let trimmed = value.trim();
+    match trimmed.to_lowercase().as_str() {
+        MIN_TLS_VERSION_TLS10 | MIN_TLS_VERSION_TLS11 => {
+            warn!(
+                config_key = "min_tls_version",
+                value = trimmed,
+                "Configured TLS minimum version is lower than rustls supports; using tlsv1.2."
+            );
+            TlsMinimumVersion::Tls12
+        }
+        "" | MIN_TLS_VERSION_TLS12 => TlsMinimumVersion::Tls12,
+        MIN_TLS_VERSION_TLS13 => TlsMinimumVersion::Tls13,
+        _ => {
+            warn!(
+                config_key = "min_tls_version",
+                value = trimmed,
+                "Invalid configured TLS minimum version; using tlsv1.2."
+            );
+            TlsMinimumVersion::Tls12
+        }
+    }
 }
 
 /// OPW metrics endpoint configuration.
@@ -147,6 +181,13 @@ pub struct ForwarderConfiguration {
     /// invalid or self-signed certificates should enable this.
     #[serde(default)]
     skip_ssl_validation: bool,
+
+    /// Minimum TLS protocol version for Datadog intake forwarding.
+    ///
+    /// Defaults to TLS 1.2. TLS 1.0 and TLS 1.1 are accepted for compatibility with core Agent configuration, but
+    /// Saluki clamps them to TLS 1.2 because rustls does not support older protocol versions.
+    #[serde(default = "default_min_tls_version")]
+    min_tls_version: String,
 }
 
 impl ForwarderConfiguration {
@@ -256,6 +297,11 @@ impl ForwarderConfiguration {
     /// Returns whether TLS certificate validation is disabled for Datadog intake forwarding.
     pub const fn skip_ssl_validation(&self) -> bool {
         self.skip_ssl_validation
+    }
+
+    /// Returns the minimum TLS protocol version for Datadog intake forwarding.
+    pub fn min_tls_version(&self) -> TlsMinimumVersion {
+        min_tls_version_from_config_value(&self.min_tls_version)
     }
 }
 
@@ -398,6 +444,60 @@ mod tests {
         let config = forwarder_config_from(base_config(), Some(&env_vars)).await;
 
         assert!(config.skip_ssl_validation());
+    }
+
+    #[tokio::test]
+    async fn min_tls_version_defaults_to_tls12() {
+        let config = forwarder_config_from(base_config(), None).await;
+
+        assert_eq!(config.min_tls_version(), TlsMinimumVersion::Tls12);
+    }
+
+    #[tokio::test]
+    async fn min_tls_version_tls12_uses_tls12() {
+        let config =
+            forwarder_config_from(config_with(serde_json::json!({ "min_tls_version": "tlsv1.2" })), None).await;
+
+        assert_eq!(config.min_tls_version(), TlsMinimumVersion::Tls12);
+    }
+
+    #[tokio::test]
+    async fn min_tls_version_tls13_uses_tls13() {
+        let config =
+            forwarder_config_from(config_with(serde_json::json!({ "min_tls_version": "tlsv1.3" })), None).await;
+
+        assert_eq!(config.min_tls_version(), TlsMinimumVersion::Tls13);
+    }
+
+    #[tokio::test]
+    async fn min_tls_version_is_case_insensitive() {
+        let config =
+            forwarder_config_from(config_with(serde_json::json!({ "min_tls_version": "TlSv1.3" })), None).await;
+
+        assert_eq!(config.min_tls_version(), TlsMinimumVersion::Tls13);
+    }
+
+    #[tokio::test]
+    async fn min_tls_version_tls10_and_tls11_clamp_to_tls12() {
+        for min_tls_version in ["tlsv1.0", "tlsv1.1"] {
+            let config = forwarder_config_from(
+                config_with(serde_json::json!({
+                    "min_tls_version": min_tls_version,
+                })),
+                None,
+            )
+            .await;
+
+            assert_eq!(config.min_tls_version(), TlsMinimumVersion::Tls12);
+        }
+    }
+
+    #[tokio::test]
+    async fn min_tls_version_invalid_value_falls_back_to_tls12() {
+        let config =
+            forwarder_config_from(config_with(serde_json::json!({ "min_tls_version": "tlsv1.9" })), None).await;
+
+        assert_eq!(config.min_tls_version(), TlsMinimumVersion::Tls12);
     }
 
     #[tokio::test]
