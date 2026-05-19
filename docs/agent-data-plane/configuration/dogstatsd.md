@@ -216,7 +216,6 @@ ways that are not yet fully characterized.
 | `dogstatsd_disable_verbose_logs`                                 | Suppress noisy parse error logs               | [#1350] |
 | `dogstatsd_experimental_http.enabled`                            | Enable experimental HTTP/H2C DSD listener     | [#1682] |
 | `dogstatsd_experimental_http.listen_address`                     | Bind addr for experimental HTTP DSD listener  | [#1682] |
-| `dogstatsd_host_socket_path`                                     | Host UDS socket dir (admission controller)    | [#1687] |
 | `dogstatsd_mapper_cache_size`                                    | LRU cache size for mapper regex match results | [#1687] |
 | `enable_json_stream_shared_compressor_buffers`                   | Pre-allocate shared compressor buffers        | [#1686] |
 | `enable_payloads.json_to_v1_intake`                              | Enable JSON payload to /api/v1/intake         | [#1686] |
