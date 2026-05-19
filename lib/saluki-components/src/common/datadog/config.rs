@@ -188,12 +188,18 @@ pub struct ForwarderConfiguration {
     /// Saluki clamps them to TLS 1.2 because rustls does not support older protocol versions.
     #[serde(default = "default_min_tls_version")]
     min_tls_version: String,
+
+    /// Parsed minimum TLS protocol version for Datadog intake forwarding.
+    #[serde(skip)]
+    #[facet(opaque)]
+    parsed_min_tls_version: TlsMinimumVersion,
 }
 
 impl ForwarderConfiguration {
     /// Creates a new `ForwarderConfiguration` from the given configuration.
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
         let mut forwarder_config = config.as_typed::<Self>()?;
+        forwarder_config.parsed_min_tls_version = min_tls_version_from_config_value(&forwarder_config.min_tls_version);
 
         // Handle fixing up the forwarder storage path if it's empty.
         forwarder_config.retry.fix_empty_storage_path(config);
@@ -300,8 +306,8 @@ impl ForwarderConfiguration {
     }
 
     /// Returns the minimum TLS protocol version for Datadog intake forwarding.
-    pub fn min_tls_version(&self) -> TlsMinimumVersion {
-        min_tls_version_from_config_value(&self.min_tls_version)
+    pub const fn min_tls_version(&self) -> TlsMinimumVersion {
+        self.parsed_min_tls_version
     }
 }
 

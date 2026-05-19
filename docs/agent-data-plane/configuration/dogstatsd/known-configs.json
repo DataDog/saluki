@@ -1459,10 +1459,10 @@
   },
   {
     "key": "min_tls_version",
-    "feature_state": "PARITY",
-    "action": "NONE",
+    "feature_state": "DIVERGENT",
+    "action": "DOCUMENTED",
     "description": "Minimum TLS version for HTTPS connections",
-    "reason": "Implemented for Datadog intake forwarding. TLS 1.0 and TLS 1.1 values are accepted for core agent config compatibility and clamped to TLS 1.2 because rustls does not support older protocol versions.",
+    "reason": "Implemented for Datadog intake forwarding. TLS 1.2 and TLS 1.3 behavior matches the core agent; TLS 1.0 and TLS 1.1 values are accepted for config compatibility and clamped to TLS 1.2 because rustls does not support older protocol versions.",
     "issue": null,
     "adp_key": null
   },

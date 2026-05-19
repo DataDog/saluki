@@ -76,9 +76,23 @@ default values.
 | `dogstatsd_stats_port`              | Internal stats endpoint port     | Configurable port                              | On-demand via API ([#1352])                                    |
 | `log_level`                         | Log verbosity directives         | Controls Agent logs                            | Plain levels control ADP/Saluki-owned targets only             |
 | `logging_frequency`                 | Transaction success log interval | Throttles success logs                         | Intentionally unused                                           |
+| `min_tls_version`                   | Minimum outbound TLS version     | Supports TLS 1.0, 1.1, 1.2, and 1.3           | Supports TLS 1.2+ and TLS 1.3-only; clamps TLS 1.0/1.1 to 1.2  |
 | `serializer_zstd_compressor_level`  | Zstd compression level           | Default level 1                                | Default level 3 (intentional)                                  |
 | `skip_ssl_validation`               | Skip TLS cert validation         | Disables validation for outbound HTTPS clients | Applies to the shared Datadog forwarder; rejected in FIPS mode |
 | `telemetry.enabled`                 | Global telemetry toggle          | Agent toggle                                   | Use `data_plane.telemetry_enabled` ([#1338])                   |
+
+### Datadog intake TLS protocol version (`min_tls_version`)
+
+ADP supports `min_tls_version` for Datadog intake forwarding through the shared Datadog
+forwarder. The default is `tlsv1.2`, which allows TLS 1.2 and TLS 1.3. To require TLS 1.3
+only, set `min_tls_version: tlsv1.3` or `DD_MIN_TLS_VERSION=tlsv1.3`.
+
+The core agent also accepts `tlsv1.0` and `tlsv1.1`. ADP accepts those values for
+configuration compatibility, but clamps them to TLS 1.2 because ADP uses `rustls`, which
+doesn't support TLS 1.0 or TLS 1.1.
+
+This setting doesn't affect ADP IPC, local privileged APIs, ADP control-plane clients, OTLP
+proxying to the core agent, or unrelated HTTP clients.
 
 ### Datadog intake TLS validation (`skip_ssl_validation`)
 

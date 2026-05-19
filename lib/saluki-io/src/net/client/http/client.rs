@@ -260,6 +260,9 @@ impl HttpClientBuilder {
     /// Sets the minimum TLS protocol version for HTTPS connections.
     ///
     /// Defaults to TLS 1.2.
+    ///
+    /// This updates the same TLS builder configured by [`Self::with_tls_config`], so call order matters when both
+    /// methods change the minimum TLS version.
     pub fn with_min_tls_version(mut self, version: TlsMinimumVersion) -> Self {
         self.tls_builder = self.tls_builder.with_min_tls_version(version);
         self
