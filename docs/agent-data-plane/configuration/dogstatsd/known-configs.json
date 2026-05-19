@@ -532,10 +532,11 @@
   },
   {
     "key": "dogstatsd_mapper_cache_size",
-    "feature_state": "MISSING",
-    "action": "INVESTIGATE",
-    "description": "LRU cache size for mapper regex match results",
-    "reason": "Core agent uses LRU cache; not relevant to ADP mapper implementation.",
+    "feature_state": "DIVERGENT",
+    "action": "DOCUMENTED",
+    "description": "Mapper result LRU cache size",
+    "reason": "Implementation in lib/saluki-components/src/transforms/dogstatsd_mapper/mod.rs mirrors the agent's per-name result cache (key=metric name, value=mapped name + extra tags, with negative caching). Default 1000 matches the agent. Divergence: at cache_size=0, ADP disables the cache only and keeps mapping profiles active; the agent silently disables mapping entirely because its underlying LRU rejects non-positive sizes.",
+
     "issue": "#1687",
     "adp_key": null
   },

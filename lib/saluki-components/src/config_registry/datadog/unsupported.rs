@@ -520,17 +520,6 @@ crate::declare_annotations! {
         value_type_override: None,
         test_json: None,
     };
-    /// `dogstatsd_mapper_cache_size` - LRU cache size for mapper regex results.
-    DOGSTATSD_MAPPER_CACHE_SIZE = SalukiAnnotation {
-        schema: &schema::DOGSTATSD_MAPPER_CACHE_SIZE,
-        // Not implemented. #1687
-        support_level: SupportLevel::Incompatible(Severity::Low),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-    };
     /// `enable_json_stream_shared_compressor_buffers` - shared JSON stream compressor buffer allocation.
     ENABLE_JSON_STREAM_SHARED_COMPRESSOR_BUFFERS = SalukiAnnotation {
         schema: &schema::ENABLE_JSON_STREAM_SHARED_COMPRESSOR_BUFFERS,

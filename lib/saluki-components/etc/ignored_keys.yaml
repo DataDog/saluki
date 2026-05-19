@@ -1252,6 +1252,7 @@
   reason: initial bulk
 - name: dogstatsd_host_socket_path
   reason: Admission controller plumbing; not read by DSD server
+
 - name: dogstatsd_mem_based_rate_limiter.enabled
   reason: initial bulk
 - name: dogstatsd_mem_based_rate_limiter.go_gc
