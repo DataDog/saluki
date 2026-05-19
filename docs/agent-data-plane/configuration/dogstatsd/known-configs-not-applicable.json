@@ -765,6 +765,7 @@
   "docker_env_as_tags",
   "docker_labels_as_tags",
   "docker_query_timeout",
+  "dogstatsd_host_socket_path",
   "dynamic_instrumentation.circuit_breaker.all_probes_cpu_limit",
   "dynamic_instrumentation.circuit_breaker.interrupt_overhead",
   "dynamic_instrumentation.circuit_breaker.interval",
