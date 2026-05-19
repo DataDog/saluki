@@ -2433,9 +2433,13 @@
 - name: notable_events.enabled
   reason: initial bulk
 - name: observability_pipelines_worker.logs.enabled
+  reason: OPW logs routing out of scope for ADP
 - name: observability_pipelines_worker.logs.url
+  reason: OPW logs routing out of scope for ADP
 - name: observability_pipelines_worker.traces.enabled
+  reason: OPW traces routing out of scope for ADP
 - name: observability_pipelines_worker.traces.url
+  reason: OPW traces routing out of scope for ADP
 - name: ol_proxy_config.additional_endpoints
   reason: initial bulk
 - name: ol_proxy_config.api_key
@@ -3295,9 +3299,13 @@
 - name: use_networkv2_check
   reason: initial bulk
 - name: vector.logs.enabled
+  reason: OPW logs routing out of scope for ADP
 - name: vector.logs.url
+  reason: OPW logs routing out of scope for ADP
 - name: vector.traces.enabled
+  reason: OPW traces routing out of scope for ADP
 - name: vector.traces.url
+  reason: OPW traces routing out of scope for ADP
 - name: vsock_addr
   reason: initial bulk
 - name: win_skip_com_init
