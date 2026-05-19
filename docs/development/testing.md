@@ -28,7 +28,7 @@ output for a given input. The output comparison is semantic, not a simple byte-b
 used to assert correctness.
 
 **Terminology Note:** Correctness tests ***are integration tests*** in the sense that they run the entire system.
-However, in our repo, *integration tests* refer to a specific set of smoke tests [below](#integration-tests-panoramic).
+However, in our repository, *integration tests* refer to a specific set of smoke tests [below](#integration-tests-panoramic).
 
 Correctness test cases are specified by YAML configuration files found in `test/correctness`.
 

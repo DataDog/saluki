@@ -208,7 +208,7 @@ pub enum MetricValues {
 }
 
 impl MetricValues {
-    /// Creates a set of counter values from the given value(s).
+    /// Creates a set of counter values from the given values.
     pub fn counter<V>(values: V) -> Self
     where
         V: Into<ScalarPoints>,
@@ -234,7 +234,7 @@ impl MetricValues {
         Ok(Self::Counter(points))
     }
 
-    /// Creates a set of gauge values from the given value(s).
+    /// Creates a set of gauge values from the given values.
     pub fn gauge<V>(values: V) -> Self
     where
         V: Into<ScalarPoints>,
@@ -262,7 +262,7 @@ impl MetricValues {
         Self::Set(values.into())
     }
 
-    /// Creates a set of histogram values from the given value(s).
+    /// Creates a set of histogram values from the given values.
     pub fn histogram<V>(values: V) -> Self
     where
         V: Into<HistogramPoints>,
@@ -288,7 +288,7 @@ impl MetricValues {
         Ok(Self::Histogram(histogram.into()))
     }
 
-    /// Creates a set of distribution values from the given value(s).
+    /// Creates a set of distribution values from the given values.
     pub fn distribution<V>(values: V) -> Self
     where
         V: Into<SketchPoints>,
@@ -314,7 +314,7 @@ impl MetricValues {
         Ok(Self::Distribution(sketch.into()))
     }
 
-    /// Creates a set of rate values from the given value(s) and interval.
+    /// Creates a set of rate values from the given values and interval.
     pub fn rate<V>(values: V, interval: Duration) -> Self
     where
         V: Into<ScalarPoints>,
@@ -463,7 +463,7 @@ impl MetricValues {
         }
     }
 
-    /// Returns `true` if this metric is a serie.
+    /// Returns `true` if this metric is a series.
     pub fn is_serie(&self) -> bool {
         matches!(
             self,

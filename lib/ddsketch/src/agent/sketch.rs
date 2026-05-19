@@ -750,8 +750,8 @@ mod tests {
 
     /// Basic collapse: when bins exceed the limit, the mass from removed bins is merged
     /// into the first kept bin (lowest surviving key). This mirrors the CollapsingLowestDenseStore
-    /// semantics from sketches-go: all bins with index < (maxIndex - limit + 1) collapse into
-    /// the bin at (maxIndex - limit + 1).
+    /// semantics from sketches-go: all bins with index < (`maxIndex` - limit + 1) collapse into
+    /// the bin at (`maxIndex` - limit + 1).
     ///
     /// Input:  [(0,2), (1,3), (2,4), (3,5)]  limit=2  →  remove 2 bins
     /// missing = n[0] + n[1] = 2 + 3 = 5
@@ -800,7 +800,7 @@ mod tests {
         assert_eq!(total_before, total_after, "all mass must be preserved with u32 bins");
     }
 
-    /// When already at or under the limit, trim_left is a no-op.
+    /// When already at or under the limit, `trim_left` is a no-op.
     #[test]
     fn trim_left_no_op_when_within_limit() {
         let original = make_bins(&[(5, 10), (6, 20)]);
@@ -811,11 +811,11 @@ mod tests {
         assert_eq!(to_pairs(&bins), to_pairs(&original));
     }
 
-    /// Regression test for trim_left bin count with large per-sample weights.
+    /// Regression test for `trim_left` bin count with large per-sample weights.
     ///
     /// With the old u16 layout, a sample weight of ~260M would generate ceil(260M / 65535) = 3969
     /// bins per key, causing bin count explosion and an encoder panic. With u32, the same weight
-    /// fits in a single bin (260M < u32::MAX ≈ 4.3B), so one insert_n call produces exactly one
+    /// fits in a single bin (260M < u32::MAX ≈ 4.3B), so one `insert_n` call produces exactly one
     /// bin per key and the bin limit is trivially respected.
     ///
     /// This test inserts several values with a weight representative of what ADP receives when
@@ -891,13 +891,13 @@ mod tests {
     }
 }
 
-/// Property-based tests for trim_left, adapted from TestAddFuzzy / TestAddIntFuzzy /
+/// Property-based tests for `trim_left`, adapted from TestAddFuzzy / TestAddIntFuzzy /
 /// TestMergeFuzzy in sketches-go/ddsketch/store/store_test.go.
 ///
 /// The sketches-go suite generates random (index, count) inputs, passes them through
 /// CollapsingLowestDenseStore, and asserts structural invariants using the `collapsingLowest`
 /// oracle transform. We do the same here: generate random sorted distinct-key bins, run
-/// trim_left, and check the same invariants.
+/// `trim_left`, and check the same invariants.
 #[cfg(test)]
 mod property_tests {
     use proptest::prelude::*;
@@ -911,13 +911,13 @@ mod property_tests {
             .prop_map(|map| map.into_iter().map(|(k, n)| Bin { k, n }).collect())
     }
 
-    /// Strategy: a bin_limit in 1..=32 (small enough to exercise collapsing frequently).
+    /// Strategy: a `bin_limit` in 1..=32 (small enough to exercise collapsing frequently).
     fn arb_limit() -> impl Strategy<Value = u16> {
         1u16..=32
     }
 
     proptest! {
-        /// After trim_left, the bin count must never exceed bin_limit.
+        /// After `trim_left`, the bin count must never exceed `bin_limit`.
         ///
         /// Mirrors the core bin-count invariant checked throughout the sketches-go suite:
         /// every store operation must leave the store within its configured capacity.
@@ -935,9 +935,9 @@ mod property_tests {
             );
         }
 
-        /// After trim_left, bins must remain sorted by key with no duplicate keys.
+        /// After `trim_left`, bins must remain sorted by key with no duplicate keys.
         ///
-        /// trim_left only drains a prefix and modifies bins[num_to_remove].n in place;
+        /// `trim_left` only drains a prefix and modifies bins[num_to_remove].n in place;
         /// it must not disturb the ordering of the surviving bins.
         #[test]
         fn prop_output_bins_are_sorted_and_distinct(
@@ -955,7 +955,7 @@ mod property_tests {
             }
         }
 
-        /// When bins.len() <= limit, trim_left is a no-op: bins is unchanged.
+        /// When bins.len() <= limit, `trim_left` is a no-op: bins is unchanged.
         #[test]
         fn prop_no_op_when_within_limit(
             bins in arb_bins(16),
@@ -971,7 +971,7 @@ mod property_tests {
         /// Total count is preserved exactly when no u32 overflow occurs.
         ///
         /// This is the key invariant from sketches-go's assertEncodeBins:
-        /// store.TotalCount() must equal the sum of all inserted counts.
+        /// `store.TotalCount()` must equal the sum of all inserted counts.
         /// We restrict counts to keep the collapsed sum safely below u32::MAX
         /// (sketches-go never loses mass because it uses float64; we match that
         /// guarantee for all inputs where the collapsed bin doesn't overflow u32).
@@ -996,10 +996,10 @@ mod property_tests {
             );
         }
 
-        /// The surviving bins are always the bin_limit highest-key bins from the input.
+        /// The surviving bins are always the `bin_limit` highest-key bins from the input.
         ///
-        /// This is the direct encoding of the collapsingLowest oracle from sketches-go:
-        /// minCollapsedIndex = maxIndex - limit + 1; all bins with key < minCollapsedIndex
+        /// This is the direct encoding of the `collapsingLowest` oracle from sketches-go:
+        /// minCollapsedIndex = `maxIndex` - limit + 1; all bins with key < minCollapsedIndex
         /// are removed (their mass folds into minCollapsedIndex). The output keys must
         /// exactly match the top min(len, limit) keys of the input.
         #[test]

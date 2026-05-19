@@ -50,7 +50,7 @@ mod private {
 /// Helper methods for providing context on errors.
 ///
 /// Slightly different than `anyhow::Context` as the methods on this trait are named to avoid conflicting with
-/// similarly-named methods provide by `snafu`.
+/// similarly named methods provide by `snafu`.
 pub trait ErrorContext<T, E>: private::Sealed {
     /// Wrap the error value with additional context.
     fn error_context<C>(self, context: C) -> Result<T, GenericError>

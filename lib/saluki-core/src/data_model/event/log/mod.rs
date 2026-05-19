@@ -109,7 +109,7 @@ impl Log {
         self
     }
 
-    /// Sets the addtional properties map.
+    /// Sets the additional properties map.
     pub fn with_additional_properties(
         mut self, additional_properties: impl Into<Option<HashMap<MetaString, JsonValue>>>,
     ) -> Self {

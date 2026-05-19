@@ -14,7 +14,7 @@ use otlp_protos::opentelemetry::proto::{
 const DIV_MEBIBYTES: f64 = 1024.0 * 1024.0;
 const DIV_PERCENTAGE: f64 = 0.01;
 
-/// Extracts any Datadog-specific metrics from a metric and appends them to the new_metrics vector.
+/// Extracts any Datadog-specific metrics from a metric and appends them to the `new_metrics` vector.
 pub(super) fn remap_metrics(new_metrics: &mut Vec<OtlpMetric>, metric: &OtlpMetric) {
     remap_system_metrics(new_metrics, metric);
     remap_container_metrics(new_metrics, metric);

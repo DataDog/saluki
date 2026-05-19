@@ -49,7 +49,7 @@ impl ServiceSignature {
         }
     }
 
-    /// Computes FNV-1a hash matching Go's ServiceSignature.Hash().
+    /// Computes FNV-1a hash matching Go's `ServiceSignature.Hash()`.
     ///
     /// The hash is computed over: `name + "," + env`
     pub(super) fn hash(&self) -> Signature {

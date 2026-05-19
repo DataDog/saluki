@@ -196,7 +196,7 @@ crate::declare_annotations! {
 
     // ── Logs / Metrics ────────────────────────────────────────────────────────
 
-    /// `otlp_config.logs.enabled`—schema default is false but saluki defaults to true; test_json injects false explicitly.
+    /// `otlp_config.logs.enabled`—schema default is false but saluki defaults to true; `test_json` injects false explicitly.
     OTLP_CONFIG_LOGS_ENABLED = SalukiAnnotation {
         schema: &schema::OTLP_CONFIG_LOGS_ENABLED,
         support_level: SupportLevel::Full,

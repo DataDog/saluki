@@ -124,8 +124,8 @@ impl HistogramSummary<'_> {
     ///
     /// The underlying weight accumulation uses compensated (Neumaier) summation over float weights,
     /// and the result is rounded to the nearest integer. For standard sample rates whose reciprocals
-    /// are exact integers (e.g. `0.1`, `0.25`, `0.5`, `1.0`) rounding has no effect; for
-    /// non-integer-reciprocal rates (e.g. `0.21` → weight ≈ 4.762) it gives a closer approximation
+    /// are exact integers (for example, `0.1`, `0.25`, `0.5`, `1.0`) rounding has no effect; for
+    /// non-integer-reciprocal rates (for example, `0.21` → weight ≈ 4.762) it gives a closer approximation
     /// than truncation.
     pub fn count(&self) -> u64 {
         self.count.round() as u64

@@ -27,9 +27,9 @@ pub enum GrantError {
 /// be reduced over time but never fully eliminated, and so on.
 ///
 /// In order to protect against this issue, we utilize a slop factor when calculating the effective limits that we
-/// should verify memory bounds again. For example, if we seek to use no more than 64MB of memory from the OS
-/// perspective (RSS), then intuitively we know that we might only be able to allocate 55-60MB of memory before
-/// allocator fragmentation causes us to reach 64MB RSS.
+/// should verify memory bounds again. For example, if we seek to use no more than 64 MB of memory from the OS
+/// perspective (RSS), then intuitively we know that we might only be able to allocate 55-60 MB of memory before
+/// allocator fragmentation causes us to reach 64 MB RSS.
 ///
 /// By specifying a slop factor, we can provide ourselves breathing room to ensure that we don't try to allocate every
 /// last byte of the given global limit, inevitably leading to _exceeding_ that limit and potentially causing
@@ -59,7 +59,7 @@ impl MemoryGrant {
     /// slop factor of 0.1 would indicate that only 90% of the initial limit should be used, and a slop factor of 0.25
     /// would indicate that only 75% of the initial limit should be used, and so on.
     ///
-    /// If the slop factor isn't valid (must be 0.0 < slop_factor <= 1.0), then `None` is returned.  If the effective
+    /// If the slop factor isn't valid (must be 0.0 < `slop_factor` <= 1.0), then `None` is returned. If the effective
     /// limit is greater than 9007199254740992 bytes (2^53 bytes, or roughly 9 petabytes), then `None` is returned. This
     /// is a hardcoded limit.
     pub fn with_slop_factor(initial_limit_bytes: usize, slop_factor: f64) -> Result<Self, GrantError> {

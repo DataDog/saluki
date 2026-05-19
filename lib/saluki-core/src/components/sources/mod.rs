@@ -17,7 +17,7 @@ pub use self::context::SourceContext;
 pub trait Source {
     /// Runs the source.
     ///
-    /// The source context provides access primarily to the forwarder, used to send events to the next component(s) in
+    /// The source context provides access primarily to the forwarder, used to send events to the next components in
     /// the topology, as well as other information such as the component context.
     ///
     /// Sources are expected to run indefinitely until their shutdown is triggered by the topology, or an error occurs.

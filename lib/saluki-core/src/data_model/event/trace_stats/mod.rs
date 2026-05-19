@@ -6,8 +6,8 @@ use stringtheory::MetaString;
 /// Trace statistics output from the APM Stats transform.
 ///
 /// Contains pre-aggregated trace statistics grouped by client/tracer. The encoder wraps this
-/// in a `StatsPayload` protobuf and adds agent-level metadata (agentHostname, agentEnv,
-/// agentVersion, clientComputed, splitPayload) from ADP configuration.
+/// in a `StatsPayload` protobuf and adds agent-level metadata (`agentHostname`, `agentEnv`,
+/// `agentVersion`, `clientComputed`, `splitPayload`) from ADP configuration.
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct TraceStats {
     /// Multiple client payloads, one per PayloadAggregationKey (hostname/env/version/container).
@@ -33,7 +33,7 @@ impl TraceStats {
 
 /// Tracer-level stats payload.
 ///
-/// Groups stats by tracer/container identity (hostname, env, version, container_id).
+/// Groups stats by tracer/container identity (hostname, env, version, `container_id`).
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct ClientStatsPayload {
     hostname: MetaString,
