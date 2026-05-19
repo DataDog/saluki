@@ -1,6 +1,6 @@
 # Configuring DogStatsD on Agent Data Plane
 
-<!-- Last updated: 2026-05-18 -->
+<!-- Last updated: 2026-05-19 -->
 
 The DogStatsD implementation on ADP has been redesigned in Rust for better resource guarantees and
 efficiency. Because the architecture is different from the original implementation, certain
