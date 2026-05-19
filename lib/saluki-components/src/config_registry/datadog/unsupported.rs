@@ -565,7 +565,7 @@ crate::declare_annotations! {
     AUTOSCALING_FAILOVER_ENABLED = SalukiAnnotation {
         schema: &schema::AUTOSCALING_FAILOVER_ENABLED,
         // Not implemented. #1684
-        support_level: SupportLevel::Incompatible(Severity::High),
+        support_level: SupportLevel::Incompatible(Severity::Medium),
         additional_yaml_paths: &[],
         env_var_override: None,
         used_by: &[],
@@ -620,7 +620,7 @@ crate::declare_annotations! {
     DOGSTATSD_MAPPER_CACHE_SIZE = SalukiAnnotation {
         schema: &schema::DOGSTATSD_MAPPER_CACHE_SIZE,
         // Not implemented. #1687
-        support_level: SupportLevel::Incompatible(Severity::Medium),
+        support_level: SupportLevel::Incompatible(Severity::Low),
         additional_yaml_paths: &[],
         env_var_override: None,
         used_by: &[],
@@ -708,7 +708,7 @@ crate::declare_annotations! {
     MULTI_REGION_FAILOVER_API_KEY = SalukiAnnotation {
         schema: &schema::MULTI_REGION_FAILOVER_API_KEY,
         // Not implemented. #1678
-        support_level: SupportLevel::Incompatible(Severity::High),
+        support_level: SupportLevel::Incompatible(Severity::Medium),
         additional_yaml_paths: &[],
         env_var_override: None,
         used_by: &[],
@@ -719,7 +719,7 @@ crate::declare_annotations! {
     MULTI_REGION_FAILOVER_DD_URL = SalukiAnnotation {
         schema: &schema::MULTI_REGION_FAILOVER_DD_URL,
         // Not implemented. #1678
-        support_level: SupportLevel::Incompatible(Severity::High),
+        support_level: SupportLevel::Incompatible(Severity::Medium),
         additional_yaml_paths: &[],
         env_var_override: None,
         used_by: &[],
@@ -741,7 +741,7 @@ crate::declare_annotations! {
     MULTI_REGION_FAILOVER_FAILOVER_METRICS = SalukiAnnotation {
         schema: &schema::MULTI_REGION_FAILOVER_FAILOVER_METRICS,
         // Not implemented. #1678
-        support_level: SupportLevel::Incompatible(Severity::High),
+        support_level: SupportLevel::Incompatible(Severity::Medium),
         additional_yaml_paths: &[],
         env_var_override: None,
         used_by: &[],
@@ -752,7 +752,7 @@ crate::declare_annotations! {
     MULTI_REGION_FAILOVER_METRIC_ALLOWLIST = SalukiAnnotation {
         schema: &schema::MULTI_REGION_FAILOVER_METRIC_ALLOWLIST,
         // Not implemented. #1678
-        support_level: SupportLevel::Incompatible(Severity::High),
+        support_level: SupportLevel::Incompatible(Severity::Medium),
         additional_yaml_paths: &[],
         env_var_override: None,
         used_by: &[],
@@ -763,7 +763,7 @@ crate::declare_annotations! {
     MULTI_REGION_FAILOVER_SITE = SalukiAnnotation {
         schema: &schema::MULTI_REGION_FAILOVER_SITE,
         // Not implemented. #1678
-        support_level: SupportLevel::Incompatible(Severity::High),
+        support_level: SupportLevel::Incompatible(Severity::Medium),
         additional_yaml_paths: &[],
         env_var_override: None,
         used_by: &[],
