@@ -226,10 +226,20 @@ impl SpanConcentrator {
     }
 
     fn is_span_eligible(&self, span: &Span) -> bool {
-        if span.attributes.get(METRIC_TOP_LEVEL).and_then(AttributeValue::as_float).is_some_and(|v| v == 1.0) {
+        if span
+            .attributes
+            .get(METRIC_TOP_LEVEL)
+            .and_then(AttributeValue::as_float)
+            .is_some_and(|v| v == 1.0)
+        {
             return true;
         }
-        if span.attributes.get(METRIC_MEASURED).and_then(AttributeValue::as_float).is_some_and(|v| v == 1.0) {
+        if span
+            .attributes
+            .get(METRIC_MEASURED)
+            .and_then(AttributeValue::as_float)
+            .is_some_and(|v| v == 1.0)
+        {
             return true;
         }
         if self.compute_stats_by_span_kind {
@@ -249,10 +259,19 @@ impl SpanConcentrator {
             return None;
         }
 
-        let span_kind = span.attributes.get(TAG_SPAN_KIND).and_then(AttributeValue::as_string).cloned().unwrap_or_default();
+        let span_kind = span
+            .attributes
+            .get(TAG_SPAN_KIND)
+            .and_then(AttributeValue::as_string)
+            .cloned()
+            .unwrap_or_default();
         let status_code = get_status_code(&span.attributes);
         let grpc_status_code = get_grpc_status_code(&span.attributes).to_metastring();
-        let is_top_level = span.attributes.get(METRIC_TOP_LEVEL).and_then(AttributeValue::as_float).is_some_and(|v| v == 1.0);
+        let is_top_level = span
+            .attributes
+            .get(METRIC_TOP_LEVEL)
+            .and_then(AttributeValue::as_float)
+            .is_some_and(|v| v == 1.0);
         let matching_peer_tags = self.matching_peer_tags(span, &span_kind);
 
         Some(StatSpan {
@@ -277,7 +296,10 @@ impl SpanConcentrator {
     fn matching_peer_tags(&self, span: &Span, span_kind: &str) -> Vec<MetaString> {
         let mut peer_tags = Vec::new();
 
-        let base_service = span.attributes.get(TAG_BASE_SERVICE).and_then(AttributeValue::as_string);
+        let base_service = span
+            .attributes
+            .get(TAG_BASE_SERVICE)
+            .and_then(AttributeValue::as_string);
         let keys_to_check = self.peer_tag_keys_to_aggregate_for_span(span_kind, base_service);
         for key in keys_to_check {
             if let Some(value) = span.attributes.get(key.as_ref()).and_then(AttributeValue::as_string) {
@@ -350,7 +372,11 @@ pub const fn compute_stats_for_span_kind(kind: &str) -> bool {
 }
 
 fn is_partial_snapshot(span: &Span) -> bool {
-    match span.attributes.get(METRIC_PARTIAL_VERSION).and_then(AttributeValue::as_float) {
+    match span
+        .attributes
+        .get(METRIC_PARTIAL_VERSION)
+        .and_then(AttributeValue::as_float)
+    {
         Some(v) => v >= 0.0,
         None => false,
     }

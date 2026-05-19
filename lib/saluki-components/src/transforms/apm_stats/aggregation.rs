@@ -522,7 +522,10 @@ mod tests {
 
         // String value only
         let mut attrs: FastHashMap<MetaString, AV> = FastHashMap::default();
-        attrs.insert(MetaString::from("http.status_code"), AV::String(MetaString::from("200")));
+        attrs.insert(
+            MetaString::from("http.status_code"),
+            AV::String(MetaString::from("200")),
+        );
         assert_eq!(get_status_code(&attrs), 200);
 
         // Float value only
@@ -549,7 +552,10 @@ mod tests {
 
         // String with lowercase name "aborted"
         let mut attrs: FastHashMap<MetaString, AV> = FastHashMap::default();
-        attrs.insert(MetaString::from("rpc.grpc.status_code"), AV::String(MetaString::from("aborted")));
+        attrs.insert(
+            MetaString::from("rpc.grpc.status_code"),
+            AV::String(MetaString::from("aborted")),
+        );
         assert_eq!(get_grpc_status_code(&attrs), GrpcStatusCode::Aborted);
 
         // Float with numeric code
@@ -564,32 +570,50 @@ mod tests {
 
         // Numeric string in attrs
         let mut attrs: FastHashMap<MetaString, AV> = FastHashMap::default();
-        attrs.insert(MetaString::from("rpc.grpc.status.code"), AV::String(MetaString::from("15")));
+        attrs.insert(
+            MetaString::from("rpc.grpc.status.code"),
+            AV::String(MetaString::from("15")),
+        );
         assert_eq!(get_grpc_status_code(&attrs), GrpcStatusCode::DataLoss);
 
         // "Canceled" (mixed case)
         let mut attrs: FastHashMap<MetaString, AV> = FastHashMap::default();
-        attrs.insert(MetaString::from("rpc.grpc.status.code"), AV::String(MetaString::from("Canceled")));
+        attrs.insert(
+            MetaString::from("rpc.grpc.status.code"),
+            AV::String(MetaString::from("Canceled")),
+        );
         assert_eq!(get_grpc_status_code(&attrs), GrpcStatusCode::Cancelled);
 
         // "CANCELLED" (uppercase)
         let mut attrs: FastHashMap<MetaString, AV> = FastHashMap::default();
-        attrs.insert(MetaString::from("rpc.grpc.status.code"), AV::String(MetaString::from("CANCELLED")));
+        attrs.insert(
+            MetaString::from("rpc.grpc.status.code"),
+            AV::String(MetaString::from("CANCELLED")),
+        );
         assert_eq!(get_grpc_status_code(&attrs), GrpcStatusCode::Cancelled);
 
         // With "StatusCode." prefix
         let mut attrs: FastHashMap<MetaString, AV> = FastHashMap::default();
-        attrs.insert(MetaString::from("grpc.status.code"), AV::String(MetaString::from("StatusCode.ABORTED")));
+        attrs.insert(
+            MetaString::from("grpc.status.code"),
+            AV::String(MetaString::from("StatusCode.ABORTED")),
+        );
         assert_eq!(get_grpc_status_code(&attrs), GrpcStatusCode::Aborted);
 
         // Invalid prefix (typo)
         let mut attrs: FastHashMap<MetaString, AV> = FastHashMap::default();
-        attrs.insert(MetaString::from("grpc.status.code"), AV::String(MetaString::from("StatusCodee.ABORTED")));
+        attrs.insert(
+            MetaString::from("grpc.status.code"),
+            AV::String(MetaString::from("StatusCodee.ABORTED")),
+        );
         assert_eq!(get_grpc_status_code(&attrs), GrpcStatusCode::Unset);
 
         // "InvalidArgument" (PascalCase)
         let mut attrs: FastHashMap<MetaString, AV> = FastHashMap::default();
-        attrs.insert(MetaString::from("rpc.grpc.status_code"), AV::String(MetaString::from("InvalidArgument")));
+        attrs.insert(
+            MetaString::from("rpc.grpc.status_code"),
+            AV::String(MetaString::from("InvalidArgument")),
+        );
         assert_eq!(get_grpc_status_code(&attrs), GrpcStatusCode::InvalidArgument);
     }
 
@@ -599,8 +623,7 @@ mod tests {
         let make_span = |service: &str,
                          meta: FastHashMap<MetaString, MetaString>,
                          metrics: FastHashMap<MetaString, f64>| {
-            let mut attrs: FastHashMap<MetaString, AV> =
-                meta.into_iter().map(|(k, v)| (k, AV::String(v))).collect();
+            let mut attrs: FastHashMap<MetaString, AV> = meta.into_iter().map(|(k, v)| (k, AV::String(v))).collect();
             attrs.extend(metrics.into_iter().map(|(k, v)| (k, AV::Float(v))));
             Span::default().with_service(service).with_attributes(attrs)
         };
@@ -716,7 +739,10 @@ mod tests {
         let make_span_with_kind = |kind: &str| {
             let mut attrs: FastHashMap<MetaString, AV> = FastHashMap::default();
             attrs.insert(MetaString::from("span.kind"), AV::String(MetaString::from(kind)));
-            attrs.insert(MetaString::from("server.address"), AV::String(MetaString::from("test-server")));
+            attrs.insert(
+                MetaString::from("server.address"),
+                AV::String(MetaString::from("test-server")),
+            );
             attrs.insert(MetaString::from("_dd.measured"), AV::Float(1.0));
             Span::default().with_attributes(attrs)
         };

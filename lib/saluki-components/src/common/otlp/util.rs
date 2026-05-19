@@ -214,7 +214,10 @@ pub fn resource_to_source(resource: &otlp_protos::opentelemetry::proto::resource
 /// instead of the OTLP protobuf resource type.
 pub fn attributes_to_source(attributes: &FastHashMap<MetaString, AttributeValue>) -> Option<Source> {
     let get = |key: &str| -> Option<&str> {
-        attributes.get(key).and_then(AttributeValue::as_string).map(|s| s.as_ref())
+        attributes
+            .get(key)
+            .and_then(AttributeValue::as_string)
+            .map(|s| s.as_ref())
     };
 
     // AWS ECS Fargate
@@ -240,4 +243,3 @@ pub fn attributes_to_source(attributes: &FastHashMap<MetaString, AttributeValue>
 
     None
 }
-

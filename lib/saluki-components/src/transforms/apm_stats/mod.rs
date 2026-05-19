@@ -28,10 +28,7 @@ use stringtheory::MetaString;
 use tokio::{select, time::interval};
 use tracing::{debug, error};
 
-use crate::common::{
-    datadog::apm::ApmConfig,
-    otlp::util::extract_container_tags_from_attributes_map,
-};
+use crate::common::{datadog::apm::ApmConfig, otlp::util::extract_container_tags_from_attributes_map};
 
 mod aggregation;
 pub(crate) use self::aggregation::{process_tags_hash, PayloadAggregationKey};
@@ -208,7 +205,12 @@ impl ApmStats {
         // env fallback order mirrors get_trace_env (Go agent pkg/trace/traceutil/trace.go:GetEnv):
         // root span attrs → all span attrs → trace.payload.env (ADP extension) → agent_env.
         let env = root_span
-            .and_then(|s| s.attributes.get("env").and_then(AttributeValue::as_string).filter(|s| !s.is_empty()))
+            .and_then(|s| {
+                s.attributes
+                    .get("env")
+                    .and_then(AttributeValue::as_string)
+                    .filter(|s| !s.is_empty())
+            })
             .cloned()
             .or_else(|| {
                 trace.spans().iter().find_map(|s| {
@@ -228,7 +230,12 @@ impl ApmStats {
             });
 
         let hostname = root_span
-            .and_then(|s| s.attributes.get("_dd.hostname").and_then(AttributeValue::as_string).filter(|s| !s.is_empty()))
+            .and_then(|s| {
+                s.attributes
+                    .get("_dd.hostname")
+                    .and_then(AttributeValue::as_string)
+                    .filter(|s| !s.is_empty())
+            })
             .cloned()
             .unwrap_or_else(|| {
                 if !trace.payload.hostname.is_empty() {
@@ -242,7 +249,12 @@ impl ApmStats {
             trace.payload.app_version.clone()
         } else {
             root_span
-                .and_then(|s| s.attributes.get("version").and_then(AttributeValue::as_string).filter(|s| !s.is_empty()))
+                .and_then(|s| {
+                    s.attributes
+                        .get("version")
+                        .and_then(AttributeValue::as_string)
+                        .filter(|s| !s.is_empty())
+                })
                 .cloned()
                 .unwrap_or_default()
         };
@@ -257,12 +269,22 @@ impl ApmStats {
         };
 
         let git_commit_sha = root_span
-            .and_then(|s| s.attributes.get("_dd.git.commit.sha").and_then(AttributeValue::as_string).filter(|s| !s.is_empty()))
+            .and_then(|s| {
+                s.attributes
+                    .get("_dd.git.commit.sha")
+                    .and_then(AttributeValue::as_string)
+                    .filter(|s| !s.is_empty())
+            })
             .cloned()
             .unwrap_or_default();
 
         let image_tag = root_span
-            .and_then(|s| s.attributes.get("_dd.image_tag").and_then(AttributeValue::as_string).filter(|s| !s.is_empty()))
+            .and_then(|s| {
+                s.attributes
+                    .get("_dd.image_tag")
+                    .and_then(AttributeValue::as_string)
+                    .filter(|s| !s.is_empty())
+            })
             .cloned()
             .unwrap_or_default();
 
@@ -458,9 +480,18 @@ fn now_nanos() -> u64 {
 
 /// Extracts process tags from trace, checking both span and trace attributes.
 fn extract_process_tags(trace: &Trace) -> MetaString {
-    let root_span = trace.spans().iter().find(|s| s.parent_id() == 0).or_else(|| trace.spans().first());
+    let root_span = trace
+        .spans()
+        .iter()
+        .find(|s| s.parent_id() == 0)
+        .or_else(|| trace.spans().first());
     if let Some(span) = root_span {
-        if let Some(tags) = span.attributes.get(TAG_PROCESS_TAGS).and_then(AttributeValue::as_string).filter(|s| !s.is_empty()) {
+        if let Some(tags) = span
+            .attributes
+            .get(TAG_PROCESS_TAGS)
+            .and_then(AttributeValue::as_string)
+            .filter(|s| !s.is_empty())
+        {
             return tags.clone();
         }
     }
@@ -477,8 +508,8 @@ mod tests {
     use proptest::prelude::*;
     use saluki_common::collections::FastHashMap;
     use saluki_core::data_model::event::trace::{AttributeValue, Span};
-    use saluki_core::data_model::event::trace_stats::ClientStatsBucket;
     use saluki_core::data_model::event::trace_stats::ClientGroupedStats;
+    use saluki_core::data_model::event::trace_stats::ClientStatsBucket;
 
     use super::aggregation::BUCKET_DURATION_NS;
     use super::span_concentrator::METRIC_PARTIAL_VERSION;
@@ -506,8 +537,10 @@ mod tests {
         if let Some(m) = metrics {
             attrs.extend(m.into_iter().map(|(k, v)| (k, AttributeValue::Float(v))));
         }
-        Span::new(service, "query", resource, "db", span_id, parent_id, start, duration, error)
-            .with_attributes(attrs)
+        Span::new(
+            service, "query", resource, "db", span_id, parent_id, start, duration, error,
+        )
+        .with_attributes(attrs)
     }
 
     /// Creates a simple measured span for basic tests
@@ -844,7 +877,10 @@ mod tests {
             // Client span with span.kind=client but no _top_level or _dd.measured
             // Should NOT produce stats when compute_stats_by_span_kind is disabled
             let mut client_attrs = FastHashMap::default();
-            client_attrs.insert(MetaString::from("span.kind"), AttributeValue::String(MetaString::from("client")));
+            client_attrs.insert(
+                MetaString::from("span.kind"),
+                AttributeValue::String(MetaString::from("client")),
+            );
             let client_span = Span::new("myservice", "postgres.query", "SELECT ...", "db", 2, 1, now, 75, 0)
                 .with_attributes(client_attrs);
 
@@ -886,7 +922,10 @@ mod tests {
             // Client span with span.kind=client
             // SHOULD produce stats when compute_stats_by_span_kind is enabled
             let mut client_attrs = FastHashMap::default();
-            client_attrs.insert(MetaString::from("span.kind"), AttributeValue::String(MetaString::from("client")));
+            client_attrs.insert(
+                MetaString::from("span.kind"),
+                AttributeValue::String(MetaString::from("client")),
+            );
             let client_span = Span::new("myservice", "postgres.query", "SELECT ...", "db", 2, 1, now, 75, 0)
                 .with_attributes(client_attrs);
 
@@ -917,12 +956,21 @@ mod tests {
             let mut concentrator = SpanConcentrator::new(true, false, &[], now);
 
             let mut attrs = FastHashMap::default();
-            attrs.insert(MetaString::from("span.kind"), AttributeValue::String(MetaString::from("client")));
-            attrs.insert(MetaString::from("db.instance"), AttributeValue::String(MetaString::from("i-1234")));
-            attrs.insert(MetaString::from("db.system"), AttributeValue::String(MetaString::from("postgres")));
+            attrs.insert(
+                MetaString::from("span.kind"),
+                AttributeValue::String(MetaString::from("client")),
+            );
+            attrs.insert(
+                MetaString::from("db.instance"),
+                AttributeValue::String(MetaString::from("i-1234")),
+            );
+            attrs.insert(
+                MetaString::from("db.system"),
+                AttributeValue::String(MetaString::from("postgres")),
+            );
             attrs.insert(MetaString::from("_dd.measured"), AttributeValue::Float(1.0));
-            let client_span = Span::new("myservice", "postgres.query", "SELECT ...", "db", 2, 1, now, 75, 0)
-                .with_attributes(attrs);
+            let client_span =
+                Span::new("myservice", "postgres.query", "SELECT ...", "db", 2, 1, now, 75, 0).with_attributes(attrs);
 
             let payload_key = PayloadAggregationKey {
                 env: MetaString::from("test"),
@@ -955,12 +1003,21 @@ mod tests {
             let mut concentrator = SpanConcentrator::new(true, true, &[], now);
 
             let mut attrs = FastHashMap::default();
-            attrs.insert(MetaString::from("span.kind"), AttributeValue::String(MetaString::from("client")));
-            attrs.insert(MetaString::from("db.instance"), AttributeValue::String(MetaString::from("i-1234")));
-            attrs.insert(MetaString::from("db.system"), AttributeValue::String(MetaString::from("postgres")));
+            attrs.insert(
+                MetaString::from("span.kind"),
+                AttributeValue::String(MetaString::from("client")),
+            );
+            attrs.insert(
+                MetaString::from("db.instance"),
+                AttributeValue::String(MetaString::from("i-1234")),
+            );
+            attrs.insert(
+                MetaString::from("db.system"),
+                AttributeValue::String(MetaString::from("postgres")),
+            );
             attrs.insert(MetaString::from("_dd.measured"), AttributeValue::Float(1.0));
-            let client_span = Span::new("myservice", "postgres.query", "SELECT ...", "db", 2, 1, now, 75, 0)
-                .with_attributes(attrs);
+            let client_span =
+                Span::new("myservice", "postgres.query", "SELECT ...", "db", 2, 1, now, 75, 0).with_attributes(attrs);
 
             let payload_key = PayloadAggregationKey {
                 env: MetaString::from("test"),
@@ -1112,7 +1169,10 @@ mod tests {
         // Test with process tags in first span meta
         {
             let mut attrs = FastHashMap::default();
-            attrs.insert(MetaString::from(TAG_PROCESS_TAGS), AttributeValue::String(MetaString::from("a:1,b:2,c:3")));
+            attrs.insert(
+                MetaString::from(TAG_PROCESS_TAGS),
+                AttributeValue::String(MetaString::from("a:1,b:2,c:3")),
+            );
             let span = Span::default().with_attributes(attrs);
             let trace = Trace::new(vec![span]);
             let process_tags = extract_process_tags(&trace);
@@ -1122,7 +1182,10 @@ mod tests {
         // Test with empty process tags
         {
             let mut attrs = FastHashMap::default();
-            attrs.insert(MetaString::from(TAG_PROCESS_TAGS), AttributeValue::String(MetaString::from("")));
+            attrs.insert(
+                MetaString::from(TAG_PROCESS_TAGS),
+                AttributeValue::String(MetaString::from("")),
+            );
             let span = Span::default().with_attributes(attrs);
             let trace = Trace::new(vec![span]);
             let process_tags = extract_process_tags(&trace);

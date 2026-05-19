@@ -62,19 +62,22 @@ impl PathAccessor<SpanTransformFamily> for SpanAttributesAccessor {
                     ctx.span.attributes.remove(key.as_str());
                 }
                 Value::String(s) => {
-                    ctx.span
-                        .attributes
-                        .insert(MetaString::from(key.as_str()), AttributeValue::String(MetaString::from(Arc::clone(s))));
+                    ctx.span.attributes.insert(
+                        MetaString::from(key.as_str()),
+                        AttributeValue::String(MetaString::from(Arc::clone(s))),
+                    );
                 }
                 Value::Int(n) => {
-                    ctx.span
-                        .attributes
-                        .insert(MetaString::from(key.as_str()), AttributeValue::String(MetaString::from(n.to_string().as_str())));
+                    ctx.span.attributes.insert(
+                        MetaString::from(key.as_str()),
+                        AttributeValue::String(MetaString::from(n.to_string().as_str())),
+                    );
                 }
                 Value::Float(f) => {
-                    ctx.span
-                        .attributes
-                        .insert(MetaString::from(key.as_str()), AttributeValue::String(MetaString::from(f.to_string().as_str())));
+                    ctx.span.attributes.insert(
+                        MetaString::from(key.as_str()),
+                        AttributeValue::String(MetaString::from(f.to_string().as_str())),
+                    );
                 }
                 Value::Bool(b) => {
                     ctx.span.attributes.insert(

@@ -154,6 +154,7 @@ fn add_onboarding_metadata_to_span(span: &mut Span, install_info: &InstallInfo) 
 
 fn add_meta_entry_if_missing(span: &mut Span, key: &MetaString, value: &MetaString) {
     if !span.attributes.contains_key(key) {
-        span.attributes.insert(key.clone(), AttributeValue::String(value.clone()));
+        span.attributes
+            .insert(key.clone(), AttributeValue::String(value.clone()));
     }
 }

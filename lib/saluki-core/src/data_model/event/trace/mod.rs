@@ -559,9 +559,7 @@ impl SpanEvent {
     }
 
     /// Replaces the attributes map.
-    pub fn with_attributes(
-        mut self, attributes: impl Into<Option<FastHashMap<MetaString, AttributeValue>>>,
-    ) -> Self {
+    pub fn with_attributes(mut self, attributes: impl Into<Option<FastHashMap<MetaString, AttributeValue>>>) -> Self {
         self.attributes = attributes.into().unwrap_or_default();
         self
     }

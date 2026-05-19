@@ -132,13 +132,7 @@ pub fn otel_span_to_dd_span(
     }
 
     for attribute in span_attributes {
-        map_attribute_generic(
-            attribute,
-            &mut attrs,
-            ignore_missing_fields,
-            interner,
-            string_builder,
-        );
+        map_attribute_generic(attribute, &mut attrs, ignore_missing_fields, interner, string_builder);
     }
 
     if let Some(trace_id_hex) = trace_id_hex {
@@ -349,7 +343,10 @@ pub fn otel_to_dd_span_minimal(
         let kind = SpanKind::try_from(otel_span.kind).unwrap_or(SpanKind::Unspecified);
         MetaString::from_static(span_kind_name(kind))
     });
-    attrs.insert(MetaString::from_static(SPAN_KIND_META_KEY), AttributeValue::String(span_kind));
+    attrs.insert(
+        MetaString::from_static(SPAN_KIND_META_KEY),
+        AttributeValue::String(span_kind),
+    );
 
     let mut service = use_both_maps(
         span_attributes,
@@ -945,8 +942,8 @@ const SQL_DB_SYSTEMS: &[&str] = &[
 ];
 
 fn map_attribute_generic(
-    attribute: &KeyValue, attrs: &mut FastHashMap<MetaString, AttributeValue>,
-    ignore_missing_fields: bool, interner: &GenericMapInterner, string_builder: &mut StringBuilder<GenericMapInterner>,
+    attribute: &KeyValue, attrs: &mut FastHashMap<MetaString, AttributeValue>, ignore_missing_fields: bool,
+    interner: &GenericMapInterner, string_builder: &mut StringBuilder<GenericMapInterner>,
 ) {
     if attribute.key.is_empty() {
         return;
@@ -1165,7 +1162,10 @@ fn status_to_error(
                     }
                 }
             }
-            attrs.insert(MetaString::from_static("error.msg"), AttributeValue::String(message.into()));
+            attrs.insert(
+                MetaString::from_static("error.msg"),
+                AttributeValue::String(message.into()),
+            );
         }
     }
     1
@@ -1254,9 +1254,8 @@ pub(super) fn otlp_value_to_string(value: &OtlpValue) -> Option<String> {
 // Datadog convention key, then inserts `value` into `attrs` if not already
 // present, with key-specific special-case handling.
 fn conditionally_map_otlp_attribute(
-    key: &str, value: AttributeValue, attrs: &mut FastHashMap<MetaString, AttributeValue>,
-    ignore_missing_fields: bool, interner: &GenericMapInterner,
-    string_builder: &mut StringBuilder<GenericMapInterner>,
+    key: &str, value: AttributeValue, attrs: &mut FastHashMap<MetaString, AttributeValue>, ignore_missing_fields: bool,
+    interner: &GenericMapInterner, string_builder: &mut StringBuilder<GenericMapInterner>,
 ) {
     let Some(mapped_key) = get_dd_key_for_otlp_attribute(key, interner, string_builder) else {
         return;
@@ -1743,41 +1742,28 @@ mod tests {
         let mut string_builder = StringBuilder::new().with_interner(interner.clone());
 
         let http_attr = kv_str("http.request.method", "GET");
-        map_attribute_generic(
-            &http_attr,
-            &mut attrs,
-            false,
-            &interner,
-            &mut string_builder,
-        );
+        map_attribute_generic(&http_attr, &mut attrs, false, &interner, &mut string_builder);
         assert_eq!(
-            attrs.get("http.method").and_then(AttributeValue::as_string).map(|v| v.as_ref()),
+            attrs
+                .get("http.method")
+                .and_then(AttributeValue::as_string)
+                .map(|v| v.as_ref()),
             Some("GET")
         );
 
         let sampling_attr = kv_int("sampling.priority", 2);
-        map_attribute_generic(
-            &sampling_attr,
-            &mut attrs,
-            false,
-            &interner,
-            &mut string_builder,
-        );
+        map_attribute_generic(&sampling_attr, &mut attrs, false, &interner, &mut string_builder);
         assert_eq!(
             attrs.get(SAMPLING_PRIORITY_METRIC_KEY).and_then(AttributeValue::as_num),
             Some(2.0)
         );
 
         let analytics_attr = kv_bool(ANALYTICS_EVENT_KEY, true);
-        map_attribute_generic(
-            &analytics_attr,
-            &mut attrs,
-            false,
-            &interner,
-            &mut string_builder,
-        );
+        map_attribute_generic(&analytics_attr, &mut attrs, false, &interner, &mut string_builder);
         assert_eq!(
-            attrs.get(EVENT_EXTRACTION_METRIC_KEY).and_then(AttributeValue::as_float),
+            attrs
+                .get(EVENT_EXTRACTION_METRIC_KEY)
+                .and_then(AttributeValue::as_float),
             Some(1.0)
         );
 
@@ -1787,13 +1773,7 @@ mod tests {
 
         let mut attrs_ignore: FastHashMap<MetaString, AttributeValue> = FastHashMap::default();
         let env_attr = kv_str("env", "prod");
-        map_attribute_generic(
-            &env_attr,
-            &mut attrs_ignore,
-            true,
-            &interner,
-            &mut string_builder,
-        );
+        map_attribute_generic(&env_attr, &mut attrs_ignore, true, &interner, &mut string_builder);
         assert!(attrs_ignore.is_empty());
     }
 
@@ -2183,21 +2163,35 @@ mod tests {
             use saluki_core::data_model::event::trace::AttributeValue;
             if tc.should_map {
                 assert_eq!(
-                    dd_span.attributes.get("db.name").and_then(AttributeValue::as_string).map(|s| s.as_ref()),
+                    dd_span
+                        .attributes
+                        .get("db.name")
+                        .and_then(AttributeValue::as_string)
+                        .map(|s| s.as_ref()),
                     Some(tc.expected_name),
                     "test case: {}",
                     tc.name
                 );
             } else if !tc.expected_name.is_empty() {
                 assert_eq!(
-                    dd_span.attributes.get("db.name").and_then(AttributeValue::as_string).map(|s| s.as_ref()),
+                    dd_span
+                        .attributes
+                        .get("db.name")
+                        .and_then(AttributeValue::as_string)
+                        .map(|s| s.as_ref()),
                     Some(tc.expected_name),
                     "test case: {}",
                     tc.name
                 );
             } else {
                 assert!(
-                    dd_span.attributes.get("db.name").and_then(AttributeValue::as_string).map(|s| s.as_ref()).unwrap_or("").is_empty(),
+                    dd_span
+                        .attributes
+                        .get("db.name")
+                        .and_then(AttributeValue::as_string)
+                        .map(|s| s.as_ref())
+                        .unwrap_or("")
+                        .is_empty(),
                     "test case: {}",
                     tc.name
                 );

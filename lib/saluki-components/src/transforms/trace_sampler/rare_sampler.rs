@@ -160,7 +160,8 @@ impl RareSampler {
 
         // Now safe to mutably borrow trace.
         if let Some(span) = trace.spans_mut().get_mut(sampled_idx) {
-            span.attributes.insert(MetaString::from_static(RARE_KEY), AttributeValue::Float(1.0));
+            span.attributes
+                .insert(MetaString::from_static(RARE_KEY), AttributeValue::Float(1.0));
         }
 
         true
@@ -209,9 +210,20 @@ impl RareSampler {
 /// Checks `_top_level` (agent-set), `_dd.top_level` (tracer-set), and `_dd.measured`, mirroring
 /// `HasTopLevel` + `IsMeasured` in the Go agent's `traceutil` package.
 fn is_top_level_or_measured(span: &Span) -> bool {
-    span.attributes.get(KEY_TOP_LEVEL).and_then(AttributeValue::as_float).is_some_and(|v| v == 1.0)
-        || span.attributes.get(KEY_TRACER_TOP_LEVEL).and_then(AttributeValue::as_float).is_some_and(|v| v == 1.0)
-        || span.attributes.get(KEY_MEASURED).and_then(AttributeValue::as_float).is_some_and(|v| v == 1.0)
+    span.attributes
+        .get(KEY_TOP_LEVEL)
+        .and_then(AttributeValue::as_float)
+        .is_some_and(|v| v == 1.0)
+        || span
+            .attributes
+            .get(KEY_TRACER_TOP_LEVEL)
+            .and_then(AttributeValue::as_float)
+            .is_some_and(|v| v == 1.0)
+        || span
+            .attributes
+            .get(KEY_MEASURED)
+            .and_then(AttributeValue::as_float)
+            .is_some_and(|v| v == 1.0)
 }
 
 #[cfg(test)]
@@ -227,8 +239,10 @@ mod tests {
     fn make_span_with_metrics(
         service: &str, name: &str, resource: &str, metrics: FastHashMap<MetaString, f64>,
     ) -> DdSpan {
-        let attrs: FastHashMap<MetaString, AttributeValue> =
-            metrics.into_iter().map(|(k, v)| (k, AttributeValue::Float(v))).collect();
+        let attrs: FastHashMap<MetaString, AttributeValue> = metrics
+            .into_iter()
+            .map(|(k, v)| (k, AttributeValue::Float(v)))
+            .collect();
         DdSpan::new(
             MetaString::from(service),
             MetaString::from(name),
@@ -276,7 +290,13 @@ mod tests {
         let mut trace = make_trace(vec![make_top_level_span("svc", "op", "res")]);
         assert!(sampler.sample(&mut trace, 0));
         // The rare key should be set on the sampled span.
-        assert_eq!(trace.spans()[0].attributes.get(RARE_KEY).and_then(AttributeValue::as_float), Some(1.0));
+        assert_eq!(
+            trace.spans()[0]
+                .attributes
+                .get(RARE_KEY)
+                .and_then(AttributeValue::as_float),
+            Some(1.0)
+        );
     }
 
     #[test]
@@ -411,7 +431,13 @@ mod tests {
 
         let mut trace1 = make_trace(vec![make_top_level_span("s1", "op", "r1")]);
         assert!(sampler.sample(&mut trace1, 0));
-        assert_eq!(trace1.spans()[0].attributes.get(RARE_KEY).and_then(AttributeValue::as_float), Some(1.0));
+        assert_eq!(
+            trace1.spans()[0]
+                .attributes
+                .get(RARE_KEY)
+                .and_then(AttributeValue::as_float),
+            Some(1.0)
+        );
 
         let mut trace2 = make_trace(vec![
             make_top_level_span("s1", "op", "r1"),
@@ -419,12 +445,18 @@ mod tests {
         ]);
         assert!(sampler.sample(&mut trace2, 0));
         assert_eq!(
-            trace2.spans()[0].attributes.get(RARE_KEY).and_then(AttributeValue::as_float),
+            trace2.spans()[0]
+                .attributes
+                .get(RARE_KEY)
+                .and_then(AttributeValue::as_float),
             None,
             "r1 should not get rare flag"
         );
         assert_eq!(
-            trace2.spans()[1].attributes.get(RARE_KEY).and_then(AttributeValue::as_float),
+            trace2.spans()[1]
+                .attributes
+                .get(RARE_KEY)
+                .and_then(AttributeValue::as_float),
             Some(1.0),
             "r2 should get rare flag"
         );

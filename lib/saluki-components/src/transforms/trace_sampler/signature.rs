@@ -114,7 +114,11 @@ pub(super) fn compute_span_hash(span: &Span, env: &str, with_resource: bool) -> 
     if with_resource {
         h = write_hash(h, span.resource().as_bytes());
     }
-    if let Some(code) = span.attributes.get(KEY_HTTP_STATUS_CODE).and_then(AttributeValue::as_string) {
+    if let Some(code) = span
+        .attributes
+        .get(KEY_HTTP_STATUS_CODE)
+        .and_then(AttributeValue::as_string)
+    {
         h = write_hash(h, code.as_ref().as_bytes());
     }
     if let Some(typ) = span.attributes.get(KEY_ERROR_TYPE).and_then(AttributeValue::as_string) {

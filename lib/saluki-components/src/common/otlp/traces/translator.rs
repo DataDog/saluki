@@ -190,7 +190,8 @@ impl OtlpTracesTranslator {
         let string_builder = &mut self.string_builder;
 
         // Build unified resource metadata for the new Trace fields.
-        let resource_meta = extract_resource_meta(&resource.attributes, ignore_missing_fields, interner, string_builder);
+        let resource_meta =
+            extract_resource_meta(&resource.attributes, ignore_missing_fields, interner, string_builder);
 
         let mut traces_by_id: FastHashMap<u64, TraceEntry> = FastHashMap::default();
         let trace_count_hint = resource_spans.scope_spans.len();
@@ -226,7 +227,11 @@ impl OtlpTracesTranslator {
                 );
 
                 // Track last-seen priority for this trace (overwrites previous values)
-                if let Some(priority) = dd_span.attributes.get(SAMPLING_PRIORITY_METRIC_KEY).and_then(AttributeValue::as_num) {
+                if let Some(priority) = dd_span
+                    .attributes
+                    .get(SAMPLING_PRIORITY_METRIC_KEY)
+                    .and_then(AttributeValue::as_num)
+                {
                     entry.priority = Some(priority as i32);
                 }
 

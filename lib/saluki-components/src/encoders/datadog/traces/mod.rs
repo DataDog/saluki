@@ -49,8 +49,8 @@ use crate::common::datadog::{
 };
 use crate::common::otlp::config::TracesConfig;
 use crate::common::otlp::util::{
-    attributes_to_source, extract_container_tags_from_attributes_map, Source as OtlpSource, SourceKind as OtlpSourceKind,
-    KEY_DATADOG_CONTAINER_TAGS,
+    attributes_to_source, extract_container_tags_from_attributes_map, Source as OtlpSource,
+    SourceKind as OtlpSourceKind, KEY_DATADOG_CONTAINER_TAGS,
 };
 
 const CONTAINER_TAGS_META_KEY: &str = "_dd.tags.container";

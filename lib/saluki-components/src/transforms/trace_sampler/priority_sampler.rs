@@ -91,8 +91,10 @@ impl PrioritySampler {
         // ignore the tracer specific logic
 
         let rate = self.sampler.get_signature_sample_rate(signature);
-        root.attributes
-            .insert(MetaString::from_static(DEPRECATED_RATE_KEY), AttributeValue::Float(rate));
+        root.attributes.insert(
+            MetaString::from_static(DEPRECATED_RATE_KEY),
+            AttributeValue::Float(rate),
+        );
         rate
     }
 }
