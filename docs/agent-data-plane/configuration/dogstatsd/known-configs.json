@@ -68,7 +68,7 @@
     "action": "INVESTIGATE",
     "description": "Channel buffer depth for aggregator queues",
     "reason": "Saluki topology uses fixed interconnect sizes and construction-time wiring; no per-component config knobs.",
-    "issue": "#1681",
+    "issue": null,
     "adp_key": null
   },
   {
@@ -77,7 +77,7 @@
     "action": "INVESTIGATE",
     "description": "Parallel flush: series/sketch buffer size",
     "reason": "Saluki topology uses fixed interconnect sizes; no per-component config knobs.",
-    "issue": "#1681",
+    "issue": null,
     "adp_key": null
   },
   {
@@ -86,7 +86,7 @@
     "action": "INVESTIGATE",
     "description": "Parallel flush: channel size for series/sketches",
     "reason": "Saluki topology uses fixed interconnect sizes; no per-component config knobs.",
-    "issue": "#1681",
+    "issue": null,
     "adp_key": null
   },
   {
@@ -95,7 +95,7 @@
     "action": "INVESTIGATE",
     "description": "Timeout (seconds) for aggregator flush on stop",
     "reason": "Saluki topology uses fixed interconnect sizes and construction-time wiring; no per-component config knobs.",
-    "issue": "#1681",
+    "issue": null,
     "adp_key": null
   },
   {
@@ -113,7 +113,7 @@
     "action": "INVESTIGATE",
     "description": "Enable shared tag deduplication store",
     "reason": "Core agent concept with no ADP analog.",
-    "issue": "#1681",
+    "issue": null,
     "adp_key": null
   },
   {
@@ -131,7 +131,7 @@
     "action": "INVESTIGATE",
     "description": "Enable anomaly detection observer pipeline",
     "reason": "New key flagged for investigation.",
-    "issue": "#1683",
+    "issue": null,
     "adp_key": null
   },
   {
@@ -140,7 +140,7 @@
     "action": "INVESTIGATE",
     "description": "Enable metric ingestion for anomaly detection",
     "reason": "New key flagged for investigation.",
-    "issue": "#1683",
+    "issue": null,
     "adp_key": null
   },
   {
@@ -167,7 +167,7 @@
     "action": "INVESTIGATE",
     "description": "Enable autoscaling failover metric routing via DCA",
     "reason": "Marked for investigation; previously dismissed as not-applicable.",
-    "issue": "#1684",
+    "issue": null,
     "adp_key": null
   },
   {
@@ -176,7 +176,7 @@
     "action": "INVESTIGATE",
     "description": "Metric names forwarded to DCA for autoscaling fail",
     "reason": "Marked for investigation; previously dismissed as not-applicable.",
-    "issue": "#1684",
+    "issue": null,
     "adp_key": null
   },
   {
@@ -186,15 +186,6 @@
     "description": "Global listen host fallback",
     "reason": "Read by the DogStatsD source and used as the bind IP for UDP/TCP listeners. Accepts an IP literal or a hostname resolved via DNS. Precedence matches the core agent: dogstatsd_non_local_traffic=true binds 0.0.0.0, else bind_host is used, else 127.0.0.1.",
     "issue": "#1331",
-    "adp_key": null
-  },
-  {
-    "key": "cluster_agent.enabled",
-    "feature_state": "MISSING",
-    "action": "INVESTIGATE",
-    "description": "Enable Cluster Agent connectivity",
-    "reason": "Required for autoscaling failover routing decisions. Investigated under #1684.",
-    "issue": "#1684",
     "adp_key": null
   },
   {
@@ -212,7 +203,7 @@
     "action": "INVESTIGATE",
     "description": "Fleet Automation config ID tag for agent",
     "reason": "Marked for investigation; previously dismissed as not-applicable.",
-    "issue": "#1685",
+    "issue": null,
     "adp_key": null
   },
   {
@@ -473,7 +464,7 @@
     "action": "INVESTIGATE",
     "description": "Enable experimental HTTP/H2C DSD listener",
     "reason": "Experimental HTTP/H2C DogStatsD ingestion endpoint; not needed for ADP.",
-    "issue": "#1682",
+    "issue": null,
     "adp_key": null
   },
   {
@@ -482,7 +473,7 @@
     "action": "INVESTIGATE",
     "description": "Bind addr for experimental HTTP DSD listener",
     "reason": "Experimental HTTP/H2C DogStatsD ingestion endpoint; not needed for ADP.",
-    "issue": "#1682",
+    "issue": null,
     "adp_key": null
   },
   {
@@ -502,6 +493,15 @@
     "reason": "Key naming mismatch fixed in #1498. ADP reads both dogstatsd_flush_incomplete_buckets and aggregate_flush_open_windows.",
     "issue": "#1366",
     "adp_key": "aggregate_flush_open_windows"
+  },
+  {
+    "key": "dogstatsd_host_socket_path",
+    "feature_state": "MISSING",
+    "action": "INVESTIGATE",
+    "description": "Host UDS socket dir used by admission controller",
+    "reason": "Kubernetes Cluster Agent admission controller plumbing, not DogStatsD server config.",
+    "issue": null,
+    "adp_key": null
   },
   {
     "key": "dogstatsd_log_file",
@@ -545,7 +545,7 @@
     "action": "INVESTIGATE",
     "description": "LRU cache size for mapper regex match results",
     "reason": "Core agent uses LRU cache; not relevant to ADP mapper implementation.",
-    "issue": "#1687",
+    "issue": null,
     "adp_key": null
   },
   {
@@ -1049,7 +1049,7 @@
     "action": "INVESTIGATE",
     "description": "Pre-allocate shared compressor buffers",
     "reason": "Marked for investigation; previously dismissed as not-applicable.",
-    "issue": "#1686",
+    "issue": null,
     "adp_key": null
   },
   {
@@ -1058,7 +1058,7 @@
     "action": "INVESTIGATE",
     "description": "Enable JSON payload delivery to /api/v1/intake",
     "reason": "Marked for investigation; previously dismissed as not-applicable.",
-    "issue": "#1686",
+    "issue": null,
     "adp_key": null
   },
   {
@@ -1103,7 +1103,7 @@
     "action": "INVESTIGATE",
     "description": "Agent's own pod entity ID (set by DCA webhook)",
     "reason": "Marked for investigation; previously dismissed as not-applicable.",
-    "issue": "#1685",
+    "issue": null,
     "adp_key": null
   },
   {
@@ -1274,7 +1274,7 @@
     "action": "INVESTIGATE",
     "description": "In-memory requeue buffer size for forwarder",
     "reason": "Marked for investigation; previously dismissed as not-applicable.",
-    "issue": "#1680",
+    "issue": null,
     "adp_key": null
   },
   {
@@ -1310,7 +1310,7 @@
     "action": "INVESTIGATE",
     "description": "Timeout (sec) for forwarder graceful stop",
     "reason": "Marked for investigation; previously dismissed as not-applicable.",
-    "issue": "#1680",
+    "issue": null,
     "adp_key": null
   },
   {
@@ -1355,7 +1355,7 @@
     "action": "INVESTIGATE",
     "description": "Override agent name for Heroku telemetry",
     "reason": "Marked for investigation; previously dismissed as not-applicable.",
-    "issue": "#1685",
+    "issue": null,
     "adp_key": null
   },
   {
@@ -1472,7 +1472,7 @@
     "action": "INVESTIGATE",
     "description": "Debug-log serialized payloads before send",
     "reason": "Marked for investigation; previously dismissed as not-applicable.",
-    "issue": "#1686",
+    "issue": null,
     "adp_key": null
   },
   {
@@ -1575,30 +1575,12 @@
     "adp_key": null
   },
   {
-    "key": "multi_region_failover.api_key",
-    "feature_state": "MISSING",
-    "action": "INVESTIGATE",
-    "description": "API key for the MRF failover region",
-    "reason": "Companion MRF credential/endpoint keys; investigated under issue #1678.",
-    "issue": "#1678",
-    "adp_key": null
-  },
-  {
-    "key": "multi_region_failover.dd_url",
-    "feature_state": "MISSING",
-    "action": "INVESTIGATE",
-    "description": "Intake URL for the MRF failover region",
-    "reason": "Companion MRF credential/endpoint keys; investigated under issue #1678.",
-    "issue": "#1678",
-    "adp_key": null
-  },
-  {
     "key": "multi_region_failover.enabled",
     "feature_state": "MISSING",
     "action": "INVESTIGATE",
     "description": "Enable multi-region failover mode",
     "reason": "Marked for investigation; previously dismissed as not-applicable.",
-    "issue": "#1678",
+    "issue": null,
     "adp_key": null
   },
   {
@@ -1607,7 +1589,7 @@
     "action": "INVESTIGATE",
     "description": "Enable metrics forwarding to failover region",
     "reason": "Marked for investigation; previously dismissed as not-applicable.",
-    "issue": "#1678",
+    "issue": null,
     "adp_key": null
   },
   {
@@ -1616,16 +1598,7 @@
     "action": "INVESTIGATE",
     "description": "Metric name allowlist for MRF forwarding",
     "reason": "Marked for investigation; previously dismissed as not-applicable.",
-    "issue": "#1678",
-    "adp_key": null
-  },
-  {
-    "key": "multi_region_failover.site",
-    "feature_state": "MISSING",
-    "action": "INVESTIGATE",
-    "description": "Datadog site for the MRF failover region",
-    "reason": "Companion MRF credential/endpoint keys; investigated under issue #1678.",
-    "issue": "#1678",
+    "issue": null,
     "adp_key": null
   },
   {
@@ -2057,7 +2030,7 @@
     "action": "INVESTIGATE",
     "description": "Histogram buckets for DSD aggregator channel lag",
     "reason": "Marked for investigation; previously dismissed as not-applicable.",
-    "issue": "#1679",
+    "issue": null,
     "adp_key": null
   },
   {
@@ -2066,7 +2039,7 @@
     "action": "INVESTIGATE",
     "description": "Histogram buckets for listener channel latency",
     "reason": "Marked for investigation; previously dismissed as not-applicable.",
-    "issue": "#1679",
+    "issue": null,
     "adp_key": null
   },
   {
@@ -2075,7 +2048,7 @@
     "action": "INVESTIGATE",
     "description": "Histogram buckets for listener processing latency",
     "reason": "Marked for investigation; previously dismissed as not-applicable.",
-    "issue": "#1679",
+    "issue": null,
     "adp_key": null
   },
   {
@@ -2084,7 +2057,7 @@
     "action": "INVESTIGATE",
     "description": "Per-origin processed-metrics telemetry counters",
     "reason": "Marked for investigation; previously dismissed as not-applicable.",
-    "issue": "#1679",
+    "issue": null,
     "adp_key": null
   },
   {
