@@ -2,8 +2,6 @@
   reason: initial bulk
 - name: GUI_port
   reason: initial bulk
-- name: use_dogstatsd
-  reason: Core Agent evaluates and sets data_plane.dogstatsd.enabled
 - name: GUI_session_expiration
   reason: initial bulk
 - name: ac_exclude
@@ -1240,6 +1238,7 @@
   reason: initial bulk
 - name: dogstatsd_expiry_seconds
   reason: initial bulk
+- name: dogstatsd_host_socket_path
 - name: dogstatsd_mem_based_rate_limiter.enabled
   reason: initial bulk
 - name: dogstatsd_mem_based_rate_limiter.go_gc
@@ -3272,6 +3271,8 @@
   reason: initial bulk
 - name: use_diskv2_check
   reason: initial bulk
+- name: use_dogstatsd
+  reason: Core Agent evaluates and sets data_plane.dogstatsd.enabled
 - name: use_improved_cgroup_parser
   reason: initial bulk
 - name: use_networkv2_check
