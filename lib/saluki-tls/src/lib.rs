@@ -200,7 +200,7 @@ pub fn initialize_default_crypto_provider() -> Result<(), GenericError> {
 /// | Environment Variable | Description                                                                           |
 /// |----------------------|---------------------------------------------------------------------------------------|
 /// | SSL_CERT_FILE        | File containing an arbitrary number of certificates in PEM format.                     |
-/// | SSL_CERT_DIR         | Directory utilizing the hierarchy and naming convention used by OpenSSL's [c_rehash]. |
+/// | SSL_CERT_DIR         | Directory utilizing the hierarchy and naming convention used by OpenSSL's [`c_rehash`]. |
 ///
 /// If **either** (or **both**) are set, certificates are only loaded from the locations specified via environment
 /// variables and not the platform- native certificate store.

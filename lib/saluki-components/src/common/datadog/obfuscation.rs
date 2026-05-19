@@ -156,7 +156,7 @@ impl SqlObfuscationConfig {
         clone
     }
 
-    /// Returns a clone with dollar_quoted_func disabled.
+    /// Returns a clone with `dollar_quoted_func` disabled.
     /// Used for recursive obfuscation to avoid infinite loops.
     pub fn with_dollar_quoted_func_disabled(&self) -> Self {
         let mut clone = self.clone();

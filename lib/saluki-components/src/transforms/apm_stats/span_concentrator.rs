@@ -129,7 +129,7 @@ pub struct SpanConcentrator {
     /// Number of buckets to buffer before flushing
     buffer_len: u64,
 
-    /// Time-bucketed raw stats: bucket_timestamp -> RawBucket
+    /// Time-bucketed raw stats: `bucket_timestamp` -> RawBucket
     buckets: FastHashMap<u64, RawBucket>,
 
     /// Shared registry for aggregation keys.

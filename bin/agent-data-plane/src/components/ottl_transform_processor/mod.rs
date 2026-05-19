@@ -21,24 +21,26 @@ use saluki_error::{generic_error, GenericError};
 use tracing::{debug, error};
 
 mod config;
+use self::config::{ErrorMode, OttlTransformConfig};
+
 mod span_context;
+use self::span_context::{SpanTransformContext, SpanTransformFamily};
 
-use config::{ErrorMode, OttlTransformConfig};
-use span_context::{SpanTransformContext, SpanTransformFamily};
-
-/// Configuration for the OTTL Transform processor, loaded from the data plane config.
+/// Configuration for the OTTL Transform processor.
 #[derive(Clone, Debug)]
 pub struct OttlTransformConfiguration {
     config: OttlTransformConfig,
 }
 
 impl OttlTransformConfiguration {
-    /// Creates configuration from the given generic configuration.
+    /// Creates an `OttlTransformConfiguration` from the given configuration.
     ///
-    /// Reads the OTTL Transform config from the `ottl_transform_config` key at the top level of the
-    /// data-plane configuration.
+    /// Reads the OTTL Transform config from the `ottl_transform_config` key at the top level of the data-plane
+    /// configuration.
     ///
-    /// Returns an error if a value at `ottl_transform_config` exists but fails to deserialize.
+    /// # Errors
+    ///
+    /// If a value at `ottl_transform_config` exists but fails to deserialize, an error is returned.
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
         let transform_config = config.try_get_typed::<OttlTransformConfig>("ottl_transform_config")?;
         Ok(Self {
@@ -51,13 +53,12 @@ impl OttlTransformConfiguration {
 impl SynchronousTransformBuilder for OttlTransformConfiguration {
     /// Builds the OTTL `Transform` from the current configuration.
     ///
-    /// Registers the `set` editor function, parses each trace statement, and returns
-    /// the transform. Statements may be editor calls like `set(attributes["key"], "value")`
-    /// with optional `where` clauses.
+    /// Registers the `set` editor function, parses each trace statement, and returns the transform. Statements may be
+    /// editor calls like `set(attributes["key"], "value")` with optional `where` clauses.
     ///
     /// # Errors
     ///
-    /// Returns an error if any OTTL statement fails to parse.
+    /// If the OTTL statement fails to parse, an error is returned.
     async fn build(&self, _context: ComponentContext) -> Result<Box<dyn SynchronousTransform + Send>, GenericError> {
         let path_resolvers = span_context::span_transform_path_resolvers();
 

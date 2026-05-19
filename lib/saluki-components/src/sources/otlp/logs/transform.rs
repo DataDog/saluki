@@ -50,7 +50,7 @@ pub fn map_status_text(text: &str) -> Option<LogStatus> {
     }
 }
 
-/// status_from_severity_number converts the severity number to log level
+/// `status_from_severity_number` converts the severity number to log level
 ///
 /// https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/logs/data-model.md#field-severitynumber
 pub fn status_from_severity_number(severity_number: i32) -> Option<LogStatus> {
