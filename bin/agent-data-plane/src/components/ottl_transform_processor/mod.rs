@@ -11,12 +11,13 @@ use async_trait::async_trait;
 use ottl::{CallbackMap, EnumMap, OttlParser};
 use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
-use saluki_context::tags::TagSet;
+use saluki_common::collections::FastHashMap;
 use saluki_core::{
     components::{transforms::*, ComponentContext},
-    data_model::event::trace::Span,
+    data_model::event::trace::{AttributeValue, Span},
     topology::EventsBuffer,
 };
+use stringtheory::MetaString;
 use saluki_error::{generic_error, GenericError};
 use tracing::{debug, error};
 
@@ -107,8 +108,8 @@ impl OttlTransform {
     /// Each statement is executed in order. For editor statements (for example, `set`), the `where`
     /// clause is evaluated first; if it matches (or is absent), the editor function runs.
     /// Errors are handled according to `error_mode`.
-    fn transform_span(&self, span: &mut Span, resource_tags: &TagSet) {
-        let mut ctx = SpanTransformContext::new(span, resource_tags);
+    fn transform_span(&self, span: &mut Span, resource_attrs: &FastHashMap<MetaString, AttributeValue>) {
+        let mut ctx = SpanTransformContext::new(span, resource_attrs);
 
         for parser in &self.span_parsers {
             match parser.execute(&mut ctx) {
@@ -139,9 +140,9 @@ impl SynchronousTransform for OttlTransform {
 
         for event in event_buffer {
             if let Some(trace) = event.try_as_trace_mut() {
-                let resource_tags = trace.resource_tags().clone();
+                let resource_attrs = std::sync::Arc::clone(&trace.attributes);
                 for span in trace.spans_mut() {
-                    self.transform_span(span, &resource_tags);
+                    self.transform_span(span, &resource_attrs);
                 }
             }
         }

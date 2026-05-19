@@ -456,7 +456,7 @@ fn now_nanos() -> u64 {
         .as_nanos() as u64
 }
 
-/// Extracts process tags from trace, checking both span meta and trace attributes.
+/// Extracts process tags from trace, checking both span and trace attributes.
 fn extract_process_tags(trace: &Trace) -> MetaString {
     let root_span = trace.spans().iter().find(|s| s.parent_id() == 0).or_else(|| trace.spans().first());
     if let Some(span) = root_span {

@@ -125,6 +125,7 @@ fn extract_resource_meta(
         // Scalar types are stored in their native AttributeValue variant so downstream
         // code (e.g. the encoder) can coerce at the output boundary. Arrays and KVLists
         // are stringified via JSON because no wire format accepts them natively.
+        // TODO: when implementing the new indexed format this will no longer be necessary.
         let attr_value = match value {
             OtlpValue::StringValue(s) => AttributeValue::String(MetaString::from_interner(s.as_str(), interner)),
             OtlpValue::IntValue(i) => AttributeValue::Int(*i),

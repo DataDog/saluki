@@ -104,7 +104,7 @@ impl OttlFilter {
             return false;
         }
 
-        let mut ctx = SpanFilterContext::new(span, trace.resource_tags());
+        let mut ctx = SpanFilterContext::new(span, &trace.attributes);
 
         for parser in &self.span_parsers {
             match parser.execute(&mut ctx) {

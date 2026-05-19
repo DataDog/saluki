@@ -552,11 +552,10 @@ impl TraceEndpointEncoder {
                         {
                             let mut ms = s.meta_struct();
                             for (k, v) in &span.attributes {
-                                match v {
-                                    AttributeValue::Bytes(bytes) => ms.write_entry(k.as_ref(), bytes.as_slice())?,
-                                    // TODO: Array and KeyValueList could be JSON-serialized into meta_struct;
-                                    // skipped until a caller needs them for span-level attributes.
-                                    _ => {}
+                                // TODO: Array and KeyValueList could be JSON-serialized into meta_struct;
+                                // skipped until a caller needs them for span-level attributes.
+                                if let AttributeValue::Bytes(bytes) = v {
+                                    ms.write_entry(k.as_ref(), bytes.as_slice())?;
                                 }
                             }
                         }
