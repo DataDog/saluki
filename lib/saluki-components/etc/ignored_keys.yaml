@@ -2,8 +2,6 @@
   reason: initial bulk
 - name: GUI_port
   reason: initial bulk
-- name: use_dogstatsd
-  reason: Core Agent evaluates and sets data_plane.dogstatsd.enabled
 - name: GUI_session_expiration
   reason: initial bulk
 - name: ac_exclude
@@ -2420,6 +2418,10 @@
   reason: initial bulk
 - name: notable_events.enabled
   reason: initial bulk
+- name: observability_pipelines_worker.logs.enabled
+- name: observability_pipelines_worker.logs.url
+- name: observability_pipelines_worker.traces.enabled
+- name: observability_pipelines_worker.traces.url
 - name: ol_proxy_config.additional_endpoints
   reason: initial bulk
 - name: ol_proxy_config.api_key
@@ -3272,10 +3274,16 @@
   reason: initial bulk
 - name: use_diskv2_check
   reason: initial bulk
+- name: use_dogstatsd
+  reason: Core Agent evaluates and sets data_plane.dogstatsd.enabled
 - name: use_improved_cgroup_parser
   reason: initial bulk
 - name: use_networkv2_check
   reason: initial bulk
+- name: vector.logs.enabled
+- name: vector.logs.url
+- name: vector.traces.enabled
+- name: vector.traces.url
 - name: vsock_addr
   reason: initial bulk
 - name: win_skip_com_init
