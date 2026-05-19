@@ -7,7 +7,7 @@ mod capture;
 mod capture_api;
 mod file_header;
 mod reader;
-mod replay;
+mod replay_control;
 mod replay_api;
 pub(super) mod writer;
 
@@ -15,8 +15,8 @@ pub use self::capture::DogStatsDCaptureControl;
 pub(crate) use self::capture::TrafficCapture;
 pub use self::capture_api::DogStatsDCaptureAPIHandler;
 pub use self::reader::{TimestampResolution, TrafficCaptureReader};
-pub(crate) use self::replay::TrafficReplay;
-pub use self::replay::{DogStatsDReplayControl, ReplayHandle, ReplayOptions, DEFAULT_REPLAY_LOOPS};
+pub(crate) use self::replay_control::TrafficReplay;
+pub use self::replay_control::{DogStatsDReplayControl, ReplayHandle, ReplayOptions, DEFAULT_REPLAY_LOOPS};
 pub use self::replay_api::DogStatsDReplayAPIHandler;
 pub(crate) use self::writer::CaptureRecord;
 
