@@ -488,7 +488,7 @@ crate::declare_annotations! {
     AUTOSCALING_FAILOVER_METRICS = SalukiAnnotation {
         schema: &schema::AUTOSCALING_FAILOVER_METRICS,
         // Not implemented. #1684
-        support_level: SupportLevel::Incompatible(Severity::High),
+        support_level: SupportLevel::Incompatible(Severity::Medium),
         additional_yaml_paths: &[],
         env_var_override: None,
         used_by: &[],
@@ -742,7 +742,7 @@ crate::declare_annotations! {
     CLUSTER_AGENT_ENABLED = SalukiAnnotation {
         schema: &schema::CLUSTER_AGENT_ENABLED,
         // Not implemented. Required for autoscaling failover routing. #1684
-        support_level: SupportLevel::Incompatible(Severity::High),
+        support_level: SupportLevel::Incompatible(Severity::Low),
         additional_yaml_paths: &[],
         env_var_override: None,
         used_by: &[],
