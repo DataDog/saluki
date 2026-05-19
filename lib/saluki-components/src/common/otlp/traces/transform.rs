@@ -253,9 +253,9 @@ pub fn otel_span_to_dd_span(
             continue;
         };
         if let Some(serialized) = otlp_value_to_string(value) {
-            conditionally_map_otlp_attribute_to_meta(
+            conditionally_map_otlp_attribute(
                 attribute.key.as_str(),
-                &serialized,
+                AttributeValue::String(MetaString::from_interner(&serialized, interner)),
                 &mut attrs,
                 ignore_missing_fields,
                 interner,
@@ -265,7 +265,7 @@ pub fn otel_span_to_dd_span(
     }
 
     if let Some(scope) = instrumentation_scope {
-        instrumentation_scope_attributes_to_meta(scope, &mut attrs, interner);
+        instrumentation_scope_attributes_to_attrs(scope, &mut attrs, interner);
     }
 
     if !attrs.contains_key("db.name") {
@@ -958,9 +958,9 @@ fn map_attribute_generic(
 
     match value {
         OtlpValue::StringValue(s) => {
-            conditionally_map_otlp_attribute_to_meta(
+            conditionally_map_otlp_attribute(
                 attribute.key.as_str(),
-                s.as_str(),
+                AttributeValue::String(MetaString::from_interner(s.as_str(), interner)),
                 attrs,
                 ignore_missing_fields,
                 interner,
@@ -968,10 +968,9 @@ fn map_attribute_generic(
             );
         }
         OtlpValue::BoolValue(b) => {
-            let bool_value = if *b { "true" } else { "false" };
-            conditionally_map_otlp_attribute_to_meta(
+            conditionally_map_otlp_attribute(
                 attribute.key.as_str(),
-                bool_value,
+                AttributeValue::String(MetaString::from_static(if *b { "true" } else { "false" })),
                 attrs,
                 ignore_missing_fields,
                 interner,
@@ -980,9 +979,9 @@ fn map_attribute_generic(
         }
         OtlpValue::BytesValue(bytes) => {
             let placeholder = format!("<{} bytes>", bytes.len());
-            conditionally_map_otlp_attribute_to_meta(
+            conditionally_map_otlp_attribute(
                 attribute.key.as_str(),
-                &placeholder,
+                AttributeValue::String(MetaString::from_interner(&placeholder, interner)),
                 attrs,
                 ignore_missing_fields,
                 interner,
@@ -990,9 +989,9 @@ fn map_attribute_generic(
             );
         }
         OtlpValue::IntValue(i) => {
-            conditionally_map_otlp_attribute_to_metric(
+            conditionally_map_otlp_attribute(
                 attribute.key.as_str(),
-                *i as f64,
+                AttributeValue::Float(*i as f64),
                 attrs,
                 ignore_missing_fields,
                 interner,
@@ -1000,9 +999,9 @@ fn map_attribute_generic(
             );
         }
         OtlpValue::DoubleValue(d) => {
-            conditionally_map_otlp_attribute_to_metric(
+            conditionally_map_otlp_attribute(
                 attribute.key.as_str(),
-                *d,
+                AttributeValue::Float(*d),
                 attrs,
                 ignore_missing_fields,
                 interner,
@@ -1015,7 +1014,7 @@ fn map_attribute_generic(
     }
 }
 
-fn instrumentation_scope_attributes_to_meta(
+fn instrumentation_scope_attributes_to_attrs(
     scope: &OtlpInstrumentationScope, attrs: &mut FastHashMap<MetaString, AttributeValue>,
     interner: &GenericMapInterner,
 ) {
@@ -1153,7 +1152,7 @@ fn status_to_error(
                 AttributeValue::String(status.message.as_str().into()),
             );
         } else if let Some(http_code) =
-            get_first_from_meta(attrs, &[HTTP_RESPONSE_STATUS_CODE_KEY, HTTP_STATUS_CODE_KEY])
+            get_first_from_attrs(attrs, &[HTTP_RESPONSE_STATUS_CODE_KEY, HTTP_STATUS_CODE_KEY])
         {
             let mut message = http_code.as_ref().to_string();
             if let Some(http_text) = attrs.get("http.status_text").and_then(AttributeValue::as_string) {
@@ -1173,7 +1172,7 @@ fn status_to_error(
     1
 }
 
-fn get_first_from_meta(attrs: &FastHashMap<MetaString, AttributeValue>, keys: &[&str]) -> Option<MetaString> {
+fn get_first_from_attrs(attrs: &FastHashMap<MetaString, AttributeValue>, keys: &[&str]) -> Option<MetaString> {
     for key in keys {
         if let Some(value) = attrs.get(*key).and_then(AttributeValue::as_string) {
             return Some(value.clone());
@@ -1251,66 +1250,48 @@ pub(super) fn otlp_value_to_string(value: &OtlpValue) -> Option<String> {
     }
 }
 
-fn conditionally_map_otlp_attribute_to_meta(
-    key: &str, value: &str, attrs: &mut FastHashMap<MetaString, AttributeValue>, ignore_missing_fields: bool,
-    interner: &GenericMapInterner, string_builder: &mut StringBuilder<GenericMapInterner>,
+// Mirrors SetMetaOTLPIfEmpty / SetMetricOTLPIfEmpty from the Go agent
+// (pkg/trace/transform/transform.go). Checks whether `key` maps to a
+// Datadog convention key, then inserts `value` into `attrs` if not already
+// present, with key-specific special-case handling.
+fn conditionally_map_otlp_attribute(
+    key: &str, value: AttributeValue, attrs: &mut FastHashMap<MetaString, AttributeValue>,
+    ignore_missing_fields: bool, interner: &GenericMapInterner,
+    string_builder: &mut StringBuilder<GenericMapInterner>,
 ) {
-    if let Some(mapped_key) = get_dd_key_for_otlp_attribute(key, interner, string_builder) {
-        if attrs.contains_key(&mapped_key) {
-            return;
-        }
-        if ignore_missing_fields && has_dd_namespaced_equivalent(mapped_key.as_ref()) {
-            return;
-        }
-        set_meta_field_otlp_if_empty(mapped_key, value, attrs);
+    let Some(mapped_key) = get_dd_key_for_otlp_attribute(key, interner, string_builder) else {
+        return;
+    };
+    if attrs.contains_key(&mapped_key) {
+        return;
     }
-}
-
-fn conditionally_map_otlp_attribute_to_metric(
-    key: &str, value: f64, attrs: &mut FastHashMap<MetaString, AttributeValue>, ignore_missing_fields: bool,
-    interner: &GenericMapInterner, string_builder: &mut StringBuilder<GenericMapInterner>,
-) {
-    if let Some(mapped_key) = get_dd_key_for_otlp_attribute(key, interner, string_builder) {
-        if attrs.contains_key(&mapped_key) {
-            return;
-        }
-        if ignore_missing_fields && has_dd_namespaced_equivalent(mapped_key.as_ref()) {
-            return;
-        }
-        set_metric_field_otlp_if_empty(mapped_key, value, attrs);
+    if ignore_missing_fields && has_dd_namespaced_equivalent(mapped_key.as_ref()) {
+        return;
     }
-}
-
-// SetMetaOTLPIfEmpty sets the k/v OTLP attribute pair as a tag on span s, if the corresponding value hasn't been set already.
-// based off of the code from the agent https://github.com/DataDog/datadog-agent/blob/main/pkg/trace/transform/transform.go#L612
-fn set_meta_field_otlp_if_empty(key: MetaString, value: &str, attrs: &mut FastHashMap<MetaString, AttributeValue>) {
-    match key.as_ref() {
+    match mapped_key.as_ref() {
         "service.name" | "operation.name" | "resource.name" | "span.type" => {
             // handled elsewhere
         }
         ANALYTICS_EVENT_KEY => {
-            if attrs.contains_key(EVENT_EXTRACTION_METRIC_KEY) {
-                return;
-            }
-            if let Some(parsed) = parse_bool(value) {
-                attrs
-                    .entry(MetaString::from_static(EVENT_EXTRACTION_METRIC_KEY))
-                    .or_insert(AttributeValue::Float(if parsed { 1.0 } else { 0.0 }));
+            if !attrs.contains_key(EVENT_EXTRACTION_METRIC_KEY) {
+                if let AttributeValue::String(s) = &value {
+                    if let Some(parsed) = parse_bool(s.as_ref()) {
+                        attrs
+                            .entry(MetaString::from_static(EVENT_EXTRACTION_METRIC_KEY))
+                            .or_insert(AttributeValue::Float(if parsed { 1.0 } else { 0.0 }));
+                    }
+                }
             }
         }
         _ => {
-            attrs.entry(key).or_insert_with(|| AttributeValue::String(value.into()));
+            let storage_key = if mapped_key.as_ref() == "sampling.priority" {
+                MetaString::from_static(SAMPLING_PRIORITY_METRIC_KEY)
+            } else {
+                mapped_key
+            };
+            attrs.entry(storage_key).or_insert(value);
         }
     }
-}
-
-fn set_metric_field_otlp_if_empty(key: MetaString, value: f64, attrs: &mut FastHashMap<MetaString, AttributeValue>) {
-    let storage_key = if key.as_ref() == "sampling.priority" {
-        MetaString::from_static(SAMPLING_PRIORITY_METRIC_KEY)
-    } else {
-        key
-    };
-    attrs.entry(storage_key).or_insert(AttributeValue::Float(value));
 }
 
 // GetDDKeyForOTLPAttribute looks for a key in the Datadog HTTP convention that matches the given key from the
