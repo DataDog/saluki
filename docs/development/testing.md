@@ -57,10 +57,8 @@ containers using the airlock library (which talks to containerd via gRPC) and as
 
 ### Running
 
-Build the required container images, then run:
-
 ```bash
-# run all correctness tests (builds required images automatically)
+# run all correctness tests
 make test-correctness
 
 # run a single test case

@@ -26,12 +26,7 @@ and `millstone` -- by running `make build-correctness-tools-image`.
 ## Running correctness tests
 
 Run all correctness tests with `make test-correctness`, or a single test case with
-`make test-correctness-case CASE=<test-name>`. Both targets build required images automatically
-before running (`panoramic`, `correctness-tools-image`, `datadog-agent-image-release`).
-
-After making changes to `datadog-intake` or `millstone`, run `make build-correctness-tools-image`
-before the next test run to pick up the changes, or let `make test-correctness` rebuild it as part
-of the normal prerequisite chain.
+`make test-correctness-case CASE=<test-name>`.
 
 [fakeintake_gh]: https://github.com/DataDog/datadog-agent/tree/main/test/fakeintake
 [lading_gh]: https://github.com/DataDog/lading
