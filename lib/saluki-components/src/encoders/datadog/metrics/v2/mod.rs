@@ -1,4 +1,4 @@
-use std::num::NonZeroU64;
+use std::{fmt, num::NonZeroU64};
 
 use datadog_protos::metrics as proto;
 use ddsketch::DDSketch;
@@ -10,11 +10,15 @@ use saluki_core::data_model::event::metric::{Metric, MetricOrigin, MetricValues}
 use saluki_error::GenericError;
 use tracing::warn;
 
-use super::endpoint::{EndpointConfiguration, MetricsEndpoint};
+use super::{
+    endpoint::{EndpointConfiguration, MetricsEndpoint},
+    v1,
+};
 use crate::common::datadog::{
     io::RB_BUFFER_CHUNK_SIZE,
     request_builder::{EndpointEncoder, RequestBuilder},
-    DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT, DEFAULT_INTAKE_UNCOMPRESSED_SIZE_LIMIT,
+    DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT, DEFAULT_INTAKE_UNCOMPRESSED_SIZE_LIMIT, METRICS_SERIES_V1_PATH,
+    METRICS_SERIES_V2_PATH, METRICS_SKETCHES_PATH,
 };
 
 mod constants;
@@ -38,6 +42,8 @@ pub async fn create_v2_request_builder(
 }
 
 /// An encoder for V2 metrics.
+///
+/// This also handles the legacy V1 JSON series endpoint when `use_v2_api_series` is disabled.
 #[derive(Debug)]
 pub struct MetricsEndpointEncoder {
     endpoint: MetricsEndpoint,
@@ -72,9 +78,49 @@ impl MetricsEndpointEncoder {
     }
 }
 
+/// Error returned when a metric fails to encode for either the V1 JSON or V2 protobuf intake.
+#[derive(Debug)]
+pub enum MetricsEncodeError {
+    /// Protobuf encoding failed.
+    Protobuf(protobuf::Error),
+
+    /// JSON encoding failed.
+    Json(serde_json::Error),
+}
+
+impl fmt::Display for MetricsEncodeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Protobuf(e) => write!(f, "protobuf encode error: {}", e),
+            Self::Json(e) => write!(f, "json encode error: {}", e),
+        }
+    }
+}
+
+impl std::error::Error for MetricsEncodeError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Protobuf(e) => Some(e),
+            Self::Json(e) => Some(e),
+        }
+    }
+}
+
+impl From<protobuf::Error> for MetricsEncodeError {
+    fn from(value: protobuf::Error) -> Self {
+        Self::Protobuf(value)
+    }
+}
+
+impl From<serde_json::Error> for MetricsEncodeError {
+    fn from(value: serde_json::Error) -> Self {
+        Self::Json(value)
+    }
+}
+
 impl EndpointEncoder for MetricsEndpointEncoder {
     type Input = Metric;
-    type EncodeError = protobuf::Error;
+    type EncodeError = MetricsEncodeError;
 
     fn encoder_name() -> &'static str {
         "metrics"
@@ -82,71 +128,98 @@ impl EndpointEncoder for MetricsEndpointEncoder {
 
     fn compressed_size_limit(&self) -> usize {
         match self.endpoint {
-            MetricsEndpoint::Series => constants::SERIES_V2_COMPRESSED_SIZE_LIMIT,
+            MetricsEndpoint::SeriesV1 => v1::SERIES_COMPRESSED_SIZE_LIMIT,
+            MetricsEndpoint::SeriesV2 => constants::SERIES_V2_COMPRESSED_SIZE_LIMIT,
             MetricsEndpoint::Sketches => DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT,
         }
     }
 
     fn uncompressed_size_limit(&self) -> usize {
         match self.endpoint {
-            MetricsEndpoint::Series => constants::SERIES_V2_UNCOMPRESSED_SIZE_LIMIT,
+            MetricsEndpoint::SeriesV1 => v1::SERIES_UNCOMPRESSED_SIZE_LIMIT,
+            MetricsEndpoint::SeriesV2 => constants::SERIES_V2_UNCOMPRESSED_SIZE_LIMIT,
             MetricsEndpoint::Sketches => DEFAULT_INTAKE_UNCOMPRESSED_SIZE_LIMIT,
         }
     }
 
+    fn input_data_point_count(&self, input: &Self::Input) -> usize {
+        input.values().len()
+    }
+
     fn is_valid_input(&self, input: &Self::Input) -> bool {
-        let input_endpoint = MetricsEndpoint::from_metric(input);
-        input_endpoint == self.endpoint
+        let is_series_input = matches!(
+            input.values(),
+            MetricValues::Counter(..) | MetricValues::Rate(..) | MetricValues::Gauge(..) | MetricValues::Set(..)
+        );
+
+        match self.endpoint {
+            MetricsEndpoint::SeriesV1 | MetricsEndpoint::SeriesV2 => is_series_input,
+            MetricsEndpoint::Sketches => !is_series_input,
+        }
+    }
+
+    fn get_payload_prefix(&self) -> Option<&'static [u8]> {
+        match self.endpoint {
+            MetricsEndpoint::SeriesV1 => Some(v1::SERIES_PAYLOAD_PREFIX),
+            _ => None,
+        }
+    }
+
+    fn get_payload_suffix(&self) -> Option<&'static [u8]> {
+        match self.endpoint {
+            MetricsEndpoint::SeriesV1 => Some(v1::SERIES_PAYLOAD_SUFFIX),
+            _ => None,
+        }
+    }
+
+    fn get_input_separator(&self) -> Option<&'static [u8]> {
+        match self.endpoint {
+            MetricsEndpoint::SeriesV1 => Some(v1::SERIES_INPUT_SEPARATOR),
+            _ => None,
+        }
     }
 
     fn encode(&mut self, input: &Self::Input, buffer: &mut Vec<u8>) -> Result<(), Self::EncodeError> {
-        // NOTE: We're passing _four_ buffers to `encode_single_metric`, which is a lot, but with good reason.
-        //
-        // The first buffer, `buffer`, is the overall output buffer: the caller expects us to put the full encoded
-        // metric payload into this buffer.
-        //
-        // The second and third buffers, `primary_scratch_buf` and `secondary_scratch_buf`, are used for roughly the
-        // same thing but deal with _nesting_. When writing a "message" in Protocol Buffers, the message data itself is
-        // prefixed with the field number and a length delimiter that specifies how long the message is. We can't write
-        // that length delimiter until we know the full size of the message, so we write the message to a scratch
-        // buffer, calculate its size, and then write the field number and length delimiter to the output buffer
-        // followed by the message data from the scratch buffer.
-        //
-        // We have _two_ scratch buffers because you need a dedicated buffer for each level of nested message. We have
-        // to be able to nest up to two levels deep in our metrics payload, so we need two scratch buffers to handle
-        // that.
-        //
-        // The fourth buffer, `packed_scratch_buf`, is used for writing out packed repeated fields. This is similar to
-        // the situation describe above, except it's not _exactly_ the same as an additional level of nesting.. so I
-        // just decided to give it a somewhat more descriptive name.
-        encode_single_metric(
-            input,
-            &self.additional_tags,
-            buffer,
-            &mut self.primary_scratch_buf,
-            &mut self.secondary_scratch_buf,
-            &mut self.packed_scratch_buf,
-            &mut self.tags_deduplicator,
-        )?;
+        match self.endpoint {
+            MetricsEndpoint::SeriesV1 => {
+                v1::encode_series_metric(input, &self.additional_tags, buffer, &mut self.tags_deduplicator)?;
+                Ok(())
+            }
+            MetricsEndpoint::SeriesV2 | MetricsEndpoint::Sketches => {
+                // NOTE: We're passing _four_ buffers to `encode_single_metric`, which is a lot, but with good reason.
+                encode_single_metric(
+                    input,
+                    &self.additional_tags,
+                    buffer,
+                    &mut self.primary_scratch_buf,
+                    &mut self.secondary_scratch_buf,
+                    &mut self.packed_scratch_buf,
+                    &mut self.tags_deduplicator,
+                )?;
 
-        Ok(())
+                Ok(())
+            }
+        }
     }
 
     fn endpoint_uri(&self) -> Uri {
         match self.endpoint {
-            MetricsEndpoint::Series => PathAndQuery::from_static("/api/v2/series").into(),
-            MetricsEndpoint::Sketches => PathAndQuery::from_static("/api/beta/sketches").into(),
+            MetricsEndpoint::SeriesV1 => PathAndQuery::from_static(METRICS_SERIES_V1_PATH).into(),
+            MetricsEndpoint::SeriesV2 => PathAndQuery::from_static(METRICS_SERIES_V2_PATH).into(),
+            MetricsEndpoint::Sketches => PathAndQuery::from_static(METRICS_SKETCHES_PATH).into(),
         }
     }
 
     fn endpoint_method(&self) -> Method {
-        // Both endpoints use POST.
+        // All endpoints use POST.
         Method::POST
     }
 
     fn content_type(&self) -> HeaderValue {
-        // Both endpoints encode via Protocol Buffers.
-        constants::CONTENT_TYPE_PROTOBUF.clone()
+        match self.endpoint {
+            MetricsEndpoint::SeriesV1 => v1::CONTENT_TYPE.clone(),
+            MetricsEndpoint::SeriesV2 | MetricsEndpoint::Sketches => HeaderValue::from_static("application/x-protobuf"),
+        }
     }
 }
 
@@ -250,6 +323,10 @@ fn encode_series_metric(
 
     output_stream.write_enum(constants::SERIES_TYPE_FIELD_NUMBER, metric_type.value())?;
 
+    if let Some(unit) = metric.metadata().unit() {
+        output_stream.write_string(constants::SERIES_UNIT_FIELD_NUMBER, unit)?;
+    }
+
     for (timestamp, value) in points {
         // If this is a rate metric, scale our value by the interval, in seconds.
         let value = maybe_interval
@@ -312,7 +389,7 @@ fn encode_sketch_metric(
                 // We convert histograms to sketches to be able to write them out in the payload.
                 let mut ddsketch = DDSketch::default();
                 for sample in histogram.samples() {
-                    ddsketch.insert_n(sample.value.into_inner(), sample.weight);
+                    ddsketch.insert_n(sample.value.into_inner(), sample.weight.0 as u64);
                 }
 
                 write_dogsketch(output_stream, scratch_buf, packed_scratch_buf, timestamp, &ddsketch)?;
@@ -556,10 +633,11 @@ mod tests {
 
     use protobuf::CodedOutputStream;
     use saluki_common::iter::ReusableDeduplicator;
-    use saluki_context::tags::SharedTagSet;
-    use saluki_core::data_model::event::metric::Metric;
+    use saluki_context::{tags::SharedTagSet, Context};
+    use saluki_core::data_model::event::metric::{Metric, MetricMetadata, MetricValues};
+    use stringtheory::MetaString;
 
-    use super::{encode_sketch_metric, MetricsEndpoint, MetricsEndpointEncoder};
+    use super::{encode_series_metric, encode_sketch_metric, v1, MetricsEndpoint, MetricsEndpointEncoder};
     use crate::common::datadog::request_builder::EndpointEncoder as _;
 
     #[test]
@@ -611,8 +689,8 @@ mod tests {
 
     #[test]
     fn input_valid() {
-        // Our encoder should always consider series metrics valid when set to the series endpoint, and similarly for
-        // sketch metrics when set to the sketches endpoint.
+        // Our encoder should always consider series metrics valid when set to either series endpoint, and similarly
+        // for sketch metrics when set to the sketches endpoint.
         let counter = Metric::counter("counter", 1.0);
         let rate = Metric::rate("rate", 1.0, Duration::from_secs(1));
         let gauge = Metric::gauge("gauge", 1.0);
@@ -620,15 +698,18 @@ mod tests {
         let histogram = Metric::histogram("histogram", [1.0, 2.0, 3.0]);
         let distribution = Metric::distribution("distribution", [1.0, 2.0, 3.0]);
 
-        let series_endpoint = MetricsEndpointEncoder::from_endpoint(MetricsEndpoint::Series);
+        let series_v1 = MetricsEndpointEncoder::from_endpoint(MetricsEndpoint::SeriesV1);
+        let series_v2 = MetricsEndpointEncoder::from_endpoint(MetricsEndpoint::SeriesV2);
         let sketches_endpoint = MetricsEndpointEncoder::from_endpoint(MetricsEndpoint::Sketches);
 
-        assert!(series_endpoint.is_valid_input(&counter));
-        assert!(series_endpoint.is_valid_input(&rate));
-        assert!(series_endpoint.is_valid_input(&gauge));
-        assert!(series_endpoint.is_valid_input(&set));
-        assert!(!series_endpoint.is_valid_input(&histogram));
-        assert!(!series_endpoint.is_valid_input(&distribution));
+        for series_endpoint in [&series_v1, &series_v2] {
+            assert!(series_endpoint.is_valid_input(&counter));
+            assert!(series_endpoint.is_valid_input(&rate));
+            assert!(series_endpoint.is_valid_input(&gauge));
+            assert!(series_endpoint.is_valid_input(&set));
+            assert!(!series_endpoint.is_valid_input(&histogram));
+            assert!(!series_endpoint.is_valid_input(&distribution));
+        }
 
         assert!(!sketches_endpoint.is_valid_input(&counter));
         assert!(!sketches_endpoint.is_valid_input(&rate));
@@ -636,5 +717,76 @@ mod tests {
         assert!(!sketches_endpoint.is_valid_input(&set));
         assert!(sketches_endpoint.is_valid_input(&histogram));
         assert!(sketches_endpoint.is_valid_input(&distribution));
+    }
+
+    #[test]
+    fn input_data_point_count_tracks_metric_values() {
+        let counter = Metric::counter("counter", [(123, 1.0), (124, 2.0)]);
+        let histogram = Metric::histogram("histogram", [1.0, 2.0, 3.0]);
+
+        let series_endpoint = MetricsEndpointEncoder::from_endpoint(MetricsEndpoint::SeriesV2);
+        let sketches_endpoint = MetricsEndpointEncoder::from_endpoint(MetricsEndpoint::Sketches);
+
+        assert_eq!(series_endpoint.input_data_point_count(&counter), 2);
+        assert_eq!(sketches_endpoint.input_data_point_count(&histogram), 1);
+    }
+
+    #[test]
+    fn series_metric_unit_encoded() {
+        // A gauge with a unit in its metadata must produce a series protobuf payload that contains the unit string
+        // in field 6 (MetricSeries.unit), which the Datadog backend already accepts.
+        let context = Context::from_static_parts("my.timer.avg", &[]);
+        let metadata = MetricMetadata::default().with_unit(MetaString::from_static("millisecond"));
+        let gauge = Metric::from_parts(context, MetricValues::gauge([1.0_f64]), metadata);
+
+        let host_tags = SharedTagSet::default();
+        let mut scratch_buf = Vec::new();
+        let mut tags_deduplicator = ReusableDeduplicator::new();
+
+        let mut payload = Vec::new();
+        {
+            let mut writer = CodedOutputStream::vec(&mut payload);
+            encode_series_metric(
+                &gauge,
+                &host_tags,
+                &mut writer,
+                &mut scratch_buf,
+                &mut tags_deduplicator,
+            )
+            .expect("Failed to encode gauge as series metric");
+            writer.flush().expect("Failed to flush");
+        }
+
+        // In the protobuf wire format, a string field with field number 6 has tag byte 0x32 ((6 << 3) | 2).
+        // The tag is followed by a varint length and then the UTF-8 bytes of the string.
+        let expected_tag: u8 = (6 << 3) | 2; // 0x32
+        let expected_value = b"millisecond";
+
+        let tag_pos = payload
+            .windows(1 + 1 + expected_value.len())
+            .position(|w| w[0] == expected_tag && w[1] == expected_value.len() as u8 && &w[2..] == expected_value);
+
+        assert!(
+            tag_pos.is_some(),
+            "series payload should contain unit field (field 6 = 'millisecond'), got bytes: {:?}",
+            payload
+        );
+    }
+
+    #[test]
+    fn series_v1_endpoint_routing() {
+        // SeriesV1 advertises the V1 URI, JSON content type, and the {"series":[...]} framing.
+        let encoder = MetricsEndpointEncoder::from_endpoint(MetricsEndpoint::SeriesV1);
+        assert_eq!(encoder.endpoint_uri().path(), "/api/v1/series");
+        assert_eq!(encoder.content_type(), "application/json");
+        assert_eq!(encoder.get_payload_prefix(), Some(v1::SERIES_PAYLOAD_PREFIX));
+        assert_eq!(encoder.get_payload_suffix(), Some(v1::SERIES_PAYLOAD_SUFFIX));
+        assert_eq!(encoder.get_input_separator(), Some(v1::SERIES_INPUT_SEPARATOR));
+
+        // V2 series stays on protobuf with no framing.
+        let v2 = MetricsEndpointEncoder::from_endpoint(MetricsEndpoint::SeriesV2);
+        assert_eq!(v2.endpoint_uri().path(), "/api/v2/series");
+        assert_eq!(v2.content_type(), "application/x-protobuf");
+        assert!(v2.get_payload_prefix().is_none());
     }
 }

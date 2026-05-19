@@ -1,6 +1,6 @@
 //! Runtime system.
 //!
-//! This module contains the core components of the runtime system, including supervisors and processes. It is directly
+//! This module contains the core components of the runtime system, including supervisors and processes. It's directly
 //! inspired by [Erlang/OTP](https://www.erlang.org/docs/28/system/design_principles#supervision-trees).
 //!
 //! To quote the Erlang/OTP documentation:
@@ -22,8 +22,8 @@
 //! - every process is a future that runs as an independent asynchronous task on a Tokio runtime
 //! - every process has a unique numerical identifier and a semi-unique name
 //!
-//! Unlike Erlang processes, Saluki processes do not have an inherent mailbox or message passing capabilities. As well,
-//! processes cannot run by themselves. They must be _supervised_.
+//! Unlike Erlang processes, Saluki processes don't have an inherent mailbox or message passing capabilities. As well,
+//! processes can't run by themselves. They must be _supervised_.
 //!
 //! # Supervisors
 //!
@@ -55,6 +55,9 @@
 //! failed workers and supervisors are restarted.
 
 mod process;
+pub use self::process::Id as ProcessId;
+
+pub mod state;
 
 mod dedicated;
 pub use self::dedicated::{RuntimeConfiguration, RuntimeMode};

@@ -91,7 +91,7 @@ pub trait EvalContextFamily: 'static {
 // =====================================================================================================================
 
 /// Represents all possible values in OTTL expressions and function arguments.
-/// Uses Arc<str> for strings and Arc<[u8]> for bytes to enable cheap cloning.
+/// Uses `Arc<str>` for strings and `Arc<[u8]>` for bytes to enable cheap cloning.
 #[derive(Clone, Default, Debug, PartialEq /* , Eq, PartialOrd - not applicable it seems */)]
 pub enum Value {
     /// Nil/null value

@@ -71,7 +71,7 @@ each other over channels, which are the primary mechanism for sending data from 
 another.
 
 Components implement specific traits (an `interface` in Go) in order to indicate what type of
-component they are, and these traits also requiring describing the input and/or output data types
+component they're, and these traits also requiring describing the input and/or output data types
 they support, which is used by the topology graph to ensure that components are connected correctly.
 
 #### Sources
@@ -82,7 +82,7 @@ There are no real limitations on how to get data in, but generally speaking, mos
 _push-_ or _pull-based_, where data is either _pushed_ in, such as by a client, or _pulled_ in, such
 as by querying an external service. In some cases, a source might be able to generate its own data.
 
-Examples of sources (some of which do not currently exist):
+Examples of sources (some of which don't currently exist):
 
 - DogStatsD (receive metrics from StatsD/DogStatsD clients)
 - File (pull data from files on disk)
@@ -96,7 +96,7 @@ Broadly speaking, transforms are used to either combine data (for example, aggre
 enrichment, conversion) or filter data (for example, dropping, sampling). Transforms are always in the
 "middle" of a topology, as they don't generate data themselves.
 
-Examples of transforms (some of which do not currently exist):
+Examples of transforms (some of which don't currently exist):
 
 - Aggregate (aggregate metrics over a time window, based on their name/tags)
 - Origin Enrichment (enrich metrics with additional tags based on their point of origin)
@@ -112,7 +112,7 @@ Like sources, there are no real limitations on how to get data out, and most des
 either be push or pull, but the majority of destinations will be push-based, where data is pushed to
 an external system.
 
-Examples of destinations (some of which do not currently exist):
+Examples of destinations (some of which don't currently exist):
 
 - Datadog Metrics (send metrics to the Datadog platform)
 - Prometheus Scrape (expose a Prometheus-compatible scrape endpoint for metrics)
@@ -201,14 +201,14 @@ the implicit behavior of the channels used to connect components together.
 Shutdown starts at the top level, controlled by the topology itself. A signal is sent to all sources
 indicating that shutdown should proceed. Sources will then begin to shutdown, stopping new
 data/connections/etc from coming in, as well as waiting for existing work to complete. Once a source
-shuts down, it signals back to the topology that it is done. Once all sources have signaled that
+shuts down, it signals back to the topology that it's done. Once all sources have signaled that
 they have shut down, the topology waits for all remaining components to complete as well.
 
-However, transforms and destinations are not signaled directly to shutdown. Instead, they depend on
+However, transforms and destinations aren't signaled directly to shutdown. Instead, they depend on
 the implicit behavior of the channels that are used for receiving events. Once these channels have
 been drained of any remaining events, and all of the senders have shutdown, the channel will be
 marked as closed. This lets transforms and destination focus on simply receiving from the channel
-until it is closed, at which point they will naturally complete and shutdown.
+until it's closed, at which point they will naturally complete and shutdown.
 
 By triggering shutdown at the source level, and then having each subsequent component process any
 remaining events, we ensure that all remaining events are processed before the topology is
@@ -223,7 +223,7 @@ then finally spawn the topology to begin accepting, processing, and forwarding d
 When a topology is spawned, we do so by using an asynchronous runtime, where each component is
 treated as an individual "task," and individual components can spawn their own tasks. Saluki uses
 [Tokio](https://docs.rs/tokio) as the underlying runtime implementation, as it provides a
-high-performance, work-stealing runtime that is well-suited for running data-intensive pipelines
+high-performance, work-stealing runtime that's well-suited for running data-intensive pipelines
 such as the ones built with Saluki.
 
 #### Concurrency and parallelism
@@ -244,4 +244,4 @@ log file being read.
 
 In fact, splitting computation into more granular tasks is ideal, as it helps to allow for better
 balancing the work across the runtime's worker threads. As Tokio is a work-stealing runtime, idle
-worker threads can "steal" tasks from other worker threads when they are busy or blocked.
+worker threads can "steal" tasks from other worker threads when they're busy or blocked.

@@ -13,17 +13,20 @@ use figment::{
 };
 use saluki_error::GenericError;
 use serde::Deserialize;
-use snafu::{ResultExt as _, Snafu};
+use snafu::Snafu;
 use tokio::sync::{broadcast, mpsc, oneshot, Mutex};
 use tracing::{debug, error};
 
+pub mod duration_string;
 pub mod dynamic;
 mod provider;
-mod secrets;
+pub mod space_separated;
 
+pub use self::duration_string::{parse_duration, DurationString, ParseDurationError};
 pub use self::dynamic::FieldUpdateWatcher;
 use self::dynamic::{ConfigChangeEvent, ConfigUpdate};
 use self::provider::ResolvedProvider;
+pub use self::space_separated::{deserialize_opt_space_separated_or_seq, deserialize_space_separated_or_seq};
 
 #[derive(Clone)]
 struct ArcProvider(Arc<dyn Provider + Send + Sync>);
@@ -73,7 +76,7 @@ pub enum ConfigurationError {
         field: Cow<'static, str>,
     },
 
-    /// Requested field's data type was not the unexpected data type.
+    /// Requested field's data type wasn't the unexpected data type.
     #[snafu(display(
         "Expected value for field '{}' to be '{}', got '{}' instead.",
         field,
@@ -98,13 +101,6 @@ pub enum ConfigurationError {
     Generic {
         /// Error source.
         source: GenericError,
-    },
-
-    /// Secrets resolution error.
-    #[snafu(display("Failed to resolve secrets."))]
-    Secrets {
-        /// Error source.
-        source: secrets::Error,
     },
 }
 
@@ -163,8 +159,8 @@ impl ConfigurationLoader {
     /// Sets key aliases to apply when loading file-based configuration sources.
     ///
     /// Each entry is `(nested_path, flat_key)`. When a YAML or JSON file contains a value at `nested_path`
-    /// (dot-separated), that value is also emitted under `flat_key` at the top level — but only if `flat_key`
-    /// is not already explicitly set at the top level. This ensures that both YAML nested format and flat env var
+    /// (dot-separated), that value is also emitted under `flat_key` at the top level—but only if `flat_key`
+    /// isn't already explicitly set at the top level. This ensures that both YAML nested format and flat env var
     /// format produce the same Figment key, so source precedence (env vars > file) works correctly.
     ///
     /// Must be called before any file-loading methods ([`from_yaml`][Self::from_yaml], etc.) to take effect.
@@ -175,7 +171,7 @@ impl ConfigurationLoader {
 
     /// Appends one or more providers to the configuration chain.
     ///
-    /// Sources are merged in the order they are added: later sources take precedence over earlier ones. Call
+    /// Sources are merged in the order they're added: later sources take precedence over earlier ones. Call
     /// this method after any file-loading methods and before [`from_environment`][Self::from_environment] to
     /// place the added providers at the correct intermediate precedence level:
     ///
@@ -198,7 +194,7 @@ impl ConfigurationLoader {
     ///
     /// # Errors
     ///
-    /// If the file could not be read, or if the file is not valid YAML, an error will be returned.
+    /// If the file couldn't be read, or if the file isn't valid YAML, an error will be returned.
     pub fn from_yaml<P>(mut self, path: P) -> Result<Self, ConfigurationError>
     where
         P: AsRef<std::path::Path>,
@@ -236,7 +232,7 @@ impl ConfigurationLoader {
     ///
     /// # Errors
     ///
-    /// If the file could not be read, or if the file is not valid JSON, an error will be returned.
+    /// If the file couldn't be read, or if the file isn't valid JSON, an error will be returned.
     pub fn from_json<P>(mut self, path: P) -> Result<Self, ConfigurationError>
     where
         P: AsRef<std::path::Path>,
@@ -272,11 +268,11 @@ impl ConfigurationLoader {
 
     /// Loads configuration from environment variables.
     ///
-    /// The prefix given will have an underscore appended to it if it does not already end with one. For
+    /// The prefix given will have an underscore appended to it if it doesn't already end with one. For
     /// example, with a prefix of `app`, any environment variable starting with `app_` would be matched. The
     /// prefix is case-insensitive.
     ///
-    /// Sources are merged in the order they are added, with later sources taking precedence over earlier ones.
+    /// Sources are merged in the order they're added, with later sources taking precedence over earlier ones.
     /// Sources added after this call will have higher precedence than environment variables.
     ///
     /// # Errors
@@ -306,93 +302,6 @@ impl ConfigurationLoader {
         Ok(self)
     }
 
-    /// Resolves secrets in the configuration based on available secret backend configuration.
-    ///
-    /// This will attempt to resolve any secret references (format shown below) in the configuration by using a "secrets
-    /// backend", which is a user-provided command that utilizes a simple JSON-based protocol to accept secrets to
-    /// resolve, and return those resolved secrets, or the errors that occurred during resolving.
-    ///
-    /// # Configuration
-    ///
-    /// This method uses the existing configuration (see Caveats) to determine the secrets backend configuration. The
-    /// following configuration settings are used:
-    ///
-    /// - `secret_backend_command`: The executable to resolve secrets. (required)
-    /// - `secret_backend_timeout`: The timeout for the secrets backend command, in seconds. (optional, default: 30)
-    ///
-    /// # Usage
-    ///
-    /// For any value which should be resolved as a secret, the value should be a string in the format of
-    /// `ENC[secret_reference]`. The `secret_reference` portion is the value that will be sent to the backend command
-    /// during resolution. There is no limitation on the format of the `secret_reference` value, so long as it can be
-    /// expressed through the existing configuration sources (YAML, environment variables, etc).
-    ///
-    /// The entire configuration value must match this pattern, and cannot be used to replace only part of a value, so
-    /// values such as `db-ENC[secret_reference]` would not be detected as secrets and thus would not be resolved.
-    ///
-    /// # Protocol
-    ///
-    /// The executable is expected to accept a JSON object on stdin, with the following format:
-    ///
-    /// ```json
-    /// {
-    ///   "version": "1.0",
-    ///   "secrets": ["key1", "key2"]
-    /// }
-    /// ```
-    ///
-    /// The executable is expected return a JSON object on stdout, with the following format:
-    /// ```json
-    /// {
-    ///   "key1": {
-    ///     "value": "my_secret_password",
-    ///     "error": null
-    ///   },
-    ///   "key2": {
-    ///     "value": null,
-    ///     "error": "could not fetch the secret"
-    ///   }
-    /// }
-    /// ```
-    ///
-    /// If any entry in the response has an `error` value that is anything but `null`, the overall resolution will be
-    /// considered failed.
-    ///
-    /// # Caveats
-    ///
-    /// ## Time of resolution
-    ///
-    /// Secrets resolution happens at the time this method is called, and only resolves configuration values that are
-    /// already present in the configuration, which means all calls to load configuration (`try_from_yaml`,
-    /// `from_environment`, etc) must be made before calling this method.
-    ///
-    /// ## Sensitive data in error output
-    ///
-    /// Care should be taken to not return sensitive information in either the error output (standard error) of the
-    /// backend command or the `error` field in the JSON response, as these values are logged in order to aid debugging.
-    pub async fn with_default_secrets_resolution(mut self) -> Result<Self, ConfigurationError> {
-        let configuration = build_figment_from_sources(&self.provider_sources);
-
-        // If no secrets backend is set, we can't resolve secrets, so just return early.
-        if !has_valid_secret_backend_command(&configuration) {
-            debug!("No secrets backend configured; skipping secrets resolution.");
-            return Ok(self);
-        }
-
-        let resolver_config = configuration.extract::<secrets::resolver::ExternalProcessResolverConfiguration>()?;
-        let resolver = secrets::resolver::ExternalProcessResolver::from_configuration(resolver_config)
-            .await
-            .context(Secrets)?;
-
-        let provider = secrets::Provider::new(resolver, &configuration)
-            .await
-            .context(Secrets)?;
-
-        self.provider_sources
-            .push(ProviderSource::Static(ArcProvider(Arc::new(provider))));
-        Ok(self)
-    }
-
     /// Enables dynamic configuration.
     ///
     /// The receiver is used in `run_dynamic_config_updater` to handle retrieving the initial snapshot and subsequent updates.
@@ -405,7 +314,7 @@ impl ConfigurationLoader {
     ///
     /// ## Errors
     ///
-    /// If the configuration could not be deserialized into `T`, an error will be returned.
+    /// If the configuration couldn't be deserialized into `T`, an error will be returned.
     pub fn into_typed<'a, T>(self) -> Result<T, ConfigurationError>
     where
         T: Deserialize<'a>,
@@ -488,7 +397,7 @@ impl ConfigurationLoader {
         }
     }
 
-    /// Configures a [`GenericConfiguration`] that is suitable for tests.
+    /// Configures a [`GenericConfiguration`] that's suitable for tests.
     ///
     /// This configures the loader with the following defaults:
     ///
@@ -513,7 +422,7 @@ impl ConfigurationLoader {
     /// environment provider.
     ///
     /// The factory is called after test environment variables have been set, so any env var reads it performs
-    /// (e.g. in `DatadogRemapper`) are consistent with the test's env setup.
+    /// (for example, in `DatadogRemapper`) are consistent with the test's env setup.
     ///
     /// This is generally only useful for testing purposes, and is exposed publicly in order to be used in cross-crate testing scenarios.
     pub async fn for_tests_with_provider_factory<P, F>(
@@ -546,7 +455,7 @@ impl ConfigurationLoader {
         if let Some(pairs) = env_vars.as_ref() {
             for (k, v) in pairs.iter() {
                 // Set under both the raw name and the TEST_ prefix:
-                //   - Raw name: available to any env-reading providers (e.g. DatadogRemapper)
+                //   - Raw name: available to any env-reading providers (for example, DatadogRemapper)
                 //   - TEST_ prefix: read by from_environment("TEST") (simulates DD_ prefix)
                 std::env::set_var(k, v);
                 std::env::set_var(format!("TEST_{}", k), v);
@@ -751,7 +660,7 @@ struct Inner {
 
 /// A generic configuration object.
 ///
-/// This represents the merged configuration derived from [`ConfigurationLoader`] in its raw form.  Values can be
+/// This represents the merged configuration derived from [`ConfigurationLoader`] in its raw form. Values can be
 /// queried by key, and can be extracted either as typed values or in their raw form.
 ///
 /// Keys must be in the form of `a.b.c`, where periods (`.`) as used to indicate a nested value.
@@ -781,7 +690,7 @@ impl GenericConfiguration {
     /// If dynamic configuration is in use, this method will asynchronously wait until the first snapshot has been
     /// received and applied.
     ///
-    /// If dynamic configuration is not used, it returns immediately.
+    /// If dynamic configuration isn't used, it returns immediately.
     pub async fn ready(&self) {
         // We need a lock to both ensure that multiple callers can race against this,
         // and to allow us mutable access to consume the receiver.
@@ -824,7 +733,7 @@ impl GenericConfiguration {
     ///
     /// ## Errors
     ///
-    /// If the key does not exist in the configuration, or if the value could not be deserialized into `T`, an error
+    /// If the key doesn't exist in the configuration, or if the value couldn't be deserialized into `T`, an error
     /// variant will be returned.
     pub fn get_typed<'a, T>(&self, key: &str) -> Result<T, ConfigurationError>
     where
@@ -833,9 +742,9 @@ impl GenericConfiguration {
         self.get(key)
     }
 
-    /// Gets a configuration value by key, or the default value if a key does not exist or could not be deserialized.
+    /// Gets a configuration value by key, or the default value if a key doesn't exist or couldn't be deserialized.
     ///
-    /// The `Default` implementation of `T` will be used both if the key could not be found, as well as for any error
+    /// The `Default` implementation of `T` will be used both if the key couldn't be found, as well as for any error
     /// during deserialization. This effectively swallows any errors and should generally be used sparingly.
     ///
     /// The key must be in the form of `a.b.c`, where periods (`.`) are used to indicate a nested lookup.
@@ -855,7 +764,7 @@ impl GenericConfiguration {
     ///
     /// ## Errors
     ///
-    /// If the value could not be deserialized into `T`, an error will be returned.
+    /// If the value couldn't be deserialized into `T`, an error will be returned.
     pub fn try_get_typed<'a, T>(&self, key: &str) -> Result<Option<T>, ConfigurationError>
     where
         T: Deserialize<'a>,
@@ -871,7 +780,7 @@ impl GenericConfiguration {
     ///
     /// ## Errors
     ///
-    /// If the value could not be deserialized into `T`, an error will be returned.
+    /// If the value couldn't be deserialized into `T`, an error will be returned.
     pub fn as_typed<'a, T>(&self) -> Result<T, ConfigurationError>
     where
         T: Deserialize<'a>,
@@ -889,6 +798,22 @@ impl GenericConfiguration {
         self.inner.event_sender.as_ref().map(|s| s.subscribe())
     }
 
+    /// Extracts the entire configuration as a flat list of dot-separated key paths and their values.
+    ///
+    /// Nested JSON objects are descended into, joining keys with dots. Arrays, strings, numbers,
+    /// bools, and nulls are leaf values and are never descended into. The returned values are
+    /// never `Value::Object`.
+    ///
+    /// ## Errors
+    ///
+    /// If the configuration couldn't be serialized to JSON, an error will be returned.
+    pub fn flattened_keys(&self) -> Result<Vec<(String, serde_json::Value)>, ConfigurationError> {
+        let root: serde_json::Value = self.as_typed()?;
+        let mut out = Vec::new();
+        flatten_value(&root, &mut String::new(), &mut out);
+        Ok(out)
+    }
+
     /// Creates a watcher that yields only when the given key changes.
     ///
     /// If dynamic configuration is disabled, the returned watcher's `changed()`
@@ -898,6 +823,23 @@ impl GenericConfiguration {
             key: key.to_string(),
             rx: self.subscribe_for_updates(),
         }
+    }
+}
+
+/// Recursively descend into the tree building a dot-separated path until hitting a non-Object leaf node.
+fn flatten_value(value: &serde_json::Value, prefix: &mut String, out: &mut Vec<(String, serde_json::Value)>) {
+    if let serde_json::Value::Object(map) = value {
+        for (key, child) in map {
+            let prev_len = prefix.len();
+            if !prefix.is_empty() {
+                prefix.push('.');
+            }
+            prefix.push_str(key);
+            flatten_value(child, prefix, out);
+            prefix.truncate(prev_len);
+        }
+    } else {
+        out.push((prefix.clone(), value.clone()));
     }
 }
 
@@ -925,52 +867,9 @@ fn from_figment_error(lookup_sources: &HashSet<LookupSource>, e: figment::Error)
     }
 }
 
-fn has_valid_secret_backend_command(configuration: &Figment) -> bool {
-    configuration
-        .find_value("secret_backend_command")
-        .ok()
-        .is_some_and(|v| v.as_str().filter(|s| !s.is_empty()).is_some())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    macro_rules! json_to_figment {
-        ($json:tt) => {
-            Figment::from(Serialized::defaults(serde_json::json!($json)))
-        };
-    }
-
-    #[test]
-    fn test_has_valid_secret_backend_command() {
-        // When `secrets_backend_command` is not set at all, or is set to an empty string, or isn't even a string
-        // value... then we should consider those scenarios as "secrets backend not configured".
-        let figment = Figment::new();
-        assert!(!has_valid_secret_backend_command(&figment));
-
-        let figment = json_to_figment!({
-            "secret_backend_command": ""
-        });
-        assert!(!has_valid_secret_backend_command(&figment));
-
-        let figment = json_to_figment!({
-            "secret_backend_command": false
-        });
-        assert!(!has_valid_secret_backend_command(&figment));
-
-        // Otherwise, whether it's a valid path or not, then we should consider things enabled, which means we'll
-        // at least attempt secrets resolution:
-        let figment = json_to_figment!({
-            "secret_backend_command": "/usr/bin/foo"
-        });
-        assert!(has_valid_secret_backend_command(&figment));
-
-        let figment = json_to_figment!({
-            "secret_backend_command": "or anything else"
-        });
-        assert!(has_valid_secret_backend_command(&figment));
-    }
 
     #[tokio::test]
     async fn test_static_configuration() {
@@ -1223,5 +1122,72 @@ mod tests {
         // ready() should not resolve until the initial snapshot is processed.
         let res = tokio::time::timeout(std::time::Duration::from_millis(1000), cfg.ready()).await;
         assert!(res.is_err(), "ready() should time out without an initial snapshot");
+    }
+
+    #[tokio::test]
+    async fn test_flattened_keys_flat_and_nested() {
+        let (cfg, _) = ConfigurationLoader::for_tests(
+            Some(serde_json::json!({
+                "top": "value",
+                "nested": { "a": 1, "b": { "c": true } }
+            })),
+            None,
+            false,
+        )
+        .await;
+        cfg.ready().await;
+
+        let pairs = cfg.flattened_keys().unwrap();
+        let map: std::collections::HashMap<&str, &serde_json::Value> =
+            pairs.iter().map(|(k, v)| (k.as_str(), v)).collect();
+
+        assert_eq!(map.get("top"), Some(&&serde_json::json!("value")));
+        assert_eq!(map.get("nested.a"), Some(&&serde_json::json!(1)));
+        assert_eq!(map.get("nested.b.c"), Some(&&serde_json::json!(true)));
+        assert!(!map.contains_key("nested"));
+        assert!(!map.contains_key("nested.b"));
+    }
+
+    #[tokio::test]
+    async fn test_flattened_keys_arrays_are_leaves() {
+        let (cfg, _) = ConfigurationLoader::for_tests(
+            Some(serde_json::json!({
+                "tags": ["a", "b"],
+                "matrix": [[1, 2], [3, 4]]
+            })),
+            None,
+            false,
+        )
+        .await;
+        cfg.ready().await;
+
+        let pairs = cfg.flattened_keys().unwrap();
+        let map: std::collections::HashMap<&str, &serde_json::Value> =
+            pairs.iter().map(|(k, v)| (k.as_str(), v)).collect();
+
+        assert_eq!(map.get("tags"), Some(&&serde_json::json!(["a", "b"])));
+        assert_eq!(map.get("matrix"), Some(&&serde_json::json!([[1, 2], [3, 4]])));
+    }
+
+    #[tokio::test]
+    async fn test_flattened_keys_null_values_absent() {
+        let (cfg, _) = ConfigurationLoader::for_tests(
+            Some(serde_json::json!({
+                "present": "yes",
+                "absent": null
+            })),
+            None,
+            false,
+        )
+        .await;
+        cfg.ready().await;
+
+        let pairs = cfg.flattened_keys().unwrap();
+        let map: std::collections::HashMap<&str, &serde_json::Value> =
+            pairs.iter().map(|(k, v)| (k.as_str(), v)).collect();
+
+        assert_eq!(map.get("present"), Some(&&serde_json::json!("yes")));
+        // Figment drops null values during deserialization, so they are absent from the output.
+        assert!(!map.contains_key("absent"));
     }
 }

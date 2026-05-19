@@ -134,9 +134,11 @@ pub(crate) enum EndpointError {
 
 #[serde_as]
 #[derive(Clone, Debug, Default, Deserialize, Facet)]
+#[cfg_attr(test, derive(PartialEq, serde::Serialize))]
 struct APIKeys(#[serde_as(as = "OneOrMany<_>")] Vec<String>);
 
 #[derive(Clone, Debug, Default, Deserialize, Facet)]
+#[cfg_attr(test, derive(PartialEq, serde::Serialize))]
 struct MappedAPIKeys(HashMap<String, APIKeys>);
 
 impl MappedAPIKeys {
@@ -154,11 +156,19 @@ impl FromStr for MappedAPIKeys {
     }
 }
 
+#[cfg(test)]
+impl std::fmt::Display for MappedAPIKeys {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", serde_json::to_string(&self.0).unwrap_or_default())
+    }
+}
+
 /// A set of additional API endpoints to forward metrics to.
 ///
 /// Each endpoint can be associated with multiple API keys. Requests will be forwarded to each unique endpoint/API key pair.
 #[serde_as]
 #[derive(Clone, Debug, Default, Deserialize, Facet)]
+#[cfg_attr(test, derive(PartialEq, serde::Serialize))]
 pub(crate) struct AdditionalEndpoints(#[serde_as(as = "PickFirst<(DisplayFromStr, _)>")] MappedAPIKeys);
 
 impl AdditionalEndpoints {
@@ -168,7 +178,7 @@ impl AdditionalEndpoints {
     ///
     /// # Errors
     ///
-    /// If any of the additional endpoints are not valid URLs, or a valid URL could not be constructed after applying
+    /// If any of the additional endpoints aren't valid URLs, or a valid URL couldn't be constructed after applying
     /// the necessary normalization / modifications, an error will be returned.
     pub fn resolved_endpoints(&self) -> Result<Vec<ResolvedEndpoint>, EndpointError> {
         let mut resolved = Vec::new();
@@ -206,6 +216,7 @@ impl AdditionalEndpoints {
 
 /// Endpoint configuration for sending payloads to the Datadog platform.
 #[derive(Clone, Deserialize, Facet)]
+#[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
 pub struct EndpointConfiguration {
     /// The API key to use.
     api_key: String,
@@ -221,12 +232,12 @@ pub struct EndpointConfiguration {
 
     /// The full URL base to send metrics to.
     ///
-    /// This takes precedence over `site`, and is not altered in any way. This can be useful to specifying the exact
+    /// This takes precedence over `site`, and isn't altered in any way. This can be useful to specifying the exact
     /// endpoint used, such as when looking to change the scheme (for example, `http` vs `https`) or specifying a custom port,
     /// which are both useful when proxying traffic to an intermediate destination before forwarding to Datadog.
     ///
     /// Defaults to unset.
-    #[serde(default)]
+    #[serde(default, alias = "url")]
     dd_url: Option<String>,
 
     /// Enables sending data to multiple endpoints and/or with multiple API keys via dual shipping.
@@ -252,37 +263,44 @@ impl EndpointConfiguration {
         self.additional_endpoints = AdditionalEndpoints::default();
     }
 
-    /// Builds the resolved endpoints from the endpoint configuration.
-    ///
-    /// This will generate a `ResolvedEndpoint` for each unique endpoint/API key pair, which includes the "primary"
-    /// endpoint defined by `site`/`dd_url` and any additional endpoints defined in `additional_endpoints`.
+    /// Builds the resolved primary endpoint from `site`/`dd_url`.
     ///
     /// # Errors
     ///
-    /// If any of the additional endpoints are not valid URLs, or a valid URL could not be constructed after applying
-    /// the necessary normalization / modifications to a particular endpoint, an error will be returned.
-    pub fn build_resolved_endpoints(
+    /// If the primary endpoint isn't a valid URL, or a valid URL couldn't be constructed after applying the
+    /// necessary normalization / modifications to the endpoint, an error will be returned.
+    pub(crate) fn build_primary_endpoint(
         &self, configuration: Option<GenericConfiguration>,
-    ) -> Result<Vec<ResolvedEndpoint>, GenericError> {
-        let primary_endpoint = calculate_resolved_endpoint(self.dd_url.as_deref(), &self.site, &self.api_key)
-            .error_context("Failed parsing/resolving the primary destination endpoint.")?
-            .with_configuration(configuration);
+    ) -> Result<ResolvedEndpoint, GenericError> {
+        calculate_resolved_endpoint(self.dd_url.as_deref(), &self.site, &self.api_key)
+            .error_context("Failed parsing/resolving the primary destination endpoint.")
+            .map(|endpoint| endpoint.with_configuration(configuration))
+    }
 
-        let additional_endpoints = self
-            .additional_endpoints
+    /// Builds the resolved primary endpoint from a URL override.
+    pub(crate) fn build_primary_endpoint_override(
+        &self, url: &str, configuration: Option<GenericConfiguration>,
+    ) -> Result<ResolvedEndpoint, EndpointError> {
+        calculate_resolved_endpoint(Some(url), &self.site, &self.api_key)
+            .map(|endpoint| endpoint.with_configuration(configuration))
+    }
+
+    /// Builds the resolved additional endpoints.
+    ///
+    /// # Errors
+    ///
+    /// If any additional endpoint isn't a valid URL, or a valid URL couldn't be constructed after applying the
+    /// necessary normalization / modifications to a particular endpoint, an error will be returned.
+    pub(crate) fn build_additional_endpoints(&self) -> Result<Vec<ResolvedEndpoint>, GenericError> {
+        self.additional_endpoints
             .resolved_endpoints()
-            .error_context("Failed parsing/resolving the additional destination endpoints.")?;
-
-        let mut endpoints = additional_endpoints;
-        endpoints.insert(0, primary_endpoint);
-
-        Ok(endpoints)
+            .error_context("Failed parsing/resolving the additional destination endpoints.")
     }
 }
 
 /// A single API endpoint and its associated API key.
 ///
-/// An endpoint is defined as a unique, fully-qualified domain name that metrics will be sent to, such as
+/// An endpoint is defined as a unique, fully qualified domain name that metrics will be sent to, such as
 /// `https://app.datadoghq.com`.
 #[derive(Clone, Debug)]
 pub struct ResolvedEndpoint {
@@ -298,15 +316,56 @@ pub struct ResolvedEndpoint {
     traces_authority: Option<Authority>,
 }
 
+/// Routing role for a resolved endpoint.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum EndpointRoute {
+    /// The normal primary Datadog endpoint.
+    Primary,
+    /// The OPW metrics primary endpoint.
+    MetricsPrimary,
+    /// A configured dual-shipping endpoint.
+    Additional,
+}
+
+/// A resolved endpoint with routing metadata.
+#[derive(Clone, Debug)]
+pub(crate) struct RoutableEndpoint {
+    route: EndpointRoute,
+    endpoint: ResolvedEndpoint,
+}
+
+impl RoutableEndpoint {
+    /// Creates a new routable endpoint.
+    pub(crate) const fn new(route: EndpointRoute, endpoint: ResolvedEndpoint) -> Self {
+        Self { route, endpoint }
+    }
+
+    /// Returns the routing role.
+    pub(crate) const fn route(&self) -> EndpointRoute {
+        self.route
+    }
+
+    /// Returns the resolved endpoint.
+    #[cfg(test)]
+    pub(crate) const fn endpoint(&self) -> &ResolvedEndpoint {
+        &self.endpoint
+    }
+
+    /// Consumes the routable endpoint and returns its parts.
+    pub(crate) fn into_parts(self) -> (EndpointRoute, ResolvedEndpoint) {
+        (self.route, self.endpoint)
+    }
+}
+
 impl ResolvedEndpoint {
     /// Creates a new `ResolvedEndpoint` instance from the given endpoint and API key, normalizing and modifying the
     /// endpoint as necessary.
     ///
     /// # Errors
     ///
-    /// If the given endpoint is not a valid URL, or a valid URL could not be constructed after applying the necessary
+    /// If the given endpoint isn't a valid URL, or a valid URL couldn't be constructed after applying the necessary
     /// normalization / modifications, an error will be returned.
-    fn from_raw_endpoint(raw_endpoint: &str, api_key: &str) -> Result<Self, EndpointError> {
+    pub(crate) fn from_raw_endpoint(raw_endpoint: &str, api_key: &str) -> Result<Self, EndpointError> {
         let endpoint = parse_and_normalize_endpoint(raw_endpoint)?;
         let logs_authority = compute_logs_authority(&endpoint);
         let traces_authority = compute_traces_authority(&endpoint);
@@ -370,6 +429,12 @@ impl ResolvedEndpoint {
         self.api_key.as_str()
     }
 
+    /// Returns whether this endpoint can refresh its API key from dynamic configuration.
+    #[cfg(test)]
+    pub(crate) fn has_configuration(&self) -> bool {
+        self.config.is_some()
+    }
+
     /// Returns the pre-computed logs intake authority, if available.
     ///
     /// This authority is derived from the endpoint host when it contains the `.agent.` marker,
@@ -409,7 +474,7 @@ fn parse_and_normalize_endpoint(raw_endpoint: &str) -> Result<Url, EndpointError
 
 /// Returns a specialized domain prefix based on the versioning of the current application.
 ///
-/// This generates a prefix that is similar in format to the one generated by Datadog Agent for determining the endpoint
+/// This generates a prefix that's similar in format to the one generated by Datadog Agent for determining the endpoint
 /// to send metrics to.
 fn get_data_plane_version_prefix() -> String {
     let app_details = saluki_metadata::get_app_details();
@@ -425,12 +490,12 @@ fn get_data_plane_version_prefix() -> String {
 
 /// Prefixes the given API endpoint with the version of the data plane process.
 ///
-/// If the given API endpoint does not include a scheme, `https` is assumed. As well, if the endpoint does not represent
-/// an official Datadog API endpoint, it will not be modified.
+/// If the given API endpoint doesn't include a scheme, `https` is assumed. As well, if the endpoint doesn't represent
+/// an official Datadog API endpoint, it won't be modified.
 ///
 /// # Errors
 ///
-/// If the given API endpoint cannot be parsed as a valid URL, an error will be returned.
+/// If the given API endpoint can't be parsed as a valid URL, an error will be returned.
 fn add_data_plane_version_prefix(mut endpoint: Url) -> Result<Url, EndpointError> {
     let new_host = match endpoint.host_str() {
         Some(host) => {
@@ -469,7 +534,7 @@ fn add_data_plane_version_prefix(mut endpoint: Url) -> Result<Url, EndpointError
 ///
 /// # Errors
 ///
-/// If an override URL is provided and cannot be parsed, or if a valid endpoint cannot be constructed from the given
+/// If an override URL is provided and can't be parsed, or if a valid endpoint can't be constructed from the given
 /// site, an error will be returned.
 fn calculate_resolved_endpoint(
     override_url: Option<&str>, site: &str, api_key: &str,
@@ -495,7 +560,7 @@ fn calculate_resolved_endpoint(
 /// this extracts the site suffix and constructs the logs intake host in the form
 /// `agent-http-intake.logs.{site}`.
 ///
-/// Returns `None` if the host doesn't contain the marker or if the authority cannot be parsed.
+/// Returns `None` if the host doesn't contain the marker or if the authority can't be parsed.
 fn compute_logs_authority(endpoint: &Url) -> Option<Authority> {
     const AGENT_HOST_MARKER: &str = ".agent.";
 
@@ -508,7 +573,7 @@ fn compute_logs_authority(endpoint: &Url) -> Option<Authority> {
 }
 
 /// Computes the traces intake authority from a resolved endpoint URL.
-/// Returns `None` if the host doesn't contain the marker or if the authority cannot be parsed.
+/// Returns `None` if the host doesn't contain the marker or if the authority can't be parsed.
 fn compute_traces_authority(endpoint: &Url) -> Option<Authority> {
     const AGENT_HOST_MARKER: &str = ".agent.";
 

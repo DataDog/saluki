@@ -6,8 +6,8 @@ use containerd_protos::services::namespaces::v1::Namespace;
 use futures::{stream::select_all, Stream, StreamExt as _};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
+use saluki_core::health::Health;
 use saluki_error::GenericError;
-use saluki_health::Health;
 use saluki_metrics::static_metrics;
 use stringtheory::interning::{GenericMapInterner, Interner as _};
 use tokio::{select, sync::mpsc, time::sleep};
@@ -50,7 +50,7 @@ impl ContainerdMetadataCollector {
     ///
     /// # Errors
     ///
-    /// If the containerd gRPC client cannot be created, or listing the namespaces in the containerd runtime fails, an
+    /// If the containerd gRPC client can't be created, or listing the namespaces in the containerd runtime fails, an
     /// error will be returned.
     pub async fn from_configuration(
         config: &GenericConfiguration, health: Health, tag_interner: GenericMapInterner,

@@ -1,8 +1,17 @@
-use std::{num::NonZeroUsize, time::Duration};
+use std::{
+    num::NonZeroUsize,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use async_trait::async_trait;
 use memory_accounting::{ComponentRegistry, MemoryLimiter};
-use saluki_components::{destinations::PrometheusConfiguration, sources::InternalMetricsConfiguration};
+use prometheus_exposition::PrometheusRenderer;
+use saluki_components::{
+    destinations::{PrometheusConfiguration, PrometheusPayloadProvider},
+    sources::InternalMetricsConfiguration,
+};
+use saluki_core::health::HealthRegistry;
 use saluki_core::{
     runtime::{
         InitializationError, ProcessShutdown, RestartStrategy, RuntimeConfiguration, Supervisable, Supervisor,
@@ -11,13 +20,14 @@ use saluki_core::{
     topology::TopologyBlueprint,
 };
 use saluki_error::{generic_error, GenericError};
-use saluki_health::HealthRegistry;
 use tracing::info;
 
 use crate::config::DataPlaneConfiguration;
+use crate::state::metrics::{get_compat_remappings, get_shared_metrics_state, render_telemetry};
 
 // SAFETY: This value is clearly non-zero.
 const DEFAULT_INTERCONNECT_CAPACITY: NonZeroUsize = NonZeroUsize::new(4).unwrap();
+const COMPAT_METRICS_PATH: &str = "/compat/metrics";
 
 /// A worker that runs the internal telemetry topology.
 ///
@@ -50,8 +60,19 @@ impl Supervisable for InternalTelemetryWorker {
     async fn initialize(&self, mut process_shutdown: ProcessShutdown) -> Result<SupervisorFuture, InitializationError> {
         // Build the internal telemetry topology blueprint
         let int_metrics_config = InternalMetricsConfiguration;
+        let metrics_state = get_shared_metrics_state().await;
+        let compat_rules = get_compat_remappings();
+        let compat_renderer = Mutex::new(PrometheusRenderer::new());
+        let compat_provider: Arc<dyn PrometheusPayloadProvider> = Arc::new(move || {
+            let state = metrics_state.state();
+            let mut renderer = compat_renderer
+                .lock()
+                .expect("compat renderer mutex should not be poisoned");
+            render_telemetry(state, &compat_rules, &mut renderer)
+        });
         let prometheus_config =
-            PrometheusConfiguration::from_listen_address(self.dp_config.telemetry_listen_addr().clone());
+            PrometheusConfiguration::from_listen_address(self.dp_config.telemetry_listen_addr().clone())
+                .with_additional_route(COMPAT_METRICS_PATH, compat_provider);
 
         info!(
             "Internal telemetry enabled. Spawning Prometheus scrape endpoint on {}.",
@@ -92,11 +113,11 @@ impl Supervisable for InternalTelemetryWorker {
 ///
 /// It runs on a dedicated single-threaded runtime.
 ///
-/// Returns `Ok(None)` if telemetry is not enabled.
+/// Returns `Ok(None)` if telemetry isn't enabled.
 ///
 /// # Errors
 ///
-/// If the supervisor cannot be created, an error is returned.
+/// If the supervisor can't be created, an error is returned.
 pub fn create_observability_supervisor(
     dp_config: &DataPlaneConfiguration, component_registry: &ComponentRegistry, health_registry: HealthRegistry,
 ) -> Result<Option<Supervisor>, GenericError> {

@@ -11,6 +11,7 @@ workspace = true
 [dependencies]
 bollard = { workspace = true, features = ["http", "pipe"] }
 futures = { workspace = true }
+home = { workspace = true }
 saluki-error = { workspace = true }
 tokio = { workspace = true, features = [
   "fs",

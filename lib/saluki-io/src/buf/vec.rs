@@ -9,10 +9,10 @@ use super::{ClearableIoBuffer, CollapsibleReadWriteIoBuffer, ReadIoBuffer};
 /// A fixed-size bytes buffer.
 ///
 /// This is a simple wrapper around a `BytesMut` that provides fixed-size semantics by disallowing writes that extend
-/// beyond the initial capacity. `FixedSizeVec` cannot be used directly, and must be interacted with via the
+/// beyond the initial capacity. `FixedSizeVec` can't be used directly, and must be interacted with via the
 /// [`Buf`] and [`BufMut`] traits.
 ///
-/// Additionally, it is designed for use in object pools (implements [`Clearable`]).
+/// Additionally, it's designed for use in object pools (implements [`Clearable`]).
 pub struct FixedSizeVec {
     data: UniqueArc<Vec<u8>>,
     read_idx: usize,
@@ -21,7 +21,7 @@ pub struct FixedSizeVec {
 impl FixedSizeVec {
     /// Creates a new `FixedSizeVec` with the given capacity.
     ///
-    /// The vector will not grow once all available capacity has been consumed, and must be cleared to be reused.
+    /// The vector won't grow once all available capacity has been consumed, and must be cleared to be reused.
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             data: UniqueArc::new(Vec::with_capacity(capacity)),

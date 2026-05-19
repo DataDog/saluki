@@ -8,7 +8,7 @@ pub enum ProtoConversionError {
     /// The protobuf message is missing the required mapping field.
     MissingMapping,
 
-    /// The gamma value in the protobuf does not match the expected gamma.
+    /// The gamma value in the protobuf doesn't match the expected gamma.
     GammaMismatch {
         /// The expected gamma value.
         expected: f64,
@@ -16,13 +16,13 @@ pub enum ProtoConversionError {
         actual: f64,
     },
 
-    /// The index offset is non-zero, which is not supported by LogarithmicMapping.
+    /// The index offset is non-zero, which isn't supported by LogarithmicMapping.
     NonZeroIndexOffset {
         /// The actual index offset from the protobuf.
         actual: f64,
     },
 
-    /// The interpolation mode is not supported.
+    /// The interpolation mode isn't supported.
     UnsupportedInterpolation {
         /// The actual interpolation mode value from the protobuf.
         actual: i32,
@@ -36,7 +36,7 @@ pub enum ProtoConversionError {
         count: f64,
     },
 
-    /// A bin count value is not a valid integer.
+    /// A bin count value isn't a valid integer.
     NonIntegerBinCount {
         /// The bin index.
         index: i32,
@@ -50,7 +50,7 @@ pub enum ProtoConversionError {
         count: f64,
     },
 
-    /// The zero count is not a valid integer.
+    /// The zero count isn't a valid integer.
     NonIntegerZeroCount {
         /// The non-integer zero count value.
         count: f64,

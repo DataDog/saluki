@@ -1,0 +1,47 @@
+# syntax=docker/dockerfile:1.23
+#
+# This Dockerfile builds the "correctness tools suite" -- `datadog-intake` and `millstone` -- which together
+# support the correctness testing framework for Agent Data Plane. The resulting image contains both binaries
+# at their default paths under `/usr/local/bin`.
+
+ARG BUILD_IMAGE=ubuntu:24.04
+ARG APP_IMAGE=ubuntu:24.04
+
+# Build stage: install Rust and other build dependencies, compile correctness tools.
+FROM ${BUILD_IMAGE} AS builder
+
+ARG RUST_VERSION=stable
+
+RUN apt-get update && \
+    apt-get install --no-install-recommends -y \
+    build-essential ca-certificates make cmake gcc g++ perl protobuf-compiler curl rustup
+RUN rustup set profile minimal
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+# Pre-install the pinned Rust toolchain. We bind-mount only `rust-toolchain.toml` so this layer's
+# cache key is just that file's content -- code changes do not invalidate the toolchain install.
+RUN --mount=type=bind,source=rust-toolchain.toml,target=/tmp/rust-toolchain.toml \
+    cd /tmp && rustup show active-toolchain
+
+WORKDIR /correctness-tools
+COPY . /correctness-tools
+
+# Build the correctness tools (`datadog-intake` and `millstone`).
+#
+# We mount caches at the target dir and cargo home so that local development workflows can take advantage of incremental
+# builds. We copy the resulting binaries out of the build cache to /out after building them.
+#
+# COPY . /correctness-tools above will retrigger this layer on code changes but the builds should be incremental.
+RUN --mount=type=cache,target=/correctness-tools/target,id=correctness-tools-target \
+    --mount=type=cache,target=/root/.cargo/registry,id=cargo-registry \
+    --mount=type=cache,target=/root/.cargo/git,id=cargo-git \
+    mkdir -p /out && \
+    cargo build --profile release --bin datadog-intake --bin millstone && \
+    cp /correctness-tools/target/release/datadog-intake /out/datadog-intake && \
+    cp /correctness-tools/target/release/millstone /out/millstone
+
+# Final stage: copy both binaries on top of the configured application base image.
+FROM ${APP_IMAGE}
+
+COPY --from=builder /out/datadog-intake /usr/local/bin/datadog-intake
+COPY --from=builder /out/millstone /usr/local/bin/millstone

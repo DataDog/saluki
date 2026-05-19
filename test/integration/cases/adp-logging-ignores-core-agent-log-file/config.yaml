@@ -1,0 +1,33 @@
+type: integration
+name: "adp-logging-ignores-core-agent-log-file"
+description: "Verifies ADP ignores the Core Agent's `log_file` setting and continues to use its own per-subagent log file path"
+timeout: 90s
+
+container:
+  image: "saluki-images/datadog-agent:testing-devel"
+  env:
+    DD_API_KEY: "test-api-key"
+    DD_HOSTNAME: "integration-test-ignore-core-log-file"
+    DD_DATA_PLANE_ENABLED: "true"
+    DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT: "true"
+    DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+    DD_LOG_FILE: "/tmp/coreagent-only.log"
+    DD_DOGSTATSD_PORT: "8125"
+  exposed_ports:
+    - "8125/udp"
+
+assertions:
+  # Wait for ADP to receive its initial configuration from the Core Agent and reload logging.
+  - type: log_contains
+    pattern: "Initial configuration received."
+    timeout: 30s
+  # The Core Agent honored DD_LOG_FILE; its own log file has CORE entries.
+  - type: file_contains
+    path: "/tmp/coreagent-only.log"
+    pattern: "CORE"
+    timeout: 30s
+  # ADP did NOT honor DD_LOG_FILE; it still wrote to its per-subagent default path.
+  - type: file_contains
+    path: "/var/log/datadog/agent-data-plane.log"
+    pattern: "DATAPLANE"
+    timeout: 30s

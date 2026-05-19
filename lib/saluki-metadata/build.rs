@@ -75,7 +75,7 @@ fn get_env_var_or_default(var_name: &str, default: &str) -> String {
 }
 
 /// Returns the value the given environment variable after parsing as a boolean, or the default value if the environment
-/// variable is missing/empty, or if it is not a valid boolean.
+/// variable is missing/empty, or if it's not a valid boolean.
 fn get_env_var_bool_or_default(var_name: &str, default: bool) -> bool {
     let value = get_env_var_or_default(var_name, "").to_ascii_lowercase();
     match value.as_str() {

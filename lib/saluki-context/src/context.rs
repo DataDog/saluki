@@ -1,11 +1,11 @@
 use std::{fmt, hash, sync::Arc};
 
 use metrics::Gauge;
-use saluki_common::collections::ContiguousBitSet;
+use saluki_common::collections::{ContiguousBitSet, PrehashedHashSet};
 use stringtheory::MetaString;
 
 use crate::{
-    hash::{hash_context, ContextKey},
+    hash::{hash_context, hash_context_with_seen, ContextKey},
     tags::{Tag, TagSet},
 };
 
@@ -180,7 +180,7 @@ impl Context {
     /// Mutates the instrumented tags of this context via a closure.
     ///
     /// Uses copy-on-write semantics: if this context shares its inner data with other clones, the
-    /// inner data is cloned first so that mutations do not affect other holders. If this context is
+    /// inner data is cloned first so that mutations don't affect other holders. If this context is
     /// the sole owner, the mutation happens in place.
     ///
     /// The context key is automatically recomputed after the closure returns.
@@ -191,7 +191,7 @@ impl Context {
     /// Mutates the origin tags of this context via a closure.
     ///
     /// Uses copy-on-write semantics: if this context shares its inner data with other clones, the
-    /// inner data is cloned first so that mutations do not affect other holders. If this context is
+    /// inner data is cloned first so that mutations don't affect other holders. If this context is
     /// the sole owner, the mutation happens in place.
     ///
     /// The context key is automatically recomputed after the closure returns.
@@ -202,7 +202,7 @@ impl Context {
     /// Mutates both instrumented tags and origin tags via a single closure.
     ///
     /// Uses copy-on-write semantics: if this context shares its inner data with other clones, the
-    /// inner data is cloned first so that mutations do not affect other holders. If this context is
+    /// inner data is cloned first so that mutations don't affect other holders. If this context is
     /// the sole owner, the mutation happens in place.
     ///
     /// The context key is recomputed once after the closure returns.
@@ -223,7 +223,7 @@ impl Context {
 
     /// Creates a lazy copy-on-write mutable view over this context's tag sets.
     ///
-    /// The returned view supports mutations (e.g. [`retain_tags`][TagSetMutView::retain_tags])
+    /// The returned view supports mutations (for example, [`retain_tags`][TagSetMutView::retain_tags])
     /// without immediately triggering an `Arc` clone. The actual clone, mutation, and context key
     /// recomputation only happen when [`TagSetMutView::finish`] is called, and only if changes
     /// were actually recorded.
@@ -244,7 +244,7 @@ impl Context {
     /// Since origin tags can potentially be expensive to calculate, this method will cache the size of the origin tags
     /// when this method is first called.
     ///
-    /// Additionally, the value returned by this method does not compensate for externalities such as origin tags
+    /// Additionally, the value returned by this method doesn't compensate for externalities such as origin tags
     /// potentially being shared by multiple contexts, or whether or not tags are inlined, interned, or heap
     /// allocated. This means that the value returned is essentially the worst-case usage, and should be used as a rough
     /// estimate.
@@ -303,6 +303,7 @@ pub struct TagSetMutViewState {
     tag_addition_removals: ContiguousBitSet,
     origin_base_removals: ContiguousBitSet,
     origin_addition_removals: ContiguousBitSet,
+    hash_seen: PrehashedHashSet<u64>,
 }
 
 impl TagSetMutViewState {
@@ -321,7 +322,7 @@ impl TagSetMutViewState {
 
 /// A lazy copy-on-write mutable view over a [`Context`]'s tag sets.
 ///
-/// Operations on this view (e.g. [`retain_tags`][Self::retain_tags]) are recorded but not
+/// Operations on this view (for example, [`retain_tags`][Self::retain_tags]) are recorded but not
 /// applied immediately. The actual `Arc` clone, mutation, and context key recomputation only
 /// occur when [`finish`][Self::finish] is called, and only if changes were recorded.
 pub struct TagSetMutView<'a, 'b> {
@@ -383,7 +384,7 @@ impl<'a, 'b> TagSetMutView<'a, 'b> {
                 .apply_removals(&self.state.origin_base_removals, &self.state.origin_addition_removals);
         }
 
-        let (key, _) = hash_context(&inner.name, &inner.tags, &inner.origin_tags);
+        let (key, _) = hash_context_with_seen(&inner.name, &inner.tags, &inner.origin_tags, &mut self.state.hash_seen);
         inner.key = key;
 
         total

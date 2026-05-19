@@ -76,7 +76,7 @@ macro_rules! register_metric {
 
 /// Creates statically defined metrics within a dedicated container struct.
 ///
-/// In some cases, the metrics needed for a component are well-established and do not require a high-level of dynamism:
+/// In some cases, the metrics needed for a component are well-established and don't require a high-level of dynamism:
 /// perhaps only a single label is needed for all metrics, and the value is known ahead of time. In these cases, it can
 /// be useful to declare the metrics up front, and in a contained way, to avoid having to deal with the string-y metric
 /// names (and any labels) at each and every callsite.
@@ -95,9 +95,9 @@ macro_rules! register_metric {
 ///
 /// # Levels
 ///
-/// In `metrics`, metrics have an inherent "level", similar to logs: trace, debug, info, warn, and error.  Levels can be
+/// In `metrics`, metrics have an inherent "level", similar to logs: trace, debug, info, warn, and error. Levels can be
 /// used to filter metrics based on their importance or severity. For example, a trace-level metric might be only be
-/// required for debugging and should not be sent all the time, while warn- or error-level metrics should be sent all the
+/// required for debugging and shouldn't be sent all the time, while warn- or error-level metrics should be sent all the
 /// time.
 ///
 /// We expose the ability to specify the level to use for a metric by specifying it as a prefix to the metric type. See the

@@ -23,7 +23,7 @@ impl FeatureDetector {
         Self::for_feature(config, Feature::all_bits())
     }
 
-    /// Creates a new `FeatureDetector` that checks for the given feature(s).
+    /// Creates a new `FeatureDetector` that checks for the given features.
     ///
     /// Multiple features can be checked for by combining the feature variants in a bitwise OR fashion.
     pub fn for_feature(config: &GenericConfiguration, feature_mask: Feature) -> Self {

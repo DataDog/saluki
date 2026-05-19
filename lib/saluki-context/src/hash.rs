@@ -15,7 +15,7 @@ use saluki_common::{
 /// differences such as case (lower vs upper) or leading/trailing whitespace will influence the resulting hash.
 ///
 /// If a tag is seen more than once, it will be ignored and not included in the overall hash. This function allocates a
-/// hash set in order to track which tags have already been hashed, so it is preferable to allocate a single
+/// hash set in order to track which tags have already been hashed, so it's preferable to allocate a single
 /// [`PrehashedHashSet`] and use it with [`hash_context_with_seen`] in order to amortize the cost of allocating the hash
 /// set.
 ///

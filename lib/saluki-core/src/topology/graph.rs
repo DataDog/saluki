@@ -326,7 +326,7 @@ impl Graph {
     ///
     /// # Errors
     ///
-    /// If either the `from` or `to` component IDs do not exist in the graph, or are invalid, an error is returned.
+    /// If either the `from` or `to` component IDs don't exist in the graph, or are invalid, an error is returned.
     pub fn add_edge<F, T>(&mut self, from: F, to: T) -> Result<(), GraphError>
     where
         F: AsRef<str>,
@@ -433,9 +433,9 @@ impl Graph {
     /// at least supporting metric events if the upstream only emits metrics.
     ///
     /// Additionally, there are encoder and forwarder components, which deal with events and payloads, respectively.
-    /// Forwarders can only accept payloads, so they cannot be connected directly to "event" components like sources or
+    /// Forwarders can only accept payloads, so they can't be connected directly to "event" components like sources or
     /// transforms, but they can be connected to encoders. Encoders can accept events and emit payloads, so they can
-    /// be connected to sources and transforms as a downstream component (same "event" data type) but cannot be
+    /// be connected to sources and transforms as a downstream component (same "event" data type) but can't be
     /// connected to another encoder (different data types). Like "event" components, encoders and forwarders must
     /// have an overlap in "payload" subtypes to be connected.
     ///

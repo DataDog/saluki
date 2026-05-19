@@ -1,3 +1,7 @@
+// serde_with's DeserializeFromStr macro generates code that calls core::str::from_utf8 internally,
+// which we otherwise disallow in favor of simdutf8::basic::from_utf8.
+#![allow(clippy::disallowed_methods)]
+
 use std::{
     collections::hash_map::Entry,
     fmt,
@@ -26,7 +30,7 @@ use stringtheory::MetaString;
 /// wrapper provides ergonomic conversions to/from a string representation based on a base64-encoded wrapper around the
 /// canonical Protobuf representation.
 ///
-/// This makes it safe to transport over JSON for use in `datadog-intake` and `ground-truth`.
+/// This makes it safe to transport over JSON for use in `datadog-intake` and `panoramic`.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct EncodedApmStatsDDSketch {
@@ -205,7 +209,7 @@ pub struct BucketedClientStatistics {
 }
 
 impl BucketedClientStatistics {
-    /// Merge the given stats into the given bucket, creating the bucket if it does not already exist.
+    /// Merge the given stats into the given bucket, creating the bucket if it doesn't already exist.
     pub fn merge(&mut self, bucket_timeframe: BucketTimeframe, stats: ClientStatistics) -> Result<(), GenericError> {
         match self.buckets.entry(bucket_timeframe) {
             Entry::Occupied(mut entry) => {
@@ -226,7 +230,7 @@ impl BucketedClientStatistics {
     ///
     /// # Errors
     ///
-    /// If the buckets cannot be merged for any reason, an error is returned.
+    /// If the buckets can't be merged for any reason, an error is returned.
     pub fn merged(&self) -> Result<Option<ClientStatistics>, GenericError> {
         let mut bucket_stats = self.buckets.values().cloned();
 
@@ -275,7 +279,7 @@ pub struct ClientStatistics {
 impl ClientStatistics {
     /// Merges `other` into `self`.
     ///
-    /// If `other` does not have the same aggregation key as `self` (essentially: if any of the string fields differ),
+    /// If `other` doesn't have the same aggregation key as `self` (essentially: if any of the string fields differ),
     /// an error is returned.
     pub fn merge(&mut self, other: Self) -> Result<(), GenericError> {
         // Check all "fixed" fields and ensure they're identical.

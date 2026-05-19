@@ -9,6 +9,7 @@ repository = { workspace = true }
 workspace = true
 
 [dependencies]
+simdutf8 = { workspace = true }
 
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
 libc = { workspace = true }
@@ -22,7 +23,7 @@ windows-sys = { workspace = true, features = [
 ] }
 
 [target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
-mach2 = { version = "0.4.2" }
+mach2 = { version = "0.6.0" }
 
 [dev-dependencies]
 dhat = { workspace = true }

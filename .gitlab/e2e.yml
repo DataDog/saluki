@@ -1,36 +1,4 @@
-.test-correctness-definition:
-  stage: e2e
-  tags: ["docker-in-docker:amd64"]
-  needs:
-    - build-bundled-agent-adp-image
-    - build-datadog-intake-image
-    - build-millstone-image
-  retry: 2
-  timeout: 10m
-  image: "${SALUKI_BUILD_CI_IMAGE}"
-  artifacts:
-    expire_in: 1 weeks
-    paths:
-      - /tmp/ground-truth/ # for debugging
-    when: always
-  variables:
-    DD_LOG_LEVEL: "ground_truth=debug,info"
-    GROUND_TRUTH_ALPINE_IMAGE: registry.ddbuild.io/alpine:latest
-    GROUND_TRUTH_MILLSTONE__IMAGE: ${SALUKI_IMAGE_REPO_BASE}/millstone:${CI_COMMIT_SHA}
-    GROUND_TRUTH_DATADOG_INTAKE__IMAGE: ${SALUKI_IMAGE_REPO_BASE}/datadog-intake:${CI_COMMIT_SHA}
-    GROUND_TRUTH_COMPARISON__IMAGE: ${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}
-  script:
-    - make build-ground-truth
-    - target/release/ground-truth ./test/correctness/${CORRECTNESS_TEST_CASE}/config.yaml
-
-# Mixin for correctness tests where baseline is the CI-built bundled ADP image.
-# Tests with a different baseline (for example, DDOT) should NOT extend this and instead
-# let config.yaml specify the baseline image directly.
-.test-correctness-adp-baseline:
-  variables:
-    GROUND_TRUTH_BASELINE__IMAGE: ${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}
-
-build-datadog-intake-image:
+build-correctness-tools-image:
   stage: e2e
   image: ${DOCKER_BUILD_IMAGE}
   needs: []
@@ -39,29 +7,10 @@ build-datadog-intake-image:
   script:
     - docker buildx build
       --platform linux/amd64
-      --file ./docker/Dockerfile.datadog-intake
-      --tag ${SALUKI_IMAGE_REPO_BASE}/datadog-intake:${CI_COMMIT_SHA}
-      --build-arg BASE_IMAGE=${PUBLIC_BASE_IMAGE}
-      --label git.repository=${CI_PROJECT_NAME}
-      --label git.branch=${CI_COMMIT_REF_NAME}
-      --label git.commit=${CI_COMMIT_SHA}
-      --label ci.pipeline_id=${CI_PIPELINE_ID}
-      --label ci.job_id=${CI_JOB_ID}
-      --push
-      .
-
-build-millstone-image:
-  stage: e2e
-  image: ${DOCKER_BUILD_IMAGE}
-  needs: []
-  retry: 2
-  timeout: 10m
-  script:
-    - docker buildx build
-      --platform linux/amd64
-      --file ./docker/Dockerfile.millstone
-      --tag ${SALUKI_IMAGE_REPO_BASE}/millstone:${CI_COMMIT_SHA}
-      --build-arg BASE_IMAGE=${PUBLIC_BASE_IMAGE}
+      --file ./docker/Dockerfile.correctness-tools
+      --tag ${SALUKI_IMAGE_REPO_BASE}/correctness-tools:${CI_COMMIT_SHA}
+      --build-arg BUILD_IMAGE=${PUBLIC_BASE_IMAGE}
+      --build-arg APP_IMAGE=${PUBLIC_BASE_IMAGE}
       --label git.repository=${CI_PROJECT_NAME}
       --label git.branch=${CI_COMMIT_REF_NAME}
       --label git.commit=${CI_COMMIT_SHA}
@@ -82,7 +31,7 @@ build-bundled-agent-adp-image:
       --platform linux/amd64
       --file ./docker/Dockerfile.datadog-agent
       --tag ${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}
-      --build-arg DD_AGENT_IMAGE=${PUBLIC_DD_AGENT_IMAGE}
+      --build-arg DD_AGENT_VERSION=${PUBLIC_DD_AGENT_VERSION}
       --build-arg ADP_IMAGE=${ADP_FULL_IMAGE_TAG}
       --build-arg BUILD_PROFILE=release
       --label git.repository=${CI_PROJECT_NAME}
@@ -93,45 +42,54 @@ build-bundled-agent-adp-image:
       --push
       .
 
-test-correctness-dsd-plain:
-  extends: [.build-common-variables, .test-correctness-definition, .test-correctness-adp-baseline]
-  variables:
-    CORRECTNESS_TEST_CASE: dsd-plain
+# Compile panoramic once. The dynamically generated child pipeline below
+# pulls this artifact instead of rebuilding per test.
+build-panoramic-binary:
+  extends: .build-common-variables
+  stage: e2e
+  tags: ["arch:amd64"]
+  needs: []
+  retry: 2
+  timeout: 30m
+  image: "${SALUKI_BUILD_CI_IMAGE}"
+  artifacts:
+    expire_in: 1 day
+    paths: [target/release/panoramic]
+  script:
+    - make build-panoramic
 
-test-correctness-dsd-plain-v3:
-  extends: [.build-common-variables, .test-correctness-definition, .test-correctness-adp-baseline]
-  variables:
-    CORRECTNESS_TEST_CASE: dsd-plain-v3
+# Scan test/correctness/ and emit a child-pipeline YAML with one job per test
+# directory. Each emitted job extends mixins from .gitlab/correctness-mixins.yml.
+generate-correctness-pipeline:
+  stage: e2e
+  image: "${SALUKI_BUILD_CI_IMAGE}"
+  needs:
+    - build-bundled-agent-adp-image
+    - build-correctness-tools-image
+    - build-panoramic-binary
+  script:
+    - bash tooling/generate-correctness-pipeline.sh > generated-correctness.yml
+  artifacts:
+    paths: [generated-correctness.yml]
 
-test-correctness-dsd-plain-v3-validation:
-  extends: [.build-common-variables, .test-correctness-definition, .test-correctness-adp-baseline]
+# Run the generated child pipeline.
+run-correctness-tests:
+  stage: e2e
+  needs:
+    - generate-correctness-pipeline
   variables:
-    CORRECTNESS_TEST_CASE: dsd-plain-v3-validation
-
-test-correctness-dsd-origin-detection:
-  extends: [.build-common-variables, .test-correctness-definition, .test-correctness-adp-baseline]
-  variables:
-    CORRECTNESS_TEST_CASE: dsd-origin-detection
-
-test-correctness-otlp-metrics:
-  extends: [.build-common-variables, .test-correctness-definition, .test-correctness-adp-baseline]
-  variables:
-    CORRECTNESS_TEST_CASE: otlp-metrics
-
-test-correctness-otlp-traces:
-  extends: [.build-common-variables, .test-correctness-definition, .test-correctness-adp-baseline]
-  variables:
-    CORRECTNESS_TEST_CASE: otlp-traces
-
-test-correctness-otlp-traces-ottl-filtering:
-  extends: [.build-common-variables, .test-correctness-definition]
-  variables:
-    CORRECTNESS_TEST_CASE: otlp-traces-ottl-filtering
-
-test-correctness-otlp-traces-ottl-transform:
-  extends: [.build-common-variables, .test-correctness-definition]
-  variables:
-    CORRECTNESS_TEST_CASE: otlp-traces-ottl-transform
+    # Child pipelines inherit the parent's global YAML variables by default,
+    # so SALUKI_* are already available. PARENT_PIPELINE_ID is renamed from
+    # CI_PIPELINE_ID so the child's `needs:[pipeline: ..., job: ...]` can
+    # reference the parent pipeline (in the child, $CI_PIPELINE_ID is its own).
+    PARENT_PIPELINE_ID: $CI_PIPELINE_ID
+  trigger:
+    include:
+      # this is the file we generated in the previous step
+      - artifact: generated-correctness.yml
+        job: generate-correctness-pipeline
+    # folds child status into the parent
+    strategy: depend
 
 test-integration:
   stage: e2e
@@ -150,7 +108,7 @@ test-integration:
     # Looks weird but we need to set this so that the test runner knows the right image path to pull the `alpine` image, which is required by
     # `airlock` to properly configure some permissions on the shared volume before the target container is started. We don't have access to
     # Docker Hub so the default of `alpine:latest` is insufficient.
-    GROUND_TRUTH_ALPINE_IMAGE: registry.ddbuild.io/alpine:latest
+    PANORAMIC_ALPINE_IMAGE: registry.ddbuild.io/alpine:latest
     PANORAMIC_LOG_DIR: integration-logs
   script:
     # Copy the bundled Agent/ADP image we built to the local Docker instance so we can share the integration

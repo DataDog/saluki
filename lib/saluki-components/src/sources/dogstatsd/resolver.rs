@@ -7,8 +7,6 @@ use stringtheory::interning::GenericMapInterner;
 
 use super::{DogStatsDConfiguration, DogStatsDOriginTagResolver};
 
-const RESOLVER_CACHE_EXPIRATION: Duration = Duration::from_secs(30);
-
 /// Context resolvers for the DogStatsD source.
 #[derive(Clone)]
 pub struct ContextResolvers {
@@ -30,18 +28,21 @@ impl ContextResolvers {
     ) -> Result<Self, GenericError> {
         // We'll use the same string interner size for both context resolvers, which does mean double the usage, but
         // it's simpler this way for the moment.
-        let context_string_interner_size = NonZeroUsize::new(config.context_string_interner_bytes.as_u64() as usize)
-            .ok_or_else(|| generic_error!("context_string_interner_size must be greater than 0"))?;
+        let context_string_interner_size =
+            NonZeroUsize::new(config.effective_context_string_interner_bytes().as_u64() as usize)
+                .ok_or_else(|| generic_error!("context_string_interner_size must be greater than 0"))?;
 
         let cached_contexts_limit = config.cached_contexts_limit;
         let cached_tagsets_limit = config.cached_tagsets_limit;
+        let context_expiry_seconds = Duration::from_secs(config.context_expiry_seconds);
+        let allow_context_heap_allocations = config.allow_context_heap_allocations;
 
         let interner = GenericMapInterner::new(context_string_interner_size);
 
         let tags_resolver = TagsResolverBuilder::new(format!("{}/dsd/tags", context.component_id()), interner.clone())?
             .with_cached_tagsets_limit(cached_tagsets_limit)
-            .with_idle_tagsets_expiration(RESOLVER_CACHE_EXPIRATION)
-            .with_heap_allocations(config.allow_context_heap_allocations)
+            .with_idle_tagsets_expiration(context_expiry_seconds)
+            .with_heap_allocations(allow_context_heap_allocations)
             .with_origin_tags_resolver(
                 maybe_origin_tags_resolver
                     .map(|resolver| -> Arc<dyn saluki_context::origin::OriginTagsResolver> { Arc::new(resolver) }),
@@ -51,8 +52,8 @@ impl ContextResolvers {
         let primary_resolver = ContextResolverBuilder::from_name(format!("{}/dsd/primary", context.component_id()))?
             .with_interner_capacity_bytes(context_string_interner_size)
             .with_cached_contexts_limit(cached_contexts_limit)
-            .with_idle_context_expiration(RESOLVER_CACHE_EXPIRATION)
-            .with_heap_allocations(config.allow_context_heap_allocations)
+            .with_idle_context_expiration(context_expiry_seconds)
+            .with_heap_allocations(allow_context_heap_allocations)
             .with_tags_resolver(Some(tags_resolver.clone()))
             .with_interner(interner.clone())
             .build();
@@ -60,9 +61,9 @@ impl ContextResolvers {
         let no_agg_resolver = ContextResolverBuilder::from_name(format!("{}/dsd/no_agg", context.component_id()))?
             .with_interner_capacity_bytes(context_string_interner_size)
             .without_caching()
-            .with_heap_allocations(config.allow_context_heap_allocations)
+            .with_heap_allocations(allow_context_heap_allocations)
             .with_tags_resolver(Some(tags_resolver.clone()))
-            .with_interner(interner.clone())
+            .with_interner(interner)
             .build();
 
         Ok(ContextResolvers {
@@ -86,7 +87,7 @@ impl ContextResolvers {
 
     /// Returns a mutable reference to the no-aggregation context resolver.
     ///
-    /// This context resolver should be used for metrics that do not require aggregation, which implies the metrics had
+    /// This context resolver should be used for metrics that don't require aggregation, which implies the metrics had
     /// a timestamp specified in the payload.
     pub fn no_agg(&mut self) -> &mut ContextResolver {
         &mut self.no_agg

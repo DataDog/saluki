@@ -17,6 +17,7 @@ use tokio::sync::oneshot;
 
 use super::{
     shutdown::ProcessShutdown,
+    state::DataspaceRegistry,
     supervisor::{Supervisor, SupervisorError},
 };
 
@@ -68,13 +69,13 @@ impl RuntimeConfiguration {
 pub enum RuntimeMode {
     /// Run on the ambient runtime (default).
     ///
-    /// The supervisor runs on whatever Tokio runtime is currently active when it is spawned.
+    /// The supervisor runs on whatever Tokio runtime is currently active when it's spawned.
     #[default]
     Ambient,
 
     /// Run on a dedicated runtime with the given configuration.
     ///
-    /// The supervisor spawns its own OS thread(s) and Tokio runtime, providing runtime isolation from the parent
+    /// The supervisor spawns its own OS threads and Tokio runtime, providing runtime isolation from the parent
     /// supervisor.
     Dedicated(RuntimeConfiguration),
 }
@@ -149,9 +150,10 @@ impl Future for DedicatedRuntimeHandle {
 ///
 /// # Errors
 ///
-/// If the OS thread cannot be spawned, an error is returned.
+/// If the OS thread can't be spawned, an error is returned.
 pub(crate) fn spawn_dedicated_runtime(
     mut supervisor: Supervisor, config: RuntimeConfiguration, process_shutdown: ProcessShutdown,
+    dataspace: DataspaceRegistry,
 ) -> Result<DedicatedRuntimeHandle, GenericError> {
     let (init_tx, init_rx) = oneshot::channel();
     let (result_tx, result_rx) = oneshot::channel();
@@ -178,8 +180,9 @@ pub(crate) fn spawn_dedicated_runtime(
 
             // Run the supervisor to completion and send the result back.
             //
-            // We ignore failures with sending the result because we can't do anything about it anyways.
-            let result = runtime.block_on(supervisor.run_with_process_shutdown(process_shutdown));
+            // We pass the parent's dataspace so the nested supervisor inherits it across the
+            // thread boundary rather than creating a new one.
+            let result = runtime.block_on(supervisor.run_with_process_shutdown(process_shutdown, Some(dataspace)));
             let _ = result_tx.send(result);
         })
         .map_err(|e| generic_error!("Failed to spawn dedicated runtime thread '{}': {}", thread_name, e))?;

@@ -16,7 +16,7 @@ pub struct NewlineFramer {
 impl NewlineFramer {
     /// Whether or not the delimiter is required when EOF has been reached.
     ///
-    /// This controls whether or not the frames must always be suffixed by the delimiter character.  In some cases, a
+    /// This controls whether or not the frames must always be suffixed by the delimiter character. In some cases, a
     /// delimiter is purely for separating multiple frames within a single payload, and when the final payload is sent,
     /// it may not include the delimiter at the end.
     ///

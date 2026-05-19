@@ -8,6 +8,7 @@
 mod common;
 
 pub mod config;
+pub mod config_registry;
 pub mod decoders;
 pub mod destinations;
 pub mod encoders;

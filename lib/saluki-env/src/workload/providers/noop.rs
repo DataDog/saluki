@@ -8,7 +8,7 @@ use crate::{
     WorkloadProvider,
 };
 
-/// A no-op workload provider that does not provide any workload information.
+/// A no-op workload provider that doesn't provide any workload information.
 #[derive(Default)]
 pub struct NoopWorkloadProvider;
 

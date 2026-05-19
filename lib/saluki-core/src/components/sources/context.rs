@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use memory_accounting::ComponentRegistry;
-use saluki_health::Health;
 
+use crate::health::Health;
 use crate::{
     components::ComponentContext,
     topology::{shutdown::ComponentShutdownHandle, EventsDispatcher, TopologyContext},

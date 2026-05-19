@@ -78,7 +78,7 @@ impl TagSet {
     /// Inserts a tag into the set.
     ///
     /// If the tag is already present in the set, this does nothing. Presence is checked by exact
-    /// tag value (both name and value), not just by name — multiple tags with the same name but
+    /// tag value (both name and value), not just by name—multiple tags with the same name but
     /// different values can coexist.
     pub fn insert_tag<T>(&mut self, tag: T)
     where
@@ -275,7 +275,7 @@ impl TagSet {
 
     /// Merges the tags from another set into this set.
     ///
-    /// If a tag from `other` is already present in this set, it will not be added.
+    /// If a tag from `other` is already present in this set, it won't be added.
     pub fn merge_missing(&mut self, other: Self) {
         for tag in other {
             self.insert_tag(tag);
@@ -284,7 +284,7 @@ impl TagSet {
 
     /// Merges the tags from a shared set into this set.
     ///
-    /// If a tag from `other` is already present in this set, it will not be added.
+    /// If a tag from `other` is already present in this set, it won't be added.
     pub fn merge_missing_shared(&mut self, other: &SharedTagSet) {
         for tag in other {
             if !self.has_tag(tag.as_str()) {
@@ -296,7 +296,7 @@ impl TagSet {
 
     /// Merges the tags from a shared set into this set.
     ///
-    /// This method does not attempt to avoid adding duplicate tags.
+    /// This method doesn't attempt to avoid adding duplicate tags.
     pub fn merge_shared(&mut self, other: &SharedTagSet) {
         self.base.extend_from_shared(other);
     }
@@ -318,7 +318,7 @@ impl TagSet {
     /// Returns the estimated size of the tag set, in bytes.
     ///
     /// This includes the size of the base `SharedTagSet`, additions, and removal tracking. The value returned is a rough
-    /// estimate and does not compensate for inlined, interned, or heap-allocated tags.
+    /// estimate and doesn't compensate for inlined, interned, or heap-allocated tags.
     pub fn size_of(&self) -> usize {
         let additions_size = self
             .overlay
@@ -655,7 +655,7 @@ mod tests {
         let original = shared_from(&["a:1", "b:2", "c:3"]);
         let ts = TagSet::from(original.clone());
 
-        // No mutations — into_shared should return the base as-is.
+        // No mutations—into_shared should return the base as-is.
         assert!(!ts.is_modified());
         let result = ts.into_shared();
         assert_eq!(result, original);
@@ -700,7 +700,7 @@ mod tests {
         let mut ts = TagSet::from(base);
         ts.insert_tag(Tag::from("env:production"));
 
-        // Both env tags coexist — insert only deduplicates by exact value, not by name.
+        // Both env tags coexist—insert only deduplicates by exact value, not by name.
         assert_eq!(ts.len(), 3);
         assert!(ts.has_tag("env:staging"));
         assert!(ts.has_tag("env:production"));

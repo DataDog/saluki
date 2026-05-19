@@ -56,7 +56,7 @@ impl TargetSender {
     pub fn from_config(config: &Config) -> Result<Self, GenericError> {
         let (backend, runtime) = match &config.target {
             TargetAddress::Tcp(addr) => {
-                let stream = TcpStream::connect(addr)
+                let stream = TcpStream::connect(addr.as_str())
                     .with_error_context(|| format!("Failed to connect to TCP target '{}'.", addr))?;
                 (TargetBackend::Tcp(stream), None)
             }
@@ -64,7 +64,7 @@ impl TargetSender {
                 // We have to bind the socket first before we can "connect" it.
                 let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).error_context("Failed to bind UDP socket.")?;
                 socket
-                    .connect(addr)
+                    .connect(addr.as_str())
                     .with_error_context(|| format!("Failed to connect to UDP target '{}'.", addr))?;
 
                 (TargetBackend::Udp(socket), None)
@@ -91,7 +91,7 @@ impl TargetSender {
     /// Sends a single payload to the target.
     ///
     /// Attempts to send the entire payload to the target, but may only partially write a payload if the underlying
-    /// target transport does not support ordered delivery of messages and fragmented sends cannot be achieved.
+    /// target transport doesn't support ordered delivery of messages and fragmented sends can't be achieved.
     ///
     /// On success, `Ok(n)` is returned, where `n` is the number of bytes sent.
     ///
@@ -161,7 +161,7 @@ fn send_grpc_payload(
 ///
 /// # Errors
 ///
-/// Returns an error if the runtime cannot be created or the connection cannot be established.
+/// Returns an error if the runtime can't be created or the connection can't be established.
 fn create_grpc_client(url: &str) -> Result<(TargetBackend, Option<tokio::runtime::Runtime>), GenericError> {
     // Split the URL into host:port and service/method path
     let (host_and_port, path) = url

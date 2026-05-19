@@ -1,7 +1,5 @@
 use std::time::{Duration, Instant};
 
-use bollard::Docker;
-
 use crate::assertions::{Assertion, AssertionContext, AssertionResult};
 
 /// Assertion that checks the container process exits with a specific exit code.
@@ -33,10 +31,10 @@ impl Assertion for ProcessExitsWithAssertion {
         let started = Instant::now();
 
         tokio::select! {
-            // Wait for the container to exit (signaled via cancel_token).
-            _ = ctx.cancel_token.cancelled() => {
+            // Wait for the container to exit.
+            _ = ctx.container_exit_token.cancelled() => {
                 // Container exited - check exit code via Docker API
-                let docker = match Docker::connect_with_defaults() {
+                let docker: bollard::Docker = match airlock::docker::connect() {
                     Ok(d) => d,
                     Err(e) => {
                         return AssertionResult {

@@ -1,9 +1,13 @@
 # Testing
 
+> **Note for developing on macOS**: Docker typically runs inside a Linux VM and the socket may not be at the standard
+> `/var/run/docker.sock` path. The test tooling automatically searches common non-standard socket locations when the
+> standard path is absent. If auto-detection doesn't find your socket, set the `DOCKER_HOST` environment variable.
+
 The Saluki testing strategy consists of four main pillars:
 
 1. Unit Tests (Rust/cargo)
-2. Correctness Tests (ground-truth)
+2. Correctness Tests (panoramic)
 3. Integration Tests (panoramic)
 4. Performance Tests (SMP)
 
@@ -11,11 +15,11 @@ The Saluki testing strategy consists of four main pillars:
 
 These are found throughout the Rust codebase as you would expect. You can run them with `cargo test` or you can use
 `make test` which will run them with `cargo nextest` for more parallelization. Platform-specific unit tests should be
-skipped or compiled-out for platforms they are incompatible with.
+skipped or compiled-out for platforms they're incompatible with.
 
-CI: `.gitlab/test.yml` — runs on both Linux (amd64/arm64) and macOS (amd64/arm64).
+CI: `.gitlab/test.yml`—runs on both Linux (amd64/arm64) and macOS (amd64/arm64).
 
-## Correctness Tests (ground-truth)
+## Correctness Tests (panoramic)
 
 These tests serve to answer the question: *Does ADP produce the same output as the Datadog Agent for a given workload?*
 
@@ -34,17 +38,17 @@ All binaries live under `bin/correctness/`:
 
 | Binary             | Purpose                                                                                  |
 |--------------------|------------------------------------------------------------------------------------------|
-| **ground-truth**   | Test runner and analyzer. Orchestrates containers, collects outputs and asserts outputs. |
+| **panoramic**      | Unified test runner for both correctness and integration tests.                          |
 | **millstone**      | Deterministic load generator.                                                            |
 | **datadog-intake** | Mock Datadog API: receives test output                                                   |
 | **airlock**        | Library for running containers in isolated groups.                                       |
 
-Test case configs live in `test/correctness/` (e.g. `test/correctness/dsd-plain/config.yaml`).
+Test case configs live in `test/correctness/` (for example, `test/correctness/dsd-plain/config.yaml`).
 
 ### Program Flow
 
-**ground-truth** is the entry-point for running a test. It orchestrates the containers using the airlock library (which
-talks to containerd via gRPC) and asserts the correctness of the output. It:
+**panoramic** is the entry-point for running a test. When given a correctness test config, it orchestrates the
+containers using the airlock library (which talks to containerd via gRPC) and asserts the correctness of the output. It:
 - reads the test configuration files
 - starts two sets of containers
   - `millstone` -> ADP -> `datadog-intake`
@@ -57,23 +61,25 @@ Build the required container images, then run:
 
 ```bash
 # build images (only needed once, or after changes)
-make build-datadog-intake-image build-millstone-image build-datadog-agent-image
+make build-correctness-tools-image build-datadog-agent-image
 
 # run all correctness tests
 make test-correctness
 
 # run a single test case
-make test-correctness-dsd-plain
+make test-correctness-case CASE=dsd-plain
 ```
 
-CI: `.gitlab/e2e.yml` — `e2e` stage, 10 min timeout, retry 2.
+The `correctness-tools` image bundles the **correctness tools suite** -- both `datadog-intake` and `millstone` -- into a single image used by every correctness test case.
+
+CI: `.gitlab/e2e.yml`—`e2e` stage, 10 min timeout, retry 2.
 
 ## Integration Tests (panoramic)
 
 Integration tests run a containerized ADP instance and assert high-level invariants: process stability, expected log
 output, port availability, exit behavior. They catch regressions from enabling new features or settings that cause
-crashes or early exits. They do not test output correctness. This type of test is often known as a "smoke test." For
-integration tests that check system output, see [correctness tests](#correctness-tests-ground-truth) above.
+crashes or early exits. They don't test output correctness. This type of test is often known as a "smoke test." For
+integration tests that check system output, see [correctness tests](#correctness-tests-panoramic) above.
 
 ### Running
 
@@ -91,7 +97,7 @@ Test cases live in `test/integration/cases/` as `config.yaml` files. The runner 
 Each test defines a container and a list of high-level assertions. Assertions run sequentially by default but can also
 be configured to run in `parallel`.
 
-CI: `.gitlab/e2e.yml` — same file as correctness, `e2e` stage, 10 min timeout, retry 2.
+CI: `.gitlab/e2e.yml`—same file as correctness, `e2e` stage, 10 min timeout, retry 2.
 
 ## Benchmark Tests: Single Machine Performance (SMP)
 
@@ -101,7 +107,7 @@ in GitLab CI (`.gitlab/benchmark.yml`).
 
 Each experiment pairs a **target** (ADP container) with **Lading** (deterministic load generator). Lading sends payloads
 (DogStatsD, OTLP, logs, etc.) at configured rates using seeded generators for reproducibility. SMP measures CPU, memory,
-throughput — not output correctness.
+throughput—not output correctness.
 
 ### Experiments
 
@@ -109,15 +115,15 @@ Defined in `test/smp/regression/adp/experiments.yaml`. Run `make generate-smp-ex
 in `test/smp/regression/adp/cases/`. Each case gets an `experiment.yaml` (target config) and `lading/lading.yaml` (load
 config).
 
-CI compares current branch against merge-base of main — purely "has your change regressed or improved?"
+CI compares current branch against merge-base of main—purely "has your change regressed or improved?"
 
 You can run experiments locally with `smp local-run` to debug experiment configs without waiting for CI (single
-replicate, no statistical analysis). This is mainly useful when iterating on a new or broken experiment — for normal
+replicate, no statistical analysis). This is mainly useful when iterating on a new or broken experiment—for normal
 development, lean on CI.
 
 ## Fuzzing
 
-A fifth type of testing is fuzzing. We aren't doing a lot with fuzzing right now, but what we have uses `cargo-fuzz` and
+A fifth type of testing is fuzzing. We aren't doing a lot with fuzzing right now, but what we've uses `cargo-fuzz` and
 operates at the function-level. More fuzzing coverage will likely come in the future.
 
 ## Directory Index
@@ -131,10 +137,9 @@ operates at the function-level. More fuzzing coverage will likely come in the fu
 
 # custom test tooling
 bin/correctness/
-├── ground-truth/          : test orchestrator
+├── panoramic/             : unified test runner (correctness + integration)
 ├── millstone/             : load generator
 ├── datadog-intake/        : mock Datadog API
-├── panoramic/             : integration test runner
 ├── airlock/               : container isolation lib
 └── stele/                 : telemetry data types
 

@@ -5,14 +5,19 @@ use saluki_io::compression::CompressionScheme;
 /// Metrics intake endpoint.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MetricsEndpoint {
-    /// Series metrics.
+    /// V1 series metrics, encoded as JSON and sent to `/api/v1/series`.
     ///
-    /// Includes counters, gauges, rates, and sets.
-    Series,
+    /// Includes counters, gauges, rates, and sets. Selected when `use_v2_api_series` is `false`.
+    SeriesV1,
 
-    /// Sketch metrics.
+    /// V2 series metrics, encoded as Protocol Buffers and sent to `/api/v2/series`.
     ///
-    /// Includes histograms and distributions.
+    /// Includes counters, gauges, rates, and sets. The default series encoding.
+    SeriesV2,
+
+    /// Sketch metrics, encoded as Protocol Buffers and sent to `/api/beta/sketches`.
+    ///
+    /// Includes histograms and distributions. Always uses the V2 endpoint regardless of `use_v2_api_series`.
     Sketches,
 }
 
@@ -21,7 +26,7 @@ impl MetricsEndpoint {
     pub fn from_metric(metric: &Metric) -> Self {
         match metric.values() {
             MetricValues::Counter(..) | MetricValues::Rate(..) | MetricValues::Gauge(..) | MetricValues::Set(..) => {
-                Self::Series
+                Self::SeriesV2
             }
             MetricValues::Histogram(..) | MetricValues::Distribution(..) => Self::Sketches,
         }

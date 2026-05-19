@@ -9,7 +9,7 @@ const PACKED_LEN_MASK: usize = usize::MAX >> (usize::BITS / 2);
 /// The upper half of the `usize` contains the capacity, while the lower half contains the length. This is useful for
 /// tracking both the capacity and length of a value in a more efficient way, when the known upper bound on the size of
 /// the values can be represented in half of the bits of `usize`, which on 64-bit platforms means being less than or
-/// equal to 4GB.
+/// equal to 4 GB.
 pub struct PackedLengthCapacity(usize);
 
 impl PackedLengthCapacity {

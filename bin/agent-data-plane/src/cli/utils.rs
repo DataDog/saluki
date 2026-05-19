@@ -1,11 +1,11 @@
-use bytes::Buf as _;
 use futures::TryFutureExt as _;
-use http::{uri::PathAndQuery, Request, Response, StatusCode, Uri};
+use http::{header::CONTENT_TYPE, uri::PathAndQuery, Request, Response, StatusCode, Uri};
 use http_body_util::BodyExt as _;
 use hyper::body::Incoming;
 use saluki_config::GenericConfiguration;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_io::net::{client::http::HttpClient, ListenAddress};
+use serde::{Deserialize, Serialize};
 
 use crate::config::DataPlaneConfiguration;
 
@@ -15,12 +15,25 @@ pub struct DataPlaneAPIClient {
     authority: String,
 }
 
+#[derive(Serialize)]
+struct DogStatsDCaptureBody<'a> {
+    duration: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    path: Option<&'a str>,
+    compressed: bool,
+}
+
+#[derive(Deserialize)]
+struct DogStatsDCaptureResponseBody {
+    path: String,
+}
+
 impl DataPlaneAPIClient {
     /// Creates a new `DataPlaneAPIClient` from the given generic configuration.
     ///
     /// # Errors
     ///
-    /// If the data plane configuration can't be deserialized, or the data plane API endpoints cannot be
+    /// If the data plane configuration can't be deserialized, or the data plane API endpoints can't be
     /// determined, an error will be returned.
     pub fn from_config(config: &GenericConfiguration) -> Result<Self, GenericError> {
         let dp_config = DataPlaneConfiguration::from_configuration(config)?;
@@ -171,6 +184,38 @@ impl DataPlaneAPIClient {
             .and_then(body_when_success)
     }
 
+    /// Starts a DogStatsD traffic capture.
+    ///
+    /// # Errors
+    ///
+    /// If the request fails, if ADP rejects the capture request, or if the response body can't be decoded, an error is
+    /// returned.
+    pub async fn dogstatsd_capture(
+        &mut self, duration: &str, path: Option<&str>, compressed: bool,
+    ) -> Result<String, GenericError> {
+        let uri = self.build_uri("/dogstatsd/capture/trigger", None);
+        let body = serde_json::to_string(&DogStatsDCaptureBody {
+            duration,
+            path,
+            compressed,
+        })
+        .error_context("Failed to serialize DogStatsD capture request.")?;
+        let req = Request::post(uri)
+            .header(CONTENT_TYPE, "application/json")
+            .body(body)
+            .expect("valid request");
+        let response_body = self
+            .client
+            .send(req)
+            .and_then(process_response_body)
+            .await
+            .and_then(body_when_capture_success)?;
+        let response = serde_json::from_str::<DogStatsDCaptureResponseBody>(&response_body)
+            .error_context("Failed to deserialize DogStatsD capture response.")?;
+
+        Ok(response.path)
+    }
+
     /// Retrieves the configuration of the process.
     ///
     /// This is a point-in-time snapshot of the configuration, which could change over time if dynamic configuration is enabled.
@@ -196,7 +241,7 @@ impl DataPlaneAPIClient {
     ///
     /// # Errors
     ///
-    /// If the request fails, or if the server responds with an unexpected status code, or if a workload provider is not
+    /// If the request fails, or if the server responds with an unexpected status code, or if a workload provider isn't
     /// configured, an error is returned.
     pub async fn workload_tags(&mut self) -> Result<String, GenericError> {
         let uri = self.build_uri("/workload/remote_agent/tags/dump", None);
@@ -215,7 +260,7 @@ impl DataPlaneAPIClient {
     ///
     /// # Errors
     ///
-    /// If the request fails, or if the server responds with an unexpected status code, or if a workload provider is not
+    /// If the request fails, or if the server responds with an unexpected status code, or if a workload provider isn't
     /// configured, an error is returned.
     pub async fn workload_external_data(&mut self) -> Result<String, GenericError> {
         let uri = self.build_uri("/workload/remote_agent/external_data/dump", None);
@@ -232,8 +277,10 @@ impl DataPlaneAPIClient {
 }
 
 async fn collect_body(body: Incoming) -> Option<String> {
-    let body = body.collect().await.ok()?.aggregate();
-    String::from_utf8(body.chunk().to_vec()).ok()
+    // `Collected::to_bytes()` merges all frames. Do not use `Buf::chunk().to_vec()` on an aggregated body: `chunk()`
+    // is only the first contiguous slice (often ~16 KiB), which truncates large JSON such as `/config` responses.
+    let bytes = body.collect().await.ok()?.to_bytes();
+    String::from_utf8(bytes.into()).ok()
 }
 
 async fn process_response_body(response: Response<Incoming>) -> Result<Response<String>, GenericError> {
@@ -245,6 +292,18 @@ async fn process_response_body(response: Response<Incoming>) -> Result<Response<
         Ok(Response::from_parts(parts, body))
     } else {
         Err(generic_error!("Received non-success response ({}): {}.", status, body))
+    }
+}
+
+fn body_when_capture_success(resp: Response<String>) -> Result<String, GenericError> {
+    match resp.status() {
+        status if status.is_success() => Ok(resp.into_body()),
+        StatusCode::BAD_REQUEST | StatusCode::PRECONDITION_FAILED => Err(generic_error!("{}", resp.into_body())),
+        status => Err(generic_error!(
+            "Failed to start DogStatsD capture ({}): {}.",
+            status,
+            resp.into_body()
+        )),
     }
 }
 
@@ -269,5 +328,47 @@ fn empty_when_success(resp: Response<String>) -> Result<(), GenericError> {
             resp.status(),
             resp.into_body()
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use http::{Response, StatusCode};
+
+    use super::body_when_capture_success;
+
+    #[test]
+    fn dogstatsd_capture_failed_precondition_surfaces_server_message() {
+        let response = Response::builder()
+            .status(StatusCode::PRECONDITION_FAILED)
+            .body("capture already in progress".to_string())
+            .expect("valid response");
+        let error = body_when_capture_success(response).expect_err("precondition failure should be an error");
+
+        assert_eq!(error.to_string(), "capture already in progress");
+    }
+
+    #[test]
+    fn dogstatsd_capture_invalid_argument_surfaces_server_message() {
+        let response = Response::builder()
+            .status(StatusCode::BAD_REQUEST)
+            .body("missing duration unit".to_string())
+            .expect("valid response");
+        let error = body_when_capture_success(response).expect_err("invalid arguments should be an error");
+
+        assert_eq!(error.to_string(), "missing duration unit");
+    }
+
+    #[test]
+    fn dogstatsd_capture_other_errors_keep_context() {
+        let response = Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .body("route not found".to_string())
+            .expect("valid response");
+        let error = body_when_capture_success(response).expect_err("unexpected status should be an error");
+
+        let message = error.to_string();
+        assert!(message.contains("Failed to start DogStatsD capture"));
+        assert!(message.contains("route not found"));
     }
 }

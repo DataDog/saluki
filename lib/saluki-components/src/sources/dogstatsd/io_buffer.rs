@@ -23,7 +23,7 @@ use tracing::trace;
 ///
 /// This wrapper provides two basic behaviors:
 ///
-/// - acquire a new buffer when the current buffer does not exist
+/// - acquire a new buffer when the current buffer doesn't exist
 /// - retain the current buffer (and collapse it) if there is remaining data, _or_ release it if there is no remaining data
 ///
 /// When the current buffer still has remaining data, we must preserve the buffer and its data as we could otherwise be
@@ -38,8 +38,8 @@ use tracing::trace;
 ///
 /// For connectionless streams, the current buffer is never released and is always reused. This is because
 /// connectionless streams are often higher volume in terms of the number of socket reads that occur, and are a fixed
-/// number that does not change with the amount of traffic that is being sent. This allows us to reduce the overhead
-/// related to acquiring and releasing buffers, ensuring that these inherently lossy streams are not introducing
+/// number that doesn't change with the amount of traffic that's being sent. This allows us to reduce the overhead
+/// related to acquiring and releasing buffers, ensuring that these inherently lossy streams aren't introducing
 /// additional overhead that might cause unnecessary packet loss.
 pub struct IoBufferManager<'a, O>
 where

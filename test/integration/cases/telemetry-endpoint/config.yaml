@@ -1,6 +1,7 @@
+type: integration
 name: "telemetry-endpoint"
 description: "Verifies the internal telemetry endpoint is accessible"
-timeout: 60s
+timeout: 90s
 
 container:
   image: "saluki-images/datadog-agent:testing-devel"
@@ -10,7 +11,6 @@ container:
     DD_DATA_PLANE_ENABLED: "true"
     DD_DATA_PLANE_STANDALONE_MODE: "true"
     DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
-    DD_DATA_PLANE_TELEMETRY_ENABLED: "true"
     DD_DATA_PLANE_TELEMETRY_LISTEN_ADDR: "tcp://0.0.0.0:5102"
   exposed_ports:
     - "5102/tcp"
@@ -28,9 +28,15 @@ assertions:
         port: 5102
         protocol: tcp
         timeout: 10s
-      - type: health_check
+      - type: http_check
         endpoint: "http://localhost:5102/metrics"
-        expected_status: 200
+        status:
+          equal: 200
+        timeout: 10s
+      - type: http_check
+        endpoint: "http://localhost:5102/compat/metrics"
+        status:
+          equal: 200
         timeout: 10s
       - type: log_not_contains
         pattern: "panic|PANIC"

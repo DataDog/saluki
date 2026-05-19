@@ -36,7 +36,7 @@ pub enum MathOp {
 pub enum IndexExpr {
     /// String index like ["key"]
     String(String),
-    /// Integer index like [0]
+    /// Integer index like \[0\]
     Int(usize),
 }
 
@@ -46,7 +46,7 @@ pub enum IndexExpr {
 /// `resource.attributes["key"]`, there are two fields: `Field { name: "resource", keys: [] }`
 /// and `Field { name: "attributes", keys: [IndexExpr::String("key")] }`.
 ///
-/// Pre-allocated at parse time and stored in [`ResolvedPath`]; on the hot path the evaluator
+/// Pre-allocated at parse time and stored in `ResolvedPath`; on the hot path the evaluator
 /// passes `&[Field]` by reference with zero allocation and zero copy.
 #[derive(Debug, Clone)]
 pub struct Field {

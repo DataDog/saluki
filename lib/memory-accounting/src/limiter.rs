@@ -19,12 +19,12 @@ use crate::MemoryGrant;
 ///
 /// `MemoryLimiter` watches the process's physical memory usage (Resident Set Size/Working Set) and keeps track of when
 /// the usage exceeds the configured limit. Cooperating tasks call `wait_for_capacity` to participate in accepting
-/// backpressure that can be used to throttle work that is responsible for allocating memory.
+/// backpressure that can be used to throttle work that's responsible for allocating memory.
 ///
 /// The backpressure is scaled based on how close the memory usage is to the configured limit, with a minimum and
-/// maximum backoff duration that is applied. This means that until we are using a certain percentage of the configured
+/// maximum backoff duration that's applied. This means that until we're using a certain percentage of the configured
 /// limit, no backpressure is applied. Once that threshold is crossed, backpressure is applied proportionally to how
-/// close to the limit we are. Callers are never fully blocked even if the limit is reached.
+/// close to the limit we're. Callers are never fully blocked even if the limit is reached.
 #[derive(Clone)]
 pub struct MemoryLimiter {
     active_backoff_nanos: Arc<AtomicU64>,
@@ -37,8 +37,8 @@ impl MemoryLimiter {
     /// `wait_for_capacity` will observe waiting once the memory usage exceeds the configured limit threshold. The
     /// waiting time will scale progressively the closer the memory usage is to the configured limit.
     ///
-    /// Defaults to a 95% threshold (i.e. threshold begins at 95% of the limit), a minimum backoff duration of 1ms, and
-    /// a maximum backoff duration of 25ms. The effective limit of the grant is used as the memory limit.
+    /// Defaults to a 95% threshold (that's, threshold begins at 95% of the limit), a minimum backoff duration of 1 ms, and
+    /// a maximum backoff duration of 25 ms. The effective limit of the grant is used as the memory limit.
     pub fn new(grant: MemoryGrant) -> Option<Self> {
         // Smoke test to see if we can even collect memory stats on this system.
         Querier::default().resident_set_size()?;
@@ -67,7 +67,7 @@ impl MemoryLimiter {
         Some(Self { active_backoff_nanos })
     }
 
-    /// Creates a no-op `MemoryLimiter` that does not perform any limiting.
+    /// Creates a no-op `MemoryLimiter` that doesn't perform any limiting.
     ///
     /// All calls to `wait_for_capacity` will return immediately.
     pub fn noop() -> Self {
@@ -78,7 +78,7 @@ impl MemoryLimiter {
 
     /// Waits a short period of time based on the available memory.
     ///
-    /// If the used memory is not within the threshold of the configured limit, no waiting will occur. Otherwise, the
+    /// If the used memory isn't within the threshold of the configured limit, no waiting will occur. Otherwise, the
     /// call will wait a variable amount of time depending on how close to the configured limit the process is.
     pub async fn wait_for_capacity(&self) {
         let active_backoff_nanos = self.active_backoff_nanos.load(Relaxed);

@@ -52,7 +52,7 @@ pub trait DispatchBuffer: Dispatchable + Default {
 
     /// Attempts to push an item into the buffer.
     ///
-    /// Returns `Some(item)` if the buffer is full and the item could not be pushed.
+    /// Returns `Some(item)` if the buffer is full and the item couldn't be pushed.
     fn try_push(&mut self, item: Self::Item) -> Option<Self::Item>;
 }
 
@@ -283,7 +283,7 @@ where
     ///
     /// # Errors
     ///
-    /// If the output does not exist, an error is returned.
+    /// If the output doesn't exist, an error is returned.
     pub fn attach_sender_to_output(
         &mut self, output_name: &OutputName, sender: mpsc::Sender<T>,
     ) -> Result<(), GenericError> {
@@ -328,7 +328,7 @@ where
     ///
     /// # Errors
     ///
-    /// If the default output is not set, or there is an error sending to the default output, an error is returned.
+    /// If the default output isn't set, or there is an error sending to the default output, an error is returned.
     pub async fn dispatch(&self, item: T) -> Result<(), GenericError> {
         self.dispatch_inner(None, item).await
     }
@@ -337,7 +337,7 @@ where
     ///
     /// # Errors
     ///
-    /// If a output of the given name is not set, or there is an error sending to the output, an error is returned.
+    /// If a output of the given name isn't set, or there is an error sending to the output, an error is returned.
     pub async fn dispatch_named<N>(&self, output_name: N, item: T) -> Result<(), GenericError>
     where
         N: AsRef<str>,
@@ -363,31 +363,65 @@ where
 {
     /// Creates a buffered dispatcher for the default output.
     ///
-    /// This should generally be used if the items being dispatched are not already collected in a container, or exposed
+    /// This should generally be used if the items being dispatched aren't already collected in a container, or exposed
     /// via an iterable type. It allows for efficiently buffering items one-by-one before dispatching them to the
     /// underlying output.
     ///
     /// # Errors
     ///
-    /// If the default output has not been configured, an error will be returned.
+    /// If the default output hasn't been configured, an error will be returned.
     pub fn buffered(&self) -> Result<BufferedDispatcher<'_, T>, GenericError> {
         self.get_default_output().map(BufferedDispatcher::new)
     }
 
     /// Creates a buffered dispatcher for the given named output.
     ///
-    /// This should generally be used if the items being dispatched are not already collected in a container, or exposed
+    /// This should generally be used if the items being dispatched aren't already collected in a container, or exposed
     /// via an iterable type. It allows for efficiently buffering items one-by-one before dispatching them to the
     /// underlying output.
     ///
     /// # Errors
     ///
-    /// If the given named output has not been configured, an error will be returned.
+    /// If the given named output hasn't been configured, an error will be returned.
     pub fn buffered_named<N>(&self, output_name: N) -> Result<BufferedDispatcher<'_, T>, GenericError>
     where
         N: AsRef<str>,
     {
         self.get_named_output(output_name.as_ref()).map(BufferedDispatcher::new)
+    }
+
+    /// Dispatches a single item to the default output.
+    ///
+    /// # Errors
+    ///
+    /// If the default output isn't set, or there is an error sending to the default output, an error is returned.
+    pub async fn dispatch_one(&self, item: T::Item) -> Result<(), GenericError> {
+        self.dispatch_one_inner(None, item).await
+    }
+
+    /// Dispatches a single item to the given named output.
+    ///
+    /// # Errors
+    ///
+    /// If an output of the given name isn't set, or there is an error sending to the output, an error is returned.
+    pub async fn dispatch_one_named<N>(&self, output_name: N, item: T::Item) -> Result<(), GenericError>
+    where
+        N: AsRef<str>,
+    {
+        self.dispatch_one_inner(Some(output_name.as_ref()), item).await
+    }
+
+    async fn dispatch_one_inner(&self, output_name: Option<&str>, item: T::Item) -> Result<(), GenericError> {
+        let target = match output_name {
+            None => self.get_default_output()?,
+            Some(name) => self.get_named_output(name)?,
+        };
+
+        let mut buffer = T::default();
+        if buffer.try_push(item).is_some() {
+            return Err(generic_error!("Default-constructed buffer rejected a single item."));
+        }
+        target.send(buffer).await
     }
 }
 
@@ -1025,5 +1059,58 @@ mod tests {
             !dispatcher.is_named_output_connected("nonexistent_output"),
             "should return false for nonexistent output"
         );
+    }
+
+    #[tokio::test]
+    async fn default_output_dispatch_one() {
+        // Dispatch a single item to the default output and confirm it arrives wrapped in a one-element buffer.
+        let mut dispatcher = buffered_dispatcher::<FixedUsizeVec<4>>();
+
+        let (tx, mut rx) = mpsc::channel(1);
+        add_dispatcher_default_output(&mut dispatcher, [tx]);
+
+        let input_item = 42;
+
+        dispatcher.dispatch_one(input_item).await.unwrap();
+
+        let output_item = rx.try_recv().expect("input item should have been dispatched");
+        assert_eq!(output_item.len(), 1);
+        assert_eq!(output_item[0], input_item);
+    }
+
+    #[tokio::test]
+    async fn named_output_dispatch_one() {
+        // Same as above but for a named output.
+        let mut dispatcher = buffered_dispatcher::<FixedUsizeVec<4>>();
+
+        let output_name = "single";
+        let (tx, mut rx) = mpsc::channel(1);
+        add_dispatcher_named_output(&mut dispatcher, output_name, [tx]);
+
+        let input_item = 42;
+
+        dispatcher.dispatch_one_named(output_name, input_item).await.unwrap();
+
+        let output_item = rx.try_recv().expect("input item should have been dispatched");
+        assert_eq!(output_item.len(), 1);
+        assert_eq!(output_item[0], input_item);
+    }
+
+    #[tokio::test]
+    async fn default_output_dispatch_one_not_set() {
+        // dispatch_one without a default output configured should error.
+        let dispatcher = buffered_dispatcher::<FixedUsizeVec<4>>();
+
+        let result = dispatcher.dispatch_one(42).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn named_output_dispatch_one_not_set() {
+        // dispatch_one_named on an unknown output should error.
+        let dispatcher = buffered_dispatcher::<FixedUsizeVec<4>>();
+
+        let result = dispatcher.dispatch_one_named("nonexistent", 42).await;
+        assert!(result.is_err());
     }
 }

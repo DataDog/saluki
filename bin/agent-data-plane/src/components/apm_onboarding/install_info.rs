@@ -1,12 +1,11 @@
 use std::io::ErrorKind;
 
+use datadog_agent_commons::platform::PlatformSettings;
 use saluki_common::time::get_unix_timestamp;
 use saluki_error::{ErrorContext as _, GenericError};
 use serde::{Deserialize, Serialize};
 use stringtheory::MetaString;
 use uuid::Uuid;
-
-use crate::internal::platform::PlatformSettings;
 
 static INSTALL_TYPE_DEFAULT: MetaString = MetaString::from_static("manual");
 static INSTALL_TYPE_DOCKER_DEFAULT: MetaString = MetaString::from_static("docker_manual");
@@ -35,7 +34,7 @@ impl InstallInfo {
     ///
     /// # Errors
     ///
-    /// If the default installation info path cannot be read or written to, or if there is an error during serialization
+    /// If the default installation info path can't be read or written to, or if there is an error during serialization
     /// or deserialization of the installation info, an error will be returned.
     pub async fn load_or_create() -> Result<Self, GenericError> {
         let path = PlatformSettings::get_config_dir_path().join("install.json");

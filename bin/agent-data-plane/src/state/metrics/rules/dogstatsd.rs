@@ -4,6 +4,26 @@ pub fn get_dogstatsd_remappings() -> Vec<RemapperRule> {
     vec![
         // DogStatsD metrics.
         RemapperRule::by_name_and_tags(
+            "adp.metric_filterlist_size",
+            &["component_id:dsd_prefix_filter"],
+            "datadog.agent.filterlist.size",
+        ),
+        RemapperRule::by_name_and_tags(
+            "adp.metric_filterlist_updates_total",
+            &["component_id:dsd_prefix_filter"],
+            "datadog.agent.filterlist.updates",
+        ),
+        RemapperRule::by_name_and_tags(
+            "adp.dogstatsd_listener_filtered_points_total",
+            &["component_id:dsd_prefix_filter"],
+            "datadog.agent.dogstatsd.listener_filtered_points",
+        ),
+        RemapperRule::by_name_and_tags(
+            "adp.dogstatsd_post_aggregate_filtered_metrics_total",
+            &["component_id:dsd_post_agg_filter"],
+            "datadog.agent.aggregator.dogstatsd_filtered_metrics",
+        ),
+        RemapperRule::by_name_and_tags(
             "adp.object_pool_acquired",
             &["pool_name:dsd_packet_bufs"],
             "dogstatsd.packet_pool_get",
@@ -75,13 +95,5 @@ pub fn get_dogstatsd_remappings() -> Vec<RemapperRule> {
         )
         .with_original_tags(["message_type"])
         .with_additional_tags(["state:error"]),
-        // NOTE: The Agent-side metric does not have the `_secs` suffix, and is in nanoseconds, which is why we're
-        // slightly deviating here.
-        RemapperRule::by_name_and_tags(
-            "adp.component_send_latency_seconds",
-            &["component_id:dsd_in"],
-            "dogstatsd.channel_latency_secs",
-        )
-        .with_remapped_tags([("output", "message_type")]),
     ]
 }

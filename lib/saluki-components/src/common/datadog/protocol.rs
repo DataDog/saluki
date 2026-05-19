@@ -82,7 +82,7 @@ impl MetricsPayloadInfo {
 }
 
 /// V3 API settings for a specific metric type (series or sketches).
-#[derive(Clone, Debug, Deserialize, Facet)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Facet)]
 pub struct V3ApiSettings {
     /// Endpoints that should receive V3 payloads for this metric type.
     ///
@@ -130,7 +130,7 @@ impl V3ApiSettings {
 }
 
 /// V3 API configuration for per-endpoint V3 support.
-#[derive(Clone, Debug, Default, Deserialize, Facet)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Facet)]
 pub struct V3ApiConfig {
     /// V3 settings for series metrics (counters, gauges, rates, sets).
     #[serde(default)]

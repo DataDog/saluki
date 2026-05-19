@@ -63,7 +63,7 @@ impl Assertion for LogContainsAssertion {
                 };
             }
 
-            if ctx.cancel_token.is_cancelled() {
+            if ctx.cancel_token.is_cancelled() || ctx.container_exit_token.is_cancelled() {
                 return AssertionResult {
                     name: self.name().to_string(),
                     passed: false,
@@ -97,7 +97,7 @@ impl Assertion for LogContainsAssertion {
     }
 }
 
-/// Assertion that checks a pattern does NOT appear in the logs for a duration.
+/// Assertion that checks a pattern doesn't appear in the logs for a duration.
 pub struct LogNotContainsAssertion {
     pattern: String,
     is_regex: bool,
@@ -157,7 +157,7 @@ impl Assertion for LogNotContainsAssertion {
                 };
             }
 
-            if ctx.cancel_token.is_cancelled() {
+            if ctx.cancel_token.is_cancelled() || ctx.container_exit_token.is_cancelled() {
                 return AssertionResult {
                     name: self.name().to_string(),
                     passed: false,

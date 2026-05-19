@@ -112,8 +112,8 @@ impl ClientTLSConfigBuilder {
     ///
     /// # Errors
     ///
-    /// If the default root cert store (see [`load_platform_root_certificates`]) has not been initialized, and a root
-    /// cert store has not been provided, or if the resulting configuration is not FIPS compliant, an error will be
+    /// If the default root cert store (see [`load_platform_root_certificates`]) hasn't been initialized, and a root
+    /// cert store hasn't been provided, or if the resulting configuration isn't FIPS compliant, an error will be
     /// returned.
     pub fn build(self) -> Result<ClientConfig, GenericError> {
         let max_tls12_resumption_sessions = self

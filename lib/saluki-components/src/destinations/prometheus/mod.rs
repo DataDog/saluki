@@ -1,3 +1,9 @@
+//! Prometheus destination.
+//!
+//! # Missing
+//!
+//! - Use `DynamicShutdownCoordinator` so shutdown can be triggered and all HTTP connections can drain.
+
 use std::{
     convert::Infallible,
     num::NonZeroUsize,
@@ -6,7 +12,7 @@ use std::{
 
 use async_trait::async_trait;
 use ddsketch::DDSketch;
-use http::{Request, Response};
+use http::{Request, Response, StatusCode};
 use hyper::{body::Incoming, service::service_fn};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use prometheus_exposition::{MetricType, PrometheusRenderer};
@@ -34,6 +40,8 @@ use tracing::debug;
 const CONTEXT_LIMIT: usize = 10_000;
 const PAYLOAD_SIZE_LIMIT_BYTES: usize = 1024 * 1024;
 const TAGS_BUFFER_SIZE_LIMIT_BYTES: usize = 2048;
+const RAW_METRICS_PATH: &str = "/metrics";
+const LEGACY_RAW_METRICS_PATH: &str = "/";
 
 // Histogram-related constants and pre-calculated buckets.
 const TIME_HISTOGRAM_BUCKET_COUNT: usize = 30;
@@ -46,6 +54,27 @@ static NON_TIME_HISTOGRAM_BUCKETS: LazyLock<[(f64, &'static str); NON_TIME_HISTO
 
 // SAFETY: This is obviously not zero.
 const METRIC_NAME_STRING_INTERNER_BYTES: NonZeroUsize = NonZeroUsize::new(65536).unwrap();
+
+/// Provides a Prometheus scrape payload for an additional route.
+pub trait PrometheusPayloadProvider: Send + Sync {
+    /// Renders the current Prometheus text payload.
+    fn render_payload(&self) -> String;
+}
+
+impl<F> PrometheusPayloadProvider for F
+where
+    F: Fn() -> String + Send + Sync,
+{
+    fn render_payload(&self) -> String {
+        self()
+    }
+}
+
+#[derive(Clone)]
+struct PrometheusAdditionalRoute {
+    path: String,
+    provider: Arc<dyn PrometheusPayloadProvider>,
+}
 
 /// Prometheus destination.
 ///
@@ -68,12 +97,29 @@ const METRIC_NAME_STRING_INTERNER_BYTES: NonZeroUsize = NonZeroUsize::new(65536)
 pub struct PrometheusConfiguration {
     #[serde(rename = "prometheus_listen_addr")]
     listen_addr: ListenAddress,
+
+    #[serde(skip)]
+    additional_routes: Vec<PrometheusAdditionalRoute>,
 }
 
 impl PrometheusConfiguration {
     /// Creates a new `PrometheusConfiguration` for the given listen address.
     pub fn from_listen_address(listen_addr: ListenAddress) -> Self {
-        Self { listen_addr }
+        Self {
+            listen_addr,
+            additional_routes: Vec::new(),
+        }
+    }
+
+    /// Adds an additional scrape route backed by the given payload provider.
+    pub fn with_additional_route(
+        mut self, path: impl Into<String>, provider: Arc<dyn PrometheusPayloadProvider>,
+    ) -> Self {
+        self.additional_routes.push(PrometheusAdditionalRoute {
+            path: path.into(),
+            provider,
+        });
+        self
     }
 }
 
@@ -86,6 +132,7 @@ impl DestinationBuilder for PrometheusConfiguration {
     async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Destination + Send>, GenericError> {
         Ok(Box::new(Prometheus {
             listener: ConnectionOrientedListener::from_listen_address(self.listen_addr.clone()).await?,
+            additional_routes: self.additional_routes.clone(),
             metrics: FastIndexMap::default(),
             payload: Arc::new(RwLock::new(String::new())),
             renderer: PrometheusRenderer::new(),
@@ -114,6 +161,7 @@ impl MemoryBounds for PrometheusConfiguration {
 
 struct Prometheus {
     listener: ConnectionOrientedListener,
+    additional_routes: Vec<PrometheusAdditionalRoute>,
     metrics: FastIndexMap<PrometheusContext, FastIndexMap<Context, PrometheusValue>>,
     payload: Arc<RwLock<String>>,
     renderer: PrometheusRenderer,
@@ -125,6 +173,7 @@ impl Destination for Prometheus {
     async fn run(mut self: Box<Self>, mut context: DestinationContext) -> Result<(), GenericError> {
         let Self {
             listener,
+            additional_routes,
             mut metrics,
             payload,
             mut renderer,
@@ -133,7 +182,8 @@ impl Destination for Prometheus {
 
         let mut health = context.take_health_handle();
 
-        let (http_shutdown, mut http_error) = spawn_prom_scrape_service(listener, Arc::clone(&payload));
+        let (http_shutdown, mut http_error) =
+            spawn_prom_scrape_service(listener, Arc::clone(&payload), additional_routes);
         health.mark_ready();
 
         debug!("Prometheus destination started.");
@@ -206,17 +256,37 @@ impl Destination for Prometheus {
 
 fn spawn_prom_scrape_service(
     listener: ConnectionOrientedListener, payload: Arc<RwLock<String>>,
+    additional_routes: Vec<PrometheusAdditionalRoute>,
 ) -> (ShutdownHandle, ErrorHandle) {
-    let service = service_fn(move |_: Request<Incoming>| {
+    let additional_routes = Arc::new(additional_routes);
+    let service = service_fn(move |req: Request<Incoming>| {
         let payload = Arc::clone(&payload);
+        let additional_routes = Arc::clone(&additional_routes);
         async move {
-            let payload = payload.read().await;
-            Ok::<_, Infallible>(Response::new(axum::body::Body::from(payload.to_string())))
+            Ok::<_, Infallible>(build_scrape_response(req.uri().path(), &payload, additional_routes.as_ref()).await)
         }
     });
 
     let http_server = HttpServer::from_listener(listener, service);
     http_server.listen()
+}
+
+async fn build_scrape_response(
+    path: &str, payload: &Arc<RwLock<String>>, additional_routes: &[PrometheusAdditionalRoute],
+) -> Response<axum::body::Body> {
+    if path == RAW_METRICS_PATH || path == LEGACY_RAW_METRICS_PATH {
+        let payload = payload.read().await;
+        return Response::new(axum::body::Body::from(payload.to_string()));
+    }
+
+    if let Some(route) = additional_routes.iter().find(|route| route.path == path) {
+        return Response::new(axum::body::Body::from(route.provider.render_payload()));
+    }
+
+    Response::builder()
+        .status(StatusCode::NOT_FOUND)
+        .body(axum::body::Body::empty())
+        .expect("response builder should accept static status and empty body")
 }
 
 #[allow(clippy::mutable_key_type)]
@@ -437,7 +507,7 @@ impl PrometheusHistogram {
 
     fn merge_histogram(&mut self, histogram: &Histogram) {
         for sample in histogram.samples() {
-            self.add_sample(sample.value.into_inner(), sample.weight);
+            self.add_sample(sample.value.into_inner(), sample.weight.0 as u64);
         }
     }
 
@@ -494,6 +564,8 @@ fn histogram_buckets<const N: usize>(base: f64, scale: f64) -> [(f64, &'static s
 
 #[cfg(test)]
 mod tests {
+    use http_body_util::BodyExt as _;
+
     use super::*;
 
     #[test]
@@ -535,5 +607,47 @@ mod tests {
             // Adjust the expected bucket count to fully account for the current sample before moving on.
             expected_bucket_count += sample.1;
         }
+    }
+
+    #[tokio::test]
+    async fn scrape_routes_serve_raw_compat_and_404() {
+        let payload = Arc::new(RwLock::new("raw".to_string()));
+        let routes = vec![PrometheusAdditionalRoute {
+            path: "/compat/metrics".to_string(),
+            provider: Arc::new(|| "compat".to_string()),
+        }];
+
+        let raw_response = build_scrape_response("/metrics", &payload, &routes).await;
+        assert_eq!(raw_response.status(), StatusCode::OK);
+        let raw_body = raw_response
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        assert_eq!(&raw_body[..], b"raw");
+
+        let legacy_response = build_scrape_response("/", &payload, &routes).await;
+        assert_eq!(legacy_response.status(), StatusCode::OK);
+        let legacy_body = legacy_response
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        assert_eq!(&legacy_body[..], b"raw");
+
+        let compat_response = build_scrape_response("/compat/metrics", &payload, &routes).await;
+        assert_eq!(compat_response.status(), StatusCode::OK);
+        let compat_body = compat_response
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        assert_eq!(&compat_body[..], b"compat");
+
+        let missing_response = build_scrape_response("/missing", &payload, &routes).await;
+        assert_eq!(missing_response.status(), StatusCode::NOT_FOUND);
     }
 }

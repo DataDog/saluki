@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "all-conf-keys.schema.json",
+  "title": "All Config Keys",
+  "description": "Cross-reference of all discovered config keys with their classification status and source locations. Written to {{tmp}}/all-conf-keys.json during the Discover phase. Keys confirmed as not-applicable are excluded; keys in known-configs.json are Status=known; everything else is Status=unreviewed.",
+  "type": "array",
+  "uniqueItems": true,
+  "items": {
+    "type": "object",
+    "required": ["ConfKey", "Status", "RefImpl", "AdpImpl"],
+    "additionalProperties": false,
+    "properties": {
+      "ConfKey": {
+        "type": "string",
+        "description": "Exact config key name."
+      },
+      "Status": {
+        "type": "string",
+        "enum": ["known", "unreviewed"],
+        "description": "known = already in known-configs.json; unreviewed = needs classification."
+      },
+      "RefImpl": {
+        "type": ["string", "null"],
+        "description": "Source location in datadog-agent, e.g. 'pkg/config/setup/common_settings.go:1596'. Null if key exists only in AdpImpl."
+      },
+      "AdpImpl": {
+        "type": ["string", "null"],
+        "description": "Source location in Saluki, e.g. 'lib/saluki-components/src/transforms/aggregate/config.rs:79'. Null if key exists only in RefImpl."
+      }
+    }
+  }
+}

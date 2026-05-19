@@ -136,7 +136,7 @@ impl ComponentMetadata {
 /// destination within it could be subcomponents of the topology.
 ///
 /// Components are generally meant to be tied to something that has its own memory bounds and is somewhat "standalone",
-/// but this is not an absolute requirement and components can be nested more granularly for organizational/aesthetic
+/// but this isn't an absolute requirement and components can be nested more granularly for organizational/aesthetic
 /// purposes. Again, for example, one might opt to create a component in their topology for each component type --
 /// sources, transforms, and destinations -- and then add the actual instances of those components as subcomponents to
 /// each grouping, leading to a nested structure such as `topology/sources/source1`, `topology/transforms/transform1`,
@@ -147,7 +147,7 @@ impl ComponentMetadata {
 /// Every component is able to define memory bounds for itself and its subcomponents. A builder-style API is exposed to
 /// allow for ergonomically defining these bounds -- both minimum and firm -- for components, as well as extending the
 /// nestable aspect of the registry itself to the bounds builder, allowing for flexibility in where components are
-/// defined from and how they are nested.
+/// defined from and how they're nested.
 ///
 /// ## Allocation tracking
 ///
@@ -156,9 +156,25 @@ impl ComponentMetadata {
 /// allocator with components that are never actually used, such as those used for organizational/aesthetic purposes.
 pub struct ComponentRegistry {
     inner: Arc<Mutex<ComponentMetadata>>,
+    root: Option<Arc<Mutex<ComponentMetadata>>>,
 }
 
 impl ComponentRegistry {
+    fn get_root(&self) -> Arc<Mutex<ComponentMetadata>> {
+        match &self.root {
+            Some(root) => Arc::clone(root),
+            None => Arc::clone(&self.inner),
+        }
+    }
+
+    /// Creates a handle to this registry.
+    ///
+    /// The handle provides read-only access to root-level operations like creating API handlers and verifying bounds. It
+    /// can be freely cloned and shared.
+    pub fn root(&self) -> ComponentRegistryHandle {
+        ComponentRegistryHandle { inner: self.get_root() }
+    }
+
     /// Gets a component by name, or creates it if it doesn't exist.
     ///
     /// The name provided can be given in a direct (`component_name`) or nested (`path.to.component_name`) form. If the
@@ -172,6 +188,7 @@ impl ComponentRegistry {
         let mut inner = self.inner.lock().unwrap();
         Self {
             inner: inner.get_or_create(name),
+            root: Some(self.get_root()),
         }
     }
 
@@ -180,6 +197,7 @@ impl ComponentRegistry {
         MemoryBoundsBuilder {
             inner: Self {
                 inner: Arc::clone(&self.inner),
+                root: Some(self.get_root()),
             },
             _lt: PhantomData,
         }
@@ -187,13 +205,31 @@ impl ComponentRegistry {
 
     /// Gets the tracking token for the component scoped to this registry.
     ///
-    /// If the component is the root component (has no name), the root allocation token is returned.  Otherwise, the
+    /// If the component is the root component (has no name), the root allocation token is returned. Otherwise, the
     /// component is registered (using its full name) if it hasn't already been, and that token is returned.
     pub fn token(&mut self) -> AllocationGroupToken {
         let mut inner = self.inner.lock().unwrap();
         inner.token()
     }
 
+    /// Gets the total minimum required bytes for this component and all subcomponents.
+    pub fn as_bounds(&self) -> ComponentBounds {
+        self.inner.lock().unwrap().as_bounds()
+    }
+}
+
+/// A cloneable, read-only handle to a component registry.
+///
+/// This handle provides access to read-only operations such as creating an API handler or verifying bounds. Unlike
+/// [`ComponentRegistry`], it can be freely cloned and shared across ownership boundaries.
+///
+/// Obtained via [`ComponentRegistry::root`].
+#[derive(Clone)]
+pub struct ComponentRegistryHandle {
+    inner: Arc<Mutex<ComponentMetadata>>,
+}
+
+impl ComponentRegistryHandle {
     /// Validates that all components are able to respect the calculated effective limit.
     ///
     /// If validation succeeds, `VerifiedBounds` is returned, which provides information about the effective limit that
@@ -210,7 +246,7 @@ impl ComponentRegistry {
         BoundsVerifier::new(initial_grant, bounds).verify()
     }
 
-    /// Gets an API handler for reporting the memory bounds and usage of all components.
+    /// Gets an API handler for reporting the memory bounds and usage of all component in the registry.
     ///
     /// This handler exposes routes for querying the memory bounds and usage of all registered components. See
     /// [`MemoryAPIHandler`] for more information about routes and responses.
@@ -218,9 +254,23 @@ impl ComponentRegistry {
         MemoryAPIHandler::from_state(Arc::clone(&self.inner))
     }
 
-    /// Gets the total minimum required bytes for this component and all subcomponents.
+    /// Gets the total minimum required bytes for all components in the registry.
+    ///
+    /// See [`ComponentRegistry::as_bounds`] for more details.
     pub fn as_bounds(&self) -> ComponentBounds {
         self.inner.lock().unwrap().as_bounds()
+    }
+}
+
+impl ComponentRegistry {
+    #[cfg(test)]
+    fn inner_ptr_eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.inner, &other.inner)
+    }
+
+    #[cfg(test)]
+    fn root_ptr_eq(&self, handle: &ComponentRegistryHandle) -> bool {
+        Arc::ptr_eq(&self.get_root(), &handle.inner)
     }
 }
 
@@ -228,6 +278,7 @@ impl Default for ComponentRegistry {
     fn default() -> Self {
         Self {
             inner: Arc::new(Mutex::new(ComponentMetadata::from_full_name(None))),
+            root: None,
         }
     }
 }
@@ -298,7 +349,7 @@ impl MemoryBoundsBuilder<'_> {
 
     /// Gets a builder object for defining the firm bounds of the current component.
     ///
-    /// The firm limit is additive with the minimum required memory, so entries that are added via `minimum` do not need
+    /// The firm limit is additive with the minimum required memory, so entries that are added via `minimum` don't need
     /// to be added again here.
     pub fn firm(&mut self) -> BoundsBuilder<'_, Firm> {
         let bounds = self.inner.inner.lock().unwrap();
@@ -360,7 +411,7 @@ impl<'a, S: BoundsMutator> BoundsBuilder<'a, S> {
     ///
     /// This is useful for tracking the expected memory usage of a single instance of a type if that type is heap
     /// allocated. For example, components that are spawned by a topology generally end up being boxed, which means a
-    /// heap allocation exists that is the size of the component type.
+    /// heap allocation exists that's the size of the component type.
     pub fn with_single_value<T>(&mut self, name: impl Into<String>) -> &mut Self {
         S::add_usage(&mut self.inner.bounds, UsageExpr::struct_size::<T>(name));
         self
@@ -413,5 +464,61 @@ impl<'a, S: BoundsMutator> BoundsBuilder<'a, S> {
     pub fn with_expr(&mut self, expr: UsageExpr) -> &mut Self {
         S::add_usage(&mut self.inner.bounds, expr);
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn root_handle_from_root_registry_points_to_root() {
+        let registry = ComponentRegistry::default();
+        let handle = registry.root();
+
+        assert!(registry.root_ptr_eq(&handle));
+    }
+
+    #[test]
+    fn root_handle_from_subcomponent_points_to_root() {
+        let registry = ComponentRegistry::default();
+        let child = registry.get_or_create("child");
+
+        let handle = child.root();
+
+        assert!(registry.root_ptr_eq(&handle));
+        assert!(!child.inner_ptr_eq(&registry));
+    }
+
+    #[test]
+    fn root_handle_from_deeply_nested_subcomponent_points_to_root() {
+        let registry = ComponentRegistry::default();
+        let grandchild = registry.get_or_create("child").get_or_create("grandchild");
+
+        let handle = grandchild.root();
+
+        assert!(registry.root_ptr_eq(&handle));
+    }
+
+    #[test]
+    fn root_handle_from_dotted_path_subcomponent_points_to_root() {
+        let registry = ComponentRegistry::default();
+        let nested = registry.get_or_create("a.b.c");
+
+        let handle = nested.root();
+
+        assert!(registry.root_ptr_eq(&handle));
+    }
+
+    #[test]
+    fn cloned_handle_points_to_root() {
+        let registry = ComponentRegistry::default();
+        let child = registry.get_or_create("child");
+
+        let handle = child.root();
+        let cloned = handle.clone();
+
+        assert!(Arc::ptr_eq(&handle.inner, &cloned.inner));
+        assert!(registry.root_ptr_eq(&cloned));
     }
 }

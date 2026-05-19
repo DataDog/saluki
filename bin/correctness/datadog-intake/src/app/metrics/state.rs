@@ -92,9 +92,13 @@ impl MetricsState {
         }
     }
 
-    pub fn merge_series_payload(&self, payload: MetricPayload) -> Result<(), GenericError> {
-        let metrics = Metric::try_from_series(payload)?;
-        self.metrics.lock().unwrap().extend(metrics);
+    /// Merges the given series v2 payload into the current metrics state.
+    pub fn merge_series_v2_payload(&self, payload: MetricPayload) -> Result<(), GenericError> {
+        let metrics = Metric::try_from_series_v2(payload)?;
+
+        let mut data = self.metrics.lock().unwrap();
+        data.extend(metrics);
+
         Ok(())
     }
 
@@ -110,10 +114,20 @@ impl MetricsState {
         Ok(())
     }
 
+    /// Merges the given series v1 payload into the current metrics state.
+    pub fn merge_series_v1_payload(&self, bytes: &[u8]) -> Result<(), GenericError> {
+        let metrics = Metric::try_from_series_v1(bytes)?;
+
+        let mut data = self.metrics.lock().unwrap();
+        data.extend(metrics);
+
+        Ok(())
+    }
+
     pub fn accumulate_v2_series(
         &self, payload: MetricPayload, batch_id: String, batch_seq: usize, batch_len: usize,
     ) -> Result<(), GenericError> {
-        let metrics = Metric::try_from_series(payload)?;
+        let metrics = Metric::try_from_series_v2(payload)?;
         self.accumulate_v2(&self.series_pairs, "series", metrics, batch_id, batch_seq, batch_len)
     }
 

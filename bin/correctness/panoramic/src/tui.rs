@@ -115,7 +115,7 @@ impl Tui {
                 self.add_line(format!("Starting test '{}'...", name));
                 self.active_tests.push(name);
             }
-            TestEvent::TestCompleted { result } => {
+            TestEvent::TestCompleted { result, log_dir } => {
                 // Remove from active tests.
                 self.active_tests.retain(|n| n != &result.name);
                 self.completed_tests += 1;
@@ -146,14 +146,22 @@ impl Tui {
 
                     // Add error details if present.
                     if let Some(ref error) = result.error {
-                        self.add_line(format!("  Error: {}", error));
+                        let mut lines = error.lines();
+                        if let Some(first) = lines.next() {
+                            self.add_line(format!("  Error: {}", first));
+                            for line in lines {
+                                self.add_line(format!("  {}", line));
+                            }
+                        }
                     }
 
                     // Add failed assertion details.
                     for assertion in &result.assertion_results {
                         if !assertion.passed {
                             self.add_line(format!("  - {} ({:.2?})", assertion.name, assertion.duration));
-                            self.add_line(format!("    {}", assertion.message));
+                            for line in assertion.message.lines() {
+                                self.add_line(format!("    {}", line));
+                            }
                         }
                     }
 
@@ -164,7 +172,12 @@ impl Tui {
                             self.add_line(format!("    {} ({:.2?})", phase.phase, phase.duration));
                         }
                     }
+
+                    self.add_line(format!("  Logs: {}", log_dir.display()));
                 }
+            }
+            TestEvent::StatusLine { message } => {
+                self.add_line(message);
             }
             TestEvent::AllDone => {
                 // Add summary line.
@@ -239,13 +252,14 @@ impl Tui {
         };
 
         let elapsed_str = format!(" ({:.1}s)", elapsed.as_secs_f64());
+        let status = truncate_status_bar(&progress, &active, &elapsed_str);
 
         write!(
             stdout,
             "{}{}{}",
-            progress.cyan().bold(),
-            active.yellow(),
-            elapsed_str.dimmed()
+            status.progress.cyan().bold(),
+            status.active.yellow(),
+            status.elapsed.dimmed()
         )?;
 
         Ok(())
@@ -298,12 +312,61 @@ impl Drop for Tui {
     }
 }
 
+struct StatusBar {
+    progress: String,
+    active: String,
+    elapsed: String,
+}
+
+fn truncate_status_bar(progress: &str, active: &str, elapsed: &str) -> StatusBar {
+    let Ok((columns, _)) = terminal::size() else {
+        return StatusBar {
+            progress: progress.to_string(),
+            active: active.to_string(),
+            elapsed: elapsed.to_string(),
+        };
+    };
+
+    let max_width = usize::from(columns);
+    let fixed_width = progress.chars().count() + elapsed.chars().count();
+    let active = if fixed_width >= max_width {
+        String::new()
+    } else {
+        truncate_to_width(active, max_width - fixed_width)
+    };
+
+    StatusBar {
+        progress: progress.to_string(),
+        active,
+        elapsed: elapsed.to_string(),
+    }
+}
+
+fn truncate_to_width(value: &str, max_width: usize) -> String {
+    let width = value.chars().count();
+    if width <= max_width {
+        return value.to_string();
+    }
+
+    if max_width == 0 {
+        return String::new();
+    }
+
+    if max_width == 1 {
+        return "…".to_string();
+    }
+
+    let mut truncated = value.chars().take(max_width - 1).collect::<String>();
+    truncated.push('…');
+    truncated
+}
+
 /// Run the TUI event consumer.
 ///
 /// This function consumes test events from the channel and renders them to the terminal.
 /// It returns when `AllDone` is received or the user cancels via Ctrl+C or 'q'.
 pub async fn run_tui_consumer(
-    mut rx: mpsc::UnboundedReceiver<TestEvent>, cancel_token: CancellationToken, log_dir: Option<PathBuf>,
+    mut rx: mpsc::UnboundedReceiver<TestEvent>, cancel_all: CancellationToken, log_dir: Option<PathBuf>,
 ) -> io::Result<()> {
     let mut tui = Tui::new()?;
 
@@ -318,7 +381,7 @@ pub async fn run_tui_consumer(
     while !done {
         if tui.poll_input()? && !cancelled {
             cancelled = true;
-            cancel_token.cancel();
+            cancel_all.cancel();
             tui.add_line("Cancelling...");
         }
 

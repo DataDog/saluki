@@ -57,10 +57,11 @@ fn default_env() -> String {
 
 /// Configuration for the Datadog APM Stats encoder.
 #[derive(Deserialize, Facet)]
+#[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
 pub struct DatadogApmStatsEncoderConfiguration {
     /// Flush timeout for pending requests, in seconds.
     ///
-    /// When the encoder has written traces to the in-flight request payload, but it has not yet reached the
+    /// When the encoder has written traces to the in-flight request payload, but it hasn't yet reached the
     /// payload size limits that would force the payload to be flushed, the encoder will wait for a period of time
     /// before flushing the in-flight request payload.
     ///
@@ -264,7 +265,7 @@ async fn run_request_builder(
 
                     for maybe_request in maybe_requests {
                         match maybe_request {
-                            Ok((events, request)) => {
+                            Ok((events, _data_points, request)) => {
                                 let payload_meta = PayloadMetadata::from_event_count(events);
                                 let http_payload = HttpPayload::new(payload_meta, request);
                                 let payload = Payload::Http(http_payload);
@@ -302,7 +303,7 @@ async fn run_request_builder(
                 let maybe_stats_requests = stats_request_builder.flush().await;
                 for maybe_request in maybe_stats_requests {
                     match maybe_request {
-                        Ok((events, request)) => {
+                        Ok((events, _data_points, request)) => {
                             let payload_meta = PayloadMetadata::from_event_count(events);
                             let http_payload = HttpPayload::new(payload_meta, request);
                             let payload = Payload::Http(http_payload);
@@ -463,5 +464,28 @@ impl EndpointEncoder for StatsEndpointEncoder {
 
     fn content_type(&self) -> HeaderValue {
         CONTENT_TYPE_MSGPACK.clone()
+    }
+}
+
+#[cfg(test)]
+mod config_smoke {
+    use serde_json::json;
+
+    use super::DatadogApmStatsEncoderConfiguration;
+    use crate::config_registry::structs;
+    use crate::config_registry::test_support::run_config_smoke_tests;
+
+    #[tokio::test]
+    async fn smoke_test() {
+        run_config_smoke_tests(
+            structs::DATADOG_APM_STATS_ENCODER_CONFIGURATION,
+            &[],
+            json!({}),
+            |cfg| {
+                cfg.as_typed::<DatadogApmStatsEncoderConfiguration>()
+                    .expect("DatadogApmStatsEncoderConfiguration should deserialize")
+            },
+        )
+        .await
     }
 }

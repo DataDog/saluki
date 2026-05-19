@@ -256,7 +256,7 @@ impl ApmStats {
 /// Splits stats payloads into multiple `TraceStats` events, each containing at most `max_entries_per_event` grouped
 /// entries.
 ///
-/// This function will not attempt to collapse/pack payloads to optimize the number of events generated: there will always
+/// This function won't attempt to collapse/pack payloads to optimize the number of events generated: there will always
 /// be at least as many output client payloads as there are input client payloads.
 fn split_into_trace_stats(client_payloads: Vec<ClientStatsPayload>, max_entries_per_event: usize) -> Vec<TraceStats> {
     if client_payloads.is_empty() {

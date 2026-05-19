@@ -4,9 +4,13 @@ use facet::Facet;
 use saluki_config::GenericConfiguration;
 use saluki_error::GenericError;
 use serde::Deserialize;
+use tracing::warn;
 
 use super::{
-    endpoints::EndpointConfiguration, protocol::V3ApiConfig, proxy::ProxyConfiguration, retry::RetryConfiguration,
+    endpoints::{EndpointConfiguration, EndpointRoute, RoutableEndpoint},
+    protocol::V3ApiConfig,
+    proxy::ProxyConfiguration,
+    retry::RetryConfiguration,
 };
 
 const fn default_endpoint_concurrency() -> usize {
@@ -24,12 +28,75 @@ const fn default_endpoint_buffer_size() -> usize {
 const fn default_forwarder_connection_reset_interval() -> u64 {
     0
 }
+
+/// OPW metrics endpoint configuration.
+#[derive(Clone, Default, Deserialize, Facet)]
+#[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
+pub(crate) struct OpwMetricsConfiguration {
+    /// Enables routing all metrics to Observability Pipelines Worker.
+    ///
+    /// Defaults to `false`.
+    #[serde(default, rename = "observability_pipelines_worker_metrics_enabled")]
+    observability_pipelines_worker_enabled: bool,
+
+    /// Endpoint of the Observability Pipelines Worker instance to route metrics to.
+    ///
+    /// Defaults to unset.
+    #[serde(default, rename = "observability_pipelines_worker_metrics_url")]
+    observability_pipelines_worker_url: String,
+
+    /// Enables routing all metrics to Vector.
+    ///
+    /// Deprecated in favor of `observability_pipelines_worker.metrics.enabled`.
+    ///
+    /// Defaults to `false`.
+    #[serde(default, rename = "vector_metrics_enabled")]
+    vector_enabled: bool,
+
+    /// Endpoint of the Vector instance to route metrics to.
+    ///
+    /// Deprecated in favor of `observability_pipelines_worker.metrics.url`.
+    ///
+    /// Defaults to unset.
+    #[serde(default, rename = "vector_metrics_url")]
+    vector_url: String,
+}
+
+struct SelectedOpwMetricsEndpoint<'a> {
+    enabled_key: &'static str,
+    url_key: &'static str,
+    url: &'a str,
+}
+
+impl OpwMetricsConfiguration {
+    fn selected_endpoint(&self) -> Option<SelectedOpwMetricsEndpoint<'_>> {
+        if self.observability_pipelines_worker_enabled {
+            return Some(SelectedOpwMetricsEndpoint {
+                enabled_key: "observability_pipelines_worker.metrics.enabled",
+                url_key: "observability_pipelines_worker.metrics.url",
+                url: &self.observability_pipelines_worker_url,
+            });
+        }
+
+        if self.vector_enabled {
+            return Some(SelectedOpwMetricsEndpoint {
+                enabled_key: "vector.metrics.enabled",
+                url_key: "vector.metrics.url",
+                url: &self.vector_url,
+            });
+        }
+
+        None
+    }
+}
+
 /// Forwarder configuration based on the Datadog Agent's forwarder configuration.
 ///
 /// This adapter provides a simple way to utilize the existing configuration values that are passed to the Datadog
 /// Agent, which are used to control the behavior of its forwarder, such as retries and concurrency, in conjunction with
 /// with existing primitives, as such retry policies in [`saluki_io::util::retry`].
 #[derive(Clone, Deserialize, Facet)]
+#[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
 pub struct ForwarderConfiguration {
     /// Maximum number of concurrent requests for an individual endpoint.
     ///
@@ -61,6 +128,10 @@ pub struct ForwarderConfiguration {
     #[serde(flatten)]
     proxy: Option<ProxyConfiguration>,
 
+    /// OPW metrics routing configuration.
+    #[serde(flatten)]
+    opw_metrics: OpwMetricsConfiguration,
+
     /// Connection reset interval, in seconds.
     ///
     /// Defaults to 0.
@@ -76,6 +147,14 @@ pub struct ForwarderConfiguration {
     /// based on endpoint URL matching.
     #[serde(rename = "serializer_experimental_use_v3_api", default)]
     v3_api: V3ApiConfig,
+
+    /// Whether to disable TLS certificate validation for Datadog intake forwarding.
+    ///
+    /// Defaults to `false`. If set to `true`, HTTPS clients built for the shared Datadog forwarder accept invalid
+    /// server certificates. Only deployments that intentionally route Datadog intake traffic through endpoints with
+    /// invalid or self-signed certificates should enable this.
+    #[serde(default)]
+    skip_ssl_validation: bool,
 }
 
 impl ForwarderConfiguration {
@@ -104,14 +183,67 @@ impl ForwarderConfiguration {
         self.endpoint_buffer_size
     }
 
-    /// Returns a reference to the endpoint configuration.
-    pub const fn endpoint(&self) -> &EndpointConfiguration {
-        &self.endpoint
-    }
-
     /// Returns a mutable reference to the endpoint configuration.
     pub fn endpoint_mut(&mut self) -> &mut EndpointConfiguration {
         &mut self.endpoint
+    }
+
+    /// Clears the OPW metrics endpoint override.
+    pub(crate) fn clear_opw_metrics_endpoint(&mut self) {
+        self.opw_metrics = OpwMetricsConfiguration::default();
+    }
+
+    /// Builds resolved endpoints with routing metadata.
+    ///
+    /// The normal primary and OPW metrics primary endpoints share the same dynamic API key source.
+    pub(crate) fn build_routable_endpoints(
+        &self, configuration: Option<GenericConfiguration>,
+    ) -> Result<Vec<RoutableEndpoint>, GenericError> {
+        // Label each endpoint so the I/O loop can route metrics to OPW and non-metrics to the normal primary.
+        let mut endpoints = Vec::new();
+        endpoints.push(RoutableEndpoint::new(
+            EndpointRoute::Primary,
+            self.endpoint.build_primary_endpoint(configuration.clone())?,
+        ));
+
+        if let Some(selected) = self.opw_metrics.selected_endpoint() {
+            let trimmed_url = selected.url.trim();
+            if trimmed_url.is_empty() {
+                warn!(
+                    enabled_key = selected.enabled_key,
+                    url_key = selected.url_key,
+                    "OPW/Vector metrics override is enabled, but no override URL was provided: override will be \
+                     disabled. Continuing.",
+                );
+            } else {
+                match self
+                    .endpoint
+                    .build_primary_endpoint_override(trimmed_url, configuration.clone())
+                {
+                    Ok(endpoint) => {
+                        endpoints.push(RoutableEndpoint::new(EndpointRoute::MetricsPrimary, endpoint));
+                    }
+                    Err(e) => {
+                        warn!(
+                            enabled_key = selected.enabled_key,
+                            url_key = selected.url_key,
+                            url = trimmed_url,
+                            error = %e,
+                            "Failed to configure OPW/Vector metrics override URL: override will be disabled. Continuing.",
+                        );
+                    }
+                }
+            }
+        }
+
+        endpoints.extend(
+            self.endpoint
+                .build_additional_endpoints()?
+                .into_iter()
+                .map(|endpoint| RoutableEndpoint::new(EndpointRoute::Additional, endpoint)),
+        );
+
+        Ok(endpoints)
     }
 
     /// Returns a reference to the retry configuration.
@@ -133,6 +265,11 @@ impl ForwarderConfiguration {
     pub fn v3_api(&self) -> &V3ApiConfig {
         &self.v3_api
     }
+
+    /// Returns whether TLS certificate validation is disabled for Datadog intake forwarding.
+    pub const fn skip_ssl_validation(&self) -> bool {
+        self.skip_ssl_validation
+    }
 }
 
 #[cfg(test)]
@@ -147,6 +284,13 @@ mod tests {
     const PROXY_A_URI: &str = "http://proxy-a.example.com:3128/";
     const PROXY_B: &str = "http://proxy-b.example.com:3128";
     const PROXY_B_URI: &str = "http://proxy-b.example.com:3128/";
+    const DATADOG_URL: &str = "http://datadog.example.com";
+    const DATADOG_URI: &str = "http://datadog.example.com/";
+    const OPW_URL: &str = "http://opw.example.com:8080";
+    const OPW_URI: &str = "http://opw.example.com:8080/";
+    const VECTOR_URL: &str = "http://vector.example.com:8080";
+    const VECTOR_URI: &str = "http://vector.example.com:8080/";
+    const ADDITIONAL_URI: &str = "http://additional.example.com/";
 
     fn base_config() -> serde_json::Value {
         serde_json::json!({ "api_key": "test-api-key" })
@@ -174,6 +318,32 @@ mod tests {
         )
         .await;
         ForwarderConfiguration::from_configuration(&cfg).expect("ForwarderConfiguration should deserialize")
+    }
+
+    async fn generic_config_from(
+        file_values: serde_json::Value, env_vars: Option<&[(String, String)]>,
+    ) -> GenericConfiguration {
+        let (cfg, _) = ConfigurationLoader::for_tests_with_provider_factory(
+            Some(file_values),
+            env_vars,
+            false,
+            KEY_ALIASES,
+            DatadogRemapper::new,
+        )
+        .await;
+        cfg
+    }
+
+    fn endpoint_urls_by_route(config: &ForwarderConfiguration, route: EndpointRoute) -> Vec<String> {
+        config
+            .build_routable_endpoints(None)
+            .expect("endpoints should resolve")
+            .into_iter()
+            .filter_map(|endpoint| {
+                let (endpoint_route, endpoint) = endpoint.into_parts();
+                (endpoint_route == route).then(|| endpoint.endpoint().to_string())
+            })
+            .collect()
     }
 
     // Precedence chain: YAML (proxy.http nested) < HTTP_PROXY < DD_PROXY_HTTP
@@ -217,5 +387,260 @@ mod tests {
 
         let proxies = config.proxy().as_ref().unwrap().build().unwrap();
         assert_eq!(proxies[0].uri().to_string(), PROXY_B_URI);
+    }
+
+    #[tokio::test]
+    async fn skip_ssl_validation_defaults_to_false() {
+        let config = forwarder_config_from(base_config(), None).await;
+
+        assert!(!config.skip_ssl_validation());
+    }
+
+    #[tokio::test]
+    async fn skip_ssl_validation_set_via_yaml() {
+        let config = forwarder_config_from(config_with(serde_json::json!({ "skip_ssl_validation": true })), None).await;
+
+        assert!(config.skip_ssl_validation());
+    }
+
+    #[tokio::test]
+    async fn skip_ssl_validation_set_via_env_var() {
+        // SKIP_SSL_VALIDATION simulates DD_SKIP_SSL_VALIDATION: the test helper sets
+        // TEST_SKIP_SSL_VALIDATION, which from_environment("TEST") reads as skip_ssl_validation.
+        let env_vars = vec![("SKIP_SSL_VALIDATION".to_string(), "true".to_string())];
+        let config = forwarder_config_from(base_config(), Some(&env_vars)).await;
+
+        assert!(config.skip_ssl_validation());
+    }
+
+    #[tokio::test]
+    async fn opw_metrics_endpoint_overrides_metric_primary() {
+        let config = forwarder_config_from(
+            config_with(serde_json::json!({
+                "dd_url": DATADOG_URL,
+                "observability_pipelines_worker": {
+                    "metrics": {
+                        "enabled": true,
+                        "url": OPW_URL,
+                    }
+                }
+            })),
+            None,
+        )
+        .await;
+
+        assert_eq!(
+            endpoint_urls_by_route(&config, EndpointRoute::Primary),
+            vec![DATADOG_URI]
+        );
+        assert_eq!(
+            endpoint_urls_by_route(&config, EndpointRoute::MetricsPrimary),
+            vec![OPW_URI]
+        );
+    }
+
+    #[tokio::test]
+    async fn opw_metrics_endpoint_disabled_does_not_override_metric_primary() {
+        let config = forwarder_config_from(
+            config_with(serde_json::json!({
+                "dd_url": DATADOG_URL,
+                "observability_pipelines_worker": {
+                    "metrics": {
+                        "enabled": false,
+                        "url": OPW_URL,
+                    }
+                },
+                "vector": {
+                    "metrics": {
+                        "enabled": false,
+                        "url": VECTOR_URL,
+                    }
+                }
+            })),
+            None,
+        )
+        .await;
+
+        assert_eq!(
+            endpoint_urls_by_route(&config, EndpointRoute::Primary),
+            vec![DATADOG_URI]
+        );
+        assert!(endpoint_urls_by_route(&config, EndpointRoute::MetricsPrimary).is_empty());
+    }
+
+    #[tokio::test]
+    async fn vector_metrics_endpoint_is_legacy_fallback() {
+        let config = forwarder_config_from(
+            config_with(serde_json::json!({
+                "dd_url": DATADOG_URL,
+                "vector": {
+                    "metrics": {
+                        "enabled": true,
+                        "url": VECTOR_URL,
+                    }
+                }
+            })),
+            None,
+        )
+        .await;
+
+        assert_eq!(
+            endpoint_urls_by_route(&config, EndpointRoute::MetricsPrimary),
+            vec![VECTOR_URI]
+        );
+    }
+
+    #[tokio::test]
+    async fn opw_metrics_endpoint_takes_precedence_over_vector() {
+        let config = forwarder_config_from(
+            config_with(serde_json::json!({
+                "dd_url": DATADOG_URL,
+                "observability_pipelines_worker": {
+                    "metrics": {
+                        "enabled": true,
+                        "url": OPW_URL,
+                    }
+                },
+                "vector": {
+                    "metrics": {
+                        "enabled": true,
+                        "url": VECTOR_URL,
+                    }
+                }
+            })),
+            None,
+        )
+        .await;
+
+        assert_eq!(
+            endpoint_urls_by_route(&config, EndpointRoute::MetricsPrimary),
+            vec![OPW_URI]
+        );
+    }
+
+    #[tokio::test]
+    async fn opw_metrics_endpoint_does_not_fallback_to_vector_when_opw_url_empty() {
+        let config = forwarder_config_from(
+            config_with(serde_json::json!({
+                "dd_url": DATADOG_URL,
+                "observability_pipelines_worker": {
+                    "metrics": {
+                        "enabled": true,
+                        "url": "",
+                    }
+                },
+                "vector": {
+                    "metrics": {
+                        "enabled": true,
+                        "url": VECTOR_URL,
+                    }
+                }
+            })),
+            None,
+        )
+        .await;
+
+        assert!(endpoint_urls_by_route(&config, EndpointRoute::MetricsPrimary).is_empty());
+    }
+
+    #[tokio::test]
+    async fn opw_metrics_endpoint_does_not_fallback_to_vector_when_opw_url_invalid() {
+        let config = forwarder_config_from(
+            config_with(serde_json::json!({
+                "dd_url": DATADOG_URL,
+                "observability_pipelines_worker": {
+                    "metrics": {
+                        "enabled": true,
+                        "url": "http://[::1",
+                    }
+                },
+                "vector": {
+                    "metrics": {
+                        "enabled": true,
+                        "url": VECTOR_URL,
+                    }
+                }
+            })),
+            None,
+        )
+        .await;
+
+        assert!(endpoint_urls_by_route(&config, EndpointRoute::MetricsPrimary).is_empty());
+    }
+
+    #[tokio::test]
+    async fn opw_metrics_endpoint_keeps_dynamic_api_key_configuration() {
+        let generic_config = generic_config_from(
+            config_with(serde_json::json!({
+                "observability_pipelines_worker": {
+                    "metrics": {
+                        "enabled": true,
+                        "url": OPW_URL,
+                    }
+                }
+            })),
+            None,
+        )
+        .await;
+        let config =
+            ForwarderConfiguration::from_configuration(&generic_config).expect("ForwarderConfiguration should parse");
+
+        let endpoints = config
+            .build_routable_endpoints(Some(generic_config))
+            .expect("endpoints should resolve");
+        let opw_endpoint = endpoints
+            .iter()
+            .find(|endpoint| endpoint.route() == EndpointRoute::MetricsPrimary)
+            .expect("OPW endpoint should exist");
+
+        assert!(opw_endpoint.endpoint().has_configuration());
+    }
+
+    #[tokio::test]
+    async fn opw_metrics_endpoint_preserves_additional_endpoints() {
+        let config = forwarder_config_from(
+            config_with(serde_json::json!({
+                "dd_url": DATADOG_URL,
+                "observability_pipelines_worker": {
+                    "metrics": {
+                        "enabled": true,
+                        "url": OPW_URL,
+                    }
+                },
+                "additional_endpoints": {
+                    "http://additional.example.com": ["extra-api-key"]
+                }
+            })),
+            None,
+        )
+        .await;
+
+        assert_eq!(
+            endpoint_urls_by_route(&config, EndpointRoute::Additional),
+            vec![ADDITIONAL_URI]
+        );
+    }
+}
+
+#[cfg(test)]
+mod config_smoke {
+    use serde_json::json;
+
+    use super::ForwarderConfiguration;
+    use crate::config_registry::structs;
+    use crate::config_registry::test_support::run_config_smoke_tests;
+
+    #[tokio::test]
+    async fn smoke_test() {
+        // `api_key` has no serde default (EndpointConfiguration::api_key: String), so
+        // deserialization panics on an empty config. Supply it via base_config so every
+        // config load in the smoke test has a valid starting point.
+        run_config_smoke_tests(
+            structs::FORWARDER_CONFIGURATION,
+            &[],
+            json!({ "api_key": "smoke-test-api-key" }),
+            |cfg| ForwarderConfiguration::from_configuration(&cfg).expect("ForwarderConfiguration should deserialize"),
+        )
+        .await
     }
 }

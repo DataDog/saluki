@@ -15,7 +15,7 @@ use stringtheory::MetaString;
 use tokio::sync::OnceCell;
 
 mod rules;
-pub use self::rules::{get_datadog_agent_remappings, RemapperRule};
+pub use self::rules::{get_compat_remappings, get_datadog_agent_remappings, RemapperRule};
 
 /// Aggregated metric value.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -149,7 +149,7 @@ impl AggregatedMetricsState {
     /// a certain facet. This method can allow re-aggregating the value of each different facet value into a single
     /// value.
     ///
-    /// If multiple metrics are found with a matching name, but they are not all counter metrics, or if no metrics are
+    /// If multiple metrics are found with a matching name, but they're not all counter metrics, or if no metrics are
     /// found with a matching name, `0.0` is returned.
     pub fn get_aggregated(&self, name: &str) -> f64 {
         self.get_aggregated_with_tags(name, &[])
@@ -162,7 +162,7 @@ impl AggregatedMetricsState {
     /// a certain facet. This method can allow re-aggregating the value of each different facet value into a single
     /// value.
     ///
-    /// If multiple metrics are found with a matching name, but they are not all counter metrics, or if no metrics are
+    /// If multiple metrics are found with a matching name, but they're not all counter metrics, or if no metrics are
     /// found with a matching name, `0.0` is returned.
     pub fn get_aggregated_with_tags(&self, name: &str, tags: &[&str]) -> f64 {
         let mut total = 0.0;
@@ -247,7 +247,7 @@ fn metric_values_to_aggregated(values: MetricValues) -> Option<AggregatedMetric>
 
 /// Gets the shared metrics state, which provides unified access to internal metrics in a simplified interface.
 ///
-/// This is lazily initialized and will only be created when it is first accessed.
+/// This is lazily initialized and will only be created when it's first accessed.
 pub async fn get_shared_metrics_state() -> Reflector<AggregatedMetricsProcessor> {
     static REFLECTOR: OnceCell<Reflector<AggregatedMetricsProcessor>> = OnceCell::const_new();
     REFLECTOR
@@ -270,12 +270,12 @@ fn merge_aggregated_values(existing: AggregatedMetricValue, incoming: Aggregated
     }
 }
 
-/// Renders the RAR-relevant subset of internal metrics in Prometheus text exposition format.
+/// Renders remapped internal metrics in Prometheus text exposition format.
 ///
 /// Iterates the aggregated metrics state, matches each metric against the remapper rules, and renders only the
 /// matching metrics (in their Agent-compatible remapped form) using the provided renderer. The remapper rules act as
 /// both the filter (only matched metrics are included) and the name translator.
-pub fn render_rar_telemetry(
+pub fn render_telemetry(
     state: &AggregatedMetricsState, rules: &[RemapperRule], renderer: &mut PrometheusRenderer,
 ) -> String {
     renderer.clear();
@@ -295,12 +295,16 @@ pub fn render_rar_telemetry(
             if let Some(mut remapped) = rule.try_match_no_context(context) {
                 remapped.tags.sort();
 
+                let continue_matching = rule.should_continue_matching();
                 let series = groups.entry(remapped.name).or_default();
                 series
                     .entry(remapped.tags)
                     .and_modify(|existing| *existing = merge_aggregated_values(*existing, *value))
                     .or_insert(*value);
-                return;
+
+                if !continue_matching {
+                    return;
+                }
             }
         }
     });
@@ -357,6 +361,14 @@ fn get_help_text(metric_name: &str) -> Option<&'static str> {
         }
         "aggregator.dogstatsd_contexts" => Some("Count the number of dogstatsd contexts in the aggregator"),
         "aggregator.processed" => Some("Amount of metrics/services_checks/events processed by the aggregator"),
+        "datadog.agent.filterlist.size" => Some("Metric filter list size"),
+        "datadog.agent.filterlist.updates" => {
+            Some("Incremented when a reconfiguration of the metric filterlist happened")
+        }
+        "datadog.agent.dogstatsd.listener_filtered_points" => Some("How many points were filtered out"),
+        "datadog.agent.aggregator.dogstatsd_filtered_metrics" => {
+            Some("How many metrics were filtered in the time samplers")
+        }
         "dogstatsd.processed" => Some("Count of service checks/events/metrics processed by dogstatsd"),
         "dogstatsd.packet_pool_get" => Some("Count of get done in the packet pool"),
         "dogstatsd.packet_pool_put" => Some("Count of put done in the packet pool"),
@@ -476,6 +488,20 @@ mod tests {
                 Context::from_static_parts("adp.object_pool_in_use", &["pool_name:dsd_packet_bufs"]),
                 7.0,
             )),
+            Event::Metric(Metric::gauge(
+                Context::from_static_parts(
+                    "adp.component_data_points_sent_total",
+                    &["domain:https://api.datadoghq.com"],
+                ),
+                12.0,
+            )),
+            Event::Metric(Metric::gauge(
+                Context::from_static_parts(
+                    "adp.component_data_points_dropped_total",
+                    &["domain:https://api.datadoghq.com"],
+                ),
+                3.0,
+            )),
             // This metric should NOT appear in output (no matching rule).
             Event::Metric(Metric::counter(
                 Context::from_static_parts("adp.some_unrelated_metric", &[]),
@@ -489,11 +515,13 @@ mod tests {
 
         let rules = get_datadog_agent_remappings();
         let mut renderer = PrometheusRenderer::new();
-        let output = render_rar_telemetry(&state, &rules, &mut renderer);
+        let output = render_telemetry(&state, &rules, &mut renderer);
 
         // Matched metrics should appear with remapped names.
-        assert!(output.contains("dogstatsd__packet_pool_get"));
-        assert!(output.contains("dogstatsd__packet_pool{"));
+        assert!(output.contains("dogstatsd__packet_pool_get "));
+        assert!(output.contains("dogstatsd__packet_pool "));
+        assert!(output.contains("point__sent{domain=\"https://api.datadoghq.com\"} 12"));
+        assert!(output.contains("point__dropped{domain=\"https://api.datadoghq.com\"} 3"));
 
         // Unmatched metrics should NOT appear.
         assert!(!output.contains("some_unrelated_metric"));
@@ -501,6 +529,163 @@ mod tests {
         // Should have TYPE headers.
         assert!(output.contains("# TYPE dogstatsd__packet_pool_get counter"));
         assert!(output.contains("# TYPE dogstatsd__packet_pool gauge"));
+        assert!(output.contains("# TYPE point__sent gauge"));
+        assert!(output.contains("# TYPE point__dropped gauge"));
+    }
+
+    #[test]
+    fn test_render_compat_telemetry() {
+        let processor = AggregatedMetricsProcessor;
+        let state = processor.build_initial_state();
+
+        let metrics = vec![
+            Event::Metric(Metric::counter(
+                Context::from_static_parts(
+                    "adp.component_events_received_total",
+                    &["component_id:dsd_in", "message_type:metrics"],
+                ),
+                11.0,
+            )),
+            Event::Metric(Metric::counter(
+                Context::from_static_parts(
+                    "adp.component_packets_received_total",
+                    &["component_id:dsd_in", "listener_type:unix"],
+                ),
+                7.0,
+            )),
+            Event::Metric(Metric::counter(
+                Context::from_static_parts(
+                    "adp.component_packets_received_total",
+                    &["component_id:dsd_in", "listener_type:unixgram"],
+                ),
+                5.0,
+            )),
+            Event::Metric(Metric::counter(
+                Context::from_static_parts(
+                    "adp.component_packets_received_total",
+                    &["component_id:dsd_in", "listener_type:udp", "state:error"],
+                ),
+                13.0,
+            )),
+            Event::Metric(Metric::counter(
+                Context::from_static_parts(
+                    "adp.component_packets_received_total",
+                    &["component_id:dsd_in", "listener_type:unix", "state:error"],
+                ),
+                17.0,
+            )),
+            Event::Metric(Metric::counter(
+                Context::from_static_parts(
+                    "adp.component_packets_received_total",
+                    &["component_id:dsd_in", "listener_type:unixgram", "state:error"],
+                ),
+                19.0,
+            )),
+            Event::Metric(Metric::counter(
+                Context::from_static_parts(
+                    "adp.component_errors_total",
+                    &["component_id:dsd_in", "listener_type:udp", "error_type:framing"],
+                ),
+                23.0,
+            )),
+            Event::Metric(Metric::counter(
+                Context::from_static_parts(
+                    "adp.component_errors_total",
+                    &["component_id:dsd_in", "listener_type:unix", "error_type:framing"],
+                ),
+                29.0,
+            )),
+            Event::Metric(Metric::counter(
+                Context::from_static_parts(
+                    "adp.component_errors_total",
+                    &["component_id:dsd_in", "listener_type:unixgram", "error_type:framing"],
+                ),
+                31.0,
+            )),
+            Event::Metric(Metric::counter(
+                Context::from_static_parts(
+                    "adp.network_http_requests_errors_total",
+                    &["error_type:connection_error", "error_scope:phase"],
+                ),
+                3.0,
+            )),
+            Event::Metric(Metric::counter(
+                Context::from_static_parts(
+                    "adp.network_http_requests_errors_total",
+                    &["error_type:cant_send", "error_scope:transaction"],
+                ),
+                1.0,
+            )),
+            Event::Metric(Metric::counter(
+                Context::from_static_parts(
+                    "adp.network_http_requests_errors_total",
+                    &["error_type:sent_request_error", "error_scope:transaction"],
+                ),
+                2.0,
+            )),
+            Event::Metric(Metric::gauge("adp.network_http_retry_queue_size", 2.0)),
+        ];
+
+        for metric in metrics {
+            processor.process(metric, &state);
+        }
+
+        let rules = get_compat_remappings();
+        let mut renderer = PrometheusRenderer::new();
+        let output = render_telemetry(&state, &rules, &mut renderer);
+
+        assert!(output.contains("dogstatsd_metric_packets 11"));
+        assert!(output.contains("dogstatsd_uds_packets 48"));
+        assert!(output.contains("dogstatsd_udp_packet_reading_errors 13"));
+        assert!(output.contains("dogstatsd_uds_packet_reading_errors 36"));
+        assert!(!output.contains("dogstatsd_udp_packet_reading_errors 23"));
+        assert!(!output.contains("dogstatsd_uds_packet_reading_errors 60"));
+        assert!(
+            output.contains("forwarder_transactions_errors_by_type_connection_errors{source=\"agent-data-plane\"} 3")
+        );
+        assert!(
+            output.contains("forwarder_transactions_errors_by_type_sent_request_errors{source=\"agent-data-plane\"} 2")
+        );
+        assert!(output.contains("forwarder_transactions_errors{source=\"agent-data-plane\"} 3"));
+        assert!(output.contains("forwarder_transactions_retry_queue_size{source=\"agent-data-plane\"} 2"));
+    }
+
+    #[test]
+    fn test_compat_remappings_cover_expected_names() {
+        let rules = get_compat_remappings();
+        let expected_names = [
+            "dogstatsd_event_packets",
+            "dogstatsd_event_parse_errors",
+            "dogstatsd_metric_packets",
+            "dogstatsd_metric_parse_errors",
+            "dogstatsd_service_check_packets",
+            "dogstatsd_service_check_parse_errors",
+            "dogstatsd_udp_packets",
+            "dogstatsd_udp_bytes",
+            "dogstatsd_udp_packet_reading_errors",
+            "dogstatsd_uds_packets",
+            "dogstatsd_uds_bytes",
+            "dogstatsd_uds_packet_reading_errors",
+            "dogstatsd_uds_origin_detection_errors",
+            "forwarder_transactions_dropped",
+            "forwarder_transactions_success",
+            "forwarder_transactions_errors",
+            "forwarder_transactions_http_errors",
+            "forwarder_transactions_errors_by_type_connection_errors",
+            "forwarder_transactions_errors_by_type_dns_errors",
+            "forwarder_transactions_errors_by_type_tls_errors",
+            "forwarder_transactions_errors_by_type_wrote_request_errors",
+            "forwarder_transactions_errors_by_type_sent_request_errors",
+            "forwarder_transactions_retry_queue_size",
+            "retry_queue_duration_bytes_per_sec",
+        ];
+
+        for expected_name in expected_names {
+            assert!(
+                rules.iter().any(|rule| rule.remapped_name() == expected_name),
+                "missing compat rule for {expected_name}"
+            );
+        }
     }
 
     #[test]
@@ -577,7 +762,7 @@ mod tests {
 
         let rules = get_datadog_agent_remappings();
         let mut renderer = PrometheusRenderer::new();
-        let output = render_rar_telemetry(&state, &rules, &mut renderer);
+        let output = render_telemetry(&state, &rules, &mut renderer);
 
         // Should only have one dogstatsd__processed series with state="ok" and message_type="metrics",
         // with the summed value of 35.
@@ -599,6 +784,54 @@ mod tests {
             "expected summed value of 35, got: {}",
             processed_lines[0]
         );
+    }
+
+    #[test]
+    fn test_render_rar_telemetry_remaps_filterlist_metrics() {
+        let processor = AggregatedMetricsProcessor;
+        let state = processor.build_initial_state();
+
+        let metrics = vec![
+            Event::Metric(Metric::gauge(
+                Context::from_static_parts("adp.metric_filterlist_size", &["component_id:dsd_prefix_filter"]),
+                2.0,
+            )),
+            Event::Metric(Metric::counter(
+                Context::from_static_parts(
+                    "adp.metric_filterlist_updates_total",
+                    &["component_id:dsd_prefix_filter"],
+                ),
+                3.0,
+            )),
+            Event::Metric(Metric::counter(
+                Context::from_static_parts(
+                    "adp.dogstatsd_listener_filtered_points_total",
+                    &["component_id:dsd_prefix_filter"],
+                ),
+                5.0,
+            )),
+            Event::Metric(Metric::counter(
+                Context::from_static_parts(
+                    "adp.dogstatsd_post_aggregate_filtered_metrics_total",
+                    &["component_id:dsd_post_agg_filter"],
+                ),
+                7.0,
+            )),
+        ];
+
+        for metric in metrics {
+            processor.process(metric, &state);
+        }
+
+        let rules = get_datadog_agent_remappings();
+        let mut renderer = PrometheusRenderer::new();
+        let output = render_telemetry(&state, &rules, &mut renderer);
+
+        assert!(output.contains("datadog__agent__filterlist__size 2"));
+        assert!(output.contains("datadog__agent__filterlist__updates 3"));
+        assert!(output.contains("datadog__agent__dogstatsd__listener_filtered_points 5"));
+        assert!(output.contains("datadog__agent__aggregator__dogstatsd_filtered_metrics 7"));
+        assert!(!output.contains("component_id="));
     }
 
     #[test]
@@ -631,6 +864,22 @@ mod tests {
         assert_eq!(
             get_help_text("aggregator.processed"),
             Some("Amount of metrics/services_checks/events processed by the aggregator")
+        );
+        assert_eq!(
+            get_help_text("datadog.agent.filterlist.size"),
+            Some("Metric filter list size")
+        );
+        assert_eq!(
+            get_help_text("datadog.agent.filterlist.updates"),
+            Some("Incremented when a reconfiguration of the metric filterlist happened")
+        );
+        assert_eq!(
+            get_help_text("datadog.agent.dogstatsd.listener_filtered_points"),
+            Some("How many points were filtered out")
+        );
+        assert_eq!(
+            get_help_text("datadog.agent.aggregator.dogstatsd_filtered_metrics"),
+            Some("How many metrics were filtered in the time samplers")
         );
     }
 }

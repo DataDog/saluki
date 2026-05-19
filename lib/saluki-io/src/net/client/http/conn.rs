@@ -8,8 +8,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+use hickory_resolver::net::NetError;
 use http::{Extensions, Uri};
-use hyper_hickory::{TokioHickoryHttpConnector, TokioHickoryResolver};
 use hyper_rustls::{HttpsConnector, HttpsConnectorBuilder, MaybeHttpsStream};
 use hyper_util::{
     client::legacy::connect::{CaptureConnection, Connected, Connection, HttpConnector},
@@ -23,14 +23,17 @@ use tokio::net::TcpStream;
 use tower::{BoxError, Service};
 use tracing::debug;
 
+use super::telemetry::HttpTransactionErrorTelemetry;
+use crate::net::dns::{HickoryHttpConnector, HickoryResolver};
+
 /// Imposes a limit on the age of a connection.
 ///
-/// In many cases, it is undesirable to hold onto a connection indefinitely, even if it can be theoretically reused.
+/// In many cases, it's undesirable to hold onto a connection indefinitely, even if it can be theoretically reused.
 /// Doing so can make it more difficult to perform maintenance on infrastructure, as the expectation of old connections
-/// being eventually closed and replaced is not upheld.
+/// being eventually closed and replaced isn't upheld.
 ///
 /// This extension allows tracking the age of a connection (based on when the connector creates the connection) and
-/// checking if it is expired, or past the configured limit. Callers can then decide how to handle the expiration, such
+/// checking if it's expired, or past the configured limit. Callers can then decide how to handle the expiration, such
 /// as by closing the connection.
 #[derive(Clone)]
 struct ConnectionAgeLimit {
@@ -133,6 +136,7 @@ pin_project! {
         #[pin]
         inner: MaybeHttpsStream<Transport>,
         bytes_sent: Option<Counter>,
+        error_telemetry: Option<HttpTransactionErrorTelemetry>,
         conn_age_limit: Option<Duration>,
     }
 }
@@ -169,13 +173,27 @@ impl hyper::rt::Write for HttpsCapableConnection {
                 }
                 Poll::Ready(Ok(n))
             }
+            Poll::Ready(Err(error)) => {
+                if let Some(error_telemetry) = this.error_telemetry.as_ref() {
+                    error_telemetry.increment_wrote_request_error();
+                }
+                Poll::Ready(Err(error))
+            }
             other => other,
         }
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         let this = self.project();
-        this.inner.poll_flush(cx)
+        match this.inner.poll_flush(cx) {
+            Poll::Ready(Err(error)) => {
+                if let Some(error_telemetry) = this.error_telemetry.as_ref() {
+                    error_telemetry.increment_wrote_request_error();
+                }
+                Poll::Ready(Err(error))
+            }
+            other => other,
+        }
     }
 
     fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
@@ -198,6 +216,12 @@ impl hyper::rt::Write for HttpsCapableConnection {
                 }
                 Poll::Ready(Ok(n))
             }
+            Poll::Ready(Err(error)) => {
+                if let Some(error_telemetry) = this.error_telemetry.as_ref() {
+                    error_telemetry.increment_wrote_request_error();
+                }
+                Poll::Ready(Err(error))
+            }
             other => other,
         }
     }
@@ -209,8 +233,9 @@ impl hyper::rt::Write for HttpsCapableConnection {
 /// of the URI host. Otherwise, connections are routed via the standard DNS + TCP path.
 #[derive(Clone)]
 struct InnerConnector {
-    http: TokioHickoryHttpConnector,
+    http: HickoryHttpConnector,
     connect_timeout: Duration,
+    error_telemetry: Option<HttpTransactionErrorTelemetry>,
     #[cfg(unix)]
     unix_socket_path: Option<Arc<std::path::Path>>,
 }
@@ -235,20 +260,37 @@ impl Service<Uri> for InnerConnector {
         #[cfg(unix)]
         if let Some(path) = self.unix_socket_path.clone() {
             let connect_timeout = self.connect_timeout;
+            let error_telemetry = self.error_telemetry.clone();
             return Box::pin(async move {
                 let stream = tokio::time::timeout(connect_timeout, tokio::net::UnixStream::connect(&*path))
                     .await
                     .map_err(|_| -> BoxError {
+                        if let Some(error_telemetry) = &error_telemetry {
+                            error_telemetry.increment_connection_error();
+                        }
                         Box::new(io::Error::new(io::ErrorKind::TimedOut, "unix socket connect timed out"))
                     })?
-                    .map_err(|e| -> BoxError { Box::new(e) })?;
+                    .map_err(|e| -> BoxError {
+                        if let Some(error_telemetry) = &error_telemetry {
+                            error_telemetry.increment_connection_error();
+                        }
+                        Box::new(e)
+                    })?;
                 Ok(Transport::Unix(TokioIo::new(stream)))
             });
         }
 
         let fut = self.http.call(dst);
+        let error_telemetry = self.error_telemetry.clone();
         Box::pin(async move {
-            let tcp = fut.await.map_err(BoxError::from)?;
+            let tcp = fut.await.map_err(|error| {
+                if !is_dns_error(&error) {
+                    if let Some(error_telemetry) = &error_telemetry {
+                        error_telemetry.increment_connection_error();
+                    }
+                }
+                BoxError::from(error)
+            })?;
             Ok(Transport::Tcp(tcp))
         })
     }
@@ -259,6 +301,7 @@ impl Service<Uri> for InnerConnector {
 pub struct HttpsCapableConnector {
     inner: HttpsConnector<InnerConnector>,
     bytes_sent: Option<Counter>,
+    error_telemetry: Option<HttpTransactionErrorTelemetry>,
     conn_age_limit: Option<Duration>,
 }
 
@@ -274,13 +317,25 @@ impl Service<Uri> for HttpsCapableConnector {
     fn call(&mut self, dst: Uri) -> Self::Future {
         let inner = self.inner.call(dst);
         let bytes_sent = self.bytes_sent.clone();
+        let error_telemetry = self.error_telemetry.clone();
         let conn_age_limit = self.conn_age_limit;
         Box::pin(async move {
-            inner.await.map(|inner| HttpsCapableConnection {
-                inner,
-                bytes_sent,
-                conn_age_limit,
-            })
+            match inner.await {
+                Ok(inner) => Ok(HttpsCapableConnection {
+                    inner,
+                    bytes_sent,
+                    error_telemetry,
+                    conn_age_limit,
+                }),
+                Err(error) => {
+                    if is_tls_error(error.as_ref()) {
+                        if let Some(error_telemetry) = &error_telemetry {
+                            error_telemetry.increment_tls_error();
+                        }
+                    }
+                    Err(error)
+                }
+            }
         })
     }
 }
@@ -290,6 +345,7 @@ impl Service<Uri> for HttpsCapableConnector {
 pub struct HttpsCapableConnectorBuilder {
     connect_timeout: Option<Duration>,
     bytes_sent: Option<Counter>,
+    error_telemetry: Option<HttpTransactionErrorTelemetry>,
     conn_age_limit: Option<Duration>,
     #[cfg(unix)]
     unix_socket_path: Option<PathBuf>,
@@ -304,7 +360,7 @@ impl HttpsCapableConnectorBuilder {
         self
     }
 
-    /// Sets the maximum age of a connection before it is closed.
+    /// Sets the maximum age of a connection before it's closed.
     ///
     /// This is distinct from the maximum idle time: if any connection's age exceeds `limit`, it will be closed rather
     /// than being reused and added to the idle connection pool.
@@ -320,7 +376,7 @@ impl HttpsCapableConnectorBuilder {
 
     /// Sets a counter that gets incremented with the number of bytes sent over the connection.
     ///
-    /// This tracks bytes sent at the HTTP client level, which includes headers and body but does not include underlying
+    /// This tracks bytes sent at the HTTP client level, which includes headers and body but doesn't include underlying
     /// transport overhead, such as TLS handshaking, and so on.
     ///
     /// Defaults to unset.
@@ -329,10 +385,16 @@ impl HttpsCapableConnectorBuilder {
         self
     }
 
+    /// Sets the telemetry counters used to track HTTP request lifecycle failures.
+    pub(super) fn with_error_telemetry(mut self, error_telemetry: HttpTransactionErrorTelemetry) -> Self {
+        self.error_telemetry = Some(error_telemetry);
+        self
+    }
+
     /// Sets a Unix domain socket path to route all connections through.
     ///
     /// When set, the connector will connect to this Unix socket instead of performing DNS resolution
-    /// and TCP connection. The URI host is ignored in this case — all requests are sent through the
+    /// and TCP connection. The URI host is ignored in this case—all requests are sent through the
     /// configured socket.
     ///
     /// Defaults to unset (TCP connections via DNS).
@@ -346,8 +408,11 @@ impl HttpsCapableConnectorBuilder {
     pub fn build(self, tls_config: ClientConfig) -> Result<HttpsCapableConnector, GenericError> {
         let connect_timeout = self.connect_timeout.unwrap_or(Duration::from_secs(30));
 
-        let hickory_resolver = TokioHickoryResolver::from_system_conf()
+        let mut hickory_resolver = HickoryResolver::from_system_conf()
             .error_context("Failed to load system DNS configuration when creating DNS resolver for HTTP client.")?;
+        if let Some(error_telemetry) = &self.error_telemetry {
+            hickory_resolver = hickory_resolver.with_lookup_errors_counter(error_telemetry.dns_errors());
+        }
 
         // Create the HTTP connector, and ensure that we don't enforce _only_ HTTP, since that will break being able to
         // wrap this in an HTTPS connector.
@@ -358,6 +423,7 @@ impl HttpsCapableConnectorBuilder {
         let inner_connector = InnerConnector {
             http: http_connector,
             connect_timeout,
+            error_telemetry: self.error_telemetry.clone(),
             #[cfg(unix)]
             unix_socket_path: self.unix_socket_path.map(PathBuf::into_boxed_path).map(Arc::from),
         };
@@ -372,9 +438,32 @@ impl HttpsCapableConnectorBuilder {
         Ok(HttpsCapableConnector {
             inner: https_connector,
             bytes_sent: self.bytes_sent,
+            error_telemetry: self.error_telemetry,
             conn_age_limit: self.conn_age_limit,
         })
     }
+}
+
+fn is_tls_error(error: &(dyn std::error::Error + 'static)) -> bool {
+    let mut current = Some(error);
+    while let Some(error) = current {
+        if error.downcast_ref::<rustls::Error>().is_some() {
+            return true;
+        }
+        current = error.source();
+    }
+    false
+}
+
+fn is_dns_error(error: &(dyn std::error::Error + 'static)) -> bool {
+    let mut current = Some(error);
+    while let Some(error) = current {
+        if error.downcast_ref::<NetError>().is_some() {
+            return true;
+        }
+        current = error.source();
+    }
+    false
 }
 
 pub(super) fn check_connection_state(captured_conn: CaptureConnection) {

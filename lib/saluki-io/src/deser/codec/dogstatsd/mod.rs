@@ -78,6 +78,7 @@ pub struct DogStatsDCodecConfiguration {
     maximum_tag_count: usize,
     timestamps: bool,
     minimum_sample_rate: f64,
+    client_origin_detection: bool,
 }
 
 impl DogStatsDCodecConfiguration {
@@ -88,8 +89,8 @@ impl DogStatsDCodecConfiguration {
     /// payload. This allows for decoding payloads with invalid contents (for example, characters that are valid UTF-8, but
     /// aren't within ASCII bounds, etc) such that the data plane can attempt to process them further.
     ///
-    /// Permissive mode does not allow for decoding payloads with structural errors (for example, missing delimiters, etc) or
-    /// that cannot be safely handled internally (for example, invalid UTF-8 characters for the metric name or tags).
+    /// Permissive mode doesn't allow for decoding payloads with structural errors (for example, missing delimiters, etc) or
+    /// that can't be safely handled internally (for example, invalid UTF-8 characters for the metric name or tags).
     ///
     /// Defaults to `false`.
     pub fn with_permissive_mode(mut self, permissive: bool) -> Self {
@@ -99,7 +100,7 @@ impl DogStatsDCodecConfiguration {
 
     /// Sets the maximum tag length.
     ///
-    /// This controls the number of bytes that are allowed for a single tag. If a tag exceeds this limit, it is
+    /// This controls the number of bytes that are allowed for a single tag. If a tag exceeds this limit, it's
     /// truncated to the closest previous UTF-8 character boundary, in order to preserve UTF-8 validity.
     ///
     /// Defaults to no limit.
@@ -132,12 +133,23 @@ impl DogStatsDCodecConfiguration {
 
     /// Sets the minimum sample rate.
     ///
-    /// This is the minimum sample rate that is allowed for a metric payload. If the sample rate is less than this limit,
+    /// This is the minimum sample rate that's allowed for a metric payload. If the sample rate is less than this limit,
     /// the sample rate is clamped to this value and a log message is emitted.
     ///
     /// Defaults to `0.000000003845`.
     pub fn with_minimum_sample_rate(mut self, minimum_sample_rate: f64) -> Self {
         self.minimum_sample_rate = minimum_sample_rate;
+        self
+    }
+
+    /// Sets whether client-provided origin detection fields are parsed.
+    ///
+    /// When disabled, the `c:` (Local Data), `e:` (External Data), and `card:` (Cardinality) fields are ignored even if
+    /// present in the payload.
+    ///
+    /// Defaults to `false`.
+    pub fn with_client_origin_detection(mut self, enabled: bool) -> Self {
+        self.client_origin_detection = enabled;
         self
     }
 }
@@ -150,6 +162,7 @@ impl Default for DogStatsDCodecConfiguration {
             timestamps: true,
             permissive: false,
             minimum_sample_rate: MINIMUM_SAFE_DEFAULT_SAMPLE_RATE,
+            client_origin_detection: false,
         }
     }
 }
@@ -158,7 +171,7 @@ impl Default for DogStatsDCodecConfiguration {
 ///
 /// This codec is used to parse the DogStatsD protocol, which is a superset of the StatsD protocol. DogStatsD adds a
 /// number of additional features, such as the ability to specify tags, send histograms directly, send service checks
-/// and events (DataDog-specific), and more.
+/// and events (Datadog-specific), and more.
 ///
 /// [dsd]: https://docs.datadoghq.com/developers/dogstatsd/
 #[derive(Clone, Debug)]
@@ -179,7 +192,7 @@ impl DogStatsDCodec {
     ///
     /// # Errors
     ///
-    /// If the raw data is not a valid DogStatsD packet, an error is returned.
+    /// If the raw data isn't a valid DogStatsD packet, an error is returned.
     pub fn decode_packet<'a>(&self, data: &'a [u8]) -> Result<ParsedPacket<'a>, ParseError> {
         match parse_message_type(data) {
             MessageType::Event => self.decode_event(data).map(ParsedPacket::Event),

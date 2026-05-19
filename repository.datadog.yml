@@ -1,0 +1,6 @@
+---
+schema-version: v2
+kind: adms
+auto-version-updates:
+  disabled:
+    reason: Existing dependency update/management tooling in place (Dependabot)

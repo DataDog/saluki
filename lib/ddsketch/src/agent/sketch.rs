@@ -12,6 +12,7 @@ use super::config::{
     Config, DDSKETCH_CONF_BIN_LIMIT, DDSKETCH_CONF_GAMMA_LN, DDSKETCH_CONF_GAMMA_V, DDSKETCH_CONF_NORM_BIAS,
     DDSKETCH_CONF_NORM_MIN,
 };
+use crate::canonical::mapping::LogarithmicMapping;
 use crate::common::float_eq;
 
 static SKETCH_CONFIG: Config = Config::new(
@@ -33,10 +34,10 @@ const MAX_BIN_WIDTH: u32 = u32::MAX;
 /// by the agent, handle them internally, merge them, and so on, without any loss of accuracy, eventually forwarding
 /// them to Datadog ourselves.
 ///
-/// As such, this implementation is constrained in the same ways: the configuration parameters cannot be changed, the
+/// As such, this implementation is constrained in the same ways: the configuration parameters can't be changed, the
 /// collapsing strategy is fixed, and we support a limited number of methods for inserting into the sketch.
 ///
-/// Importantly, we have a special function, again taken from the agent version, to allow us to interpolate histograms,
+/// Importantly, we've a special function, again taken from the agent version, to allow us to interpolate histograms,
 /// specifically our own aggregated histograms, into a sketch so that we can emit useful default quantiles, rather than
 /// having to ship the buckets -- upper bound and count -- to a downstream system that might have no native way to do
 /// the same thing, basically providing no value as they have no way to render useful data from them.
@@ -44,8 +45,8 @@ const MAX_BIN_WIDTH: u32 = u32::MAX;
 /// # Features
 ///
 /// This crate exposes a single feature, `serde`, which enables serialization and deserialization of `DDSketch` with
-/// `serde`. This feature is not enabled by default, as it can be slightly risky to use. This is primarily due to the
-/// fact that the format of `DDSketch` is not promised to be stable over time. If you enable this feature, you should
+/// `serde`. This feature isn't enabled by default, as it can be slightly risky to use. This is primarily due to the
+/// fact that the format of `DDSketch` isn't promised to be stable over time. If you enable this feature, you should
 /// take care to avoid storing serialized `DDSketch` data for long periods of time, as deserializing it in the future
 /// may work but could lead to incorrect/unexpected behavior or issues with correctness.
 ///
@@ -74,6 +75,17 @@ pub struct DDSketch {
 }
 
 impl DDSketch {
+    /// Returns the canonical DDSketch mapping that aligns with the agent sketch's key space.
+    pub fn remap_mapping() -> LogarithmicMapping {
+        LogarithmicMapping::new_with_gamma_and_offset(DDSKETCH_CONF_GAMMA_V, f64::from(DDSKETCH_CONF_NORM_BIAS) + 0.5)
+            .expect("agent sketch gamma and offset are always valid")
+    }
+
+    /// Returns the representative value for the given agent sketch key.
+    pub fn value_for_key(key: i16) -> f64 {
+        SKETCH_CONFIG.bin_lower_bound(key)
+    }
+
     /// Returns the number of bins in the sketch.
     pub fn bin_count(&self) -> usize {
         self.bins.len()
@@ -87,6 +99,31 @@ impl DDSketch {
     /// Number of samples currently represented by this sketch.
     pub fn count(&self) -> u64 {
         self.count
+    }
+
+    /// Overrides the sample count tracked by this sketch.
+    pub fn set_count(&mut self, count: u64) {
+        self.count = count;
+    }
+
+    /// Overrides the sum of all values tracked by this sketch.
+    pub fn set_sum(&mut self, sum: f64) {
+        self.sum = sum;
+    }
+
+    /// Overrides the average value tracked by this sketch.
+    pub fn set_avg(&mut self, avg: f64) {
+        self.avg = avg;
+    }
+
+    /// Overrides the minimum value tracked by this sketch.
+    pub fn set_min(&mut self, min: f64) {
+        self.min = min;
+    }
+
+    /// Overrides the maximum value tracked by this sketch.
+    pub fn set_max(&mut self, max: f64) {
+        self.max = max;
     }
 
     /// Minimum value seen by this sketch.
@@ -667,7 +704,7 @@ fn trim_left(bins: &mut SmallVec<[Bin; 4]>, bin_limit: u16) {
     }
 
     // Fold the accumulated mass into the first kept bin, matching Go's `bins[newMinIndex] += n`.
-    // Any remainder that overflows u32::MAX is discarded — this requires >4B observations in a
+    // Any remainder that overflows u32::MAX is discarded—this requires >4B observations in a
     // single collapsed bin and is an intentional divergence from the Datadog Agent (which uses
     // float64 counts and never loses mass).
     bins[num_to_remove].increment(missing);
@@ -814,7 +851,7 @@ mod tests {
     /// Input:  [(0, u32::MAX), (1, 1)]  limit=1  →  remove 1 bin
     /// missing = u32::MAX; bins[1].increment(u32::MAX): next = u32::MAX+1 > u32::MAX
     /// → n = u32::MAX, remainder = 1 (discarded)
-    /// Final: [(1, u32::MAX)] — 1 observation lost
+    /// Final: [(1, u32::MAX)]—1 observation lost
     #[test]
     fn trim_left_saturates_first_kept_bin_and_discards_remainder() {
         let mut bins = make_bins(&[(0, u32::MAX), (1, 1)]);
@@ -844,7 +881,7 @@ mod tests {
     ///
     /// Input:  [(0,1),(1,1),(2,1),(3,1),(4,1),(5,1),(6,1),(7,1),(8,1),(9,1)]  limit=4
     /// num_to_remove=6; missing=6; bins[6].increment(6): 1+6=7 → n=7
-    /// Final: [(6,7),(7,1),(8,1),(9,1)]  — only top 4 keys kept, collapsed mass in first
+    /// Final: [(6,7),(7,1),(8,1),(9,1)] —only top 4 keys kept, collapsed mass in first
     #[test]
     fn trim_left_monotonic_ascending_keeps_top_keys() {
         let pairs: Vec<(i16, u32)> = (0..10).map(|i| (i, 1)).collect();
@@ -934,7 +971,7 @@ mod property_tests {
         /// Total count is preserved exactly when no u32 overflow occurs.
         ///
         /// This is the key invariant from sketches-go's assertEncodeBins:
-        /// store.TotalCount() must equal the sum of all inserted counts.
+        /// `store.TotalCount()` must equal the sum of all inserted counts.
         /// We restrict counts to keep the collapsed sum safely below u32::MAX
         /// (sketches-go never loses mass because it uses float64; we match that
         /// guarantee for all inputs where the collapsed bin doesn't overflow u32).

@@ -21,7 +21,7 @@ pub fn tags_from_instrumentation_scope_metadata(scope: &otlp_common::Instrumenta
     tags
 }
 
-/// Creates tags for when instrumentation scope is not present in the OTLP payload.
+/// Creates tags for when instrumentation scope isn't present in the OTLP payload.
 /// This matches DD Agent behavior which adds "n/a" values for missing scope.
 pub fn tags_from_empty_instrumentation_scope() -> Vec<String> {
     vec![

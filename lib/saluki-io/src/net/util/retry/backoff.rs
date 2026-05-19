@@ -1,10 +1,11 @@
 use std::{
+    convert::Infallible,
     fmt,
     sync::{Arc, Mutex},
     time::Duration,
 };
 
-use rand::{rng, Rng as _, RngCore};
+use rand::{rand_core::TryRng, rng, Rng as _, RngExt as _};
 
 #[derive(Clone)]
 pub enum BackoffRng {
@@ -16,7 +17,7 @@ pub enum BackoffRng {
     SecureDefault,
 
     /// A shared random number generator.
-    Shared(Arc<Mutex<Box<dyn RngCore + Send + Sync>>>),
+    Shared(Arc<Mutex<Box<dyn TryRng<Error = Infallible> + Send + Sync>>>),
 }
 
 impl fmt::Debug for BackoffRng {
@@ -28,26 +29,29 @@ impl fmt::Debug for BackoffRng {
     }
 }
 
-impl RngCore for BackoffRng {
-    fn next_u32(&mut self) -> u32 {
-        match self {
+impl TryRng for BackoffRng {
+    type Error = Infallible;
+
+    fn try_next_u32(&mut self) -> Result<u32, Self::Error> {
+        Ok(match self {
             BackoffRng::SecureDefault => rng().next_u32(),
             BackoffRng::Shared(rng) => rng.lock().unwrap().next_u32(),
-        }
+        })
     }
 
-    fn next_u64(&mut self) -> u64 {
-        match self {
+    fn try_next_u64(&mut self) -> Result<u64, Self::Error> {
+        Ok(match self {
             BackoffRng::SecureDefault => rng().next_u64(),
             BackoffRng::Shared(rng) => rng.lock().unwrap().next_u64(),
-        }
+        })
     }
 
-    fn fill_bytes(&mut self, dest: &mut [u8]) {
+    fn try_fill_bytes(&mut self, dst: &mut [u8]) -> Result<(), Self::Error> {
         match self {
-            BackoffRng::SecureDefault => rng().fill_bytes(dest),
-            BackoffRng::Shared(rng) => rng.lock().unwrap().fill_bytes(dest),
+            BackoffRng::SecureDefault => rng().fill_bytes(dst),
+            BackoffRng::Shared(rng) => rng.lock().unwrap().fill_bytes(dst),
         }
+        Ok(())
     }
 }
 
@@ -67,7 +71,7 @@ pub struct ExponentialBackoff {
 impl ExponentialBackoff {
     /// Creates a new `ExponentialBackoff` with the given minimum and maximum backoff durations.
     ///
-    /// Jitter is not applied to the calculated backoff durations.
+    /// Jitter isn't applied to the calculated backoff durations.
     pub fn new(min_backoff: Duration, max_backoff: Duration) -> Self {
         Self {
             min_backoff,
@@ -85,9 +89,9 @@ impl ExponentialBackoff {
     /// for the given external error count. If the minimum backoff factor is set to 1.0 or less, then jitter will be
     /// disabled.
     ///
-    /// Concretely, this means that with a minimum backoff duration of 10ms, and a minimum backoff factor of 2.0, the
-    /// duration for an error count of one would be 20ms without jitter, but anywhere between 10ms and 20ms with jitter.
-    /// For an error count of two, it be 40ms without jitter, but anywhere between 20ms and 40ms with jitter.
+    /// Concretely, this means that with a minimum backoff duration of 10 ms, and a minimum backoff factor of 2.0, the
+    /// duration for an error count of one would be 20 ms without jitter, but anywhere between 10 ms and 20 ms with jitter.
+    /// For an error count of two, it be 40 ms without jitter, but anywhere between 20 ms and 40 ms with jitter.
     pub fn with_jitter(min_backoff: Duration, max_backoff: Duration, min_backoff_factor: f64) -> Self {
         Self {
             min_backoff,
@@ -105,7 +109,7 @@ impl ExponentialBackoff {
     /// Defaults to a lazily initialized, thread-local CSPRNG seeded by the operating system.
     pub fn with_rng<R>(self, rng: R) -> Self
     where
-        R: RngCore + Send + Sync + 'static,
+        R: TryRng<Error = Infallible> + Send + Sync + 'static,
     {
         ExponentialBackoff {
             min_backoff: self.min_backoff,
@@ -139,11 +143,38 @@ impl ExponentialBackoff {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::{convert::Infallible, time::Duration};
 
     use proptest::prelude::*;
+    use rand::rand_core::TryRng;
 
     use crate::net::util::retry::ExponentialBackoff;
+
+    /// Adapter to bridge `proptest`'s `TestRng` (`rand` 0.9 `RngCore`) to `rand` 0.10's `TryRng`. Created by Claude as
+    /// a workaround to compilation issues when updating our workspace version of `rand` to 0.10 while `proptest` was
+    /// still using 0.9.
+    // TODO: remove this when proptest updates to 0.10
+    struct PropTestRng(proptest::test_runner::TestRng);
+
+    impl TryRng for PropTestRng {
+        type Error = Infallible;
+
+        fn try_next_u32(&mut self) -> Result<u32, Self::Error> {
+            use proptest::prelude::RngCore as _;
+            Ok(self.0.next_u32())
+        }
+
+        fn try_next_u64(&mut self) -> Result<u64, Self::Error> {
+            use proptest::prelude::RngCore as _;
+            Ok(self.0.next_u64())
+        }
+
+        fn try_fill_bytes(&mut self, dst: &mut [u8]) -> Result<(), Self::Error> {
+            use proptest::prelude::RngCore as _;
+            self.0.fill_bytes(dst);
+            Ok(())
+        }
+    }
 
     fn arb_exponential_backoff(min_backoff_factor: f64) -> impl Strategy<Value = ExponentialBackoff> {
         (1u64..=u64::MAX, 1u64..u64::MAX)
@@ -155,7 +186,7 @@ mod tests {
                     min_backoff_factor,
                 )
             })
-            .prop_perturb(|backoff, rng| backoff.with_rng(rng))
+            .prop_perturb(|backoff, rng| backoff.with_rng(PropTestRng(rng)))
     }
 
     proptest! {

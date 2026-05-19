@@ -1,25 +1,31 @@
 //! Metric Tag Filterlist synchronous transform.
 //!
-//! Removes or retains specific tags from distribution metrics based on per-metric configuration.
-//! Supports both "exclude" (denylist) and "include" (allowlist) modes.
+//! Removes or retains specific tags from distribution and count metrics based on per-metric
+//! configuration. Supports both "exclude" (denylist) and "include" (allowlist) modes.
 //!
 //! Configuration is read from the `metric_tag_filterlist` key and can be updated at runtime via
 //! Remote Config.
 
 mod telemetry;
 
+use std::{num::NonZeroUsize, time::Duration};
+
 use async_trait::async_trait;
 use foldhash::fast::RandomState as FoldHashState;
 use hashbrown::{HashMap, HashSet};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
+use saluki_common::cache::{Cache, CacheBuilder};
 use saluki_config::GenericConfiguration;
-use saluki_context::tags::{Tag, TagSet};
+use saluki_context::{tags::Tag, Context, TagSetMutViewState};
 use saluki_core::{
     components::{
         transforms::{Transform, TransformBuilder, TransformContext},
         ComponentContext,
     },
-    data_model::event::{metric::Metric, EventType},
+    data_model::event::{
+        metric::{Metric, MetricValues},
+        EventType,
+    },
     observability::ComponentMetricsExt,
     topology::OutputDefinition,
 };
@@ -27,7 +33,13 @@ use saluki_error::GenericError;
 use saluki_metrics::MetricsBuilder;
 use serde::{de::Deserializer, Deserialize};
 use tokio::select;
-use tracing::{debug, warn};
+use tracing::{debug, error, warn};
+
+use crate::components::dogstatsd_filterlist::METRIC_TAG_FILTERLIST_CONFIG_KEY;
+
+const CONTEXT_CACHE_CAPACITY: usize = 100_000;
+const CONTEXT_CACHE_TTI: Duration = Duration::from_secs(30);
+const CONTEXT_CACHE_EXPIRATION_INTERVAL: Duration = Duration::from_secs(1);
 
 use self::telemetry::Telemetry;
 
@@ -82,7 +94,7 @@ pub type CompiledFilters = HashMap<String, (bool, HashSet<String, FoldHashState>
 pub enum FilterMetricTagsOutcome {
     /// No rule existed for the metric name.
     RuleMiss,
-    /// A rule existed, but applying it did not change any tags.
+    /// A rule existed, but applying it didn't change any tags.
     NoChange,
     /// A rule existed and removed one or more tags.
     Modified {
@@ -170,6 +182,7 @@ impl TransformBuilder for TagFilterlistConfiguration {
                 .clone()
                 .expect("configuration must be set via from_configuration"),
             telemetry: Telemetry::new(&metrics_builder),
+            context_cache: build_context_cache(),
         }))
     }
 }
@@ -177,6 +190,10 @@ impl TransformBuilder for TagFilterlistConfiguration {
 impl MemoryBounds for TagFilterlistConfiguration {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
         builder.minimum().with_single_value::<TagFilterlist>("component struct");
+
+        builder
+            .firm()
+            .with_fixed_amount("context cache", CONTEXT_CACHE_CAPACITY * 64);
     }
 }
 
@@ -184,6 +201,16 @@ struct TagFilterlist {
     filters: CompiledFilters,
     configuration: GenericConfiguration,
     telemetry: Telemetry,
+    context_cache: Cache<Context, Option<(Context, usize)>>,
+}
+
+fn build_context_cache() -> Cache<Context, Option<(Context, usize)>> {
+    CacheBuilder::from_identifier("tag_filterlist/context_cache")
+        .expect("identifier cannot be empty")
+        .with_capacity(NonZeroUsize::new(CONTEXT_CACHE_CAPACITY).unwrap())
+        .with_time_to_idle(Some(CONTEXT_CACHE_TTI))
+        .with_expiration_interval(CONTEXT_CACHE_EXPIRATION_INTERVAL)
+        .build()
 }
 
 #[async_trait]
@@ -192,7 +219,9 @@ impl Transform for TagFilterlist {
         let mut health = context.take_health_handle();
         health.mark_ready();
 
-        let mut watcher = self.configuration.watch_for_updates("metric_tag_filterlist");
+        let mut watcher = self.configuration.watch_for_updates(METRIC_TAG_FILTERLIST_CONFIG_KEY);
+
+        let mut view_state = TagSetMutViewState::default();
 
         debug!("Metric Tag Filterlist transform started.");
 
@@ -203,20 +232,48 @@ impl Transform for TagFilterlist {
                     Some(mut events) => {
                         for event in &mut events {
                             if let Some(metric) = event.try_as_metric_mut() {
-                                if metric.values().is_sketch() {
-                                    let outcome = filter_metric_tags(metric, &self.filters);
-                                    self.telemetry.record(outcome);
+                                if metric.values().is_sketch()
+                                    || matches!(metric.values(), MetricValues::Counter(_))
+                                {
+                                    let original_context = metric.context().clone();
+
+                                    if let Some(cached) = self.context_cache.get(&original_context) {
+                                        match cached {
+                                            None => self.telemetry.record(FilterMetricTagsOutcome::NoChange),
+                                            Some((filtered_ctx, removed_tags)) => {
+                                                *metric.context_mut() = filtered_ctx;
+                                                self.telemetry.record(FilterMetricTagsOutcome::Modified { removed_tags });
+                                            }
+                                        }
+                                    } else {
+                                        let outcome = filter_metric_tags(metric, &mut view_state, &self.filters);
+                                        self.telemetry.record(outcome);
+
+                                        match outcome {
+                                            FilterMetricTagsOutcome::RuleMiss => {}
+                                            FilterMetricTagsOutcome::NoChange => {
+                                                self.context_cache.insert(original_context, None);
+                                            }
+                                            FilterMetricTagsOutcome::Modified { removed_tags } => {
+                                                self.context_cache.insert(
+                                                    original_context,
+                                                    Some((metric.context().clone(), removed_tags)),
+                                                );
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
                         if let Err(e) = context.dispatcher().dispatch(events).await {
-                            tracing::error!(error = %e, "Failed to dispatch events.");
+                            error!(error = %e, "Failed to dispatch events.");
                         }
                     }
                     None => break,
                 },
                 (_, new_entries) = watcher.changed::<Vec<MetricTagFilterEntry>>() => {
                     self.filters = compile_filters(new_entries.as_deref().unwrap_or(&[]));
+                    self.context_cache = build_context_cache();
                     debug!("Updated metric tag filterlist.");
                 },
             }
@@ -233,54 +290,40 @@ fn should_keep_tag(tag: &Tag, is_exclude: bool, names: &HashSet<String, FoldHash
     is_exclude != names.contains(tag.as_borrowed().name())
 }
 
-#[inline]
-fn has_removable_tags(tags: &TagSet, is_exclude: bool, names: &HashSet<String, FoldHashState>) -> bool {
-    tags.into_iter().any(|tag| !should_keep_tag(tag, is_exclude, names))
-}
-
 /// Filter the tags of a distribution metric according to the compiled filter table.
 ///
 /// Both instrumented tags and origin tags are filtered using the same tag key list.
-/// If the metric name is not present in `filters`, the metric is left unchanged.
+/// If the metric name isn't present in `filters`, the metric is left unchanged.
 /// If filtering would not change any tags, the metric context is left untouched (zero allocations).
 #[inline]
-pub fn filter_metric_tags(metric: &mut Metric, filters: &CompiledFilters) -> FilterMetricTagsOutcome {
+pub fn filter_metric_tags(
+    metric: &mut Metric, state: &mut TagSetMutViewState, filters: &CompiledFilters,
+) -> FilterMetricTagsOutcome {
     let Some((is_exclude, tag_names)) = filters.get(metric.context().name().as_ref()) else {
         return FilterMetricTagsOutcome::RuleMiss;
     };
 
-    let is_exclude = *is_exclude;
+    let mut tag_set_view = metric.context_mut().tags_mut_view(state);
+    tag_set_view.retain_tags(|tag| should_keep_tag(tag, *is_exclude, tag_names));
+    tag_set_view.retain_origin_tags(|tag| should_keep_tag(tag, *is_exclude, tag_names));
+    let total_removed = tag_set_view.finish();
 
-    let has_tag_removals = has_removable_tags(metric.context().tags(), is_exclude, tag_names);
-    let has_origin_removals = has_removable_tags(metric.context().origin_tags(), is_exclude, tag_names);
-
-    if !has_tag_removals && !has_origin_removals {
-        return FilterMetricTagsOutcome::NoChange;
-    }
-
-    let mut total_removed = 0;
-    metric.context_mut().with_tag_sets_mut(|tags, origin_tags| {
-        if has_tag_removals {
-            let before = tags.len();
-            tags.retain(|tag| should_keep_tag(tag, is_exclude, tag_names));
-            total_removed += before - tags.len();
+    if total_removed == 0 {
+        FilterMetricTagsOutcome::NoChange
+    } else {
+        FilterMetricTagsOutcome::Modified {
+            removed_tags: total_removed,
         }
-        if has_origin_removals {
-            let before = origin_tags.len();
-            origin_tags.retain(|tag| should_keep_tag(tag, is_exclude, tag_names));
-            total_removed += before - origin_tags.len();
-        }
-    });
-
-    FilterMetricTagsOutcome::Modified {
-        removed_tags: total_removed,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use saluki_config::{dynamic::ConfigUpdate, ConfigurationLoader};
-    use saluki_context::{tags::Tag, Context};
+    use saluki_context::{
+        tags::{Tag, TagSet},
+        Context, TagSetMutViewState,
+    };
     use saluki_core::data_model::event::metric::Metric;
     use saluki_metrics::{test::TestRecorder, MetricsBuilder};
     use serde_json::json;
@@ -326,7 +369,8 @@ mod tests {
         let filters = compile_filters(&entries);
 
         let mut metric = distribution_metric("my.dist", &["env:prod", "service:web", "host:h1"]);
-        filter_metric_tags(&mut metric, &filters);
+        let mut state = TagSetMutViewState::default();
+        filter_metric_tags(&mut metric, &mut state, &filters);
 
         assert_eq!(tag_names(&metric), vec!["service:web"]);
     }
@@ -341,7 +385,8 @@ mod tests {
         let filters = compile_filters(&entries);
 
         let mut metric = distribution_metric("my.dist", &["env:prod", "service:web", "host:h1"]);
-        filter_metric_tags(&mut metric, &filters);
+        let mut state = TagSetMutViewState::default();
+        filter_metric_tags(&mut metric, &mut state, &filters);
 
         assert_eq!(tag_names(&metric), vec!["env:prod"]);
     }
@@ -356,7 +401,8 @@ mod tests {
         let filters = compile_filters(&entries);
 
         let mut metric = distribution_metric("my.dist", &["env:prod", "service:web"]);
-        filter_metric_tags(&mut metric, &filters);
+        let mut state = TagSetMutViewState::default();
+        filter_metric_tags(&mut metric, &mut state, &filters);
 
         assert_eq!(tag_names(&metric), vec!["env:prod", "service:web"]);
     }
@@ -369,6 +415,74 @@ mod tests {
     }
 
     #[test]
+    fn count_exclude_removes_listed_tags() {
+        let entries = vec![MetricTagFilterEntry {
+            metric_name: "my.counter".to_string(),
+            action: FilterAction::Exclude,
+            tags: vec!["env".to_string(), "host".to_string()],
+        }];
+        let filters = compile_filters(&entries);
+
+        let mut metric = counter_metric("my.counter", &["env:prod", "service:web", "host:h1"]);
+        let mut state = TagSetMutViewState::default();
+        let outcome = filter_metric_tags(&mut metric, &mut state, &filters);
+
+        assert_eq!(tag_names(&metric), vec!["service:web"]);
+        assert_eq!(outcome, FilterMetricTagsOutcome::Modified { removed_tags: 2 });
+    }
+
+    #[test]
+    fn count_include_keeps_only_listed_tags() {
+        let entries = vec![MetricTagFilterEntry {
+            metric_name: "my.counter".to_string(),
+            action: FilterAction::Include,
+            tags: vec!["env".to_string()],
+        }];
+        let filters = compile_filters(&entries);
+
+        let mut metric = counter_metric("my.counter", &["env:prod", "service:web", "host:h1"]);
+        let mut state = TagSetMutViewState::default();
+        let outcome = filter_metric_tags(&mut metric, &mut state, &filters);
+
+        assert_eq!(tag_names(&metric), vec!["env:prod"]);
+        assert_eq!(outcome, FilterMetricTagsOutcome::Modified { removed_tags: 2 });
+    }
+
+    #[test]
+    fn count_non_matching_metric_unchanged() {
+        let entries = vec![MetricTagFilterEntry {
+            metric_name: "other.counter".to_string(),
+            action: FilterAction::Exclude,
+            tags: vec!["env".to_string()],
+        }];
+        let filters = compile_filters(&entries);
+
+        let mut metric = counter_metric("my.counter", &["env:prod", "service:web"]);
+        let mut state = TagSetMutViewState::default();
+        let outcome = filter_metric_tags(&mut metric, &mut state, &filters);
+
+        assert_eq!(tag_names(&metric), vec!["env:prod", "service:web"]);
+        assert_eq!(outcome, FilterMetricTagsOutcome::RuleMiss);
+    }
+
+    #[test]
+    fn count_no_change_outcome_when_filter_matches_no_tags() {
+        let entries = vec![MetricTagFilterEntry {
+            metric_name: "my.counter".to_string(),
+            action: FilterAction::Exclude,
+            tags: vec!["region".to_string()],
+        }];
+        let filters = compile_filters(&entries);
+
+        let mut metric = counter_metric("my.counter", &["env:prod", "service:web"]);
+        let mut state = TagSetMutViewState::default();
+        let outcome = filter_metric_tags(&mut metric, &mut state, &filters);
+
+        assert_eq!(tag_names(&metric), vec!["env:prod", "service:web"]);
+        assert_eq!(outcome, FilterMetricTagsOutcome::NoChange);
+    }
+
+    #[test]
     fn bare_tag_excluded_by_name() {
         let entries = vec![MetricTagFilterEntry {
             metric_name: "my.dist".to_string(),
@@ -378,7 +492,8 @@ mod tests {
         let filters = compile_filters(&entries);
 
         let mut metric = distribution_metric("my.dist", &["production", "service:web"]);
-        filter_metric_tags(&mut metric, &filters);
+        let mut state = TagSetMutViewState::default();
+        filter_metric_tags(&mut metric, &mut state, &filters);
 
         assert_eq!(tag_names(&metric), vec!["service:web"]);
     }
@@ -393,7 +508,8 @@ mod tests {
         let filters = compile_filters(&entries);
 
         let mut metric = distribution_metric("my.dist", &["env:prod", "service:web"]);
-        filter_metric_tags(&mut metric, &filters);
+        let mut state = TagSetMutViewState::default();
+        filter_metric_tags(&mut metric, &mut state, &filters);
 
         assert!(metric.context().tags().is_empty());
     }
@@ -408,7 +524,8 @@ mod tests {
         let filters = compile_filters(&entries);
 
         let mut metric = distribution_metric("my.dist", &["env:prod", "service:web"]);
-        filter_metric_tags(&mut metric, &filters);
+        let mut state = TagSetMutViewState::default();
+        filter_metric_tags(&mut metric, &mut state, &filters);
 
         assert_eq!(tag_names(&metric), vec!["env:prod", "service:web"]);
     }
@@ -430,7 +547,8 @@ mod tests {
         let filters = compile_filters(&entries);
 
         let mut metric = distribution_metric("my.dist", &["env:prod", "host:h1", "service:web"]);
-        filter_metric_tags(&mut metric, &filters);
+        let mut state = TagSetMutViewState::default();
+        filter_metric_tags(&mut metric, &mut state, &filters);
 
         assert_eq!(tag_names(&metric), vec!["service:web"]);
     }
@@ -452,7 +570,8 @@ mod tests {
         let filters = compile_filters(&entries);
 
         let mut metric = distribution_metric("my.dist", &["env:prod", "host:h1", "service:web"]);
-        filter_metric_tags(&mut metric, &filters);
+        let mut state = TagSetMutViewState::default();
+        filter_metric_tags(&mut metric, &mut state, &filters);
 
         assert_eq!(tag_names(&metric), vec!["env:prod", "service:web"]);
     }
@@ -474,7 +593,8 @@ mod tests {
         let filters = compile_filters(&entries);
 
         let mut metric = distribution_metric("my.dist", &["env:prod", "host:h1", "service:web"]);
-        filter_metric_tags(&mut metric, &filters);
+        let mut state = TagSetMutViewState::default();
+        filter_metric_tags(&mut metric, &mut state, &filters);
 
         assert_eq!(tag_names(&metric), vec!["env:prod", "service:web"]);
     }
@@ -483,7 +603,8 @@ mod tests {
     fn no_config_is_noop() {
         let filters = compile_filters(&[]);
         let mut metric = distribution_metric("my.dist", &["env:prod", "service:web"]);
-        filter_metric_tags(&mut metric, &filters);
+        let mut state = TagSetMutViewState::default();
+        filter_metric_tags(&mut metric, &mut state, &filters);
         assert_eq!(tag_names(&metric), vec!["env:prod", "service:web"]);
     }
 
@@ -563,7 +684,8 @@ mod tests {
 
         let mut metric =
             distribution_metric_with_origin_tags("my.dist", &["env:prod"], &["env:prod", "host:h1", "service:web"]);
-        filter_metric_tags(&mut metric, &filters);
+        let mut state = TagSetMutViewState::default();
+        filter_metric_tags(&mut metric, &mut state, &filters);
 
         assert_eq!(origin_tag_names(&metric), vec!["service:web"]);
     }
@@ -579,7 +701,8 @@ mod tests {
 
         let mut metric =
             distribution_metric_with_origin_tags("my.dist", &["env:prod"], &["env:prod", "host:h1", "service:web"]);
-        filter_metric_tags(&mut metric, &filters);
+        let mut state = TagSetMutViewState::default();
+        filter_metric_tags(&mut metric, &mut state, &filters);
 
         assert_eq!(origin_tag_names(&metric), vec!["env:prod"]);
     }
@@ -594,7 +717,8 @@ mod tests {
         let filters = compile_filters(&entries);
 
         let mut metric = distribution_metric("my.dist", &["env:prod", "service:web"]);
-        filter_metric_tags(&mut metric, &filters);
+        let mut state = TagSetMutViewState::default();
+        filter_metric_tags(&mut metric, &mut state, &filters);
 
         assert_eq!(tag_names(&metric), vec!["service:web"]);
         assert!(metric.context().origin_tags().is_empty());
@@ -621,7 +745,8 @@ mod tests {
         }];
         let filters = compile_filters(&entries);
 
-        filter_metric_tags(&mut metric1, &filters);
+        let mut state = TagSetMutViewState::default();
+        filter_metric_tags(&mut metric1, &mut state, &filters);
 
         assert_eq!(origin_tag_names(&metric1), vec!["service:web"]);
         let metric2_origin: Vec<_> = metric2
@@ -651,7 +776,8 @@ mod tests {
             &["env:prod", "service:web", "host:h1"],
             &["env:prod", "host:h1", "region:us-east-1"],
         );
-        filter_metric_tags(&mut metric, &filters);
+        let mut state = TagSetMutViewState::default();
+        filter_metric_tags(&mut metric, &mut state, &filters);
 
         assert_eq!(tag_names(&metric), vec!["service:web"]);
         assert_eq!(origin_tag_names(&metric), vec!["region:us-east-1"]);
@@ -714,7 +840,8 @@ mod tests {
         let filters = compile_filters(new_entries.as_deref().unwrap_or(&[]));
 
         let mut metric = distribution_metric("my.dist", &["env:prod", "host:h1", "service:web"]);
-        filter_metric_tags(&mut metric, &filters);
+        let mut state = TagSetMutViewState::default();
+        filter_metric_tags(&mut metric, &mut state, &filters);
         assert_eq!(tag_names(&metric), vec!["env:prod", "service:web"]);
     }
 
@@ -765,7 +892,8 @@ mod tests {
         let filters = compile_filters(new_entries.as_deref().unwrap_or(&[]));
 
         let mut metric = distribution_metric("my.dist", &["env:prod", "service:web"]);
-        filter_metric_tags(&mut metric, &filters);
+        let mut state = TagSetMutViewState::default();
+        filter_metric_tags(&mut metric, &mut state, &filters);
         assert_eq!(tag_names(&metric), vec!["env:prod", "service:web"]);
     }
 
@@ -800,7 +928,8 @@ mod tests {
         let filters = compile_filters(new_entries.as_deref().unwrap_or(&[]));
 
         let mut metric = distribution_metric("my.dist", &["env:prod", "service:web", "host:h1"]);
-        filter_metric_tags(&mut metric, &filters);
+        let mut state = TagSetMutViewState::default();
+        filter_metric_tags(&mut metric, &mut state, &filters);
         assert_eq!(tag_names(&metric), vec!["service:web"]);
     }
 
@@ -815,7 +944,8 @@ mod tests {
 
         let mut metric = distribution_metric("my.dist", &["env:prod", "host:h1"]);
 
-        let outcome = filter_metric_tags(&mut metric, &filters);
+        let mut state = TagSetMutViewState::default();
+        let outcome = filter_metric_tags(&mut metric, &mut state, &filters);
 
         assert_eq!(outcome, FilterMetricTagsOutcome::Modified { removed_tags: 1 });
         assert_eq!(tag_names(&metric), vec!["env:prod"]);
@@ -841,7 +971,8 @@ mod tests {
         assert!(!metric.context().tags().is_modified());
         assert!(!metric.context().origin_tags().is_modified());
 
-        let outcome = filter_metric_tags(&mut metric, &filters);
+        let mut state = TagSetMutViewState::default();
+        let outcome = filter_metric_tags(&mut metric, &mut state, &filters);
 
         assert_eq!(outcome, FilterMetricTagsOutcome::NoChange);
         assert_eq!(tag_names(&metric), vec!["env:prod", "host:h1"]);

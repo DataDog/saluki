@@ -217,10 +217,10 @@ impl<W: AsyncWrite> WriteStatistics for Compressor<W> {
 /// as amortize how often they write compressed data to the output stream, increasing the potential efficiency of the
 /// related function or system calls to do so.
 ///
-/// However, this presents a problem when there is a need to ensure that the size of the compressed data does not exceed
+/// However, this presents a problem when there is a need to ensure that the size of the compressed data doesn't exceed
 /// a certain threshold. As many inputs can be written to the compressor before the next chunk of compressed data is
-/// output, it is possible to write enough data that the compressed output exceeds the threshold. Further, many
-/// compression algorithms/implementations do not provide a way to query the size of the compressed data without
+/// output, it's possible to write enough data that the compressed output exceeds the threshold. Further, many
+/// compression algorithms/implementations don't provide a way to query the size of the compressed data without
 /// expensive operations that either require doing multiple compression passes on different slices of the data, or early
 /// flushing of compressed data, potentially leading to abnormally low compression ratios.
 ///

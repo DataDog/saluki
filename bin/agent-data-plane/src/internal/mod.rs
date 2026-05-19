@@ -1,21 +1,24 @@
 use memory_accounting::ComponentRegistry;
-use saluki_components::destinations::DogStatsDStatisticsConfiguration;
+use saluki_app::logging::LoggingOverrideController;
 use saluki_config::GenericConfiguration;
+use saluki_core::health::HealthRegistry;
 use saluki_core::runtime::Supervisor;
 use saluki_error::GenericError;
-use saluki_health::HealthRegistry;
+
+use crate::config::DataPlaneConfiguration;
 
 mod control_plane;
-pub use self::control_plane::create_control_plane_supervisor;
+pub use self::control_plane::{create_control_plane_supervisor, DogStatsDControlPlaneConfiguration};
+
+pub mod env;
+
+pub mod logging;
 
 mod observability;
 pub use self::observability::create_observability_supervisor;
 
-pub mod platform;
-
 pub mod remote_agent;
 use self::remote_agent::RemoteAgentBootstrap;
-use crate::{config::DataPlaneConfiguration, env_provider::ADPEnvironmentProvider};
 
 /// Creates the root internal supervisor containing control plane and observability subsystems.
 ///
@@ -27,11 +30,11 @@ use crate::{config::DataPlaneConfiguration, env_provider::ADPEnvironmentProvider
 ///
 /// # Errors
 ///
-/// If the supervisor cannot be created, an error is returned.
+/// If the supervisor can't be created, an error is returned.
 pub async fn create_internal_supervisor(
     config: &GenericConfiguration, dp_config: &DataPlaneConfiguration, component_registry: &ComponentRegistry,
-    health_registry: HealthRegistry, env_provider: ADPEnvironmentProvider,
-    dsd_stats_config: DogStatsDStatisticsConfiguration, ra_bootstrap: Option<RemoteAgentBootstrap>,
+    health_registry: HealthRegistry, dsd_config: DogStatsDControlPlaneConfiguration,
+    ra_bootstrap: Option<RemoteAgentBootstrap>, logging_controller: LoggingOverrideController,
 ) -> Result<Supervisor, GenericError> {
     // The root supervisor runs in ambient mode (caller's runtime) since its children each have their own
     // dedicated runtimes. The default restart strategy (one-for-one, 1 restart per 5s) applies to the child
@@ -45,9 +48,9 @@ pub async fn create_internal_supervisor(
             dp_config,
             component_registry,
             health_registry.clone(),
-            env_provider,
-            dsd_stats_config,
+            dsd_config,
             ra_bootstrap,
+            logging_controller,
         )
         .await?,
     );

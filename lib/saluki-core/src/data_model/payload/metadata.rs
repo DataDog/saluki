@@ -9,6 +9,7 @@ use anymap3::{CloneAny, Map};
 #[derive(Clone)]
 pub struct PayloadMetadata {
     event_count: usize,
+    data_point_count: usize,
     extensions: Map<dyn CloneAny + Send + Sync>,
 }
 
@@ -17,6 +18,16 @@ impl PayloadMetadata {
     pub fn from_event_count(event_count: usize) -> Self {
         PayloadMetadata {
             event_count,
+            data_point_count: 0,
+            extensions: Map::new(),
+        }
+    }
+
+    /// Creates a new `PayloadMetadata` with the given event and data point counts.
+    pub fn from_event_and_data_point_count(event_count: usize, data_point_count: usize) -> Self {
+        PayloadMetadata {
+            event_count,
+            data_point_count,
             extensions: Map::new(),
         }
     }
@@ -24,6 +35,11 @@ impl PayloadMetadata {
     /// Returns the number of events in the payload.
     pub fn event_count(&self) -> usize {
         self.event_count
+    }
+
+    /// Returns the number of metric data points in the payload.
+    pub fn data_point_count(&self) -> usize {
+        self.data_point_count
     }
 
     /// Gets a reference to a typed extension value, if present.

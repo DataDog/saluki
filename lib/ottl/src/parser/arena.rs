@@ -125,7 +125,7 @@ fn resolve_path<F: EvalContextFamily>(path: &PathExpr, path_resolvers: &PathReso
 }
 
 /// Convert boxed AST to arena-based AST for cache-friendly execution.
-/// Path resolution happens HERE (once at parse time), not at each execution!
+/// Path resolution happens HERE (once at parse time), not at each execution.
 pub fn convert_to_arena<F: EvalContextFamily>(
     root: &RootExpr, arena: &mut AstArena<F>, path_resolvers: &PathResolverMap<F>,
 ) -> Result<ArenaRootExpr> {
@@ -364,7 +364,7 @@ fn convert_value_expr<F: EvalContextFamily>(
 ///
 /// - Converts all arguments (positional and named) to arena value refs via [`convert_value_expr`].
 /// - Preserves `name`, `is_editor`, `indexes`, and the pre-resolved `callback` from the source AST.
-/// - Does not resolve callbacks here; the parser is expected to have attached [`CallbackFn`] when applicable.
+/// - Doesn't resolve callbacks here; the parser is expected to have attached [`CallbackFn`] when applicable.
 fn convert_function_call<F: EvalContextFamily>(
     fc: &FunctionCall, arena: &mut AstArena<F>, path_resolvers: &PathResolverMap<F>,
 ) -> Result<FunctionCallRef> {

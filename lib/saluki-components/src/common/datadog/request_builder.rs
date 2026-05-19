@@ -2,7 +2,7 @@
 
 use std::io;
 
-use http::{HeaderValue, Method, Request, Uri};
+use http::{HeaderName, HeaderValue, Method, Request, Uri};
 use saluki_common::buf::{ChunkedBytesBuffer, FrozenChunkedBytesBuffer};
 use saluki_io::compression::*;
 use snafu::{ResultExt, Snafu};
@@ -27,6 +27,11 @@ pub trait EndpointEncoder: std::fmt::Debug {
 
     /// Returns the maximum size of the uncompressed payload in bytes.
     fn uncompressed_size_limit(&self) -> usize;
+
+    /// Returns the number of metric data points represented by an input.
+    fn input_data_point_count(&self, _input: &Self::Input) -> usize {
+        0
+    }
 
     /// Returns `true` if the given input is valid for this encoder.
     ///
@@ -61,7 +66,7 @@ pub trait EndpointEncoder: std::fmt::Debug {
     ///
     /// # Errors
     ///
-    /// If the input cannot otherwise be encoded for any reason, an error will be returned.
+    /// If the input can't otherwise be encoded for any reason, an error will be returned.
     fn encode(&mut self, input: &Self::Input, buffer: &mut Vec<u8>) -> Result<(), Self::EncodeError>;
 
     /// Returns the URI of the endpoint that this encoder is associated with.
@@ -74,6 +79,13 @@ pub trait EndpointEncoder: std::fmt::Debug {
     ///
     /// This should be the corresponding MIME type for the encoded form of input events.
     fn content_type(&self) -> HeaderValue;
+
+    /// Returns any additional HTTP headers to include with each request.
+    ///
+    /// Defaults to no additional headers. Override to add encoder-specific headers.
+    fn additional_headers(&self) -> &[(HeaderName, HeaderValue)] {
+        &[]
+    }
 }
 
 // Request builder errors.
@@ -277,7 +289,7 @@ where
     ///
     /// # Errors
     ///
-    /// If the given input is not valid for the configured encoder, or if there is an error during compression of the
+    /// If the given input isn't valid for the configured encoder, or if there is an error during compression of the
     /// encoded input, an error will be returned.
     pub async fn encode(&mut self, input: E::Input) -> Result<Option<E::Input>, RequestBuilderError<E>> {
         // Check if the input is valid for this encoder.
@@ -310,7 +322,7 @@ where
     /// Internal implementation of `encode`.
     ///
     /// This method excludes any specific edge case/error handling (such as if the input is valid, or asserting we
-    /// haven't hit input limits), and avoids any of the logic that supports request splitting. It is written this way
+    /// haven't hit input limits), and avoids any of the logic that supports request splitting. It's written this way
     /// so that it can be used in the request splitting logic itself without any thorny recursion issues.
     async fn encode_inner(&mut self, input: &E::Input) -> Result<bool, RequestBuilderError<E>> {
         // Write any configured prefix/input separator, if necessary.
@@ -382,7 +394,9 @@ where
     /// # Errors
     ///
     /// If an error occurs while finalizing the compressor or creating the request, an error will be returned.
-    pub async fn flush(&mut self) -> Vec<Result<(usize, Request<FrozenChunkedBytesBuffer>), RequestBuilderError<E>>> {
+    pub async fn flush(
+        &mut self,
+    ) -> Vec<Result<(usize, usize, Request<FrozenChunkedBytesBuffer>), RequestBuilderError<E>>> {
         if self.encoded_inputs.is_empty() {
             return vec![];
         }
@@ -410,16 +424,19 @@ where
             return self.split_request().await;
         }
 
+        let data_points_written = self.encoded_data_point_count(&self.encoded_inputs);
         let inputs_written = self.clear_encoded_inputs();
-        debug!(encoder = E::encoder_name(), endpoint = ?self.encoder.endpoint_uri(), uncompressed_len, compressed_len, inputs_written, "Flushing request.");
+        debug!(encoder = E::encoder_name(), endpoint = ?self.encoder.endpoint_uri(), uncompressed_len, compressed_len, inputs_written, data_points_written, "Flushing request.");
 
-        vec![self.create_request(compressed_buf).map(|req| (inputs_written, req))]
+        vec![self
+            .create_request(compressed_buf)
+            .map(|req| (inputs_written, data_points_written, req))]
     }
 
     /// Internal implementation of `flush`.
     ///
     /// This method excludes any specific edge case/error handling (such as checking if the (un)compressed size limits
-    /// are exceeded), and does not handle request splitting, as it is meant to be used in the request splitting logic
+    /// are exceeded), and doesn't handle request splitting, as it's meant to be used in the request splitting logic
     /// itself.
     async fn flush_inner(&mut self) -> Result<(usize, FrozenChunkedBytesBuffer), RequestBuilderError<E>> {
         // If we have a payload suffix configured, write it now.
@@ -475,9 +492,16 @@ where
         len
     }
 
+    fn encoded_data_point_count(&self, inputs: &[E::Input]) -> usize {
+        inputs
+            .iter()
+            .map(|input| self.encoder.input_data_point_count(input))
+            .sum()
+    }
+
     async fn split_request(
         &mut self,
-    ) -> Vec<Result<(usize, Request<FrozenChunkedBytesBuffer>), RequestBuilderError<E>>> {
+    ) -> Vec<Result<(usize, usize, Request<FrozenChunkedBytesBuffer>), RequestBuilderError<E>>> {
         // Nothing to do if we have no encoded inputs.
         let mut requests = Vec::new();
         if self.encoded_inputs.is_empty() {
@@ -538,7 +562,7 @@ where
 
     async fn try_split_request(
         &mut self, inputs: &[E::Input],
-    ) -> Option<Result<(usize, Request<FrozenChunkedBytesBuffer>), RequestBuilderError<E>>> {
+    ) -> Option<Result<(usize, usize, Request<FrozenChunkedBytesBuffer>), RequestBuilderError<E>>> {
         trace!(
             encoder = E::encoder_name(),
             endpoint = ?self.encoder.endpoint_uri(),
@@ -598,9 +622,11 @@ where
             }));
         }
 
+        let data_points_written = self.encoded_data_point_count(inputs);
+
         Some(
             self.create_request(compressed_buf)
-                .map(|request| (inputs.len(), request)),
+                .map(|request| (inputs.len(), data_points_written, request)),
         )
     }
 
@@ -614,6 +640,10 @@ where
 
         if let Some(content_encoding) = self.compressor.content_encoding() {
             builder = builder.header(http::header::CONTENT_ENCODING, content_encoding);
+        }
+
+        for (name, value) in self.encoder.additional_headers() {
+            builder = builder.header(name, value);
         }
 
         builder.body(buffer).context(Http)
@@ -668,7 +698,7 @@ mod tests {
 
         for (request, expected_request_body) in requests.into_iter().zip(expected_request_bodies) {
             let (request, expected_request_body) = match request {
-                Ok((_, request)) => (request, expected_request_body),
+                Ok((_, _data_points, request)) => (request, expected_request_body),
                 Err(e) => panic!("failed to create request: {}", e),
             };
 
@@ -753,6 +783,10 @@ mod tests {
 
         fn uncompressed_size_limit(&self) -> usize {
             self.uncompressed_size_limit
+        }
+
+        fn input_data_point_count(&self, input: &Self::Input) -> usize {
+            input.len()
         }
 
         fn encode(&mut self, input: &String, buffer: &mut Vec<u8>) -> Result<(), Self::EncodeError> {
@@ -879,6 +913,46 @@ mod tests {
             format!("{}{}", inputs[2], inputs[3]),
         ];
         flush_and_validate_requests(request_builder, expected_request_bodies).await;
+    }
+
+    #[tokio::test]
+    async fn split_oversized_request_tracks_data_points_written() {
+        let inputs = vec!["aaaa".to_string(), "bb".to_string(), "ccc".to_string(), "d".to_string()];
+
+        let encoder = TestEncoder::new(usize::MAX, usize::MAX, "/submit");
+        let mut request_builder = create_no_compression_request_builder(encoder).await;
+
+        for input in &inputs {
+            request_builder.encode(input.clone()).await.unwrap();
+        }
+
+        request_builder.set_custom_len_limits(usize::MAX, inputs.iter().map(|s| s.len()).sum::<usize>() - 1);
+
+        let requests = request_builder.flush().await;
+        assert_eq!(requests.len(), 2);
+
+        let mut actual = Vec::new();
+        for request in requests {
+            let (events, data_points, request) = request.expect("split request should be created");
+            let body = request.into_body().collect().await.unwrap().to_bytes();
+            actual.push((events, data_points, String::from_utf8(body.to_vec()).unwrap()));
+        }
+
+        assert_eq!(
+            actual,
+            vec![
+                (
+                    2,
+                    inputs[0].len() + inputs[1].len(),
+                    format!("{}{}", inputs[0], inputs[1])
+                ),
+                (
+                    2,
+                    inputs[2].len() + inputs[3].len(),
+                    format!("{}{}", inputs[2], inputs[3])
+                ),
+            ]
+        );
     }
 
     #[tokio::test]
@@ -1048,7 +1122,7 @@ mod tests {
             let requests = request_builder.flush().await;
             for request in requests {
                 match request {
-                    Ok((events, _request)) => {
+                    Ok((events, _data_points, _request)) => {
                         flushed_inputs_len += events;
                     }
                     Err(e) => match e {
@@ -1087,7 +1161,7 @@ mod tests {
         let requests = request_builder.flush().await;
         for request in requests {
             match request {
-                Ok((events, _request)) => {
+                Ok((events, _data_points, _request)) => {
                     flushed_inputs_len += events;
                 }
                 Err(e) => match e {

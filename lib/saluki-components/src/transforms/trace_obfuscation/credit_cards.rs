@@ -49,13 +49,13 @@ impl CreditCardObfuscator {
         // Only store user-provided keep_values.
         // Static allowlist is checked separately via `ALLOWLISTED_TAGS.contains()`.
         let keep_values: FastHashSet<MetaString> = config
-            .keep_values()
+            .keep_values
             .iter()
             .map(|s| MetaString::from(s.as_str()))
             .collect();
 
         Self {
-            luhn: config.luhn(),
+            luhn: config.luhn,
             keep_values,
         }
     }

@@ -7,11 +7,11 @@ title: ADR 000 - Short title, representative of solved problem and found solutio
 
 ## Problem Statement
 
-Begin with the problem statement, e.g., in free form using two to three sentences or in the form of an illustrative story. You may want to articulate the problem in form of a question and add links to collaboration boards or issue management systems.
+Begin with the problem statement, for example, in free form using two to three sentences or in the form of an illustrative story. You may want to articulate the problem in form of a question and add links to collaboration boards or issue management systems.
 
 ## Context
 
-Provide context on problem, including why the current design is not sufficient for meeting requirements, or what has changed that necessitates a new approach.
+Provide context on problem, including why the current design isn't sufficient for meeting requirements, or what has changed that necessitates a new approach.
 
 ## Considered Options
 
@@ -22,11 +22,11 @@ Provide context on problem, including why the current design is not sufficient f
 
 ## Decision Outcome
 
-Chosen option: "(option here)", because [justification. e.g., only option which meets all requirements, etc].
+Chosen option: "(option here)", because [justification. for example, only option which meets all requirements, etc].
 
 <!-- This is an optional element. Feel free to remove. -->
 ### Consequences
 
-* Good, because [positive consequence, e.g., improvement of one or more desired qualities, …]
-* Bad, because [negative consequence, e.g., compromising one or more desired qualities, …]
+* Good, because [positive consequence, for example, improvement of one or more desired qualities, …]
+* Bad, because [negative consequence, for example, compromising one or more desired qualities, …]
 * ...

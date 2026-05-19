@@ -177,6 +177,10 @@ pub struct Metadata {
     /// Number of events represented by this transaction.
     pub event_count: usize,
 
+    /// Number of metric data points represented by this transaction.
+    #[serde(default)]
+    pub data_point_count: usize,
+
     /// Payload info containing protocol version and metric type, if applicable.
     ///
     /// This is `Some` for metrics payloads and `None` for non-metrics payloads.
@@ -185,20 +189,12 @@ pub struct Metadata {
 }
 
 impl Metadata {
-    /// Create a new `Metadata` instance with the given event count.
-    #[cfg(test)]
-    pub const fn from_event_count(event_count: usize) -> Self {
+    /// Create a new `Metadata` instance with the given event and data point counts.
+    pub const fn from_event_and_data_point_count(event_count: usize, data_point_count: usize) -> Self {
         Self {
             event_count,
+            data_point_count,
             payload_info: None,
-        }
-    }
-
-    /// Create a new `Metadata` instance with the given event count and payload info.
-    pub const fn new(event_count: usize, payload_info: Option<MetricsPayloadInfo>) -> Self {
-        Self {
-            event_count,
-            payload_info,
         }
     }
 }
@@ -210,7 +206,7 @@ impl Metadata {
 /// itself (headers, path, body, etc).
 ///
 /// `Transaction<B>` supports this by allowing for wrapping an in-memory body type `B` (for example, `ReadIoBuffer`) or wrapping
-/// a body that has been rehydrated from a string (for example, `Bytes`). This means that `B` can be a complex type that cannot
+/// a body that has been rehydrated from a string (for example, `Bytes`). This means that `B` can be a complex type that can't
 /// actually be rehydrated from a single string input (such as `FrozenChunkedBytesBuffer`) and we maintain optimal
 /// memory usage, and performance, regardless of which body type was used to construct `Transaction<B>`.
 #[derive(Clone, Deserialize, Serialize)]
@@ -243,8 +239,13 @@ where
     }
 
     /// Returns a reference to the transaction metadata.
-    pub fn metadata(&self) -> &Metadata {
+    pub const fn metadata(&self) -> &Metadata {
         &self.metadata
+    }
+
+    /// Returns the transaction request URI.
+    pub fn request_uri(&self) -> &http::Uri {
+        self.request.uri()
     }
 
     /// Consumes the `Transaction` and returns the transaction metadata and original request.
@@ -259,6 +260,10 @@ where
 {
     fn event_count(&self) -> u64 {
         self.metadata.event_count as u64
+    }
+
+    fn data_point_count(&self) -> u64 {
+        self.metadata.data_point_count as u64
     }
 }
 
@@ -277,13 +282,14 @@ mod tests {
 
     use bytes::Buf as _;
     use http::Request;
+    use saluki_io::net::util::retry::EventContainer as _;
 
     use super::{Metadata, Transaction};
 
     #[test]
     fn basic_transaction_ser_deser_roundtrip() {
         // Create a basic transaction with a simple body.
-        let metadata = Metadata::from_event_count(1);
+        let metadata = Metadata::from_event_and_data_point_count(1, 7);
         let body = VecDeque::from("hello, world!".as_bytes().to_vec());
         let request = Request::builder().uri("http://example.com").body(body.clone()).unwrap();
 
@@ -294,6 +300,9 @@ mod tests {
 
         // Check some basic properties.
         assert_eq!(deserialized.metadata.event_count, metadata.event_count);
+        assert_eq!(deserialized.metadata.data_point_count, metadata.data_point_count);
+        assert_eq!(deserialized.event_count(), metadata.event_count as u64);
+        assert_eq!(deserialized.data_point_count(), metadata.data_point_count as u64);
         assert_eq!(deserialized.request.uri(), "http://example.com");
 
         // Clone / drain the request body, and make sure it matches the original body.

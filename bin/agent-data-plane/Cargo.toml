@@ -1,6 +1,6 @@
 [package]
 name = "agent-data-plane"
-version = "0.1.35"
+version = "1.2.0"
 edition = { workspace = true }
 license = { workspace = true }
 repository = { workspace = true }
@@ -10,15 +10,16 @@ workspace = true
 
 [features]
 default = []
-fips = ["saluki-app/tls-fips"]
+fips = ["saluki-app/tls-fips", "saluki-components/fips"]
 
 [dependencies]
 argh = { workspace = true, features = ["help"] }
 async-trait = { workspace = true }
-bytes = { workspace = true }
+bytesize = { workspace = true }
 chrono = { workspace = true }
 colored = { workspace = true }
 comfy-table = { workspace = true }
+datadog-agent-commons = { workspace = true }
 datadog-protos = { workspace = true }
 foldhash = { workspace = true }
 futures = { workspace = true }
@@ -32,6 +33,7 @@ ottl = { workspace = true }
 papaya = { workspace = true }
 prometheus-exposition = { workspace = true }
 prost-types = { workspace = true }
+saluki-api = { workspace = true }
 saluki-app = { workspace = true }
 saluki-common = { workspace = true }
 saluki-components = { workspace = true }
@@ -40,13 +42,12 @@ saluki-context = { workspace = true }
 saluki-core = { workspace = true }
 saluki-env = { workspace = true }
 saluki-error = { workspace = true }
-saluki-health = { workspace = true }
 saluki-io = { workspace = true }
 saluki-metadata = { workspace = true }
 saluki-metrics = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-serde_yaml = { workspace = true }
+serde_with = { workspace = true }
 stringtheory = { workspace = true }
 tokio = { workspace = true, features = [
   "macros",
@@ -69,4 +70,6 @@ tikv-jemallocator = { workspace = true, features = [
 chrono = { workspace = true }
 
 [dev-dependencies]
+derive-where = { workspace = true }
+saluki-components = { workspace = true, features = ["config-test-support"] }
 saluki-metrics = { workspace = true, features = ["test"] }

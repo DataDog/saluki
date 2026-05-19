@@ -49,7 +49,7 @@ impl OttlTransformConfiguration {
 
 #[async_trait]
 impl SynchronousTransformBuilder for OttlTransformConfiguration {
-    /// Builds the OTTL Transform transform from the current configuration.
+    /// Builds the OTTL `Transform` from the current configuration.
     ///
     /// Registers the `set` editor function, parses each trace statement, and returns
     /// the transform. Statements may be editor calls like `set(attributes["key"], "value")`
@@ -103,7 +103,7 @@ pub struct OttlTransform {
 impl OttlTransform {
     /// Applies all configured OTTL statements to a single span.
     ///
-    /// Each statement is executed in order. For editor statements (e.g. `set`), the `where`
+    /// Each statement is executed in order. For editor statements (for example, `set`), the `where`
     /// clause is evaluated first; if it matches (or is absent), the editor function runs.
     /// Errors are handled according to `error_mode`.
     fn transform_span(&self, span: &mut Span, resource_tags: &TagSet) {

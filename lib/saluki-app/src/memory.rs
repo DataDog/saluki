@@ -3,21 +3,24 @@
 use std::{
     collections::{HashMap, VecDeque},
     env, fs,
-    sync::atomic::{AtomicBool, Ordering::Relaxed},
     time::Duration,
 };
 
+use async_trait::async_trait;
 use bytesize::ByteSize;
 use memory_accounting::{
     allocator::{AllocationGroupRegistry, AllocationStats, AllocationStatsSnapshot},
-    ComponentBounds, ComponentRegistry, MemoryGrant, MemoryLimiter,
+    ComponentBounds, ComponentRegistry, ComponentRegistryHandle, MemoryGrant, MemoryLimiter,
 };
 use metrics::{counter, gauge, Counter, Gauge, Level};
-use saluki_common::task::spawn_traced_named;
+use saluki_api::{DynamicRoute, EndpointType};
 use saluki_config::GenericConfiguration;
+use saluki_core::runtime::{
+    state::DataspaceRegistry, InitializationError, ProcessShutdown, Supervisable, SupervisorFuture,
+};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use serde::Deserialize;
-use tokio::time::sleep;
+use tokio::{pin, select, time::sleep};
 use tracing::{error, info, warn};
 
 const fn default_memory_slop_factor() -> f64 {
@@ -26,6 +29,25 @@ const fn default_memory_slop_factor() -> f64 {
 
 const fn default_enable_global_limiter() -> bool {
     true
+}
+
+/// Bounds validation and global memory limiter behavior.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum MemoryMode {
+    /// Bounds validation is skipped, and no memory limiting is applied.
+    #[default]
+    Disabled,
+
+    /// Treat bounds validation failures as non-fatal.
+    ///
+    /// Global memory limiter will be enabled and active if a memory limit is configured.
+    Permissive,
+
+    /// Treat bounds validation failures as fatal.
+    ///
+    /// Global memory limiter will be enabled and active if a memory limit is configured.
+    Strict,
 }
 
 /// Configuration for memory bounds.
@@ -47,20 +69,28 @@ pub struct MemoryBoundsConfiguration {
     /// memory limit, such that we account for the "known unknowns" -- memory that hasn't yet been accounted for -- by
     /// simply ensuring that we can fit within a portion of the overall limit.
     ///
-    /// Values between 0 to 1 are allowed, and represent the percentage of `memory_limit` that is held back. This means
+    /// Values between 0 to 1 are allowed, and represent the percentage of `memory_limit` that's held back. This means
     /// that a slop factor of 0.25, for example, will cause 25% of `memory_limit` to be withheld. If `memory_limit` was
-    /// 100MB, we would then verify that the memory bounds can fit within 75MB (100MB * (1 - 0.25) => 75MB).
+    /// 100 MB, we would then verify that the memory bounds can fit within 75 MB (100 MB * (1 - 0.25) => 75 MB).
     #[serde(default = "default_memory_slop_factor")]
     memory_slop_factor: f64,
 
     /// Whether or not to enable the global memory limiter.
     ///
-    /// When set to `false`, the global memory limiter will operate in a no-op mode. All calls to use it will never exert
-    /// backpressure, and only the inherent memory bounds of the running components will influence memory usage.
+    /// When set to `false`, the global memory limiter will operate in a no-op mode. All calls to use it will never
+    /// exert backpressure, and only the inherent memory bounds of the running components will influence memory usage.
     ///
     /// Defaults to `true`.
     #[serde(default = "default_enable_global_limiter")]
     enable_global_limiter: bool,
+
+    /// The memory mode to use when reconciling the calculated memory bounds against the configured memory limit.
+    ///
+    /// See [`MemoryMode`] for the available modes and their behavior.
+    ///
+    /// Defaults to [`MemoryMode::Disabled`].
+    #[serde(default)]
+    memory_mode: MemoryMode,
 }
 
 impl MemoryBoundsConfiguration {
@@ -108,60 +138,86 @@ impl MemoryBoundsConfiguration {
     }
 }
 
-/// Initializes the memory bounds system and verifies any configured bounds.
+/// Initializes the memory bounds system and verifies any configured bounds based on the configured memory mode.
 ///
-/// If no memory limit is configured, or if the populated memory bounds fit within the configured memory limit,
-/// `Ok(MemoryLimiter)` is returned. The memory limiter can be used as a global limiter for the process, allowing
-/// callers to cooperatively participate in staying within the configured memory bounds by blocking when used memory
-/// exceeds the configured limit, until it returns below the limit. The limiter uses the effective memory limit, based
-/// on the configured slop factor.
+/// See [`MemoryMode`] for details on the behavior of each mode.
 ///
 /// # Errors
 ///
-/// If the bounds could not be validated, an error is returned.
+/// If the bounds couldn't be validated under [`MemoryMode::Strict`], or if the configured grant is invalid, an error
+/// is returned.
 pub fn initialize_memory_bounds(
-    configuration: MemoryBoundsConfiguration, component_registry: &ComponentRegistry,
+    configuration: MemoryBoundsConfiguration, component_registry: ComponentRegistryHandle,
 ) -> Result<MemoryLimiter, GenericError> {
-    let initial_grant = match configuration.memory_limit {
-        Some(limit) => MemoryGrant::with_slop_factor(limit.as_u64() as usize, configuration.memory_slop_factor)?,
-        None => {
-            info!("No memory limit set for the process. Skipping memory bounds verification.");
-            return Ok(MemoryLimiter::noop());
+    let configured_grant = configuration
+        .memory_limit
+        .map(|limit| MemoryGrant::with_slop_factor(limit.as_u64() as usize, configuration.memory_slop_factor))
+        .transpose()?;
+
+    let limiter_grant = match configuration.memory_mode {
+        MemoryMode::Disabled => {
+            info!("Memory limiting disabled.");
+            None
         }
+        mode @ (MemoryMode::Permissive | MemoryMode::Strict) => match configured_grant {
+            Some(grant) => {
+                verify_bounds_for_mode(mode, grant, &component_registry)?;
+                Some(grant)
+            }
+            None => {
+                info!("No memory limit set for the process. Skipping memory bounds verification.");
+                None
+            }
+        },
     };
 
-    let verified_bounds = match component_registry.verify_bounds(initial_grant) {
-        Ok(verified_bounds) => verified_bounds,
-        Err(e) => {
-            error!("Failed to verify memory bounds: {}.", e);
+    let limiter = match limiter_grant {
+        Some(grant) if configuration.enable_global_limiter => MemoryLimiter::new(grant)
+            .ok_or_else(|| generic_error!("Memory statistics cannot be gathered on this system."))?,
+        _ => MemoryLimiter::noop(),
+    };
 
+    Ok(limiter)
+}
+
+fn verify_bounds_for_mode(
+    mode: MemoryMode, initial_grant: MemoryGrant, component_registry: &ComponentRegistryHandle,
+) -> Result<(), GenericError> {
+    match component_registry.verify_bounds(initial_grant) {
+        Ok(verified_bounds) => {
+            info!(
+				"Verified memory bounds. Minimum memory requirement of {}, with a calculated firm memory bound of {} out of {} available, from an initial {} grant.",
+				bytes_to_si_string(verified_bounds.total_minimum_required_bytes()),
+				bytes_to_si_string(verified_bounds.total_firm_limit_bytes()),
+				bytes_to_si_string(verified_bounds.total_available_bytes()),
+				bytes_to_si_string(initial_grant.initial_limit_bytes()),
+			);
+
+            print_bounds(verified_bounds.bounds());
+            Ok(())
+        }
+        Err(e) => {
             let bounds = component_registry.as_bounds();
             print_bounds(&bounds);
 
-            return Err(generic_error!(
-                "Configured memory limit is insufficient for the current configuration."
-            ));
+            match mode {
+                MemoryMode::Strict => {
+                    error!("Failed to verify memory bounds: {}.", e);
+                    Err(generic_error!(
+                        "Configured memory limit is insufficient for the current configuration."
+                    ))
+                }
+                MemoryMode::Permissive => {
+                    warn!(
+                        "Configured memory limit ({}) may be insufficient for the current configuration. Memory limiting behavior will be best effort. Continuing.",
+                        bytes_to_si_string(initial_grant.initial_limit_bytes()),
+                    );
+                    Ok(())
+                }
+                MemoryMode::Disabled => unreachable!("verify_bounds_for_mode is never called with Disabled mode"),
+            }
         }
-    };
-
-    let limiter = if configuration.enable_global_limiter {
-        MemoryLimiter::new(initial_grant)
-            .ok_or_else(|| generic_error!("Memory statistics cannot be gathered on this system."))
-    } else {
-        Ok(MemoryLimiter::noop())
-    }?;
-
-    info!(
-		"Verified memory bounds. Minimum memory requirement of {}, with a calculated firm memory bound of {} out of {} available, from an initial {} grant.",
-		bytes_to_si_string(verified_bounds.total_minimum_required_bytes()),
-		bytes_to_si_string(verified_bounds.total_firm_limit_bytes()),
-		bytes_to_si_string(verified_bounds.total_available_bytes()),
-		bytes_to_si_string(initial_grant.initial_limit_bytes()),
-	);
-
-    print_bounds(verified_bounds.bounds());
-
-    Ok(limiter)
+    }
 }
 
 fn print_bounds(bounds: &ComponentBounds) {
@@ -239,49 +295,71 @@ impl AllocationGroupMetrics {
     }
 }
 
-/// Initializes the memory allocator telemetry subsystem.
+/// A worker that periodically collects per-allocation group memory usage statistics and emits the internal telemetry.
 ///
-/// This spawns a background task that will periodically collect memory usage statistics, such as which components are
-/// responsible for which portion of the live heap, and report them as internal telemetry.
-///
-/// # Errors
-///
-/// If the memory allocator subsystem has already been initialized, an error will be returned.
-pub(crate) async fn initialize_allocator_telemetry() -> Result<(), GenericError> {
-    // Simple initialization guard to prevent multiple calls to this function.
-    static INIT: AtomicBool = AtomicBool::new(false);
-    if INIT.swap(true, Relaxed) {
-        return Err(generic_error!("Memory allocator subsystem already initialized."));
-    }
+/// Additionally, asserts the memory API routes from the given [`ComponentRegistry`] as a [`DynamicRoute`] on the
+/// unprivileged API endpoint.
+pub struct AllocationTelemetryWorker {
+    component_registry: ComponentRegistryHandle,
+}
 
-    // We can't enforce, at compile-time, that the tracking allocator must be installed if a caller is trying to
-    // initialize the allocator's reporting infrastructure... but we can at least warn them if we detect it's not
-    // installed here at runtime.
-    if !AllocationGroupRegistry::allocator_installed() {
-        warn!("Tracking allocator not installed. Memory telemetry will not be available.");
-    }
-
-    // Spawn the background task that will periodically collect memory usage statistics.
-    spawn_traced_named("allocator-telemetry-collector", async {
-        let mut metrics = HashMap::new();
-
-        loop {
-            sleep(Duration::from_secs(1)).await;
-
-            AllocationGroupRegistry::global().visit_allocation_groups(|group_name, stats| {
-                let group_metrics = match metrics.get_mut(group_name) {
-                    Some(group_metrics) => group_metrics,
-                    None => metrics
-                        .entry(group_name.to_string())
-                        .or_insert_with(|| AllocationGroupMetrics::new(group_name)),
-                };
-
-                group_metrics.update(stats);
-            });
+impl AllocationTelemetryWorker {
+    /// Creates a new `AllocationTelemetryWorker` for the given component registry.
+    pub fn new(component_registry: &ComponentRegistry) -> Self {
+        Self {
+            component_registry: component_registry.root(),
         }
-    });
+    }
+}
 
-    Ok(())
+#[async_trait]
+impl Supervisable for AllocationTelemetryWorker {
+    fn name(&self) -> &str {
+        "alloc-telemetry"
+    }
+
+    async fn initialize(&self, mut process_shutdown: ProcessShutdown) -> Result<SupervisorFuture, InitializationError> {
+        // We can't enforce, at compile-time, that the tracking allocator must be installed if a caller is trying to
+        // initialize the allocator's reporting infrastructure... but we can at least warn them if we detect it's not
+        // installed here at runtime.
+        if !AllocationGroupRegistry::allocator_installed() {
+            warn!("Tracking allocator not installed. Memory telemetry will not be available.");
+        }
+
+        let memory_routes = DynamicRoute::http(EndpointType::Unprivileged, self.component_registry.api_handler());
+
+        Ok(Box::pin(async move {
+            // Register our API routes before we actually start running.
+            DataspaceRegistry::try_current()
+                .ok_or_else(|| generic_error!("Dataspace not available."))?
+                .assert(memory_routes, "alloc-telemetry-api");
+
+            let mut metrics = HashMap::new();
+
+            let shutdown = process_shutdown.wait_for_shutdown();
+            pin!(shutdown);
+
+            loop {
+                select! {
+                    _ = &mut shutdown => break,
+                    _ = sleep(Duration::from_secs(1)) => {
+                        AllocationGroupRegistry::global().visit_allocation_groups(|group_name, stats| {
+                            let group_metrics = match metrics.get_mut(group_name) {
+                                Some(group_metrics) => group_metrics,
+                                None => metrics
+                                    .entry(group_name.to_string())
+                                    .or_insert_with(|| AllocationGroupMetrics::new(group_name)),
+                            };
+
+                            group_metrics.update(stats);
+                        });
+                    }
+                }
+            }
+
+            Ok(())
+        }))
+    }
 }
 
 struct CgroupMemoryParser;

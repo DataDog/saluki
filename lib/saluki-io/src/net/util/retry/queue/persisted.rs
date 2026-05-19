@@ -7,7 +7,7 @@ use std::{
 
 use chrono::{DateTime, NaiveDateTime, Utc};
 use fs4::{available_space, total_space};
-use rand::Rng;
+use rand::RngExt as _;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use serde::{de::DeserializeOwned, Serialize};
 use tracing::{debug, info, warn};
@@ -26,7 +26,7 @@ struct PersistedEntry {
 impl PersistedEntry {
     /// Attempts to create a `PersistedEntry` from the given path.
     ///
-    /// If the given path is not recognized as the path to a valid persisted entry, `None` is returned.
+    /// If the given path isn't recognized as the path to a valid persisted entry, `None` is returned.
     fn try_from_path(path: PathBuf, size_bytes: u64) -> Option<Self> {
         let timestamp = decode_timestamped_filename(&path)?;
         Some(Self {
@@ -102,7 +102,7 @@ where
 {
     /// Creates a new `PersistedQueue` instance from the given root path and maximum size.
     ///
-    /// The root path is created if it does not already exist, and is scanned for existing persisted entries. Entries
+    /// The root path is created if it doesn't already exist, and is scanned for existing persisted entries. Entries
     /// are removed (oldest first) until the total size of all scanned entries is within the given maximum size.
     ///
     /// # Errors
@@ -301,8 +301,8 @@ where
             let entry = self.entries.remove(0);
 
             // Deserialize the entry, which gives us back the original event and removes the file from disk.
-            let event_count = match try_deserialize_entry::<T>(&entry).await {
-                Ok(Some(deserialized)) => deserialized.event_count(),
+            let deserialized = match try_deserialize_entry::<T>(&entry).await {
+                Ok(Some(deserialized)) => deserialized,
                 Ok(None) => {
                     warn!(entry.path = %entry.path.display(), "Failed to find entry on disk. Persisted entry state may be inconsistent.");
                     continue;
@@ -325,9 +325,9 @@ where
 
             // Update our statistics.
             self.total_on_disk_bytes -= entry.size_bytes;
-            push_result.track_dropped_item(event_count);
+            push_result.track_dropped_item(&deserialized);
 
-            debug!(entry.path = %entry.path.display(), entry.len = entry.size_bytes, "Dropped persisted entry.");
+            warn!(entry.path = %entry.path.display(), entry.len = entry.size_bytes, "Dropped persisted entry.");
         }
 
         Ok(push_result)
@@ -456,6 +456,7 @@ async fn create_directory_recursive(path: PathBuf) -> Result<(), GenericError> {
 
 #[cfg(test)]
 mod tests {
+    use rand::RngExt as _;
     use rand_distr::Alphanumeric;
     use serde::Deserialize;
 

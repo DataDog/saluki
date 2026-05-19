@@ -4,7 +4,7 @@ use saluki_common::collections::FastHashSet;
 use serde_json::{Map, Value};
 use stringtheory::MetaString;
 
-use super::obfuscator::{JsonObfuscationConfig, SqlObfuscationConfig};
+use super::obfuscator::SqlObfuscationConfig;
 use super::sql::obfuscate_sql_string;
 
 /// Pre-initialized JSON obfuscator with computed sets.
@@ -16,15 +16,10 @@ pub struct JsonObfuscator {
 
 impl JsonObfuscator {
     /// Creates a new JSON obfuscator with pre-computed sets.
-    pub fn new(config: &JsonObfuscationConfig, sql_config: &SqlObfuscationConfig) -> Self {
+    pub fn new(keep_values: &[String], obfuscate_sql_values: &[String], sql_config: &SqlObfuscationConfig) -> Self {
         Self {
-            keep_keys: config
-                .keep_values()
-                .iter()
-                .map(|s| MetaString::from(s.as_str()))
-                .collect(),
-            sql_keys: config
-                .obfuscate_sql_values()
+            keep_keys: keep_values.iter().map(|s| MetaString::from(s.as_str())).collect(),
+            sql_keys: obfuscate_sql_values
                 .iter()
                 .map(|s| MetaString::from(s.as_str()))
                 .collect(),
@@ -84,31 +79,21 @@ impl JsonObfuscator {
 mod tests {
     use super::*;
 
-    fn default_config() -> JsonObfuscationConfig {
-        JsonObfuscationConfig {
-            enabled: true,
-            keep_values: Vec::new(),
-            obfuscate_sql_values: Vec::new(),
-        }
-    }
-
     fn default_sql_config() -> SqlObfuscationConfig {
         SqlObfuscationConfig::default()
     }
 
     /// Helper for tests - creates obfuscator and obfuscates in one call.
     fn obfuscate_json_string(
-        json_str: &str, config: &JsonObfuscationConfig, sql_config: &SqlObfuscationConfig,
+        json_str: &str, keep_values: &[String], obfuscate_sql_values: &[String], sql_config: &SqlObfuscationConfig,
     ) -> String {
-        JsonObfuscator::new(config, sql_config).obfuscate(json_str)
+        JsonObfuscator::new(keep_values, obfuscate_sql_values, sql_config).obfuscate(json_str)
     }
 
     #[test]
     fn test_obfuscate_simple_object() {
-        let config = default_config();
-        let sql_config = default_sql_config();
         let json = r#"{"user": "john", "id": 123}"#;
-        let result = obfuscate_json_string(json, &config, &sql_config);
+        let result = obfuscate_json_string(json, &[], &[], &default_sql_config());
 
         let parsed: Value = serde_json::from_str(&result).unwrap();
         assert_eq!(parsed["user"], "?");
@@ -117,9 +102,8 @@ mod tests {
 
     #[test]
     fn test_obfuscate_nested_object() {
-        let config = default_config();
         let json = r#"{"user": {"name": "john", "age": 30}, "active": true}"#;
-        let result = obfuscate_json_string(json, &config, &default_sql_config());
+        let result = obfuscate_json_string(json, &[], &[], &default_sql_config());
 
         let parsed: Value = serde_json::from_str(&result).unwrap();
         assert_eq!(parsed["user"]["name"], "?");
@@ -129,9 +113,8 @@ mod tests {
 
     #[test]
     fn test_obfuscate_array() {
-        let config = default_config();
         let json = r#"{"items": [1, 2, 3], "names": ["alice", "bob"]}"#;
-        let result = obfuscate_json_string(json, &config, &default_sql_config());
+        let result = obfuscate_json_string(json, &[], &[], &default_sql_config());
 
         let parsed: Value = serde_json::from_str(&result).unwrap();
         assert_eq!(parsed["items"][0], "?");
@@ -143,13 +126,9 @@ mod tests {
 
     #[test]
     fn test_keep_values() {
-        let config = JsonObfuscationConfig {
-            enabled: true,
-            keep_values: vec!["status".to_string(), "version".to_string()],
-            obfuscate_sql_values: Vec::new(),
-        };
+        let keep = vec!["status".to_string(), "version".to_string()];
         let json = r#"{"user": "john", "status": "active", "version": "1.0"}"#;
-        let result = obfuscate_json_string(json, &config, &default_sql_config());
+        let result = obfuscate_json_string(json, &keep, &[], &default_sql_config());
 
         let parsed: Value = serde_json::from_str(&result).unwrap();
         assert_eq!(parsed["user"], "?");
@@ -159,9 +138,8 @@ mod tests {
 
     #[test]
     fn test_mongodb_query() {
-        let config = default_config();
         let json = r#"{"find": "users", "filter": {"age": {"$gt": 25}}, "limit": 10}"#;
-        let result = obfuscate_json_string(json, &config, &default_sql_config());
+        let result = obfuscate_json_string(json, &[], &[], &default_sql_config());
 
         let parsed: Value = serde_json::from_str(&result).unwrap();
         assert_eq!(parsed["find"], "?");
@@ -171,9 +149,8 @@ mod tests {
 
     #[test]
     fn test_elasticsearch_query() {
-        let config = default_config();
         let json = r#"{"query": {"match": {"title": "search term"}}, "size": 20}"#;
-        let result = obfuscate_json_string(json, &config, &default_sql_config());
+        let result = obfuscate_json_string(json, &[], &[], &default_sql_config());
 
         let parsed: Value = serde_json::from_str(&result).unwrap();
         assert_eq!(parsed["query"]["match"]["title"], "?");
@@ -182,9 +159,8 @@ mod tests {
 
     #[test]
     fn test_invalid_json() {
-        let config = default_config();
         let json = r#"{"invalid": json}"#;
-        let result = obfuscate_json_string(json, &config, &default_sql_config());
+        let result = obfuscate_json_string(json, &[], &[], &default_sql_config());
 
         // Should return original string on parse error
         assert_eq!(result, json);
@@ -192,8 +168,7 @@ mod tests {
 
     #[test]
     fn test_empty_string() {
-        let config = default_config();
-        let result = obfuscate_json_string("", &config, &default_sql_config());
+        let result = obfuscate_json_string("", &[], &[], &default_sql_config());
         assert_eq!(result, "");
     }
 
@@ -209,16 +184,14 @@ mod tests {
 
     #[test]
     fn test_agent_elasticsearch_body_1() {
-        let config = default_config();
         let input = r#"{ "query": { "multi_match" : { "query" : "guide", "fields" : ["_all", { "key": "value", "other": ["1", "2", {"k": "v"}] }, "2"] } } }"#;
         let expected = r#"{ "query": { "multi_match": { "query": "?", "fields" : ["?", { "key": "?", "other": ["?", "?", {"k": "?"}] }, "?"] } } }"#;
-        let result = obfuscate_json_string(input, &config, &default_sql_config());
+        let result = obfuscate_json_string(input, &[], &[], &default_sql_config());
         assert_json_eq(&result, expected);
     }
 
     #[test]
     fn test_agent_elasticsearch_body_2() {
-        let config = default_config();
         let input = r#"{
   "highlight": {
     "pre_tags": [ "<em>" ],
@@ -233,65 +206,54 @@ mod tests {
     "index": "?"
   }
 }"#;
-        let result = obfuscate_json_string(input, &config, &default_sql_config());
+        let result = obfuscate_json_string(input, &[], &[], &default_sql_config());
         assert_json_eq(&result, expected);
     }
 
     #[test]
     fn test_agent_elasticsearch_body_3_keep_other() {
-        let config = JsonObfuscationConfig {
-            enabled: true,
-            keep_values: vec!["other".to_string()],
-            obfuscate_sql_values: Vec::new(),
-        };
+        let keep = vec!["other".to_string()];
+        let obfuscate_sql = Vec::new();
         let input = r#"{ "query": { "multi_match" : { "query" : "guide", "fields" : ["_all", { "key": "value", "other": ["1", "2", {"k": "v"}] }, "2"] } } }"#;
         let expected = r#"{ "query": { "multi_match": { "query": "?", "fields" : ["?", { "key": "?", "other": ["1", "2", {"k": "v"}] }, "?"] } } }"#;
-        let result = obfuscate_json_string(input, &config, &default_sql_config());
+        let result = obfuscate_json_string(input, &keep, &obfuscate_sql, &default_sql_config());
         assert_json_eq(&result, expected);
     }
 
     #[test]
     fn test_agent_elasticsearch_body_4_keep_fields() {
-        let config = JsonObfuscationConfig {
-            enabled: true,
-            keep_values: vec!["fields".to_string()],
-            obfuscate_sql_values: Vec::new(),
-        };
+        let keep = vec!["fields".to_string()];
+        let obfuscate_sql = Vec::new();
         let input = r#"{"fields" : ["_all", { "key": "value", "other": ["1", "2", {"k": "v"}] }, "2"]}"#;
         let expected = r#"{"fields" : ["_all", { "key": "value", "other": ["1", "2", {"k": "v"}] }, "2"]}"#;
-        let result = obfuscate_json_string(input, &config, &default_sql_config());
+        let result = obfuscate_json_string(input, &keep, &obfuscate_sql, &default_sql_config());
         assert_json_eq(&result, expected);
     }
 
     #[test]
     fn test_agent_elasticsearch_body_5_keep_k() {
-        let config = JsonObfuscationConfig {
-            enabled: true,
-            keep_values: vec!["k".to_string()],
-            obfuscate_sql_values: Vec::new(),
-        };
+        let keep = vec!["k".to_string()];
+        let obfuscate_sql = Vec::new();
         let input = r#"{"fields" : ["_all", { "key": "value", "other": ["1", "2", {"k": "v"}] }, "2"]}"#;
         let expected = r#"{"fields" : ["?", { "key": "?", "other": ["?", "?", {"k": "v"}] }, "?"]}"#;
-        let result = obfuscate_json_string(input, &config, &default_sql_config());
+        let result = obfuscate_json_string(input, &keep, &obfuscate_sql, &default_sql_config());
         assert_json_eq(&result, expected);
     }
 
     #[test]
     fn test_agent_elasticsearch_body_6_keep_c() {
-        let config = JsonObfuscationConfig {
-            enabled: true,
-            keep_values: vec!["C".to_string()],
-            obfuscate_sql_values: Vec::new(),
-        };
+        let keep = vec!["C".to_string()];
+        let obfuscate_sql = Vec::new();
         let input = r#"{"fields" : [{"A": 1, "B": {"C": 3}}, "2"]}"#;
         let expected = r#"{"fields" : [{"A": "?", "B": {"C": 3}}, "?"]}"#;
-        let result = obfuscate_json_string(input, &config, &default_sql_config());
+        let result = obfuscate_json_string(input, &keep, &obfuscate_sql, &default_sql_config());
         assert_json_eq(&result, expected);
     }
 
     #[test]
     fn test_agent_elasticsearch_body_7() {
-        let config = default_config();
+        let keep: Vec<String> = vec![];
+        let obfuscate_sql: Vec<String> = vec![];
         let input = r#"{
     "query": {
        "match" : {
@@ -322,17 +284,14 @@ mod tests {
        }
     }
 }"#;
-        let result = obfuscate_json_string(input, &config, &default_sql_config());
+        let result = obfuscate_json_string(input, &keep, &obfuscate_sql, &default_sql_config());
         assert_json_eq(&result, expected);
     }
 
     #[test]
     fn test_agent_elasticsearch_body_8_keep_source() {
-        let config = JsonObfuscationConfig {
-            enabled: true,
-            keep_values: vec!["_source".to_string()],
-            obfuscate_sql_values: Vec::new(),
-        };
+        let keep = vec!["_source".to_string()];
+        let obfuscate_sql = Vec::new();
         let input = r#"{
     "query": {
        "match" : {
@@ -363,17 +322,14 @@ mod tests {
        }
     }
 }"#;
-        let result = obfuscate_json_string(input, &config, &default_sql_config());
+        let result = obfuscate_json_string(input, &keep, &obfuscate_sql, &default_sql_config());
         assert_json_eq(&result, expected);
     }
 
     #[test]
     fn test_agent_elasticsearch_body_9_keep_query() {
-        let config = JsonObfuscationConfig {
-            enabled: true,
-            keep_values: vec!["query".to_string()],
-            obfuscate_sql_values: Vec::new(),
-        };
+        let keep = vec!["query".to_string()];
+        let obfuscate_sql = Vec::new();
         let input = r#"{
     "query": {
        "match" : {
@@ -404,17 +360,14 @@ mod tests {
        }
     }
 }"#;
-        let result = obfuscate_json_string(input, &config, &default_sql_config());
+        let result = obfuscate_json_string(input, &keep, &obfuscate_sql, &default_sql_config());
         assert_json_eq(&result, expected);
     }
 
     #[test]
     fn test_agent_elasticsearch_body_10_keep_match() {
-        let config = JsonObfuscationConfig {
-            enabled: true,
-            keep_values: vec!["match".to_string()],
-            obfuscate_sql_values: Vec::new(),
-        };
+        let keep = vec!["match".to_string()];
+        let obfuscate_sql = Vec::new();
         let input = r#"{
     "query": {
        "match" : {
@@ -445,84 +398,69 @@ mod tests {
        }
     }
 }"#;
-        let result = obfuscate_json_string(input, &config, &default_sql_config());
+        let result = obfuscate_json_string(input, &keep, &obfuscate_sql, &default_sql_config());
         assert_json_eq(&result, expected);
     }
 
     #[test]
     fn test_agent_mongo_keep_company_wallet() {
-        let config = JsonObfuscationConfig {
-            enabled: true,
-            keep_values: vec!["company_wallet_configuration_id".to_string()],
-            obfuscate_sql_values: Vec::new(),
-        };
+        let keep = vec!["company_wallet_configuration_id".to_string()];
+        let obfuscate_sql = Vec::new();
         let input = r#"{"email":"dev@datadoghq.com","company_wallet_configuration_id":1}"#;
         let expected = r#"{"email":"?","company_wallet_configuration_id":1}"#;
-        let result = obfuscate_json_string(input, &config, &default_sql_config());
+        let result = obfuscate_json_string(input, &keep, &obfuscate_sql, &default_sql_config());
         assert_json_eq(&result, expected);
     }
 
     #[test]
     fn test_agent_sql_json_basic() {
-        let config = JsonObfuscationConfig {
-            enabled: true,
-            keep_values: vec!["hello".to_string()],
-            obfuscate_sql_values: vec!["query".to_string()],
-        };
+        let keep = vec!["hello".to_string()];
+        let obfuscate_sql = vec!["query".to_string()];
         let sql_config = default_sql_config();
         let input = r#"{"query": "select * from table where id = 2", "hello": "world", "hi": "there"}"#;
         let expected = r#"{"query": "select * from table where id = ?", "hello": "world", "hi": "?"}"#;
-        let result = obfuscate_json_string(input, &config, &sql_config);
+        let result = obfuscate_json_string(input, &keep, &obfuscate_sql, &sql_config);
         assert_json_eq(&result, expected);
     }
 
     #[test]
     fn test_agent_sql_json_tried_sql_obfuscate_an_object() {
-        let config = JsonObfuscationConfig {
-            enabled: true,
-            keep_values: Vec::new(),
-            obfuscate_sql_values: vec!["object".to_string()],
-        };
+        let keep = Vec::new();
+        let obfuscate_sql = vec!["object".to_string()];
         let sql_config = default_sql_config();
         let input = r#"{"object": {"not a": "query"}}"#;
         let expected = r#"{"object": {"not a": "?"}}"#;
-        let result = obfuscate_json_string(input, &config, &sql_config);
+        let result = obfuscate_json_string(input, &keep, &obfuscate_sql, &sql_config);
         assert_json_eq(&result, expected);
     }
 
     #[test]
     fn test_agent_sql_json_tried_sql_obfuscate_an_array() {
-        let config = JsonObfuscationConfig {
-            enabled: true,
-            keep_values: Vec::new(),
-            obfuscate_sql_values: vec!["object".to_string()],
-        };
+        let keep = Vec::new();
+        let obfuscate_sql = vec!["object".to_string()];
         let sql_config = default_sql_config();
         let input = r#"{"object": ["not", "a", "query"]}"#;
         let expected = r#"{"object": ["?", "?", "?"]}"#;
-        let result = obfuscate_json_string(input, &config, &sql_config);
+        let result = obfuscate_json_string(input, &keep, &obfuscate_sql, &sql_config);
         assert_json_eq(&result, expected);
     }
 
     #[test]
     fn test_agent_sql_plan_mysql() {
-        let config = JsonObfuscationConfig {
-            enabled: true,
-            keep_values: vec![
-                "select_id".to_string(),
-                "using_filesort".to_string(),
-                "table_name".to_string(),
-                "access_type".to_string(),
-                "possible_keys".to_string(),
-                "key".to_string(),
-                "key_length".to_string(),
-                "used_key_parts".to_string(),
-                "used_columns".to_string(),
-                "ref".to_string(),
-                "update".to_string(),
-            ],
-            obfuscate_sql_values: vec!["attached_condition".to_string()],
-        };
+        let keep = vec![
+            "select_id".to_string(),
+            "using_filesort".to_string(),
+            "table_name".to_string(),
+            "access_type".to_string(),
+            "possible_keys".to_string(),
+            "key".to_string(),
+            "key_length".to_string(),
+            "used_key_parts".to_string(),
+            "used_columns".to_string(),
+            "ref".to_string(),
+            "update".to_string(),
+        ];
+        let obfuscate_sql = vec!["attached_condition".to_string()];
         let sql_config = default_sql_config();
         let input = r#"{
   "query_block": {
@@ -604,7 +542,7 @@ mod tests {
 	}
   }
 }"#;
-        let result = obfuscate_json_string(input, &config, &sql_config);
+        let result = obfuscate_json_string(input, &keep, &obfuscate_sql, &sql_config);
         assert_json_eq(&result, expected);
     }
 }

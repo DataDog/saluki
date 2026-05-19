@@ -1,8 +1,9 @@
 use std::collections::{HashMap, HashSet};
+use std::time::Duration;
 
 use argh::{FromArgValue, FromArgs};
 use comfy_table::{presets::ASCII_FULL_CONDENSED, Cell, ContentArrangement, Row, Table};
-use saluki_config::GenericConfiguration;
+use saluki_config::{DurationString, GenericConfiguration};
 use saluki_error::{ErrorContext as _, GenericError};
 use serde::Deserialize;
 use tokio::io::{self, AsyncWriteExt};
@@ -22,6 +23,7 @@ pub struct DogstatsdCommand {
 #[argh(subcommand)]
 enum DogstatsdSubcommand {
     Stats(StatsCommand),
+    Capture(CaptureCommand),
 }
 
 /// Prints basic statistics about the metrics received by the data plane.
@@ -47,6 +49,27 @@ struct StatsCommand {
     /// maximum number of metrics to display (applied after filtering)
     #[argh(option, short = 'l', long = "limit")]
     limit: Option<usize>,
+}
+
+const fn default_capture_duration() -> DurationString {
+    DurationString::new(Duration::from_secs(60))
+}
+
+/// Starts a DogStatsD traffic capture.
+#[derive(FromArgs, Debug)]
+#[argh(subcommand, name = "capture")]
+struct CaptureCommand {
+    /// how long the traffic capture should run for, using Go-style duration syntax such as `10s` or `1m0s`
+    #[argh(option, short = 'd', long = "duration", default = "default_capture_duration()")]
+    capture_duration: DurationString,
+
+    /// directory path to write the capture into
+    #[argh(option, short = 'p', long = "path")]
+    capture_path: Option<String>,
+
+    /// whether to zstd-compress the capture file
+    #[argh(option, short = 'z', long = "compressed", default = "true")]
+    compressed: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -119,6 +142,12 @@ pub async fn handle_dogstatsd_command(bootstrap_config: &GenericConfiguration, c
                 std::process::exit(1);
             }
         }
+        DogstatsdSubcommand::Capture(config) => {
+            if let Err(e) = handle_dogstatsd_capture(&mut api_client, config).await {
+                error!("Failed to start DogStatsD capture: {:#}", e);
+                std::process::exit(1);
+            }
+        }
     }
 }
 
@@ -149,6 +178,21 @@ async fn handle_dogstatsd_stats(api_client: &mut DataPlaneAPIClient, cmd: StatsC
         AnalysisMode::Summary => handle_stats_summary_analysis(&cmd, response).await?,
         AnalysisMode::Cardinality => handle_stats_cardinality_analysis(&cmd, response).await?,
     }
+
+    Ok(())
+}
+
+async fn handle_dogstatsd_capture(
+    api_client: &mut DataPlaneAPIClient, cmd: CaptureCommand,
+) -> Result<(), GenericError> {
+    info!("Starting a DogStatsD traffic capture session...");
+
+    let capture_duration = cmd.capture_duration.to_string();
+    let capture_path = api_client
+        .dogstatsd_capture(&capture_duration, cmd.capture_path.as_deref(), cmd.compressed)
+        .await?;
+
+    info!("Capture started. Data will be written to '{capture_path}'.");
 
     Ok(())
 }
@@ -286,4 +330,16 @@ where
     }
     stdout.flush().await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::default_capture_duration;
+
+    #[test]
+    fn dogstatsd_capture_default_duration_matches_go() {
+        assert_eq!(default_capture_duration().as_duration(), Duration::from_secs(60));
+    }
 }

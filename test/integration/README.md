@@ -209,14 +209,43 @@ Verifies a pattern does NOT appear in the logs for a duration.
   stream: both
 ```
 
-#### `health_check`
+#### `http_check`
 
-Checks an HTTP health endpoint.
+Probes an HTTP or HTTPS endpoint and asserts on the response status code. HTTPS is supported with optional certificate verification skipping for self-signed certs. The status matcher accepts either an "equal" or "not equal" variant; the latter is useful for asserting that a route is registered without having to know what status code the endpoint would return.
 
 ```yaml
-- type: health_check
+# Assert the endpoint returns a specific status code.
+- type: http_check
   endpoint: "http://localhost:5102/health"
-  expected_status: 200
+  status:
+    equal: 200
+  timeout: 30s
+
+# Probe an HTTPS endpoint served with a self-signed certificate, asserting only that the route is
+# registered (i.e. the response is anything other than 404).
+- type: http_check
+  endpoint: "https://localhost:5101/logging/override"
+  status:
+    not_equal: 404
+  insecure_skip_verify: true     # Optional: skip TLS certificate verification (default: false)
+  timeout: 30s
+```
+
+#### `file_contains`
+
+Polls a file inside the container (via `docker exec cat`) until it exists and, optionally, contains a pattern. If `pattern` is omitted, only file existence is checked.
+
+```yaml
+# File must exist.
+- type: file_contains
+  path: "/var/log/datadog/agent-data-plane.log"
+  timeout: 30s
+
+# File must exist and contain the pattern.
+- type: file_contains
+  path: "/var/log/datadog/agent-data-plane.log"
+  pattern: "DATAPLANE"
+  regex: false           # Optional: treat pattern as regex (default: false)
   timeout: 30s
 ```
 

@@ -13,6 +13,7 @@ pub struct DataPlaneConfiguration {
     secure_api_listen_address: ListenAddress,
     telemetry_enabled: bool,
     telemetry_listen_addr: ListenAddress,
+    checks: DataPlaneChecksConfiguration,
     dogstatsd: DataPlaneDogStatsDConfiguration,
     otlp: DataPlaneOtlpConfiguration,
 }
@@ -22,7 +23,7 @@ impl DataPlaneConfiguration {
     ///
     /// # Errors
     ///
-    /// If the configuration cannot be deserialized, an error is returned.
+    /// If the configuration can't be deserialized, an error is returned.
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
         // TODO: We're explicitly querying each individual field from the configuration because if we don't, then our
         // environment variable overrides end up requiring double underscores to indicate nesting (i.e. we have to do
@@ -36,20 +37,19 @@ impl DataPlaneConfiguration {
             standalone_mode: config.try_get_typed("data_plane.standalone_mode")?.unwrap_or(false),
             use_new_config_stream_endpoint: config
                 .try_get_typed("data_plane.use_new_config_stream_endpoint")?
-                .unwrap_or(false),
-            remote_agent_enabled: config
-                .try_get_typed("data_plane.remote_agent_enabled")?
-                .unwrap_or(false),
+                .unwrap_or(true),
+            remote_agent_enabled: config.try_get_typed("data_plane.remote_agent_enabled")?.unwrap_or(true),
             api_listen_address: config
                 .try_get_typed("data_plane.api_listen_address")?
                 .unwrap_or_else(|| ListenAddress::any_tcp(5100)),
             secure_api_listen_address: config
                 .try_get_typed("data_plane.secure_api_listen_address")?
                 .unwrap_or_else(|| ListenAddress::any_tcp(5101)),
-            telemetry_enabled: config.try_get_typed("data_plane.telemetry_enabled")?.unwrap_or(false),
+            telemetry_enabled: config.try_get_typed("data_plane.telemetry_enabled")?.unwrap_or(true),
             telemetry_listen_addr: config
                 .try_get_typed("data_plane.telemetry_listen_addr")?
                 .unwrap_or_else(|| ListenAddress::any_tcp(5102)),
+            checks: DataPlaneChecksConfiguration::from_configuration(config)?,
             dogstatsd: DataPlaneDogStatsDConfiguration::from_configuration(config)?,
             otlp: DataPlaneOtlpConfiguration::from_configuration(config)?,
         })
@@ -99,6 +99,11 @@ impl DataPlaneConfiguration {
         &self.telemetry_listen_addr
     }
 
+    /// Returns a reference to the Checks-specific data plane configuration.
+    pub const fn checks(&self) -> &DataPlaneChecksConfiguration {
+        &self.checks
+    }
+
     /// Returns a reference to the DogStatsD-specific data plane configuration.
     pub const fn dogstatsd(&self) -> &DataPlaneDogStatsDConfiguration {
         &self.dogstatsd
@@ -111,7 +116,7 @@ impl DataPlaneConfiguration {
 
     /// Returns `true` if any data pipelines are enabled.
     pub const fn data_pipelines_enabled(&self) -> bool {
-        self.dogstatsd().enabled() || self.otlp().enabled()
+        self.checks().enabled() || self.dogstatsd().enabled() || self.otlp().enabled()
     }
 
     /// Returns `true` if the metrics pipeline is required.
@@ -120,19 +125,39 @@ impl DataPlaneConfiguration {
     /// by higher-level data pipelines, such as DogStatsD.
     pub const fn metrics_pipeline_required(&self) -> bool {
         // We consider the metrics pipeline to be enabled if:
+        // - Checks is enabled
         // - DogStatsD is enabled
         // - OTLP is enabled and not in proxy mode
-        self.dogstatsd().enabled() || (self.otlp().enabled() && !self.otlp().proxy().enabled())
+        self.checks().enabled()
+            || self.dogstatsd().enabled()
+            || (self.otlp().enabled() && !self.otlp().proxy().enabled())
     }
 
     /// Returns `true` if the logs pipeline is required.
     ///
     /// This indicates that the "baseline" logs pipeline (encoding, forwarding) is required by higher-level data
-    /// pipelines, such as OTLP.
+    /// pipelines, such as Checks or OTLP.
     pub const fn logs_pipeline_required(&self) -> bool {
         // We consider the logs pipeline to be enabled if:
+        // - Checks is enabled
         // - OTLP is enabled and not in proxy mode
-        self.otlp().enabled() && !self.otlp().proxy().enabled()
+        self.checks().enabled() || (self.otlp().enabled() && !self.otlp().proxy().enabled())
+    }
+
+    /// Returns `true` if the events pipeline is required.
+    ///
+    /// This indicates that the "baseline" events pipeline (encoding, forwarding) is required by higher-level data
+    /// pipelines, such as Checks or DogStatsD.
+    pub const fn events_pipeline_required(&self) -> bool {
+        self.checks().enabled() || self.dogstatsd().enabled()
+    }
+
+    /// Returns `true` if the service checks pipeline is required.
+    ///
+    /// This indicates that the "baseline" service checks pipeline (encoding, forwarding) is required by higher-level
+    /// data pipelines, such as Checks or DogStatsD.
+    pub const fn service_checks_pipeline_required(&self) -> bool {
+        self.checks().enabled() || self.dogstatsd().enabled()
     }
 
     /// Returns `true` if the traces pipeline is required.
@@ -146,21 +171,49 @@ impl DataPlaneConfiguration {
     }
 }
 
-/// DogStatsD-specific data plane configuration.
+/// Checks-specific data plane configuration.
 #[derive(Clone, Debug)]
-pub struct DataPlaneDogStatsDConfiguration {
-    /// Whether DogStatsD is enabled.
+pub struct DataPlaneChecksConfiguration {
+    /// Whether Checks is enabled.
     ///
-    /// When disabled, DogStatsD will not be started.
+    /// When disabled, Checks won't be started.
     ///
     /// Defaults to `false`.
     enabled: bool,
 }
 
-impl DataPlaneDogStatsDConfiguration {
+impl DataPlaneChecksConfiguration {
     fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
         Ok(Self {
-            enabled: config.try_get_typed("data_plane.dogstatsd.enabled")?.unwrap_or(false),
+            enabled: config.try_get_typed("data_plane.checks.enabled")?.unwrap_or(false),
+        })
+    }
+
+    /// Returns `true` if Checks is enabled.
+    pub const fn enabled(&self) -> bool {
+        self.enabled
+    }
+}
+
+/// DogStatsD-specific data plane configuration.
+#[derive(Clone, Debug)]
+pub struct DataPlaneDogStatsDConfiguration {
+    /// Whether DogStatsD is enabled.
+    ///
+    /// When disabled, DogStatsD won't be started.
+    ///
+    /// Defaults to `true`.
+    enabled: bool,
+}
+
+impl DataPlaneDogStatsDConfiguration {
+    // We intentionally do NOT read the Core Agent's `use_dogstatsd` key here. The Core Agent is the
+    // sole authority on whether ADP should run DogStatsD: it evaluates `use_dogstatsd` (along with
+    // other signals) and sets `data_plane.dogstatsd.enabled` on our behalf. Reading both would risk
+    // ADP and the Core Agent disagreeing. See `docs/agent-data-plane/configuration/dogstatsd.md`.
+    fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
+        Ok(Self {
+            enabled: config.try_get_typed("data_plane.dogstatsd.enabled")?.unwrap_or(true),
         })
     }
 
@@ -206,7 +259,7 @@ impl DataPlaneOtlpConfiguration {
 pub struct DataPlaneOtlpProxyConfiguration {
     /// Whether or not to proxy all signals to the Agent.
     ///
-    /// When enabled, OTLP signals which are not supported by ADP will be proxied to the Agent. Depending on the signal
+    /// When enabled, OTLP signals which aren't supported by ADP will be proxied to the Agent. Depending on the signal
     /// type, they may be proxied to either the Core Agent or Trace Agent.
     ///
     /// Defaults to `true`.
@@ -281,5 +334,92 @@ impl DataPlaneOtlpProxyConfiguration {
     /// Returns `true` if the OTLP logs should be proxied to the Core Agent.
     pub const fn proxy_logs(&self) -> bool {
         self.proxy_logs
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use saluki_config::ConfigurationLoader;
+    use serde_json::json;
+
+    use super::*;
+
+    // ADP ignores `use_dogstatsd`. The Core Agent evaluates that key and delivers the resolved
+    // decision to ADP by setting `data_plane.dogstatsd.enabled` via the config stream.
+
+    #[tokio::test]
+    async fn default_enables_dogstatsd() {
+        let (config, _) =
+            ConfigurationLoader::for_tests(Some(json!({ "data_plane": { "enabled": true } })), None, false).await;
+
+        let dp = DataPlaneConfiguration::from_configuration(&config).expect("parse config");
+        assert!(dp.enabled());
+        assert!(dp.dogstatsd().enabled());
+    }
+
+    #[tokio::test]
+    async fn use_dogstatsd_false_does_not_disable_dogstatsd_by_default() {
+        let (config, _) = ConfigurationLoader::for_tests(
+            Some(json!({ "use_dogstatsd": false, "data_plane": { "enabled": true } })),
+            None,
+            false,
+        )
+        .await;
+
+        let dp = DataPlaneConfiguration::from_configuration(&config).expect("parse config");
+        assert!(dp.enabled());
+        assert!(dp.dogstatsd().enabled());
+    }
+
+    #[tokio::test]
+    async fn explicit_false_disables_dogstatsd() {
+        let (config, _) = ConfigurationLoader::for_tests(
+            Some(json!({ "data_plane": { "enabled": true, "dogstatsd": { "enabled": false } } })),
+            None,
+            false,
+        )
+        .await;
+
+        let dp = DataPlaneConfiguration::from_configuration(&config).expect("parse config");
+        assert!(dp.enabled());
+        assert!(!dp.dogstatsd().enabled());
+    }
+
+    #[tokio::test]
+    async fn use_dogstatsd_true_does_not_override_explicit_false() {
+        // `use_dogstatsd=true` must not enable DSD when `data_plane.dogstatsd.enabled=false` is
+        // set explicitly. ADP reads only its own key.
+        let (config, _) = ConfigurationLoader::for_tests(
+            Some(json!({
+                "use_dogstatsd": true,
+                "data_plane": { "enabled": true, "dogstatsd": { "enabled": false } },
+            })),
+            None,
+            false,
+        )
+        .await;
+
+        let dp = DataPlaneConfiguration::from_configuration(&config).expect("parse config");
+        assert!(dp.enabled());
+        assert!(!dp.dogstatsd().enabled());
+    }
+
+    #[tokio::test]
+    async fn use_dogstatsd_false_does_not_disable_dogstatsd_when_explicitly_enabled() {
+        // `use_dogstatsd=false` must not disable DSD when `data_plane.dogstatsd.enabled=true` is
+        // set explicitly. The Core Agent communicates its resolved decision via that key.
+        let (config, _) = ConfigurationLoader::for_tests(
+            Some(json!({
+                "use_dogstatsd": false,
+                "data_plane": { "enabled": true, "dogstatsd": { "enabled": true } },
+            })),
+            None,
+            false,
+        )
+        .await;
+
+        let dp = DataPlaneConfiguration::from_configuration(&config).expect("parse config");
+        assert!(dp.enabled());
+        assert!(dp.dogstatsd().enabled());
     }
 }

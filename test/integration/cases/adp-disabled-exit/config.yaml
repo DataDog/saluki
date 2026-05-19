@@ -1,3 +1,4 @@
+type: integration
 name: "adp-disabled-exit"
 description: "Verify ADP exits cleanly when data plane is not enabled"
 timeout: 45s

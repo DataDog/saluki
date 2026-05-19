@@ -18,6 +18,6 @@ pub trait ForwarderBuilder: MemoryBounds {
     ///
     /// ## Errors
     ///
-    /// If the forwarder cannot be built for any reason, an error is returned.
+    /// If the forwarder can't be built for any reason, an error is returned.
     async fn build(&self, context: ComponentContext) -> Result<Box<dyn Forwarder + Send>, GenericError>;
 }

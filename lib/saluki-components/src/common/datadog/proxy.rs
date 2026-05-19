@@ -4,11 +4,13 @@ use std::sync::Arc;
 use facet::Facet;
 use headers::Authorization;
 use hyper_http_proxy::{Intercept, Proxy};
+use saluki_config::deserialize_space_separated_or_seq;
 use saluki_error::GenericError;
-use serde::{Deserialize, Deserializer};
+use serde::Deserialize;
 use url::Url;
 
 #[derive(Clone, Deserialize, Facet)]
+#[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
 pub struct ProxyConfiguration {
     /// The proxy server for HTTP requests.
     #[serde(rename = "proxy_http")]
@@ -30,11 +32,11 @@ pub struct ProxyConfiguration {
     /// - A CIDR range: `192.168.0.0/24` or `2001:db8::/32`. Only used when
     ///   `no_proxy_nonexact_match` is true; ignored in exact mode.
     /// - A domain name: `example.com`. In exact mode, only the literal hostname matches. In
-    ///   nonexact mode, the domain and all its subdomains match (e.g. `example.com` also matches
+    ///   nonexact mode, the domain and all its subdomains match (for example, `example.com` also matches
     ///   `sub.example.com`). An optional port suffix (`example.com:443`) restricts the match to
     ///   that port.
     /// - A leading-dot domain: `.example.com`. Only used in nonexact mode; matches subdomains
-    ///   only, not the domain itself (e.g. `.example.com` matches `sub.example.com` but not
+    ///   only, not the domain itself (for example, `.example.com` matches `sub.example.com` but not
     ///   `example.com`).
     /// - A wildcard `*`: bypasses the proxy for all destinations. Only used in nonexact mode.
     #[serde(
@@ -119,11 +121,11 @@ fn new_proxy(proxy_url: &str, intercept: Intercept) -> Result<Proxy, GenericErro
 
 /// Parsed representation of a single `no_proxy` entry.
 enum NoProxyEntry {
-    /// `*` — bypass proxy for all destinations. Only used in nonexact mode.
+    /// `*`—bypass proxy for all destinations. Only used in nonexact mode.
     Wildcard,
-    /// An IP address in CIDR notation (e.g. `192.168.0.0/24`). Only used in nonexact mode.
+    /// An IP address in CIDR notation (for example, `192.168.0.0/24`). Only used in nonexact mode.
     IpCidr { addr: IpAddr, prefix_len: u8 },
-    /// An exact IP address, with an optional port constraint (e.g. `192.168.1.1` or `192.168.1.1:80`).
+    /// An exact IP address, with an optional port constraint (for example, `192.168.1.1` or `192.168.1.1:80`).
     IpExact { addr: IpAddr, port: Option<u16> },
     /// A domain name, with optional port constraint and a flag for suffix-only matching.
     ///
@@ -167,11 +169,11 @@ impl NoProxyEntry {
                 if nonexact {
                     if *suffix_only {
                         // Leading-dot entry: only matches subdomains, not the domain itself.
-                        // e.g. ".y.com" matches "x.y.com" but not "y.com".
+                        // for example, ".y.com" matches "x.y.com" but not "y.com".
                         host_lower.ends_with(&format!(".{}", name))
                     } else {
                         // Plain domain: matches the domain and all subdomains.
-                        // e.g. "foo.com" matches "foo.com" and "bar.foo.com".
+                        // for example, "foo.com" matches "foo.com" and "bar.foo.com".
                         host_lower == *name || host_lower.ends_with(&format!(".{}", name))
                     }
                 } else {
@@ -293,46 +295,27 @@ fn ip_in_cidr(network: IpAddr, prefix_len: u8, addr: IpAddr) -> bool {
             let shift = 128 - prefix_len;
             (u128::from(net) >> shift) == (u128::from(tgt) >> shift)
         }
-        // IPv4 vs IPv6 mismatch — never matches.
+        // IPv4 vs IPv6 mismatch—never matches.
         _ => false,
     }
 }
 
-/// Deserializes a `Vec<String>` from either a sequence or a space-separated string.
-///
-/// This handles the dual representation of `no_proxy`: a YAML sequence (`proxy.no_proxy`) and an
-/// environment variable (`DD_PROXY_NO_PROXY`) where values are space-separated.
-fn deserialize_space_separated_or_seq<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    use std::fmt;
+#[cfg(test)]
+mod config_smoke {
+    use serde_json::json;
 
-    use serde::de::{self, SeqAccess, Visitor};
+    use super::ProxyConfiguration;
+    use crate::config_registry::structs;
+    use crate::config_registry::test_support::run_config_smoke_tests;
 
-    struct SpaceSeparatedOrSeq;
-
-    impl<'de> Visitor<'de> for SpaceSeparatedOrSeq {
-        type Value = Vec<String>;
-
-        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-            formatter.write_str("a sequence or a space-separated string")
-        }
-
-        fn visit_str<E: de::Error>(self, v: &str) -> Result<Vec<String>, E> {
-            Ok(v.split_whitespace().map(str::to_owned).collect())
-        }
-
-        fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Vec<String>, A::Error> {
-            let mut values = Vec::new();
-            while let Some(v) = seq.next_element()? {
-                values.push(v);
-            }
-            Ok(values)
-        }
+    #[tokio::test]
+    async fn proxy_configuration_smoke_test() {
+        run_config_smoke_tests(structs::PROXY_CONFIGURATION, &[], json!({}), |cfg| {
+            cfg.as_typed::<ProxyConfiguration>()
+                .expect("ProxyConfiguration should deserialize")
+        })
+        .await
     }
-
-    deserializer.deserialize_any(SpaceSeparatedOrSeq)
 }
 
 #[cfg(test)]
@@ -602,7 +585,7 @@ mod tests {
         let config = proxy_config_with_cloud_flag(true);
         let proxies = config.build().expect("should build");
         assert_eq!(proxies.len(), 1);
-        // With no no_proxy list and the flag enabled, nothing is excluded — proxies everything.
+        // With no no_proxy list and the flag enabled, nothing is excluded—proxies everything.
         assert!(proxies[0]
             .intercept()
             .matches(&"http://169.254.169.254/latest/meta-data".parse::<hyper::Uri>().unwrap()));

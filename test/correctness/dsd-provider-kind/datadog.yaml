@@ -1,0 +1,27 @@
+# Using a fixed hostname is both required to avoid errors, and also will ensure consistent tags between DSD/ADP.
+hostname: "correctness-testing"
+
+# Dummy API key.
+api_key: dummy-api-key-correctness-testing
+
+# We have to specifically configure the health port to use.
+health_port: 5555
+
+# Point ourselves at the datadog-intake service.
+dd_url: "http://datadog-intake:2049"
+
+# Turn off UDP and listen on a UDS socket instead.
+dogstatsd_port: 0
+dogstatsd_socket: /airlock/metrics.sock
+
+dogstatsd_origin_detection: false
+
+# Single worker to avoid out-of-order gauge processing.
+dogstatsd_workers_count: 1
+
+# provider_kind is set via DD_PROVIDER_KIND env var. The Agent reads this config key and, if
+# non-empty, appends `provider_kind:<value>` as a static tag to all DogStatsD metrics. ADP must do
+# the same. This test verifies that behavior.
+#
+# The env var is set in config.yaml (DD_PROVIDER_KIND=gke-autopilot) rather than here, matching how
+# it is deployed in practice via the Helm chart.

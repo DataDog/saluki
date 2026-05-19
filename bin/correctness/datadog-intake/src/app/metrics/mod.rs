@@ -13,6 +13,7 @@ pub fn build_metrics_router() -> Router {
     Router::new()
         .route("/metrics/dump", get(handle_metrics_dump))
         .route("/metrics/validation_status", get(handle_metrics_validation_status))
+        .route("/api/v1/series", post(handle_series_v1))
         .route("/api/v2/series", post(handle_series_v2))
         .route("/api/beta/sketches", post(handle_sketch_beta))
         .route("/api/intake/metrics/v3/series", post(handle_series_v3))

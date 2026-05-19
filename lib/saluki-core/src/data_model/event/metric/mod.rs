@@ -27,7 +27,7 @@ pub use self::value::{
 /// but the tags as well. Effectively, a context is meant to be a unique name for a metric.
 ///
 /// The value is precisely what it sounds like: the value of the metric. The value holds both the metric type and the
-/// measurement (or measurements) tied to that metric type. This ensures that the measurement(s) are always represented
+/// measurement (or measurements) tied to that metric type. This ensures that the measurements are always represented
 /// correctly for the given metric type.
 ///
 /// The metadata contains ancillary data related to the metric, such as the timestamp, sample rate, and origination
@@ -40,7 +40,7 @@ pub struct Metric {
 }
 
 impl Metric {
-    /// Creates a counter metric from the given context and value(s).
+    /// Creates a counter metric from the given context and values.
     ///
     /// Default metadata will be used.
     pub fn counter<C, V>(context: C, values: V) -> Self
@@ -55,7 +55,7 @@ impl Metric {
         }
     }
 
-    /// Creates a gauge metric from the given context and value(s).
+    /// Creates a gauge metric from the given context and values.
     ///
     /// Default metadata will be used.
     pub fn gauge<C, V>(context: C, values: V) -> Self
@@ -70,7 +70,7 @@ impl Metric {
         }
     }
 
-    /// Creates a rate metric from the given context and value(s).
+    /// Creates a rate metric from the given context and values.
     ///
     /// Default metadata will be used.
     pub fn rate<C, V>(context: C, values: V, interval: Duration) -> Self
@@ -85,7 +85,7 @@ impl Metric {
         }
     }
 
-    /// Creates a set metric from the given context and value(s).
+    /// Creates a set metric from the given context and values.
     ///
     /// Default metadata will be used.
     pub fn set<C, V>(context: C, values: V) -> Self
@@ -100,7 +100,7 @@ impl Metric {
         }
     }
 
-    /// Creates a histogram metric from the given context and value(s).
+    /// Creates a histogram metric from the given context and values.
     ///
     /// Default metadata will be used.
     pub fn histogram<C, V>(context: C, values: V) -> Self
@@ -115,7 +115,7 @@ impl Metric {
         }
     }
 
-    /// Creates a distribution metric from the given context and value(s).
+    /// Creates a distribution metric from the given context and values.
     ///
     /// Default metadata will be used.
     pub fn distribution<C, V>(context: C, values: V) -> Self

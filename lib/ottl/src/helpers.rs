@@ -19,7 +19,7 @@ use crate::{IndexExpr, Value};
 /// # Errors
 ///
 /// Returns an error if an index is out of bounds, a map key is missing, or
-/// the value type does not support the given index type.
+/// the value type doesn't support the given index type.
 ///
 /// # Example
 ///

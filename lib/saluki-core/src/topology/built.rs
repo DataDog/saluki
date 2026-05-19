@@ -6,7 +6,6 @@ use memory_accounting::{
 };
 use saluki_common::task::JoinSetExt as _;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
-use saluki_health::HealthRegistry;
 use tokio::{
     runtime::Handle,
     sync::mpsc,
@@ -20,7 +19,7 @@ use tracing::{debug, error_span};
 /// have heavy, compute-bound tasks that they need to execute, they should generally be spawned on the worker pool (also known as the "global thread pool") to
 /// avoid scheduling contention/starvation with the core component tasks.
 pub enum WorkerPoolConfiguration {
-    /// Use the ambient Tokio runtime (that is, `Handle::current()`).
+    /// Use the ambient Tokio runtime (that's, `Handle::current()`).
     ///
     /// Component subtasks are spawned on whatever runtime is currently active.
     /// Useful when the topology is embedded in an application that already
@@ -42,6 +41,7 @@ use super::{
     graph::Graph, running::RunningTopology, shutdown::ComponentShutdownCoordinator, ComponentId, EventsBuffer,
     EventsConsumer, OutputName, PayloadsConsumer, RegisteredComponent, TypedComponentId,
 };
+use crate::health::HealthRegistry;
 use crate::{
     components::{
         decoders::{Decoder, DecoderContext},

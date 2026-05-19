@@ -28,7 +28,7 @@ use tower::Service;
 ///
 /// - TLS support
 /// - API-wide authentication support (can be added at the per-handler level)
-/// - graceful shutdown (shutdown stops new connections, but does not wait for existing connections to close)
+/// - graceful shutdown (shutdown stops new connections, but doesn't wait for existing connections to close)
 #[derive(Default)]
 pub struct APIBuilder {
     http_router: Router,
@@ -125,7 +125,7 @@ impl APIBuilder {
     ///
     /// # Errors
     ///
-    /// If the given listen address is not connection-oriented, or if the server fails to bind to the address, or if
+    /// If the given listen address isn't connection-oriented, or if the server fails to bind to the address, or if
     /// there is an error while accepting for new connections, an error will be returned.
     pub async fn serve<F>(self, listen_address: ListenAddress, shutdown: F) -> Result<(), GenericError>
     where

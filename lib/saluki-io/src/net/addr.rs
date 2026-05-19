@@ -62,7 +62,7 @@ impl ListenAddress {
     ///
     /// When the listen address is a TCP or UDP address, this method returns a socket address that can be used to
     /// connect to the listener bound to this listen address, such that if the listen address is unspecified
-    /// (`0.0.0.0`), the client will connect locally using "localhost". When the listen address is not "unspecified" or
+    /// (`0.0.0.0`), the client will connect locally using "localhost". When the listen address isn't "unspecified" or
     /// already uses "localhost", this method returns the listen address as-is.
     ///
     /// If the address is a Unix domain socket, this method returns `None`.
@@ -208,6 +208,73 @@ pub struct ProcessCredentials {
     pub gid: u32,
 }
 
+/// Reason UDS process credential detection failed.
+#[cfg(unix)]
+#[derive(Clone, Copy)]
+pub enum ProcessCredentialsError {
+    /// Ancillary data was present but didn't contain usable process credentials.
+    InvalidCredentials,
+
+    /// Process credentials were present, but the PID was zero.
+    ZeroPid,
+
+    /// UDS process credential detection isn't supported on this platform.
+    UnsupportedPlatform,
+}
+
+#[cfg(unix)]
+impl ProcessCredentialsError {
+    /// Returns a concise identifier for the failure reason.
+    pub const fn identifier(&self) -> &'static str {
+        match self {
+            Self::InvalidCredentials => "invalid-credentials",
+            Self::ZeroPid => "zero-pid",
+            Self::UnsupportedPlatform => "unsupported-platform",
+        }
+    }
+}
+
+#[cfg(unix)]
+impl fmt::Display for ProcessCredentialsError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidCredentials => write!(f, "invalid process credentials"),
+            Self::ZeroPid => write!(f, "process credential PID is zero"),
+            Self::UnsupportedPlatform => write!(f, "process credentials are unsupported on this platform"),
+        }
+    }
+}
+
+/// Process identity associated with a Unix domain socket peer.
+#[cfg(unix)]
+#[derive(Clone)]
+pub enum ProcessIdentity {
+    /// Process credentials were detected.
+    Credentials(ProcessCredentials),
+
+    /// Process credential detection failed.
+    Error(ProcessCredentialsError),
+
+    /// Process identity isn't available for this peer.
+    Unavailable,
+}
+
+#[cfg(unix)]
+impl ProcessIdentity {
+    /// Returns process credentials, if they were detected.
+    pub fn credentials(&self) -> Option<&ProcessCredentials> {
+        match self {
+            Self::Credentials(creds) => Some(creds),
+            Self::Error(_) | Self::Unavailable => None,
+        }
+    }
+
+    /// Returns `true` if process credential detection failed.
+    pub const fn is_error(&self) -> bool {
+        matches!(self, Self::Error(_))
+    }
+}
+
 /// Connection address.
 ///
 /// A generic representation of the address of a remote peer. This can either be a typical socket address (used for
@@ -219,7 +286,7 @@ pub enum ConnectionAddress {
 
     /// A process-like address.
     #[cfg(unix)]
-    ProcessLike(Option<ProcessCredentials>),
+    ProcessLike(ProcessIdentity),
 }
 
 impl fmt::Display for ConnectionAddress {
@@ -227,10 +294,33 @@ impl fmt::Display for ConnectionAddress {
         match self {
             Self::SocketLike(addr) => write!(f, "{}", addr),
             #[cfg(unix)]
-            Self::ProcessLike(maybe_creds) => match maybe_creds {
-                None => write!(f, "<unbound>"),
-                Some(creds) => write!(f, "<pid={} uid={} gid={}>", creds.pid, creds.uid, creds.gid),
+            Self::ProcessLike(identity) => match identity {
+                ProcessIdentity::Credentials(creds) => {
+                    write!(f, "<pid={} uid={} gid={}>", creds.pid, creds.uid, creds.gid)
+                }
+                ProcessIdentity::Error(error) => write!(f, "<origin-detection-error: {}>", error.identifier()),
+                ProcessIdentity::Unavailable => write!(f, "<no-origin>"),
             },
+        }
+    }
+}
+
+impl ConnectionAddress {
+    /// Returns process credentials for a Unix domain socket peer, if available.
+    #[cfg(unix)]
+    pub fn process_credentials(&self) -> Option<&ProcessCredentials> {
+        match self {
+            Self::ProcessLike(identity) => identity.credentials(),
+            Self::SocketLike(_) => None,
+        }
+    }
+
+    /// Returns `true` if Unix domain socket process credential detection failed.
+    #[cfg(unix)]
+    pub const fn has_process_credential_error(&self) -> bool {
+        match self {
+            Self::ProcessLike(identity) => identity.is_error(),
+            Self::SocketLike(_) => false,
         }
     }
 }
@@ -244,7 +334,7 @@ impl From<SocketAddr> for ConnectionAddress {
 #[cfg(unix)]
 impl From<ProcessCredentials> for ConnectionAddress {
     fn from(creds: ProcessCredentials) -> Self {
-        Self::ProcessLike(Some(creds))
+        Self::ProcessLike(ProcessIdentity::Credentials(creds))
     }
 }
 
@@ -274,7 +364,7 @@ impl GrpcTargetAddress {
     /// For TCP addresses, this method converts unspecified addresses (`0.0.0.0` or `::`) to localhost
     /// (`127.0.0.1` or `::1`) to ensure the advertised address matches TLS certificates.
     ///
-    /// Returns `None` if the listen address is not a connection-oriented transport.
+    /// Returns `None` if the listen address isn't a connection-oriented transport.
     pub fn try_from_listen_addr(listen_address: &ListenAddress) -> Option<Self> {
         match listen_address {
             ListenAddress::Tcp(_) => {

@@ -1,11 +1,22 @@
+use std::collections::BTreeMap;
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
     time::Duration,
 };
 
+use async_trait::async_trait;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use serde::Deserialize;
+
+use crate::correctness::analysis::AnalysisMode;
+use crate::correctness::config::{
+    Config as CorrectnessConfig, DatadogIntakeConfig as CorrectnessDatadogIntakeConfig,
+    MillstoneConfig as CorrectnessMillstoneConfig, Runtime as CorrectnessRuntime,
+    TargetConfig as CorrectnessTargetConfig,
+};
+use crate::reporter::TestResult;
+use crate::test::{Test, TestContext, TestSuite};
 
 /// A duration that can be parsed from human-readable strings like "10s", "1m", "500ms".
 #[derive(Clone, Debug)]
@@ -83,9 +94,10 @@ fn parse_duration(s: &str) -> Result<Duration, String> {
     Ok(total)
 }
 
-/// Root test case configuration.
+/// The deserializable configuration struct that defines an integration test. Not to be confused with
+/// `CorrectnessConfig` which is a different testing modality.
 #[derive(Clone, Debug, Deserialize)]
-pub struct TestCase {
+pub struct IntegrationConfig {
     /// Name of the test case.
     pub name: String,
 
@@ -192,9 +204,9 @@ pub enum AssertionConfig {
         stream: LogStream,
     },
 
-    /// Check that a pattern does NOT appear in the logs for a duration.
+    /// Check that a pattern doesn't appear in the logs for a duration.
     LogNotContains {
-        /// The pattern that should not appear.
+        /// The pattern that shouldn't appear.
         pattern: String,
         /// Whether to interpret the pattern as a regex.
         #[serde(default)]
@@ -206,18 +218,43 @@ pub enum AssertionConfig {
         stream: LogStream,
     },
 
-    /// Check an HTTP health endpoint.
-    HealthCheck {
-        /// The endpoint URL to check.
+    /// Probe an HTTP/HTTPS endpoint and assert on the response status code.
+    ///
+    /// HTTPS endpoints are supported with optional certificate verification skipping. The status
+    /// matcher accepts either "must equal" or "must not equal" semantics; the latter is useful for
+    /// asserting only that a route is registered without having to know what status code the
+    /// endpoint would otherwise return.
+    HttpCheck {
+        /// The endpoint URL to check. Both `http://` and `https://` schemes are accepted.
         endpoint: String,
-        /// The expected HTTP status code.
-        expected_status: u16,
-        /// Timeout for the health check to succeed.
+        /// Matcher applied to the response status code.
+        status: HttpStatusMatcher,
+        /// Whether to skip TLS certificate verification for `https://` endpoints.
+        ///
+        /// Defaults to `false`. Set to `true` when probing endpoints that serve self-signed
+        /// certificates (such as the ADP privileged API in integration tests).
+        #[serde(default)]
+        insecure_skip_verify: bool,
+        /// Timeout for the check to succeed.
+        timeout: HumanDuration,
+    },
+
+    /// Check that a file exists in the container, and optionally that its contents match a pattern.
+    FileContains {
+        /// Absolute path to the file inside the container.
+        path: String,
+        /// Optional pattern that must appear in the file's contents. If omitted, only file existence is checked.
+        #[serde(default)]
+        pattern: Option<String>,
+        /// Whether to interpret `pattern` as a regex.
+        #[serde(default)]
+        regex: bool,
+        /// Timeout for waiting for the file (and pattern, if any) to appear.
         timeout: HumanDuration,
     },
 }
 
-/// Which log stream(s) to check.
+/// Which log streams to check.
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum LogStream {
@@ -227,7 +264,135 @@ pub enum LogStream {
     Both,
 }
 
-impl TestCase {
+/// Matcher for the response status code of an [`AssertionConfig::HttpCheck`].
+///
+/// Exactly one variant is set at deserialization time, so the assertion either requires a specific
+/// status code or rejects a specific status code.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HttpStatusMatcher {
+    /// Assertion passes when the response status code equals this value.
+    Equal(u16),
+    /// Assertion passes when the response status code is anything other than this value.
+    NotEqual(u16),
+}
+
+impl AssertionConfig {
+    /// Replaces `{{PANORAMIC_DYNAMIC_*}}` placeholders in string fields with resolved values.
+    pub fn resolve_dynamic_vars(&mut self, vars: &HashMap<String, String>) {
+        match self {
+            AssertionConfig::LogContains { pattern, .. } | AssertionConfig::LogNotContains { pattern, .. } => {
+                crate::dynamic_vars::resolve_placeholders(pattern, vars);
+            }
+            AssertionConfig::HttpCheck { endpoint, .. } => {
+                crate::dynamic_vars::resolve_placeholders(endpoint, vars);
+            }
+            AssertionConfig::PortListening { protocol, .. } => {
+                crate::dynamic_vars::resolve_placeholders(protocol, vars);
+            }
+            AssertionConfig::FileContains { path, pattern, .. } => {
+                crate::dynamic_vars::resolve_placeholders(path, vars);
+                if let Some(p) = pattern {
+                    crate::dynamic_vars::resolve_placeholders(p, vars);
+                }
+            }
+            AssertionConfig::ProcessStableFor { .. } | AssertionConfig::ProcessExitsWith { .. } => {}
+        }
+    }
+
+    /// Returns any unresolved `{{PANORAMIC_DYNAMIC_*}}` placeholders in string fields.
+    pub fn unresolved_placeholders(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        match self {
+            AssertionConfig::LogContains { pattern, .. } | AssertionConfig::LogNotContains { pattern, .. } => {
+                crate::dynamic_vars::find_unresolved(pattern, &mut out);
+            }
+            AssertionConfig::HttpCheck { endpoint, .. } => {
+                crate::dynamic_vars::find_unresolved(endpoint, &mut out);
+            }
+            AssertionConfig::PortListening { protocol, .. } => {
+                crate::dynamic_vars::find_unresolved(protocol, &mut out);
+            }
+            AssertionConfig::FileContains { path, pattern, .. } => {
+                crate::dynamic_vars::find_unresolved(path, &mut out);
+                if let Some(p) = pattern {
+                    crate::dynamic_vars::find_unresolved(p, &mut out);
+                }
+            }
+            AssertionConfig::ProcessStableFor { .. } | AssertionConfig::ProcessExitsWith { .. } => {}
+        }
+        out
+    }
+}
+
+impl AssertionStep {
+    /// Replaces `{{PANORAMIC_DYNAMIC_*}}` placeholders in all assertion configs within this step.
+    pub fn resolve_dynamic_vars(&mut self, vars: &HashMap<String, String>) {
+        match self {
+            AssertionStep::Single(config) => config.resolve_dynamic_vars(vars),
+            AssertionStep::Parallel { parallel } => {
+                for config in parallel {
+                    config.resolve_dynamic_vars(vars);
+                }
+            }
+        }
+    }
+
+    /// Returns any unresolved `{{PANORAMIC_DYNAMIC_*}}` placeholders in this step.
+    pub fn unresolved_placeholders(&self) -> Vec<String> {
+        match self {
+            AssertionStep::Single(config) => config.unresolved_placeholders(),
+            AssertionStep::Parallel { parallel } => parallel.iter().flat_map(|c| c.unresolved_placeholders()).collect(),
+        }
+    }
+}
+
+#[async_trait]
+impl Test for IntegrationConfig {
+    fn name(&self) -> String {
+        self.name.clone()
+    }
+
+    fn suite(&self) -> TestSuite {
+        TestSuite::Integration
+    }
+
+    fn description(&self) -> Option<String> {
+        self.description.clone()
+    }
+
+    fn timeout(&self) -> Duration {
+        self.timeout.0
+    }
+
+    fn images(&self) -> BTreeMap<&str, String> {
+        let mut m = BTreeMap::new();
+        m.insert("container", self.container.image.clone());
+        m
+    }
+
+    async fn run(&self, tctx: TestContext) -> TestResult {
+        let mut runner = crate::runner::IntegrationRunner::new(self.clone(), tctx);
+        runner.run().await
+    }
+}
+
+impl IntegrationConfig {
+    /// Replaces `{{PANORAMIC_DYNAMIC_*}}` placeholders in all assertion steps.
+    pub fn resolve_dynamic_vars(&mut self, vars: &HashMap<String, String>) {
+        for step in &mut self.assertions {
+            step.resolve_dynamic_vars(vars);
+        }
+    }
+
+    /// Returns any unresolved `{{PANORAMIC_DYNAMIC_*}}` placeholders across all assertion steps.
+    pub fn unresolved_placeholders(&self) -> Vec<String> {
+        self.assertions
+            .iter()
+            .flat_map(|s| s.unresolved_placeholders())
+            .collect()
+    }
+
     /// Count total individual assertions across all steps.
     pub fn total_assertion_count(&self) -> usize {
         self.assertions
@@ -245,7 +410,7 @@ impl TestCase {
         let content = std::fs::read_to_string(path)
             .error_context(format!("Failed to read configuration file: {}", path.display()))?;
 
-        let mut test_case: TestCase = serde_yaml::from_str(&content)
+        let mut test_case: IntegrationConfig = serde_yaml::from_str(&content)
             .error_context(format!("Failed to parse configuration file: {}", path.display()))?;
 
         test_case.base_path = path
@@ -268,43 +433,293 @@ impl TestCase {
     }
 }
 
-/// Discover all test cases in a directory.
-pub fn discover_tests<P: AsRef<Path>>(base_path: P) -> Result<Vec<TestCase>, GenericError> {
-    let base_path = base_path.as_ref();
-    let mut test_cases = Vec::new();
+/// A single variant in a `correctness_matrix` test.
+///
+/// Each variant expands into an independent correctness test. The variant's `additional_env_vars`
+/// are appended to the environment variables of both the baseline and comparison targets in the
+/// base configuration, allowing a single test directory to exercise multiple agent configurations
+/// without duplicating the full config layout.
+#[derive(Clone, Deserialize)]
+pub struct MatrixVariant {
+    /// Name suffix for this variant.
+    ///
+    /// The expanded test name is `{base_name}/{variant_name}`, for example,
+    /// `dsd-origin-detection-matrix/unified`.
+    pub name: String,
 
-    if !base_path.is_dir() {
-        return Err(generic_error!("Test directory does not exist: {}", base_path.display()));
+    /// Environment variables appended to both the baseline and comparison targets.
+    ///
+    /// Entries must be in `KEY=VALUE` format, identical to `additional_env_vars` on
+    /// [`CorrectnessTargetConfig`]. These are appended after the base config's env vars, so they
+    /// can override defaults by relying on last-write-wins semantics in the agent's config loader.
+    #[serde(default)]
+    pub additional_env_vars: Vec<String>,
+}
+
+/// A matrix correctness test that fans out into one independent test per variant.
+///
+/// This is the deserialized form of a `type: correctness_matrix` config file. It shares all
+/// structural fields with a standard `correctness` config, but adds a `variants` list. At
+/// discovery time each variant is expanded into a standalone [`CorrectnessConfig`] named
+/// `{base_name}/{variant_name}`, which the runner treats as a fully independent test case.
+#[derive(Clone, Deserialize)]
+pub struct MatrixConfig {
+    /// Container runtime backend to use.
+    pub runtime: CorrectnessRuntime,
+
+    /// Analysis mode to use.
+    pub analysis_mode: AnalysisMode,
+
+    /// Millstone configuration (shared across all variants).
+    pub millstone: CorrectnessMillstoneConfig,
+
+    /// Datadog intake configuration (shared across all variants).
+    pub datadog_intake: CorrectnessDatadogIntakeConfig,
+
+    /// Baseline target configuration (shared base; variant env vars are appended).
+    pub baseline: CorrectnessTargetConfig,
+
+    /// Comparison target configuration (shared base; variant env vars are appended).
+    pub comparison: CorrectnessTargetConfig,
+
+    /// When analysis mode is traces: if true, use OTLP-direct analysis (baseline is OTel-based).
+    ///
+    /// Propagated unchanged to every expanded [`CorrectnessConfig`].
+    #[serde(default)]
+    pub otlp_direct_analysis_mode: bool,
+
+    /// When analysis mode is traces: additional span field paths to ignore when diffing baseline
+    /// vs comparison.
+    ///
+    /// Propagated unchanged to every expanded [`CorrectnessConfig`].
+    #[serde(default)]
+    pub additional_span_ignore_fields: Vec<String>,
+
+    /// Matrix variants. Each entry produces one expanded test case.
+    pub variants: Vec<MatrixVariant>,
+
+    #[serde(skip, default = "PathBuf::new")]
+    base_config_path: PathBuf,
+}
+
+impl MatrixConfig {
+    fn from_yaml(config_path: &str) -> Result<Self, GenericError> {
+        use saluki_config::ConfigurationLoader;
+
+        let config_path = PathBuf::from(config_path)
+            .canonicalize()
+            .error_context("Failed to canonicalize matrix configuration file path.")?;
+
+        let mut config = ConfigurationLoader::default()
+            .from_yaml(&config_path)
+            .error_context("Failed to load matrix configuration file.")?
+            .from_environment("PANORAMIC")
+            .expect("Environment variable prefix should not be empty.")
+            .into_typed::<MatrixConfig>()
+            .error_context("Failed to deserialize matrix configuration file.")?;
+
+        config.base_config_path = config_path
+            .parent()
+            .expect("Configuration file path must be an absolute file path.")
+            .to_path_buf();
+
+        Ok(config)
     }
 
-    let entries = std::fs::read_dir(base_path)
-        .error_context(format!("Failed to read test directory: {}", base_path.display()))?;
+    fn get_canonicalized_config_path<P: AsRef<Path>>(&self, path: P) -> PathBuf {
+        let path = path.as_ref();
+        if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            self.base_config_path.join(path)
+        }
+    }
 
-    for entry in entries {
-        let entry = entry.error_context("Failed to read directory entry")?;
-        let path = entry.path();
+    /// Expands this matrix into one [`CorrectnessConfig`] per variant.
+    ///
+    /// Each expanded config is a clone of the base configuration with the variant's
+    /// `additional_env_vars` appended to both the baseline and comparison targets.
+    fn expand(self, base_name: &str) -> Vec<CorrectnessConfig> {
+        self.variants
+            .iter()
+            .map(|variant| {
+                let mut baseline = self.baseline.clone();
+                baseline
+                    .additional_env_vars
+                    .extend(variant.additional_env_vars.iter().cloned());
 
-        if path.is_dir() {
-            let config_path = path.join("config.yaml");
-            if config_path.exists() {
-                match TestCase::from_yaml(&config_path) {
-                    Ok(test_case) => test_cases.push(test_case),
-                    Err(e) => {
-                        tracing::warn!(
-                            path = %config_path.display(),
-                            error = %e,
-                            "Failed to load test case, skipping"
-                        );
+                let mut comparison = self.comparison.clone();
+                comparison
+                    .additional_env_vars
+                    .extend(variant.additional_env_vars.iter().cloned());
+
+                CorrectnessConfig {
+                    name: format!("{}/{}", base_name, variant.name),
+                    runtime: self.runtime.clone(),
+                    analysis_mode: self.analysis_mode.clone(),
+                    millstone: CorrectnessMillstoneConfig {
+                        image: self.millstone.image.clone(),
+                        binary_path: self.millstone.binary_path.clone(),
+                        config_path: self.get_canonicalized_config_path(&self.millstone.config_path),
+                    },
+                    datadog_intake: CorrectnessDatadogIntakeConfig {
+                        image: self.datadog_intake.image.clone(),
+                        binary_path: self.datadog_intake.binary_path.clone(),
+                        config_path: self.get_canonicalized_config_path(&self.datadog_intake.config_path),
+                    },
+                    baseline: CorrectnessTargetConfig {
+                        image: baseline.image,
+                        entrypoint: baseline.entrypoint,
+                        command: baseline.command,
+                        files: baseline
+                            .files
+                            .iter()
+                            .map(|f| canonicalize_file_entry(f, &self.base_config_path))
+                            .collect(),
+                        additional_env_vars: baseline.additional_env_vars,
+                    },
+                    comparison: CorrectnessTargetConfig {
+                        image: comparison.image,
+                        entrypoint: comparison.entrypoint,
+                        command: comparison.command,
+                        files: comparison
+                            .files
+                            .iter()
+                            .map(|f| canonicalize_file_entry(f, &self.base_config_path))
+                            .collect(),
+                        additional_env_vars: comparison.additional_env_vars,
+                    },
+                    otlp_direct_analysis_mode: self.otlp_direct_analysis_mode,
+                    additional_span_ignore_fields: self.additional_span_ignore_fields.clone(),
+                    base_config_path: PathBuf::new(),
+                }
+            })
+            .collect()
+    }
+}
+
+/// Rewrites the host-path portion of a `host_path:container_path` file entry to an absolute path
+/// anchored at `base_path`, mirroring the canonicalization that `CorrectnessConfig::from_yaml`
+/// performs for its own `files` entries.
+fn canonicalize_file_entry(entry: &str, base_path: &Path) -> String {
+    match entry.split_once(':') {
+        Some((host, container)) => {
+            let abs = if Path::new(host).is_absolute() {
+                PathBuf::from(host)
+            } else {
+                base_path.join(host)
+            };
+            format!("{}:{}", abs.display(), container)
+        }
+        None => entry.to_string(),
+    }
+}
+
+/// Discover all test cases across one or more directories.
+///
+/// Each `config.yaml` found in a direct subdirectory must have a top-level `type` field set to
+/// `"integration"`, `"correctness"`, or `"correctness_matrix"`. Files with a missing or unknown
+/// `type` cause a panic. Multiple test types may coexist freely within the same directory.
+pub fn discover_tests(dirs: &[PathBuf]) -> Result<Vec<Box<dyn Test>>, GenericError> {
+    let mut tests: Vec<Box<dyn Test>> = Vec::new();
+
+    for base_path in dirs {
+        if !base_path.is_dir() {
+            return Err(generic_error!("Test directory does not exist: {}", base_path.display()));
+        }
+
+        let entries = std::fs::read_dir(base_path)
+            .error_context(format!("Failed to read test directory: {}", base_path.display()))?;
+
+        for entry in entries {
+            let entry = entry.error_context("Failed to read directory entry")?;
+            let path = entry.path();
+
+            if path.is_dir() {
+                let config_path = path.join("config.yaml");
+                if config_path.exists() {
+                    match try_load_test(&config_path, &path) {
+                        Ok(loaded) => tests.extend(loaded),
+                        Err(e) => {
+                            // Previously we had a warning here that cannot be seen in TUI-mode. It is better to fail
+                            // loudly and fast when we have a bad test configuration than to falsely believe our test is
+                            // working when we see that all tests passed.
+                            panic!("Failed to load test case, bad configuration: {e}");
+                        }
                     }
                 }
             }
         }
     }
 
-    // Sort by name for deterministic ordering
-    test_cases.sort_by(|a, b| a.name.cmp(&b.name));
+    // Sort by name for deterministic ordering.
+    tests.sort_by_key(|a| a.name());
 
-    Ok(test_cases)
+    Ok(tests)
+}
+
+/// Load one or more test cases from a config file, dispatching on the top-level `type` field.
+///
+/// Returns a `Vec` because a `correctness_matrix` config expands into multiple independent test
+/// cases—one per variant—while `integration` and `correctness` configs each produce exactly
+/// one test case.
+fn try_load_test(config_path: &Path, dir_path: &Path) -> Result<Vec<Box<dyn Test>>, GenericError> {
+    let content = std::fs::read_to_string(config_path)
+        .error_context(format!("Failed to read config file: {}", config_path.display()))?;
+
+    let peek: serde_yaml::Value = serde_yaml::from_str(&content).error_context(format!(
+        "Failed to parse config file as YAML: {}",
+        config_path.display()
+    ))?;
+
+    let test_type = peek.get("type").and_then(|v| v.as_str()).ok_or_else(|| {
+        generic_error!("Missing required 'type' field (expected 'integration', 'correctness', or 'correctness_matrix')")
+    })?;
+
+    match test_type {
+        "integration" => {
+            let config = IntegrationConfig::from_yaml(config_path)?;
+            Ok(vec![Box::new(config)])
+        }
+        "correctness" => {
+            let config_path_str = config_path
+                .to_str()
+                .ok_or_else(|| generic_error!("Invalid UTF-8 in config path: {}", config_path.display()))?;
+            let mut config = CorrectnessConfig::from_yaml(config_path_str)?;
+            config.name = dir_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown")
+                .to_string();
+            Ok(vec![Box::new(config)])
+        }
+        "correctness_matrix" => {
+            let config_path_str = config_path
+                .to_str()
+                .ok_or_else(|| generic_error!("Invalid UTF-8 in config path: {}", config_path.display()))?;
+            let base_name = dir_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown")
+                .to_string();
+            let matrix = MatrixConfig::from_yaml(config_path_str)?;
+            if matrix.variants.is_empty() {
+                return Err(generic_error!(
+                    "correctness_matrix '{}' has no variants defined",
+                    base_name
+                ));
+            }
+            Ok(matrix
+                .expand(&base_name)
+                .into_iter()
+                .map(|c| Box::new(c) as Box<dyn Test>)
+                .collect())
+        }
+        other => Err(generic_error!(
+            "Unknown test type '{}' (expected 'integration', 'correctness', or 'correctness_matrix')",
+            other
+        )),
+    }
 }
 
 /// Parse a port specification (for example, "8125/udp") into port number and protocol.

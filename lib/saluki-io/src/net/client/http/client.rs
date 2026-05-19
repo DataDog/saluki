@@ -25,6 +25,7 @@ use tower::{timeout::TimeoutLayer, util::BoxCloneService, BoxError, Service, Ser
 
 use super::{
     conn::{check_connection_state, HttpsCapableConnectorBuilder},
+    telemetry::HttpTransactionErrorTelemetry,
     EndpointTelemetryLayer,
 };
 
@@ -169,7 +170,7 @@ impl HttpClientBuilder {
         self
     }
 
-    /// Sets the maximum age of a connection before it is closed.
+    /// Sets the maximum age of a connection before it's closed.
     ///
     /// This is distinct from the maximum idle time: if any connection's age exceeds `limit`, it will be closed rather
     /// than being reused and added to the idle connection pool.
@@ -217,7 +218,12 @@ impl HttpClientBuilder {
     where
         F: Fn(&Uri) -> Option<MetaString> + Send + Sync + 'static,
     {
-        let mut layer = EndpointTelemetryLayer::default().with_metrics_builder(metrics_builder);
+        let error_telemetry = HttpTransactionErrorTelemetry::from_builder(&metrics_builder);
+        self.connector_builder = self.connector_builder.with_error_telemetry(error_telemetry.clone());
+
+        let mut layer = EndpointTelemetryLayer::default()
+            .with_metrics_builder(metrics_builder)
+            .with_error_telemetry(error_telemetry);
 
         if let Some(endpoint_name_fn) = endpoint_name_fn {
             layer = layer.with_endpoint_name_fn(endpoint_name_fn);
@@ -230,7 +236,7 @@ impl HttpClientBuilder {
     /// Sets a Unix domain socket path to route all connections through.
     ///
     /// When set, the client will connect to this Unix socket instead of performing DNS resolution
-    /// and TCP connection. The URI host is ignored — all requests are sent through the configured
+    /// and TCP connection. The URI host is ignored—all requests are sent through the configured
     /// socket.
     ///
     /// Defaults to unset (TCP connections via DNS).
@@ -265,7 +271,7 @@ impl HttpClientBuilder {
 
     /// Sets a counter that gets incremented with the number of bytes sent over the connection.
     ///
-    /// This tracks bytes sent at the HTTP client level, which includes headers and body but does not include underlying
+    /// This tracks bytes sent at the HTTP client level, which includes headers and body but doesn't include underlying
     /// transport overhead, such as TLS handshaking, and so on.
     ///
     /// Defaults to unset.

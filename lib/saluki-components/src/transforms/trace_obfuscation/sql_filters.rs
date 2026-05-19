@@ -35,8 +35,8 @@ pub struct MetadataFinderFilter {
 impl MetadataFinderFilter {
     pub fn new(config: &SqlObfuscationConfig) -> Self {
         Self {
-            collect_table_names: config.table_names(),
-            replace_digits: config.replace_digits(),
+            collect_table_names: config.table_names,
+            replace_digits: config.replace_digits,
             tables_seen: FastHashSet::default(),
             tables_csv: String::new(),
         }
@@ -160,7 +160,7 @@ pub struct ReplaceFilter {
 impl ReplaceFilter {
     pub fn new(config: &SqlObfuscationConfig) -> Self {
         Self {
-            replace_digits: config.replace_digits(),
+            replace_digits: config.replace_digits,
             config: config.clone(),
         }
     }

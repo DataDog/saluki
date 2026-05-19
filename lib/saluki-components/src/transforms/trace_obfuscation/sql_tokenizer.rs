@@ -107,7 +107,7 @@ impl<'a> SQLTokenizer<'a> {
 
         let ch = self.last_char;
 
-        if is_leading_letter(ch) && !(self.config.dbms() == "postgresql" && ch == '@') {
+        if is_leading_letter(ch) && !(self.config.dbms == "postgresql" && ch == '@') {
             return self.scan_identifier();
         }
 
@@ -325,7 +325,7 @@ impl<'a> SQLTokenizer<'a> {
         }
 
         let buf = &self.buf[start..self.pos];
-        let upper = std::str::from_utf8(buf).unwrap_or("").to_uppercase();
+        let upper = simdutf8::basic::from_utf8(buf).unwrap_or("").to_uppercase();
         let kind = match upper.as_str() {
             "NULL" => TokenKind::Null,
             "TRUE" | "FALSE" => TokenKind::BooleanLiteral,
@@ -499,7 +499,7 @@ impl<'a> SQLTokenizer<'a> {
         let content_end = self.pos - tag_len - 2;
         let buf = &self.buf[content_start..content_end];
 
-        let kind = if self.config.dollar_quoted_func() && tag == b"func" {
+        let kind = if self.config.dollar_quoted_func && tag == b"func" {
             TokenKind::DollarQuotedFunc
         } else {
             TokenKind::DollarQuotedString

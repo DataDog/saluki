@@ -57,7 +57,7 @@ impl DatadogConfiguration {
     ///
     /// # Errors
     ///
-    /// If the given request path is not valid, an error is returned.
+    /// If the given request path isn't valid, an error is returned.
     pub fn with_endpoint_override(mut self, dd_url: String, api_key: String) -> Self {
         // Clear any existing additional endpoints, and set the new DD URL and API key.
         //
@@ -66,6 +66,7 @@ impl DatadogConfiguration {
         endpoint.clear_additional_endpoints();
         endpoint.set_dd_url(dd_url);
         endpoint.set_api_key(api_key);
+        self.forwarder_config.clear_opw_metrics_endpoint();
 
         self
     }
@@ -151,10 +152,11 @@ impl Forwarder for Datadog {
                 maybe_payload = context.payloads().next() => match maybe_payload {
                     Some(payload) => if let Some(http_payload) = payload.try_into_http_payload() {
                         let (payload_meta, request) = http_payload.into_parts();
-                        let transaction_meta = Metadata::new(
+                        let mut transaction_meta = Metadata::from_event_and_data_point_count(
                             payload_meta.event_count(),
-                            payload_meta.get::<MetricsPayloadInfo>().copied(),
+                            payload_meta.data_point_count(),
                         );
+                        transaction_meta.payload_info = payload_meta.get::<MetricsPayloadInfo>().copied();
                         let transaction = Transaction::from_original(transaction_meta, request);
 
                         forwarder.send_transaction(transaction).await?;
@@ -176,6 +178,7 @@ impl Forwarder for Datadog {
 fn get_dd_endpoint_name(uri: &Uri) -> Option<MetaString> {
     match uri.path() {
         "/api/v2/logs" => Some(MetaString::from_static("logs_v2")),
+        "/api/v1/series" => Some(MetaString::from_static("series_v1")),
         "/api/v2/series" => Some(MetaString::from_static("series_v2")),
         "/api/beta/sketches" => Some(MetaString::from_static("sketches_v2")),
         "/api/v1/check_run" => Some(MetaString::from_static("check_run_v1")),

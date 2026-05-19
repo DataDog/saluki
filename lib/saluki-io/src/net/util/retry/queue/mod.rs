@@ -11,11 +11,16 @@ use self::persisted::{DiskUsageRetriever, DiskUsageRetrieverWrapper, PersistedQu
 /// A container that holds events.
 ///
 /// This trait is used as an incredibly generic way to expose the number of events within a "container", which we
-/// loosely define to be anything that is holding events in some form. This is primarily used to track the number of
+/// loosely define to be anything that's holding events in some form. This is primarily used to track the number of
 /// events dropped by `RetryQueue` (and `PersistedQueue`) when entries have to be dropped due to size limits.
 pub trait EventContainer {
     /// Returns the number of events represented by this container.
     fn event_count(&self) -> u64;
+
+    /// Returns the number of metric data points represented by this container.
+    fn data_point_count(&self) -> u64 {
+        0
+    }
 }
 
 /// A value that can be retried.
@@ -48,6 +53,9 @@ pub struct PushResult {
 
     /// Total number of events represented by the dropped items.
     pub events_dropped: u64,
+
+    /// Total number of metric data points represented by the dropped items.
+    pub data_points_dropped: u64,
 }
 
 impl PushResult {
@@ -60,12 +68,14 @@ impl PushResult {
     pub fn merge(&mut self, other: Self) {
         self.items_dropped += other.items_dropped;
         self.events_dropped += other.events_dropped;
+        self.data_points_dropped += other.data_points_dropped;
     }
 
     /// Tracks a single dropped item.
-    pub fn track_dropped_item(&mut self, event_count: u64) {
+    pub fn track_dropped_item(&mut self, item: &dyn EventContainer) {
         self.items_dropped += 1;
-        self.events_dropped += event_count;
+        self.events_dropped += item.event_count();
+        self.data_points_dropped += item.data_point_count();
     }
 }
 
@@ -100,7 +110,7 @@ where
     /// Configures the queue to persist pending entries to disk.
     ///
     /// Disk persistence is used as a fallback to in-memory storage when the queue is full. When attempting to add a new
-    /// entry to the queue, and the queue cannot fit the entry in-memory, in-memory entries will be persisted to disk,
+    /// entry to the queue, and the queue can't fit the entry in-memory, in-memory entries will be persisted to disk,
     /// oldest first.
     ///
     /// When reading entries from the queue, in-memory entries are read first, followed by persisted entries. This
@@ -151,14 +161,14 @@ where
     /// Returns the number of persisted entries that have been permanently dropped due to errors since the last call
     /// to this method, resetting the counter.
     ///
-    /// Always returns 0 if disk persistence is not enabled.
+    /// Always returns 0 if disk persistence isn't enabled.
     pub fn take_persisted_entries_dropped(&mut self) -> u64 {
         self.persisted_pending.as_mut().map_or(0, |p| p.take_entries_dropped())
     }
 
     /// Enqueues an entry.
     ///
-    /// If the queue is full and the entry cannot be enqueue in-memory, and disk persistence is enabled, in-memory
+    /// If the queue is full and the entry can't be enqueue in-memory, and disk persistence is enabled, in-memory
     /// entries will be moved to disk (oldest first) until enough capacity is available to enqueue the new entry
     /// in-memory.
     ///
@@ -196,7 +206,7 @@ where
                     "Dropped in-memory entry to increase available capacity."
                 );
 
-                push_result.track_dropped_item(oldest_entry.event_count());
+                push_result.track_dropped_item(&oldest_entry);
             }
 
             self.total_in_memory_bytes -= oldest_entry_size;
@@ -241,7 +251,7 @@ where
     /// Flushes all entries, potentially persisting them to disk.
     ///
     /// When disk persistence is configured, this will flush all in-memory entries to disk. Flushing to disk still obeys
-    /// the normal limiting behavior in terms of maximum on-disk size. When disk persistence is not enabled, all
+    /// the normal limiting behavior in terms of maximum on-disk size. When disk persistence isn't enabled, all
     /// in-memory entries will be dropped.
     ///
     /// # Errors
@@ -261,7 +271,7 @@ where
             } else {
                 debug!(entry.len = entry_size, "Dropped in-memory entry during flush.");
 
-                push_result.track_dropped_item(entry.event_count());
+                push_result.track_dropped_item(&entry);
             }
         }
 
@@ -273,7 +283,7 @@ where
 mod tests {
     use std::path::Path;
 
-    use rand::Rng as _;
+    use rand::RngExt as _;
     use rand_distr::Alphanumeric;
     use serde::Deserialize;
 

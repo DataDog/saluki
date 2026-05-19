@@ -89,7 +89,7 @@ impl<'eval, 'ctx, F: EvalContextFamily> Args for ArenaArgs<'eval, 'ctx, F> {
         }
     }
 
-    /// Returns the name of the argument at `index` if it is a named argument; `None` for positional.
+    /// Returns the name of the argument at `index` if it's a named argument; `None` for positional.
     #[inline]
     fn name(&self, index: usize) -> Option<&str> {
         if index >= self.args.len() {

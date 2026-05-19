@@ -29,6 +29,10 @@ mod trace_piecemeal_include {
     include!(concat!(env!("OUT_DIR"), "/trace_piecemeal/mod.rs"));
 }
 
+mod checks_include {
+    include!(concat!(env!("OUT_DIR"), "/checks.mod.rs"));
+}
+
 /// Metrics-related definitions.
 pub mod metrics {
     pub use super::include::agent_payload::metric_payload::*;
@@ -73,4 +77,9 @@ pub mod agent {
 /// DDSketch definitions from (sketches-go).
 pub mod sketches {
     pub use super::sketch_include::ddsketch::*;
+}
+
+/// Checks definitions.
+pub mod checks {
+    pub use super::checks_include::datadog::checks::v1::*;
 }

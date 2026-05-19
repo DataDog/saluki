@@ -1,3 +1,5 @@
+//! Entity identifiers.
+
 use std::{cmp::Ordering, fmt};
 
 use stringtheory::MetaString;
@@ -18,7 +20,7 @@ pub enum EntityId {
     /// The global entity.
     ///
     /// Represents the root of the entity hierarchy, which is equivalent to a "global" scope. This is generally used
-    /// to represent a collection of metadata entries that are not associated with any specific entity, but with
+    /// to represent a collection of metadata entries that aren't associated with any specific entity, but with
     /// anything within the workload, such as host or cluster tags.
     Global,
 
@@ -54,7 +56,7 @@ impl EntityId {
     /// - If the input starts with `cid-`, we treat it as a container ID.
     /// - If none of the above conditions are met, we assume the entire input is a container ID.
     ///
-    /// If the input fails to be parsed in a valid fashion (for example, `in-` prefix but the remainder is not a valid
+    /// If the input fails to be parsed in a valid fashion (for example, `in-` prefix but the remainder isn't a valid
     /// integer), or is empty, `None` is returned.
     pub fn from_local_data<S>(raw_local_data: S) -> Option<Self>
     where
@@ -172,7 +174,7 @@ impl serde::Serialize for EntityId {
 /// - container inode
 /// - container PID (lowest precedence)
 ///
-/// Wrapped entity IDs are be sorted highest to lowest precedence. For entity IDs with the same precedence, they are
+/// Wrapped entity IDs are be sorted highest to lowest precedence. For entity IDs with the same precedence, they're
 /// further ordered by their internal value. For entity IDs with a string identifier, lexicographical ordering is used.
 /// For entity IDs with a numeric identifier, numerical ordering is used.
 #[derive(Eq, PartialEq)]

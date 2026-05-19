@@ -33,7 +33,7 @@ export CARGO_BINSTALL_STRATEGIES ?= crate-meta-data,compile
 ifeq ($(CI),true)
 	override CARGO_BINSTALL_STRATEGIES = compile
 endif
-export CARGO_TOOL_VERSION_cargo-binstall ?= 1.17.7
+export CARGO_TOOL_VERSION_cargo-binstall ?= 1.18.1
 export CARGO_TOOL_VERSION_dd-rust-license-tool ?= 1.0.3
 export CARGO_TOOL_VERSION_cargo-deny ?= 0.18.9
 export CARGO_TOOL_VERSION_cargo-hack ?= 0.6.30
@@ -48,7 +48,7 @@ export LADING_VERSION ?= sha-d608ffbce8f8c77b147d6750b3bb6d6948af239a
 
 # Version of source repositories (Git tag) for vendored Protocol Buffers definitions.
 export PROTOBUF_SRC_REPO_DD_AGENT ?= 7.73.x
-export PROTOBUF_SRC_REPO_AGENT_PAYLOAD ?= v5.0.180
+export PROTOBUF_SRC_REPO_AGENT_PAYLOAD ?= v5.0.164
 export PROTOBUF_SRC_REPO_CONTAINERD ?= v2.2.0
 export PROTOBUF_SRC_REPO_SKETCHES_GO ?= v1.4.7
 
@@ -192,28 +192,14 @@ build-gen-statsd-image: ## Builds the gen-statsd container image ('latest' tag)
 		--file ./docker/Dockerfile.gen-statsd \
 		.
 
-.PHONY: build-ground-truth
-build-ground-truth: check-rust-build-tools
-build-ground-truth: ## Builds the ground-truth binary in debug mode
-	@echo "[*] Building ground-truth locally..."
-	@cargo build --profile release --package ground-truth
 
-.PHONY: build-datadog-intake-image
-build-datadog-intake-image: ## Builds the datadog-intake container image in release mode ('latest' tag)
-	@echo "[*] Building datadog-intake image..."
+.PHONY: build-correctness-tools-image
+build-correctness-tools-image: ## Builds the correctness tools suite (datadog-intake + millstone) container image ('latest' tag)
+	@echo "[*] Building correctness tools image (datadog-intake + millstone)..."
 	@docker build \
-		--tag saluki-images/datadog-intake:latest \
-		--tag local.dev/saluki-images/datadog-intake:testing \
-		--file ./docker/Dockerfile.datadog-intake \
-		.
-
-.PHONY: build-millstone-image
-build-millstone-image: ## Builds the millstone container image in release mode ('latest' tag)
-	@echo "[*] Building millstone image..."
-	@docker build \
-		--tag saluki-images/millstone:latest \
-		--tag local.dev/saluki-images/millstone:testing \
-		--file ./docker/Dockerfile.millstone \
+		--tag saluki-images/correctness-tools:latest \
+		--tag local.dev/saluki-images/correctness-tools:testing \
+		--file ./docker/Dockerfile.correctness-tools \
 		.
 
 .PHONY: build-proxy-dumper-image
@@ -233,6 +219,7 @@ endif
 		--tag local.dev/saluki-images/proxy-dumper:testing \
 		--build-arg BUILD_IMAGE=$(GO_BUILD_IMAGE) \
 		--build-arg APP_IMAGE=$(GO_APP_IMAGE) \
+		--build-context repo=. \
 		--file ./docker/Dockerfile.proxy-dumper \
 		test/build/dd-agent-benchmarks/docker/proxy-dumper
 
@@ -254,7 +241,24 @@ ifeq ($(shell command -v protoc >/dev/null || echo not-found), not-found)
 endif
 ifeq ($(shell command -v cargo-binstall >/dev/null || echo not-found), not-found)
 	@echo "[*] Installing cargo-binstall@$(CARGO_TOOL_VERSION_cargo-binstall)..."
-	@cargo install cargo-binstall@$(CARGO_TOOL_VERSION_cargo-binstall)
+	@set -eu; \
+		host_triple=$$(rustc -vV | awk '/^host:/ { print $$2 }'); \
+		case "$$host_triple" in \
+			*apple-darwin|*windows*) ext=zip ;; \
+			*) ext=tgz ;; \
+		esac; \
+		asset="cargo-binstall-$$host_triple.full.$$ext"; \
+		url="https://github.com/cargo-bins/cargo-binstall/releases/download/v$(CARGO_TOOL_VERSION_cargo-binstall)/$$asset"; \
+		tmpdir=$$(mktemp -d); \
+		trap 'rm -rf "$$tmpdir"' EXIT; \
+		echo "[*] Downloading $$url..."; \
+		curl -fsSL "$$url" -o "$$tmpdir/$$asset"; \
+		case "$$ext" in \
+			zip) unzip -q "$$tmpdir/$$asset" -d "$$tmpdir" ;; \
+			tgz) tar -xzf "$$tmpdir/$$asset" -C "$$tmpdir" ;; \
+		esac; \
+		mkdir -p "$(CARGO_BIN_DIR)"; \
+		install -m 0755 "$$tmpdir/cargo-binstall" "$(CARGO_BIN_DIR)/cargo-binstall"
 endif
 
 ##@ Running
@@ -424,6 +428,21 @@ ifeq ($(shell command -v minikube >/dev/null || echo not-found), not-found)
 	$(error "Please install minikube: https://minikube.sigs.k8s.io/docs/start/")
 endif
 
+##@ Kind (Correctness Testing)
+
+# kind cluster lifecycle (create, load, delete) is managed by panoramic automatically
+# when running kind-runtime tests. Use --no-delete-cluster to keep the cluster alive
+# between local runs.
+
+.PHONY: check-kind-tools
+check-kind-tools:
+ifeq ($(shell command -v kind >/dev/null 2>&1 || echo not-found), not-found)
+	$(error "Please install kind: https://kind.sigs.k8s.io/docs/user/quick-start/#installation")
+endif
+ifeq ($(shell command -v kubectl >/dev/null 2>&1 || echo not-found), not-found)
+	$(error "Please install kubectl: https://kubernetes.io/docs/tasks/tools/")
+endif
+
 .PHONY: check-proxy-dumper-tools
 check-proxy-dumper-tools:
 ifeq ($(shell command -v go >/dev/null || echo not-found), not-found)
@@ -443,7 +462,13 @@ endif
 
 .PHONY: check-all
 check-all: ## Check everything
-check-all: check-fmt check-clippy check-features check-deny check-licenses
+check-all: check-fmt check-clippy check-features check-deny check-licenses generate-api-docs
+
+.PHONY: generate-api-docs
+generate-api-docs: check-rust-build-tools
+generate-api-docs: ## Check that API documentation builds without errors
+	@echo "[*] Checking API documentation build..."
+	@RUSTDOCFLAGS="--enable-index-page -Zunstable-options" cargo +nightly doc --no-deps -Zrustdoc-map --lib
 
 .PHONY: check-clippy
 check-clippy: check-rust-build-tools
@@ -502,13 +527,13 @@ sync-docs-config: ## Synchronizes the Vale configuration, updating configured st
 test: check-rust-build-tools cargo-install-cargo-nextest
 test: ## Runs all unit tests
 	@echo "[*] Running unit tests..."
-	cargo nextest run --lib -E 'not test(/property_test_*/)'
+	cargo nextest run --lib --bins --no-fail-fast -E 'not test(/property_test_*/)'
 
 .PHONY: test-property
 test-property: check-rust-build-tools cargo-install-cargo-nextest
 test-property: ## Runs all property tests
 	@echo "[*] Running property tests..."
-	cargo nextest run --lib --release -E 'test(/property_test_*/)'
+	cargo nextest run --lib --bins --no-fail-fast --release -E 'test(/property_test_*/)'
 
 .PHONY: test-docs
 test-docs: check-rust-build-tools
@@ -533,56 +558,16 @@ test-all: ## Test everything
 test-all: test test-property test-docs test-miri test-loom
 
 .PHONY: test-correctness
-test-correctness: ## Runs the complete correctness suite
-test-correctness: test-correctness-dsd-plain test-correctness-dsd-plain-v3 test-correctness-dsd-plain-v3-validation test-correctness-dsd-origin-detection test-correctness-otlp-metrics test-correctness-otlp-traces test-correctness-otlp-traces-ottl-filtering test-correctness-otlp-traces-ottl-transform
+test-correctness: build-panoramic
+test-correctness: ## Runs the complete correctness suite (all test cases in parallel)
+	@echo "[*] Running correctness test suite..."
+	@target/release/panoramic run -d $(shell pwd)/test/correctness $(if $(PANORAMIC_PARALLELISM),-p $(PANORAMIC_PARALLELISM))
 
-.PHONY: test-correctness-dsd-plain
-test-correctness-dsd-plain: build-ground-truth
-test-correctness-dsd-plain: ## Runs the 'dsd-plain' correctness test case
-	@echo "[*] Running 'dsd-plain' correctness test case..."
-	@target/release/ground-truth $(shell pwd)/test/correctness/dsd-plain/config.yaml
-
-.PHONY: test-correctness-dsd-plain-v3
-test-correctness-dsd-plain-v3: build-ground-truth
-test-correctness-dsd-plain-v3: ## Runs the 'dsd-plain-v3' correctness test case
-	@echo "[*] Running 'dsd-plain-v3' correctness test case..."
-	@target/release/ground-truth $(shell pwd)/test/correctness/dsd-plain-v3/config.yaml
-
-.PHONY: test-correctness-dsd-plain-v3-validation
-test-correctness-dsd-plain-v3-validation: build-ground-truth
-test-correctness-dsd-plain-v3-validation: ## Runs the 'dsd-plain-v3-validation' correctness test case
-	@echo "[*] Running 'dsd-plain-v3-validation' correctness test case..."
-	@target/release/ground-truth $(shell pwd)/test/correctness/dsd-plain-v3-validation/config.yaml
-
-.PHONY: test-correctness-dsd-origin-detection
-test-correctness-dsd-origin-detection: build-ground-truth
-test-correctness-dsd-origin-detection: ## Runs the 'dsd-origin-detection' correctness test case
-	@echo "[*] Running 'dsd-origin-detection' correctness test case..."
-	@target/release/ground-truth $(shell pwd)/test/correctness/dsd-origin-detection/config.yaml
-
-.PHONY: test-correctness-otlp-metrics
-test-correctness-otlp-metrics: build-ground-truth
-test-correctness-otlp-metrics: ## Runs the 'otlp-metrics' correctness test case
-	@echo "[*] Running 'otlp-metrics' correctness test case..."
-	@target/release/ground-truth $(shell pwd)/test/correctness/otlp-metrics/config.yaml
-
-.PHONY: test-correctness-otlp-traces
-test-correctness-otlp-traces: build-ground-truth
-test-correctness-otlp-traces: ## Runs the 'otlp-traces' correctness test case
-	@echo "[*] Running 'otlp-traces' correctness test case..."
-	@target/release/ground-truth $(shell pwd)/test/correctness/otlp-traces/config.yaml
-
-.PHONY: test-correctness-otlp-traces-ottl-filtering
-test-correctness-otlp-traces-ottl-filtering: build-ground-truth
-test-correctness-otlp-traces-ottl-filtering: ## Runs the 'otlp-traces-ottl-filtering' E2E test (OTel Collector + OTTL vs ADP + OTTL)
-	@echo "[*] Running 'otlp-traces-ottl-filtering' correctness test case..."
-	@target/release/ground-truth $(shell pwd)/test/correctness/otlp-traces-ottl-filtering/config.yaml
-
-.PHONY: test-correctness-otlp-traces-ottl-transform
-test-correctness-otlp-traces-ottl-transform: build-ground-truth
-test-correctness-otlp-traces-ottl-transform: ## Runs the 'otlp-traces-ottl-transform' E2E test (OTel Collector + OTTL transform vs ADP + OTTL transform)
-	@echo "[*] Running 'otlp-traces-ottl-transform' correctness test case..."
-	@target/release/ground-truth $(shell pwd)/test/correctness/otlp-traces-ottl-transform/config.yaml
+.PHONY: test-correctness-case
+test-correctness-case: build-panoramic
+test-correctness-case: ## Runs a single correctness test case by name (usage: make test-correctness-case CASE=dsd-plain)
+	@echo "[*] Running '$(CASE)' correctness test case..."
+	@target/release/panoramic run -d $(shell pwd)/test/correctness -t $(CASE) --no-tui
 
 .PHONY: build-panoramic
 build-panoramic: check-rust-build-tools
@@ -759,6 +744,14 @@ clean-airlock: ## Cleans up Airlock-related resources in Docker (used for correc
 	@docker volume ls --filter label=created_by=airlock -q | xargs -r docker volume rm -f
 	@docker network ls --filter label=created_by=airlock -q | xargs -r docker network rm -f
 
+.PHONY: clean-kind
+clean-kind: check-kind-tools ## Cleans up orphaned panoramic namespaces in the kind cluster (used for correctness tests)
+	@echo "[*] Cleaning panoramic-kind namespaces..."
+	@kubectl get namespace -l created-by=panoramic-kind -o name | xargs -r kubectl delete
+
+.PHONY: clean-correctness
+clean-correctness: clean-airlock clean-kind ## Cleans up all orphaned correctness test resources (Docker + kind)
+
 .PHONY: fmt
 fmt: check-rust-build-tools cargo-install-cargo-autoinherit cargo-install-cargo-sort
 fmt: ## Format Rust source code
@@ -774,6 +767,12 @@ sync-licenses: check-rust-build-tools cargo-install-dd-rust-license-tool
 sync-licenses: ## Synchronizes the third-party license file with the current crate dependencies
 	@echo "[*] Synchronizing third-party license file to current dependencies..."
 	@$(HOME)/.cargo/bin/dd-rust-license-tool write
+
+.PHONY: setup-hooks
+setup-hooks: ## Configure Git to use the committed hooks in .githooks/
+	@git config core.hooksPath .githooks
+	@echo "[*] Git hooks configured. Pre-commit checks will run on each commit."
+	@echo "[*] To skip hooks on a specific commit, use: git commit --no-verify"
 
 .PHONY: cargo-preinstall
 cargo-preinstall: cargo-install-dd-rust-license-tool cargo-install-cargo-deny cargo-install-cargo-hack

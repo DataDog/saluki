@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::time::Duration;
 
 use colored::Colorize as _;
@@ -31,6 +32,9 @@ pub struct TestResult {
     pub error: Option<String>,
     /// Timing breakdown for each phase of test execution.
     pub phase_timings: Vec<PhaseTiming>,
+    /// Full per-assertion mismatch details for log output (not shown in TUI/reporter).
+    #[serde(skip)]
+    pub assertion_details: Vec<Vec<String>>,
 }
 
 /// Result of running all test cases.
@@ -102,7 +106,7 @@ impl Reporter {
     }
 
     /// Report the result of a single test.
-    pub fn report_test_result(&self, result: &TestResult) {
+    pub fn report_test_result(&self, result: &TestResult, log_dir: impl AsRef<Path>) {
         if matches!(self.format, OutputFormat::Text) {
             let status = if result.passed {
                 "PASS".green().bold()
@@ -114,7 +118,13 @@ impl Reporter {
 
             // Show error if present
             if let Some(ref error) = result.error {
-                println!("  {} {}", "Error:".red(), error);
+                let mut lines = error.lines();
+                if let Some(first) = lines.next() {
+                    println!("  {} {}", "Error:".red(), first);
+                    for line in lines {
+                        println!("  {}", line);
+                    }
+                }
             }
 
             // Show assertion results on failure or in verbose mode
@@ -132,6 +142,8 @@ impl Reporter {
                         println!("    {} ({:.2?})", phase.phase, phase.duration);
                     }
                 }
+
+                println!("  {} {}", "Logs:".dimmed(), log_dir.as_ref().display());
             }
         }
     }

@@ -44,7 +44,7 @@ impl MetricType {
 ///
 /// There are two ways to use the renderer:
 ///
-/// **High-level**: Use [`render_group`][Self::render_group] for counter/gauge groups where all series are simple
+/// **High-level**: Use [`render_scalar_group`][Self::render_scalar_group] for counter/gauge groups where all series are simple
 /// label/value pairs. This handles the TYPE/HELP headers and all series lines in one call.
 ///
 /// **Low-level**: Use [`begin_group`][Self::begin_group] to start a new metric group (writes TYPE/HELP headers), then

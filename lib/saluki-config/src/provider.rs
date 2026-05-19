@@ -110,7 +110,7 @@ where
 /// Adds a flat top-level key for each alias entry whose nested path exists in `value`.
 ///
 /// For each `(from_path, to_key)` pair: if `from_path` (dot-separated) resolves to a value,
-/// that value is written under `to_key` at the top level — but only if `to_key` is not already
+/// that value is written under `to_key` at the top level—but only if `to_key` isn't already
 /// present. This lets both `proxy: http: <url>` (YAML-nested) and `proxy_http: <url>` (flat)
 /// produce the same canonical Figment key without dropping either representation.
 fn apply_key_aliases(value: &mut JsonValue, aliases: &[(&str, &str)]) {

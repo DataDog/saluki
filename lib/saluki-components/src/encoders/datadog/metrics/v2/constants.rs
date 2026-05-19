@@ -1,5 +1,3 @@
-use http::HeaderValue;
-
 pub const SERIES_V2_COMPRESSED_SIZE_LIMIT: usize = 512_000; // 500 KiB
 pub const SERIES_V2_UNCOMPRESSED_SIZE_LIMIT: usize = 5_242_880; // 5 MiB
 
@@ -32,6 +30,7 @@ pub const SERIES_METRIC_FIELD_NUMBER: u32 = 2;
 pub const SERIES_TAGS_FIELD_NUMBER: u32 = 3;
 pub const SERIES_POINTS_FIELD_NUMBER: u32 = 4;
 pub const SERIES_TYPE_FIELD_NUMBER: u32 = 5;
+pub const SERIES_UNIT_FIELD_NUMBER: u32 = 6;
 pub const SERIES_SOURCE_TYPE_NAME_FIELD_NUMBER: u32 = 7;
 pub const SERIES_INTERVAL_FIELD_NUMBER: u32 = 8;
 pub const SERIES_METADATA_FIELD_NUMBER: u32 = 9;
@@ -41,5 +40,3 @@ pub const SKETCH_HOST_FIELD_NUMBER: u32 = 2;
 pub const SKETCH_TAGS_FIELD_NUMBER: u32 = 4;
 pub const SKETCH_DOGSKETCHES_FIELD_NUMBER: u32 = 7;
 pub const SKETCH_METADATA_FIELD_NUMBER: u32 = 8;
-
-pub static CONTENT_TYPE_PROTOBUF: HeaderValue = HeaderValue::from_static("application/x-protobuf");

@@ -3,6 +3,8 @@ use std::{collections::hash_map::Entry, time::Duration};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use datadog_agent_commons::ipc::client::RemoteAgentClient;
+use datadog_agent_commons::ipc::session::{SessionId, SessionIdHandle};
 use datadog_protos::agent::{
     config_event,
     flare::v1::{flare_provider_server::*, *},
@@ -16,7 +18,6 @@ use prost_types::value::Kind;
 use saluki_common::task::spawn_traced_named;
 use saluki_config::{dynamic::ConfigUpdate, upsert, GenericConfiguration};
 use saluki_core::state::reflector::Reflector;
-use saluki_env::helpers::remote_agent::{RemoteAgentClient, SessionId, SessionIdHandle};
 use saluki_error::{generic_error, GenericError};
 use saluki_io::net::GrpcTargetAddress;
 use serde_json::{Map, Value};
@@ -29,8 +30,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::config::DataPlaneConfiguration;
 use crate::state::metrics::{
-    get_datadog_agent_remappings, get_shared_metrics_state, render_rar_telemetry, AggregatedMetricsProcessor,
-    RemapperRule,
+    get_datadog_agent_remappings, get_shared_metrics_state, render_telemetry, AggregatedMetricsProcessor, RemapperRule,
 };
 
 const DEFAULT_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
@@ -135,7 +135,7 @@ impl RemoteAgentBootstrap {
 
     /// Creates a new `TelemetryProviderServer` tied to this remote agent.
     ///
-    /// Returns `None` if telemetry is not enabled.
+    /// Returns `None` if telemetry isn't enabled.
     pub fn create_telemetry_service(&self) -> Option<TelemetryProviderServer<RemoteAgentImpl>> {
         self.telemetry_enabled
             .then(|| TelemetryProviderServer::new(self.build_impl()))
@@ -162,6 +162,7 @@ impl RemoteAgentBootstrap {
 struct RemoteAgentState {
     pid: u32,
     display_name: String,
+    flavor: String,
     api_listen_addr: String,
     session_id: SessionIdHandle,
     service_names: Vec<String>,
@@ -173,17 +174,15 @@ impl RemoteAgentState {
         api_listen_addr: GrpcTargetAddress, service_names: Vec<String>,
     ) -> (Self, oneshot::Receiver<Result<(), GenericError>>) {
         let app_details = saluki_metadata::get_app_details();
-        let display_name = app_details
-            .full_name()
-            .replace(" ", "-")
-            .replace("_", "-")
-            .to_lowercase();
+        let display_name = app_details.full_name().to_string();
+        let flavor = app_details.full_name().replace(" ", "_").to_lowercase();
 
         let (init_reg_tx, init_reg_rx) = oneshot::channel();
 
         let state = Self {
             pid: std::process::id(),
             display_name,
+            flavor,
             api_listen_addr: api_listen_addr.to_string(),
             session_id: SessionIdHandle::empty(),
             service_names,
@@ -220,6 +219,7 @@ async fn run_remote_agent_registration_loop(mut client: RemoteAgentClient, mut s
                     .register_remote_agent_request(
                         state.pid,
                         &state.display_name,
+                        &state.flavor,
                         &state.api_listen_addr,
                         state.service_names.clone(),
                     )
@@ -478,7 +478,7 @@ impl TelemetryProvider for RemoteAgentImpl {
 
                 let state = self.internal_metrics.state();
                 let mut renderer = self.renderer.lock().await;
-                let prom_text = render_rar_telemetry(state, &self.remapper_rules, &mut renderer);
+                let prom_text = render_telemetry(state, &self.remapper_rules, &mut renderer);
 
                 Ok(tonic::Response::new(GetTelemetryResponse {
                     payload: Some(Payload::PromText(prom_text)),

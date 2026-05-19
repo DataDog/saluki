@@ -27,7 +27,7 @@ Additionally, we use `cargo clippy` to catch common mistakes and suboptimal code
 suggestions of more idiomatic or succinct ways to write common code patterns, as well as potentially point out subtle
 bugs with certain usages. While Clippy _does_ support being able to automatically apply suggested fixes, doing so
 requires a clean working copy (no uncommitted changes), and we opt not to override that behavior as it could potentially
-overwrite changes that the developer has not yet fully worked through.
+overwrite changes that the developer hasn't yet fully worked through.
 
 As such, developers **MUST** run `make check-clippy` and apply the suggestions. Like the formatters, Clippy lints are
 checked and enforced in CI.
@@ -90,7 +90,7 @@ like guidance from someone who genuinely wants to help you succeed.
 
 **What to avoid:**
 
-- "Please" in instructions — just tell the reader what to do ("Run `make fmt`", not "Please run `make fmt`")
+- "Please" in instructions—just tell the reader what to do ("Run `make fmt`", not "Please run `make fmt`")
 - Terms like "simply", "easy", "just", or "obviously": they minimize difficulty and can frustrate readers who find
   something challenging
 - Excessive exclamation marks: reserve them for genuinely exciting announcements
@@ -202,17 +202,17 @@ pub struct ContextResolver { /* ... */ }
 
 1. **First line**: A complete sentence summarizing what the item is or does
 2. **Body**: Detailed explanation, design rationale, and usage notes (after a blank line)
-3. **Sections**: Formal sections using markdown headers (see below)
+3. **Sections**: Formal sections using Markdown headers (see below)
 
 #### Documentation sections
 
 Use these sections as applicable:
 
-- `# Errors` — Document when errors are returned and what they mean
-- `# Panics` — Document conditions that cause panics
-- `# Examples` — Provide runnable examples for public APIs
-- `# Design` — Explain architectural decisions for complex items
-- `# Missing` — Document known limitations or planned future work
+- `# Errors`—Document when errors are returned and what they mean
+- `# Panics`—Document conditions that cause panics
+- `# Examples`—Provide runnable examples for public APIs
+- `# Design`—Explain architectural decisions for complex items
+- `# Missing`—Document known limitations or planned future work
 
 Example with an `# Errors` section:
 
@@ -306,12 +306,12 @@ pub trait Source {
 
 ### Trade-off documentation
 
-When documenting performance, memory, or design trade-offs, be explicit about what is being traded and why:
+When documenting performance, memory, or design trade-offs, be explicit about what's being traded and why:
 
 - **Name both sides**: "This represents a trade-off between throughput and memory usage"
 - **Quantify when possible**: "Approximately 150–200 bytes per context based on typical metric names and tags"
 - **Acknowledge variability**: "The optimal value is workload-dependent"
-- **Provide guidance**: "A good starting point is 1MB per 5000 unique contexts"
+- **Provide guidance**: "A good starting point is 1 MB per 5000 unique contexts"
 
 Example:
 

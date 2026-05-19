@@ -10,6 +10,8 @@ workspace = true
 
 [features]
 default = []
+config-test-support = []
+fips = ["saluki-io/fips"]
 
 [dependencies]
 async-trait = { workspace = true }
@@ -62,6 +64,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 serde_with = { workspace = true, features = ["alloc"] }
 serde_yaml = { workspace = true }
+simdutf8 = { workspace = true }
 smallvec = { workspace = true }
 snafu = { workspace = true }
 stringtheory = { workspace = true }
@@ -77,12 +80,23 @@ tokio = { workspace = true, features = [
 tonic = { workspace = true, features = ["router", "server"] }
 tower = { workspace = true, features = ["limit", "retry", "timeout", "util"] }
 tracing = { workspace = true }
+tracing-appender = { workspace = true }
+tracing-rolling-file = { workspace = true }
 url = { workspace = true }
 uuid = { workspace = true, features = ["std", "v7"] }
+zstd = { workspace = true }
 
 [dev-dependencies]
+derive-where = { workspace = true }
 proptest = { workspace = true }
+rcgen = { workspace = true, features = ["crypto", "aws_lc_rs", "pem"] }
+rustls = { workspace = true }
 saluki-metrics = { workspace = true, features = ["test"] }
 saluki-tls = { workspace = true }
+tempfile = { workspace = true }
 test-strategy = { workspace = true }
 tokio = { workspace = true, features = ["time"] }
+tokio-rustls = { workspace = true }
+
+[build-dependencies]
+serde_yaml = { workspace = true }

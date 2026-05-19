@@ -41,10 +41,13 @@ variables:
   SALUKI_BUILD_CI_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/build-ci:latest"
   SALUKI_GENERAL_CI_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/general-ci:latest"
   SALUKI_SMP_CI_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/smp-ci:latest"
+  SALUKI_BUILDCACHE_CI_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/buildcache-ci:latest"
+  SALUKI_SPDX_LICENSES_CI_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/spdx-licenses-ci:latest"
 
   # Converged Datadog Agent-specific variables, which control how we build the converged Datadog Agent image that we
   # publicly publish.
-  PUBLIC_DD_AGENT_IMAGE: "registry.datadoghq.com/agent:7.77.2-jmx"
+  PUBLIC_DSD_VERSION: "7.78.4"
+  PUBLIC_DD_AGENT_VERSION: "7.78.4-jmx"
 
   # Base images to copy Agent Data Plane into, depending on whether the image is meant for our internal environment or
   # public registries.

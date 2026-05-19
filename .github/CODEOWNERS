@@ -7,3 +7,6 @@
 # images, and so on, are reviewed by the Agent Delivery team to their satisfaction and in keeping with
 # any processes/requirements they have in place for the normal Datadog Agent releases.
 /.gitlab/release.yml @DataDog/agent-delivery
+
+ # Workspaces prebuild image auto-updates
+ /.devcontainer/datadog/default/ @DataDog/agent-data-plane @robot-github-sre

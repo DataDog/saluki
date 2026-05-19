@@ -120,7 +120,7 @@ pub struct SpanConcentrator {
     /// Configured peer tag keys for aggregation (base + custom)
     peer_tag_keys: Vec<MetaString>,
 
-    /// Bucket duration in nanoseconds (10s)
+    /// Bucket duration in nanoseconds (10 s)
     bsize: u64,
 
     /// Timestamp of oldest allowed bucket (prevents stats for already-flushed buckets)

@@ -25,6 +25,7 @@ const fn default_origin_detection_optout() -> bool {
 /// "origin" information, such as specific metric tags or UDS socket credentials. Enrichment involves adding additional
 /// metric tags that describe the origin of the metric, such as the Kubernetes pod or container.
 #[derive(Clone, Deserialize)]
+#[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
 pub struct OriginEnrichmentConfiguration {
     /// Whether or not to enable origin detection.
     ///
@@ -57,7 +58,7 @@ pub struct OriginEnrichmentConfiguration {
     ///
     /// Defaults to `false`.
     ///
-    /// [1]: if an entity ID was detected via Origin Detection, it is only used if either no client-provided entity ID
+    /// [1]: if an entity ID was detected via Origin Detection, it's only used if either no client-provided entity ID
     ///      was present or if `entity_id_precedence` is set to `false`.
     #[serde(rename = "origin_detection_unified", default)]
     origin_detection_unified: bool,
@@ -65,7 +66,7 @@ pub struct OriginEnrichmentConfiguration {
     /// Whether or not to opt out of origin detection for DogStatsD metrics.
     ///
     /// When set to `true`, and the metric explicitly denotes a cardinality of "none", origin enrichment will be
-    /// skipped. This is only applicable to DogStatsD metrics when unified origin detection behavior is not enabled.
+    /// skipped. This is only applicable to DogStatsD metrics when unified origin detection behavior isn't enabled.
     ///
     /// Defaults to `true`.
     #[serde(
@@ -73,6 +74,15 @@ pub struct OriginEnrichmentConfiguration {
         default = "default_origin_detection_optout"
     )]
     origin_detection_optout: bool,
+
+    /// Whether or not to parse client-provided origin fields from DogStatsD payloads.
+    ///
+    /// When enabled, the `c:` (Local Data), `e:` (External Data), and `card:` (Cardinality) protocol fields are
+    /// parsed and used for origin enrichment.
+    ///
+    /// Defaults to `false`.
+    #[serde(rename = "dogstatsd_origin_detection_client", default)]
+    pub(super) origin_detection_client: bool,
 }
 
 impl Default for OriginEnrichmentConfiguration {
@@ -83,7 +93,14 @@ impl Default for OriginEnrichmentConfiguration {
             tag_cardinality: default_tag_cardinality(),
             origin_detection_unified: false,
             origin_detection_optout: default_origin_detection_optout(),
+            origin_detection_client: false,
         }
+    }
+}
+
+impl OriginEnrichmentConfiguration {
+    pub(super) const fn enabled(&self) -> bool {
+        self.enabled
     }
 }
 
@@ -360,6 +377,7 @@ mod tests {
             local_data: None,
             external_data: None,
             cardinality: Some(OriginTagCardinality::Low),
+            unit: None,
         };
 
         let packet_without_card = MetricPacket {
@@ -371,6 +389,7 @@ mod tests {
             local_data: None,
             external_data: None,
             cardinality: None,
+            unit: None,
         };
 
         let with_card_origin = origin_from_metric_packet(&packet_with_card, &well_known_tags);
@@ -543,6 +562,7 @@ mod tests {
                 tag_cardinality: OriginTagCardinality::High,
                 origin_detection_unified: false,
                 origin_detection_optout: false,
+                origin_detection_client: false,
             };
 
             let origin_tags_resolver = build_tags_resolver_with_default_tags(tag_resolver_config);
@@ -573,6 +593,7 @@ mod tests {
             tag_cardinality: OriginTagCardinality::High,
             origin_detection_unified: true,
             origin_detection_optout: false,
+            origin_detection_client: false,
         };
 
         let origin_tags_resolver = build_tags_resolver_with_default_tags(tag_resolver_config);

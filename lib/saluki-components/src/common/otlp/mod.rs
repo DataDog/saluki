@@ -5,6 +5,7 @@
 pub mod attributes;
 pub mod config;
 pub mod origin;
+pub mod semantics;
 pub mod traces;
 pub mod util;
 
@@ -94,12 +95,12 @@ pub fn build_metrics(component_context: &ComponentContext) -> Metrics {
 
     Metrics {
         metrics_received: builder
-            .register_debug_counter_with_tags("component_events_received_total", [("message_type", "otlp_metrics")]),
+            .register_counter_with_tags("component_events_received_total", [("message_type", "otlp_metrics")]),
         logs_received: builder
-            .register_debug_counter_with_tags("component_events_received_total", [("message_type", "otlp_logs")]),
+            .register_counter_with_tags("component_events_received_total", [("message_type", "otlp_logs")]),
         bytes_received: builder.register_counter_with_tags("component_bytes_received_total", [("source", "otlp")]),
         spans_received: builder
-            .register_debug_counter_with_tags("component_events_received_total", [("message_type", "otlp_spans")]),
+            .register_counter_with_tags("component_events_received_total", [("message_type", "otlp_spans")]),
     }
 }
 
@@ -170,7 +171,12 @@ impl OtlpServerBuilder {
             ListenAddress::Tcp(addr) => addr,
             _ => return Err(generic_error!("OTLP gRPC endpoint must be a TCP address.")),
         };
-        thread_pool_handle.spawn_traced_named("otlp-grpc-server", grpc_server.serve(grpc_socket_addr));
+
+        let grpc_listener = tokio::net::TcpListener::bind(grpc_socket_addr)
+            .await
+            .map_err(|e| generic_error!("Failed to bind OTLP gRPC listener on '{}': {}", grpc_socket_addr, e))?;
+        let grpc_incoming = tonic::transport::server::TcpIncoming::from(grpc_listener);
+        thread_pool_handle.spawn_traced_named("otlp-grpc-server", grpc_server.serve_with_incoming(grpc_incoming));
 
         // Create and spawn the HTTP server.
         let service = TowerToHyperService::new(

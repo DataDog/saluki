@@ -44,6 +44,7 @@ const fn default_zstd_compressor_level() -> i32 {
 
 /// Datadog Logs incremental encoder.
 #[derive(Deserialize, Debug, Facet)]
+#[cfg_attr(test, derive(PartialEq, serde::Serialize))]
 pub struct DatadogLogsConfiguration {
     /// Compression kind for Logs payloads. Defaults to `zstd`.
     #[serde(
@@ -137,7 +138,7 @@ impl IncrementalEncoder for DatadogLogs {
         let maybe_requests = self.request_builder.flush().await;
         for maybe_request in maybe_requests {
             match maybe_request {
-                Ok((events, request)) => {
+                Ok((events, _data_points, request)) => {
                     let payload_meta = PayloadMetadata::from_event_count(events);
                     let http_payload = HttpPayload::new(payload_meta, request);
                     let payload = Payload::Http(http_payload);
@@ -257,5 +258,23 @@ impl EndpointEncoder for LogsEndpointEncoder {
 
     fn content_type(&self) -> HeaderValue {
         CONTENT_TYPE_JSON.clone()
+    }
+}
+
+#[cfg(test)]
+mod config_smoke {
+    use serde_json::json;
+
+    use super::DatadogLogsConfiguration;
+    use crate::config_registry::structs;
+    use crate::config_registry::test_support::run_config_smoke_tests;
+
+    #[tokio::test]
+    async fn smoke_test() {
+        run_config_smoke_tests(structs::DATADOG_LOGS_CONFIGURATION, &[], json!({}), |cfg| {
+            cfg.as_typed::<DatadogLogsConfiguration>()
+                .expect("DatadogLogsConfiguration should deserialize")
+        })
+        .await
     }
 }

@@ -23,7 +23,7 @@ pub struct Querier {
 impl Querier {
     /// Gets the resident set size of this process, in bytes.
     ///
-    /// If the resident set size cannot be determined, `None` is returned. This could be for a number of underlying
+    /// If the resident set size can't be determined, `None` is returned. This could be for a number of underlying
     /// reasons, but should generally be considered an incredibly rare/unlikely event.
     pub fn resident_set_size(&mut self) -> Option<usize> {
         match &mut self.source {
@@ -82,7 +82,7 @@ impl Querier {
                 let raw_rss_field = buf.split(|b| *b == b' ').nth(1)?;
 
                 // We need to parse the field as an integer, and then multiply it by the page size to get the value in bytes.
-                let rss_pages = std::str::from_utf8(raw_rss_field).ok()?.parse::<usize>().ok()?;
+                let rss_pages = simdutf8::basic::from_utf8(raw_rss_field).ok()?.parse::<usize>().ok()?;
                 Some(rss_pages * page_size)
             }
         }
@@ -122,7 +122,7 @@ fn parse_kb_value_as_bytes(raw_rss_value: &[u8]) -> Option<usize> {
     match raw_rss_value.iter().position(|&b| b == b' ') {
         Some(space_idx) => {
             let raw_value = &raw_rss_value[..space_idx];
-            std::str::from_utf8(raw_value)
+            simdutf8::basic::from_utf8(raw_value)
                 .ok()?
                 .parse::<usize>()
                 .ok()

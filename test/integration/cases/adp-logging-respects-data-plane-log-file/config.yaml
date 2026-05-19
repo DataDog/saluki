@@ -1,0 +1,28 @@
+type: integration
+name: "adp-logging-respects-data-plane-log-file"
+description: "Verifies ADP honors the per-subagent `data_plane.log_file` setting when explicitly configured"
+timeout: 90s
+
+container:
+  image: "saluki-images/datadog-agent:testing-devel"
+  env:
+    DD_API_KEY: "test-api-key"
+    DD_HOSTNAME: "integration-test-data-plane-log-override"
+    DD_DATA_PLANE_ENABLED: "true"
+    DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT: "true"
+    DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+    DD_DATA_PLANE_LOG_FILE: "/tmp/adp-custom.log"
+    DD_DOGSTATSD_PORT: "8125"
+  exposed_ports:
+    - "8125/udp"
+
+assertions:
+  # Wait for ADP to receive its initial configuration from the Core Agent and reload logging.
+  - type: log_contains
+    pattern: "Initial configuration received."
+    timeout: 30s
+  # ADP writes to the explicitly-configured per-subagent path.
+  - type: file_contains
+    path: "/tmp/adp-custom.log"
+    pattern: "DATAPLANE"
+    timeout: 30s

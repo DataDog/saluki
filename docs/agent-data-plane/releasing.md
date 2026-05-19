@@ -8,28 +8,29 @@ collected/generated, and more.
 
 The release process for ADP roughly looks like this:
 
-- create a Github release, which tags `main` at a particular point
+- create a GitHub release, which tags `main` at a particular point
 - creation of the Git tag triggers a CI pipeline that additionally unlocks jobs to publish release artifacts
 - the additional CI jobs, once manually triggered, will publish ADP container images to various public container image
   registries
 - bump the version of ADP to the next development version
+- post a release announcement in the `#agent-data-plane` Slack channel
 
 ## Quick steps
 
 - Ensure that `main` is up-to-date with all of the intended changes that should be present, and that CI tests are
   passing cleanly (this will get checked in the actual release CI pipeline, but easier to catch problems early)
-- Go to the [Releases](https://github.com/DataDog/saluki/releases) page on Github and click the `Draft a new release`
+- Go to the [Releases](https://github.com/DataDog/saluki/releases) page on GitHub and click the `Draft a new release`
   button.
 - Fill in the appropriate Git tag (see ["Determining the version"](#determining-the-version) below) and click `Create
   new tag ... on publish`.
 - Leave `Previous tag` at `auto`, and change `Release title` to `Agent Data Plane <version>`, where `<version>` is the
-  Git tag being created. (e.g., `Agent Data Plane 0.2.0`)
+  Git tag being created. (for example, `Agent Data Plane 0.2.0`)
 - Click the `Generate release notes` to automatically populate the relevant changes since the last release.
 - If there are any additional notes that should be included, add a new section, called `Additional Notes`, at the top of
   the release notes. (above the auto-generated `What's Changed` section)
 - Click `Publish release`.
-- Go to the [Gitlab CI pipelines dashboard](https://gitlab.ddbuild.io/DataDog/saluki/-/pipelines) for the repository and
-  find the pipeline that was triggered for the newly-created Git tag. It may take a minute or two for the repository
+- Go to the [GitLab CI pipelines dashboard](https://gitlab.ddbuild.io/DataDog/saluki/-/pipelines) for the repository and
+  find the pipeline that was triggered for the newly created Git tag. It may take a minute or two for the repository
   sync and pipeline creation to occur.
 - The pipeline should progress through the `test`, `build`, `correctness`, and `release` stages without issue.
 - Once all stages have completed, the `release` stage will have a number of blocked jobs: standalone image publishing,
@@ -39,7 +40,13 @@ The release process for ADP roughly looks like this:
 - Once triggered, they should run to completion.
 - Once complete, you should be able to navigate to a public container image registry that we use, such as [Docker
   Hub](https://hub.docker.com/r/datadog/agent-data-plane/tags), and find the resulting images: if the tag was `0.2.0`,
-  you should be able to see a recently-published image with a tag that looks like `0.2.0` and `0.2.0-fips`.
+  you should be able to see a recently published image with a tag that looks like `0.2.0` and `0.2.0-fips`.
+- Post a release announcement in the `#agent-data-plane` Slack channel
+  in the following format:
+  ```
+  Agent Data Plane vX.Y.Z: <link to GitHub release>
+  CI pipeline: <link to GitLab CI pipeline for the git tag>
+  ```
 
 ## Determining the version
 
@@ -74,14 +81,14 @@ during the build process and is used to drive a number of behaviors:
 - outputting the version of ADP, when it was built, the build architecture, etc, as a log at startup
 - special constant identifiers that are used to populate things like HTTP request headers (user agent, etc)
 
-This build metadata is calculated with a Make target — `emit-build-metadata` — which populates it during local builds or
+This build metadata is calculated with a Make target—`emit-build-metadata`—which populates it during local builds or
 regular CI builds. The relevant build arguments are all prefixed with `APP_` and are as follows:
 
 - `APP_FULL_NAME`: the full name of the application (hard-coded to `agent-data-plane`)
 - `APP_SHORT_NAME`: the short name of the application (hard-coded to `data-plane`)
 - `APP_IDENTIFIER`: a short identifier for the application (hard-coded to `adp`)
 - `APP_VERSION`: the version of the application (set to `version` field in `bin/agent-data-plane/Cargo.toml`)
-- `APP_BUILD_DATE`: the date the build was performed (set to the creation time of the Gitlab CI pipeline)
+- `APP_BUILD_DATE`: the date the build was performed (set to the creation time of the GitLab CI pipeline)
 
-This build metadata should not need to be manually changed on a per-release basis, and so this section is mostly
+This build metadata shouldn't need to be manually changed on a per-release basis, and so this section is mostly
 informational and not relevant to the release process itself.

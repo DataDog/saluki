@@ -1,4 +1,4 @@
-# ottl — Rust OTTL Parser Library
+# ottl—Rust OTTL Parser Library
 
 **ottl** is a Rust library for parsing and executing [OpenTelemetry Transformation Language (OTTL)](https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/pkg/ottl) expressions.
 
@@ -19,9 +19,9 @@
 
 The library provides a complete pipeline for working with OTTL:
 
-1. **Lexical Analysis** — tokenization of the input string (`lexer` module)
-2. **Syntax Analysis** — AST construction with callback binding at parse time (`parser` module)
-3. **Execution** — AST interpretation with support for conditions, mathematical and logical expressions
+1. **Lexical Analysis**—tokenization of the input string (`lexer` module)
+2. **Syntax Analysis**—AST construction with callback binding at parse time (`parser` module)
+3. **Execution**—AST interpretation with support for conditions, mathematical and logical expressions
 
 ### Key Features
 
@@ -95,7 +95,7 @@ pub enum Argument {
 The context type is a generic parameter `C` so that no type erasure or `'static` is required; you can use context types that hold references.
 
 ```rust
-// Lazy argument evaluation — arguments are evaluated only when requested (zero allocation)
+// Lazy argument evaluation—arguments are evaluated only when requested (zero allocation)
 // C is the evaluation context type.
 pub trait Args<C> {
     fn ctx(&mut self) -> &mut C;
@@ -127,7 +127,7 @@ pub type PathResolverMap<C> = HashMap<String, PathResolver<C>>;
 Trait for accessing values by path. Per the [OTTL spec](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/pkg/ottl/LANGUAGE.md#paths), **path interpretation (including path indexes) is the integrator's responsibility**. The context type `C` is a type parameter so that no type erasure or `'static` is required.
 
 - **Path with indexes** (for example, `resource.attributes["key"]`, `items[0]`): the evaluator calls PathAccessor::get or PathAccessor::set with the path string and the index list; the implementor resolves path and indexes. For a typical "get base value then apply indexes" implementation, use [`ottl::helpers::apply_indexes`](crate::helpers::apply_indexes).
-- **Converter/editor return value with indexes** (for example, `Split("a,b,c", ",")[0]`): the library applies indexes to the function result; the integrator does not handle this.
+- **Converter/editor return value with indexes** (for example, `Split("a,b,c", ",")[0]`): the library applies indexes to the function result; the integrator doesn't handle this.
 
 ```rust
 // Index expression: string key ["key"] or integer index [0]
@@ -153,7 +153,7 @@ pub trait PathAccessor<C>: fmt::Debug {
 
 ### Creating a Parser
 
-The parser is generic over the context type `C`. Choose a concrete context type (for example, `MyContext`, or `()` for expressions that do not use paths).
+The parser is generic over the context type `C`. Choose a concrete context type (for example, `MyContext`, or `()` for expressions that don't use paths).
 
 ```rust
 use ottl::{Parser, OttlParser, CallbackMap, EnumMap, PathResolver, PathResolverMap};
@@ -337,9 +337,9 @@ Lexical analyzer based on the [logos](https://crates.io/crates/logos) library.
 
 **Main Components:**
 
-- `Token<'a>` — enum of all OTTL tokens
-- `Lexer` — wrapper over logos lexer
-- `LexerError` — error with position information
+- `Token<'a>`—enum of all OTTL tokens
+- `Lexer`—wrapper over logos lexer
+- `LexerError`—error with position information
 
 **Tokens:**
 
@@ -352,9 +352,9 @@ Lexical analyzer based on the [logos](https://crates.io/crates/logos) library.
 | Literals | `StringLiteral`, `IntLiteral`, `FloatLiteral`, `BytesLiteral` |
 | Identifiers | `LowerIdent`, `UpperIdent` |
 
-### `parser/` (parser, ast, arena, eval)
+### `parser/` (`parser`, `ast`, `arena`, `eval`)
 
-Syntax analyzer based on [chumsky 0.12](https://crates.io/crates/chumsky). Parsing produces boxed AST types; they are then converted to an arena-based representation for cache-friendly execution.
+Syntax analyzer based on [chumsky 0.12](https://crates.io/crates/chumsky). Parsing produces boxed AST types; they're then converted to an arena-based representation for cache-friendly execution.
 
 **Boxed AST (parsing, in `ast.rs`):**
 
@@ -402,13 +402,13 @@ Execution uses **arena-based** types (`ArenaRootExpr`, `ArenaBoolExpr`, `ArenaMa
 
 Main library module, exports the public API:
 
-- `Parser` — main parser
-- `OttlParser` — public API trait
-- `Value`, `Argument` — data types
-- `Args` — trait for lazy argument evaluation in callbacks
-- `CallbackFn`, `CallbackMap`, `EnumMap` — callback types
-- `PathAccessor`, `PathResolver`, `PathResolverMap` — path handling; `IndexExpr` — index type for `get` and converter result; path index interpretation is the integrator's responsibility
-- `BoxError`, `Result` — error types
+- `Parser`—main parser
+- `OttlParser`—public API trait
+- `Value`, `Argument`—data types
+- `Args`—trait for lazy argument evaluation in callbacks
+- `CallbackFn`, `CallbackMap`, `EnumMap`—callback types
+- `PathAccessor`, `PathResolver`, `PathResolverMap`—path handling; `IndexExpr`—index type for `get` and converter result; path index interpretation is the integrator's responsibility
+- `BoxError`, `Result`—error types
 
 ### `tests.rs`
 
@@ -445,7 +445,7 @@ Benchmarks live in `lib/ottl/benches/parser.rs`. Two kinds of benchmarks are inc
 - **Parser creation**: measures `Parser::new(...)` (lexer + grammar parse + path resolution).
 - **Execute**: measures only `parser.execute(ctx)`; the parser is built once outside the timed loop.
 
-| Benchmark | What is measured | Expression / scenario |
+| Benchmark | What's measured | Expression / scenario |
 |-----------|------------------|-------------------------|
 | `parser_creation` | Time to create parser (lex + parse + path resolution) | `set(my.int.value, my.int.status + 100) where (my.int.status == STATUS_OK or ...) and my.bool.enabled` |
 | `execute_complex_realistic` | Execute: editor + WHERE + paths + enums | Same as above |

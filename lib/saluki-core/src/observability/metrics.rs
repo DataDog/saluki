@@ -7,26 +7,30 @@ use std::{
     time::Duration,
 };
 
+use async_trait::async_trait;
 use futures::Stream;
 use metrics::{
     Counter, Gauge, Histogram, Key, KeyName, Level, Metadata, Recorder, SetRecorderError, SharedString, Unit,
 };
 use metrics_util::registry::{AtomicStorage, Registry};
-use saluki_common::{
-    collections::{FastConcurrentHashMap, FastHashMap},
-    task::spawn_traced_named,
-};
+use saluki_common::collections::{FastConcurrentHashMap, FastHashMap};
 use saluki_context::{
     origin::RawOrigin,
     tags::{Tag, TagSet},
     Context, ContextResolver, ContextResolverBuilder,
 };
 use saluki_error::GenericError;
-use tokio::sync::broadcast::{self, error::RecvError, Receiver};
+use tokio::{
+    select,
+    sync::broadcast::{self, error::RecvError, Receiver},
+};
 use tokio_util::sync::ReusableBoxFuture;
 use tracing::debug;
 
-use crate::data_model::event::{metric::*, Event};
+use crate::{
+    data_model::event::{metric::*, Event},
+    runtime::{InitializationError, ProcessShutdown, Supervisable, SupervisorFuture},
+};
 
 const FLUSH_INTERVAL: Duration = Duration::from_secs(1);
 const INTERNAL_METRICS_INTERNER_SIZE: NonZeroUsize = NonZeroUsize::new(16_384).unwrap();
@@ -47,12 +51,12 @@ pub struct FilterHandle {
 impl FilterHandle {
     /// Overrides the current metrics filter level.
     pub fn override_filter(&self, level: Level) {
-        *self.state.current_level.lock().unwrap() = Some(level);
+        *self.state.current_level.lock().unwrap() = level;
     }
 
-    /// Resets the metrics filter level to the default (INFO).
+    /// Resets the metrics filter level to the default that was configured when the metrics subsystem was initialized.
     pub fn reset_filter(&self) {
-        *self.state.current_level.lock().unwrap() = None;
+        *self.state.current_level.lock().unwrap() = self.state.default_level;
     }
 }
 
@@ -61,7 +65,8 @@ struct State {
     level_map: FastConcurrentHashMap<Key, Level>,
     flush_tx: broadcast::Sender<SharedEvents>,
     metrics_prefix: String,
-    current_level: Mutex<Option<Level>>,
+    default_level: Level,
+    current_level: Mutex<Level>,
 }
 
 impl State {
@@ -82,7 +87,7 @@ struct MetricsRecorder {
 }
 
 impl MetricsRecorder {
-    fn new(metrics_prefix: String) -> Self {
+    fn new(metrics_prefix: String, default_level: Level) -> Self {
         let (flush_tx, _) = broadcast::channel(2);
         Self {
             state: Arc::new(State {
@@ -90,7 +95,8 @@ impl MetricsRecorder {
                 level_map: FastConcurrentHashMap::default(),
                 flush_tx,
                 metrics_prefix,
-                current_level: Mutex::new(None),
+                default_level,
+                current_level: Mutex::new(default_level),
             }),
         }
     }
@@ -216,67 +222,67 @@ async fn flush_metrics(flush_interval: Duration) {
     loop {
         flush_interval.tick().await;
 
-        // If we have no downstream listeners, just clear our histograms so they don't accumulate memory forever.
+        // If we have no downstream listeners, clear our counters and histograms to keep them in a quieseced state.
         if state.flush_tx.receiver_count() == 0 {
+            let counters = state.registry.get_counter_handles();
+            for (_, counter) in counters {
+                counter.swap(0, Ordering::Relaxed);
+            }
+
             let histograms = state.registry.get_histogram_handles();
             for (_, histogram) in histograms {
                 histogram.clear();
             }
+
             continue;
         }
 
         let mut metrics = Vec::new();
-        let current_level = {
-            let current_level = state.current_level.lock().unwrap();
-            current_level.as_ref().copied().unwrap_or(Level::TRACE)
-        };
+        let current_level = *state.current_level.lock().unwrap();
 
         let counters = state.registry.get_counter_handles();
         let gauges = state.registry.get_gauge_handles();
         let histograms = state.registry.get_histogram_handles();
 
+        // For all metric types, we take their value (in a consuming fashion) _before_ checking if they're filtered.
+        //
+        // This lets us avoid emitting large, accumulated values for counters the first time they pass the filter check,
+        // and likewise, it avoids endless accumulation of histogram values, which translates to actual allocations
+        // behind the scenes.
+
         for (key, counter) in counters {
+            let value = counter.swap(0, Ordering::Relaxed) as f64;
+
             if state.is_metric_filtered(&key, &current_level) {
                 continue;
             }
 
             let context = context_resolver.resolve_from_key(key);
-            let value = counter.swap(0, Ordering::Relaxed) as f64;
-
             let metric = Metric::counter(context, value);
             metrics.push(Event::Metric(metric));
         }
 
         for (key, gauge) in gauges {
+            let value = f64::from_bits(gauge.load(Ordering::Relaxed));
+
             if state.is_metric_filtered(&key, &current_level) {
                 continue;
             }
 
             let context = context_resolver.resolve_from_key(key);
-            let value = f64::from_bits(gauge.load(Ordering::Relaxed));
-
             let metric = Metric::gauge(context, value);
             metrics.push(Event::Metric(metric));
         }
 
         for (key, histogram) in histograms {
+            histogram_samples.clear();
+            histogram.clear_with(|samples| histogram_samples.extend(samples));
+
             if state.is_metric_filtered(&key, &current_level) {
                 continue;
             }
 
             let context = context_resolver.resolve_from_key(key);
-
-            // Collect all of the samples from the histogram.
-            //
-            // If the histogram was empty, skip emitting a metric for this histogram entirely. Empty sketches don't make
-            // sense to send.
-            histogram_samples.clear();
-            histogram.clear_with(|samples| histogram_samples.extend(samples));
-
-            if histogram_samples.is_empty() {
-                continue;
-            }
-
             let metric = Metric::histogram(context, &histogram_samples[..]);
             metrics.push(Event::Metric(metric));
         }
@@ -332,17 +338,49 @@ impl MetricsContextResolver {
     }
 }
 
-/// Initializes the metrics subsystem with the given metrics prefix.
+/// Initializes the metrics subsystem with the given metrics prefix and default filter level.
 ///
-/// ## Errors
+/// `default_level` sets the initial filter level for emitted metrics, and is also what the filter is restored to when
+/// [`FilterHandle::reset_filter`] is invoked. Metrics whose level is more verbose than this default are filtered out
+/// until a runtime override is applied via [`FilterHandle::override_filter`].
+///
+/// Returns a [`FilterHandle`] for adjusting the runtime metrics filter, plus a [`MetricsFlusherWorker`]
+/// that must be added to a [`Supervisor`][crate::runtime::Supervisor] in order to drive the periodic
+/// flush loop. Internal metrics aren't propagated to subscribers until the worker is running.
+///
+/// # Errors
 ///
 /// If a global recorder was already installed, an error will be returned.
-pub async fn initialize_metrics(metrics_prefix: String) -> Result<FilterHandle, GenericError> {
-    let recorder = MetricsRecorder::new(metrics_prefix);
+pub async fn initialize_metrics(
+    metrics_prefix: String, default_level: Level,
+) -> Result<(FilterHandle, MetricsFlusherWorker), GenericError> {
+    let recorder = MetricsRecorder::new(metrics_prefix, default_level);
     let filter_handle = recorder.filter_handle();
     recorder.install()?;
 
-    spawn_traced_named("internal-telemetry-metrics-flusher", flush_metrics(FLUSH_INTERVAL));
+    Ok((filter_handle, MetricsFlusherWorker))
+}
 
-    Ok(filter_handle)
+/// A worker that periodically flushes the internal metrics registry to broadcast subscribers.
+///
+/// Wraps the internal flush loop and runs it under a [`Supervisor`][crate::runtime::Supervisor]. Must
+/// only be added to a supervisor after [`initialize_metrics`] has been called -- the flush loop
+/// reads from the global recorder state set by that call.
+pub struct MetricsFlusherWorker;
+
+#[async_trait]
+impl Supervisable for MetricsFlusherWorker {
+    fn name(&self) -> &str {
+        "internal-telemetry-metrics-flusher"
+    }
+
+    async fn initialize(&self, mut process_shutdown: ProcessShutdown) -> Result<SupervisorFuture, InitializationError> {
+        Ok(Box::pin(async move {
+            select! {
+                _ = flush_metrics(FLUSH_INTERVAL) => {},
+                _ = process_shutdown.wait_for_shutdown() => {},
+            }
+            Ok(())
+        }))
+    }
 }

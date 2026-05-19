@@ -1,10 +1,10 @@
 use std::io;
 
 use bytes::BufMut;
-use socket2::{MaybeUninitSlice, MsgHdrMut, SockAddr, SockAddrStorage, SockRef};
+use socket2::{Domain, MaybeUninitSlice, MsgHdrMut, Protocol, SockAddr, SockAddrStorage, SockRef, Socket, Type};
 
 use super::ancillary::{ControlMessage, SocketCredentialsAncillaryData};
-use crate::net::addr::{ConnectionAddress, ProcessCredentials};
+use crate::net::addr::{ConnectionAddress, ProcessCredentials, ProcessCredentialsError, ProcessIdentity};
 
 /// Enables the `SO_PASSCRED` option on the given socket.
 ///
@@ -49,25 +49,31 @@ where
     // If we got any socket credentials back, parse them.
     let control_len = msg_hdr.control_len();
 
-    let maybe_process_creds = if control_len > 0 {
+    let process_identity = if control_len > 0 {
         unsafe {
             ancillary_data.set_len(control_len);
-            let messages = ancillary_data.messages();
-            messages
+
+            match ancillary_data
+                .messages()
                 .map(|m| match m {
-                    ControlMessage::Credentials(creds) => ProcessCredentials {
-                        pid: creds.pid,
-                        uid: creds.uid,
-                        gid: creds.gid,
-                    },
+                    ControlMessage::Credentials(creds) => creds,
                 })
                 .next()
+            {
+                Some(creds) if creds.pid == 0 => ProcessIdentity::Error(ProcessCredentialsError::ZeroPid),
+                Some(creds) => ProcessIdentity::Credentials(ProcessCredentials {
+                    pid: creds.pid,
+                    uid: creds.uid,
+                    gid: creds.gid,
+                }),
+                None => ProcessIdentity::Error(ProcessCredentialsError::InvalidCredentials),
+            }
         }
     } else {
-        None
+        ProcessIdentity::Unavailable
     };
 
-    let conn_addr = ConnectionAddress::ProcessLike(maybe_process_creds);
+    let conn_addr = ConnectionAddress::ProcessLike(process_identity);
 
     // Finally, update our buffer to reflect the bytes we've read.
     unsafe {
@@ -75,4 +81,17 @@ where
     }
 
     Ok((n, conn_addr))
+}
+
+/// Returns `true` if `SO_REUSEPORT` is supported for UDP sockets on the current platform.
+pub fn socket_reuseport_supported() -> bool {
+    let socket = match Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP)) {
+        Ok(socket) => socket,
+        Err(_) => return false,
+    };
+
+    match socket.set_reuse_port(true) {
+        Ok(()) => true,
+        Err(_) => false,
+    }
 }

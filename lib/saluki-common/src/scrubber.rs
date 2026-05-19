@@ -40,7 +40,7 @@ pub struct Replacer {
 
 static DEFAULT_SCRUBBER: OnceLock<Scrubber> = OnceLock::new();
 
-/// Returns a reference to the default, lazily-initialized global scrubber.
+/// Returns a reference to the default, lazily initialized global scrubber.
 ///
 /// This function ensures that the default scrubber, with its associated regex compilation,
 /// is only initialized once for the lifetime of the application.
@@ -114,9 +114,12 @@ impl Default for Scrubber {
             repl_func: None,
         };
 
+        // Capture the optional closing `"` as $4 so the replacement preserves it for JSON values without breaking
+        // unquoted values (plain text / YAML). Without $4, `"password":"secret"` → `"password":"********` (invalid JSON).
+        // `:[ ]?` matches both compact JSON (`"password":"secret"`) and spaced YAML (`password: secret`).
         let password_replacer = Replacer {
-            regex: Some(Regex::new(r#"(?i)(\"?(?:pass(?:word)?|pswd|pwd)\"?)((?:=| = |: )\"?)([0-9A-Za-z#!$%&'()*+,\-./:;<=>?@\[\\\]^_{|}~]+)"#).unwrap()),
-            repl: Some(b"$1$2********".to_vec()),
+            regex: Some(Regex::new(r#"(?i)(\"?(?:pass(?:word)?|pswd|pwd)\"?)((?:=| = |:[ ]?)\"?)([0-9A-Za-z#!$%&'()*+,\-./:;<=>?@\[\\\]^_{|}~]+)(\"?)"#).unwrap()),
+            repl: Some(b"$1$2********$4".to_vec()),
             hints: None,
             repl_func: None,
         };
@@ -359,6 +362,64 @@ mod tests {
             "   random_url_key:   'mongodb+srv://user:pass-with-hyphen@abc.example.com/database'   ",
             "   random_url_key:   'mongodb+srv://user:********@abc.example.com/database'   ",
         );
+    }
+
+    #[test]
+    fn test_password_yaml_double_quoted_value() {
+        assert_clean("password: \"supersecret\"", "password: \"********\"");
+    }
+
+    #[test]
+    fn test_password_unquoted_value_still_scrubbed() {
+        assert_clean("password=supersecret", "password=********");
+        assert_clean("password: supersecret", "password: ********");
+    }
+
+    #[test]
+    fn test_json_password_like_key_scrubs_to_valid_json() {
+        let scrubber = default_scrubber();
+        // spaced (pretty-printed JSON / YAML)
+        let input = r#"{"mysql_password": "supersecret"}"#;
+        let cleaned = String::from_utf8(scrubber.scrub_bytes(input.as_bytes())).unwrap();
+        serde_json::from_str::<serde_json::Value>(&cleaned).expect("scrubbed JSON must parse");
+        assert!(cleaned.contains("********"));
+
+        // compact JSON (no space after colon)
+        let input_compact = r#"{"password":"secret"}"#;
+        let cleaned_compact = String::from_utf8(scrubber.scrub_bytes(input_compact.as_bytes())).unwrap();
+        serde_json::from_str::<serde_json::Value>(&cleaned_compact).expect("compact scrubbed JSON must parse");
+        assert!(
+            cleaned_compact.contains("********"),
+            "compact JSON password must be scrubbed: {cleaned_compact}"
+        );
+    }
+
+    #[test]
+    fn test_json_single_line_api_key_scrub() {
+        let scrubber = default_scrubber();
+        let input = r#"{"api_key":"aaaaaaaaaaaaaaaaaaaaaaaaaaaabbbb"}"#;
+        let cleaned = scrubber.scrub_bytes(input.as_bytes());
+        let cleaned_string = String::from_utf8(cleaned).unwrap();
+        // Must remain valid JSON after scrubbing (regex YAML-style replacers must not corrupt JSON).
+        serde_json::from_str::<serde_json::Value>(&cleaned_string).expect("scrubbed output must parse as JSON");
+        assert!(
+            cleaned_string.contains("***************************"),
+            "expected masked api key suffix, got: {cleaned_string}"
+        );
+    }
+
+    #[test]
+    fn test_large_single_line_json_scrubbed_still_parses() {
+        let mut map = serde_json::Map::new();
+        map.insert("api_key".into(), serde_json::json!("aaaaaaaaaaaaaaaaaaaaaaaaaaaabbbb"));
+        map.insert("pad".into(), serde_json::json!("x".repeat(25_000)));
+        let line = serde_json::to_string(&serde_json::Value::Object(map)).unwrap();
+        assert!(line.len() > 16_384, "sanity: payload should exceed 16 KiB");
+
+        let scrubber = default_scrubber();
+        let cleaned = scrubber.scrub_bytes(line.as_bytes());
+        let cleaned_string = String::from_utf8(cleaned).unwrap();
+        serde_json::from_str::<serde_json::Value>(&cleaned_string).expect("JSON parse after scrub");
     }
 
     #[test]

@@ -24,7 +24,7 @@ pub use self::detector::FeatureDetector;
 const CONTAINER_HOST_MOUNT_PATH: &str = "/host";
 const SOCKET_CHECK_CONNECT_TIMEOUT: Duration = Duration::from_millis(500);
 
-/// Features are distinct markers or indicators of a particular technology or platform that is present.
+/// Features are distinct markers or indicators of a particular technology or platform that's present.
 ///
 /// In general, features represent the type of environment that the application is running in, such as the Kubernetes
 /// feature being present indicating that the application is running in Kubernetes, and so on.
@@ -78,8 +78,8 @@ where
 
 /// Checks to see if a Unix domain sockets exists, and is reachable, at the given path.
 ///
-/// If there is no file at the given path, or if the file is not of the socket type, `None` is returned. If the socket
-/// at the given path is not reachable, `Some(false)` is returned. Otherwise, `Some(true)` is returned.
+/// If there is no file at the given path, or if the file isn't of the socket type, `None` is returned. If the socket
+/// at the given path isn't reachable, `Some(false)` is returned. Otherwise, `Some(true)` is returned.
 ///
 /// Reachability is determined as either being able to connect or having the permissions to do so. We do this because it
 /// is likely that if no process is _currently_ listening on the socket, one will likely be in the future.

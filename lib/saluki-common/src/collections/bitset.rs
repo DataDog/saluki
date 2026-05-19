@@ -3,7 +3,7 @@ use smallvec::SmallVec;
 /// A dense, contiguous bitset.
 ///
 /// `ContiguousBitSet` is designed for tracking set membership of dense, contiguous values, such as the indexes of
-/// values in a vector. It is able to hold up to 128 values (indices 0–127) inline with no heap allocation. It is _not_
+/// values in a vector. It's able to hold up to 128 values (indices 0–127) inline with no heap allocation. It's _not_
 /// suitable for sparse values (values that are far apart in value) as the size of the underlying storage will tied to
 /// the largest value in the set: roughly `((max_value / 64) + 1) * 8` bytes.
 ///
