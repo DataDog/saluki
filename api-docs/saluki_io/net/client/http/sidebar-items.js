@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"enum":["TlsMinimumVersion"],"fn":["into_client_body"],"struct":["EndpointTelemetry","EndpointTelemetryLayer","HttpClient","HttpClientBuilder","HttpsCapableConnector","HttpsCapableConnectorBuilder"],"type":["ClientBody"]};
+window.SIDEBAR_ITEMS = {"enum":["HttpProtocol","TlsMinimumVersion"],"fn":["into_client_body"],"struct":["EndpointTelemetry","EndpointTelemetryLayer","HttpClient","HttpClientBuilder","HttpsCapableConnector","HttpsCapableConnectorBuilder"],"type":["ClientBody"]};
