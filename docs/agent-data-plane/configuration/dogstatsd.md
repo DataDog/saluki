@@ -26,8 +26,6 @@ tracking.
 
 | Config Key                                       | Description                           | Issue   |
 | ------------------------------------------------ | ------------------------------------- | ------- |
-| `cri_connection_timeout`                         | CRI runtime connection timeout        | [#1348] |
-| `cri_query_timeout`                              | CRI runtime query timeout             | [#1348] |
 | `dogstatsd_capture_depth`                        | Traffic capture channel depth         | [#1381] |
 | `dogstatsd_capture_path`                         | Traffic capture file location         | [#1381] |
 | `dogstatsd_pipe_name`                            | Windows named pipe path               | [#1466] |
@@ -414,7 +412,6 @@ when the receiving syslog daemon expects the Agent's RFC-style header.
 [#1338]: https://github.com/DataDog/saluki/issues/1338
 [#1339]: https://github.com/DataDog/saluki/issues/1339
 [#1342]: https://github.com/DataDog/saluki/issues/1342
-[#1348]: https://github.com/DataDog/saluki/issues/1348
 [#1350]: https://github.com/DataDog/saluki/issues/1350
 [#1352]: https://github.com/DataDog/saluki/issues/1352
 [#1353]: https://github.com/DataDog/saluki/issues/1353

@@ -208,20 +208,20 @@
   },
   {
     "key": "cri_connection_timeout",
-    "feature_state": "MISSING",
-    "action": "IMPLEMENT",
+    "feature_state": "PARITY",
+    "action": "NONE",
     "description": "CRI container runtime connection timeout (s)",
-    "reason": "ADP hardcodes 5s; should read from config with default 1s.",
-    "issue": "#1348",
+    "reason": "Confirmed implemented in ADP. Behavior matches the core agent: the value controls the containerd gRPC connection timeout and defaults to 1s.",
+    "issue": null,
     "adp_key": null
   },
   {
     "key": "cri_query_timeout",
-    "feature_state": "MISSING",
-    "action": "IMPLEMENT",
+    "feature_state": "PARITY",
+    "action": "NONE",
     "description": "CRI container runtime query timeout (s)",
-    "reason": "ADP has no per-RPC timeout; should read from config with default 5s.",
-    "issue": "#1348",
+    "reason": "Confirmed implemented in ADP. Behavior matches the core agent: the value applies to unary containerd RPCs and defaults to 5s; long-lived event streams remain untimed.",
+    "issue": null,
     "adp_key": null
   },
   {
