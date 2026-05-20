@@ -480,7 +480,7 @@ fn entity_id_to_remote_entity_id(entity_id: &EntityId) -> RemoteEntityId {
     }
 }
 
-fn parse_entity_id_str(value: &str) -> Option<EntityId> {
+pub(super) fn parse_entity_id_str(value: &str) -> Option<EntityId> {
     const CONTAINER_ID_PREFIX: &str = "container_id://";
     const POD_UID_PREFIX: &str = "kubernetes_pod_uid://";
     const CONTAINER_PID_PREFIX: &str = "container_pid://";

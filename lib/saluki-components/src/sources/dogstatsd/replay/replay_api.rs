@@ -71,6 +71,33 @@ impl DogStatsDReplayAPIHandler {
     }
 }
 
+impl DogStatsDReplayAPIHandler {
+    /// Stops the currently in-flight replay, if any.
+    ///
+    /// Returns `200` with `{ "stopped": true }` if a replay was running and has now been signaled to cancel; `200`
+    /// with `{ "stopped": false }` if no replay was active. Never an error — "stop with nothing running" is benign.
+    async fn stop_handler(
+        State(replay_control): State<DogStatsDReplayControl>,
+    ) -> Result<Json<ReplayStopResponseBody>, (StatusCode, String)> {
+        let was_ongoing = replay_control
+            .is_ongoing()
+            .map_err(|e| (StatusCode::PRECONDITION_FAILED, e.to_string()))?;
+
+        replay_control
+            .stop_replay()
+            .map_err(|e| (StatusCode::PRECONDITION_FAILED, e.to_string()))?;
+
+        Ok(Json(ReplayStopResponseBody { stopped: was_ongoing }))
+    }
+}
+
+/// Response body for `POST /dogstatsd/replay/stop`.
+#[derive(Serialize)]
+pub struct ReplayStopResponseBody {
+    /// `true` if a replay was running when stop was called; `false` if no replay was active.
+    pub stopped: bool,
+}
+
 impl APIHandler for DogStatsDReplayAPIHandler {
     type State = DogStatsDReplayControl;
 
@@ -79,6 +106,8 @@ impl APIHandler for DogStatsDReplayAPIHandler {
     }
 
     fn generate_routes(&self) -> Router<Self::State> {
-        Router::new().route("/dogstatsd/replay/trigger", post(Self::trigger_handler))
+        Router::new()
+            .route("/dogstatsd/replay/trigger", post(Self::trigger_handler))
+            .route("/dogstatsd/replay/stop", post(Self::stop_handler))
     }
 }
