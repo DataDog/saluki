@@ -8,9 +8,10 @@
 
 use std::{
     collections::VecDeque,
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     num::NonZeroUsize,
     path::PathBuf,
-    sync::{Arc, LazyLock},
+    sync::{Arc, LazyLock, OnceLock},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -55,13 +56,14 @@ use saluki_io::{
     },
 };
 use saluki_metrics::MetricsBuilder;
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use serde_with::{serde_as, NoneAsEmptyString};
 use snafu::{ResultExt as _, Snafu};
 use stringtheory::MetaString;
 use tokio::{
+    net::UdpSocket,
     select,
-    time::{interval, MissedTickBehavior},
+    time::{interval, timeout, MissedTickBehavior},
 };
 use tracing::{debug, error, info, trace, warn};
 
@@ -130,6 +132,10 @@ const fn default_port() -> u16 {
 }
 
 const fn default_tcp_port() -> u16 {
+    0
+}
+
+const fn default_statsd_forward_port() -> u16 {
     0
 }
 
@@ -220,6 +226,16 @@ const fn default_capture_depth() -> usize {
 }
 
 const DOGSTATSD_CAPTURE_DIR: &str = "dsd_capture";
+const FORWARDER_RESOLVE_TIMEOUT: Duration = Duration::from_secs(5);
+const FORWARDER_SOCKET_READY_TIMEOUT: Duration = Duration::from_millis(100);
+
+fn deserialize_empty_metastring_as_none<'de, D>(deserializer: D) -> Result<Option<MetaString>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<MetaString>::deserialize(deserializer)?;
+    Ok(value.filter(|host| !host.is_empty()))
+}
 
 /// DogStatsD source.
 ///
@@ -270,6 +286,28 @@ pub struct DogStatsDConfiguration {
     /// Defaults to 0.
     #[serde(rename = "dogstatsd_tcp_port", default = "default_tcp_port")]
     tcp_port: u16,
+
+    /// The host to forward raw DogStatsD packets to over UDP.
+    ///
+    /// Forwarding is enabled only when this value is non-empty and `statsd_forward_port` is non-zero. Forwarding is
+    /// best effort: setup failures are logged, and send failures are tracked through telemetry. Forwarding failures
+    /// don't affect normal DogStatsD ingestion.
+    ///
+    /// Defaults to unset.
+    #[serde(
+        rename = "statsd_forward_host",
+        default,
+        deserialize_with = "deserialize_empty_metastring_as_none"
+    )]
+    statsd_forward_host: Option<MetaString>,
+
+    /// The port to forward raw DogStatsD packets to over UDP.
+    ///
+    /// Forwarding is enabled only when this value is non-zero and `statsd_forward_host` is non-empty.
+    ///
+    /// Defaults to 0.
+    #[serde(rename = "statsd_forward_port", default = "default_statsd_forward_port")]
+    statsd_forward_port: u16,
 
     /// The Unix domain socket path to listen on, in datagram mode.
     ///
@@ -608,6 +646,11 @@ impl DogStatsDConfiguration {
         EolRequired::from_config_values(&self.eol_required)
     }
 
+    fn statsd_forward_target(&self) -> Option<(&MetaString, u16)> {
+        let host = self.statsd_forward_host.as_ref()?;
+        (self.statsd_forward_port != 0).then_some((host, self.statsd_forward_port))
+    }
+
     /// Returns the number of UDP stream handlers to spawn, derived from `dogstatsd_autoscale_udp_listeners` and
     /// the number of available vCPUs.
     ///
@@ -814,6 +857,7 @@ impl SourceBuilder for DogStatsDConfiguration {
             self.workload_provider.clone(),
         );
         self.capture_control.bind(traffic_capture.clone());
+        let packet_forwarder = PacketForwarder::from_config(self);
 
         Ok(Box::new(DogStatsD {
             listeners,
@@ -829,6 +873,7 @@ impl SourceBuilder for DogStatsDConfiguration {
             additional_tags: self.additional_tags().into(),
             capture_entity_resolver: self.capture_entity_resolver.clone(),
             traffic_capture,
+            packet_forwarder,
         }))
     }
 
@@ -878,6 +923,7 @@ pub struct DogStatsD {
     additional_tags: Arc<[String]>,
     capture_entity_resolver: Option<Arc<dyn CaptureEntityResolver + Send + Sync>>,
     traffic_capture: TrafficCapture,
+    packet_forwarder: Option<PacketForwarder>,
 }
 
 struct ListenerContext {
@@ -892,6 +938,7 @@ struct ListenerContext {
     additional_tags: Arc<[String]>,
     capture_entity_resolver: Option<Arc<dyn CaptureEntityResolver + Send + Sync>>,
     traffic_capture: TrafficCapture,
+    packet_forwarder: Option<PacketForwarder>,
 }
 
 struct HandlerContext {
@@ -906,6 +953,7 @@ struct HandlerContext {
     additional_tags: Arc<[String]>,
     capture_entity_resolver: Option<Arc<dyn CaptureEntityResolver + Send + Sync>>,
     traffic_capture: TrafficCapture,
+    packet_forwarder: Option<PacketForwarder>,
 }
 
 struct Metrics {
@@ -923,6 +971,9 @@ struct Metrics {
     connections_active: Gauge,
     packet_receive_success: Counter,
     packet_receive_failure: Counter,
+    packets_forwarded: Counter,
+    bytes_forwarded: Counter,
+    packet_forwarding_errors: Counter,
 }
 
 impl Metrics {
@@ -981,6 +1032,133 @@ impl Metrics {
     fn packet_receive_failure(&self) -> &Counter {
         &self.packet_receive_failure
     }
+
+    fn packets_forwarded(&self) -> &Counter {
+        &self.packets_forwarded
+    }
+
+    fn bytes_forwarded(&self) -> &Counter {
+        &self.bytes_forwarded
+    }
+
+    fn packet_forwarding_errors(&self) -> &Counter {
+        &self.packet_forwarding_errors
+    }
+}
+
+struct ConnectedPacketForwarder {
+    socket: Arc<UdpSocket>,
+    target: SocketAddr,
+}
+
+impl ConnectedPacketForwarder {
+    async fn connect(target: SocketAddr) -> std::io::Result<Self> {
+        let bind_addr = match target.ip() {
+            IpAddr::V4(_) => SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
+            IpAddr::V6(_) => SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0),
+        };
+        let socket = UdpSocket::bind(bind_addr).await?;
+        socket.connect(target).await?;
+        timeout(FORWARDER_SOCKET_READY_TIMEOUT, socket.writable())
+            .await
+            .map_err(|_| {
+                std::io::Error::new(std::io::ErrorKind::TimedOut, "timed out waiting for forwarder socket")
+            })??;
+
+        Ok(Self {
+            socket: Arc::new(socket),
+            target,
+        })
+    }
+
+    fn forward(&self, payload: &[u8], metrics: &Metrics) {
+        match self.socket.try_send(payload) {
+            Ok(bytes_sent) => {
+                metrics.packets_forwarded().increment(1);
+                metrics.bytes_forwarded().increment(bytes_sent as u64);
+            }
+            Err(e) => {
+                metrics.packet_forwarding_errors().increment(1);
+                debug!(target = %self.target, error = %e, "Failed to forward DogStatsD packet.");
+            }
+        }
+    }
+}
+
+#[derive(Clone)]
+struct PacketForwarder {
+    target_host: MetaString,
+    target_port: u16,
+    connected: Arc<OnceLock<ConnectedPacketForwarder>>,
+}
+
+impl PacketForwarder {
+    fn from_config(config: &DogStatsDConfiguration) -> Option<Self> {
+        let (host, port) = config.statsd_forward_target()?;
+        Some(Self {
+            target_host: host.clone(),
+            target_port: port,
+            connected: Arc::new(OnceLock::new()),
+        })
+    }
+
+    fn spawn_connect(&self) {
+        let forwarder = self.clone();
+        spawn_traced_named("dogstatsd-packet-forwarder-setup", async move {
+            forwarder.connect().await;
+        });
+    }
+
+    async fn connect(&self) {
+        let host = &self.target_host;
+        let port = self.target_port;
+        let target = match timeout(FORWARDER_RESOLVE_TIMEOUT, resolve_forward_target(host, port)).await {
+            Ok(target) => target,
+            Err(e) => {
+                warn!(%host, port, error = %e, "Timed out resolving statsd forward target. Packet forwarding disabled.");
+                return;
+            }
+        };
+        let target = match target {
+            Ok(target) => target,
+            Err(e) => {
+                warn!(%host, port, error = %e, "Could not resolve statsd forward target. Packet forwarding disabled.");
+                return;
+            }
+        };
+
+        match ConnectedPacketForwarder::connect(target).await {
+            Ok(forwarder) => {
+                info!(%target, "DogStatsD packet forwarding enabled.");
+                if self.connected.set(forwarder).is_err() {
+                    debug!("DogStatsD packet forwarding was already initialized.");
+                }
+            }
+            Err(e) => {
+                warn!(%target, error = %e, "Could not connect to statsd forward target. Packet forwarding disabled.");
+            }
+        }
+    }
+
+    fn forward(&self, payload: &[u8], metrics: &Metrics) {
+        if payload.is_empty() {
+            return;
+        }
+
+        if let Some(connected) = self.connected.get() {
+            connected.forward(payload, metrics);
+        }
+    }
+}
+
+async fn resolve_forward_target(host: &str, port: u16) -> std::io::Result<SocketAddr> {
+    let mut addrs = tokio::net::lookup_host((host, port)).await?;
+    addrs.next().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::AddrNotAvailable,
+            "statsd forward target resolved to zero socket addresses",
+        )
+    })
 }
 
 fn build_metrics(listen_addr: &ListenAddress, component_context: &ComponentContext) -> Metrics {
@@ -1050,6 +1228,16 @@ fn build_metrics(listen_addr: &ListenAddress, component_context: &ComponentConte
             "component_packets_received_total",
             [("listener_type", listener_type), ("state", "error")],
         ),
+        packets_forwarded: builder.register_counter_with_tags(
+            "component_packets_forwarded_total",
+            [("listener_type", listener_type), ("state", "ok")],
+        ),
+        bytes_forwarded: builder
+            .register_counter_with_tags("component_bytes_forwarded_total", [("listener_type", listener_type)]),
+        packet_forwarding_errors: builder.register_counter_with_tags(
+            "component_packets_forwarded_total",
+            [("listener_type", listener_type), ("state", "error")],
+        ),
         failed_context_resolve_total: builder.register_counter("component_failed_context_resolve_total"),
     }
 }
@@ -1061,6 +1249,10 @@ impl Source for DogStatsD {
         let mut health = context.take_health_handle();
 
         let mut listener_shutdown_coordinator = DynamicShutdownCoordinator::default();
+
+        if let Some(packet_forwarder) = &self.packet_forwarder {
+            packet_forwarder.spawn_connect();
+        }
 
         // For each listener, spawn a dedicated task to run it.
         for listener in self.listeners {
@@ -1084,6 +1276,7 @@ impl Source for DogStatsD {
                 additional_tags: self.additional_tags.clone(),
                 capture_entity_resolver: self.capture_entity_resolver.clone(),
                 traffic_capture: self.traffic_capture.clone(),
+                packet_forwarder: self.packet_forwarder.clone(),
             };
 
             spawn_traced_named(
@@ -1134,6 +1327,7 @@ async fn process_listener(
         additional_tags,
         capture_entity_resolver,
         traffic_capture,
+        packet_forwarder,
     } = listener_context;
     tokio::pin!(shutdown_handle);
 
@@ -1165,6 +1359,7 @@ async fn process_listener(
                         additional_tags: additional_tags.clone(),
                         capture_entity_resolver: capture_entity_resolver.clone(),
                         traffic_capture: traffic_capture.clone(),
+                        packet_forwarder: packet_forwarder.clone(),
                     };
 
                     let task_name = format!(
@@ -1218,6 +1413,7 @@ async fn drive_stream(
         additional_tags,
         capture_entity_resolver,
         traffic_capture,
+        packet_forwarder,
     } = handler_context;
 
     debug!(%listen_addr, "Stream handler started.");
@@ -1252,17 +1448,21 @@ async fn drive_stream(
                     }
 
                     let is_connectionless = stream.is_connectionless();
+                    let payload = received_payload(io_buffer, bytes_read);
 
                     capture_uds_traffic(
                         &listen_addr,
                         &traffic_capture,
                         capture_entity_resolver.as_deref(),
                         &peer_addr,
-                        received_payload(io_buffer, bytes_read),
+                        payload,
                         &mut stream_capture,
                     );
 
                     if is_connectionless {
+                        if let Some(forwarder) = &packet_forwarder {
+                            forwarder.forward(payload, &metrics);
+                        }
                         metrics.packet_receive_success().increment(1);
                     }
                     metrics.bytes_received().increment(bytes_read as u64);
@@ -1292,6 +1492,13 @@ async fn drive_stream(
 
                     'frame: loop {
                         let frame_result = framer.next_frame(io_buffer, reached_eof);
+                        if !is_connectionless {
+                            while let Some(outer_frame) = framer.pop_extracted_outer_frame() {
+                                if let Some(forwarder) = &packet_forwarder {
+                                    forwarder.forward(&outer_frame, &metrics);
+                                }
+                            }
+                        }
                         let completed_outer_frames = framer.take_completed_outer_frames();
                         if !is_connectionless && completed_outer_frames > 0 {
                             metrics.packet_receive_success().increment(completed_outer_frames as u64);
@@ -1779,21 +1986,26 @@ mod tests {
         collections::HashMap,
         net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4},
         path::PathBuf,
+        sync::Arc,
+        time::Duration,
     };
 
     use bytesize::ByteSize;
     use saluki_config::ConfigurationLoader;
     use saluki_context::{ContextResolverBuilder, TagsResolverBuilder};
+    use saluki_core::{components::ComponentContext, topology::ComponentId};
     use saluki_env::workload::{CaptureEntityResolver, EntityId};
     use saluki_io::{
         deser::codec::dogstatsd::{DogStatsDCodec, DogStatsDCodecConfiguration, ParsedPacket},
         net::{ConnectionAddress, ListenAddress, ProcessCredentials, ProcessIdentity},
     };
+    use saluki_metrics::test::TestRecorder;
     use serde_json::json;
+    use tokio::{net::UdpSocket, time::timeout};
 
     use super::{
-        handle_metric_packet, resolve_capture_container_id, ContextResolvers, DogStatsDConfiguration,
-        DOGSTATSD_CAPTURE_DIR, MIN_CAPTURE_DEPTH,
+        build_metrics, handle_metric_packet, resolve_capture_container_id, ConnectedPacketForwarder, ContextResolvers,
+        DogStatsDConfiguration, PacketForwarder, DOGSTATSD_CAPTURE_DIR, MIN_CAPTURE_DEPTH,
     };
 
     #[derive(Default)]
@@ -1922,6 +2134,120 @@ mod tests {
     fn stream_log_too_big_from_config() {
         let config = deser_config(r#"{"dogstatsd_stream_log_too_big": true}"#);
         assert!(config.stream_log_too_big);
+    }
+
+    #[test]
+    fn statsd_forward_defaults_disabled() {
+        let config = deser_config("{}");
+        assert!(config.statsd_forward_host.is_none());
+        assert_eq!(config.statsd_forward_port, 0);
+        assert!(config.statsd_forward_target().is_none());
+    }
+
+    #[test]
+    fn statsd_forward_empty_host_disabled() {
+        let config = deser_config(r#"{"statsd_forward_host": "", "statsd_forward_port": 9125}"#);
+        assert!(config.statsd_forward_host.is_none());
+        assert!(config.statsd_forward_target().is_none());
+    }
+
+    #[test]
+    fn statsd_forward_zero_port_disabled() {
+        let config = deser_config(r#"{"statsd_forward_host": "127.0.0.1", "statsd_forward_port": 0}"#);
+        assert_eq!(config.statsd_forward_host.as_deref(), Some("127.0.0.1"));
+        assert!(config.statsd_forward_target().is_none());
+    }
+
+    #[test]
+    fn statsd_forward_host_and_port_enabled() {
+        let config = deser_config(r#"{"statsd_forward_host": "127.0.0.1", "statsd_forward_port": 9125}"#);
+        let (host, port) = config.statsd_forward_target().expect("forwarding should be enabled");
+        assert_eq!(host.as_ref(), "127.0.0.1");
+        assert_eq!(port, 9125);
+    }
+
+    #[test]
+    fn statsd_forward_invalid_target_still_builds_forwarder_handle() {
+        let config = deser_config(r#"{"statsd_forward_host": "not a valid host", "statsd_forward_port": 9125}"#);
+        assert!(PacketForwarder::from_config(&config).is_some());
+    }
+
+    #[tokio::test]
+    async fn packet_forwarder_sends_payload_bytes() {
+        let receiver = UdpSocket::bind("127.0.0.1:0").await.expect("receiver should bind");
+        let receiver_addr = receiver.local_addr().expect("receiver should have an address");
+        let forwarder = ConnectedPacketForwarder::connect(receiver_addr)
+            .await
+            .expect("forwarder should connect");
+        let payload = b"daemon:666|g|#sometag1:somevalue1,sometag2:somevalue2\nanother:1|c\n";
+
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let listen_addr = ListenAddress::Udp(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 8125)));
+        let context = ComponentContext::source(ComponentId::try_from("dogstatsd_test").expect("valid component ID"));
+        let metrics = build_metrics(&listen_addr, &context);
+
+        forwarder.forward(payload, &metrics);
+
+        let mut actual = [0u8; 128];
+        let (received_len, _) = timeout(Duration::from_secs(1), receiver.recv_from(&mut actual))
+            .await
+            .expect("receive should not time out")
+            .expect("receiver should receive payload");
+
+        assert_eq!(&actual[..received_len], payload);
+        assert_eq!(
+            recorder.counter((
+                "component_packets_forwarded_total",
+                &[
+                    ("component_id", "dogstatsd_test"),
+                    ("component_type", "source"),
+                    ("listener_type", "udp"),
+                    ("state", "ok"),
+                ]
+            )),
+            Some(1)
+        );
+        assert_eq!(
+            recorder.counter((
+                "component_bytes_forwarded_total",
+                &[
+                    ("component_id", "dogstatsd_test"),
+                    ("component_type", "source"),
+                    ("listener_type", "udp"),
+                ]
+            )),
+            Some(payload.len() as u64)
+        );
+    }
+
+    #[tokio::test]
+    async fn packet_forwarder_send_error_increments_error_telemetry() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let listen_addr = ListenAddress::Udp(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 8125)));
+        let context = ComponentContext::source(ComponentId::try_from("dogstatsd_test").expect("valid component ID"));
+        let metrics = build_metrics(&listen_addr, &context);
+        let socket = UdpSocket::bind("127.0.0.1:0").await.expect("socket should bind");
+        let forwarder = ConnectedPacketForwarder {
+            socket: Arc::new(socket),
+            target: SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 9125)),
+        };
+
+        forwarder.forward(b"daemon:666|g", &metrics);
+
+        assert_eq!(
+            recorder.counter((
+                "component_packets_forwarded_total",
+                &[
+                    ("component_id", "dogstatsd_test"),
+                    ("component_type", "source"),
+                    ("listener_type", "udp"),
+                    ("state", "error"),
+                ]
+            )),
+            Some(1)
+        );
     }
 
     #[test]
