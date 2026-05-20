@@ -1,9 +1,9 @@
 # Verify the config check exits ADP when a high-severity incompatible key has a non-default value.
 #
-# statsd_forward_host is set to a non-default value. This key controls raw UDP packet mirroring
-# to a secondary host, a feature architecturally foreign to Saluki's metric processing pipeline.
+# min_tls_version is set to a non-default value. This key controls the minimum TLS version for
+# outbound HTTPS clients and remains high-severity incompatible until ADP supports it.
 #
-# If statsd_forward_host is implemented in the future, this test will fail. At that point, either
+# If min_tls_version is implemented in the future, this test will fail. At that point, either
 # replace the key with another high-severity incompatible key, or delete this test if no suitable
 # key remains.
 
@@ -21,7 +21,7 @@ container:
     DD_DATA_PLANE_STANDALONE_MODE: "false"
     DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT: "true"
     DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
-    DD_STATSD_FORWARD_HOST: "192.168.1.100" # Incompatible(High) - triggers error and exit
+    DD_MIN_TLS_VERSION: "tlsv1.3" # Incompatible(High) - triggers error and exit
 
 assertions:
   - type: log_contains

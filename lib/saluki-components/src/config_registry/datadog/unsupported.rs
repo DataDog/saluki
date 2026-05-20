@@ -365,8 +365,8 @@ crate::declare_annotations! {
     /// `statsd_forward_host` - host for packet forwarding.
     STATSD_FORWARD_HOST = SalukiAnnotation {
         schema: &schema::STATSD_FORWARD_HOST,
-        // Packet forwarding not implemented. #1476
-        support_level: SupportLevel::Incompatible(Severity::High),
+        // Raw DogStatsD UDP packet forwarding implemented. #1476
+        support_level: SupportLevel::Full,
         additional_yaml_paths: &[],
         env_var_override: None,
         used_by: &[],
@@ -377,8 +377,8 @@ crate::declare_annotations! {
     /// `statsd_forward_port` - port for packet forwarding.
     STATSD_FORWARD_PORT = SalukiAnnotation {
         schema: &schema::STATSD_FORWARD_PORT,
-        // Packet forwarding not implemented. #1476
-        support_level: SupportLevel::Incompatible(Severity::High),
+        // Raw DogStatsD UDP packet forwarding implemented. #1476
+        support_level: SupportLevel::Full,
         additional_yaml_paths: &[],
         env_var_override: None,
         used_by: &[],

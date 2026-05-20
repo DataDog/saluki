@@ -39,8 +39,6 @@ tracking.
 | `min_tls_version`                                | Minimum TLS version for HTTPS         | [#1370] |
 | `serializer_experimental_use_v3_api.*`           | V3 metrics API migration flags        | [#1468] |
 | `sslkeylogfile`                                  | TLS key log file path                 | [#1372] |
-| `statsd_forward_host`                            | Host for packet forwarding            | [#1476] |
-| `statsd_forward_port`                            | Port for packet forwarding            | [#1476] |
 | `tls_handshake_timeout`                          | HTTP TLS handshake timeout            | [#178]  |
 
 <!-- section:unsupported-not-planned -->
@@ -62,6 +60,15 @@ architecture is fundamentally different or the feature is platform-specific.
 | `dogstatsd_telemetry_enabled_listener_id`      | Per-listener telemetry tagging   | Not feasible to thread through                               |
 | `dogstatsd_workers_count`                      | Number of DSD processing workers | ADP uses async tasks                                         |
 | `use_dogstatsd`                                | Master DogStatsD enable toggle   | Core Agent evaluates and sets `data_plane.dogstatsd.enabled` |
+
+## Supported packet forwarding
+
+ADP supports the core Agent's raw DogStatsD packet forwarding settings. When both
+`statsd_forward_host` and `statsd_forward_port` are set, ADP forwards every received DogStatsD
+packet over UDP to the configured destination and also continues normal local processing.
+Forwarding is best-effort: if the destination cannot be resolved or connected at startup, ADP logs a
+warning and continues without packet forwarding; if an individual packet send fails, ADP logs a
+warning and continues processing subsequent packets.
 
 ## Behavioral Differences
 

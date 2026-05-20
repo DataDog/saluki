@@ -23,7 +23,11 @@ use saluki_components::{
     },
     forwarders::{DatadogConfiguration, OtlpForwarderConfiguration},
     relays::otlp::OtlpRelayConfiguration,
-    sources::{ChecksIPCConfiguration, DogStatsDCaptureAPIHandler, DogStatsDConfiguration, OtlpConfiguration},
+    sources::{
+        ChecksIPCConfiguration, DogStatsDCaptureAPIHandler, DogStatsDEventRouterConfiguration,
+        DogStatsDPacketDecoderConfiguration, DogStatsDPacketForwarderConfiguration, DogStatsDPacketRelayConfiguration,
+        OtlpConfiguration,
+    },
     transforms::{
         AggregateConfiguration, ApmStatsTransformConfiguration, ChainedConfiguration, DogStatsDMapperConfiguration,
         HostEnrichmentConfiguration, TraceObfuscationConfiguration, TraceSamplerConfiguration,
@@ -619,11 +623,16 @@ async fn add_dsd_pipeline_to_blueprint(
     //    │    (destination)    │    │                       (Datadog Platform)                        │
     //    └─────────────────────┘    └ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┘
 
-    let dsd_config = DogStatsDConfiguration::from_configuration(config)
-        .error_context("Failed to configure DogStatsD source.")?
+    let dsd_packet_relay_config = DogStatsDPacketRelayConfiguration::from_configuration(config)
+        .error_context("Failed to configure DogStatsD packet relay.")?
         .with_workload_provider(env_provider.workload().clone())
         .with_capture_entity_resolver(env_provider.workload().clone());
-    let dsd_capture_api_handler = dsd_config.capture_api_handler();
+    let dsd_capture_api_handler = dsd_packet_relay_config.capture_api_handler();
+    let dsd_packet_decoder_config = DogStatsDPacketDecoderConfiguration::from_configuration(config)
+        .error_context("Failed to configure DogStatsD packet decoder.")?
+        .with_workload_provider(env_provider.workload().clone());
+    let dsd_packet_forwarder_config = DogStatsDPacketForwarderConfiguration::from_configuration(config)
+        .error_context("Failed to configure DogStatsD packet forwarder.")?;
     let dsd_prefix_filter_configuration = DogStatsDPrefixFilterConfiguration::from_configuration(config)?;
     let dsd_mapper_config = DogStatsDMapperConfiguration::from_configuration(config)?;
     let dsd_enrich_config =
@@ -650,7 +659,9 @@ async fn add_dsd_pipeline_to_blueprint(
 
     blueprint
         // Components.
-        .add_source("dsd_in", dsd_config)?
+        .add_relay("dsd_in", dsd_packet_relay_config)?
+        .add_decoder("dsd_decode", dsd_packet_decoder_config)?
+        .add_transform("dsd_event_router", DogStatsDEventRouterConfiguration)?
         .add_transform("dsd_prefix_filter", dsd_prefix_filter_configuration)?
         .add_transform("dsd_enrich", dsd_enrich_config)?
         .add_transform("dsd_tag_filterlist", dsd_tag_filterlist_config)?
@@ -660,25 +671,33 @@ async fn add_dsd_pipeline_to_blueprint(
         .add_transform("service_checks_enrich", service_checks_enrich_config)?
         .add_destination("dsd_stats_out", dsd_stats_config)?
         // Metrics.
-        .connect_component("dsd_enrich", ["dsd_in.metrics"])?
+        .connect_component("dsd_decode", ["dsd_in.raw_packets"])?
+        .connect_component("dsd_event_router", ["dsd_decode"])?
+        .connect_component("dsd_enrich", ["dsd_event_router.metrics"])?
         .connect_component("dsd_prefix_filter", ["dsd_enrich"])?
         .connect_component("dsd_tag_filterlist", ["dsd_prefix_filter"])?
         .connect_component("dsd_agg", ["dsd_tag_filterlist"])?
         .connect_component("dsd_post_agg_filter", ["dsd_agg"])?
         .connect_component("metrics_enrich", ["dsd_post_agg_filter"])?
         // Events.
-        .connect_component("events_enrich", ["dsd_in.events"])?
+        .connect_component("events_enrich", ["dsd_event_router.events"])?
         .connect_component("dd_events_encode", ["events_enrich"])?
-        .connect_component("service_checks_enrich", ["dsd_in.service_checks"])?
+        .connect_component("service_checks_enrich", ["dsd_event_router.service_checks"])?
         .connect_component("dd_service_checks_encode", ["service_checks_enrich"])?
         // DogStatsD Stats.
-        .connect_component("dsd_stats_out", ["dsd_in.metrics"])?;
+        .connect_component("dsd_stats_out", ["dsd_event_router.metrics"])?;
+
+    if dsd_packet_forwarder_config.enabled() {
+        blueprint
+            .add_forwarder("dsd_packet_forward_out", dsd_packet_forwarder_config)?
+            .connect_component("dsd_packet_forward_out", ["dsd_in.raw_packets"])?;
+    }
 
     if dsd_debug_log_config.enabled() {
         blueprint
             // DogStatsD debug log.
             .add_destination("dsd_debug_log_out", dsd_debug_log_config)?
-            .connect_component("dsd_debug_log_out", ["dsd_in.metrics"])?;
+            .connect_component("dsd_debug_log_out", ["dsd_event_router.metrics"])?;
     }
     Ok(dsd_capture_api_handler)
 }

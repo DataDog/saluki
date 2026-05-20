@@ -1792,19 +1792,19 @@
   },
   {
     "key": "statsd_forward_host",
-    "feature_state": "MISSING",
-    "action": "IMPLEMENT",
+    "feature_state": "PARITY",
+    "action": "NONE",
     "description": "UDP packet forwarding destination host",
-    "reason": "Forwards raw DogStatsD packets to another statsd server. Identified as customer-important; tracked for implementation.",
+    "reason": "ADP forwards raw DogStatsD packets over UDP when both statsd_forward_host and statsd_forward_port are configured, matching the core Agent transparent packet forwarding behavior.",
     "issue": "#1476",
     "adp_key": null
   },
   {
     "key": "statsd_forward_port",
-    "feature_state": "MISSING",
-    "action": "IMPLEMENT",
+    "feature_state": "PARITY",
+    "action": "NONE",
     "description": "UDP packet forwarding destination port",
-    "reason": "Forwards raw DogStatsD packets to another statsd server. Identified as customer-important; tracked for implementation.",
+    "reason": "ADP forwards raw DogStatsD packets over UDP when both statsd_forward_host and statsd_forward_port are configured, matching the core Agent transparent packet forwarding behavior.",
     "issue": "#1476",
     "adp_key": null
   },

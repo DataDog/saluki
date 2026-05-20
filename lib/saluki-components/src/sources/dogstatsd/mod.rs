@@ -25,14 +25,18 @@ use saluki_context::{
     tags::{RawTags, RawTagsFilter},
     TagsResolver,
 };
-use saluki_core::data_model::event::{
-    eventd::EventD,
-    metric::{Metric, MetricMetadata, MetricOrigin},
-    service_check::ServiceCheck,
-    Event, EventType,
+use saluki_core::data_model::{
+    event::{
+        eventd::EventD,
+        metric::{Metric, MetricMetadata, MetricOrigin},
+        service_check::ServiceCheck,
+        Event, EventType,
+    },
+    payload::{Payload, PayloadMetadata, PayloadType, RawPayload, RawPayloadSource},
 };
+use saluki_core::topology::ComponentId;
 use saluki_core::{
-    components::{sources::*, ComponentContext},
+    components::{decoders::*, forwarders::*, relays::*, sources::*, transforms::*, ComponentContext},
     observability::ComponentMetricsExt as _,
     pooling::FixedSizeObjectPool,
     topology::{
@@ -51,7 +55,7 @@ use saluki_io::{
     },
     net::{
         listener::{Listener, ListenerError},
-        ConnectionAddress, ListenAddress, ProcessIdentity, Stream,
+        ConnectionAddress, ListenAddress, ProcessCredentials, ProcessIdentity, Stream,
     },
 };
 use saluki_metrics::MetricsBuilder;
@@ -60,6 +64,7 @@ use serde_with::{serde_as, NoneAsEmptyString};
 use snafu::{ResultExt as _, Snafu};
 use stringtheory::MetaString;
 use tokio::{
+    net::{lookup_host, UdpSocket},
     select,
     time::{interval, MissedTickBehavior},
 };
@@ -107,6 +112,29 @@ enum Error {
 
     #[snafu(display("bind_host '{}' resolved to zero IP addresses.", host))]
     BindHostHasNoAddresses { host: String },
+
+    #[snafu(display(
+        "statsd forwarding destination '{}:{}' did not resolve to any socket addresses.",
+        host,
+        port
+    ))]
+    StatsDForwardAddressHasNoAddresses { host: String, port: u16 },
+
+    #[snafu(display("Failed to bind UDP socket for statsd forwarding: {}", source))]
+    FailedToBindStatsDForwardSocket { source: std::io::Error },
+
+    #[snafu(display(
+        "Failed to connect UDP socket for statsd forwarding to '{}': {}",
+        destination,
+        source
+    ))]
+    FailedToConnectStatsDForwardSocket {
+        destination: std::net::SocketAddr,
+        source: std::io::Error,
+    },
+
+    #[snafu(display("Failed to forward DogStatsD packet: {}", source))]
+    FailedToForwardStatsDPacket { source: std::io::Error },
 }
 
 const ERROR_TYPE_ORIGIN_DETECTION: &str = "origin_detection";
@@ -174,7 +202,7 @@ const fn default_true() -> bool {
 }
 
 /// Controls which payload types are forwarded to the backend.
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[cfg_attr(test, derive(PartialEq, serde::Serialize))]
 pub struct EnablePayloadsConfiguration {
     /// Whether or not to enable sending series (counter/gauge/rate) payloads.
@@ -225,7 +253,7 @@ const DOGSTATSD_CAPTURE_DIR: &str = "dsd_capture";
 ///
 /// Accepts metrics over TCP, UDP, or Unix Domain Sockets in the StatsD/DogStatsD format.
 #[serde_as]
-#[derive(Deserialize, Default)]
+#[derive(Clone, Deserialize, Default)]
 #[cfg_attr(test, derive(derive_where::DeriveWhere, serde::Serialize))]
 #[cfg_attr(test, derive_where(PartialEq))]
 pub struct DogStatsDConfiguration {
@@ -566,6 +594,756 @@ async fn resolve_bind_host(host: &str) -> Result<std::net::IpAddr, Error> {
         .next()
         .map(|sa| sa.ip())
         .ok_or_else(|| Error::BindHostHasNoAddresses { host: host.to_string() })
+}
+
+/// DogStatsD raw packet relay configuration.
+#[derive(Clone)]
+pub struct DogStatsDPacketRelayConfiguration {
+    dogstatsd: DogStatsDConfiguration,
+}
+
+impl DogStatsDPacketRelayConfiguration {
+    /// Creates a new `DogStatsDPacketRelayConfiguration` from the given configuration.
+    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
+        Ok(Self {
+            dogstatsd: DogStatsDConfiguration::from_configuration(config)?,
+        })
+    }
+
+    #[cfg(test)]
+    fn from_dogstatsd_config(dogstatsd: DogStatsDConfiguration) -> Self {
+        Self { dogstatsd }
+    }
+
+    async fn build_listeners(&self) -> Result<Vec<Listener>, Error> {
+        self.dogstatsd.build_listeners().await
+    }
+
+    /// Returns an HTTP API handler exposing the DogStatsD capture control surface.
+    pub fn capture_api_handler(&self) -> DogStatsDCaptureAPIHandler {
+        self.dogstatsd.capture_api_handler()
+    }
+
+    /// Sets the resolver to use for mapping live sender PIDs while capturing DogStatsD traffic.
+    pub fn with_capture_entity_resolver<R>(mut self, capture_entity_resolver: R) -> Self
+    where
+        R: CaptureEntityResolver + Send + Sync + 'static,
+    {
+        self.dogstatsd = self.dogstatsd.with_capture_entity_resolver(capture_entity_resolver);
+        self
+    }
+
+    /// Sets the workload provider to use for capture metadata.
+    pub fn with_workload_provider<W>(mut self, workload_provider: W) -> Self
+    where
+        W: WorkloadProvider + Send + Sync + 'static,
+    {
+        self.dogstatsd = self.dogstatsd.with_workload_provider(workload_provider);
+        self
+    }
+}
+
+#[async_trait]
+impl RelayBuilder for DogStatsDPacketRelayConfiguration {
+    fn outputs(&self) -> &[OutputDefinition<PayloadType>] {
+        static OUTPUTS: LazyLock<Vec<OutputDefinition<PayloadType>>> =
+            LazyLock::new(|| vec![OutputDefinition::named_output("raw_packets", PayloadType::Raw)]);
+        &OUTPUTS
+    }
+
+    async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Relay + Send>, GenericError> {
+        let listeners = self.build_listeners().await?;
+        if listeners.is_empty() {
+            return Err(Error::NoListenersConfigured.into());
+        }
+        let traffic_capture = TrafficCapture::with_workload_provider(
+            self.dogstatsd.capture_path.clone(),
+            self.dogstatsd.capture_depth.max(MIN_CAPTURE_DEPTH),
+            self.dogstatsd.workload_provider.clone(),
+        );
+        self.dogstatsd.capture_control.bind(traffic_capture.clone());
+
+        Ok(Box::new(DogStatsDPacketRelay {
+            listeners,
+            io_buffer_pool: FixedSizeObjectPool::with_builder("dsd_packet_bufs", self.dogstatsd.buffer_count, || {
+                FixedSizeVec::with_capacity(get_adjusted_buffer_size(self.dogstatsd.buffer_size))
+            }),
+            eol_required: self.dogstatsd.eol_required(),
+            stream_log_too_big: self.dogstatsd.stream_log_too_big,
+            origin_detection_enabled: self.dogstatsd.origin_enrichment.enabled(),
+            capture_entity_resolver: self.dogstatsd.capture_entity_resolver.clone(),
+            traffic_capture,
+        }))
+    }
+}
+
+impl MemoryBounds for DogStatsDPacketRelayConfiguration {
+    fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
+        self.dogstatsd.specify_bounds(builder);
+    }
+}
+
+/// DogStatsD raw packet relay.
+pub struct DogStatsDPacketRelay {
+    listeners: Vec<Listener>,
+    io_buffer_pool: FixedSizeObjectPool<BytesBuffer>,
+    eol_required: EolRequired,
+    stream_log_too_big: bool,
+    origin_detection_enabled: bool,
+    capture_entity_resolver: Option<Arc<dyn CaptureEntityResolver + Send + Sync>>,
+    traffic_capture: TrafficCapture,
+}
+
+#[async_trait]
+impl Relay for DogStatsDPacketRelay {
+    async fn run(mut self: Box<Self>, mut context: RelayContext) -> Result<(), GenericError> {
+        let mut shutdown_handle = context.take_shutdown_handle();
+        let mut health = context.take_health_handle();
+        let mut listener_shutdown_coordinator = DynamicShutdownCoordinator::default();
+
+        for listener in self.listeners {
+            let listen_addr = listener.listen_address().clone();
+            let task_name = format!("dogstatsd-packet-relay-listener-{}", listen_addr.listener_type());
+            let listener_context = PacketRelayListenerContext {
+                shutdown_handle: listener_shutdown_coordinator.register(),
+                listener,
+                io_buffer_pool: self.io_buffer_pool.clone(),
+                eol_required: self.eol_required,
+                stream_log_too_big: self.stream_log_too_big,
+                origin_detection_enabled: self.origin_detection_enabled,
+                capture_entity_resolver: self.capture_entity_resolver.clone(),
+                traffic_capture: self.traffic_capture.clone(),
+            };
+            spawn_traced_named(
+                task_name,
+                process_packet_relay_listener(context.clone(), listener_context),
+            );
+        }
+
+        health.mark_ready();
+        debug!("DogStatsD packet relay started.");
+
+        loop {
+            select! {
+                _ = &mut shutdown_handle => break,
+                _ = health.live() => continue,
+            }
+        }
+
+        listener_shutdown_coordinator.shutdown().await;
+        debug!("DogStatsD packet relay stopped.");
+        Ok(())
+    }
+}
+
+struct PacketRelayListenerContext {
+    shutdown_handle: DynamicShutdownHandle,
+    listener: Listener,
+    io_buffer_pool: FixedSizeObjectPool<BytesBuffer>,
+    eol_required: EolRequired,
+    stream_log_too_big: bool,
+    origin_detection_enabled: bool,
+    capture_entity_resolver: Option<Arc<dyn CaptureEntityResolver + Send + Sync>>,
+    traffic_capture: TrafficCapture,
+}
+
+async fn process_packet_relay_listener(relay_context: RelayContext, listener_context: PacketRelayListenerContext) {
+    let PacketRelayListenerContext {
+        shutdown_handle,
+        mut listener,
+        io_buffer_pool,
+        eol_required,
+        stream_log_too_big,
+        origin_detection_enabled,
+        capture_entity_resolver,
+        traffic_capture,
+    } = listener_context;
+    tokio::pin!(shutdown_handle);
+
+    let listen_addr = listener.listen_address().clone();
+    let mut stream_shutdown_coordinator = DynamicShutdownCoordinator::default();
+    let mut stream_idx: u32 = 0;
+    info!(%listen_addr, "DogStatsD packet relay listener started.");
+
+    loop {
+        select! {
+            _ = &mut shutdown_handle => break,
+            result = listener.accept() => match result {
+                Ok(stream) => {
+                    let handler_context = PacketRelayHandlerContext {
+                        listen_addr: listen_addr.clone(),
+                        framer: get_framer(&listen_addr, eol_required.for_listener(&listen_addr)),
+                        io_buffer_pool: io_buffer_pool.clone(),
+                        stream_log_too_big,
+                        metrics: build_metrics(&listen_addr, relay_context.component_context()),
+                        origin_detection_enabled,
+                        capture_entity_resolver: capture_entity_resolver.clone(),
+                        traffic_capture: traffic_capture.clone(),
+                    };
+                    let task_name = format!("dogstatsd-packet-relay-handler-{}-{}", listen_addr.listener_type(), stream_idx);
+                    stream_idx = stream_idx.wrapping_add(1);
+                    spawn_traced_named(task_name, process_packet_relay_stream(stream, relay_context.clone(), handler_context, stream_shutdown_coordinator.register()));
+                }
+                Err(e) => {
+                    error!(%listen_addr, error = %e, "Failed to accept connection. Stopping packet relay listener.");
+                    break;
+                }
+            }
+        }
+    }
+
+    stream_shutdown_coordinator.shutdown().await;
+    info!(%listen_addr, "DogStatsD packet relay listener stopped.");
+}
+
+struct PacketRelayHandlerContext {
+    listen_addr: ListenAddress,
+    framer: DsdFramer,
+    io_buffer_pool: FixedSizeObjectPool<BytesBuffer>,
+    stream_log_too_big: bool,
+    metrics: Metrics,
+    origin_detection_enabled: bool,
+    capture_entity_resolver: Option<Arc<dyn CaptureEntityResolver + Send + Sync>>,
+    traffic_capture: TrafficCapture,
+}
+
+async fn process_packet_relay_stream(
+    stream: Stream, relay_context: RelayContext, handler_context: PacketRelayHandlerContext,
+    shutdown_handle: DynamicShutdownHandle,
+) {
+    tokio::pin!(shutdown_handle);
+    select! {
+        _ = &mut shutdown_handle => debug!("Packet relay stream handler received shutdown signal."),
+        _ = drive_packet_relay_stream(stream, relay_context, handler_context) => {},
+    }
+}
+
+async fn drive_packet_relay_stream(
+    mut stream: Stream, relay_context: RelayContext, handler_context: PacketRelayHandlerContext,
+) {
+    let PacketRelayHandlerContext {
+        listen_addr,
+        mut framer,
+        io_buffer_pool,
+        stream_log_too_big,
+        metrics,
+        origin_detection_enabled,
+        capture_entity_resolver,
+        traffic_capture,
+    } = handler_context;
+    let mut io_buffer_manager = IoBufferManager::new(&io_buffer_pool, &stream);
+    let mut stream_capture = StreamCaptureState::new();
+    let memory_limiter = relay_context.topology_context().memory_limiter();
+
+    'read: loop {
+        let mut eof = false;
+        let mut io_buffer = io_buffer_manager.get_buffer_mut().await;
+        memory_limiter.wait_for_capacity().await;
+
+        match stream.receive(&mut io_buffer).await {
+            Ok((bytes_read, peer_addr)) => {
+                if bytes_read == 0 {
+                    eof = true;
+                }
+
+                let is_connectionless = stream.is_connectionless();
+                if is_connectionless {
+                    metrics.packet_receive_success().increment(1);
+                }
+                metrics.bytes_received().increment(bytes_read as u64);
+                metrics.bytes_received_size().record(bytes_read as f64);
+                let origin_detection_failed =
+                    origin_detection_enabled && bytes_read > 0 && peer_addr.has_process_credential_error();
+                if origin_detection_failed && is_connectionless {
+                    metrics.origin_detection_errors().increment(1);
+                }
+
+                capture_uds_traffic(
+                    &listen_addr,
+                    &traffic_capture,
+                    capture_entity_resolver.as_deref(),
+                    &peer_addr,
+                    received_payload(io_buffer, bytes_read),
+                    &mut stream_capture,
+                );
+                let reached_eof = eof || is_connectionless;
+
+                'frame: loop {
+                    match framer.next_frame(io_buffer, reached_eof) {
+                        Ok(Some(frame)) => {
+                            let completed_outer_frames = framer.take_completed_outer_frames();
+                            if !is_connectionless && completed_outer_frames > 0 {
+                                metrics
+                                    .packet_receive_success()
+                                    .increment(completed_outer_frames as u64);
+                            }
+                            if origin_detection_failed && completed_outer_frames > 0 {
+                                metrics
+                                    .origin_detection_errors()
+                                    .increment(completed_outer_frames as u64);
+                            }
+                            let payload = Payload::Raw(RawPayload::with_source(
+                                PayloadMetadata::from_event_count(1),
+                                raw_payload_source_from_connection_address(&peer_addr),
+                                frame.to_vec(),
+                            ));
+                            if let Err(e) = relay_context.dispatcher().dispatch_named("raw_packets", payload).await {
+                                error!(error = %e, "Failed to dispatch raw DogStatsD packet.");
+                            }
+                        }
+                        Err(e) => {
+                            metrics.framing_errors().increment(1);
+                            if should_warn_stream_log_too_big(&listen_addr, &e, stream_log_too_big) {
+                                warn!(%listen_addr, %peer_addr, error = %e, "DogStatsD stream frame exceeded the configured buffer size.");
+                            }
+                            if stream.is_connectionless() {
+                                io_buffer.clear();
+                                continue 'read;
+                            } else {
+                                break 'read;
+                            }
+                        }
+                        Ok(None) => {
+                            if eof && !stream.is_connectionless() {
+                                break 'read;
+                            } else {
+                                break 'frame;
+                            }
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                metrics.packet_receive_failure().increment(1);
+                warn!(%listen_addr, error = %e, "I/O error while reading DogStatsD packet relay stream.");
+                if !stream.is_connectionless() {
+                    break;
+                }
+            }
+        }
+    }
+}
+
+fn raw_payload_source_from_connection_address(peer_addr: &ConnectionAddress) -> RawPayloadSource {
+    match peer_addr {
+        ConnectionAddress::SocketLike(addr) => RawPayloadSource::SocketAddr(*addr),
+        #[cfg(unix)]
+        ConnectionAddress::ProcessLike(ProcessIdentity::Credentials(creds)) => {
+            RawPayloadSource::UnixProcessCredentials {
+                pid: creds.pid,
+                uid: creds.uid,
+                gid: creds.gid,
+            }
+        }
+        #[cfg(unix)]
+        ConnectionAddress::ProcessLike(_) => RawPayloadSource::Unavailable,
+    }
+}
+
+fn connection_address_from_raw_payload_source(source: RawPayloadSource) -> Option<ConnectionAddress> {
+    match source {
+        RawPayloadSource::Unavailable => None,
+        RawPayloadSource::SocketAddr(addr) => Some(ConnectionAddress::SocketLike(addr)),
+        #[cfg(unix)]
+        RawPayloadSource::UnixProcessCredentials { pid, uid, gid } => Some(ConnectionAddress::ProcessLike(
+            ProcessIdentity::Credentials(ProcessCredentials { pid, uid, gid }),
+        )),
+        #[cfg(not(unix))]
+        RawPayloadSource::UnixProcessCredentials { .. } => None,
+    }
+}
+
+#[cfg(test)]
+async fn receive_one_raw_packet_from_listeners(
+    mut listeners: Vec<Listener>, packet: &[u8], listen_addr: std::net::SocketAddr,
+) -> Result<Vec<u8>, GenericError> {
+    let mut listener = listeners.pop().ok_or_else(|| generic_error!("no listener"))?;
+    let mut stream = listener.accept().await?;
+    let sender = UdpSocket::bind("127.0.0.1:0").await?;
+    sender.send_to(packet, listen_addr).await?;
+
+    let mut io_buffer = Vec::with_capacity(8192);
+    let (bytes_read, _) = stream.receive(&mut io_buffer).await?;
+    Ok(io_buffer[..bytes_read].to_vec())
+}
+
+/// DogStatsD raw packet decoder configuration.
+#[derive(Clone)]
+pub struct DogStatsDPacketDecoderConfiguration {
+    dogstatsd: DogStatsDConfiguration,
+}
+
+impl DogStatsDPacketDecoderConfiguration {
+    /// Creates a new `DogStatsDPacketDecoderConfiguration` from the given configuration.
+    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
+        Ok(Self {
+            dogstatsd: DogStatsDConfiguration::from_configuration(config)?,
+        })
+    }
+
+    /// Sets the workload provider to use for origin detection/enrichment.
+    pub fn with_workload_provider<W>(mut self, workload_provider: W) -> Self
+    where
+        W: WorkloadProvider + Send + Sync + 'static,
+    {
+        self.dogstatsd = self.dogstatsd.with_workload_provider(workload_provider);
+        self
+    }
+}
+
+#[async_trait]
+impl DecoderBuilder for DogStatsDPacketDecoderConfiguration {
+    fn input_payload_type(&self) -> PayloadType {
+        PayloadType::Raw
+    }
+
+    fn output_event_type(&self) -> EventType {
+        EventType::Metric | EventType::EventD | EventType::ServiceCheck
+    }
+
+    async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Decoder + Send>, GenericError> {
+        let dsd_context = ComponentContext::source(ComponentId::try_from("dsd_in").expect("valid component ID"));
+        Ok(Box::new(DogStatsDPacketDecoder::from_dogstatsd_config_with_context(
+            self.dogstatsd.clone(),
+            &dsd_context,
+        )?))
+    }
+}
+
+impl MemoryBounds for DogStatsDPacketDecoderConfiguration {
+    fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
+        builder
+            .minimum()
+            .with_single_value::<DogStatsDPacketDecoder>("component struct");
+    }
+}
+
+/// DogStatsD raw packet decoder.
+pub struct DogStatsDPacketDecoder {
+    codec: DogStatsDCodec,
+    context_resolvers: ContextResolvers,
+    enabled_filter: EnablePayloadsFilter,
+    additional_tags: Arc<[String]>,
+}
+
+impl DogStatsDPacketDecoder {
+    #[cfg(test)]
+    fn from_dogstatsd_config(config: DogStatsDConfiguration) -> Result<Self, GenericError> {
+        let context = ComponentContext::decoder(ComponentId::try_from("test_dsd_decode").expect("valid component id"));
+        Self::from_dogstatsd_config_with_context(config, &context)
+    }
+
+    fn from_dogstatsd_config_with_context(
+        config: DogStatsDConfiguration, context: &ComponentContext,
+    ) -> Result<Self, GenericError> {
+        let maybe_origin_tags_resolver = config
+            .workload_provider
+            .clone()
+            .map(|provider| DogStatsDOriginTagResolver::new(config.origin_enrichment.clone(), provider));
+        let context_resolvers = ContextResolvers::new(&config, context, maybe_origin_tags_resolver)
+            .error_context("Failed to create context resolvers.")?;
+        let codec_config = DogStatsDCodecConfiguration::default()
+            .with_timestamps(config.no_aggregation_pipeline_support)
+            .with_permissive_mode(config.permissive_decoding)
+            .with_minimum_sample_rate(config.minimum_sample_rate)
+            .with_client_origin_detection(config.origin_enrichment.origin_detection_client);
+        let codec = DogStatsDCodec::from_configuration(codec_config);
+        let enabled_filter = EnablePayloadsFilter::default()
+            .with_allow_series(config.enable_payloads.series)
+            .with_allow_sketches(config.enable_payloads.sketches)
+            .with_allow_events(config.enable_payloads.events)
+            .with_allow_service_checks(config.enable_payloads.service_checks);
+
+        Ok(Self {
+            codec,
+            context_resolvers,
+            enabled_filter,
+            additional_tags: config.additional_tags().into(),
+        })
+    }
+
+    fn decode_raw_payload(&mut self, payload: RawPayload, peer_addr: &ConnectionAddress) -> Vec<Event> {
+        let (_, source, data) = payload.into_parts();
+        let metrics = Metrics::noop();
+        let source_peer_addr = connection_address_from_raw_payload_source(source).unwrap_or_else(|| peer_addr.clone());
+        match handle_frame(
+            &data,
+            &self.codec,
+            &mut self.context_resolvers,
+            &metrics,
+            &source_peer_addr,
+            self.enabled_filter,
+            &self.additional_tags,
+        ) {
+            Ok(Some(event)) => vec![event],
+            Ok(None) => Vec::new(),
+            Err(e) => {
+                warn!(error = %e, "Failed to parse raw DogStatsD packet.");
+                Vec::new()
+            }
+        }
+    }
+}
+
+#[async_trait]
+impl Decoder for DogStatsDPacketDecoder {
+    async fn run(mut self: Box<Self>, mut context: DecoderContext) -> Result<(), GenericError> {
+        let mut health = context.take_health_handle();
+        health.mark_ready();
+        debug!("DogStatsD packet decoder started.");
+
+        loop {
+            select! {
+                _ = health.live() => continue,
+                maybe_payload = context.payloads().next() => match maybe_payload {
+                    Some(Payload::Raw(raw)) => {
+                        for event in self.decode_raw_payload(raw, &ConnectionAddress::ProcessLike(ProcessIdentity::Unavailable)) {
+                            if let Err(e) = context.dispatcher().dispatch_one(event).await {
+                                error!(error = %e, "Failed to dispatch decoded DogStatsD event.");
+                            }
+                        }
+                    }
+                    Some(_) => warn!("Received non-raw payload in DogStatsD packet decoder. Dropping payload."),
+                    None => break,
+                },
+            }
+        }
+
+        debug!("DogStatsD packet decoder stopped.");
+        Ok(())
+    }
+}
+
+/// DogStatsD event router configuration.
+pub struct DogStatsDEventRouterConfiguration;
+
+#[async_trait]
+impl TransformBuilder for DogStatsDEventRouterConfiguration {
+    fn input_event_type(&self) -> EventType {
+        EventType::Metric | EventType::EventD | EventType::ServiceCheck
+    }
+
+    fn outputs(&self) -> &[OutputDefinition<EventType>] {
+        static OUTPUTS: LazyLock<Vec<OutputDefinition<EventType>>> = LazyLock::new(|| {
+            vec![
+                OutputDefinition::named_output("metrics", EventType::Metric),
+                OutputDefinition::named_output("events", EventType::EventD),
+                OutputDefinition::named_output("service_checks", EventType::ServiceCheck),
+            ]
+        });
+        &OUTPUTS
+    }
+
+    async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Transform + Send>, GenericError> {
+        Ok(Box::new(DogStatsDEventRouter))
+    }
+}
+
+impl MemoryBounds for DogStatsDEventRouterConfiguration {
+    fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
+        builder
+            .minimum()
+            .with_single_value::<DogStatsDEventRouter>("component struct");
+    }
+}
+
+/// Routes decoded DogStatsD events by type.
+pub struct DogStatsDEventRouter;
+
+impl DogStatsDEventRouter {
+    fn split_by_type(mut events: EventsBuffer) -> (EventsBuffer, EventsBuffer, EventsBuffer) {
+        let metric_events = events.extract(Event::is_metric);
+        let eventd_events = events.extract(Event::is_eventd);
+        let service_check_events = events.extract(Event::is_service_check);
+
+        let mut metrics = EventsBuffer::default();
+        for event in metric_events {
+            let _ = metrics.try_push(event);
+        }
+
+        let mut eventds = EventsBuffer::default();
+        for event in eventd_events {
+            let _ = eventds.try_push(event);
+        }
+
+        let mut service_checks = EventsBuffer::default();
+        for event in service_check_events {
+            let _ = service_checks.try_push(event);
+        }
+
+        (metrics, eventds, service_checks)
+    }
+}
+
+#[async_trait]
+impl Transform for DogStatsDEventRouter {
+    async fn run(self: Box<Self>, mut context: TransformContext) -> Result<(), GenericError> {
+        let mut health = context.take_health_handle();
+        health.mark_ready();
+        debug!("DogStatsD event router started.");
+
+        loop {
+            select! {
+                _ = health.live() => continue,
+                maybe_events = context.events().next() => match maybe_events {
+                    Some(events) => {
+                        let (metrics, eventds, service_checks) = Self::split_by_type(events);
+                        if !metrics.is_empty() {
+                            context.dispatcher().dispatch_named("metrics", metrics).await?;
+                        }
+                        if !eventds.is_empty() {
+                            context.dispatcher().dispatch_named("events", eventds).await?;
+                        }
+                        if !service_checks.is_empty() {
+                            context.dispatcher().dispatch_named("service_checks", service_checks).await?;
+                        }
+                    }
+                    None => break,
+                }
+            }
+        }
+
+        debug!("DogStatsD event router stopped.");
+        Ok(())
+    }
+}
+
+/// DogStatsD raw packet UDP forwarder configuration.
+#[serde_as]
+#[derive(Clone, Deserialize, Default)]
+pub struct DogStatsDPacketForwarderConfiguration {
+    /// Host to forward raw DogStatsD packets to.
+    ///
+    /// Defaults to unset. Forwarding is disabled unless both this and `statsd_forward_port` are set.
+    #[serde(rename = "statsd_forward_host", default)]
+    #[serde_as(as = "NoneAsEmptyString")]
+    host: Option<String>,
+
+    /// UDP port to forward raw DogStatsD packets to.
+    ///
+    /// Defaults to `0`. Forwarding is disabled unless both this and `statsd_forward_host` are set.
+    #[serde(rename = "statsd_forward_port", default)]
+    port: u16,
+}
+
+impl DogStatsDPacketForwarderConfiguration {
+    /// Creates a new `DogStatsDPacketForwarderConfiguration` from the given configuration.
+    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
+        Ok(config.as_typed()?)
+    }
+
+    /// Returns `true` if packet forwarding is enabled.
+    pub fn enabled(&self) -> bool {
+        self.host.is_some() && self.port != 0
+    }
+}
+
+#[async_trait]
+impl ForwarderBuilder for DogStatsDPacketForwarderConfiguration {
+    fn input_payload_type(&self) -> PayloadType {
+        PayloadType::Raw
+    }
+
+    async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Forwarder + Send>, GenericError> {
+        let Some(host) = &self.host else {
+            return Ok(Box::new(DogStatsDPacketForwarder::disabled()));
+        };
+        if self.port == 0 {
+            return Ok(Box::new(DogStatsDPacketForwarder::disabled()));
+        }
+
+        match DogStatsDPacketForwarder::connect(host, self.port).await {
+            Ok(forwarder) => Ok(Box::new(forwarder)),
+            Err(e) => {
+                warn!(error = %e, "Could not connect to statsd forward host. Raw packet forwarding disabled.");
+                Ok(Box::new(DogStatsDPacketForwarder::disabled()))
+            }
+        }
+    }
+}
+
+impl MemoryBounds for DogStatsDPacketForwarderConfiguration {
+    fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
+        builder
+            .minimum()
+            .with_single_value::<DogStatsDPacketForwarder>("component struct");
+    }
+}
+
+/// DogStatsD raw packet UDP forwarder.
+pub struct DogStatsDPacketForwarder {
+    socket: Option<UdpSocket>,
+}
+
+impl DogStatsDPacketForwarder {
+    fn disabled() -> Self {
+        Self { socket: None }
+    }
+
+    async fn connect(host: &str, port: u16) -> Result<Self, Error> {
+        let destination = lookup_host((host, port))
+            .await
+            .context(UnresolvableBindHost { host: host.to_string() })?
+            .next()
+            .ok_or_else(|| Error::StatsDForwardAddressHasNoAddresses {
+                host: host.to_string(),
+                port,
+            })?;
+        let bind_addr = if destination.is_ipv4() { "0.0.0.0:0" } else { "[::]:0" };
+        let socket = UdpSocket::bind(bind_addr)
+            .await
+            .context(FailedToBindStatsDForwardSocket)?;
+        socket
+            .connect(destination)
+            .await
+            .context(FailedToConnectStatsDForwardSocket { destination })?;
+
+        Ok(Self { socket: Some(socket) })
+    }
+
+    async fn forward_payload(&self, payload: RawPayload) -> Result<(), Error> {
+        let Some(socket) = &self.socket else {
+            return Ok(());
+        };
+        let (_, data) = payload.into_inner();
+        let bytes_sent = socket.send(&data).await.context(FailedToForwardStatsDPacket)?;
+        if bytes_sent != data.len() {
+            warn!(
+                bytes_sent,
+                packet_len = data.len(),
+                "Forwarded partial DogStatsD packet."
+            );
+        }
+
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl Forwarder for DogStatsDPacketForwarder {
+    async fn run(self: Box<Self>, mut context: ForwarderContext) -> Result<(), GenericError> {
+        let mut health = context.take_health_handle();
+        health.mark_ready();
+        debug!("DogStatsD raw packet forwarder started.");
+
+        loop {
+            select! {
+                _ = health.live() => continue,
+                maybe_payload = context.payloads().next() => match maybe_payload {
+                    Some(Payload::Raw(raw)) => {
+                        if let Err(e) = self.forward_payload(raw).await {
+                            warn!(error = %e, "Forwarding DogStatsD packet failed.");
+                        }
+                    }
+                    Some(_) => warn!("Received non-raw payload in DogStatsD packet forwarder. Dropping payload."),
+                    None => break,
+                },
+            }
+        }
+
+        debug!("DogStatsD raw packet forwarder stopped.");
+        Ok(())
+    }
 }
 
 impl DogStatsDConfiguration {
@@ -926,6 +1704,25 @@ struct Metrics {
 }
 
 impl Metrics {
+    fn noop() -> Self {
+        Self {
+            metrics_received: Counter::noop(),
+            events_received: Counter::noop(),
+            service_checks_received: Counter::noop(),
+            bytes_received: Counter::noop(),
+            bytes_received_size: Histogram::noop(),
+            framing_errors: Counter::noop(),
+            metric_decoder_errors: Counter::noop(),
+            event_decoder_errors: Counter::noop(),
+            service_check_decoder_errors: Counter::noop(),
+            origin_detection_errors: Counter::noop(),
+            failed_context_resolve_total: Counter::noop(),
+            connections_active: Gauge::noop(),
+            packet_receive_success: Counter::noop(),
+            packet_receive_failure: Counter::noop(),
+        }
+    }
+
     fn metrics_received(&self) -> &Counter {
         &self.metrics_received
     }
@@ -1784,6 +2581,18 @@ mod tests {
     use bytesize::ByteSize;
     use saluki_config::ConfigurationLoader;
     use saluki_context::{ContextResolverBuilder, TagsResolverBuilder};
+    use saluki_core::{
+        data_model::{
+            event::{
+                eventd::EventD,
+                metric::Metric,
+                service_check::{CheckStatus, ServiceCheck},
+                Event,
+            },
+            payload::RawPayload,
+        },
+        topology::EventsBuffer,
+    };
     use saluki_env::workload::{CaptureEntityResolver, EntityId};
     use saluki_io::{
         deser::codec::dogstatsd::{DogStatsDCodec, DogStatsDCodecConfiguration, ParsedPacket},
@@ -1884,6 +2693,102 @@ mod tests {
 
     fn deser_config(json: &str) -> DogStatsDConfiguration {
         serde_json::from_str(json).expect("failed to deserialize config")
+    }
+
+    #[tokio::test]
+    async fn packet_relay_emits_udp_datagram_as_raw_payload() {
+        let reserved = std::net::UdpSocket::bind("127.0.0.1:0").expect("reserve UDP port");
+        let port = reserved.local_addr().expect("reserved addr").port();
+        drop(reserved);
+
+        let relay_config = super::DogStatsDPacketRelayConfiguration::from_dogstatsd_config(DogStatsDConfiguration {
+            port,
+            tcp_port: 0,
+            socket_path: None,
+            socket_stream_path: None,
+            ..Default::default()
+        });
+        let listeners = relay_config.build_listeners().await.expect("build listeners");
+        let listen_addr = listeners
+            .first()
+            .and_then(|listener| listener.listen_address().as_local_connect_addr())
+            .expect("UDP local addr");
+        let payload = b"relay.metric:1|c";
+
+        let received = super::receive_one_raw_packet_from_listeners(listeners, payload, listen_addr)
+            .await
+            .expect("receive raw packet");
+
+        assert_eq!(received, payload);
+    }
+
+    #[tokio::test]
+    async fn packet_decoder_decodes_raw_metric_payload() {
+        let mut decoder =
+            super::DogStatsDPacketDecoder::from_dogstatsd_config(deser_config("{}")).expect("decoder should build");
+        let payload = RawPayload::new(
+            saluki_core::data_model::payload::PayloadMetadata::from_event_count(1),
+            b"decoder.metric:1|c|#env:test".to_vec(),
+        );
+
+        let events = decoder.decode_raw_payload(
+            payload,
+            &ConnectionAddress::from("127.0.0.1:8125".parse::<SocketAddr>().unwrap()),
+        );
+
+        assert_eq!(events.len(), 1);
+        let metric = events
+            .into_iter()
+            .next()
+            .unwrap()
+            .try_into_metric()
+            .expect("metric event");
+        assert_eq!(metric.context().name().as_ref(), "decoder.metric");
+        assert!(metric.context().tags().has_tag("env:test"));
+    }
+
+    #[test]
+    fn event_router_splits_events_by_type() {
+        let mut buffer = EventsBuffer::default();
+        assert!(buffer
+            .try_push(Event::Metric(Metric::counter("router.metric", 1.0)))
+            .is_none());
+        assert!(buffer.try_push(Event::EventD(EventD::new("title", "text"))).is_none());
+        assert!(buffer
+            .try_push(Event::ServiceCheck(ServiceCheck::new("router.check", CheckStatus::Ok)))
+            .is_none());
+
+        let (metrics, events, service_checks) = super::DogStatsDEventRouter::split_by_type(buffer);
+
+        assert_eq!(metrics.len(), 1);
+        assert_eq!(events.len(), 1);
+        assert_eq!(service_checks.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn packet_forwarder_forwards_raw_payload_bytes() {
+        let listener = tokio::net::UdpSocket::bind("127.0.0.1:0")
+            .await
+            .expect("bind UDP listener");
+        let listener_addr = listener.local_addr().expect("listener local addr");
+
+        let forwarder = super::DogStatsDPacketForwarder::connect("127.0.0.1", listener_addr.port())
+            .await
+            .expect("forwarder should connect");
+        let payload = RawPayload::new(
+            saluki_core::data_model::payload::PayloadMetadata::from_event_count(1),
+            b"daemon:666|g|#sometag:somevalue".to_vec(),
+        );
+
+        forwarder.forward_payload(payload).await.expect("forward payload");
+
+        let mut buffer = [0u8; 128];
+        let bytes_read = tokio::time::timeout(std::time::Duration::from_secs(1), listener.recv(&mut buffer))
+            .await
+            .expect("receive should not time out")
+            .expect("receive should succeed");
+
+        assert_eq!(&buffer[..bytes_read], b"daemon:666|g|#sometag:somevalue");
     }
 
     fn udp_listen_address() -> ListenAddress {

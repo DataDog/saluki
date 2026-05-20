@@ -15,7 +15,7 @@ mod metadata;
 pub use self::metadata::PayloadMetadata;
 
 mod raw;
-pub use self::raw::RawPayload;
+pub use self::raw::{RawPayload, RawPayloadSource};
 
 /// Output payload type.
 ///
