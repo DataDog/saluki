@@ -1,11 +1,10 @@
 # Verify the config check exits ADP when a high-severity incompatible key has a non-default value.
 #
-# statsd_forward_host is set to a non-default value. This key controls raw UDP packet mirroring
-# to a secondary host, a feature architecturally foreign to Saluki's metric processing pipeline.
+# `forwarder_http_protocol` is set to a non-default value. This key controls the core Agent
+# forwarder's HTTP transport selection, which ADP doesn't implement through the core Agent key.
 #
-# If statsd_forward_host is implemented in the future, this test will fail. At that point, either
-# replace the key with another high-severity incompatible key, or delete this test if no suitable
-# key remains.
+# If `forwarder_http_protocol` is implemented in the future, replace this key with another
+# high-severity incompatible key, or delete this test if no suitable key remains.
 
 type: integration
 name: "adp-config-check-exit"
@@ -21,7 +20,7 @@ container:
     DD_DATA_PLANE_STANDALONE_MODE: "false"
     DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT: "true"
     DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
-    DD_STATSD_FORWARD_HOST: "192.168.1.100" # Incompatible(High) - triggers error and exit
+    DD_FORWARDER_HTTP_PROTOCOL: "http1" # Incompatible(High) - triggers error and exit
 
 assertions:
   - type: log_contains
