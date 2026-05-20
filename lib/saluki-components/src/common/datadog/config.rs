@@ -3,7 +3,7 @@ use std::time::Duration;
 use facet::Facet;
 use saluki_config::GenericConfiguration;
 use saluki_error::GenericError;
-use saluki_io::net::client::http::TlsMinimumVersion;
+use saluki_io::net::client::http::{HttpProtocol, TlsMinimumVersion};
 use serde::Deserialize;
 use tracing::warn;
 
@@ -64,7 +64,8 @@ fn min_tls_version_from_config_value(value: &str) -> TlsMinimumVersion {
 
 /// HTTP protocol selection for the Datadog forwarder.
 #[repr(u8)]
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Facet)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Facet)]
+#[serde(rename_all = "lowercase")]
 #[cfg_attr(test, derive(serde::Serialize))]
 pub enum ForwarderHttpProtocol {
     /// Automatically negotiate HTTP/2 with HTTP/1.1 fallback.
@@ -75,23 +76,7 @@ pub enum ForwarderHttpProtocol {
     Http1,
 }
 
-impl<'de> Deserialize<'de> for ForwarderHttpProtocol {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let value = String::deserialize(deserializer)?;
-        match value.as_str() {
-            "auto" => Ok(Self::Auto),
-            "http1" => Ok(Self::Http1),
-            other => Err(serde::de::Error::custom(format!(
-                "invalid forwarder_http_protocol value '{other}': expected 'auto' or 'http1'"
-            ))),
-        }
-    }
-}
-
-impl From<ForwarderHttpProtocol> for saluki_io::net::client::http::HttpProtocol {
+impl From<ForwarderHttpProtocol> for HttpProtocol {
     fn from(protocol: ForwarderHttpProtocol) -> Self {
         match protocol {
             ForwarderHttpProtocol::Auto => Self::Auto,
@@ -274,7 +259,7 @@ impl ForwarderConfiguration {
     }
 
     /// Returns the HTTP protocol selection for outgoing forwarder requests.
-    pub fn http_protocol(&self) -> saluki_io::net::client::http::HttpProtocol {
+    pub fn http_protocol(&self) -> HttpProtocol {
         self.http_protocol.into()
     }
 
