@@ -147,6 +147,13 @@ pub struct ForwarderConfiguration {
     /// invalid or self-signed certificates should enable this.
     #[serde(default)]
     skip_ssl_validation: bool,
+
+    /// Whether to signal that the backend should allow arbitrary tag values.
+    ///
+    /// Defaults to `false`. If set to `true`, the Datadog forwarder adds `Allow-Arbitrary-Tag-Value: true` to every
+    /// outbound intake request. The data plane does not perform local tag validation based on this setting.
+    #[serde(default)]
+    allow_arbitrary_tags: bool,
 }
 
 impl ForwarderConfiguration {
@@ -256,6 +263,11 @@ impl ForwarderConfiguration {
     /// Returns whether TLS certificate validation is disabled for Datadog intake forwarding.
     pub const fn skip_ssl_validation(&self) -> bool {
         self.skip_ssl_validation
+    }
+
+    /// Returns whether outbound intake requests should allow arbitrary tag values.
+    pub const fn allow_arbitrary_tags(&self) -> bool {
+        self.allow_arbitrary_tags
     }
 }
 
@@ -381,6 +393,31 @@ mod tests {
         let config = forwarder_config_from(base_config(), None).await;
 
         assert!(!config.skip_ssl_validation());
+    }
+
+    #[tokio::test]
+    async fn allow_arbitrary_tags_defaults_to_false() {
+        let config = forwarder_config_from(base_config(), None).await;
+
+        assert!(!config.allow_arbitrary_tags());
+    }
+
+    #[tokio::test]
+    async fn allow_arbitrary_tags_set_via_yaml() {
+        let config =
+            forwarder_config_from(config_with(serde_json::json!({ "allow_arbitrary_tags": true })), None).await;
+
+        assert!(config.allow_arbitrary_tags());
+    }
+
+    #[tokio::test]
+    async fn allow_arbitrary_tags_set_via_env_var() {
+        // ALLOW_ARBITRARY_TAGS simulates DD_ALLOW_ARBITRARY_TAGS: the test helper sets
+        // TEST_ALLOW_ARBITRARY_TAGS, which from_environment("TEST") reads as allow_arbitrary_tags.
+        let env_vars = vec![("ALLOW_ARBITRARY_TAGS".to_string(), "true".to_string())];
+        let config = forwarder_config_from(base_config(), Some(&env_vars)).await;
+
+        assert!(config.allow_arbitrary_tags());
     }
 
     #[tokio::test]
