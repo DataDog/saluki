@@ -37,7 +37,7 @@ use tracing::{debug, error, warn};
 use super::{
     config::ForwarderConfiguration,
     endpoints::{EndpointRoute, ResolvedEndpoint, RoutableEndpoint},
-    middleware::{for_resolved_endpoint, with_version_info},
+    middleware::{for_resolved_endpoint, with_allow_arbitrary_tags, with_version_info},
     telemetry::{ComponentTelemetry, SharedTransactionQueueTelemetry, TransactionQueueTelemetry},
     transaction::{Metadata, Transaction, TransactionBody},
     METRIC_INTAKE_PATHS,
@@ -367,6 +367,8 @@ async fn run_endpoint_io_loop<B>(
     let mut service = ServiceBuilder::new()
         // Set the request's URI to the endpoint's URI, and add the API key as a header.
         .map_request(for_resolved_endpoint(endpoint))
+        // Signal backend support for arbitrary tag values when configured.
+        .map_request(with_allow_arbitrary_tags(config.allow_arbitrary_tags()))
         // Set the User-Agent and DD-Agent-Version headers indicating the version of the data plane sending the request.
         .map_request(with_version_info())
         .concurrency_limit(config.endpoint_concurrency())

@@ -118,11 +118,11 @@
   },
   {
     "key": "allow_arbitrary_tags",
-    "feature_state": "MISSING",
-    "action": "IMPLEMENT",
+    "feature_state": "PARITY",
+    "action": "NONE",
     "description": "Relax backend tag validation via HTTP header",
-    "reason": "Signals backend tag validation relaxation.",
-    "issue": "#1377",
+    "reason": "Implemented in ADP. When set, the Datadog forwarder adds `Allow-Arbitrary-Tag-Value: true` to outbound intake requests. Behavior matches the core agent.",
+    "issue": null,
     "adp_key": null
   },
   {
