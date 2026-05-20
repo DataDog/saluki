@@ -23,9 +23,10 @@ use tracing::{debug, warn};
 /// autodiscovery API operates in a streaming fashion, which the provider uses to then broadcast updates to subscribers.
 #[derive(Clone)]
 pub struct RemoteAgentAutodiscoveryProvider {
-    sender: Sender<AutodiscoveryEvent>,
-    receiver: Arc<Mutex<Option<Receiver<AutodiscoveryEvent>>>>,
+    subscribers: AutodiscoverySubscribers,
 }
+
+type AutodiscoverySubscribers = Arc<Mutex<Vec<Sender<AutodiscoveryEvent>>>>;
 
 impl RemoteAgentAutodiscoveryProvider {
     /// Creates a new `RemoteAgentAutodiscoveryProvider` based on the given configuration, along with a [`Supervisor`] that
@@ -36,15 +37,14 @@ impl RemoteAgentAutodiscoveryProvider {
     /// If the remote agent client couldn't be created, an error is returned.
     pub async fn from_configuration(config: &GenericConfiguration) -> Result<(Self, Supervisor), GenericError> {
         let client = RemoteAgentClient::from_configuration(config).await?;
-        let (sender, receiver) = mpsc::channel::<AutodiscoveryEvent>(16);
+        let subscribers = Arc::new(Mutex::new(Vec::new()));
 
         let provider = Self {
-            sender: sender.clone(),
-            receiver: Arc::new(Mutex::new(Some(receiver))),
+            subscribers: subscribers.clone(),
         };
 
         let mut supervisor = Supervisor::new("autodiscovery")?;
-        supervisor.add_worker(AutodiscoveryEventBroadcaster { client, sender });
+        supervisor.add_worker(AutodiscoveryEventBroadcaster { client, subscribers });
 
         Ok((provider, supervisor))
     }
@@ -53,13 +53,15 @@ impl RemoteAgentAutodiscoveryProvider {
 #[async_trait]
 impl AutodiscoveryProvider for RemoteAgentAutodiscoveryProvider {
     async fn subscribe(&self) -> Option<Receiver<AutodiscoveryEvent>> {
-        self.receiver.lock().await.take()
+        let (sender, receiver) = mpsc::channel::<AutodiscoveryEvent>(16);
+        self.subscribers.lock().await.push(sender);
+        Some(receiver)
     }
 }
 
 struct AutodiscoveryEventBroadcaster {
     client: RemoteAgentClient,
-    sender: Sender<AutodiscoveryEvent>,
+    subscribers: AutodiscoverySubscribers,
 }
 
 #[async_trait]
@@ -70,19 +72,19 @@ impl Supervisable for AutodiscoveryEventBroadcaster {
 
     async fn initialize(&self, process_shutdown: ProcessShutdown) -> Result<SupervisorFuture, InitializationError> {
         let client = self.client.clone();
-        let sender = self.sender.clone();
+        let subscribers = self.subscribers.clone();
 
         Ok(Box::pin(async move {
             select! {
                 _ = process_shutdown => {},
-                _ = run_ad_event_broadcaster(client, sender) => {},
+                _ = run_ad_event_broadcaster(client, subscribers) => {},
             }
             Ok(())
         }))
     }
 }
 
-async fn run_ad_event_broadcaster(mut client: RemoteAgentClient, sender: Sender<AutodiscoveryEvent>) {
+async fn run_ad_event_broadcaster(mut client: RemoteAgentClient, subscribers: AutodiscoverySubscribers) {
     debug!("Listening to autodiscovery events from remote agent.");
 
     loop {
@@ -95,7 +97,7 @@ async fn run_ad_event_broadcaster(mut client: RemoteAgentClient, sender: Sender<
                 Ok(response) => {
                     for proto_config in response.configs {
                         let event = AutodiscoveryEvent::from(proto_config);
-                        let _ = sender.send(event).await;
+                        send_to_subscribers(&subscribers, event).await;
                     }
                 }
                 Err(status) => {
@@ -111,4 +113,17 @@ async fn run_ad_event_broadcaster(mut client: RemoteAgentClient, sender: Sender<
 
         debug!("Autodiscovery event stream ended. Reconnecting...");
     }
+}
+
+async fn send_to_subscribers(subscribers: &AutodiscoverySubscribers, event: AutodiscoveryEvent) {
+    let mut subscribers = subscribers.lock().await;
+    let mut active_subscribers = Vec::with_capacity(subscribers.len());
+
+    for sender in subscribers.drain(..) {
+        if sender.send(event.clone()).await.is_ok() {
+            active_subscribers.push(sender);
+        }
+    }
+
+    *subscribers = active_subscribers;
 }

@@ -368,7 +368,7 @@ pub enum AutodiscoveryEvent {
 pub trait AutodiscoveryProvider {
     /// Subscribe to autodiscovery events.
     ///
-    /// Returns `None` when no provider is configured, or when the provider's event receiver has already been taken.
+    /// Returns `None` when no provider is configured.
     async fn subscribe(&self) -> Option<Receiver<AutodiscoveryEvent>>;
 }
 
