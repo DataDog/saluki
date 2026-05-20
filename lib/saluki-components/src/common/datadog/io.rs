@@ -162,6 +162,7 @@ where
         let mut client_builder = HttpClient::builder()
             .with_request_timeout(config.request_timeout())
             .with_min_tls_version(config.min_tls_version())
+            .with_http_protocol(config.http_protocol())
             .with_bytes_sent_counter(telemetry.bytes_sent().clone())
             .with_endpoint_telemetry(metrics_builder.clone(), Some(endpoint_name));
         if let Some(proxy) = config.proxy() {
