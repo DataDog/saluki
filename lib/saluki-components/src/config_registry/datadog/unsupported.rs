@@ -2,18 +2,6 @@
 use crate::config_registry::{generated::schema, SalukiAnnotation, Severity, SupportLevel};
 
 crate::declare_annotations! {
-    /// `allow_arbitrary_tags` - signal backend tag validation relaxation.
-    ALLOW_ARBITRARY_TAGS = SalukiAnnotation {
-        schema: &schema::ALLOW_ARBITRARY_TAGS,
-        // Not implemented. #1377
-        support_level: SupportLevel::Incompatible(Severity::Medium),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-    };
-
     /// `cri_connection_timeout` - CRI runtime connection timeout.
     CRI_CONNECTION_TIMEOUT = SalukiAnnotation {
         schema: &schema::CRI_CONNECTION_TIMEOUT,

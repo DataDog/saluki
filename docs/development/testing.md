@@ -57,12 +57,7 @@ containers using the airlock library (which talks to containerd via gRPC) and as
 
 ### Running
 
-Build the required container images, then run:
-
 ```bash
-# build images (only needed once, or after changes)
-make build-correctness-tools-image build-datadog-agent-image
-
 # run all correctness tests
 make test-correctness
 

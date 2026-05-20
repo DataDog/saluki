@@ -161,6 +161,17 @@ crate::declare_annotations! {
         test_json: None,
     };
 
+    /// `allow_arbitrary_tags`—signals backend tag validation relaxation.
+    ALLOW_ARBITRARY_TAGS = SalukiAnnotation {
+        schema: &schema::ALLOW_ARBITRARY_TAGS,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: Some(&["DD_ALLOW_ARBITRARY_TAGS"]),
+        used_by: &[structs::FORWARDER_CONFIGURATION],
+        value_type_override: None,
+        test_json: None,
+    };
+
     // ── RetryConfiguration fields ─────────────────────────────────────────────
 
     /// `forwarder_backoff_base`—base growth rate for retry backoff in seconds.

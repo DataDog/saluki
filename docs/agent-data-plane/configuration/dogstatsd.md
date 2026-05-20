@@ -1,6 +1,6 @@
 # Configuring DogStatsD on Agent Data Plane
 
-<!-- Last updated: 2026-05-15 -->
+<!-- Last updated: 2026-05-19 -->
 
 The DogStatsD implementation on ADP has been redesigned in Rust for better resource guarantees and
 efficiency. Because the architecture is different from the original implementation, certain
@@ -26,7 +26,6 @@ tracking.
 
 | Config Key                                       | Description                           | Issue   |
 | ------------------------------------------------ | ------------------------------------- | ------- |
-| `allow_arbitrary_tags`                           | Allow arbitrary tag values            | [#1377] |
 | `cri_connection_timeout`                         | CRI runtime connection timeout        | [#1348] |
 | `cri_query_timeout`                              | CRI runtime query timeout             | [#1348] |
 | `dogstatsd_capture_depth`                        | Traffic capture channel depth         | [#1381] |
@@ -50,6 +49,7 @@ architecture is fundamentally different or the feature is platform-specific.
 
 | Config Key                                     | Description                      | Reason                                                       |
 | ---------------------------------------------- | -------------------------------- | ------------------------------------------------------------ |
+| `dogstatsd_host_socket_path`                   | Host UDS socket dir for DSD      | Not read by DSD server; admission-controller only            |
 | `dogstatsd_mem_based_rate_limiter.enabled`     | Enable memory rate limiter       | Go GC specific; use `memory_limit`                           |
 | `dogstatsd_no_aggregation_pipeline_batch_size` | No-agg pipeline batch size       | Fixed in ADP topology                                        |
 | `dogstatsd_packet_buffer_flush_timeout`        | Packet buffer flush timeout      | ADP decodes inline                                           |
@@ -70,6 +70,7 @@ default values.
 
 | Config Key                          | Description                      | Agent Behavior                                 | ADP Behavior                                                   |
 | ----------------------------------- | -------------------------------- | ---------------------------------------------- | -------------------------------------------------------------- |
+| `dogstatsd_mapper_cache_size`       | Mapper result LRU cache size     | `0` disables mapping; positive sizes the LRU   | `0` disables the cache only; mapping still runs ([#1687])      |
 | `dogstatsd_metrics_stats_enable`    | Enable per-metric debug stats    | Config toggle                                  | Gates debug log; stats API on-demand ([#1352], [#1356])        |
 | `dogstatsd_stats_enable`            | Enable internal stats endpoint   | Config toggle                                  | On-demand via API ([#1352])                                    |
 | `dogstatsd_stats_buffer`            | Internal stats buffer size       | Configurable                                   | On-demand via API ([#1352])                                    |
@@ -204,6 +205,21 @@ The core agent enables internal Prometheus metrics via `telemetry.enabled` and i
 OpenMetrics check pointed at the agent's own telemetry endpoint. ADP has a separate telemetry
 endpoint controlled by `data_plane.telemetry_enabled`. Customers enabling ADP telemetry must
 configure a separate OpenMetrics check pointed at ADP's endpoint. See [#1338].
+
+### `dogstatsd_mapper_cache_size`
+
+ADP and the core agent both cache mapper results to skip regex evaluation on repeat metric names.
+With the default value of `1000`, and with any positive integer, behavior matches the core agent:
+results are cached in an LRU keyed by the original metric name, including a negative-cache entry for
+names that match no profile.
+
+The two implementations diverge when this setting is `0`. In the core agent, `0` is rejected by the
+underlying LRU library, which causes the entire mapper to be silently disabled — mapping profiles
+configured by `dogstatsd_mapper_profiles` are not applied. In ADP, `0` disables the result cache
+only; mapping profiles still run, so each metric pays the regex evaluation cost without amortization.
+
+If you previously set `dogstatsd_mapper_cache_size: 0` in the core agent to turn off the mapper,
+clear `dogstatsd_mapper_profiles` instead when running ADP. See [#1687].
 
 ## Compatibility Unknown
 
@@ -431,7 +447,6 @@ when the receiving syslog daemon expects the Agent's RFC-style header.
 [#1371]: https://github.com/DataDog/saluki/issues/1371
 [#1372]: https://github.com/DataDog/saluki/issues/1372
 [#1373]: https://github.com/DataDog/saluki/issues/1373
-[#1377]: https://github.com/DataDog/saluki/issues/1377
 [#1380]: https://github.com/DataDog/saluki/issues/1380
 [#1381]: https://github.com/DataDog/saluki/issues/1381
 [#1382]: https://github.com/DataDog/saluki/issues/1382
@@ -442,3 +457,4 @@ when the receiving syslog daemon expects the Agent's RFC-style header.
 [#1476]: https://github.com/DataDog/saluki/issues/1476
 [#1640]: https://github.com/DataDog/saluki/issues/1640
 [#1667]: https://github.com/DataDog/saluki/issues/1667
+[#1687]: https://github.com/DataDog/saluki/issues/1687
