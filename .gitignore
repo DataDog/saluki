@@ -1,4 +1,5 @@
 target/
+.worktrees/
 .vscode/
 tooling/bin/
 test/k8s/charts/
