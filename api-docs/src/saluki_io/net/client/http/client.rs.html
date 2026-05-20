@@ -19,7 +19,7 @@
 <a href=#19 id=19 data-nosnippet>19</a><span class="kw">use </span>metrics::Counter;
 <a href=#20 id=20 data-nosnippet>20</a><span class="kw">use </span>saluki_error::GenericError;
 <a href=#21 id=21 data-nosnippet>21</a><span class="kw">use </span>saluki_metrics::MetricsBuilder;
-<a href=#22 id=22 data-nosnippet>22</a><span class="kw">use </span>saluki_tls::ClientTLSConfigBuilder;
+<a href=#22 id=22 data-nosnippet>22</a><span class="kw">use </span>saluki_tls::{ClientTLSConfigBuilder, TlsMinimumVersion};
 <a href=#23 id=23 data-nosnippet>23</a><span class="kw">use </span>stringtheory::MetaString;
 <a href=#24 id=24 data-nosnippet>24</a><span class="kw">use </span>tower::{timeout::TimeoutLayer, util::BoxCloneService, BoxError, Service, ServiceBuilder, ServiceExt <span class="kw">as _</span>};
 <a href=#25 id=25 data-nosnippet>25</a>
@@ -257,74 +257,85 @@
 <a href=#257 id=257 data-nosnippet>257</a>        <span class="self">self
 <a href=#258 id=258 data-nosnippet>258</a>    </span>}
 <a href=#259 id=259 data-nosnippet>259</a>
-<a href=#260 id=260 data-nosnippet>260</a>    <span class="doccomment">/// Sets the underlying Hyper client configuration.
+<a href=#260 id=260 data-nosnippet>260</a>    <span class="doccomment">/// Sets the minimum TLS protocol version for HTTPS connections.
 <a href=#261 id=261 data-nosnippet>261</a>    ///
-<a href=#262 id=262 data-nosnippet>262</a>    /// This is provided to allow for more advanced configuration of the Hyper client itself, and should generally be
-<a href=#263 id=263 data-nosnippet>263</a>    /// used sparingly.
-<a href=#264 id=264 data-nosnippet>264</a>    </span><span class="kw">pub fn </span>with_hyper_config&lt;F&gt;(<span class="kw-2">mut </span><span class="self">self</span>, f: F) -&gt; <span class="self">Self
-<a href=#265 id=265 data-nosnippet>265</a>    </span><span class="kw">where
-<a href=#266 id=266 data-nosnippet>266</a>        </span>F: FnOnce(<span class="kw-2">&amp;mut </span>Builder),
-<a href=#267 id=267 data-nosnippet>267</a>    {
-<a href=#268 id=268 data-nosnippet>268</a>        f(<span class="kw-2">&amp;mut </span><span class="self">self</span>.hyper_builder);
-<a href=#269 id=269 data-nosnippet>269</a>        <span class="self">self
-<a href=#270 id=270 data-nosnippet>270</a>    </span>}
-<a href=#271 id=271 data-nosnippet>271</a>
-<a href=#272 id=272 data-nosnippet>272</a>    <span class="doccomment">/// Sets a counter that gets incremented with the number of bytes sent over the connection.
-<a href=#273 id=273 data-nosnippet>273</a>    ///
-<a href=#274 id=274 data-nosnippet>274</a>    /// This tracks bytes sent at the HTTP client level, which includes headers and body but doesn't include underlying
-<a href=#275 id=275 data-nosnippet>275</a>    /// transport overhead, such as TLS handshaking, and so on.
-<a href=#276 id=276 data-nosnippet>276</a>    ///
-<a href=#277 id=277 data-nosnippet>277</a>    /// Defaults to unset.
-<a href=#278 id=278 data-nosnippet>278</a>    </span><span class="kw">pub fn </span>with_bytes_sent_counter(<span class="kw-2">mut </span><span class="self">self</span>, counter: Counter) -&gt; <span class="self">Self </span>{
-<a href=#279 id=279 data-nosnippet>279</a>        <span class="self">self</span>.connector_builder = <span class="self">self</span>.connector_builder.with_bytes_sent_counter(counter);
+<a href=#262 id=262 data-nosnippet>262</a>    /// Defaults to TLS 1.2.
+<a href=#263 id=263 data-nosnippet>263</a>    ///
+<a href=#264 id=264 data-nosnippet>264</a>    /// This updates the same TLS builder configured by [`Self::with_tls_config`], so call order matters when both
+<a href=#265 id=265 data-nosnippet>265</a>    /// methods change the minimum TLS version.
+<a href=#266 id=266 data-nosnippet>266</a>    </span><span class="kw">pub fn </span>with_min_tls_version(<span class="kw-2">mut </span><span class="self">self</span>, version: TlsMinimumVersion) -&gt; <span class="self">Self </span>{
+<a href=#267 id=267 data-nosnippet>267</a>        <span class="self">self</span>.tls_builder = <span class="self">self</span>.tls_builder.with_min_tls_version(version);
+<a href=#268 id=268 data-nosnippet>268</a>        <span class="self">self
+<a href=#269 id=269 data-nosnippet>269</a>    </span>}
+<a href=#270 id=270 data-nosnippet>270</a>
+<a href=#271 id=271 data-nosnippet>271</a>    <span class="doccomment">/// Sets the underlying Hyper client configuration.
+<a href=#272 id=272 data-nosnippet>272</a>    ///
+<a href=#273 id=273 data-nosnippet>273</a>    /// This is provided to allow for more advanced configuration of the Hyper client itself, and should generally be
+<a href=#274 id=274 data-nosnippet>274</a>    /// used sparingly.
+<a href=#275 id=275 data-nosnippet>275</a>    </span><span class="kw">pub fn </span>with_hyper_config&lt;F&gt;(<span class="kw-2">mut </span><span class="self">self</span>, f: F) -&gt; <span class="self">Self
+<a href=#276 id=276 data-nosnippet>276</a>    </span><span class="kw">where
+<a href=#277 id=277 data-nosnippet>277</a>        </span>F: FnOnce(<span class="kw-2">&amp;mut </span>Builder),
+<a href=#278 id=278 data-nosnippet>278</a>    {
+<a href=#279 id=279 data-nosnippet>279</a>        f(<span class="kw-2">&amp;mut </span><span class="self">self</span>.hyper_builder);
 <a href=#280 id=280 data-nosnippet>280</a>        <span class="self">self
 <a href=#281 id=281 data-nosnippet>281</a>    </span>}
 <a href=#282 id=282 data-nosnippet>282</a>
-<a href=#283 id=283 data-nosnippet>283</a>    <span class="doccomment">/// Builds the `HttpClient`.
+<a href=#283 id=283 data-nosnippet>283</a>    <span class="doccomment">/// Sets a counter that gets incremented with the number of bytes sent over the connection.
 <a href=#284 id=284 data-nosnippet>284</a>    ///
-<a href=#285 id=285 data-nosnippet>285</a>    /// # Errors
-<a href=#286 id=286 data-nosnippet>286</a>    ///
-<a href=#287 id=287 data-nosnippet>287</a>    /// If there was an error building the TLS configuration for the client, an error will be returned.
-<a href=#288 id=288 data-nosnippet>288</a>    </span><span class="kw">pub fn </span>build(<span class="self">self</span>) -&gt; <span class="prelude-ty">Result</span>&lt;HttpClient, GenericError&gt; {
-<a href=#289 id=289 data-nosnippet>289</a>        <span class="kw">let </span>tls_config = <span class="self">self</span>.tls_builder.build()<span class="question-mark">?</span>;
-<a href=#290 id=290 data-nosnippet>290</a>        <span class="kw">let </span>connector = <span class="self">self</span>.connector_builder.build(tls_config)<span class="question-mark">?</span>;
-<a href=#291 id=291 data-nosnippet>291</a>        <span class="comment">// TODO(fips): Look into updating `hyper-http-proxy` to use the provided connector for establishing the
-<a href=#292 id=292 data-nosnippet>292</a>        // connection to the proxy itself, even when the proxy is at an HTTPS URL, to ensure our desired TLS stack is
-<a href=#293 id=293 data-nosnippet>293</a>        // being used.
-<a href=#294 id=294 data-nosnippet>294</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>proxy_connector = hyper_http_proxy::ProxyConnector::new(connector)<span class="question-mark">?</span>;
-<a href=#295 id=295 data-nosnippet>295</a>        <span class="kw">if let </span><span class="prelude-val">Some</span>(proxies) = <span class="kw-2">&amp;</span><span class="self">self</span>.proxies {
-<a href=#296 id=296 data-nosnippet>296</a>            <span class="kw">for </span>proxy <span class="kw">in </span>proxies {
-<a href=#297 id=297 data-nosnippet>297</a>                proxy_connector.add_proxy(proxy.to_owned());
-<a href=#298 id=298 data-nosnippet>298</a>            }
-<a href=#299 id=299 data-nosnippet>299</a>        }
-<a href=#300 id=300 data-nosnippet>300</a>        <span class="kw">let </span>client = <span class="self">self</span>.hyper_builder.build(proxy_connector);
-<a href=#301 id=301 data-nosnippet>301</a>
-<a href=#302 id=302 data-nosnippet>302</a>        <span class="kw">let </span>inner = ServiceBuilder::new()
-<a href=#303 id=303 data-nosnippet>303</a>            .option_layer(<span class="self">self</span>.request_timeout.map(TimeoutLayer::new))
-<a href=#304 id=304 data-nosnippet>304</a>            .option_layer(<span class="self">self</span>.endpoint_telemetry)
-<a href=#305 id=305 data-nosnippet>305</a>            .service(client.map_err(BoxError::from))
-<a href=#306 id=306 data-nosnippet>306</a>            .boxed_clone();
-<a href=#307 id=307 data-nosnippet>307</a>
-<a href=#308 id=308 data-nosnippet>308</a>        <span class="prelude-val">Ok</span>(HttpClient { inner })
-<a href=#309 id=309 data-nosnippet>309</a>    }
-<a href=#310 id=310 data-nosnippet>310</a>}
-<a href=#311 id=311 data-nosnippet>311</a>
-<a href=#312 id=312 data-nosnippet>312</a><span class="kw">impl </span>Default <span class="kw">for </span>HttpClientBuilder {
-<a href=#313 id=313 data-nosnippet>313</a>    <span class="kw">fn </span>default() -&gt; <span class="self">Self </span>{
-<a href=#314 id=314 data-nosnippet>314</a>        <span class="kw">let </span><span class="kw-2">mut </span>hyper_builder = Builder::new(TokioExecutor::new());
-<a href=#315 id=315 data-nosnippet>315</a>        hyper_builder
-<a href=#316 id=316 data-nosnippet>316</a>            .pool_timer(TokioTimer::new())
-<a href=#317 id=317 data-nosnippet>317</a>            .pool_max_idle_per_host(<span class="number">5</span>)
-<a href=#318 id=318 data-nosnippet>318</a>            .pool_idle_timeout(Duration::from_secs(<span class="number">45</span>));
-<a href=#319 id=319 data-nosnippet>319</a>
-<a href=#320 id=320 data-nosnippet>320</a>        <span class="self">Self </span>{
-<a href=#321 id=321 data-nosnippet>321</a>            connector_builder: HttpsCapableConnectorBuilder::default(),
-<a href=#322 id=322 data-nosnippet>322</a>            hyper_builder,
-<a href=#323 id=323 data-nosnippet>323</a>            tls_builder: ClientTLSConfigBuilder::new(),
-<a href=#324 id=324 data-nosnippet>324</a>            request_timeout: <span class="prelude-val">Some</span>(Duration::from_secs(<span class="number">20</span>)),
-<a href=#325 id=325 data-nosnippet>325</a>            endpoint_telemetry: <span class="prelude-val">None</span>,
-<a href=#326 id=326 data-nosnippet>326</a>            proxies: <span class="prelude-val">None</span>,
-<a href=#327 id=327 data-nosnippet>327</a>        }
-<a href=#328 id=328 data-nosnippet>328</a>    }
-<a href=#329 id=329 data-nosnippet>329</a>}
+<a href=#285 id=285 data-nosnippet>285</a>    /// This tracks bytes sent at the HTTP client level, which includes headers and body but doesn't include underlying
+<a href=#286 id=286 data-nosnippet>286</a>    /// transport overhead, such as TLS handshaking, and so on.
+<a href=#287 id=287 data-nosnippet>287</a>    ///
+<a href=#288 id=288 data-nosnippet>288</a>    /// Defaults to unset.
+<a href=#289 id=289 data-nosnippet>289</a>    </span><span class="kw">pub fn </span>with_bytes_sent_counter(<span class="kw-2">mut </span><span class="self">self</span>, counter: Counter) -&gt; <span class="self">Self </span>{
+<a href=#290 id=290 data-nosnippet>290</a>        <span class="self">self</span>.connector_builder = <span class="self">self</span>.connector_builder.with_bytes_sent_counter(counter);
+<a href=#291 id=291 data-nosnippet>291</a>        <span class="self">self
+<a href=#292 id=292 data-nosnippet>292</a>    </span>}
+<a href=#293 id=293 data-nosnippet>293</a>
+<a href=#294 id=294 data-nosnippet>294</a>    <span class="doccomment">/// Builds the `HttpClient`.
+<a href=#295 id=295 data-nosnippet>295</a>    ///
+<a href=#296 id=296 data-nosnippet>296</a>    /// # Errors
+<a href=#297 id=297 data-nosnippet>297</a>    ///
+<a href=#298 id=298 data-nosnippet>298</a>    /// If there was an error building the TLS configuration for the client, an error will be returned.
+<a href=#299 id=299 data-nosnippet>299</a>    </span><span class="kw">pub fn </span>build(<span class="self">self</span>) -&gt; <span class="prelude-ty">Result</span>&lt;HttpClient, GenericError&gt; {
+<a href=#300 id=300 data-nosnippet>300</a>        <span class="kw">let </span>tls_config = <span class="self">self</span>.tls_builder.build()<span class="question-mark">?</span>;
+<a href=#301 id=301 data-nosnippet>301</a>        <span class="kw">let </span>connector = <span class="self">self</span>.connector_builder.build(tls_config)<span class="question-mark">?</span>;
+<a href=#302 id=302 data-nosnippet>302</a>        <span class="comment">// TODO(fips): Look into updating `hyper-http-proxy` to use the provided connector for establishing the
+<a href=#303 id=303 data-nosnippet>303</a>        // connection to the proxy itself, even when the proxy is at an HTTPS URL, to ensure our desired TLS stack is
+<a href=#304 id=304 data-nosnippet>304</a>        // being used.
+<a href=#305 id=305 data-nosnippet>305</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>proxy_connector = hyper_http_proxy::ProxyConnector::new(connector)<span class="question-mark">?</span>;
+<a href=#306 id=306 data-nosnippet>306</a>        <span class="kw">if let </span><span class="prelude-val">Some</span>(proxies) = <span class="kw-2">&amp;</span><span class="self">self</span>.proxies {
+<a href=#307 id=307 data-nosnippet>307</a>            <span class="kw">for </span>proxy <span class="kw">in </span>proxies {
+<a href=#308 id=308 data-nosnippet>308</a>                proxy_connector.add_proxy(proxy.to_owned());
+<a href=#309 id=309 data-nosnippet>309</a>            }
+<a href=#310 id=310 data-nosnippet>310</a>        }
+<a href=#311 id=311 data-nosnippet>311</a>        <span class="kw">let </span>client = <span class="self">self</span>.hyper_builder.build(proxy_connector);
+<a href=#312 id=312 data-nosnippet>312</a>
+<a href=#313 id=313 data-nosnippet>313</a>        <span class="kw">let </span>inner = ServiceBuilder::new()
+<a href=#314 id=314 data-nosnippet>314</a>            .option_layer(<span class="self">self</span>.request_timeout.map(TimeoutLayer::new))
+<a href=#315 id=315 data-nosnippet>315</a>            .option_layer(<span class="self">self</span>.endpoint_telemetry)
+<a href=#316 id=316 data-nosnippet>316</a>            .service(client.map_err(BoxError::from))
+<a href=#317 id=317 data-nosnippet>317</a>            .boxed_clone();
+<a href=#318 id=318 data-nosnippet>318</a>
+<a href=#319 id=319 data-nosnippet>319</a>        <span class="prelude-val">Ok</span>(HttpClient { inner })
+<a href=#320 id=320 data-nosnippet>320</a>    }
+<a href=#321 id=321 data-nosnippet>321</a>}
+<a href=#322 id=322 data-nosnippet>322</a>
+<a href=#323 id=323 data-nosnippet>323</a><span class="kw">impl </span>Default <span class="kw">for </span>HttpClientBuilder {
+<a href=#324 id=324 data-nosnippet>324</a>    <span class="kw">fn </span>default() -&gt; <span class="self">Self </span>{
+<a href=#325 id=325 data-nosnippet>325</a>        <span class="kw">let </span><span class="kw-2">mut </span>hyper_builder = Builder::new(TokioExecutor::new());
+<a href=#326 id=326 data-nosnippet>326</a>        hyper_builder
+<a href=#327 id=327 data-nosnippet>327</a>            .pool_timer(TokioTimer::new())
+<a href=#328 id=328 data-nosnippet>328</a>            .pool_max_idle_per_host(<span class="number">5</span>)
+<a href=#329 id=329 data-nosnippet>329</a>            .pool_idle_timeout(Duration::from_secs(<span class="number">45</span>));
+<a href=#330 id=330 data-nosnippet>330</a>
+<a href=#331 id=331 data-nosnippet>331</a>        <span class="self">Self </span>{
+<a href=#332 id=332 data-nosnippet>332</a>            connector_builder: HttpsCapableConnectorBuilder::default(),
+<a href=#333 id=333 data-nosnippet>333</a>            hyper_builder,
+<a href=#334 id=334 data-nosnippet>334</a>            tls_builder: ClientTLSConfigBuilder::new(),
+<a href=#335 id=335 data-nosnippet>335</a>            request_timeout: <span class="prelude-val">Some</span>(Duration::from_secs(<span class="number">20</span>)),
+<a href=#336 id=336 data-nosnippet>336</a>            endpoint_telemetry: <span class="prelude-val">None</span>,
+<a href=#337 id=337 data-nosnippet>337</a>            proxies: <span class="prelude-val">None</span>,
+<a href=#338 id=338 data-nosnippet>338</a>        }
+<a href=#339 id=339 data-nosnippet>339</a>    }
+<a href=#340 id=340 data-nosnippet>340</a>}
 </code></pre></div></section></main></body></html>
