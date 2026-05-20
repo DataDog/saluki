@@ -41,6 +41,11 @@ async fn main() -> Result<(), GenericError> {
     let started = Instant::now();
     let cli: Cli = argh::from_env();
 
+    if matches!(cli.action, Action::Version(_)) {
+        handle_version_command().await;
+        return Ok(());
+    }
+
     // Load our "bootstrap" configuration -- static configuration on disk or from environment variables -- so we can
     // initialize basic subsystems before executing the given subcommand.
     let bootstrap_config_path = cli.config_file.unwrap_or_else(PlatformSettings::get_config_file_path);
@@ -153,6 +158,7 @@ async fn run_inner(
         Action::Debug(cmd) => handle_debug_command(&bootstrap_config, cmd).await,
         Action::Config(_) => handle_config_command(&bootstrap_config).await,
         Action::Dogstatsd(cmd) => handle_dogstatsd_command(&bootstrap_config, cmd).await,
+        Action::Version(_) => handle_version_command().await,
     }
 
     Ok(None)
