@@ -2,30 +2,6 @@
 use crate::config_registry::{generated::schema, SalukiAnnotation, Severity, SupportLevel};
 
 crate::declare_annotations! {
-    /// `cri_connection_timeout` - CRI runtime connection timeout.
-    CRI_CONNECTION_TIMEOUT = SalukiAnnotation {
-        schema: &schema::CRI_CONNECTION_TIMEOUT,
-        // Not implemented. ADP hardcodes CRI timeout. #1348
-        support_level: SupportLevel::Incompatible(Severity::Medium),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-    };
-
-    /// `cri_query_timeout` - CRI runtime query timeout.
-    CRI_QUERY_TIMEOUT = SalukiAnnotation {
-        schema: &schema::CRI_QUERY_TIMEOUT,
-        // Not implemented. ADP hardcodes CRI timeout. #1348
-        support_level: SupportLevel::Incompatible(Severity::Medium),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-    };
-
     /// `dogstatsd_disable_verbose_logs` - suppress noisy parse error logs.
     DOGSTATSD_DISABLE_VERBOSE_LOGS = SalukiAnnotation {
         schema: &schema::DOGSTATSD_DISABLE_VERBOSE_LOGS,

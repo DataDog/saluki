@@ -1,6 +1,7 @@
 //! Datadog Agent configuration registry entries.
 
 pub mod aggregate;
+pub mod containerd;
 pub mod dogstatsd;
 pub mod dogstatsd_mapper;
 pub mod dogstatsd_prefix_filter;
@@ -23,6 +24,7 @@ use super::SalukiAnnotation;
 pub(crate) static SUPPORTED_ANNOTATIONS: LazyLock<Vec<&'static SalukiAnnotation>> = LazyLock::new(|| {
     let mut v = Vec::new();
     v.extend_from_slice(aggregate::ALL);
+    v.extend_from_slice(containerd::ALL);
     v.extend_from_slice(dogstatsd::ALL);
     v.extend_from_slice(dogstatsd_mapper::ALL);
     v.extend_from_slice(forwarder::ALL);
