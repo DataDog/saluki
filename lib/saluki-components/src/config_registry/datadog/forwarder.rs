@@ -150,6 +150,17 @@ crate::declare_annotations! {
         test_json: None,
     };
 
+    /// `min_tls_version`—minimum TLS version for Datadog intake forwarding.
+    MIN_TLS_VERSION = SalukiAnnotation {
+        schema: &schema::MIN_TLS_VERSION,
+        support_level: SupportLevel::Partial,
+        additional_yaml_paths: &[],
+        env_var_override: Some(&["DD_MIN_TLS_VERSION"]),
+        used_by: &[structs::FORWARDER_CONFIGURATION],
+        value_type_override: None,
+        test_json: None,
+    };
+
     /// `allow_arbitrary_tags`—signals backend tag validation relaxation.
     ALLOW_ARBITRARY_TAGS = SalukiAnnotation {
         schema: &schema::ALLOW_ARBITRARY_TAGS,
