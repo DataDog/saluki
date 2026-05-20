@@ -134,18 +134,6 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `forwarder_http_protocol` - HTTP version selection.
-    FORWARDER_HTTP_PROTOCOL = SalukiAnnotation {
-        schema: &schema::FORWARDER_HTTP_PROTOCOL,
-        // Not implemented. #1361
-        support_level: SupportLevel::Incompatible(Severity::High),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-    };
-
     /// `forwarder_low_prio_buffer_size` - low-priority request queue size.
     FORWARDER_LOW_PRIO_BUFFER_SIZE = SalukiAnnotation {
         schema: &schema::FORWARDER_LOW_PRIO_BUFFER_SIZE,

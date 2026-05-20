@@ -139,6 +139,17 @@ crate::declare_annotations! {
         test_json: None,
     };
 
+    /// `forwarder_http_protocol`—HTTP version selection for outgoing forwarder requests.
+    FORWARDER_HTTP_PROTOCOL = SalukiAnnotation {
+        schema: &schema::FORWARDER_HTTP_PROTOCOL,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::FORWARDER_CONFIGURATION],
+        value_type_override: None,
+        test_json: Some("\"http1\""),
+    };
+
     /// `skip_ssl_validation`—disables TLS certificate validation for Datadog intake forwarding.
     SKIP_SSL_VALIDATION = SalukiAnnotation {
         schema: &schema::SKIP_SSL_VALIDATION,
