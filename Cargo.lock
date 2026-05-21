@@ -83,6 +83,7 @@ dependencies = [
  "home",
  "saluki-error",
  "tokio",
+ "tokio-util",
  "tracing",
 ]
 
