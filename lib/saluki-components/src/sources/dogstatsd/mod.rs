@@ -2256,8 +2256,8 @@ mod tests {
 
     use super::{
         build_metrics, handle_metric_packet, resolve_capture_container_id, ConnectedPacketForwarder, ContextResolvers,
-        DogStatsDConfiguration, ForwardPacket, PacketForwardBuffer, PacketForwarder, DOGSTATSD_CAPTURE_DIR,
-        MIN_CAPTURE_DEPTH,
+        DogStatsDConfiguration, ForwardPacket, PacketForwardBuffer, PacketForwarder,
+        DEFAULT_DOGSTATSD_PACKET_BUFFER_FLUSH_TIMEOUT, DOGSTATSD_CAPTURE_DIR, MIN_CAPTURE_DEPTH,
     };
 
     #[derive(Default)]

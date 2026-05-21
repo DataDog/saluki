@@ -16,8 +16,8 @@ pub enum DogStatsDForwardingComparisonMode {
 }
 
 pub fn run_analysis(
-    baseline_packets: &[String], comparison_packets: &[String], require_packets: bool,
-    require_batched_packets: bool, comparison_mode: DogStatsDForwardingComparisonMode,
+    baseline_packets: &[String], comparison_packets: &[String], require_packets: bool, require_batched_packets: bool,
+    comparison_mode: DogStatsDForwardingComparisonMode,
 ) -> Result<(), (GenericError, Vec<String>)> {
     if baseline_packets.is_empty() && comparison_packets.is_empty() {
         if require_packets {
@@ -224,7 +224,9 @@ fn decode_forwarded_packet(packet: &str) -> Result<Vec<u8>, (GenericError, Vec<S
     STANDARD.decode(packet).map_err(|e| {
         (
             generic_error!("Failed to decode forwarded DogStatsD packet capture."),
-            vec![format!("invalid forwarded packet base64: packet_base64={packet}, error={e}")],
+            vec![format!(
+                "invalid forwarded packet base64: packet_base64={packet}, error={e}"
+            )],
         )
     })
 }
@@ -250,14 +252,8 @@ mod tests {
 
     #[test]
     fn required_packets_fail_when_both_sides_are_empty() {
-        let error = run_analysis(
-            &[],
-            &[],
-            true,
-            false,
-            DogStatsDForwardingComparisonMode::Packets,
-        )
-        .expect_err("empty required captures should fail");
+        let error = run_analysis(&[], &[], true, false, DogStatsDForwardingComparisonMode::Packets)
+            .expect_err("empty required captures should fail");
 
         assert!(error.0.to_string().contains("No forwarded DogStatsD packets"));
         assert!(error.1[0].contains("both baseline and comparison captures were empty"));
@@ -265,14 +261,8 @@ mod tests {
 
     #[test]
     fn optional_empty_captures_pass() {
-        run_analysis(
-            &[],
-            &[],
-            false,
-            false,
-            DogStatsDForwardingComparisonMode::Packets,
-        )
-        .expect("empty optional captures should pass");
+        run_analysis(&[], &[], false, false, DogStatsDForwardingComparisonMode::Packets)
+            .expect("empty optional captures should pass");
     }
 
     #[test]

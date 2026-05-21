@@ -80,9 +80,7 @@ impl AnalysisRunner {
     }
 
     /// Sets how forwarded DogStatsD captures are compared for this analysis run.
-    pub const fn with_dogstatsd_forwarding_comparison_mode(
-        mut self, mode: DogStatsDForwardingComparisonMode,
-    ) -> Self {
+    pub const fn with_dogstatsd_forwarding_comparison_mode(mut self, mode: DogStatsDForwardingComparisonMode) -> Self {
         self.dogstatsd_forwarding_comparison_mode = mode;
         self
     }
