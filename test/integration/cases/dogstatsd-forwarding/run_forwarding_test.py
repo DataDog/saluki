@@ -9,15 +9,15 @@ import urllib.request
 
 PAYLOAD = b"adp.forwarding.integration:1|c|#source:integration"
 MALFORMED_PAYLOAD = b"this is not dogstatsd"
+UDP_BATCHED_PAYLOAD = MALFORMED_PAYLOAD + b"\n" + PAYLOAD
 STREAM_PAYLOAD = b"adp.forwarding.stream_one:1|c\nadp.forwarding.stream_two:2|c\n"
 UDS_PAYLOAD = b"adp.forwarding.uds_datagram:1|c"
 UDS_STREAM_PAYLOAD = b"adp.forwarding.uds_stream:1|c\n"
-FORWARDED_PATH = "/tmp/dsd-forwarded-packet"
-FORWARDED_MALFORMED_PATH = "/tmp/dsd-forwarded-malformed-packet"
+FORWARDED_UDP_BATCH_PATH = "/tmp/dsd-forwarded-udp-batch"
 FORWARDED_STREAM_PATH = "/tmp/dsd-forwarded-stream-packet"
 FORWARDED_UDS_PATH = "/tmp/dsd-forwarded-uds-packet"
 FORWARDED_UDS_STREAM_PATH = "/tmp/dsd-forwarded-uds-stream-packet"
-INGESTED_PATH = "/tmp/dsd-processing-seen"
+PARSED_METRIC_PATH = "/tmp/dsd-metric-parsed"
 FORWARD_ADDR = ("127.0.0.1", 9125)
 DOGSTATSD_ADDR = ("127.0.0.1", 8125)
 DOGSTATSD_STREAM_ADDR = ("127.0.0.1", 9126)
@@ -43,20 +43,18 @@ def remove_paths(paths):
 def remove_marker_files():
     remove_paths(
         (
-            FORWARDED_PATH,
-            FORWARDED_MALFORMED_PATH,
+            FORWARDED_UDP_BATCH_PATH,
             FORWARDED_STREAM_PATH,
             FORWARDED_UDS_PATH,
             FORWARDED_UDS_STREAM_PATH,
-            INGESTED_PATH,
+            PARSED_METRIC_PATH,
         )
     )
 
 
 def forwarded_packets_received():
     return (
-        os.path.exists(FORWARDED_PATH)
-        and os.path.exists(FORWARDED_MALFORMED_PATH)
+        os.path.exists(FORWARDED_UDP_BATCH_PATH)
         and os.path.exists(FORWARDED_STREAM_PATH)
         and os.path.exists(FORWARDED_UDS_PATH)
         and os.path.exists(FORWARDED_UDS_STREAM_PATH)
@@ -75,11 +73,8 @@ def receive_forwarded_packet():
             except TimeoutError:
                 continue
 
-            if data == PAYLOAD:
-                with open(FORWARDED_PATH, "wb") as output_file:
-                    output_file.write(data)
-            elif data == MALFORMED_PAYLOAD:
-                with open(FORWARDED_MALFORMED_PATH, "wb") as output_file:
+            if UDP_BATCHED_PAYLOAD in data:
+                with open(FORWARDED_UDP_BATCH_PATH, "wb") as output_file:
                     output_file.write(data)
             elif data == STREAM_PAYLOAD:
                 with open(FORWARDED_STREAM_PATH, "wb") as output_file:
@@ -178,11 +173,11 @@ def metric_line_value(line):
         return 0.0
 
 
-def packet_received_line(line):
+def metric_parsed_line(line):
     return (
-        "component_packets_received_total" in line
+        "component_events_received_total" in line
+        and 'message_type="metrics"' in line
         and 'listener_type="udp"' in line
-        and 'state="ok"' in line
         and metric_line_value(line) > 0.0
     )
 
@@ -199,8 +194,8 @@ def poll_ingestion_telemetry():
                 continue
 
             for line in body.splitlines():
-                if packet_received_line(line):
-                    with open(INGESTED_PATH, "w", encoding="utf-8") as output_file:
+                if metric_parsed_line(line):
+                    with open(PARSED_METRIC_PATH, "w", encoding="utf-8") as output_file:
                         output_file.write(line)
                     return
 

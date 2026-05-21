@@ -775,19 +775,19 @@
   },
   {
     "key": "dogstatsd_packet_buffer_flush_timeout",
-    "feature_state": "NOT_APPLICABLE",
+    "feature_state": "DIVERGENT",
     "action": "NONE",
     "description": "Packet buffer flush timeout",
-    "reason": "ADP decodes inline; no buffering pipeline.",
+    "reason": "ADP decodes inline for normal ingestion, but uses this setting to match Core Agent UDP packet forwarding batch flush behavior when statsd forwarding is enabled.",
     "issue": null,
     "adp_key": null
   },
   {
     "key": "dogstatsd_packet_buffer_size",
-    "feature_state": "NOT_APPLICABLE",
+    "feature_state": "DIVERGENT",
     "action": "NONE",
     "description": "Datagrams per packet buffer",
-    "reason": "ADP decodes inline; no buffering pipeline.",
+    "reason": "ADP decodes inline for normal ingestion, but uses this setting to match Core Agent UDP forwarding packet-group flush behavior when statsd forwarding is enabled.",
     "issue": null,
     "adp_key": null
   },

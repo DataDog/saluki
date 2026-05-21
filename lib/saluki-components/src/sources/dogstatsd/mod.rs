@@ -16,12 +16,12 @@ use std::{
 };
 
 use async_trait::async_trait;
-use bytes::{Buf, BufMut};
+use bytes::{Buf, BufMut, Bytes};
 use bytesize::ByteSize;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
 use metrics::{Counter, Gauge, Histogram};
 use saluki_common::task::spawn_traced_named;
-use saluki_config::{deserialize_space_separated_or_seq, GenericConfiguration};
+use saluki_config::{deserialize_space_separated_or_seq, DurationString, GenericConfiguration};
 use saluki_context::{
     tags::{RawTags, RawTagsFilter},
     TagsResolver,
@@ -63,6 +63,7 @@ use stringtheory::MetaString;
 use tokio::{
     net::UdpSocket,
     select,
+    sync::mpsc,
     time::{interval, timeout, MissedTickBehavior},
 };
 use tracing::{debug, error, info, trace, warn};
@@ -228,6 +229,17 @@ const fn default_capture_depth() -> usize {
 const DOGSTATSD_CAPTURE_DIR: &str = "dsd_capture";
 const FORWARDER_RESOLVE_TIMEOUT: Duration = Duration::from_secs(5);
 const FORWARDER_SOCKET_READY_TIMEOUT: Duration = Duration::from_millis(100);
+// Mirrors defaults from datadog-agent/pkg/config/setup/common_settings.go.
+const DEFAULT_DOGSTATSD_PACKET_BUFFER_SIZE: usize = 32;
+const DEFAULT_DOGSTATSD_PACKET_BUFFER_FLUSH_TIMEOUT: Duration = Duration::from_millis(100);
+
+const fn default_packet_buffer_size() -> usize {
+    DEFAULT_DOGSTATSD_PACKET_BUFFER_SIZE
+}
+
+const fn default_packet_buffer_flush_timeout() -> DurationString {
+    DurationString::new(DEFAULT_DOGSTATSD_PACKET_BUFFER_FLUSH_TIMEOUT)
+}
 
 fn deserialize_empty_metastring_as_none<'de, D>(deserializer: D) -> Result<Option<MetaString>, D::Error>
 where
@@ -308,6 +320,27 @@ pub struct DogStatsDConfiguration {
     /// Defaults to 0.
     #[serde(rename = "statsd_forward_port", default = "default_statsd_forward_port")]
     statsd_forward_port: u16,
+
+    /// The number of assembled UDP forwarding packets to buffer before flushing them.
+    ///
+    /// ADP decodes DogStatsD messages inline and doesn't use this setting for normal ingestion. When packet forwarding
+    /// is enabled, ADP uses this setting to match the Core Agent's UDP forwarding flush behavior.
+    ///
+    /// Defaults to 32.
+    #[serde(rename = "dogstatsd_packet_buffer_size", default = "default_packet_buffer_size")]
+    packet_buffer_size: usize,
+
+    /// How long ADP buffers UDP DogStatsD datagrams before flushing a forwarded packet.
+    ///
+    /// ADP decodes DogStatsD messages inline and doesn't use this setting for normal ingestion. When packet forwarding
+    /// is enabled, ADP uses this setting to match the Core Agent's UDP forwarding batch cadence.
+    ///
+    /// Defaults to 100ms.
+    #[serde(
+        rename = "dogstatsd_packet_buffer_flush_timeout",
+        default = "default_packet_buffer_flush_timeout"
+    )]
+    packet_buffer_flush_timeout: DurationString,
 
     /// The Unix domain socket path to listen on, in datagram mode.
     ///
@@ -1047,7 +1080,7 @@ impl Metrics {
 }
 
 struct ConnectedPacketForwarder {
-    socket: Arc<UdpSocket>,
+    socket: UdpSocket,
     target: SocketAddr,
 }
 
@@ -1065,23 +1098,46 @@ impl ConnectedPacketForwarder {
                 std::io::Error::new(std::io::ErrorKind::TimedOut, "timed out waiting for forwarder socket")
             })??;
 
-        Ok(Self {
-            socket: Arc::new(socket),
-            target,
-        })
+        Ok(Self { socket, target })
     }
 
-    fn forward(&self, payload: &[u8], metrics: &Metrics) {
-        match self.socket.try_send(payload) {
-            Ok(bytes_sent) => {
-                metrics.packets_forwarded().increment(1);
-                metrics.bytes_forwarded().increment(bytes_sent as u64);
-            }
-            Err(e) => {
-                metrics.packet_forwarding_errors().increment(1);
-                debug!(target = %self.target, error = %e, "Failed to forward DogStatsD packet.");
+    async fn run(self, mut packets_rx: mpsc::Receiver<ForwardPacket>) {
+        while let Some(packet) = packets_rx.recv().await {
+            match self.socket.send(&packet.payload).await {
+                Ok(bytes_sent) => packet.record_success(bytes_sent),
+                Err(e) => {
+                    packet.record_error();
+                    debug!(target = %self.target, error = %e, "Failed to forward DogStatsD packet.");
+                }
             }
         }
+    }
+}
+
+struct ForwardPacket {
+    payload: Bytes,
+    packets_forwarded: Counter,
+    bytes_forwarded: Counter,
+    packet_forwarding_errors: Counter,
+}
+
+impl ForwardPacket {
+    fn from_payload(payload: Bytes, metrics: &Metrics) -> Self {
+        Self {
+            payload,
+            packets_forwarded: metrics.packets_forwarded().clone(),
+            bytes_forwarded: metrics.bytes_forwarded().clone(),
+            packet_forwarding_errors: metrics.packet_forwarding_errors().clone(),
+        }
+    }
+
+    fn record_success(&self, bytes_sent: usize) {
+        self.packets_forwarded.increment(1);
+        self.bytes_forwarded.increment(bytes_sent as u64);
+    }
+
+    fn record_error(&self) {
+        self.packet_forwarding_errors.increment(1);
     }
 }
 
@@ -1089,7 +1145,10 @@ impl ConnectedPacketForwarder {
 struct PacketForwarder {
     target_host: MetaString,
     target_port: u16,
-    connected: Arc<OnceLock<ConnectedPacketForwarder>>,
+    udp_batch_max_bytes: usize,
+    udp_buffer_max_packets: usize,
+    udp_batch_flush_timeout: Duration,
+    connected: Arc<OnceLock<mpsc::Sender<ForwardPacket>>>,
 }
 
 impl PacketForwarder {
@@ -1098,8 +1157,27 @@ impl PacketForwarder {
         Some(Self {
             target_host: host.clone(),
             target_port: port,
+            udp_batch_max_bytes: config.buffer_size,
+            udp_buffer_max_packets: config.packet_buffer_size,
+            udp_batch_flush_timeout: config.packet_buffer_flush_timeout.as_duration(),
             connected: Arc::new(OnceLock::new()),
         })
+    }
+
+    const fn udp_batch_max_bytes(&self) -> usize {
+        self.udp_batch_max_bytes
+    }
+
+    const fn udp_buffer_max_packets(&self) -> usize {
+        self.udp_buffer_max_packets
+    }
+
+    const fn udp_batch_flush_timeout(&self) -> Duration {
+        self.udp_batch_flush_timeout
+    }
+
+    fn queue_capacity(&self) -> usize {
+        self.udp_buffer_max_packets.max(1)
     }
 
     fn spawn_connect(&self) {
@@ -1129,8 +1207,11 @@ impl PacketForwarder {
 
         match ConnectedPacketForwarder::connect(target).await {
             Ok(forwarder) => {
+                let (packets_tx, packets_rx) = mpsc::channel(self.queue_capacity());
+                spawn_traced_named("dogstatsd-packet-forwarder", forwarder.run(packets_rx));
+
                 info!(%target, "DogStatsD packet forwarding enabled.");
-                if self.connected.set(forwarder).is_err() {
+                if self.connected.set(packets_tx).is_err() {
                     debug!("DogStatsD packet forwarding was already initialized.");
                 }
             }
@@ -1140,13 +1221,88 @@ impl PacketForwarder {
         }
     }
 
-    fn forward(&self, payload: &[u8], metrics: &Metrics) {
+    async fn forward(&self, payload: Bytes, metrics: &Metrics) {
         if payload.is_empty() {
             return;
         }
 
-        if let Some(connected) = self.connected.get() {
-            connected.forward(payload, metrics);
+        if let Some(packets_tx) = self.connected.get() {
+            let packet = ForwardPacket::from_payload(payload, metrics);
+            if packets_tx.send(packet).await.is_err() {
+                metrics.packet_forwarding_errors().increment(1);
+                debug!("Failed to enqueue DogStatsD packet for forwarding: receiver dropped.");
+            }
+        }
+    }
+}
+
+struct PacketForwardBuffer {
+    current_payload: Vec<u8>,
+    pending_payloads: Vec<Vec<u8>>,
+    max_payload_bytes: usize,
+    max_pending_packets: usize,
+}
+
+impl PacketForwardBuffer {
+    fn new(max_payload_bytes: usize, max_pending_packets: usize) -> Self {
+        Self {
+            current_payload: Vec::with_capacity(max_payload_bytes),
+            pending_payloads: Vec::with_capacity(max_pending_packets),
+            max_payload_bytes,
+            max_pending_packets,
+        }
+    }
+
+    async fn push(&mut self, payload: &[u8], forwarder: &PacketForwarder, metrics: &Metrics) {
+        if payload.is_empty() {
+            return;
+        }
+
+        if self.current_payload.is_empty() {
+            self.current_payload.extend_from_slice(payload);
+            return;
+        }
+
+        if self.can_append(payload) {
+            self.current_payload.push(b'\n');
+            self.current_payload.extend_from_slice(payload);
+            return;
+        }
+
+        self.complete_current_payload();
+        self.flush_pending_if_full(forwarder, metrics).await;
+        // Start a new batch with the payload that did not fit in the previous one.
+        self.current_payload.extend_from_slice(payload);
+    }
+
+    async fn flush(&mut self, forwarder: &PacketForwarder, metrics: &Metrics) {
+        self.complete_current_payload();
+        self.flush_pending(forwarder, metrics).await;
+    }
+
+    fn complete_current_payload(&mut self) {
+        if !self.current_payload.is_empty() {
+            self.pending_payloads.push(std::mem::take(&mut self.current_payload));
+        }
+    }
+
+    fn can_append(&self, payload: &[u8]) -> bool {
+        self.current_payload
+            .len()
+            .checked_add(1)
+            .and_then(|len| len.checked_add(payload.len()))
+            .is_some_and(|len| len <= self.max_payload_bytes)
+    }
+
+    async fn flush_pending_if_full(&mut self, forwarder: &PacketForwarder, metrics: &Metrics) {
+        if self.pending_payloads.len() >= self.max_pending_packets {
+            self.flush_pending(forwarder, metrics).await;
+        }
+    }
+
+    async fn flush_pending(&mut self, forwarder: &PacketForwarder, metrics: &Metrics) {
+        for payload in self.pending_payloads.drain(..) {
+            forwarder.forward(Bytes::from(payload), metrics).await;
         }
     }
 }
@@ -1427,6 +1583,16 @@ async fn drive_stream(
     // we're otherwise idle and not receiving packets from the client.
     let mut buffer_flush = interval(Duration::from_millis(100));
     buffer_flush.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    let mut packet_forward_flush = interval(packet_forwarder.as_ref().map_or(
+        DEFAULT_DOGSTATSD_PACKET_BUFFER_FLUSH_TIMEOUT,
+        PacketForwarder::udp_batch_flush_timeout,
+    ));
+    packet_forward_flush.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    packet_forward_flush.tick().await;
+    let mut packet_forward_buffer = packet_forwarder
+        .as_ref()
+        .filter(|_| matches!(listen_addr, ListenAddress::Udp(_)))
+        .map(|forwarder| PacketForwardBuffer::new(forwarder.udp_batch_max_bytes(), forwarder.udp_buffer_max_packets()));
 
     let mut event_buffer_manager = EventBufferManager::default();
     let mut io_buffer_manager = IoBufferManager::new(&io_buffer_pool, &stream);
@@ -1461,7 +1627,11 @@ async fn drive_stream(
 
                     if is_connectionless {
                         if let Some(forwarder) = &packet_forwarder {
-                            forwarder.forward(payload, &metrics);
+                            if let Some(buffer) = packet_forward_buffer.as_mut() {
+                                buffer.push(payload, forwarder, &metrics).await;
+                            } else {
+                                forwarder.forward(Bytes::copy_from_slice(payload), &metrics).await;
+                            }
                         }
                         metrics.packet_receive_success().increment(1);
                     }
@@ -1495,7 +1665,7 @@ async fn drive_stream(
                         if !is_connectionless {
                             while let Some(outer_frame) = framer.pop_extracted_outer_frame() {
                                 if let Some(forwarder) = &packet_forwarder {
-                                    forwarder.forward(&outer_frame, &metrics);
+                                    forwarder.forward(outer_frame, &metrics).await;
                                 }
                             }
                         }
@@ -1584,7 +1754,17 @@ async fn drive_stream(
                     dispatch_events(event_buffer, &source_context, &listen_addr).await;
                 }
             },
+
+            _ = packet_forward_flush.tick(), if packet_forward_buffer.is_some() => {
+                if let (Some(forwarder), Some(buffer)) = (&packet_forwarder, packet_forward_buffer.as_mut()) {
+                    buffer.flush(forwarder, &metrics).await;
+                }
+            },
         }
+    }
+
+    if let (Some(forwarder), Some(buffer)) = (&packet_forwarder, packet_forward_buffer.as_mut()) {
+        buffer.flush(forwarder, &metrics).await;
     }
 
     if let Some(event_buffer) = event_buffer_manager.consume() {
@@ -1986,10 +2166,11 @@ mod tests {
         collections::HashMap,
         net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4},
         path::PathBuf,
-        sync::Arc,
+        sync::{Arc, OnceLock},
         time::Duration,
     };
 
+    use bytes::Bytes;
     use bytesize::ByteSize;
     use saluki_config::ConfigurationLoader;
     use saluki_context::{ContextResolverBuilder, TagsResolverBuilder};
@@ -2001,11 +2182,13 @@ mod tests {
     };
     use saluki_metrics::test::TestRecorder;
     use serde_json::json;
-    use tokio::{net::UdpSocket, time::timeout};
+    use stringtheory::MetaString;
+    use tokio::{net::UdpSocket, sync::mpsc, time::timeout};
 
     use super::{
         build_metrics, handle_metric_packet, resolve_capture_container_id, ConnectedPacketForwarder, ContextResolvers,
-        DogStatsDConfiguration, PacketForwarder, DOGSTATSD_CAPTURE_DIR, MIN_CAPTURE_DEPTH,
+        DogStatsDConfiguration, ForwardPacket, PacketForwardBuffer, PacketForwarder, DOGSTATSD_CAPTURE_DIR,
+        MIN_CAPTURE_DEPTH,
     };
 
     #[derive(Default)]
@@ -2024,6 +2207,20 @@ mod tests {
     impl CaptureEntityResolver for CaptureTestEntityResolver {
         fn resolve_container_entity_for_live_pid(&self, process_id: u32) -> Option<EntityId> {
             self.pid_map.get(&process_id).cloned()
+        }
+    }
+
+    fn packet_forwarder_from_sender(
+        target_port: u16, packets_tx: mpsc::Sender<ForwardPacket>, udp_batch_max_bytes: usize,
+        udp_buffer_max_packets: usize,
+    ) -> PacketForwarder {
+        PacketForwarder {
+            target_host: MetaString::from_static("127.0.0.1"),
+            target_port,
+            udp_batch_max_bytes,
+            udp_buffer_max_packets,
+            udp_batch_flush_timeout: Duration::from_millis(100),
+            connected: Arc::new(OnceLock::from(packets_tx)),
         }
     }
 
@@ -2141,6 +2338,11 @@ mod tests {
         let config = deser_config("{}");
         assert!(config.statsd_forward_host.is_none());
         assert_eq!(config.statsd_forward_port, 0);
+        assert_eq!(config.packet_buffer_size, 32);
+        assert_eq!(
+            config.packet_buffer_flush_timeout.as_duration(),
+            Duration::from_millis(100)
+        );
         assert!(config.statsd_forward_target().is_none());
     }
 
@@ -2186,8 +2388,13 @@ mod tests {
         let listen_addr = ListenAddress::Udp(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 8125)));
         let context = ComponentContext::source(ComponentId::try_from("dogstatsd_test").expect("valid component ID"));
         let metrics = build_metrics(&listen_addr, &context);
+        let (packets_tx, packets_rx) = mpsc::channel(1);
+        let worker = tokio::spawn(forwarder.run(packets_rx));
+        let packet_forwarder = packet_forwarder_from_sender(receiver_addr.port(), packets_tx, 8192, 32);
 
-        forwarder.forward(payload, &metrics);
+        packet_forwarder
+            .forward(Bytes::copy_from_slice(payload), &metrics)
+            .await;
 
         let mut actual = [0u8; 128];
         let (received_len, _) = timeout(Duration::from_secs(1), receiver.recv_from(&mut actual))
@@ -2219,6 +2426,126 @@ mod tests {
             )),
             Some(payload.len() as u64)
         );
+        worker.abort();
+    }
+
+    #[tokio::test]
+    async fn packet_forward_buffer_batches_payload_bytes_until_flush() {
+        let receiver = UdpSocket::bind("127.0.0.1:0").await.expect("receiver should bind");
+        let receiver_addr = receiver.local_addr().expect("receiver should have an address");
+        let forwarder = ConnectedPacketForwarder::connect(receiver_addr)
+            .await
+            .expect("forwarder should connect");
+
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let listen_addr = ListenAddress::Udp(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 8125)));
+        let context = ComponentContext::source(ComponentId::try_from("dogstatsd_test").expect("valid component ID"));
+        let metrics = build_metrics(&listen_addr, &context);
+        let (packets_tx, packets_rx) = mpsc::channel(1);
+        let worker = tokio::spawn(forwarder.run(packets_rx));
+        let packet_forwarder = packet_forwarder_from_sender(receiver_addr.port(), packets_tx, 8192, 32);
+        let mut buffer = PacketForwardBuffer::new(
+            packet_forwarder.udp_batch_max_bytes(),
+            packet_forwarder.udp_buffer_max_packets(),
+        );
+
+        buffer.push(b"daemon:666|g", &packet_forwarder, &metrics).await;
+        let mut actual = [0u8; 128];
+        assert!(
+            timeout(Duration::from_millis(100), receiver.recv_from(&mut actual))
+                .await
+                .is_err(),
+            "buffer should not forward before flush"
+        );
+
+        buffer.push(b"another:1|c", &packet_forwarder, &metrics).await;
+        buffer.flush(&packet_forwarder, &metrics).await;
+
+        let (received_len, _) = timeout(Duration::from_secs(1), receiver.recv_from(&mut actual))
+            .await
+            .expect("receive should not time out")
+            .expect("receiver should receive payload");
+
+        assert_eq!(&actual[..received_len], b"daemon:666|g\nanother:1|c");
+        assert_eq!(
+            recorder.counter((
+                "component_packets_forwarded_total",
+                &[
+                    ("component_id", "dogstatsd_test"),
+                    ("component_type", "source"),
+                    ("listener_type", "udp"),
+                    ("state", "ok"),
+                ]
+            )),
+            Some(1)
+        );
+        worker.abort();
+    }
+
+    #[tokio::test]
+    async fn packet_forward_buffer_flushes_when_next_payload_does_not_fit() {
+        let receiver = UdpSocket::bind("127.0.0.1:0").await.expect("receiver should bind");
+        let receiver_addr = receiver.local_addr().expect("receiver should have an address");
+        let forwarder = ConnectedPacketForwarder::connect(receiver_addr)
+            .await
+            .expect("forwarder should connect");
+
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let listen_addr = ListenAddress::Udp(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 8125)));
+        let context = ComponentContext::source(ComponentId::try_from("dogstatsd_test").expect("valid component ID"));
+        let metrics = build_metrics(&listen_addr, &context);
+        let (packets_tx, packets_rx) = mpsc::channel(1);
+        let worker = tokio::spawn(forwarder.run(packets_rx));
+        let packet_forwarder = packet_forwarder_from_sender(receiver_addr.port(), packets_tx, 11, 1);
+        let mut buffer = PacketForwardBuffer::new(
+            packet_forwarder.udp_batch_max_bytes(),
+            packet_forwarder.udp_buffer_max_packets(),
+        );
+
+        buffer.push(b"first", &packet_forwarder, &metrics).await;
+        buffer.push(b"second", &packet_forwarder, &metrics).await;
+
+        let mut actual = [0u8; 128];
+        let (received_len, _) = timeout(Duration::from_secs(1), receiver.recv_from(&mut actual))
+            .await
+            .expect("receive should not time out")
+            .expect("receiver should receive first payload");
+        assert_eq!(&actual[..received_len], b"first");
+
+        buffer.flush(&packet_forwarder, &metrics).await;
+        let (received_len, _) = timeout(Duration::from_secs(1), receiver.recv_from(&mut actual))
+            .await
+            .expect("receive should not time out")
+            .expect("receiver should receive second payload");
+        assert_eq!(&actual[..received_len], b"second");
+        worker.abort();
+    }
+
+    #[tokio::test]
+    async fn packet_forwarder_waits_when_queue_is_full() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let listen_addr = ListenAddress::Udp(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 8125)));
+        let context = ComponentContext::source(ComponentId::try_from("dogstatsd_test").expect("valid component ID"));
+        let metrics = build_metrics(&listen_addr, &context);
+        let (packets_tx, _packets_rx) = mpsc::channel(1);
+        let packet_forwarder = packet_forwarder_from_sender(9125, packets_tx, 8192, 32);
+
+        packet_forwarder
+            .forward(Bytes::from_static(b"first:1|c"), &metrics)
+            .await;
+
+        assert!(
+            timeout(
+                Duration::from_millis(100),
+                packet_forwarder.forward(Bytes::from_static(b"second:1|c"), &metrics),
+            )
+            .await
+            .is_err(),
+            "forwarding should wait for queue capacity instead of dropping"
+        );
     }
 
     #[tokio::test]
@@ -2230,24 +2557,39 @@ mod tests {
         let metrics = build_metrics(&listen_addr, &context);
         let socket = UdpSocket::bind("127.0.0.1:0").await.expect("socket should bind");
         let forwarder = ConnectedPacketForwarder {
-            socket: Arc::new(socket),
+            socket,
             target: SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 9125)),
         };
+        let (packets_tx, packets_rx) = mpsc::channel(1);
+        let worker = tokio::spawn(forwarder.run(packets_rx));
+        let packet_forwarder = packet_forwarder_from_sender(9125, packets_tx, 8192, 32);
 
-        forwarder.forward(b"daemon:666|g", &metrics);
+        packet_forwarder
+            .forward(Bytes::from_static(b"daemon:666|g"), &metrics)
+            .await;
 
-        assert_eq!(
-            recorder.counter((
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+        loop {
+            if recorder.counter((
                 "component_packets_forwarded_total",
                 &[
                     ("component_id", "dogstatsd_test"),
                     ("component_type", "source"),
                     ("listener_type", "udp"),
                     ("state", "error"),
-                ]
-            )),
-            Some(1)
-        );
+                ],
+            )) == Some(1)
+            {
+                break;
+            }
+
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "forwarding error telemetry should be recorded"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        worker.abort();
     }
 
     #[test]
