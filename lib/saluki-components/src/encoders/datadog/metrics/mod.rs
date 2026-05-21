@@ -1245,6 +1245,7 @@ mod tests {
     use saluki_common::iter::ReusableDeduplicator;
     use saluki_context::{tags::SharedTagSet, Context};
     use saluki_core::data_model::event::metric::{Metric, MetricMetadata, MetricOrigin, MetricValues};
+    use saluki_io::compression::CompressionScheme;
     use serde_json::Value as JsonValue;
     use stringtheory::MetaString;
 
@@ -1256,7 +1257,6 @@ mod tests {
         io::RB_BUFFER_CHUNK_SIZE,
         request_builder::{EndpointEncoder as _, RequestBuilder},
     };
-    use saluki_io::compression::CompressionScheme;
 
     fn encode_one_v1(metric: &Metric) -> JsonValue {
         let mut buf = Vec::new();
