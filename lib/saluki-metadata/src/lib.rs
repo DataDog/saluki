@@ -1,3 +1,5 @@
+use serde::{Serialize, Serializer};
+
 #[allow(dead_code)]
 mod details {
     include!(concat!(env!("OUT_DIR"), "/details.rs"));
@@ -49,6 +51,7 @@ pub fn get_app_details() -> &'static AppDetails {
 /// The version string will be treated as a semantic version, and will be split on periods to extract the major, minor,
 /// and patch numbers. Additionally, the patch number will be split on hyphens to remove any pre-release or build
 /// metadata.
+#[derive(Serialize)]
 pub struct AppDetails {
     full_name: &'static str,
     short_name: &'static str,
@@ -178,5 +181,15 @@ impl Version {
     /// If the patch version number isn't present in the version string, this will return `0`.
     pub fn patch(&self) -> u32 {
         self.patch
+    }
+}
+
+impl Serialize for Version {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        // Redirect serialization entirely to the 'raw' string slice
+        serializer.serialize_str(self.raw)
     }
 }

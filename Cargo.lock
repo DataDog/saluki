@@ -4306,6 +4306,9 @@ dependencies = [
 [[package]]
 name = "saluki-metadata"
 version = "0.1.0"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "saluki-metrics"
