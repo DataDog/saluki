@@ -692,6 +692,19 @@ impl DogStatsDConfiguration {
         u16::try_from(self.statsd_forward_port).ok().map(|port| (host, port))
     }
 
+    fn packet_buffer_flush_timeout_or_default(&self) -> Duration {
+        let timeout = self.packet_buffer_flush_timeout.as_duration();
+        if timeout.is_zero() {
+            warn!(
+                default_ms = DEFAULT_DOGSTATSD_PACKET_BUFFER_FLUSH_TIMEOUT.as_millis(),
+                "Invalid dogstatsd_packet_buffer_flush_timeout of 0. Using default packet buffer flush timeout."
+            );
+            DEFAULT_DOGSTATSD_PACKET_BUFFER_FLUSH_TIMEOUT
+        } else {
+            timeout
+        }
+    }
+
     fn has_invalid_statsd_forward_port(&self) -> bool {
         self.statsd_forward_host.is_some()
             && self.statsd_forward_port != 0
@@ -1212,7 +1225,7 @@ impl PacketForwarder {
             target_port: port,
             udp_batch_max_bytes: config.buffer_size,
             udp_buffer_max_packets: config.packet_buffer_size,
-            udp_batch_flush_timeout: config.packet_buffer_flush_timeout.as_duration(),
+            udp_batch_flush_timeout: config.packet_buffer_flush_timeout_or_default(),
             connected: Arc::new(OnceLock::new()),
         })
     }
@@ -2400,6 +2413,24 @@ mod tests {
             Duration::from_millis(100)
         );
         assert!(config.statsd_forward_target().is_none());
+    }
+
+    #[test]
+    fn statsd_forward_zero_packet_buffer_flush_timeout_uses_default() {
+        let config = deser_config(
+            r#"{
+                "statsd_forward_host": "127.0.0.1",
+                "statsd_forward_port": 9125,
+                "dogstatsd_packet_buffer_flush_timeout": 0
+            }"#,
+        );
+        let forwarder = PacketForwarder::from_config(&config).expect("forwarding should be enabled");
+
+        assert_eq!(config.packet_buffer_flush_timeout.as_duration(), Duration::ZERO);
+        assert_eq!(
+            forwarder.udp_batch_flush_timeout(),
+            DEFAULT_DOGSTATSD_PACKET_BUFFER_FLUSH_TIMEOUT
+        );
     }
 
     #[test]

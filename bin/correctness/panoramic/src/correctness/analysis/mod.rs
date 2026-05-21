@@ -5,6 +5,7 @@ mod collected;
 pub use self::collected::CollectedData;
 
 mod dogstatsd_forwarding;
+pub use self::dogstatsd_forwarding::DogStatsDForwardingComparisonMode;
 mod events;
 mod metrics;
 mod service_checks;
@@ -43,6 +44,8 @@ pub struct AnalysisRunner {
     comparison_data: CollectedData,
     traces_options: Option<TracesAnalysisOptions>,
     require_dogstatsd_forwarded_packets: bool,
+    require_dogstatsd_forwarded_packet_batches: bool,
+    dogstatsd_forwarding_comparison_mode: DogStatsDForwardingComparisonMode,
 }
 
 impl AnalysisRunner {
@@ -59,12 +62,28 @@ impl AnalysisRunner {
             comparison_data,
             traces_options,
             require_dogstatsd_forwarded_packets: false,
+            require_dogstatsd_forwarded_packet_batches: false,
+            dogstatsd_forwarding_comparison_mode: DogStatsDForwardingComparisonMode::Packets,
         }
     }
 
     /// Sets whether forwarded DogStatsD packets are required for this analysis run.
     pub const fn with_dogstatsd_forwarding_requirement(mut self, require_packets: bool) -> Self {
         self.require_dogstatsd_forwarded_packets = require_packets;
+        self
+    }
+
+    /// Sets whether forwarded DogStatsD packet batching is required for this analysis run.
+    pub const fn with_dogstatsd_forwarding_batch_requirement(mut self, require_batches: bool) -> Self {
+        self.require_dogstatsd_forwarded_packet_batches = require_batches;
+        self
+    }
+
+    /// Sets how forwarded DogStatsD captures are compared for this analysis run.
+    pub const fn with_dogstatsd_forwarding_comparison_mode(
+        mut self, mode: DogStatsDForwardingComparisonMode,
+    ) -> Self {
+        self.dogstatsd_forwarding_comparison_mode = mode;
         self
     }
 
@@ -104,6 +123,8 @@ impl AnalysisRunner {
             self.baseline_data.dogstatsd_forwarded_packets(),
             self.comparison_data.dogstatsd_forwarded_packets(),
             self.require_dogstatsd_forwarded_packets,
+            self.require_dogstatsd_forwarded_packet_batches,
+            self.dogstatsd_forwarding_comparison_mode,
         )
     }
 }

@@ -2,6 +2,8 @@ type: correctness
 runtime: docker
 analysis_mode: metrics
 require_dogstatsd_forwarded_packets: true
+require_dogstatsd_forwarded_packet_batches: true
+dogstatsd_forwarding_comparison_mode: messages
 millstone:
   image: saluki-images/correctness-tools:latest
   config_path: millstone.yaml

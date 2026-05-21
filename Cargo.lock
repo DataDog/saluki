@@ -2960,6 +2960,7 @@ dependencies = [
  "airlock",
  "argh",
  "async-trait",
+ "base64 0.22.1",
  "bollard",
  "chrono",
  "colored",

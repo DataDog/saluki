@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use serde::Deserialize;
 
-use crate::correctness::analysis::AnalysisMode;
+use crate::correctness::analysis::{AnalysisMode, DogStatsDForwardingComparisonMode};
 use crate::correctness::config::{
     Config as CorrectnessConfig, DatadogIntakeConfig as CorrectnessDatadogIntakeConfig,
     MillstoneConfig as CorrectnessMillstoneConfig, Runtime as CorrectnessRuntime,
@@ -499,6 +499,15 @@ pub struct MatrixConfig {
     #[serde(default)]
     pub require_dogstatsd_forwarded_packets: bool,
 
+    /// Whether each expanded correctness run must capture at least one forwarded DogStatsD packet containing multiple
+    /// messages.
+    #[serde(default)]
+    pub require_dogstatsd_forwarded_packet_batches: bool,
+
+    /// How forwarded DogStatsD captures should be compared.
+    #[serde(default)]
+    pub dogstatsd_forwarding_comparison_mode: DogStatsDForwardingComparisonMode,
+
     /// Matrix variants. Each entry produces one expanded test case.
     pub variants: Vec<MatrixVariant>,
 
@@ -596,6 +605,8 @@ impl MatrixConfig {
                     otlp_direct_analysis_mode: self.otlp_direct_analysis_mode,
                     additional_span_ignore_fields: self.additional_span_ignore_fields.clone(),
                     require_dogstatsd_forwarded_packets: self.require_dogstatsd_forwarded_packets,
+                    require_dogstatsd_forwarded_packet_batches: self.require_dogstatsd_forwarded_packet_batches,
+                    dogstatsd_forwarding_comparison_mode: self.dogstatsd_forwarding_comparison_mode,
                     base_config_path: PathBuf::new(),
                 }
             })
