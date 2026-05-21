@@ -5,6 +5,7 @@ use http::{
 
 use super::endpoints::ResolvedEndpoint;
 
+static ALLOW_ARBITRARY_TAG_VALUE_HEADER: HeaderName = HeaderName::from_static("allow-arbitrary-tag-value");
 static DD_AGENT_VERSION_HEADER: HeaderName = HeaderName::from_static("dd-agent-version");
 static DD_API_KEY_HEADER: HeaderName = HeaderName::from_static("dd-api-key");
 
@@ -56,6 +57,23 @@ pub fn for_resolved_endpoint<B>(mut endpoint: ResolvedEndpoint) -> impl FnMut(Re
     }
 }
 
+/// Builds a middleware function that optionally signals backend support for arbitrary tag values.
+///
+/// When enabled, adds `Allow-Arbitrary-Tag-Value: true` to every outbound request. This mirrors the Datadog Agent's
+/// forwarder behavior for `allow_arbitrary_tags`; it does not perform local tag validation.
+pub fn with_allow_arbitrary_tags<B>(enabled: bool) -> impl Fn(Request<B>) -> Request<B> + Clone {
+    move |mut request| {
+        if enabled {
+            request.headers_mut().insert(
+                ALLOW_ARBITRARY_TAG_VALUE_HEADER.clone(),
+                HeaderValue::from_static("true"),
+            );
+        }
+
+        request
+    }
+}
+
 /// Builds a middleware function that adds request headers indicating the version of the data plane making the request.
 ///
 /// Adds the `dd-agent-version` header with the version of the data plane (`x.y.z`), and the `User-Agent` header with
@@ -81,5 +99,41 @@ pub fn with_version_info<B>() -> impl Fn(Request<B>) -> Request<B> + Clone {
             .headers_mut()
             .insert(http::header::USER_AGENT, user_agent_header_value.clone());
         request
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use http::Request;
+
+    use super::with_allow_arbitrary_tags;
+
+    #[test]
+    fn allow_arbitrary_tags_header_is_added_when_enabled() {
+        let middleware = with_allow_arbitrary_tags(true);
+        let request = Request::builder()
+            .uri("/api/v1/series")
+            .body(())
+            .expect("request should build");
+
+        let request = middleware(request);
+
+        assert_eq!(
+            request.headers().get("allow-arbitrary-tag-value"),
+            Some(&http::HeaderValue::from_static("true"))
+        );
+    }
+
+    #[test]
+    fn allow_arbitrary_tags_header_is_not_added_when_disabled() {
+        let middleware = with_allow_arbitrary_tags(false);
+        let request = Request::builder()
+            .uri("/api/v1/series")
+            .body(())
+            .expect("request should build");
+
+        let request = middleware(request);
+
+        assert!(request.headers().get("allow-arbitrary-tag-value").is_none());
     }
 }

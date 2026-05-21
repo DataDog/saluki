@@ -2,42 +2,6 @@
 use crate::config_registry::{generated::schema, SalukiAnnotation, Severity, SupportLevel};
 
 crate::declare_annotations! {
-    /// `allow_arbitrary_tags` - signal backend tag validation relaxation.
-    ALLOW_ARBITRARY_TAGS = SalukiAnnotation {
-        schema: &schema::ALLOW_ARBITRARY_TAGS,
-        // Not implemented. #1377
-        support_level: SupportLevel::Incompatible(Severity::Medium),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-    };
-
-    /// `cri_connection_timeout` - CRI runtime connection timeout.
-    CRI_CONNECTION_TIMEOUT = SalukiAnnotation {
-        schema: &schema::CRI_CONNECTION_TIMEOUT,
-        // Not implemented. ADP hardcodes CRI timeout. #1348
-        support_level: SupportLevel::Incompatible(Severity::Medium),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-    };
-
-    /// `cri_query_timeout` - CRI runtime query timeout.
-    CRI_QUERY_TIMEOUT = SalukiAnnotation {
-        schema: &schema::CRI_QUERY_TIMEOUT,
-        // Not implemented. ADP hardcodes CRI timeout. #1348
-        support_level: SupportLevel::Incompatible(Severity::Medium),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-    };
-
     /// `dogstatsd_disable_verbose_logs` - suppress noisy parse error logs.
     DOGSTATSD_DISABLE_VERBOSE_LOGS = SalukiAnnotation {
         schema: &schema::DOGSTATSD_DISABLE_VERBOSE_LOGS,
@@ -146,18 +110,6 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `forwarder_http_protocol` - HTTP version selection.
-    FORWARDER_HTTP_PROTOCOL = SalukiAnnotation {
-        schema: &schema::FORWARDER_HTTP_PROTOCOL,
-        // Not implemented. #1361
-        support_level: SupportLevel::Incompatible(Severity::High),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-    };
-
     /// `forwarder_low_prio_buffer_size` - low-priority request queue size.
     FORWARDER_LOW_PRIO_BUFFER_SIZE = SalukiAnnotation {
         schema: &schema::FORWARDER_LOW_PRIO_BUFFER_SIZE,
@@ -211,18 +163,6 @@ crate::declare_annotations! {
         schema: &schema::LOG_FORMAT_RFC3339,
         // Not implemented. #1373
         support_level: SupportLevel::Incompatible(Severity::Medium),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-    };
-
-    /// `min_tls_version` - minimum TLS version for HTTPS.
-    MIN_TLS_VERSION = SalukiAnnotation {
-        schema: &schema::MIN_TLS_VERSION,
-        // Not implemented. #1370
-        support_level: SupportLevel::Incompatible(Severity::High),
         additional_yaml_paths: &[],
         env_var_override: None,
         used_by: &[],

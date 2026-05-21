@@ -9,7 +9,8 @@ use rustls::{
     },
     crypto::CryptoProvider,
     pki_types::{CertificateDer, ServerName, UnixTime},
-    ClientConfig, DigitallySignedStruct, RootCertStore, SignatureScheme,
+    version::{TLS12, TLS13},
+    ClientConfig, DigitallySignedStruct, RootCertStore, SignatureScheme, SupportedProtocolVersion,
 };
 use saluki_error::{generic_error, GenericError};
 use tracing::debug;
@@ -23,6 +24,28 @@ static DEFAULT_ROOT_CERT_STORE: OnceLock<Arc<RootCertStore>> = OnceLock::new();
 
 // Various defaults for TLS configuration.
 const DEFAULT_MAX_TLS12_RESUMPTION_SESSIONS: usize = 8;
+const TLS12_PLUS_PROTOCOL_VERSIONS: &[&SupportedProtocolVersion] = &[&TLS13, &TLS12];
+const TLS13_PROTOCOL_VERSIONS: &[&SupportedProtocolVersion] = &[&TLS13];
+
+/// Minimum TLS protocol version to use for client connections.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum TlsMinimumVersion {
+    /// TLS 1.2 or newer.
+    #[default]
+    Tls12,
+
+    /// TLS 1.3 or newer.
+    Tls13,
+}
+
+impl TlsMinimumVersion {
+    const fn protocol_versions(self) -> &'static [&'static SupportedProtocolVersion] {
+        match self {
+            Self::Tls12 => TLS12_PLUS_PROTOCOL_VERSIONS,
+            Self::Tls13 => TLS13_PROTOCOL_VERSIONS,
+        }
+    }
+}
 
 /// A certificate verifier that accepts all server certificates without validation.
 ///
@@ -69,6 +92,7 @@ impl ServerCertVerifier for AcceptAllServerCertVerifier {
 /// - ability to configure client authentication
 pub struct ClientTLSConfigBuilder {
     max_tls12_resumption_sessions: Option<usize>,
+    min_tls_version: TlsMinimumVersion,
     root_cert_store: Option<RootCertStore>,
     danger_accept_invalid_certs: bool,
 }
@@ -77,6 +101,7 @@ impl ClientTLSConfigBuilder {
     pub fn new() -> Self {
         Self {
             max_tls12_resumption_sessions: None,
+            min_tls_version: TlsMinimumVersion::default(),
             root_cert_store: None,
             danger_accept_invalid_certs: false,
         }
@@ -95,6 +120,14 @@ impl ClientTLSConfigBuilder {
     /// Defaults to the "default" root certificate store initialized from the platform. (See [`load_platform_root_certificates`].)
     pub fn with_root_cert_store(mut self, store: RootCertStore) -> Self {
         self.root_cert_store = Some(store);
+        self
+    }
+
+    /// Sets the minimum TLS protocol version to allow for client connections.
+    ///
+    /// Defaults to TLS 1.2.
+    pub fn with_min_tls_version(mut self, version: TlsMinimumVersion) -> Self {
+        self.min_tls_version = version;
         self
     }
 
@@ -119,6 +152,7 @@ impl ClientTLSConfigBuilder {
         let max_tls12_resumption_sessions = self
             .max_tls12_resumption_sessions
             .unwrap_or(DEFAULT_MAX_TLS12_RESUMPTION_SESSIONS);
+        let protocol_versions = self.min_tls_version.protocol_versions();
 
         let mut config = if self.danger_accept_invalid_certs {
             let crypto_provider = CryptoProvider::get_default()
@@ -128,7 +162,7 @@ impl ClientTLSConfigBuilder {
                 provider: crypto_provider,
             });
 
-            ClientConfig::builder()
+            ClientConfig::builder_with_protocol_versions(protocol_versions)
                 .dangerous()
                 .with_custom_certificate_verifier(verifier)
                 .with_no_client_auth()
@@ -140,7 +174,7 @@ impl ClientTLSConfigBuilder {
                     .ok_or(generic_error!("Default TLS root certificate store not initialized."))
             })?;
 
-            ClientConfig::builder()
+            ClientConfig::builder_with_protocol_versions(protocol_versions)
                 .with_root_certificates(root_cert_store)
                 .with_no_client_auth()
         };
@@ -199,8 +233,8 @@ pub fn initialize_default_crypto_provider() -> Result<(), GenericError> {
 ///
 /// | Environment Variable | Description                                                                           |
 /// |----------------------|---------------------------------------------------------------------------------------|
-/// | SSL_CERT_FILE        | File containing an arbitrary number of certificates in PEM format.                     |
-/// | SSL_CERT_DIR         | Directory utilizing the hierarchy and naming convention used by OpenSSL's [`c_rehash`]. |
+/// | SSL_CERT_FILE        | File containing an arbitrary number of certificates in PEM format.                    |
+/// | SSL_CERT_DIR         | Directory utilizing the hierarchy and naming convention used by OpenSSL's `c_rehash`. |
 ///
 /// If **either** (or **both**) are set, certificates are only loaded from the locations specified via environment
 /// variables and not the platform- native certificate store.
@@ -304,4 +338,28 @@ pub fn load_platform_root_certificates() -> Result<(), GenericError> {
         .expect("should be impossible for DEFAULT_ROOT_CERT_STORE to be initialized twice");
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use rustls::ProtocolVersion;
+
+    use super::TlsMinimumVersion;
+
+    #[test]
+    fn tls12_minimum_enables_tls12_and_tls13() {
+        let versions = TlsMinimumVersion::Tls12.protocol_versions();
+
+        assert_eq!(versions.len(), 2);
+        assert_eq!(versions[0].version, ProtocolVersion::TLSv1_3);
+        assert_eq!(versions[1].version, ProtocolVersion::TLSv1_2);
+    }
+
+    #[test]
+    fn tls13_minimum_enables_tls13_only() {
+        let versions = TlsMinimumVersion::Tls13.protocol_versions();
+
+        assert_eq!(versions.len(), 1);
+        assert_eq!(versions[0].version, ProtocolVersion::TLSv1_3);
+    }
 }

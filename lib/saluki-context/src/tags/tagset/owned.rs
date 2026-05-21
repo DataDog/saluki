@@ -943,7 +943,7 @@ mod tests {
         RemoveByName(String),
     }
 
-    /// Strategy for generating a tag string like "key:value".
+    /// Strategy for generating a tag string like `"key:value"`.
     fn arb_tag() -> impl Strategy<Value = String> {
         ("[a-z]{1,4}", "[a-z0-9]{1,4}").prop_map(|(k, v)| format!("{k}:{v}"))
     }

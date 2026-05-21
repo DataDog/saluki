@@ -139,12 +139,45 @@ crate::declare_annotations! {
         test_json: None,
     };
 
+    /// `forwarder_http_protocol`—HTTP version selection for outgoing forwarder requests.
+    FORWARDER_HTTP_PROTOCOL = SalukiAnnotation {
+        schema: &schema::FORWARDER_HTTP_PROTOCOL,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::FORWARDER_CONFIGURATION],
+        value_type_override: None,
+        test_json: Some("\"http1\""),
+    };
+
     /// `skip_ssl_validation`—disables TLS certificate validation for Datadog intake forwarding.
     SKIP_SSL_VALIDATION = SalukiAnnotation {
         schema: &schema::SKIP_SSL_VALIDATION,
         support_level: SupportLevel::Full,
         additional_yaml_paths: &[],
         env_var_override: Some(&["DD_SKIP_SSL_VALIDATION"]),
+        used_by: &[structs::FORWARDER_CONFIGURATION],
+        value_type_override: None,
+        test_json: None,
+    };
+
+    /// `min_tls_version`—minimum TLS version for Datadog intake forwarding.
+    MIN_TLS_VERSION = SalukiAnnotation {
+        schema: &schema::MIN_TLS_VERSION,
+        support_level: SupportLevel::Partial,
+        additional_yaml_paths: &[],
+        env_var_override: Some(&["DD_MIN_TLS_VERSION"]),
+        used_by: &[structs::FORWARDER_CONFIGURATION],
+        value_type_override: None,
+        test_json: None,
+    };
+
+    /// `allow_arbitrary_tags`—signals backend tag validation relaxation.
+    ALLOW_ARBITRARY_TAGS = SalukiAnnotation {
+        schema: &schema::ALLOW_ARBITRARY_TAGS,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: Some(&["DD_ALLOW_ARBITRARY_TAGS"]),
         used_by: &[structs::FORWARDER_CONFIGURATION],
         value_type_override: None,
         test_json: None,

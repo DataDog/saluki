@@ -26,9 +26,6 @@ tracking.
 
 | Config Key                                       | Description                           | Issue   |
 | ------------------------------------------------ | ------------------------------------- | ------- |
-| `allow_arbitrary_tags`                           | Allow arbitrary tag values            | [#1377] |
-| `cri_connection_timeout`                         | CRI runtime connection timeout        | [#1348] |
-| `cri_query_timeout`                              | CRI runtime query timeout             | [#1348] |
 | `dogstatsd_capture_depth`                        | Traffic capture channel depth         | [#1381] |
 | `dogstatsd_capture_path`                         | Traffic capture file location         | [#1381] |
 | `dogstatsd_pipe_name`                            | Windows named pipe path               | [#1466] |
@@ -36,7 +33,6 @@ tracking.
 | `forwarder_http_protocol`                        | HTTP version (auto/http1)             | [#1361] |
 | `forwarder_outdated_file_in_days`                | Retry file retention (days)           | [#1360] |
 | `log_format_rfc3339`                             | Use RFC3339 timestamp format          | [#1373] |
-| `min_tls_version`                                | Minimum TLS version for HTTPS         | [#1370] |
 | `serializer_experimental_use_v3_api.*`           | V3 metrics API migration flags        | [#1468] |
 | `sslkeylogfile`                                  | TLS key log file path                 | [#1372] |
 | `statsd_forward_host`                            | Host for packet forwarding            | [#1476] |
@@ -70,18 +66,32 @@ architecture is fundamentally different or the feature is platform-specific.
 The following settings are recognized by both ADP and the core agent, but with different behavior or
 default values.
 
-| Config Key                          | Description                      | Agent Behavior                                 | ADP Behavior                                                      |
-| ----------------------------------- | -------------------------------- | ---------------------------------------------- | ----------------------------------------------------------------- |
-| `dogstatsd_metrics_stats_enable`    | Enable per-metric debug stats    | Config toggle                                  | Gates debug log; stats API on-demand ([#1352], [#1356])           |
-| `dogstatsd_stats_enable`            | Enable internal stats endpoint   | Config toggle                                  | On-demand via API ([#1352])                                       |
-| `dogstatsd_stats_buffer`            | Internal stats buffer size       | Configurable                                   | On-demand via API ([#1352])                                       |
-| `dogstatsd_stats_port`              | Internal stats endpoint port     | Configurable port                              | On-demand via API ([#1352])                                       |
-| `log_level`                         | Log verbosity directives         | Controls Agent logs                            | Plain levels control ADP/Saluki-owned targets only                |
-| `logging_frequency`                 | Transaction success log interval | Throttles success logs                         | Intentionally unused                                              |
-| `serializer_zstd_compressor_level`  | Zstd compression level           | Default level 1                                | Default level 3 (intentional)                                     |
-| `dogstatsd_mapper_cache_size`       | Mapper result LRU cache size     | Present, default 1000                          | cache_size=0 disables cache only; agent disables mapping entirely |
-| `skip_ssl_validation`               | Skip TLS cert validation         | Disables validation for outbound HTTPS clients | Applies to the shared Datadog forwarder; rejected in FIPS mode    |
-| `telemetry.enabled`                 | Global telemetry toggle          | Agent toggle                                   | Use `data_plane.telemetry_enabled` ([#1338])                      |
+| Config Key                          | Description                      | Agent Behavior                                 | ADP Behavior                                                   |
+| ----------------------------------- | -------------------------------- | ---------------------------------------------- | -------------------------------------------------------------- |
+| `dogstatsd_mapper_cache_size`       | Mapper result LRU cache size     | `0` disables mapping; positive sizes the LRU   | `0` disables the cache only; mapping still runs ([#1687])      |
+| `dogstatsd_metrics_stats_enable`    | Enable per-metric debug stats    | Config toggle                                  | Gates debug log; stats API on-demand ([#1352], [#1356])        |
+| `dogstatsd_stats_enable`            | Enable internal stats endpoint   | Config toggle                                  | On-demand via API ([#1352])                                    |
+| `dogstatsd_stats_buffer`            | Internal stats buffer size       | Configurable                                   | On-demand via API ([#1352])                                    |
+| `dogstatsd_stats_port`              | Internal stats endpoint port     | Configurable port                              | On-demand via API ([#1352])                                    |
+| `log_level`                         | Log verbosity directives         | Controls Agent logs                            | Plain levels control ADP/Saluki-owned targets only             |
+| `logging_frequency`                 | Transaction success log interval | Throttles success logs                         | Intentionally unused                                           |
+| `min_tls_version`                   | Minimum outbound TLS version     | Supports TLS 1.0, 1.1, 1.2, and 1.3           | Supports TLS 1.2+ and TLS 1.3-only; clamps TLS 1.0/1.1 to 1.2  |
+| `serializer_zstd_compressor_level`  | Zstd compression level           | Default level 1                                | Default level 3 (intentional)                                  |
+| `skip_ssl_validation`               | Skip TLS cert validation         | Disables validation for outbound HTTPS clients | Applies to the shared Datadog forwarder; rejected in FIPS mode |
+| `telemetry.enabled`                 | Global telemetry toggle          | Agent toggle                                   | Use `data_plane.telemetry_enabled` ([#1338])                   |
+
+### Datadog intake TLS protocol version (`min_tls_version`)
+
+ADP supports `min_tls_version` for Datadog intake forwarding through the shared Datadog
+forwarder. The default is `tlsv1.2`, which allows TLS 1.2 and TLS 1.3. To require TLS 1.3
+only, set `min_tls_version: tlsv1.3` or `DD_MIN_TLS_VERSION=tlsv1.3`.
+
+The core agent also accepts `tlsv1.0` and `tlsv1.1`. ADP accepts those values for
+configuration compatibility, but clamps them to TLS 1.2 because ADP uses `rustls`, which
+doesn't support TLS 1.0 or TLS 1.1.
+
+This setting doesn't affect ADP IPC, local privileged APIs, ADP control-plane clients, OTLP
+proxying to the core agent, or unrelated HTTP clients.
 
 ### Datadog intake TLS validation (`skip_ssl_validation`)
 
@@ -202,7 +212,7 @@ results are cached in an LRU keyed by the original metric name, including a nega
 names that match no profile.
 
 The two implementations diverge when this setting is `0`. In the core agent, `0` is rejected by the
-underlying LRU library, which causes the entire mapper to be silently disabled — mapping profiles
+underlying LRU library, which causes the entire mapper to be silently disabled: mapping profiles
 configured by `dogstatsd_mapper_profiles` are not applied. In ADP, `0` disables the result cache
 only; mapping profiles still run, so each metric pays the regex evaluation cost without amortization.
 
@@ -273,7 +283,7 @@ The following settings are specific to ADP and have no equivalent in the core ag
 | `aggregate_window_duration`                 | Aggregation window size                    |         |
 | `connect_retry_attempts`                    | IPC client connect retries                 |         |
 | `connect_retry_backoff`                     | IPC client retry delay                     |         |
-| `counter_expiry_seconds`                    | Idle counter keep-alive duration           | 300s    |
+| `counter_expiry_seconds`                    | Idle counter keep-alive duration           | 300     |
 | `data_plane.api_listen_address`             | ADP unprivileged API address               |         |
 | `data_plane.remote_agent_enabled`           | Register as remote agent                   |         |
 | `data_plane.secure_api_listen_address`      | ADP privileged API address                 |         |
@@ -441,7 +451,6 @@ when the receiving syslog daemon expects the Agent's RFC-style header.
 [#1338]: https://github.com/DataDog/saluki/issues/1338
 [#1339]: https://github.com/DataDog/saluki/issues/1339
 [#1342]: https://github.com/DataDog/saluki/issues/1342
-[#1348]: https://github.com/DataDog/saluki/issues/1348
 [#1350]: https://github.com/DataDog/saluki/issues/1350
 [#1352]: https://github.com/DataDog/saluki/issues/1352
 [#1353]: https://github.com/DataDog/saluki/issues/1353
@@ -461,7 +470,6 @@ when the receiving syslog daemon expects the Agent's RFC-style header.
 [#1371]: https://github.com/DataDog/saluki/issues/1371
 [#1372]: https://github.com/DataDog/saluki/issues/1372
 [#1373]: https://github.com/DataDog/saluki/issues/1373
-[#1377]: https://github.com/DataDog/saluki/issues/1377
 [#1380]: https://github.com/DataDog/saluki/issues/1380
 [#1381]: https://github.com/DataDog/saluki/issues/1381
 [#1382]: https://github.com/DataDog/saluki/issues/1382

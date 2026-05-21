@@ -462,7 +462,7 @@ endif
 
 .PHONY: check-all
 check-all: ## Check everything
-check-all: check-fmt check-clippy check-features check-deny check-licenses generate-api-docs
+check-all: check-fmt check-clippy check-docs check-deny check-licenses generate-api-docs check-features
 
 .PHONY: generate-api-docs
 generate-api-docs: check-rust-build-tools
@@ -514,7 +514,8 @@ check-unused-deps: ## Checks for any imported dependencies that are not used in 
 .PHONY: check-docs
 check-docs: check-lint-tools
 check-docs: ## Checks prose/code documentation against our style guide
-	@vale docs lib bin
+	@echo "[*] Checking prose/code documentation against our style guide..."
+	@vale --minAlertLevel=error --glob='!{lib/*/target/*,docs/.vitepress/*}' docs lib bin
 
 .PHONY: sync-docs-config
 sync-docs-config: check-lint-tools

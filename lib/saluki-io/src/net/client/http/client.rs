@@ -19,12 +19,12 @@ use hyper_util::{
 use metrics::Counter;
 use saluki_error::GenericError;
 use saluki_metrics::MetricsBuilder;
-use saluki_tls::ClientTLSConfigBuilder;
+use saluki_tls::{ClientTLSConfigBuilder, TlsMinimumVersion};
 use stringtheory::MetaString;
 use tower::{timeout::TimeoutLayer, util::BoxCloneService, BoxError, Service, ServiceBuilder, ServiceExt as _};
 
 use super::{
-    conn::{check_connection_state, HttpsCapableConnectorBuilder},
+    conn::{check_connection_state, HttpProtocol, HttpsCapableConnectorBuilder},
     telemetry::HttpTransactionErrorTelemetry,
     EndpointTelemetryLayer,
 };
@@ -170,6 +170,14 @@ impl HttpClientBuilder {
         self
     }
 
+    /// Sets the HTTP protocol selection for client connections.
+    ///
+    /// Defaults to [`HttpProtocol::Auto`], which automatically negotiates HTTP/2 with HTTP/1.1 fallback.
+    pub fn with_http_protocol(mut self, protocol: HttpProtocol) -> Self {
+        self.connector_builder = self.connector_builder.with_http_protocol(protocol);
+        self
+    }
+
     /// Sets the maximum age of a connection before it's closed.
     ///
     /// This is distinct from the maximum idle time: if any connection's age exceeds `limit`, it will be closed rather
@@ -254,6 +262,17 @@ impl HttpClientBuilder {
         F: FnOnce(ClientTLSConfigBuilder) -> ClientTLSConfigBuilder,
     {
         self.tls_builder = f(self.tls_builder);
+        self
+    }
+
+    /// Sets the minimum TLS protocol version for HTTPS connections.
+    ///
+    /// Defaults to TLS 1.2.
+    ///
+    /// This updates the same TLS builder configured by [`Self::with_tls_config`], so call order matters when both
+    /// methods change the minimum TLS version.
+    pub fn with_min_tls_version(mut self, version: TlsMinimumVersion) -> Self {
+        self.tls_builder = self.tls_builder.with_min_tls_version(version);
         self
     }
 

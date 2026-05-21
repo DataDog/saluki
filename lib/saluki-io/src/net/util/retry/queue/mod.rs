@@ -10,7 +10,7 @@ use self::persisted::{DiskUsageRetriever, DiskUsageRetrieverWrapper, PersistedQu
 
 /// A container that holds events.
 ///
-/// This trait is used as an incredibly generic way to expose the number of events within a "container", which we
+/// This trait is used as an incredibly generic way to expose the number of events within a "container," which we
 /// loosely define to be anything that's holding events in some form. This is primarily used to track the number of
 /// events dropped by `RetryQueue` (and `PersistedQueue`) when entries have to be dropped due to size limits.
 pub trait EventContainer {

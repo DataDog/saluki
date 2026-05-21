@@ -37,7 +37,7 @@ use tracing::{debug, error, warn};
 use super::{
     config::ForwarderConfiguration,
     endpoints::{EndpointRoute, ResolvedEndpoint, RoutableEndpoint},
-    middleware::{for_resolved_endpoint, with_version_info},
+    middleware::{for_resolved_endpoint, with_allow_arbitrary_tags, with_version_info},
     telemetry::{ComponentTelemetry, SharedTransactionQueueTelemetry, TransactionQueueTelemetry},
     transaction::{Metadata, Transaction, TransactionBody},
     METRIC_INTAKE_PATHS,
@@ -161,6 +161,8 @@ where
         let endpoints = config.build_routable_endpoints(configuration)?;
         let mut client_builder = HttpClient::builder()
             .with_request_timeout(config.request_timeout())
+            .with_min_tls_version(config.min_tls_version())
+            .with_http_protocol(config.http_protocol())
             .with_bytes_sent_counter(telemetry.bytes_sent().clone())
             .with_endpoint_telemetry(metrics_builder.clone(), Some(endpoint_name));
         if let Some(proxy) = config.proxy() {
@@ -367,6 +369,8 @@ async fn run_endpoint_io_loop<B>(
     let mut service = ServiceBuilder::new()
         // Set the request's URI to the endpoint's URI, and add the API key as a header.
         .map_request(for_resolved_endpoint(endpoint))
+        // Signal backend support for arbitrary tag values when configured.
+        .map_request(with_allow_arbitrary_tags(config.allow_arbitrary_tags()))
         // Set the User-Agent and DD-Agent-Version headers indicating the version of the data plane sending the request.
         .map_request(with_version_info())
         .concurrency_limit(config.endpoint_concurrency())
@@ -810,8 +814,10 @@ mod tests {
     use rcgen::{generate_simple_self_signed, CertifiedKey};
     use rustls::{
         pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer},
+        version::TLS12,
         RootCertStore, ServerConfig,
     };
+    use saluki_io::net::client::http::TlsMinimumVersion;
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
         sync::mpsc,
@@ -870,8 +876,15 @@ mod tests {
     }
 
     fn http_client_for_tls_validation(validation: TlsCertificateValidation) -> HttpClient {
-        let client_builder =
-            HttpClient::builder().with_tls_config(|builder| builder.with_root_cert_store(RootCertStore::empty()));
+        http_client_for_tls_validation_with_min_tls_version(validation, TlsMinimumVersion::Tls12)
+    }
+
+    fn http_client_for_tls_validation_with_min_tls_version(
+        validation: TlsCertificateValidation, min_tls_version: TlsMinimumVersion,
+    ) -> HttpClient {
+        let client_builder = HttpClient::builder()
+            .with_min_tls_version(min_tls_version)
+            .with_tls_config(|builder| builder.with_root_cert_store(RootCertStore::empty()));
 
         validation
             .apply_to(client_builder)
@@ -881,12 +894,28 @@ mod tests {
     }
 
     async fn start_self_signed_https_server() -> (String, mpsc::Receiver<String>) {
+        start_self_signed_https_server_with_versions(TestServerTlsVersions::Default).await
+    }
+
+    #[derive(Clone, Copy)]
+    enum TestServerTlsVersions {
+        Default,
+        Tls12Only,
+    }
+
+    async fn start_self_signed_https_server_with_versions(
+        versions: TestServerTlsVersions,
+    ) -> (String, mpsc::Receiver<String>) {
         init_tls_crypto_provider();
 
         let CertifiedKey { cert, signing_key } = generate_simple_self_signed(["localhost".to_string()]).unwrap();
         let cert_chain = vec![cert.der().clone()];
         let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(signing_key.serialize_der()));
-        let server_config = ServerConfig::builder()
+        let server_config_builder = match versions {
+            TestServerTlsVersions::Default => ServerConfig::builder(),
+            TestServerTlsVersions::Tls12Only => ServerConfig::builder_with_protocol_versions(&[&TLS12]),
+        };
+        let server_config = server_config_builder
             .with_no_client_auth()
             .with_single_cert(cert_chain, key)
             .unwrap();
@@ -1039,6 +1068,46 @@ mod tests {
         let request = http::Request::builder().uri(uri).body(Empty::<Bytes>::new()).unwrap();
 
         let response = client.send(request).await.expect("request should succeed");
+
+        assert_eq!(response.status(), http::StatusCode::OK);
+        let received_request = timeout(Duration::from_secs(2), request_rx.recv())
+            .await
+            .expect("timed out waiting for HTTPS request")
+            .expect("HTTPS request channel closed");
+        assert!(received_request.starts_with("GET / HTTP/1.1"));
+    }
+
+    #[tokio::test]
+    async fn min_tls_version_tls13_rejects_tls12_only_endpoint() {
+        let (uri, mut request_rx) =
+            start_self_signed_https_server_with_versions(TestServerTlsVersions::Tls12Only).await;
+        let request = http::Request::builder()
+            .uri(uri.clone())
+            .body(Empty::<Bytes>::new())
+            .unwrap();
+        let mut tls13_client = http_client_for_tls_validation_with_min_tls_version(
+            TlsCertificateValidation::Disabled,
+            TlsMinimumVersion::Tls13,
+        );
+
+        let result = tls13_client.send(request).await;
+
+        assert!(
+            result.is_err(),
+            "TLS 1.3-only client should reject TLS 1.2-only endpoint"
+        );
+        assert!(
+            timeout(Duration::from_millis(200), request_rx.recv()).await.is_err(),
+            "server should not receive an HTTP request when TLS negotiation fails"
+        );
+
+        let request = http::Request::builder().uri(uri).body(Empty::<Bytes>::new()).unwrap();
+        let mut tls12_client = http_client_for_tls_validation_with_min_tls_version(
+            TlsCertificateValidation::Disabled,
+            TlsMinimumVersion::Tls12,
+        );
+
+        let response = tls12_client.send(request).await.expect("request should succeed");
 
         assert_eq!(response.status(), http::StatusCode::OK);
         let received_request = timeout(Duration::from_secs(2), request_rx.recv())
