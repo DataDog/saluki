@@ -47,6 +47,10 @@ RUN curl -s -L -o /tmp/go-1.23.0.tar.gz https://go.dev/dl/go1.23.0.linux-${TARGE
 RUN --mount=type=bind,from=ci-scripts,target=/scripts \
     /scripts/install-protoc.sh
 
+# Install vale (prose linter), used for documentation lint checks.
+RUN --mount=type=bind,from=ci-scripts,target=/scripts \
+    /scripts/install-vale.sh
+
 # Install Rust and common Cargo tooling that we depend on.
 ENV PATH="/root/.cargo/bin:${PATH}"
 RUN --mount=type=bind,from=ci-scripts,target=/scripts \
