@@ -593,6 +593,21 @@ list-integration-tests: build-panoramic
 list-integration-tests: ## Lists available ADP integration tests
 	@target/release/panoramic list -d $(shell pwd)/test/integration/cases
 
+.PHONY: build-adp-native
+build-adp-native: check-rust-build-tools
+build-adp-native: ## Builds the agent-data-plane binary natively for the current host (release profile)
+	@echo "[*] Building agent-data-plane (release, native host target)..."
+	@cargo build --release --bin agent-data-plane
+
+.PHONY: test-integration-macos
+test-integration-macos: build-panoramic build-adp-native
+test-integration-macos: ## Runs ADP integration tests natively on macOS (no Docker)
+	@echo "[*] Running native macOS integration tests..."
+	@ADP_BINARY_PATH=$(shell pwd)/target/release/agent-data-plane \
+		target/release/panoramic run -d $(shell pwd)/test/integration/cases \
+		-t $(if $(CASE),$(CASE),basic-startup/native_macos) --no-tui \
+		$(if $(PANORAMIC_LOG_DIR),-l $(PANORAMIC_LOG_DIR))
+
 .PHONY: ensure-rust-miri
 ensure-rust-miri:
 ifeq ($(shell command -v rustup >/dev/null || echo not-found), not-found)
