@@ -318,7 +318,7 @@ impl ForwarderConfiguration {
 
         endpoints.extend(
             self.endpoint
-                .build_additional_endpoints()?
+                .build_additional_endpoints(configuration.clone())?
                 .into_iter()
                 .map(|endpoint| RoutableEndpoint::new(EndpointRoute::Additional, endpoint)),
         );
@@ -800,6 +800,38 @@ mod tests {
             .expect("OPW endpoint should exist");
 
         assert!(opw_endpoint.endpoint().has_configuration());
+    }
+
+    #[tokio::test]
+    async fn additional_endpoints_keep_dynamic_api_key_configuration() {
+        let generic_config = generic_config_from(
+            config_with(serde_json::json!({
+                "additional_endpoints": {
+                    "http://additional.example.com": ["extra-api-key"]
+                }
+            })),
+            None,
+        )
+        .await;
+        let config =
+            ForwarderConfiguration::from_configuration(&generic_config).expect("ForwarderConfiguration should parse");
+
+        let endpoints = config
+            .build_routable_endpoints(Some(generic_config))
+            .expect("endpoints should resolve");
+        let additional = endpoints
+            .iter()
+            .find(|e| e.route() == EndpointRoute::Additional)
+            .expect("additional endpoint should exist");
+
+        assert!(
+            additional.endpoint().has_configuration(),
+            "additional endpoint should hold a live config reference"
+        );
+        assert!(
+            additional.endpoint().has_api_key_index(),
+            "additional endpoint should have an api_key_index"
+        );
     }
 
     #[tokio::test]
