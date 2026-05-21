@@ -20,6 +20,7 @@ use std::{
 };
 
 use airlock::native::{LogSink, NativeProcess, NativeProcessConfig};
+use rand::distr::SampleString as _;
 use saluki_error::{ErrorContext as _, GenericError};
 use tokio::sync::{Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
@@ -67,6 +68,29 @@ impl NativeIntegrationRunner {
         };
         debug!(test = %test_name, binary = %binary_path.display(), "Resolved ADP binary path.");
 
+        // Create a per-test state directory and seed it with an empty datadog.yaml. ADP's
+        // bootstrap loader requires the file to exist; tests communicate config through env
+        // vars, so the file itself is intentionally empty.
+        let state_dir = match create_test_state_dir() {
+            Ok(d) => d,
+            Err(e) => return make_error_result(test_name, started, "prepare_state_dir", e, phase_timings),
+        };
+        let config_path = state_dir.join("datadog.yaml");
+        if let Err(e) = std::fs::write(&config_path, b"") {
+            return make_error_result(
+                test_name,
+                started,
+                "prepare_state_dir",
+                saluki_error::generic_error!(
+                    "Failed to write empty datadog.yaml at '{}': {}",
+                    config_path.display(),
+                    e
+                ),
+                phase_timings,
+            );
+        }
+        debug!(test = %test_name, state_dir = %state_dir.display(), "Prepared per-test state directory.");
+
         // Phase: spawn the process.
         let spawn_start = Instant::now();
         let exit_token = CancellationToken::new();
@@ -74,8 +98,9 @@ impl NativeIntegrationRunner {
             buf: self.log_buffer.clone(),
         }));
 
+        let config_path_str = config_path.to_string_lossy().into_owned();
         let process_config = NativeProcessConfig::new(self.test_case.name.clone(), binary_path)
-            .with_args(vec!["run".to_string()])
+            .with_args(vec!["-c".to_string(), config_path_str, "run".to_string()])
             .with_env_map(self.test_case.container.env.clone());
 
         let process = match NativeProcess::spawn(process_config, log_sink, exit_token.clone()).await {
@@ -202,6 +227,16 @@ fn resolve_adp_binary_path() -> Result<PathBuf, GenericError> {
             ADP_BINARY_ENV_VAR
         )
     })
+}
+
+fn create_test_state_dir() -> Result<PathBuf, GenericError> {
+    let suffix = rand::distr::Alphanumeric
+        .sample_string(&mut rand::rng(), 8)
+        .to_lowercase();
+    let dir = std::env::temp_dir().join(format!("panoramic-native-{}", suffix));
+    std::fs::create_dir_all(&dir)
+        .with_error_context(|| format!("Failed to create state directory '{}'.", dir.display()))?;
+    Ok(dir)
 }
 
 fn make_error_result(

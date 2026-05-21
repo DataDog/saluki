@@ -575,14 +575,16 @@ build-adp-native: ## Builds the agent-data-plane binary natively for the current
 	@echo "[*] Building agent-data-plane (release, native host target)..."
 	@cargo build --release --bin agent-data-plane
 
-.PHONY: test-integration-macos
-test-integration-macos: build-panoramic build-adp-native
-test-integration-macos: ## Runs ADP integration tests natively on macOS (no Docker)
+.PHONY: test-integration-macos-run
+test-integration-macos-run: ## Runs native macOS integration tests using already-built binaries (assumes target/release/{panoramic,agent-data-plane} exist)
 	@echo "[*] Running native macOS integration tests..."
-	@ADP_BINARY_PATH=$(shell pwd)/target/release/agent-data-plane \
-		target/release/panoramic run -d $(shell pwd)/test/integration/cases \
+	@ADP_BINARY_PATH="$(CURDIR)/target/release/agent-data-plane" \
+		target/release/panoramic run -d "$(CURDIR)/test/integration/cases" \
 		-t $(if $(CASE),$(CASE),basic-startup/native_macos) --no-tui \
 		$(if $(PANORAMIC_LOG_DIR),-l $(PANORAMIC_LOG_DIR))
+
+.PHONY: test-integration-macos
+test-integration-macos: build-panoramic build-adp-native test-integration-macos-run ## Builds and runs ADP integration tests natively on macOS (no Docker)
 
 .PHONY: ensure-rust-miri
 ensure-rust-miri:
