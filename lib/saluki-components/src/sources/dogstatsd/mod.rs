@@ -8,6 +8,7 @@
 
 use std::{
     collections::VecDeque,
+    future::Future,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     num::NonZeroUsize,
     path::PathBuf,
@@ -1099,10 +1100,18 @@ struct ConnectedPacketForwarder {
 
 impl ConnectedPacketForwarder {
     async fn connect_to_first_available(targets: Vec<SocketAddr>) -> std::io::Result<Self> {
+        Self::connect_to_first_available_with(targets, Self::connect).await
+    }
+
+    async fn connect_to_first_available_with<F, Fut>(targets: Vec<SocketAddr>, mut connect: F) -> std::io::Result<Self>
+    where
+        F: FnMut(SocketAddr) -> Fut,
+        Fut: Future<Output = std::io::Result<Self>>,
+    {
         let mut last_error = None;
 
         for target in targets {
-            match Self::connect(target).await {
+            match connect(target).await {
                 Ok(forwarder) => return Ok(forwarder),
                 Err(e) => {
                     debug!(%target, error = %e, "Could not connect to statsd forward target address.");
@@ -2213,7 +2222,7 @@ mod tests {
         collections::HashMap,
         net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4},
         path::PathBuf,
-        sync::{Arc, OnceLock},
+        sync::{Arc, Mutex, OnceLock},
         time::Duration,
     };
 
@@ -2497,10 +2506,36 @@ mod tests {
         let receiver = UdpSocket::bind("127.0.0.1:0").await.expect("receiver should bind");
         let receiver_addr = receiver.local_addr().expect("receiver should have an address");
         let invalid_target = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0));
+        let attempts = Arc::new(Mutex::new(Vec::new()));
+        let attempts_for_connect = attempts.clone();
 
-        let forwarder = ConnectedPacketForwarder::connect_to_first_available(vec![invalid_target, receiver_addr])
-            .await
-            .expect("forwarder should connect to the second target");
+        let forwarder = ConnectedPacketForwarder::connect_to_first_available_with(
+            vec![invalid_target, receiver_addr],
+            move |target| {
+                let attempts = attempts_for_connect.clone();
+                async move {
+                    attempts
+                        .lock()
+                        .expect("attempts lock should not be poisoned")
+                        .push(target);
+                    if target == invalid_target {
+                        Err(std::io::Error::new(
+                            std::io::ErrorKind::AddrNotAvailable,
+                            "test failure",
+                        ))
+                    } else {
+                        ConnectedPacketForwarder::connect(target).await
+                    }
+                }
+            },
+        )
+        .await
+        .expect("forwarder should connect to the second target");
+
+        assert_eq!(
+            *attempts.lock().expect("attempts lock should not be poisoned"),
+            vec![invalid_target, receiver_addr]
+        );
         assert_eq!(forwarder.target, receiver_addr);
 
         let payload = b"daemon:666|g";
