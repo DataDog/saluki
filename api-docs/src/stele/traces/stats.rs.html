@@ -431,9 +431,9 @@
 <a href=#431 id=431 data-nosnippet>431</a>
 <a href=#432 id=432 data-nosnippet>432</a><span class="doccomment">/// Aggregator for client statistics.
 <a href=#433 id=433 data-nosnippet>433</a>///
-<a href=#434 id=434 data-nosnippet>434</a>/// Client statistics are aggregated by a number of fields that generate correspond to a specific span: service, name,
-<a href=#435 id=435 data-nosnippet>435</a>/// and operation. Additional fields are used to further group the statistics, such as response codes and tags. This is
-<a href=#436 id=436 data-nosnippet>436</a>/// referred to as the "aggregation key".
+<a href=#434 id=434 data-nosnippet>434</a>/// Client statistics are represented by generating an "aggregation key" for a given span, and then grouping statistics
+<a href=#435 id=435 data-nosnippet>435</a>/// by that key. The aggregation key includes fields like service, span name, span operation, response code, and more.
+<a href=#436 id=436 data-nosnippet>436</a>/// This is meant to group like spans together,
 <a href=#437 id=437 data-nosnippet>437</a></span><span class="attr">#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 <a href=#438 id=438 data-nosnippet>438</a></span><span class="kw">pub struct </span>ClientStatisticsAggregator {
 <a href=#439 id=439 data-nosnippet>439</a>    groups: FastHashMap&lt;AggregationKey, BucketedClientStatistics&gt;,
@@ -476,11 +476,8 @@
 <a href=#476 id=476 data-nosnippet>476</a>    }
 <a href=#477 id=477 data-nosnippet>477</a>
 <a href=#478 id=478 data-nosnippet>478</a>    <span class="doccomment">/// Returns a reference to the aggregated statistics groups.
-<a href=#479 id=479 data-nosnippet>479</a>    ///
-<a href=#480 id=480 data-nosnippet>480</a>    /// Groups are split by "aggregation key", which is a combination of select fields in each client stats payload,
-<a href=#481 id=481 data-nosnippet>481</a>    /// roughly corresponding to a specific span: name, operation, kind, tags, and so on.
-<a href=#482 id=482 data-nosnippet>482</a>    </span><span class="kw">pub fn </span>groups(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span>FastHashMap&lt;AggregationKey, BucketedClientStatistics&gt; {
-<a href=#483 id=483 data-nosnippet>483</a>        <span class="kw-2">&amp;</span><span class="self">self</span>.groups
-<a href=#484 id=484 data-nosnippet>484</a>    }
-<a href=#485 id=485 data-nosnippet>485</a>}
+<a href=#479 id=479 data-nosnippet>479</a>    </span><span class="kw">pub fn </span>groups(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span>FastHashMap&lt;AggregationKey, BucketedClientStatistics&gt; {
+<a href=#480 id=480 data-nosnippet>480</a>        <span class="kw-2">&amp;</span><span class="self">self</span>.groups
+<a href=#481 id=481 data-nosnippet>481</a>    }
+<a href=#482 id=482 data-nosnippet>482</a>}
 </code></pre></div></section></main></body></html>

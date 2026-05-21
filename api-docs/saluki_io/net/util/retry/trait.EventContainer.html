@@ -5,7 +5,7 @@
     // Provided method
     fn <a href="#method.data_point_count" class="fn">data_point_count</a>(&amp;self) -&gt; <a class="primitive" href="https://doc.rust-lang.org/nightly/std/primitive.u64.html">u64</a> { ... }
 }</code></pre><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>A container that holds events.</p>
-<p>This trait is used as an incredibly generic way to expose the number of events within a “container”, which we
+<p>This trait is used as an incredibly generic way to expose the number of events within a “container,” which we
 loosely define to be anything that’s holding events in some form. This is primarily used to track the number of
 events dropped by <code>RetryQueue</code> (and <code>PersistedQueue</code>) when entries have to be dropped due to size limits.</p>
 </div></details><h2 id="required-methods" class="section-header">Required Methods<a href="#required-methods" class="anchor">§</a></h2><div class="methods"><details class="toggle method-toggle" open><summary><section id="tymethod.event_count" class="method"><a class="src rightside" href="../../../../src/saluki_io/net/util/retry/queue/mod.rs.html#18">Source</a><h4 class="code-header">fn <a href="#tymethod.event_count" class="fn">event_count</a>(&amp;self) -&gt; <a class="primitive" href="https://doc.rust-lang.org/nightly/std/primitive.u64.html">u64</a></h4></section></summary><div class="docblock"><p>Returns the number of events represented by this container.</p>

@@ -304,10 +304,10 @@
 <a href=#304 id=304 data-nosnippet>304</a>
 <a href=#305 id=305 data-nosnippet>305</a><span class="doccomment">/// A centralized store for resolved contexts.
 <a href=#306 id=306 data-nosnippet>306</a>///
-<a href=#307 id=307 data-nosnippet>307</a>/// Contexts are the combination of a name and a set of tags. They're used to identify a specific metric series. As contexts
-<a href=#308 id=308 data-nosnippet>308</a>/// are constructed entirely of strings, they're expensive to construct in a way that allows sending between tasks, as
-<a href=#309 id=309 data-nosnippet>309</a>/// this usually requires allocations. Even further, the same context may be "hot", used frequently by the
-<a href=#310 id=310 data-nosnippet>310</a>/// applications/services sending us metrics.
+<a href=#307 id=307 data-nosnippet>307</a>/// Contexts are the combination of a name and a set of tags. They're used to identify a specific metric series. As
+<a href=#308 id=308 data-nosnippet>308</a>/// contexts are constructed entirely of strings, they're expensive to construct in a way that allows sending between
+<a href=#309 id=309 data-nosnippet>309</a>/// tasks, as this usually requires allocations. Additionally, some context are "hotter" than others, used frequently by
+<a href=#310 id=310 data-nosnippet>310</a>/// the applications/services sending us metrics.
 <a href=#311 id=311 data-nosnippet>311</a>///
 <a href=#312 id=312 data-nosnippet>312</a>/// In order to optimize this, the context resolver is responsible for both interning the strings involved where
 <a href=#313 id=313 data-nosnippet>313</a>/// possible, as well as keeping a map of contexts that can be referred to with a cheap handle. We can cheaply search

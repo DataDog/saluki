@@ -12,7 +12,7 @@
 <a href=#12 id=12 data-nosnippet>12</a>///
 <a href=#13 id=13 data-nosnippet>13</a>/// In many cases, it's useful to extend a set of tags with additional tags, without needing to clone the additional
 <a href=#14 id=14 data-nosnippet>14</a>/// tags or re-allocate the underlying storage to fit the entire set of tags. `SharedTagSet` supports this by utilizing
-<a href=#15 id=15 data-nosnippet>15</a>/// "structural sharing", where `SharedTagSet` is internally represented by a set of smart pointers to `FrozenTagSet`.
+<a href=#15 id=15 data-nosnippet>15</a>/// _structural sharing_, where `SharedTagSet` is internally represented by a set of smart pointers to `FrozenTagSet`.
 <a href=#16 id=16 data-nosnippet>16</a>///
 <a href=#17 id=17 data-nosnippet>17</a>/// This allows `SharedTagSet` to be cheaply extended with additional `SharedTagSet` instances, without needing to
 <a href=#18 id=18 data-nosnippet>18</a>/// allocate enough underlying storage to hold all of the individual tags. Extending a `SharedTagSet` will allocate a

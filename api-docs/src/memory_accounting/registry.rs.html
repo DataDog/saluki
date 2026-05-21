@@ -124,7 +124,7 @@
 <a href=#124 id=124 data-nosnippet>124</a>
 <a href=#125 id=125 data-nosnippet>125</a><span class="doccomment">/// A registry for components for tracking memory bounds and runtime memory usage.
 <a href=#126 id=126 data-nosnippet>126</a>///
-<a href=#127 id=127 data-nosnippet>127</a>/// This registry provides a unified interface for declaring the memory bounds of a "component", as well as registering
+<a href=#127 id=127 data-nosnippet>127</a>/// This registry provides a unified interface for declaring the memory bounds of a _component_, as well as registering
 <a href=#128 id=128 data-nosnippet>128</a>/// that component for runtime memory usage tracking when using the tracking allocator implementation in `memory-accounting`.
 <a href=#129 id=129 data-nosnippet>129</a>///
 <a href=#130 id=130 data-nosnippet>130</a>/// ## Components
@@ -135,7 +135,7 @@
 <a href=#135 id=135 data-nosnippet>135</a>/// forward data. The topology itself could be considered a component, and each individual source, transform, and
 <a href=#136 id=136 data-nosnippet>136</a>/// destination within it could be subcomponents of the topology.
 <a href=#137 id=137 data-nosnippet>137</a>///
-<a href=#138 id=138 data-nosnippet>138</a>/// Components are generally meant to be tied to something that has its own memory bounds and is somewhat "standalone",
+<a href=#138 id=138 data-nosnippet>138</a>/// Components are generally meant to be tied to something that has its own memory bounds and is somewhat standalone,
 <a href=#139 id=139 data-nosnippet>139</a>/// but this isn't an absolute requirement and components can be nested more granularly for organizational/aesthetic
 <a href=#140 id=140 data-nosnippet>140</a>/// purposes. Again, for example, one might opt to create a component in their topology for each component type --
 <a href=#141 id=141 data-nosnippet>141</a>/// sources, transforms, and destinations -- and then add the actual instances of those components as subcomponents to

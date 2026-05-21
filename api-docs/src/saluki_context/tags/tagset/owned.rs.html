@@ -943,7 +943,7 @@
 <a href=#943 id=943 data-nosnippet>943</a>        RemoveByName(String),
 <a href=#944 id=944 data-nosnippet>944</a>    }
 <a href=#945 id=945 data-nosnippet>945</a>
-<a href=#946 id=946 data-nosnippet>946</a>    <span class="doccomment">/// Strategy for generating a tag string like "key:value".
+<a href=#946 id=946 data-nosnippet>946</a>    <span class="doccomment">/// Strategy for generating a tag string like `"key:value"`.
 <a href=#947 id=947 data-nosnippet>947</a>    </span><span class="kw">fn </span>arb_tag() -&gt; <span class="kw">impl </span>Strategy&lt;Value = String&gt; {
 <a href=#948 id=948 data-nosnippet>948</a>        (<span class="string">"[a-z]{1,4}"</span>, <span class="string">"[a-z0-9]{1,4}"</span>).prop_map(|(k, v)| <span class="macro">format!</span>(<span class="string">"{k}:{v}"</span>))
 <a href=#949 id=949 data-nosnippet>949</a>    }

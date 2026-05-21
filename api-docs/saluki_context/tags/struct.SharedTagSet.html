@@ -2,7 +2,7 @@
 <h2 id="structural-sharing"><a class="doc-anchor" href="#structural-sharing">§</a>Structural sharing</h2>
 <p>In many cases, it’s useful to extend a set of tags with additional tags, without needing to clone the additional
 tags or re-allocate the underlying storage to fit the entire set of tags. <code>SharedTagSet</code> supports this by utilizing
-“structural sharing”, where <code>SharedTagSet</code> is internally represented by a set of smart pointers to <code>FrozenTagSet</code>.</p>
+<em>structural sharing</em>, where <code>SharedTagSet</code> is internally represented by a set of smart pointers to <code>FrozenTagSet</code>.</p>
 <p>This allows <code>SharedTagSet</code> to be cheaply extended with additional <code>SharedTagSet</code> instances, without needing to
 allocate enough underlying storage to hold all of the individual tags. Extending a <code>SharedTagSet</code> will allocate a
 small amount of memory (8 bytes) for each additional <code>SharedTagSet</code> that’s chained after the first additional one:

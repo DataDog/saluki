@@ -1339,7 +1339,7 @@
 <a href=#1339 id=1339 data-nosnippet>1339</a>        }
 <a href=#1340 id=1340 data-nosnippet>1340</a>    }
 <a href=#1341 id=1341 data-nosnippet>1341</a>
-<a href=#1342 id=1342 data-nosnippet>1342</a>    <span class="doccomment">/// ETS + OTLP non-error trace (legacy sampler path): pre-sampling sets priority=AutoKeep and dm="-9".
+<a href=#1342 id=1342 data-nosnippet>1342</a>    <span class="doccomment">/// ETS + OTLP non-error trace (legacy sampler path): pre-sampling sets priority=AutoKeep and dm=-9.
 <a href=#1343 id=1343 data-nosnippet>1343</a>    /// Mirrors DDA `OTLPReceiver` assigning priority=1 + dm=-9 before ETS returns early.
 <a href=#1344 id=1344 data-nosnippet>1344</a>    </span><span class="attr">#[test]
 <a href=#1345 id=1345 data-nosnippet>1345</a>    </span><span class="kw">fn </span>ets_otlp_non_error_gets_presample_priority_and_dm() {
@@ -1357,7 +1357,7 @@
 <a href=#1357 id=1357 data-nosnippet>1357</a>        <span class="macro">assert_eq!</span>(dm, DECISION_MAKER_PROBABILISTIC, <span class="string">"OTLP pre-sampling sets dm=-9"</span>);
 <a href=#1358 id=1358 data-nosnippet>1358</a>    }
 <a href=#1359 id=1359 data-nosnippet>1359</a>
-<a href=#1360 id=1360 data-nosnippet>1360</a>    <span class="doccomment">/// ETS + OTLP error trace (legacy sampler path): pre-sampling sets priority=AutoKeep and dm="-9".
+<a href=#1360 id=1360 data-nosnippet>1360</a>    <span class="doccomment">/// ETS + OTLP error trace (legacy sampler path): pre-sampling sets priority=AutoKeep and dm=-9.
 <a href=#1361 id=1361 data-nosnippet>1361</a>    </span><span class="attr">#[test]
 <a href=#1362 id=1362 data-nosnippet>1362</a>    </span><span class="kw">fn </span>ets_otlp_error_gets_presample_priority_and_dm() {
 <a href=#1363 id=1363 data-nosnippet>1363</a>        <span class="kw">let </span><span class="kw-2">mut </span>sampler = create_sampler_with_ets_legacy();
