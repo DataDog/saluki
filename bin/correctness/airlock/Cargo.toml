@@ -15,8 +15,11 @@ home = { workspace = true }
 saluki-error = { workspace = true }
 tokio = { workspace = true, features = [
   "fs",
+  "io-util",
   "macros",
+  "process",
   "rt",
   "rt-multi-thread",
 ] }
+tokio-util = { workspace = true }
 tracing = { workspace = true }
