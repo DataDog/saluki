@@ -177,7 +177,7 @@ impl RetryConfiguration {
     }
 
     /// Creates a new [`DefaultHttpRetryPolicy`] based on the forwarder configuration.
-    pub fn to_default_http_retry_policy(&self) -> DefaultHttpRetryPolicy {
+    pub fn to_default_http_retry_policy<B: 'static>(&self) -> DefaultHttpRetryPolicy<B> {
         let retry_backoff = ExponentialBackoff::with_jitter(
             Duration::from_secs_f64(self.backoff_base),
             Duration::from_secs_f64(self.backoff_max),
