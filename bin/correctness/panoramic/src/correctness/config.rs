@@ -77,6 +77,10 @@ pub struct Config {
     #[serde(default)]
     pub additional_span_ignore_fields: Vec<String>,
 
+    /// Whether the correctness run must capture at least one forwarded DogStatsD packet.
+    #[serde(default)]
+    pub require_dogstatsd_forwarded_packets: bool,
+
     #[serde(skip, default = "PathBuf::new")]
     pub(crate) base_config_path: PathBuf,
 }
