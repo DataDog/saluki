@@ -62,10 +62,21 @@ ensure_macos() {
     fi
 }
 
-# Returns 0 if a local VM with the given name exists.
+# Returns 0 if any tart entry (local VM or cached OCI image) matches the given name.
 vm_exists() {
-    tart list --format=json 2>/dev/null \
-        | grep -E "\"Name\"\s*:\s*\"$1\"" >/dev/null
+    # Use the default columnar output (Source Name Disk Size Accessed State) and
+    # match the Name column. Avoids dealing with JSON's escaped-slash output for
+    # image names like ghcr.io/foo/bar.
+    tart list 2>/dev/null \
+        | awk 'NR > 1 { print $2 }' \
+        | grep -Fx -- "$1" >/dev/null
+}
+
+# Returns 0 if a LOCAL VM with the given name exists (excludes cached OCI images).
+local_vm_exists() {
+    tart list 2>/dev/null \
+        | awk 'NR > 1 && $1 == "local" { print $2 }' \
+        | grep -Fx -- "$1" >/dev/null
 }
 
 cleanup() {
@@ -77,7 +88,7 @@ cleanup() {
         kill -TERM "$TART_RUN_PID" 2>/dev/null
     fi
 
-    if vm_exists "$VM_NAME"; then
+    if local_vm_exists "$VM_NAME"; then
         log "Stopping VM '$VM_NAME'..."
         tart stop "$VM_NAME" 2>/dev/null
         # tart stop returns before the VM is fully down; give it a moment.
@@ -86,7 +97,7 @@ cleanup() {
 
     if [[ "${TART_KEEP_VM:-0}" == "1" ]]; then
         log "TART_KEEP_VM=1 set; leaving VM '$VM_NAME' on disk (use 'tart delete $VM_NAME' to remove)."
-    elif vm_exists "$VM_NAME"; then
+    elif local_vm_exists "$VM_NAME"; then
         log "Deleting VM '$VM_NAME'..."
         tart delete "$VM_NAME" 2>/dev/null
     fi
@@ -120,7 +131,7 @@ fi
 
 # If the ephemeral VM somehow already exists (previous abort?), wipe it before
 # cloning fresh. Cloning into an existing name fails otherwise.
-if vm_exists "$VM_NAME"; then
+if local_vm_exists "$VM_NAME"; then
     log "Removing stale VM '$VM_NAME' before cloning..."
     tart stop "$VM_NAME" 2>/dev/null || true
     sleep 1
@@ -141,7 +152,7 @@ log "Waiting up to ${BOOT_TIMEOUT}s for the VM to become reachable via tart exec
 deadline=$(( SECONDS + BOOT_TIMEOUT ))
 ready=0
 while (( SECONDS < deadline )); do
-    if tart exec "$VM_NAME" -- true >/dev/null 2>&1; then
+    if tart exec "$VM_NAME" true >/dev/null 2>&1; then
         ready=1
         break
     fi
@@ -155,9 +166,11 @@ fi
 
 log "VM ready. Running command: $*"
 
-# `tart exec <name> -- cmd args...` passes args verbatim. We wrap in `sh -c` so
-# we can cd into the shared mount before running the user's command.
+# Build a shell command that cd's into the shared mount and runs the user's
+# command. The path contains spaces, so we single-quote it for the inner shell.
+# Note: `tart exec` does NOT use `--` as an argument separator; passing `--`
+# would be interpreted as the command name itself.
 guest_repo="/Volumes/My Shared Files/${SHARED_NAME}"
-inner_cmd=$(printf 'cd %q && %s' "$guest_repo" "$*")
+inner_cmd="cd '${guest_repo}' && $*"
 
-tart exec "$VM_NAME" -- sh -c "$inner_cmd"
+tart exec "$VM_NAME" sh -c "$inner_cmd"
