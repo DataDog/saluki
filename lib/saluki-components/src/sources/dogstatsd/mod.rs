@@ -136,7 +136,7 @@ const fn default_tcp_port() -> u16 {
     0
 }
 
-const fn default_statsd_forward_port() -> u16 {
+const fn default_statsd_forward_port() -> i64 {
     0
 }
 
@@ -229,6 +229,8 @@ const fn default_capture_depth() -> usize {
 const DOGSTATSD_CAPTURE_DIR: &str = "dsd_capture";
 const FORWARDER_RESOLVE_TIMEOUT: Duration = Duration::from_secs(5);
 const FORWARDER_SOCKET_READY_TIMEOUT: Duration = Duration::from_millis(100);
+const MIN_STATSD_FORWARD_PORT: i64 = 1;
+const MAX_STATSD_FORWARD_PORT: i64 = u16::MAX as i64;
 // Mirrors defaults from datadog-agent/pkg/config/setup/common_settings.go.
 const DEFAULT_DOGSTATSD_PACKET_BUFFER_SIZE: usize = 32;
 const DEFAULT_DOGSTATSD_PACKET_BUFFER_FLUSH_TIMEOUT: Duration = Duration::from_millis(100);
@@ -315,11 +317,12 @@ pub struct DogStatsDConfiguration {
 
     /// The port to forward raw DogStatsD packets to over UDP.
     ///
-    /// Forwarding is enabled only when this value is non-zero and `statsd_forward_host` is non-empty.
+    /// Forwarding is enabled only when this value is within the UDP port range and `statsd_forward_host` is non-empty.
+    /// If this value is negative or greater than 65535, forwarding is disabled without failing DogStatsD ingestion.
     ///
     /// Defaults to 0.
     #[serde(rename = "statsd_forward_port", default = "default_statsd_forward_port")]
-    statsd_forward_port: u16,
+    statsd_forward_port: i64,
 
     /// The number of assembled UDP forwarding packets to buffer before flushing them.
     ///
@@ -681,7 +684,17 @@ impl DogStatsDConfiguration {
 
     fn statsd_forward_target(&self) -> Option<(&MetaString, u16)> {
         let host = self.statsd_forward_host.as_ref()?;
-        (self.statsd_forward_port != 0).then_some((host, self.statsd_forward_port))
+        if self.statsd_forward_port == 0 {
+            return None;
+        }
+
+        u16::try_from(self.statsd_forward_port).ok().map(|port| (host, port))
+    }
+
+    fn has_invalid_statsd_forward_port(&self) -> bool {
+        self.statsd_forward_host.is_some()
+            && self.statsd_forward_port != 0
+            && u16::try_from(self.statsd_forward_port).is_err()
     }
 
     /// Returns the number of UDP stream handlers to spawn, derived from `dogstatsd_autoscale_udp_listeners` and
@@ -1153,6 +1166,16 @@ struct PacketForwarder {
 
 impl PacketForwarder {
     fn from_config(config: &DogStatsDConfiguration) -> Option<Self> {
+        if config.has_invalid_statsd_forward_port() {
+            warn!(
+                port = config.statsd_forward_port,
+                min = MIN_STATSD_FORWARD_PORT,
+                max = MAX_STATSD_FORWARD_PORT,
+                "Invalid statsd forward port. Packet forwarding disabled."
+            );
+            return None;
+        }
+
         let (host, port) = config.statsd_forward_target()?;
         Some(Self {
             target_host: host.clone(),
@@ -2358,6 +2381,22 @@ mod tests {
         let config = deser_config(r#"{"statsd_forward_host": "127.0.0.1", "statsd_forward_port": 0}"#);
         assert_eq!(config.statsd_forward_host.as_deref(), Some("127.0.0.1"));
         assert!(config.statsd_forward_target().is_none());
+    }
+
+    #[test]
+    fn statsd_forward_negative_port_disabled() {
+        let config = deser_config(r#"{"statsd_forward_host": "127.0.0.1", "statsd_forward_port": -1}"#);
+        assert_eq!(config.statsd_forward_port, -1);
+        assert!(config.statsd_forward_target().is_none());
+        assert!(PacketForwarder::from_config(&config).is_none());
+    }
+
+    #[test]
+    fn statsd_forward_out_of_range_port_disabled() {
+        let config = deser_config(r#"{"statsd_forward_host": "127.0.0.1", "statsd_forward_port": 65536}"#);
+        assert_eq!(config.statsd_forward_port, 65536);
+        assert!(config.statsd_forward_target().is_none());
+        assert!(PacketForwarder::from_config(&config).is_none());
     }
 
     #[test]

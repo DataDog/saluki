@@ -73,7 +73,7 @@ def receive_forwarded_packet():
             except TimeoutError:
                 continue
 
-            if UDP_BATCHED_PAYLOAD in data:
+            if data == UDP_BATCHED_PAYLOAD:
                 with open(FORWARDED_UDP_BATCH_PATH, "wb") as output_file:
                     output_file.write(data)
             elif data == STREAM_PAYLOAD:
