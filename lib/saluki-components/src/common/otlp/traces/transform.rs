@@ -438,7 +438,7 @@ pub fn otel_to_dd_span_minimal(
     if let Some(status_code) = get_otel_status_code(span_attributes, resource_attributes, ignore_missing_fields) {
         attrs.insert(
             MetaString::from_static(HTTP_STATUS_CODE_KEY),
-            AttributeValue::Float(status_code as f64),
+            AttributeValue::String(MetaString::from(status_code.to_string())),
         );
     }
 
