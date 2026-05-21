@@ -1098,6 +1098,27 @@ struct ConnectedPacketForwarder {
 }
 
 impl ConnectedPacketForwarder {
+    async fn connect_to_first_available(targets: Vec<SocketAddr>) -> std::io::Result<Self> {
+        let mut last_error = None;
+
+        for target in targets {
+            match Self::connect(target).await {
+                Ok(forwarder) => return Ok(forwarder),
+                Err(e) => {
+                    debug!(%target, error = %e, "Could not connect to statsd forward target address.");
+                    last_error = Some(e);
+                }
+            }
+        }
+
+        Err(last_error.unwrap_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::AddrNotAvailable,
+                "statsd forward target resolved to zero socket addresses",
+            )
+        }))
+    }
+
     async fn connect(target: SocketAddr) -> std::io::Result<Self> {
         let bind_addr = match target.ip() {
             IpAddr::V4(_) => SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
@@ -1213,23 +1234,24 @@ impl PacketForwarder {
     async fn connect(&self) {
         let host = &self.target_host;
         let port = self.target_port;
-        let target = match timeout(FORWARDER_RESOLVE_TIMEOUT, resolve_forward_target(host, port)).await {
-            Ok(target) => target,
+        let targets = match timeout(FORWARDER_RESOLVE_TIMEOUT, resolve_forward_targets(host, port)).await {
+            Ok(targets) => targets,
             Err(e) => {
                 warn!(%host, port, error = %e, "Timed out resolving statsd forward target. Packet forwarding disabled.");
                 return;
             }
         };
-        let target = match target {
-            Ok(target) => target,
+        let targets = match targets {
+            Ok(targets) => targets,
             Err(e) => {
                 warn!(%host, port, error = %e, "Could not resolve statsd forward target. Packet forwarding disabled.");
                 return;
             }
         };
 
-        match ConnectedPacketForwarder::connect(target).await {
+        match ConnectedPacketForwarder::connect_to_first_available(targets).await {
             Ok(forwarder) => {
+                let target = forwarder.target;
                 let (packets_tx, packets_rx) = mpsc::channel(self.queue_capacity());
                 spawn_traced_named("dogstatsd-packet-forwarder", forwarder.run(packets_rx));
 
@@ -1239,7 +1261,7 @@ impl PacketForwarder {
                 }
             }
             Err(e) => {
-                warn!(%target, error = %e, "Could not connect to statsd forward target. Packet forwarding disabled.");
+                warn!(%host, port, error = %e, "Could not connect to any statsd forward target address. Packet forwarding disabled.");
             }
         }
     }
@@ -1330,14 +1352,16 @@ impl PacketForwardBuffer {
     }
 }
 
-async fn resolve_forward_target(host: &str, port: u16) -> std::io::Result<SocketAddr> {
-    let mut addrs = tokio::net::lookup_host((host, port)).await?;
-    addrs.next().ok_or_else(|| {
-        std::io::Error::new(
+async fn resolve_forward_targets(host: &str, port: u16) -> std::io::Result<Vec<SocketAddr>> {
+    let addrs = tokio::net::lookup_host((host, port)).await?.collect::<Vec<_>>();
+    if addrs.is_empty() {
+        Err(std::io::Error::new(
             std::io::ErrorKind::AddrNotAvailable,
             "statsd forward target resolved to zero socket addresses",
-        )
-    })
+        ))
+    } else {
+        Ok(addrs)
+    }
 }
 
 fn build_metrics(listen_addr: &ListenAddress, component_context: &ComponentContext) -> Metrics {
@@ -2466,6 +2490,29 @@ mod tests {
             Some(payload.len() as u64)
         );
         worker.abort();
+    }
+
+    #[tokio::test]
+    async fn packet_forwarder_connects_to_later_resolved_target() {
+        let receiver = UdpSocket::bind("127.0.0.1:0").await.expect("receiver should bind");
+        let receiver_addr = receiver.local_addr().expect("receiver should have an address");
+        let invalid_target = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0));
+
+        let forwarder = ConnectedPacketForwarder::connect_to_first_available(vec![invalid_target, receiver_addr])
+            .await
+            .expect("forwarder should connect to the second target");
+        assert_eq!(forwarder.target, receiver_addr);
+
+        let payload = b"daemon:666|g";
+        let sent = forwarder.socket.send(payload).await.expect("forward should succeed");
+        assert_eq!(sent, payload.len());
+
+        let mut actual = [0u8; 128];
+        let (received_len, _) = timeout(Duration::from_secs(1), receiver.recv_from(&mut actual))
+            .await
+            .expect("receive should not time out")
+            .expect("receiver should receive payload");
+        assert_eq!(&actual[..received_len], payload);
     }
 
     #[tokio::test]
