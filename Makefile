@@ -608,6 +608,12 @@ test-integration-macos: ## Runs ADP integration tests natively on macOS (no Dock
 		-t $(if $(CASE),$(CASE),basic-startup/native_macos) --no-tui \
 		$(if $(PANORAMIC_LOG_DIR),-l $(PANORAMIC_LOG_DIR))
 
+.PHONY: test-integration-macos-tart
+test-integration-macos-tart: build-panoramic build-adp-native
+test-integration-macos-tart: ## Runs native macOS integration tests inside an ephemeral Tart VM
+	@echo "[*] Running native macOS integration tests inside a Tart VM..."
+	@tooling/tart/run-in-vm.sh make test-integration-macos $(if $(CASE),CASE=$(CASE),)
+
 .PHONY: ensure-rust-miri
 ensure-rust-miri:
 ifeq ($(shell command -v rustup >/dev/null || echo not-found), not-found)
