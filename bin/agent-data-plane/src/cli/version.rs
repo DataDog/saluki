@@ -4,7 +4,7 @@ use argh::FromArgs;
 #[derive(FromArgs, Debug)]
 #[argh(subcommand, name = "version")]
 pub struct VersionCommand {
-    /// print the complete saluki_metadata version information as a JSON object
+    /// emits the version information as JSON, with additional detail
     #[argh(switch)]
     pub json: bool,
 }

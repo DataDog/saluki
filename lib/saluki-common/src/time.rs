@@ -29,7 +29,7 @@ pub fn get_unix_timestamp() -> u64 {
 ///
 /// In scenarios where the current Unix timestamp is needed frequently, this function provides a cached value that's
 /// updated periodically. As the precision of the timestamp is one second, this function allows trading off accuracy
-/// (see below) for reduced overhead. The resulting value is considered "coarse", because it might be off by significant
+/// (see below) for reduced overhead. The resulting value is considered "coarse," because it might be off by significant
 /// percentage of the overall precision.
 ///
 /// # Accuracy
