@@ -905,11 +905,19 @@ impl Driver {
                     }
 
                     // Not healthy yet, so we'll keep waiting.
-                    HealthStatusEnum::STARTING | HealthStatusEnum::UNHEALTHY => {
+                    HealthStatusEnum::STARTING => {
                         debug!(
                             driver_id = self.config.driver_id,
                             "Container '{}' not yet healthy. Waiting...", &self.container_name
                         );
+                    }
+
+                    HealthStatusEnum::UNHEALTHY => {
+                        return Err(generic_error!(
+                            "Container became unhealthy (driver_id: {}, container: {}). Check logs in the test run directory.",
+                            self.config.driver_id,
+                            self.container_name
+                        ));
                     }
                 }
             } else {
