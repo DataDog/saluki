@@ -123,7 +123,5 @@ check-smp-experiments:
 check-docs:
   extends: .linux-arm64-test-job
   stage: test
-  rules:
-    - when: manual
   script:
     - make check-docs
