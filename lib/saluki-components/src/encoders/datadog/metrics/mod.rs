@@ -101,6 +101,18 @@ const fn default_max_metrics_per_payload() -> usize {
     10_000
 }
 
+const fn default_max_series_payload_size() -> usize {
+    SERIES_V2_COMPRESSED_SIZE_LIMIT
+}
+
+const fn default_max_series_uncompressed_payload_size() -> usize {
+    SERIES_V2_UNCOMPRESSED_SIZE_LIMIT
+}
+
+const fn default_max_series_points_per_payload() -> usize {
+    10_000
+}
+
 const fn default_flush_timeout_secs() -> u64 {
     2
 }
@@ -134,6 +146,47 @@ pub struct DatadogMetricsConfiguration {
         default = "default_max_metrics_per_payload"
     )]
     max_metrics_per_payload: usize,
+
+    /// Maximum compressed size, in bytes, of a V2 series payload.
+    ///
+    /// This applies only when `use_v2_api.series` is `true`. V1 series and sketches continue to use their existing
+    /// endpoint defaults. High-throughput workloads may increase this to reduce request count, at the cost of larger
+    /// individual requests. If set to `0`, every non-empty compressed payload exceeds the limit and is dropped during
+    /// flush.
+    ///
+    /// Defaults to 512,000 bytes.
+    #[serde(
+        rename = "serializer_max_series_payload_size",
+        default = "default_max_series_payload_size"
+    )]
+    max_series_payload_size: usize,
+
+    /// Maximum uncompressed size, in bytes, of a V2 series payload.
+    ///
+    /// This applies only when `use_v2_api.series` is `true`. V1 series and sketches continue to use their existing
+    /// endpoint defaults. This limit protects the encoder before compression, so compressed payload size may still
+    /// force a separate flush. Values smaller than the minimum endpoint framing size prevent the request builder from
+    /// starting.
+    ///
+    /// Defaults to 5,242,880 bytes.
+    #[serde(
+        rename = "serializer_max_series_uncompressed_payload_size",
+        default = "default_max_series_uncompressed_payload_size"
+    )]
+    max_series_uncompressed_payload_size: usize,
+
+    /// Maximum number of metric points to encode into a single V2 series payload.
+    ///
+    /// This applies only when `use_v2_api.series` is `true`. A single metric containing more points than this limit is
+    /// rejected, matching the request builder's behavior for inputs that cannot fit by themselves. If set to `0`, all
+    /// non-empty V2 series metrics are rejected.
+    ///
+    /// Defaults to 10,000 points.
+    #[serde(
+        rename = "serializer_max_series_points_per_payload",
+        default = "default_max_series_points_per_payload"
+    )]
+    max_series_points_per_payload: usize,
 
     /// Flush timeout for pending requests, in seconds.
     ///
@@ -226,6 +279,11 @@ impl EncoderBuilder for DatadogMetricsConfiguration {
 
         let mut series_rb = RequestBuilder::new(series_encoder, compression_scheme, RB_BUFFER_CHUNK_SIZE).await?;
         series_rb.with_max_inputs_per_payload(self.max_metrics_per_payload);
+
+        if series_endpoint == MetricsEndpoint::SeriesV2 {
+            series_rb.with_len_limits(self.max_series_uncompressed_payload_size, self.max_series_payload_size)?;
+            series_rb.with_max_data_points_per_payload(self.max_series_points_per_payload);
+        }
 
         let mut sketches_rb = RequestBuilder::new(sketches_encoder, compression_scheme, RB_BUFFER_CHUNK_SIZE).await?;
         sketches_rb.with_max_inputs_per_payload(self.max_metrics_per_payload);
@@ -1194,7 +1252,11 @@ mod tests {
         encode_series_v1_metric, encode_series_v2_metric, encode_sketch_metric, MetricsEndpoint,
         MetricsEndpointEncoder, SERIES_V1_INPUT_SEPARATOR, SERIES_V1_PAYLOAD_PREFIX, SERIES_V1_PAYLOAD_SUFFIX,
     };
-    use crate::common::datadog::request_builder::EndpointEncoder as _;
+    use crate::common::datadog::{
+        io::RB_BUFFER_CHUNK_SIZE,
+        request_builder::{EndpointEncoder as _, RequestBuilder},
+    };
+    use saluki_io::compression::CompressionScheme;
 
     fn encode_one_v1(metric: &Metric) -> JsonValue {
         let mut buf = Vec::new();
@@ -1294,6 +1356,29 @@ mod tests {
 
         assert_eq!(series_endpoint.input_data_point_count(&counter), 2);
         assert_eq!(sketches_endpoint.input_data_point_count(&histogram), 1);
+    }
+
+    #[tokio::test]
+    async fn v2_series_request_builder_respects_point_limit() {
+        let first_counter = Metric::counter("first", [(123, 1.0), (124, 2.0)]);
+        let second_counter = Metric::counter("second", 3.0);
+
+        let series_endpoint = MetricsEndpointEncoder::from_endpoint(MetricsEndpoint::SeriesV2);
+        let mut request_builder = RequestBuilder::new(series_endpoint, CompressionScheme::noop(), RB_BUFFER_CHUNK_SIZE)
+            .await
+            .expect("request builder should be created");
+        request_builder.with_max_data_points_per_payload(2);
+
+        assert!(request_builder
+            .encode(first_counter)
+            .await
+            .expect("first metric should encode")
+            .is_none());
+        assert!(request_builder
+            .encode(second_counter)
+            .await
+            .expect("second metric should signal flush")
+            .is_some());
     }
 
     #[test]
@@ -1507,5 +1592,24 @@ mod use_v2_api_series_default {
             .expect("config should load");
         let parsed: DatadogMetricsConfiguration = cfg.as_typed().expect("should deserialize");
         assert!(parsed.use_v2_api_series);
+    }
+
+    #[tokio::test]
+    async fn deserializes_series_payload_limit_keys() {
+        let cfg = ConfigurationLoader::default()
+            .with_key_aliases(KEY_ALIASES)
+            .add_providers([figment::providers::Serialized::defaults(json!({
+                "serializer_max_series_payload_size": 1234,
+                "serializer_max_series_uncompressed_payload_size": 5678,
+                "serializer_max_series_points_per_payload": 90,
+            }))])
+            .into_generic()
+            .await
+            .expect("config should load");
+        let parsed: DatadogMetricsConfiguration = cfg.as_typed().expect("should deserialize");
+
+        assert_eq!(parsed.max_series_payload_size, 1234);
+        assert_eq!(parsed.max_series_uncompressed_payload_size, 5678);
+        assert_eq!(parsed.max_series_points_per_payload, 90);
     }
 }

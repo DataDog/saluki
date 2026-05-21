@@ -116,6 +116,15 @@ where
         encoded_len: usize,
         uncompressed_len_limit: usize,
     },
+    #[snafu(display(
+        "input would exceed data point limit ({} data point(s) > {})",
+        data_point_count,
+        data_point_limit
+    ))]
+    InputExceedsDataPointLimit {
+        data_point_count: usize,
+        data_point_limit: usize,
+    },
     #[snafu(display("input was invalid for request builder: {:?}'", input))]
     InvalidInput { input: E::Input },
     #[snafu(display("failed to encode/write payload: {}", source))]
@@ -170,6 +179,8 @@ where
     compressed_len_limit: usize,
     uncompressed_len_limit: usize,
     max_inputs_per_payload: usize,
+    max_data_points_per_payload: usize,
+    encoded_data_points: usize,
     encoded_inputs: Vec<E::Input>,
 }
 
@@ -186,19 +197,7 @@ where
         let compressed_len_limit = encoder.compressed_size_limit();
         let uncompressed_len_limit = encoder.uncompressed_size_limit();
 
-        // Make sure the uncompressed size limit is large enough to accommodate the prefix and suffix and an additional
-        // byte: this is the smallest possible valid payload that could conceivably be written, and so we have to be
-        // able to at least fit that.
-        let prefix_len = encoder.get_payload_prefix().map_or(0, |p| p.len());
-        let suffix_len = encoder.get_payload_suffix().map_or(0, |s| s.len());
-        let uncompressed_len_prefix_suffix = prefix_len + suffix_len;
-        if uncompressed_len_limit < uncompressed_len_prefix_suffix + 1 {
-            return Err(RequestBuilderError::UncompressedSizeLimitTooLow {
-                uncompressed_size_limit: uncompressed_len_limit,
-                prefix_len,
-                suffix_len,
-            });
-        }
+        let uncompressed_len_prefix_suffix = Self::validate_uncompressed_len_limit(&encoder, uncompressed_len_limit)?;
 
         let compressor = create_compressor(compression_scheme, buffer_chunk_size);
         Ok(Self {
@@ -213,6 +212,8 @@ where
             compressed_len_limit,
             uncompressed_len_limit,
             max_inputs_per_payload: usize::MAX,
+            max_data_points_per_payload: usize::MAX,
+            encoded_data_points: 0,
             encoded_inputs: Vec::new(),
         })
     }
@@ -221,6 +222,27 @@ where
     pub fn with_max_inputs_per_payload(&mut self, max_inputs_per_payload: usize) -> &mut Self {
         self.max_inputs_per_payload = max_inputs_per_payload;
         self
+    }
+
+    /// Sets the maximum number of data points that can be encoded in a single payload.
+    pub fn with_max_data_points_per_payload(&mut self, max_data_points_per_payload: usize) -> &mut Self {
+        self.max_data_points_per_payload = max_data_points_per_payload;
+        self
+    }
+
+    /// Configures custom (un)compressed length limits for the request builder.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the uncompressed size limit is too small to contain the endpoint framing and at least one
+    /// byte of input data.
+    pub fn with_len_limits(
+        &mut self, uncompressed_len_limit: usize, compressed_len_limit: usize,
+    ) -> Result<&mut Self, RequestBuilderError<E>> {
+        Self::validate_uncompressed_len_limit(&self.encoder, uncompressed_len_limit)?;
+        self.uncompressed_len_limit = uncompressed_len_limit;
+        self.compressed_len_limit = compressed_len_limit;
+        Ok(self)
     }
 
     /// Configures custom (un)compressed length limits for the request builder.
@@ -235,6 +257,26 @@ where
     /// Returns a reference to the encoder used by the request builder.
     pub const fn encoder(&self) -> &E {
         &self.encoder
+    }
+
+    fn validate_uncompressed_len_limit(
+        encoder: &E, uncompressed_len_limit: usize,
+    ) -> Result<usize, RequestBuilderError<E>> {
+        // Make sure the uncompressed size limit is large enough to accommodate the prefix and suffix and an additional
+        // byte: this is the smallest possible valid payload that could conceivably be written, and so we have to be
+        // able to at least fit that.
+        let prefix_len = encoder.get_payload_prefix().map_or(0, |p| p.len());
+        let suffix_len = encoder.get_payload_suffix().map_or(0, |s| s.len());
+        let uncompressed_len_prefix_suffix = prefix_len + suffix_len;
+        if uncompressed_len_limit < uncompressed_len_prefix_suffix + 1 {
+            return Err(RequestBuilderError::UncompressedSizeLimitTooLow {
+                uncompressed_size_limit: uncompressed_len_limit,
+                prefix_len,
+                suffix_len,
+            });
+        }
+
+        Ok(uncompressed_len_prefix_suffix)
     }
 
     fn uncompressed_len(&self) -> usize {
@@ -297,9 +339,26 @@ where
             return Err(RequestBuilderError::InvalidInput { input });
         }
 
+        let input_data_point_count = self.encoder.input_data_point_count(&input);
+        if input_data_point_count > self.max_data_points_per_payload {
+            return Err(RequestBuilderError::InputExceedsDataPointLimit {
+                data_point_count: input_data_point_count,
+                data_point_limit: self.max_data_points_per_payload,
+            });
+        }
+
         // Make sure we haven't hit the maximum number of inputs per payload.
         if self.encoded_inputs.len() >= self.max_inputs_per_payload {
             trace!("Maximum number of inputs per payload reached.");
+            return Ok(Some(input));
+        }
+
+        // Make sure we haven't hit the maximum number of data points per payload. We allow the first input through
+        // above only if it fits by itself, so this branch only signals a normal flush boundary for a non-empty payload.
+        if self.encoded_data_points > 0
+            && self.encoded_data_points.saturating_add(input_data_point_count) > self.max_data_points_per_payload
+        {
+            trace!("Maximum number of data points per payload reached.");
             return Ok(Some(input));
         }
 
@@ -312,6 +371,7 @@ where
         // Otherwise, we wrote the encoded input successfully so we'll hold on to that input for now in case we need to
         // split the payload later.
         if self.encode_inner(&input).await? {
+            self.encoded_data_points += input_data_point_count;
             self.encoded_inputs.push(input);
             Ok(None)
         } else {
@@ -489,6 +549,7 @@ where
     fn clear_encoded_inputs(&mut self) -> usize {
         let len = self.encoded_inputs.len();
         self.encoded_inputs.clear();
+        self.encoded_data_points = 0;
         len
     }
 
@@ -533,6 +594,7 @@ where
         //
         // We can do this by swapping it out with a new `Vec<E::Input>` since empty vectors don't allocate at all.
         let mut encoded_inputs = std::mem::take(&mut self.encoded_inputs);
+        self.encoded_data_points = 0;
         let encoded_inputs_pivot = encoded_inputs.len() / 2;
 
         let first_half_encoded_inputs = &encoded_inputs[0..encoded_inputs_pivot];
@@ -1019,6 +1081,45 @@ mod tests {
         // Since we know we could fit the same three inputs in the first request builder when there was no limit on the
         // number of inputs per payload, we know we're not being instructed to flush here due to hitting (un)compressed
         // size limits.
+    }
+
+    #[tokio::test]
+    async fn obeys_max_data_points_per_payload() {
+        // The test encoder treats each byte as a data point, which lets us exercise point-based flushing without
+        // coupling the test to a specific Datadog payload format.
+        let input1 = "aa".to_string();
+        let input2 = "bbb".to_string();
+        let input3 = "c".to_string();
+
+        let encoder = TestEncoder::new(usize::MAX, usize::MAX, "/submit");
+        let mut request_builder = create_no_compression_request_builder(encoder).await;
+        request_builder.with_max_data_points_per_payload(5);
+
+        assert_eq!(None, request_builder.encode(input1).await.unwrap());
+        assert_eq!(None, request_builder.encode(input2).await.unwrap());
+        assert_eq!(Some(input3.clone()), request_builder.encode(input3).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn input_exceeding_max_data_points_returns_error() {
+        let encoder = TestEncoder::new(usize::MAX, usize::MAX, "/submit");
+        let mut request_builder = create_no_compression_request_builder(encoder).await;
+        request_builder.with_max_data_points_per_payload(2);
+
+        let err = request_builder
+            .encode("abc".to_string())
+            .await
+            .expect_err("input should exceed data point limit");
+        match err {
+            RequestBuilderError::InputExceedsDataPointLimit {
+                data_point_count,
+                data_point_limit,
+            } => {
+                assert_eq!(data_point_count, 3);
+                assert_eq!(data_point_limit, 2);
+            }
+            other => panic!("expected InputExceedsDataPointLimit error, got: {:?}", other),
+        }
     }
 
     #[tokio::test]

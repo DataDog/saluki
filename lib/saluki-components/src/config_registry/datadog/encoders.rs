@@ -81,6 +81,39 @@ crate::declare_annotations! {
         test_json: None,
     };
 
+    /// `serializer_max_series_payload_size`—max compressed V2 series payload size.
+    SERIALIZER_MAX_SERIES_PAYLOAD_SIZE = SalukiAnnotation {
+        schema: &schema::SERIALIZER_MAX_SERIES_PAYLOAD_SIZE,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::DATADOG_METRICS_CONFIGURATION],
+        value_type_override: Some(ValueType::Integer),
+        test_json: None,
+    };
+
+    /// `serializer_max_series_points_per_payload`—max points per V2 series payload.
+    SERIALIZER_MAX_SERIES_POINTS_PER_PAYLOAD = SalukiAnnotation {
+        schema: &schema::SERIALIZER_MAX_SERIES_POINTS_PER_PAYLOAD,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::DATADOG_METRICS_CONFIGURATION],
+        value_type_override: Some(ValueType::Integer),
+        test_json: None,
+    };
+
+    /// `serializer_max_series_uncompressed_payload_size`—max uncompressed V2 series payload size.
+    SERIALIZER_MAX_SERIES_UNCOMPRESSED_PAYLOAD_SIZE = SalukiAnnotation {
+        schema: &schema::SERIALIZER_MAX_SERIES_UNCOMPRESSED_PAYLOAD_SIZE,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::DATADOG_METRICS_CONFIGURATION],
+        value_type_override: Some(ValueType::Integer),
+        test_json: None,
+    };
+
     /// `use_v2_api.series`—when `false`, send series metrics to the legacy V1 JSON intake at `/api/v1/series`.
     USE_V2_API_SERIES = SalukiAnnotation {
         schema: &schema::USE_V2_API_SERIES,

@@ -1,6 +1,6 @@
 # Configuring DogStatsD on Agent Data Plane
 
-<!-- Last updated: 2026-05-19 -->
+<!-- Last updated: 2026-05-20 -->
 
 The DogStatsD implementation on ADP has been redesigned in Rust for better resource guarantees and
 efficiency. Because the architecture is different from the original implementation, certain
@@ -239,9 +239,6 @@ ways that aren't yet fully characterized.
 | `forwarder_max_concurrent_requests`                | Max concurrent HTTP requests     | [#1363] |
 | `forwarder_retry_queue_capacity_time_interval_sec` | Retry queue time-based capacity  | [#1365] |
 | `serializer_max_payload_size`                      | Max compressed payload size      | [#1354] |
-| `serializer_max_series_payload_size`               | Max series compressed size       | [#1354] |
-| `serializer_max_series_points_per_payload`         | Max series points per payload    | [#1354] |
-| `serializer_max_series_uncompressed_payload_size`  | Max series uncompressed size     | [#1354] |
 | `serializer_max_uncompressed_payload_size`         | Max uncompressed payload size    | [#1354] |
 
 ## ADP-Only Settings

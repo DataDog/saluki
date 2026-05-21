@@ -278,42 +278,6 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `serializer_max_series_payload_size` - max series compressed size.
-    SERIALIZER_MAX_SERIES_PAYLOAD_SIZE = SalukiAnnotation {
-        schema: &schema::SERIALIZER_MAX_SERIES_PAYLOAD_SIZE,
-        // Not configurable in ADP. #1354
-        support_level: SupportLevel::Incompatible(Severity::Low),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-    };
-
-    /// `serializer_max_series_points_per_payload` - max series points per payload.
-    SERIALIZER_MAX_SERIES_POINTS_PER_PAYLOAD = SalukiAnnotation {
-        schema: &schema::SERIALIZER_MAX_SERIES_POINTS_PER_PAYLOAD,
-        // Not configurable in ADP. #1354
-        support_level: SupportLevel::Incompatible(Severity::Low),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-    };
-
-    /// `serializer_max_series_uncompressed_payload_size` - max series uncompressed size.
-    SERIALIZER_MAX_SERIES_UNCOMPRESSED_PAYLOAD_SIZE = SalukiAnnotation {
-        schema: &schema::SERIALIZER_MAX_SERIES_UNCOMPRESSED_PAYLOAD_SIZE,
-        // Not configurable in ADP. #1354
-        support_level: SupportLevel::Incompatible(Severity::Low),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-    };
-
     /// `serializer_max_uncompressed_payload_size` - max uncompressed payload size.
     SERIALIZER_MAX_UNCOMPRESSED_PAYLOAD_SIZE = SalukiAnnotation {
         schema: &schema::SERIALIZER_MAX_UNCOMPRESSED_PAYLOAD_SIZE,
