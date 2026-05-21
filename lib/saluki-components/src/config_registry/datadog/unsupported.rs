@@ -471,17 +471,6 @@ crate::declare_annotations! {
         value_type_override: None,
         test_json: None,
     };
-    /// `enable_payloads.json_to_v1_intake` - legacy /api/v1/intake JSON payload delivery.
-    ENABLE_PAYLOADS_JSON_TO_V1_INTAKE = SalukiAnnotation {
-        schema: &schema::ENABLE_PAYLOADS_JSON_TO_V1_INTAKE,
-        // Not implemented. #1686
-        support_level: SupportLevel::Incompatible(Severity::High),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-    };
     /// `entity_id` - agent pod entity ID injected by DCA webhook.
     ENTITY_ID = SalukiAnnotation {
         schema: &schema::ENTITY_ID,

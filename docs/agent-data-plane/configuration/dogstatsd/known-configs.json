@@ -536,7 +536,6 @@
     "action": "DOCUMENTED",
     "description": "Mapper result LRU cache size",
     "reason": "Implementation in lib/saluki-components/src/transforms/dogstatsd_mapper/mod.rs mirrors the agent's per-name result cache (key=metric name, value=mapped name + extra tags, with negative caching). Default 1000 matches the agent. Divergence: at cache_size=0, ADP disables the cache only and keeps mapping profiles active; the agent silently disables mapping entirely because its underlying LRU rejects non-positive sizes.",
-
     "issue": "#1687",
     "adp_key": null
   },
@@ -1040,15 +1039,6 @@
     "feature_state": "MISSING",
     "action": "INVESTIGATE",
     "description": "Pre-allocate shared compressor buffers",
-    "reason": "Marked for investigation; previously dismissed as not-applicable.",
-    "issue": "#1686",
-    "adp_key": null
-  },
-  {
-    "key": "enable_payloads.json_to_v1_intake",
-    "feature_state": "MISSING",
-    "action": "INVESTIGATE",
-    "description": "Enable JSON payload delivery to /api/v1/intake",
     "reason": "Marked for investigation; previously dismissed as not-applicable.",
     "issue": "#1686",
     "adp_key": null

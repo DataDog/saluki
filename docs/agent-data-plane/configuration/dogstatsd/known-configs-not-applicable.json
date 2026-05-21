@@ -810,6 +810,7 @@
   "enable_metadata_collection",
   "enable_payloads",
   "enable_payloads.events",
+  "enable_payloads.json_to_v1_intake",
   "enable_payloads.series",
   "enable_payloads.service_checks",
   "enable_payloads.sketches",

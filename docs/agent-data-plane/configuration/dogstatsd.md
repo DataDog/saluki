@@ -243,7 +243,6 @@ ways that are not yet fully characterized.
 | `dogstatsd_experimental_http.enabled`                            | Enable experimental HTTP/H2C DSD listener     | [#1682] |
 | `dogstatsd_experimental_http.listen_address`                     | Bind addr for experimental HTTP DSD listener  | [#1682] |
 | `enable_json_stream_shared_compressor_buffers`                   | Pre-allocate shared compressor buffers        | [#1686] |
-| `enable_payloads.json_to_v1_intake`                              | Enable JSON payload to /api/v1/intake         | [#1686] |
 | `entity_id`                                                      | Agent's own pod entity ID (DCA webhook)       | [#1685] |
 | `forwarder_apikey_validation_interval`                           | API key check interval (mins)                 | [#1357] |
 | `forwarder_flush_to_disk_mem_ratio`                              | Mem-to-disk flush threshold                   | [#1364] |
