@@ -36,7 +36,7 @@ fn default_should_retry<B>(response: &Response<B>) -> bool {
 /// - 413 Payload Too Large (likely a client-side bug)
 ///
 /// Additional [`HttpRetryPredicate`]s can be registered via [`StandardHttpClassifier::with_predicate`]. A response is
-/// retried if any predicate — including the default — returns `true` (OR semantics). This allows callers to
+/// retried if any predicate—including the default—returns `true` (OR semantics). This allows callers to
 /// selectively unlock retries for status codes that the default predicate would not retry, without affecting other
 /// status codes.
 pub struct StandardHttpClassifier<B = ()> {
@@ -67,7 +67,7 @@ impl<B: 'static> StandardHttpClassifier<B> {
 
     /// Adds a predicate.
     ///
-    /// A response is retried if any predicate — including the default — returns `true` (OR semantics).
+    /// A response is retried if any predicate—including the default—returns `true` (OR semantics).
     pub fn with_predicate(mut self, predicate: HttpRetryPredicate<B>) -> Self {
         self.predicates.push(predicate);
         self

@@ -45,19 +45,19 @@ tracking.
 The following settings exist in the core agent but are not planned for ADP, typically because ADP's
 architecture is fundamentally different or the feature is platform-specific.
 
-| Config Key                                     | Description                      | Reason                                                       |
-| ---------------------------------------------- | -------------------------------- | ------------------------------------------------------------ |
-| `dogstatsd_host_socket_path`                   | Host UDS socket dir for DSD      | Not read by DSD server; admission controller only            |
-| `dogstatsd_mem_based_rate_limiter.enabled`     | Enable memory rate limiter       | Go GC specific; use `memory_limit`                           |
-| `dogstatsd_no_aggregation_pipeline_batch_size` | No-agg pipeline batch size       | Fixed in ADP topology                                        |
-| `dogstatsd_packet_buffer_flush_timeout`        | Packet buffer flush timeout      | ADP decodes inline                                           |
-| `dogstatsd_packet_buffer_size`                 | Datagrams per packet buffer      | ADP decodes inline                                           |
-| `dogstatsd_pipeline_autoadjust`                | Auto-adjust pipeline workers     | ADP uses async tasks                                         |
-| `dogstatsd_pipeline_count`                     | Parallel processing pipelines    | ADP uses async tasks                                         |
-| `dogstatsd_queue_size`                         | Packet channel buffer size       | ADP uses async tasks                                         |
-| `dogstatsd_telemetry_enabled_listener_id`      | Per-listener telemetry tagging   | Not feasible to thread through                               |
-| `dogstatsd_workers_count`                      | Number of DSD processing workers | ADP uses async tasks                                         |
-| `use_dogstatsd`                                | Master DogStatsD enable toggle   | Core Agent evaluates and sets `data_plane.dogstatsd.enabled` |
+| Config Key                                     | Description                        | Reason                                                       |
+| ---------------------------------------------- | ---------------------------------- | ------------------------------------------------------------ |
+| `dogstatsd_host_socket_path`                   | Host UDS socket dir for DSD        | Not read by DSD server; admission controller only            |
+| `dogstatsd_mem_based_rate_limiter.enabled`     | Enable memory rate limiter         | Go GC specific; use `memory_limit`                           |
+| `dogstatsd_no_aggregation_pipeline_batch_size` | No-aggregation pipeline batch size | Fixed in ADP topology                                        |
+| `dogstatsd_packet_buffer_flush_timeout`        | Packet buffer flush timeout        | ADP decodes inline                                           |
+| `dogstatsd_packet_buffer_size`                 | Datagrams per packet buffer        | ADP decodes inline                                           |
+| `dogstatsd_pipeline_autoadjust`                | Auto-adjust pipeline workers       | ADP uses async tasks                                         |
+| `dogstatsd_pipeline_count`                     | Parallel processing pipelines      | ADP uses async tasks                                         |
+| `dogstatsd_queue_size`                         | Packet channel buffer size         | ADP uses async tasks                                         |
+| `dogstatsd_telemetry_enabled_listener_id`      | Per-listener telemetry tagging     | Not feasible to thread through                               |
+| `dogstatsd_workers_count`                      | Number of DSD processing workers   | ADP uses async tasks                                         |
+| `use_dogstatsd`                                | Master DogStatsD enable toggle     | Core Agent evaluates and sets `data_plane.dogstatsd.enabled` |
 
 ## Behavioral Differences
 
@@ -349,7 +349,7 @@ when the receiving syslog daemon expects the Agent's RFC-style header.
 | Config Key                                       | Description                            |
 | ------------------------------------------------ | -------------------------------------- |
 | `additional_endpoints`                           | Dual-ship to extra endpoints           |
-| `aggregate_context_limit`                        | Max contexts per agg window            |
+| `aggregate_context_limit`                        | Max contexts per aggregation window    |
 | `api_key`                                        | API key for endpoint auth              |
 | `auth_token_file_path`                           | IPC auth token file path               |
 | `bind_host`                                      | Global listen host fallback            |
