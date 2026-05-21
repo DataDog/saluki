@@ -114,10 +114,35 @@ pub struct IntegrationConfig {
     /// List of assertion steps to run.
     pub assertions: Vec<AssertionStep>,
 
+    /// Runtimes under which this test runs.
+    ///
+    /// Each value must be either `"docker"` (the default) or `"native_macos"`. When multiple
+    /// runtimes are declared, the test discovery layer expands the config into one independent
+    /// test case per runtime, named `{name}/{runtime}`.
+    #[serde(default = "default_integration_runtimes")]
+    pub runtimes: Vec<String>,
+
+    /// Resolved runtime for this specific test instance after discovery-time expansion.
+    ///
+    /// At parse time, this is always empty. The discovery layer sets it when expanding a
+    /// multi-runtime config into per-runtime instances.
+    #[serde(skip)]
+    pub resolved_runtime: String,
+
     /// Base path for resolving relative file paths.
     #[serde(skip)]
     pub base_path: PathBuf,
 }
+
+fn default_integration_runtimes() -> Vec<String> {
+    vec!["docker".to_string()]
+}
+
+/// Runtime identifier for integration tests that run as native (non-containerized) processes.
+pub const NATIVE_MACOS_RUNTIME: &str = "native_macos";
+
+/// Runtime identifier for integration tests that run inside a Docker container.
+pub const DOCKER_RUNTIME: &str = "docker";
 
 /// Container configuration for a test case.
 #[derive(Clone, Debug, Deserialize)]
@@ -350,7 +375,11 @@ impl AssertionStep {
 #[async_trait]
 impl Test for IntegrationConfig {
     fn name(&self) -> String {
-        self.name.clone()
+        if self.resolved_runtime.is_empty() || self.runtimes.len() <= 1 {
+            self.name.clone()
+        } else {
+            format!("{}/{}", self.name, self.resolved_runtime)
+        }
     }
 
     fn suite(&self) -> TestSuite {
@@ -367,13 +396,33 @@ impl Test for IntegrationConfig {
 
     fn images(&self) -> BTreeMap<&str, String> {
         let mut m = BTreeMap::new();
-        m.insert("container", self.container.image.clone());
+        // The native_macos runtime doesn't require any container image.
+        if self.resolved_runtime != NATIVE_MACOS_RUNTIME {
+            m.insert("container", self.container.image.clone());
+        }
         m
     }
 
+    fn runtime(&self) -> String {
+        if self.resolved_runtime.is_empty() {
+            DOCKER_RUNTIME.to_string()
+        } else {
+            self.resolved_runtime.clone()
+        }
+    }
+
     async fn run(&self, tctx: TestContext) -> TestResult {
-        let mut runner = crate::runner::IntegrationRunner::new(self.clone(), tctx);
-        runner.run().await
+        match self.resolved_runtime.as_str() {
+            NATIVE_MACOS_RUNTIME => {
+                let mut runner = crate::native_runner::NativeIntegrationRunner::new(self.clone(), tctx);
+                runner.run().await
+            }
+            // Default to the existing Docker path for "docker" or unset.
+            _ => {
+                let mut runner = crate::runner::IntegrationRunner::new(self.clone(), tctx);
+                runner.run().await
+            }
+        }
     }
 }
 
@@ -685,7 +734,28 @@ fn try_load_test(config_path: &Path, dir_path: &Path) -> Result<Vec<Box<dyn Test
     match test_type {
         "integration" => {
             let config = IntegrationConfig::from_yaml(config_path)?;
-            Ok(vec![Box::new(config)])
+            if config.runtimes.is_empty() {
+                return Err(generic_error!(
+                    "integration test '{}' has empty runtimes list",
+                    config.name
+                ));
+            }
+            let mut tests: Vec<Box<dyn Test>> = Vec::new();
+            for runtime in &config.runtimes {
+                if runtime != DOCKER_RUNTIME && runtime != NATIVE_MACOS_RUNTIME {
+                    return Err(generic_error!(
+                        "integration test '{}' declares unknown runtime '{}' (expected '{}' or '{}')",
+                        config.name,
+                        runtime,
+                        DOCKER_RUNTIME,
+                        NATIVE_MACOS_RUNTIME
+                    ));
+                }
+                let mut variant = config.clone();
+                variant.resolved_runtime = runtime.clone();
+                tests.push(Box::new(variant));
+            }
+            Ok(tests)
         }
         "correctness" => {
             let config_path_str = config_path
