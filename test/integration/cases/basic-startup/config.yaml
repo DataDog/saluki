@@ -2,6 +2,7 @@ type: integration
 name: "basic-startup"
 description: "Verifies ADP starts successfully and remains stable"
 timeout: 90s
+runtimes: [docker, native_macos]
 
 container:
   image: "saluki-images/datadog-agent:testing-devel"
