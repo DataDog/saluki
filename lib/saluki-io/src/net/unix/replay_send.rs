@@ -6,10 +6,7 @@
 //! matching the Go agent's replay subcommand). If the capability is missing, the first `sendmsg` will fail with
 //! `EPERM` and the replay task aborts.
 
-use std::{
-    io, mem,
-    os::fd::{AsRawFd, FromRawFd, OwnedFd},
-};
+use std::{io, mem, os::fd::AsRawFd};
 
 use tokio::net::UnixDatagram;
 
@@ -66,10 +63,7 @@ fn send_with_ucred(fd: libc::c_int, payload: &[u8], creds: &libc::ucred) -> io::
         // Populate the cmsghdr at the start of the control buffer.
         let cmsg = libc::CMSG_FIRSTHDR(&msg);
         if cmsg.is_null() {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                "failed to obtain cmsghdr from control buffer",
-            ));
+            return Err(io::Error::other("failed to obtain cmsghdr from control buffer"));
         }
         (*cmsg).cmsg_level = libc::SOL_SOCKET;
         (*cmsg).cmsg_type = libc::SCM_CREDENTIALS;
@@ -92,7 +86,7 @@ fn send_with_ucred(fd: libc::c_int, payload: &[u8], creds: &libc::ucred) -> io::
 
 #[cfg(test)]
 mod tests {
-    use std::os::fd::AsRawFd;
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 
     use super::*;
 
