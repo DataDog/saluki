@@ -422,6 +422,28 @@ crate::declare_annotations! {
         test_json: None,
     };
 
+    /// `dogstatsd_packet_buffer_size`—UDP forwarding packet batch size.
+    DOGSTATSD_PACKET_BUFFER_SIZE = SalukiAnnotation {
+        schema: &schema::DOGSTATSD_PACKET_BUFFER_SIZE,
+        support_level: SupportLevel::Partial,
+        additional_yaml_paths: &[],
+        env_var_override: Some(&["DD_DOGSTATSD_PACKET_BUFFER_SIZE"]),
+        used_by: &[structs::DOGSTATSD_CONFIGURATION],
+        value_type_override: Some(ValueType::Integer),
+        test_json: None,
+    };
+
+    /// `dogstatsd_packet_buffer_flush_timeout`—UDP forwarding packet batch flush timeout.
+    DOGSTATSD_PACKET_BUFFER_FLUSH_TIMEOUT = SalukiAnnotation {
+        schema: &schema::DOGSTATSD_PACKET_BUFFER_FLUSH_TIMEOUT,
+        support_level: SupportLevel::Partial,
+        additional_yaml_paths: &[],
+        env_var_override: Some(&["DD_DOGSTATSD_PACKET_BUFFER_FLUSH_TIMEOUT"]),
+        used_by: &[structs::DOGSTATSD_CONFIGURATION],
+        value_type_override: Some(ValueType::String),
+        test_json: Some(r#""42s""#),
+    };
+
     /// `dogstatsd_cached_contexts_limit`—max cached metric contexts.
     DOGSTATSD_CACHED_CONTEXTS_LIMIT = SalukiAnnotation {
         schema: &DOGSTATSD_CACHED_CONTEXTS_LIMIT_SCHEMA,
