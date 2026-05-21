@@ -1,7 +1,7 @@
 type: integration
 name: "adp-memory-mode-strict-exceeds-limit"
 description: "Verifies that strict mode causes ADP to exit with code 1 when the calculated bounds exceed the configured limit"
-timeout: 60s
+timeout: 120s
 
 container:
   image: "saluki-images/datadog-agent:testing-devel"

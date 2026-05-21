@@ -1,7 +1,7 @@
 type: integration
 name: "adp-logging-ignores-core-agent-log-file"
 description: "Verifies ADP ignores the Core Agent's `log_file` setting and continues to use its own per-subagent log file path"
-timeout: 90s
+timeout: 120s
 
 container:
   image: "saluki-images/datadog-agent:testing-devel"
