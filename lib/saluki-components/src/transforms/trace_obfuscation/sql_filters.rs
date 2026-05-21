@@ -151,7 +151,7 @@ impl TokenFilter for DiscardFilter {
     fn reset(&mut self) {}
 }
 
-/// Filter that replaces literals with "?".
+/// Filter that replaces literals with a placeholder symbol (`?`).
 pub struct ReplaceFilter {
     replace_digits: bool,
     config: SqlObfuscationConfig,

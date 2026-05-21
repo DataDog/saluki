@@ -22,7 +22,9 @@ Provide context on problem, including why the current design isn't sufficient fo
 
 ## Decision Outcome
 
-Chosen option: "(option here)", because [justification. for example, only option which meets all requirements, etc].
+Chosen option: **(option here)**
+
+[justification of choosing option; for example, "only option which meets all requirements"].
 
 <!-- This is an optional element. Feel free to remove. -->
 ### Consequences

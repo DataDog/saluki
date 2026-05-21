@@ -75,7 +75,7 @@ version to bump to, we follow the [Semantic Versioning](https://semver.org/) spe
 
 ## Build metadata
 
-We calculate a number of values that are used to populate what we call "build metadata", which is information passed in
+We calculate a number of values that are used to populate what we call _build metadata_, which is information passed in
 during the build process and is used to drive a number of behaviors:
 
 - outputting the version of ADP, when it was built, the build architecture, etc, as a log at startup

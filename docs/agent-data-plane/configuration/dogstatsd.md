@@ -212,7 +212,7 @@ results are cached in an LRU keyed by the original metric name, including a nega
 names that match no profile.
 
 The two implementations diverge when this setting is `0`. In the core agent, `0` is rejected by the
-underlying LRU library, which causes the entire mapper to be silently disabled — mapping profiles
+underlying LRU library, which causes the entire mapper to be silently disabled: mapping profiles
 configured by `dogstatsd_mapper_profiles` are not applied. In ADP, `0` disables the result cache
 only; mapping profiles still run, so each metric pays the regex evaluation cost without amortization.
 
@@ -257,7 +257,7 @@ The following settings are specific to ADP and have no equivalent in the core ag
 | `aggregate_window_duration`                 | Aggregation window size                    |         |
 | `connect_retry_attempts`                    | IPC client connect retries                 |         |
 | `connect_retry_backoff`                     | IPC client retry delay                     |         |
-| `counter_expiry_seconds`                    | Idle counter keep-alive duration           | 300s    |
+| `counter_expiry_seconds`                    | Idle counter keep-alive duration           | 300     |
 | `data_plane.api_listen_address`             | ADP unprivileged API address               |         |
 | `data_plane.remote_agent_enabled`           | Register as remote agent                   |         |
 | `data_plane.secure_api_listen_address`      | ADP privileged API address                 |         |
