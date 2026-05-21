@@ -1729,10 +1729,10 @@
   },
   {
     "key": "serializer_max_series_points_per_payload",
-    "feature_state": "PARITY",
+    "feature_state": "NOT_APPLICABLE",
     "action": "NONE",
     "description": "Max data points per series payload",
-    "reason": "ADP reads this Agent key for V2 series point-count flush limits. Defaults match the core agent. serializer_max_metrics_per_payload remains an ADP-specific metric-count safety cap.",
+    "reason": "Removed from the core Agent; ADP intentionally does not support it.",
     "issue": "#1354",
     "adp_key": null
   },
