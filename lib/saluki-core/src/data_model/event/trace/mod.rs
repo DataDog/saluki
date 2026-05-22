@@ -38,9 +38,31 @@ impl AttributeValue {
     }
 
     /// Returns the inner float if this is a `Float` variant.
+    ///
+    /// Returns `Some` only when the stored variant is `Float`. For numeric semantic tags
+    /// where the source may store an integer (e.g. sampling priority, `_sample_rate`,
+    /// `_top_level`), use [`as_num`][AttributeValue::as_num] instead.
     pub fn as_float(&self) -> Option<f64> {
         if let AttributeValue::Float(f) = self {
             Some(*f)
+        } else {
+            None
+        }
+    }
+
+    /// Returns the inner bool if this is a `Bool` variant.
+    pub fn as_bool(&self) -> Option<bool> {
+        if let AttributeValue::Bool(b) = self {
+            Some(*b)
+        } else {
+            None
+        }
+    }
+
+    /// Returns the inner integer if this is an `Int` variant.
+    pub fn as_int(&self) -> Option<i64> {
+        if let AttributeValue::Int(i) = self {
+            Some(*i)
         } else {
             None
         }
@@ -329,8 +351,8 @@ impl Span {
     }
 
     /// Replaces the span attributes map.
-    pub fn with_attributes(mut self, attributes: FastHashMap<MetaString, AttributeValue>) -> Self {
-        self.attributes = attributes;
+    pub fn with_attributes(mut self, attributes: impl Into<Option<FastHashMap<MetaString, AttributeValue>>>) -> Self {
+        self.attributes = attributes.into().unwrap_or_default();
         self
     }
 

@@ -212,17 +212,17 @@ impl RareSampler {
 fn is_top_level_or_measured(span: &Span) -> bool {
     span.attributes
         .get(KEY_TOP_LEVEL)
-        .and_then(AttributeValue::as_float)
+        .and_then(AttributeValue::as_num)
         .is_some_and(|v| v == 1.0)
         || span
             .attributes
             .get(KEY_TRACER_TOP_LEVEL)
-            .and_then(AttributeValue::as_float)
+            .and_then(AttributeValue::as_num)
             .is_some_and(|v| v == 1.0)
         || span
             .attributes
             .get(KEY_MEASURED)
-            .and_then(AttributeValue::as_float)
+            .and_then(AttributeValue::as_num)
             .is_some_and(|v| v == 1.0)
 }
 

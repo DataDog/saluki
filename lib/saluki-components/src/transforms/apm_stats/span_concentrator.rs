@@ -229,7 +229,7 @@ impl SpanConcentrator {
         if span
             .attributes
             .get(METRIC_TOP_LEVEL)
-            .and_then(AttributeValue::as_float)
+            .and_then(AttributeValue::as_num)
             .is_some_and(|v| v == 1.0)
         {
             return true;
@@ -237,7 +237,7 @@ impl SpanConcentrator {
         if span
             .attributes
             .get(METRIC_MEASURED)
-            .and_then(AttributeValue::as_float)
+            .and_then(AttributeValue::as_num)
             .is_some_and(|v| v == 1.0)
         {
             return true;
@@ -270,7 +270,7 @@ impl SpanConcentrator {
         let is_top_level = span
             .attributes
             .get(METRIC_TOP_LEVEL)
-            .and_then(AttributeValue::as_float)
+            .and_then(AttributeValue::as_num)
             .is_some_and(|v| v == 1.0);
         let matching_peer_tags = self.matching_peer_tags(span, &span_kind);
 
@@ -375,7 +375,7 @@ fn is_partial_snapshot(span: &Span) -> bool {
     match span
         .attributes
         .get(METRIC_PARTIAL_VERSION)
-        .and_then(AttributeValue::as_float)
+        .and_then(AttributeValue::as_num)
     {
         Some(v) => v >= 0.0,
         None => false,

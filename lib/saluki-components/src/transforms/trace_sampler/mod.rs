@@ -199,7 +199,7 @@ impl TraceSampler {
             if let Some(p) = root
                 .attributes
                 .get(SAMPLING_PRIORITY_METRIC_KEY)
-                .and_then(AttributeValue::as_float)
+                .and_then(AttributeValue::as_num)
             {
                 return Some(p as i32);
             }

@@ -8,7 +8,7 @@ pub(super) fn weight(span: &Span) -> f64 {
     if let Some(rate) = span
         .attributes
         .get(KEY_SAMPLING_RATE_GLOBAL)
-        .and_then(AttributeValue::as_float)
+        .and_then(AttributeValue::as_num)
     {
         if rate > 0.0 && rate <= 1.0 {
             return 1.0 / rate;

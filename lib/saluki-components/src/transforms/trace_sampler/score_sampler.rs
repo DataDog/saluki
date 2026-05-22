@@ -171,14 +171,14 @@ pub(super) fn weight_root(span: &Span) -> f32 {
     let client_rate = span
         .attributes
         .get(KEY_SAMPLING_RATE_GLOBAL)
-        .and_then(AttributeValue::as_float)
+        .and_then(AttributeValue::as_num)
         .filter(|&r| r > 0.0 && r <= 1.0)
         .unwrap_or(1.0);
 
     let pre_sampler_rate = span
         .attributes
         .get(KEY_SAMPLING_RATE_PRE_SAMPLER)
-        .and_then(AttributeValue::as_float)
+        .and_then(AttributeValue::as_num)
         .filter(|&r| r > 0.0 && r <= 1.0)
         .unwrap_or(1.0);
 
@@ -189,6 +189,6 @@ pub(super) fn weight_root(span: &Span) -> f32 {
 fn get_global_rate(span: &Span) -> f64 {
     span.attributes
         .get(KEY_SAMPLING_RATE_GLOBAL)
-        .and_then(AttributeValue::as_float)
+        .and_then(AttributeValue::as_num)
         .unwrap_or(1.0)
 }
