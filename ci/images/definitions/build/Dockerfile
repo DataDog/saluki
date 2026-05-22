@@ -4,7 +4,7 @@ ARG BASE_IMAGE=registry.ddbuild.io/images/base/gbi-ubuntu_2204:release
 #
 # This lets us avoid having to actually copy them into a layer that makes it into the final image.
 FROM scratch AS ci-scripts
-COPY --chmod=+x .ci/*.sh /
+COPY --chmod=+x ci/images/scripts/*.sh /
 
 # Create another small helper image with our Makefile and ADP's `Cargo.toml` in the right layout
 # such that we can bindmount it and then run `make cargo-preinstall`.
@@ -64,5 +64,5 @@ RUN --mount=type=bind,source=Makefile,target=/tmp/Makefile \
     CI=true make -C /tmp cargo-preinstall && \
     /scripts/clean-temporary-caches.sh
 
-COPY --chmod=+x .ci/images/build/entrypoint.sh /
+COPY --chmod=+x ci/images/definitions/build/entrypoint.sh /
 ENTRYPOINT [ "/entrypoint.sh" ]
