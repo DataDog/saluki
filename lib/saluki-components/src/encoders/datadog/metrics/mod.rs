@@ -109,6 +109,15 @@ const fn default_max_series_uncompressed_payload_size() -> usize {
     SERIES_V2_UNCOMPRESSED_SIZE_LIMIT
 }
 
+fn clamp_series_v2_payload_limits(
+    max_series_uncompressed_payload_size: usize, max_series_payload_size: usize,
+) -> (usize, usize) {
+    (
+        max_series_uncompressed_payload_size.min(SERIES_V2_UNCOMPRESSED_SIZE_LIMIT),
+        max_series_payload_size.min(SERIES_V2_COMPRESSED_SIZE_LIMIT),
+    )
+}
+
 const fn default_flush_timeout_secs() -> u64 {
     2
 }
@@ -146,9 +155,10 @@ pub struct DatadogMetricsConfiguration {
     /// Maximum compressed size, in bytes, of a V2 series payload.
     ///
     /// This applies only when `use_v2_api.series` is `true`. V1 series and sketches continue to use their existing
-    /// endpoint defaults. High-throughput workloads may increase this to reduce request count, at the cost of larger
-    /// individual requests. If set to `0`, every non-empty compressed payload exceeds the limit and is dropped during
-    /// flush.
+    /// endpoint defaults. The effective value is clamped to the V2 series API limit of 512,000 bytes, so larger
+    /// configured values do not allow payloads that intake would reject. High-throughput workloads may increase this
+    /// up to that API limit to reduce request count, at the cost of larger individual requests. If set to `0`, every
+    /// non-empty compressed payload exceeds the limit and is dropped during flush.
     ///
     /// Defaults to 512,000 bytes.
     #[serde(
@@ -160,9 +170,10 @@ pub struct DatadogMetricsConfiguration {
     /// Maximum uncompressed size, in bytes, of a V2 series payload.
     ///
     /// This applies only when `use_v2_api.series` is `true`. V1 series and sketches continue to use their existing
-    /// endpoint defaults. This limit protects the encoder before compression, so compressed payload size may still
-    /// force a separate flush. Values smaller than the minimum endpoint framing size prevent the request builder from
-    /// starting.
+    /// endpoint defaults. The effective value is clamped to the V2 series API limit of 5,242,880 bytes, so larger
+    /// configured values do not allow payloads that intake would reject. This limit protects the encoder before
+    /// compression, so compressed payload size may still force a separate flush. Values smaller than the minimum
+    /// endpoint framing size prevent the request builder from starting.
     ///
     /// Defaults to 5,242,880 bytes.
     #[serde(
@@ -264,7 +275,9 @@ impl EncoderBuilder for DatadogMetricsConfiguration {
         series_rb.with_max_inputs_per_payload(self.max_metrics_per_payload);
 
         if series_endpoint == MetricsEndpoint::SeriesV2 {
-            series_rb.with_len_limits(self.max_series_uncompressed_payload_size, self.max_series_payload_size)?;
+            let (uncompressed_limit, compressed_limit) =
+                clamp_series_v2_payload_limits(self.max_series_uncompressed_payload_size, self.max_series_payload_size);
+            series_rb.with_len_limits(uncompressed_limit, compressed_limit)?;
         }
 
         let mut sketches_rb = RequestBuilder::new(sketches_encoder, compression_scheme, RB_BUFFER_CHUNK_SIZE).await?;
@@ -1531,7 +1544,10 @@ mod use_v2_api_series_default {
     use saluki_config::ConfigurationLoader;
     use serde_json::json;
 
-    use super::DatadogMetricsConfiguration;
+    use super::{
+        clamp_series_v2_payload_limits, DatadogMetricsConfiguration, SERIES_V2_COMPRESSED_SIZE_LIMIT,
+        SERIES_V2_UNCOMPRESSED_SIZE_LIMIT,
+    };
     use crate::config::KEY_ALIASES;
 
     /// `use_v2_api_series` defaults to `true` (preserves V2 protobuf behavior when the flag is absent).
@@ -1564,5 +1580,19 @@ mod use_v2_api_series_default {
 
         assert_eq!(parsed.max_series_payload_size, 1234);
         assert_eq!(parsed.max_series_uncompressed_payload_size, 5678);
+    }
+
+    #[test]
+    fn clamps_series_payload_limit_keys_to_api_limits() {
+        let (uncompressed_limit, compressed_limit) = clamp_series_v2_payload_limits(
+            SERIES_V2_UNCOMPRESSED_SIZE_LIMIT + 1,
+            SERIES_V2_COMPRESSED_SIZE_LIMIT + 1,
+        );
+        assert_eq!(uncompressed_limit, SERIES_V2_UNCOMPRESSED_SIZE_LIMIT);
+        assert_eq!(compressed_limit, SERIES_V2_COMPRESSED_SIZE_LIMIT);
+
+        let (uncompressed_limit, compressed_limit) = clamp_series_v2_payload_limits(5678, 1234);
+        assert_eq!(uncompressed_limit, 5678);
+        assert_eq!(compressed_limit, 1234);
     }
 }
