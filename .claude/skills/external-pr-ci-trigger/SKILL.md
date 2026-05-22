@@ -180,25 +180,6 @@ git branch -d 'OWNER/BRANCH'
 The local `OWNER/BRANCH` is safe to delete because we just pushed it; `origin/OWNER/BRANCH` is
 the source of truth from here on.
 
-## Step 6: Trigger CI and report links
-
-```bash
-ddr devflow ddci trigger --owner DataDog --repository saluki --branch OWNER/BRANCH
-```
-
-If `ddr` is not installed or the command fails, note it but don't treat it as fatal — the push
-itself is what attaches CI to the PR. The `ddr` call is a convenience to kick the pipeline
-immediately.
-
-Then print these links for the user:
-
-- Branch on GitHub: `https://github.com/DataDog/saluki/tree/OWNER/BRANCH`
-- CI Visibility pipelines:
-  `https://app.datadoghq.com/ci/pipeline-executions?query=ci_level%3Apipeline%20%40ci.provider.name%3Agitlab%20%40git.repository.name%3A%22DataDog%2Fsaluki%22%20%40git.branch%3A%22OWNER%2FBRANCH%22&currentTab=json&index=cipipeline&sort=time`
-
-URL-encode any `/` inside `OWNER/BRANCH` as `%2F` when building the CI Visibility link (the
-GitHub link does not need encoding).
-
 ## Anti-patterns
 
 - **Don't `git reset --hard` or `git clean` to "make the working tree clean."** If preconditions
