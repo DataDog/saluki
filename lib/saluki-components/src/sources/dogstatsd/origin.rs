@@ -11,6 +11,20 @@ use tracing::trace;
 
 use super::{replay::CapturedTaggerHandle, tags::WellKnownTags};
 
+const REPLAY_PROCESS_ID_MARKER: u32 = 1u32 << 31;
+
+pub(super) fn mark_replay_process_id(process_id: u32) -> u32 {
+    process_id | REPLAY_PROCESS_ID_MARKER
+}
+
+fn captured_process_id_from_replay(process_id: u32) -> Option<u32> {
+    if process_id & REPLAY_PROCESS_ID_MARKER != 0 {
+        Some(process_id & !REPLAY_PROCESS_ID_MARKER)
+    } else {
+        None
+    }
+}
+
 const fn default_tag_cardinality() -> OriginTagCardinality {
     OriginTagCardinality::Low
 }
@@ -221,21 +235,17 @@ impl DogStatsDOriginTagResolver {
 
 impl OriginTagsResolver for DogStatsDOriginTagResolver {
     fn resolve_origin_tags(&self, origin: RawOrigin<'_>) -> SharedTagSet {
-        // Replay traffic bypasses the live enrichment pipeline entirely: the captured `TaggerState` already contains
-        // fully-resolved tags per entity, so the resolver's entity-ID-walking logic has nothing to add. We look up
-        // directly from the captured store using the captured PID (set by the packet handler when it observed the
-        // replay credentials marker).
-        if origin.is_replay() {
+        // Replay traffic is tagged by setting the marker bit on the origin process ID. It bypasses the live enrichment
+        // pipeline entirely: the captured `TaggerState` already contains fully-resolved tags per entity, so the
+        // resolver's entity-ID-walking logic has nothing to add.
+        if let Some(captured_process_id) = origin.process_id().and_then(captured_process_id_from_replay) {
             if let Some(store) = self.captured_tagger.current() {
-                if let Some(pid) = origin.process_id() {
-                    let cardinality = origin.cardinality().unwrap_or(self.config.tag_cardinality);
-                    return store.lookup(pid as i32, cardinality).unwrap_or_default();
-                }
+                let cardinality = origin.cardinality().unwrap_or(self.config.tag_cardinality);
+                return store
+                    .lookup(captured_process_id as i32, cardinality)
+                    .unwrap_or_default();
             }
-            trace!(
-                ?origin,
-                "Replay-flagged origin but no captured tagger or PID available."
-            );
+            trace!(?origin, "Replay-flagged origin but no captured tagger available.");
             return SharedTagSet::default();
         }
 
@@ -726,8 +736,7 @@ mod tests {
         let resolver = DogStatsDOriginTagResolver::new(config, live, captured_tagger);
 
         let mut origin = RawOrigin::default();
-        origin.set_process_id(7777);
-        origin.set_replay(true);
+        origin.set_process_id(mark_replay_process_id(7777));
         origin.set_cardinality(OriginTagCardinality::Low);
 
         let tags = resolver.resolve_origin_tags(origin);
@@ -749,8 +758,7 @@ mod tests {
         let resolver = DogStatsDOriginTagResolver::new(config, live, CapturedTaggerHandle::new());
 
         let mut origin = RawOrigin::default();
-        origin.set_process_id(7777);
-        origin.set_replay(true);
+        origin.set_process_id(mark_replay_process_id(7777));
 
         let tags = resolver.resolve_origin_tags(origin);
         assert!(

@@ -128,13 +128,6 @@ pub struct RawOrigin<'a> {
     ///
     /// See [`ExternalData`] for more information.
     external_data: Option<RawExternalData<'a>>,
-
-    /// Whether this origin describes a packet injected by a replay session.
-    ///
-    /// Set to `true` when the receive-side packet handler observes the replay credentials marker on incoming
-    /// `SCM_CREDENTIALS`. Downstream tag resolution branches on this flag to consult the captured tagger snapshot
-    /// instead of the live workload provider.
-    is_replay: bool,
 }
 
 impl<'a> RawOrigin<'a> {
@@ -202,16 +195,6 @@ impl<'a> RawOrigin<'a> {
     /// Returns the External Data of the sender.
     pub fn external_data(&self) -> Option<&RawExternalData<'a>> {
         self.external_data.as_ref()
-    }
-
-    /// Marks (or unmarks) this origin as originating from a replay session.
-    pub fn set_replay(&mut self, is_replay: bool) {
-        self.is_replay = is_replay;
-    }
-
-    /// Returns whether this origin describes a replay-injected packet.
-    pub fn is_replay(&self) -> bool {
-        self.is_replay
     }
 }
 
@@ -445,21 +428,6 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
-
-    #[test]
-    fn raw_origin_is_replay_defaults_false() {
-        let origin = RawOrigin::default();
-        assert!(!origin.is_replay());
-    }
-
-    #[test]
-    fn raw_origin_set_replay_round_trips() {
-        let mut origin = RawOrigin::default();
-        origin.set_replay(true);
-        assert!(origin.is_replay());
-        origin.set_replay(false);
-        assert!(!origin.is_replay());
-    }
 
     proptest! {
         #[test]

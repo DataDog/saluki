@@ -458,12 +458,8 @@ async fn create_topology(
     }
 
     if dp_config.dogstatsd().enabled() {
-        let (capture_api_handler, replay_api_handler) =
-            add_dsd_pipeline_to_blueprint(&mut blueprint, config, env_provider, dsd_stats_config).await?;
-        control_surfaces.dogstatsd = Some(DogStatsDControlSurface {
-            capture_api_handler,
-            replay_api_handler,
-        });
+        control_surfaces.dogstatsd =
+            Some(add_dsd_pipeline_to_blueprint(&mut blueprint, config, env_provider, dsd_stats_config).await?);
     }
 
     if dp_config.otlp().enabled() {
@@ -607,7 +603,7 @@ async fn add_baseline_traces_pipeline_to_blueprint(
 async fn add_dsd_pipeline_to_blueprint(
     blueprint: &mut TopologyBlueprint, config: &GenericConfiguration, env_provider: &ADPEnvironmentProvider,
     dsd_stats_config: DogStatsDStatisticsConfiguration,
-) -> Result<(DogStatsDCaptureAPIHandler, DogStatsDReplayAPIHandler), GenericError> {
+) -> Result<DogStatsDControlSurface, GenericError> {
     // We're creating the "front half" of the DogStatsD pipeline, which deals solely with accepting DogStatsD payloads,
     // and enriching/processing them in DSD-specific ways, relevant to how the Datadog Agent is expected to behave.
     //
@@ -705,7 +701,10 @@ async fn add_dsd_pipeline_to_blueprint(
             .add_destination("dsd_debug_log_out", dsd_debug_log_config)?
             .connect_component("dsd_debug_log_out", ["dsd_in.metrics"])?;
     }
-    Ok((dsd_capture_api_handler, dsd_replay_api_handler))
+    Ok(DogStatsDControlSurface {
+        capture_api_handler: dsd_capture_api_handler,
+        replay_api_handler: dsd_replay_api_handler,
+    })
 }
 
 fn add_otlp_pipeline_to_blueprint(

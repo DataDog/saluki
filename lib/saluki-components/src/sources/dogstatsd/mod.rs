@@ -86,8 +86,8 @@ pub use self::replay::{
 
 mod origin;
 use self::origin::{
-    origin_from_event_packet, origin_from_metric_packet, origin_from_service_check_packet, DogStatsDOriginTagResolver,
-    OriginEnrichmentConfiguration,
+    mark_replay_process_id, origin_from_event_packet, origin_from_metric_packet, origin_from_service_check_packet,
+    DogStatsDOriginTagResolver, OriginEnrichmentConfiguration,
 };
 
 mod resolver;
@@ -1511,11 +1511,10 @@ fn process_id_from_peer_addr(peer_addr: &ConnectionAddress) -> Option<i32> {
 ///
 /// Live packets carry the sender process's real PID/UID/GID; we use `creds.pid` as the origin's process_id. Replay
 /// packets carry `gid == REPLAY_CREDENTIALS_GID` and pack the captured (original) PID into `creds.uid`; we recover
-/// that PID and flag the origin so downstream tag resolution consults the captured tagger store.
+/// that PID with an internal marker so downstream tag resolution consults the captured tagger store.
 fn apply_credentials_to_origin(origin: &mut RawOrigin<'_>, creds: &ProcessCredentials) {
     if creds.gid == REPLAY_CREDENTIALS_GID {
-        origin.set_process_id(creds.uid);
-        origin.set_replay(true);
+        origin.set_process_id(mark_replay_process_id(creds.uid));
     } else {
         origin.set_process_id(creds.pid as u32);
     }
@@ -2442,7 +2441,6 @@ mod tests {
         super::apply_credentials_to_origin(&mut origin, &creds);
 
         assert_eq!(origin.process_id(), Some(12345));
-        assert!(!origin.is_replay(), "non-replay GID must not flip the replay flag");
     }
 
     #[test]
@@ -2456,8 +2454,10 @@ mod tests {
         };
         super::apply_credentials_to_origin(&mut origin, &creds);
 
-        assert_eq!(origin.process_id(), Some(captured_pid));
-        assert!(origin.is_replay(), "replay GID must flip the replay flag");
+        assert_eq!(
+            origin.process_id(),
+            Some(super::origin::mark_replay_process_id(captured_pid))
+        );
     }
 }
 
