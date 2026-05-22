@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap},
     path::PathBuf,
     time::{Duration, Instant},
 };
@@ -25,7 +25,7 @@ use tracing::{debug, info, warn};
 use crate::{
     correctness::{
         analysis::{AnalysisMode, AnalysisRunner, CollectedData, TracesAnalysisOptions},
-        config::{Config, TargetConfig},
+        config::{millstone_first_network_port, millstone_targets_all_sockets, Config, TargetConfig},
         runner::make_error_result,
     },
     reporter::{PhaseTiming, TestResult},
@@ -115,7 +115,7 @@ pub async fn run_k8s_correctness_test(name: String, config: Config, tctx: TestCo
 
     let run_start = Instant::now();
 
-    let use_socket_wait = crate::correctness::config::millstone_targets_all_sockets(&millstone_template);
+    let use_socket_wait = millstone_targets_all_sockets(&millstone_template);
 
     // Clean up all three namespaces regardless of outcome.
     let cleanup = |err: GenericError| {
@@ -163,7 +163,7 @@ pub async fn run_k8s_correctness_test(name: String, config: Config, tctx: TestCo
     // in parallel with the agent pods (which is fine, as the socket won't appear until the agent is
     // ready regardless).
     let tcp_readiness_checks = if !use_socket_wait {
-        if let Some(port) = crate::correctness::config::millstone_first_network_port(&millstone_template) {
+        if let Some(port) = millstone_first_network_port(&millstone_template) {
             let baseline_pod_api: Api<Pod> = Api::namespaced(client.clone(), &baseline_ns);
             let comparison_pod_api: Api<Pod> = Api::namespaced(client.clone(), &comparison_ns);
             match tokio::try_join!(
@@ -224,8 +224,9 @@ pub async fn run_k8s_correctness_test(name: String, config: Config, tctx: TestCo
     // Per-target $GROUP values. For socket transports the substitution value is the entry key
     // (the airlock HostPath directory name); for TCP/gRPC the value is the corresponding agent
     // pod's cluster IP, since pod hostnames are not routable from a separate pod.
-    let group_values: std::collections::HashMap<String, String> = if use_socket_wait {
+    let group_values: HashMap<String, String> = if use_socket_wait {
         [
+            // TODO: find a more dynamic mechanism for this.
             ("baseline".to_string(), "baseline".to_string()),
             ("comparison".to_string(), "comparison".to_string()),
         ]
@@ -242,6 +243,7 @@ pub async fn run_k8s_correctness_test(name: String, config: Config, tctx: TestCo
             Err(e) => return make_error_result(name, started, "get_pod_ips", cleanup(e).await),
         };
         [
+            // TODO: find a more dynamic mechanism for this.
             ("baseline".to_string(), baseline_pod_ip),
             ("comparison".to_string(), comparison_pod_ip),
         ]

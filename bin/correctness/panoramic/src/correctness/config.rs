@@ -297,6 +297,7 @@ impl Config {
 /// keys are reported as an error rather than silently leaving `$GROUP` unresolved.
 ///
 /// Returns the rewritten YAML as a `String` ready to be written to the millstone container.
+// TODO: let's design a better way to configure our containers than this
 pub fn resolve_group_placeholders<F>(template: &str, mut lookup: F) -> Result<String, GenericError>
 where
     F: FnMut(&str) -> Option<String>,

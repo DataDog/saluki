@@ -27,9 +27,29 @@ struct GrpcBackend {
     service_method_path: String,
 }
 
+/// Per-backend send statistics, accumulated across the lifetime of a `TargetSender`.
+///
+/// Tracked separately per target so the final summary can show divergent behavior between
+/// fan-out sinks (for example, partial writes happening on one socket but not the other).
+#[derive(Clone, Copy, Default)]
+pub struct BackendStats {
+    /// Number of payloads for which a write was attempted and succeeded (no error returned).
+    pub payloads_sent: u64,
+    /// Total bytes reported written across all successful sends to this backend.
+    pub bytes_sent: u64,
+    /// Number of successful sends where the reported byte count was less than the payload length.
+    pub partial_sends: u64,
+}
+
+struct BackendEntry {
+    name: String,
+    backend: TargetBackend,
+    stats: BackendStats,
+}
+
 pub struct TargetSender {
     /// Named backends in declared order. `send()` writes to each in turn for every payload.
-    backends: Vec<(String, TargetBackend)>,
+    backends: Vec<BackendEntry>,
     /// Shared tokio runtime used by every gRPC backend in this process; `None` if no backend
     /// requires gRPC. A single runtime is sufficient because `send()` is synchronous and we
     /// `block_on` one call at a time.
@@ -50,7 +70,11 @@ impl TargetSender {
         let file =
             File::create(path).with_error_context(|| format!("Failed to create output file '{}'.", path.display()))?;
         Ok(Self {
-            backends: vec![("file".to_string(), TargetBackend::File(file))],
+            backends: vec![BackendEntry {
+                name: "file".to_string(),
+                backend: TargetBackend::File(file),
+                stats: BackendStats::default(),
+            }],
             runtime: None,
         })
     }
@@ -78,10 +102,19 @@ impl TargetSender {
         let mut backends = Vec::with_capacity(config.targets.len());
         for (name, addr) in &config.targets {
             let backend = build_backend(name, addr, runtime.as_ref())?;
-            backends.push((name.clone(), backend));
+            backends.push(BackendEntry {
+                name: name.clone(),
+                backend,
+                stats: BackendStats::default(),
+            });
         }
 
         Ok(Self { backends, runtime })
+    }
+
+    /// Returns per-target send statistics in declared order.
+    pub fn stats(&self) -> impl Iterator<Item = (&str, BackendStats)> {
+        self.backends.iter().map(|e| (e.name.as_str(), e.stats))
     }
 
     /// Sends a single payload to every configured target in turn (fan-out).
@@ -100,8 +133,8 @@ impl TargetSender {
     /// If any backend fails to send, the error is returned with the target's name prepended.
     pub fn send(&mut self, payload: &[u8]) -> Result<usize, GenericError> {
         let mut total_bytes = 0usize;
-        for (name, backend) in &mut self.backends {
-            let bytes: Result<usize, GenericError> = match backend {
+        for entry in &mut self.backends {
+            let bytes: Result<usize, GenericError> = match &mut entry.backend {
                 TargetBackend::Tcp(stream) => stream
                     .write_all(payload)
                     .map(|_| payload.len())
@@ -128,11 +161,18 @@ impl TargetSender {
             };
 
             match bytes {
-                Ok(n) => total_bytes += n,
+                Ok(n) => {
+                    entry.stats.payloads_sent += 1;
+                    entry.stats.bytes_sent += n as u64;
+                    if n != payload.len() {
+                        entry.stats.partial_sends += 1;
+                    }
+                    total_bytes += n;
+                }
                 Err(e) => {
                     return Err(saluki_error::generic_error!(
                         "Failed to send to target '{}': {}",
-                        name,
+                        entry.name,
                         e
                     ))
                 }
