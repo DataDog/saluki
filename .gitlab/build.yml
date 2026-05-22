@@ -27,6 +27,7 @@
       --build-arg BUILD_BASE=build-prepped
       --build-arg LICENSE_IMAGE=${SALUKI_SPDX_LICENSES_CI_IMAGE}
       --build-arg LICENSE_BASE=license-prepped
+      --build-arg PROFILING_IMAGE=${APP_IMAGE}
       --build-arg APP_IMAGE=${APP_IMAGE}
       --build-arg BUILD_PROFILE=${BUILD_PROFILE}
       --build-arg BUILD_FEATURES=${BUILD_FEATURES}
