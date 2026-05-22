@@ -20,7 +20,7 @@ use tracing::{debug, error, info, info_span, Instrument as _, Span};
 
 use crate::correctness::{
     analysis::{AnalysisMode, AnalysisRunner, CollectedData, TracesAnalysisOptions},
-    config::{Config, Runtime},
+    config::{resolve_group_placeholders, Config, Runtime},
     sync::Coordinator,
 };
 use crate::{
@@ -277,7 +277,7 @@ impl CorrectnessRunner {
                 self.millstone_config.config_path.display()
             )
         })?;
-        let resolved = crate::correctness::config::resolve_group_placeholders(&template, |key| Some(key.to_string()))?;
+        let resolved = resolve_group_placeholders(&template, |key| Some(key.to_string()))?;
 
         // Write the resolved config to a per-test scratch file under the test's log directory.
         // Using `log_dir()` keeps the file isolated per test (the harness creates one log_dir
@@ -287,6 +287,14 @@ impl CorrectnessRunner {
         std::fs::write(&resolved_path, &resolved).with_error_context(|| {
             format!(
                 "Failed to write resolved millstone config to '{}'.",
+                resolved_path.display()
+            )
+        })?;
+        // Docker requires bind-mount host paths to be absolute; canonicalize after writing so
+        // that a relative PANORAMIC_LOG_DIR isn't silently treated as a named volume name.
+        let resolved_path = std::fs::canonicalize(&resolved_path).with_error_context(|| {
+            format!(
+                "Failed to canonicalize resolved millstone config path '{}'.",
                 resolved_path.display()
             )
         })?;
