@@ -228,3 +228,4 @@ libtest
 mpmc
 dhat
 profiler
+sed
