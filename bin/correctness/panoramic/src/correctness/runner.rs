@@ -277,8 +277,7 @@ impl CorrectnessRunner {
                 self.millstone_config.config_path.display()
             )
         })?;
-        let resolved =
-            crate::correctness::config::resolve_group_placeholders(&template, |key| Some(key.to_string()))?;
+        let resolved = crate::correctness::config::resolve_group_placeholders(&template, |key| Some(key.to_string()))?;
 
         // Write the resolved config to a per-test scratch file under the test's log directory.
         // Using `log_dir()` keeps the file isolated per test (the harness creates one log_dir
@@ -286,7 +285,10 @@ impl CorrectnessRunner {
         // otherwise re-mount this file into the target agent containers at `/millstone.resolved.yaml`.
         let resolved_path = self.tctx.log_dir().join("millstone.resolved.yaml");
         std::fs::write(&resolved_path, &resolved).with_error_context(|| {
-            format!("Failed to write resolved millstone config to '{}'.", resolved_path.display())
+            format!(
+                "Failed to write resolved millstone config to '{}'.",
+                resolved_path.display()
+            )
         })?;
 
         let driver_config = DriverConfig::from_image("millstone", self.millstone_config.image.clone())

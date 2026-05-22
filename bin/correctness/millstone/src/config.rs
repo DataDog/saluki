@@ -326,6 +326,10 @@ targets:
             Err(e) => e,
         };
         let msg = err.to_string();
-        assert!(msg.contains("baseline"), "error should mention duplicate key, got: {}", msg);
+        assert!(
+            msg.contains("baseline"),
+            "error should mention duplicate key, got: {}",
+            msg
+        );
     }
 }

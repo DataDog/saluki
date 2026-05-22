@@ -70,10 +70,7 @@ impl TargetSender {
             .iter()
             .any(|(_, addr)| matches!(addr, TargetAddress::Grpc(_)));
         let runtime = if needs_runtime {
-            Some(
-                tokio::runtime::Runtime::new()
-                    .error_context("Failed to create tokio runtime for gRPC client.")?,
-            )
+            Some(tokio::runtime::Runtime::new().error_context("Failed to create tokio runtime for gRPC client.")?)
         } else {
             None
         };
@@ -156,16 +153,17 @@ fn build_backend(
 ) -> Result<TargetBackend, GenericError> {
     match addr {
         TargetAddress::Tcp(addr_str) => {
-            let stream = TcpStream::connect(addr_str.as_str())
-                .with_error_context(|| format!("Failed to connect to TCP target '{}' (target='{}').", addr_str, name))?;
+            let stream = TcpStream::connect(addr_str.as_str()).with_error_context(|| {
+                format!("Failed to connect to TCP target '{}' (target='{}').", addr_str, name)
+            })?;
             Ok(TargetBackend::Tcp(stream))
         }
         TargetAddress::Udp(addr_str) => {
             let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))
                 .with_error_context(|| format!("Failed to bind UDP socket (target='{}').", name))?;
-            socket
-                .connect(addr_str.as_str())
-                .with_error_context(|| format!("Failed to connect to UDP target '{}' (target='{}').", addr_str, name))?;
+            socket.connect(addr_str.as_str()).with_error_context(|| {
+                format!("Failed to connect to UDP target '{}' (target='{}').", addr_str, name)
+            })?;
             Ok(TargetBackend::Udp(socket))
         }
         TargetAddress::UnixDatagram(path) => {

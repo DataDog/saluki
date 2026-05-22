@@ -115,8 +115,7 @@ pub async fn run_k8s_correctness_test(name: String, config: Config, tctx: TestCo
 
     let run_start = Instant::now();
 
-    let use_socket_wait =
-        crate::correctness::config::millstone_targets_all_sockets(&millstone_template);
+    let use_socket_wait = crate::correctness::config::millstone_targets_all_sockets(&millstone_template);
 
     // Clean up all three namespaces regardless of outcome.
     let cleanup = |err: GenericError| {
@@ -250,10 +249,9 @@ pub async fn run_k8s_correctness_test(name: String, config: Config, tctx: TestCo
         .collect()
     };
 
-    let resolved_config = match crate::correctness::config::resolve_group_placeholders(
-        &config_with_origin,
-        |key| group_values.get(key).cloned(),
-    ) {
+    let resolved_config = match crate::correctness::config::resolve_group_placeholders(&config_with_origin, |key| {
+        group_values.get(key).cloned()
+    }) {
         Ok(s) => s,
         Err(e) => return make_error_result(name, started, "resolve_millstone_config", cleanup(e).await),
     };
