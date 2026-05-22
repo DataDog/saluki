@@ -7,7 +7,6 @@ use hyper_http_proxy::{Intercept, Proxy};
 use saluki_config::deserialize_space_separated_or_seq;
 use saluki_error::GenericError;
 use serde::Deserialize;
-use tracing::debug;
 use url::Url;
 
 #[derive(Clone, Deserialize, Facet)]
@@ -321,6 +320,8 @@ mod config_smoke {
 
 #[cfg(test)]
 mod tests {
+    use tracing::debug;
+
     use super::*;
 
     fn deserialize_no_proxy(json: serde_json::Value) -> Vec<String> {
