@@ -68,7 +68,7 @@ generate-correctness-pipeline:
     - build-correctness-tools-image
     - build-panoramic-binary
   script:
-    - bash tooling/generate-correctness-pipeline.sh > generated-correctness.yml
+    - bash ci/tooling/generate-correctness-pipeline.sh > generated-correctness.yml
   artifacts:
     paths: [generated-correctness.yml]
 

@@ -1,5 +1,5 @@
 # Mixins extended by every correctness-test job in the dynamically generated
-# child pipeline (see tooling/generate-correctness-pipeline.sh).
+# child pipeline (see ci/tooling/generate-correctness-pipeline.sh).
 #
 # Why mixins: the generator emits one stanza per test that is identical except
 # for CORRECTNESS_TEST_CASE and (optionally) the baseline-image override.

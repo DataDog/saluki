@@ -27,3 +27,11 @@ mach2 = { version = "0.6.0" }
 
 [dev-dependencies]
 dhat = { workspace = true }
+
+# Run the runtime-allocation test without the libtest harness so that the harness's own
+# lazy initializations (mpmc `Context`, `SyncWaker` mutex via `OnceBox`, etc.) cannot race
+# with the dhat profiler and be attributed to the code under test. See issue #625.
+[[test]]
+name = "no_runtime_allocations"
+path = "tests/no_runtime_allocations.rs"
+harness = false

@@ -80,7 +80,7 @@ impl<P: Processor> Clone for Store<P> {
 /// load on the Kubernetes API server by caching the state of resources in memory. `Reflector` provides comparable
 /// functionality, allowing for a single data source to be consumed, and then shared amongst multiple callers. However,
 ///
-/// `Reflector` utilizes the concept of a "processor", which dictates both the type of data that can be consumed and
+/// `Reflector` utilizes the concept of a _processor_, which dictates both the type of data that can be consumed and
 /// data that gets stored. This means that `Reflector` is more than just a cache of the data source, but also
 /// potentially a mapped version of it, allowing for transforming the data in whatever way is necessary.
 #[derive(Clone)]

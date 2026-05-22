@@ -181,7 +181,7 @@ pub struct EsObfuscationConfig {
     )]
     pub(crate) keep_values: Vec<String>,
 
-    /// Keys whose string values should be SQL-obfuscated instead of replaced with "?".
+    /// Keys whose string values should be SQL-obfuscated instead of replaced with `?`.
     #[serde(
         default,
         deserialize_with = "deserialize_space_separated_or_seq",
@@ -206,7 +206,7 @@ pub struct MongoObfuscationConfig {
     )]
     pub(crate) keep_values: Vec<String>,
 
-    /// Keys whose string values should be SQL-obfuscated instead of replaced with "?".
+    /// Keys whose string values should be SQL-obfuscated instead of replaced with `?`.
     #[serde(
         default,
         deserialize_with = "deserialize_space_separated_or_seq",
@@ -231,7 +231,7 @@ pub struct OpenSearchObfuscationConfig {
     )]
     pub(crate) keep_values: Vec<String>,
 
-    /// Keys whose string values should be SQL-obfuscated instead of replaced with "?".
+    /// Keys whose string values should be SQL-obfuscated instead of replaced with `?`.
     #[serde(
         default,
         deserialize_with = "deserialize_space_separated_or_seq",

@@ -99,6 +99,7 @@ hyper-http-proxy = { version = "1.1", default-features = false, features = [
 ] }
 hyper-rustls = { version = "0.27", default-features = false, features = [
   "aws-lc-rs",
+  "http1",
   "http2",
   "rustls-native-certs",
 ] }

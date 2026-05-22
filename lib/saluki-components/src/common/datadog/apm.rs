@@ -194,7 +194,7 @@ pub struct ApmConfig {
 
     /// Default environment to use when traces don't provide one.
     ///
-    /// Defaults to "none".
+    /// Defaults to `"none"`.
     #[serde(default = "default_env")]
     default_env: MetaString,
 
@@ -211,6 +211,7 @@ pub struct ApmConfig {
     rare_sampler: RareSamplerConfig,
 
     /// Obfuscation configuration for trace data.
+    ///
     /// Populated from `ApmConfiguration.obfuscation` in `from_configuration`; not read from serde directly.
     #[serde(skip)]
     obfuscation: ObfuscationConfig,

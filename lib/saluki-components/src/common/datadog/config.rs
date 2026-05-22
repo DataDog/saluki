@@ -3,7 +3,7 @@ use std::time::Duration;
 use facet::Facet;
 use saluki_config::GenericConfiguration;
 use saluki_error::GenericError;
-use saluki_io::net::client::http::TlsMinimumVersion;
+use saluki_io::net::client::http::{HttpProtocol, TlsMinimumVersion};
 use serde::Deserialize;
 use tracing::warn;
 
@@ -58,6 +58,29 @@ fn min_tls_version_from_config_value(value: &str) -> TlsMinimumVersion {
                 "Invalid configured TLS minimum version; using tlsv1.2."
             );
             TlsMinimumVersion::Tls12
+        }
+    }
+}
+
+/// HTTP protocol selection for the Datadog forwarder.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Facet)]
+#[serde(rename_all = "lowercase")]
+#[cfg_attr(test, derive(serde::Serialize))]
+pub enum ForwarderHttpProtocol {
+    /// Automatically negotiate HTTP/2 with HTTP/1.1 fallback.
+    #[default]
+    Auto,
+
+    /// Use HTTP/1.1 only.
+    Http1,
+}
+
+impl From<ForwarderHttpProtocol> for HttpProtocol {
+    fn from(protocol: ForwarderHttpProtocol) -> Self {
+        match protocol {
+            ForwarderHttpProtocol::Auto => Self::Auto,
+            ForwarderHttpProtocol::Http1 => Self::Http1,
         }
     }
 }
@@ -165,6 +188,12 @@ pub struct ForwarderConfiguration {
     #[serde(flatten)]
     opw_metrics: OpwMetricsConfiguration,
 
+    /// HTTP protocol selection for outgoing forwarder requests.
+    ///
+    /// Defaults to `auto`, which negotiates HTTP/2 with HTTP/1.1 fallback. Set to `http1` to force HTTP/1.1 only.
+    #[serde(default, rename = "forwarder_http_protocol")]
+    http_protocol: ForwarderHttpProtocol,
+
     /// Connection reset interval, in seconds.
     ///
     /// Defaults to 0.
@@ -227,6 +256,11 @@ impl ForwarderConfiguration {
     /// Returns the maximum number of pending requests for an individual endpoint.
     pub const fn endpoint_buffer_size(&self) -> usize {
         self.endpoint_buffer_size
+    }
+
+    /// Returns the HTTP protocol selection for outgoing forwarder requests.
+    pub fn http_protocol(&self) -> HttpProtocol {
+        self.http_protocol.into()
     }
 
     /// Returns a mutable reference to the endpoint configuration.
@@ -438,6 +472,48 @@ mod tests {
 
         let proxies = config.proxy().as_ref().unwrap().build().unwrap();
         assert_eq!(proxies[0].uri().to_string(), PROXY_B_URI);
+    }
+
+    #[tokio::test]
+    async fn forwarder_http_protocol_defaults_to_auto() {
+        let config = forwarder_config_from(base_config(), None).await;
+
+        assert_eq!(config.http_protocol(), saluki_io::net::client::http::HttpProtocol::Auto);
+    }
+
+    #[tokio::test]
+    async fn forwarder_http_protocol_accepts_auto() {
+        let config = forwarder_config_from(
+            config_with(serde_json::json!({ "forwarder_http_protocol": "auto" })),
+            None,
+        )
+        .await;
+
+        assert_eq!(config.http_protocol(), saluki_io::net::client::http::HttpProtocol::Auto);
+    }
+
+    #[tokio::test]
+    async fn forwarder_http_protocol_accepts_http1() {
+        let config = forwarder_config_from(
+            config_with(serde_json::json!({ "forwarder_http_protocol": "http1" })),
+            None,
+        )
+        .await;
+
+        assert_eq!(
+            config.http_protocol(),
+            saluki_io::net::client::http::HttpProtocol::Http1
+        );
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "ForwarderConfiguration should deserialize")]
+    async fn forwarder_http_protocol_rejects_unknown_values() {
+        let _ = forwarder_config_from(
+            config_with(serde_json::json!({ "forwarder_http_protocol": "http2" })),
+            None,
+        )
+        .await;
     }
 
     #[tokio::test]
