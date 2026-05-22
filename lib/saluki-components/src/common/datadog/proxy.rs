@@ -7,6 +7,7 @@ use hyper_http_proxy::{Intercept, Proxy};
 use saluki_config::deserialize_space_separated_or_seq;
 use saluki_error::GenericError;
 use serde::Deserialize;
+use tracing::debug;
 use url::Url;
 
 #[derive(Clone, Deserialize, Facet)]
@@ -603,7 +604,13 @@ mod tests {
         static INIT: std::sync::OnceLock<()> = std::sync::OnceLock::new();
         INIT.get_or_init(|| {
             if rustls::crypto::CryptoProvider::get_default().is_none() {
-                saluki_tls::initialize_default_crypto_provider().expect("failed to initialize TLS crypto provider");
+                match saluki_tls::initialize_default_crypto_provider() {
+                    Ok(()) => {}
+                    Err(e) if rustls::crypto::CryptoProvider::get_default().is_some() => {
+                        debug!(error = %e, "TLS crypto provider was initialized by another test.");
+                    }
+                    Err(e) => panic!("failed to initialize TLS crypto provider: {e}"),
+                }
             }
             saluki_tls::load_platform_root_certificates().expect("failed to load platform root certificates");
         });
