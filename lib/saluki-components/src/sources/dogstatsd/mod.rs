@@ -65,6 +65,8 @@ use tokio::{
 };
 use tracing::{debug, error, info, trace, warn};
 
+use crate::destinations::DogStatsDStatsCollector;
+
 mod framer;
 use self::framer::{get_framer, DsdFramer};
 use crate::sources::dogstatsd::tags::{WellKnownTags, WellKnownTagsFilterPredicate};
@@ -508,6 +510,10 @@ pub struct DogStatsDConfiguration {
     #[cfg_attr(test, derive_where(skip))]
     capture_control: DogStatsDCaptureControl,
 
+    #[serde(skip, default)]
+    #[cfg_attr(test, derive_where(skip))]
+    stats_collector: Option<DogStatsDStatsCollector>,
+
     /// Provider kind tag appended to all metrics as `provider_kind:<value>`.
     ///
     /// Set via `DD_PROVIDER_KIND` by the Helm chart on GKE Autopilot (`gke-autopilot`) and GKE on
@@ -664,6 +670,12 @@ impl DogStatsDConfiguration {
     /// Returns an HTTP API handler exposing the DogStatsD capture control surface.
     pub fn capture_api_handler(&self) -> DogStatsDCaptureAPIHandler {
         DogStatsDCaptureAPIHandler::new(self.capture_control.clone())
+    }
+
+    /// Sets the DogStatsD stats collector to record successfully decoded metrics.
+    pub fn with_stats_collector(mut self, stats_collector: DogStatsDStatsCollector) -> Self {
+        self.stats_collector = Some(stats_collector);
+        self
     }
 
     fn fix_empty_capture_path(&mut self, config: &GenericConfiguration) {
@@ -829,6 +841,7 @@ impl SourceBuilder for DogStatsDConfiguration {
             additional_tags: self.additional_tags().into(),
             capture_entity_resolver: self.capture_entity_resolver.clone(),
             traffic_capture,
+            stats_collector: self.stats_collector.clone(),
         }))
     }
 
@@ -878,6 +891,7 @@ pub struct DogStatsD {
     additional_tags: Arc<[String]>,
     capture_entity_resolver: Option<Arc<dyn CaptureEntityResolver + Send + Sync>>,
     traffic_capture: TrafficCapture,
+    stats_collector: Option<DogStatsDStatsCollector>,
 }
 
 struct ListenerContext {
@@ -892,6 +906,7 @@ struct ListenerContext {
     additional_tags: Arc<[String]>,
     capture_entity_resolver: Option<Arc<dyn CaptureEntityResolver + Send + Sync>>,
     traffic_capture: TrafficCapture,
+    stats_collector: Option<DogStatsDStatsCollector>,
 }
 
 struct HandlerContext {
@@ -906,6 +921,7 @@ struct HandlerContext {
     additional_tags: Arc<[String]>,
     capture_entity_resolver: Option<Arc<dyn CaptureEntityResolver + Send + Sync>>,
     traffic_capture: TrafficCapture,
+    stats_collector: Option<DogStatsDStatsCollector>,
 }
 
 struct Metrics {
@@ -1084,6 +1100,7 @@ impl Source for DogStatsD {
                 additional_tags: self.additional_tags.clone(),
                 capture_entity_resolver: self.capture_entity_resolver.clone(),
                 traffic_capture: self.traffic_capture.clone(),
+                stats_collector: self.stats_collector.clone(),
             };
 
             spawn_traced_named(
@@ -1134,6 +1151,7 @@ async fn process_listener(
         additional_tags,
         capture_entity_resolver,
         traffic_capture,
+        stats_collector,
     } = listener_context;
     tokio::pin!(shutdown_handle);
 
@@ -1165,6 +1183,7 @@ async fn process_listener(
                         additional_tags: additional_tags.clone(),
                         capture_entity_resolver: capture_entity_resolver.clone(),
                         traffic_capture: traffic_capture.clone(),
+                        stats_collector: stats_collector.clone(),
                     };
 
                     let task_name = format!(
@@ -1218,6 +1237,7 @@ async fn drive_stream(
         additional_tags,
         capture_entity_resolver,
         traffic_capture,
+        stats_collector,
     } = handler_context;
 
     debug!(%listen_addr, "Stream handler started.");
@@ -1303,7 +1323,7 @@ async fn drive_stream(
                         match frame_result {
                             Ok(Some(frame)) => {
                                 trace!(%listen_addr, %peer_addr, ?frame, "Decoded frame.");
-                                match handle_frame(&frame[..], &codec, &mut context_resolvers, &metrics, &peer_addr, enabled_filter, &additional_tags) {
+                                match handle_frame(&frame[..], &codec, &mut context_resolvers, &metrics, &peer_addr, enabled_filter, &additional_tags, stats_collector.as_ref()) {
                                     Ok(Some(event)) => {
                                         if let Some(event_buffer) = event_buffer_manager.try_push(event) {
                                             debug!(%listen_addr, %peer_addr, "Event buffer is full. Forwarding events.");
@@ -1498,6 +1518,7 @@ fn capture_timestamp_ns() -> i64 {
 fn handle_frame(
     frame: &[u8], codec: &DogStatsDCodec, context_resolvers: &mut ContextResolvers, source_metrics: &Metrics,
     peer_addr: &ConnectionAddress, enabled_filter: EnablePayloadsFilter, additional_tags: &[String],
+    stats_collector: Option<&DogStatsDStatsCollector>,
 ) -> Result<Option<Event>, ParseError> {
     let parsed = match codec.decode_packet(frame) {
         Ok(parsed) => parsed,
@@ -1530,6 +1551,9 @@ fn handle_frame(
             match handle_metric_packet(metric_packet, context_resolvers, peer_addr, additional_tags) {
                 Some(metric) => {
                     source_metrics.metrics_received().increment(events_len);
+                    if let Some(stats_collector) = stats_collector {
+                        stats_collector.record_metric(&metric);
+                    }
                     Event::Metric(metric)
                 }
                 None => {
@@ -1784,6 +1808,7 @@ mod tests {
     use bytesize::ByteSize;
     use saluki_config::ConfigurationLoader;
     use saluki_context::{ContextResolverBuilder, TagsResolverBuilder};
+    use saluki_core::{components::ComponentContext, data_model::event::Event, topology::ComponentId};
     use saluki_env::workload::{CaptureEntityResolver, EntityId};
     use saluki_io::{
         deser::codec::dogstatsd::{DogStatsDCodec, DogStatsDCodecConfiguration, ParsedPacket},
@@ -1792,9 +1817,10 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        handle_metric_packet, resolve_capture_container_id, ContextResolvers, DogStatsDConfiguration,
-        DOGSTATSD_CAPTURE_DIR, MIN_CAPTURE_DEPTH,
+        build_metrics, handle_frame, handle_metric_packet, resolve_capture_container_id, ContextResolvers,
+        DogStatsDConfiguration, EnablePayloadsFilter, DOGSTATSD_CAPTURE_DIR, MIN_CAPTURE_DEPTH,
     };
+    use crate::destinations::DogStatsDStatsCollector;
 
     #[derive(Default)]
     struct CaptureTestEntityResolver {
@@ -2302,6 +2328,39 @@ mod tests {
                 _ => panic!("expected Metric packet"),
             }
         }
+    }
+
+    #[test]
+    fn handle_frame_records_metric_in_configured_stats_collector() {
+        let codec = DogStatsDCodec::from_configuration(DogStatsDCodecConfiguration::default());
+        let tags_resolver = TagsResolverBuilder::for_tests().build();
+        let context_resolver = ContextResolverBuilder::for_tests()
+            .with_tags_resolver(Some(tags_resolver.clone()))
+            .build();
+        let mut context_resolvers = ContextResolvers::manual(context_resolver.clone(), context_resolver, tags_resolver);
+        let peer_addr = ConnectionAddress::from("1.1.1.1:1234".parse::<SocketAddr>().unwrap());
+        let listen_addr = ListenAddress::Udp(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 8125)));
+        let component_id = ComponentId::try_from("dogstatsd_test").expect("component ID should be valid");
+        let component_context = ComponentContext::source(component_id);
+        let metrics = build_metrics(&listen_addr, &component_context);
+        let collector = DogStatsDStatsCollector::default();
+        collector.start_collection_for_tests(10);
+
+        let event = handle_frame(
+            b"test_metric_name:1|c|#env:test",
+            &codec,
+            &mut context_resolvers,
+            &metrics,
+            &peer_addr,
+            EnablePayloadsFilter::default(),
+            &[],
+            Some(&collector),
+        )
+        .expect("frame should decode");
+
+        assert!(matches!(event, Some(Event::Metric(_))));
+        assert_eq!(collector.active_metric_count_for_tests("test_metric_name"), Some(1));
+        collector.clear_collection_for_tests();
     }
 
     #[tokio::test]

@@ -1,38 +1,32 @@
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::{
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex, MutexGuard,
+    },
+    time::Duration,
+};
 
-use async_trait::async_trait;
-use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_api::{
     extract::{Query, State},
     routing::{get, Router},
     APIHandler, StatusCode,
 };
-use saluki_common::time::get_coarse_unix_timestamp;
+use saluki_common::{collections::FastHashMap, time::get_coarse_unix_timestamp};
 use saluki_context::tags::TagSet;
-use saluki_core::{
-    components::{
-        destinations::{Destination, DestinationBuilder, DestinationContext},
-        ComponentContext,
-    },
-    data_model::event::{Event, EventType},
-};
-use saluki_error::GenericError;
+use saluki_core::data_model::event::metric::Metric;
 use serde::{Deserialize, Serialize, Serializer};
-use serde_json;
 use stringtheory::MetaString;
-use tokio::sync::{Mutex, OwnedMutexGuard};
-use tokio::time::{Duration, Instant};
-use tokio::{select, sync::mpsc, sync::oneshot};
+use tokio::time::sleep;
 
-type StatsRequestReceiver = mpsc::Receiver<(oneshot::Sender<StatsResponse>, u64)>;
+const MAXIMUM_COLLECTION_DURATION_SECS: u64 = 600;
 
 #[derive(Debug, Default, Clone, Serialize)]
 pub struct MetricSample {
     count: u64,
     last_seen: u64,
 }
-#[derive(Serialize)]
+
+#[derive(Debug, Serialize)]
 enum StatsResponse {
     /// An existing statistics collection request is running.
     AlreadyRunning {
@@ -43,7 +37,7 @@ enum StatsResponse {
     Statistics(CollectedStatistics),
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 struct CollectedStatistics {
     /// Start time of the collected metrics, as a Unix timestamp.
     start_time_unix: u64,
@@ -64,7 +58,8 @@ struct FlattenedMetricStat<'a> {
     stats: &'a MetricSample,
 }
 
-struct FlattenedStats(HashMap<ContextNoOrigin, MetricSample>);
+#[derive(Debug)]
+struct FlattenedStats(FastHashMap<ContextNoOrigin, MetricSample>);
 
 impl Serialize for FlattenedStats {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -79,16 +74,214 @@ impl Serialize for FlattenedStats {
     }
 }
 
-/// Configuration for DogStatsD statistics destination and API handler.
+#[derive(Debug, Eq, Hash, PartialEq, Serialize)]
+struct ContextNoOrigin {
+    name: MetaString,
+    tags: TagSet,
+}
+
+impl ContextNoOrigin {
+    fn from_metric(metric: &Metric) -> Self {
+        let context = metric.context();
+        Self {
+            name: context.name().clone(),
+            tags: context.tags().clone(),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct ActiveCollection {
+    id: u64,
+    start_time_unix: u64,
+    end_time_unix: u64,
+    stats: FastHashMap<ContextNoOrigin, MetricSample>,
+}
+
+#[derive(Debug, Default)]
+struct CollectorState {
+    next_id: u64,
+    active: Option<ActiveCollection>,
+}
+
+#[derive(Debug, Default)]
+struct CollectorInner {
+    active: AtomicBool,
+    state: Mutex<CollectorState>,
+}
+
+/// Shared DogStatsD statistics collector.
+///
+/// The collector is inactive by default. While inactive, recording a metric only reads an atomic boolean and returns.
+#[derive(Clone, Debug, Default)]
+pub struct DogStatsDStatsCollector {
+    inner: Arc<CollectorInner>,
+}
+
+impl DogStatsDStatsCollector {
+    /// Records a metric if a DogStatsD stats collection is active.
+    pub fn record_metric(&self, metric: &Metric) {
+        if !self.inner.active.load(Ordering::Acquire) {
+            return;
+        }
+
+        let timestamp = get_coarse_unix_timestamp();
+        let mut state = lock_state(&self.inner.state);
+        let Some(active) = state.active.as_mut() else {
+            self.inner.active.store(false, Ordering::Release);
+            return;
+        };
+
+        let sample = active.stats.entry(ContextNoOrigin::from_metric(metric)).or_default();
+        sample.count += 1;
+        sample.last_seen = timestamp;
+    }
+
+    async fn collect_for(&self, collection_duration_secs: u64) -> StatsResponse {
+        let duration = Duration::from_secs(collection_duration_secs);
+        let guard = match self.start_collection(collection_duration_secs) {
+            Ok(guard) => guard,
+            Err(response) => return response,
+        };
+
+        sleep(duration).await;
+        guard.finish()
+    }
+
+    fn start_collection(&self, collection_duration_secs: u64) -> Result<CollectionGuard, StatsResponse> {
+        let mut state = lock_state(&self.inner.state);
+
+        if let Some(active) = &state.active {
+            let try_after = active.end_time_unix.saturating_sub(get_coarse_unix_timestamp());
+            return Err(StatsResponse::AlreadyRunning { try_after });
+        }
+
+        let start_time_unix = get_coarse_unix_timestamp();
+        let end_time_unix = start_time_unix + collection_duration_secs;
+        let id = state.next_id;
+        state.next_id = state.next_id.wrapping_add(1);
+        state.active = Some(ActiveCollection {
+            id,
+            start_time_unix,
+            end_time_unix,
+            stats: FastHashMap::default(),
+        });
+        self.inner.active.store(true, Ordering::Release);
+
+        Ok(CollectionGuard {
+            collector: self.clone(),
+            collection_id: id,
+            disarmed: false,
+        })
+    }
+
+    fn finish_collection(&self, collection_id: u64) -> StatsResponse {
+        let mut state = lock_state(&self.inner.state);
+        let Some(active) = state.active.take() else {
+            self.inner.active.store(false, Ordering::Release);
+            return empty_statistics_response();
+        };
+
+        if active.id != collection_id {
+            state.active = Some(active);
+            return empty_statistics_response();
+        }
+
+        self.inner.active.store(false, Ordering::Release);
+
+        StatsResponse::Statistics(CollectedStatistics {
+            start_time_unix: active.start_time_unix,
+            end_time_unix: active.end_time_unix,
+            stats: FlattenedStats(active.stats),
+        })
+    }
+
+    fn cancel_collection(&self, collection_id: u64) {
+        let mut state = lock_state(&self.inner.state);
+        if state.active.as_ref().is_some_and(|active| active.id == collection_id) {
+            state.active = None;
+            self.inner.active.store(false, Ordering::Release);
+        }
+    }
+
+    #[cfg(test)]
+    fn is_active(&self) -> bool {
+        self.inner.active.load(Ordering::Acquire)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn start_collection_for_tests(&self, collection_duration_secs: u64) {
+        let mut guard = self
+            .start_collection(collection_duration_secs)
+            .expect("collection should start");
+        guard.disarmed = true;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn active_metric_count_for_tests(&self, name: &str) -> Option<u64> {
+        let state = lock_state(&self.inner.state);
+        state.active.as_ref().and_then(|active| {
+            active
+                .stats
+                .iter()
+                .find(|(context, _)| context.name.as_ref() == name)
+                .map(|(_, sample)| sample.count)
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn clear_collection_for_tests(&self) {
+        let mut state = lock_state(&self.inner.state);
+        state.active = None;
+        self.inner.active.store(false, Ordering::Release);
+    }
+}
+
+#[derive(Debug)]
+struct CollectionGuard {
+    collector: DogStatsDStatsCollector,
+    collection_id: u64,
+    disarmed: bool,
+}
+
+impl CollectionGuard {
+    fn finish(mut self) -> StatsResponse {
+        self.disarmed = true;
+        self.collector.finish_collection(self.collection_id)
+    }
+}
+
+impl Drop for CollectionGuard {
+    fn drop(&mut self) {
+        if !self.disarmed {
+            self.collector.cancel_collection(self.collection_id);
+        }
+    }
+}
+
+fn lock_state(state: &Mutex<CollectorState>) -> MutexGuard<'_, CollectorState> {
+    state.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn empty_statistics_response() -> StatsResponse {
+    StatsResponse::Statistics(CollectedStatistics {
+        start_time_unix: 0,
+        end_time_unix: 0,
+        stats: FlattenedStats(FastHashMap::default()),
+    })
+}
+
+/// Configuration for DogStatsD statistics API handling.
 #[derive(Clone)]
 pub struct DogStatsDStatisticsConfiguration {
     api_handler: DogStatsDAPIHandler,
-    rx: Arc<Mutex<StatsRequestReceiver>>,
+    collector: DogStatsDStatsCollector,
 }
+
 /// State for the DogStatsD API handler.
 #[derive(Clone)]
 pub struct DogStatsDAPIHandlerState {
-    tx: Arc<mpsc::Sender<(oneshot::Sender<StatsResponse>, u64)>>,
+    collector: DogStatsDStatsCollector,
 }
 
 /// API handler for DogStatsD statistics endpoint.
@@ -97,106 +290,6 @@ pub struct DogStatsDAPIHandler {
     state: DogStatsDAPIHandlerState,
 }
 
-/// DogStatsD destination that collects metrics and processes statistics.
-pub struct DogStatsDStats {
-    rx: OwnedMutexGuard<StatsRequestReceiver>,
-}
-
-#[async_trait::async_trait]
-impl Destination for DogStatsDStats {
-    async fn run(mut self: Box<Self>, mut context: DestinationContext) -> Result<(), GenericError> {
-        let mut health = context.take_health_handle();
-        let mut collection_active = false;
-        let mut stats_response_tx: Option<tokio::sync::oneshot::Sender<StatsResponse>> = None;
-        let mut current_stats: Option<HashMap<ContextNoOrigin, MetricSample>> = None;
-        let mut stats_collection_start_time = 0;
-        let mut stats_collection_end_time = 0;
-        let collection_done = tokio::time::sleep(std::time::Duration::ZERO);
-        tokio::pin!(collection_done);
-
-        health.mark_ready();
-
-        loop {
-            select! {
-                _ = health.live() => {
-                    continue
-                },
-                Some((response_tx, collection_period_secs)) = self.rx.recv() => {
-                    if collection_active {
-                        // We're already collecting statistics for another stats request
-                        // so inform the caller they need to try again later.
-                        let try_after = stats_collection_end_time - get_coarse_unix_timestamp();
-
-                        // We don't care if we can successfully send back a response or not.
-                        let _ = response_tx.send(StatsResponse::AlreadyRunning { try_after });
-                    } else {
-                        // Start collection.
-                        collection_active = true;
-                        stats_collection_start_time = get_coarse_unix_timestamp();
-                        stats_collection_end_time = stats_collection_start_time + collection_period_secs;
-                        stats_response_tx = Some(response_tx);
-                        current_stats = Some(HashMap::new());
-                        collection_done.as_mut().reset(Instant::now() + Duration::from_secs(collection_period_secs));
-                    }
-                },
-                maybe_events = context.events().next() => match maybe_events {
-                    Some(events) => {
-                        if let Some(stats) = current_stats.as_mut() {
-                            // We're actively collecting, so process the metrics.
-                            for event in events {
-                                if let Event::Metric(metric) = event {
-
-                                    let context = metric.context();
-                                    let new_context = ContextNoOrigin {
-                                        name: context.name().clone(),
-                                        tags: context.tags().clone(),
-                                    };
-
-                                    let timestamp = get_coarse_unix_timestamp();
-                                    let sample = stats.entry(new_context).or_default();
-                                    sample.count += 1;
-                                    sample.last_seen = timestamp;
-
-                            }
-                        }
-                     }},
-                     None => break,
-                },
-                _ = &mut collection_done, if collection_active => {
-                    collection_active = false;
-
-                    // Build the response.
-                    let stats = match current_stats.take() {
-                        Some(stats) => stats,
-                        None => continue,
-                    };
-
-                    let response = StatsResponse::Statistics(CollectedStatistics {
-                        start_time_unix: stats_collection_start_time,
-                        end_time_unix: stats_collection_end_time,
-                        stats: FlattenedStats(stats),
-                    });
-
-                    let response_tx = match stats_response_tx.take() {
-                        Some(tx) => tx,
-                        None => continue,
-                    };
-
-                    // We don't care if we can successfully send back a response or not.
-                    let _ = response_tx.send(response);
-                }
-
-            }
-        }
-        Ok(())
-    }
-}
-
-#[derive(Eq, Hash, PartialEq, Serialize)]
-struct ContextNoOrigin {
-    name: MetaString,
-    tags: TagSet,
-}
 #[derive(Deserialize)]
 struct StatsQueryParams {
     collection_duration_secs: u64,
@@ -206,7 +299,6 @@ impl DogStatsDAPIHandler {
     async fn stats_handler(
         State(state): State<DogStatsDAPIHandlerState>, Query(query): Query<StatsQueryParams>,
     ) -> (StatusCode, String) {
-        const MAXIMUM_COLLECTION_DURATION_SECS: u64 = 600;
         if query.collection_duration_secs > MAXIMUM_COLLECTION_DURATION_SECS {
             return (
                 StatusCode::BAD_REQUEST,
@@ -217,34 +309,20 @@ impl DogStatsDAPIHandler {
             );
         }
 
-        let (oneshot_tx, oneshot_rx) = oneshot::channel();
-
-        state
-            .tx
-            .send((oneshot_tx, query.collection_duration_secs))
-            .await
-            .unwrap(); // TODO: use config to set collection period
-
-        match oneshot_rx.await {
-            Ok(stats) => match stats {
-                StatsResponse::Statistics(collected_stats) => match serde_json::to_string(&collected_stats) {
-                    Ok(json) => (StatusCode::OK, json),
-                    Err(e) => (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        format!("Failed to serialize stats: {}", e),
-                    ),
-                },
-                StatsResponse::AlreadyRunning { try_after } => (
-                    StatusCode::TOO_MANY_REQUESTS,
-                    format!(
-                        "Statistics collection already active. Please try again in {} seconds.",
-                        try_after
-                    ),
+        match state.collector.collect_for(query.collection_duration_secs).await {
+            StatsResponse::Statistics(collected_stats) => match serde_json::to_string(&collected_stats) {
+                Ok(json) => (StatusCode::OK, json),
+                Err(e) => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Failed to serialize stats: {}", e),
                 ),
             },
-            Err(_) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Failed to collect statistics.".to_string(),
+            StatsResponse::AlreadyRunning { try_after } => (
+                StatusCode::TOO_MANY_REQUESTS,
+                format!(
+                    "Statistics collection already active. Please try again in {} seconds.",
+                    try_after
+                ),
             ),
         }
     }
@@ -265,13 +343,15 @@ impl APIHandler for DogStatsDAPIHandler {
 impl DogStatsDStatisticsConfiguration {
     /// Creates a new `DogStatsDStatisticsConfiguration`.
     pub fn new() -> Self {
-        let (tx, rx) = mpsc::channel(4);
-        let state = DogStatsDAPIHandlerState { tx: Arc::new(tx) };
+        let collector = DogStatsDStatsCollector::default();
+        let state = DogStatsDAPIHandlerState {
+            collector: collector.clone(),
+        };
         let handler = DogStatsDAPIHandler { state };
 
         Self {
             api_handler: handler,
-            rx: Arc::new(Mutex::new(rx)),
+            collector,
         }
     }
 
@@ -279,24 +359,78 @@ impl DogStatsDStatisticsConfiguration {
     pub fn api_handler(&self) -> DogStatsDAPIHandler {
         self.api_handler.clone()
     }
-}
 
-#[async_trait]
-impl DestinationBuilder for DogStatsDStatisticsConfiguration {
-    fn input_event_type(&self) -> EventType {
-        EventType::Metric
-    }
-
-    async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Destination + Send>, GenericError> {
-        let rx = self.rx.clone().try_lock_owned()?;
-        Ok(Box::new(DogStatsDStats { rx }))
+    /// Returns the shared DogStatsD stats collector.
+    pub fn collector(&self) -> DogStatsDStatsCollector {
+        self.collector.clone()
     }
 }
 
-impl MemoryBounds for DogStatsDStatisticsConfiguration {
-    fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
-        builder
-            .minimum()
-            .with_single_value::<DogStatsDStats>("component struct");
+#[cfg(test)]
+mod tests {
+    use saluki_context::Context;
+
+    use super::*;
+
+    #[test]
+    fn inactive_record_metric_is_noop() {
+        let collector = DogStatsDStatsCollector::default();
+        collector.record_metric(&Metric::counter("foo", 1.0));
+
+        assert!(!collector.is_active());
+        assert!(lock_state(&collector.inner.state).active.is_none());
+    }
+
+    #[tokio::test]
+    async fn active_collection_counts_metrics() {
+        let collector = DogStatsDStatsCollector::default();
+        let guard = collector.start_collection(10).expect("collection should start");
+
+        let context = Context::from_static_parts("foo", &["env:test"]);
+        collector.record_metric(&Metric::counter(context.clone(), 1.0));
+        collector.record_metric(&Metric::counter(context, 2.0));
+
+        let response = guard.finish();
+        let StatsResponse::Statistics(collected) = response else {
+            panic!("expected statistics response");
+        };
+
+        assert_eq!(collected.stats.0.len(), 1);
+        let sample = collected
+            .stats
+            .0
+            .values()
+            .next()
+            .expect("expected collected metric sample");
+        assert_eq!(sample.count, 2);
+        assert!(sample.last_seen >= collected.start_time_unix);
+        assert!(!collector.is_active());
+    }
+
+    #[test]
+    fn second_collection_reports_already_running() {
+        let collector = DogStatsDStatsCollector::default();
+        let _guard = collector.start_collection(10).expect("collection should start");
+
+        let response = collector
+            .start_collection(10)
+            .expect_err("second collection should fail");
+
+        match response {
+            StatsResponse::AlreadyRunning { try_after } => assert!(try_after <= 10),
+            StatsResponse::Statistics(_) => panic!("expected already running response"),
+        }
+    }
+
+    #[test]
+    fn dropped_collection_guard_clears_active_state() {
+        let collector = DogStatsDStatsCollector::default();
+        let guard = collector.start_collection(10).expect("collection should start");
+        assert!(collector.is_active());
+
+        drop(guard);
+
+        assert!(!collector.is_active());
+        assert!(lock_state(&collector.inner.state).active.is_none());
     }
 }
