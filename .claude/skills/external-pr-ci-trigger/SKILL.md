@@ -34,7 +34,7 @@ contributor's owner, branch, and fork repo name from the PR via `gh`. See Step 0
 number handy (for example, you want to mirror a branch that doesn't have a PR yet).
 
 - `<owner>` matches `[a-zA-Z0-9_-]+`
-- `<branch>` matches `[a-zA-Z0-9#_/-]+`
+- `<branch>` matches `[a-zA-Z0-9.#_/-]+` (dots are allowed for branches like `release/1.2.3`)
 - The whole string MUST NOT contain a single quote (`'`).
 
 Examples: `1234`, `octocat:fix-thing`, `octocat:feature/cool-thing`, `octocat:user#123/wip`.
@@ -86,6 +86,11 @@ git remote | grep -Fx "OWNER" || true
 
 # 1d. Capture the current branch so we can restore it at the end.
 git branch --show-current
+
+# 1e. origin MUST point at DataDog/saluki. A clone where origin is a personal fork would
+#     silently push to the wrong repo and the contributor's PR check status would never
+#     update. Accept either SSH or HTTPS form, with or without a trailing `.git`.
+git remote get-url origin | grep -Ex '(git@github\.com:|https://github\.com/)DataDog/saluki(\.git)?' || true
 ```
 
 For 1a: any non-empty output means the working tree is dirty — abort and ask the user to commit
@@ -95,6 +100,9 @@ For 1b and 1c: any non-empty output means a stale leftover exists from a prior r
 user the recovery commands below and ask them to clean up before retrying.
 
 Save the output of 1d as `CURR_BRANCH` for use in Step 5.
+
+For 1e: empty grep output (no match) means `origin` is not `DataDog/saluki` — abort and tell the
+user. Do not attempt to "fix" their remotes.
 
 ## Step 2: Discover the fork's repository name (Form B only — skip if Form A)
 
