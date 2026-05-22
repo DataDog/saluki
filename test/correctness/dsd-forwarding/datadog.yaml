@@ -30,12 +30,9 @@ dogstatsd_non_local_traffic: true
 dogstatsd_socket: ""
 dogstatsd_stream_socket: ""
 
-# Forward raw DogStatsD UDP packets to the fake intake capture socket.
+# Forward DogStatsD messages to the fake intake capture socket.
 statsd_forward_host: "datadog-intake"
 statsd_forward_port: 9125
-
-# Keep forwarding batches deterministic for steady-state capture comparison.
-dogstatsd_packet_buffer_flush_timeout: 1ms
 
 # Ensure origin detection is disabled since we can't support it with ADP in standalone mode.
 dogstatsd_origin_detection: false

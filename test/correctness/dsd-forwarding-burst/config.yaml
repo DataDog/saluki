@@ -2,8 +2,9 @@ type: correctness
 runtime: docker
 analysis_mode: metrics
 require_dogstatsd_forwarded_packets: true
-require_dogstatsd_forwarded_packet_batches: true
-dogstatsd_forwarding_comparison_mode: messages
+# This case intentionally reuses the same Agent configuration as dsd-forwarding. The distinct
+# coverage comes from the Millstone burst traffic shape, while analysis compares forwarded messages
+# instead of exact UDP packet boundaries.
 millstone:
   image: saluki-images/correctness-tools:latest
   config_path: millstone.yaml

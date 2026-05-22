@@ -9,12 +9,16 @@ import urllib.request
 
 PAYLOAD = b"adp.forwarding.integration:1|c|#source:integration"
 MALFORMED_PAYLOAD = b"this is not dogstatsd"
-UDP_BATCHED_PAYLOAD = MALFORMED_PAYLOAD + b"\n" + PAYLOAD
-STREAM_PAYLOAD = b"adp.forwarding.stream_one:1|c\nadp.forwarding.stream_two:2|c\n"
+STREAM_ONE_PAYLOAD = b"adp.forwarding.stream_one:1|c"
+STREAM_TWO_PAYLOAD = b"adp.forwarding.stream_two:2|c"
+STREAM_PAYLOAD = STREAM_ONE_PAYLOAD + b"\n" + STREAM_TWO_PAYLOAD + b"\n"
 UDS_PAYLOAD = b"adp.forwarding.uds_datagram:1|c"
-UDS_STREAM_PAYLOAD = b"adp.forwarding.uds_stream:1|c\n"
-FORWARDED_UDP_BATCH_PATH = "/tmp/dsd-forwarded-udp-batch"
-FORWARDED_STREAM_PATH = "/tmp/dsd-forwarded-stream-packet"
+UDS_STREAM_PAYLOAD = b"adp.forwarding.uds_stream:1|c"
+UDS_STREAM_FRAME_PAYLOAD = UDS_STREAM_PAYLOAD + b"\n"
+FORWARDED_UDP_MALFORMED_PATH = "/tmp/dsd-forwarded-udp-malformed"
+FORWARDED_UDP_METRIC_PATH = "/tmp/dsd-forwarded-udp-metric"
+FORWARDED_STREAM_ONE_PATH = "/tmp/dsd-forwarded-stream-one"
+FORWARDED_STREAM_TWO_PATH = "/tmp/dsd-forwarded-stream-two"
 FORWARDED_UDS_PATH = "/tmp/dsd-forwarded-uds-packet"
 FORWARDED_UDS_STREAM_PATH = "/tmp/dsd-forwarded-uds-stream-packet"
 PARSED_METRIC_PATH = "/tmp/dsd-metric-parsed"
@@ -43,8 +47,10 @@ def remove_paths(paths):
 def remove_marker_files():
     remove_paths(
         (
-            FORWARDED_UDP_BATCH_PATH,
-            FORWARDED_STREAM_PATH,
+            FORWARDED_UDP_MALFORMED_PATH,
+            FORWARDED_UDP_METRIC_PATH,
+            FORWARDED_STREAM_ONE_PATH,
+            FORWARDED_STREAM_TWO_PATH,
             FORWARDED_UDS_PATH,
             FORWARDED_UDS_STREAM_PATH,
             PARSED_METRIC_PATH,
@@ -54,8 +60,10 @@ def remove_marker_files():
 
 def forwarded_packets_received():
     return (
-        os.path.exists(FORWARDED_UDP_BATCH_PATH)
-        and os.path.exists(FORWARDED_STREAM_PATH)
+        os.path.exists(FORWARDED_UDP_MALFORMED_PATH)
+        and os.path.exists(FORWARDED_UDP_METRIC_PATH)
+        and os.path.exists(FORWARDED_STREAM_ONE_PATH)
+        and os.path.exists(FORWARDED_STREAM_TWO_PATH)
         and os.path.exists(FORWARDED_UDS_PATH)
         and os.path.exists(FORWARDED_UDS_STREAM_PATH)
     )
@@ -73,11 +81,17 @@ def receive_forwarded_packet():
             except TimeoutError:
                 continue
 
-            if data == UDP_BATCHED_PAYLOAD:
-                with open(FORWARDED_UDP_BATCH_PATH, "wb") as output_file:
+            if data == MALFORMED_PAYLOAD:
+                with open(FORWARDED_UDP_MALFORMED_PATH, "wb") as output_file:
                     output_file.write(data)
-            elif data == STREAM_PAYLOAD:
-                with open(FORWARDED_STREAM_PATH, "wb") as output_file:
+            elif data == PAYLOAD:
+                with open(FORWARDED_UDP_METRIC_PATH, "wb") as output_file:
+                    output_file.write(data)
+            elif data == STREAM_ONE_PAYLOAD:
+                with open(FORWARDED_STREAM_ONE_PATH, "wb") as output_file:
+                    output_file.write(data)
+            elif data == STREAM_TWO_PAYLOAD:
+                with open(FORWARDED_STREAM_TWO_PATH, "wb") as output_file:
                     output_file.write(data)
             elif data == UDS_PAYLOAD:
                 with open(FORWARDED_UDS_PATH, "wb") as output_file:
@@ -114,7 +128,7 @@ def send_dogstatsd_stream_payload():
             time.sleep(PROBE_INTERVAL_SECS)
             continue
 
-        if os.path.exists(FORWARDED_STREAM_PATH):
+        if os.path.exists(FORWARDED_STREAM_ONE_PATH) and os.path.exists(FORWARDED_STREAM_TWO_PATH):
             return
         time.sleep(PROBE_INTERVAL_SECS)
 
@@ -145,7 +159,7 @@ def send_unix_datagram_payload():
 
 
 def send_unix_stream_payload():
-    stream_frame = len(UDS_STREAM_PAYLOAD).to_bytes(4, "little") + UDS_STREAM_PAYLOAD
+    stream_frame = len(UDS_STREAM_FRAME_PAYLOAD).to_bytes(4, "little") + UDS_STREAM_FRAME_PAYLOAD
     deadline = time.monotonic() + PROBE_TIMEOUT_SECS
 
     while not stop_event.is_set() and time.monotonic() < deadline:

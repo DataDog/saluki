@@ -1,6 +1,6 @@
 type: integration
 name: "dogstatsd-forwarding"
-description: "Verifies DogStatsD raw packet forwarding mirrors payload bytes and preserves ingestion"
+description: "Verifies DogStatsD message forwarding mirrors framed payloads and preserves ingestion"
 timeout: 90s
 
 container:
@@ -19,8 +19,6 @@ container:
     DD_DOGSTATSD_SOCKET: "/tmp/dsd-forwarding.sock"
     DD_DOGSTATSD_STREAM_SOCKET: "/tmp/dsd-forwarding-stream.sock"
     DD_DOGSTATSD_NON_LOCAL_TRAFFIC: "true"
-    DD_DOGSTATSD_PACKET_BUFFER_SIZE: "32"
-    DD_DOGSTATSD_PACKET_BUFFER_FLUSH_TIMEOUT: "100ms"
     DD_STATSD_FORWARD_HOST: "127.0.0.1"
     DD_STATSD_FORWARD_PORT: "9125"
   files:
@@ -34,12 +32,20 @@ assertions:
     pattern: "DogStatsD packet forwarding enabled"
     timeout: 15s
   - type: file_contains
-    path: "/tmp/dsd-forwarded-udp-batch"
-    pattern: "this is not dogstatsd\nadp.forwarding.integration:1|c|#source:integration"
+    path: "/tmp/dsd-forwarded-udp-malformed"
+    pattern: "this is not dogstatsd"
     timeout: 30s
   - type: file_contains
-    path: "/tmp/dsd-forwarded-stream-packet"
-    pattern: "adp.forwarding.stream_one:1|c\nadp.forwarding.stream_two:2|c\n"
+    path: "/tmp/dsd-forwarded-udp-metric"
+    pattern: "adp.forwarding.integration:1|c|#source:integration"
+    timeout: 30s
+  - type: file_contains
+    path: "/tmp/dsd-forwarded-stream-one"
+    pattern: "adp.forwarding.stream_one:1|c"
+    timeout: 30s
+  - type: file_contains
+    path: "/tmp/dsd-forwarded-stream-two"
+    pattern: "adp.forwarding.stream_two:2|c"
     timeout: 30s
   - type: file_contains
     path: "/tmp/dsd-forwarded-uds-packet"
@@ -47,7 +53,7 @@ assertions:
     timeout: 30s
   - type: file_contains
     path: "/tmp/dsd-forwarded-uds-stream-packet"
-    pattern: "adp.forwarding.uds_stream:1|c\n"
+    pattern: "adp.forwarding.uds_stream:1|c"
     timeout: 30s
   - type: file_contains
     path: "/tmp/dsd-metric-parsed"

@@ -14,7 +14,7 @@ use saluki_config::ConfigurationLoader;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use serde::Deserialize;
 
-use crate::correctness::analysis::{AnalysisMode, DogStatsDForwardingComparisonMode};
+use crate::correctness::analysis::AnalysisMode;
 use crate::reporter::TestResult;
 use crate::test::{Test, TestContext, TestSuite};
 
@@ -80,14 +80,6 @@ pub struct Config {
     /// Whether the correctness run must capture at least one forwarded DogStatsD packet.
     #[serde(default)]
     pub require_dogstatsd_forwarded_packets: bool,
-
-    /// Whether the correctness run must capture at least one forwarded DogStatsD packet containing multiple messages.
-    #[serde(default)]
-    pub require_dogstatsd_forwarded_packet_batches: bool,
-
-    /// How forwarded DogStatsD captures should be compared.
-    #[serde(default)]
-    pub dogstatsd_forwarding_comparison_mode: DogStatsDForwardingComparisonMode,
 
     #[serde(skip, default = "PathBuf::new")]
     pub(crate) base_config_path: PathBuf,

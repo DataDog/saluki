@@ -11,13 +11,6 @@ pub enum DsdFramer {
 }
 
 impl DsdFramer {
-    pub fn pop_extracted_outer_frame(&mut self) -> Option<Bytes> {
-        match self {
-            Self::NonStream(_) => None,
-            Self::Stream(framer) => framer.pop_extracted_outer_frame(),
-        }
-    }
-
     pub fn take_completed_outer_frames(&mut self) -> usize {
         match self {
             Self::NonStream(_) => 0,
@@ -105,37 +98,5 @@ mod tests {
             framer.next_frame(&mut buf, true),
             Err(FramingError::InvalidFrame { .. })
         ));
-    }
-
-    #[test]
-    fn stream_exposes_outer_payload_before_inner_frames_are_consumed() {
-        let payload = b"a:1|c\nb:1|c\n";
-        let mut buf = VecDeque::new();
-        buf.extend((payload.len() as u32).to_le_bytes());
-        buf.extend(payload);
-        let mut framer = get_framer(
-            &ListenAddress::Tcp(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 8125))),
-            true,
-        );
-
-        let first = framer
-            .next_frame(&mut buf, false)
-            .expect("framing should not fail")
-            .expect("first inner frame should be available");
-        let outer = framer
-            .pop_extracted_outer_frame()
-            .expect("outer payload should be available after first inner frame");
-
-        assert_eq!(&first[..], b"a:1|c");
-        assert_eq!(&outer[..], payload);
-        assert!(framer.pop_extracted_outer_frame().is_none());
-
-        let second = framer
-            .next_frame(&mut buf, false)
-            .expect("framing should not fail")
-            .expect("second inner frame should be available");
-
-        assert_eq!(&second[..], b"b:1|c");
-        assert!(framer.pop_extracted_outer_frame().is_none());
     }
 }

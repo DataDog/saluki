@@ -775,19 +775,19 @@
   },
   {
     "key": "dogstatsd_packet_buffer_flush_timeout",
-    "feature_state": "DIVERGENT",
+    "feature_state": "NOT_APPLICABLE",
     "action": "NONE",
     "description": "Packet buffer flush timeout",
-    "reason": "ADP decodes inline for normal ingestion, but uses this setting to match Core Agent UDP packet forwarding batch flush behavior when statsd forwarding is enabled.",
+    "reason": "ADP decodes inline; no buffering pipeline.",
     "issue": null,
     "adp_key": null
   },
   {
     "key": "dogstatsd_packet_buffer_size",
-    "feature_state": "DIVERGENT",
+    "feature_state": "NOT_APPLICABLE",
     "action": "NONE",
     "description": "Datagrams per packet buffer",
-    "reason": "ADP decodes inline for normal ingestion, but uses this setting to match Core Agent UDP forwarding packet-group flush behavior when statsd forwarding is enabled.",
+    "reason": "ADP decodes inline; no buffering pipeline.",
     "issue": null,
     "adp_key": null
   },
@@ -1795,7 +1795,7 @@
     "feature_state": "PARITY",
     "action": "NONE",
     "description": "UDP packet forwarding destination host",
-    "reason": "ADP mirrors raw DogStatsD payload bytes over UDP to the configured host before parsing.",
+    "reason": "ADP forwards framed DogStatsD messages over UDP to the configured host before parsing.",
     "issue": null,
     "adp_key": null
   },
@@ -1804,7 +1804,7 @@
     "feature_state": "PARITY",
     "action": "NONE",
     "description": "UDP packet forwarding destination port",
-    "reason": "ADP mirrors raw DogStatsD payload bytes over UDP to the configured port before parsing.",
+    "reason": "ADP forwards framed DogStatsD messages over UDP to the configured port before parsing.",
     "issue": null,
     "adp_key": null
   },

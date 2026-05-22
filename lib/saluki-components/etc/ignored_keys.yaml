@@ -1300,6 +1300,10 @@
   reason: initial bulk
 - name: dogstatsd_no_aggregation_pipeline_batch_size
   reason: initial bulk
+- name: dogstatsd_packet_buffer_flush_timeout
+  reason: initial bulk
+- name: dogstatsd_packet_buffer_size
+  reason: initial bulk
 - name: dogstatsd_pipeline_autoadjust
   reason: initial bulk
 - name: dogstatsd_pipeline_count

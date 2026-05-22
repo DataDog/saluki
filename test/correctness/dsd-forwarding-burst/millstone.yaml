@@ -2,9 +2,8 @@ seed: [3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 
 target: "udp://$GROUP:8125"
 aggregation_bucket_width_secs: 10
 volume: 10
-# Keep the send burst short enough for both implementations to batch at least some packets.
-# The analysis compares individual DogStatsD messages so periodic flush tick alignment cannot
-# make this case flaky by splitting the burst into different forwarded UDP packet boundaries.
+# Send a short burst while comparing forwarded DogStatsD messages, so differing UDP packet
+# boundaries between implementations do not make this case flaky.
 send_delay_us: 500
 corpus:
   size: 10

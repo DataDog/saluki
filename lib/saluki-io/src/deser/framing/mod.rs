@@ -1,5 +1,3 @@
-use std::collections::VecDeque;
-
 use bytes::Bytes;
 use snafu::Snafu;
 use tracing::trace;
@@ -63,7 +61,6 @@ pub struct NestedFramer<Inner, Outer> {
     inner: Inner,
     outer: Outer,
     current_outer_frame: Option<Bytes>,
-    extracted_outer_frames: VecDeque<Bytes>,
     completed_outer_frames: usize,
 }
 
@@ -74,14 +71,8 @@ impl<Inner, Outer> NestedFramer<Inner, Outer> {
             inner,
             outer,
             current_outer_frame: None,
-            extracted_outer_frames: VecDeque::new(),
             completed_outer_frames: 0,
         }
-    }
-
-    /// Returns the next outer frame extracted since the last call.
-    pub fn pop_extracted_outer_frame(&mut self) -> Option<Bytes> {
-        self.extracted_outer_frames.pop_front()
     }
 
     /// Returns the number of outer frames that have been fully consumed since the last call.
@@ -122,7 +113,6 @@ where
                                 "Extracted outer frame."
                             );
 
-                            self.extracted_outer_frames.push_back(frame.clone());
                             self.current_outer_frame.get_or_insert(frame)
                         }
 

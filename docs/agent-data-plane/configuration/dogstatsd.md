@@ -50,6 +50,8 @@ architecture is fundamentally different or the feature is platform-specific.
 | `dogstatsd_host_socket_path`                   | Host UDS socket dir for DSD      | Not read by DSD server; admission-controller only            |
 | `dogstatsd_mem_based_rate_limiter.enabled`     | Enable memory rate limiter       | Go GC specific; use `memory_limit`                           |
 | `dogstatsd_no_aggregation_pipeline_batch_size` | No-agg pipeline batch size       | Fixed in ADP topology                                        |
+| `dogstatsd_packet_buffer_flush_timeout`        | Packet buffer flush timeout      | ADP decodes inline                                           |
+| `dogstatsd_packet_buffer_size`                 | Datagrams per packet buffer      | ADP decodes inline                                           |
 | `dogstatsd_pipeline_autoadjust`                | Auto-adjust pipeline workers     | ADP uses async tasks                                         |
 | `dogstatsd_pipeline_count`                     | Parallel processing pipelines    | ADP uses async tasks                                         |
 | `dogstatsd_queue_size`                         | Packet channel buffer size       | ADP uses async tasks                                         |
@@ -67,8 +69,6 @@ default values.
 | Config Key                          | Description                      | Agent Behavior                                 | ADP Behavior                                                   |
 | ----------------------------------- | -------------------------------- | ---------------------------------------------- | -------------------------------------------------------------- |
 | `dogstatsd_mapper_cache_size`       | Mapper result LRU cache size     | `0` disables mapping; positive sizes the LRU   | `0` disables the cache only; mapping still runs ([#1687])      |
-| `dogstatsd_packet_buffer_flush_timeout` | Packet buffer flush timeout | Flushes listener packet buffers and UDP forwarding batches | Controls UDP forwarding batch flushes only; normal ingestion decodes inline |
-| `dogstatsd_packet_buffer_size`      | Datagrams per packet buffer      | Flushes buffered packet groups at this count   | Controls UDP forwarding packet-group flushes only; normal ingestion decodes inline |
 | `dogstatsd_metrics_stats_enable`    | Enable per-metric debug stats    | Config toggle                                  | Gates debug log; stats API on-demand ([#1352], [#1356])        |
 | `dogstatsd_stats_enable`            | Enable internal stats endpoint   | Config toggle                                  | On-demand via API ([#1352])                                    |
 | `dogstatsd_stats_buffer`            | Internal stats buffer size       | Configurable                                   | On-demand via API ([#1352])                                    |
@@ -93,15 +93,14 @@ doesn't support TLS 1.0 or TLS 1.1.
 This setting doesn't affect ADP IPC, local privileged APIs, ADP control-plane clients, OTLP
 proxying to the core agent, or unrelated HTTP clients.
 
-### DogStatsD packet forwarding (`statsd_forward_host` / `statsd_forward_port`)
+### DogStatsD forwarding (`statsd_forward_host` / `statsd_forward_port`)
 
-ADP supports raw DogStatsD packet forwarding when both `statsd_forward_host` and
-`statsd_forward_port` are set. Incoming DogStatsD payload bytes are mirrored over UDP to the
-configured destination before parsing, filtering, mapping, or aggregation. UDP datagrams follow the
-core Agent forwarding batch behavior: datagrams are joined with newline separators up to
-`dogstatsd_buffer_size`, then flushed by `dogstatsd_packet_buffer_size` or
-`dogstatsd_packet_buffer_flush_timeout`. Forwarding is best effort: ADP logs setup failures and
-tracks send failures, but those failures don't stop normal DogStatsD ingestion.
+ADP supports DogStatsD forwarding when both `statsd_forward_host` and
+`statsd_forward_port` are set. ADP forwards each framed DogStatsD message over UDP to the
+configured destination before parsing, filtering, mapping, or aggregation. Forwarding doesn't
+preserve the core Agent's packet-buffer grouping, so forwarded UDP datagrams may be split
+differently while carrying the same DogStatsD messages. Forwarding is best effort: ADP logs setup
+failures and tracks send failures, but those failures don't stop normal DogStatsD ingestion.
 
 ### Datadog intake TLS validation (`skip_ssl_validation`)
 
