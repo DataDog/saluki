@@ -239,6 +239,10 @@ impl DogStatsDPostAggregateFilter {
         is_scalar_series_metric(metric) && self.matcher.contains(metric.context().name())
     }
 
+    fn is_noop(&self) -> bool {
+        self.matcher.is_empty()
+    }
+
     fn transform_buffer(&self, buffer: &mut EventsBuffer) {
         buffer.remove_if(|event| {
             let should_filter = event
@@ -279,7 +283,9 @@ impl Transform for DogStatsDPostAggregateFilter {
                 _ = health.live() => continue,
                 maybe_events = context.events().next() => match maybe_events {
                     Some(mut events) => {
-                        self.transform_buffer(&mut events);
+                        if !self.is_noop() {
+                            self.transform_buffer(&mut events);
+                        }
 
                         if let Err(e) = context.dispatcher().dispatch(events).await {
                             error!(error = %e, "Failed to dispatch events.");
@@ -397,6 +403,22 @@ mod tests {
             .collect::<Vec<_>>();
         names.sort();
         names
+    }
+
+    #[test]
+    fn empty_matcher_is_noop_and_keeps_scalar_metrics() {
+        let filter = noop_filter(vec![], false, vec![], false);
+
+        assert!(filter.is_noop());
+        let names = filter_metric_names(
+            &filter,
+            vec![
+                Metric::gauge("request.duration.max", 1.0),
+                Metric::counter("request.duration.count", 1.0),
+            ],
+        );
+
+        assert_eq!(names, vec!["request.duration.count", "request.duration.max"]);
     }
 
     // Mirrors Datadog Agent time-sampler filtering of generated histogram series:

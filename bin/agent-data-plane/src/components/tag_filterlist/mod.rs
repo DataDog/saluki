@@ -27,7 +27,7 @@ use saluki_core::{
         EventType,
     },
     observability::ComponentMetricsExt,
-    topology::OutputDefinition,
+    topology::{EventsBuffer, OutputDefinition},
 };
 use saluki_error::GenericError;
 use saluki_metrics::MetricsBuilder;
@@ -230,41 +230,7 @@ impl Transform for TagFilterlist {
                 _ = health.live() => continue,
                 maybe_events = context.events().next() => match maybe_events {
                     Some(mut events) => {
-                        for event in &mut events {
-                            if let Some(metric) = event.try_as_metric_mut() {
-                                if metric.values().is_sketch()
-                                    || matches!(metric.values(), MetricValues::Counter(_))
-                                {
-                                    let original_context = metric.context().clone();
-
-                                    if let Some(cached) = self.context_cache.get(&original_context) {
-                                        match cached {
-                                            None => self.telemetry.record(FilterMetricTagsOutcome::NoChange),
-                                            Some((filtered_ctx, removed_tags)) => {
-                                                *metric.context_mut() = filtered_ctx;
-                                                self.telemetry.record(FilterMetricTagsOutcome::Modified { removed_tags });
-                                            }
-                                        }
-                                    } else {
-                                        let outcome = filter_metric_tags(metric, &mut view_state, &self.filters);
-                                        self.telemetry.record(outcome);
-
-                                        match outcome {
-                                            FilterMetricTagsOutcome::RuleMiss => {}
-                                            FilterMetricTagsOutcome::NoChange => {
-                                                self.context_cache.insert(original_context, None);
-                                            }
-                                            FilterMetricTagsOutcome::Modified { removed_tags } => {
-                                                self.context_cache.insert(
-                                                    original_context,
-                                                    Some((metric.context().clone(), removed_tags)),
-                                                );
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                        self.transform_buffer(&mut events, &mut view_state);
                         if let Err(e) = context.dispatcher().dispatch(events).await {
                             error!(error = %e, "Failed to dispatch events.");
                         }
@@ -282,6 +248,51 @@ impl Transform for TagFilterlist {
         debug!("Metric Tag Filterlist transform stopped.");
 
         Ok(())
+    }
+}
+
+impl TagFilterlist {
+    fn is_noop(&self) -> bool {
+        self.filters.is_empty()
+    }
+
+    fn transform_buffer(&mut self, events: &mut EventsBuffer, view_state: &mut TagSetMutViewState) {
+        if self.is_noop() {
+            return;
+        }
+
+        for event in events {
+            if let Some(metric) = event.try_as_metric_mut() {
+                if metric.values().is_sketch() || matches!(metric.values(), MetricValues::Counter(_)) {
+                    let original_context = metric.context().clone();
+
+                    if let Some(cached) = self.context_cache.get(&original_context) {
+                        match cached {
+                            None => self.telemetry.record(FilterMetricTagsOutcome::NoChange),
+                            Some((filtered_ctx, removed_tags)) => {
+                                *metric.context_mut() = filtered_ctx;
+                                self.telemetry
+                                    .record(FilterMetricTagsOutcome::Modified { removed_tags });
+                            }
+                        }
+                    } else {
+                        let outcome = filter_metric_tags(metric, view_state, &self.filters);
+                        self.telemetry.record(outcome);
+
+                        match outcome {
+                            FilterMetricTagsOutcome::RuleMiss => {}
+                            FilterMetricTagsOutcome::NoChange => {
+                                self.context_cache.insert(original_context, None);
+                            }
+                            FilterMetricTagsOutcome::Modified { removed_tags } => {
+                                self.context_cache
+                                    .insert(original_context, Some((metric.context().clone(), removed_tags)));
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -324,7 +335,10 @@ mod tests {
         tags::{Tag, TagSet},
         Context, TagSetMutViewState,
     };
-    use saluki_core::data_model::event::metric::Metric;
+    use saluki_core::{
+        data_model::event::{metric::Metric, Event},
+        topology::EventsBuffer,
+    };
     use saluki_metrics::{test::TestRecorder, MetricsBuilder};
     use serde_json::json;
 
@@ -348,6 +362,17 @@ mod tests {
         Metric::counter(context, 1.0)
     }
 
+    async fn tag_filterlist(entries: Vec<MetricTagFilterEntry>) -> TagFilterlist {
+        let (configuration, _) = ConfigurationLoader::for_tests(Some(json!({})), None, false).await;
+
+        TagFilterlist {
+            filters: compile_filters(&entries),
+            configuration,
+            telemetry: Telemetry::new(&MetricsBuilder::default()),
+            context_cache: build_context_cache(),
+        }
+    }
+
     fn tag_names(metric: &Metric) -> Vec<String> {
         let mut names: Vec<_> = metric
             .context()
@@ -357,6 +382,28 @@ mod tests {
             .collect();
         names.sort();
         names
+    }
+
+    #[tokio::test]
+    async fn empty_filterlist_skips_transform_work() {
+        let mut filter = tag_filterlist(Vec::new()).await;
+        let mut view_state = TagSetMutViewState::default();
+        let mut events = EventsBuffer::default();
+        let metric = counter_metric("my.counter", &["env:prod", "service:web"]);
+        let original_context = metric.context().clone();
+
+        assert!(filter.is_noop());
+        assert!(events.try_push(Event::Metric(metric)).is_none());
+
+        filter.transform_buffer(&mut events, &mut view_state);
+
+        let metric = events
+            .into_iter()
+            .next()
+            .and_then(Event::try_into_metric)
+            .expect("metric should still be present");
+        assert_eq!(metric.context(), &original_context);
+        assert!(filter.context_cache.is_empty());
     }
 
     #[test]

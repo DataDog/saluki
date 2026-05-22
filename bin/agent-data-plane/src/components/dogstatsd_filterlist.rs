@@ -47,6 +47,11 @@ impl Blocklist {
         Self { data, match_prefix }
     }
 
+    /// Returns whether the blocklist has no configured values.
+    pub(super) fn is_empty(&self) -> bool {
+        self.data.is_empty()
+    }
+
     /// Returns whether `name` matches a configured metric name.
     pub(super) fn contains(&self, name: &str) -> bool {
         if self.data.is_empty() {
@@ -135,5 +140,25 @@ impl EffectiveFilterlist {
     pub(super) fn to_matcher(&self) -> Blocklist {
         let (values, match_prefix) = self.effective_values();
         Blocklist::new(values.iter().map(String::as_str), match_prefix)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Blocklist;
+
+    #[test]
+    fn blocklist_empty_when_default() {
+        assert!(Blocklist::default().is_empty());
+    }
+
+    #[test]
+    fn blocklist_not_empty_with_exact_matches() {
+        assert!(!Blocklist::new(["foo"], false).is_empty());
+    }
+
+    #[test]
+    fn blocklist_not_empty_with_prefix_matches() {
+        assert!(!Blocklist::new(["foo", "foo.bar"], true).is_empty());
     }
 }

@@ -273,6 +273,10 @@ impl DogStatsDPrefixFilter {
                 .iter()
                 .any(|prefix| metric_name.starts_with(prefix))
     }
+
+    fn is_noop(&self) -> bool {
+        self.metric_prefix.is_empty() && self.matcher.is_empty()
+    }
 }
 
 #[async_trait]
@@ -295,12 +299,13 @@ impl Transform for DogStatsDPrefixFilter {
                 _ = health.live() => continue,
                 maybe_events = context.events().next() => match maybe_events {
                     Some(mut events) => {
-                        events.remove_if(|event| match event.try_as_metric_mut() {
-                            // `process_metric` returns `true` if the metric should be kept, so we have to invert that
-                            // here to match the predicate structure, which will _remove_ the event if `true` is returned.
-                            Some(metric) => !self.process_metric(metric),
-                            None => true,
-                        });
+                        if !self.is_noop() {
+                            events.remove_if(|event| match event.try_as_metric_mut() {
+                                // `process_metric` returns `true` if the metric should be kept, so we invert it here.
+                                Some(metric) => !self.process_metric(metric),
+                                None => true,
+                            });
+                        }
 
                         if let Err(e) = context.dispatcher().dispatch(events).await {
                             error!(error = %e, "Failed to dispatch events.");
@@ -348,6 +353,24 @@ mod tests {
     use saluki_metrics::{test::TestRecorder, MetricsBuilder};
 
     use super::*;
+
+    fn filter_with(metric_prefix: &str, matcher: Blocklist) -> DogStatsDPrefixFilter {
+        DogStatsDPrefixFilter {
+            metric_prefix: metric_prefix.to_string(),
+            metric_prefix_blocklist: vec![],
+            matcher,
+            effective_filterlist: EffectiveFilterlist::default(),
+            telemetry: FilterlistTelemetry::noop(),
+            configuration: None,
+        }
+    }
+
+    #[test]
+    fn noop_only_when_prefix_and_matcher_are_empty() {
+        assert!(filter_with("", Blocklist::default()).is_noop());
+        assert!(!filter_with("foo.", Blocklist::default()).is_noop());
+        assert!(!filter_with("", Blocklist::new(["foo"], false)).is_noop());
+    }
 
     #[test]
     fn test_metric_prefix_add() {
