@@ -2049,6 +2049,14 @@ mod tests {
         MIN_CAPTURE_DEPTH,
     };
 
+    const LINUX_EAFNOSUPPORT: i32 = 97;
+    const MACOS_EAFNOSUPPORT: i32 = 47;
+
+    fn is_ipv6_unavailable_error(error: &std::io::Error) -> bool {
+        matches!(error.kind(), ErrorKind::AddrNotAvailable | ErrorKind::Unsupported)
+            || matches!(error.raw_os_error(), Some(LINUX_EAFNOSUPPORT | MACOS_EAFNOSUPPORT))
+    }
+
     #[derive(Default)]
     struct CaptureTestEntityResolver {
         pid_map: HashMap<u32, EntityId>,
@@ -2280,7 +2288,7 @@ mod tests {
     async fn packet_forwarder_sends_payload_bytes_to_ipv6_target() {
         let receiver = match UdpSocket::bind("[::1]:0").await {
             Ok(receiver) => receiver,
-            Err(e) if e.kind() == ErrorKind::AddrNotAvailable => return,
+            Err(e) if is_ipv6_unavailable_error(&e) => return,
             Err(e) => panic!("receiver should bind: {e}"),
         };
         let receiver_addr = receiver.local_addr().expect("receiver should have an address");
