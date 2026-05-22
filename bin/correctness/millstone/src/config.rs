@@ -143,8 +143,8 @@ pub struct Config {
     /// Each generated payload is sent to every target in turn (fan-out), in declared order, before
     /// the next payload is generated. Keys are free-form target names (used in logs and errors);
     /// values are address strings parsed the same way as a single target. At least one target is
-    /// required. `IndexMap` preserves the order keys appear in the YAML file and rejects
-    /// duplicate keys via `serde_yaml`.
+    /// required.
+    // TODO: the names of the target can only be: baseline and/or comparison
     pub targets: IndexMap<String, TargetAddress>,
 
     /// Output volume.
