@@ -115,7 +115,8 @@ pub async fn run_k8s_correctness_test(name: String, config: Config, tctx: TestCo
 
     let run_start = Instant::now();
 
-    let use_socket_wait = is_socket_target(&millstone_template);
+    let use_socket_wait =
+        crate::correctness::config::millstone_targets_all_sockets(&millstone_template);
 
     // Clean up all three namespaces regardless of outcome.
     let cleanup = |err: GenericError| {
@@ -163,7 +164,7 @@ pub async fn run_k8s_correctness_test(name: String, config: Config, tctx: TestCo
     // in parallel with the agent pods (which is fine, as the socket won't appear until the agent is
     // ready regardless).
     let tcp_readiness_checks = if !use_socket_wait {
-        if let Some(port) = extract_target_port(&millstone_template) {
+        if let Some(port) = crate::correctness::config::millstone_first_network_port(&millstone_template) {
             let baseline_pod_api: Api<Pod> = Api::namespaced(client.clone(), &baseline_ns);
             let comparison_pod_api: Api<Pod> = Api::namespaced(client.clone(), &comparison_ns);
             match tokio::try_join!(
@@ -201,9 +202,12 @@ pub async fn run_k8s_correctness_test(name: String, config: Config, tctx: TestCo
         return make_error_result(name, started, "millstone_pod_start", cleanup(e).await);
     }
 
-    // Phase 2: All pods are Running. Gather origin data from the millstone pod and write both
-    // configs. Both runs use the same container ID and pod UID so both agents resolve identical
-    // enrichment, even though the origin actually belongs to the millstone pod, not the agents.
+    // Phase 2: All pods are Running. Gather origin data from the millstone pod, resolve
+    // `$GROUP` per target (socket transports use the directory-name component of the HostPath
+    // airlock volume; network transports use the agent pod's cluster IP), and write a single
+    // resolved config into the millstone container. Origin enrichment uses the millstone pod's
+    // own UID and container ID; both agents see those values identically because they receive
+    // the same payload bytes.
     let millstone_pod_api: Api<Pod> = Api::namespaced(client.clone(), &millstone_ns);
 
     let origin_data = match gather_pod_origin_data(&millstone_pod_api, POD_NAME).await {
@@ -216,13 +220,18 @@ pub async fn run_k8s_correctness_test(name: String, config: Config, tctx: TestCo
         origin_data.pod_uid, origin_data.millstone_container_id
     );
 
-    let config_content = substitute_origin_placeholders(&millstone_template, &origin_data);
+    let config_with_origin = substitute_origin_placeholders(&millstone_template, &origin_data);
 
-    // For socket targets $GROUP is the group name (used in the airlock volume path).
-    // For TCP/gRPC targets $GROUP is the agent pod's cluster IP (the only routable address
-    // from the separate millstone pod).
-    let (baseline_group_value, comparison_group_value) = if is_socket_target(&config_content) {
-        ("baseline".to_string(), "comparison".to_string())
+    // Per-target $GROUP values. For socket transports the substitution value is the entry key
+    // (the airlock HostPath directory name); for TCP/gRPC the value is the corresponding agent
+    // pod's cluster IP, since pod hostnames are not routable from a separate pod.
+    let group_values: std::collections::HashMap<String, String> = if use_socket_wait {
+        [
+            ("baseline".to_string(), "baseline".to_string()),
+            ("comparison".to_string(), "comparison".to_string()),
+        ]
+        .into_iter()
+        .collect()
     } else {
         let baseline_pod_api: Api<Pod> = Api::namespaced(client.clone(), &baseline_ns);
         let comparison_pod_api: Api<Pod> = Api::namespaced(client.clone(), &comparison_ns);
@@ -233,32 +242,33 @@ pub async fn run_k8s_correctness_test(name: String, config: Config, tctx: TestCo
             Ok(ips) => ips,
             Err(e) => return make_error_result(name, started, "get_pod_ips", cleanup(e).await),
         };
-        (baseline_pod_ip, comparison_pod_ip)
+        [
+            ("baseline".to_string(), baseline_pod_ip),
+            ("comparison".to_string(), comparison_pod_ip),
+        ]
+        .into_iter()
+        .collect()
     };
 
-    let baseline_config = make_millstone_config_for_group(&config_content, &baseline_group_value);
-    let comparison_config = make_millstone_config_for_group(&config_content, &comparison_group_value);
+    let resolved_config = match crate::correctness::config::resolve_group_placeholders(
+        &config_with_origin,
+        |key| group_values.get(key).cloned(),
+    ) {
+        Ok(s) => s,
+        Err(e) => return make_error_result(name, started, "resolve_millstone_config", cleanup(e).await),
+    };
 
-    let write_result = tokio::try_join!(
-        exec_write_file(
-            client.clone(),
-            &millstone_ns,
-            POD_NAME,
-            "millstone",
-            "/etc/millstone/baseline.toml",
-            &baseline_config,
-        ),
-        exec_write_file(
-            client.clone(),
-            &millstone_ns,
-            POD_NAME,
-            "millstone",
-            "/etc/millstone/comparison.toml",
-            &comparison_config,
-        ),
-    );
-    if let Err(e) = write_result {
-        return make_error_result(name, started, "write_millstone_configs", cleanup(e).await);
+    if let Err(e) = exec_write_file(
+        client.clone(),
+        &millstone_ns,
+        POD_NAME,
+        "millstone",
+        "/etc/millstone/config.yaml",
+        &resolved_config,
+    )
+    .await
+    {
+        return make_error_result(name, started, "write_millstone_config", cleanup(e).await);
     }
 
     // Phase 3: Both agent pods are ready; start port-forwards for data collection.
@@ -523,41 +533,6 @@ async fn prepare_millstone_group(
     Ok(())
 }
 
-/// Replaces the `$GROUP` placeholder in the millstone config with the given value.
-///
-/// For socket targets, `group_value` is `"baseline"` or `"comparison"` (the directory-name
-/// component of the HostPath airlock volume). For TCP/gRPC targets it's the agent pod's
-/// cluster IP, which millstone uses to reach the agent across pod boundaries.
-fn make_millstone_config_for_group(template: &str, group_value: &str) -> String {
-    template.replace("$GROUP", group_value)
-}
-
-/// Returns true if the millstone config template uses a Unix socket target.
-///
-/// Used to decide whether the millstone pod's startup script should wait for socket files to
-/// appear in addition to waiting for the config files written by the harness.
-fn is_socket_target(template: &str) -> bool {
-    template.lines().any(|line| {
-        let t = line.trim_start();
-        t.starts_with("target:") && (t.contains("unixgram://") || t.contains("unix://"))
-    })
-}
-
-/// Extracts the port number from the millstone config template.
-///
-/// Parses the template as YAML, reads the `target` string, and extracts the port from the
-/// `scheme://$GROUP:<port>/...` URL. Returns `None` for Unix socket targets (which need no port
-/// check) or if parsing fails. Used to add a `nc -z` port-readiness check to the millstone
-/// pod's startup script for TCP/gRPC/UDP targets.
-fn extract_target_port(template: &str) -> Option<u16> {
-    let doc: serde_yaml::Value = serde_yaml::from_str(template).ok()?;
-    let target = doc.get("target")?.as_str()?;
-    // Targets look like "scheme://$GROUP:port" or "scheme://$GROUP:port/path".
-    // Socket targets (unixgram://, unix://) have no port and return None.
-    let after_host = target.split("://").nth(1)?.split(':').nth(1)?;
-    after_host.split('/').next()?.parse().ok()
-}
-
 // ---------------------------------------------------------------------------
 // Pod construction helpers
 // ---------------------------------------------------------------------------
@@ -738,12 +713,14 @@ struct MillstonePodConfig<'a> {
     tcp_readiness_checks: Vec<(String, u16)>,
 }
 
-/// Builds the shared millstone pod spec.
+/// Builds the millstone pod spec.
 ///
 /// The pod mounts both agents' socket directories (as `/baseline-airlock` and
-/// `/comparison-airlock`) and an EmptyDir for the two config files the harness writes after
-/// the pod is Running. The wait script blocks until both configs and both sockets are present,
-/// then launches both millstone processes in parallel and waits for both to exit.
+/// `/comparison-airlock`) and an EmptyDir for the single resolved config file the harness
+/// writes after the pod reaches Running. The wait script blocks until the config and both
+/// sockets are present (sockets only for DSD targets; a port check is used for TCP/gRPC),
+/// then `exec`s `millstone /etc/millstone/config.yaml`. The pod's exit code is the millstone
+/// exit code; no compound shell arithmetic is needed.
 fn build_millstone_pod(cfg: MillstonePodConfig<'_>) -> Pod {
     let MillstonePodConfig {
         namespace,
@@ -755,15 +732,12 @@ fn build_millstone_pod(cfg: MillstonePodConfig<'_>) -> Pod {
         tcp_readiness_checks,
     } = cfg;
 
-    // Build the readiness condition. Config files are always awaited since the harness writes
-    // them after the pod reaches Running. Socket files are only awaited for DSD tests.
-    // For TCP/gRPC/UDP tests a nc -z port check is added instead: the agent pod has reached
-    // Running phase but may not have bound its port yet, and a failed gRPC connect or early
-    // UDP send causes an immediate failure or silent packet loss respectively.
-    let mut ready_parts = vec![
-        "[ -f /etc/millstone/baseline.toml ]".to_string(),
-        "[ -f /etc/millstone/comparison.toml ]".to_string(),
-    ];
+    // Build the readiness condition. The single resolved config is always awaited since the
+    // harness writes it after the pod reaches Running. Socket files are only awaited for DSD
+    // tests. For TCP/gRPC/UDP tests a nc -z port check is added instead: the agent pod has
+    // reached Running phase but may not have bound its port yet, and a failed gRPC connect or
+    // early UDP send causes an immediate failure or silent packet loss respectively.
+    let mut ready_parts = vec!["[ -f /etc/millstone/config.yaml ]".to_string()];
     if use_socket_wait {
         ready_parts.push("[ -S /baseline-airlock/metrics.sock ]".to_string());
         ready_parts.push("[ -S /comparison-airlock/metrics.sock ]".to_string());
@@ -773,14 +747,8 @@ fn build_millstone_pod(cfg: MillstonePodConfig<'_>) -> Pod {
     }
     let ready_cond = ready_parts.join(" && ");
 
-    // Capture both child PIDs and propagate a non-zero exit if either run fails. Plain `wait`
-    // with no arguments exits with the status of the last reaped job, which would mask a failure
-    // from the first child if the second exits cleanly.
     let wait_cmd = format!(
-        "until {cond}; do sleep 1; done; \
-         exec sh -c '{bin} /etc/millstone/baseline.toml & P1=$!; \
-                      {bin} /etc/millstone/comparison.toml & P2=$!; \
-                      wait $P1; R1=$?; wait $P2; R2=$?; exit $((R1 | R2))'",
+        "until {cond}; do sleep 1; done; exec {bin} /etc/millstone/config.yaml",
         cond = ready_cond,
         bin = millstone_binary
     );

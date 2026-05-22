@@ -1,10 +1,14 @@
 use std::{
+    fmt,
     num::NonZeroUsize,
     path::{Path, PathBuf},
 };
 
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
-use serde::Deserialize;
+use serde::{
+    de::{self, MapAccess, Visitor},
+    Deserialize, Deserializer,
+};
 
 #[derive(Deserialize)]
 #[serde(try_from = "String")]
@@ -137,8 +141,14 @@ pub struct Config {
     /// Millstone would wait 6 seconds, until the current time was 20 (20 % 10 == 0) before starting to send.
     pub aggregation_bucket_width_secs: Option<u64>,
 
-    /// The target to send payloads to.
-    pub target: TargetAddress,
+    /// The targets to send payloads to.
+    ///
+    /// Each generated payload is sent to every target in turn (fan-out), in declared order, before
+    /// the next payload is generated. Keys are free-form target names (used in logs and errors);
+    /// values are address strings parsed the same way as a single target. At least one target is
+    /// required.
+    #[serde(deserialize_with = "deserialize_targets")]
+    pub targets: Vec<(String, TargetAddress)>,
 
     /// Output volume.
     ///
@@ -186,6 +196,136 @@ impl Config {
         let config: Self =
             serde_yaml::from_str(&config_file_raw).error_context("Failed to parse configuration file.")?;
 
+        if config.targets.is_empty() {
+            return Err(generic_error!("`targets:` must contain at least one entry."));
+        }
+
         Ok(config)
+    }
+}
+
+/// Deserializes a YAML mapping into an order-preserving `Vec<(String, TargetAddress)>`.
+///
+/// Send order matches declared order, so we cannot use `HashMap` or `BTreeMap`. Visiting the
+/// underlying `MapAccess` directly preserves the order produced by `serde_yaml`'s YAML parser
+/// without adding an `indexmap` dependency. Duplicate keys are rejected because they would
+/// silently shadow each other in the resulting map and produce a misleading send count.
+fn deserialize_targets<'de, D>(deserializer: D) -> Result<Vec<(String, TargetAddress)>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct TargetsVisitor;
+
+    impl<'de> Visitor<'de> for TargetsVisitor {
+        type Value = Vec<(String, TargetAddress)>;
+
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("a map of target name to target address")
+        }
+
+        fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+        where
+            A: MapAccess<'de>,
+        {
+            let mut entries: Vec<(String, TargetAddress)> = Vec::new();
+            while let Some((key, value)) = map.next_entry::<String, TargetAddress>()? {
+                if entries.iter().any(|(existing, _)| existing == &key) {
+                    return Err(de::Error::custom(format!("duplicate target name '{}'", key)));
+                }
+                entries.push((key, value));
+            }
+            Ok(entries)
+        }
+    }
+
+    deserializer.deserialize_map(TargetsVisitor)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const BASE_CFG: &str = r#"
+seed: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+volume: 10
+corpus:
+  size: 1
+  payload:
+    dogstatsd:
+      contexts: { constant: 1 }
+      name_length: { inclusive: { min: 1, max: 2 } }
+      tag_length: { inclusive: { min: 1, max: 2 } }
+      tags_per_msg: { inclusive: { min: 0, max: 0 } }
+      kind_weights: { metric: 100, event: 0, service_check: 0 }
+"#;
+
+    fn parse(targets_yaml: &str) -> Result<Config, serde_yaml::Error> {
+        let full = format!("{}\n{}\n", BASE_CFG, targets_yaml);
+        serde_yaml::from_str(&full)
+    }
+
+    #[test]
+    fn parses_two_target_map_preserving_order() {
+        let cfg = parse(
+            r#"
+targets:
+  baseline: "udp://baseline:8125"
+  comparison: "udp://comparison:8125"
+"#,
+        )
+        .expect("should parse");
+        assert_eq!(cfg.targets.len(), 2);
+        assert_eq!(cfg.targets[0].0, "baseline");
+        assert_eq!(cfg.targets[1].0, "comparison");
+        assert!(matches!(cfg.targets[0].1, TargetAddress::Udp(_)));
+    }
+
+    #[test]
+    fn parses_three_target_map_preserving_order() {
+        // Three keys chosen to break alphabetical and insertion-order assumptions if iteration
+        // order ever changes.
+        let cfg = parse(
+            r#"
+targets:
+  zeta: "udp://zeta:1"
+  alpha: "udp://alpha:1"
+  middle: "udp://middle:1"
+"#,
+        )
+        .expect("should parse");
+        let names: Vec<&str> = cfg.targets.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(names, vec!["zeta", "alpha", "middle"]);
+    }
+
+    #[test]
+    fn parses_single_target_map() {
+        let cfg = parse(
+            r#"
+targets:
+  only: "udp://only:8125"
+"#,
+        )
+        .expect("should parse");
+        assert_eq!(cfg.targets.len(), 1);
+        assert_eq!(cfg.targets[0].0, "only");
+    }
+
+    #[test]
+    fn rejects_duplicate_target_names() {
+        // Serde-yaml itself flags duplicate map keys for typed deserialization; either error path
+        // is acceptable, but the message must mention the offending key so debugging is easy.
+        let result = parse(
+            r#"
+targets:
+  baseline: "udp://a:1"
+  baseline: "udp://b:1"
+"#,
+        );
+        let err = match result {
+            Ok(_) => panic!("duplicate keys should fail to parse"),
+            Err(e) => e,
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("baseline"), "error should mention duplicate key, got: {}", msg);
     }
 }

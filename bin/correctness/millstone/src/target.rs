@@ -28,13 +28,20 @@ struct GrpcBackend {
 }
 
 pub struct TargetSender {
-    backend: TargetBackend,
-    // Runtime for gRPC operations (only used when backend is Grpc)
+    /// Named backends in declared order. `send()` writes to each in turn for every payload.
+    backends: Vec<(String, TargetBackend)>,
+    /// Shared tokio runtime used by every gRPC backend in this process; `None` if no backend
+    /// requires gRPC. A single runtime is sufficient because `send()` is synchronous and we
+    /// `block_on` one call at a time.
     runtime: Option<tokio::runtime::Runtime>,
 }
 
 impl TargetSender {
-    /// Creates a new `TargetSender` that writes to a file.
+    /// Creates a new `TargetSender` that writes to a single file.
+    ///
+    /// Used for the `--output-file` mode of millstone, which writes the generated payload bytes
+    /// to disk instead of sending them over the wire. Only one backend is needed; the entry is
+    /// named `"file"` for consistency with the named-backend model.
     ///
     /// # Errors
     ///
@@ -43,82 +50,158 @@ impl TargetSender {
         let file =
             File::create(path).with_error_context(|| format!("Failed to create output file '{}'.", path.display()))?;
         Ok(Self {
-            backend: TargetBackend::File(file),
+            backends: vec![("file".to_string(), TargetBackend::File(file))],
             runtime: None,
         })
     }
 
     /// Creates a new `TargetSender` based on the given configuration.
     ///
+    /// Builds one backend per entry in `config.targets`, in declared order. A single shared tokio
+    /// runtime is created up front if any backend is gRPC; all gRPC backends share it.
+    ///
     /// # Errors
     ///
-    /// If an error occurs while creating the socket/stream necessary for the target address, it will be returned.
+    /// If an error occurs while creating the socket/stream necessary for any target address, it
+    /// will be returned. The error message identifies the failing target by name.
     pub fn from_config(config: &Config) -> Result<Self, GenericError> {
-        let (backend, runtime) = match &config.target {
-            TargetAddress::Tcp(addr) => {
-                let stream = TcpStream::connect(addr.as_str())
-                    .with_error_context(|| format!("Failed to connect to TCP target '{}'.", addr))?;
-                (TargetBackend::Tcp(stream), None)
-            }
-            TargetAddress::Udp(addr) => {
-                // We have to bind the socket first before we can "connect" it.
-                let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).error_context("Failed to bind UDP socket.")?;
-                socket
-                    .connect(addr.as_str())
-                    .with_error_context(|| format!("Failed to connect to UDP target '{}'.", addr))?;
-
-                (TargetBackend::Udp(socket), None)
-            }
-            TargetAddress::UnixDatagram(path) => {
-                let datagram = UnixDatagram::unbound().error_context("Failed to bind Unix datagram socket.")?;
-                datagram.connect(path).with_error_context(|| {
-                    format!("Failed to connect to Unix datagram target '{}'.", path.display())
-                })?;
-
-                (TargetBackend::UnixDatagram(datagram), None)
-            }
-            TargetAddress::Unix(path) => {
-                let stream = UnixStream::connect(path)
-                    .with_error_context(|| format!("Failed to connect to Unix stream target '{}'.", path.display()))?;
-                (TargetBackend::Unix(stream), None)
-            }
-            TargetAddress::Grpc(url) => create_grpc_client(url)?,
+        let needs_runtime = config
+            .targets
+            .iter()
+            .any(|(_, addr)| matches!(addr, TargetAddress::Grpc(_)));
+        let runtime = if needs_runtime {
+            Some(
+                tokio::runtime::Runtime::new()
+                    .error_context("Failed to create tokio runtime for gRPC client.")?,
+            )
+        } else {
+            None
         };
 
-        Ok(Self { backend, runtime })
+        let mut backends = Vec::with_capacity(config.targets.len());
+        for (name, addr) in &config.targets {
+            let backend = build_backend(name, addr, runtime.as_ref())?;
+            backends.push((name.clone(), backend));
+        }
+
+        Ok(Self { backends, runtime })
     }
 
-    /// Sends a single payload to the target.
+    /// Sends a single payload to every configured target in turn (fan-out).
     ///
-    /// Attempts to send the entire payload to the target, but may only partially write a payload if the underlying
-    /// target transport doesn't support ordered delivery of messages and fragmented sends can't be achieved.
+    /// Writes the same payload bytes to each backend in declared order. Fails fast on the first
+    /// error: subsequent backends are not written, and the error is annotated with the failing
+    /// target's name. Returns the total number of bytes written across all successful backends
+    /// when every backend succeeded.
     ///
-    /// On success, `Ok(n)` is returned, where `n` is the number of bytes sent.
+    /// Fail-fast is correct for correctness testing: if one sink can't receive, the comparison
+    /// is invalid and continuing would produce asymmetric counters and a misleading divergence
+    /// report. See `design/millstone-fanout.md` ("Error semantics").
     ///
     /// # Errors
     ///
-    /// If an error occurs while sending the payload, it will be returned.
+    /// If any backend fails to send, the error is returned with the target's name prepended.
     pub fn send(&mut self, payload: &[u8]) -> Result<usize, GenericError> {
-        let n = match &mut self.backend {
-            TargetBackend::Tcp(stream) => stream.write_all(payload).map(|_| payload.len())?,
-            TargetBackend::Udp(socket) => socket.send(payload)?,
-            TargetBackend::UnixDatagram(datagram) => datagram.send(payload)?,
-            TargetBackend::Unix(stream) => stream.write_all(payload).map(|_| payload.len())?,
-            TargetBackend::Grpc(backend) => {
-                let channel = backend.channel.clone();
-                let service_method_path = backend.service_method_path.clone();
-                let runtime = self
-                    .runtime
-                    .as_ref()
-                    .ok_or_else(|| saluki_error::generic_error!("Runtime not available for gRPC send."))?;
+        let mut total_bytes = 0usize;
+        for (name, backend) in &mut self.backends {
+            let bytes: Result<usize, GenericError> = match backend {
+                TargetBackend::Tcp(stream) => stream
+                    .write_all(payload)
+                    .map(|_| payload.len())
+                    .map_err(GenericError::from),
+                TargetBackend::Udp(socket) => socket.send(payload).map_err(GenericError::from),
+                TargetBackend::UnixDatagram(datagram) => datagram.send(payload).map_err(GenericError::from),
+                TargetBackend::Unix(stream) => stream
+                    .write_all(payload)
+                    .map(|_| payload.len())
+                    .map_err(GenericError::from),
+                TargetBackend::Grpc(grpc) => {
+                    let runtime = self
+                        .runtime
+                        .as_ref()
+                        .ok_or_else(|| saluki_error::generic_error!("Runtime not available for gRPC send."))?;
+                    let channel = grpc.channel.clone();
+                    let service_method_path = grpc.service_method_path.clone();
+                    send_grpc_payload(runtime, channel, &service_method_path, payload).map(|_| payload.len())
+                }
+                TargetBackend::File(file) => file
+                    .write_all(payload)
+                    .map(|_| payload.len())
+                    .map_err(GenericError::from),
+            };
 
-                send_grpc_payload(runtime, channel, &service_method_path, payload)?;
-                payload.len()
+            match bytes {
+                Ok(n) => total_bytes += n,
+                Err(e) => {
+                    return Err(saluki_error::generic_error!(
+                        "Failed to send to target '{}': {}",
+                        name,
+                        e
+                    ))
+                }
             }
-            TargetBackend::File(file) => file.write_all(payload).map(|_| payload.len())?,
-        };
+        }
 
-        Ok(n)
+        Ok(total_bytes)
+    }
+}
+
+/// Builds a single `TargetBackend` for the given target name and address.
+///
+/// `runtime` must be `Some` when `addr` is `Grpc`; the gRPC channel is created on that runtime
+/// so all gRPC backends share a single executor. The target `name` is used only to annotate
+/// error messages.
+fn build_backend(
+    name: &str, addr: &TargetAddress, runtime: Option<&tokio::runtime::Runtime>,
+) -> Result<TargetBackend, GenericError> {
+    match addr {
+        TargetAddress::Tcp(addr_str) => {
+            let stream = TcpStream::connect(addr_str.as_str())
+                .with_error_context(|| format!("Failed to connect to TCP target '{}' (target='{}').", addr_str, name))?;
+            Ok(TargetBackend::Tcp(stream))
+        }
+        TargetAddress::Udp(addr_str) => {
+            let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))
+                .with_error_context(|| format!("Failed to bind UDP socket (target='{}').", name))?;
+            socket
+                .connect(addr_str.as_str())
+                .with_error_context(|| format!("Failed to connect to UDP target '{}' (target='{}').", addr_str, name))?;
+            Ok(TargetBackend::Udp(socket))
+        }
+        TargetAddress::UnixDatagram(path) => {
+            let datagram = UnixDatagram::unbound()
+                .with_error_context(|| format!("Failed to bind Unix datagram socket (target='{}').", name))?;
+            datagram.connect(path).with_error_context(|| {
+                format!(
+                    "Failed to connect to Unix datagram target '{}' (target='{}').",
+                    path.display(),
+                    name
+                )
+            })?;
+            Ok(TargetBackend::UnixDatagram(datagram))
+        }
+        TargetAddress::Unix(path) => {
+            let stream = UnixStream::connect(path).with_error_context(|| {
+                format!(
+                    "Failed to connect to Unix stream target '{}' (target='{}').",
+                    path.display(),
+                    name
+                )
+            })?;
+            Ok(TargetBackend::Unix(stream))
+        }
+        TargetAddress::Grpc(url) => {
+            let runtime = runtime.ok_or_else(|| {
+                saluki_error::generic_error!(
+                    "Internal error: runtime missing for gRPC target '{}' (target='{}').",
+                    url,
+                    name
+                )
+            })?;
+            let backend = create_grpc_backend(runtime, url)
+                .with_error_context(|| format!("Failed to create gRPC backend for target '{}'.", name))?;
+            Ok(TargetBackend::Grpc(backend))
+        }
     }
 }
 
@@ -155,21 +238,20 @@ fn send_grpc_payload(
     })
 }
 
-/// Creates a generic gRPC backend with a tokio runtime for the given gRPC URL.
+/// Creates a gRPC backend on the shared runtime.
 ///
 /// The URL should be in the format: `<host>:<port>/<service>/<method>`.
 ///
 /// # Errors
 ///
-/// Returns an error if the runtime can't be created or the connection can't be established.
-fn create_grpc_client(url: &str) -> Result<(TargetBackend, Option<tokio::runtime::Runtime>), GenericError> {
-    // Split the URL into host:port and service/method path
+/// Returns an error if the URL is malformed or the connection can't be established.
+fn create_grpc_backend(runtime: &tokio::runtime::Runtime, url: &str) -> Result<GrpcBackend, GenericError> {
+    // Split the URL into host:port and service/method path.
     let (host_and_port, path) = url
         .split_once('/')
         .ok_or_else(|| saluki_error::generic_error!("Invalid gRPC URL format: {}", url))?;
     let service_method_path = format!("/{}", path);
 
-    let runtime = tokio::runtime::Runtime::new().error_context("Failed to create tokio runtime for gRPC client.")?;
     let endpoint = format!("http://{}", host_and_port);
 
     let channel = runtime
@@ -182,11 +264,10 @@ fn create_grpc_client(url: &str) -> Result<(TargetBackend, Option<tokio::runtime
         })
         .with_error_context(|| format!("Failed to connect to gRPC target '{}'.", endpoint))?;
 
-    let backend = GrpcBackend {
+    Ok(GrpcBackend {
         channel,
         service_method_path,
-    };
-    Ok((TargetBackend::Grpc(backend), Some(runtime)))
+    })
 }
 
 // No-op codec for sending raw protobuf bytes via gRPC without encoding/decoding.

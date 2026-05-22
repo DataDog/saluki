@@ -1,5 +1,7 @@
 seed: [3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 131, 137]
-target: "udp://$GROUP:8125"
+targets:
+  baseline:   "udp://$GROUP:8125"
+  comparison: "udp://$GROUP:8125"
 aggregation_bucket_width_secs: 10
 volume: 10000
 # UDP socket receive buffers on Linux are ~208 KiB (net.core.rmem_max default). A zero-delay

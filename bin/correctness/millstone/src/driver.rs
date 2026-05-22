@@ -50,8 +50,9 @@ impl Driver {
         let mut borrowed_payloads = payloads.iter().map(|b| &b[..]).cycle();
 
         let mut payloads_sent = 0;
+        // Aggregate across all fan-out targets. `TargetSender::send` returns the sum of bytes
+        // written to every backend for this payload.
         let mut payload_bytes_sent = 0;
-        let mut partial_sends = 0;
 
         let max_payloads = self.config.volume.get();
 
@@ -92,22 +93,16 @@ impl Driver {
 
             payload_bytes_sent += bytes_sent as u64;
             payloads_sent += 1;
-            if payload.len() != bytes_sent {
-                partial_sends += 1;
-            }
         }
 
         let send_duration = start.elapsed();
         let throughput_bps = ByteSize((payload_bytes_sent as f64 / send_duration.as_secs_f64()) as u64);
 
         let payload_bytes_sent_human = ByteSize(payload_bytes_sent);
-        let pct_partial_sends = (partial_sends as f64 / payloads_sent as f64) * 100.0;
         info!(
-            "Sent {} payloads ({}), with {} partial sends ({}% of total), over {:?} ({}/s).",
+            "Sent {} payloads ({} total across all targets) over {:?} ({}/s).",
             payloads_sent,
             payload_bytes_sent_human.display().si(),
-            partial_sends,
-            pct_partial_sends,
             send_duration,
             throughput_bps.display().si()
         );

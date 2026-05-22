@@ -284,3 +284,216 @@ impl Config {
         self.target_driver_config(&self.comparison).await
     }
 }
+
+/// Resolves `$GROUP` per-target in a millstone config template by walking the `targets:` map.
+///
+/// The template uses one shared placeholder, `$GROUP`, that the orchestrator must substitute
+/// differently for each target. This helper parses the template as YAML, expects a top-level
+/// `targets:` mapping, and for each entry replaces `$GROUP` in that entry's address using the
+/// caller-supplied lookup (typically `key -> "baseline" | "comparison"` for Docker, or
+/// `key -> pod cluster IP` for k8s TCP/gRPC). Other parts of the document are left untouched.
+///
+/// The lookup closure must return `Some` for every target key present in the template; missing
+/// keys are reported as an error rather than silently leaving `$GROUP` unresolved.
+///
+/// Returns the rewritten YAML as a `String` ready to be written to the millstone container.
+pub fn resolve_group_placeholders<F>(template: &str, mut lookup: F) -> Result<String, GenericError>
+where
+    F: FnMut(&str) -> Option<String>,
+{
+    let mut doc: serde_yaml::Value =
+        serde_yaml::from_str(template).error_context("Failed to parse millstone config template as YAML.")?;
+
+    let targets = doc
+        .get_mut("targets")
+        .and_then(|v| v.as_mapping_mut())
+        .ok_or_else(|| generic_error!("Millstone config template is missing a `targets:` mapping."))?;
+
+    for (key, value) in targets.iter_mut() {
+        let key_str = key
+            .as_str()
+            .ok_or_else(|| generic_error!("Non-string key in `targets:` mapping."))?;
+        let addr = value
+            .as_str()
+            .ok_or_else(|| generic_error!("Non-string address for target '{}'.", key_str))?;
+
+        if addr.contains("$GROUP") {
+            let resolved = lookup(key_str).ok_or_else(|| {
+                generic_error!(
+                    "No `$GROUP` substitution provided for target '{}' in millstone config.",
+                    key_str
+                )
+            })?;
+            let new_addr = addr.replace("$GROUP", &resolved);
+            *value = serde_yaml::Value::String(new_addr);
+        }
+    }
+
+    serde_yaml::to_string(&doc).error_context("Failed to serialize resolved millstone config.")
+}
+
+/// Returns true if every entry in the `targets:` mapping of the template is a Unix-socket target
+/// (either `unixgram://` or `unix://`).
+///
+/// The k8s path uses this to decide whether the millstone pod's startup wait should include a
+/// `[ -S ... ]` socket-file check. Mixed-transport configs (some socket, some TCP) are not
+/// supported by the existing test suite and are not handled here; they would return `false`.
+pub fn millstone_targets_all_sockets(template: &str) -> bool {
+    let Ok(doc) = serde_yaml::from_str::<serde_yaml::Value>(template) else {
+        return false;
+    };
+    let Some(targets) = doc.get("targets").and_then(|v| v.as_mapping()) else {
+        return false;
+    };
+    if targets.is_empty() {
+        return false;
+    }
+    targets.iter().all(|(_, v)| {
+        v.as_str()
+            .map(|s| s.starts_with("unixgram://") || s.starts_with("unix://"))
+            .unwrap_or(false)
+    })
+}
+
+/// Extracts the port from the first non-Unix target in the `targets:` mapping.
+///
+/// All current correctness configs use one transport across all targets, so probing the first
+/// non-socket entry is sufficient to learn the agent port. Returns `None` if every target is a
+/// Unix socket or the template can't be parsed.
+pub fn millstone_first_network_port(template: &str) -> Option<u16> {
+    let doc: serde_yaml::Value = serde_yaml::from_str(template).ok()?;
+    let targets = doc.get("targets")?.as_mapping()?;
+    for (_, value) in targets.iter() {
+        let addr = value.as_str()?;
+        if addr.starts_with("unixgram://") || addr.starts_with("unix://") {
+            continue;
+        }
+        // scheme://HOST:PORT[/path] -> take the part after `://`, then everything after the
+        // first `:` up to either `/` or end.
+        let after_scheme = addr.split("://").nth(1)?;
+        let after_host = after_scheme.split(':').nth(1)?;
+        return after_host.split('/').next()?.parse().ok();
+    }
+    None
+}
+
+#[cfg(test)]
+mod millstone_helper_tests {
+    use super::*;
+
+    #[test]
+    fn resolves_group_per_target() {
+        let template = r#"
+targets:
+  baseline: "udp://$GROUP:8125"
+  comparison: "udp://$GROUP:8125"
+volume: 1
+"#;
+        let resolved = resolve_group_placeholders(template, |k| Some(k.to_string())).unwrap();
+        assert!(resolved.contains("udp://baseline:8125"));
+        assert!(resolved.contains("udp://comparison:8125"));
+        assert!(!resolved.contains("$GROUP"));
+    }
+
+    #[test]
+    fn resolves_group_with_custom_lookup() {
+        // k8s case: TCP target keys map to pod cluster IPs, not group names.
+        let template = r#"
+targets:
+  baseline: "grpc://$GROUP:4317/svc/Method"
+  comparison: "grpc://$GROUP:4317/svc/Method"
+"#;
+        let resolved = resolve_group_placeholders(template, |k| match k {
+            "baseline" => Some("10.0.0.1".to_string()),
+            "comparison" => Some("10.0.0.2".to_string()),
+            _ => None,
+        })
+        .unwrap();
+        assert!(resolved.contains("grpc://10.0.0.1:4317"));
+        assert!(resolved.contains("grpc://10.0.0.2:4317"));
+    }
+
+    #[test]
+    fn errors_on_missing_substitution() {
+        // If the lookup returns None for a key whose address contains $GROUP, fail loudly rather
+        // than ship an unresolved placeholder to the container.
+        let template = r#"
+targets:
+  baseline: "udp://$GROUP:8125"
+"#;
+        let err = resolve_group_placeholders(template, |_| None).unwrap_err();
+        assert!(format!("{}", err).contains("baseline"));
+    }
+
+    #[test]
+    fn leaves_address_alone_when_no_placeholder() {
+        // Lookup must not be called for entries without `$GROUP`; verify by panicking inside it.
+        let template = r#"
+targets:
+  baseline: "udp://10.0.0.1:8125"
+  comparison: "udp://10.0.0.2:8125"
+"#;
+        let resolved = resolve_group_placeholders(template, |_| {
+            panic!("lookup must not be called when no $GROUP is present")
+        })
+        .unwrap();
+        assert!(resolved.contains("10.0.0.1"));
+        assert!(resolved.contains("10.0.0.2"));
+    }
+
+    #[test]
+    fn all_sockets_recognised_for_unixgram() {
+        assert!(millstone_targets_all_sockets(
+            r#"
+targets:
+  baseline: "unixgram:///x/metrics.sock"
+  comparison: "unixgram:///y/metrics.sock"
+"#
+        ));
+    }
+
+    #[test]
+    fn all_sockets_false_for_mixed_and_tcp() {
+        // Mixed transports are not supported by the existing suite; verifying the function
+        // reports false ensures the k8s readiness path won't skip its port-readiness check by
+        // mistake on a mixed config.
+        assert!(!millstone_targets_all_sockets(
+            r#"
+targets:
+  baseline: "unixgram:///x/metrics.sock"
+  comparison: "udp://comparison:8125"
+"#
+        ));
+        assert!(!millstone_targets_all_sockets(
+            r#"
+targets:
+  baseline: "udp://baseline:8125"
+"#
+        ));
+    }
+
+    #[test]
+    fn first_network_port_skips_sockets() {
+        // Sockets come first; the helper must scan past them to find the TCP/UDP port.
+        let port = millstone_first_network_port(
+            r#"
+targets:
+  baseline: "unixgram:///x/metrics.sock"
+  comparison: "udp://comparison:8125"
+"#,
+        );
+        assert_eq!(port, Some(8125));
+    }
+
+    #[test]
+    fn first_network_port_grpc_with_path() {
+        // gRPC addresses include a `/service/Method` suffix; the port parse must stop at `/`.
+        let port = millstone_first_network_port(
+            r#"
+targets:
+  baseline: "grpc://$GROUP:4317/opentelemetry.proto.collector.metrics.v1.MetricsService/Export"
+"#,
+        );
+        assert_eq!(port, Some(4317));
+    }
+}

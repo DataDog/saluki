@@ -13,7 +13,7 @@ use airlock::{
 };
 use rand::{distr::SampleString as _, rng};
 use rand_distr::Alphanumeric;
-use saluki_error::{generic_error, GenericError};
+use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use tokio::{select, task::JoinHandle, time::sleep};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, info_span, Instrument as _, Span};
@@ -29,10 +29,11 @@ use crate::{
     test::TestContext,
 };
 
-/// Path where the original millstone config is mounted inside the shared millstone container.
+/// Path where the resolved millstone config is mounted inside the millstone container.
 ///
-/// This mirrors the path used by the single-millstone setup so the same bind-mount machinery works.
-const MILLSTONE_CONFIG_INTERNAL: &str = "/etc/millstone/config.toml";
+/// Under fan-out, panoramic writes a single resolved config (with `$GROUP` substituted
+/// per-target) and bind-mounts it at this path. Millstone reads it as its only argument.
+const MILLSTONE_CONFIG_INTERNAL: &str = "/etc/millstone/config.yaml";
 
 /// How long to wait after millstone exits before querying datadog-intake for data.
 ///
@@ -165,8 +166,8 @@ pub(crate) fn make_error_result(name: String, started: Instant, phase: &str, e: 
 ///
 /// In a correctness test, two isolated groups of containers are created. One containing the Agent
 /// alone (baseline), and the other containing ADP and the Agent working together (comparison). A
-/// single shared millstone container runs two parallel millstone processes—one targeting each
-/// agent—to ensure both agents receive bitwise-identical inputs from the same seed.
+/// single millstone container generates each payload once and fans it out to both agents,
+/// ensuring both agents receive bitwise-identical inputs from the same seed.
 pub struct CorrectnessRunner {
     datadog_intake_config: DatadogIntakeConfig,
     millstone_config: MillstoneConfig,
@@ -247,22 +248,20 @@ impl CorrectnessRunner {
         Ok(group_runner)
     }
 
-    /// Builds the group runner for the shared millstone container.
+    /// Builds the group runner for the millstone container.
     ///
-    /// The millstone container is set up identically to the original single-millstone setup:
-    /// `millstone.yaml` is bind-mounted at the same path as before. The shell entrypoint then
-    /// uses `sed` to derive two per-target configs in `/tmp`—one with `baseline` addresses and
-    /// one with `comparison` addresses—before launching both millstone processes in parallel.
-    ///
-    /// Two `sed` substitutions cover all target types:
-    /// - DSD socket targets: `/airlock/` → `/{group}-airlock/`
-    /// - TCP/gRPC targets: `://target` → `://{group}`
+    /// Under fan-out, one millstone process generates each payload once and writes the same
+    /// bytes to every target listed under `targets:` in the config. Panoramic resolves the
+    /// `$GROUP` placeholder per target on the host (substituting the Docker network alias
+    /// `"baseline"` or `"comparison"`), writes the resolved YAML to a per-test scratch file,
+    /// and bind-mounts it into the container. The container then runs `millstone <config>`
+    /// directly—no sed templating, no parallel processes, no compound exit-code arithmetic.
     ///
     /// Both agents are healthy before this container starts, so no startup wait is needed.
-    async fn build_shared_millstone_group_runner(
+    async fn build_millstone_group_runner(
         &self, isolation_group_id: String, baseline_isolation_group_id: &str, comparison_isolation_group_id: &str,
     ) -> Result<GroupRunner, GenericError> {
-        debug!("Creating shared millstone group runner...");
+        debug!("Creating millstone group runner...");
 
         let millstone_binary = self
             .millstone_config
@@ -270,24 +269,31 @@ impl CorrectnessRunner {
             .clone()
             .unwrap_or_else(|| "/usr/local/bin/millstone".to_string());
 
-        // Substitute $GROUP in the bind-mounted config to produce two per-target configs, then
-        // run both millstone processes in parallel. `exec sh -c '...'` ensures both seds complete
-        // before either millstone process starts.
-        let cmd = format!(
-            "sed 's/\\$GROUP/baseline/g' {cfg} > /tmp/millstone-baseline.toml && \
-             sed 's/\\$GROUP/comparison/g' {cfg} > /tmp/millstone-comparison.toml && \
-             exec sh -c '{bin} /tmp/millstone-baseline.toml & P1=$!; \
-                          {bin} /tmp/millstone-comparison.toml & P2=$!; \
-                          wait $P1; R1=$?; wait $P2; R2=$?; exit $((R1 | R2))'",
-            cfg = MILLSTONE_CONFIG_INTERNAL,
-            bin = millstone_binary,
-        );
+        // Resolve $GROUP per target on the host. For Docker, the substitution value is simply
+        // the entry's key, which is also the network alias the corresponding agent advertises.
+        let template = std::fs::read_to_string(&self.millstone_config.config_path).with_error_context(|| {
+            format!(
+                "Failed to read millstone config template '{}'.",
+                self.millstone_config.config_path.display()
+            )
+        })?;
+        let resolved =
+            crate::correctness::config::resolve_group_placeholders(&template, |key| Some(key.to_string()))?;
+
+        // Write the resolved config to a per-test scratch file under the test's log directory.
+        // Using `log_dir()` keeps the file isolated per test (the harness creates one log_dir
+        // per test name) and avoids the mounts-dir auto-overlay machinery, which would
+        // otherwise re-mount this file into the target agent containers at `/millstone.resolved.yaml`.
+        let resolved_path = self.tctx.log_dir().join("millstone.resolved.yaml");
+        std::fs::write(&resolved_path, &resolved).with_error_context(|| {
+            format!("Failed to write resolved millstone config to '{}'.", resolved_path.display())
+        })?;
 
         let driver_config = DriverConfig::from_image("millstone", self.millstone_config.image.clone())
-            .with_entrypoint(vec!["/bin/sh".to_string(), "-c".to_string()])
-            .with_command(vec![cmd])
-            // Bind-mount the original millstone.yaml—same as the single-millstone setup.
-            .with_bind_mount(&self.millstone_config.config_path, MILLSTONE_CONFIG_INTERNAL)
+            .with_entrypoint(vec![millstone_binary])
+            .with_command(vec![MILLSTONE_CONFIG_INTERNAL.to_string()])
+            // Bind-mount the resolved millstone config so the in-container path is stable.
+            .with_bind_mount(&resolved_path, MILLSTONE_CONFIG_INTERNAL)
             // Mount both agent isolation-group volumes so millstone can reach their DSD sockets.
             .with_volume_mount(format!("airlock-{}", baseline_isolation_group_id), "/baseline-airlock")
             .with_volume_mount(
@@ -377,7 +383,7 @@ impl CorrectnessRunner {
             .build_comparison_group_runner(comparison_isolation_group_id.clone())
             .await?;
         let millstone_group_runner = self
-            .build_shared_millstone_group_runner(
+            .build_millstone_group_runner(
                 millstone_isolation_group_id.clone(),
                 &baseline_isolation_group_id,
                 &comparison_isolation_group_id,

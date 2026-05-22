@@ -50,10 +50,16 @@ fn get_finalized_corpus_blueprint(config: &Config) -> Result<CorpusBlueprint, Ge
     let mut blueprint = config.corpus.clone();
 
     // When generating DogStatsD payloads, we need to set the length-delimited framing mode when UDS is being used in
-    // SOCK_STREAM mode.
+    // SOCK_STREAM mode. Under fan-out we assume every target in a single config uses a compatible
+    // framing (they must, since identical bytes are sent to all of them); if any target is Unix
+    // stream, the framing flag applies to the whole corpus.
     match &mut blueprint.payload {
         Payload::DogStatsD(dsd_config) => {
-            if let TargetAddress::Unix(_) = config.target {
+            let any_unix_stream = config
+                .targets
+                .iter()
+                .any(|(_, addr)| matches!(addr, TargetAddress::Unix(_)));
+            if any_unix_stream {
                 dsd_config.length_prefix_framed = true;
             }
         }
