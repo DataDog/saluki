@@ -602,7 +602,9 @@ mod tests {
     fn init_tls() {
         static INIT: std::sync::OnceLock<()> = std::sync::OnceLock::new();
         INIT.get_or_init(|| {
-            saluki_tls::initialize_default_crypto_provider().expect("failed to initialize TLS crypto provider");
+            if rustls::crypto::CryptoProvider::get_default().is_none() {
+                saluki_tls::initialize_default_crypto_provider().expect("failed to initialize TLS crypto provider");
+            }
             saluki_tls::load_platform_root_certificates().expect("failed to load platform root certificates");
         });
     }
