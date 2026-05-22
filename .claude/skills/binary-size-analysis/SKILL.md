@@ -150,7 +150,7 @@ For each of the top 3-5 contributors identified above, perform targeted investig
 ### Distinguishing workspace vs third-party crates
 
 Use `cargo metadata --no-deps --format-version 1` to get the workspace crate list (packages with
-`source: null`). The existing script at `test/one-off/analyze-binary-size.py` has this logic as a
+`source: null`). The existing script at `ci/tooling/analyze-binary-size.py` has this logic as a
 reference. Workspace crates use underscores in symbols but hyphens in `Cargo.toml`.
 
 ### For third-party dependencies
