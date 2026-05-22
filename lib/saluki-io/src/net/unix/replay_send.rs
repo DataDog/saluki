@@ -33,16 +33,16 @@ pub async fn send_replay_packet(
 
 /// Synchronously writes one payload with the given credentials to the raw fd.
 ///
-/// Constructs a `cmsghdr` header followed by the `ucred` body in a single control buffer, then invokes `sendmsg`. The
-/// buffer is stack-allocated and sized via `CMSG_SPACE` to satisfy the kernel's alignment requirements.
+/// Constructs a `cmsghdr` header followed by the `ucred` body in a single control buffer, then invokes `sendmsg`.
 fn send_with_ucred(fd: libc::c_int, payload: &[u8], creds: &libc::ucred) -> io::Result<usize> {
     // SAFETY: `CMSG_SPACE` is a const expression on `size_of::<ucred>()`; the call is safe and returns the byte count
     // needed to hold one aligned cmsghdr plus a ucred payload.
     let control_len = unsafe { libc::CMSG_SPACE(mem::size_of::<libc::ucred>() as u32) as usize };
 
-    // Stack-allocated control buffer. `CMSG_SPACE` rounds up for alignment, so the resulting buffer is correctly
-    // aligned when accessed via the libc CMSG_* macros below.
-    let mut control_buf = vec![0u8; control_len];
+    // `CMSG_SPACE` gives us the padded byte length, but the backing storage also has to be aligned for `cmsghdr` and
+    // `ucred` because the CMSG_* macros return typed pointers into it.
+    let control_words = control_len.div_ceil(mem::size_of::<usize>());
+    let mut control_buf = vec![0usize; control_words];
 
     // SAFETY: we construct a `msghdr` pointing at the payload and the control buffer, then walk the control buffer
     // with the libc CMSG_FIRSTHDR / CMSG_DATA macros to write the cmsghdr header and ucred body. Pointers all
@@ -57,7 +57,7 @@ fn send_with_ucred(fd: libc::c_int, payload: &[u8], creds: &libc::ucred) -> io::
         let mut msg: libc::msghdr = mem::zeroed();
         msg.msg_iov = &mut iov;
         msg.msg_iovlen = 1;
-        msg.msg_control = control_buf.as_mut_ptr() as *mut libc::c_void;
+        msg.msg_control = control_buf.as_mut_ptr().cast::<libc::c_void>();
         msg.msg_controllen = control_len as _;
 
         // Populate the cmsghdr at the start of the control buffer.
