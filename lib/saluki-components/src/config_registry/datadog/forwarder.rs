@@ -1,6 +1,7 @@
 //! Annotations for ForwarderConfiguration keys (endpoint, retry, and forwarder settings).
-use crate::config_registry::{generated::schema, structs, SalukiAnnotation, SupportLevel, ValueType};
+use crate::config_registry::{generated::schema, structs, PipelineAffinity, SalukiAnnotation, SupportLevel, ValueType};
 
+// All keys are labeled as CrossCutting because the forwarder configuration can affect any pipeline.
 crate::declare_annotations! {
     // ── Endpoint ──────────────────────────────────────────────────────────────
 
@@ -13,6 +14,7 @@ crate::declare_annotations! {
         used_by: &[structs::FORWARDER_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::CrossCutting,
     };
 
     /// `site`—Datadog site domain (for example, `datadoghq.com`).
@@ -24,6 +26,7 @@ crate::declare_annotations! {
         used_by: &[structs::FORWARDER_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::CrossCutting,
     };
 
     /// `dd_url`—explicit intake URL, overrides `site`.
@@ -35,6 +38,7 @@ crate::declare_annotations! {
         used_by: &[structs::FORWARDER_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::CrossCutting,
     };
 
     /// `observability_pipelines_worker.metrics.enabled`—route metrics to OPW.
@@ -46,6 +50,7 @@ crate::declare_annotations! {
         used_by: &[structs::FORWARDER_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::CrossCutting,
     };
 
     /// `observability_pipelines_worker.metrics.url`—OPW metrics intake URL.
@@ -57,6 +62,7 @@ crate::declare_annotations! {
         used_by: &[structs::FORWARDER_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::CrossCutting,
     };
 
     /// `vector.metrics.enabled`—route metrics to OPW (legacy alias).
@@ -68,6 +74,7 @@ crate::declare_annotations! {
         used_by: &[structs::FORWARDER_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::CrossCutting,
     };
 
     /// `vector.metrics.url`—OPW metrics intake URL (legacy alias).
@@ -79,6 +86,7 @@ crate::declare_annotations! {
         used_by: &[structs::FORWARDER_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::CrossCutting,
     };
 
     /// `additional_endpoints`—extra intake endpoints (JSON map of host → API keys).
@@ -91,6 +99,7 @@ crate::declare_annotations! {
         used_by: &[structs::FORWARDER_CONFIGURATION],
         value_type_override: None,
         test_json: Some(r#"{"smoke-host-1.example.com": ["smoke-api-key"]}"#),
+        pipeline_affinity: PipelineAffinity::CrossCutting,
     };
 
     // ── ForwarderConfiguration direct fields ──────────────────────────────────
@@ -104,6 +113,7 @@ crate::declare_annotations! {
         used_by: &[structs::FORWARDER_CONFIGURATION],
         value_type_override: Some(ValueType::Integer),
         test_json: None,
+        pipeline_affinity: PipelineAffinity::CrossCutting,
     };
 
     /// `forwarder_timeout`—request timeout in seconds. Schema Float; field u64.
@@ -115,6 +125,7 @@ crate::declare_annotations! {
         used_by: &[structs::FORWARDER_CONFIGURATION],
         value_type_override: Some(ValueType::Integer),
         test_json: None,
+        pipeline_affinity: PipelineAffinity::CrossCutting,
     };
 
     /// `forwarder_high_prio_buffer_size`—max pending requests per endpoint. Schema Float; field usize.
@@ -126,6 +137,7 @@ crate::declare_annotations! {
         used_by: &[structs::FORWARDER_CONFIGURATION],
         value_type_override: Some(ValueType::Integer),
         test_json: None,
+        pipeline_affinity: PipelineAffinity::CrossCutting,
     };
 
     /// `forwarder_connection_reset_interval`—seconds between connection resets. Schema Float; field u64.
@@ -137,6 +149,7 @@ crate::declare_annotations! {
         used_by: &[structs::FORWARDER_CONFIGURATION],
         value_type_override: Some(ValueType::Integer),
         test_json: None,
+        pipeline_affinity: PipelineAffinity::CrossCutting,
     };
 
     /// `forwarder_http_protocol`—HTTP version selection for outgoing forwarder requests.
@@ -148,6 +161,7 @@ crate::declare_annotations! {
         used_by: &[structs::FORWARDER_CONFIGURATION],
         value_type_override: None,
         test_json: Some("\"http1\""),
+        pipeline_affinity: PipelineAffinity::CrossCutting,
     };
 
     /// `skip_ssl_validation`—disables TLS certificate validation for Datadog intake forwarding.
@@ -159,6 +173,7 @@ crate::declare_annotations! {
         used_by: &[structs::FORWARDER_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::CrossCutting,
     };
 
     /// `min_tls_version`—minimum TLS version for Datadog intake forwarding.
@@ -170,6 +185,7 @@ crate::declare_annotations! {
         used_by: &[structs::FORWARDER_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::CrossCutting,
     };
 
     /// `allow_arbitrary_tags`—signals backend tag validation relaxation.
@@ -181,6 +197,7 @@ crate::declare_annotations! {
         used_by: &[structs::FORWARDER_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::CrossCutting,
     };
 
     // ── RetryConfiguration fields ─────────────────────────────────────────────
@@ -194,6 +211,7 @@ crate::declare_annotations! {
         used_by: &[structs::FORWARDER_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::CrossCutting,
     };
 
     /// `forwarder_backoff_factor`—jitter factor for retry backoff.
@@ -205,6 +223,7 @@ crate::declare_annotations! {
         used_by: &[structs::FORWARDER_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::CrossCutting,
     };
 
     /// `forwarder_backoff_max`—maximum retry backoff duration in seconds.
@@ -216,6 +235,7 @@ crate::declare_annotations! {
         used_by: &[structs::FORWARDER_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::CrossCutting,
     };
 
     /// `forwarder_recovery_interval`—error count decrease on success. Schema Float; field u32.
@@ -227,6 +247,7 @@ crate::declare_annotations! {
         used_by: &[structs::FORWARDER_CONFIGURATION],
         value_type_override: Some(ValueType::Integer),
         test_json: None,
+        pipeline_affinity: PipelineAffinity::CrossCutting,
     };
 
     /// `forwarder_recovery_reset`—reset error count on successful request.
@@ -238,6 +259,7 @@ crate::declare_annotations! {
         used_by: &[structs::FORWARDER_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::CrossCutting,
     };
 
     /// `forwarder_retry_queue_max_size`—(deprecated) max in-memory retry queue size in bytes. Schema Float; field `Option<u64>`.
@@ -249,6 +271,7 @@ crate::declare_annotations! {
         used_by: &[structs::FORWARDER_CONFIGURATION],
         value_type_override: Some(ValueType::Integer),
         test_json: None,
+        pipeline_affinity: PipelineAffinity::CrossCutting,
     };
 
     /// `forwarder_retry_queue_payloads_max_size`—max in-memory retry queue size in bytes. Schema Float; field `Option<u64>`.
@@ -260,6 +283,7 @@ crate::declare_annotations! {
         used_by: &[structs::FORWARDER_CONFIGURATION],
         value_type_override: Some(ValueType::Integer),
         test_json: None,
+        pipeline_affinity: PipelineAffinity::CrossCutting,
     };
 
     /// `forwarder_storage_max_disk_ratio`—max disk usage fraction before stopping on-disk queue.
@@ -271,6 +295,7 @@ crate::declare_annotations! {
         used_by: &[structs::FORWARDER_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::CrossCutting,
     };
 
     /// `forwarder_storage_max_size_in_bytes`—max on-disk retry queue size. Schema Float; field u64.
@@ -282,6 +307,7 @@ crate::declare_annotations! {
         used_by: &[structs::FORWARDER_CONFIGURATION],
         value_type_override: Some(ValueType::Integer),
         test_json: None,
+        pipeline_affinity: PipelineAffinity::CrossCutting,
     };
 
     /// `forwarder_storage_path`—directory for on-disk retry queue.
@@ -293,5 +319,6 @@ crate::declare_annotations! {
         used_by: &[structs::FORWARDER_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::CrossCutting,
     };
 }

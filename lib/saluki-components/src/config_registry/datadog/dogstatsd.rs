@@ -1,6 +1,7 @@
 //! Annotations for DogStatsD source configuration keys.
 use crate::config_registry::{
-    generated::schema, structs, SalukiAnnotation, Schema, SchemaEntry, SupportLevel, ValueType,
+    generated::schema, structs, Pipeline, PipelineAffinity, SalukiAnnotation, Schema, SchemaEntry, SupportLevel,
+    ValueType,
 };
 
 static DOGSTATSD_ALLOW_CONTEXT_HEAP_ALLOCS_SCHEMA: SchemaEntry = SchemaEntry {
@@ -87,6 +88,7 @@ crate::declare_annotations! {
         used_by: &[structs::DOGSTATSD_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
 
     /// `dogstatsd_buffer_size`—receive buffer size in bytes. Schema says Float; field is usize.
@@ -98,6 +100,7 @@ crate::declare_annotations! {
         used_by: &[structs::DOGSTATSD_CONFIGURATION],
         value_type_override: Some(ValueType::Integer),
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
 
     /// `dogstatsd_capture_depth` - traffic capture channel depth.
@@ -109,6 +112,7 @@ crate::declare_annotations! {
         used_by: &[structs::DOGSTATSD_CONFIGURATION],
         value_type_override: Some(ValueType::Integer),
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
 
     /// `dogstatsd_capture_path` - traffic capture file location.
@@ -120,6 +124,7 @@ crate::declare_annotations! {
         used_by: &[structs::DOGSTATSD_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
 
     /// `dogstatsd_context_expiry_seconds` - context cache TTL.
@@ -131,6 +136,7 @@ crate::declare_annotations! {
         used_by: &[structs::DOGSTATSD_CONFIGURATION],
         value_type_override: Some(ValueType::Integer),
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
 
     /// `dogstatsd_entity_id_precedence`—client entity ID takes precedence over UDS origin.
@@ -142,6 +148,7 @@ crate::declare_annotations! {
         used_by: &[structs::DOGSTATSD_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
 
     /// `dogstatsd_eol_required`—require newline-terminated messages for selected listener types.
@@ -153,6 +160,7 @@ crate::declare_annotations! {
         used_by: &[structs::DOGSTATSD_CONFIGURATION],
         value_type_override: None,
         test_json: Some(r#"["udp"]"#),
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
 
     /// `dogstatsd_non_local_traffic`—accept packets from non-localhost addresses.
@@ -164,6 +172,7 @@ crate::declare_annotations! {
         used_by: &[structs::DOGSTATSD_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
 
     /// `dogstatsd_origin_detection`—enable UDS-based origin detection.
@@ -175,6 +184,7 @@ crate::declare_annotations! {
         used_by: &[structs::DOGSTATSD_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
 
     /// `dogstatsd_origin_detection_client`—enable container enrichment fields.
@@ -186,6 +196,7 @@ crate::declare_annotations! {
         used_by: &[structs::DOGSTATSD_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
 
     /// `dogstatsd_origin_optout_enabled`—skip enrichment when cardinality=none.
@@ -197,6 +208,7 @@ crate::declare_annotations! {
         used_by: &[structs::DOGSTATSD_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
 
     /// `dogstatsd_port`—UDP port. Schema says Float; field is u16.
@@ -208,6 +220,7 @@ crate::declare_annotations! {
         used_by: &[structs::DOGSTATSD_CONFIGURATION],
         value_type_override: Some(ValueType::Integer),
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
 
     /// `dogstatsd_socket`—UDS datagram socket path.
@@ -219,6 +232,7 @@ crate::declare_annotations! {
         used_by: &[structs::DOGSTATSD_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
 
     /// `dogstatsd_so_rcvbuf`—DogStatsD UDP/UDS socket receive buffer size. Schema Float; field usize.
@@ -230,6 +244,7 @@ crate::declare_annotations! {
         used_by: &[structs::DOGSTATSD_CONFIGURATION],
         value_type_override: Some(ValueType::Integer),
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
 
     /// `dogstatsd_stream_socket`—UDS stream socket path.
@@ -241,6 +256,7 @@ crate::declare_annotations! {
         used_by: &[structs::DOGSTATSD_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
 
     /// `dogstatsd_stream_log_too_big`—log oversized UDS stream frames.
@@ -252,6 +268,7 @@ crate::declare_annotations! {
         used_by: &[structs::DOGSTATSD_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
 
     /// `statsd_forward_host`—host for DogStatsD message forwarding.
@@ -285,6 +302,7 @@ crate::declare_annotations! {
         used_by: &[structs::DOGSTATSD_CONFIGURATION],
         value_type_override: Some(ValueType::Integer),
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
 
     /// `dogstatsd_tag_cardinality`—default tag cardinality for origin enrichment.
@@ -297,6 +315,7 @@ crate::declare_annotations! {
         used_by: &[structs::DOGSTATSD_CONFIGURATION],
         value_type_override: None,
         test_json: Some(r#""high""#),
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
 
     /// `dogstatsd_tags`—additional tags applied to all ingested metrics.
@@ -308,6 +327,7 @@ crate::declare_annotations! {
         used_by: &[structs::DOGSTATSD_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
 
     /// `provider_kind`—appended as a static tag (`provider_kind:<value>`) to all DogStatsD metrics.
@@ -319,6 +339,7 @@ crate::declare_annotations! {
         used_by: &[structs::DOGSTATSD_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
 
     /// `origin_detection_unified`—use unified entity ID resolution for origin enrichment.
@@ -330,6 +351,7 @@ crate::declare_annotations! {
         used_by: &[structs::DOGSTATSD_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
 
     /// `dogstatsd_log_file`—path to the DogStatsD metric debug log file.
@@ -341,6 +363,7 @@ crate::declare_annotations! {
         used_by: &[structs::DOGSTATSD_DEBUG_LOG_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
 
     /// `dogstatsd_log_file_max_rolls`—number of rotated debug log files to keep. Schema Float; field usize.
@@ -352,6 +375,7 @@ crate::declare_annotations! {
         used_by: &[structs::DOGSTATSD_DEBUG_LOG_CONFIGURATION],
         value_type_override: Some(ValueType::Integer),
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
 
     /// `dogstatsd_log_file_max_size`—max active debug log file size before rotation.
@@ -363,6 +387,7 @@ crate::declare_annotations! {
         used_by: &[structs::DOGSTATSD_DEBUG_LOG_CONFIGURATION],
         value_type_override: None,
         test_json: Some(r#""42MB""#),
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
 
     /// `dogstatsd_logging_enabled`—enable writing DogStatsD metric debug stats to a file.
@@ -374,6 +399,7 @@ crate::declare_annotations! {
         used_by: &[structs::DOGSTATSD_DEBUG_LOG_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
 
     /// `dogstatsd_metrics_stats_enable`—enable metric-level DogStatsD debug statistics.
@@ -385,6 +411,7 @@ crate::declare_annotations! {
         used_by: &[structs::DOGSTATSD_DEBUG_LOG_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
 
     // ── ADP-specific ──────────────────────────────────────────────────────────
@@ -398,6 +425,7 @@ crate::declare_annotations! {
         used_by: &[structs::DOGSTATSD_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
 
     /// `dogstatsd_autoscale_udp_listeners`—bind multiple UDP sockets with SO_REUSEPORT for kernel load balancing.
@@ -409,6 +437,7 @@ crate::declare_annotations! {
         used_by: &[structs::DOGSTATSD_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
 
     /// `dogstatsd_buffer_count`—number of message buffers to pre-allocate.
@@ -420,6 +449,7 @@ crate::declare_annotations! {
         used_by: &[structs::DOGSTATSD_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
 
     /// `dogstatsd_cached_contexts_limit`—max cached metric contexts.
@@ -431,6 +461,7 @@ crate::declare_annotations! {
         used_by: &[structs::DOGSTATSD_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
 
     /// `dogstatsd_cached_tagsets_limit`—max cached tag sets.
@@ -442,6 +473,7 @@ crate::declare_annotations! {
         used_by: &[structs::DOGSTATSD_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
 
     /// `dogstatsd_minimum_sample_rate`—minimum allowed sample rate.
@@ -453,6 +485,7 @@ crate::declare_annotations! {
         used_by: &[structs::DOGSTATSD_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
 
     /// `dogstatsd_permissive_decoding`—relax decoding strictness for Agent `compat`.
@@ -464,6 +497,7 @@ crate::declare_annotations! {
         used_by: &[structs::DOGSTATSD_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
 
     /// `dogstatsd_string_interner_size_bytes`—explicit interner byte budget (overrides entry count).
@@ -475,6 +509,7 @@ crate::declare_annotations! {
         used_by: &[structs::DOGSTATSD_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
 
     /// `dogstatsd_tcp_port`—TCP port (0 = disabled).
@@ -486,6 +521,7 @@ crate::declare_annotations! {
         used_by: &[structs::DOGSTATSD_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
 
     /// `enable_payloads.events`—forward event payloads.
@@ -497,6 +533,7 @@ crate::declare_annotations! {
         used_by: &[structs::DOGSTATSD_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
 
     /// `enable_payloads.series`—forward series (counter/gauge/rate) payloads.
@@ -508,6 +545,7 @@ crate::declare_annotations! {
         used_by: &[structs::DOGSTATSD_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
 
     /// `enable_payloads.service_checks`—forward service check payloads.
@@ -519,6 +557,7 @@ crate::declare_annotations! {
         used_by: &[structs::DOGSTATSD_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
 
     /// `enable_payloads.sketches`—forward sketch (distribution) payloads.
@@ -530,5 +569,6 @@ crate::declare_annotations! {
         used_by: &[structs::DOGSTATSD_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
 }
