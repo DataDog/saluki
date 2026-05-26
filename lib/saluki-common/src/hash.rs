@@ -136,7 +136,11 @@ impl std::hash::Hasher for StableHasher {
 
 #[cfg(test)]
 mod tests {
+    use std::hash::Hash as _;
+
     use super::*;
+
+    // --- StableHasher / hash_single_stable ---
 
     #[test]
     fn stable_hasher_output_unchanged() {
@@ -145,5 +149,103 @@ mod tests {
         // stable hash implementation has changed and any stored/compared hashes will be invalid.
         assert_eq!(hash_single_stable("saluki"), 0x1d40da1f331833ef);
         assert_eq!(hash_single_stable("hello world"), 0x6db238adc26a3bd8);
+    }
+
+    #[test]
+    fn stable_hasher_consistent() {
+        assert_eq!(hash_single_stable("test"), hash_single_stable("test"));
+    }
+
+    #[test]
+    fn stable_hasher_discriminates_inputs() {
+        assert_ne!(hash_single_stable("a"), hash_single_stable("b"));
+    }
+
+    // --- hash_single_fast / get_fast_hasher ---
+
+    #[test]
+    fn fast_hasher_consistent_within_run() {
+        assert_eq!(hash_single_fast("test"), hash_single_fast("test"));
+    }
+
+    #[test]
+    fn fast_hasher_discriminates_inputs() {
+        assert_ne!(hash_single_fast("a"), hash_single_fast("b"));
+    }
+
+    #[test]
+    fn get_fast_hasher_consistent_with_hash_single_fast() {
+        // get_fast_hasher uses the same global seed as hash_single_fast.
+        let mut hasher = get_fast_hasher();
+        "test".hash(&mut hasher);
+        assert_eq!(hasher.finish(), hash_single_fast("test"));
+    }
+
+    // --- get_fast_build_hasher ---
+
+    #[test]
+    fn fast_build_hasher_consistent_within_instance() {
+        let state = get_fast_build_hasher();
+        let h1 = {
+            let mut h = state.build_hasher();
+            "test".hash(&mut h);
+            h.finish()
+        };
+        let h2 = {
+            let mut h = state.build_hasher();
+            "test".hash(&mut h);
+            h.finish()
+        };
+        assert_eq!(h1, h2);
+    }
+
+    #[test]
+    fn fast_build_hasher_independent_per_call() {
+        // Each call to get_fast_build_hasher produces an independently seeded instance,
+        // so the same input should hash to different values across instances.
+        let h1 = {
+            let mut h = get_fast_build_hasher().build_hasher();
+            "test".hash(&mut h);
+            h.finish()
+        };
+        let h2 = {
+            let mut h = get_fast_build_hasher().build_hasher();
+            "test".hash(&mut h);
+            h.finish()
+        };
+        assert_ne!(h1, h2);
+    }
+
+    // --- NoopU64Hasher ---
+
+    #[test]
+    fn noop_u64_hasher_passes_through() {
+        let mut h = NoopU64Hasher::default();
+        h.write_u64(42);
+        assert_eq!(h.finish(), 42);
+    }
+
+    #[test]
+    fn noop_u64_hasher_last_write_wins() {
+        let mut h = NoopU64Hasher::default();
+        h.write_u64(1);
+        h.write_u64(99);
+        assert_eq!(h.finish(), 99);
+    }
+
+    #[test]
+    #[should_panic]
+    fn noop_u64_hasher_panics_on_non_u64_write() {
+        let mut h = NoopU64Hasher::default();
+        h.write(b"not a u64");
+    }
+
+    // --- NoopU64BuildHasher ---
+
+    #[test]
+    fn noop_u64_build_hasher_creates_noop_hasher() {
+        let mut h = NoopU64BuildHasher.build_hasher();
+        h.write_u64(7);
+        assert_eq!(h.finish(), 7);
     }
 }
