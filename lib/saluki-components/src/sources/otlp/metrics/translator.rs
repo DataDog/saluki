@@ -2713,12 +2713,12 @@ mod tests {
 
         // First metric is rate from point 1 to 2: (15-10)/(3-2) = 5
         let metric1 = events[0].try_as_metric().unwrap();
-        let expected_ts_s_1 = (start_ts_s + 3) as u64;
+        let expected_ts_s_1 = start_ts_s + 3;
         assert_eq!(metric1.values(), &MetricValues::gauge((expected_ts_s_1, 5.0)));
 
         // Second metric is rate from point 2 to 3: (20-15)/(4-3) = 5
         let metric2 = events[1].try_as_metric().unwrap();
-        let expected_ts_s_2 = (start_ts_s + 4) as u64;
+        let expected_ts_s_2 = start_ts_s + 4;
         assert_eq!(metric2.values(), &MetricValues::gauge((expected_ts_s_2, 5.0)));
     }
 
