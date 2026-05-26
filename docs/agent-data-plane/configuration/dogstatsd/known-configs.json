@@ -1837,46 +1837,46 @@
   },
   {
     "key": "serializer_max_payload_size",
-    "feature_state": "MISSING",
-    "action": "INVESTIGATE",
+    "feature_state": "PARITY",
+    "action": "NONE",
     "description": "Max compressed payload size (generic)",
-    "reason": "Missing in ADP; ADP hardcodes limits per endpoint type. Investigation needed to determine whether configurable limits are needed.",
+    "reason": "ADP reads this Agent key for V1 series, sketches, events, and service check payload compressed size limits. Defaults match the core agent.",
     "issue": "#1354",
     "adp_key": null
   },
   {
     "key": "serializer_max_series_payload_size",
-    "feature_state": "MISSING",
-    "action": "INVESTIGATE",
+    "feature_state": "PARITY",
+    "action": "NONE",
     "description": "Max compressed V2 series payload size",
-    "reason": "Missing in ADP; ADP hardcodes series compressed size limit. Investigation needed to determine whether configurable limits are needed.",
+    "reason": "ADP reads this Agent key for V2 series payload compressed size limits. Defaults match the core agent.",
     "issue": "#1354",
     "adp_key": null
   },
   {
     "key": "serializer_max_series_points_per_payload",
-    "feature_state": "MISSING",
-    "action": "INVESTIGATE",
+    "feature_state": "NOT_APPLICABLE",
+    "action": "NONE",
     "description": "Max data points per series payload",
-    "reason": "ADP has serializer_max_metrics_per_payload which counts metrics not points.",
+    "reason": "Removed from the core Agent; ADP intentionally does not support it.",
     "issue": "#1354",
-    "adp_key": "serializer_max_metrics_per_payload"
+    "adp_key": null
   },
   {
     "key": "serializer_max_series_uncompressed_payload_size",
-    "feature_state": "MISSING",
-    "action": "INVESTIGATE",
+    "feature_state": "PARITY",
+    "action": "NONE",
     "description": "Max uncompressed V2 series payload size",
-    "reason": "Missing in ADP; ADP hardcodes series uncompressed size limit. Investigation needed to determine whether configurable limits are needed.",
+    "reason": "ADP reads this Agent key for V2 series payload uncompressed size limits. Defaults match the core agent.",
     "issue": "#1354",
     "adp_key": null
   },
   {
     "key": "serializer_max_uncompressed_payload_size",
-    "feature_state": "MISSING",
-    "action": "INVESTIGATE",
+    "feature_state": "PARITY",
+    "action": "NONE",
     "description": "Max uncompressed payload size (generic)",
-    "reason": "Missing in ADP; ADP hardcodes 60MB vs Agent 4MB for non-series payloads. Significant divergence.",
+    "reason": "ADP reads this Agent key for V1 series, sketches, events, and service check payload uncompressed size limits. Defaults match the core agent.",
     "issue": "#1354",
     "adp_key": null
   },

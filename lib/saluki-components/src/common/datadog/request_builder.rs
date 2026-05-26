@@ -186,19 +186,7 @@ where
         let compressed_len_limit = encoder.compressed_size_limit();
         let uncompressed_len_limit = encoder.uncompressed_size_limit();
 
-        // Make sure the uncompressed size limit is large enough to accommodate the prefix and suffix and an additional
-        // byte: this is the smallest possible valid payload that could conceivably be written, and so we have to be
-        // able to at least fit that.
-        let prefix_len = encoder.get_payload_prefix().map_or(0, |p| p.len());
-        let suffix_len = encoder.get_payload_suffix().map_or(0, |s| s.len());
-        let uncompressed_len_prefix_suffix = prefix_len + suffix_len;
-        if uncompressed_len_limit < uncompressed_len_prefix_suffix + 1 {
-            return Err(RequestBuilderError::UncompressedSizeLimitTooLow {
-                uncompressed_size_limit: uncompressed_len_limit,
-                prefix_len,
-                suffix_len,
-            });
-        }
+        let uncompressed_len_prefix_suffix = Self::validate_uncompressed_len_limit(&encoder, uncompressed_len_limit)?;
 
         let compressor = create_compressor(compression_scheme, buffer_chunk_size);
         Ok(Self {
@@ -225,6 +213,21 @@ where
 
     /// Configures custom (un)compressed length limits for the request builder.
     ///
+    /// # Errors
+    ///
+    /// Returns an error when the uncompressed size limit is too small to contain the endpoint framing and at least one
+    /// byte of input data.
+    pub fn with_len_limits(
+        &mut self, uncompressed_len_limit: usize, compressed_len_limit: usize,
+    ) -> Result<&mut Self, RequestBuilderError<E>> {
+        Self::validate_uncompressed_len_limit(&self.encoder, uncompressed_len_limit)?;
+        self.uncompressed_len_limit = uncompressed_len_limit;
+        self.compressed_len_limit = compressed_len_limit;
+        Ok(self)
+    }
+
+    /// Configures custom (un)compressed length limits for the request builder.
+    ///
     /// Used specifically for testing purposes.
     #[cfg(test)]
     fn set_custom_len_limits(&mut self, uncompressed_len_limit: usize, compressed_len_limit: usize) {
@@ -235,6 +238,26 @@ where
     /// Returns a reference to the encoder used by the request builder.
     pub const fn encoder(&self) -> &E {
         &self.encoder
+    }
+
+    fn validate_uncompressed_len_limit(
+        encoder: &E, uncompressed_len_limit: usize,
+    ) -> Result<usize, RequestBuilderError<E>> {
+        // Make sure the uncompressed size limit is large enough to accommodate the prefix and suffix and an additional
+        // byte: this is the smallest possible valid payload that could conceivably be written, and so we have to be
+        // able to at least fit that.
+        let prefix_len = encoder.get_payload_prefix().map_or(0, |p| p.len());
+        let suffix_len = encoder.get_payload_suffix().map_or(0, |s| s.len());
+        let uncompressed_len_prefix_suffix = prefix_len + suffix_len;
+        if uncompressed_len_limit < uncompressed_len_prefix_suffix + 1 {
+            return Err(RequestBuilderError::UncompressedSizeLimitTooLow {
+                uncompressed_size_limit: uncompressed_len_limit,
+                prefix_len,
+                suffix_len,
+            });
+        }
+
+        Ok(uncompressed_len_prefix_suffix)
     }
 
     fn uncompressed_len(&self) -> usize {
