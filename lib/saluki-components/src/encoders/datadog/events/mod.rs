@@ -27,15 +27,13 @@ use crate::common::datadog::{
     io::RB_BUFFER_CHUNK_SIZE,
     request_builder::{EndpointEncoder, RequestBuilder},
     telemetry::ComponentTelemetry,
+    DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT, DEFAULT_INTAKE_UNCOMPRESSED_SIZE_LIMIT,
     DEFAULT_SERIALIZER_COMPRESSED_SIZE_LIMIT, DEFAULT_SERIALIZER_UNCOMPRESSED_SIZE_LIMIT,
 };
 
 const DEFAULT_SERIALIZER_COMPRESSOR_KIND: &str = "zstd";
 const MAX_EVENTS_PER_PAYLOAD: usize = 100;
 const EVENTS_FIELD_NUMBER: u32 = 1;
-// `/api/v1/events_batch` shares the same intake bounds as the V2 series API.
-const EVENTS_BATCH_COMPRESSED_SIZE_LIMIT: usize = 512_000; // 500 KiB
-const EVENTS_BATCH_UNCOMPRESSED_SIZE_LIMIT: usize = 5_242_880; // 5 MiB
 
 static CONTENT_TYPE_PROTOBUF: HeaderValue = HeaderValue::from_static("application/x-protobuf");
 
@@ -64,18 +62,18 @@ pub struct DatadogEventsConfiguration {
     /// Maximum compressed size, in bytes, of an events payload.
     ///
     /// This uses the same generic event payload setting as the Datadog Agent. ADP sends events to
-    /// `/api/v1/events_batch`, so the effective value is clamped to that endpoint's limit of 512,000 bytes. If set to
-    /// `0`, every non-empty compressed payload exceeds the limit and is dropped during flush.
+    /// `/api/v1/events_batch`, so the effective value is clamped to that endpoint's global intake limit of 3,200,000
+    /// bytes. If set to `0`, every non-empty compressed payload exceeds the limit and is dropped during flush.
     ///
-    /// Defaults to 2,621,440 bytes before clamping. The effective default is 512,000 bytes.
+    /// Defaults to 2,621,440 bytes.
     #[serde(rename = "serializer_max_payload_size", default = "default_max_payload_size")]
     max_payload_size: usize,
 
     /// Maximum uncompressed size, in bytes, of an events payload.
     ///
     /// This uses the same generic event payload setting as the Datadog Agent. ADP sends events to
-    /// `/api/v1/events_batch`, so the effective value is clamped to that endpoint's limit of 5,242,880 bytes. Values
-    /// smaller than the minimum endpoint framing size prevent the request builder from starting.
+    /// `/api/v1/events_batch`, so the effective value is clamped to that endpoint's global intake limit of 62,914,560
+    /// bytes. Values smaller than the minimum endpoint framing size prevent the request builder from starting.
     ///
     /// Defaults to 4,194,304 bytes.
     #[serde(
@@ -133,8 +131,8 @@ impl IncrementalEncoderBuilder for DatadogEventsConfiguration {
         let (uncompressed_limit, compressed_limit) = clamp_payload_limits(
             self.max_uncompressed_payload_size,
             self.max_payload_size,
-            EVENTS_BATCH_UNCOMPRESSED_SIZE_LIMIT,
-            EVENTS_BATCH_COMPRESSED_SIZE_LIMIT,
+            DEFAULT_INTAKE_UNCOMPRESSED_SIZE_LIMIT,
+            DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT,
         );
         request_builder.with_len_limits(uncompressed_limit, compressed_limit)?;
         request_builder.with_max_inputs_per_payload(MAX_EVENTS_PER_PAYLOAD);
@@ -237,11 +235,11 @@ impl EndpointEncoder for EventsEndpointEncoder {
     }
 
     fn compressed_size_limit(&self) -> usize {
-        EVENTS_BATCH_COMPRESSED_SIZE_LIMIT
+        DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT
     }
 
     fn uncompressed_size_limit(&self) -> usize {
-        EVENTS_BATCH_UNCOMPRESSED_SIZE_LIMIT
+        DEFAULT_INTAKE_UNCOMPRESSED_SIZE_LIMIT
     }
 
     fn encode(&mut self, input: &Self::Input, buffer: &mut Vec<u8>) -> Result<(), Self::EncodeError> {
