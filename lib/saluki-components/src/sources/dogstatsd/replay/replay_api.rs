@@ -1,42 +1,21 @@
-//! HTTP API handler for the DogStatsD replay control surface.
+//! HTTP API handler for DogStatsD replay sessions.
 //!
-//! Exposes `POST /dogstatsd/replay/trigger` on the privileged API. The body identifies the capture file to replay and
-//! optionally overrides the loop count.
+//! A replay client starts a session before sending replay packets and finishes the same session when replay ends. The
+//! ADP process keeps the captured tagger snapshot only for the active session.
 
-use std::path::PathBuf;
-
+use axum::body::Bytes;
+use datadog_protos::agent::TaggerState;
+use prost::Message as _;
 use saluki_api::{
-    extract::State,
-    routing::{post, Router},
+    extract::{Path, State},
+    routing::{delete, post, Router},
     APIHandler, Json, StatusCode,
 };
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
-use super::{DogStatsDReplayControl, ReplayOptions, DEFAULT_REPLAY_LOOPS};
+use super::DogStatsDReplayControl;
 
-/// Request body for `POST /dogstatsd/replay/trigger`.
-#[derive(Deserialize)]
-pub struct ReplayTriggerBody {
-    /// Absolute path to the `.dog` or `.dog.zstd` capture file to replay.
-    pub path: String,
-
-    /// Number of times to replay the capture. `0` means replay forever until cancelled. Defaults to `1`.
-    #[serde(default = "default_loops")]
-    pub loops: u32,
-}
-
-fn default_loops() -> u32 {
-    DEFAULT_REPLAY_LOOPS
-}
-
-/// Response body for `POST /dogstatsd/replay/trigger`.
-#[derive(Serialize)]
-pub struct ReplayTriggerResponseBody {
-    /// Path the replay is reading from. Echoes back what the server accepted.
-    pub path: String,
-}
-
-/// API handler for the DogStatsD replay control surface.
+/// API handler for the DogStatsD replay session control surface.
 #[derive(Clone)]
 pub struct DogStatsDReplayAPIHandler {
     replay_control: DogStatsDReplayControl,
@@ -48,54 +27,49 @@ impl DogStatsDReplayAPIHandler {
         Self { replay_control }
     }
 
-    async fn trigger_handler(
-        State(replay_control): State<DogStatsDReplayControl>, Json(body): Json<ReplayTriggerBody>,
-    ) -> Result<Json<ReplayTriggerResponseBody>, (StatusCode, String)> {
-        let opts = ReplayOptions::new(PathBuf::from(body.path)).with_loops(body.loops);
+    async fn start_session_handler(
+        State(replay_control): State<DogStatsDReplayControl>, body: Bytes,
+    ) -> Result<Json<ReplaySessionResponseBody>, (StatusCode, String)> {
+        let state = if body.is_empty() {
+            None
+        } else {
+            Some(
+                TaggerState::decode(body)
+                    .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid tagger state: {}", e)))?,
+            )
+        };
 
-        let handle = replay_control.start_replay(opts).map_err(|e| {
-            let message = e.to_string();
-            // A concurrent replay is a conflict (409) rather than a precondition failure: the request is well-formed
-            // but the system is currently in a state that rejects it.
-            let status = if message.contains("replay already in progress") {
-                StatusCode::CONFLICT
-            } else {
-                StatusCode::PRECONDITION_FAILED
-            };
-            (status, message)
-        })?;
+        let session = replay_control.start_session(state).map_err(map_replay_control_error)?;
 
-        Ok(Json(ReplayTriggerResponseBody {
-            path: handle.path.display().to_string(),
-        }))
+        Ok(Json(ReplaySessionResponseBody { session_id: session.id }))
     }
-}
 
-impl DogStatsDReplayAPIHandler {
-    /// Stops the currently in-flight replay, if any.
-    ///
-    /// Returns `200` with `{ "stopped": true }` if a replay was running and has now been signaled to cancel; `200`
-    /// with `{ "stopped": false }` if no replay was active. Never an error — "stop with nothing running" is benign.
-    async fn stop_handler(
-        State(replay_control): State<DogStatsDReplayControl>,
-    ) -> Result<Json<ReplayStopResponseBody>, (StatusCode, String)> {
-        let was_ongoing = replay_control
-            .is_ongoing()
-            .map_err(|e| (StatusCode::PRECONDITION_FAILED, e.to_string()))?;
-
+    async fn finish_session_handler(
+        State(replay_control): State<DogStatsDReplayControl>, Path(session_id): Path<String>,
+    ) -> Result<StatusCode, (StatusCode, String)> {
         replay_control
-            .stop_replay()
-            .map_err(|e| (StatusCode::PRECONDITION_FAILED, e.to_string()))?;
+            .finish_session(&session_id)
+            .map_err(map_replay_control_error)?;
 
-        Ok(Json(ReplayStopResponseBody { stopped: was_ongoing }))
+        Ok(StatusCode::NO_CONTENT)
     }
 }
 
-/// Response body for `POST /dogstatsd/replay/stop`.
-#[derive(Serialize)]
-pub struct ReplayStopResponseBody {
-    /// `true` if a replay was running when stop was called; `false` if no replay was active.
-    pub stopped: bool,
+/// Response body for `POST /dogstatsd/replay/session`.
+#[derive(Debug, Serialize)]
+pub struct ReplaySessionResponseBody {
+    /// Opaque session identifier the replay client must use when finishing the replay.
+    pub session_id: String,
+}
+
+fn map_replay_control_error(err: saluki_error::GenericError) -> (StatusCode, String) {
+    let message = err.to_string();
+    let status = if message.contains("replay already in progress") || message.contains("does not own") {
+        StatusCode::CONFLICT
+    } else {
+        StatusCode::PRECONDITION_FAILED
+    };
+    (status, message)
 }
 
 impl APIHandler for DogStatsDReplayAPIHandler {
@@ -107,7 +81,114 @@ impl APIHandler for DogStatsDReplayAPIHandler {
 
     fn generate_routes(&self) -> Router<Self::State> {
         Router::new()
-            .route("/dogstatsd/replay/trigger", post(Self::trigger_handler))
-            .route("/dogstatsd/replay/stop", post(Self::stop_handler))
+            .route("/dogstatsd/replay/session", post(Self::start_session_handler))
+            .route(
+                "/dogstatsd/replay/session/{session_id}",
+                delete(Self::finish_session_handler),
+            )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use datadog_protos::agent::{Entity as ProtoEntity, TaggerState};
+    use prost::Message as _;
+    use saluki_context::origin::OriginTagCardinality;
+
+    use super::*;
+    use crate::sources::dogstatsd::replay::CapturedTaggerHandle;
+
+    fn make_state() -> TaggerState {
+        let entity = ProtoEntity {
+            low_cardinality_tags: vec!["env:prod".into()],
+            ..Default::default()
+        };
+
+        let mut entities = HashMap::new();
+        entities.insert("container_id://container-xyz".to_string(), entity);
+
+        let mut pid_map = HashMap::new();
+        pid_map.insert(99, "container_id://container-xyz".to_string());
+
+        TaggerState {
+            state: entities,
+            pid_map,
+            duration: 0,
+        }
+    }
+
+    #[tokio::test]
+    async fn start_session_rejects_invalid_protobuf() {
+        let control = DogStatsDReplayControl::new();
+        let err = DogStatsDReplayAPIHandler::start_session_handler(State(control), Bytes::from_static(b"bad"))
+            .await
+            .expect_err("invalid protobuf should fail");
+
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn start_and_finish_session_update_control() {
+        let captured_tagger = CapturedTaggerHandle::new();
+        let control = DogStatsDReplayControl::new();
+        control.bind(captured_tagger.clone());
+
+        let body = Bytes::from(make_state().encode_to_vec());
+        let Json(session) = DogStatsDReplayAPIHandler::start_session_handler(State(control.clone()), body)
+            .await
+            .expect("session should start");
+        assert!(!session.session_id.is_empty());
+
+        let store = captured_tagger.current().expect("state should be set");
+        assert!(store.lookup(99, OriginTagCardinality::Low).is_some());
+
+        let finish_status = DogStatsDReplayAPIHandler::finish_session_handler(State(control), Path(session.session_id))
+            .await
+            .expect("finish should succeed");
+        assert_eq!(finish_status, StatusCode::NO_CONTENT);
+        assert!(captured_tagger.current().is_none());
+    }
+
+    #[tokio::test]
+    async fn start_session_rejects_concurrent_session() {
+        let captured_tagger = CapturedTaggerHandle::new();
+        let control = DogStatsDReplayControl::new();
+        control.bind(captured_tagger);
+
+        let body = Bytes::from(make_state().encode_to_vec());
+        let _ = DogStatsDReplayAPIHandler::start_session_handler(State(control.clone()), body)
+            .await
+            .expect("first session should start");
+
+        let err =
+            DogStatsDReplayAPIHandler::start_session_handler(State(control), Bytes::from(make_state().encode_to_vec()))
+                .await
+                .expect_err("second session should fail");
+        assert_eq!(err.0, StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn finish_session_rejects_non_owner() {
+        let captured_tagger = CapturedTaggerHandle::new();
+        let control = DogStatsDReplayControl::new();
+        control.bind(captured_tagger.clone());
+
+        let body = Bytes::from(make_state().encode_to_vec());
+        let Json(session) = DogStatsDReplayAPIHandler::start_session_handler(State(control.clone()), body)
+            .await
+            .expect("session should start");
+
+        let err = DogStatsDReplayAPIHandler::finish_session_handler(State(control.clone()), Path("wrong".to_string()))
+            .await
+            .expect_err("non-owner should fail");
+        assert_eq!(err.0, StatusCode::CONFLICT);
+        assert!(captured_tagger.current().is_some());
+
+        DogStatsDReplayAPIHandler::finish_session_handler(State(control), Path(session.session_id))
+            .await
+            .expect("owner should finish");
+        assert!(captured_tagger.current().is_none());
     }
 }

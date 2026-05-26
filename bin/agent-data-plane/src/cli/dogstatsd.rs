@@ -1,13 +1,20 @@
 use std::collections::{HashMap, HashSet};
-use std::time::Duration;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use argh::{FromArgValue, FromArgs};
 use comfy_table::{presets::ASCII_FULL_CONDENSED, Cell, ContentArrangement, Row, Table};
+use saluki_components::sources::{
+    TimestampResolution, TrafficCaptureReader, DEFAULT_REPLAY_LOOPS, REPLAY_CREDENTIALS_GID,
+};
 use saluki_config::{DurationString, GenericConfiguration};
-use saluki_error::{ErrorContext as _, GenericError};
+use saluki_error::{generic_error, ErrorContext as _, GenericError};
+use saluki_io::net::unix::send_replay_packet;
 use serde::Deserialize;
 use tokio::io::{self, AsyncWriteExt};
-use tracing::{error, info};
+use tokio::net::UnixDatagram;
+use tokio_util::sync::CancellationToken;
+use tracing::{debug, error, info};
 
 use crate::cli::utils::DataPlaneAPIClient;
 
@@ -24,6 +31,7 @@ pub struct DogstatsdCommand {
 enum DogstatsdSubcommand {
     Stats(StatsCommand),
     Capture(CaptureCommand),
+    Replay(ReplayCommand),
 }
 
 /// Prints basic statistics about the metrics received by the data plane.
@@ -70,6 +78,23 @@ struct CaptureCommand {
     /// whether to zstd-compress the capture file
     #[argh(option, short = 'z', long = "compressed", default = "true")]
     compressed: bool,
+}
+
+const fn default_replay_loops() -> u32 {
+    DEFAULT_REPLAY_LOOPS
+}
+
+/// Replays DogStatsD traffic from a capture file.
+#[derive(FromArgs, Debug)]
+#[argh(subcommand, name = "replay")]
+struct ReplayCommand {
+    /// path to the `.dog` or `.dog.zstd` capture file to replay
+    #[argh(option, short = 'f', long = "file")]
+    replay_file_path: PathBuf,
+
+    /// number of times to replay the capture file; 0 replays forever until interrupted
+    #[argh(option, short = 'l', long = "loops", default = "default_replay_loops()")]
+    loops: u32,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -148,6 +173,12 @@ pub async fn handle_dogstatsd_command(bootstrap_config: &GenericConfiguration, c
                 std::process::exit(1);
             }
         }
+        DogstatsdSubcommand::Replay(config) => {
+            if let Err(e) = handle_dogstatsd_replay(&mut api_client, bootstrap_config, config).await {
+                error!("Failed to replay DogStatsD traffic: {:#}", e);
+                std::process::exit(1);
+            }
+        }
     }
 }
 
@@ -195,6 +226,144 @@ async fn handle_dogstatsd_capture(
     info!("Capture started. Data will be written to '{capture_path}'.");
 
     Ok(())
+}
+
+async fn handle_dogstatsd_replay(
+    api_client: &mut DataPlaneAPIClient, config: &GenericConfiguration, cmd: ReplayCommand,
+) -> Result<(), GenericError> {
+    let socket_path = dogstatsd_socket_path(config)?;
+
+    info!("Preparing DogStatsD replay from '{}'.", cmd.replay_file_path.display());
+
+    let reader = TrafficCaptureReader::from_path(&cmd.replay_file_path)?;
+    let state = reader.read_state()?;
+    let session_id = api_client.dogstatsd_replay_start_session(state.as_ref()).await?;
+    if state.is_some() {
+        info!("Loaded captured DogStatsD tagger state into ADP.");
+    } else {
+        info!("Capture file contains no DogStatsD tagger state. Replayed packets will not receive captured tags.");
+    }
+    drop(reader);
+
+    let cancel = CancellationToken::new();
+    let cancel_on_signal = tokio::spawn({
+        let cancel = cancel.clone();
+        async move {
+            if tokio::signal::ctrl_c().await.is_ok() {
+                cancel.cancel();
+            }
+        }
+    });
+
+    let replay_result = run_dogstatsd_replay(&cmd.replay_file_path, &socket_path, cmd.loops, &cancel).await;
+    cancel_on_signal.abort();
+
+    let finish_result = api_client.dogstatsd_replay_finish_session(&session_id).await;
+    match (replay_result, finish_result) {
+        (Ok(()), Ok(())) => {
+            if cancel.is_cancelled() {
+                info!("DogStatsD replay interrupted.");
+            } else {
+                info!("DogStatsD replay completed.");
+            }
+            Ok(())
+        }
+        (Err(replay_error), Ok(())) => Err(replay_error),
+        (Ok(()), Err(finish_error)) => Err(finish_error),
+        (Err(replay_error), Err(finish_error)) => Err(generic_error!(
+            "{} Additionally, failed to finish DogStatsD replay session: {}.",
+            replay_error,
+            finish_error
+        )),
+    }
+}
+
+fn dogstatsd_socket_path(config: &GenericConfiguration) -> Result<PathBuf, GenericError> {
+    match config.try_get_typed::<String>("dogstatsd_socket")? {
+        Some(path) if !path.is_empty() => Ok(PathBuf::from(path)),
+        _ => Err(generic_error!(
+            "DogStatsD replay requires `dogstatsd_socket` to be configured."
+        )),
+    }
+}
+
+async fn run_dogstatsd_replay(
+    replay_file_path: &Path, socket_path: &Path, loops: u32, cancel: &CancellationToken,
+) -> Result<(), GenericError> {
+    let socket = UnixDatagram::unbound().map_err(|e| generic_error!("Failed to open UDS client for replay: {}", e))?;
+    socket
+        .connect(socket_path)
+        .map_err(|e| generic_error!("Failed to connect replay client to '{}': {}", socket_path.display(), e))?;
+
+    let mut iteration: u32 = 0;
+    loop {
+        if cancel.is_cancelled() {
+            return Ok(());
+        }
+        if loops != 0 && iteration >= loops {
+            return Ok(());
+        }
+        iteration = iteration.saturating_add(1);
+
+        tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return Ok(()),
+            r = replay_one_iteration(replay_file_path, &socket, cancel) => {
+                r?;
+            }
+        }
+    }
+}
+
+async fn replay_one_iteration(
+    replay_file_path: &Path, socket: &UnixDatagram, cancel: &CancellationToken,
+) -> Result<(), GenericError> {
+    let mut reader = TrafficCaptureReader::from_path(replay_file_path)?;
+    let resolution = reader.timestamp_resolution();
+
+    let start = Instant::now();
+    let mut first_timestamp: Option<i64> = None;
+    let mut packets_sent: u64 = 0;
+
+    loop {
+        if cancel.is_cancelled() {
+            return Ok(());
+        }
+
+        let msg = match reader.read_next()? {
+            Some(msg) => msg,
+            None => {
+                debug!(packets_sent, "Replay iteration completed.");
+                return Ok(());
+            }
+        };
+
+        let first = *first_timestamp.get_or_insert(msg.timestamp);
+        let target_offset = compute_target_offset(msg.timestamp, first, resolution);
+        let target_deadline = start + target_offset;
+        let now = Instant::now();
+        if target_deadline > now {
+            // Wait until the target deadline or cancellation, prioritizing cancellation.
+            tokio::select! {
+                biased;
+                _ = cancel.cancelled() => return Ok(()),
+                _ = tokio::time::sleep_until(tokio::time::Instant::from_std(target_deadline)) => {}
+            }
+        }
+
+        send_replay_packet(socket, &msg.payload, msg.pid, REPLAY_CREDENTIALS_GID)
+            .await
+            .map_err(|err| generic_error!("Replay packet send failed (captured_pid={}): {}", msg.pid, err))?;
+        packets_sent += 1;
+    }
+}
+
+fn compute_target_offset(timestamp: i64, first_timestamp: i64, resolution: TimestampResolution) -> Duration {
+    let delta = timestamp.saturating_sub(first_timestamp).max(0) as u64;
+    match resolution {
+        TimestampResolution::Seconds => Duration::from_secs(delta),
+        TimestampResolution::Nanoseconds => Duration::from_nanos(delta),
+    }
 }
 
 async fn handle_stats_summary_analysis(cmd: &StatsCommand, mut response: StatsResponse<'_>) -> io::Result<()> {
@@ -336,10 +505,48 @@ where
 mod tests {
     use std::time::Duration;
 
-    use super::default_capture_duration;
+    use saluki_config::ConfigurationLoader;
+    use serde_json::json;
+
+    use super::{
+        compute_target_offset, default_capture_duration, default_replay_loops, dogstatsd_socket_path,
+        TimestampResolution,
+    };
 
     #[test]
     fn dogstatsd_capture_default_duration_matches_go() {
         assert_eq!(default_capture_duration().as_duration(), Duration::from_secs(60));
+    }
+
+    #[test]
+    fn dogstatsd_replay_default_loops_matches_go() {
+        assert_eq!(default_replay_loops(), 1);
+    }
+
+    #[test]
+    fn compute_target_offset_handles_both_resolutions() {
+        let seconds = compute_target_offset(105, 100, TimestampResolution::Seconds);
+        assert_eq!(seconds, Duration::from_secs(5));
+
+        let nanos = compute_target_offset(1_000_000_000, 0, TimestampResolution::Nanoseconds);
+        assert_eq!(nanos, Duration::from_nanos(1_000_000_000));
+
+        let clamped = compute_target_offset(50, 100, TimestampResolution::Nanoseconds);
+        assert_eq!(clamped, Duration::ZERO);
+    }
+
+    #[tokio::test]
+    async fn dogstatsd_socket_path_requires_configured_socket() {
+        let (config, _) = ConfigurationLoader::for_tests(Some(json!({ "dogstatsd_socket": "" })), None, false).await;
+        let err = dogstatsd_socket_path(&config).expect_err("empty socket should fail");
+        assert!(err.to_string().contains("dogstatsd_socket"));
+    }
+
+    #[tokio::test]
+    async fn dogstatsd_socket_path_reads_configured_socket() {
+        let (config, _) =
+            ConfigurationLoader::for_tests(Some(json!({ "dogstatsd_socket": "/tmp/dsd.sock" })), None, false).await;
+        let path = dogstatsd_socket_path(&config).expect("socket should be configured");
+        assert_eq!(path, std::path::PathBuf::from("/tmp/dsd.sock"));
     }
 }

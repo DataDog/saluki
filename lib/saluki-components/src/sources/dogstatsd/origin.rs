@@ -723,7 +723,9 @@ mod tests {
             duration: 0,
         };
         let captured_tagger = CapturedTaggerHandle::new();
-        captured_tagger.publish(super::super::replay::CapturedTaggerStore::from_tagger_state(state));
+        captured_tagger.set_current(Some(super::super::replay::CapturedTaggerStore::from_tagger_state(
+            state,
+        )));
 
         // Build a resolver whose live workload provider is empty; if the replay path is wired wrong, we'd get
         // no tags. If it's wired right, we get the captured tags.
@@ -747,7 +749,7 @@ mod tests {
 
     #[test]
     fn resolve_origin_tags_returns_empty_when_replay_flag_set_but_no_captured_store() {
-        // If the replay flag is set but no captured store has been published, the resolver returns an empty tag set
+        // If the replay flag is set but no captured store is current, the resolver returns an empty tag set
         // (no fallback to the live tagger). This guards against accidentally serving live tags for replay packets.
         let config = OriginEnrichmentConfiguration {
             enabled: true,

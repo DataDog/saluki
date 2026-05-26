@@ -6,8 +6,7 @@ pub use self::checks_ipc::ChecksIPCConfiguration;
 mod dogstatsd;
 pub use self::dogstatsd::{
     DogStatsDCaptureAPIHandler, DogStatsDConfiguration, DogStatsDReplayAPIHandler, DogStatsDReplayControl,
-    ReplayHandle, ReplayOptions, TimestampResolution, TrafficCaptureReader, DEFAULT_REPLAY_LOOPS,
-    REPLAY_CREDENTIALS_GID,
+    ReplaySession, TimestampResolution, TrafficCaptureReader, DEFAULT_REPLAY_LOOPS, REPLAY_CREDENTIALS_GID,
 };
 
 mod internal_metrics;

@@ -1,10 +1,10 @@
 //! Linux-only helpers for sending DogStatsD replay traffic.
 //!
 //! Replay packets carry a synthetic `SCM_CREDENTIALS` ancillary block that lets the receive-side packet handler
-//! distinguish replay from live and recover the captured PID. Stamping a GID the process doesn't actually own requires
-//! `CAP_SETGID` (or root) — replay assumes the operator has run ADP with the appropriate privileges (typically `sudo`,
-//! matching the Go agent's replay subcommand). If the capability is missing, the first `sendmsg` will fail with
-//! `EPERM` and the replay task aborts.
+//! distinguish replay from live and recover the captured PID. Stamping a UID/GID the process doesn't actually own
+//! requires `CAP_SETUID`/`CAP_SETGID` (or root), so replay assumes the operator has run the replay subprocess with
+//! the appropriate privileges. If either capability is missing, the first `sendmsg` will fail with `EPERM` and the
+//! replay client aborts.
 
 use std::{io, mem, os::fd::AsRawFd};
 

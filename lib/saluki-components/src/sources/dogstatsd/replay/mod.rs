@@ -18,8 +18,7 @@ pub use self::capture_api::DogStatsDCaptureAPIHandler;
 pub(crate) use self::captured_tagger::{CapturedTaggerHandle, CapturedTaggerStore};
 pub use self::reader::{TimestampResolution, TrafficCaptureReader};
 pub use self::replay_api::DogStatsDReplayAPIHandler;
-pub(crate) use self::replay_control::TrafficReplay;
-pub use self::replay_control::{DogStatsDReplayControl, ReplayHandle, ReplayOptions, DEFAULT_REPLAY_LOOPS};
+pub use self::replay_control::{DogStatsDReplayControl, ReplaySession, DEFAULT_REPLAY_LOOPS};
 pub(crate) use self::writer::CaptureRecord;
 
 /// GID stamped onto replay-injected DogStatsD packets via `SCM_CREDENTIALS`.

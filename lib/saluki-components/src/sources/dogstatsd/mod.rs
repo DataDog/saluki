@@ -77,11 +77,10 @@ mod io_buffer;
 use self::io_buffer::IoBufferManager;
 
 mod replay;
-use self::replay::{CaptureRecord, CapturedTaggerHandle, TrafficCapture, TrafficReplay};
+use self::replay::{CaptureRecord, CapturedTaggerHandle, TrafficCapture};
 pub use self::replay::{
     DogStatsDCaptureAPIHandler, DogStatsDCaptureControl, DogStatsDReplayAPIHandler, DogStatsDReplayControl,
-    ReplayHandle, ReplayOptions, TimestampResolution, TrafficCaptureReader, DEFAULT_REPLAY_LOOPS,
-    REPLAY_CREDENTIALS_GID,
+    ReplaySession, TimestampResolution, TrafficCaptureReader, DEFAULT_REPLAY_LOOPS, REPLAY_CREDENTIALS_GID,
 };
 
 mod origin;
@@ -806,8 +805,8 @@ impl SourceBuilder for DogStatsDConfiguration {
         }
 
         let origin_detection_enabled = self.origin_enrichment.enabled();
-        // Single CapturedTaggerHandle is cloned to both the resolver (reader of the captured store) and the
-        // TrafficReplay coordinator (writer). Both sides reference the same atomic slot.
+        // Single CapturedTaggerHandle is cloned to both the resolver (reader of the captured store) and the replay
+        // control surface (writer). Both sides reference the same atomic slot.
         let captured_tagger = CapturedTaggerHandle::new();
 
         let maybe_origin_tags_resolver = self.workload_provider.clone().map(|provider| {
@@ -837,8 +836,7 @@ impl SourceBuilder for DogStatsDConfiguration {
         );
         self.capture_control.bind(traffic_capture.clone());
 
-        let traffic_replay = TrafficReplay::new(self.socket_path.as_ref().map(PathBuf::from), captured_tagger);
-        self.replay_control.bind(traffic_replay);
+        self.replay_control.bind(captured_tagger);
 
         Ok(Box::new(DogStatsD {
             listeners,
