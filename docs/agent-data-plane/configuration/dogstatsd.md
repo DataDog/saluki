@@ -76,7 +76,6 @@ default values.
 | `min_tls_version`                   | Minimum outbound TLS version     | Supports TLS 1.0, 1.1, 1.2, and 1.3            | Supports TLS 1.2+ and TLS 1.3-only; clamps TLS 1.0/1.1 to 1.2  |
 | `serializer_zstd_compressor_level`  | Zstd compression level           | Default level 1                                | Default level 3 (intentional)                                  |
 | `skip_ssl_validation`               | Skip TLS cert validation         | Disables validation for outbound HTTPS clients | Applies to the shared Datadog forwarder; rejected in FIPS mode |
-| `telemetry.enabled`                 | Global telemetry toggle          | Agent toggle                                   | Use `data_plane.telemetry_enabled` ([#1338])                   |
 
 ### Datadog intake TLS protocol version (`min_tls_version`)
 
@@ -160,12 +159,12 @@ topology, but only collects data during a time-bounded request. To collect stati
 window, then returns count and last-seen time per metric context inline as JSON. The CLI uses the
 same API and renders the result as either summary or cardinality analysis.
 
-ADP also exposes internal DogStatsD telemetry through its OpenMetrics endpoint when
-`data_plane.telemetry_enabled` is enabled. Scrape `data_plane.telemetry_listen_addr` to collect
-aggregate DogStatsD counters such as processed message counts, packet and byte counts, packet pool
-usage, and channel latency. This telemetry endpoint is separate from `/dogstatsd/stats`: it does not
-return the per-metric count and last-seen map, and it is not controlled by the core agent's
-`dogstatsd_stats_*` keys.
+ADP also exposes internal DogStatsD telemetry through its OpenMetrics endpoint, always-on at
+`http://<api_listen_address>/metrics` (the unprivileged API endpoint; default port `5100`). Scrape
+that endpoint to collect aggregate DogStatsD counters such as processed message counts, packet and
+byte counts, packet pool usage, and channel latency. This endpoint is separate from
+`/dogstatsd/stats`: it does not return the per-metric count and last-seen map, and it is not
+controlled by the core agent's `dogstatsd_stats_*` keys.
 
 ADP does not expose the core agent's packet-per-second expvar endpoint or a persistent per-metric
 DogStatsD statistics endpoint to scrape. You do not need to set up scraper configuration for this
@@ -203,13 +202,6 @@ The default `dogstatsd_log_file` path is
 This debug log differs from the `dogstatsd_capture_*` settings. The debug log records decoded metric
 summaries after DogStatsD parsing. The capture settings record raw DogStatsD traffic for packet-level
 investigation, and they remain tracked separately under [#1381].
-
-### `telemetry.enabled`
-
-The core agent enables internal Prometheus metrics via `telemetry.enabled` and ingests them with an
-OpenMetrics check pointed at the agent's own telemetry endpoint. ADP has a separate telemetry
-endpoint controlled by `data_plane.telemetry_enabled`. Customers enabling ADP telemetry must
-configure a separate OpenMetrics check pointed at ADP's endpoint. See [#1338].
 
 ### `dogstatsd_mapper_cache_size`
 

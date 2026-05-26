@@ -1,4 +1,9 @@
 //! Internal metrics support.
+//!
+//! Includes the [`MetricsStream`] broadcast of internally emitted metrics events and the
+//! [`Reflector`]-based [`AggregatedMetricsState`] view that downstream callers query for
+//! Prometheus exposition.
+
 use std::{
     num::NonZeroUsize,
     pin::Pin,
@@ -31,6 +36,24 @@ use crate::{
     data_model::event::{metric::*, Event},
     runtime::{InitializationError, ProcessShutdown, Supervisable, SupervisorFuture},
 };
+
+mod aggregated;
+pub use self::aggregated::{
+    get_shared_metrics_state, merge_aggregated_values, AggregatedMetricValue, AggregatedMetricsProcessor,
+    AggregatedMetricsState,
+};
+
+mod histogram;
+pub use self::histogram::AggregatedHistogram;
+
+mod processor;
+pub use self::processor::TelemetryProcessor;
+
+mod reflector;
+pub use self::reflector::{Processor, Reflector};
+
+mod remapper;
+pub use self::remapper::{RemappedMetric, RemapperRule};
 
 const FLUSH_INTERVAL: Duration = Duration::from_secs(1);
 const INTERNAL_METRICS_INTERNER_SIZE: NonZeroUsize = NonZeroUsize::new(16_384).unwrap();

@@ -254,18 +254,6 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `telemetry.enabled` - global telemetry toggle.
-    TELEMETRY_ENABLED = SalukiAnnotation {
-        schema: &schema::TELEMETRY_ENABLED,
-        // ADP uses data_plane.telemetry_enabled instead. #1338
-        support_level: SupportLevel::Incompatible(Severity::Medium),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-    };
-
     /// `tls_handshake_timeout` - HTTP TLS handshake timeout.
     TLS_HANDSHAKE_TIMEOUT = SalukiAnnotation {
         schema: &schema::TLS_HANDSHAKE_TIMEOUT,

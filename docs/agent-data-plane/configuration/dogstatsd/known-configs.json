@@ -2043,15 +2043,6 @@
     "adp_key": null
   },
   {
-    "key": "telemetry.enabled",
-    "feature_state": "DIVERGENT",
-    "action": "DOCUMENTED",
-    "description": "Global telemetry toggle",
-    "reason": "ADP uses data_plane.telemetry_enabled instead of telemetry.enabled. Operator setting telemetry.enabled won't affect ADP; must use ADP's key.",
-    "issue": "#1338",
-    "adp_key": "data_plane.telemetry_enabled"
-  },
-  {
     "key": "tls_handshake_timeout",
     "feature_state": "MISSING",
     "action": "IMPLEMENT",
