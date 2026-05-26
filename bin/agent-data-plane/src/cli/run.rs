@@ -612,17 +612,18 @@ async fn add_dsd_pipeline_to_blueprint(
     //               │                 └ ─ ─ ─▶ │        Metrics Pipeline       │           │
     //               │                          │  (aggregate, enrich, encode)  │           │
     //               │                          └ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┘           │
-    //               │                                       │                               │
-    //               ▼                                       ▼                               ▼
-    //    ┌─────────────────────┐    ┌ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┐
-    //    │      DSD Stats      │    │                           Forwarder                             │
-    //    │    (destination)    │    │                       (Datadog Platform)                        │
-    //    └─────────────────────┘    └ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┘
+    //                                                       │                               │
+    //                                                       ▼                               ▼
+    //                          ┌ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┐
+    //                          │                           Forwarder                             │
+    //                          │                       (Datadog Platform)                        │
+    //                          └ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┘
 
     let dsd_config = DogStatsDConfiguration::from_configuration(config)
         .error_context("Failed to configure DogStatsD source.")?
         .with_workload_provider(env_provider.workload().clone())
-        .with_capture_entity_resolver(env_provider.workload().clone());
+        .with_capture_entity_resolver(env_provider.workload().clone())
+        .with_stats_collector(dsd_stats_config.collector());
     let dsd_capture_api_handler = dsd_config.capture_api_handler();
     let dsd_prefix_filter_configuration = DogStatsDPrefixFilterConfiguration::from_configuration(config)?;
     let dsd_mapper_config = DogStatsDMapperConfiguration::from_configuration(config)?;
@@ -658,7 +659,6 @@ async fn add_dsd_pipeline_to_blueprint(
         .add_transform("dsd_post_agg_filter", dsd_post_agg_filter_config)?
         .add_transform("events_enrich", events_enrich_config)?
         .add_transform("service_checks_enrich", service_checks_enrich_config)?
-        .add_destination("dsd_stats_out", dsd_stats_config)?
         // Metrics.
         .connect_component("dsd_enrich", ["dsd_in.metrics"])?
         .connect_component("dsd_prefix_filter", ["dsd_enrich"])?
@@ -670,9 +670,7 @@ async fn add_dsd_pipeline_to_blueprint(
         .connect_component("events_enrich", ["dsd_in.events"])?
         .connect_component("dd_events_encode", ["events_enrich"])?
         .connect_component("service_checks_enrich", ["dsd_in.service_checks"])?
-        .connect_component("dd_service_checks_encode", ["service_checks_enrich"])?
-        // DogStatsD Stats.
-        .connect_component("dsd_stats_out", ["dsd_in.metrics"])?;
+        .connect_component("dd_service_checks_encode", ["service_checks_enrich"])?;
 
     if dsd_debug_log_config.enabled() {
         blueprint

@@ -1,6 +1,6 @@
 # Configuring DogStatsD on Agent Data Plane
 
-<!-- Last updated: 2026-05-19 -->
+<!-- Last updated: 2026-05-26 -->
 
 The DogStatsD implementation on ADP has been redesigned in Rust for better resource guarantees and
 efficiency. Because the architecture is different from the original implementation, certain
@@ -146,12 +146,15 @@ unique metric and tag combination. That data powers the core agent's `dogstatsd-
 and HTTP endpoint.
 
 ADP does not mirror the packet-level statistics config path. Instead, ADP provides an on-demand
-metric-level view through a DogStatsD statistics destination that is always wired into the
-topology, but only collects data during a time-bounded request. To collect statistics, run
-`agent-data-plane dogstatsd stats --duration-secs N` or call the privileged
-`/dogstatsd/stats?collection_duration_secs=N` API. The handler waits for the requested collection
-window, then returns count and last-seen time per metric context inline as JSON. The CLI uses the
-same API and renders the result as either summary or cardinality analysis.
+metric-level view from the DogStatsD source path. The source records successfully decoded metrics
+into a shared statistics collector, but the collector only retains samples while a time-bounded
+request is active. There is no separate always-wired topology destination for this API. To collect
+statistics, run `agent-data-plane dogstatsd stats --duration-secs N` or call the privileged
+`/dogstatsd/stats?collection_duration_secs=N` API. The handler activates the collector, waits for
+the requested collection window, then returns count and last-seen time per metric context inline as
+JSON. Each collection stores up to 10,000 distinct metric contexts; after that, already-seen
+contexts continue updating but new contexts are ignored. The CLI uses the same API and renders the
+result as either summary or cardinality analysis.
 
 ADP also exposes internal DogStatsD telemetry through its OpenMetrics endpoint when
 `data_plane.telemetry_enabled` is enabled. Scrape `data_plane.telemetry_listen_addr` to collect
