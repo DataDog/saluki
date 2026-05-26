@@ -231,7 +231,7 @@ const FORWARDER_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const FORWARDER_IPV4_BIND_ADDR: &str = "0.0.0.0:0";
 const FORWARDER_IPV6_BIND_ADDR: &str = "[::]:0";
 const FORWARDER_SOCKET_READY_TIMEOUT: Duration = Duration::from_millis(100);
-const FORWARDER_QUEUE_CAPACITY: usize = 32;
+const FORWARDER_QUEUE_CAPACITY: usize = 1024;
 
 fn deserialize_empty_metastring_as_none<'de, D>(deserializer: D) -> Result<Option<MetaString>, D::Error>
 where
@@ -293,9 +293,8 @@ pub struct DogStatsDConfiguration {
 
     /// The host to forward framed DogStatsD messages to over UDP.
     ///
-    /// Forwarding is enabled only when this value is non-empty and `statsd_forward_port` is non-zero. Forwarding is
-    /// best effort: setup failures are logged, and send failures are tracked through telemetry. Forwarding failures
-    /// don't affect normal DogStatsD ingestion.
+    /// Forwarding is enabled only when this value is non-empty and `statsd_forward_port` is non-zero. Setup failures
+    /// are logged, and send failures are tracked through telemetry.
     ///
     /// Defaults to unset.
     #[serde(

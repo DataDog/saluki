@@ -99,8 +99,8 @@ ADP supports DogStatsD forwarding when both `statsd_forward_host` and
 `statsd_forward_port` are set. ADP forwards each framed DogStatsD message over UDP to the
 configured destination before parsing, filtering, mapping, or aggregation. Forwarding doesn't
 preserve the core Agent's packet-buffer grouping, so forwarded UDP datagrams may be split
-differently while carrying the same DogStatsD messages. Forwarding is best effort: ADP logs setup
-failures and tracks send failures, but those failures don't stop normal DogStatsD ingestion.
+differently while carrying the same DogStatsD messages. ADP logs setup failures and tracks send
+failures through telemetry.
 
 ### Datadog intake TLS validation (`skip_ssl_validation`)
 
