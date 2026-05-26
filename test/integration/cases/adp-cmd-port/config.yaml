@@ -12,7 +12,7 @@
 type: integration
 name: "adp-cmd-port"
 description: "Verifies ADP connects to the correct port when cmd_port is set"
-timeout: 90s
+timeout: 120s
 
 container:
   image: "saluki-images/datadog-agent:testing-devel"

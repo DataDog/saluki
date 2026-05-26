@@ -4,8 +4,10 @@ use saluki_context::tags::{SharedTagSet, Tag};
 use saluki_core::data_model::event::metric::{Metric, MetricOrigin, MetricValues};
 use serde_json::{Map as JsonMap, Number as JsonNumber, Value as JsonValue};
 
-pub(super) const SERIES_COMPRESSED_SIZE_LIMIT: usize = 2_000_000; // ~2 MiB
-pub(super) const SERIES_UNCOMPRESSED_SIZE_LIMIT: usize = 4_000_000; // ~4 MiB
+use crate::common::datadog::{DEFAULT_SERIALIZER_COMPRESSED_SIZE_LIMIT, DEFAULT_SERIALIZER_UNCOMPRESSED_SIZE_LIMIT};
+
+pub(super) const SERIES_COMPRESSED_SIZE_LIMIT: usize = DEFAULT_SERIALIZER_COMPRESSED_SIZE_LIMIT;
+pub(super) const SERIES_UNCOMPRESSED_SIZE_LIMIT: usize = DEFAULT_SERIALIZER_UNCOMPRESSED_SIZE_LIMIT;
 
 pub(super) static CONTENT_TYPE: HeaderValue = HeaderValue::from_static("application/json");
 

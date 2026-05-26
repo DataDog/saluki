@@ -215,7 +215,7 @@ impl<M: IndexMapping, S: Store> DDSketch<M, S> {
     ///
     /// The protobuf `DDSketch` doesn't include `sum`, `min`, `max`, or `count` fields.
     /// These are computed or set to defaults:
-    /// - `count`: sum of all bin counts plus zero_count
+    /// - `count`: sum of all bin counts plus `zero_count`
     /// - `sum`, `min`, `max`: set to sentinel defaults (can't be recovered from proto)
     pub fn from_proto(proto: &ProtoDDSketch, mapping: M) -> Result<Self, ProtoConversionError>
     where

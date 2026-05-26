@@ -21,7 +21,7 @@ const SHRINK_CARDINALITY: usize = 200;
 
 /// ScoreSampler for traces
 ///
-/// ScoreSampler samples pieces of traces by computing a signature based on spans (service, name, rsc, http.status, error.type)
+/// ScoreSampler samples pieces of traces by computing a signature based on spans (service, name, `rsc`, http.status, error.type)
 /// scoring it and applying a rate.
 /// The rates are applied on the TraceID to maximize the number of chunks with errors caught for the same traceID.
 /// For a set traceID: P(chunk1 kept and chunk2 kept) = min(P(chunk1 kept), P(chunk2 kept))

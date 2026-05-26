@@ -17,11 +17,12 @@ use super::{
 use crate::common::datadog::{
     io::RB_BUFFER_CHUNK_SIZE,
     request_builder::{EndpointEncoder, RequestBuilder},
-    DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT, DEFAULT_INTAKE_UNCOMPRESSED_SIZE_LIMIT, METRICS_SERIES_V1_PATH,
+    DEFAULT_SERIALIZER_COMPRESSED_SIZE_LIMIT, DEFAULT_SERIALIZER_UNCOMPRESSED_SIZE_LIMIT, METRICS_SERIES_V1_PATH,
     METRICS_SERIES_V2_PATH, METRICS_SKETCHES_PATH,
 };
 
 mod constants;
+pub(super) use constants::{SERIES_V2_COMPRESSED_SIZE_LIMIT, SERIES_V2_UNCOMPRESSED_SIZE_LIMIT};
 
 /// Creates a V2 request builder for the given endpoint.
 ///
@@ -130,7 +131,7 @@ impl EndpointEncoder for MetricsEndpointEncoder {
         match self.endpoint {
             MetricsEndpoint::SeriesV1 => v1::SERIES_COMPRESSED_SIZE_LIMIT,
             MetricsEndpoint::SeriesV2 => constants::SERIES_V2_COMPRESSED_SIZE_LIMIT,
-            MetricsEndpoint::Sketches => DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT,
+            MetricsEndpoint::Sketches => DEFAULT_SERIALIZER_COMPRESSED_SIZE_LIMIT,
         }
     }
 
@@ -138,7 +139,7 @@ impl EndpointEncoder for MetricsEndpointEncoder {
         match self.endpoint {
             MetricsEndpoint::SeriesV1 => v1::SERIES_UNCOMPRESSED_SIZE_LIMIT,
             MetricsEndpoint::SeriesV2 => constants::SERIES_V2_UNCOMPRESSED_SIZE_LIMIT,
-            MetricsEndpoint::Sketches => DEFAULT_INTAKE_UNCOMPRESSED_SIZE_LIMIT,
+            MetricsEndpoint::Sketches => DEFAULT_SERIALIZER_UNCOMPRESSED_SIZE_LIMIT,
         }
     }
 

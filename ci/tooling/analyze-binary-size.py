@@ -385,10 +385,10 @@ def generate_report(
     passed = change_percent <= threshold_percent
 
     if passed:
-        status = "PASSED"
+        status = "Binary size difference within threshold"
         status_emoji = "✅"
     else:
-        status = "FAILED"
+        status = "Binary size difference exceeds threshold"
         status_emoji = "❌"
 
     baseline_size_fmt = format_size(baseline_size)
@@ -400,37 +400,24 @@ def generate_report(
     else:
         change_percent_fmt = f"{change_percent:.2f}%"
 
-    analysis_type = (
-        "Stripped binaries (debug symbols excluded)"
-        if using_stripped_binaries
-        else "Full binaries (includes debug symbols)"
-    )
+    analysis_type = "stripped binaries" if using_stripped_binaries else "full binaries"
 
     report = f"""
-**Target:** {baseline_sha} (baseline) vs {comparison_sha} (comparison) [diff](../../compare/{baseline_sha}..{comparison_sha})
-**Analysis Type:** {analysis_type}
-**Baseline Size:** {baseline_size_fmt}
-**Comparison Size:** {comparison_size_fmt}
+**Baseline:** {baseline_sha} &middot; **Comparison:** {comparison_sha} &middot; [diff](../../compare/{baseline_sha}..{comparison_sha})
+**Analysis Configuration:** {analysis_type} &middot; **Pass/Fail Threshold:** +{threshold_percent:.0f}%
+**Sizes:** {baseline_size_fmt} (baseline) vs {comparison_size_fmt} (comparison)
 **Size Change:** {size_diff_fmt} ({change_percent_fmt})
-**Pass/Fail Threshold:** +{threshold_percent:.0f}%
-**Result:** {status} {status_emoji}
+
+## {status_emoji} {status}
 
 <details>
-<summary>
-
-### Changes by Module
-
-</summary>
+<summary><b>Changes by Module</b></summary>
 
 {module_rollup}
 </details>
 
 <details>
-<summary>
-
-### Detailed Symbol Changes
-
-</summary>
+<summary><b>Detailed Symbol Changes</b></summary>
 
 ```
 {bloaty_txt_output}

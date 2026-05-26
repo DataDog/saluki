@@ -1010,7 +1010,7 @@ impl PathAccessor<UnitFamily> for TrackingPathAccessor {
     }
 }
 
-/// Create a PathResolverMap with tracking accessor for target, my.int.value, status_code
+/// Create a PathResolverMap with tracking accessor for target, my.int.value, `status_code`
 fn tracking_path_resolver_map(
     int_value: i64, status_code: i64,
 ) -> (PathResolverMap<UnitFamily>, Arc<TrackingPathAccessor>) {
@@ -2289,7 +2289,7 @@ fn test_runtime_error_division_by_zero_float() {
     assert!(result.is_err(), "Execute should fail with division by zero error");
 }
 
-/// PathAccessor that fails on get (for path_not_found test)
+/// PathAccessor that fails on get (for `path_not_found` test)
 #[derive(Debug)]
 struct FailingPathAccessor;
 impl PathAccessor<UnitFamily> for FailingPathAccessor {

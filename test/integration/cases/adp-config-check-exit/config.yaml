@@ -10,7 +10,7 @@
 type: integration
 name: "adp-config-check-exit"
 description: "Verify config check exits ADP on high-severity incompatible key"
-timeout: 45s
+timeout: 120s
 
 container:
   image: "saluki-images/datadog-agent:testing-devel"

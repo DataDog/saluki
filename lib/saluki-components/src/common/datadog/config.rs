@@ -3,6 +3,7 @@ use std::time::Duration;
 use facet::Facet;
 use saluki_config::GenericConfiguration;
 use saluki_error::GenericError;
+use saluki_io::net::client::http::{HttpProtocol, TlsMinimumVersion};
 use serde::Deserialize;
 use tracing::warn;
 
@@ -27,6 +28,62 @@ const fn default_endpoint_buffer_size() -> usize {
 
 const fn default_forwarder_connection_reset_interval() -> u64 {
     0
+}
+
+const MIN_TLS_VERSION_TLS10: &str = "tlsv1.0";
+const MIN_TLS_VERSION_TLS11: &str = "tlsv1.1";
+const MIN_TLS_VERSION_TLS12: &str = "tlsv1.2";
+const MIN_TLS_VERSION_TLS13: &str = "tlsv1.3";
+
+fn default_min_tls_version() -> String {
+    MIN_TLS_VERSION_TLS12.to_string()
+}
+
+fn min_tls_version_from_config_value(value: &str) -> TlsMinimumVersion {
+    let trimmed = value.trim();
+    match trimmed.to_lowercase().as_str() {
+        MIN_TLS_VERSION_TLS10 | MIN_TLS_VERSION_TLS11 => {
+            warn!(
+                config_key = "min_tls_version",
+                value = trimmed,
+                "Configured TLS minimum version is lower than rustls supports; using tlsv1.2."
+            );
+            TlsMinimumVersion::Tls12
+        }
+        "" | MIN_TLS_VERSION_TLS12 => TlsMinimumVersion::Tls12,
+        MIN_TLS_VERSION_TLS13 => TlsMinimumVersion::Tls13,
+        _ => {
+            warn!(
+                config_key = "min_tls_version",
+                value = trimmed,
+                "Invalid configured TLS minimum version; using tlsv1.2."
+            );
+            TlsMinimumVersion::Tls12
+        }
+    }
+}
+
+/// HTTP protocol selection for the Datadog forwarder.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Facet)]
+#[serde(rename_all = "lowercase")]
+#[cfg_attr(test, derive(serde::Serialize))]
+pub enum ForwarderHttpProtocol {
+    /// Automatically negotiate HTTP/2 with HTTP/1.1 fallback.
+    #[default]
+    Auto,
+
+    /// Use HTTP/1.1 only.
+    Http1,
+}
+
+impl From<ForwarderHttpProtocol> for HttpProtocol {
+    fn from(protocol: ForwarderHttpProtocol) -> Self {
+        match protocol {
+            ForwarderHttpProtocol::Auto => Self::Auto,
+            ForwarderHttpProtocol::Http1 => Self::Http1,
+        }
+    }
 }
 
 /// OPW metrics endpoint configuration.
@@ -132,6 +189,12 @@ pub struct ForwarderConfiguration {
     #[serde(flatten)]
     opw_metrics: OpwMetricsConfiguration,
 
+    /// HTTP protocol selection for outgoing forwarder requests.
+    ///
+    /// Defaults to `auto`, which negotiates HTTP/2 with HTTP/1.1 fallback. Set to `http1` to force HTTP/1.1 only.
+    #[serde(default, rename = "forwarder_http_protocol")]
+    http_protocol: ForwarderHttpProtocol,
+
     /// Connection reset interval, in seconds.
     ///
     /// Defaults to 0.
@@ -155,12 +218,32 @@ pub struct ForwarderConfiguration {
     /// invalid or self-signed certificates should enable this.
     #[serde(default)]
     skip_ssl_validation: bool,
+
+    /// Minimum TLS protocol version for Datadog intake forwarding.
+    ///
+    /// Defaults to TLS 1.2. TLS 1.0 and TLS 1.1 are accepted for compatibility with core Agent configuration, but
+    /// Saluki clamps them to TLS 1.2 because rustls does not support older protocol versions.
+    #[serde(default = "default_min_tls_version")]
+    min_tls_version: String,
+
+    /// Parsed minimum TLS protocol version for Datadog intake forwarding.
+    #[serde(skip)]
+    #[facet(opaque)]
+    parsed_min_tls_version: TlsMinimumVersion,
+
+    /// Whether to signal that the backend should allow arbitrary tag values.
+    ///
+    /// Defaults to `false`. If set to `true`, the Datadog forwarder adds `Allow-Arbitrary-Tag-Value: true` to every
+    /// outbound intake request. The data plane does not perform local tag validation based on this setting.
+    #[serde(default)]
+    allow_arbitrary_tags: bool,
 }
 
 impl ForwarderConfiguration {
     /// Creates a new `ForwarderConfiguration` from the given configuration.
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
         let mut forwarder_config = config.as_typed::<Self>()?;
+        forwarder_config.parsed_min_tls_version = min_tls_version_from_config_value(&forwarder_config.min_tls_version);
 
         // Handle fixing up the forwarder storage path if it's empty.
         forwarder_config.retry.fix_empty_storage_path(config);
@@ -181,6 +264,11 @@ impl ForwarderConfiguration {
     /// Returns the maximum number of pending requests for an individual endpoint.
     pub const fn endpoint_buffer_size(&self) -> usize {
         self.endpoint_buffer_size
+    }
+
+    /// Returns the HTTP protocol selection for outgoing forwarder requests.
+    pub fn http_protocol(&self) -> HttpProtocol {
+        self.http_protocol.into()
     }
 
     /// Returns a mutable reference to the endpoint configuration.
@@ -269,6 +357,16 @@ impl ForwarderConfiguration {
     /// Returns whether TLS certificate validation is disabled for Datadog intake forwarding.
     pub const fn skip_ssl_validation(&self) -> bool {
         self.skip_ssl_validation
+    }
+
+    /// Returns the minimum TLS protocol version for Datadog intake forwarding.
+    pub const fn min_tls_version(&self) -> TlsMinimumVersion {
+        self.parsed_min_tls_version
+    }
+
+    /// Returns whether outbound intake requests should allow arbitrary tag values.
+    pub const fn allow_arbitrary_tags(&self) -> bool {
+        self.allow_arbitrary_tags
     }
 }
 
@@ -390,10 +488,77 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn forwarder_http_protocol_defaults_to_auto() {
+        let config = forwarder_config_from(base_config(), None).await;
+
+        assert_eq!(config.http_protocol(), saluki_io::net::client::http::HttpProtocol::Auto);
+    }
+
+    #[tokio::test]
+    async fn forwarder_http_protocol_accepts_auto() {
+        let config = forwarder_config_from(
+            config_with(serde_json::json!({ "forwarder_http_protocol": "auto" })),
+            None,
+        )
+        .await;
+
+        assert_eq!(config.http_protocol(), saluki_io::net::client::http::HttpProtocol::Auto);
+    }
+
+    #[tokio::test]
+    async fn forwarder_http_protocol_accepts_http1() {
+        let config = forwarder_config_from(
+            config_with(serde_json::json!({ "forwarder_http_protocol": "http1" })),
+            None,
+        )
+        .await;
+
+        assert_eq!(
+            config.http_protocol(),
+            saluki_io::net::client::http::HttpProtocol::Http1
+        );
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "ForwarderConfiguration should deserialize")]
+    async fn forwarder_http_protocol_rejects_unknown_values() {
+        let _ = forwarder_config_from(
+            config_with(serde_json::json!({ "forwarder_http_protocol": "http2" })),
+            None,
+        )
+        .await;
+    }
+
+    #[tokio::test]
     async fn skip_ssl_validation_defaults_to_false() {
         let config = forwarder_config_from(base_config(), None).await;
 
         assert!(!config.skip_ssl_validation());
+    }
+
+    #[tokio::test]
+    async fn allow_arbitrary_tags_defaults_to_false() {
+        let config = forwarder_config_from(base_config(), None).await;
+
+        assert!(!config.allow_arbitrary_tags());
+    }
+
+    #[tokio::test]
+    async fn allow_arbitrary_tags_set_via_yaml() {
+        let config =
+            forwarder_config_from(config_with(serde_json::json!({ "allow_arbitrary_tags": true })), None).await;
+
+        assert!(config.allow_arbitrary_tags());
+    }
+
+    #[tokio::test]
+    async fn allow_arbitrary_tags_set_via_env_var() {
+        // ALLOW_ARBITRARY_TAGS simulates DD_ALLOW_ARBITRARY_TAGS: the test helper sets
+        // TEST_ALLOW_ARBITRARY_TAGS, which from_environment("TEST") reads as allow_arbitrary_tags.
+        let env_vars = vec![("ALLOW_ARBITRARY_TAGS".to_string(), "true".to_string())];
+        let config = forwarder_config_from(base_config(), Some(&env_vars)).await;
+
+        assert!(config.allow_arbitrary_tags());
     }
 
     #[tokio::test]
@@ -411,6 +576,60 @@ mod tests {
         let config = forwarder_config_from(base_config(), Some(&env_vars)).await;
 
         assert!(config.skip_ssl_validation());
+    }
+
+    #[tokio::test]
+    async fn min_tls_version_defaults_to_tls12() {
+        let config = forwarder_config_from(base_config(), None).await;
+
+        assert_eq!(config.min_tls_version(), TlsMinimumVersion::Tls12);
+    }
+
+    #[tokio::test]
+    async fn min_tls_version_tls12_uses_tls12() {
+        let config =
+            forwarder_config_from(config_with(serde_json::json!({ "min_tls_version": "tlsv1.2" })), None).await;
+
+        assert_eq!(config.min_tls_version(), TlsMinimumVersion::Tls12);
+    }
+
+    #[tokio::test]
+    async fn min_tls_version_tls13_uses_tls13() {
+        let config =
+            forwarder_config_from(config_with(serde_json::json!({ "min_tls_version": "tlsv1.3" })), None).await;
+
+        assert_eq!(config.min_tls_version(), TlsMinimumVersion::Tls13);
+    }
+
+    #[tokio::test]
+    async fn min_tls_version_is_case_insensitive() {
+        let config =
+            forwarder_config_from(config_with(serde_json::json!({ "min_tls_version": "TlSv1.3" })), None).await;
+
+        assert_eq!(config.min_tls_version(), TlsMinimumVersion::Tls13);
+    }
+
+    #[tokio::test]
+    async fn min_tls_version_tls10_and_tls11_clamp_to_tls12() {
+        for min_tls_version in ["tlsv1.0", "tlsv1.1"] {
+            let config = forwarder_config_from(
+                config_with(serde_json::json!({
+                    "min_tls_version": min_tls_version,
+                })),
+                None,
+            )
+            .await;
+
+            assert_eq!(config.min_tls_version(), TlsMinimumVersion::Tls12);
+        }
+    }
+
+    #[tokio::test]
+    async fn min_tls_version_invalid_value_falls_back_to_tls12() {
+        let config =
+            forwarder_config_from(config_with(serde_json::json!({ "min_tls_version": "tlsv1.9" })), None).await;
+
+        assert_eq!(config.min_tls_version(), TlsMinimumVersion::Tls12);
     }
 
     #[tokio::test]

@@ -13,9 +13,9 @@ RUN set -x \
     && datadog-ci version
 
 # Install aws-cli.
-COPY .ci/install-awscli.sh /
+COPY ci/images/scripts/install-awscli.sh /
 RUN chmod +x /install-awscli.sh && /install-awscli.sh
 
-COPY .ci/images/general/entrypoint.sh /
+COPY ci/images/definitions/general/entrypoint.sh /
 RUN chmod +x /entrypoint.sh
 ENTRYPOINT [ "/entrypoint.sh" ]

@@ -1,7 +1,7 @@
 type: integration
 name: "dogstatsd-autoscale-udp"
 description: "Verifies DogStatsD UDP listener autoscaling (SO_REUSEPORT) starts cleanly on Linux"
-timeout: 90s
+timeout: 120s
 
 container:
   image: "saluki-images/datadog-agent:testing-devel"

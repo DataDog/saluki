@@ -17,13 +17,15 @@ In the spirit of open development, we want our design and planning process to be
 
 ## Considered Options
 
-* **Continue with ad-hoc documentation in PRs and issues**—no new process; decisions stay where they were discussed.
-* **Introduce an ADR section only**—add a dedicated section for recording point-in-time architectural decisions.
-* **Introduce both an ADR section and an RFC/plans section**—add an ADR section for decisions and a separate section for longer-form design proposals and plans (RFCs).
+* **Continue with ad-hoc documentation in PRs and issues**: no new process is required, and decisions stay where they were discussed.
+* **Introduce an ADR section only**: add a dedicated section for recording point-in-time architectural decisions.
+* **Introduce both an ADR section and an RFC/plans section**: add an ADR section for decisions and a separate section for longer-form design proposals and plans (RFCs).
 
 ## Decision Outcome
 
-Chosen option: "Introduce both an ADR section and an RFC/plans section", because each format serves a distinct purpose and together they cover the full spectrum of design documentation we need.
+Chosen option: **Introduce both an ADR section and an RFC/plans section**
+
+Each format serves a distinct purpose and together they cover the full spectrum of design documentation we need.
 
 ADRs are concise, point-in-time records of a decision and its rationale—ideal for capturing *what* was decided and *why*. RFCs/plans are longer-form documents suited for proposing and discussing designs *before* a decision is finalized. Having both gives contributors a clear place to propose ideas (RFCs) and a clear place to record the outcome (ADRs), all within the same public documentation site.
 

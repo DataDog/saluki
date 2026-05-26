@@ -10,7 +10,7 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates curl git cmake ninja-build g++ libssl-dev && \
     rm -rf /var/lib/apt/lists/*
 
-COPY .ci/install-buildcache.sh /install-buildcache.sh
+COPY ci/images/scripts/install-buildcache.sh /install-buildcache.sh
 RUN chmod +x /install-buildcache.sh && BUILDCACHE_STATIC=1 /install-buildcache.sh
 
 # Final stage: scratch base holding only the buildcache binary. This image is not meant to be
