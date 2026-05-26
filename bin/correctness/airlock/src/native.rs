@@ -33,6 +33,12 @@ pub struct NativeProcessConfig {
     pub env: HashMap<String, String>,
     /// Working directory for the process. If `None`, inherits the caller's working directory.
     pub working_dir: Option<PathBuf>,
+    /// If `true`, the spawned process is placed into a new process group with itself as the
+    /// group leader, and [`cleanup`][NativeProcess::cleanup] signals the entire group instead of
+    /// only the immediate child. This is essential when the spawned binary forks helpers that
+    /// outlive their parent (e.g., the Datadog Core Agent spawns `trace-agent` and
+    /// `process-agent` which orphan onto launchd if only the parent is killed).
+    pub use_process_group: bool,
 }
 
 impl NativeProcessConfig {
@@ -44,7 +50,17 @@ impl NativeProcessConfig {
             args: Vec::new(),
             env: HashMap::new(),
             working_dir: None,
+            use_process_group: false,
         }
+    }
+
+    /// Places the spawned process in a new process group with itself as the group leader.
+    ///
+    /// Use this for binaries that fork long-lived helper processes that would otherwise orphan
+    /// when the parent is killed.
+    pub fn with_process_group(mut self) -> Self {
+        self.use_process_group = true;
+        self
     }
 
     /// Sets the arguments for the process.
@@ -85,6 +101,9 @@ pub trait LogSink: Send + Sync {
 pub struct NativeProcess {
     name: String,
     child: Option<Child>,
+    /// PGID to signal on cleanup when the spawned process is a process group leader. `None`
+    /// when [`NativeProcessConfig::use_process_group`] was `false`.
+    process_group: Option<i32>,
     exit_token: CancellationToken,
     log_tasks: Vec<JoinHandle<()>>,
     exit_task: Option<JoinHandle<()>>,
@@ -112,10 +131,24 @@ impl NativeProcess {
         if let Some(ref wd) = config.working_dir {
             cmd.current_dir(wd);
         }
+        if config.use_process_group {
+            // Place the spawned process in a new process group so we can later signal all of
+            // its descendants together.
+            #[cfg(unix)]
+            cmd.process_group(0);
+        }
 
         let mut child = cmd
             .spawn()
             .with_error_context(|| format!("Failed to spawn '{}'.", config.binary_path.display()))?;
+
+        // When using a process group, capture the PGID. We made the child the group leader
+        // (process_group(0)), so PGID == child PID.
+        let process_group = if config.use_process_group {
+            child.id().map(|pid| pid as i32)
+        } else {
+            None
+        };
 
         let stdout = child
             .stdout
@@ -142,6 +175,7 @@ impl NativeProcess {
         Ok(Self {
             name: config.name,
             child: Some(child),
+            process_group,
             exit_token,
             log_tasks: vec![stdout_task, stderr_task],
             exit_task: Some(exit_task),
@@ -178,8 +212,25 @@ impl NativeProcess {
         }
     }
 
-    /// Kills the child, joins background tasks, and cancels the exit token.
+    /// Kills the child (and its process group, if configured), joins background tasks, and
+    /// cancels the exit token.
     pub async fn cleanup(mut self) {
+        // If we asked for a process group, first send SIGTERM to the entire group. This gives
+        // descendants (e.g., trace-agent, process-agent spawned by the Datadog Core Agent) a
+        // chance to shut down cleanly before we hard-kill them. After a brief grace period we
+        // send SIGKILL to the group to guarantee no orphans remain.
+        #[cfg(unix)]
+        if let Some(pgid) = self.process_group {
+            // SAFETY: killpg with a valid pgid is a safe syscall; we ignore the return value.
+            unsafe {
+                libc::killpg(pgid, libc::SIGTERM);
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            unsafe {
+                libc::killpg(pgid, libc::SIGKILL);
+            }
+        }
+
         if let Some(mut child) = self.child.take() {
             let _ = child.kill().await;
             let _ = child.wait().await;

@@ -36,6 +36,14 @@ use crate::{
 const ADP_BINARY_ENV_VAR: &str = "ADP_BINARY_PATH";
 const DEFAULT_ADP_BINARY_PATH: &str = "target/release/agent-data-plane";
 
+const CORE_AGENT_BINARY_ENV_VAR: &str = "CORE_AGENT_BINARY_PATH";
+const DEFAULT_CORE_AGENT_BINARY_PATH: &str = "/opt/datadog-agent/bin/agent/agent";
+
+/// How long to wait for the Core Agent to write its `auth_token` and `ipc_cert.pem` before
+/// giving up and failing the test.
+const CORE_AGENT_IPC_READY_TIMEOUT: Duration = Duration::from_secs(60);
+const CORE_AGENT_IPC_READY_POLL: Duration = Duration::from_millis(200);
+
 /// Runner for a single native-process integration test case.
 pub(crate) struct NativeIntegrationRunner {
     test_case: IntegrationConfig,
@@ -91,21 +99,95 @@ impl NativeIntegrationRunner {
         }
         debug!(test = %test_name, state_dir = %state_dir.display(), "Prepared per-test state directory.");
 
-        // Phase: spawn the process.
-        let spawn_start = Instant::now();
         let exit_token = CancellationToken::new();
         let log_sink: Arc<Mutex<dyn LogSink>> = Arc::new(Mutex::new(NativeLogSink {
             buf: self.log_buffer.clone(),
         }));
 
+        // Optional Phase: spawn the Core Agent (converged tests).
+        //
+        // Converged tests need both the Core Agent and ADP running side-by-side, sharing a
+        // config directory so they can authenticate over IPC. We spawn the Agent first against
+        // the per-test state dir, wait until it has written `auth_token` and `ipc_cert.pem`,
+        // then spawn ADP with `DD_AUTH_TOKEN_FILE_PATH` pointing at the per-test auth token so
+        // ADP's IPC client uses the same per-test credentials (and ADP's own API server uses
+        // the matching cert).
+        let mut core_agent: Option<NativeProcess> = None;
+        if self.test_case.requires_core_agent {
+            let agent_spawn_start = Instant::now();
+            let agent_binary = match resolve_core_agent_binary_path() {
+                Ok(p) => p,
+                Err(e) => return make_error_result(test_name, started, "resolve_core_agent", e, phase_timings),
+            };
+            debug!(test = %test_name, binary = %agent_binary.display(), "Resolved Core Agent binary path.");
+
+            let agent_config = NativeProcessConfig::new(format!("{}-core-agent", self.test_case.name), agent_binary)
+                .with_args(vec![
+                    "run".to_string(),
+                    "-c".to_string(),
+                    state_dir.to_string_lossy().into_owned(),
+                ])
+                .with_env_map(self.test_case.container.env.clone())
+                // The Core Agent forks `trace-agent` and `process-agent` helpers; without a process
+                // group they orphan onto launchd on cleanup and continue holding ports (e.g., 8126
+                // for trace-agent), blocking subsequent tests.
+                .with_process_group();
+
+            let agent = match NativeProcess::spawn(agent_config, log_sink.clone(), exit_token.clone()).await {
+                Ok(p) => p,
+                Err(e) => {
+                    phase_timings.push(PhaseTiming {
+                        phase: "core_agent_spawn".to_string(),
+                        duration: agent_spawn_start.elapsed(),
+                    });
+                    return make_error_result(test_name, started, "core_agent_spawn", e, phase_timings);
+                }
+            };
+            phase_timings.push(PhaseTiming {
+                phase: "core_agent_spawn".to_string(),
+                duration: agent_spawn_start.elapsed(),
+            });
+            info!(test = %test_name, "Core Agent process started.");
+
+            let wait_start = Instant::now();
+            if let Err(e) = wait_for_agent_ipc_ready(&state_dir, CORE_AGENT_IPC_READY_TIMEOUT).await {
+                agent.cleanup().await;
+                phase_timings.push(PhaseTiming {
+                    phase: "core_agent_ipc_ready".to_string(),
+                    duration: wait_start.elapsed(),
+                });
+                return make_error_result(test_name, started, "core_agent_ipc_ready", e, phase_timings);
+            }
+            phase_timings.push(PhaseTiming {
+                phase: "core_agent_ipc_ready".to_string(),
+                duration: wait_start.elapsed(),
+            });
+            debug!(test = %test_name, "Core Agent IPC credentials present.");
+            core_agent = Some(agent);
+        }
+
+        // Phase: spawn ADP.
+        let spawn_start = Instant::now();
         let config_path_str = config_path.to_string_lossy().into_owned();
+        let mut adp_env = self.test_case.container.env.clone();
+        if self.test_case.requires_core_agent {
+            // Point ADP's IPC client at the per-test auth token (and by derivation, the
+            // per-test ipc_cert.pem in the same directory).
+            adp_env.insert(
+                "DD_AUTH_TOKEN_FILE_PATH".to_string(),
+                state_dir.join("auth_token").to_string_lossy().into_owned(),
+            );
+        }
         let process_config = NativeProcessConfig::new(self.test_case.name.clone(), binary_path)
             .with_args(vec!["-c".to_string(), config_path_str, "run".to_string()])
-            .with_env_map(self.test_case.container.env.clone());
+            .with_env_map(adp_env);
 
         let process = match NativeProcess::spawn(process_config, log_sink, exit_token.clone()).await {
             Ok(p) => p,
             Err(e) => {
+                if let Some(agent) = core_agent.take() {
+                    agent.cleanup().await;
+                }
                 phase_timings.push(PhaseTiming {
                     phase: "spawn".to_string(),
                     duration: spawn_start.elapsed(),
@@ -118,7 +200,7 @@ impl NativeIntegrationRunner {
             duration: spawn_start.elapsed(),
         });
 
-        info!(test = %test_name, "Native process started.");
+        info!(test = %test_name, "ADP process started.");
 
         // Phase: run assertions.
         let assertion_start = Instant::now();
@@ -130,9 +212,13 @@ impl NativeIntegrationRunner {
             duration: assertion_start.elapsed(),
         });
 
-        // Phase: cleanup.
+        // Phase: cleanup. ADP first, Core Agent second — in case the Agent's shutdown depends on
+        // ADP releasing connections gracefully.
         let cleanup_start = Instant::now();
         process.cleanup().await;
+        if let Some(agent) = core_agent.take() {
+            agent.cleanup().await;
+        }
         phase_timings.push(PhaseTiming {
             phase: "cleanup".to_string(),
             duration: cleanup_start.elapsed(),
@@ -243,6 +329,38 @@ fn resolve_adp_binary_path() -> Result<PathBuf, GenericError> {
             ADP_BINARY_ENV_VAR
         )
     })
+}
+
+fn resolve_core_agent_binary_path() -> Result<PathBuf, GenericError> {
+    let raw = std::env::var(CORE_AGENT_BINARY_ENV_VAR)
+        .ok()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(DEFAULT_CORE_AGENT_BINARY_PATH));
+
+    raw.canonicalize().with_error_context(|| {
+        format!(
+            "Core Agent binary not found at '{}'. Set {} or install the Datadog Agent (https://docs.datadoghq.com/agent/).",
+            raw.display(),
+            CORE_AGENT_BINARY_ENV_VAR
+        )
+    })
+}
+
+async fn wait_for_agent_ipc_ready(state_dir: &std::path::Path, timeout: Duration) -> Result<(), GenericError> {
+    let auth_token = state_dir.join("auth_token");
+    let ipc_cert = state_dir.join("ipc_cert.pem");
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if auth_token.is_file() && ipc_cert.is_file() {
+            return Ok(());
+        }
+        tokio::time::sleep(CORE_AGENT_IPC_READY_POLL).await;
+    }
+    Err(saluki_error::generic_error!(
+        "Core Agent did not write 'auth_token' and 'ipc_cert.pem' to '{}' within {:?}.",
+        state_dir.display(),
+        timeout
+    ))
 }
 
 fn create_test_state_dir() -> Result<PathBuf, GenericError> {
