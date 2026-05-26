@@ -4131,7 +4131,6 @@ dependencies = [
  "test-strategy",
  "tokio",
  "tokio-rustls",
- "tokio-util",
  "tonic",
  "tower 0.5.3",
  "tracing",
