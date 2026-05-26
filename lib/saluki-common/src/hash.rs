@@ -3,7 +3,7 @@ use std::{
     sync::LazyLock,
 };
 
-use sha3::digest::{ExtendableOutput as _, Update as _};
+use shake::digest::{ExtendableOutput as _, Update as _};
 
 /// A fast, non-cryptographic hash implementation that's optimized for quality.
 ///
@@ -113,13 +113,13 @@ pub fn hash_single_stable<H: std::hash::Hash>(value: H) -> u64 {
 ///
 /// At a minimum, the hasher implementation won't change within major versions of Saluki, including v0 and v1.
 ///
-/// Currently, [`sha3`][sha3] (specifically SHAKE128) is used as the underlying implementation. While SHAKE128 is a
+/// Currently, [`shake`][shake] (specifically SHAKE128) is used as the underlying implementation. While SHAKE128 is a
 /// cryptographic hash algorithm, the way it's used effectively makes it a non-cryptographic hash algorithm given how
 /// much the output is truncated.
 ///
-/// [sha3]: https://crates.io/crates/sha3
+/// [shake]: https://crates.io/crates/shake
 #[derive(Default)]
-pub struct StableHasher(sha3::Shake128);
+pub struct StableHasher(shake::Shake128);
 
 impl std::hash::Hasher for StableHasher {
     fn write(&mut self, bytes: &[u8]) {
