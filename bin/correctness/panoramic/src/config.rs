@@ -217,6 +217,21 @@ pub enum AssertionConfig {
         timeout: HumanDuration,
     },
 
+    /// Check that ADP itself exits with a specific exit code, abstracting over the runtime's
+    /// observation mechanism.
+    ///
+    /// On the `docker` runtime the converged image wraps ADP under s6, which keeps the
+    /// container alive across ADP restarts and logs `agent-data-plane exited with code N` from
+    /// `docker/s6-services/agent-data-plane/finish`. This assertion greps the log buffer for
+    /// that line. On the `native_macos` runtime ADP is spawned directly; the assertion reads
+    /// the exit code recorded by the native runner when ADP's child process exited.
+    AdpExitsWith {
+        /// The expected exit code.
+        expected_code: i64,
+        /// Timeout for waiting for the exit to be observed.
+        timeout: HumanDuration,
+    },
+
     /// Check that a port is listening.
     PortListening {
         /// The port number to check.
@@ -333,7 +348,9 @@ impl AssertionConfig {
                     crate::dynamic_vars::resolve_placeholders(p, vars);
                 }
             }
-            AssertionConfig::ProcessStableFor { .. } | AssertionConfig::ProcessExitsWith { .. } => {}
+            AssertionConfig::ProcessStableFor { .. }
+            | AssertionConfig::ProcessExitsWith { .. }
+            | AssertionConfig::AdpExitsWith { .. } => {}
         }
     }
 
@@ -356,7 +373,9 @@ impl AssertionConfig {
                     crate::dynamic_vars::find_unresolved(p, &mut out);
                 }
             }
-            AssertionConfig::ProcessStableFor { .. } | AssertionConfig::ProcessExitsWith { .. } => {}
+            AssertionConfig::ProcessStableFor { .. }
+            | AssertionConfig::ProcessExitsWith { .. }
+            | AssertionConfig::AdpExitsWith { .. } => {}
         }
         out
     }

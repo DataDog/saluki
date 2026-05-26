@@ -2,8 +2,11 @@ type: integration
 name: "adp-rar-disabled"
 description: "Verify ADP gracefully handles RAR being disabled on the Core Agent"
 timeout: 120s
-runtimes: [docker, native_macos]
-requires_core_agent: true
+# Docker-only: the assertion is that ADP stays up (handles failure gracefully via retry). In
+# the converged image, s6 restarts ADP on every exit, so 'process stable for 10s' really
+# means 'container stable for 10s'. There is no equivalent supervisor on the native_macos
+# runtime, so this assertion does not translate; re-enable once the native runner grows a
+# supervisor or the test is rewritten to assert on retry behavior directly.
 
 container:
   image: "saluki-images/datadog-agent:testing-devel"

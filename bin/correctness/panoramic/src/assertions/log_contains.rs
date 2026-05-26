@@ -63,11 +63,15 @@ impl Assertion for LogContainsAssertion {
                 };
             }
 
-            if ctx.cancel_token.is_cancelled() || ctx.container_exit_token.is_cancelled() {
+            // If the process exited, do a final read of the log buffer in case the line we are
+            // looking for landed before the exit. Only treat true external cancellation (e.g.,
+            // Ctrl-C / test-suite timeout) as a hard cancel.
+            let exited = ctx.container_exit_token.is_cancelled();
+            if ctx.cancel_token.is_cancelled() {
                 return AssertionResult {
                     name: self.name().to_string(),
                     passed: false,
-                    message: "Assertion cancelled because container exited.".to_string(),
+                    message: "Assertion cancelled.".to_string(),
                     duration: started.elapsed(),
                 };
             }
@@ -90,6 +94,17 @@ impl Assertion for LogContainsAssertion {
                     stderr_lines = buffer.stderr.len(),
                     "Pattern not yet found, continuing to poll logs..."
                 );
+            }
+
+            // After the final post-exit read, if we still have not matched, the pattern is
+            // definitively absent. Stop polling rather than spinning until the deadline.
+            if exited {
+                return AssertionResult {
+                    name: self.name().to_string(),
+                    passed: false,
+                    message: format!("Pattern '{}' not found in logs before process exited.", self.pattern),
+                    duration: started.elapsed(),
+                };
             }
 
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -157,11 +172,15 @@ impl Assertion for LogNotContainsAssertion {
                 };
             }
 
-            if ctx.cancel_token.is_cancelled() || ctx.container_exit_token.is_cancelled() {
+            // If the process exited, do a final read of the log buffer in case the line we are
+            // looking for landed before the exit. Only treat true external cancellation (e.g.,
+            // Ctrl-C / test-suite timeout) as a hard cancel.
+            let exited = ctx.container_exit_token.is_cancelled();
+            if ctx.cancel_token.is_cancelled() {
                 return AssertionResult {
                     name: self.name().to_string(),
                     passed: false,
-                    message: "Assertion cancelled because container exited.".to_string(),
+                    message: "Assertion cancelled.".to_string(),
                     duration: started.elapsed(),
                 };
             }
@@ -184,6 +203,17 @@ impl Assertion for LogNotContainsAssertion {
                         duration: started.elapsed(),
                     };
                 }
+            }
+
+            // If the process exited, the absence of the pattern is final — nothing more can
+            // be logged. Treat this as success (the pattern never appeared during the run).
+            if exited {
+                return AssertionResult {
+                    name: self.name().to_string(),
+                    passed: true,
+                    message: format!("Pattern '{}' not found in logs; process exited cleanly.", self.pattern),
+                    duration: started.elapsed(),
+                };
             }
 
             tokio::time::sleep(Duration::from_millis(100)).await;

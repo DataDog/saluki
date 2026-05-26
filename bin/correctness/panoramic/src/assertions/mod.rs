@@ -6,6 +6,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::config::{AssertionConfig, LogStream};
 
+mod adp_exits;
 mod file_contains;
 mod http_check;
 mod log_contains;
@@ -13,6 +14,7 @@ mod port_listening;
 mod process_exits;
 mod process_stable;
 
+pub use adp_exits::AdpExitsWithAssertion;
 pub use file_contains::FileContainsAssertion;
 pub use http_check::HttpCheckAssertion;
 pub use log_contains::{LogContainsAssertion, LogNotContainsAssertion};
@@ -106,6 +108,10 @@ pub struct AssertionContext {
     /// otherwise reach into a container (e.g., reading a file via `docker exec`) should operate
     /// against the host filesystem / local process instead.
     pub is_native: bool,
+    /// Exit code of the native target process, populated once it exits. `None` on the docker
+    /// path or while the process is still running; `Some(None)` if the process was killed by
+    /// signal; `Some(Some(code))` if it exited normally.
+    pub native_exit_code: Option<airlock::native::ExitCodeCell>,
 }
 
 /// Trait for assertion implementations.
@@ -127,6 +133,9 @@ pub fn create_assertion(config: &AssertionConfig) -> Result<Box<dyn Assertion>, 
         AssertionConfig::ProcessStableFor { duration } => Ok(Box::new(ProcessStableForAssertion::new(duration.0))),
         AssertionConfig::ProcessExitsWith { expected_code, timeout } => {
             Ok(Box::new(ProcessExitsWithAssertion::new(*expected_code, timeout.0)))
+        }
+        AssertionConfig::AdpExitsWith { expected_code, timeout } => {
+            Ok(Box::new(AdpExitsWithAssertion::new(*expected_code, timeout.0)))
         }
         AssertionConfig::PortListening {
             port,

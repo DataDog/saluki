@@ -818,6 +818,7 @@ impl IntegrationRunner {
             port_mappings: port_mappings.clone(),
             container_name: container_name.to_string(),
             is_native: false,
+            native_exit_code: None,
         };
 
         for (step_index, step) in self.test_case.assertions.iter().enumerate() {

@@ -8,17 +8,33 @@
 //! Only the small subset of the Docker driver surface needed by the panoramic native runner is
 //! implemented: spawn, log capture, exit watching, and cleanup.
 
-use std::{collections::HashMap, path::PathBuf, process::Stdio, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    path::PathBuf,
+    process::Stdio,
+    sync::{Arc, OnceLock},
+    time::Duration,
+};
 
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use tokio::{
     io::{AsyncBufReadExt as _, AsyncRead, BufReader},
-    process::{Child, Command},
+    process::Command,
     sync::Mutex,
     task::JoinHandle,
 };
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
+
+/// Shared cell that receives the exit code of a spawned [`NativeProcess`].
+///
+/// The cell is populated by the background exit watcher when the child exits on its own, or by
+/// [`NativeProcess::cleanup`] when the test tears down. Consumers (e.g., the
+/// `process_exits_with` assertion in panoramic) read the cell after the exit token fires.
+///
+/// The inner `Option<i32>` is `None` if the process was terminated by signal rather than exiting
+/// normally with a status code.
+pub type ExitCodeCell = Arc<OnceLock<Option<i32>>>;
 
 /// Configuration for a native process to spawn.
 #[derive(Clone)]
@@ -96,15 +112,21 @@ pub trait LogSink: Send + Sync {
 /// A spawned native process and its supporting tasks.
 ///
 /// `NativeProcess` owns the child process plus background tasks that pump stdout/stderr lines
-/// into a shared sink and observe the child's exit. Calling [`cleanup`][Self::cleanup] kills the
-/// child, joins the background tasks, and cancels the exit token.
+/// into a shared sink and observe the child's exit. The provided exit token is cancelled when
+/// the child process exits on its own (observed by the background watcher) or when
+/// [`cleanup`][Self::cleanup] is called. The exit code is recorded in the shared
+/// [`ExitCodeCell`] returned by [`exit_code_cell`][Self::exit_code_cell].
 pub struct NativeProcess {
     name: String,
-    child: Option<Child>,
     /// PGID to signal on cleanup when the spawned process is a process group leader. `None`
     /// when [`NativeProcessConfig::use_process_group`] was `false`.
     process_group: Option<i32>,
+    /// The child process. Owned by the exit watcher; we communicate with it via signals.
+    ///
+    /// `None` once `cleanup` has reaped it (or never set if spawn failed before assignment).
+    child_pid: Option<u32>,
     exit_token: CancellationToken,
+    exit_code: ExitCodeCell,
     log_tasks: Vec<JoinHandle<()>>,
     exit_task: Option<JoinHandle<()>>,
 }
@@ -144,8 +166,9 @@ impl NativeProcess {
 
         // When using a process group, capture the PGID. We made the child the group leader
         // (process_group(0)), so PGID == child PID.
+        let child_pid = child.id();
         let process_group = if config.use_process_group {
-            child.id().map(|pid| pid as i32)
+            child_pid.map(|pid| pid as i32)
         } else {
             None
         };
@@ -162,21 +185,35 @@ impl NativeProcess {
         let stdout_task = spawn_log_pump(stdout, log_sink.clone(), false);
         let stderr_task = spawn_log_pump(stderr, log_sink, true);
 
-        // We don't move the child here, so the actual exit observation happens in `cleanup` or
-        // `wait_with_timeout`. The exit_task is kept as a placeholder so future implementations
-        // can attach a SIGCHLD-style notifier without changing the public API.
-        let name_for_watcher = config.name.clone();
+        // Real exit watcher: moves the child into the task, calls `wait()`, records the exit
+        // code, and fires the exit token so blocked assertions (process_stable_for /
+        // process_exits_with) unblock immediately rather than waiting for the test's own
+        // cleanup phase.
+        let exit_code: ExitCodeCell = Arc::new(OnceLock::new());
+        let exit_code_for_watcher = exit_code.clone();
         let exit_token_for_watcher = exit_token.clone();
+        let name_for_watcher = config.name.clone();
         let exit_task = tokio::spawn(async move {
-            debug!(name = %name_for_watcher, "Native process exit watcher placeholder; exit observation happens in cleanup.");
-            exit_token_for_watcher.cancelled().await;
+            match child.wait().await {
+                Ok(status) => {
+                    let code = status.code();
+                    debug!(name = %name_for_watcher, ?code, "Native process exited.");
+                    let _ = exit_code_for_watcher.set(code);
+                }
+                Err(e) => {
+                    warn!(name = %name_for_watcher, error = %e, "Failed to wait on native process; treating as exited.");
+                    let _ = exit_code_for_watcher.set(None);
+                }
+            }
+            exit_token_for_watcher.cancel();
         });
 
         Ok(Self {
             name: config.name,
-            child: Some(child),
             process_group,
+            child_pid,
             exit_token,
+            exit_code,
             log_tasks: vec![stdout_task, stderr_task],
             exit_task: Some(exit_task),
         })
@@ -192,24 +229,11 @@ impl NativeProcess {
         self.exit_token.clone()
     }
 
-    /// Waits for the process to exit, killing it if `timeout` elapses first.
-    ///
-    /// Returns the exit code if available, `None` if the process was terminated by signal.
-    #[allow(dead_code)]
-    pub async fn wait_with_timeout(&mut self, timeout: Duration) -> Result<Option<i32>, GenericError> {
-        let child = self
-            .child
-            .as_mut()
-            .ok_or_else(|| generic_error!("Process already cleaned up."))?;
-        match tokio::time::timeout(timeout, child.wait()).await {
-            Ok(Ok(status)) => Ok(status.code()),
-            Ok(Err(e)) => Err(generic_error!("Failed to wait for process: {}", e)),
-            Err(_) => {
-                let _ = child.kill().await;
-                let _ = child.wait().await;
-                Err(generic_error!("Process did not exit within timeout."))
-            }
-        }
+    /// Returns a clone of the shared exit-code cell. The cell is populated once the process
+    /// exits (either on its own or via cleanup). Consumers should wait on [`exit_token`] before
+    /// reading.
+    pub fn exit_code_cell(&self) -> ExitCodeCell {
+        self.exit_code.clone()
     }
 
     /// Kills the child (and its process group, if configured), joins background tasks, and
@@ -229,16 +253,30 @@ impl NativeProcess {
             unsafe {
                 libc::killpg(pgid, libc::SIGKILL);
             }
+        } else if let Some(pid) = self.child_pid {
+            // Fallback: just signal the direct child. The exit watcher owns the Child handle
+            // so we can't call kill() through it; use libc directly.
+            #[cfg(unix)]
+            unsafe {
+                libc::kill(pid as i32, libc::SIGTERM);
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            #[cfg(unix)]
+            unsafe {
+                libc::kill(pid as i32, libc::SIGKILL);
+            }
+            #[cfg(not(unix))]
+            let _ = pid;
         }
 
-        if let Some(mut child) = self.child.take() {
-            let _ = child.kill().await;
-            let _ = child.wait().await;
-        }
-        self.exit_token.cancel();
+        // The exit watcher will have observed the kill and set the exit code + fired the token.
+        // Join it so we don't leak the task.
         if let Some(handle) = self.exit_task.take() {
             let _ = handle.await;
         }
+        // Defensive: make sure the token is fired even if the watcher never set it (e.g., on a
+        // failed wait).
+        self.exit_token.cancel();
         for handle in self.log_tasks.drain(..) {
             let _ = handle.await;
         }
@@ -247,10 +285,10 @@ impl NativeProcess {
 
 impl Drop for NativeProcess {
     fn drop(&mut self) {
-        if self.child.is_some() {
+        if self.exit_task.is_some() {
             warn!(
                 name = %self.name,
-                "NativeProcess dropped without explicit cleanup; child will be killed via kill_on_drop."
+                "NativeProcess dropped without explicit cleanup; child may have been killed via kill_on_drop."
             );
         }
     }

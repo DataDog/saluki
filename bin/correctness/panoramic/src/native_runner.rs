@@ -99,7 +99,13 @@ impl NativeIntegrationRunner {
         }
         debug!(test = %test_name, state_dir = %state_dir.display(), "Prepared per-test state directory.");
 
-        let exit_token = CancellationToken::new();
+        // ADP and the (optional) Core Agent get independent exit tokens. The token passed to
+        // assertions is ADP's — we only care about ADP's exit lifecycle from the test's point
+        // of view; the Core Agent dying separately is an environmental fault, not a test
+        // signal. The Agent's token is used only by `NativeProcess` internals to fire when the
+        // Agent process truly exits.
+        let adp_exit_token = CancellationToken::new();
+        let agent_exit_token = CancellationToken::new();
         let log_sink: Arc<Mutex<dyn LogSink>> = Arc::new(Mutex::new(NativeLogSink {
             buf: self.log_buffer.clone(),
         }));
@@ -144,7 +150,7 @@ impl NativeIntegrationRunner {
                 // for trace-agent), blocking subsequent tests.
                 .with_process_group();
 
-            let agent = match NativeProcess::spawn(agent_config, log_sink.clone(), exit_token.clone()).await {
+            let agent = match NativeProcess::spawn(agent_config, log_sink.clone(), agent_exit_token.clone()).await {
                 Ok(p) => p,
                 Err(e) => {
                     phase_timings.push(PhaseTiming {
@@ -193,7 +199,7 @@ impl NativeIntegrationRunner {
             .with_args(vec!["-c".to_string(), config_path_str, "run".to_string()])
             .with_env_map(adp_env);
 
-        let process = match NativeProcess::spawn(process_config, log_sink, exit_token.clone()).await {
+        let process = match NativeProcess::spawn(process_config, log_sink, adp_exit_token.clone()).await {
             Ok(p) => p,
             Err(e) => {
                 if let Some(agent) = core_agent.take() {
@@ -216,7 +222,11 @@ impl NativeIntegrationRunner {
         // Phase: run assertions.
         let assertion_start = Instant::now();
         let assertion_results = self
-            .run_assertions(process.name().to_string(), exit_token.clone())
+            .run_assertions(
+                process.name().to_string(),
+                adp_exit_token.clone(),
+                process.exit_code_cell(),
+            )
             .await;
         phase_timings.push(PhaseTiming {
             phase: "assertions".to_string(),
@@ -264,6 +274,7 @@ impl NativeIntegrationRunner {
 
     async fn run_assertions(
         &self, process_display_name: String, exit_token: CancellationToken,
+        exit_code_cell: airlock::native::ExitCodeCell,
     ) -> Vec<AssertionResult> {
         let mut results = Vec::new();
         let cancel_token = self.tctx.test_cancel_token();
@@ -290,6 +301,7 @@ impl NativeIntegrationRunner {
                         cancel_token: cancel_token.clone(),
                         container_name: process_display_name.clone(),
                         is_native: true,
+                        native_exit_code: Some(exit_code_cell.clone()),
                         port_mappings: port_mappings.clone(),
                     };
                     results.push(assertion.check(&ctx).await);
@@ -305,6 +317,7 @@ impl NativeIntegrationRunner {
                                     cancel_token: cancel_token.clone(),
                                     container_name: process_display_name.clone(),
                                     is_native: true,
+                                    native_exit_code: Some(exit_code_cell.clone()),
                                     port_mappings: port_mappings.clone(),
                                 };
                                 futures.push(async move { a.check(&ctx).await });
