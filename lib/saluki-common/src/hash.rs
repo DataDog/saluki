@@ -186,34 +186,14 @@ mod tests {
     #[test]
     fn fast_build_hasher_consistent_within_instance() {
         let state = get_fast_build_hasher();
-        let h1 = {
-            let mut h = state.build_hasher();
-            "test".hash(&mut h);
-            h.finish()
-        };
-        let h2 = {
-            let mut h = state.build_hasher();
-            "test".hash(&mut h);
-            h.finish()
-        };
-        assert_eq!(h1, h2);
+        assert_eq!(state.hash_one("test"), state.hash_one("test"));
     }
 
     #[test]
     fn fast_build_hasher_independent_per_call() {
         // Each call to get_fast_build_hasher produces an independently seeded instance,
         // so the same input should hash to different values across instances.
-        let h1 = {
-            let mut h = get_fast_build_hasher().build_hasher();
-            "test".hash(&mut h);
-            h.finish()
-        };
-        let h2 = {
-            let mut h = get_fast_build_hasher().build_hasher();
-            "test".hash(&mut h);
-            h.finish()
-        };
-        assert_ne!(h1, h2);
+        assert_ne!(get_fast_build_hasher().hash_one("test"), get_fast_build_hasher().hash_one("test"));
     }
 
     // --- NoopU64Hasher ---
