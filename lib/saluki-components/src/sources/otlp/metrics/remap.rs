@@ -217,7 +217,17 @@ fn remap_system_metrics(new_metrics: &mut Vec<OtlpMetric>, metric: &OtlpMetric) 
     }
 }
 
-#[allow(clippy::collapsible_match)]
+fn copy_metric_with_unit(
+    dest: &mut Vec<OtlpMetric>, m: &OtlpMetric, newname: &str, div: f64, attributes_mapping: AttributesMapping,
+    filter: &[Kv], unit: &str,
+) {
+    if copy_metric_with_attr(dest, m, newname, div, attributes_mapping, filter) {
+        if let Some(added) = dest.last_mut() {
+            added.unit = unit.to_string();
+        }
+    }
+}
+
 fn remap_container_metrics(new_metrics: &mut Vec<OtlpMetric>, metric: &OtlpMetric) {
     let name = metric.name.as_str();
     if !name.starts_with("container.") {
@@ -225,46 +235,37 @@ fn remap_container_metrics(new_metrics: &mut Vec<OtlpMetric>, metric: &OtlpMetri
     }
     match name {
         "container.cpu.usage.total" => {
-            if copy_metric_with_attr(
+            copy_metric_with_unit(
                 new_metrics,
                 metric,
                 "container.cpu.usage",
                 1.0,
                 AttributesMapping::empty(),
                 &[],
-            ) {
-                if let Some(addm) = new_metrics.last_mut() {
-                    addm.unit = "nanocore".to_string();
-                }
-            }
+                "nanocore",
+            );
         }
         "container.cpu.usage.usermode" => {
-            if copy_metric_with_attr(
+            copy_metric_with_unit(
                 new_metrics,
                 metric,
                 "container.cpu.user",
                 1.0,
                 AttributesMapping::empty(),
                 &[],
-            ) {
-                if let Some(addm) = new_metrics.last_mut() {
-                    addm.unit = "nanocore".to_string();
-                }
-            }
+                "nanocore",
+            );
         }
         "container.cpu.usage.system" => {
-            if copy_metric_with_attr(
+            copy_metric_with_unit(
                 new_metrics,
                 metric,
                 "container.cpu.system",
                 1.0,
                 AttributesMapping::empty(),
                 &[],
-            ) {
-                if let Some(addm) = new_metrics.last_mut() {
-                    addm.unit = "nanocore".to_string();
-                }
-            }
+                "nanocore",
+            );
         }
         "container.cpu.throttling_data.throttled_time" => {
             copy_metric_with_attr(

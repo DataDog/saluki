@@ -255,9 +255,7 @@ fn obfuscate_redis_cmd(out: &mut String, cmd: &str, args: &[String]) {
             obfuscate_arg_n(&mut args, 3);
         }
 
-        "GEOHASH" | "GEOPOS" | "GEODIST" | "LPUSH" | "RPUSH" | "SREM" | "ZREM" | "SADD"
-            if args.len() > 1 =>
-        {
+        "GEOHASH" | "GEOPOS" | "GEODIST" | "LPUSH" | "RPUSH" | "SREM" | "ZREM" | "SADD" if args.len() > 1 => {
             args[1] = "?".to_string();
             args.truncate(2);
         }

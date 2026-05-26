@@ -181,8 +181,7 @@ impl TokenFilter for ReplaceFilter {
                 return Ok((mark_filtered_groupable(token, buffer), Some(b"?".to_vec())));
             }
             TokenKind::ID
-                if last_buffer == b"="
-                    && (token == TokenKind::DoubleQuotedString || token == TokenKind::QuotedID) =>
+                if last_buffer == b"=" && (token == TokenKind::DoubleQuotedString || token == TokenKind::QuotedID) =>
             {
                 return Ok((mark_filtered_groupable(token, buffer), Some(b"?".to_vec())));
             }
