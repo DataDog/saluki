@@ -512,7 +512,7 @@ pub struct DogStatsDConfiguration {
 
     #[serde(skip, default)]
     #[cfg_attr(test, derive_where(skip))]
-    stats_collector: Option<DogStatsDStatsCollector>,
+    stats_collector: DogStatsDStatsCollector,
 
     /// Provider kind tag appended to all metrics as `provider_kind:<value>`.
     ///
@@ -674,7 +674,7 @@ impl DogStatsDConfiguration {
 
     /// Sets the DogStatsD stats collector to record successfully decoded metrics.
     pub fn with_stats_collector(mut self, stats_collector: DogStatsDStatsCollector) -> Self {
-        self.stats_collector = Some(stats_collector);
+        self.stats_collector = stats_collector;
         self
     }
 
@@ -875,6 +875,7 @@ impl MemoryBounds for DogStatsDConfiguration {
                 "dogstatsd_string_interner_size_bytes",
                 self.effective_context_string_interner_bytes().as_u64() as usize,
             ));
+        builder.with_subcomponent("dogstatsd stats collector", &self.stats_collector);
     }
 }
 
@@ -891,7 +892,7 @@ pub struct DogStatsD {
     additional_tags: Arc<[String]>,
     capture_entity_resolver: Option<Arc<dyn CaptureEntityResolver + Send + Sync>>,
     traffic_capture: TrafficCapture,
-    stats_collector: Option<DogStatsDStatsCollector>,
+    stats_collector: DogStatsDStatsCollector,
 }
 
 struct ListenerContext {
@@ -906,7 +907,7 @@ struct ListenerContext {
     additional_tags: Arc<[String]>,
     capture_entity_resolver: Option<Arc<dyn CaptureEntityResolver + Send + Sync>>,
     traffic_capture: TrafficCapture,
-    stats_collector: Option<DogStatsDStatsCollector>,
+    stats_collector: DogStatsDStatsCollector,
 }
 
 struct HandlerContext {
@@ -921,7 +922,7 @@ struct HandlerContext {
     additional_tags: Arc<[String]>,
     capture_entity_resolver: Option<Arc<dyn CaptureEntityResolver + Send + Sync>>,
     traffic_capture: TrafficCapture,
-    stats_collector: Option<DogStatsDStatsCollector>,
+    stats_collector: DogStatsDStatsCollector,
 }
 
 struct Metrics {
@@ -1323,7 +1324,7 @@ async fn drive_stream(
                         match frame_result {
                             Ok(Some(frame)) => {
                                 trace!(%listen_addr, %peer_addr, ?frame, "Decoded frame.");
-                                match handle_frame(&frame[..], &codec, &mut context_resolvers, &metrics, &peer_addr, enabled_filter, &additional_tags, stats_collector.as_ref()) {
+                                match handle_frame(&frame[..], &codec, &mut context_resolvers, &metrics, &peer_addr, enabled_filter, &additional_tags, &stats_collector) {
                                     Ok(Some(event)) => {
                                         if let Some(event_buffer) = event_buffer_manager.try_push(event) {
                                             debug!(%listen_addr, %peer_addr, "Event buffer is full. Forwarding events.");
@@ -1518,7 +1519,7 @@ fn capture_timestamp_ns() -> i64 {
 fn handle_frame(
     frame: &[u8], codec: &DogStatsDCodec, context_resolvers: &mut ContextResolvers, source_metrics: &Metrics,
     peer_addr: &ConnectionAddress, enabled_filter: EnablePayloadsFilter, additional_tags: &[String],
-    stats_collector: Option<&DogStatsDStatsCollector>,
+    stats_collector: &DogStatsDStatsCollector,
 ) -> Result<Option<Event>, ParseError> {
     let parsed = match codec.decode_packet(frame) {
         Ok(parsed) => parsed,
@@ -1551,9 +1552,7 @@ fn handle_frame(
             match handle_metric_packet(metric_packet, context_resolvers, peer_addr, additional_tags) {
                 Some(metric) => {
                     source_metrics.metrics_received().increment(events_len);
-                    if let Some(stats_collector) = stats_collector {
-                        stats_collector.record_metric(&metric);
-                    }
+                    stats_collector.record_metric(&metric);
                     Event::Metric(metric)
                 }
                 None => {
@@ -1806,6 +1805,7 @@ mod tests {
     };
 
     use bytesize::ByteSize;
+    use saluki_common::time::get_coarse_unix_timestamp;
     use saluki_config::ConfigurationLoader;
     use saluki_context::{ContextResolverBuilder, TagsResolverBuilder};
     use saluki_core::{components::ComponentContext, data_model::event::Event, topology::ComponentId};
@@ -2345,6 +2345,7 @@ mod tests {
         let metrics = build_metrics(&listen_addr, &component_context);
         let collector = DogStatsDStatsCollector::default();
         collector.start_collection_for_tests(10);
+        let start_time_unix = get_coarse_unix_timestamp();
 
         let event = handle_frame(
             b"test_metric_name:1|c|#env:test",
@@ -2354,12 +2355,15 @@ mod tests {
             &peer_addr,
             EnablePayloadsFilter::default(),
             &[],
-            Some(&collector),
+            &collector,
         )
         .expect("frame should decode");
 
         assert!(matches!(event, Some(Event::Metric(_))));
         assert_eq!(collector.active_metric_count_for_tests("test_metric_name"), Some(1));
+        assert!(collector
+            .active_metric_last_seen_for_tests("test_metric_name")
+            .is_some_and(|last_seen| last_seen >= start_time_unix));
         collector.clear_collection_for_tests();
     }
 

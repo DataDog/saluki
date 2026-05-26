@@ -1,11 +1,12 @@
 use std::{
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicU64, Ordering},
         Arc, Mutex, MutexGuard,
     },
     time::Duration,
 };
 
+use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_api::{
     extract::{Query, State},
     routing::{get, Router},
@@ -19,6 +20,9 @@ use stringtheory::MetaString;
 use tokio::time::sleep;
 
 const MAXIMUM_COLLECTION_DURATION_SECS: u64 = 600;
+const MAXIMUM_DISTINCT_CONTEXTS: usize = 10_000;
+const INACTIVE_COLLECTION_ID: u64 = 0;
+const INITIAL_COLLECTION_ID: u64 = 1;
 
 #[derive(Debug, Default, Clone, Serialize)]
 pub struct MetricSample {
@@ -106,13 +110,23 @@ struct CollectorState {
 
 #[derive(Debug, Default)]
 struct CollectorInner {
-    active: AtomicBool,
+    active_collection_id: AtomicU64,
     state: Mutex<CollectorState>,
 }
 
 /// Shared DogStatsD statistics collector.
 ///
-/// The collector is inactive by default. While inactive, recording a metric only reads an atomic boolean and returns.
+/// The collector is inactive by default. While inactive, recording a metric only reads an atomic collection ID and
+/// returns without locking or allocating.
+///
+/// A collection is activated by the DogStatsD stats API for a bounded duration. Only one collection may be active at a
+/// time, and each active collection receives a unique nonzero ID. Metrics observed for an older ID are dropped if a
+/// later collection has already started, which prevents back-to-back requests from recording stale metrics into the
+/// wrong response.
+///
+/// Active collections store up to `MAXIMUM_DISTINCT_CONTEXTS` distinct metric contexts. Once the cap is reached, metrics
+/// for existing contexts continue to update their count and last-seen timestamp, while metrics for new contexts are
+/// ignored.
 #[derive(Clone, Debug, Default)]
 pub struct DogStatsDStatsCollector {
     inner: Arc<CollectorInner>,
@@ -120,21 +134,50 @@ pub struct DogStatsDStatsCollector {
 
 impl DogStatsDStatsCollector {
     /// Records a metric if a DogStatsD stats collection is active.
+    ///
+    /// When no collection is active, this method performs a single atomic load and returns. When a collection is active,
+    /// it captures the active collection ID, locks the collector state, allocates a context key for the metric, and then
+    /// updates the count and last-seen timestamp for that context.
+    ///
+    /// If the active collection changes before the state lock is acquired, the metric is treated as stale and dropped
+    /// instead of being recorded into the newer collection. If the collection has already reached its distinct-context
+    /// cap, only metrics for contexts already present in the collection are recorded.
     pub fn record_metric(&self, metric: &Metric) {
-        if !self.inner.active.load(Ordering::Acquire) {
+        let collection_id = self.inner.active_collection_id.load(Ordering::Acquire);
+        if collection_id == INACTIVE_COLLECTION_ID {
             return;
         }
 
+        self.record_metric_for_collection(collection_id, metric);
+    }
+
+    fn record_metric_for_collection(&self, collection_id: u64, metric: &Metric) {
         let timestamp = get_coarse_unix_timestamp();
         let mut state = lock_state(&self.inner.state);
         let Some(active) = state.active.as_mut() else {
-            self.inner.active.store(false, Ordering::Release);
+            self.inner
+                .active_collection_id
+                .store(INACTIVE_COLLECTION_ID, Ordering::Release);
             return;
         };
 
-        let sample = active.stats.entry(ContextNoOrigin::from_metric(metric)).or_default();
-        sample.count += 1;
-        sample.last_seen = timestamp;
+        if active.id != collection_id {
+            return;
+        }
+
+        let context = ContextNoOrigin::from_metric(metric);
+        if let Some(sample) = active.stats.get_mut(&context) {
+            sample.count += 1;
+            sample.last_seen = timestamp;
+        } else if active.stats.len() < MAXIMUM_DISTINCT_CONTEXTS {
+            active.stats.insert(
+                context,
+                MetricSample {
+                    count: 1,
+                    last_seen: timestamp,
+                },
+            );
+        }
     }
 
     async fn collect_for(&self, collection_duration_secs: u64) -> StatsResponse {
@@ -158,15 +201,18 @@ impl DogStatsDStatsCollector {
 
         let start_time_unix = get_coarse_unix_timestamp();
         let end_time_unix = start_time_unix + collection_duration_secs;
-        let id = state.next_id;
-        state.next_id = state.next_id.wrapping_add(1);
+        let id = state.next_id.max(INITIAL_COLLECTION_ID);
+        state.next_id = id.wrapping_add(1);
+        if state.next_id == INACTIVE_COLLECTION_ID {
+            state.next_id = INITIAL_COLLECTION_ID;
+        }
         state.active = Some(ActiveCollection {
             id,
             start_time_unix,
             end_time_unix,
             stats: FastHashMap::default(),
         });
-        self.inner.active.store(true, Ordering::Release);
+        self.inner.active_collection_id.store(id, Ordering::Release);
 
         Ok(CollectionGuard {
             collector: self.clone(),
@@ -178,7 +224,9 @@ impl DogStatsDStatsCollector {
     fn finish_collection(&self, collection_id: u64) -> StatsResponse {
         let mut state = lock_state(&self.inner.state);
         let Some(active) = state.active.take() else {
-            self.inner.active.store(false, Ordering::Release);
+            self.inner
+                .active_collection_id
+                .store(INACTIVE_COLLECTION_ID, Ordering::Release);
             return empty_statistics_response();
         };
 
@@ -187,7 +235,9 @@ impl DogStatsDStatsCollector {
             return empty_statistics_response();
         }
 
-        self.inner.active.store(false, Ordering::Release);
+        self.inner
+            .active_collection_id
+            .store(INACTIVE_COLLECTION_ID, Ordering::Release);
 
         StatsResponse::Statistics(CollectedStatistics {
             start_time_unix: active.start_time_unix,
@@ -200,13 +250,15 @@ impl DogStatsDStatsCollector {
         let mut state = lock_state(&self.inner.state);
         if state.active.as_ref().is_some_and(|active| active.id == collection_id) {
             state.active = None;
-            self.inner.active.store(false, Ordering::Release);
+            self.inner
+                .active_collection_id
+                .store(INACTIVE_COLLECTION_ID, Ordering::Release);
         }
     }
 
     #[cfg(test)]
     fn is_active(&self) -> bool {
-        self.inner.active.load(Ordering::Acquire)
+        self.inner.active_collection_id.load(Ordering::Acquire) != INACTIVE_COLLECTION_ID
     }
 
     #[cfg(test)]
@@ -230,10 +282,33 @@ impl DogStatsDStatsCollector {
     }
 
     #[cfg(test)]
+    pub(crate) fn active_metric_last_seen_for_tests(&self, name: &str) -> Option<u64> {
+        let state = lock_state(&self.inner.state);
+        state.active.as_ref().and_then(|active| {
+            active
+                .stats
+                .iter()
+                .find(|(context, _)| context.name.as_ref() == name)
+                .map(|(_, sample)| sample.last_seen)
+        })
+    }
+
+    #[cfg(test)]
     pub(crate) fn clear_collection_for_tests(&self) {
         let mut state = lock_state(&self.inner.state);
         state.active = None;
-        self.inner.active.store(false, Ordering::Release);
+        self.inner
+            .active_collection_id
+            .store(INACTIVE_COLLECTION_ID, Ordering::Release);
+    }
+}
+
+impl MemoryBounds for DogStatsDStatsCollector {
+    fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
+        builder.minimum().with_single_value::<CollectorInner>("collector state");
+        builder
+            .firm()
+            .with_map::<ContextNoOrigin, MetricSample>("active collection contexts", MAXIMUM_DISTINCT_CONTEXTS);
     }
 }
 
@@ -432,5 +507,59 @@ mod tests {
 
         assert!(!collector.is_active());
         assert!(lock_state(&collector.inner.state).active.is_none());
+    }
+
+    #[test]
+    fn stale_collection_id_does_not_record_into_new_collection() {
+        let collector = DogStatsDStatsCollector::default();
+        let guard = collector.start_collection(10).expect("collection should start");
+        let stale_collection_id = guard.collection_id;
+        let response = guard.finish();
+        assert!(matches!(response, StatsResponse::Statistics(_)));
+
+        let guard = collector.start_collection(10).expect("collection should start");
+        collector.record_metric_for_collection(stale_collection_id, &Metric::counter("foo", 1.0));
+
+        let response = guard.finish();
+        let StatsResponse::Statistics(collected) = response else {
+            panic!("expected statistics response");
+        };
+        assert!(collected.stats.0.is_empty());
+    }
+
+    #[test]
+    fn active_collection_caps_distinct_contexts() {
+        let collector = DogStatsDStatsCollector::default();
+        let guard = collector.start_collection(10).expect("collection should start");
+
+        for index in 0..MAXIMUM_DISTINCT_CONTEXTS {
+            let context = Context::from_parts(MetaString::from(format!("metric_{}", index)), TagSet::default());
+            collector.record_metric(&Metric::counter(context, 1.0));
+        }
+        collector.record_metric(&Metric::counter("metric_over_cap", 1.0));
+
+        let existing_context = Context::from_parts(MetaString::from("metric_0"), TagSet::default());
+        collector.record_metric(&Metric::counter(existing_context, 1.0));
+
+        let response = guard.finish();
+        let StatsResponse::Statistics(collected) = response else {
+            panic!("expected statistics response");
+        };
+
+        assert_eq!(collected.stats.0.len(), MAXIMUM_DISTINCT_CONTEXTS);
+        assert!(!collected
+            .stats
+            .0
+            .keys()
+            .any(|context| context.name.as_ref() == "metric_over_cap"));
+
+        let first_metric = collected
+            .stats
+            .0
+            .iter()
+            .find(|(context, _)| context.name.as_ref() == "metric_0")
+            .map(|(_, sample)| sample)
+            .expect("expected existing context to remain recorded");
+        assert_eq!(first_metric.count, 2);
     }
 }
