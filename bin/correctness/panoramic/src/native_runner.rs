@@ -121,13 +121,24 @@ impl NativeIntegrationRunner {
             };
             debug!(test = %test_name, binary = %agent_binary.display(), "Resolved Core Agent binary path.");
 
+            // The Agent and ADP must agree on the auth_token / ipc_cert.pem path. The Agent's
+            // authoritative config (sent to ADP via the config stream) overrides ADP's env vars
+            // by design, so the Agent must itself be told about the per-test path — otherwise
+            // it advertises the platform default (`/opt/datadog-agent/etc/auth_token`), ADP
+            // follows that advice for its post-config-stream IPC clients, and TLS fails with
+            // UnknownIssuer because the platform default cert does not match what the per-test
+            // Agent is actually serving.
+            let auth_token_path = state_dir.join("auth_token").to_string_lossy().into_owned();
+            let mut agent_env = self.test_case.container.env.clone();
+            agent_env.insert("DD_AUTH_TOKEN_FILE_PATH".to_string(), auth_token_path.clone());
+
             let agent_config = NativeProcessConfig::new(format!("{}-core-agent", self.test_case.name), agent_binary)
                 .with_args(vec![
                     "run".to_string(),
                     "-c".to_string(),
                     state_dir.to_string_lossy().into_owned(),
                 ])
-                .with_env_map(self.test_case.container.env.clone())
+                .with_env_map(agent_env)
                 // The Core Agent forks `trace-agent` and `process-agent` helpers; without a process
                 // group they orphan onto launchd on cleanup and continue holding ports (e.g., 8126
                 // for trace-agent), blocking subsequent tests.
