@@ -133,3 +133,17 @@ impl std::hash::Hasher for StableHasher {
         u64::from_le_bytes(buf)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stable_hasher_output_unchanged() {
+        // These expected values were generated with sha3 0.11's Shake128 and must not change
+        // within a major version of Saluki. If this test fails after a dependency change, the
+        // stable hash implementation has changed and any stored/compared hashes will be invalid.
+        assert_eq!(hash_single_stable("saluki"), 0x1d40da1f331833ef);
+        assert_eq!(hash_single_stable("hello world"), 0x6db238adc26a3bd8);
+    }
+}
