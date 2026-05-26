@@ -116,3 +116,39 @@ test-integration:
     - docker pull ${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}
     - docker tag ${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA} saluki-images/datadog-agent:testing-devel
     - make test-integration-quick
+
+# Runs the subset of integration tests that have opted in to the `native_macos` runtime
+# directly on a bare-metal macOS runner. No Docker, no virtualization: panoramic spawns ADP
+# (and the Core Agent for converged tests) as real macOS processes against a per-test temp
+# state directory. The Datadog Agent install at /opt/datadog-agent is provisioned by the
+# Makefile target (idempotent: re-uses an existing install if the runner has one).
+.test-integration-macos-base:
+  stage: e2e
+  needs: []
+  retry: 2
+  timeout: 30m
+  artifacts:
+    expire_in: 1 week
+    paths:
+      - integration-logs/
+    when: always
+  variables:
+    PANORAMIC_LOG_DIR: integration-logs
+  before_script:
+    # Defensive: clean up any leftover Datadog Agent processes from prior runs on this shared
+    # runner before we begin. Otherwise a stranded trace-agent/process-agent can hold ports
+    # (e.g., 8126) and break the first converged test.
+    - sudo pkill -9 -f /opt/datadog-agent/bin/agent/agent || true
+    - sudo pkill -9 -f /opt/datadog-agent/embedded/bin/ || true
+  script:
+    - make test-integration-macos-ci
+
+test-integration-macos-arm64:
+  extends:
+    - .macos-arm64-test-job
+    - .test-integration-macos-base
+
+test-integration-macos-amd64:
+  extends:
+    - .macos-amd64-test-job
+    - .test-integration-macos-base
