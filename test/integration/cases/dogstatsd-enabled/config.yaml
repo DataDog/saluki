@@ -2,6 +2,7 @@ type: integration
 name: "dogstatsd-enabled"
 description: "Verifies DogStatsD pipeline starts and listens on UDP port"
 timeout: 120s
+runtimes: [docker, native_macos]
 
 container:
   image: "saluki-images/datadog-agent:testing-devel"

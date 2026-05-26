@@ -2,6 +2,7 @@ type: integration
 name: "telemetry-endpoint"
 description: "Verifies the internal telemetry routes are exposed on the unprivileged API endpoint"
 timeout: 120s
+runtimes: [docker, native_macos]
 
 container:
   image: "saluki-images/datadog-agent:testing-devel"

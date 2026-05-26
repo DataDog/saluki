@@ -28,7 +28,7 @@ use tracing::{debug, error, info};
 
 use crate::{
     assertions::{create_assertion, AssertionContext, AssertionResult, LogBuffer},
-    config::{AssertionStep, IntegrationConfig},
+    config::{parse_port_spec, AssertionStep, IntegrationConfig},
     reporter::{PhaseTiming, TestResult},
     test::{Test, TestContext},
 };
@@ -150,11 +150,27 @@ impl NativeIntegrationRunner {
         }
     }
 
+    /// Builds the port mappings for assertions. In the Docker runner this maps container ports
+    /// to host ports allocated by Docker. On native there is no remapping: a port declared in
+    /// `exposed_ports` is reachable on the host at the same number. We populate identity entries
+    /// so the existing `port_listening` assertion (which expects every probed port to appear in
+    /// the mapping) works unchanged.
+    fn build_port_mappings(&self) -> HashMap<String, u16> {
+        let mut mappings = HashMap::new();
+        for spec in &self.test_case.container.exposed_ports {
+            if let Ok((port, protocol)) = parse_port_spec(spec) {
+                mappings.insert(format!("{}/{}", port, protocol), port);
+            }
+        }
+        mappings
+    }
+
     async fn run_assertions(
         &self, process_display_name: String, exit_token: CancellationToken,
     ) -> Vec<AssertionResult> {
         let mut results = Vec::new();
         let cancel_token = self.tctx.test_cancel_token();
+        let port_mappings = self.build_port_mappings();
 
         for step in &self.test_case.assertions {
             match step {
@@ -176,7 +192,7 @@ impl NativeIntegrationRunner {
                         container_exit_token: exit_token.clone(),
                         cancel_token: cancel_token.clone(),
                         container_name: process_display_name.clone(),
-                        port_mappings: HashMap::new(),
+                        port_mappings: port_mappings.clone(),
                     };
                     results.push(assertion.check(&ctx).await);
                 }
@@ -190,7 +206,7 @@ impl NativeIntegrationRunner {
                                     container_exit_token: exit_token.clone(),
                                     cancel_token: cancel_token.clone(),
                                     container_name: process_display_name.clone(),
-                                    port_mappings: HashMap::new(),
+                                    port_mappings: port_mappings.clone(),
                                 };
                                 futures.push(async move { a.check(&ctx).await });
                             }

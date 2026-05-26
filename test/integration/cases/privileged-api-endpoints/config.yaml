@@ -2,6 +2,7 @@ type: integration
 name: "privileged-api-endpoints"
 description: "Verifies the logging and metrics override routes are exposed on the privileged API after the workers assert them dynamically."
 timeout: 120s
+runtimes: [docker, native_macos]
 
 container:
   image: "saluki-images/datadog-agent:testing-devel"

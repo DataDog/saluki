@@ -2,6 +2,7 @@ type: integration
 name: "otlp-traces-enabled"
 description: "Verifies OTLP pipeline starts with native trace handling and proxying for metrics/logs"
 timeout: 120s
+runtimes: [docker, native_macos]
 
 container:
   image: "saluki-images/datadog-agent:testing-devel"

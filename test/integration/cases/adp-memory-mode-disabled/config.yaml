@@ -2,6 +2,7 @@ type: integration
 name: "adp-memory-mode-disabled"
 description: "Verifies that memory limiting is disabled by default and bounds verification is skipped"
 timeout: 120s
+runtimes: [docker, native_macos]
 
 container:
   image: "saluki-images/datadog-agent:testing-devel"
