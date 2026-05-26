@@ -38,8 +38,6 @@ dependencies = [
  "hyper",
  "metrics",
  "ottl",
- "papaya",
- "prometheus-exposition",
  "prost-types",
  "resource-accounting",
  "saluki-api",
