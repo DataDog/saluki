@@ -217,6 +217,7 @@ fn remap_system_metrics(new_metrics: &mut Vec<OtlpMetric>, metric: &OtlpMetric) 
     }
 }
 
+#[allow(clippy::collapsible_match)]
 fn remap_container_metrics(new_metrics: &mut Vec<OtlpMetric>, metric: &OtlpMetric) {
     let name = metric.name.as_str();
     if !name.starts_with("container.") {
@@ -534,17 +535,13 @@ fn copy_metric_with_attr(
 
         // Apply division logic.
         match dp.value {
-            Some(OtlpNumberValue::AsInt(ref mut i)) => {
-                if div >= 1.0 {
-                    *i /= div as i64;
-                }
+            Some(OtlpNumberValue::AsInt(ref mut i)) if div >= 1.0 => {
+                *i /= div as i64;
             }
-            Some(OtlpNumberValue::AsDouble(ref mut d)) => {
-                if div != 0.0 {
-                    *d /= div;
-                }
+            Some(OtlpNumberValue::AsDouble(ref mut d)) if div != 0.0 => {
+                *d /= div;
             }
-            None => {}
+            _ => {}
         }
 
         // Apply attribute mappings.

@@ -65,21 +65,19 @@ pub fn parse_dogstatsd_service_check<'a>(
                     maybe_hostname = Some(hostname);
                 }
                 // Local Data: client-provided data used for resolving the entity ID that this service check originated from.
-                LOCAL_DATA_PREFIX => {
-                    if config.client_origin_detection {
+                LOCAL_DATA_PREFIX
+                    if config.client_origin_detection => {
                         let (_, local_data) =
                             all_consuming(preceded(tag(LOCAL_DATA_PREFIX), local_data)).parse(chunk)?;
                         maybe_local_data = Some(local_data);
                     }
-                }
                 // External Data: client-provided data used for resolving the entity ID that this service check originated from.
-                EXTERNAL_DATA_PREFIX => {
-                    if config.client_origin_detection {
+                EXTERNAL_DATA_PREFIX
+                    if config.client_origin_detection => {
                         let (_, external_data) =
                             all_consuming(preceded(tag(EXTERNAL_DATA_PREFIX), external_data)).parse(chunk)?;
                         maybe_external_data = Some(external_data);
                     }
-                }
                 // Tags: additional tags to be added to the service check.
                 _ if chunk.starts_with(TAGS_PREFIX) => {
                     let (_, tags) = all_consuming(preceded(tag(TAGS_PREFIX), tags(config))).parse(chunk)?;
@@ -91,12 +89,11 @@ pub fn parse_dogstatsd_service_check<'a>(
                     maybe_message = Some(message);
                 }
                 // Cardinality: client-provided cardinality for the service check.
-                _ if chunk.starts_with(CARDINALITY_PREFIX) => {
-                    if config.client_origin_detection {
+                _ if chunk.starts_with(CARDINALITY_PREFIX)
+                    && config.client_origin_detection => {
                         let (_, cardinality) = cardinality(chunk)?;
                         maybe_cardinality = cardinality;
                     }
-                }
                 _ => {
                     // We don't know what this is, so we just skip it.
                     //

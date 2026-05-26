@@ -442,7 +442,7 @@ impl DDSketch {
         }
 
         // Sort the key counts first, as that's required by `insert_key_counts`.
-        key_counts.sort_unstable_by(|(k1, _), (k2, _)| k1.cmp(k2));
+        key_counts.sort_unstable_by_key(|(k, _)| *k);
 
         self.insert_key_counts(&key_counts);
     }
@@ -655,7 +655,7 @@ impl TryFrom<Dogsketch> for DDSketch {
             return Err("k and n bin vectors have differing lengths");
         }
 
-        for (k, n) in k.into_iter().zip(n.into_iter()) {
+        for (k, n) in k.into_iter().zip(n) {
             let k = i16::try_from(k).map_err(|_| "bin key overflows i16")?;
 
             sketch.bins.push(Bin { k, n });
