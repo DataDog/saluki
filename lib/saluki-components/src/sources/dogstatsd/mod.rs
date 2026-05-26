@@ -8,18 +8,16 @@
 
 use std::{
     collections::VecDeque,
-    net::SocketAddr,
     num::NonZeroUsize,
     path::PathBuf,
-    sync::{Arc, LazyLock, OnceLock},
+    sync::{Arc, LazyLock},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use async_trait::async_trait;
-use bytes::{Buf, BufMut, Bytes};
+use bytes::{Buf, BufMut};
 use bytesize::ByteSize;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
-use metrics::{Counter, Gauge, Histogram};
 use saluki_common::task::spawn_traced_named;
 use saluki_config::{deserialize_space_separated_or_seq, GenericConfiguration};
 use saluki_context::{
@@ -34,7 +32,6 @@ use saluki_core::data_model::event::{
 };
 use saluki_core::{
     components::{sources::*, ComponentContext},
-    observability::ComponentMetricsExt as _,
     pooling::FixedSizeObjectPool,
     topology::{
         interconnect::EventBufferManager,
@@ -55,18 +52,18 @@ use saluki_io::{
         ConnectionAddress, ListenAddress, ProcessIdentity, Stream,
     },
 };
-use saluki_metrics::MetricsBuilder;
 use serde::{Deserialize, Deserializer};
 use serde_with::{serde_as, NoneAsEmptyString};
 use snafu::{ResultExt as _, Snafu};
 use stringtheory::MetaString;
 use tokio::{
-    net::UdpSocket,
     select,
-    sync::mpsc,
-    time::{interval, timeout, MissedTickBehavior},
+    time::{interval, MissedTickBehavior},
 };
 use tracing::{debug, error, info, trace, warn};
+
+mod forwarder;
+use self::forwarder::{PacketForwarder, PacketForwarderTarget};
 
 mod framer;
 use self::framer::{get_framer, DsdFramer};
@@ -77,6 +74,9 @@ use self::filters::EnablePayloadsFilter;
 
 mod io_buffer;
 use self::io_buffer::IoBufferManager;
+
+mod metrics;
+use self::metrics::{build_metrics, Metrics};
 
 mod replay;
 use self::replay::{CaptureRecord, TrafficCapture};
@@ -111,8 +111,6 @@ enum Error {
     #[snafu(display("bind_host '{}' resolved to zero IP addresses.", host))]
     BindHostHasNoAddresses { host: String },
 }
-
-const ERROR_TYPE_ORIGIN_DETECTION: &str = "origin_detection";
 
 /// Baseline byte cost per interner entry, used to convert the Core Agent's entry-count-based
 /// `dogstatsd_string_interner_size` to a byte size.
@@ -227,11 +225,6 @@ const fn default_capture_depth() -> usize {
 }
 
 const DOGSTATSD_CAPTURE_DIR: &str = "dsd_capture";
-const FORWARDER_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
-const FORWARDER_IPV4_BIND_ADDR: &str = "0.0.0.0:0";
-const FORWARDER_IPV6_BIND_ADDR: &str = "[::]:0";
-const FORWARDER_SOCKET_READY_TIMEOUT: Duration = Duration::from_millis(100);
-const FORWARDER_QUEUE_CAPACITY: usize = 1024;
 
 fn deserialize_empty_metastring_as_none<'de, D>(deserializer: D) -> Result<Option<MetaString>, D::Error>
 where
@@ -658,6 +651,11 @@ impl DogStatsDConfiguration {
         Some((host, self.statsd_forward_port))
     }
 
+    fn packet_forwarder_target(&self) -> Option<PacketForwarderTarget> {
+        let (host, port) = self.statsd_forward_target()?;
+        Some(PacketForwarderTarget::new(host.clone(), port))
+    }
+
     /// Returns the number of UDP stream handlers to spawn, derived from `dogstatsd_autoscale_udp_listeners` and
     /// the number of available vCPUs.
     ///
@@ -864,7 +862,7 @@ impl SourceBuilder for DogStatsDConfiguration {
             self.workload_provider.clone(),
         );
         self.capture_control.bind(traffic_capture.clone());
-        let packet_forwarder = PacketForwarder::from_config(self);
+        let packet_forwarder_target = self.packet_forwarder_target();
 
         Ok(Box::new(DogStatsD {
             listeners,
@@ -880,7 +878,7 @@ impl SourceBuilder for DogStatsDConfiguration {
             additional_tags: self.additional_tags().into(),
             capture_entity_resolver: self.capture_entity_resolver.clone(),
             traffic_capture,
-            packet_forwarder,
+            packet_forwarder_target,
         }))
     }
 
@@ -930,7 +928,7 @@ pub struct DogStatsD {
     additional_tags: Arc<[String]>,
     capture_entity_resolver: Option<Arc<dyn CaptureEntityResolver + Send + Sync>>,
     traffic_capture: TrafficCapture,
-    packet_forwarder: Option<PacketForwarder>,
+    packet_forwarder_target: Option<PacketForwarderTarget>,
 }
 
 struct ListenerContext {
@@ -945,7 +943,7 @@ struct ListenerContext {
     additional_tags: Arc<[String]>,
     capture_entity_resolver: Option<Arc<dyn CaptureEntityResolver + Send + Sync>>,
     traffic_capture: TrafficCapture,
-    packet_forwarder: Option<PacketForwarder>,
+    packet_forwarder_target: Option<PacketForwarderTarget>,
 }
 
 struct HandlerContext {
@@ -963,327 +961,6 @@ struct HandlerContext {
     packet_forwarder: Option<PacketForwarder>,
 }
 
-struct Metrics {
-    metrics_received: Counter,
-    events_received: Counter,
-    service_checks_received: Counter,
-    bytes_received: Counter,
-    bytes_received_size: Histogram,
-    framing_errors: Counter,
-    metric_decoder_errors: Counter,
-    event_decoder_errors: Counter,
-    service_check_decoder_errors: Counter,
-    origin_detection_errors: Counter,
-    failed_context_resolve_total: Counter,
-    connections_active: Gauge,
-    packet_receive_success: Counter,
-    packet_receive_failure: Counter,
-    packets_forwarded: Counter,
-    bytes_forwarded: Counter,
-    packet_forwarding_errors: Counter,
-}
-
-impl Metrics {
-    fn metrics_received(&self) -> &Counter {
-        &self.metrics_received
-    }
-
-    fn events_received(&self) -> &Counter {
-        &self.events_received
-    }
-
-    fn service_checks_received(&self) -> &Counter {
-        &self.service_checks_received
-    }
-
-    fn bytes_received(&self) -> &Counter {
-        &self.bytes_received
-    }
-
-    fn bytes_received_size(&self) -> &Histogram {
-        &self.bytes_received_size
-    }
-
-    fn framing_errors(&self) -> &Counter {
-        &self.framing_errors
-    }
-
-    fn metric_decode_failed(&self) -> &Counter {
-        &self.metric_decoder_errors
-    }
-
-    fn event_decode_failed(&self) -> &Counter {
-        &self.event_decoder_errors
-    }
-
-    fn service_check_decode_failed(&self) -> &Counter {
-        &self.service_check_decoder_errors
-    }
-
-    fn origin_detection_errors(&self) -> &Counter {
-        &self.origin_detection_errors
-    }
-
-    fn failed_context_resolve_total(&self) -> &Counter {
-        &self.failed_context_resolve_total
-    }
-
-    fn connections_active(&self) -> &Gauge {
-        &self.connections_active
-    }
-
-    fn packet_receive_success(&self) -> &Counter {
-        &self.packet_receive_success
-    }
-
-    fn packet_receive_failure(&self) -> &Counter {
-        &self.packet_receive_failure
-    }
-
-    fn packets_forwarded(&self) -> &Counter {
-        &self.packets_forwarded
-    }
-
-    fn bytes_forwarded(&self) -> &Counter {
-        &self.bytes_forwarded
-    }
-
-    fn packet_forwarding_errors(&self) -> &Counter {
-        &self.packet_forwarding_errors
-    }
-}
-
-struct ConnectedPacketForwarder {
-    socket: UdpSocket,
-    target: SocketAddr,
-}
-
-impl ConnectedPacketForwarder {
-    async fn connect(host: &str, port: u16) -> std::io::Result<Self> {
-        match Self::connect_from_bind_addr(FORWARDER_IPV4_BIND_ADDR, host, port).await {
-            Ok(forwarder) => Ok(forwarder),
-            Err(ipv4_error) => {
-                debug!(
-                    %host,
-                    port,
-                    error = %ipv4_error,
-                    "Could not connect to statsd forward target with IPv4 UDP socket."
-                );
-                Self::connect_from_bind_addr(FORWARDER_IPV6_BIND_ADDR, host, port)
-                    .await
-                    .map_err(|ipv6_error| {
-                        std::io::Error::new(
-                            ipv6_error.kind(),
-                            format!(
-                                "could not connect to statsd forward target with IPv4 or IPv6 UDP socket: \
-                                 IPv4 error: {ipv4_error}; IPv6 error: {ipv6_error}"
-                            ),
-                        )
-                    })
-            }
-        }
-    }
-
-    async fn connect_from_bind_addr(bind_addr: &str, host: &str, port: u16) -> std::io::Result<Self> {
-        let socket = UdpSocket::bind(bind_addr).await?;
-        socket.connect((host, port)).await?;
-        timeout(FORWARDER_SOCKET_READY_TIMEOUT, socket.writable())
-            .await
-            .map_err(|_| {
-                std::io::Error::new(std::io::ErrorKind::TimedOut, "timed out waiting for forwarder socket")
-            })??;
-
-        let target = socket.peer_addr()?;
-        Ok(Self { socket, target })
-    }
-
-    async fn run(self, mut packets_rx: mpsc::Receiver<ForwardPacket>) {
-        while let Some(packet) = packets_rx.recv().await {
-            match self.socket.send(&packet.payload).await {
-                Ok(bytes_sent) => packet.record_success(bytes_sent),
-                Err(e) => {
-                    packet.record_error();
-                    debug!(target = %self.target, error = %e, "Failed to forward DogStatsD packet.");
-                }
-            }
-        }
-    }
-}
-
-struct ForwardPacket {
-    payload: Bytes,
-    packets_forwarded: Counter,
-    bytes_forwarded: Counter,
-    packet_forwarding_errors: Counter,
-}
-
-impl ForwardPacket {
-    fn from_payload(payload: Bytes, metrics: &Metrics) -> Self {
-        Self {
-            payload,
-            packets_forwarded: metrics.packets_forwarded().clone(),
-            bytes_forwarded: metrics.bytes_forwarded().clone(),
-            packet_forwarding_errors: metrics.packet_forwarding_errors().clone(),
-        }
-    }
-
-    fn record_success(&self, bytes_sent: usize) {
-        self.packets_forwarded.increment(1);
-        self.bytes_forwarded.increment(bytes_sent as u64);
-    }
-
-    fn record_error(&self) {
-        self.packet_forwarding_errors.increment(1);
-    }
-}
-
-#[derive(Clone)]
-struct PacketForwarder {
-    target_host: MetaString,
-    target_port: u16,
-    connected: Arc<OnceLock<mpsc::Sender<ForwardPacket>>>,
-}
-
-impl PacketForwarder {
-    fn from_config(config: &DogStatsDConfiguration) -> Option<Self> {
-        let (host, port) = config.statsd_forward_target()?;
-        Some(Self {
-            target_host: host.clone(),
-            target_port: port,
-            connected: Arc::new(OnceLock::new()),
-        })
-    }
-
-    fn spawn_connect(&self) {
-        let forwarder = self.clone();
-        spawn_traced_named("dogstatsd-packet-forwarder-setup", async move {
-            forwarder.connect().await;
-        });
-    }
-
-    async fn connect(&self) {
-        let host = &self.target_host;
-        let port = self.target_port;
-        match timeout(FORWARDER_CONNECT_TIMEOUT, ConnectedPacketForwarder::connect(host, port)).await {
-            Err(e) => {
-                warn!(%host, port, error = %e, "Timed out connecting to statsd forward target. Packet forwarding disabled.");
-            }
-            Ok(forwarder) => {
-                let forwarder = match forwarder {
-                    Ok(forwarder) => forwarder,
-                    Err(e) => {
-                        warn!(%host, port, error = %e, "Could not connect to statsd forward target. Packet forwarding disabled.");
-                        return;
-                    }
-                };
-                let target = forwarder.target;
-                let (packets_tx, packets_rx) = mpsc::channel(FORWARDER_QUEUE_CAPACITY);
-                spawn_traced_named("dogstatsd-packet-forwarder", forwarder.run(packets_rx));
-
-                info!(%target, "DogStatsD packet forwarding enabled.");
-                if self.connected.set(packets_tx).is_err() {
-                    debug!("DogStatsD packet forwarding was already initialized.");
-                }
-            }
-        }
-    }
-
-    async fn forward(&self, payload: Bytes, metrics: &Metrics) {
-        if payload.is_empty() {
-            return;
-        }
-
-        if let Some(packets_tx) = self.connected.get() {
-            let packet = ForwardPacket::from_payload(payload, metrics);
-            if packets_tx.send(packet).await.is_err() {
-                metrics.packet_forwarding_errors().increment(1);
-                debug!("Failed to enqueue DogStatsD packet for forwarding: receiver dropped.");
-            }
-        }
-    }
-}
-
-fn build_metrics(listen_addr: &ListenAddress, component_context: &ComponentContext) -> Metrics {
-    let builder = MetricsBuilder::from_component_context(component_context);
-
-    let listener_type = match listen_addr {
-        ListenAddress::Tcp(_) => "tcp",
-        ListenAddress::Udp(_) => "udp",
-        ListenAddress::Unix(_) => "unix",
-        ListenAddress::Unixgram(_) => "unixgram",
-    };
-
-    Metrics {
-        metrics_received: builder.register_counter_with_tags(
-            "component_events_received_total",
-            [("message_type", "metrics"), ("listener_type", listener_type)],
-        ),
-        events_received: builder.register_counter_with_tags(
-            "component_events_received_total",
-            [("message_type", "events"), ("listener_type", listener_type)],
-        ),
-        service_checks_received: builder.register_counter_with_tags(
-            "component_events_received_total",
-            [("message_type", "service_checks"), ("listener_type", listener_type)],
-        ),
-        bytes_received: builder
-            .register_counter_with_tags("component_bytes_received_total", [("listener_type", listener_type)]),
-        bytes_received_size: builder
-            .register_trace_histogram_with_tags("component_bytes_received_size", [("listener_type", listener_type)]),
-        framing_errors: builder.register_counter_with_tags(
-            "component_errors_total",
-            [("listener_type", listener_type), ("error_type", "framing")],
-        ),
-        metric_decoder_errors: builder.register_counter_with_tags(
-            "component_errors_total",
-            [
-                ("listener_type", listener_type),
-                ("error_type", "decode"),
-                ("message_type", "metrics"),
-            ],
-        ),
-        event_decoder_errors: builder.register_counter_with_tags(
-            "component_errors_total",
-            [
-                ("listener_type", listener_type),
-                ("error_type", "decode"),
-                ("message_type", "events"),
-            ],
-        ),
-        service_check_decoder_errors: builder.register_counter_with_tags(
-            "component_errors_total",
-            [
-                ("listener_type", listener_type),
-                ("error_type", "decode"),
-                ("message_type", "service_checks"),
-            ],
-        ),
-        origin_detection_errors: builder
-            .register_counter_with_tags("component_errors_total", [("error_type", ERROR_TYPE_ORIGIN_DETECTION)]),
-        connections_active: builder
-            .register_gauge_with_tags("component_connections_active", [("listener_type", listener_type)]),
-        packet_receive_success: builder.register_counter_with_tags(
-            "component_packets_received_total",
-            [("listener_type", listener_type), ("state", "ok")],
-        ),
-        packet_receive_failure: builder.register_counter_with_tags(
-            "component_packets_received_total",
-            [("listener_type", listener_type), ("state", "error")],
-        ),
-        packets_forwarded: builder.register_counter_with_tags(
-            "component_packets_forwarded_total",
-            [("listener_type", listener_type), ("state", "ok")],
-        ),
-        bytes_forwarded: builder
-            .register_counter_with_tags("component_bytes_forwarded_total", [("listener_type", listener_type)]),
-        packet_forwarding_errors: builder.register_counter_with_tags(
-            "component_packets_forwarded_total",
-            [("listener_type", listener_type), ("state", "error")],
-        ),
-        failed_context_resolve_total: builder.register_counter("component_failed_context_resolve_total"),
-    }
-}
-
 #[async_trait]
 impl Source for DogStatsD {
     async fn run(mut self: Box<Self>, mut context: SourceContext) -> Result<(), GenericError> {
@@ -1291,10 +968,6 @@ impl Source for DogStatsD {
         let mut health = context.take_health_handle();
 
         let mut listener_shutdown_coordinator = DynamicShutdownCoordinator::default();
-
-        if let Some(packet_forwarder) = &self.packet_forwarder {
-            packet_forwarder.spawn_connect();
-        }
 
         // For each listener, spawn a dedicated task to run it.
         for listener in self.listeners {
@@ -1318,7 +991,7 @@ impl Source for DogStatsD {
                 additional_tags: self.additional_tags.clone(),
                 capture_entity_resolver: self.capture_entity_resolver.clone(),
                 traffic_capture: self.traffic_capture.clone(),
-                packet_forwarder: self.packet_forwarder.clone(),
+                packet_forwarder_target: self.packet_forwarder_target.clone(),
             };
 
             spawn_traced_named(
@@ -1369,11 +1042,19 @@ async fn process_listener(
         additional_tags,
         capture_entity_resolver,
         traffic_capture,
-        packet_forwarder,
+        packet_forwarder_target,
     } = listener_context;
     tokio::pin!(shutdown_handle);
 
     let listen_addr = listener.listen_address().clone();
+    let metrics = build_metrics(&listen_addr, source_context.component_context());
+    let packet_forwarder = packet_forwarder_target
+        .as_ref()
+        .map(|target| target.to_forwarder(metrics.clone()));
+    if let Some(packet_forwarder) = &packet_forwarder {
+        packet_forwarder.spawn_connect();
+    }
+
     let mut stream_shutdown_coordinator = DynamicShutdownCoordinator::default();
     let mut stream_idx: u32 = 0;
 
@@ -1394,7 +1075,7 @@ async fn process_listener(
                         framer: get_framer(&listen_addr, eol_required.for_listener(&listen_addr)),
                         codec: codec.clone(),
                         io_buffer_pool: io_buffer_pool.clone(),
-                        metrics: build_metrics(&listen_addr, source_context.component_context()),
+                        metrics: metrics.clone(),
                         context_resolvers: context_resolvers.clone(),
                         origin_detection_enabled,
                         stream_log_too_big,
@@ -1543,7 +1224,7 @@ async fn drive_stream(
                             Ok(Some(frame)) => {
                                 trace!(%listen_addr, %peer_addr, ?frame, "Decoded frame.");
                                 if let Some(forwarder) = &packet_forwarder {
-                                    forwarder.forward(frame.clone(), &metrics).await;
+                                    forwarder.forward(frame.clone()).await;
                                 }
                                 match handle_frame(&frame[..], &codec, &mut context_resolvers, &metrics, &peer_addr, enabled_filter, &additional_tags) {
                                     Ok(Some(event)) => {
@@ -2043,8 +1724,12 @@ mod tests {
     use tokio::{net::UdpSocket, sync::mpsc, time::timeout};
 
     use super::{
-        build_metrics, handle_metric_packet, resolve_capture_container_id, ConnectedPacketForwarder, ContextResolvers,
-        DogStatsDConfiguration, ForwardPacket, PacketForwarder, DOGSTATSD_CAPTURE_DIR, FORWARDER_QUEUE_CAPACITY,
+        forwarder::{
+            ConnectedPacketForwarder, ForwardPacket, PacketForwarder, PacketForwarderTarget, FORWARDER_QUEUE_CAPACITY,
+        },
+        handle_metric_packet,
+        metrics::build_metrics,
+        resolve_capture_container_id, ContextResolvers, DogStatsDConfiguration, DOGSTATSD_CAPTURE_DIR,
         MIN_CAPTURE_DEPTH,
     };
 
@@ -2075,12 +1760,13 @@ mod tests {
         }
     }
 
-    fn packet_forwarder_from_sender(target_port: u16, packets_tx: mpsc::Sender<ForwardPacket>) -> PacketForwarder {
-        PacketForwarder {
-            target_host: MetaString::from_static("127.0.0.1"),
-            target_port,
-            connected: Arc::new(OnceLock::from(packets_tx)),
-        }
+    fn packet_forwarder_from_sender(
+        target_port: u16, packets_tx: mpsc::Sender<ForwardPacket>, metrics: super::metrics::Metrics,
+    ) -> PacketForwarder {
+        let mut forwarder =
+            PacketForwarderTarget::new(MetaString::from_static("127.0.0.1"), target_port).to_forwarder(metrics);
+        forwarder.connected = Arc::new(OnceLock::from(packets_tx));
+        forwarder
     }
 
     #[test]
@@ -2225,7 +1911,7 @@ mod tests {
     #[test]
     fn statsd_forward_invalid_target_still_builds_forwarder_handle() {
         let config = deser_config(r#"{"statsd_forward_host": "not a valid host", "statsd_forward_port": 9125}"#);
-        assert!(PacketForwarder::from_config(&config).is_some());
+        assert!(config.packet_forwarder_target().is_some());
     }
 
     #[tokio::test]
@@ -2243,12 +1929,10 @@ mod tests {
         let context = ComponentContext::source(ComponentId::try_from("dogstatsd_test").expect("valid component ID"));
         let metrics = build_metrics(&listen_addr, &context);
         let (packets_tx, packets_rx) = mpsc::channel(1);
-        let worker = tokio::spawn(forwarder.run(packets_rx));
-        let packet_forwarder = packet_forwarder_from_sender(receiver_addr.port(), packets_tx);
+        let worker = tokio::spawn(forwarder.run(packets_rx, metrics.clone()));
+        let packet_forwarder = packet_forwarder_from_sender(receiver_addr.port(), packets_tx, metrics);
 
-        packet_forwarder
-            .forward(Bytes::copy_from_slice(payload), &metrics)
-            .await;
+        packet_forwarder.forward(Bytes::copy_from_slice(payload)).await;
 
         let mut actual = [0u8; 128];
         let (received_len, _) = timeout(Duration::from_secs(1), receiver.recv_from(&mut actual))
@@ -2302,12 +1986,10 @@ mod tests {
         let context = ComponentContext::source(ComponentId::try_from("dogstatsd_test").expect("valid component ID"));
         let metrics = build_metrics(&listen_addr, &context);
         let (packets_tx, packets_rx) = mpsc::channel(1);
-        let worker = tokio::spawn(forwarder.run(packets_rx));
-        let packet_forwarder = packet_forwarder_from_sender(receiver_addr.port(), packets_tx);
+        let worker = tokio::spawn(forwarder.run(packets_rx, metrics.clone()));
+        let packet_forwarder = packet_forwarder_from_sender(receiver_addr.port(), packets_tx, metrics);
 
-        packet_forwarder
-            .forward(Bytes::copy_from_slice(payload), &metrics)
-            .await;
+        packet_forwarder.forward(Bytes::copy_from_slice(payload)).await;
 
         let mut actual = [0u8; 128];
         let (received_len, _) = timeout(Duration::from_secs(1), receiver.recv_from(&mut actual))
@@ -2327,18 +2009,16 @@ mod tests {
         let context = ComponentContext::source(ComponentId::try_from("dogstatsd_test").expect("valid component ID"));
         let metrics = build_metrics(&listen_addr, &context);
         let (packets_tx, _packets_rx) = mpsc::channel(FORWARDER_QUEUE_CAPACITY);
-        let packet_forwarder = packet_forwarder_from_sender(9125, packets_tx);
+        let packet_forwarder = packet_forwarder_from_sender(9125, packets_tx, metrics);
 
         for _ in 0..FORWARDER_QUEUE_CAPACITY {
-            packet_forwarder
-                .forward(Bytes::from_static(b"queued:1|c"), &metrics)
-                .await;
+            packet_forwarder.forward(Bytes::from_static(b"queued:1|c")).await;
         }
 
         assert!(
             timeout(
                 Duration::from_millis(100),
-                packet_forwarder.forward(Bytes::from_static(b"blocked:1|c"), &metrics),
+                packet_forwarder.forward(Bytes::from_static(b"blocked:1|c")),
             )
             .await
             .is_err(),
@@ -2359,12 +2039,10 @@ mod tests {
             target: SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 9125)),
         };
         let (packets_tx, packets_rx) = mpsc::channel(1);
-        let worker = tokio::spawn(forwarder.run(packets_rx));
-        let packet_forwarder = packet_forwarder_from_sender(9125, packets_tx);
+        let worker = tokio::spawn(forwarder.run(packets_rx, metrics.clone()));
+        let packet_forwarder = packet_forwarder_from_sender(9125, packets_tx, metrics);
 
-        packet_forwarder
-            .forward(Bytes::from_static(b"daemon:666|g"), &metrics)
-            .await;
+        packet_forwarder.forward(Bytes::from_static(b"daemon:666|g")).await;
 
         let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
         loop {
