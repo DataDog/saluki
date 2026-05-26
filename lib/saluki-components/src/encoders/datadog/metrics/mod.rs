@@ -150,9 +150,9 @@ pub struct DatadogMetricsConfiguration {
     )]
     max_metrics_per_payload: usize,
 
-    /// Maximum compressed size, in bytes, of generic serializer payloads.
+    /// Maximum compressed size, in bytes, of generic payloads.
     ///
-    /// This applies to V1 JSON series payloads and sketch payloads, matching the Datadog Agent's generic serializer
+    /// This applies to V1 JSON series payloads and sketch payloads, matching the Datadog Agent's generic payload
     /// builder. V2 series payloads use `serializer_max_series_payload_size` instead. The effective value is clamped to
     /// the Agent's default intake-safe limit of 2,621,440 bytes, so larger configured values do not allow payloads that
     /// intake may reject. If set to `0`, every non-empty compressed payload exceeds the limit and is dropped during
@@ -162,9 +162,9 @@ pub struct DatadogMetricsConfiguration {
     #[serde(rename = "serializer_max_payload_size", default = "default_max_payload_size")]
     max_payload_size: usize,
 
-    /// Maximum uncompressed size, in bytes, of generic serializer payloads.
+    /// Maximum uncompressed size, in bytes, of generic payloads.
     ///
-    /// This applies to V1 JSON series payloads and sketch payloads, matching the Datadog Agent's generic serializer
+    /// This applies to V1 JSON series payloads and sketch payloads, matching the Datadog Agent's generic payload
     /// builder. V2 series payloads use `serializer_max_series_uncompressed_payload_size` instead. The effective value
     /// is clamped to the Agent's default intake-safe limit of 4,194,304 bytes, so larger configured values do not allow
     /// payloads that intake may reject. Values smaller than the minimum endpoint framing size prevent the request
