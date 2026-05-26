@@ -442,7 +442,7 @@ endif
 
 .PHONY: check-all
 check-all: ## Check everything
-check-all: check-fmt check-clippy check-docs check-deny check-licenses generate-api-docs check-features
+check-all: check-fmt check-clippy check-docs check-deny check-licenses check-unused-deps generate-api-docs check-features
 
 .PHONY: generate-api-docs
 generate-api-docs: check-rust-build-tools
