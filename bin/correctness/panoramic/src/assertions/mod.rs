@@ -105,7 +105,7 @@ pub struct AssertionContext {
     /// Name of the container being tested.
     pub container_name: String,
     /// Whether the test is running natively (no container). When `true`, assertions that would
-    /// otherwise reach into a container (e.g., reading a file via `docker exec`) should operate
+    /// otherwise reach into a container (for example, reading a file via `docker exec`) should operate
     /// against the host filesystem / local process instead.
     pub is_native: bool,
     /// Exit code of the native target process, populated once it exits. `None` on the docker

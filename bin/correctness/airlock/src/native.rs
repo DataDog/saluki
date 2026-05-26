@@ -29,7 +29,7 @@ use tracing::{debug, warn};
 /// Shared cell that receives the exit code of a spawned [`NativeProcess`].
 ///
 /// The cell is populated by the background exit watcher when the child exits on its own, or by
-/// [`NativeProcess::cleanup`] when the test tears down. Consumers (e.g., the
+/// [`NativeProcess::cleanup`] when the test tears down. Consumers (for example, the
 /// `process_exits_with` assertion in panoramic) read the cell after the exit token fires.
 ///
 /// The inner `Option<i32>` is `None` if the process was terminated by signal rather than exiting
@@ -52,7 +52,7 @@ pub struct NativeProcessConfig {
     /// If `true`, the spawned process is placed into a new process group with itself as the
     /// group leader, and [`cleanup`][NativeProcess::cleanup] signals the entire group instead of
     /// only the immediate child. This is essential when the spawned binary forks helpers that
-    /// outlive their parent (e.g., the Datadog Core Agent spawns `trace-agent` and
+    /// outlive their parent (for example, the Datadog Core Agent spawns `trace-agent` and
     /// `process-agent` which orphan onto launchd if only the parent is killed).
     pub use_process_group: bool,
 }
@@ -240,7 +240,7 @@ impl NativeProcess {
     /// cancels the exit token.
     pub async fn cleanup(mut self) {
         // If we asked for a process group, first send SIGTERM to the entire group. This gives
-        // descendants (e.g., trace-agent, process-agent spawned by the Datadog Core Agent) a
+        // descendants (for example, trace-agent, process-agent spawned by the Datadog Core Agent) a
         // chance to shut down cleanly before we hard-kill them. After a brief grace period we
         // send SIGKILL to the group to guarantee no orphans remain.
         #[cfg(unix)]
@@ -274,7 +274,7 @@ impl NativeProcess {
         if let Some(handle) = self.exit_task.take() {
             let _ = handle.await;
         }
-        // Defensive: make sure the token is fired even if the watcher never set it (e.g., on a
+        // Defensive: make sure the token is fired even if the watcher never set it (for example, on a
         // failed wait).
         self.exit_token.cancel();
         for handle in self.log_tasks.drain(..) {

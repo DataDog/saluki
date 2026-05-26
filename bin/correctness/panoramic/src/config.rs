@@ -129,7 +129,7 @@ pub struct IntegrationConfig {
     /// way they would in production. When `false` (the default), only ADP is spawned (standalone
     /// mode).
     ///
-    /// On the `docker` runtime this field is informational — the converged image always runs
+    /// On the `docker` runtime this field is informational; the converged image always runs
     /// both processes via s6.
     #[serde(default)]
     pub requires_core_agent: bool,
