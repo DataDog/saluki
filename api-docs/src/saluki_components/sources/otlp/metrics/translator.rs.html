@@ -2713,12 +2713,12 @@
 <a href=#2713 id=2713 data-nosnippet>2713</a>
 <a href=#2714 id=2714 data-nosnippet>2714</a>        <span class="comment">// First metric is rate from point 1 to 2: (15-10)/(3-2) = 5
 <a href=#2715 id=2715 data-nosnippet>2715</a>        </span><span class="kw">let </span>metric1 = events[<span class="number">0</span>].try_as_metric().unwrap();
-<a href=#2716 id=2716 data-nosnippet>2716</a>        <span class="kw">let </span>expected_ts_s_1 = (start_ts_s + <span class="number">3</span>) <span class="kw">as </span>u64;
+<a href=#2716 id=2716 data-nosnippet>2716</a>        <span class="kw">let </span>expected_ts_s_1 = start_ts_s + <span class="number">3</span>;
 <a href=#2717 id=2717 data-nosnippet>2717</a>        <span class="macro">assert_eq!</span>(metric1.values(), <span class="kw-2">&amp;</span>MetricValues::gauge((expected_ts_s_1, <span class="number">5.0</span>)));
 <a href=#2718 id=2718 data-nosnippet>2718</a>
 <a href=#2719 id=2719 data-nosnippet>2719</a>        <span class="comment">// Second metric is rate from point 2 to 3: (20-15)/(4-3) = 5
 <a href=#2720 id=2720 data-nosnippet>2720</a>        </span><span class="kw">let </span>metric2 = events[<span class="number">1</span>].try_as_metric().unwrap();
-<a href=#2721 id=2721 data-nosnippet>2721</a>        <span class="kw">let </span>expected_ts_s_2 = (start_ts_s + <span class="number">4</span>) <span class="kw">as </span>u64;
+<a href=#2721 id=2721 data-nosnippet>2721</a>        <span class="kw">let </span>expected_ts_s_2 = start_ts_s + <span class="number">4</span>;
 <a href=#2722 id=2722 data-nosnippet>2722</a>        <span class="macro">assert_eq!</span>(metric2.values(), <span class="kw-2">&amp;</span>MetricValues::gauge((expected_ts_s_2, <span class="number">5.0</span>)));
 <a href=#2723 id=2723 data-nosnippet>2723</a>    }
 <a href=#2724 id=2724 data-nosnippet>2724</a>

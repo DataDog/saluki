@@ -442,7 +442,7 @@
 <a href=#442 id=442 data-nosnippet>442</a>        }
 <a href=#443 id=443 data-nosnippet>443</a>
 <a href=#444 id=444 data-nosnippet>444</a>        <span class="comment">// Sort the key counts first, as that's required by `insert_key_counts`.
-<a href=#445 id=445 data-nosnippet>445</a>        </span>key_counts.sort_unstable_by(|(k1, <span class="kw">_</span>), (k2, <span class="kw">_</span>)| k1.cmp(k2));
+<a href=#445 id=445 data-nosnippet>445</a>        </span>key_counts.sort_unstable_by_key(|(k, <span class="kw">_</span>)| <span class="kw-2">*</span>k);
 <a href=#446 id=446 data-nosnippet>446</a>
 <a href=#447 id=447 data-nosnippet>447</a>        <span class="self">self</span>.insert_key_counts(<span class="kw-2">&amp;</span>key_counts);
 <a href=#448 id=448 data-nosnippet>448</a>    }
@@ -655,7 +655,7 @@
 <a href=#655 id=655 data-nosnippet>655</a>            <span class="kw">return </span><span class="prelude-val">Err</span>(<span class="string">"k and n bin vectors have differing lengths"</span>);
 <a href=#656 id=656 data-nosnippet>656</a>        }
 <a href=#657 id=657 data-nosnippet>657</a>
-<a href=#658 id=658 data-nosnippet>658</a>        <span class="kw">for </span>(k, n) <span class="kw">in </span>k.into_iter().zip(n.into_iter()) {
+<a href=#658 id=658 data-nosnippet>658</a>        <span class="kw">for </span>(k, n) <span class="kw">in </span>k.into_iter().zip(n) {
 <a href=#659 id=659 data-nosnippet>659</a>            <span class="kw">let </span>k = i16::try_from(k).map_err(|<span class="kw">_</span>| <span class="string">"bin key overflows i16"</span>)<span class="question-mark">?</span>;
 <a href=#660 id=660 data-nosnippet>660</a>
 <a href=#661 id=661 data-nosnippet>661</a>            sketch.bins.push(Bin { k, n });

@@ -81,29 +81,81 @@
 <a href=#81 id=81 data-nosnippet>81</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#82 id=82 data-nosnippet>82</a>    };
 <a href=#83 id=83 data-nosnippet>83</a>
-<a href=#84 id=84 data-nosnippet>84</a>    <span class="doccomment">/// `use_v2_api.series`—when `false`, send series metrics to the legacy V1 JSON intake at `/api/v1/series`.
-<a href=#85 id=85 data-nosnippet>85</a>    </span>USE_V2_API_SERIES = SalukiAnnotation {
-<a href=#86 id=86 data-nosnippet>86</a>        schema: <span class="kw-2">&amp;</span>schema::USE_V2_API_SERIES,
+<a href=#84 id=84 data-nosnippet>84</a>    <span class="doccomment">/// `serializer_max_payload_size`—max compressed generic payload size.
+<a href=#85 id=85 data-nosnippet>85</a>    </span>SERIALIZER_MAX_PAYLOAD_SIZE = SalukiAnnotation {
+<a href=#86 id=86 data-nosnippet>86</a>        schema: <span class="kw-2">&amp;</span>schema::SERIALIZER_MAX_PAYLOAD_SIZE,
 <a href=#87 id=87 data-nosnippet>87</a>        support_level: SupportLevel::Full,
 <a href=#88 id=88 data-nosnippet>88</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
 <a href=#89 id=89 data-nosnippet>89</a>        env_var_override: <span class="prelude-val">None</span>,
-<a href=#90 id=90 data-nosnippet>90</a>        used_by: <span class="kw-2">&amp;</span>[structs::DATADOG_METRICS_CONFIGURATION],
-<a href=#91 id=91 data-nosnippet>91</a>        value_type_override: <span class="prelude-val">None</span>,
-<a href=#92 id=92 data-nosnippet>92</a>        test_json: <span class="prelude-val">None</span>,
-<a href=#93 id=93 data-nosnippet>93</a>    };
-<a href=#94 id=94 data-nosnippet>94</a>
-<a href=#95 id=95 data-nosnippet>95</a>    <span class="doccomment">/// `env`—the environment name attached to all emitted telemetry.
-<a href=#96 id=96 data-nosnippet>96</a>    </span>ENV = SalukiAnnotation {
-<a href=#97 id=97 data-nosnippet>97</a>        schema: <span class="kw-2">&amp;</span>schema::ENV,
-<a href=#98 id=98 data-nosnippet>98</a>        support_level: SupportLevel::Full,
-<a href=#99 id=99 data-nosnippet>99</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
-<a href=#100 id=100 data-nosnippet>100</a>        env_var_override: <span class="prelude-val">None</span>,
-<a href=#101 id=101 data-nosnippet>101</a>        used_by: <span class="kw-2">&amp;</span>[
-<a href=#102 id=102 data-nosnippet>102</a>            structs::DATADOG_APM_STATS_ENCODER_CONFIGURATION,
-<a href=#103 id=103 data-nosnippet>103</a>            structs::DATADOG_TRACE_CONFIGURATION,
-<a href=#104 id=104 data-nosnippet>104</a>        ],
-<a href=#105 id=105 data-nosnippet>105</a>        value_type_override: <span class="prelude-val">None</span>,
-<a href=#106 id=106 data-nosnippet>106</a>        test_json: <span class="prelude-val">None</span>,
-<a href=#107 id=107 data-nosnippet>107</a>    };
-<a href=#108 id=108 data-nosnippet>108</a>}
+<a href=#90 id=90 data-nosnippet>90</a>        used_by: <span class="kw-2">&amp;</span>[
+<a href=#91 id=91 data-nosnippet>91</a>            structs::DATADOG_EVENTS_CONFIGURATION,
+<a href=#92 id=92 data-nosnippet>92</a>            structs::DATADOG_METRICS_CONFIGURATION,
+<a href=#93 id=93 data-nosnippet>93</a>            structs::DATADOG_SERVICE_CHECKS_CONFIGURATION,
+<a href=#94 id=94 data-nosnippet>94</a>        ],
+<a href=#95 id=95 data-nosnippet>95</a>        value_type_override: <span class="prelude-val">Some</span>(ValueType::Integer),
+<a href=#96 id=96 data-nosnippet>96</a>        test_json: <span class="prelude-val">None</span>,
+<a href=#97 id=97 data-nosnippet>97</a>    };
+<a href=#98 id=98 data-nosnippet>98</a>
+<a href=#99 id=99 data-nosnippet>99</a>    <span class="doccomment">/// `serializer_max_uncompressed_payload_size`—max uncompressed generic payload size.
+<a href=#100 id=100 data-nosnippet>100</a>    </span>SERIALIZER_MAX_UNCOMPRESSED_PAYLOAD_SIZE = SalukiAnnotation {
+<a href=#101 id=101 data-nosnippet>101</a>        schema: <span class="kw-2">&amp;</span>schema::SERIALIZER_MAX_UNCOMPRESSED_PAYLOAD_SIZE,
+<a href=#102 id=102 data-nosnippet>102</a>        support_level: SupportLevel::Full,
+<a href=#103 id=103 data-nosnippet>103</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
+<a href=#104 id=104 data-nosnippet>104</a>        env_var_override: <span class="prelude-val">None</span>,
+<a href=#105 id=105 data-nosnippet>105</a>        used_by: <span class="kw-2">&amp;</span>[
+<a href=#106 id=106 data-nosnippet>106</a>            structs::DATADOG_EVENTS_CONFIGURATION,
+<a href=#107 id=107 data-nosnippet>107</a>            structs::DATADOG_METRICS_CONFIGURATION,
+<a href=#108 id=108 data-nosnippet>108</a>            structs::DATADOG_SERVICE_CHECKS_CONFIGURATION,
+<a href=#109 id=109 data-nosnippet>109</a>        ],
+<a href=#110 id=110 data-nosnippet>110</a>        value_type_override: <span class="prelude-val">Some</span>(ValueType::Integer),
+<a href=#111 id=111 data-nosnippet>111</a>        test_json: <span class="prelude-val">None</span>,
+<a href=#112 id=112 data-nosnippet>112</a>    };
+<a href=#113 id=113 data-nosnippet>113</a>
+<a href=#114 id=114 data-nosnippet>114</a>    <span class="doccomment">/// `serializer_max_series_payload_size`—max compressed V2 series payload size.
+<a href=#115 id=115 data-nosnippet>115</a>    </span>SERIALIZER_MAX_SERIES_PAYLOAD_SIZE = SalukiAnnotation {
+<a href=#116 id=116 data-nosnippet>116</a>        schema: <span class="kw-2">&amp;</span>schema::SERIALIZER_MAX_SERIES_PAYLOAD_SIZE,
+<a href=#117 id=117 data-nosnippet>117</a>        support_level: SupportLevel::Full,
+<a href=#118 id=118 data-nosnippet>118</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
+<a href=#119 id=119 data-nosnippet>119</a>        env_var_override: <span class="prelude-val">None</span>,
+<a href=#120 id=120 data-nosnippet>120</a>        used_by: <span class="kw-2">&amp;</span>[structs::DATADOG_METRICS_CONFIGURATION],
+<a href=#121 id=121 data-nosnippet>121</a>        value_type_override: <span class="prelude-val">Some</span>(ValueType::Integer),
+<a href=#122 id=122 data-nosnippet>122</a>        test_json: <span class="prelude-val">None</span>,
+<a href=#123 id=123 data-nosnippet>123</a>    };
+<a href=#124 id=124 data-nosnippet>124</a>
+<a href=#125 id=125 data-nosnippet>125</a>    <span class="doccomment">/// `serializer_max_series_uncompressed_payload_size`—max uncompressed V2 series payload size.
+<a href=#126 id=126 data-nosnippet>126</a>    </span>SERIALIZER_MAX_SERIES_UNCOMPRESSED_PAYLOAD_SIZE = SalukiAnnotation {
+<a href=#127 id=127 data-nosnippet>127</a>        schema: <span class="kw-2">&amp;</span>schema::SERIALIZER_MAX_SERIES_UNCOMPRESSED_PAYLOAD_SIZE,
+<a href=#128 id=128 data-nosnippet>128</a>        support_level: SupportLevel::Full,
+<a href=#129 id=129 data-nosnippet>129</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
+<a href=#130 id=130 data-nosnippet>130</a>        env_var_override: <span class="prelude-val">None</span>,
+<a href=#131 id=131 data-nosnippet>131</a>        used_by: <span class="kw-2">&amp;</span>[structs::DATADOG_METRICS_CONFIGURATION],
+<a href=#132 id=132 data-nosnippet>132</a>        value_type_override: <span class="prelude-val">Some</span>(ValueType::Integer),
+<a href=#133 id=133 data-nosnippet>133</a>        test_json: <span class="prelude-val">None</span>,
+<a href=#134 id=134 data-nosnippet>134</a>    };
+<a href=#135 id=135 data-nosnippet>135</a>
+<a href=#136 id=136 data-nosnippet>136</a>    <span class="doccomment">/// `use_v2_api.series`—when `false`, send series metrics to the legacy V1 JSON intake at `/api/v1/series`.
+<a href=#137 id=137 data-nosnippet>137</a>    </span>USE_V2_API_SERIES = SalukiAnnotation {
+<a href=#138 id=138 data-nosnippet>138</a>        schema: <span class="kw-2">&amp;</span>schema::USE_V2_API_SERIES,
+<a href=#139 id=139 data-nosnippet>139</a>        support_level: SupportLevel::Full,
+<a href=#140 id=140 data-nosnippet>140</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
+<a href=#141 id=141 data-nosnippet>141</a>        env_var_override: <span class="prelude-val">None</span>,
+<a href=#142 id=142 data-nosnippet>142</a>        used_by: <span class="kw-2">&amp;</span>[structs::DATADOG_METRICS_CONFIGURATION],
+<a href=#143 id=143 data-nosnippet>143</a>        value_type_override: <span class="prelude-val">None</span>,
+<a href=#144 id=144 data-nosnippet>144</a>        test_json: <span class="prelude-val">None</span>,
+<a href=#145 id=145 data-nosnippet>145</a>    };
+<a href=#146 id=146 data-nosnippet>146</a>
+<a href=#147 id=147 data-nosnippet>147</a>    <span class="doccomment">/// `env`—the environment name attached to all emitted telemetry.
+<a href=#148 id=148 data-nosnippet>148</a>    </span>ENV = SalukiAnnotation {
+<a href=#149 id=149 data-nosnippet>149</a>        schema: <span class="kw-2">&amp;</span>schema::ENV,
+<a href=#150 id=150 data-nosnippet>150</a>        support_level: SupportLevel::Full,
+<a href=#151 id=151 data-nosnippet>151</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
+<a href=#152 id=152 data-nosnippet>152</a>        env_var_override: <span class="prelude-val">None</span>,
+<a href=#153 id=153 data-nosnippet>153</a>        used_by: <span class="kw-2">&amp;</span>[
+<a href=#154 id=154 data-nosnippet>154</a>            structs::DATADOG_APM_STATS_ENCODER_CONFIGURATION,
+<a href=#155 id=155 data-nosnippet>155</a>            structs::DATADOG_TRACE_CONFIGURATION,
+<a href=#156 id=156 data-nosnippet>156</a>        ],
+<a href=#157 id=157 data-nosnippet>157</a>        value_type_override: <span class="prelude-val">None</span>,
+<a href=#158 id=158 data-nosnippet>158</a>        test_json: <span class="prelude-val">None</span>,
+<a href=#159 id=159 data-nosnippet>159</a>    };
+<a href=#160 id=160 data-nosnippet>160</a>}
 </code></pre></div></section></main></body></html>
