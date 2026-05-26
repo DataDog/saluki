@@ -114,32 +114,24 @@ pub fn parse_dogstatsd_metric<'a>(
                     maybe_tags = Some(tags);
                 }
                 // Local Data: client-provided data used for resolving the entity ID that this metric originated from.
-                b'c' if chunk.len() > 1 && chunk[1] == b':' => {
-                    if config.client_origin_detection {
-                        let (_, local_data) = all_consuming(preceded(tag("c:"), local_data)).parse(chunk)?;
-                        maybe_local_data = Some(local_data);
-                    }
+                b'c' if chunk.len() > 1 && chunk[1] == b':' && config.client_origin_detection => {
+                    let (_, local_data) = all_consuming(preceded(tag("c:"), local_data)).parse(chunk)?;
+                    maybe_local_data = Some(local_data);
                 }
                 // Timestamp: client-provided timestamp for the metric, relative to the Unix epoch, in seconds.
-                b'T' => {
-                    if config.timestamps {
-                        let (_, timestamp) = all_consuming(preceded(tag("T"), unix_timestamp)).parse(chunk)?;
-                        maybe_timestamp = Some(timestamp);
-                    }
+                b'T' if config.timestamps => {
+                    let (_, timestamp) = all_consuming(preceded(tag("T"), unix_timestamp)).parse(chunk)?;
+                    maybe_timestamp = Some(timestamp);
                 }
                 // External Data: client-provided data used for resolving the entity ID that this metric originated from.
-                b'e' if chunk.len() > 1 && chunk[1] == b':' => {
-                    if config.client_origin_detection {
-                        let (_, external_data) = all_consuming(preceded(tag("e:"), external_data)).parse(chunk)?;
-                        maybe_external_data = Some(external_data);
-                    }
+                b'e' if chunk.len() > 1 && chunk[1] == b':' && config.client_origin_detection => {
+                    let (_, external_data) = all_consuming(preceded(tag("e:"), external_data)).parse(chunk)?;
+                    maybe_external_data = Some(external_data);
                 }
                 // Cardinality: client-provided cardinality for the metric.
-                b'c' if chunk.starts_with(CARDINALITY_PREFIX) => {
-                    if config.client_origin_detection {
-                        let (_, cardinality) = cardinality(chunk)?;
-                        maybe_cardinality = cardinality;
-                    }
+                b'c' if chunk.starts_with(CARDINALITY_PREFIX) && config.client_origin_detection => {
+                    let (_, cardinality) = cardinality(chunk)?;
+                    maybe_cardinality = cardinality;
                 }
                 _ => {
                     // We don't know what this is, so we just skip it.

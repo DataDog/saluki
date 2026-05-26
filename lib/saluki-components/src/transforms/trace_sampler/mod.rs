@@ -1339,7 +1339,7 @@ mod tests {
         }
     }
 
-    /// ETS + OTLP non-error trace (legacy sampler path): pre-sampling sets priority=AutoKeep and dm="-9".
+    /// ETS + OTLP non-error trace (legacy sampler path): pre-sampling sets priority=AutoKeep and dm=-9.
     /// Mirrors DDA `OTLPReceiver` assigning priority=1 + dm=-9 before ETS returns early.
     #[test]
     fn ets_otlp_non_error_gets_presample_priority_and_dm() {
@@ -1357,7 +1357,7 @@ mod tests {
         assert_eq!(dm, DECISION_MAKER_PROBABILISTIC, "OTLP pre-sampling sets dm=-9");
     }
 
-    /// ETS + OTLP error trace (legacy sampler path): pre-sampling sets priority=AutoKeep and dm="-9".
+    /// ETS + OTLP error trace (legacy sampler path): pre-sampling sets priority=AutoKeep and dm=-9.
     #[test]
     fn ets_otlp_error_gets_presample_priority_and_dm() {
         let mut sampler = create_sampler_with_ets_legacy();

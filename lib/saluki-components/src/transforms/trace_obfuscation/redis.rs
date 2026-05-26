@@ -237,11 +237,9 @@ fn obfuscate_redis_cmd(out: &mut String, cmd: &str, args: &[String]) {
     let mut args = args.to_vec();
 
     match cmd_upper.as_str() {
-        "AUTH" => {
-            if !args.is_empty() {
-                args[0] = "?".to_string();
-                args.truncate(1);
-            }
+        "AUTH" if !args.is_empty() => {
+            args[0] = "?".to_string();
+            args.truncate(1);
         }
 
         "APPEND" | "GETSET" | "LPUSHX" | "GEORADIUSBYMEMBER" | "RPUSHX" | "SET" | "SETNX" | "SISMEMBER" | "ZRANK"
@@ -257,11 +255,9 @@ fn obfuscate_redis_cmd(out: &mut String, cmd: &str, args: &[String]) {
             obfuscate_arg_n(&mut args, 3);
         }
 
-        "GEOHASH" | "GEOPOS" | "GEODIST" | "LPUSH" | "RPUSH" | "SREM" | "ZREM" | "SADD" => {
-            if args.len() > 1 {
-                args[1] = "?".to_string();
-                args.truncate(2);
-            }
+        "GEOHASH" | "GEOPOS" | "GEODIST" | "LPUSH" | "RPUSH" | "SREM" | "ZREM" | "SADD" if args.len() > 1 => {
+            args[1] = "?".to_string();
+            args.truncate(2);
         }
 
         "GEOADD" => {
@@ -276,10 +272,8 @@ fn obfuscate_redis_cmd(out: &mut String, cmd: &str, args: &[String]) {
             obfuscate_args_step(&mut args, 0, 2);
         }
 
-        "CONFIG" => {
-            if !args.is_empty() && args[0].to_uppercase() == "SET" {
-                obfuscate_arg_n(&mut args, 2);
-            }
+        "CONFIG" if !args.is_empty() && args[0].to_uppercase() == "SET" => {
+            obfuscate_arg_n(&mut args, 2);
         }
 
         "BITFIELD" => {

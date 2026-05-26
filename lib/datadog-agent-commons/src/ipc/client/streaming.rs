@@ -26,7 +26,7 @@ pin_project! {
     /// A streaming gRPC response.
     ///
     /// Compared to the normal streaming response type from [`tonic`], `StreamingResponse` handles a special case where
-    /// servers may not send an initial message that allows the RPC to "establish", which is required to create the
+    /// servers may not send a guaranteed initial message, which is required for `tonic` to create and return the
     /// `Streaming` object that can then be polled. This leads to an issue where calls can effectively appear to block
     /// until the first message is sent by the server, which is suboptimal.
     ///

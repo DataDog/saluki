@@ -24,7 +24,7 @@ use stringtheory::MetaString;
 use tower::{timeout::TimeoutLayer, util::BoxCloneService, BoxError, Service, ServiceBuilder, ServiceExt as _};
 
 use super::{
-    conn::{check_connection_state, HttpsCapableConnectorBuilder},
+    conn::{check_connection_state, HttpProtocol, HttpsCapableConnectorBuilder},
     telemetry::HttpTransactionErrorTelemetry,
     EndpointTelemetryLayer,
 };
@@ -167,6 +167,14 @@ impl HttpClientBuilder {
     /// configuration settings, such as the connect timeout or retry policy.
     pub fn without_request_timeout(mut self) -> Self {
         self.request_timeout = None;
+        self
+    }
+
+    /// Sets the HTTP protocol selection for client connections.
+    ///
+    /// Defaults to [`HttpProtocol::Auto`], which automatically negotiates HTTP/2 with HTTP/1.1 fallback.
+    pub fn with_http_protocol(mut self, protocol: HttpProtocol) -> Self {
+        self.connector_builder = self.connector_builder.with_http_protocol(protocol);
         self
     }
 

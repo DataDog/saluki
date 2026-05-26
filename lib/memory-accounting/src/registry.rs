@@ -124,7 +124,7 @@ impl ComponentMetadata {
 
 /// A registry for components for tracking memory bounds and runtime memory usage.
 ///
-/// This registry provides a unified interface for declaring the memory bounds of a "component", as well as registering
+/// This registry provides a unified interface for declaring the memory bounds of a _component_, as well as registering
 /// that component for runtime memory usage tracking when using the tracking allocator implementation in `memory-accounting`.
 ///
 /// ## Components
@@ -135,7 +135,7 @@ impl ComponentMetadata {
 /// forward data. The topology itself could be considered a component, and each individual source, transform, and
 /// destination within it could be subcomponents of the topology.
 ///
-/// Components are generally meant to be tied to something that has its own memory bounds and is somewhat "standalone",
+/// Components are generally meant to be tied to something that has its own memory bounds and is somewhat standalone,
 /// but this isn't an absolute requirement and components can be nested more granularly for organizational/aesthetic
 /// purposes. Again, for example, one might opt to create a component in their topology for each component type --
 /// sources, transforms, and destinations -- and then add the actual instances of those components as subcomponents to

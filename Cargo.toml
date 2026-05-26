@@ -99,6 +99,7 @@ hyper-http-proxy = { version = "1.1", default-features = false, features = [
 ] }
 hyper-rustls = { version = "0.27", default-features = false, features = [
   "aws-lc-rs",
+  "http1",
   "http2",
   "rustls-native-certs",
 ] }
@@ -119,8 +120,8 @@ quanta = { version = "0.12", default-features = false }
 crossterm = { version = "0.29", default-features = false }
 rand = { version = "0.10", default-features = false }
 rand_distr = { version = "0.6", default-features = false }
-k8s-openapi = { version = "0.22", default-features = false, features = ["v1_30"] }
-kube = { version = "0.93", default-features = false }
+k8s-openapi = { version = "0.24", default-features = false, features = ["v1_30"] }
+kube = { version = "0.99", default-features = false }
 regex = { version = "1.12", default-features = false }
 rustls = { version = "0.23", default-features = false, features = [
   "aws_lc_rs",
@@ -180,7 +181,7 @@ crossbeam-queue = { version = "0.3", default-features = false, features = [
 ] }
 float-cmp = { version = "0.10", default-features = false }
 tower-http = { version = "0.6", default-features = false }
-bollard = { version = "0.20", default-features = false }
+bollard = { version = "0.21", default-features = false }
 home = { version = "0.5", default-features = false }
 reqwest = { version = "0.13", default-features = false }
 lading-payload = { git = "https://github.com/DataDog/lading", rev = "f06a75d63397c4e0210ca9184a3240515e547fec" }
@@ -204,7 +205,7 @@ fnv = { version = "1", default-features = false }
 twox-hash = { version = "2", features = ["xxhash64"] }
 sha3 = { version = "0.11", default-features = false }
 test-strategy = { version = "0.4", default-features = false }
-opentelemetry-semantic-conventions = { version = "0.31.0", default-features = false }
+opentelemetry-semantic-conventions = { version = "0.32.0", default-features = false }
 comfy-table = { version = "7", default-features = false }
 dtoa = { version = "1", default-features = false }
 itoa = { version = "1", default-features = false }
@@ -218,7 +219,7 @@ argh = { version = "0.1", default-features = false }
 rmp-serde = { version = "1.3", default-features = false }
 serde_bytes = { version = "0.11.19", default-features = false }
 num-traits = { version = "0.2", default-features = false }
-chumsky = { version = "0.12", default-features = false }
+chumsky = { version = "0.13", default-features = false }
 logos = { version = "0.16", default-features = false }
 lru-slab = { version = "0.1.2", default-features = false }
 hickory-resolver = { version = "0.26", default-features = false }

@@ -296,6 +296,17 @@ impl Service<Uri> for InnerConnector {
     }
 }
 
+/// HTTP protocol selection for client connections.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum HttpProtocol {
+    /// Automatically negotiate HTTP/2 with HTTP/1.1 fallback.
+    #[default]
+    Auto,
+
+    /// Use HTTP/1.1 only.
+    Http1,
+}
+
 /// A connector that supports HTTP or HTTPS.
 #[derive(Clone)]
 pub struct HttpsCapableConnector {
@@ -347,6 +358,7 @@ pub struct HttpsCapableConnectorBuilder {
     bytes_sent: Option<Counter>,
     error_telemetry: Option<HttpTransactionErrorTelemetry>,
     conn_age_limit: Option<Duration>,
+    http_protocol: HttpProtocol,
     #[cfg(unix)]
     unix_socket_path: Option<PathBuf>,
 }
@@ -357,6 +369,14 @@ impl HttpsCapableConnectorBuilder {
     /// Defaults to 30 seconds.
     pub fn with_connect_timeout(mut self, timeout: Duration) -> Self {
         self.connect_timeout = Some(timeout);
+        self
+    }
+
+    /// Sets the HTTP protocol selection for client connections.
+    ///
+    /// Defaults to [`HttpProtocol::Auto`].
+    pub fn with_http_protocol(mut self, protocol: HttpProtocol) -> Self {
+        self.http_protocol = protocol;
         self
     }
 
@@ -429,11 +449,13 @@ impl HttpsCapableConnectorBuilder {
         };
 
         // Create the HTTPS connector.
-        let https_connector = HttpsConnectorBuilder::new()
-            .with_tls_config(tls_config)
-            .https_or_http()
-            .enable_all_versions()
-            .wrap_connector(inner_connector);
+        let https_connector_builder = HttpsConnectorBuilder::new().with_tls_config(tls_config).https_or_http();
+        let https_connector = match self.http_protocol {
+            HttpProtocol::Auto => https_connector_builder
+                .enable_all_versions()
+                .wrap_connector(inner_connector),
+            HttpProtocol::Http1 => https_connector_builder.enable_http1().wrap_connector(inner_connector),
+        };
 
         Ok(HttpsCapableConnector {
             inner: https_connector,
@@ -442,6 +464,20 @@ impl HttpsCapableConnectorBuilder {
             conn_age_limit: self.conn_age_limit,
         })
     }
+}
+
+#[cfg(test)]
+fn configure_tls_alpn_for_http_protocol(mut tls_config: ClientConfig, protocol: HttpProtocol) -> ClientConfig {
+    match protocol {
+        HttpProtocol::Auto => {
+            tls_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+        }
+        HttpProtocol::Http1 => {
+            tls_config.alpn_protocols.clear();
+        }
+    }
+
+    tls_config
 }
 
 fn is_tls_error(error: &(dyn std::error::Error + 'static)) -> bool {
@@ -481,5 +517,32 @@ pub(super) fn check_connection_state(captured_conn: CaptureConnection) {
                 conn_metadata.poison();
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{configure_tls_alpn_for_http_protocol, HttpProtocol};
+
+    fn empty_tls_config() -> rustls::ClientConfig {
+        rustls::ClientConfig::builder_with_provider(rustls::crypto::aws_lc_rs::default_provider().into())
+            .with_safe_default_protocol_versions()
+            .expect("AWS-LC default protocol versions should be valid")
+            .with_root_certificates(rustls::RootCertStore::empty())
+            .with_no_client_auth()
+    }
+
+    #[test]
+    fn auto_protocol_advertises_h2_and_http1_alpn() {
+        let tls_config = configure_tls_alpn_for_http_protocol(empty_tls_config(), HttpProtocol::Auto);
+
+        assert_eq!(tls_config.alpn_protocols, vec![b"h2".to_vec(), b"http/1.1".to_vec()]);
+    }
+
+    #[test]
+    fn http1_protocol_leaves_alpn_empty() {
+        let tls_config = configure_tls_alpn_for_http_protocol(empty_tls_config(), HttpProtocol::Http1);
+
+        assert!(tls_config.alpn_protocols.is_empty());
     }
 }

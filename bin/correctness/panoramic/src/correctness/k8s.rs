@@ -900,7 +900,7 @@ async fn build_agent_config_volumes(
         volumes.push(Volume {
             name: cm_name.clone(),
             config_map: Some(ConfigMapVolumeSource {
-                name: Some(cm_name.clone()),
+                name: cm_name.clone(),
                 ..Default::default()
             }),
             ..Default::default()

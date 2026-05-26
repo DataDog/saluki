@@ -27,7 +27,7 @@ build-adp-baseline-image:
     - *setup-smp-env
   script:
     # Initialize our AWS credentials.
-    - ./test/smp/configure-smp-aws-credentials.sh
+    - ./ci/tooling/configure-smp-aws-credentials.sh
     # Checkout the baseline commit and define the relevant variables
     #
     # We use the merge base of the current branch, relative to `main`. This means that for stacked PRs, we won't be
@@ -78,7 +78,7 @@ build-adp-comparison-image:
     - *setup-smp-env
   script:
     # Initialize our AWS credentials.
-    - ./test/smp/configure-smp-aws-credentials.sh
+    - ./ci/tooling/configure-smp-aws-credentials.sh
     # Checkout the comparison commit and define the relevant variables.
     - export COMPARISON_ADP_SHA=${CI_COMMIT_SHA}
     - export COMPARISON_ADP_IMG="${ADP_IMG_BASE}-${COMPARISON_ADP_SHA}"
@@ -133,7 +133,7 @@ run-benchmarks-adp:
   script:
     # Do some pre-flight steps like creating directories, installing helper utilities, setting credentials, and so on.
     - mkdir outputs && touch outputs/report.md outputs/report.html
-    - ./test/smp/configure-smp-aws-credentials.sh
+    - ./ci/tooling/configure-smp-aws-credentials.sh
     # Download the SMP binary.
     - aws --profile ${AWS_NAMED_PROFILE} s3 cp s3://smp-cli-releases/v${SMP_VERSION}/x86_64-unknown-linux-musl/smp smp && chmod +x smp
     # Trigger the SMP job run.
@@ -188,7 +188,7 @@ report-benchmarks-adp:
       - outputs/condensed-report.md
     when: always
   script:
-    - python3 ./test/smp/build-smp-report.py
+    - python3 ./ci/tooling/build-smp-report.py
       --report-json outputs/report.json
       --output-report outputs/condensed-report.md
     - cat outputs/condensed-report.md | /usr/local/bin/pr-commenter --for-pr="$CI_COMMIT_REF_NAME" --header="Regression Detector (Agent Data Plane)"
@@ -217,7 +217,7 @@ binary-size-analysis:
     when: always
   script:
     # Initialize our AWS credentials and login to ECR.
-    - ./test/smp/configure-smp-aws-credentials.sh
+    - ./ci/tooling/configure-smp-aws-credentials.sh
     - aws ecr get-login-password --region us-west-2 --profile ${AWS_NAMED_PROFILE} | docker login --username AWS --password-stdin ${SMP_ECR_HOST}
 
     # Extract binaries from the container images.
@@ -241,7 +241,7 @@ binary-size-analysis:
 
     # Run the analysis script to generate bloaty output, markdown report, and check threshold.
     # The script exits with code 1 if size increased by more than 5%.
-    - python3 ./test/one-off/analyze-binary-size.py
+    - python3 ./ci/tooling/analyze-binary-size.py
       --baseline-binary binaries/baseline-adp
       --baseline-debug binaries/baseline-adp.debug
       --baseline-sha ${BASELINE_ADP_SHA}

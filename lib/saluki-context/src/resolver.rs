@@ -304,10 +304,10 @@ impl ContextResolverBuilder {
 
 /// A centralized store for resolved contexts.
 ///
-/// Contexts are the combination of a name and a set of tags. They're used to identify a specific metric series. As contexts
-/// are constructed entirely of strings, they're expensive to construct in a way that allows sending between tasks, as
-/// this usually requires allocations. Even further, the same context may be "hot", used frequently by the
-/// applications/services sending us metrics.
+/// Contexts are the combination of a name and a set of tags. They're used to identify a specific metric series. As
+/// contexts are constructed entirely of strings, they're expensive to construct in a way that allows sending between
+/// tasks, as this usually requires allocations. Additionally, some context are "hotter" than others, used frequently by
+/// the applications/services sending us metrics.
 ///
 /// In order to optimize this, the context resolver is responsible for both interning the strings involved where
 /// possible, as well as keeping a map of contexts that can be referred to with a cheap handle. We can cheaply search

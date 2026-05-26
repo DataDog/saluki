@@ -5,10 +5,10 @@ set -euo pipefail
 # workflow based on the actual crate and component structure of the codebase.
 #
 # Usage:
-#   ./tooling/update-pr-title-scopes.sh update   # Update the workflow file
-#   ./tooling/update-pr-title-scopes.sh check    # Check if the workflow file is up-to-date
+#   ./ci/tooling/update-pr-title-scopes.sh update   # Update the workflow file
+#   ./ci/tooling/update-pr-title-scopes.sh check    # Check if the workflow file is up-to-date
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 WORKFLOW_FILE="${REPO_ROOT}/.github/workflows/check-pr-title.yml"
 LIB_DIR="${REPO_ROOT}/lib"
 BIN_DIR="${REPO_ROOT}/bin"

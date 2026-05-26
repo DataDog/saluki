@@ -167,7 +167,10 @@ fn yaml_value_to_json_str(value: &serde_yaml::Value) -> Option<String> {
             let escaped = s.replace('\\', "\\\\").replace('"', "\\\"");
             Some(format!("\"{}\"", escaped))
         }
-        serde_yaml::Value::Sequence(seq) if seq.is_empty() => Some("[]".to_string()),
+        serde_yaml::Value::Sequence(seq) => {
+            let items: Option<Vec<String>> = seq.iter().map(yaml_value_to_json_str).collect();
+            items.map(|elems| format!("[{}]", elems.join(",")))
+        }
         serde_yaml::Value::Mapping(map) if map.is_empty() => Some("{}".to_string()),
         _ => None,
     }

@@ -23,7 +23,7 @@
       - any-glob-to-any-file:
           - ".gitlab/**/*"
           - ".github/**/*"
-          - ".ci/**/*"
+          - "ci/**/*"
           - ".gitlab-ci.yml"
 
 "area/components":

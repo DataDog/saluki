@@ -64,38 +64,38 @@
   },
   {
     "key": "aggregator_buffer_size",
-    "feature_state": "NOT_APPLICABLE",
-    "action": "NONE",
-    "description": "Aggregator input channel size",
+    "feature_state": "MISSING",
+    "action": "INVESTIGATE",
+    "description": "Channel buffer depth for aggregator queues",
     "reason": "Saluki topology uses fixed interconnect sizes and construction-time wiring; no per-component config knobs.",
-    "issue": null,
+    "issue": "#1681",
     "adp_key": null
   },
   {
     "key": "aggregator_flush_metrics_and_serialize_in_parallel_buffer_size",
-    "feature_state": "NOT_APPLICABLE",
-    "action": "NONE",
-    "description": "Parallel flush buffer size",
+    "feature_state": "MISSING",
+    "action": "INVESTIGATE",
+    "description": "Parallel flush: series/sketch buffer size",
     "reason": "Saluki topology uses fixed interconnect sizes; no per-component config knobs.",
-    "issue": null,
+    "issue": "#1681",
     "adp_key": null
   },
   {
     "key": "aggregator_flush_metrics_and_serialize_in_parallel_chan_size",
-    "feature_state": "NOT_APPLICABLE",
-    "action": "NONE",
-    "description": "Parallel flush channel size",
+    "feature_state": "MISSING",
+    "action": "INVESTIGATE",
+    "description": "Parallel flush: channel size for series/sketches",
     "reason": "Saluki topology uses fixed interconnect sizes; no per-component config knobs.",
-    "issue": null,
+    "issue": "#1681",
     "adp_key": null
   },
   {
     "key": "aggregator_stop_timeout",
-    "feature_state": "NOT_APPLICABLE",
-    "action": "NONE",
-    "description": "Aggregator shutdown timeout (s)",
+    "feature_state": "MISSING",
+    "action": "INVESTIGATE",
+    "description": "Timeout (seconds) for aggregator flush on stop",
     "reason": "Saluki topology uses fixed interconnect sizes and construction-time wiring; no per-component config knobs.",
-    "issue": null,
+    "issue": "#1681",
     "adp_key": null
   },
   {
@@ -109,11 +109,11 @@
   },
   {
     "key": "aggregator_use_tags_store",
-    "feature_state": "NOT_APPLICABLE",
-    "action": "NONE",
-    "description": "Use tags store for dedup",
+    "feature_state": "MISSING",
+    "action": "INVESTIGATE",
+    "description": "Enable shared tag deduplication store",
     "reason": "Core agent concept with no ADP analog.",
-    "issue": null,
+    "issue": "#1681",
     "adp_key": null
   },
   {
@@ -123,6 +123,24 @@
     "description": "Relax backend tag validation via HTTP header",
     "reason": "Implemented in ADP. When set, the Datadog forwarder adds `Allow-Arbitrary-Tag-Value: true` to outbound intake requests. Behavior matches the core agent.",
     "issue": null,
+    "adp_key": null
+  },
+  {
+    "key": "anomaly_detection.enabled",
+    "feature_state": "MISSING",
+    "action": "INVESTIGATE",
+    "description": "Enable anomaly detection observer pipeline",
+    "reason": "New key flagged for investigation.",
+    "issue": "#1683",
+    "adp_key": null
+  },
+  {
+    "key": "anomaly_detection.metrics.enabled",
+    "feature_state": "MISSING",
+    "action": "INVESTIGATE",
+    "description": "Enable metric ingestion for anomaly detection",
+    "reason": "New key flagged for investigation.",
+    "issue": "#1683",
     "adp_key": null
   },
   {
@@ -144,6 +162,24 @@
     "adp_key": null
   },
   {
+    "key": "autoscaling.failover.enabled",
+    "feature_state": "MISSING",
+    "action": "INVESTIGATE",
+    "description": "Enable autoscaling failover metric routing via DCA",
+    "reason": "Marked for investigation; previously dismissed as not-applicable.",
+    "issue": "#1684",
+    "adp_key": null
+  },
+  {
+    "key": "autoscaling.failover.metrics",
+    "feature_state": "MISSING",
+    "action": "INVESTIGATE",
+    "description": "Metric names forwarded to DCA for autoscaling fail",
+    "reason": "Marked for investigation; previously dismissed as not-applicable.",
+    "issue": "#1684",
+    "adp_key": null
+  },
+  {
     "key": "bind_host",
     "feature_state": "PARITY",
     "action": "NONE",
@@ -159,6 +195,15 @@
     "description": "Datadog Agent IPC/CMD API port",
     "reason": "Read by RemoteAgentClientConfiguration to build the IPC endpoint URI. Takes precedence over agent_ipc_endpoint when set.",
     "issue": "#1645",
+    "adp_key": null
+  },
+  {
+    "key": "config_id",
+    "feature_state": "MISSING",
+    "action": "INVESTIGATE",
+    "description": "Fleet Automation config ID tag for agent",
+    "reason": "Marked for investigation; previously dismissed as not-applicable.",
+    "issue": "#1685",
     "adp_key": null
   },
   {
@@ -208,20 +253,20 @@
   },
   {
     "key": "cri_connection_timeout",
-    "feature_state": "MISSING",
-    "action": "IMPLEMENT",
+    "feature_state": "PARITY",
+    "action": "NONE",
     "description": "CRI container runtime connection timeout (s)",
-    "reason": "ADP hardcodes 5s; should read from config with default 1s.",
-    "issue": "#1348",
+    "reason": "Confirmed implemented in ADP. Behavior matches the core agent: the value controls the containerd gRPC connection timeout and defaults to 1s.",
+    "issue": null,
     "adp_key": null
   },
   {
     "key": "cri_query_timeout",
-    "feature_state": "MISSING",
-    "action": "IMPLEMENT",
+    "feature_state": "PARITY",
+    "action": "NONE",
     "description": "CRI container runtime query timeout (s)",
-    "reason": "ADP has no per-RPC timeout; should read from config with default 5s.",
-    "issue": "#1348",
+    "reason": "Confirmed implemented in ADP. Behavior matches the core agent: the value applies to unary containerd RPCs and defaults to 5s; long-lived event streams remain untimed.",
+    "issue": null,
     "adp_key": null
   },
   {
@@ -415,20 +460,20 @@
   },
   {
     "key": "dogstatsd_experimental_http.enabled",
-    "feature_state": "NOT_APPLICABLE",
-    "action": "NONE",
-    "description": "Enable HTTP DSD listener",
+    "feature_state": "MISSING",
+    "action": "INVESTIGATE",
+    "description": "Enable experimental HTTP/H2C DSD listener",
     "reason": "Experimental HTTP/H2C DogStatsD ingestion endpoint; not needed for ADP.",
-    "issue": null,
+    "issue": "#1682",
     "adp_key": null
   },
   {
     "key": "dogstatsd_experimental_http.listen_address",
-    "feature_state": "NOT_APPLICABLE",
-    "action": "NONE",
-    "description": "HTTP DSD listener bind address",
+    "feature_state": "MISSING",
+    "action": "INVESTIGATE",
+    "description": "Bind addr for experimental HTTP DSD listener",
     "reason": "Experimental HTTP/H2C DogStatsD ingestion endpoint; not needed for ADP.",
-    "issue": null,
+    "issue": "#1682",
     "adp_key": null
   },
   {
@@ -990,6 +1035,15 @@
     "adp_key": null
   },
   {
+    "key": "enable_json_stream_shared_compressor_buffers",
+    "feature_state": "MISSING",
+    "action": "INVESTIGATE",
+    "description": "Pre-allocate shared compressor buffers",
+    "reason": "Marked for investigation; previously dismissed as not-applicable.",
+    "issue": "#1686",
+    "adp_key": null
+  },
+  {
     "key": "enable_payloads_events",
     "feature_state": "PARITY",
     "action": "NONE",
@@ -1023,6 +1077,15 @@
     "description": "Allow sending sketch payloads",
     "reason": "Key naming mismatch fixed in #1498. ADP reads enable_payloads.sketches.",
     "issue": "#1366",
+    "adp_key": null
+  },
+  {
+    "key": "entity_id",
+    "feature_state": "MISSING",
+    "action": "INVESTIGATE",
+    "description": "Agent's own pod entity ID (set by DCA webhook)",
+    "reason": "Marked for investigation; previously dismissed as not-applicable.",
+    "issue": "#1685",
     "adp_key": null
   },
   {
@@ -1188,6 +1251,15 @@
     "adp_key": null
   },
   {
+    "key": "forwarder_requeue_buffer_size",
+    "feature_state": "MISSING",
+    "action": "INVESTIGATE",
+    "description": "In-memory requeue buffer size for forwarder",
+    "reason": "Marked for investigation; previously dismissed as not-applicable.",
+    "issue": "#1680",
+    "adp_key": null
+  },
+  {
     "key": "forwarder_retry_queue_capacity_time_interval_sec",
     "feature_state": "MISSING",
     "action": "INVESTIGATE",
@@ -1212,6 +1284,15 @@
     "description": "Retry queue max size (bytes)",
     "reason": "Implemented in ADP. No action needed.",
     "issue": null,
+    "adp_key": null
+  },
+  {
+    "key": "forwarder_stop_timeout",
+    "feature_state": "MISSING",
+    "action": "INVESTIGATE",
+    "description": "Timeout (sec) for forwarder graceful stop",
+    "reason": "Marked for investigation; previously dismissed as not-applicable.",
+    "issue": "#1680",
     "adp_key": null
   },
   {
@@ -1248,6 +1329,15 @@
     "description": "Forwarder HTTP request timeout",
     "reason": "Implemented in ADP. No action needed.",
     "issue": null,
+    "adp_key": null
+  },
+  {
+    "key": "heroku_dyno",
+    "feature_state": "MISSING",
+    "action": "INVESTIGATE",
+    "description": "Override agent name for Heroku telemetry",
+    "reason": "Marked for investigation; previously dismissed as not-applicable.",
+    "issue": "#1685",
     "adp_key": null
   },
   {
@@ -1359,6 +1449,15 @@
     "adp_key": null
   },
   {
+    "key": "log_payloads",
+    "feature_state": "MISSING",
+    "action": "INVESTIGATE",
+    "description": "Debug-log serialized payloads before send",
+    "reason": "Marked for investigation; previously dismissed as not-applicable.",
+    "issue": "#1686",
+    "adp_key": null
+  },
+  {
     "key": "log_to_console",
     "feature_state": "PARITY",
     "action": "NONE",
@@ -1455,6 +1554,33 @@
     "description": "Minimum TLS version for HTTPS connections",
     "reason": "Implemented for Datadog intake forwarding. TLS 1.2 and TLS 1.3 behavior matches the core agent; TLS 1.0 and TLS 1.1 values are accepted for config compatibility and clamped to TLS 1.2 because rustls does not support older protocol versions.",
     "issue": null,
+    "adp_key": null
+  },
+  {
+    "key": "multi_region_failover.enabled",
+    "feature_state": "MISSING",
+    "action": "INVESTIGATE",
+    "description": "Enable multi-region failover mode",
+    "reason": "Marked for investigation; previously dismissed as not-applicable.",
+    "issue": "#1678",
+    "adp_key": null
+  },
+  {
+    "key": "multi_region_failover.failover_metrics",
+    "feature_state": "MISSING",
+    "action": "INVESTIGATE",
+    "description": "Enable metrics forwarding to failover region",
+    "reason": "Marked for investigation; previously dismissed as not-applicable.",
+    "issue": "#1678",
+    "adp_key": null
+  },
+  {
+    "key": "multi_region_failover.metric_allowlist",
+    "feature_state": "MISSING",
+    "action": "INVESTIGATE",
+    "description": "Metric name allowlist for MRF forwarding",
+    "reason": "Marked for investigation; previously dismissed as not-applicable.",
+    "issue": "#1678",
     "adp_key": null
   },
   {
@@ -1711,46 +1837,46 @@
   },
   {
     "key": "serializer_max_payload_size",
-    "feature_state": "MISSING",
-    "action": "INVESTIGATE",
+    "feature_state": "PARITY",
+    "action": "NONE",
     "description": "Max compressed payload size (generic)",
-    "reason": "Missing in ADP; ADP hardcodes limits per endpoint type. Investigation needed to determine whether configurable limits are needed.",
+    "reason": "ADP reads this Agent key for V1 series, sketches, events, and service check payload compressed size limits. Defaults match the core agent.",
     "issue": "#1354",
     "adp_key": null
   },
   {
     "key": "serializer_max_series_payload_size",
-    "feature_state": "MISSING",
-    "action": "INVESTIGATE",
+    "feature_state": "PARITY",
+    "action": "NONE",
     "description": "Max compressed V2 series payload size",
-    "reason": "Missing in ADP; ADP hardcodes series compressed size limit. Investigation needed to determine whether configurable limits are needed.",
+    "reason": "ADP reads this Agent key for V2 series payload compressed size limits. Defaults match the core agent.",
     "issue": "#1354",
     "adp_key": null
   },
   {
     "key": "serializer_max_series_points_per_payload",
-    "feature_state": "MISSING",
-    "action": "INVESTIGATE",
+    "feature_state": "NOT_APPLICABLE",
+    "action": "NONE",
     "description": "Max data points per series payload",
-    "reason": "ADP has serializer_max_metrics_per_payload which counts metrics not points.",
+    "reason": "Removed from the core Agent; ADP intentionally does not support it.",
     "issue": "#1354",
-    "adp_key": "serializer_max_metrics_per_payload"
+    "adp_key": null
   },
   {
     "key": "serializer_max_series_uncompressed_payload_size",
-    "feature_state": "MISSING",
-    "action": "INVESTIGATE",
+    "feature_state": "PARITY",
+    "action": "NONE",
     "description": "Max uncompressed V2 series payload size",
-    "reason": "Missing in ADP; ADP hardcodes series uncompressed size limit. Investigation needed to determine whether configurable limits are needed.",
+    "reason": "ADP reads this Agent key for V2 series payload uncompressed size limits. Defaults match the core agent.",
     "issue": "#1354",
     "adp_key": null
   },
   {
     "key": "serializer_max_uncompressed_payload_size",
-    "feature_state": "MISSING",
-    "action": "INVESTIGATE",
+    "feature_state": "PARITY",
+    "action": "NONE",
     "description": "Max uncompressed payload size (generic)",
-    "reason": "Missing in ADP; ADP hardcodes 60MB vs Agent 4MB for non-series payloads. Significant divergence.",
+    "reason": "ADP reads this Agent key for V1 series, sketches, events, and service check payload uncompressed size limits. Defaults match the core agent.",
     "issue": "#1354",
     "adp_key": null
   },
@@ -1878,6 +2004,42 @@
     "description": "Global tags (DD_TAGS)",
     "reason": "ADP does not read the key directly; the core agent's tagger consumes it and surfaces these tags via the host_tags response that ADP fetches over RemoteAgentClient.",
     "issue": "#1333",
+    "adp_key": null
+  },
+  {
+    "key": "telemetry.dogstatsd.aggregator_channel_latency_buckets",
+    "feature_state": "MISSING",
+    "action": "INVESTIGATE",
+    "description": "Histogram buckets for DSD aggregator channel lag",
+    "reason": "Marked for investigation; previously dismissed as not-applicable.",
+    "issue": "#1679",
+    "adp_key": null
+  },
+  {
+    "key": "telemetry.dogstatsd.listeners_channel_latency_buckets",
+    "feature_state": "MISSING",
+    "action": "INVESTIGATE",
+    "description": "Histogram buckets for listener channel latency",
+    "reason": "Marked for investigation; previously dismissed as not-applicable.",
+    "issue": "#1679",
+    "adp_key": null
+  },
+  {
+    "key": "telemetry.dogstatsd.listeners_latency_buckets",
+    "feature_state": "MISSING",
+    "action": "INVESTIGATE",
+    "description": "Histogram buckets for listener processing latency",
+    "reason": "Marked for investigation; previously dismissed as not-applicable.",
+    "issue": "#1679",
+    "adp_key": null
+  },
+  {
+    "key": "telemetry.dogstatsd_origin",
+    "feature_state": "MISSING",
+    "action": "INVESTIGATE",
+    "description": "Per-origin processed-metrics telemetry counters",
+    "reason": "Marked for investigation; previously dismissed as not-applicable.",
+    "issue": "#1679",
     "adp_key": null
   },
   {

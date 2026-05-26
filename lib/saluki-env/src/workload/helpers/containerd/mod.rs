@@ -10,6 +10,7 @@ use futures::{Stream, StreamExt as _, TryStreamExt as _};
 use hyper_util::rt::TokioIo;
 use saluki_config::GenericConfiguration;
 use saluki_error::{generic_error, GenericError};
+use serde::Deserialize;
 use snafu::{ResultExt as _, Snafu};
 use tokio::net::UnixStream;
 use tonic::{
@@ -23,8 +24,49 @@ use crate::features::ContainerdDetector;
 pub mod events;
 use self::events::{decode_envelope_to_event, ContainerdEvent, ContainerdTopic};
 
-const CONTAINERD_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_LIST_CONTAINERS_RESPONSE_SIZE: usize = 16 * 1024 * 1024;
+
+const fn default_connection_timeout_secs() -> u64 {
+    1
+}
+
+const fn default_query_timeout_secs() -> u64 {
+    5
+}
+
+/// Containerd gRPC client configuration.
+#[derive(Deserialize)]
+#[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
+pub struct ContainerdConfiguration {
+    /// Timeout for establishing the gRPC connection to the containerd socket.
+    ///
+    /// Defaults to 1 second. Increase this for hosts where containerd may accept socket connections slowly.
+    #[serde(default = "default_connection_timeout_secs", rename = "cri_connection_timeout")]
+    connection_timeout_secs: u64,
+
+    /// Per-RPC timeout for containerd API calls.
+    ///
+    /// Defaults to 5 seconds. Each containerd RPC receives this deadline independently.
+    #[serde(default = "default_query_timeout_secs", rename = "cri_query_timeout")]
+    query_timeout_secs: u64,
+}
+
+impl ContainerdConfiguration {
+    /// Creates a new `ContainerdConfiguration` from the given configuration.
+    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
+        Ok(config.as_typed::<Self>()?)
+    }
+
+    /// Returns the timeout for establishing the gRPC connection to the containerd socket.
+    pub const fn connection_timeout(&self) -> Duration {
+        Duration::from_secs(self.connection_timeout_secs)
+    }
+
+    /// Returns the per-RPC timeout for containerd API calls.
+    pub const fn query_timeout(&self) -> Duration {
+        Duration::from_secs(self.query_timeout_secs)
+    }
+}
 
 /// A [`ContainerdClient`] error.
 #[derive(Debug, Snafu)]
@@ -53,6 +95,7 @@ impl ClientError {
 #[derive(Clone)]
 pub struct ContainerdClient {
     channel: Channel,
+    query_timeout: Duration,
 }
 
 impl ContainerdClient {
@@ -75,16 +118,20 @@ impl ContainerdClient {
             ));
         }
 
+        let containerd_config = ContainerdConfiguration::from_configuration(config)?;
         let channel = Endpoint::try_from("https://[::]")
             .unwrap()
-            .connect_timeout(CONTAINERD_CONNECT_TIMEOUT)
+            .connect_timeout(containerd_config.connection_timeout())
             .connect_with_connector(service_fn(move |_| {
                 let socket_path = socket_path.clone();
                 async move { UnixStream::connect(socket_path).await.map(TokioIo::new) }
             }))
             .await?;
 
-        Ok(Self { channel })
+        Ok(Self {
+            channel,
+            query_timeout: containerd_config.query_timeout(),
+        })
     }
 
     /// Lists all namespaces.
@@ -93,7 +140,7 @@ impl ContainerdClient {
     ///
     /// If an error occurs while sending the request or receiving the response, an error will be returned.
     pub async fn list_namespaces(&self) -> Result<Vec<Namespace>, ClientError> {
-        let request = ListNamespacesRequest::default();
+        let request = create_timed_request(ListNamespacesRequest::default(), self.query_timeout);
 
         let mut client = NamespacesClient::new(self.channel.clone());
         let namespaces = client.list(request).await.context(Response)?.into_inner();
@@ -108,7 +155,7 @@ impl ContainerdClient {
     /// If an error occurs while sending the request or receiving the response, an error will be returned.
     pub async fn list_containers(&self, namespace: &Namespace) -> Result<Vec<Container>, ClientError> {
         let request = ListContainersRequest::default();
-        let request = create_namespaced_request(request, namespace);
+        let request = create_timed_namespaced_request(request, namespace, self.query_timeout);
 
         let client = ContainersClient::new(self.channel.clone());
         let response = client
@@ -142,6 +189,8 @@ impl ContainerdClient {
             ));
         }
 
+        // Match datadog-agent behavior: `cri_query_timeout` is used for unary CRI/containerd queries, but event
+        // subscriptions are long-lived streams that should stay open until the collector is canceled.
         let request = SubscribeRequest { filters };
 
         let mut client = EventsClient::new(self.channel.clone());
@@ -174,7 +223,7 @@ impl ContainerdClient {
         &self, namespace: &Namespace, container_id: String,
     ) -> Result<Vec<u32>, ClientError> {
         let request = ListPidsRequest { container_id };
-        let request = create_namespaced_request(request, namespace);
+        let request = create_timed_namespaced_request(request, namespace, self.query_timeout);
 
         let mut client = TasksClient::new(self.channel.clone());
         let response = client.list_pids(request).await.context(Response)?.into_inner();
@@ -183,11 +232,20 @@ impl ContainerdClient {
     }
 }
 
-fn create_namespaced_request<R>(req: R, ns: &Namespace) -> Request<R>
+fn create_timed_request<R>(req: R, timeout: Duration) -> Request<R>
 where
     R: IntoRequest<R>,
 {
     let mut req = req.into_request();
+    req.set_timeout(timeout);
+    req
+}
+
+fn create_timed_namespaced_request<R>(req: R, ns: &Namespace, timeout: Duration) -> Request<R>
+where
+    R: IntoRequest<R>,
+{
+    let mut req = create_timed_request(req, timeout);
     let md = req.metadata_mut();
     md.insert("containerd-namespace", ns.name.parse().unwrap());
     req
@@ -195,4 +253,72 @@ where
 
 async fn path_exists(path: &Path) -> bool {
     tokio::fs::metadata(path).await.is_ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use saluki_config::ConfigurationLoader;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn configuration_uses_core_agent_cri_timeout_defaults() {
+        let (config, _updates_tx) = ConfigurationLoader::for_tests(None, None, false).await;
+        let containerd_config =
+            ContainerdConfiguration::from_configuration(&config).expect("configuration should load");
+
+        assert_eq!(Duration::from_secs(1), containerd_config.connection_timeout());
+        assert_eq!(Duration::from_secs(5), containerd_config.query_timeout());
+    }
+
+    #[tokio::test]
+    async fn configuration_reads_cri_timeout_overrides() {
+        let raw_config = serde_yaml::from_str(
+            r#"
+            cri_connection_timeout: 2
+            cri_query_timeout: 7
+            "#,
+        )
+        .expect("config should parse");
+        let (config, _updates_tx) = ConfigurationLoader::for_tests(Some(raw_config), None, false).await;
+        let containerd_config =
+            ContainerdConfiguration::from_configuration(&config).expect("configuration should load");
+
+        assert_eq!(Duration::from_secs(2), containerd_config.connection_timeout());
+        assert_eq!(Duration::from_secs(7), containerd_config.query_timeout());
+    }
+
+    #[test]
+    fn create_timed_request_sets_grpc_timeout() {
+        let request = create_timed_request(ListNamespacesRequest::default(), Duration::from_secs(3));
+
+        assert_eq!(
+            Some("3000000u"),
+            request.metadata().get("grpc-timeout").map(|v| v.to_str().unwrap())
+        );
+    }
+
+    #[test]
+    fn create_timed_namespaced_request_sets_namespace_and_grpc_timeout() {
+        let namespace = Namespace {
+            name: "k8s.io".to_string(),
+            labels: Default::default(),
+        };
+        let request =
+            create_timed_namespaced_request(ListContainersRequest::default(), &namespace, Duration::from_secs(4));
+
+        assert_eq!(
+            Some("4000000u"),
+            request.metadata().get("grpc-timeout").map(|v| v.to_str().unwrap())
+        );
+        assert_eq!(
+            Some("k8s.io"),
+            request
+                .metadata()
+                .get("containerd-namespace")
+                .map(|v| v.to_str().unwrap())
+        );
+    }
 }

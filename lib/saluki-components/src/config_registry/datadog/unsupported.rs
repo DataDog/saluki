@@ -2,30 +2,6 @@
 use crate::config_registry::{generated::schema, SalukiAnnotation, Severity, SupportLevel};
 
 crate::declare_annotations! {
-    /// `cri_connection_timeout` - CRI runtime connection timeout.
-    CRI_CONNECTION_TIMEOUT = SalukiAnnotation {
-        schema: &schema::CRI_CONNECTION_TIMEOUT,
-        // Not implemented. ADP hardcodes CRI timeout. #1348
-        support_level: SupportLevel::Incompatible(Severity::Medium),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-    };
-
-    /// `cri_query_timeout` - CRI runtime query timeout.
-    CRI_QUERY_TIMEOUT = SalukiAnnotation {
-        schema: &schema::CRI_QUERY_TIMEOUT,
-        // Not implemented. ADP hardcodes CRI timeout. #1348
-        support_level: SupportLevel::Incompatible(Severity::Medium),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-    };
-
     /// `dogstatsd_disable_verbose_logs` - suppress noisy parse error logs.
     DOGSTATSD_DISABLE_VERBOSE_LOGS = SalukiAnnotation {
         schema: &schema::DOGSTATSD_DISABLE_VERBOSE_LOGS,
@@ -127,18 +103,6 @@ crate::declare_annotations! {
         schema: &schema::FORWARDER_FLUSH_TO_DISK_MEM_RATIO,
         // Not implemented. #1364
         support_level: SupportLevel::Incompatible(Severity::Medium),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-    };
-
-    /// `forwarder_http_protocol` - HTTP version selection.
-    FORWARDER_HTTP_PROTOCOL = SalukiAnnotation {
-        schema: &schema::FORWARDER_HTTP_PROTOCOL,
-        // Not implemented. #1361
-        support_level: SupportLevel::Incompatible(Severity::High),
         additional_yaml_paths: &[],
         env_var_override: None,
         used_by: &[],
@@ -266,58 +230,10 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `serializer_max_payload_size` - max compressed payload size.
-    SERIALIZER_MAX_PAYLOAD_SIZE = SalukiAnnotation {
-        schema: &schema::SERIALIZER_MAX_PAYLOAD_SIZE,
-        // Not configurable in ADP. #1354
-        support_level: SupportLevel::Incompatible(Severity::Low),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-    };
-
-    /// `serializer_max_series_payload_size` - max series compressed size.
-    SERIALIZER_MAX_SERIES_PAYLOAD_SIZE = SalukiAnnotation {
-        schema: &schema::SERIALIZER_MAX_SERIES_PAYLOAD_SIZE,
-        // Not configurable in ADP. #1354
-        support_level: SupportLevel::Incompatible(Severity::Low),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-    };
-
     /// `serializer_max_series_points_per_payload` - max series points per payload.
     SERIALIZER_MAX_SERIES_POINTS_PER_PAYLOAD = SalukiAnnotation {
         schema: &schema::SERIALIZER_MAX_SERIES_POINTS_PER_PAYLOAD,
-        // Not configurable in ADP. #1354
-        support_level: SupportLevel::Incompatible(Severity::Low),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-    };
-
-    /// `serializer_max_series_uncompressed_payload_size` - max series uncompressed size.
-    SERIALIZER_MAX_SERIES_UNCOMPRESSED_PAYLOAD_SIZE = SalukiAnnotation {
-        schema: &schema::SERIALIZER_MAX_SERIES_UNCOMPRESSED_PAYLOAD_SIZE,
-        // Not configurable in ADP. #1354
-        support_level: SupportLevel::Incompatible(Severity::Low),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-    };
-
-    /// `serializer_max_uncompressed_payload_size` - max uncompressed payload size.
-    SERIALIZER_MAX_UNCOMPRESSED_PAYLOAD_SIZE = SalukiAnnotation {
-        schema: &schema::SERIALIZER_MAX_UNCOMPRESSED_PAYLOAD_SIZE,
-        // Not configurable in ADP. #1354
+        // Removed from the core Agent; ADP intentionally does not support it. #1354
         support_level: SupportLevel::Incompatible(Severity::Low),
         additional_yaml_paths: &[],
         env_var_override: None,
@@ -355,6 +271,305 @@ crate::declare_annotations! {
         schema: &schema::TLS_HANDSHAKE_TIMEOUT,
         // Not implemented. Request timeout covers the gap. #178
         support_level: SupportLevel::Incompatible(Severity::Medium),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+    };
+
+    /// `aggregator_buffer_size` - aggregator input channel depth.
+    AGGREGATOR_BUFFER_SIZE = SalukiAnnotation {
+        schema: &schema::AGGREGATOR_BUFFER_SIZE,
+        // Not implemented. #1681
+        support_level: SupportLevel::Incompatible(Severity::Low),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+    };
+    /// `aggregator_flush_metrics_and_serialize_in_parallel_buffer_size` - parallel flush buffer size.
+    AGGREGATOR_FLUSH_METRICS_AND_SERIALIZE_IN_PARALLEL_BUFFER_SIZE = SalukiAnnotation {
+        schema: &schema::AGGREGATOR_FLUSH_METRICS_AND_SERIALIZE_IN_PARALLEL_BUFFER_SIZE,
+        // Not implemented. #1681
+        support_level: SupportLevel::Incompatible(Severity::Low),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+    };
+    /// `aggregator_flush_metrics_and_serialize_in_parallel_chan_size` - parallel flush channel size.
+    AGGREGATOR_FLUSH_METRICS_AND_SERIALIZE_IN_PARALLEL_CHAN_SIZE = SalukiAnnotation {
+        schema: &schema::AGGREGATOR_FLUSH_METRICS_AND_SERIALIZE_IN_PARALLEL_CHAN_SIZE,
+        // Not implemented. #1681
+        support_level: SupportLevel::Incompatible(Severity::Low),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+    };
+    /// `aggregator_stop_timeout` - aggregator shutdown drain timeout.
+    AGGREGATOR_STOP_TIMEOUT = SalukiAnnotation {
+        schema: &schema::AGGREGATOR_STOP_TIMEOUT,
+        // Not implemented. #1681
+        support_level: SupportLevel::Incompatible(Severity::Low),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+    };
+    /// `aggregator_use_tags_store` - shared tag deduplication store toggle.
+    AGGREGATOR_USE_TAGS_STORE = SalukiAnnotation {
+        schema: &schema::AGGREGATOR_USE_TAGS_STORE,
+        // Not implemented. #1681
+        support_level: SupportLevel::Incompatible(Severity::Low),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+    };
+    /// `autoscaling.failover.enabled` - autoscaling failover metric routing via DCA.
+    AUTOSCALING_FAILOVER_ENABLED = SalukiAnnotation {
+        schema: &schema::AUTOSCALING_FAILOVER_ENABLED,
+        // Not implemented. #1684
+        support_level: SupportLevel::Incompatible(Severity::Medium),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+    };
+    /// `autoscaling.failover.metrics` - metric names forwarded to DCA for failover.
+    AUTOSCALING_FAILOVER_METRICS = SalukiAnnotation {
+        schema: &schema::AUTOSCALING_FAILOVER_METRICS,
+        // Not implemented. #1684
+        support_level: SupportLevel::Incompatible(Severity::Medium),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+    };
+    /// `config_id` - Fleet Automation config ID on payloads.
+    CONFIG_ID = SalukiAnnotation {
+        schema: &schema::CONFIG_ID,
+        // Not implemented. #1685
+        support_level: SupportLevel::Incompatible(Severity::Medium),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+    };
+    /// `dogstatsd_experimental_http.enabled` - experimental HTTP/H2C DSD listener toggle.
+    DOGSTATSD_EXPERIMENTAL_HTTP_ENABLED = SalukiAnnotation {
+        schema: &schema::DOGSTATSD_EXPERIMENTAL_HTTP_ENABLED,
+        // Not implemented. #1682
+        support_level: SupportLevel::Incompatible(Severity::High),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+    };
+    /// `dogstatsd_experimental_http.listen_address` - experimental HTTP DSD listener bind address.
+    DOGSTATSD_EXPERIMENTAL_HTTP_LISTEN_ADDRESS = SalukiAnnotation {
+        schema: &schema::DOGSTATSD_EXPERIMENTAL_HTTP_LISTEN_ADDRESS,
+        // Not implemented. #1682
+        support_level: SupportLevel::Incompatible(Severity::High),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+    };
+    /// `enable_json_stream_shared_compressor_buffers` - shared JSON stream compressor buffer allocation.
+    ENABLE_JSON_STREAM_SHARED_COMPRESSOR_BUFFERS = SalukiAnnotation {
+        schema: &schema::ENABLE_JSON_STREAM_SHARED_COMPRESSOR_BUFFERS,
+        // Not implemented. #1686
+        support_level: SupportLevel::Incompatible(Severity::Low),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+    };
+    /// `entity_id` - agent pod entity ID injected by DCA webhook.
+    ENTITY_ID = SalukiAnnotation {
+        schema: &schema::ENTITY_ID,
+        // Not implemented. #1685
+        support_level: SupportLevel::Incompatible(Severity::Low),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+    };
+    /// `forwarder_requeue_buffer_size` - forwarder in-memory requeue buffer size.
+    FORWARDER_REQUEUE_BUFFER_SIZE = SalukiAnnotation {
+        schema: &schema::FORWARDER_REQUEUE_BUFFER_SIZE,
+        // Not implemented. #1680
+        support_level: SupportLevel::Incompatible(Severity::Low),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+    };
+    /// `forwarder_stop_timeout` - forwarder graceful stop drain timeout.
+    FORWARDER_STOP_TIMEOUT = SalukiAnnotation {
+        schema: &schema::FORWARDER_STOP_TIMEOUT,
+        // Not implemented. #1680
+        support_level: SupportLevel::Incompatible(Severity::Low),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+    };
+    /// `heroku_dyno` - Heroku dyno name override for agent telemetry.
+    HEROKU_DYNO = SalukiAnnotation {
+        schema: &schema::HEROKU_DYNO,
+        // Not implemented. #1685
+        support_level: SupportLevel::Incompatible(Severity::High),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+    };
+    /// `log_payloads` - debug-log serialized payloads before send.
+    LOG_PAYLOADS = SalukiAnnotation {
+        schema: &schema::LOG_PAYLOADS,
+        // Not implemented. #1686
+        support_level: SupportLevel::Incompatible(Severity::Low),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+    };
+    /// `multi_region_failover.api_key` - API key for the MRF failover region.
+    MULTI_REGION_FAILOVER_API_KEY = SalukiAnnotation {
+        schema: &schema::MULTI_REGION_FAILOVER_API_KEY,
+        // Not implemented. #1678
+        support_level: SupportLevel::Incompatible(Severity::Medium),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+    };
+    /// `multi_region_failover.dd_url` - intake URL for the MRF failover region.
+    MULTI_REGION_FAILOVER_DD_URL = SalukiAnnotation {
+        schema: &schema::MULTI_REGION_FAILOVER_DD_URL,
+        // Not implemented. #1678
+        support_level: SupportLevel::Incompatible(Severity::Medium),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+    };
+    /// `multi_region_failover.enabled` - multi-region failover mode.
+    MULTI_REGION_FAILOVER_ENABLED = SalukiAnnotation {
+        schema: &schema::MULTI_REGION_FAILOVER_ENABLED,
+        // Not implemented. #1678
+        support_level: SupportLevel::Incompatible(Severity::High),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+    };
+    /// `multi_region_failover.failover_metrics` - metrics forwarding to the failover region.
+    MULTI_REGION_FAILOVER_FAILOVER_METRICS = SalukiAnnotation {
+        schema: &schema::MULTI_REGION_FAILOVER_FAILOVER_METRICS,
+        // Not implemented. #1678
+        support_level: SupportLevel::Incompatible(Severity::Medium),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+    };
+    /// `multi_region_failover.metric_allowlist` - metric name allowlist for MRF forwarding.
+    MULTI_REGION_FAILOVER_METRIC_ALLOWLIST = SalukiAnnotation {
+        schema: &schema::MULTI_REGION_FAILOVER_METRIC_ALLOWLIST,
+        // Not implemented. #1678
+        support_level: SupportLevel::Incompatible(Severity::Medium),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+    };
+    /// `multi_region_failover.site` - Datadog site for the MRF failover region.
+    MULTI_REGION_FAILOVER_SITE = SalukiAnnotation {
+        schema: &schema::MULTI_REGION_FAILOVER_SITE,
+        // Not implemented. #1678
+        support_level: SupportLevel::Incompatible(Severity::Medium),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+    };
+    /// `telemetry.dogstatsd.aggregator_channel_latency_buckets` - DSD-to-aggregator channel latency histogram buckets.
+    TELEMETRY_DOGSTATSD_AGGREGATOR_CHANNEL_LATENCY_BUCKETS = SalukiAnnotation {
+        schema: &schema::TELEMETRY_DOGSTATSD_AGGREGATOR_CHANNEL_LATENCY_BUCKETS,
+        // Not implemented. #1679
+        support_level: SupportLevel::Incompatible(Severity::Low),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+    };
+    /// `telemetry.dogstatsd.listeners_channel_latency_buckets` - DSD listener channel latency histogram buckets.
+    TELEMETRY_DOGSTATSD_LISTENERS_CHANNEL_LATENCY_BUCKETS = SalukiAnnotation {
+        schema: &schema::TELEMETRY_DOGSTATSD_LISTENERS_CHANNEL_LATENCY_BUCKETS,
+        // Not implemented. #1679
+        support_level: SupportLevel::Incompatible(Severity::Low),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+    };
+    /// `telemetry.dogstatsd.listeners_latency_buckets` - DSD listener processing latency histogram buckets.
+    TELEMETRY_DOGSTATSD_LISTENERS_LATENCY_BUCKETS = SalukiAnnotation {
+        schema: &schema::TELEMETRY_DOGSTATSD_LISTENERS_LATENCY_BUCKETS,
+        // Not implemented. #1679
+        support_level: SupportLevel::Incompatible(Severity::Low),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+    };
+    /// `telemetry.dogstatsd_origin` - per-origin processed-metric telemetry counters.
+    TELEMETRY_DOGSTATSD_ORIGIN = SalukiAnnotation {
+        schema: &schema::TELEMETRY_DOGSTATSD_ORIGIN,
+        // Not implemented. #1679
+        support_level: SupportLevel::Incompatible(Severity::Low),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+    };
+
+    /// `cluster_agent.enabled` - enable Cluster Agent connectivity.
+    CLUSTER_AGENT_ENABLED = SalukiAnnotation {
+        schema: &schema::CLUSTER_AGENT_ENABLED,
+        // Not implemented. Required for autoscaling failover routing. #1684
+        support_level: SupportLevel::Incompatible(Severity::Low),
         additional_yaml_paths: &[],
         env_var_override: None,
         used_by: &[],

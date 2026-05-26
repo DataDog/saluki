@@ -442,7 +442,7 @@ impl DDSketch {
         }
 
         // Sort the key counts first, as that's required by `insert_key_counts`.
-        key_counts.sort_unstable_by(|(k1, _), (k2, _)| k1.cmp(k2));
+        key_counts.sort_unstable_by_key(|(k, _)| *k);
 
         self.insert_key_counts(&key_counts);
     }
@@ -655,7 +655,7 @@ impl TryFrom<Dogsketch> for DDSketch {
             return Err("k and n bin vectors have differing lengths");
         }
 
-        for (k, n) in k.into_iter().zip(n.into_iter()) {
+        for (k, n) in k.into_iter().zip(n) {
             let k = i16::try_from(k).map_err(|_| "bin key overflows i16")?;
 
             sketch.bins.push(Bin { k, n });
@@ -813,14 +813,14 @@ mod tests {
 
     /// Regression test for `trim_left` bin count with large per-sample weights.
     ///
-    /// With the old u16 layout, a sample weight of ~260M would generate ceil(260M / 65535) = 3969
-    /// bins per key, causing bin count explosion and an encoder panic. With u32, the same weight
-    /// fits in a single bin (260M < u32::MAX ≈ 4.3B), so one `insert_n` call produces exactly one
-    /// bin per key and the bin limit is trivially respected.
+    /// With the old `u16` layout, a sample weight of ~260M would generate `ceil(260M / 65535)`, or 3969, bins per key,
+    /// causing bin count explosion and an encoder panic. With `u32`, the same weight fits in a single bin (up to
+    /// `u32::MAX`, ~4.3 billion, samples per bin), so one `insert_n` call produces exactly one bin per key and the bin
+    /// limit is trivially respected.
     ///
-    /// This test inserts several values with a weight representative of what ADP receives when
-    /// clamping an incoming sample rate of 3e-9 to its minimum of 3.845e-9 (~260M per sample),
-    /// then asserts the bin count never exceeds DDSKETCH_CONF_BIN_LIMIT.
+    /// This test inserts several values with a weight representative of what ADP receives when clamping an incoming
+    /// sample rate of `3e-9` to its minimum of `3.845e-9` (~260M per sample), then asserts the bin count never exceeds
+    /// `DDSKETCH_CONF_BIN_LIMIT`.
     #[test]
     fn trim_left_respects_bin_limit_with_large_weights() {
         // Weight corresponding to ADP's minimum safe sample rate (1 / 3.845e-9 ≈ 260_078_024).

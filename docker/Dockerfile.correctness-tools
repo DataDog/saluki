@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1.23
+# syntax=docker/dockerfile:1.24
 #
 # This Dockerfile builds the "correctness tools suite" -- `datadog-intake` and `millstone` -- which together
 # support the correctness testing framework for Agent Data Plane. The resulting image contains both binaries

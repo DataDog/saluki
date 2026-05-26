@@ -1,7 +1,7 @@
 type: integration
 name: "adp-logging-respects-data-plane-log-file"
 description: "Verifies ADP honors the per-subagent `data_plane.log_file` setting when explicitly configured"
-timeout: 90s
+timeout: 120s
 
 container:
   image: "saluki-images/datadog-agent:testing-devel"

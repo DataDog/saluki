@@ -18,7 +18,7 @@ use crate::correctness::config::{
 use crate::reporter::TestResult;
 use crate::test::{Test, TestContext, TestSuite};
 
-/// A duration that can be parsed from human-readable strings like "10s", "1m", "500ms".
+/// A duration that can be parsed from human-readable strings like `10s`, `1m`, `500ms`.
 #[derive(Clone, Debug)]
 pub struct HumanDuration(pub Duration);
 

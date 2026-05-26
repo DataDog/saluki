@@ -27,5 +27,5 @@ RUN apt-get update && \
     && rm -rf /var/lib/apt/lists/*
 
 # Install protoc using the repo's own CI script.
-COPY .ci/install-protoc.sh /tmp/install-protoc.sh
+COPY ci/images/scripts/install-protoc.sh /tmp/install-protoc.sh
 RUN chmod +x /tmp/install-protoc.sh && /tmp/install-protoc.sh && rm /tmp/install-protoc.sh
