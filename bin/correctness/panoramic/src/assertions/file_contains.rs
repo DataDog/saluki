@@ -95,7 +95,12 @@ impl Assertion for FileContainsAssertion {
                 };
             }
 
-            match read_file_in_container(&ctx.container_name, &self.path).await {
+            let read_result = if ctx.is_native {
+                read_file_local(&self.path).await
+            } else {
+                read_file_in_container(&ctx.container_name, &self.path).await
+            };
+            match read_result {
                 Ok(Some(content)) => {
                     let matches = match &self.pattern {
                         None => true,
@@ -128,6 +133,20 @@ impl Assertion for FileContainsAssertion {
 
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
+    }
+}
+
+/// Reads a file from the host filesystem.
+///
+/// Used by the `native_macos` runtime where ADP runs as a local process and writes log files to
+/// real host paths. Returns the same shape as [`read_file_in_container`]: `Ok(Some(contents))`
+/// when readable, `Ok(None)` when missing, `Err` for unexpected I/O failures.
+async fn read_file_local(path: &str) -> Result<Option<String>, String> {
+    match tokio::fs::read_to_string(path).await {
+        Ok(contents) => Ok(Some(contents)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => Ok(None),
+        Err(e) => Err(format!("Failed to read '{}': {}", path, e)),
     }
 }
 

@@ -102,6 +102,10 @@ pub struct AssertionContext {
     pub port_mappings: std::collections::HashMap<String, u16>,
     /// Name of the container being tested.
     pub container_name: String,
+    /// Whether the test is running natively (no container). When `true`, assertions that would
+    /// otherwise reach into a container (e.g., reading a file via `docker exec`) should operate
+    /// against the host filesystem / local process instead.
+    pub is_native: bool,
 }
 
 /// Trait for assertion implementations.

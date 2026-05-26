@@ -289,6 +289,7 @@ impl NativeIntegrationRunner {
                         container_exit_token: exit_token.clone(),
                         cancel_token: cancel_token.clone(),
                         container_name: process_display_name.clone(),
+                        is_native: true,
                         port_mappings: port_mappings.clone(),
                     };
                     results.push(assertion.check(&ctx).await);
@@ -303,6 +304,7 @@ impl NativeIntegrationRunner {
                                     container_exit_token: exit_token.clone(),
                                     cancel_token: cancel_token.clone(),
                                     container_name: process_display_name.clone(),
+                                    is_native: true,
                                     port_mappings: port_mappings.clone(),
                                 };
                                 futures.push(async move { a.check(&ctx).await });

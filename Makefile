@@ -573,7 +573,13 @@ list-integration-tests: ## Lists available ADP integration tests
 build-adp-native: check-rust-build-tools
 build-adp-native: ## Builds the agent-data-plane binary natively for the current host (release profile)
 	@echo "[*] Building agent-data-plane (release, native host target)..."
-	@cargo build --release --bin agent-data-plane
+	@APP_FULL_NAME="$(ADP_APP_FULL_NAME)" \
+		APP_SHORT_NAME="$(ADP_APP_SHORT_NAME)" \
+		APP_IDENTIFIER="$(ADP_APP_IDENTIFIER)" \
+		APP_GIT_HASH="$(ADP_APP_GIT_HASH)" \
+		APP_VERSION="$(ADP_APP_VERSION)" \
+		APP_BUILD_DATE="$(ADP_APP_BUILD_DATE)" \
+		cargo build --release --bin agent-data-plane
 
 .PHONY: test-integration-macos-run
 test-integration-macos-run: ## Runs native macOS integration tests using already-built binaries (assumes target/release/{panoramic,agent-data-plane} exist). Defaults to all native_macos tests; override with CASE=<name>/native_macos.
