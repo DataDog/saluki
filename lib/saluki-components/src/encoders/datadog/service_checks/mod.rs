@@ -55,7 +55,7 @@ const fn default_max_uncompressed_payload_size() -> usize {
 pub struct DatadogServiceChecksConfiguration {
     /// Maximum compressed size, in bytes, of a service check payload.
     ///
-    /// This matches the Datadog Agent's generic serializer payload limit for service checks. The effective value is
+    /// This matches the Datadog Agent's generic payload limit for service checks. The effective value is
     /// clamped to the Agent's default intake-safe limit of 2,621,440 bytes, so larger configured values do not allow
     /// payloads that intake may reject. If set to `0`, every non-empty compressed payload exceeds the limit and is
     /// dropped during flush.
@@ -66,7 +66,7 @@ pub struct DatadogServiceChecksConfiguration {
 
     /// Maximum uncompressed size, in bytes, of a service check payload.
     ///
-    /// This matches the Datadog Agent's generic serializer payload limit for service checks. The effective value is
+    /// This matches the Datadog Agent's generic payload limit for service checks. The effective value is
     /// clamped to the Agent's default intake-safe limit of 4,194,304 bytes, so larger configured values do not allow
     /// payloads that intake may reject. Values smaller than the minimum endpoint framing size prevent the request
     /// builder from starting.

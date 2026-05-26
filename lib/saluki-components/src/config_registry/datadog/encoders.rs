@@ -81,7 +81,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `serializer_max_payload_size`—max compressed generic serializer payload size.
+    /// `serializer_max_payload_size`—max compressed generic payload size.
     SERIALIZER_MAX_PAYLOAD_SIZE = SalukiAnnotation {
         schema: &schema::SERIALIZER_MAX_PAYLOAD_SIZE,
         support_level: SupportLevel::Full,
@@ -96,7 +96,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `serializer_max_uncompressed_payload_size`—max uncompressed generic serializer payload size.
+    /// `serializer_max_uncompressed_payload_size`—max uncompressed generic payload size.
     SERIALIZER_MAX_UNCOMPRESSED_PAYLOAD_SIZE = SalukiAnnotation {
         schema: &schema::SERIALIZER_MAX_UNCOMPRESSED_PAYLOAD_SIZE,
         support_level: SupportLevel::Full,
