@@ -257,8 +257,6 @@ ways that are not yet fully characterized.
 | `multi_region_failover.enabled`                                  | Enable multi-region failover mode               | [#1678] |
 | `multi_region_failover.failover_metrics`                         | Enable metrics forwarding to failover region    | [#1678] |
 | `multi_region_failover.metric_allowlist`                         | Metric name allowlist for MRF forwarding        | [#1678] |
-| `serializer_max_payload_size`                                    | Max compressed payload size                     | [#1354] |
-| `serializer_max_uncompressed_payload_size`                       | Max uncompressed payload size                   | [#1354] |
 | `telemetry.dogstatsd.aggregator_channel_latency_buckets`         | Histogram buckets: DSD aggregator channel lag   | [#1679] |
 | `telemetry.dogstatsd.listeners_channel_latency_buckets`          | Histogram buckets: listener channel latency     | [#1679] |
 | `telemetry.dogstatsd.listeners_latency_buckets`                  | Histogram buckets: listener processing          | [#1679] |

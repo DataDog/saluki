@@ -22,6 +22,23 @@ pub const DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT: usize = 3_200_000; // 3 MiB
 /// Default uncompressed size limit for intake requests.
 pub const DEFAULT_INTAKE_UNCOMPRESSED_SIZE_LIMIT: usize = 62_914_560; // 60 MiB
 
+/// Datadog Agent default compressed size limit for generic serializer payloads.
+pub const DEFAULT_SERIALIZER_COMPRESSED_SIZE_LIMIT: usize = 2_621_440; // 2.5 MiB
+
+/// Datadog Agent default uncompressed size limit for generic serializer payloads.
+pub const DEFAULT_SERIALIZER_UNCOMPRESSED_SIZE_LIMIT: usize = 4_194_304; // 4 MiB
+
+/// Returns payload limits capped to the provided upper bounds.
+pub fn clamp_payload_limits(
+    uncompressed_len_limit: usize, compressed_len_limit: usize, max_uncompressed_len_limit: usize,
+    max_compressed_len_limit: usize,
+) -> (usize, usize) {
+    (
+        uncompressed_len_limit.min(max_uncompressed_len_limit),
+        compressed_len_limit.min(max_compressed_len_limit),
+    )
+}
+
 /// V1 metric series intake path.
 pub(crate) const METRICS_SERIES_V1_PATH: &str = "/api/v1/series";
 

@@ -81,6 +81,36 @@ crate::declare_annotations! {
         test_json: None,
     };
 
+    /// `serializer_max_payload_size`—max compressed generic serializer payload size.
+    SERIALIZER_MAX_PAYLOAD_SIZE = SalukiAnnotation {
+        schema: &schema::SERIALIZER_MAX_PAYLOAD_SIZE,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[
+            structs::DATADOG_EVENTS_CONFIGURATION,
+            structs::DATADOG_METRICS_CONFIGURATION,
+            structs::DATADOG_SERVICE_CHECKS_CONFIGURATION,
+        ],
+        value_type_override: Some(ValueType::Integer),
+        test_json: None,
+    };
+
+    /// `serializer_max_uncompressed_payload_size`—max uncompressed generic serializer payload size.
+    SERIALIZER_MAX_UNCOMPRESSED_PAYLOAD_SIZE = SalukiAnnotation {
+        schema: &schema::SERIALIZER_MAX_UNCOMPRESSED_PAYLOAD_SIZE,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[
+            structs::DATADOG_EVENTS_CONFIGURATION,
+            structs::DATADOG_METRICS_CONFIGURATION,
+            structs::DATADOG_SERVICE_CHECKS_CONFIGURATION,
+        ],
+        value_type_override: Some(ValueType::Integer),
+        test_json: None,
+    };
+
     /// `serializer_max_series_payload_size`—max compressed V2 series payload size.
     SERIALIZER_MAX_SERIES_PAYLOAD_SIZE = SalukiAnnotation {
         schema: &schema::SERIALIZER_MAX_SERIES_PAYLOAD_SIZE,
