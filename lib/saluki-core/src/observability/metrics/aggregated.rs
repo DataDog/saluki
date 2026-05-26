@@ -112,9 +112,9 @@ impl AggregatedMetric {
                     value: AggregatedMetricValue::Histogram(merged),
                 }
             }
-            (_, other) => Self {
-                timestamp: None,
-                value: other,
+            (_, other_value) => Self {
+                timestamp: other.timestamp,
+                value: other_value,
             },
         }
     }
