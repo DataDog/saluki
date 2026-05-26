@@ -193,7 +193,10 @@ mod tests {
     fn fast_build_hasher_independent_per_call() {
         // Each call to get_fast_build_hasher produces an independently seeded instance,
         // so the same input should hash to different values across instances.
-        assert_ne!(get_fast_build_hasher().hash_one("test"), get_fast_build_hasher().hash_one("test"));
+        assert_ne!(
+            get_fast_build_hasher().hash_one("test"),
+            get_fast_build_hasher().hash_one("test")
+        );
     }
 
     // --- NoopU64Hasher ---
