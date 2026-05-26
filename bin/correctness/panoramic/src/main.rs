@@ -188,9 +188,22 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
         .with_fail_fast(cmd.fail_fast)
         .with_event_sender(tx);
 
-    if let Some(ref filter_str) = cmd.tests {
-        let names: Vec<String> = filter_str.split(',').map(|s| s.trim().to_string()).collect();
-        args = args.with_filter(Box::new(move |t: &dyn test::Test| names.iter().any(|n| *n == t.name())));
+    // Combine the optional --runtime filter and the optional -t name filter into a single
+    // predicate. A test passes if it matches BOTH constraints (i.e., AND semantics). When neither
+    // is set, no filter is installed and every discovered test runs.
+    let name_filter: Option<Vec<String>> = cmd
+        .tests
+        .as_ref()
+        .map(|s| s.split(',').map(|n| n.trim().to_string()).collect());
+    let runtime_filter: Option<String> = cmd.runtime.clone();
+    if name_filter.is_some() || runtime_filter.is_some() {
+        args = args.with_filter(Box::new(move |t: &dyn test::Test| {
+            let name_ok = name_filter
+                .as_ref()
+                .is_none_or(|names| names.iter().any(|n| *n == t.name()));
+            let runtime_ok = runtime_filter.as_ref().is_none_or(|r| t.runtime() == *r);
+            name_ok && runtime_ok
+        }));
     }
 
     // Spawn the test runner task (same code path for both modes).

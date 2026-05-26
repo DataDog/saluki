@@ -30,6 +30,11 @@ pub struct RunCommand {
     #[argh(option, short = 't')]
     pub tests: Option<String>,
 
+    /// run only tests with the given runtime (e.g., `docker`, `native_macos`, `kubernetes_in_docker`).
+    /// Can be combined with `-t` to further restrict by name.
+    #[argh(option)]
+    pub runtime: Option<String>,
+
     /// number of tests to run in parallel
     #[argh(option, short = 'p', default = "4")]
     pub parallelism: usize,

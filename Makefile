@@ -576,11 +576,11 @@ build-adp-native: ## Builds the agent-data-plane binary natively for the current
 	@cargo build --release --bin agent-data-plane
 
 .PHONY: test-integration-macos-run
-test-integration-macos-run: ## Runs native macOS integration tests using already-built binaries (assumes target/release/{panoramic,agent-data-plane} exist)
+test-integration-macos-run: ## Runs native macOS integration tests using already-built binaries (assumes target/release/{panoramic,agent-data-plane} exist). Defaults to all native_macos tests; override with CASE=<name>/native_macos.
 	@echo "[*] Running native macOS integration tests..."
 	@ADP_BINARY_PATH="$(CURDIR)/target/release/agent-data-plane" \
 		target/release/panoramic run -d "$(CURDIR)/test/integration/cases" \
-		-t $(if $(CASE),$(CASE),basic-startup/native_macos) --no-tui \
+		$(if $(CASE),-t $(CASE),--runtime native_macos) --no-tui -p 1 \
 		$(if $(PANORAMIC_LOG_DIR),-l $(PANORAMIC_LOG_DIR))
 
 .PHONY: test-integration-macos
