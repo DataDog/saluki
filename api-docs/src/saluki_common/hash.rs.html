@@ -3,7 +3,7 @@
 <a href=#3 id=3 data-nosnippet>3</a>    sync::LazyLock,
 <a href=#4 id=4 data-nosnippet>4</a>};
 <a href=#5 id=5 data-nosnippet>5</a>
-<a href=#6 id=6 data-nosnippet>6</a><span class="kw">use </span>sha3::digest::{ExtendableOutput <span class="kw">as _</span>, Update <span class="kw">as _</span>};
+<a href=#6 id=6 data-nosnippet>6</a><span class="kw">use </span>shake::digest::{ExtendableOutput <span class="kw">as _</span>, Update <span class="kw">as _</span>};
 <a href=#7 id=7 data-nosnippet>7</a>
 <a href=#8 id=8 data-nosnippet>8</a><span class="doccomment">/// A fast, non-cryptographic hash implementation that's optimized for quality.
 <a href=#9 id=9 data-nosnippet>9</a>///
@@ -113,13 +113,13 @@
 <a href=#113 id=113 data-nosnippet>113</a>///
 <a href=#114 id=114 data-nosnippet>114</a>/// At a minimum, the hasher implementation won't change within major versions of Saluki, including v0 and v1.
 <a href=#115 id=115 data-nosnippet>115</a>///
-<a href=#116 id=116 data-nosnippet>116</a>/// Currently, [`sha3`][sha3] (specifically SHAKE128) is used as the underlying implementation. While SHAKE128 is a
+<a href=#116 id=116 data-nosnippet>116</a>/// Currently, [`shake`][shake] (specifically SHAKE128) is used as the underlying implementation. While SHAKE128 is a
 <a href=#117 id=117 data-nosnippet>117</a>/// cryptographic hash algorithm, the way it's used effectively makes it a non-cryptographic hash algorithm given how
 <a href=#118 id=118 data-nosnippet>118</a>/// much the output is truncated.
 <a href=#119 id=119 data-nosnippet>119</a>///
-<a href=#120 id=120 data-nosnippet>120</a>/// [sha3]: https://crates.io/crates/sha3
+<a href=#120 id=120 data-nosnippet>120</a>/// [shake]: https://crates.io/crates/shake
 <a href=#121 id=121 data-nosnippet>121</a></span><span class="attr">#[derive(Default)]
-<a href=#122 id=122 data-nosnippet>122</a></span><span class="kw">pub struct </span>StableHasher(sha3::Shake128);
+<a href=#122 id=122 data-nosnippet>122</a></span><span class="kw">pub struct </span>StableHasher(shake::Shake128);
 <a href=#123 id=123 data-nosnippet>123</a>
 <a href=#124 id=124 data-nosnippet>124</a><span class="kw">impl </span>std::hash::Hasher <span class="kw">for </span>StableHasher {
 <a href=#125 id=125 data-nosnippet>125</a>    <span class="kw">fn </span>write(<span class="kw-2">&amp;mut </span><span class="self">self</span>, bytes: <span class="kw-2">&amp;</span>[u8]) {
