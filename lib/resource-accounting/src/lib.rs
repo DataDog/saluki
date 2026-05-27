@@ -1,17 +1,19 @@
-//! Building blocks for declaring and enforcing memory bounds for components.
+//! Building blocks for process-level resource accounting, including memory bounds enforcement and
+//! CPU usage tracking.
 //!
-//! ## Overview
+//! # Overview
 //!
-//! This crate provides a three-pronged approach to memory accounting:
+//! This crate provides a four-pronged approach to process accounting:
 //!
 //! - memory bounds (components declare their _expected_ memory usage)
 //! - allocation tracking (tracking _actual_ memory usage)
 //! - memory limiting (enforcing _maximum_ memory usage)
+//! - CPU tracking (tracking per-component CPU time consumption)
 //!
 //! Through this approach, data planes can be vastly more resilient to memory exhaustion or
-//! exceeding externally applied memory limits.
+//! exceeding externally applied memory limits, and gain visibility into per-component CPU usage.
 //!
-//! ## Memory bounds
+//! # Memory bounds
 //!
 //! One major problem with resource planning is predicting memory usage. For many applications,
 //! there are a number of factors that can influence memory usage, such as:
@@ -36,7 +38,7 @@
 //! bounds themselves is out of scope for this crate, our other two prongs are meant to pick up the
 //! slack where memory bounds fall off.
 //!
-//! ## Allocation tracking
+//! # Allocation tracking
 //!
 //! As memory bounds are inherently lossy, and not everything can be fully bounded, we need a way to
 //! track the actual memory used against the expected memory usage. This is where allocation
@@ -51,40 +53,55 @@
 //! bounds or not. In cases where a component is exceeding its bounds, or the application as a whole
 //! is exceeding its configured limit, we need a way to attempt to enforce those limits.
 //!
-//! ## Memory limiting
-//!
-//! Memory limiting is the final prong in our approach to memory accounting.
+//! # Memory limiting
 //!
 //! When the application is approaching its configured memory limit, or is exceeding the limit, a
 //! mechanism is needed to slow down the rate of memory growth. The global memory limiter is a
 //! mechanism for cooperatively applying backpressure in order to limit the rate of work, and
 //! thereby limit the rate of allocations. Components participate by utilizing the global memory
 //! limiter, which conditionally applies small delays in order to artificially generate backpressure.
+//!
+//! # CPU tracking
+//!
+//! CPU tracking provides per-component visibility into CPU time consumption. When running on supported
+//! operating systems, we can granularly track the amount of CPU time spent on a per-thread basis, which
+//! allows us to track CPU usage for resource groups in the same way we track allocations: through the
+//! [`Tracked`] future wrapper.
+//!
+//! This allows operators to understand which components are consuming the most CPU time, aiding in
+//! capacity planning and performance optimization.
+//!
+//! CPU usage tracking is only available on Linux.
 #![deny(warnings)]
 #![deny(missing_docs)]
 
 use std::collections::HashMap;
 
-//mod partitioner;
+use serde::Serialize;
 
 #[cfg(test)]
 pub mod test_util;
 
-pub mod allocator;
+mod allocator;
+pub use self::allocator::TrackingAllocator;
+
 mod api;
-pub use self::api::MemoryAPIHandler;
+pub use self::api::ResourceAPIHandler;
 
 mod registry;
-
-use serde::Serialize;
-
 pub use self::registry::{ComponentRegistry, ComponentRegistryHandle, MemoryBoundsBuilder};
 
 mod grant;
 pub use self::grant::MemoryGrant;
 
+mod groups;
+pub use self::groups::{ResourceGroupRegistry, ResourceGroupToken, ResourceTrackingGuard, Track, Tracked};
+
 mod limiter;
 pub use self::limiter::MemoryLimiter;
+
+mod stats;
+pub use self::stats::{ResourceStats, ResourceStatsSnapshot};
 
 mod verifier;
 pub use self::verifier::{BoundsVerifier, VerifiedBounds, VerifierError};

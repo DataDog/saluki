@@ -1,6 +1,6 @@
 use std::{num::NonZeroUsize, sync::Arc};
 
-use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
+use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_common::collections::{FastConcurrentHashMap, FastConcurrentHashSet};
 use saluki_context::{
     origin::OriginTagCardinality,

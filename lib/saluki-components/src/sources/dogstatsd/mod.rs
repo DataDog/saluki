@@ -17,7 +17,7 @@ use std::{
 use async_trait::async_trait;
 use bytes::{Buf, BufMut};
 use bytesize::ByteSize;
-use memory_accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
+use resource_accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
 use saluki_common::task::spawn_traced_named;
 use saluki_config::{deserialize_space_separated_or_seq, GenericConfiguration};
 use saluki_context::{

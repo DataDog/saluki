@@ -1,8 +1,8 @@
 //! DogStatsD metric prefix and listener-side metric filter transform.
 
 use async_trait::async_trait;
-use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use metrics::{Counter, Gauge};
+use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
 use saluki_core::data_model::event::{metric::Metric, EventType};
 use saluki_core::{

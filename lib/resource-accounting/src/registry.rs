@@ -6,15 +6,14 @@ use std::{
 
 use crate::UsageExpr;
 use crate::{
-    allocator::{AllocationGroupRegistry, AllocationGroupToken},
-    api::MemoryAPIHandler,
-    BoundsVerifier, ComponentBounds, MemoryBounds, MemoryGrant, VerifiedBounds, VerifierError,
+    api::ResourceAPIHandler, BoundsVerifier, ComponentBounds, MemoryBounds, MemoryGrant, ResourceGroupRegistry,
+    ResourceGroupToken, VerifiedBounds, VerifierError,
 };
 
 pub(crate) struct ComponentMetadata {
     full_name: Option<String>,
     bounds: ComponentBounds,
-    token: Option<AllocationGroupToken>,
+    token: Option<ResourceGroupToken>,
     subcomponents: HashMap<String, Arc<Mutex<ComponentMetadata>>>,
 }
 
@@ -82,18 +81,18 @@ impl ComponentMetadata {
         }
     }
 
-    fn token(&mut self) -> AllocationGroupToken {
+    fn token(&mut self) -> ResourceGroupToken {
         match self.token {
             Some(token) => token,
             None => match self.full_name.as_deref() {
                 Some(full_name) => {
-                    let allocator_component_registry = AllocationGroupRegistry::global();
-                    let token = allocator_component_registry.register_allocation_group(full_name);
+                    let allocator_component_registry = ResourceGroupRegistry::global();
+                    let token = allocator_component_registry.register_resource_group(full_name);
                     self.token = Some(token);
 
                     token
                 }
-                None => AllocationGroupToken::root(),
+                None => ResourceGroupToken::root(),
             },
         }
     }
@@ -125,7 +124,7 @@ impl ComponentMetadata {
 /// A registry for components for tracking memory bounds and runtime memory usage.
 ///
 /// This registry provides a unified interface for declaring the memory bounds of a _component_, as well as registering
-/// that component for runtime memory usage tracking when using the tracking allocator implementation in `memory-accounting`.
+/// that component for runtime memory usage tracking when using the tracking allocator implementation in `resource-accounting`.
 ///
 /// ## Components
 ///
@@ -151,7 +150,7 @@ impl ComponentMetadata {
 ///
 /// ## Allocation tracking
 ///
-/// Every component is also able to be registered with its own allocation group when using the tracking allocator
+/// Every component is also able to be registered with its own resource group when using the tracking allocator
 /// implementation. This is done on demand when the component's token is requested, which avoids polluting the tracking
 /// allocator with components that are never actually used, such as those used for organizational/aesthetic purposes.
 pub struct ComponentRegistry {
@@ -207,7 +206,7 @@ impl ComponentRegistry {
     ///
     /// If the component is the root component (has no name), the root allocation token is returned. Otherwise, the
     /// component is registered (using its full name) if it hasn't already been, and that token is returned.
-    pub fn token(&mut self) -> AllocationGroupToken {
+    pub fn token(&mut self) -> ResourceGroupToken {
         let mut inner = self.inner.lock().unwrap();
         inner.token()
     }
@@ -246,12 +245,12 @@ impl ComponentRegistryHandle {
         BoundsVerifier::new(initial_grant, bounds).verify()
     }
 
-    /// Gets an API handler for reporting the memory bounds and usage of all component in the registry.
+    /// Gets an API handler for reporting the memory bounds and resource usage of all component in the registry.
     ///
     /// This handler exposes routes for querying the memory bounds and usage of all registered components. See
-    /// [`MemoryAPIHandler`] for more information about routes and responses.
-    pub fn api_handler(&self) -> MemoryAPIHandler {
-        MemoryAPIHandler::from_state(Arc::clone(&self.inner))
+    /// [`ResourceAPIHandler`] for more information about routes and responses.
+    pub fn api_handler(&self) -> ResourceAPIHandler {
+        ResourceAPIHandler::from_state(Arc::clone(&self.inner))
     }
 
     /// Gets the total minimum required bytes for all components in the registry.

@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use memory_accounting::ComponentRegistry;
+use resource_accounting::ComponentRegistry;
 
 use crate::health::Health;
 use crate::{

@@ -1,4 +1,4 @@
-//! Memory management.
+//! Resource accounting and telemetry.
 
 use std::{
     collections::{HashMap, VecDeque},
@@ -6,13 +6,12 @@ use std::{
     time::Duration,
 };
 
-use async_trait::async_trait;
 use bytesize::ByteSize;
-use memory_accounting::{
-    allocator::{AllocationGroupRegistry, AllocationStats, AllocationStatsSnapshot},
-    ComponentBounds, ComponentRegistry, ComponentRegistryHandle, MemoryGrant, MemoryLimiter,
-};
 use metrics::{counter, gauge, Counter, Gauge, Level};
+use resource_accounting::{
+    ComponentBounds, ComponentRegistry, ComponentRegistryHandle, MemoryGrant, MemoryLimiter, ResourceGroupRegistry,
+    ResourceStats, ResourceStatsSnapshot,
+};
 use saluki_api::{DynamicRoute, EndpointType};
 use saluki_config::GenericConfiguration;
 use saluki_core::runtime::{
@@ -21,6 +20,7 @@ use saluki_core::runtime::{
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use serde::Deserialize;
 use tokio::{pin, select, time::sleep};
+use tonic::async_trait;
 use tracing::{error, info, warn};
 
 const fn default_memory_slop_factor() -> f64 {
@@ -69,7 +69,7 @@ pub struct MemoryBoundsConfiguration {
     /// memory limit, such that we account for the "known unknowns" -- memory that hasn't yet been accounted for -- by
     /// simply ensuring that we can fit within a portion of the overall limit.
     ///
-    /// Values between 0 to 1 are allowed, and represent the percentage of `memory_limit` that's held back. This means
+    /// Values between 0 to 1 are allowed, and represent the percentage of `memory_limit` that is held back. This means
     /// that a slop factor of 0.25, for example, will cause 25% of `memory_limit` to be withheld. If `memory_limit` was
     /// 100 MB, we would then verify that the memory bounds can fit within 75 MB (100 MB * (1 - 0.25) => 75 MB).
     #[serde(default = "default_memory_slop_factor")]
@@ -144,7 +144,7 @@ impl MemoryBoundsConfiguration {
 ///
 /// # Errors
 ///
-/// If the bounds couldn't be validated under [`MemoryMode::Strict`], or if the configured grant is invalid, an error
+/// If the bounds could not be validated under [`MemoryMode::Strict`], or if the configured grant is invalid, an error
 /// is returned.
 pub fn initialize_memory_bounds(
     configuration: MemoryBoundsConfiguration, component_registry: ComponentRegistryHandle,
@@ -255,30 +255,32 @@ fn print_bounds(bounds: &ComponentBounds) {
     info!("");
 }
 
-struct AllocationGroupMetrics {
-    totals: AllocationStatsSnapshot,
+struct ResourceGroupMetrics {
+    totals: ResourceStatsSnapshot,
     allocated_bytes_total: Counter,
     allocated_bytes_live: Gauge,
     allocated_objects_total: Counter,
     allocated_objects_live: Gauge,
     deallocated_bytes_total: Counter,
     deallocated_objects_total: Counter,
+    cpu_time_nanos_total: Counter,
 }
 
-impl AllocationGroupMetrics {
+impl ResourceGroupMetrics {
     fn new(group_name: &str) -> Self {
         Self {
-            totals: AllocationStatsSnapshot::empty(),
+            totals: ResourceStatsSnapshot::empty(),
             allocated_bytes_total: counter!(level: Level::DEBUG, "group_allocated_bytes_total", "group_id" => group_name.to_string()),
             allocated_bytes_live: gauge!(level: Level::DEBUG, "group_allocated_bytes_live", "group_id" => group_name.to_string()),
             allocated_objects_total: counter!(level: Level::DEBUG, "group_allocated_objects_total", "group_id" => group_name.to_string()),
             allocated_objects_live: gauge!(level: Level::DEBUG, "group_allocated_objects_live", "group_id" => group_name.to_string()),
             deallocated_bytes_total: counter!(level: Level::DEBUG, "group_deallocated_bytes_total", "group_id" => group_name.to_string()),
             deallocated_objects_total: counter!(level: Level::DEBUG, "group_deallocated_objects_total", "group_id" => group_name.to_string()),
+            cpu_time_nanos_total: counter!(level: Level::DEBUG, "group_cpu_time_nanos_total", "group_id" => group_name.to_string()),
         }
     }
 
-    fn update(&mut self, stats: &AllocationStats) {
+    fn update(&mut self, stats: &ResourceStats) {
         let delta = stats.snapshot_delta(&self.totals);
 
         self.allocated_bytes_total.increment(delta.allocated_bytes as u64);
@@ -286,6 +288,7 @@ impl AllocationGroupMetrics {
         self.deallocated_bytes_total.increment(delta.deallocated_bytes as u64);
         self.deallocated_objects_total
             .increment(delta.deallocated_objects as u64);
+        self.cpu_time_nanos_total.increment(delta.cpu_time_nanos);
 
         self.totals.merge(&delta);
         self.allocated_bytes_live
@@ -295,16 +298,16 @@ impl AllocationGroupMetrics {
     }
 }
 
-/// A worker that periodically collects per-allocation group memory usage statistics and emits the internal telemetry.
+/// A worker that periodically collects per-resource group memory usage statistics and emits the internal telemetry.
 ///
 /// Additionally, asserts the memory API routes from the given [`ComponentRegistry`] as a [`DynamicRoute`] on the
 /// unprivileged API endpoint.
-pub struct AllocationTelemetryWorker {
+pub struct ResourceTelemetryWorker {
     component_registry: ComponentRegistryHandle,
 }
 
-impl AllocationTelemetryWorker {
-    /// Creates a new `AllocationTelemetryWorker` for the given component registry.
+impl ResourceTelemetryWorker {
+    /// Creates a new `ResourceTelemetryWorker` for the given component registry.
     pub fn new(component_registry: &ComponentRegistry) -> Self {
         Self {
             component_registry: component_registry.root(),
@@ -313,16 +316,16 @@ impl AllocationTelemetryWorker {
 }
 
 #[async_trait]
-impl Supervisable for AllocationTelemetryWorker {
+impl Supervisable for ResourceTelemetryWorker {
     fn name(&self) -> &str {
-        "alloc-telemetry"
+        "resource-telemetry"
     }
 
     async fn initialize(&self, mut process_shutdown: ProcessShutdown) -> Result<SupervisorFuture, InitializationError> {
         // We can't enforce, at compile-time, that the tracking allocator must be installed if a caller is trying to
         // initialize the allocator's reporting infrastructure... but we can at least warn them if we detect it's not
         // installed here at runtime.
-        if !AllocationGroupRegistry::allocator_installed() {
+        if !ResourceGroupRegistry::allocator_installed() {
             warn!("Tracking allocator not installed. Memory telemetry will not be available.");
         }
 
@@ -332,7 +335,7 @@ impl Supervisable for AllocationTelemetryWorker {
             // Register our API routes before we actually start running.
             DataspaceRegistry::try_current()
                 .ok_or_else(|| generic_error!("Dataspace not available."))?
-                .assert(memory_routes, "alloc-telemetry-api");
+                .assert(memory_routes, "resource-telemetry-api");
 
             let mut metrics = HashMap::new();
 
@@ -343,12 +346,12 @@ impl Supervisable for AllocationTelemetryWorker {
                 select! {
                     _ = &mut shutdown => break,
                     _ = sleep(Duration::from_secs(1)) => {
-                        AllocationGroupRegistry::global().visit_allocation_groups(|group_name, stats| {
+                        ResourceGroupRegistry::global().visit_resource_groups(|group_name, stats| {
                             let group_metrics = match metrics.get_mut(group_name) {
                                 Some(group_metrics) => group_metrics,
                                 None => metrics
                                     .entry(group_name.to_string())
-                                    .or_insert_with(|| AllocationGroupMetrics::new(group_name)),
+                                    .or_insert_with(|| ResourceGroupMetrics::new(group_name)),
                             };
 
                             group_metrics.update(stats);

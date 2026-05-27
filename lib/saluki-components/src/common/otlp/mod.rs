@@ -18,7 +18,6 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::routing::post;
 use axum::Router;
-use memory_accounting::MemoryLimiter;
 use otlp_protos::opentelemetry::proto::collector::logs::v1::logs_service_server::{LogsService, LogsServiceServer};
 use otlp_protos::opentelemetry::proto::collector::logs::v1::{ExportLogsServiceRequest, ExportLogsServiceResponse};
 use otlp_protos::opentelemetry::proto::collector::metrics::v1::metrics_service_server::{
@@ -30,6 +29,7 @@ use otlp_protos::opentelemetry::proto::collector::metrics::v1::{
 use otlp_protos::opentelemetry::proto::collector::trace::v1::trace_service_server::{TraceService, TraceServiceServer};
 use otlp_protos::opentelemetry::proto::collector::trace::v1::{ExportTraceServiceRequest, ExportTraceServiceResponse};
 use prost::Message;
+use resource_accounting::MemoryLimiter;
 use saluki_common::task::HandleExt as _;
 use saluki_core::components::ComponentContext;
 use saluki_core::observability::ComponentMetricsExt;
@@ -341,7 +341,7 @@ impl<H: OtlpHandler> TraceService for GrpcServiceImpl<H> {
 mod tests {
     use std::sync::Arc;
 
-    use memory_accounting::MemoryLimiter;
+    use resource_accounting::MemoryLimiter;
     use saluki_core::{components::ComponentContext, topology::ComponentId};
     use saluki_metrics::test::TestRecorder;
 

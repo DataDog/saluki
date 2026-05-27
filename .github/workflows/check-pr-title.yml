@@ -72,7 +72,7 @@ jobs:
             integration
             internal metrics
             io
-            memory-accounting
+            resource-accounting
             metadata
             metric router
             metrics

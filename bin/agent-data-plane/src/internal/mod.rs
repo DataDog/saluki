@@ -1,4 +1,4 @@
-use memory_accounting::ComponentRegistry;
+use resource_accounting::ComponentRegistry;
 use saluki_app::logging::LoggingOverrideController;
 use saluki_config::GenericConfiguration;
 use saluki_core::health::HealthRegistry;
