@@ -17,8 +17,10 @@
 
 mod constants;
 mod interner;
+mod payload;
 mod types;
 mod writer;
 
+pub(super) use payload::{V3EncodedRequest, V3PayloadLimits, V3PayloadRequest};
 pub use types::V3MetricType;
 pub use writer::V3Writer;
