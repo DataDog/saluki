@@ -569,7 +569,6 @@ impl MatrixConfig {
                     datadog_intake: CorrectnessDatadogIntakeConfig {
                         image: self.datadog_intake.image.clone(),
                         binary_path: self.datadog_intake.binary_path.clone(),
-                        config_path: self.get_canonicalized_config_path(&self.datadog_intake.config_path),
                     },
                     baseline: CorrectnessTargetConfig {
                         image: baseline.image,

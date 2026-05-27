@@ -1049,7 +1049,7 @@ name = "datadog-intake"
 version = "0.1.0"
 dependencies = [
  "axum",
- "base64 0.22.1",
+ "base64",
  "datadog-protos",
  "protobuf",
  "rmp-serde",
@@ -2984,7 +2984,7 @@ dependencies = [
  "airlock",
  "argh",
  "async-trait",
- "base64 0.22.1",
+ "base64",
  "bollard",
  "chrono",
  "colored",

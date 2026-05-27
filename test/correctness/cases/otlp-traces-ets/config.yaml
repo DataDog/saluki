@@ -1,0 +1,22 @@
+type: correctness
+runtime: docker
+analysis_mode: traces
+baseline:
+  image: saluki-images/datadog-agent:testing-release
+  files:
+    - datadog.yaml:/etc/datadog-agent/datadog.yaml
+  additional_env_vars:
+    - DD_API_KEY=correctness-test
+    - DD_APM_ERROR_TRACKING_STANDALONE_ENABLED=true
+comparison:
+  image: saluki-images/datadog-agent:testing-release
+  files:
+    - datadog.yaml:/etc/datadog-agent/datadog.yaml
+  additional_env_vars:
+    - DD_API_KEY=correctness-test
+    - DD_DATA_PLANE_ENABLED=true
+    - DD_DATA_PLANE_STANDALONE_MODE=true
+    - DD_DATA_PLANE_OTLP_ENABLED=true
+    # TODO: remove when we have Agent v7.80 https://github.com/DataDog/saluki/issues/1577
+    - DD_DATA_PLANE_DOGSTATSD_ENABLED=false
+    - DD_APM_ERROR_TRACKING_STANDALONE_ENABLED=true
