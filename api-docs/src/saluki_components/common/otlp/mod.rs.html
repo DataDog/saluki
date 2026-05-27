@@ -18,18 +18,18 @@
 <a href=#18 id=18 data-nosnippet>18</a><span class="kw">use </span>axum::http::StatusCode;
 <a href=#19 id=19 data-nosnippet>19</a><span class="kw">use </span>axum::routing::post;
 <a href=#20 id=20 data-nosnippet>20</a><span class="kw">use </span>axum::Router;
-<a href=#21 id=21 data-nosnippet>21</a><span class="kw">use </span>memory_accounting::MemoryLimiter;
-<a href=#22 id=22 data-nosnippet>22</a><span class="kw">use </span>otlp_protos::opentelemetry::proto::collector::logs::v1::logs_service_server::{LogsService, LogsServiceServer};
-<a href=#23 id=23 data-nosnippet>23</a><span class="kw">use </span>otlp_protos::opentelemetry::proto::collector::logs::v1::{ExportLogsServiceRequest, ExportLogsServiceResponse};
-<a href=#24 id=24 data-nosnippet>24</a><span class="kw">use </span>otlp_protos::opentelemetry::proto::collector::metrics::v1::metrics_service_server::{
-<a href=#25 id=25 data-nosnippet>25</a>    MetricsService, MetricsServiceServer,
-<a href=#26 id=26 data-nosnippet>26</a>};
-<a href=#27 id=27 data-nosnippet>27</a><span class="kw">use </span>otlp_protos::opentelemetry::proto::collector::metrics::v1::{
-<a href=#28 id=28 data-nosnippet>28</a>    ExportMetricsServiceRequest, ExportMetricsServiceResponse,
-<a href=#29 id=29 data-nosnippet>29</a>};
-<a href=#30 id=30 data-nosnippet>30</a><span class="kw">use </span>otlp_protos::opentelemetry::proto::collector::trace::v1::trace_service_server::{TraceService, TraceServiceServer};
-<a href=#31 id=31 data-nosnippet>31</a><span class="kw">use </span>otlp_protos::opentelemetry::proto::collector::trace::v1::{ExportTraceServiceRequest, ExportTraceServiceResponse};
-<a href=#32 id=32 data-nosnippet>32</a><span class="kw">use </span>prost::Message;
+<a href=#21 id=21 data-nosnippet>21</a><span class="kw">use </span>otlp_protos::opentelemetry::proto::collector::logs::v1::logs_service_server::{LogsService, LogsServiceServer};
+<a href=#22 id=22 data-nosnippet>22</a><span class="kw">use </span>otlp_protos::opentelemetry::proto::collector::logs::v1::{ExportLogsServiceRequest, ExportLogsServiceResponse};
+<a href=#23 id=23 data-nosnippet>23</a><span class="kw">use </span>otlp_protos::opentelemetry::proto::collector::metrics::v1::metrics_service_server::{
+<a href=#24 id=24 data-nosnippet>24</a>    MetricsService, MetricsServiceServer,
+<a href=#25 id=25 data-nosnippet>25</a>};
+<a href=#26 id=26 data-nosnippet>26</a><span class="kw">use </span>otlp_protos::opentelemetry::proto::collector::metrics::v1::{
+<a href=#27 id=27 data-nosnippet>27</a>    ExportMetricsServiceRequest, ExportMetricsServiceResponse,
+<a href=#28 id=28 data-nosnippet>28</a>};
+<a href=#29 id=29 data-nosnippet>29</a><span class="kw">use </span>otlp_protos::opentelemetry::proto::collector::trace::v1::trace_service_server::{TraceService, TraceServiceServer};
+<a href=#30 id=30 data-nosnippet>30</a><span class="kw">use </span>otlp_protos::opentelemetry::proto::collector::trace::v1::{ExportTraceServiceRequest, ExportTraceServiceResponse};
+<a href=#31 id=31 data-nosnippet>31</a><span class="kw">use </span>prost::Message;
+<a href=#32 id=32 data-nosnippet>32</a><span class="kw">use </span>resource_accounting::MemoryLimiter;
 <a href=#33 id=33 data-nosnippet>33</a><span class="kw">use </span>saluki_common::task::HandleExt <span class="kw">as _</span>;
 <a href=#34 id=34 data-nosnippet>34</a><span class="kw">use </span>saluki_core::components::ComponentContext;
 <a href=#35 id=35 data-nosnippet>35</a><span class="kw">use </span>saluki_core::observability::ComponentMetricsExt;
@@ -341,7 +341,7 @@
 <a href=#341 id=341 data-nosnippet>341</a></span><span class="kw">mod </span>tests {
 <a href=#342 id=342 data-nosnippet>342</a>    <span class="kw">use </span>std::sync::Arc;
 <a href=#343 id=343 data-nosnippet>343</a>
-<a href=#344 id=344 data-nosnippet>344</a>    <span class="kw">use </span>memory_accounting::MemoryLimiter;
+<a href=#344 id=344 data-nosnippet>344</a>    <span class="kw">use </span>resource_accounting::MemoryLimiter;
 <a href=#345 id=345 data-nosnippet>345</a>    <span class="kw">use </span>saluki_core::{components::ComponentContext, topology::ComponentId};
 <a href=#346 id=346 data-nosnippet>346</a>    <span class="kw">use </span>saluki_metrics::test::TestRecorder;
 <a href=#347 id=347 data-nosnippet>347</a>

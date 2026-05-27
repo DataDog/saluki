@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["MemoryMode"],"fn":["initialize_memory_bounds"],"struct":["MemoryBoundsConfiguration","ResourceTelemetryWorker"]};

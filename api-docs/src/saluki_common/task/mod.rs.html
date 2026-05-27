@@ -2,7 +2,7 @@
 <a href=#2 id=2 data-nosnippet>2</a>
 <a href=#3 id=3 data-nosnippet>3</a></span><span class="kw">use </span>std::future::Future;
 <a href=#4 id=4 data-nosnippet>4</a>
-<a href=#5 id=5 data-nosnippet>5</a><span class="kw">use </span>memory_accounting::allocator::Track <span class="kw">as _</span>;
+<a href=#5 id=5 data-nosnippet>5</a><span class="kw">use </span>resource_accounting::Track <span class="kw">as _</span>;
 <a href=#6 id=6 data-nosnippet>6</a><span class="kw">use </span>tokio::{
 <a href=#7 id=7 data-nosnippet>7</a>    runtime::Handle,
 <a href=#8 id=8 data-nosnippet>8</a>    task::{AbortHandle, JoinHandle, JoinSet},
@@ -24,7 +24,7 @@
 <a href=#24 id=24 data-nosnippet>24</a>{
 <a href=#25 id=25 data-nosnippet>25</a>    tokio::task::spawn(
 <a href=#26 id=26 data-nosnippet>26</a>        f.in_current_span()
-<a href=#27 id=27 data-nosnippet>27</a>            .in_current_allocation_group()
+<a href=#27 id=27 data-nosnippet>27</a>            .in_current_resource_group()
 <a href=#28 id=28 data-nosnippet>28</a>            .with_task_instrumentation(get_caller_location_as_string()),
 <a href=#29 id=29 data-nosnippet>29</a>    )
 <a href=#30 id=30 data-nosnippet>30</a>}
@@ -41,7 +41,7 @@
 <a href=#41 id=41 data-nosnippet>41</a>{
 <a href=#42 id=42 data-nosnippet>42</a>    tokio::task::spawn(
 <a href=#43 id=43 data-nosnippet>43</a>        f.in_current_span()
-<a href=#44 id=44 data-nosnippet>44</a>            .in_current_allocation_group()
+<a href=#44 id=44 data-nosnippet>44</a>            .in_current_resource_group()
 <a href=#45 id=45 data-nosnippet>45</a>            .with_task_instrumentation(name.into()),
 <a href=#46 id=46 data-nosnippet>46</a>    )
 <a href=#47 id=47 data-nosnippet>47</a>}
@@ -78,7 +78,7 @@
 <a href=#78 id=78 data-nosnippet>78</a>    {
 <a href=#79 id=79 data-nosnippet>79</a>        <span class="self">self</span>.spawn(
 <a href=#80 id=80 data-nosnippet>80</a>            f.in_current_span()
-<a href=#81 id=81 data-nosnippet>81</a>                .in_current_allocation_group()
+<a href=#81 id=81 data-nosnippet>81</a>                .in_current_resource_group()
 <a href=#82 id=82 data-nosnippet>82</a>                .with_task_instrumentation(get_caller_location_as_string()),
 <a href=#83 id=83 data-nosnippet>83</a>        )
 <a href=#84 id=84 data-nosnippet>84</a>    }
@@ -91,7 +91,7 @@
 <a href=#91 id=91 data-nosnippet>91</a>    {
 <a href=#92 id=92 data-nosnippet>92</a>        <span class="self">self</span>.spawn(
 <a href=#93 id=93 data-nosnippet>93</a>            f.in_current_span()
-<a href=#94 id=94 data-nosnippet>94</a>                .in_current_allocation_group()
+<a href=#94 id=94 data-nosnippet>94</a>                .in_current_resource_group()
 <a href=#95 id=95 data-nosnippet>95</a>                .with_task_instrumentation(name.into()),
 <a href=#96 id=96 data-nosnippet>96</a>        )
 <a href=#97 id=97 data-nosnippet>97</a>    }
@@ -129,7 +129,7 @@
 <a href=#129 id=129 data-nosnippet>129</a>    {
 <a href=#130 id=130 data-nosnippet>130</a>        <span class="self">self</span>.spawn(
 <a href=#131 id=131 data-nosnippet>131</a>            f.in_current_span()
-<a href=#132 id=132 data-nosnippet>132</a>                .in_current_allocation_group()
+<a href=#132 id=132 data-nosnippet>132</a>                .in_current_resource_group()
 <a href=#133 id=133 data-nosnippet>133</a>                .with_task_instrumentation(get_caller_location_as_string()),
 <a href=#134 id=134 data-nosnippet>134</a>        )
 <a href=#135 id=135 data-nosnippet>135</a>    }
@@ -142,7 +142,7 @@
 <a href=#142 id=142 data-nosnippet>142</a>    {
 <a href=#143 id=143 data-nosnippet>143</a>        <span class="self">self</span>.spawn(
 <a href=#144 id=144 data-nosnippet>144</a>            f.in_current_span()
-<a href=#145 id=145 data-nosnippet>145</a>                .in_current_allocation_group()
+<a href=#145 id=145 data-nosnippet>145</a>                .in_current_resource_group()
 <a href=#146 id=146 data-nosnippet>146</a>                .with_task_instrumentation(name.into()),
 <a href=#147 id=147 data-nosnippet>147</a>        )
 <a href=#148 id=148 data-nosnippet>148</a>    }

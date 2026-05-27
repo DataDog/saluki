@@ -1,6 +1,6 @@
 <!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Source of the Rust file `lib/saluki-core/src/topology/blueprint.rs`."><title>blueprint.rs - source</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../../static.files/rustdoc-17e0aaed.css"><meta name="rustdoc-vars" data-root-path="../../../" data-static-root-path="../../../static.files/" data-current-crate="saluki_core" data-themes="" data-resource-suffix="" data-rustdoc-version="1.98.0-nightly (d1fc603d1 2026-05-26)" data-channel="nightly" data-search-js="search-fd9372ac.js" data-stringdex-js="stringdex-2da4960a.js" data-settings-js="settings-170eb4bf.js" ><script src="../../../static.files/storage-41dd4d93.js"></script><script defer src="../../../static.files/src-script-813739b1.js"></script><script defer src="../../../src-files.js"></script><script defer src="../../../static.files/main-fcd733ba.js"></script><noscript><link rel="stylesheet" href="../../../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../../static.files/favicon-044be391.svg"></head><body class="rustdoc src"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><nav class="sidebar"><div class="src-sidebar-title"><h2>Files</h2></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><h1><div class="sub-heading">saluki_core/topology/</div>blueprint.rs</h1><rustdoc-toolbar></rustdoc-toolbar></div><div class="example-wrap digits-3"><pre class="rust"><code><a href=#1 id=1 data-nosnippet>1</a><span class="kw">use </span>std::{collections::HashMap, num::NonZeroUsize};
 <a href=#2 id=2 data-nosnippet>2</a>
-<a href=#3 id=3 data-nosnippet>3</a><span class="kw">use </span>memory_accounting::{allocator::Track <span class="kw">as _</span>, ComponentRegistry, UsageExpr};
+<a href=#3 id=3 data-nosnippet>3</a><span class="kw">use </span>resource_accounting::{ComponentRegistry, Track <span class="kw">as _</span>, UsageExpr};
 <a href=#4 id=4 data-nosnippet>4</a><span class="kw">use </span>saluki_error::{ErrorContext <span class="kw">as _</span>, GenericError};
 <a href=#5 id=5 data-nosnippet>5</a><span class="kw">use </span>snafu::Snafu;
 <a href=#6 id=6 data-nosnippet>6</a>
@@ -395,13 +395,13 @@
 <a href=#395 id=395 data-nosnippet>395</a>            <span class="kw">let </span>component_context = ComponentContext::source(id.clone());
 <a href=#396 id=396 data-nosnippet>396</a>            <span class="kw">let </span>source = builder
 <a href=#397 id=397 data-nosnippet>397</a>                .build(component_context)
-<a href=#398 id=398 data-nosnippet>398</a>                .track_allocations(allocation_token)
+<a href=#398 id=398 data-nosnippet>398</a>                .track_resources(allocation_token)
 <a href=#399 id=399 data-nosnippet>399</a>                .<span class="kw">await
 <a href=#400 id=400 data-nosnippet>400</a>                </span>.with_error_context(|| <span class="macro">format!</span>(<span class="string">"Failed to build source '{}'."</span>, id))<span class="question-mark">?</span>;
 <a href=#401 id=401 data-nosnippet>401</a>
 <a href=#402 id=402 data-nosnippet>402</a>            sources.insert(
 <a href=#403 id=403 data-nosnippet>403</a>                id,
-<a href=#404 id=404 data-nosnippet>404</a>                RegisteredComponent::new(source.track_allocations(allocation_token), component_registry),
+<a href=#404 id=404 data-nosnippet>404</a>                RegisteredComponent::new(source.track_resources(allocation_token), component_registry),
 <a href=#405 id=405 data-nosnippet>405</a>            );
 <a href=#406 id=406 data-nosnippet>406</a>        }
 <a href=#407 id=407 data-nosnippet>407</a>
@@ -413,13 +413,13 @@
 <a href=#413 id=413 data-nosnippet>413</a>            <span class="kw">let </span>component_context = ComponentContext::relay(id.clone());
 <a href=#414 id=414 data-nosnippet>414</a>            <span class="kw">let </span>relay = builder
 <a href=#415 id=415 data-nosnippet>415</a>                .build(component_context)
-<a href=#416 id=416 data-nosnippet>416</a>                .track_allocations(allocation_token)
+<a href=#416 id=416 data-nosnippet>416</a>                .track_resources(allocation_token)
 <a href=#417 id=417 data-nosnippet>417</a>                .<span class="kw">await
 <a href=#418 id=418 data-nosnippet>418</a>                </span>.with_error_context(|| <span class="macro">format!</span>(<span class="string">"Failed to build relay '{}'."</span>, id))<span class="question-mark">?</span>;
 <a href=#419 id=419 data-nosnippet>419</a>
 <a href=#420 id=420 data-nosnippet>420</a>            relays.insert(
 <a href=#421 id=421 data-nosnippet>421</a>                id,
-<a href=#422 id=422 data-nosnippet>422</a>                RegisteredComponent::new(relay.track_allocations(allocation_token), component_registry),
+<a href=#422 id=422 data-nosnippet>422</a>                RegisteredComponent::new(relay.track_resources(allocation_token), component_registry),
 <a href=#423 id=423 data-nosnippet>423</a>            );
 <a href=#424 id=424 data-nosnippet>424</a>        }
 <a href=#425 id=425 data-nosnippet>425</a>
@@ -431,13 +431,13 @@
 <a href=#431 id=431 data-nosnippet>431</a>            <span class="kw">let </span>component_context = ComponentContext::decoder(id.clone());
 <a href=#432 id=432 data-nosnippet>432</a>            <span class="kw">let </span>decoder = builder
 <a href=#433 id=433 data-nosnippet>433</a>                .build(component_context)
-<a href=#434 id=434 data-nosnippet>434</a>                .track_allocations(allocation_token)
+<a href=#434 id=434 data-nosnippet>434</a>                .track_resources(allocation_token)
 <a href=#435 id=435 data-nosnippet>435</a>                .<span class="kw">await
 <a href=#436 id=436 data-nosnippet>436</a>                </span>.with_error_context(|| <span class="macro">format!</span>(<span class="string">"Failed to build decoder '{}'."</span>, id))<span class="question-mark">?</span>;
 <a href=#437 id=437 data-nosnippet>437</a>
 <a href=#438 id=438 data-nosnippet>438</a>            decoders.insert(
 <a href=#439 id=439 data-nosnippet>439</a>                id,
-<a href=#440 id=440 data-nosnippet>440</a>                RegisteredComponent::new(decoder.track_allocations(allocation_token), component_registry),
+<a href=#440 id=440 data-nosnippet>440</a>                RegisteredComponent::new(decoder.track_resources(allocation_token), component_registry),
 <a href=#441 id=441 data-nosnippet>441</a>            );
 <a href=#442 id=442 data-nosnippet>442</a>        }
 <a href=#443 id=443 data-nosnippet>443</a>
@@ -449,13 +449,13 @@
 <a href=#449 id=449 data-nosnippet>449</a>            <span class="kw">let </span>component_context = ComponentContext::transform(id.clone());
 <a href=#450 id=450 data-nosnippet>450</a>            <span class="kw">let </span>transform = builder
 <a href=#451 id=451 data-nosnippet>451</a>                .build(component_context)
-<a href=#452 id=452 data-nosnippet>452</a>                .track_allocations(allocation_token)
+<a href=#452 id=452 data-nosnippet>452</a>                .track_resources(allocation_token)
 <a href=#453 id=453 data-nosnippet>453</a>                .<span class="kw">await
 <a href=#454 id=454 data-nosnippet>454</a>                </span>.with_error_context(|| <span class="macro">format!</span>(<span class="string">"Failed to build transform '{}'."</span>, id))<span class="question-mark">?</span>;
 <a href=#455 id=455 data-nosnippet>455</a>
 <a href=#456 id=456 data-nosnippet>456</a>            transforms.insert(
 <a href=#457 id=457 data-nosnippet>457</a>                id,
-<a href=#458 id=458 data-nosnippet>458</a>                RegisteredComponent::new(transform.track_allocations(allocation_token), component_registry),
+<a href=#458 id=458 data-nosnippet>458</a>                RegisteredComponent::new(transform.track_resources(allocation_token), component_registry),
 <a href=#459 id=459 data-nosnippet>459</a>            );
 <a href=#460 id=460 data-nosnippet>460</a>        }
 <a href=#461 id=461 data-nosnippet>461</a>
@@ -467,13 +467,13 @@
 <a href=#467 id=467 data-nosnippet>467</a>            <span class="kw">let </span>component_context = ComponentContext::destination(id.clone());
 <a href=#468 id=468 data-nosnippet>468</a>            <span class="kw">let </span>destination = builder
 <a href=#469 id=469 data-nosnippet>469</a>                .build(component_context)
-<a href=#470 id=470 data-nosnippet>470</a>                .track_allocations(allocation_token)
+<a href=#470 id=470 data-nosnippet>470</a>                .track_resources(allocation_token)
 <a href=#471 id=471 data-nosnippet>471</a>                .<span class="kw">await
 <a href=#472 id=472 data-nosnippet>472</a>                </span>.with_error_context(|| <span class="macro">format!</span>(<span class="string">"Failed to build destination '{}'."</span>, id))<span class="question-mark">?</span>;
 <a href=#473 id=473 data-nosnippet>473</a>
 <a href=#474 id=474 data-nosnippet>474</a>            destinations.insert(
 <a href=#475 id=475 data-nosnippet>475</a>                id,
-<a href=#476 id=476 data-nosnippet>476</a>                RegisteredComponent::new(destination.track_allocations(allocation_token), component_registry),
+<a href=#476 id=476 data-nosnippet>476</a>                RegisteredComponent::new(destination.track_resources(allocation_token), component_registry),
 <a href=#477 id=477 data-nosnippet>477</a>            );
 <a href=#478 id=478 data-nosnippet>478</a>        }
 <a href=#479 id=479 data-nosnippet>479</a>
@@ -485,13 +485,13 @@
 <a href=#485 id=485 data-nosnippet>485</a>            <span class="kw">let </span>component_context = ComponentContext::encoder(id.clone());
 <a href=#486 id=486 data-nosnippet>486</a>            <span class="kw">let </span>encoder = builder
 <a href=#487 id=487 data-nosnippet>487</a>                .build(component_context)
-<a href=#488 id=488 data-nosnippet>488</a>                .track_allocations(allocation_token)
+<a href=#488 id=488 data-nosnippet>488</a>                .track_resources(allocation_token)
 <a href=#489 id=489 data-nosnippet>489</a>                .<span class="kw">await
 <a href=#490 id=490 data-nosnippet>490</a>                </span>.with_error_context(|| <span class="macro">format!</span>(<span class="string">"Failed to build encoder '{}'."</span>, id))<span class="question-mark">?</span>;
 <a href=#491 id=491 data-nosnippet>491</a>
 <a href=#492 id=492 data-nosnippet>492</a>            encoders.insert(
 <a href=#493 id=493 data-nosnippet>493</a>                id,
-<a href=#494 id=494 data-nosnippet>494</a>                RegisteredComponent::new(encoder.track_allocations(allocation_token), component_registry),
+<a href=#494 id=494 data-nosnippet>494</a>                RegisteredComponent::new(encoder.track_resources(allocation_token), component_registry),
 <a href=#495 id=495 data-nosnippet>495</a>            );
 <a href=#496 id=496 data-nosnippet>496</a>        }
 <a href=#497 id=497 data-nosnippet>497</a>
@@ -503,13 +503,13 @@
 <a href=#503 id=503 data-nosnippet>503</a>            <span class="kw">let </span>component_context = ComponentContext::forwarder(id.clone());
 <a href=#504 id=504 data-nosnippet>504</a>            <span class="kw">let </span>forwarder = builder
 <a href=#505 id=505 data-nosnippet>505</a>                .build(component_context)
-<a href=#506 id=506 data-nosnippet>506</a>                .track_allocations(allocation_token)
+<a href=#506 id=506 data-nosnippet>506</a>                .track_resources(allocation_token)
 <a href=#507 id=507 data-nosnippet>507</a>                .<span class="kw">await
 <a href=#508 id=508 data-nosnippet>508</a>                </span>.with_error_context(|| <span class="macro">format!</span>(<span class="string">"Failed to build forwarder '{}'."</span>, id))<span class="question-mark">?</span>;
 <a href=#509 id=509 data-nosnippet>509</a>
 <a href=#510 id=510 data-nosnippet>510</a>            forwarders.insert(
 <a href=#511 id=511 data-nosnippet>511</a>                id,
-<a href=#512 id=512 data-nosnippet>512</a>                RegisteredComponent::new(forwarder.track_allocations(allocation_token), component_registry),
+<a href=#512 id=512 data-nosnippet>512</a>                RegisteredComponent::new(forwarder.track_resources(allocation_token), component_registry),
 <a href=#513 id=513 data-nosnippet>513</a>            );
 <a href=#514 id=514 data-nosnippet>514</a>        }
 <a href=#515 id=515 data-nosnippet>515</a>

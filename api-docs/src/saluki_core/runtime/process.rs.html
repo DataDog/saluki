@@ -9,8 +9,8 @@
 <a href=#9 id=9 data-nosnippet>9</a>    task::{Context, Poll},
 <a href=#10 id=10 data-nosnippet>10</a>};
 <a href=#11 id=11 data-nosnippet>11</a>
-<a href=#12 id=12 data-nosnippet>12</a><span class="kw">use </span>memory_accounting::allocator::{AllocationGroupRegistry, AllocationGroupToken, Track <span class="kw">as _</span>, Tracked};
-<a href=#13 id=13 data-nosnippet>13</a><span class="kw">use </span>pin_project::{pin_project, pinned_drop};
+<a href=#12 id=12 data-nosnippet>12</a><span class="kw">use </span>pin_project::{pin_project, pinned_drop};
+<a href=#13 id=13 data-nosnippet>13</a><span class="kw">use </span>resource_accounting::{ResourceGroupRegistry, ResourceGroupToken, Track <span class="kw">as _</span>, Tracked};
 <a href=#14 id=14 data-nosnippet>14</a><span class="kw">use </span>tracing::{debug_span, instrument::Instrumented, Instrument <span class="kw">as _</span>};
 <a href=#15 id=15 data-nosnippet>15</a>
 <a href=#16 id=16 data-nosnippet>16</a><span class="kw">use </span><span class="kw">super</span>::state::{DataspaceRegistry, CURRENT_DATASPACE};
@@ -102,7 +102,7 @@
 <a href=#102 id=102 data-nosnippet>102</a></span><span class="kw">pub struct </span>Process {
 <a href=#103 id=103 data-nosnippet>103</a>    id: Id,
 <a href=#104 id=104 data-nosnippet>104</a>    name: Name,
-<a href=#105 id=105 data-nosnippet>105</a>    alloc_group_token: AllocationGroupToken,
+<a href=#105 id=105 data-nosnippet>105</a>    resource_group_token: ResourceGroupToken,
 <a href=#106 id=106 data-nosnippet>106</a>    dataspace: DataspaceRegistry,
 <a href=#107 id=107 data-nosnippet>107</a>}
 <a href=#108 id=108 data-nosnippet>108</a>
@@ -111,9 +111,9 @@
 <a href=#111 id=111 data-nosnippet>111</a>        <span class="kw">let </span>name = parent
 <a href=#112 id=112 data-nosnippet>112</a>            .and_then(|p| Name::scoped(<span class="kw-2">&amp;</span>p.name, <span class="kw-2">&amp;</span>name))
 <a href=#113 id=113 data-nosnippet>113</a>            .or_else(|| Name::root(name))<span class="question-mark">?</span>;
-<a href=#114 id=114 data-nosnippet>114</a>        <span class="kw">let </span>alloc_group_token = AllocationGroupRegistry::global().register_allocation_group(<span class="kw-2">&amp;*</span>name);
+<a href=#114 id=114 data-nosnippet>114</a>        <span class="kw">let </span>resource_group_token = ResourceGroupRegistry::global().register_resource_group(<span class="kw-2">&amp;*</span>name);
 <a href=#115 id=115 data-nosnippet>115</a>        <span class="kw">let </span>dataspace = parent.map(|p| p.dataspace.clone()).unwrap_or_default();
-<a href=#116 id=116 data-nosnippet>116</a>        <span class="prelude-val">Some</span>(<span class="self">Self</span>::from_parts(Id::new(), name, alloc_group_token, dataspace))
+<a href=#116 id=116 data-nosnippet>116</a>        <span class="prelude-val">Some</span>(<span class="self">Self</span>::from_parts(Id::new(), name, resource_group_token, dataspace))
 <a href=#117 id=117 data-nosnippet>117</a>    }
 <a href=#118 id=118 data-nosnippet>118</a>
 <a href=#119 id=119 data-nosnippet>119</a>    <span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>supervisor_with_dataspace&lt;N: AsRef&lt;str&gt;&gt;(
@@ -122,11 +122,11 @@
 <a href=#122 id=122 data-nosnippet>122</a>        <span class="kw">let </span>name = parent
 <a href=#123 id=123 data-nosnippet>123</a>            .and_then(|p| Name::scoped(<span class="kw-2">&amp;</span>p.name, <span class="kw-2">&amp;</span>name))
 <a href=#124 id=124 data-nosnippet>124</a>            .or_else(|| Name::root(name))<span class="question-mark">?</span>;
-<a href=#125 id=125 data-nosnippet>125</a>        <span class="kw">let </span>alloc_group_token = AllocationGroupRegistry::global().register_allocation_group(<span class="kw-2">&amp;*</span>name);
+<a href=#125 id=125 data-nosnippet>125</a>        <span class="kw">let </span>resource_group_token = ResourceGroupRegistry::global().register_resource_group(<span class="kw-2">&amp;*</span>name);
 <a href=#126 id=126 data-nosnippet>126</a>        <span class="kw">let </span>dataspace = dataspace
 <a href=#127 id=127 data-nosnippet>127</a>            .or_else(|| parent.map(|p| p.dataspace.clone()))
 <a href=#128 id=128 data-nosnippet>128</a>            .unwrap_or_default();
-<a href=#129 id=129 data-nosnippet>129</a>        <span class="prelude-val">Some</span>(<span class="self">Self</span>::from_parts(Id::new(), name, alloc_group_token, dataspace))
+<a href=#129 id=129 data-nosnippet>129</a>        <span class="prelude-val">Some</span>(<span class="self">Self</span>::from_parts(Id::new(), name, resource_group_token, dataspace))
 <a href=#130 id=130 data-nosnippet>130</a>    }
 <a href=#131 id=131 data-nosnippet>131</a>
 <a href=#132 id=132 data-nosnippet>132</a>    <span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>worker&lt;N: AsRef&lt;str&gt;&gt;(name: N, parent: <span class="kw-2">&amp;</span>Process) -&gt; <span class="prelude-ty">Option</span>&lt;<span class="self">Self</span>&gt; {
@@ -134,16 +134,16 @@
 <a href=#134 id=134 data-nosnippet>134</a>        <span class="prelude-val">Some</span>(<span class="self">Self</span>::from_parts(
 <a href=#135 id=135 data-nosnippet>135</a>            Id::new(),
 <a href=#136 id=136 data-nosnippet>136</a>            name,
-<a href=#137 id=137 data-nosnippet>137</a>            parent.alloc_group_token,
+<a href=#137 id=137 data-nosnippet>137</a>            parent.resource_group_token,
 <a href=#138 id=138 data-nosnippet>138</a>            parent.dataspace.clone(),
 <a href=#139 id=139 data-nosnippet>139</a>        ))
 <a href=#140 id=140 data-nosnippet>140</a>    }
 <a href=#141 id=141 data-nosnippet>141</a>
-<a href=#142 id=142 data-nosnippet>142</a>    <span class="kw">fn </span>from_parts(id: Id, name: Name, alloc_group_token: AllocationGroupToken, dataspace: DataspaceRegistry) -&gt; <span class="self">Self </span>{
+<a href=#142 id=142 data-nosnippet>142</a>    <span class="kw">fn </span>from_parts(id: Id, name: Name, resource_group_token: ResourceGroupToken, dataspace: DataspaceRegistry) -&gt; <span class="self">Self </span>{
 <a href=#143 id=143 data-nosnippet>143</a>        <span class="self">Self </span>{
 <a href=#144 id=144 data-nosnippet>144</a>            id,
 <a href=#145 id=145 data-nosnippet>145</a>            name,
-<a href=#146 id=146 data-nosnippet>146</a>            alloc_group_token,
+<a href=#146 id=146 data-nosnippet>146</a>            resource_group_token,
 <a href=#147 id=147 data-nosnippet>147</a>            dataspace,
 <a href=#148 id=148 data-nosnippet>148</a>        }
 <a href=#149 id=149 data-nosnippet>149</a>    }
@@ -191,7 +191,7 @@
 <a href=#191 id=191 data-nosnippet>191</a>
 <a href=#192 id=192 data-nosnippet>192</a>        <span class="kw">let </span>process_id = process.id;
 <a href=#193 id=193 data-nosnippet>193</a>        <span class="kw">let </span>dataspace = process.dataspace.clone();
-<a href=#194 id=194 data-nosnippet>194</a>        <span class="kw">let </span>inner = inner.track_allocations(process.alloc_group_token).instrument(span);
+<a href=#194 id=194 data-nosnippet>194</a>        <span class="kw">let </span>inner = inner.track_resources(process.resource_group_token).instrument(span);
 <a href=#195 id=195 data-nosnippet>195</a>
 <a href=#196 id=196 data-nosnippet>196</a>        <span class="self">Self </span>{
 <a href=#197 id=197 data-nosnippet>197</a>            process_id,
