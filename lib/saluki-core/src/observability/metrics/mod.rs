@@ -39,8 +39,7 @@ use crate::{
 
 mod aggregated;
 pub use self::aggregated::{
-    get_shared_metrics_state, merge_aggregated_values, AggregatedMetricValue, AggregatedMetricsProcessor,
-    AggregatedMetricsState,
+    get_shared_metrics_state, AggregatedMetricValue, AggregatedMetricsProcessor, AggregatedMetricsState,
 };
 
 mod histogram;
