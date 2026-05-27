@@ -10,7 +10,7 @@ use std::{
 };
 
 use pin_project::{pin_project, pinned_drop};
-use resource_accounting::allocator::{ResourceGroupRegistry, ResourceGroupToken, Track as _, Tracked};
+use resource_accounting::{ResourceGroupRegistry, ResourceGroupToken, Track as _, Tracked};
 use tracing::{debug_span, instrument::Instrumented, Instrument as _};
 
 use super::state::{DataspaceRegistry, CURRENT_DATASPACE};

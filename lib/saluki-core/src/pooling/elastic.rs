@@ -14,7 +14,7 @@ use std::{
 };
 
 use pin_project::pin_project;
-use resource_accounting::allocator::ResourceGroupToken;
+use resource_accounting::ResourceGroupToken;
 use tokio::{
     sync::{OwnedSemaphorePermit, Semaphore},
     time::sleep,

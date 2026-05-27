@@ -28,13 +28,13 @@ pub(crate) mod state;
 
 #[cfg(all(target_os = "linux", not(system_allocator)))]
 #[global_allocator]
-static ALLOC: resource_accounting::allocator::TrackingAllocator<tikv_jemallocator::Jemalloc> =
-    resource_accounting::allocator::TrackingAllocator::new(tikv_jemallocator::Jemalloc);
+static ALLOC: resource_accounting::TrackingAllocator<tikv_jemallocator::Jemalloc> =
+    resource_accounting::TrackingAllocator::new(tikv_jemallocator::Jemalloc);
 
 #[cfg(any(not(target_os = "linux"), system_allocator))]
 #[global_allocator]
-static ALLOC: resource_accounting::allocator::TrackingAllocator<std::alloc::System> =
-    resource_accounting::allocator::TrackingAllocator::new(std::alloc::System);
+static ALLOC: resource_accounting::TrackingAllocator<std::alloc::System> =
+    resource_accounting::TrackingAllocator::new(std::alloc::System);
 
 #[tokio::main]
 async fn main() -> Result<(), GenericError> {

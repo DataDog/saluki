@@ -6,9 +6,8 @@ use std::{
 
 use crate::UsageExpr;
 use crate::{
-    allocator::{ResourceGroupRegistry, ResourceGroupToken},
-    api::ResourceAPIHandler,
-    BoundsVerifier, ComponentBounds, MemoryBounds, MemoryGrant, VerifiedBounds, VerifierError,
+    api::ResourceAPIHandler, BoundsVerifier, ComponentBounds, MemoryBounds, MemoryGrant, ResourceGroupRegistry,
+    ResourceGroupToken, VerifiedBounds, VerifierError,
 };
 
 pub(crate) struct ComponentMetadata {

@@ -82,10 +82,10 @@ use serde::Serialize;
 #[cfg(test)]
 pub mod test_util;
 
-pub mod allocator;
-mod api;
+mod allocator;
+pub use self::allocator::TrackingAllocator;
 
-pub(crate) mod cpu;
+mod api;
 pub use self::api::ResourceAPIHandler;
 
 mod registry;
@@ -94,8 +94,14 @@ pub use self::registry::{ComponentRegistry, ComponentRegistryHandle, MemoryBound
 mod grant;
 pub use self::grant::MemoryGrant;
 
+mod groups;
+pub use self::groups::{ResourceGroupRegistry, ResourceGroupToken, ResourceTrackingGuard, Track, Tracked};
+
 mod limiter;
 pub use self::limiter::MemoryLimiter;
+
+mod stats;
+pub use self::stats::{ResourceStats, ResourceStatsSnapshot};
 
 mod verifier;
 pub use self::verifier::{BoundsVerifier, VerifiedBounds, VerifierError};

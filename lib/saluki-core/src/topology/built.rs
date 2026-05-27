@@ -1,9 +1,6 @@
 use std::{collections::HashMap, future::Future, num::NonZeroUsize};
 
-use resource_accounting::{
-    allocator::{ResourceGroupToken, Tracked},
-    MemoryLimiter,
-};
+use resource_accounting::{MemoryLimiter, ResourceGroupToken, Tracked};
 use saluki_common::task::JoinSetExt as _;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use tokio::{

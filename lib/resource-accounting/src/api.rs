@@ -11,10 +11,7 @@ use saluki_api::{
 };
 use serde::Serialize;
 
-use crate::{
-    allocator::{ResourceGroupRegistry, ResourceStatsSnapshot},
-    registry::ComponentMetadata,
-};
+use crate::{registry::ComponentMetadata, ResourceGroupRegistry, ResourceStatsSnapshot};
 
 #[derive(Serialize)]
 struct ComponentUsage {

@@ -3,7 +3,7 @@ use std::{
     sync::Arc,
 };
 
-use resource_accounting::allocator::ResourceGroupToken;
+use resource_accounting::ResourceGroupToken;
 
 use super::{Clearable, ObjectPool, PoolMetrics, Poolable, ReclaimStrategy};
 

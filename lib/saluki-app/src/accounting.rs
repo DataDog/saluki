@@ -9,8 +9,8 @@ use std::{
 use bytesize::ByteSize;
 use metrics::{counter, gauge, Counter, Gauge, Level};
 use resource_accounting::{
-    allocator::{ResourceGroupRegistry, ResourceStats, ResourceStatsSnapshot},
-    ComponentBounds, ComponentRegistry, ComponentRegistryHandle, MemoryGrant, MemoryLimiter,
+    ComponentBounds, ComponentRegistry, ComponentRegistryHandle, MemoryGrant, MemoryLimiter, ResourceGroupRegistry,
+    ResourceStats, ResourceStatsSnapshot,
 };
 use saluki_api::{DynamicRoute, EndpointType};
 use saluki_config::GenericConfiguration;
