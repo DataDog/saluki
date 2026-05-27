@@ -148,6 +148,7 @@ cooldown
 crypto
 deserializable
 deserializer
+dictTagsets
 downcasted
 upcasted
 env
@@ -158,6 +159,8 @@ formatters
 globals
 implementor(s?)
 jittered
+serializer
+varint
 losslessly
 lossy
 lookups

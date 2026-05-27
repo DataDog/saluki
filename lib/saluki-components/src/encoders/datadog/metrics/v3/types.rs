@@ -64,7 +64,7 @@ enum PointKind {
     Int48 = 2,
     /// Fractional value exactly representable as f32.
     Float32 = 3,
-    /// Everything else — requires full f64 precision.
+    /// Everything else - requires full f64 precision.
     Float64 = 4,
 }
 

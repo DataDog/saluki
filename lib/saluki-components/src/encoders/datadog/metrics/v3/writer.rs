@@ -391,7 +391,7 @@ impl<'a> V3MetricBuilder<'a> {
 
     /// Sets the resources for this metric.
     ///
-    /// Resources are (type, name) pairs, e.g., ("host", "server1").
+    /// Resources are (type, name) pairs, for example, (`host`, `server1`).
     pub fn set_resources(&mut self, resources: &[(&str, &str)]) {
         let res_id = self.writer.intern_resources(resources);
         self.writer.resources[self.metric_idx] = res_id;
