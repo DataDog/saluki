@@ -22,6 +22,7 @@ use crate::common::datadog::{
 };
 
 mod constants;
+pub(super) use constants::{SERIES_V2_COMPRESSED_SIZE_LIMIT, SERIES_V2_UNCOMPRESSED_SIZE_LIMIT};
 
 /// Creates a V2 request builder for the given endpoint.
 ///
