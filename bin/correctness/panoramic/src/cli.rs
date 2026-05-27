@@ -30,8 +30,10 @@ pub struct RunCommand {
     #[argh(option, short = 't')]
     pub tests: Option<String>,
 
-    /// run only tests with the given runtime (for example, `docker`, `native_macos`, `kubernetes_in_docker`).
-    /// Can be combined with `-t` to further restrict by name.
+    /// integration-test runtime to scope discovery to (for example, `docker` or `native_macos`).
+    /// Only integration tests whose `runtimes:` list contains this value are eligible to run.
+    /// Defaults to `native_macos` on macOS hosts and `docker` everywhere else. Correctness tests
+    /// are unaffected by this flag.
     #[argh(option)]
     pub runtime: Option<String>,
 
@@ -104,6 +106,11 @@ pub struct ListCommand {
     /// path to a test cases directory (can be specified multiple times)
     #[argh(option, short = 'd')]
     pub test_dirs: Vec<PathBuf>,
+
+    /// integration-test runtime to scope discovery to. Same semantics as on `run`: defaults to
+    /// `native_macos` on macOS, `docker` everywhere else. Correctness tests are unaffected.
+    #[argh(option)]
+    pub runtime: Option<String>,
 
     /// output the discovered tests as json along with their image dependencies. a `ci` script depends on this for dynamic
     /// pipeline creation.

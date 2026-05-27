@@ -24,7 +24,7 @@ use self::cli::{Cli, Command};
 mod config;
 mod dynamic_vars;
 mod mounts;
-use self::config::discover_tests;
+use self::config::{default_host_runtime, discover_tests};
 
 mod events;
 use self::events::{create_event_channel, TestEvent};
@@ -108,7 +108,11 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
         return ExitCode::from(2);
     }
 
-    let test_cases = match discover_tests(&cmd.test_dirs) {
+    let integration_runtime = cmd
+        .runtime
+        .clone()
+        .unwrap_or_else(|| default_host_runtime().to_string());
+    let test_cases = match discover_tests(&cmd.test_dirs, &integration_runtime) {
         Ok(tests) => tests,
         Err(e) => {
             if use_tui {
@@ -188,22 +192,14 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
         .with_fail_fast(cmd.fail_fast)
         .with_event_sender(tx);
 
-    // Combine the optional --runtime filter and the optional -t name filter into a single
-    // predicate. A test passes if it matches BOTH constraints (i.e., AND semantics). When neither
-    // is set, no filter is installed and every discovered test runs.
+    // The runtime scope is already applied at discovery time. The optional -t name filter
+    // narrows further. When unset, every discovered test runs.
     let name_filter: Option<Vec<String>> = cmd
         .tests
         .as_ref()
         .map(|s| s.split(',').map(|n| n.trim().to_string()).collect());
-    let runtime_filter: Option<String> = cmd.runtime.clone();
-    if name_filter.is_some() || runtime_filter.is_some() {
-        args = args.with_filter(Box::new(move |t: &dyn test::Test| {
-            let name_ok = name_filter
-                .as_ref()
-                .is_none_or(|names| names.iter().any(|n| *n == t.name()));
-            let runtime_ok = runtime_filter.as_ref().is_none_or(|r| t.runtime() == *r);
-            name_ok && runtime_ok
-        }));
+    if let Some(names) = name_filter {
+        args = args.with_filter(Box::new(move |t: &dyn test::Test| names.iter().any(|n| *n == t.name())));
     }
 
     // Spawn the test runner task (same code path for both modes).
@@ -388,7 +384,11 @@ async fn list_tests(cmd: cli::ListCommand) -> ExitCode {
         info!("Discovering test cases from: {}...", dirs_str.join(", "));
     }
 
-    let test_cases = match discover_tests(&cmd.test_dirs) {
+    let integration_runtime = cmd
+        .runtime
+        .clone()
+        .unwrap_or_else(|| default_host_runtime().to_string());
+    let test_cases = match discover_tests(&cmd.test_dirs, &integration_runtime) {
         Ok(tests) => tests,
         Err(e) => {
             error!("Failed to discover tests: {}", e);
