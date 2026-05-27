@@ -495,6 +495,10 @@ pub struct MatrixConfig {
     #[serde(default)]
     pub additional_span_ignore_fields: Vec<String>,
 
+    /// Whether each expanded correctness run must capture at least one forwarded DogStatsD packet.
+    #[serde(default)]
+    pub require_dogstatsd_forwarded_packets: bool,
+
     /// Matrix variants. Each entry produces one expanded test case.
     pub variants: Vec<MatrixVariant>,
 
@@ -591,6 +595,7 @@ impl MatrixConfig {
                     },
                     otlp_direct_analysis_mode: self.otlp_direct_analysis_mode,
                     additional_span_ignore_fields: self.additional_span_ignore_fields.clone(),
+                    require_dogstatsd_forwarded_packets: self.require_dogstatsd_forwarded_packets,
                     base_config_path: PathBuf::new(),
                 }
             })

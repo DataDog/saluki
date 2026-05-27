@@ -5,16 +5,20 @@
 
 use saluki_error::{ErrorContext as _, GenericError};
 use tokio::{
-    net::TcpListener,
+    net::{TcpListener, UdpSocket},
     select,
     signal::unix::{signal, SignalKind},
     sync::mpsc,
 };
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use tracing_subscriber::{filter::LevelFilter, EnvFilter};
 
 mod app;
-use crate::app::initialize_app_router;
+use crate::app::{initialize_app_router, DogStatsDForwardingState};
+
+const HTTP_LISTEN_ADDR: &str = "0.0.0.0:2049";
+const DOGSTATSD_FORWARDING_LISTEN_ADDR: &str = "0.0.0.0:9125";
+const MAX_UDP_PACKET_SIZE: usize = 65535;
 
 #[tokio::main]
 async fn main() {
@@ -44,10 +48,23 @@ async fn run() -> Result<(), GenericError> {
     let (shutdown_tx, mut shutdown_rx) = mpsc::channel(1);
     spawn_signal_handlers(shutdown_tx).error_context("Failed to configure signal handlers.")?;
 
-    info!("datadog-intake started: listening on 0.0.0.0:2049");
+    let dogstatsd_forwarding_state = DogStatsDForwardingState::new();
+    let dogstatsd_forwarding_socket = UdpSocket::bind(DOGSTATSD_FORWARDING_LISTEN_ADDR)
+        .await
+        .error_context("Failed to bind DogStatsD forwarding capture socket.")?;
+    let _dogstatsd_forwarding_task = tokio::spawn(capture_dogstatsd_forwarded_packets(
+        dogstatsd_forwarding_socket,
+        dogstatsd_forwarding_state.clone(),
+    ));
 
-    let listener = TcpListener::bind("0.0.0.0:2049").await.unwrap();
-    axum::serve(listener, initialize_app_router())
+    info!("DogStatsD forwarding capture started: listening on {DOGSTATSD_FORWARDING_LISTEN_ADDR}.");
+
+    let listener = TcpListener::bind(HTTP_LISTEN_ADDR)
+        .await
+        .error_context("Failed to bind HTTP intake listener.")?;
+    info!("datadog-intake started: listening on {HTTP_LISTEN_ADDR}.");
+
+    axum::serve(listener, initialize_app_router(dogstatsd_forwarding_state))
         .with_graceful_shutdown(async move { shutdown_rx.recv().await.unwrap_or(()) })
         .await
         .map_err(Into::into)
@@ -73,4 +90,15 @@ fn spawn_signal_handlers(shutdown_tx: mpsc::Sender<()>) -> Result<(), GenericErr
     });
 
     Ok(())
+}
+
+async fn capture_dogstatsd_forwarded_packets(socket: UdpSocket, state: DogStatsDForwardingState) {
+    let mut buffer = vec![0; MAX_UDP_PACKET_SIZE];
+
+    loop {
+        match socket.recv_from(&mut buffer).await {
+            Ok((bytes_read, _peer_addr)) => state.record_packet(&buffer[..bytes_read]),
+            Err(e) => warn!(error = %e, "Failed to receive DogStatsD forwarded packet."),
+        }
+    }
 }
