@@ -55,8 +55,6 @@
 //!
 //! ## Memory limiting
 //!
-//! Memory limiting is the final prong in our approach to process accounting.
-//!
 //! When the application is approaching its configured memory limit, or is exceeding the limit, a
 //! mechanism is needed to slow down the rate of memory growth. The global memory limiter is a
 //! mechanism for cooperatively applying backpressure in order to limit the rate of work, and
@@ -65,13 +63,15 @@
 //!
 //! ## CPU tracking
 //!
-//! CPU tracking provides per-component visibility into CPU time consumption. Using the
-//! `CLOCK_THREAD_CPUTIME_ID` clock on Linux, the [`Tracked`][allocator::Tracked] future wrapper
-//! measures the thread CPU time consumed during each poll of the inner future, and attributes it
-//! to the component's resource group.
+//! CPU tracking provides per-component visibility into CPU time consumption. When running on supported
+//! operating systems, we can granularly track the amount of CPU time spent on a per-thread basis, which
+//! allows us to track CPU usage for resource groups in the same way we track allocations: through the
+//! [`Tracked`][allocator::Tracked] future wrapper.
 //!
 //! This allows operators to understand which components are consuming the most CPU time, aiding in
-//! capacity planning and performance optimization. On non-Linux platforms, CPU tracking is a no-op.
+//! capacity planning and performance optimization.
+//!
+//! CPU usage tracking is only available on Linux.
 #![deny(warnings)]
 #![deny(missing_docs)]
 
@@ -85,7 +85,7 @@ pub mod test_util;
 pub mod allocator;
 mod api;
 pub(crate) mod cpu;
-pub use self::api::MemoryAPIHandler;
+pub use self::api::ResourceAPIHandler;
 
 mod registry;
 

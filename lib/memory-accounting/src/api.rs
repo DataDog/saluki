@@ -23,13 +23,13 @@ struct ComponentUsage {
     actual_live_bytes: usize,
 }
 
-/// State used for the memory registry API handler.
+/// State used for the resource registry API handler.
 #[derive(Clone)]
-pub struct MemoryRegistryState {
+pub struct ResourceRegistryState {
     inner: Arc<Mutex<ComponentMetadata>>,
 }
 
-impl MemoryRegistryState {
+impl ResourceRegistryState {
     fn get_response(&self) -> String {
         // The component registry is a nested structure, whereas the resource registry is a flat structure. We can
         // only iterate via closure with the resource registry, so we do that, and for each entry, we look for it in
@@ -81,28 +81,28 @@ impl MemoryRegistryState {
     }
 }
 
-/// An API handler for reporting the memory bounds and usage of all components.
+/// An API handler for reporting the resource usage and usage of all components.
 ///
 /// This handler exposes a single route -- `/memory/status` -- which returns the overall bounds and live usage of each
 /// registered component.
-pub struct MemoryAPIHandler {
-    state: MemoryRegistryState,
+pub struct ResourceAPIHandler {
+    state: ResourceRegistryState,
 }
 
-impl MemoryAPIHandler {
+impl ResourceAPIHandler {
     pub(crate) fn from_state(state: Arc<Mutex<ComponentMetadata>>) -> Self {
         Self {
-            state: MemoryRegistryState { inner: state },
+            state: ResourceRegistryState { inner: state },
         }
     }
 
-    async fn status_handler(State(state): State<MemoryRegistryState>) -> impl IntoResponse {
+    async fn status_handler(State(state): State<ResourceRegistryState>) -> impl IntoResponse {
         state.get_response()
     }
 }
 
-impl APIHandler for MemoryAPIHandler {
-    type State = MemoryRegistryState;
+impl APIHandler for ResourceAPIHandler {
+    type State = ResourceRegistryState;
 
     fn generate_initial_state(&self) -> Self::State {
         self.state.clone()

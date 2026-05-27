@@ -7,7 +7,7 @@ use std::{
 use crate::UsageExpr;
 use crate::{
     allocator::{ResourceGroupRegistry, ResourceGroupToken},
-    api::MemoryAPIHandler,
+    api::ResourceAPIHandler,
     BoundsVerifier, ComponentBounds, MemoryBounds, MemoryGrant, VerifiedBounds, VerifierError,
 };
 
@@ -246,12 +246,12 @@ impl ComponentRegistryHandle {
         BoundsVerifier::new(initial_grant, bounds).verify()
     }
 
-    /// Gets an API handler for reporting the memory bounds and usage of all component in the registry.
+    /// Gets an API handler for reporting the memory bounds and resource usage of all component in the registry.
     ///
     /// This handler exposes routes for querying the memory bounds and usage of all registered components. See
-    /// [`MemoryAPIHandler`] for more information about routes and responses.
-    pub fn api_handler(&self) -> MemoryAPIHandler {
-        MemoryAPIHandler::from_state(Arc::clone(&self.inner))
+    /// [`ResourceAPIHandler`] for more information about routes and responses.
+    pub fn api_handler(&self) -> ResourceAPIHandler {
+        ResourceAPIHandler::from_state(Arc::clone(&self.inner))
     }
 
     /// Gets the total minimum required bytes for all components in the registry.
