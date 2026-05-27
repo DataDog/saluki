@@ -1,10 +1,12 @@
 use std::{sync::Arc, time::Duration};
 
+use futures::future;
 use saluki_error::GenericError;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
+use tracing::{debug, error};
 
-use crate::config::{AssertionConfig, LogStream};
+use crate::config::{AssertionConfig, AssertionStep, IntegrationConfig, LogStream};
 
 mod adp_exits;
 mod file_contains;
@@ -191,4 +193,126 @@ pub fn create_assertion(config: &AssertionConfig) -> Result<Box<dyn Assertion>, 
             timeout.0,
         ))),
     }
+}
+
+/// Runs the assertion steps from `test_case` against `ctx`, returning the per-assertion results.
+///
+/// Iterates through the test case's assertion list, executing single steps sequentially and
+/// parallel blocks concurrently. Stops at the first failure (fail-fast), so the returned vector
+/// is truncated past the failing step.
+///
+/// Used by both the docker and `native_macos` integration runners; the only thing that differs
+/// between runtimes is how `ctx` is constructed (port mappings come from a Docker driver vs.
+/// identity-mapped from the test config; `is_native` and `native_exit_code` flip).
+pub(crate) async fn run_assertion_steps(test_case: &IntegrationConfig, ctx: &AssertionContext) -> Vec<AssertionResult> {
+    let mut results = Vec::new();
+    let total_steps = test_case.assertions.len();
+
+    for (step_index, step) in test_case.assertions.iter().enumerate() {
+        match step {
+            AssertionStep::Single(assertion_config) => {
+                let assertion = match create_assertion(assertion_config) {
+                    Ok(a) => a,
+                    Err(e) => {
+                        error!(error = %e, "Failed to create assertion from configuration.");
+                        results.push(AssertionResult {
+                            name: "config_error".to_string(),
+                            passed: false,
+                            message: format!("Failed to create assertion: {}.", e),
+                            duration: Duration::ZERO,
+                        });
+                        break;
+                    }
+                };
+
+                debug!(
+                    step = step_index + 1,
+                    step_total = total_steps,
+                    assertion_type = assertion.name(),
+                    description = %assertion.description(),
+                    "Running assertion..."
+                );
+
+                let result = assertion.check(ctx).await;
+
+                if result.passed {
+                    debug!(
+                        assertion_type = assertion.name(),
+                        duration = ?result.duration,
+                        "Assertion passed."
+                    );
+                } else {
+                    debug!(
+                        assertion_type = assertion.name(),
+                        duration = ?result.duration,
+                        message = %result.message,
+                        "Assertion failed."
+                    );
+                }
+
+                let failed = !result.passed;
+                results.push(result);
+
+                if failed {
+                    debug!("Stopping assertion execution due to failure (fail-fast).");
+                    break;
+                }
+            }
+
+            AssertionStep::Parallel { parallel } => {
+                let mut assertions = Vec::new();
+                let mut config_error = false;
+
+                for assertion_config in parallel {
+                    match create_assertion(assertion_config) {
+                        Ok(a) => assertions.push(a),
+                        Err(e) => {
+                            error!(error = %e, "Failed to create assertion from configuration.");
+                            results.push(AssertionResult {
+                                name: "config_error".to_string(),
+                                passed: false,
+                                message: format!("Failed to create assertion: {}.", e),
+                                duration: Duration::ZERO,
+                            });
+                            config_error = true;
+                            break;
+                        }
+                    }
+                }
+
+                if config_error {
+                    break;
+                }
+
+                debug!(
+                    step = step_index + 1,
+                    step_total = total_steps,
+                    assertion_count = assertions.len(),
+                    "Running parallel assertion block..."
+                );
+
+                let futures: Vec<_> = assertions.iter().map(|a| a.check(ctx)).collect();
+                let parallel_results = future::join_all(futures).await;
+
+                let any_failed = parallel_results.iter().any(|r| !r.passed);
+
+                for result in parallel_results {
+                    debug!(
+                        assertion_type = %result.name,
+                        passed = result.passed,
+                        duration = ?result.duration,
+                        "Parallel assertion completed."
+                    );
+                    results.push(result);
+                }
+
+                if any_failed {
+                    debug!("Stopping assertion execution due to failure in parallel block (fail-fast).");
+                    break;
+                }
+            }
+        }
+    }
+
+    results
 }

@@ -27,8 +27,8 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info};
 
 use crate::{
-    assertions::{create_assertion, AssertionContext, AssertionResult, LogBuffer},
-    config::{parse_port_spec, AssertionStep, IntegrationConfig},
+    assertions::{AssertionContext, AssertionResult, LogBuffer},
+    config::{parse_port_spec, IntegrationConfig},
     reporter::{PhaseTiming, TestResult},
     test::{Test, TestContext},
 };
@@ -270,69 +270,16 @@ impl NativeIntegrationRunner {
         &self, process_display_name: String, exit_token: CancellationToken,
         exit_code_cell: airlock::native::ExitCodeCell,
     ) -> Vec<AssertionResult> {
-        let mut results = Vec::new();
-        let cancel_token = self.tctx.test_cancel_token();
-        let port_mappings = self.build_port_mappings();
-
-        for step in &self.test_case.assertions {
-            match step {
-                AssertionStep::Single(cfg) => {
-                    let assertion = match create_assertion(cfg) {
-                        Ok(a) => a,
-                        Err(e) => {
-                            results.push(AssertionResult {
-                                name: "create_assertion".to_string(),
-                                passed: false,
-                                message: format!("Failed to create assertion: {}", e),
-                                duration: Duration::ZERO,
-                            });
-                            continue;
-                        }
-                    };
-                    let ctx = AssertionContext {
-                        log_buffer: self.log_buffer.clone(),
-                        container_exit_token: exit_token.clone(),
-                        cancel_token: cancel_token.clone(),
-                        container_name: process_display_name.clone(),
-                        is_native: true,
-                        native_exit_code: Some(exit_code_cell.clone()),
-                        port_mappings: port_mappings.clone(),
-                    };
-                    results.push(assertion.check(&ctx).await);
-                }
-                AssertionStep::Parallel { parallel } => {
-                    let mut futures = Vec::with_capacity(parallel.len());
-                    for cfg in parallel {
-                        match create_assertion(cfg) {
-                            Ok(a) => {
-                                let ctx = AssertionContext {
-                                    log_buffer: self.log_buffer.clone(),
-                                    container_exit_token: exit_token.clone(),
-                                    cancel_token: cancel_token.clone(),
-                                    container_name: process_display_name.clone(),
-                                    is_native: true,
-                                    native_exit_code: Some(exit_code_cell.clone()),
-                                    port_mappings: port_mappings.clone(),
-                                };
-                                futures.push(async move { a.check(&ctx).await });
-                            }
-                            Err(e) => {
-                                results.push(AssertionResult {
-                                    name: "create_assertion".to_string(),
-                                    passed: false,
-                                    message: format!("Failed to create parallel assertion: {}", e),
-                                    duration: Duration::ZERO,
-                                });
-                            }
-                        }
-                    }
-                    let parallel_results = futures::future::join_all(futures).await;
-                    results.extend(parallel_results);
-                }
-            }
-        }
-
-        results
+        let ctx = AssertionContext {
+            log_buffer: self.log_buffer.clone(),
+            container_exit_token: exit_token,
+            cancel_token: self.tctx.test_cancel_token(),
+            port_mappings: self.build_port_mappings(),
+            container_name: process_display_name,
+            is_native: true,
+            native_exit_code: Some(exit_code_cell),
+        };
+        crate::assertions::run_assertion_steps(&self.test_case, &ctx).await
     }
 }
 

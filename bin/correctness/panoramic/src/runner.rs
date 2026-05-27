@@ -14,10 +14,7 @@ use std::{
 
 use airlock::driver::{Driver, DriverConfig, DriverDetails};
 use bollard::container::LogOutput;
-use futures::{
-    future,
-    stream::{self, StreamExt as _},
-};
+use futures::stream::{self, StreamExt as _};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use tokio::sync::{mpsc, RwLock, Semaphore};
 use tokio_util::sync::CancellationToken;
@@ -25,8 +22,8 @@ use tracing::{debug, error, info, warn};
 
 use crate::test::{Test, TestContext};
 use crate::{
-    assertions::{create_assertion, AssertionContext, AssertionResult, LogBuffer},
-    config::{parse_file_spec, parse_port_spec, AssertionStep, IntegrationConfig},
+    assertions::{AssertionContext, AssertionResult, LogBuffer},
+    config::{parse_file_spec, parse_port_spec, IntegrationConfig},
     events::TestEvent,
     reporter::{PhaseTiming, TestResult},
 };
@@ -808,9 +805,6 @@ impl IntegrationRunner {
     async fn run_assertions(
         &self, port_mappings: &HashMap<String, u16>, container_name: &str, exit_token: &CancellationToken,
     ) -> Vec<AssertionResult> {
-        let mut results = Vec::new();
-        let total_steps = self.test_case.assertions.len();
-
         let ctx = AssertionContext {
             log_buffer: self.log_buffer.clone(),
             container_exit_token: exit_token.clone(),
@@ -820,114 +814,7 @@ impl IntegrationRunner {
             is_native: false,
             native_exit_code: None,
         };
-
-        for (step_index, step) in self.test_case.assertions.iter().enumerate() {
-            match step {
-                AssertionStep::Single(assertion_config) => {
-                    let assertion = match create_assertion(assertion_config) {
-                        Ok(a) => a,
-                        Err(e) => {
-                            error!(error = %e, "Failed to create assertion from configuration.");
-                            results.push(AssertionResult {
-                                name: "config_error".to_string(),
-                                passed: false,
-                                message: format!("Failed to create assertion: {}.", e),
-                                duration: Duration::ZERO,
-                            });
-                            break;
-                        }
-                    };
-
-                    debug!(
-                        step = step_index + 1,
-                        step_total = total_steps,
-                        assertion_type = assertion.name(),
-                        description = %assertion.description(),
-                        "Running assertion..."
-                    );
-
-                    let result = assertion.check(&ctx).await;
-
-                    if result.passed {
-                        debug!(
-                            assertion_type = assertion.name(),
-                            duration = ?result.duration,
-                            "Assertion passed."
-                        );
-                    } else {
-                        debug!(
-                            assertion_type = assertion.name(),
-                            duration = ?result.duration,
-                            message = %result.message,
-                            "Assertion failed."
-                        );
-                    }
-
-                    let failed = !result.passed;
-                    results.push(result);
-
-                    if failed {
-                        debug!("Stopping assertion execution due to failure (fail-fast).");
-                        break;
-                    }
-                }
-
-                AssertionStep::Parallel { parallel } => {
-                    let mut assertions = Vec::new();
-                    let mut config_error = false;
-
-                    for assertion_config in parallel {
-                        match create_assertion(assertion_config) {
-                            Ok(a) => assertions.push(a),
-                            Err(e) => {
-                                error!(error = %e, "Failed to create assertion from configuration.");
-                                results.push(AssertionResult {
-                                    name: "config_error".to_string(),
-                                    passed: false,
-                                    message: format!("Failed to create assertion: {}.", e),
-                                    duration: Duration::ZERO,
-                                });
-                                config_error = true;
-                                break;
-                            }
-                        }
-                    }
-
-                    if config_error {
-                        break;
-                    }
-
-                    debug!(
-                        step = step_index + 1,
-                        step_total = total_steps,
-                        assertion_count = assertions.len(),
-                        "Running parallel assertion block..."
-                    );
-
-                    let futures: Vec<_> = assertions.iter().map(|a| a.check(&ctx)).collect();
-                    let parallel_results = future::join_all(futures).await;
-
-                    let any_failed = parallel_results.iter().any(|r| !r.passed);
-
-                    for result in parallel_results {
-                        debug!(
-                            assertion_type = %result.name,
-                            passed = result.passed,
-                            duration = ?result.duration,
-                            "Parallel assertion completed."
-                        );
-                        results.push(result);
-                    }
-
-                    if any_failed {
-                        debug!("Stopping assertion execution due to failure in parallel block (fail-fast).");
-                        break;
-                    }
-                }
-            }
-        }
-
-        results
+        crate::assertions::run_assertion_steps(&self.test_case, &ctx).await
     }
 
     async fn cleanup(&self, _driver: &Driver) -> Result<(), GenericError> {
