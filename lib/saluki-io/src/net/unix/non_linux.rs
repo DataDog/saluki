@@ -50,7 +50,7 @@ pub fn socket_reuseport_supported() -> bool {
     false
 }
 
-/// Stub — replay packet sending is Linux-only because it depends on `SCM_CREDENTIALS`.
+/// Stub: replay packet sending is Linux-only because it depends on `SCM_CREDENTIALS`.
 pub async fn send_replay_packet(
     _socket: &tokio::net::UnixDatagram, _payload: &[u8], _captured_pid: i32, _replay_gid: u32,
 ) -> io::Result<usize> {

@@ -2,8 +2,8 @@
 //!
 //! Replay packets carry a synthetic `SCM_CREDENTIALS` ancillary block that lets the receive-side packet handler
 //! distinguish replay from live and recover the captured PID. Stamping a UID/GID the process doesn't actually own
-//! requires `CAP_SETUID`/`CAP_SETGID` (or root), so replay assumes the operator has run the replay subprocess with
-//! the appropriate privileges. If either capability is missing, the first `sendmsg` will fail with `EPERM` and the
+//! requires `CAP_SETUID`/`CAP_SETGID` (or root), so replay assumes the operator has run the replay command with the
+//! appropriate privileges. If either capability is missing, the first `sendmsg` will fail with `EPERM` and the
 //! replay client aborts.
 
 use std::{io, mem, os::fd::AsRawFd};
@@ -31,7 +31,7 @@ pub async fn send_replay_packet(
         .await
 }
 
-/// Synchronously writes one payload with the given credentials to the raw fd.
+/// Synchronously writes one payload with the given credentials to the raw file descriptor.
 ///
 /// Constructs a `cmsghdr` header followed by the `ucred` body in a single control buffer, then invokes `sendmsg`.
 fn send_with_ucred(fd: libc::c_int, payload: &[u8], creds: &libc::ucred) -> io::Result<usize> {

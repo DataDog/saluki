@@ -102,7 +102,7 @@ impl CapturedTaggerStore {
     }
 
     /// Returns tags for an entity ID directly (bypassing the PID map). Used by paths that have already resolved the
-    /// PID into an entity ID via some other route (e.g., External Data).
+    /// PID into an entity ID via some other route (for example, External Data).
     pub(crate) fn lookup_by_entity(
         &self, entity_id: &EntityId, cardinality: OriginTagCardinality,
     ) -> Option<SharedTagSet> {
@@ -110,7 +110,7 @@ impl CapturedTaggerStore {
     }
 }
 
-/// Shared atomic slot holding the currently-active captured tagger store, if any.
+/// Shared atomic slot holding the currently active captured tagger store, if any.
 ///
 /// Cloned freely between the replay control surface (which sets the current store as sessions start and finish) and
 /// the DSD origin tag resolver (which loads it on every replay-flagged packet). Reads are lock-free; writes are

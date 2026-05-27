@@ -1431,7 +1431,7 @@ fn process_id_from_peer_addr(peer_addr: &ConnectionAddress) -> Option<i32> {
 
 /// Applies SCM_CREDENTIALS to the origin, dispatching on the replay marker GID.
 ///
-/// Live packets carry the sender process's real PID/UID/GID; we use `creds.pid` as the origin's process_id. Replay
+/// Live packets carry the sender process's real PID/UID/GID; we use `creds.pid` as the origin's process ID. Replay
 /// packets carry `gid == REPLAY_CREDENTIALS_GID` and pack the captured (original) PID into `creds.uid`; we recover
 /// that PID with an internal marker so downstream tag resolution consults the captured tagger store.
 fn apply_credentials_to_origin(origin: &mut RawOrigin<'_>, creds: &ProcessCredentials) {
@@ -1747,10 +1747,8 @@ mod tests {
     use bytes::Bytes;
     use bytesize::ByteSize;
     use saluki_config::ConfigurationLoader;
-
     use saluki_context::{origin::RawOrigin, ContextResolverBuilder, TagsResolverBuilder};
     use saluki_core::{components::ComponentContext, topology::ComponentId};
-
     use saluki_env::workload::{CaptureEntityResolver, EntityId};
     use saluki_io::{
         deser::codec::dogstatsd::{DogStatsDCodec, DogStatsDCodecConfiguration, ParsedPacket},
