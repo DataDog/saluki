@@ -34,7 +34,7 @@ pub fn convert_trace_id(trace_id: &[u8]) -> u64 {
 
 /// Extracts the high 8 bytes of a 128-bit OTLP trace ID as a big-endian u64.
 ///
-/// Returns 0 if the trace ID is shorter than 16 bytes (e.g. a 64-bit-only ID).
+/// Returns 0 if the trace ID is shorter than 16 bytes (for example, a 64-bit-only ID).
 pub fn convert_trace_id_high(trace_id: &[u8]) -> u64 {
     if trace_id.len() < 16 {
         return 0;
@@ -73,15 +73,15 @@ struct OtlpResourceMeta {
 /// Extracts unified trace-level fields from OTLP resource attributes.
 ///
 /// Mirrors the field extraction performed by `receiveResourceSpansV2` in the Go trace agent
-/// (`pkg/trace/api/otlp.go`): env from deployment env semconv, container ID from container
-/// semconv, hostname from `datadog.host.name`, language/version from telemetry SDK attributes.
+/// (`pkg/trace/api/otlp.go`): env from deployment environment semantic conventions, container ID from
+/// container semantic conventions, hostname from `datadog.host.name`, language/version from telemetry SDK attributes.
 /// All known fields are also inserted into the returned `attributes` map so that downstream code
 /// can use a single map lookup regardless of whether a field is explicitly modelled on `Trace`.
 ///
 /// **Hostname**: we capture only `datadog.host.name` here. The Go agent resolves hostname
 /// through up to six fallback steps (cloud-provider EC2/GCP/Azure, K8s node name, `host.name`,
 /// etc.). The encoder covers `host.name` + AWS ECS Fargate via `attributes_to_source`, but the
-/// cloud-provider and K8s steps are not yet implemented — this is a pre-existing gap, not a
+/// cloud-provider and K8s steps are not yet implemented—this is a pre-existing gap, not a
 /// regression introduced by this PR.
 /// TODO: implement full hostnameFromAttributes parity.
 fn extract_resource_meta(

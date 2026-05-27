@@ -8,7 +8,7 @@ use stringtheory::MetaString;
 /// Typed value for attributes at every level of the trace model: span attributes,
 /// span event attributes, span link attributes, and trace-level attributes.
 ///
-/// Covers all variants carried by the V1 APM idx wire format (`RawAnyValue`).
+/// Covers all variants carried by the V1 APM `idx` wire format (`RawAnyValue`).
 #[derive(Clone, Debug, PartialEq)]
 pub enum AttributeValue {
     /// String-valued attribute.
@@ -40,7 +40,7 @@ impl AttributeValue {
     /// Returns the inner float if this is a `Float` variant.
     ///
     /// Returns `Some` only when the stored variant is `Float`. For numeric semantic tags
-    /// where the source may store an integer (e.g. sampling priority, `_sample_rate`,
+    /// where the source may store an integer (for example, sampling priority, `_sample_rate`,
     /// `_top_level`), use [`as_num`][AttributeValue::as_num] instead.
     pub fn as_float(&self) -> Option<f64> {
         if let AttributeValue::Float(f) = self {
@@ -71,7 +71,7 @@ impl AttributeValue {
     /// Returns a numeric value as `f64` for either `Float` or `Int` variants.
     ///
     /// Use this when the caller only needs a number and doesn't care whether
-    /// the stored type is integral or floating-point (e.g. sampling priority).
+    /// the stored type is integral or floating-point (for example, sampling priority).
     pub fn as_num(&self) -> Option<f64> {
         match self {
             AttributeValue::Float(f) => Some(*f),
@@ -98,7 +98,7 @@ impl AttributeValue {
 pub struct PayloadFields {
     /// Container ID associated with the tracer.
     pub container_id: MetaString,
-    /// Tracer language name (e.g. `"go"`, `"python"`).
+    /// Tracer language name (for example, `"go"`, `"python"`).
     pub language_name: MetaString,
     /// Tracer language runtime version.
     pub language_version: MetaString,
@@ -106,7 +106,7 @@ pub struct PayloadFields {
     pub tracer_version: MetaString,
     /// Tracer runtime ID.
     pub runtime_id: MetaString,
-    /// Deployment environment (e.g. `"production"`, `"staging"`).
+    /// Deployment environment (for example, `"production"`, `"staging"`).
     pub env: MetaString,
     /// Hostname of the tracer host.
     pub hostname: MetaString,
@@ -130,7 +130,7 @@ pub struct Trace {
     pub trace_id_high: u64,
     /// Lower 8 bytes of the 128-bit trace ID (big-endian).
     pub trace_id_low: u64,
-    /// Trace origin string (e.g. `"lambda"`, `"rum"`).
+    /// Trace origin string (for example, `"lambda"`, `"rum"`).
     pub origin: MetaString,
 
     /// Payload-level metadata (promoted from the tracer payload or OTLP resource).
@@ -269,7 +269,7 @@ pub struct Span {
     pub version: MetaString,
     /// Instrumentation component name (V1 path).
     pub component: MetaString,
-    /// Span kind (OTEL values): 0=unspecified, 1=internal, 2=server, 3=client, 4=producer, 5=consumer.
+    /// Span kind (OTel values): 0=unspecified, 1=internal, 2=server, 3=client, 4=producer, 5=consumer.
     pub kind: u32,
     /// Typed span-level attributes (replaces `meta`, `metrics`, and `meta_struct`).
     pub attributes: FastHashMap<MetaString, AttributeValue>,
