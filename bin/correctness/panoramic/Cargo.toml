@@ -18,7 +18,7 @@ colored = { workspace = true }
 crossterm = { workspace = true, features = ["events"] }
 futures = { workspace = true }
 k8s-openapi = { workspace = true }
-kube = { workspace = true, features = ["client", "rustls-tls", "ws"] }
+kube = { workspace = true, features = ["client", "http-proxy", "rustls-tls", "ws"] }
 rand = { workspace = true, features = ["std", "std_rng", "thread_rng"] }
 rand_distr = { workspace = true }
 regex = { workspace = true, features = ["std"] }
