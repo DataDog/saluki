@@ -159,19 +159,15 @@ pub enum MetricOrigin {
     /// when richer origin metadata isn't available.
     SourceType(Arc<str>),
 
-    /// Originated from a specific product, category, and/or service.
+    /// Originated from a specific product/subproduct, with product-specific detail.
     OriginMetadata {
         /// Product.
         product: u32,
 
         /// Subproduct.
-        ///
-        /// Previously known as "category".
         subproduct: u32,
 
         /// Product detail.
-        ///
-        /// Previously known as "service".
         product_detail: u32,
     },
 }

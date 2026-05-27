@@ -431,9 +431,9 @@ impl From<&proto::ClientGroupedStats> for AggregationKey {
 
 /// Aggregator for client statistics.
 ///
-/// Client statistics are aggregated by a number of fields that generate correspond to a specific span: service, name,
-/// and operation. Additional fields are used to further group the statistics, such as response codes and tags. This is
-/// referred to as the "aggregation key".
+/// Client statistics are represented by generating an "aggregation key" for a given span, and then grouping statistics
+/// by that key. The aggregation key includes fields like service, span name, span operation, response code, and more.
+/// This is meant to group like spans together,
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct ClientStatisticsAggregator {
     groups: FastHashMap<AggregationKey, BucketedClientStatistics>,
@@ -476,9 +476,6 @@ impl ClientStatisticsAggregator {
     }
 
     /// Returns a reference to the aggregated statistics groups.
-    ///
-    /// Groups are split by "aggregation key", which is a combination of select fields in each client stats payload,
-    /// roughly corresponding to a specific span: name, operation, kind, tags, and so on.
     pub fn groups(&self) -> &FastHashMap<AggregationKey, BucketedClientStatistics> {
         &self.groups
     }

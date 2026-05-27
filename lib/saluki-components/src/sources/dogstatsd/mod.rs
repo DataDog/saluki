@@ -700,7 +700,7 @@ impl DogStatsDConfiguration {
     ///
     /// `bind_host` is the pre-resolved IP that UDP and TCP listeners should bind to (provided by
     /// `resolve_bind_host`). Precedence matches the Agent:
-    ///   - `non_local_traffic=true` → `0.0.0.0` (bind_host ignored)
+    ///   - `non_local_traffic=true` → `0.0.0.0` (`bind_host` ignored)
     ///   - `bind_host=Some(ip)`     → `ip`
     ///   - `bind_host=None`         → `127.0.0.1`
     fn build_addresses(&self, bind_host: Option<std::net::IpAddr>) -> Vec<ListenAddress> {
@@ -2264,7 +2264,7 @@ mod tests {
     }
 
     /// Passing `Some(ip)` to `build_addresses` with `non_local_traffic=true` -> both UDP and TCP
-    /// bind to `0.0.0.0`; the bind_host parameter is ignored (precedence matches the Agent).
+    /// bind to `0.0.0.0`; the `bind_host` parameter is ignored (precedence matches the Agent).
     /// Includes a UDS stream socket to confirm `bind_host` doesn't affect it.
     #[test]
     fn build_addresses_non_local_clobbers_bind_host() {

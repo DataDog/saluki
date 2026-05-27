@@ -46,7 +46,7 @@ static AGGREGATE_PASSTHROUGH_IDLE_FLUSH_TIMEOUT_SCHEMA: SchemaEntry = SchemaEntr
 
 crate::declare_annotations! {
     /// `aggregate_window_duration`—size of each aggregation window.
-    /// Duration fields serialize as {secs, nanos}; inject as object with test_json.
+    /// Duration fields serialize as {secs, nanos}; inject as object with `test_json`.
     AGGREGATE_WINDOW_DURATION = SalukiAnnotation {
         schema: &AGGREGATE_WINDOW_DURATION_SCHEMA,
         support_level: SupportLevel::Full,

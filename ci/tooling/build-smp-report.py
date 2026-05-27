@@ -261,10 +261,7 @@ def short_sha(sha: str) -> str:
 def diff_link(baseline_sha: str, comparison_sha: str) -> str:
     if not baseline_sha or not comparison_sha:
         return "(diff unavailable)"
-    return (
-        f"[Diff](https://github.com/DataDog/saluki/compare/"
-        f"{baseline_sha}...{comparison_sha})"
-    )
+    return f"[diff](../../compare/{baseline_sha}..{comparison_sha})"
 
 
 def partition_experiments(

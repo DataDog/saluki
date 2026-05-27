@@ -105,6 +105,8 @@ pub mod structs {
     pub const FORWARDER_CONFIGURATION: &str = "ForwarderConfiguration";
     /// Identifier for `DogStatsDConfiguration`.
     pub const DOGSTATSD_CONFIGURATION: &str = "DogStatsDConfiguration";
+    /// Identifier for `ContainerdConfiguration`.
+    pub const CONTAINERD_CONFIGURATION: &str = "ContainerdConfiguration";
     /// Identifier for `OtlpConfiguration`.
     pub const OTLP_CONFIGURATION: &str = "OtlpConfiguration";
     /// Identifier for `AggregateConfiguration`.

@@ -14,7 +14,7 @@
   script:
     - docker buildx create --name adp-builder --driver docker-container --use
     - echo "Acquiring temporary AWS credentials..."
-    - .ci/get-temporary-aws-credentials.sh
+    - ci/tooling/get-temporary-aws-credentials.sh
     - 'echo "Building ADP image. (version: ${ADP_IMAGE_VERSION}, target: ${BUILD_TARGET}, profile: ${BUILD_PROFILE})"'
     - docker buildx build
       --file ./docker/Dockerfile.agent-data-plane
@@ -27,6 +27,7 @@
       --build-arg BUILD_BASE=build-prepped
       --build-arg LICENSE_IMAGE=${SALUKI_SPDX_LICENSES_CI_IMAGE}
       --build-arg LICENSE_BASE=license-prepped
+      --build-arg PROFILING_IMAGE=${APP_IMAGE}
       --build-arg APP_IMAGE=${APP_IMAGE}
       --build-arg BUILD_PROFILE=${BUILD_PROFILE}
       --build-arg BUILD_FEATURES=${BUILD_FEATURES}

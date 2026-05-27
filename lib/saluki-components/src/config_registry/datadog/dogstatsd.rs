@@ -433,7 +433,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `dogstatsd_permissive_decoding`—relax decoding strictness for Agent compat.
+    /// `dogstatsd_permissive_decoding`—relax decoding strictness for Agent `compat`.
     DOGSTATSD_PERMISSIVE_DECODING = SalukiAnnotation {
         schema: &DOGSTATSD_PERMISSIVE_DECODING_SCHEMA,
         support_level: SupportLevel::Full,

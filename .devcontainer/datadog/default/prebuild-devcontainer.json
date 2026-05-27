@@ -21,7 +21,7 @@
   "features": {
     // Campaigner update PRs should take care of bumping those versions
     "registry.ddbuild.io/workspaces/features/base:0.4.112554911": {},
-    "registry.ddbuild.io/workspaces/features/claude-code:0.1.111555948": {},
+    "registry.ddbuild.io/workspaces/features/claude-code:0.1.114057582": {},
     // ADP-specific setup
     "./features/adp": {}
   },

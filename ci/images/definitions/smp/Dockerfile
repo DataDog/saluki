@@ -8,7 +8,7 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates curl cmake ninja-build g++ bzip2 && \
     rm -rf /var/lib/apt/lists/*
 
-COPY .ci/install-bloaty.sh /install-bloaty.sh
+COPY ci/images/scripts/install-bloaty.sh /install-bloaty.sh
 RUN chmod +x /install-bloaty.sh && /install-bloaty.sh
 
 # Builder stage: compile buildcache from source. Build-only deps (cmake, ninja-build, g++,
@@ -22,7 +22,7 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates curl git cmake ninja-build g++ libssl-dev && \
     rm -rf /var/lib/apt/lists/*
 
-COPY .ci/install-buildcache.sh /install-buildcache.sh
+COPY ci/images/scripts/install-buildcache.sh /install-buildcache.sh
 RUN chmod +x /install-buildcache.sh && /install-buildcache.sh
 
 # Final stage: runtime-only dependencies. Build toolchain is not present here.
@@ -32,9 +32,6 @@ ARG RUST_VERSION=1.93.0
 
 ENV DEBIAN_FRONTEND=noninteractive \
     TZ=Etc/UTC
-
-RUN --mount=type=bind,source=.ci/configure-apt-mirror.sh,target=/tmp/configure-apt-mirror.sh \
-    sh /tmp/configure-apt-mirror.sh
 
 # Runtime utilities for the benchmark/binary-size-analysis jobs. python3 + binutils are needed by
 # analyze-binary-size.py (objcopy / strip). No C/C++ toolchain here — bloaty is built in the
@@ -54,11 +51,11 @@ RUN curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal --default-too
 ENV PATH="/root/.cargo/bin:${PATH}"
 
 # Install pr-commenter for posting analysis reports back to GitHub.
-COPY .ci/install-pr-commenter.sh /
+COPY ci/images/scripts/install-pr-commenter.sh /
 RUN chmod +x /install-pr-commenter.sh && /install-pr-commenter.sh
 
 # Install AWS CLI for retrieiving credentials and settings for the SMP image registry location.
-COPY .ci/install-awscli.sh /
+COPY ci/images/scripts/install-awscli.sh /
 RUN chmod +x /install-awscli.sh && /install-awscli.sh
 
 # Copy just the compiled bloaty binary from the builder stage.
@@ -67,7 +64,7 @@ COPY --from=bloaty-builder /usr/local/bin/bloaty /usr/local/bin/bloaty
 # Copy just the compiled buildcache binary from the builder stage.
 COPY --from=buildcache-builder /usr/local/bin/buildcache /usr/local/bin/buildcache
 
-COPY .ci/images/smp/entrypoint.sh /
+COPY ci/images/definitions/smp/entrypoint.sh /
 RUN chmod +x /entrypoint.sh
 
 ENTRYPOINT [ "/entrypoint.sh" ]

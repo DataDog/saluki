@@ -241,7 +241,7 @@ const fn default_internal_port() -> u16 {
 pub struct ProbabilisticSampler {
     /// Percentage of traces to ingest (0, 100].
     ///
-    /// Invalid values (<= 0 || > 100) are disconsidered and the default is used.
+    /// Invalid values (<= 0 || > 100) are disregarded and the default is used.
     ///
     /// Corresponds to `otlp_config.traces.probabilistic_sampler.sampling_percentage` in the Agent.
     ///

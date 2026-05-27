@@ -16,7 +16,7 @@ use super::Connection;
 /// protocols are supported. In textual form, listen addresses are represented as URLs, with the scheme indicating the
 /// protocol and the authority/path representing the address to listen on.
 ///
-/// ## Examples
+/// # Examples
 ///
 /// - `tcp://127.0.0.1:6789` (listen on IPv4 loopback, TCP port 6789)
 /// - `udp://[::1]:53` (listen on IPv6 loopback, UDP port 53)
@@ -58,12 +58,13 @@ impl ListenAddress {
         }
     }
 
-    /// Returns a socket address that can be used to connect to the configured listen address with a bias for local clients.
+    /// Returns a socket address that can be used to connect to the configured listen address with a bias for local
+    /// clients.
     ///
     /// When the listen address is a TCP or UDP address, this method returns a socket address that can be used to
     /// connect to the listener bound to this listen address, such that if the listen address is unspecified
-    /// (`0.0.0.0`), the client will connect locally using "localhost". When the listen address isn't "unspecified" or
-    /// already uses "localhost", this method returns the listen address as-is.
+    /// (`0.0.0.0`), the client will connect locally using `localhost`. When the listen address isn't unspecified or
+    /// already uses `localhost`, this method returns the listen address as-is.
     ///
     /// If the address is a Unix domain socket, this method returns `None`.
     pub fn as_local_connect_addr(&self) -> Option<SocketAddr> {
