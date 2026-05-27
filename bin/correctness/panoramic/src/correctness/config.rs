@@ -32,14 +32,6 @@ pub enum Runtime {
     KubernetesInDocker,
 }
 
-fn default_millstone_binary_path() -> String {
-    "/usr/local/bin/millstone".to_string()
-}
-
-fn default_datadog_intake_binary_path() -> String {
-    "/usr/local/bin/datadog-intake".to_string()
-}
-
 fn default_otlp_direct_analysis_mode() -> bool {
     false
 }
@@ -56,9 +48,11 @@ pub struct Config {
     pub analysis_mode: AnalysisMode,
 
     /// Millstone configuration.
+    #[serde(default)]
     pub millstone: MillstoneConfig,
 
     /// Datadog intake configuration.
+    #[serde(default)]
     pub datadog_intake: DatadogIntakeConfig,
 
     /// Baseline target configuration.
@@ -86,42 +80,62 @@ pub struct Config {
 }
 
 #[derive(Clone, Deserialize)]
+#[serde(default)]
 pub struct MillstoneConfig {
     /// Container image to use for millstone.
     ///
     /// This must be a valid image reference: `millstone:x.y.z`, `registry.ddbuild.io/saluki/millstone:x.y.z`, etc.
+    ///
+    /// Defaults to `saluki-images/correctness-tools:latest`.
     pub image: String,
 
     /// Path to the millstone binary.
     ///
     /// Defaults to `/usr/local/bin/millstone`.
-    #[serde(default = "default_millstone_binary_path")]
     pub binary_path: String,
 
     /// Path to the millstone configuration file to use.
     ///
     /// This file is mapped into the baseline target's `millstone` container and so it must exist on the system where
     /// this command is run from.
+    ///
+    /// Defaults to `millstone.yaml` in the current directory of the test case.
     pub config_path: PathBuf,
 }
 
+impl Default for MillstoneConfig {
+    fn default() -> Self {
+        Self {
+            image: "saluki-images/correctness-tools:latest".to_string(),
+            binary_path: "/usr/local/bin/millstone".to_string(),
+            config_path: "millstone.yaml".into(),
+        }
+    }
+}
+
 #[derive(Clone, Deserialize)]
+#[serde(default)]
 pub struct DatadogIntakeConfig {
     /// Container image to use for datadog-intake.
     ///
     /// This must be a valid image reference: `datadog-intake:x.y.z`, `registry.ddbuild.io/saluki/datadog-intake:x.y.z`, etc.
+    ///
+    /// Defaults to `saluki-images/correctness-tools:latest`.
     pub image: String,
 
     /// Path to the datadog-intake binary.
     ///
     /// Defaults to `/usr/local/bin/datadog-intake`.
-    #[serde(default = "default_datadog_intake_binary_path")]
     pub binary_path: String,
+}
 
-    /// Path to the datadog-intake configuration file to use.
-    ///
-    /// This must be a valid path to a file on the host system.
-    pub config_path: PathBuf,
+impl Default for DatadogIntakeConfig {
+    fn default() -> Self {
+        Self {
+            image: "saluki-images/correctness-tools:latest".to_string(),
+            binary_path: "/usr/local/bin/datadog-intake".to_string(),
+        }
+    }
 }
 
 #[derive(Clone, Deserialize)]
@@ -238,7 +252,6 @@ impl Config {
         AirlockDatadogIntakeConfig {
             image: self.datadog_intake.image.clone(),
             binary_path: Some(self.datadog_intake.binary_path.clone()),
-            config_path: self.get_canonicalized_config_path(&self.datadog_intake.config_path),
         }
     }
 
