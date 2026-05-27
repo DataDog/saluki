@@ -1,16 +1,26 @@
 //! Native-process integration test runner.
 //!
 //! This runner is the parallel of [`crate::runner::IntegrationRunner`] but for tests declared
-//! with `runtime: native_macos`. Instead of building a Docker container, it spawns a binary
-//! directly via [`airlock::native::NativeProcess`] and feeds its stdout/stderr into the same
+//! with `runtime: native_macos`. Instead of building a Docker container, it spawns binaries
+//! directly via [`airlock::native::NativeProcess`] and feeds their stdout/stderr into the same
 //! [`LogBuffer`][crate::assertions::LogBuffer] used by the Docker path so the assertions work
 //! unchanged.
 //!
-//! # Scope
+//! # Supported test shapes
 //!
-//! Initial scope is ADP-standalone tests: a single binary, no Core Agent, no IPC. The binary
-//! path is discovered via the `ADP_BINARY_PATH` env var, falling back to
-//! `target/release/agent-data-plane` (resolved relative to the current working directory).
+//! - **Standalone**: only ADP is spawned. The default for tests that don't set
+//!   `requires_core_agent: true`.
+//! - **Converged**: the Datadog Core Agent is spawned alongside ADP (when
+//!   `requires_core_agent: true`), sharing a per-test config directory so they authenticate
+//!   over IPC the same way they would in production. See the per-phase comments in
+//!   [`NativeIntegrationRunner::run`] for the cert/auth_token plumbing.
+//!
+//! # Binary discovery
+//!
+//! - ADP: `ADP_BINARY_PATH` env var, default `target/release/agent-data-plane` (resolved
+//!   relative to the current working directory).
+//! - Core Agent (converged only): `CORE_AGENT_BINARY_PATH` env var, default
+//!   `/opt/datadog-agent/bin/agent/agent`.
 
 use std::{
     collections::HashMap,

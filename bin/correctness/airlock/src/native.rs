@@ -30,7 +30,7 @@ use tracing::{debug, warn};
 ///
 /// The cell is populated by the background exit watcher when the child exits on its own, or by
 /// [`NativeProcess::cleanup`] when the test tears down. Consumers (for example, the
-/// `process_exits_with` assertion in panoramic) read the cell after the exit token fires.
+/// `adp_exits_with` assertion in panoramic) read the cell after the exit token fires.
 ///
 /// The inner `Option<i32>` is `None` if the process was terminated by signal rather than exiting
 /// normally with a status code.
@@ -151,7 +151,7 @@ impl NativeProcess {
 
         // Real exit watcher: moves the child into the task, calls `wait()`, records the exit
         // code, and fires the exit token so blocked assertions (process_stable_for /
-        // process_exits_with) unblock immediately rather than waiting for the test's own
+        // adp_exits_with) unblock immediately rather than waiting for the test's own
         // cleanup phase.
         let exit_code: ExitCodeCell = Arc::new(OnceLock::new());
         let exit_code_for_watcher = exit_code.clone();
@@ -188,8 +188,8 @@ impl NativeProcess {
     }
 
     /// Returns a clone of the shared exit-code cell. The cell is populated once the process
-    /// exits (either on its own or via cleanup). Consumers should wait on [`exit_token`] before
-    /// reading.
+    /// exits (either on its own or via cleanup). Consumers should wait on the exit token they
+    /// passed to [`spawn`][Self::spawn] before reading.
     pub fn exit_code_cell(&self) -> ExitCodeCell {
         self.exit_code.clone()
     }
