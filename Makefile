@@ -589,9 +589,6 @@ test-integration-macos-run: ## Runs native macOS integration tests using already
 		$(if $(CASE),-t $(CASE),--runtime native_macos) --no-tui -p 1 \
 		$(if $(PANORAMIC_LOG_DIR),-l $(PANORAMIC_LOG_DIR))
 
-.PHONY: test-integration-macos
-test-integration-macos: build-panoramic build-adp-native test-integration-macos-run ## Builds and runs ADP integration tests natively on macOS (no Docker)
-
 # Version of the Datadog Agent installed by `provision-macos-test-env`. Pinned for
 # reproducibility; bump when the integration tests need newer Agent behavior.
 MACOS_TEST_AGENT_VERSION ?= 7.78.0
