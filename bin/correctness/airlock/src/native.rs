@@ -49,12 +49,6 @@ pub struct NativeProcessConfig {
     pub env: HashMap<String, String>,
     /// Working directory for the process. If `None`, inherits the caller's working directory.
     pub working_dir: Option<PathBuf>,
-    /// If `true`, the spawned process is placed into a new process group with itself as the
-    /// group leader, and [`cleanup`][NativeProcess::cleanup] signals the entire group instead of
-    /// only the immediate child. This is essential when the spawned binary forks helpers that
-    /// outlive their parent (for example, the Datadog Core Agent spawns `trace-agent` and
-    /// `process-agent` which orphan onto launchd if only the parent is killed).
-    pub use_process_group: bool,
 }
 
 impl NativeProcessConfig {
@@ -66,17 +60,7 @@ impl NativeProcessConfig {
             args: Vec::new(),
             env: HashMap::new(),
             working_dir: None,
-            use_process_group: false,
         }
-    }
-
-    /// Places the spawned process in a new process group with itself as the group leader.
-    ///
-    /// Use this for binaries that fork long-lived helper processes that would otherwise orphan
-    /// when the parent is killed.
-    pub fn with_process_group(mut self) -> Self {
-        self.use_process_group = true;
-        self
     }
 
     /// Sets the arguments for the process.
@@ -116,15 +100,16 @@ pub trait LogSink: Send + Sync {
 /// the child process exits on its own (observed by the background watcher) or when
 /// [`cleanup`][Self::cleanup] is called. The exit code is recorded in the shared
 /// [`ExitCodeCell`] returned by [`exit_code_cell`][Self::exit_code_cell].
+///
+/// The spawned process is always made the leader of a new process group, so
+/// [`cleanup`][Self::cleanup] can signal the entire group (parent plus any forked helpers).
+/// This matters for binaries like the Datadog Core Agent that spawn `trace-agent` /
+/// `process-agent` which would otherwise orphan onto launchd when only the parent is killed.
 pub struct NativeProcess {
     name: String,
-    /// PGID to signal on cleanup when the spawned process is a process group leader. `None`
-    /// when [`NativeProcessConfig::use_process_group`] was `false`.
+    /// PGID of the spawned process. We made the child the group leader at spawn time, so this
+    /// equals the child's PID. `None` only if spawn failed to return a PID (very rare).
     process_group: Option<i32>,
-    /// The child process. Owned by the exit watcher; we communicate with it via signals.
-    ///
-    /// `None` once `cleanup` has reaped it (or never set if spawn failed before assignment).
-    child_pid: Option<u32>,
     exit_token: CancellationToken,
     exit_code: ExitCodeCell,
     log_tasks: Vec<JoinHandle<()>>,
@@ -153,25 +138,17 @@ impl NativeProcess {
         if let Some(ref wd) = config.working_dir {
             cmd.current_dir(wd);
         }
-        if config.use_process_group {
-            // Place the spawned process in a new process group so we can later signal all of
-            // its descendants together.
-            #[cfg(unix)]
-            cmd.process_group(0);
-        }
+        // Always place the spawned process in a new process group so cleanup can signal the
+        // entire group (parent + any forked helpers) without leaking orphans.
+        #[cfg(unix)]
+        cmd.process_group(0);
 
         let mut child = cmd
             .spawn()
             .with_error_context(|| format!("Failed to spawn '{}'.", config.binary_path.display()))?;
 
-        // When using a process group, capture the PGID. We made the child the group leader
-        // (process_group(0)), so PGID == child PID.
-        let child_pid = child.id();
-        let process_group = if config.use_process_group {
-            child_pid.map(|pid| pid as i32)
-        } else {
-            None
-        };
+        // PGID == child PID since we made the child the group leader (process_group(0)).
+        let process_group = child.id().map(|pid| pid as i32);
 
         let stdout = child
             .stdout
@@ -211,7 +188,6 @@ impl NativeProcess {
         Ok(Self {
             name: config.name,
             process_group,
-            child_pid,
             exit_token,
             exit_code,
             log_tasks: vec![stdout_task, stderr_task],
@@ -236,13 +212,13 @@ impl NativeProcess {
         self.exit_code.clone()
     }
 
-    /// Kills the child (and its process group, if configured), joins background tasks, and
-    /// cancels the exit token.
+    /// Kills the spawned process group, joins background tasks, and cancels the exit token.
+    ///
+    /// Sends SIGTERM to the whole group, waits a short grace period, then sends SIGKILL to
+    /// guarantee nothing is left behind. The grace period gives well-behaved descendants
+    /// (for example, the Core Agent's `trace-agent` / `process-agent` helpers) a chance to
+    /// shut down cleanly before we hard-kill them.
     pub async fn cleanup(mut self) {
-        // If we asked for a process group, first send SIGTERM to the entire group. This gives
-        // descendants (for example, trace-agent, process-agent spawned by the Datadog Core Agent) a
-        // chance to shut down cleanly before we hard-kill them. After a brief grace period we
-        // send SIGKILL to the group to guarantee no orphans remain.
         #[cfg(unix)]
         if let Some(pgid) = self.process_group {
             // SAFETY: killpg with a valid pgid is a safe syscall; we ignore the return value.
@@ -253,20 +229,6 @@ impl NativeProcess {
             unsafe {
                 libc::killpg(pgid, libc::SIGKILL);
             }
-        } else if let Some(pid) = self.child_pid {
-            // Fallback: just signal the direct child. The exit watcher owns the Child handle
-            // so we can't call kill() through it; use libc directly.
-            #[cfg(unix)]
-            unsafe {
-                libc::kill(pid as i32, libc::SIGTERM);
-            }
-            tokio::time::sleep(Duration::from_millis(200)).await;
-            #[cfg(unix)]
-            unsafe {
-                libc::kill(pid as i32, libc::SIGKILL);
-            }
-            #[cfg(not(unix))]
-            let _ = pid;
         }
 
         // The exit watcher will have observed the kill and set the exit code + fired the token.
@@ -274,8 +236,8 @@ impl NativeProcess {
         if let Some(handle) = self.exit_task.take() {
             let _ = handle.await;
         }
-        // Defensive: make sure the token is fired even if the watcher never set it (for example, on a
-        // failed wait).
+        // Defensive: make sure the token is fired even if the watcher never set it (for example,
+        // on a failed wait).
         self.exit_token.cancel();
         for handle in self.log_tasks.drain(..) {
             let _ = handle.await;

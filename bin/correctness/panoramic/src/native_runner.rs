@@ -145,11 +145,7 @@ impl NativeIntegrationRunner {
                     "-c".to_string(),
                     state_dir.to_string_lossy().into_owned(),
                 ])
-                .with_env_map(agent_env)
-                // The Core Agent forks `trace-agent` and `process-agent` helpers; without a process
-                // group they orphan onto launchd on cleanup and continue holding ports (e.g., 8126
-                // for trace-agent), blocking subsequent tests.
-                .with_process_group();
+                .with_env_map(agent_env);
 
             let agent = match NativeProcess::spawn(agent_config, log_sink.clone(), CancellationToken::new()).await {
                 Ok(p) => p,
