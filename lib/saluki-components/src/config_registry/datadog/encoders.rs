@@ -111,6 +111,105 @@ crate::declare_annotations! {
         test_json: None,
     };
 
+    /// `serializer_experimental_use_v3_api.compression_level`—V3 API compression level.
+    /// Schema declares Float; field is i32.
+    SERIALIZER_EXPERIMENTAL_USE_V3_API_COMPRESSION_LEVEL = SalukiAnnotation {
+        schema: &schema::SERIALIZER_EXPERIMENTAL_USE_V3_API_COMPRESSION_LEVEL,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[
+            structs::DATADOG_METRICS_CONFIGURATION,
+            structs::FORWARDER_CONFIGURATION,
+        ],
+        value_type_override: Some(ValueType::Integer),
+        test_json: None,
+    };
+
+    /// `serializer_experimental_use_v3_api.series.beta_route`—V3 beta intake route path for series.
+    SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_BETA_ROUTE = SalukiAnnotation {
+        schema: &schema::SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_BETA_ROUTE,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[
+            structs::DATADOG_METRICS_CONFIGURATION,
+            structs::FORWARDER_CONFIGURATION,
+        ],
+        value_type_override: None,
+        test_json: None,
+    };
+
+    /// `serializer_experimental_use_v3_api.series.endpoints`—endpoints enabled for V3 series API.
+    SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_ENDPOINTS = SalukiAnnotation {
+        schema: &schema::SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_ENDPOINTS,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[
+            structs::DATADOG_METRICS_CONFIGURATION,
+            structs::FORWARDER_CONFIGURATION,
+        ],
+        value_type_override: None,
+        test_json: None,
+    };
+
+    /// `serializer_experimental_use_v3_api.series.use_beta`—use the V3 beta route for series.
+    SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_USE_BETA = SalukiAnnotation {
+        schema: &schema::SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_USE_BETA,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[
+            structs::DATADOG_METRICS_CONFIGURATION,
+            structs::FORWARDER_CONFIGURATION,
+        ],
+        value_type_override: None,
+        test_json: None,
+    };
+
+    /// `serializer_experimental_use_v3_api.series.validate`—dual-send V2 and V3 series for validation.
+    SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_VALIDATE = SalukiAnnotation {
+        schema: &schema::SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_VALIDATE,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[
+            structs::DATADOG_METRICS_CONFIGURATION,
+            structs::FORWARDER_CONFIGURATION,
+        ],
+        value_type_override: None,
+        test_json: None,
+    };
+
+    /// `serializer_experimental_use_v3_api.sketches.endpoints`—endpoints enabled for V3 sketches API.
+    SERIALIZER_EXPERIMENTAL_USE_V3_API_SKETCHES_ENDPOINTS = SalukiAnnotation {
+        schema: &schema::SERIALIZER_EXPERIMENTAL_USE_V3_API_SKETCHES_ENDPOINTS,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[
+            structs::DATADOG_METRICS_CONFIGURATION,
+            structs::FORWARDER_CONFIGURATION,
+        ],
+        value_type_override: None,
+        test_json: None,
+    };
+
+    /// `serializer_experimental_use_v3_api.sketches.validate`—dual-send V2 and V3 sketches for validation.
+    SERIALIZER_EXPERIMENTAL_USE_V3_API_SKETCHES_VALIDATE = SalukiAnnotation {
+        schema: &schema::SERIALIZER_EXPERIMENTAL_USE_V3_API_SKETCHES_VALIDATE,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[
+            structs::DATADOG_METRICS_CONFIGURATION,
+            structs::FORWARDER_CONFIGURATION,
+        ],
+        value_type_override: None,
+        test_json: None,
+    };
+
     /// `serializer_max_series_payload_size`—max compressed V2 series payload size.
     SERIALIZER_MAX_SERIES_PAYLOAD_SIZE = SalukiAnnotation {
         schema: &schema::SERIALIZER_MAX_SERIES_PAYLOAD_SIZE,

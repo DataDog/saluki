@@ -3074,10 +3074,6 @@
   reason: initial bulk
 - name: security_agent.log_file
   reason: initial bulk
-- name: serializer_experimental_use_v3_api.series.beta_route
-  reason: initial bulk
-- name: serializer_experimental_use_v3_api.series.use_beta
-  reason: initial bulk
 - name: server_timeout
   reason: initial bulk
 - name: serverless.enabled

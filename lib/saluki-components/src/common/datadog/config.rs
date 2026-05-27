@@ -888,7 +888,10 @@ mod config_smoke {
         // config load in the smoke test has a valid starting point.
         run_config_smoke_tests(
             structs::FORWARDER_CONFIGURATION,
-            &[],
+            &[
+                "serializer_experimental_use_v3_api.sketches.beta_route",
+                "serializer_experimental_use_v3_api.sketches.use_beta",
+            ],
             json!({ "api_key": "smoke-test-api-key" }),
             |cfg| ForwarderConfiguration::from_configuration(&cfg).expect("ForwarderConfiguration should deserialize"),
         )

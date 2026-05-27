@@ -1241,15 +1241,8 @@ mod config_smoke {
         run_config_smoke_tests(
             structs::DATADOG_METRICS_CONFIGURATION,
             &[
-                "serializer_experimental_use_v3_api.compression_level",
-                "serializer_experimental_use_v3_api.series.beta_route",
-                "serializer_experimental_use_v3_api.series.endpoints",
-                "serializer_experimental_use_v3_api.series.use_beta",
-                "serializer_experimental_use_v3_api.series.validate",
                 "serializer_experimental_use_v3_api.sketches.beta_route",
-                "serializer_experimental_use_v3_api.sketches.endpoints",
                 "serializer_experimental_use_v3_api.sketches.use_beta",
-                "serializer_experimental_use_v3_api.sketches.validate",
             ],
             json!({}),
             |cfg| {

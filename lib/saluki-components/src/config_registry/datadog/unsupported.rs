@@ -170,66 +170,6 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `serializer_experimental_use_v3_api.compression_level` - V3 API compression level.
-    SERIALIZER_EXPERIMENTAL_USE_V3_API_COMPRESSION_LEVEL = SalukiAnnotation {
-        schema: &schema::SERIALIZER_EXPERIMENTAL_USE_V3_API_COMPRESSION_LEVEL,
-        // V3 metrics API not implemented. #1468
-        support_level: SupportLevel::Incompatible(Severity::Low),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-    };
-
-    /// `serializer_experimental_use_v3_api.series.endpoints` - V3 API series endpoints.
-    SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_ENDPOINTS = SalukiAnnotation {
-        schema: &schema::SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_ENDPOINTS,
-        // V3 metrics API not implemented. #1468
-        support_level: SupportLevel::Incompatible(Severity::Low),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-    };
-
-    /// `serializer_experimental_use_v3_api.series.validate` - V3 API series validation.
-    SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_VALIDATE = SalukiAnnotation {
-        schema: &schema::SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_VALIDATE,
-        // V3 metrics API not implemented. #1468
-        support_level: SupportLevel::Incompatible(Severity::Low),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-    };
-
-    /// `serializer_experimental_use_v3_api.sketches.endpoints` - V3 API sketches endpoints.
-    SERIALIZER_EXPERIMENTAL_USE_V3_API_SKETCHES_ENDPOINTS = SalukiAnnotation {
-        schema: &schema::SERIALIZER_EXPERIMENTAL_USE_V3_API_SKETCHES_ENDPOINTS,
-        // V3 metrics API not implemented. #1468
-        support_level: SupportLevel::Incompatible(Severity::Low),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-    };
-
-    /// `serializer_experimental_use_v3_api.sketches.validate` - V3 API sketches validation.
-    SERIALIZER_EXPERIMENTAL_USE_V3_API_SKETCHES_VALIDATE = SalukiAnnotation {
-        schema: &schema::SERIALIZER_EXPERIMENTAL_USE_V3_API_SKETCHES_VALIDATE,
-        // V3 metrics API not implemented. #1468
-        support_level: SupportLevel::Incompatible(Severity::Low),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-    };
-
     /// `serializer_max_series_points_per_payload` - max series points per payload.
     SERIALIZER_MAX_SERIES_POINTS_PER_PAYLOAD = SalukiAnnotation {
         schema: &schema::SERIALIZER_MAX_SERIES_POINTS_PER_PAYLOAD,
