@@ -596,12 +596,21 @@ MACOS_TEST_AGENT_DMG_DIR ?= /tmp/saluki-dda-dmg-cache
 MACOS_TEST_AGENT_DMG_URL ?= https://s3.amazonaws.com/dd-agent/datadog-agent-$(MACOS_TEST_AGENT_VERSION)-1.$(shell uname -m).dmg
 
 .PHONY: provision-macos-test-env
-provision-macos-test-env: ## Idempotently installs the Datadog Agent at /opt/datadog-agent and bootstraps the IPC cert; required by converged native_macos integration tests.
+provision-macos-test-env: ## Idempotently installs the pinned Datadog Agent ($(MACOS_TEST_AGENT_VERSION)) at /opt/datadog-agent and bootstraps the IPC cert. Fails if a different version is already installed.
 	@echo "[*] Provisioning macOS test environment..."
 	@if [ "$(shell uname -s)" != "Darwin" ]; then \
 		echo "provision-macos-test-env only runs on macOS hosts" >&2; exit 1; \
 	fi
-	@if [ ! -x /opt/datadog-agent/bin/agent/agent ]; then \
+	@if [ -x /opt/datadog-agent/bin/agent/agent ]; then \
+		INSTALLED_VERSION=$$(/opt/datadog-agent/bin/agent/agent version 2>/dev/null | awk '{print $$2}'); \
+		if [ "$$INSTALLED_VERSION" = "$(MACOS_TEST_AGENT_VERSION)" ]; then \
+			echo "[*] Datadog Agent $$INSTALLED_VERSION already installed (matches expected version)"; \
+		else \
+			echo "ERROR: installed Datadog Agent version '$$INSTALLED_VERSION' does not match expected '$(MACOS_TEST_AGENT_VERSION)'." >&2; \
+			echo "       Remove /opt/datadog-agent or update MACOS_TEST_AGENT_VERSION and retry." >&2; \
+			exit 1; \
+		fi; \
+	else \
 		echo "[*] Installing Datadog Agent $(MACOS_TEST_AGENT_VERSION)..."; \
 		mkdir -p $(MACOS_TEST_AGENT_DMG_DIR); \
 		DMG_PATH=$(MACOS_TEST_AGENT_DMG_DIR)/datadog-agent-$(MACOS_TEST_AGENT_VERSION).dmg; \
