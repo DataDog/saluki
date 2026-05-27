@@ -1256,7 +1256,7 @@
     "action": "INVESTIGATE",
     "description": "In-memory requeue buffer size for forwarder",
     "reason": "Marked for investigation; previously dismissed as not-applicable.",
-    "issue": "#1680",
+    "issue": "#1755",
     "adp_key": null
   },
   {
@@ -1292,7 +1292,7 @@
     "action": "INVESTIGATE",
     "description": "Timeout (sec) for forwarder graceful stop",
     "reason": "Marked for investigation; previously dismissed as not-applicable.",
-    "issue": "#1680",
+    "issue": "#1754",
     "adp_key": null
   },
   {

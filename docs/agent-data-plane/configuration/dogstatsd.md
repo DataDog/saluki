@@ -249,9 +249,9 @@ ways that are not yet fully characterized.
 | `forwarder_high_prio_buffer_size`                                | High-priority request queue size                | [#1362] |
 | `forwarder_low_prio_buffer_size`                                 | Low-priority request queue size                 | [#1362] |
 | `forwarder_max_concurrent_requests`                              | Max concurrent HTTP requests                    | [#1363] |
-| `forwarder_requeue_buffer_size`                                  | In-memory re-queue buffer size                  | [#1680] |
+| `forwarder_requeue_buffer_size`                                  | In-memory re-queue buffer size                  | [#1755] |
 | `forwarder_retry_queue_capacity_time_interval_sec`               | Retry queue time-based capacity                 | [#1365] |
-| `forwarder_stop_timeout`                                         | Timeout (s) for forwarder graceful stop         | [#1680] |
+| `forwarder_stop_timeout`                                         | Timeout (s) for forwarder graceful stop         | [#1754] |
 | `heroku_dyno`                                                    | Override agent name for Heroku telemetry        | [#1753] |
 | `log_payloads`                                                   | Debug-log serialized payloads before send       | [#1750] |
 | `multi_region_failover.enabled`                                  | Enable multi-region failover mode               | [#1678] |
@@ -481,7 +481,6 @@ when the receiving syslog daemon expects the Agent's RFC-style header.
 [#1667]: https://github.com/DataDog/saluki/issues/1667
 [#1678]: https://github.com/DataDog/saluki/issues/1678
 [#1679]: https://github.com/DataDog/saluki/issues/1679
-[#1680]: https://github.com/DataDog/saluki/issues/1680
 [#1681]: https://github.com/DataDog/saluki/issues/1681
 [#1682]: https://github.com/DataDog/saluki/issues/1682
 [#1683]: https://github.com/DataDog/saluki/issues/1683
@@ -491,5 +490,7 @@ when the receiving syslog daemon expects the Agent's RFC-style header.
 [#1751]: https://github.com/DataDog/saluki/issues/1751
 [#1752]: https://github.com/DataDog/saluki/issues/1752
 [#1753]: https://github.com/DataDog/saluki/issues/1753
+[#1754]: https://github.com/DataDog/saluki/issues/1754
+[#1755]: https://github.com/DataDog/saluki/issues/1755
 
 [#1687]: https://github.com/DataDog/saluki/issues/1687

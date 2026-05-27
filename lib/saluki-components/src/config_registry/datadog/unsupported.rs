@@ -485,7 +485,7 @@ crate::declare_annotations! {
     /// `forwarder_requeue_buffer_size` - forwarder in-memory requeue buffer size.
     FORWARDER_REQUEUE_BUFFER_SIZE = SalukiAnnotation {
         schema: &schema::FORWARDER_REQUEUE_BUFFER_SIZE,
-        // Not implemented. #1680
+        // Not implemented. #1755
         support_level: SupportLevel::Incompatible(Severity::Low),
         additional_yaml_paths: &[],
         env_var_override: None,
@@ -496,7 +496,7 @@ crate::declare_annotations! {
     /// `forwarder_stop_timeout` - forwarder graceful stop drain timeout.
     FORWARDER_STOP_TIMEOUT = SalukiAnnotation {
         schema: &schema::FORWARDER_STOP_TIMEOUT,
-        // Not implemented. #1680
+        // Not implemented. #1754
         support_level: SupportLevel::Incompatible(Severity::Low),
         additional_yaml_paths: &[],
         env_var_override: None,
