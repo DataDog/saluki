@@ -500,7 +500,7 @@ mod tests {
         Span::new(service, name, resource, "web", 1, 1, 0, 1000000000, 100000000, 0).with_metrics(metrics)
     }
 
-    /// Creates a top-level span (parent_id = 0, has _top_level metric)
+    /// Creates a top-level span (`parent_id` = 0, has `_top_level` metric)
     fn make_top_level_span(
         aligned_now: u64, span_id: u64, duration: u64, bucket_offset: u64, service: &str, resource: &str, error: i32,
         meta: Option<FastHashMap<MetaString, MetaString>>,
@@ -1363,10 +1363,10 @@ mod tests {
     /// Strategy to generate test inputs for the split function.
     ///
     /// Parameters:
-    /// - num_payloads: 1..=10
-    /// - num_buckets_per_payload: 1..=5
-    /// - num_stats_per_bucket: 0..=500
-    /// - max_entries_per_event: 1..=1000 (never zero)
+    /// - `num_payloads`: 1..=10
+    /// - `num_buckets_per_payload`: 1..=5
+    /// - `num_stats_per_bucket`: 0..=500
+    /// - `max_entries_per_event`: 1..=1000 (never zero)
     fn arb_split_inputs() -> impl Strategy<Value = (Vec<ClientStatsPayload>, usize)> {
         let payloads_strategy = proptest::collection::vec(arb_payload(5, 500), 1..=10);
         let max_entries_strategy = 1..=1000usize;

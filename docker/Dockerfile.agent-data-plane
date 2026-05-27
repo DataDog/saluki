@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1.23
+# syntax=docker/dockerfile:1.24
 # This Dockerfile is, generally speaking, tuned for CI builds.
 #
 # It is designed to work seamlessly in both local builds and CI environments, but as CI is invoked far more often,
@@ -72,7 +72,7 @@ ENV BUILDCACHE_REMOTE=${BUILDCACHE_REMOTE}
 ENV BUILDCACHE_DEBUG=${BUILDCACHE_DEBUG}
 
 # Copy over required build headers for AWS-LC.
-COPY ./tooling/copy-build-headers.sh /copy-build-headers.sh
+COPY ./ci/tooling/copy-build-headers.sh /copy-build-headers.sh
 RUN chmod +x /copy-build-headers.sh && /copy-build-headers.sh
 
 # Copy over `buildcache` if an image was provided that contains it.
@@ -129,7 +129,7 @@ ARG TARGETARCH
 ARG INTERNAL_BUILD=""
 
 RUN mkdir -p /tmp/profiling
-COPY ./ci/maybe-profile.sh /tmp/maybe-profile.sh
+COPY ./ci/tooling/maybe-profile.sh /tmp/maybe-profile.sh
 RUN if [ "${INTERNAL_BUILD}" = "true" ]; then \
         apt-get update && \
         apt-get install --no-install-recommends -y ca-certificates curl && \

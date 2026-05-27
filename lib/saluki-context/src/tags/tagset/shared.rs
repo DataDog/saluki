@@ -12,7 +12,7 @@ use crate::tags::Tag;
 ///
 /// In many cases, it's useful to extend a set of tags with additional tags, without needing to clone the additional
 /// tags or re-allocate the underlying storage to fit the entire set of tags. `SharedTagSet` supports this by utilizing
-/// "structural sharing", where `SharedTagSet` is internally represented by a set of smart pointers to `FrozenTagSet`.
+/// _structural sharing_, where `SharedTagSet` is internally represented by a set of smart pointers to `FrozenTagSet`.
 ///
 /// This allows `SharedTagSet` to be cheaply extended with additional `SharedTagSet` instances, without needing to
 /// allocate enough underlying storage to hold all of the individual tags. Extending a `SharedTagSet` will allocate a

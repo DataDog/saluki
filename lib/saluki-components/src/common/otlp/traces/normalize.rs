@@ -340,7 +340,7 @@ const fn is_valid_ascii_tag_char(c: char) -> bool {
     is_valid_ascii_start_char(c) || (c >= '0' && c <= '9') || c == '.' || c == '/' || c == '-'
 }
 
-/// Truncate string to max_len bytes, respecting UTF-8 boundaries.
+/// Truncate string to `max_len` bytes, respecting UTF-8 boundaries.
 pub(super) fn truncate_utf8(s: &MetaString, max_len: usize) -> &str {
     truncate_utf8_str(s, max_len)
 }

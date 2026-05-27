@@ -337,7 +337,8 @@ pub async fn run_k8s_correctness_test(name: String, config: Config, tctx: TestCo
         }),
         _ => None,
     };
-    let analysis_runner = AnalysisRunner::new(config.analysis_mode, baseline_data, comparison_data, traces_options);
+    let analysis_runner = AnalysisRunner::new(config.analysis_mode, baseline_data, comparison_data, traces_options)
+        .with_dogstatsd_forwarding_requirement(config.require_dogstatsd_forwarded_packets);
     let analysis_result = analysis_runner.run_analysis();
     let analysis_duration = analysis_start.elapsed();
 
@@ -899,7 +900,7 @@ async fn build_agent_config_volumes(
         volumes.push(Volume {
             name: cm_name.clone(),
             config_map: Some(ConfigMapVolumeSource {
-                name: Some(cm_name.clone()),
+                name: cm_name.clone(),
                 ..Default::default()
             }),
             ..Default::default()

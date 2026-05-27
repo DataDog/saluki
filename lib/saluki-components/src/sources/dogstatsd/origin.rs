@@ -79,7 +79,7 @@ pub struct OriginEnrichmentConfiguration {
 
     /// Whether or not to opt out of origin detection for DogStatsD metrics.
     ///
-    /// When set to `true`, and the metric explicitly denotes a cardinality of "none", origin enrichment will be
+    /// When set to `true`, and the metric explicitly denotes a cardinality of `"none"`, origin enrichment will be
     /// skipped. This is only applicable to DogStatsD metrics when unified origin detection behavior isn't enabled.
     ///
     /// Defaults to `true`.

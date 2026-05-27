@@ -20,6 +20,10 @@ use self::run::RunCommand;
 
 mod utils;
 
+mod version;
+pub use self::version::handle_version_command;
+use self::version::VersionCommand;
+
 #[derive(FromArgs)]
 #[argh(
     description = "Data plane for the Datadog Agent.",
@@ -42,4 +46,5 @@ pub enum Action {
     Debug(DebugCommand),
     Config(ConfigCommand),
     Dogstatsd(DogstatsdCommand),
+    Version(VersionCommand),
 }

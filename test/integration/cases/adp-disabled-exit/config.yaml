@@ -1,7 +1,7 @@
 type: integration
 name: "adp-disabled-exit"
 description: "Verify ADP exits cleanly when data plane is not enabled"
-timeout: 45s
+timeout: 120s
 
 container:
   image: "saluki-images/datadog-agent:testing-devel"

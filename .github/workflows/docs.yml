@@ -82,7 +82,7 @@ jobs:
       - name: Uncompress generated API documentation assets
         run: tar -C /tmp/docs/api-docs -x -z -f ./api-docs.tar.gz && rm ./api-docs.tar.gz
       - name: Publish to Github Pages
-        uses: peaceiris/actions-gh-pages@4f9cc6602d3f66b9c108549d475ec49e8ef4d45e # v4.0.0
+        uses: peaceiris/actions-gh-pages@84c30a85c19949d7eee79c4ff27748b70285e453 # v4.1.0
         with:
           github_token: "${{ steps.octo-sts.outputs.token }}"
           publish_dir: /tmp/docs

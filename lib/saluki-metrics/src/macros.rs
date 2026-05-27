@@ -95,10 +95,10 @@ macro_rules! register_metric {
 ///
 /// # Levels
 ///
-/// In `metrics`, metrics have an inherent "level", similar to logs: trace, debug, info, warn, and error.  Levels can be
-/// used to filter metrics based on their importance or severity. For example, a trace-level metric might be only be
-/// required for debugging and shouldn't be sent all the time, while warn- or error-level metrics should be sent all the
-/// time.
+/// In `metrics`, metrics have an inherent _level_, similar to logs: `trace`, `debug`, `info`, `warn`, and `error`.
+/// Levels can be used to filter metrics based on their importance or severity. For example, a trace-level metric might
+/// be only be required for debugging and shouldn't be sent all the time, while warn- or error-level metrics should be
+/// sent all the time.
 ///
 /// We expose the ability to specify the level to use for a metric by specifying it as a prefix to the metric type. See the
 /// below examples for more details. Metrics can be defined at the trace, debug, or info level, and will default to the info

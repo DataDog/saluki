@@ -6,7 +6,7 @@ use super::error::ProtoConversionError;
 use super::mapping::{IndexMapping, LogarithmicMapping};
 use super::store::{CollapsingLowestDenseStore, Store};
 
-/// A fast and fully-mergeable quantile sketch with relative-error guarantees.
+/// A fast and fully mergeable quantile sketch with relative-error guarantees.
 ///
 /// This implementation supports most of the capabilities of the various official DDSketch implementations, such as:
 ///
@@ -215,7 +215,7 @@ impl<M: IndexMapping, S: Store> DDSketch<M, S> {
     ///
     /// The protobuf `DDSketch` doesn't include `sum`, `min`, `max`, or `count` fields.
     /// These are computed or set to defaults:
-    /// - `count`: sum of all bin counts plus zero_count
+    /// - `count`: sum of all bin counts plus `zero_count`
     /// - `sum`, `min`, `max`: set to sentinel defaults (can't be recovered from proto)
     pub fn from_proto(proto: &ProtoDDSketch, mapping: M) -> Result<Self, ProtoConversionError>
     where

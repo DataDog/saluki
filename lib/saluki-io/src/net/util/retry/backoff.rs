@@ -89,9 +89,9 @@ impl ExponentialBackoff {
     /// for the given external error count. If the minimum backoff factor is set to 1.0 or less, then jitter will be
     /// disabled.
     ///
-    /// Concretely, this means that with a minimum backoff duration of 10ms, and a minimum backoff factor of 2.0, the
-    /// duration for an error count of one would be 20ms without jitter, but anywhere between 10ms and 20ms with jitter.
-    /// For an error count of two, it be 40ms without jitter, but anywhere between 20ms and 40ms with jitter.
+    /// Concretely, this means that with a minimum backoff duration of 10 ms, and a minimum backoff factor of 2.0, the
+    /// duration for an error count of one would be 20 ms without jitter, but anywhere between 10 ms and 20 ms with jitter.
+    /// For an error count of two, it be 40 ms without jitter, but anywhere between 20 ms and 40 ms with jitter.
     pub fn with_jitter(min_backoff: Duration, max_backoff: Duration, min_backoff_factor: f64) -> Self {
         Self {
             min_backoff,

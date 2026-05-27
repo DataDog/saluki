@@ -117,10 +117,8 @@ impl TokenFilter for DiscardFilter {
         &mut self, token: TokenKind, last_token: TokenKind, buffer: &[u8], _last_buffer: &[u8],
     ) -> Result<(TokenKind, Option<Vec<u8>>), String> {
         match last_token {
-            TokenKind::FilteredBracketedIdentifier => {
-                if token != TokenKind::ID || buffer != b"]" {
-                    return Ok((TokenKind::FilteredBracketedIdentifier, None));
-                }
+            TokenKind::FilteredBracketedIdentifier if token != TokenKind::ID || buffer != b"]" => {
+                return Ok((TokenKind::FilteredBracketedIdentifier, None));
             }
             TokenKind::As => {
                 if buffer == b"[" {
@@ -151,7 +149,7 @@ impl TokenFilter for DiscardFilter {
     fn reset(&mut self) {}
 }
 
-/// Filter that replaces literals with "?".
+/// Filter that replaces literals with a placeholder symbol (`?`).
 pub struct ReplaceFilter {
     replace_digits: bool,
     config: SqlObfuscationConfig,
@@ -182,10 +180,10 @@ impl TokenFilter for ReplaceFilter {
             TokenKind::Savepoint => {
                 return Ok((mark_filtered_groupable(token, buffer), Some(b"?".to_vec())));
             }
-            TokenKind::ID if last_buffer == b"=" => {
-                if token == TokenKind::DoubleQuotedString || token == TokenKind::QuotedID {
-                    return Ok((mark_filtered_groupable(token, buffer), Some(b"?".to_vec())));
-                }
+            TokenKind::ID
+                if last_buffer == b"=" && (token == TokenKind::DoubleQuotedString || token == TokenKind::QuotedID) =>
+            {
+                return Ok((mark_filtered_groupable(token, buffer), Some(b"?".to_vec())));
             }
             _ => {}
         }

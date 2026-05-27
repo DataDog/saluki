@@ -11,7 +11,7 @@
 //!   to query RSS. (Available in Linux 4.14+)
 //! - `/proc/self/smaps`: This file contains detailed information about the memory mappings of the process, and can be
 //!   aggregated to determine the resident set size. (Available in Linux 2.6.14+)
-//! - `/proc/self/statm`: This file contains lazily-updated memory statistics about the process, and is the least
+//! - `/proc/self/statm`: This file contains lazily updated memory statistics about the process, and is the least
 //!   accurate, but is generally good enough for most use-cases. (Available in Linux 2.6+)
 //!
 //! ## macOS

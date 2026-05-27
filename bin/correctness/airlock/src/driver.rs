@@ -28,6 +28,16 @@ use crate::config::{DatadogIntakeConfig, MillstoneConfig, TargetConfig};
 
 const MILLSTONE_CONFIG_PATH_INTERNAL: &str = "/etc/millstone/config.toml";
 const DATADOG_INTAKE_CONFIG_PATH_INTERNAL: &str = "/etc/datadog-intake/config.toml";
+const DATADOG_INTAKE_HEALTHCHECK_INTERVAL: Duration = Duration::from_secs(1);
+const DATADOG_INTAKE_HEALTHCHECK_TIMEOUT: Duration = Duration::from_secs(1);
+const DATADOG_INTAKE_HEALTHCHECK_RETRIES: i64 = 30;
+const DATADOG_INTAKE_HEALTHCHECK_START_PERIOD: Duration = Duration::from_secs(1);
+const DATADOG_INTAKE_HEALTHCHECK_START_INTERVAL: Duration = Duration::from_secs(1);
+const DATADOG_INTAKE_HEALTHCHECK_COMMAND: &str = concat!(
+    "exec 3<>/dev/tcp/127.0.0.1/2049 && ",
+    "printf 'GET /ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && ",
+    "grep -q '200 OK' <&3"
+);
 
 pub enum ExitStatus {
     Success,
@@ -143,6 +153,18 @@ impl DriverConfig {
         let driver_config = DriverConfig::from_image("datadog-intake", config.image)
             .with_entrypoint(entrypoint)
             .with_bind_mount(config.config_path, DATADOG_INTAKE_CONFIG_PATH_INTERNAL)
+            .with_healthcheck(
+                vec![
+                    "/bin/bash".to_string(),
+                    "-c".to_string(),
+                    DATADOG_INTAKE_HEALTHCHECK_COMMAND.to_string(),
+                ],
+                DATADOG_INTAKE_HEALTHCHECK_INTERVAL,
+                DATADOG_INTAKE_HEALTHCHECK_TIMEOUT,
+                DATADOG_INTAKE_HEALTHCHECK_RETRIES,
+                DATADOG_INTAKE_HEALTHCHECK_START_PERIOD,
+                DATADOG_INTAKE_HEALTHCHECK_START_INTERVAL,
+            )
             // Map our intake port to an ephemeral port on the host side, which we'll query once the container has been
             // started so that we can connect to it.
             .with_exposed_port("tcp", 2049);
@@ -883,11 +905,19 @@ impl Driver {
                     }
 
                     // Not healthy yet, so we'll keep waiting.
-                    HealthStatusEnum::STARTING | HealthStatusEnum::UNHEALTHY => {
+                    HealthStatusEnum::STARTING => {
                         debug!(
                             driver_id = self.config.driver_id,
                             "Container '{}' not yet healthy. Waiting...", &self.container_name
                         );
+                    }
+
+                    HealthStatusEnum::UNHEALTHY => {
+                        return Err(generic_error!(
+                            "Container became unhealthy (driver_id: {}, container: {}). Check logs in the test run directory.",
+                            self.config.driver_id,
+                            self.container_name
+                        ));
                     }
                 }
             } else {

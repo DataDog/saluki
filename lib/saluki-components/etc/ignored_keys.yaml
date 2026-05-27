@@ -14,8 +14,6 @@
   reason: initial bulk
 - name: GUI_port
   reason: initial bulk
-- name: use_dogstatsd
-  reason: Core Agent evaluates and sets data_plane.dogstatsd.enabled
 - name: GUI_session_expiration
   reason: initial bulk
 - name: ac_exclude
@@ -253,16 +251,6 @@
 - name: agent_telemetry.use_v2_api
   reason: initial bulk
 - name: agent_telemetry.zstd_compression_level
-  reason: initial bulk
-- name: aggregator_buffer_size
-  reason: initial bulk
-- name: aggregator_flush_metrics_and_serialize_in_parallel_buffer_size
-  reason: initial bulk
-- name: aggregator_flush_metrics_and_serialize_in_parallel_chan_size
-  reason: initial bulk
-- name: aggregator_stop_timeout
-  reason: initial bulk
-- name: aggregator_use_tags_store
   reason: initial bulk
 - name: allow_python_path_heuristics_failure
   reason: initial bulk
@@ -516,10 +504,6 @@
   reason: initial bulk
 - name: autoscaling.cluster.enabled
   reason: initial bulk
-- name: autoscaling.failover.enabled
-  reason: initial bulk
-- name: autoscaling.failover.metrics
-  reason: initial bulk
 - name: autoscaling.workload.enabled
   reason: initial bulk
 - name: autoscaling.workload.external_recommender.tls.ca_file
@@ -665,8 +649,6 @@
 - name: cluster_agent.cmd_port
   reason: initial bulk
 - name: cluster_agent.collect_kubernetes_tags
-  reason: initial bulk
-- name: cluster_agent.enabled
   reason: initial bulk
 - name: cluster_agent.isolation_segments_tags
   reason: initial bulk
@@ -857,8 +839,6 @@
 - name: conf_path
   reason: initial bulk
 - name: confd_path
-  reason: initial bulk
-- name: config_id
   reason: initial bulk
 - name: config_providers
   reason: initial bulk
@@ -1268,16 +1248,10 @@
   reason: initial bulk
 - name: docker_query_timeout
   reason: initial bulk
-- name: dogstatsd_experimental_http.enabled
-  reason: initial bulk
-- name: dogstatsd_experimental_http.listen_address
-  reason: initial bulk
 - name: dogstatsd_expiry_seconds
   reason: initial bulk
 - name: dogstatsd_host_socket_path
-  reason: initial bulk
-- name: dogstatsd_mapper_cache_size
-  reason: initial bulk
+  reason: Admission controller plumbing; not read by DSD server
 - name: dogstatsd_mem_based_rate_limiter.enabled
   reason: initial bulk
 - name: dogstatsd_mem_based_rate_limiter.go_gc
@@ -1360,19 +1334,15 @@
   reason: initial bulk
 - name: enable_gohai
   reason: initial bulk
-- name: enable_json_stream_shared_compressor_buffers
-  reason: initial bulk
 - name: enable_metadata_collection
   reason: initial bulk
 - name: enable_payloads.json_to_v1_intake
-  reason: initial bulk
+  reason: Legacy v1/intake endpoint; not implemented in ADP
 - name: enable_signing_metadata_collection
   reason: initial bulk
 - name: enabled_rfc1123_compliant_cluster_name_tag
   reason: initial bulk
 - name: enhanced_metrics
-  reason: initial bulk
-- name: entity_id
   reason: initial bulk
 - name: event_management.forwarder.additional_endpoints
   reason: initial bulk
@@ -1526,10 +1496,6 @@
   reason: initial bulk
 - name: fleet_policies_dir
   reason: initial bulk
-- name: forwarder_requeue_buffer_size
-  reason: initial bulk
-- name: forwarder_stop_timeout
-  reason: initial bulk
 - name: gce_metadata_timeout
   reason: initial bulk
 - name: gce_send_project_id_tag
@@ -1561,8 +1527,6 @@
 - name: health_platform.persist_on_kubernetes
   reason: initial bulk
 - name: health_port
-  reason: initial bulk
-- name: heroku_dyno
   reason: initial bulk
 - name: histogram_percentiles
   reason: initial bulk
@@ -1866,14 +1830,12 @@
   reason: initial bulk
 - name: log_level
   reason: initial bulk
-- name: log_payloads
-  reason: initial bulk
 - name: log_to_console
   reason: initial bulk
 - name: log_to_syslog
   reason: initial bulk
 - name: logging_frequency
-  reason: "accepted divergence: ADP logs success below info level"
+  reason: 'accepted divergence: ADP logs success below info level'
 - name: logon_duration.enabled
   reason: initial bulk
 - name: logs_config.add_logsource_tag
@@ -2104,21 +2066,11 @@
   reason: initial bulk
 - name: metrics_port
   reason: initial bulk
-- name: multi_region_failover.api_key
-  reason: initial bulk
-- name: multi_region_failover.dd_url
-  reason: initial bulk
-- name: multi_region_failover.enabled
-  reason: initial bulk
 - name: multi_region_failover.failover_apm
   reason: initial bulk
 - name: multi_region_failover.failover_logs
   reason: initial bulk
-- name: multi_region_failover.failover_metrics
-  reason: initial bulk
 - name: multi_region_failover.logs_service_allowlist
-  reason: initial bulk
-- name: multi_region_failover.metric_allowlist
   reason: initial bulk
 - name: multi_region_failover.remote_configuration.clients.cache_bypass_limit
   reason: initial bulk
@@ -2137,8 +2089,6 @@
 - name: multi_region_failover.remote_configuration.org_status_refresh_interval
   reason: initial bulk
 - name: multi_region_failover.remote_configuration.refresh_interval
-  reason: initial bulk
-- name: multi_region_failover.site
   reason: initial bulk
 - name: network.id
   reason: initial bulk
@@ -2484,6 +2434,14 @@
   reason: initial bulk
 - name: notable_events.enabled
   reason: initial bulk
+- name: observability_pipelines_worker.logs.enabled
+  reason: OPW logs routing out of scope for ADP
+- name: observability_pipelines_worker.logs.url
+  reason: OPW logs routing out of scope for ADP
+- name: observability_pipelines_worker.traces.enabled
+  reason: OPW traces routing out of scope for ADP
+- name: observability_pipelines_worker.traces.url
+  reason: OPW traces routing out of scope for ADP
 - name: ol_proxy_config.additional_endpoints
   reason: initial bulk
 - name: ol_proxy_config.api_key
@@ -3320,14 +3278,6 @@
   reason: initial bulk
 - name: telemetry.checks
   reason: initial bulk
-- name: telemetry.dogstatsd.aggregator_channel_latency_buckets
-  reason: initial bulk
-- name: telemetry.dogstatsd.listeners_channel_latency_buckets
-  reason: initial bulk
-- name: telemetry.dogstatsd.listeners_latency_buckets
-  reason: initial bulk
-- name: telemetry.dogstatsd_origin
-  reason: initial bulk
 - name: telemetry.python_memory
   reason: initial bulk
 - name: trace_agent_host_socket_path
@@ -3344,10 +3294,20 @@
   reason: initial bulk
 - name: use_diskv2_check
   reason: initial bulk
+- name: use_dogstatsd
+  reason: Core Agent evaluates and sets data_plane.dogstatsd.enabled
 - name: use_improved_cgroup_parser
   reason: initial bulk
 - name: use_networkv2_check
   reason: initial bulk
+- name: vector.logs.enabled
+  reason: OPW logs routing out of scope for ADP
+- name: vector.logs.url
+  reason: OPW logs routing out of scope for ADP
+- name: vector.traces.enabled
+  reason: OPW traces routing out of scope for ADP
+- name: vector.traces.url
+  reason: OPW traces routing out of scope for ADP
 - name: vsock_addr
   reason: initial bulk
 - name: win_skip_com_init

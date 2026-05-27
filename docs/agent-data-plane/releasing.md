@@ -30,7 +30,7 @@ The release process for ADP roughly looks like this:
   the release notes. (above the auto-generated `What's Changed` section)
 - Click `Publish release`.
 - Go to the [GitLab CI pipelines dashboard](https://gitlab.ddbuild.io/DataDog/saluki/-/pipelines) for the repository and
-  find the pipeline that was triggered for the newly-created Git tag. It may take a minute or two for the repository
+  find the pipeline that was triggered for the newly created Git tag. It may take a minute or two for the repository
   sync and pipeline creation to occur.
 - The pipeline should progress through the `test`, `build`, `correctness`, and `release` stages without issue.
 - Once all stages have completed, the `release` stage will have a number of blocked jobs: standalone image publishing,
@@ -40,7 +40,7 @@ The release process for ADP roughly looks like this:
 - Once triggered, they should run to completion.
 - Once complete, you should be able to navigate to a public container image registry that we use, such as [Docker
   Hub](https://hub.docker.com/r/datadog/agent-data-plane/tags), and find the resulting images: if the tag was `0.2.0`,
-  you should be able to see a recently-published image with a tag that looks like `0.2.0` and `0.2.0-fips`.
+  you should be able to see a recently published image with a tag that looks like `0.2.0` and `0.2.0-fips`.
 - Post a release announcement in the `#agent-data-plane` Slack channel
   in the following format:
   ```
@@ -75,7 +75,7 @@ version to bump to, we follow the [Semantic Versioning](https://semver.org/) spe
 
 ## Build metadata
 
-We calculate a number of values that are used to populate what we call "build metadata", which is information passed in
+We calculate a number of values that are used to populate what we call _build metadata_, which is information passed in
 during the build process and is used to drive a number of behaviors:
 
 - outputting the version of ADP, when it was built, the build architecture, etc, as a log at startup

@@ -54,7 +54,7 @@ pub struct CacheBuilder<K, V, W = ItemCountWeighter, H = FastBuildHasher> {
 impl<K, V> CacheBuilder<K, V> {
     /// Creates a new `CacheBuilder` with the given cache identifier.
     ///
-    /// The cache identifier _should_ be unique, but it'sn't required to be. Metrics for the cache will be emitted
+    /// The cache identifier _should_ be unique, but it isn't required to be. Metrics for the cache will be emitted
     /// using the given identifier, so in cases where the identifier isn't unique, those metrics will be aggregated
     /// together and it won't be possible to distinguish between the different caches.
     ///

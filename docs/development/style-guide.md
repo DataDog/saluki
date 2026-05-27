@@ -90,9 +90,9 @@ like guidance from someone who genuinely wants to help you succeed.
 
 **What to avoid:**
 
-- "Please" in instructions—just tell the reader what to do ("Run `make fmt`", not "Please run `make fmt`")
-- Terms like "simply", "easy", "just", or "obviously": they minimize difficulty and can frustrate readers who find
-  something challenging
+- "Please" in instructions: just tell the reader what to do ("Run `make fmt`" instead of "Please run `make fmt`")
+- Minimizing terms like "simply" or "obviously": if it was so simple or obvious, the user wouldn't be reading the
+  documentation
 - Excessive exclamation marks: reserve them for genuinely exciting announcements
 - Jargon and buzzwords without explanation
 - Pop culture references and idioms that may not translate globally
@@ -115,7 +115,7 @@ This section covers documentation written in Markdown files, such as those in th
 
 #### Structure
 
-- **Headings**: Use sentence case for all headings ("Configure the source", not "Configure The Source")
+- **Headings**: Use sentence case for all headings ("Configure the source" instead of "Configure The Source")
 - **Heading levels**: Use H1 (`#`) for page title only; start content headings at H2 (`##`); never skip levels
 - **Lists**: Use numbered lists for sequential steps; use bullet lists for non-sequential items
 - **Paragraphs**: Keep paragraphs focused on a single idea; break up walls of text
@@ -311,7 +311,7 @@ When documenting performance, memory, or design trade-offs, be explicit about wh
 - **Name both sides**: "This represents a trade-off between throughput and memory usage"
 - **Quantify when possible**: "Approximately 150–200 bytes per context based on typical metric names and tags"
 - **Acknowledge variability**: "The optimal value is workload-dependent"
-- **Provide guidance**: "A good starting point is 1MB per 5000 unique contexts"
+- **Provide guidance**: "A good starting point is 1 MB per 5000 unique contexts"
 
 Example:
 

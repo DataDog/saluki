@@ -14,7 +14,7 @@ use otlp_protos::opentelemetry::proto::{
 const DIV_MEBIBYTES: f64 = 1024.0 * 1024.0;
 const DIV_PERCENTAGE: f64 = 0.01;
 
-/// Extracts any Datadog-specific metrics from a metric and appends them to the new_metrics vector.
+/// Extracts any Datadog-specific metrics from a metric and appends them to the `new_metrics` vector.
 pub(super) fn remap_metrics(new_metrics: &mut Vec<OtlpMetric>, metric: &OtlpMetric) {
     remap_system_metrics(new_metrics, metric);
     remap_container_metrics(new_metrics, metric);
@@ -217,6 +217,17 @@ fn remap_system_metrics(new_metrics: &mut Vec<OtlpMetric>, metric: &OtlpMetric) 
     }
 }
 
+fn copy_metric_with_unit(
+    dest: &mut Vec<OtlpMetric>, m: &OtlpMetric, newname: &str, div: f64, attributes_mapping: AttributesMapping,
+    filter: &[Kv], unit: &str,
+) {
+    if copy_metric_with_attr(dest, m, newname, div, attributes_mapping, filter) {
+        if let Some(added) = dest.last_mut() {
+            added.unit = unit.to_string();
+        }
+    }
+}
+
 fn remap_container_metrics(new_metrics: &mut Vec<OtlpMetric>, metric: &OtlpMetric) {
     let name = metric.name.as_str();
     if !name.starts_with("container.") {
@@ -224,46 +235,37 @@ fn remap_container_metrics(new_metrics: &mut Vec<OtlpMetric>, metric: &OtlpMetri
     }
     match name {
         "container.cpu.usage.total" => {
-            if copy_metric_with_attr(
+            copy_metric_with_unit(
                 new_metrics,
                 metric,
                 "container.cpu.usage",
                 1.0,
                 AttributesMapping::empty(),
                 &[],
-            ) {
-                if let Some(addm) = new_metrics.last_mut() {
-                    addm.unit = "nanocore".to_string();
-                }
-            }
+                "nanocore",
+            );
         }
         "container.cpu.usage.usermode" => {
-            if copy_metric_with_attr(
+            copy_metric_with_unit(
                 new_metrics,
                 metric,
                 "container.cpu.user",
                 1.0,
                 AttributesMapping::empty(),
                 &[],
-            ) {
-                if let Some(addm) = new_metrics.last_mut() {
-                    addm.unit = "nanocore".to_string();
-                }
-            }
+                "nanocore",
+            );
         }
         "container.cpu.usage.system" => {
-            if copy_metric_with_attr(
+            copy_metric_with_unit(
                 new_metrics,
                 metric,
                 "container.cpu.system",
                 1.0,
                 AttributesMapping::empty(),
                 &[],
-            ) {
-                if let Some(addm) = new_metrics.last_mut() {
-                    addm.unit = "nanocore".to_string();
-                }
-            }
+                "nanocore",
+            );
         }
         "container.cpu.throttling_data.throttled_time" => {
             copy_metric_with_attr(
@@ -534,17 +536,13 @@ fn copy_metric_with_attr(
 
         // Apply division logic.
         match dp.value {
-            Some(OtlpNumberValue::AsInt(ref mut i)) => {
-                if div >= 1.0 {
-                    *i /= div as i64;
-                }
+            Some(OtlpNumberValue::AsInt(ref mut i)) if div >= 1.0 => {
+                *i /= div as i64;
             }
-            Some(OtlpNumberValue::AsDouble(ref mut d)) => {
-                if div != 0.0 {
-                    *d /= div;
-                }
+            Some(OtlpNumberValue::AsDouble(ref mut d)) if div != 0.0 => {
+                *d /= div;
             }
-            None => {}
+            _ => {}
         }
 
         // Apply attribute mappings.

@@ -1,3 +1,4 @@
+use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -433,7 +434,7 @@ async fn handle_stats_cardinality_analysis<'a>(cmd: &StatsCommand, response: Sta
                 tag_cardinalities.push((tag_key, values.len() as u64));
             }
 
-            tag_cardinalities.sort_by(|a, b| b.1.cmp(&a.1));
+            tag_cardinalities.sort_by_key(|a| Reverse(a.1));
 
             (name, unique_contexts, tag_cardinalities)
         })

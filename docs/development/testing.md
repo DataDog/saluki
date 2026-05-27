@@ -11,7 +11,7 @@ The Saluki testing strategy consists of four main pillars:
 3. Integration Tests (panoramic)
 4. Performance Tests (SMP)
 
-## Unit Tests
+## Unit tests
 
 These are found throughout the Rust codebase as you would expect. You can run them with `cargo test` or you can use
 `make test` which will run them with `cargo nextest` for more parallelization. Platform-specific unit tests should be
@@ -19,7 +19,7 @@ skipped or compiled-out for platforms they're incompatible with.
 
 CI: `.gitlab/test.yml`—runs on both Linux (amd64/arm64) and macOS (amd64/arm64).
 
-## Correctness Tests (panoramic)
+## Correctness tests (panoramic)
 
 These tests serve to answer the question: *Does ADP produce the same output as the Datadog Agent for a given workload?*
 
@@ -28,11 +28,11 @@ output for a given input. The output comparison is semantic, not a simple byte-b
 used to assert correctness.
 
 **Terminology Note:** Correctness tests ***are integration tests*** in the sense that they run the entire system.
-However, in our repo, *integration tests* refer to a specific set of smoke tests [below](#integration-tests-panoramic).
+However, in our repository, *integration tests* refer to a specific set of smoke tests [below](#integration-tests-panoramic).
 
 Correctness test cases are specified by YAML configuration files found in `test/correctness`.
 
-### Binaries and Program Flow
+### Binaries and program flow
 
 All binaries live under `bin/correctness/`:
 
@@ -45,10 +45,10 @@ All binaries live under `bin/correctness/`:
 
 Test case configs live in `test/correctness/` (for example, `test/correctness/dsd-plain/config.yaml`).
 
-### Program Flow
+### Program flow
 
 **panoramic** is the entry-point for running a test. When given a correctness test config, it orchestrates the
-containers using the airlock library (which talks to containerd via gRPC) and asserts the correctness of the output. It:
+containers using the `airlock` library (which talks to containerd via gRPC) and asserts the correctness of the output. It:
 - reads the test configuration files
 - starts two sets of containers
   - `millstone` -> ADP -> `datadog-intake`
@@ -57,24 +57,19 @@ containers using the airlock library (which talks to containerd via gRPC) and as
 
 ### Running
 
-Build the required container images, then run:
-
 ```bash
-# build images (only needed once, or after changes)
-make build-correctness-tools-image build-datadog-agent-image
-
-# run all correctness tests
+# Run all correctness tests:
 make test-correctness
 
-# run a single test case
+# Run a single test case:
 make test-correctness-case CASE=dsd-plain
 ```
 
-The `correctness-tools` image bundles the **correctness tools suite** -- both `datadog-intake` and `millstone` -- into a single image used by every correctness test case.
+The `test-correctness` target handles building all of the necessary prerequisites -- `millstone, `datadog-intake`, `panoramic`, the bundled Agent/ADP image, and so on -- before running the test cases.
 
-CI: `.gitlab/e2e.yml`—`e2e` stage, 10 min timeout, retry 2.
+Correctness tests are run in the `e2e` stage in CI (`.gitlab/e2e.yml`).
 
-## Integration Tests (panoramic)
+## Integration tests (panoramic)
 
 Integration tests run a containerized ADP instance and assert high-level invariants: process stability, expected log
 output, port availability, exit behavior. They catch regressions from enabling new features or settings that cause
@@ -89,7 +84,7 @@ make test-integration-quick  # skip image builds
 make list-integration-tests  # list available tests
 ```
 
-### Test Case Config
+### Test case config
 
 Test cases live in `test/integration/cases/` as `config.yaml` files. The runner is **panoramic**
 (`bin/correctness/panoramic/`).
@@ -99,7 +94,7 @@ be configured to run in `parallel`.
 
 CI: `.gitlab/e2e.yml`—same file as correctness, `e2e` stage, 10 min timeout, retry 2.
 
-## Benchmark Tests: Single Machine Performance (SMP)
+## Benchmark tests: Single Machine Performance (SMP)
 
 SMP is a system that runs on internal, dedicated infrastructure to check the Agent for performance regressions. It runs
 experiments across multiple replicates with statistical analysis and posts reports to PRs. Maps to the `benchmark` stage
@@ -126,7 +121,7 @@ development, lean on CI.
 A fifth type of testing is fuzzing. We aren't doing a lot with fuzzing right now, but what we've uses `cargo-fuzz` and
 operates at the function-level. More fuzzing coverage will likely come in the future.
 
-## Directory Index
+## Directory index
 
 ```
 .gitlab/

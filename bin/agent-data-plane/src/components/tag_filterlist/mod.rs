@@ -86,7 +86,7 @@ pub struct MetricTagFilterEntry {
     pub tags: Vec<String>,
 }
 
-/// Compiled filter table: metric name → (is_exclude, set of tag key names).
+/// Compiled filter table: metric name → (`is_exclude`, set of tag key names).
 pub type CompiledFilters = HashMap<String, (bool, HashSet<String, FoldHashState>), FoldHashState>;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

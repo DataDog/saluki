@@ -223,11 +223,6 @@ endif
 		--file ./docker/Dockerfile.proxy-dumper \
 		test/build/dd-agent-benchmarks/docker/proxy-dumper
 
-.PHONY: build-dsd-client
-build-dsd-client: ## Builds the DogStatsD client (used for sending DSD payloads)
-	@echo "[*] Building DogStatsD client..."
-	@go build -C tooling/dogstatsd_client -o ../bin/dogstatsd_client .
-
 .PHONY: check-rust-build-tools
 check-rust-build-tools:
 ifeq ($(shell command -v cargo >/dev/null || echo not-found), not-found)
@@ -329,21 +324,6 @@ run-adp-standalone-release: ## Runs ADP locally in standalone mode (release)
 	DD_DATA_PLANE_TELEMETRY_ENABLED=true DD_DATA_PLANE_TELEMETRY_LISTEN_ADDR=tcp://127.0.0.1:5102 \
 	DD_IPC_CERT_FILE_PATH=$(ADP_STANDALONE_IPC_CERT_FILE) \
 	target/release/agent-data-plane --config /tmp/adp-empty-config.yaml run
-
-.PHONY: run-dsd-basic-udp
-run-dsd-basic-udp: build-dsd-client ## Runs a basic set of metrics via the Dogstatsd client (UDP)
-	@echo "[*] Sending basic metrics via Dogstatsd (UDP, 127.0.0.1:9191)..."
-	@./tooling/bin/dogstatsd_client 127.0.0.1:9191 count:1,gauge:2,histogram:3,distribution:4,set:five
-
-.PHONY: run-dsd-basic-uds
-run-dsd-basic-uds: build-dsd-client ## Runs a basic set of metrics via the Dogstatsd client (UDS)
-	@echo "[*] Sending basic metrics via Dogstatsd (unixgram:///tmp/adp-dogstatsd-dgram.sock)..."
-	@./tooling/bin/dogstatsd_client unixgram:///tmp/adp-dogstatsd-dgram.sock count:1,gauge:2,histogram:3,distribution:4,set:five
-
-.PHONY: run-dsd-basic-uds-stream
-run-dsd-basic-uds-stream: build-dsd-client ## Runs a basic set of metrics via the Dogstatsd client (UDS Stream)
-	@echo "[*] Sending basic metrics via Dogstatsd (unix:///tmp/adp-dogstatsd-stream.sock)..."
-	@./tooling/bin/dogstatsd_client unix:///tmp/adp-dogstatsd-stream.sock count:1,gauge:2,histogram:3,distribution:4,set:five
 
 ##@ Kubernetes
 
@@ -462,7 +442,7 @@ endif
 
 .PHONY: check-all
 check-all: ## Check everything
-check-all: check-fmt check-clippy check-features check-deny check-licenses generate-api-docs
+check-all: check-fmt check-clippy check-docs check-deny check-licenses check-unused-deps generate-api-docs check-features
 
 .PHONY: generate-api-docs
 generate-api-docs: check-rust-build-tools
@@ -514,7 +494,8 @@ check-unused-deps: ## Checks for any imported dependencies that are not used in 
 .PHONY: check-docs
 check-docs: check-lint-tools
 check-docs: ## Checks prose/code documentation against our style guide
-	@vale docs lib bin
+	@echo "[*] Checking prose/code documentation against our style guide..."
+	@vale --minAlertLevel=error --glob='!{lib/*/target/*,docs/.vitepress/*}' docs lib bin
 
 .PHONY: sync-docs-config
 sync-docs-config: check-lint-tools
@@ -558,13 +539,13 @@ test-all: ## Test everything
 test-all: test test-property test-docs test-miri test-loom
 
 .PHONY: test-correctness
-test-correctness: build-panoramic
+test-correctness: build-panoramic build-correctness-tools-image build-datadog-agent-image-release
 test-correctness: ## Runs the complete correctness suite (all test cases in parallel)
 	@echo "[*] Running correctness test suite..."
 	@target/release/panoramic run -d $(shell pwd)/test/correctness $(if $(PANORAMIC_PARALLELISM),-p $(PANORAMIC_PARALLELISM))
 
 .PHONY: test-correctness-case
-test-correctness-case: build-panoramic
+test-correctness-case: build-panoramic build-correctness-tools-image build-datadog-agent-image-release
 test-correctness-case: ## Runs a single correctness test case by name (usage: make test-correctness-case CASE=dsd-plain)
 	@echo "[*] Running '$(CASE)' correctness test case..."
 	@target/release/panoramic run -d $(shell pwd)/test/correctness -t $(CASE) --no-tui
@@ -716,15 +697,15 @@ update-protos: ## Updates all vendored Protocol Buffers definitions from their s
 	AGENT_PAYLOAD_GIT_TAG=$(PROTOBUF_SRC_REPO_AGENT_PAYLOAD) \
 	CONTAINERD_GIT_TAG=$(PROTOBUF_SRC_REPO_CONTAINERD) \
 	SKETCHES_GO_GIT_TAG=$(PROTOBUF_SRC_REPO_SKETCHES_GO) \
-	./tooling/update-protos.sh
+	./ci/tooling/update-protos.sh
 
 .PHONY: update-pr-title-scopes
 update-pr-title-scopes: ## Updates allowed PR title scopes in the CI workflow based on the codebase
-	@./tooling/update-pr-title-scopes.sh update
+	@./ci/tooling/update-pr-title-scopes.sh update
 
 .PHONY: check-pr-title-scopes
 check-pr-title-scopes: ## Checks that PR title scopes in the CI workflow are up-to-date
-	@./tooling/update-pr-title-scopes.sh check
+	@./ci/tooling/update-pr-title-scopes.sh check
 
 .PHONY: clean
 clean: check-rust-build-tools
