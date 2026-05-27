@@ -23,7 +23,7 @@ thread_local! {
 
 /// A token associated with a specific resource group.
 ///
-/// Used to attribute allocations and deallocations to a specific group with a scope guard [`TrackingGuard`], or
+/// Used to attribute allocations and deallocations to a specific group with a scope guard [`ResourceTrackingGuard`], or
 /// through helpers provided by the [`Track`] trait.
 #[derive(Clone, Copy)]
 pub struct ResourceGroupToken {

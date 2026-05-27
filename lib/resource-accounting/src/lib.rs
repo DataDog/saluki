@@ -66,7 +66,7 @@
 //! CPU tracking provides per-component visibility into CPU time consumption. When running on supported
 //! operating systems, we can granularly track the amount of CPU time spent on a per-thread basis, which
 //! allows us to track CPU usage for resource groups in the same way we track allocations: through the
-//! [`Tracked`][allocator::Tracked] future wrapper.
+//! [`Tracked`] future wrapper.
 //!
 //! This allows operators to understand which components are consuming the most CPU time, aiding in
 //! capacity planning and performance optimization.
