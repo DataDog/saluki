@@ -99,16 +99,18 @@ impl NativeIntegrationRunner {
         }
         debug!(test = %test_name, state_dir = %state_dir.display(), "Prepared per-test state directory.");
 
-        // ADP and the (optional) Core Agent get independent exit tokens. The token passed to
-        // assertions is ADP's — we only care about ADP's exit lifecycle from the test's point
-        // of view; the Core Agent dying separately is an environmental fault, not a test
-        // signal. The Agent's token is used only by `NativeProcess` internals to fire when the
-        // Agent process truly exits.
+        // Only ADP's exit lifecycle is observable to assertions. The Core Agent (when present)
+        // gets a throwaway token at spawn time — it satisfies `NativeProcess::spawn`'s
+        // signature but nothing consumes the resulting cancellation. If the Agent dies
+        // independently it's treated as an environmental fault, not a test signal.
         let adp_exit_token = CancellationToken::new();
-        let agent_exit_token = CancellationToken::new();
         let log_sink: Arc<Mutex<dyn LogSink>> = Arc::new(Mutex::new(NativeLogSink {
             buf: self.log_buffer.clone(),
         }));
+
+        // Path that both the Agent and ADP use for auth_token / ipc_cert.pem. Always computed,
+        // only inserted into env when the Agent is in the picture (see comments below).
+        let auth_token_path = state_dir.join("auth_token").to_string_lossy().into_owned();
 
         // Optional Phase: spawn the Core Agent (converged tests).
         //
@@ -134,7 +136,6 @@ impl NativeIntegrationRunner {
             // follows that advice for its post-config-stream IPC clients, and TLS fails with
             // UnknownIssuer because the platform default cert does not match what the per-test
             // Agent is actually serving.
-            let auth_token_path = state_dir.join("auth_token").to_string_lossy().into_owned();
             let mut agent_env = self.test_case.container.env.clone();
             agent_env.insert("DD_AUTH_TOKEN_FILE_PATH".to_string(), auth_token_path.clone());
 
@@ -150,7 +151,7 @@ impl NativeIntegrationRunner {
                 // for trace-agent), blocking subsequent tests.
                 .with_process_group();
 
-            let agent = match NativeProcess::spawn(agent_config, log_sink.clone(), agent_exit_token.clone()).await {
+            let agent = match NativeProcess::spawn(agent_config, log_sink.clone(), CancellationToken::new()).await {
                 Ok(p) => p,
                 Err(e) => {
                     phase_timings.push(PhaseTiming {
@@ -190,10 +191,7 @@ impl NativeIntegrationRunner {
         if self.test_case.requires_core_agent {
             // Point ADP's IPC client at the per-test auth token (and by derivation, the
             // per-test ipc_cert.pem in the same directory).
-            adp_env.insert(
-                "DD_AUTH_TOKEN_FILE_PATH".to_string(),
-                state_dir.join("auth_token").to_string_lossy().into_owned(),
-            );
+            adp_env.insert("DD_AUTH_TOKEN_FILE_PATH".to_string(), auth_token_path);
         }
         let process_config = NativeProcessConfig::new(self.test_case.name.clone(), binary_path)
             .with_args(vec!["-c".to_string(), config_path_str, "run".to_string()])
