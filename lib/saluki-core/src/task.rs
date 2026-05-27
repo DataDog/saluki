@@ -2,7 +2,7 @@
 
 use std::future::Future;
 
-use memory_accounting::allocator::Track as _;
+use resource_accounting::allocator::Track as _;
 use tokio::{
     runtime::Handle,
     task::{AbortHandle, JoinHandle, JoinSet},

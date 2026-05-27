@@ -11,7 +11,7 @@ use datadog_protos::checks::{
     service_check::{ServiceCheck as ProtoServiceCheck, Status as ServiceCheckStatus},
     SendCheckPayloadRequest, SendCheckPayloadResponse,
 };
-use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
+use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_common::task::HandleExt as _;
 use saluki_config::GenericConfiguration;
 use saluki_context::tags::{Tag, TagSet};

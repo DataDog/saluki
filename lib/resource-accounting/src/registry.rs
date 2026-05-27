@@ -125,7 +125,7 @@ impl ComponentMetadata {
 /// A registry for components for tracking memory bounds and runtime memory usage.
 ///
 /// This registry provides a unified interface for declaring the memory bounds of a _component_, as well as registering
-/// that component for runtime memory usage tracking when using the tracking allocator implementation in `memory-accounting`.
+/// that component for runtime memory usage tracking when using the tracking allocator implementation in `resource-accounting`.
 ///
 /// ## Components
 ///

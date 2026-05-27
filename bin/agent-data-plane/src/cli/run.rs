@@ -5,7 +5,7 @@ use std::{
 
 use argh::FromArgs;
 use datadog_agent_commons::platform::PlatformSettings;
-use memory_accounting::{ComponentBounds, ComponentRegistry};
+use resource_accounting::{ComponentBounds, ComponentRegistry};
 use saluki_app::{
     accounting::{initialize_memory_bounds, MemoryBoundsConfiguration},
     bootstrap::BootstrapGuard,

@@ -13,8 +13,8 @@ use std::{
     time::Duration,
 };
 
-use memory_accounting::allocator::ResourceGroupToken;
 use pin_project::pin_project;
+use resource_accounting::allocator::ResourceGroupToken;
 use tokio::{
     sync::{OwnedSemaphorePermit, Semaphore},
     time::sleep,

@@ -13,7 +13,7 @@
 //! - add error tracking standalone mode
 
 use async_trait::async_trait;
-use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
+use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_common::collections::FastHashMap;
 use saluki_config::GenericConfiguration;
 use saluki_core::{

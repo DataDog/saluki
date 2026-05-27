@@ -308,7 +308,7 @@ where
 /// # Instrumentation
 ///
 /// Supervisors automatically create their own allocation group
-/// ([`TrackingAllocator`][memory_accounting::allocator::TrackingAllocator]), which is used to track both the memory
+/// ([`TrackingAllocator`][resource_accounting::allocator::TrackingAllocator]), which is used to track both the memory
 /// usage of the supervisor itself and its children. Additionally, individual worker processes are wrapped in a
 /// dedicated [`tracing::Span`] to allow tracing the causal relationship between arbitrary code and the worker executing
 /// it.

@@ -9,11 +9,11 @@ use datadog_protos::traces::builders::{
 };
 use facet::Facet;
 use http::{uri::PathAndQuery, HeaderName, HeaderValue, Method, Uri};
-use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use opentelemetry_semantic_conventions::resource::{
     CONTAINER_ID, DEPLOYMENT_ENVIRONMENT_NAME, K8S_POD_UID, SERVICE_VERSION,
 };
 use piecemeal::{ScratchBuffer, ScratchWriter};
+use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_common::strings::StringBuilder;
 use saluki_common::task::HandleExt as _;
 use saluki_config::GenericConfiguration;

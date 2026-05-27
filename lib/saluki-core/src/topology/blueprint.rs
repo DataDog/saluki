@@ -1,6 +1,6 @@
 use std::{collections::HashMap, num::NonZeroUsize};
 
-use memory_accounting::{allocator::Track as _, ComponentRegistry, UsageExpr};
+use resource_accounting::{allocator::Track as _, ComponentRegistry, UsageExpr};
 use saluki_error::{ErrorContext as _, GenericError};
 use snafu::Snafu;
 

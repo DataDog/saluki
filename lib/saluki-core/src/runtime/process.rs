@@ -9,8 +9,8 @@ use std::{
     task::{Context, Poll},
 };
 
-use memory_accounting::allocator::{ResourceGroupRegistry, ResourceGroupToken, Track as _, Tracked};
 use pin_project::{pin_project, pinned_drop};
+use resource_accounting::allocator::{ResourceGroupRegistry, ResourceGroupToken, Track as _, Tracked};
 use tracing::{debug_span, instrument::Instrumented, Instrument as _};
 
 use super::state::{DataspaceRegistry, CURRENT_DATASPACE};

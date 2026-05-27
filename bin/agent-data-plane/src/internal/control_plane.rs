@@ -1,5 +1,5 @@
 use datadog_agent_commons::ipc::{config::IpcAuthConfiguration, tls::build_ipc_server_tls_config};
-use memory_accounting::ComponentRegistry;
+use resource_accounting::ComponentRegistry;
 use saluki_api::EndpointType;
 use saluki_app::{
     accounting::ResourceTelemetryWorker, config::ConfigWorker, dynamic_api::DynamicAPIBuilder,

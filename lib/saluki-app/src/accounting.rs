@@ -7,11 +7,11 @@ use std::{
 };
 
 use bytesize::ByteSize;
-use memory_accounting::{
+use metrics::{counter, gauge, Counter, Gauge, Level};
+use resource_accounting::{
     allocator::{ResourceGroupRegistry, ResourceStats, ResourceStatsSnapshot},
     ComponentBounds, ComponentRegistry, ComponentRegistryHandle, MemoryGrant, MemoryLimiter,
 };
-use metrics::{counter, gauge, Counter, Gauge, Level};
 use saluki_api::{DynamicRoute, EndpointType};
 use saluki_config::GenericConfiguration;
 use saluki_core::runtime::{

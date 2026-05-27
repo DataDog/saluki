@@ -5,7 +5,7 @@
 
 use std::alloc::System;
 
-use memory_accounting::allocator::{ResourceGroupRegistry, TrackingAllocator};
+use resource_accounting::allocator::{ResourceGroupRegistry, TrackingAllocator};
 
 #[global_allocator]
 static ALLOC: TrackingAllocator<System> = TrackingAllocator::new(System);

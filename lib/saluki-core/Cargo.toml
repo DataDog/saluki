@@ -15,12 +15,12 @@ ddsketch = { workspace = true }
 futures = { workspace = true }
 http = { workspace = true }
 indexmap = { workspace = true, features = ["std"] }
-memory-accounting = { workspace = true }
 metrics = { workspace = true }
 metrics-util = { workspace = true, features = ["recency", "registry"] }
 ordered-float = { workspace = true }
 paste = { workspace = true }
 pin-project = { workspace = true }
+resource-accounting = { workspace = true }
 saluki-api = { workspace = true }
 saluki-common = { workspace = true }
 saluki-context = { workspace = true }

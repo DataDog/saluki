@@ -15,11 +15,11 @@ foldhash = { workspace = true }
 http-body = { workspace = true }
 indexmap = { workspace = true }
 itoa = { workspace = true }
-memory-accounting = { workspace = true }
 papaya = { workspace = true }
 pin-project = { workspace = true }
 quick_cache = { workspace = true }
 regex = { workspace = true, features = ["unicode-perl", "unicode-case"] }
+resource-accounting = { workspace = true }
 saluki-error = { workspace = true }
 saluki-metrics = { workspace = true }
 serde = { workspace = true }

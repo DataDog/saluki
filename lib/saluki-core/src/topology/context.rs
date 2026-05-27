@@ -1,4 +1,4 @@
-use memory_accounting::MemoryLimiter;
+use resource_accounting::MemoryLimiter;
 use tokio::runtime::Handle;
 
 use crate::health::HealthRegistry;

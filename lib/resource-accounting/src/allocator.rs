@@ -377,7 +377,7 @@ pub trait Track: Sized {
     /// # Examples
     ///
     /// ```rust
-    /// use memory_accounting::allocator::{ResourceGroupRegistry, ResourceGroupToken, Track as _};
+    /// use resource_accounting::allocator::{ResourceGroupRegistry, ResourceGroupToken, Track as _};
     ///
     /// # async fn doc() {
     /// let future = async {
@@ -403,7 +403,7 @@ pub trait Track: Sized {
     /// # Examples
     ///
     /// ```rust
-    /// use memory_accounting::allocator::{ResourceGroupRegistry, ResourceGroupToken, Track as _};
+    /// use resource_accounting::allocator::{ResourceGroupRegistry, ResourceGroupToken, Track as _};
     ///
     /// # mod tokio {
     /// #     pub(super) fn spawn(_: impl std::future::Future) {}

@@ -1,6 +1,6 @@
 use std::{collections::HashMap, future::Future, num::NonZeroUsize};
 
-use memory_accounting::{
+use resource_accounting::{
     allocator::{ResourceGroupToken, Tracked},
     MemoryLimiter,
 };
