@@ -229,3 +229,4 @@ mpmc
 dhat
 profiler
 launchd
+native_macos
