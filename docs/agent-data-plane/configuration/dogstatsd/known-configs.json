@@ -203,7 +203,7 @@
     "action": "INVESTIGATE",
     "description": "Fleet Automation config ID tag for agent",
     "reason": "Marked for investigation; previously dismissed as not-applicable.",
-    "issue": "#1685",
+    "issue": "#1751",
     "adp_key": null
   },
   {
@@ -1085,7 +1085,7 @@
     "action": "INVESTIGATE",
     "description": "Agent's own pod entity ID (set by DCA webhook)",
     "reason": "Marked for investigation; previously dismissed as not-applicable.",
-    "issue": "#1685",
+    "issue": "#1752",
     "adp_key": null
   },
   {
@@ -1337,7 +1337,7 @@
     "action": "INVESTIGATE",
     "description": "Override agent name for Heroku telemetry",
     "reason": "Marked for investigation; previously dismissed as not-applicable.",
-    "issue": "#1685",
+    "issue": "#1753",
     "adp_key": null
   },
   {

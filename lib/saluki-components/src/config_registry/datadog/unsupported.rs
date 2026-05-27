@@ -430,7 +430,7 @@ crate::declare_annotations! {
     /// `config_id` - Fleet Automation config ID on payloads.
     CONFIG_ID = SalukiAnnotation {
         schema: &schema::CONFIG_ID,
-        // Not implemented. #1685
+        // Not implemented. #1751
         support_level: SupportLevel::Incompatible(Severity::Medium),
         additional_yaml_paths: &[],
         env_var_override: None,
@@ -474,7 +474,7 @@ crate::declare_annotations! {
     /// `entity_id` - agent pod entity ID injected by DCA webhook.
     ENTITY_ID = SalukiAnnotation {
         schema: &schema::ENTITY_ID,
-        // Not implemented. #1685
+        // Not implemented. #1752
         support_level: SupportLevel::Incompatible(Severity::Low),
         additional_yaml_paths: &[],
         env_var_override: None,
@@ -507,7 +507,7 @@ crate::declare_annotations! {
     /// `heroku_dyno` - Heroku dyno name override for agent telemetry.
     HEROKU_DYNO = SalukiAnnotation {
         schema: &schema::HEROKU_DYNO,
-        // Not implemented. #1685
+        // Not implemented. #1753
         support_level: SupportLevel::Incompatible(Severity::High),
         additional_yaml_paths: &[],
         env_var_override: None,
