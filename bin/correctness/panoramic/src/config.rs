@@ -114,11 +114,13 @@ pub struct IntegrationConfig {
     /// List of assertion steps to run.
     pub assertions: Vec<AssertionStep>,
 
-    /// Runtimes under which this test runs.
+    /// Runtimes under which this test is eligible to run.
     ///
-    /// Each value must be either `"docker"` (the default) or `"native_macos"`. When multiple
-    /// runtimes are declared, the test discovery layer expands the config into one independent
-    /// test case per runtime, named `{name}/{runtime}`.
+    /// Each value must be either `"docker"` (the default) or `"native_macos"`. The active
+    /// runtime for any given panoramic invocation is chosen at the CLI level (`--runtime`,
+    /// defaulting to the host's native runtime); a test discovers only when this list contains
+    /// that active runtime. Tests with multiple entries are portable across runtimes, but still
+    /// execute only once per invocation — in the active runtime.
     #[serde(default = "default_integration_runtimes")]
     pub runtimes: Vec<String>,
 
@@ -134,12 +136,14 @@ pub struct IntegrationConfig {
     #[serde(default)]
     pub requires_core_agent: bool,
 
-    /// Resolved runtime for this specific test instance after discovery-time expansion.
+    /// Active runtime for this test instance.
     ///
-    /// At parse time, this is always empty. The discovery layer sets it when expanding a
-    /// multi-runtime config into per-runtime instances.
+    /// Empty at parse time; the discovery layer sets it to whichever runtime the CLI is scoped
+    /// to (after confirming that runtime is listed in `runtimes`). Used by `Test::run` to
+    /// dispatch to the right runner and by `Test::runtime` / `Test::images` to report the
+    /// effective runtime to the CI pipeline generator.
     #[serde(skip)]
-    pub resolved_runtime: String,
+    pub active_runtime: String,
 
     /// Base path for resolving relative file paths.
     #[serde(skip)]
@@ -147,7 +151,7 @@ pub struct IntegrationConfig {
 }
 
 fn default_integration_runtimes() -> Vec<String> {
-    vec!["docker".to_string()]
+    vec![default_host_runtime().to_string()]
 }
 
 /// Runtime identifier for integration tests that run as native (non-containerized) processes.
@@ -437,22 +441,22 @@ impl Test for IntegrationConfig {
     fn images(&self) -> BTreeMap<&str, String> {
         let mut m = BTreeMap::new();
         // The native_macos runtime doesn't require any container image.
-        if self.resolved_runtime != NATIVE_MACOS_RUNTIME {
+        if self.active_runtime != NATIVE_MACOS_RUNTIME {
             m.insert("container", self.container.image.clone());
         }
         m
     }
 
     fn runtime(&self) -> String {
-        if self.resolved_runtime.is_empty() {
+        if self.active_runtime.is_empty() {
             DOCKER_RUNTIME.to_string()
         } else {
-            self.resolved_runtime.clone()
+            self.active_runtime.clone()
         }
     }
 
     async fn run(&self, tctx: TestContext) -> TestResult {
-        match self.resolved_runtime.as_str() {
+        match self.active_runtime.as_str() {
             NATIVE_MACOS_RUNTIME => {
                 let mut runner = crate::native_runner::NativeIntegrationRunner::new(self.clone(), tctx);
                 runner.run().await
@@ -805,7 +809,7 @@ fn try_load_test(
                 return Ok(Vec::new());
             }
             let mut variant = config.clone();
-            variant.resolved_runtime = integration_runtime.to_string();
+            variant.active_runtime = integration_runtime.to_string();
             Ok(vec![Box::new(variant)])
         }
         "correctness" => {

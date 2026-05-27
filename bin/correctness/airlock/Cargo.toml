@@ -13,9 +13,6 @@ bollard = { workspace = true, features = ["http", "pipe"] }
 futures = { workspace = true }
 home = { workspace = true }
 saluki-error = { workspace = true }
-
-[target.'cfg(unix)'.dependencies]
-libc = { workspace = true }
 tokio = { workspace = true, features = [
   "fs",
   "io-util",
@@ -26,3 +23,9 @@ tokio = { workspace = true, features = [
 ] }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
+
+# Native process driver uses libc's killpg/SIGTERM/SIGKILL inside #[cfg(unix)] blocks. The wider
+# correctness/integration test suite is only operated on Linux/Docker today, so this gate exists
+# more as a forward-looking marker than as something a Windows build actually depends on.
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }

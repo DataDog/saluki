@@ -2,6 +2,8 @@ type: integration
 name: "dogstatsd-forwarding"
 description: "Verifies DogStatsD message forwarding mirrors framed payloads and preserves ingestion"
 timeout: 90s
+# Not yet validated under native_macos; opt in by adding `native_macos` to this list once verified.
+runtimes: [docker]
 
 container:
   image: "saluki-images/datadog-agent:testing-devel"
