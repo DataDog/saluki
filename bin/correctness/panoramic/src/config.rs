@@ -471,9 +471,11 @@ pub struct MatrixConfig {
     pub analysis_mode: AnalysisMode,
 
     /// Millstone configuration (shared across all variants).
+    #[serde(default)]
     pub millstone: CorrectnessMillstoneConfig,
 
     /// Datadog intake configuration (shared across all variants).
+    #[serde(default)]
     pub datadog_intake: CorrectnessDatadogIntakeConfig,
 
     /// Baseline target configuration (shared base; variant env vars are appended).
@@ -648,7 +650,7 @@ pub fn discover_tests(dirs: &[PathBuf]) -> Result<Vec<Box<dyn Test>>, GenericErr
                             // Previously we had a warning here that cannot be seen in TUI-mode. It is better to fail
                             // loudly and fast when we have a bad test configuration than to falsely believe our test is
                             // working when we see that all tests passed.
-                            panic!("Failed to load test case, bad configuration: {e}");
+                            panic!("Failed to load test case, bad configuration: {e:?}");
                         }
                     }
                 }
