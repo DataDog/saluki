@@ -71,7 +71,7 @@ pub struct MemoryBoundsConfiguration {
     ///
     /// Values between 0 to 1 are allowed, and represent the percentage of `memory_limit` that is held back. This means
     /// that a slop factor of 0.25, for example, will cause 25% of `memory_limit` to be withheld. If `memory_limit` was
-    /// 100MB, we would then verify that the memory bounds can fit within 75MB (100MB * (1 - 0.25) => 75MB).
+    /// 100 MB, we would then verify that the memory bounds can fit within 75 MB (100 MB * (1 - 0.25) => 75 MB).
     #[serde(default = "default_memory_slop_factor")]
     memory_slop_factor: f64,
 
