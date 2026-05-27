@@ -142,16 +142,6 @@ impl AggregatedMetricsState {
             .for_each(|(context, value)| visitor(context, &value.value));
     }
 
-    /// Searches the state for a single metric with a matching name.
-    ///
-    /// The latest value for the metric is returned. Histograms are skipped.
-    ///
-    /// If no metric is found with a matching name, or if multiple metrics are found with a matching name, `None` is
-    /// returned.
-    pub fn find_single(&self, name: &str) -> Option<f64> {
-        self.find_single_with_tags(name, &[])
-    }
-
     /// Searches the state for a single metric with a matching name and tags.
     ///
     /// The latest value for the metric is returned. Histograms are skipped.
@@ -186,19 +176,6 @@ impl AggregatedMetricsState {
         } else {
             maybe_metric
         }
-    }
-
-    /// Searches the state for all counter metrics with a matching name and returns their aggregated value.
-    ///
-    /// This method allows rolling up counter metrics that share a common name. For example, a metric may be emitted
-    /// with the same name, but N different values for a specific tag, potentially as a way to break down the metric by
-    /// a certain facet. This method can allow re-aggregating the value of each different facet value into a single
-    /// value.
-    ///
-    /// If multiple metrics are found with a matching name, but they're not all counter metrics, or if no metrics are
-    /// found with a matching name, `0.0` is returned.
-    pub fn get_aggregated(&self, name: &str) -> f64 {
-        self.get_aggregated_with_tags(name, &[])
     }
 
     /// Searches the state for all counter metrics with a matching name and returns their aggregated value.
@@ -315,27 +292,6 @@ pub async fn get_shared_metrics_state() -> Reflector<AggregatedMetricsProcessor>
         })
         .await
         .clone()
-}
-
-/// Merges two aggregated metric values.
-///
-/// Counters are summed, gauges use last-write-wins (the incoming value is kept), histograms are merged per-bucket and
-/// by sum/count.
-pub fn merge_aggregated_values(
-    existing: AggregatedMetricValue, incoming: &AggregatedMetricValue,
-) -> AggregatedMetricValue {
-    match (existing, incoming) {
-        (AggregatedMetricValue::Counter(a), AggregatedMetricValue::Counter(b)) => {
-            AggregatedMetricValue::Counter(a + *b)
-        }
-        (AggregatedMetricValue::Histogram(mut a), AggregatedMetricValue::Histogram(b)) => {
-            a.merge(b);
-            AggregatedMetricValue::Histogram(a)
-        }
-        (AggregatedMetricValue::Gauge(_), AggregatedMetricValue::Gauge(b)) => AggregatedMetricValue::Gauge(*b),
-        // When the existing and incoming type _don't_ match, take the incoming value.
-        (_, other) => other.clone(),
-    }
 }
 
 #[cfg(test)]

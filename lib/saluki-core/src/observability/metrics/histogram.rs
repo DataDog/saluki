@@ -4,13 +4,11 @@ use std::sync::LazyLock;
 
 use crate::data_model::event::metric::Histogram;
 
-const TIME_HISTOGRAM_BUCKET_COUNT: usize = 30;
-static TIME_HISTOGRAM_BUCKETS: LazyLock<[(f64, &'static str); TIME_HISTOGRAM_BUCKET_COUNT]> =
-    LazyLock::new(|| histogram_buckets::<TIME_HISTOGRAM_BUCKET_COUNT>(0.000000128, 4.0));
-
-const NON_TIME_HISTOGRAM_BUCKET_COUNT: usize = 30;
-static NON_TIME_HISTOGRAM_BUCKETS: LazyLock<[(f64, &'static str); NON_TIME_HISTOGRAM_BUCKET_COUNT]> =
-    LazyLock::new(|| histogram_buckets::<NON_TIME_HISTOGRAM_BUCKET_COUNT>(1.0, 2.0));
+const HISTOGRAM_BUCKET_COUNT: usize = 30;
+static TIME_HISTOGRAM_BUCKETS: LazyLock<[(f64, &'static str); HISTOGRAM_BUCKET_COUNT]> =
+    LazyLock::new(|| histogram_buckets::<HISTOGRAM_BUCKET_COUNT>(0.000000128, 4.0));
+static NON_TIME_HISTOGRAM_BUCKETS: LazyLock<[(f64, &'static str); HISTOGRAM_BUCKET_COUNT]> =
+    LazyLock::new(|| histogram_buckets::<HISTOGRAM_BUCKET_COUNT>(1.0, 2.0));
 
 /// An aggregated histogram with fixed buckets, suitable for Prometheus exposition.
 ///
