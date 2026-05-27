@@ -127,6 +127,8 @@ test-integration:
   needs: []
   retry: 2
   timeout: 30m
+  # `interruptible: true` is inherited from the .macos-{arm64,amd64}-test-job mixins; see the
+  # comment in .gitlab-ci.yml for rationale.
   artifacts:
     expire_in: 1 week
     paths:
