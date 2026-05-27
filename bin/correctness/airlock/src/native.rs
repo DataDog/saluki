@@ -47,8 +47,6 @@ pub struct NativeProcessConfig {
     pub args: Vec<String>,
     /// Environment variables to set for the process.
     pub env: HashMap<String, String>,
-    /// Working directory for the process. If `None`, inherits the caller's working directory.
-    pub working_dir: Option<PathBuf>,
 }
 
 impl NativeProcessConfig {
@@ -59,7 +57,6 @@ impl NativeProcessConfig {
             binary_path: binary_path.into(),
             args: Vec::new(),
             env: HashMap::new(),
-            working_dir: None,
         }
     }
 
@@ -72,13 +69,6 @@ impl NativeProcessConfig {
     /// Sets all environment variables for the process at once.
     pub fn with_env_map(mut self, env: HashMap<String, String>) -> Self {
         self.env = env;
-        self
-    }
-
-    /// Sets the working directory for the process.
-    #[allow(dead_code)]
-    pub fn with_working_dir(mut self, dir: PathBuf) -> Self {
-        self.working_dir = Some(dir);
         self
     }
 }
@@ -135,9 +125,6 @@ impl NativeProcess {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
-        if let Some(ref wd) = config.working_dir {
-            cmd.current_dir(wd);
-        }
         // Always place the spawned process in a new process group so cleanup can signal the
         // entire group (parent + any forked helpers) without leaking orphans.
         #[cfg(unix)]
@@ -198,11 +185,6 @@ impl NativeProcess {
     /// Returns the display name of the process.
     pub fn name(&self) -> &str {
         &self.name
-    }
-
-    /// Returns a handle to the cancellation token that fires when the process exits.
-    pub fn exit_token(&self) -> CancellationToken {
-        self.exit_token.clone()
     }
 
     /// Returns a clone of the shared exit-code cell. The cell is populated once the process
