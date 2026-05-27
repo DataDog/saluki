@@ -242,7 +242,7 @@ ways that are not yet fully characterized.
 | `dogstatsd_disable_verbose_logs`                                 | Suppress noisy parse error logs                 | [#1350] |
 | `dogstatsd_experimental_http.enabled`                            | Enable experimental HTTP/H2C DSD listener       | [#1682] |
 | `dogstatsd_experimental_http.listen_address`                     | Bind address for experimental HTTP DSD listener | [#1682] |
-| `enable_json_stream_shared_compressor_buffers`                   | Pre-allocate shared compressor buffers          | [#1686] |
+| `enable_json_stream_shared_compressor_buffers`                   | Pre-allocate shared compressor buffers          | [#1749] |
 | `entity_id`                                                      | Agent's own pod entity ID (DCA webhook)         | [#1685] |
 | `forwarder_apikey_validation_interval`                           | API key check interval (minutes)                | [#1357] |
 | `forwarder_flush_to_disk_mem_ratio`                              | Mem-to-disk flush threshold                     | [#1364] |
@@ -253,7 +253,7 @@ ways that are not yet fully characterized.
 | `forwarder_retry_queue_capacity_time_interval_sec`               | Retry queue time-based capacity                 | [#1365] |
 | `forwarder_stop_timeout`                                         | Timeout (s) for forwarder graceful stop         | [#1680] |
 | `heroku_dyno`                                                    | Override agent name for Heroku telemetry        | [#1685] |
-| `log_payloads`                                                   | Debug-log serialized payloads before send       | [#1686] |
+| `log_payloads`                                                   | Debug-log serialized payloads before send       | [#1750] |
 | `multi_region_failover.enabled`                                  | Enable multi-region failover mode               | [#1678] |
 | `multi_region_failover.failover_metrics`                         | Enable metrics forwarding to failover region    | [#1678] |
 | `multi_region_failover.metric_allowlist`                         | Metric name allowlist for MRF forwarding        | [#1678] |
@@ -487,6 +487,7 @@ when the receiving syslog daemon expects the Agent's RFC-style header.
 [#1683]: https://github.com/DataDog/saluki/issues/1683
 [#1684]: https://github.com/DataDog/saluki/issues/1684
 [#1685]: https://github.com/DataDog/saluki/issues/1685
-[#1686]: https://github.com/DataDog/saluki/issues/1686
+[#1749]: https://github.com/DataDog/saluki/issues/1749
+[#1750]: https://github.com/DataDog/saluki/issues/1750
 
 [#1687]: https://github.com/DataDog/saluki/issues/1687

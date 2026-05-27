@@ -1040,7 +1040,7 @@
     "action": "INVESTIGATE",
     "description": "Pre-allocate shared compressor buffers",
     "reason": "Marked for investigation; previously dismissed as not-applicable.",
-    "issue": "#1686",
+    "issue": "#1749",
     "adp_key": null
   },
   {
@@ -1454,7 +1454,7 @@
     "action": "INVESTIGATE",
     "description": "Debug-log serialized payloads before send",
     "reason": "Marked for investigation; previously dismissed as not-applicable.",
-    "issue": "#1686",
+    "issue": "#1750",
     "adp_key": null
   },
   {

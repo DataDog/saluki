@@ -463,7 +463,7 @@ crate::declare_annotations! {
     /// `enable_json_stream_shared_compressor_buffers` - shared JSON stream compressor buffer allocation.
     ENABLE_JSON_STREAM_SHARED_COMPRESSOR_BUFFERS = SalukiAnnotation {
         schema: &schema::ENABLE_JSON_STREAM_SHARED_COMPRESSOR_BUFFERS,
-        // Not implemented. #1686
+        // Not implemented. #1749
         support_level: SupportLevel::Incompatible(Severity::Low),
         additional_yaml_paths: &[],
         env_var_override: None,
@@ -518,7 +518,7 @@ crate::declare_annotations! {
     /// `log_payloads` - debug-log serialized payloads before send.
     LOG_PAYLOADS = SalukiAnnotation {
         schema: &schema::LOG_PAYLOADS,
-        // Not implemented. #1686
+        // Not implemented. #1750
         support_level: SupportLevel::Incompatible(Severity::Low),
         additional_yaml_paths: &[],
         env_var_override: None,
