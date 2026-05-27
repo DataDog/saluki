@@ -109,11 +109,11 @@ pub struct AssertionContext {
     /// Whether the test is running natively (no container). When `true`, assertions that would
     /// otherwise reach into a container (for example, reading a file via `docker exec`) should operate
     /// against the host filesystem / local process instead.
-    pub is_native: bool,
-    /// Exit code of the native target process, populated once it exits. `None` on the docker
+    pub is_host_process: bool,
+    /// Exit code of the host target process, populated once it exits. `None` on the docker
     /// path or while the process is still running; `Some(None)` if the process was killed by
     /// signal; `Some(Some(code))` if it exited normally.
-    pub native_exit_code: Option<airlock::native::ExitCodeCell>,
+    pub host_process_exit_code: Option<airlock::unix::ExitCodeCell>,
 }
 
 /// Trait for assertion implementations.
@@ -201,9 +201,9 @@ pub fn create_assertion(config: &AssertionConfig) -> Result<Box<dyn Assertion>, 
 /// parallel blocks concurrently. Stops at the first failure (fail-fast), so the returned vector
 /// is truncated past the failing step.
 ///
-/// Used by both the docker and `native_macos` integration runners; the only thing that differs
+/// Used by both the docker and `mac` integration runners; the only thing that differs
 /// between runtimes is how `ctx` is constructed (port mappings come from a Docker driver vs.
-/// identity-mapped from the test config; `is_native` and `native_exit_code` flip).
+/// identity-mapped from the test config; `is_host_process` and `host_process_exit_code` flip).
 pub(crate) async fn run_assertion_steps(test_case: &IntegrationConfig, ctx: &AssertionContext) -> Vec<AssertionResult> {
     let mut results = Vec::new();
     let total_steps = test_case.assertions.len();

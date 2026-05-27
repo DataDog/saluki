@@ -16,7 +16,7 @@ name: "dogstatsd-bind-host"
 description: "Verifies DogStatsD binds to the address specified by bind_host"
 timeout: 120s
 # Docker-only: uses PANORAMIC_DYNAMIC shell hooks that run `hostname -i` and write /etc/hosts
-# from inside the container. Neither translates to the native_macos host runtime; re-enable
+# from inside the container. Neither translates to the mac host runtime; re-enable
 # once dynamic resolution grows a portable mechanism.
 runtimes: [docker]
 

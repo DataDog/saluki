@@ -2,7 +2,7 @@ type: integration
 name: "unprivileged-api-endpoints"
 description: "Verifies the /ready, /live, and /memory/status endpoints are accessible on the unprivileged API"
 timeout: 120s
-runtimes: [docker, native_macos]
+runtimes: [docker, mac]
 
 container:
   image: "saluki-images/datadog-agent:testing-devel"

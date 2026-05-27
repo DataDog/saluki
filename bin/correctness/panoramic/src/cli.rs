@@ -30,9 +30,9 @@ pub struct RunCommand {
     #[argh(option, short = 't')]
     pub tests: Option<String>,
 
-    /// integration-test runtime to scope discovery to (for example, `docker` or `native_macos`).
+    /// integration-test runtime to scope discovery to (for example, `docker` or `mac`).
     /// Only integration tests whose `runtimes:` list contains this value are eligible to run.
-    /// Defaults to `native_macos` on macOS hosts and `docker` everywhere else. Correctness tests
+    /// Defaults to `mac` on macOS hosts and `docker` everywhere else. Correctness tests
     /// are unaffected by this flag.
     #[argh(option)]
     pub runtime: Option<String>,
@@ -108,7 +108,7 @@ pub struct ListCommand {
     pub test_dirs: Vec<PathBuf>,
 
     /// integration-test runtime to scope discovery to. Same semantics as on `run`: defaults to
-    /// `native_macos` on macOS, `docker` everywhere else. Correctness tests are unaffected.
+    /// `mac` on macOS, `docker` everywhere else. Correctness tests are unaffected.
     #[argh(option)]
     pub runtime: Option<String>,
 

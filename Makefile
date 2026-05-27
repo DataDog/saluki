@@ -569,10 +569,10 @@ list-integration-tests: build-panoramic
 list-integration-tests: ## Lists available ADP integration tests
 	@target/release/panoramic list -d $(shell pwd)/test/integration/cases
 
-.PHONY: build-adp-native
-build-adp-native: check-rust-build-tools
-build-adp-native: ## Builds the agent-data-plane binary natively for the current host (release profile)
-	@echo "[*] Building agent-data-plane (release, native host target)..."
+.PHONY: build-adp-host
+build-adp-host: check-rust-build-tools
+build-adp-host: ## Builds the agent-data-plane binary for the current host (release profile)
+	@echo "[*] Building agent-data-plane (release, host target)..."
 	@APP_FULL_NAME="$(ADP_APP_FULL_NAME)" \
 		APP_SHORT_NAME="$(ADP_APP_SHORT_NAME)" \
 		APP_IDENTIFIER="$(ADP_APP_IDENTIFIER)" \
@@ -582,8 +582,8 @@ build-adp-native: ## Builds the agent-data-plane binary natively for the current
 		cargo build --release --bin agent-data-plane
 
 .PHONY: test-integration-macos-run
-test-integration-macos-run: ## Runs native macOS integration tests using already-built binaries (assumes target/release/{panoramic,agent-data-plane} exist). Defaults to all native_macos-eligible tests; narrow with CASE=<name>.
-	@echo "[*] Running native macOS integration tests..."
+test-integration-macos-run: ## Runs the macOS host-process integration tests using already-built binaries (assumes target/release/{panoramic,agent-data-plane} exist). Defaults to all `mac`-runtime-eligible tests; narrow with CASE=<name>.
+	@echo "[*] Running macOS host-process integration tests..."
 	@ADP_BINARY_PATH="$(CURDIR)/target/release/agent-data-plane" \
 		target/release/panoramic run -d "$(CURDIR)/test/integration/cases" \
 		$(if $(CASE),-t $(CASE)) --no-tui -p 1 \
@@ -624,8 +624,6 @@ provision-macos-test-env: ## Idempotently installs the pinned Datadog Agent ($(M
 		sudo /usr/sbin/installer -pkg "$$PKG" -target / >/dev/null 2>&1 || true; \
 		sudo hdiutil detach /Volumes/datadog_agent >/dev/null 2>&1; \
 		test -x /opt/datadog-agent/bin/agent/agent; \
-	else \
-		echo "[*] Datadog Agent already installed at /opt/datadog-agent"; \
 	fi
 	@if [ ! -f /opt/datadog-agent/etc/ipc_cert.pem ] || [ ! -f /opt/datadog-agent/etc/auth_token ]; then \
 		echo "[*] Bootstrapping IPC cert + auth_token by running the Agent briefly..."; \
@@ -651,7 +649,7 @@ provision-macos-test-env: ## Idempotently installs the pinned Datadog Agent ($(M
 	@echo "[*] macOS test environment ready."
 
 .PHONY: test-integration-macos-ci
-test-integration-macos-ci: build-panoramic build-adp-native provision-macos-test-env test-integration-macos-run ## CI entry point: builds binaries, ensures Agent + cert are provisioned, then runs the native_macos integration tests
+test-integration-macos-ci: build-panoramic build-adp-host provision-macos-test-env test-integration-macos-run ## CI entry point: builds binaries, ensures Agent + cert are provisioned, then runs the `mac`-runtime integration tests
 
 .PHONY: ensure-rust-miri
 ensure-rust-miri:

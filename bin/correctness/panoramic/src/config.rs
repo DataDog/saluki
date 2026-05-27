@@ -116,17 +116,17 @@ pub struct IntegrationConfig {
 
     /// Runtimes under which this test is eligible to run.
     ///
-    /// Each value must be either `"docker"` (the default) or `"native_macos"`. The active
+    /// Each value must be either `"docker"` (the default) or `"mac"`. The active
     /// runtime for any given panoramic invocation is chosen at the CLI level (`--runtime`,
     /// defaulting to the host's native runtime); a test discovers only when this list contains
     /// that active runtime. Tests with multiple entries are portable across runtimes, but still
-    /// execute only once per invocation — in the active runtime.
+    /// execute only once per invocation, in the active runtime.
     #[serde(default = "default_integration_runtimes")]
     pub runtimes: Vec<String>,
 
     /// Whether this test requires a Core Agent process to be running alongside ADP.
     ///
-    /// When `true`, the native runtime spawns the Datadog Core Agent as a side process before
+    /// When `true`, host-process runtimes (such as `mac`) spawn the Datadog Core Agent as a side process before
     /// starting ADP, sharing a per-test config directory so they communicate over IPC the same
     /// way they would in production. When `false` (the default), only ADP is spawned (standalone
     /// mode).
@@ -154,20 +154,22 @@ fn default_integration_runtimes() -> Vec<String> {
     vec![default_host_runtime().to_string()]
 }
 
-/// Runtime identifier for integration tests that run as native (non-containerized) processes.
-pub const NATIVE_MACOS_RUNTIME: &str = "native_macos";
+/// Runtime identifier for integration tests that run as host processes on macOS (no Docker, no
+/// virtualization). Validated on macOS only today; future host-process runtimes for other Unix
+/// platforms will get their own identifiers (for example, `linux`).
+pub const MAC_RUNTIME: &str = "mac";
 
 /// Runtime identifier for integration tests that run inside a Docker container.
 pub const DOCKER_RUNTIME: &str = "docker";
 
 /// Returns the integration-test runtime that is native to the host OS.
 ///
-/// `native_macos` on macOS hosts, `docker` everywhere else. Used as the default when a panoramic
-/// subcommand is invoked without an explicit `--runtime` flag, so that callers on the most common
-/// host get the most common runtime without having to spell it out.
+/// `mac` on macOS hosts, `docker` everywhere else. Used as the default when a panoramic
+/// subcommand is invoked without an explicit `--runtime` flag, so that callers on the most
+/// common host get the most common runtime without having to spell it out.
 pub fn default_host_runtime() -> &'static str {
     if cfg!(target_os = "macos") {
-        NATIVE_MACOS_RUNTIME
+        MAC_RUNTIME
     } else {
         DOCKER_RUNTIME
     }
@@ -240,8 +242,8 @@ pub enum AssertionConfig {
     /// On the `docker` runtime the converged image wraps ADP under s6, which keeps the
     /// container alive across ADP restarts and logs `agent-data-plane exited with code N` from
     /// `docker/s6-services/agent-data-plane/finish`. This assertion greps the log buffer for
-    /// that line. On the `native_macos` runtime ADP is spawned directly; the assertion reads
-    /// the exit code recorded by the native runner when ADP's child process exited.
+    /// that line. On the `mac` runtime ADP is spawned directly; the assertion reads
+    /// the exit code recorded by the Unix runner when ADP's child process exited.
     AdpExitsWith {
         /// The expected exit code.
         expected_code: i64,
@@ -440,8 +442,9 @@ impl Test for IntegrationConfig {
 
     fn images(&self) -> BTreeMap<&str, String> {
         let mut m = BTreeMap::new();
-        // The native_macos runtime doesn't require any container image.
-        if self.active_runtime != NATIVE_MACOS_RUNTIME {
+        // Host-process runtimes (such as `mac`) don't need a container image; the test's
+        // `container.image` field is informational for them.
+        if self.active_runtime != MAC_RUNTIME {
             m.insert("container", self.container.image.clone());
         }
         m
@@ -457,8 +460,8 @@ impl Test for IntegrationConfig {
 
     async fn run(&self, tctx: TestContext) -> TestResult {
         match self.active_runtime.as_str() {
-            NATIVE_MACOS_RUNTIME => {
-                let mut runner = crate::native_runner::NativeIntegrationRunner::new(self.clone(), tctx);
+            MAC_RUNTIME => {
+                let mut runner = crate::unix_runner::UnixIntegrationRunner::new(self.clone(), tctx);
                 runner.run().await
             }
             // Default to the existing Docker path for "docker" or unset.
@@ -794,13 +797,13 @@ fn try_load_test(
             // Validate every declared runtime up front so a typo in any list surfaces at discovery
             // time, even on hosts that wouldn't actually run that runtime.
             for runtime in &config.runtimes {
-                if runtime != DOCKER_RUNTIME && runtime != NATIVE_MACOS_RUNTIME {
+                if runtime != DOCKER_RUNTIME && runtime != MAC_RUNTIME {
                     return Err(generic_error!(
                         "integration test '{}' declares unknown runtime '{}' (expected '{}' or '{}')",
                         config.name,
                         runtime,
                         DOCKER_RUNTIME,
-                        NATIVE_MACOS_RUNTIME
+                        MAC_RUNTIME
                     ));
                 }
             }

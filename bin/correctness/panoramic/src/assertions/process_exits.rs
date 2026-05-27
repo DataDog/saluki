@@ -4,9 +4,9 @@ use crate::assertions::{Assertion, AssertionContext, AssertionResult};
 
 /// Assertion that checks the container process exits with a specific exit code.
 ///
-/// Currently implemented only for the docker runtime. The native_macos runtime uses the
+/// Currently implemented only for the docker runtime. The `mac` runtime uses the
 /// runtime-aware [`AdpExitsWithAssertion`][crate::assertions::AdpExitsWithAssertion] instead
-/// (which delegates to the per-process exit code cell on native).
+/// (which delegates to the per-process exit code cell on host-process runtimes).
 pub struct ProcessExitsWithAssertion {
     expected_code: i64,
     timeout: Duration,

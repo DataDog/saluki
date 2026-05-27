@@ -12,9 +12,9 @@ use crate::{
 /// `docker/s6-services/agent-data-plane/finish` when ADP exits. We grep the captured log buffer
 /// for that line.
 ///
-/// On the `native_macos` runtime there is no supervisor. The native runner observes ADP's child
-/// process exit directly and records the exit code in the shared cell on
-/// [`AssertionContext::native_exit_code`].
+/// On the `mac` runtime there is no supervisor. The Unix runner observes ADP's child process
+/// exit directly and records the exit code in the shared cell on
+/// [`AssertionContext::host_process_exit_code`].
 pub struct AdpExitsWithAssertion {
     expected_code: i64,
     timeout: Duration,
@@ -38,7 +38,7 @@ impl Assertion for AdpExitsWithAssertion {
 
     async fn check(&self, ctx: &AssertionContext) -> AssertionResult {
         let started = Instant::now();
-        if ctx.is_native {
+        if ctx.is_host_process {
             self.check_native(ctx, started).await
         } else {
             self.check_docker_via_supervisor_log(ctx, started).await
@@ -48,13 +48,13 @@ impl Assertion for AdpExitsWithAssertion {
 
 impl AdpExitsWithAssertion {
     async fn check_native(&self, ctx: &AssertionContext, started: Instant) -> AssertionResult {
-        let cell = match ctx.native_exit_code.as_ref() {
+        let cell = match ctx.host_process_exit_code.as_ref() {
             Some(c) => c.clone(),
             None => {
                 return AssertionResult {
                     name: self.name().to_string(),
                     passed: false,
-                    message: "Native exit code cell not provided in AssertionContext.".to_string(),
+                    message: "Host-process exit code cell not provided in AssertionContext.".to_string(),
                     duration: started.elapsed(),
                 };
             }

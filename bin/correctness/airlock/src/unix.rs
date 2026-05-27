@@ -1,11 +1,12 @@
-//! Native process driver for non-containerized integration tests.
+//! Unix process driver for non-containerized integration tests.
 //!
 //! This module mirrors the relevant surface of the Docker [`Driver`][crate::driver::Driver] but
 //! spawns a local binary instead of a container. It exists so that integration tests can run on
-//! macOS hosts where ADP is exercised as a real macOS process rather than inside a Linux
-//! container.
+//! Unix hosts where ADP is exercised as a real host process rather than inside a container. The
+//! code path is portable across POSIX hosts (Linux + macOS); only macOS is exercised today, but
+//! the same module is used unchanged when we opt other Unix hosts into the suite.
 //!
-//! Only the small subset of the Docker driver surface needed by the panoramic native runner is
+//! Only the small subset of the Docker driver surface needed by the panoramic Unix runner is
 //! implemented: spawn, log capture, exit watching, and cleanup.
 
 use std::{
@@ -26,19 +27,19 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
-/// Shared cell that receives the exit code of a spawned [`NativeProcess`].
+/// Shared cell that receives the exit code of a spawned [`UnixProcess`].
 ///
 /// The cell is populated by the background exit watcher when the child exits on its own, or by
-/// [`NativeProcess::cleanup`] when the test tears down. Consumers (for example, the
+/// [`UnixProcess::cleanup`] when the test tears down. Consumers (for example, the
 /// `adp_exits_with` assertion in panoramic) read the cell after the exit token fires.
 ///
 /// The inner `Option<i32>` is `None` if the process was terminated by signal rather than exiting
 /// normally with a status code.
 pub type ExitCodeCell = Arc<OnceLock<Option<i32>>>;
 
-/// Configuration for a native process to spawn.
+/// Configuration for a Unix process to spawn.
 #[derive(Clone)]
-pub struct NativeProcessConfig {
+pub struct UnixProcessConfig {
     /// Display name used for logs and reporting.
     pub name: String,
     /// Absolute path to the binary to execute.
@@ -49,7 +50,7 @@ pub struct NativeProcessConfig {
     pub env: HashMap<String, String>,
 }
 
-impl NativeProcessConfig {
+impl UnixProcessConfig {
     /// Creates a new configuration with the given display name and binary path.
     pub fn new(name: impl Into<String>, binary_path: impl Into<PathBuf>) -> Self {
         Self {
@@ -73,7 +74,7 @@ impl NativeProcessConfig {
     }
 }
 
-/// A trait-object-friendly sink for log lines captured from a native process.
+/// A trait-object-friendly sink for log lines captured from a Unix process.
 ///
 /// This is intentionally minimal so consumers can implement it on their own log buffer type
 /// without depending on `airlock`.
@@ -83,9 +84,9 @@ pub trait LogSink: Send + Sync {
     fn push_line(&mut self, line: String, is_stderr: bool);
 }
 
-/// A spawned native process and its supporting tasks.
+/// A spawned Unix process and its supporting tasks.
 ///
-/// `NativeProcess` owns the child process plus background tasks that pump stdout/stderr lines
+/// `UnixProcess` owns the child process plus background tasks that pump stdout/stderr lines
 /// into a shared sink and observe the child's exit. The provided exit token is cancelled when
 /// the child process exits on its own (observed by the background watcher) or when
 /// [`cleanup`][Self::cleanup] is called. The exit code is recorded in the shared
@@ -94,8 +95,9 @@ pub trait LogSink: Send + Sync {
 /// The spawned process is always made the leader of a new process group, so
 /// [`cleanup`][Self::cleanup] can signal the entire group (parent plus any forked helpers).
 /// This matters for binaries like the Datadog Core Agent that spawn `trace-agent` /
-/// `process-agent` which would otherwise orphan onto launchd when only the parent is killed.
-pub struct NativeProcess {
+/// `process-agent` which would otherwise orphan onto the init/launchd system supervisor when
+/// only the parent is killed.
+pub struct UnixProcess {
     name: String,
     /// PGID of the spawned process. We made the child the group leader at spawn time, so this
     /// equals the child's PID. `None` only if spawn failed to return a PID (very rare).
@@ -106,11 +108,11 @@ pub struct NativeProcess {
     exit_task: Option<JoinHandle<()>>,
 }
 
-impl NativeProcess {
+impl UnixProcess {
     /// Spawns the process described by `config`. The provided `log_sink` receives each line of
     /// captured stdout/stderr; the provided `exit_token` is cancelled when the process exits.
     pub async fn spawn(
-        config: NativeProcessConfig, log_sink: Arc<Mutex<dyn LogSink>>, exit_token: CancellationToken,
+        config: UnixProcessConfig, log_sink: Arc<Mutex<dyn LogSink>>, exit_token: CancellationToken,
     ) -> Result<Self, GenericError> {
         if !config.binary_path.exists() {
             return Err(generic_error!(
@@ -161,11 +163,11 @@ impl NativeProcess {
             match child.wait().await {
                 Ok(status) => {
                     let code = status.code();
-                    debug!(name = %name_for_watcher, ?code, "Native process exited.");
+                    debug!(name = %name_for_watcher, ?code, "Unix process exited.");
                     let _ = exit_code_for_watcher.set(code);
                 }
                 Err(e) => {
-                    warn!(name = %name_for_watcher, error = %e, "Failed to wait on native process; treating as exited.");
+                    warn!(name = %name_for_watcher, error = %e, "Failed to wait on Unix process; treating as exited.");
                     let _ = exit_code_for_watcher.set(None);
                 }
             }
@@ -227,12 +229,12 @@ impl NativeProcess {
     }
 }
 
-impl Drop for NativeProcess {
+impl Drop for UnixProcess {
     fn drop(&mut self) {
         if self.exit_task.is_some() {
             warn!(
                 name = %self.name,
-                "NativeProcess dropped without explicit cleanup; child may have been killed via kill_on_drop."
+                "UnixProcess dropped without explicit cleanup; child may have been killed via kill_on_drop."
             );
         }
     }

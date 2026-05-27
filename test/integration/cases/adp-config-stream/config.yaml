@@ -2,7 +2,7 @@ type: integration
 name: "adp-config-stream"
 description: "Verify ADP receives configuration from Core Agent via config stream"
 timeout: 120s
-runtimes: [docker, native_macos]
+runtimes: [docker, mac]
 requires_core_agent: true
 
 container:

@@ -14,7 +14,7 @@ type: integration
 name: "dogstatsd-non-local-overrides-bind-host"
 description: "Verifies dogstatsd_non_local_traffic takes precedence over bind_host"
 timeout: 120s
-runtimes: [docker, native_macos]
+runtimes: [docker, mac]
 
 container:
   image: "saluki-images/datadog-agent:testing-devel"

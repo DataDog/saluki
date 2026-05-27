@@ -32,10 +32,10 @@ use self::events::{create_event_channel, TestEvent};
 mod reporter;
 use self::reporter::{OutputFormat, Reporter, TestResult, TestSuiteResult};
 
-mod native_runner;
 mod runner;
 mod test;
 mod tui;
+mod unix_runner;
 mod utils;
 
 #[tokio::main]

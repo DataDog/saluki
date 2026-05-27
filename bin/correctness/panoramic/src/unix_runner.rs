@@ -1,8 +1,9 @@
-//! Native-process integration test runner.
+//! Unix-process integration test runner.
 //!
 //! This runner is the parallel of [`crate::runner::IntegrationRunner`] but for tests declared
-//! with `runtime: native_macos`. Instead of building a Docker container, it spawns binaries
-//! directly via [`airlock::native::NativeProcess`] and feeds their stdout/stderr into the same
+//! with `runtime: mac` (and, in the future, any other Unix host runtime opted in). Instead of
+//! building a Docker container, it spawns binaries directly via
+//! [`airlock::unix::UnixProcess`] and feeds their stdout/stderr into the same
 //! [`LogBuffer`][crate::assertions::LogBuffer] used by the Docker path so the assertions work
 //! unchanged.
 //!
@@ -13,7 +14,7 @@
 //! - **Converged**: the Datadog Core Agent is spawned alongside ADP (when
 //!   `requires_core_agent: true`), sharing a per-test config directory so they authenticate
 //!   over IPC the same way they would in production. See the per-phase comments in
-//!   [`NativeIntegrationRunner::run`] for the cert/auth_token plumbing.
+//!   [`UnixIntegrationRunner::run`] for the cert/auth_token plumbing.
 //!
 //! # Binary discovery
 //!
@@ -29,7 +30,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use airlock::native::{LogSink, NativeProcess, NativeProcessConfig};
+use airlock::unix::{LogSink, UnixProcess, UnixProcessConfig};
 use rand::distr::SampleString as _;
 use saluki_error::{ErrorContext as _, GenericError};
 use tokio::sync::{Mutex, RwLock};
@@ -54,14 +55,14 @@ const DEFAULT_CORE_AGENT_BINARY_PATH: &str = "/opt/datadog-agent/bin/agent/agent
 const CORE_AGENT_IPC_READY_TIMEOUT: Duration = Duration::from_secs(60);
 const CORE_AGENT_IPC_READY_POLL: Duration = Duration::from_millis(200);
 
-/// Runner for a single native-process integration test case.
-pub(crate) struct NativeIntegrationRunner {
+/// Runner for a single Unix-process integration test case.
+pub(crate) struct UnixIntegrationRunner {
     test_case: IntegrationConfig,
     tctx: TestContext,
     log_buffer: Arc<RwLock<LogBuffer>>,
 }
 
-impl NativeIntegrationRunner {
+impl UnixIntegrationRunner {
     /// Creates a new runner for the given test case.
     pub(crate) fn new(test_case: IntegrationConfig, tctx: TestContext) -> Self {
         Self {
@@ -77,7 +78,7 @@ impl NativeIntegrationRunner {
         let test_name = self.test_case.name();
         let mut phase_timings = Vec::new();
 
-        info!(test = %test_name, "Starting native integration test case.");
+        info!(test = %test_name, "Starting Unix integration test case.");
 
         // Phase: resolve binary path.
         let binary_path = match resolve_adp_binary_path() {
@@ -110,11 +111,11 @@ impl NativeIntegrationRunner {
         debug!(test = %test_name, state_dir = %state_dir.display(), "Prepared per-test state directory.");
 
         // Only ADP's exit lifecycle is observable to assertions. The Core Agent (when present)
-        // gets a throwaway token at spawn time — it satisfies `NativeProcess::spawn`'s
+        // gets a throwaway token at spawn time — it satisfies `UnixProcess::spawn`'s
         // signature but nothing consumes the resulting cancellation. If the Agent dies
         // independently it's treated as an environmental fault, not a test signal.
         let adp_exit_token = CancellationToken::new();
-        let log_sink: Arc<Mutex<dyn LogSink>> = Arc::new(Mutex::new(NativeLogSink {
+        let log_sink: Arc<Mutex<dyn LogSink>> = Arc::new(Mutex::new(PanoramicLogSink {
             buf: self.log_buffer.clone(),
         }));
 
@@ -130,7 +131,7 @@ impl NativeIntegrationRunner {
         // then spawn ADP with `DD_AUTH_TOKEN_FILE_PATH` pointing at the per-test auth token so
         // ADP's IPC client uses the same per-test credentials (and ADP's own API server uses
         // the matching cert).
-        let mut core_agent: Option<NativeProcess> = None;
+        let mut core_agent: Option<UnixProcess> = None;
         if self.test_case.requires_core_agent {
             let agent_spawn_start = Instant::now();
             let agent_binary = match resolve_core_agent_binary_path() {
@@ -149,7 +150,7 @@ impl NativeIntegrationRunner {
             let mut agent_env = self.test_case.container.env.clone();
             agent_env.insert("DD_AUTH_TOKEN_FILE_PATH".to_string(), auth_token_path.clone());
 
-            let agent_config = NativeProcessConfig::new(format!("{}-core-agent", self.test_case.name), agent_binary)
+            let agent_config = UnixProcessConfig::new(format!("{}-core-agent", self.test_case.name), agent_binary)
                 .with_args(vec![
                     "run".to_string(),
                     "-c".to_string(),
@@ -157,7 +158,7 @@ impl NativeIntegrationRunner {
                 ])
                 .with_env_map(agent_env);
 
-            let agent = match NativeProcess::spawn(agent_config, log_sink.clone(), CancellationToken::new()).await {
+            let agent = match UnixProcess::spawn(agent_config, log_sink.clone(), CancellationToken::new()).await {
                 Ok(p) => p,
                 Err(e) => {
                     phase_timings.push(PhaseTiming {
@@ -199,11 +200,11 @@ impl NativeIntegrationRunner {
             // per-test ipc_cert.pem in the same directory).
             adp_env.insert("DD_AUTH_TOKEN_FILE_PATH".to_string(), auth_token_path);
         }
-        let process_config = NativeProcessConfig::new(self.test_case.name.clone(), binary_path)
+        let process_config = UnixProcessConfig::new(self.test_case.name.clone(), binary_path)
             .with_args(vec!["-c".to_string(), config_path_str, "run".to_string()])
             .with_env_map(adp_env);
 
-        let process = match NativeProcess::spawn(process_config, log_sink, adp_exit_token.clone()).await {
+        let process = match UnixProcess::spawn(process_config, log_sink, adp_exit_token.clone()).await {
             Ok(p) => p,
             Err(e) => {
                 if let Some(agent) = core_agent.take() {
@@ -262,10 +263,10 @@ impl NativeIntegrationRunner {
     }
 
     /// Builds the port mappings for assertions. In the Docker runner this maps container ports
-    /// to host ports allocated by Docker. On native there is no remapping: a port declared in
-    /// `exposed_ports` is reachable on the host at the same number. We populate identity entries
-    /// so the existing `port_listening` assertion (which expects every probed port to appear in
-    /// the mapping) works unchanged.
+    /// to host ports allocated by Docker. As a host process there is no remapping: a port
+    /// declared in `exposed_ports` is reachable on the host at the same number. We populate
+    /// identity entries so the existing `port_listening` assertion (which expects every probed
+    /// port to appear in the mapping) works unchanged.
     fn build_port_mappings(&self) -> HashMap<String, u16> {
         let mut mappings = HashMap::new();
         for spec in &self.test_case.container.exposed_ports {
@@ -277,8 +278,7 @@ impl NativeIntegrationRunner {
     }
 
     async fn run_assertions(
-        &self, process_display_name: String, exit_token: CancellationToken,
-        exit_code_cell: airlock::native::ExitCodeCell,
+        &self, process_display_name: String, exit_token: CancellationToken, exit_code_cell: airlock::unix::ExitCodeCell,
     ) -> Vec<AssertionResult> {
         let ctx = AssertionContext {
             log_buffer: self.log_buffer.clone(),
@@ -286,8 +286,8 @@ impl NativeIntegrationRunner {
             cancel_token: self.tctx.test_cancel_token(),
             port_mappings: self.build_port_mappings(),
             container_name: process_display_name,
-            is_native: true,
-            native_exit_code: Some(exit_code_cell),
+            is_host_process: true,
+            host_process_exit_code: Some(exit_code_cell),
         };
         crate::assertions::run_assertion_steps(&self.test_case, &ctx).await
     }
@@ -344,7 +344,7 @@ fn create_test_state_dir() -> Result<PathBuf, GenericError> {
     let suffix = rand::distr::Alphanumeric
         .sample_string(&mut rand::rng(), 8)
         .to_lowercase();
-    let dir = std::env::temp_dir().join(format!("panoramic-native-{}", suffix));
+    let dir = std::env::temp_dir().join(format!("panoramic-unix-{}", suffix));
     std::fs::create_dir_all(&dir)
         .with_error_context(|| format!("Failed to create state directory '{}'.", dir.display()))?;
     Ok(dir)
@@ -353,7 +353,7 @@ fn create_test_state_dir() -> Result<PathBuf, GenericError> {
 fn make_error_result(
     name: String, started: Instant, phase: &str, e: GenericError, phase_timings: Vec<PhaseTiming>,
 ) -> TestResult {
-    error!(test = %name, error = %e, phase, "Native integration test setup failed.");
+    error!(test = %name, error = %e, phase, "Unix integration test setup failed.");
     TestResult {
         name,
         passed: false,
@@ -365,12 +365,12 @@ fn make_error_result(
     }
 }
 
-/// Bridges [`airlock::native::LogSink`] to the panoramic [`LogBuffer`].
-struct NativeLogSink {
+/// Bridges [`airlock::unix::LogSink`] to the panoramic [`LogBuffer`].
+struct PanoramicLogSink {
     buf: Arc<RwLock<LogBuffer>>,
 }
 
-impl LogSink for NativeLogSink {
+impl LogSink for PanoramicLogSink {
     fn push_line(&mut self, line: String, is_stderr: bool) {
         // Try a non-blocking write first. If contended, spawn a task to defer the write so we
         // don't stall the log pump (which is itself a tokio task).

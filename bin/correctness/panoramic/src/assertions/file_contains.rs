@@ -95,7 +95,7 @@ impl Assertion for FileContainsAssertion {
                 };
             }
 
-            let read_result = if ctx.is_native {
+            let read_result = if ctx.is_host_process {
                 read_file_local(&self.path).await
             } else {
                 read_file_in_container(&ctx.container_name, &self.path).await
@@ -138,7 +138,8 @@ impl Assertion for FileContainsAssertion {
 
 /// Reads a file from the host filesystem.
 ///
-/// Used by the `native_macos` runtime where ADP runs as a local process and writes log files to
+/// Used by the `mac` runtime (and any future host-process runtime) where ADP runs as a local
+/// process and writes log files to
 /// real host paths. Returns the same shape as [`read_file_in_container`]: `Ok(Some(contents))`
 /// when readable, `Ok(None)` when missing, `Err` for unexpected I/O failures.
 async fn read_file_local(path: &str) -> Result<Option<String>, String> {

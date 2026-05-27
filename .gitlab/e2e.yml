@@ -117,7 +117,7 @@ test-integration:
     - docker tag ${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA} saluki-images/datadog-agent:testing-devel
     - make test-integration-quick
 
-# Runs the subset of integration tests that have opted in to the `native_macos` runtime
+# Runs the subset of integration tests that have opted in to the `mac` runtime
 # directly on a bare-metal macOS runner. No Docker, no virtualization: panoramic spawns ADP
 # (and the Core Agent for converged tests) as real macOS processes against a per-test temp
 # state directory. The Datadog Agent install at /opt/datadog-agent is provisioned by the

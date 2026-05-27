@@ -25,7 +25,7 @@ name: "dogstatsd-bind-custom-hostname"
 description: "Verifies DogStatsD resolves a custom hostname in bind_host via DNS"
 timeout: 120s
 # Docker-only: uses PANORAMIC_DYNAMIC shell hooks that run `hostname -i` and write /etc/hosts
-# from inside the container. Neither translates to the native_macos host runtime; re-enable
+# from inside the container. Neither translates to the mac host runtime; re-enable
 # once dynamic resolution grows a portable mechanism.
 runtimes: [docker]
 

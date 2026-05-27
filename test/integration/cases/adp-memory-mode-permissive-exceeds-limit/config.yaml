@@ -2,7 +2,7 @@ type: integration
 name: "adp-memory-mode-permissive-exceeds-limit"
 description: "Verifies that permissive mode emits a best-effort warning when the calculated bounds exceed the configured limit, but the process still starts"
 timeout: 120s
-runtimes: [docker, native_macos]
+runtimes: [docker, mac]
 
 container:
   image: "saluki-images/datadog-agent:testing-devel"

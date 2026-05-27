@@ -811,8 +811,8 @@ impl IntegrationRunner {
             cancel_token: self.tctx.test_cancel_token(),
             port_mappings: port_mappings.clone(),
             container_name: container_name.to_string(),
-            is_native: false,
-            native_exit_code: None,
+            is_host_process: false,
+            host_process_exit_code: None,
         };
         crate::assertions::run_assertion_steps(&self.test_case, &ctx).await
     }
