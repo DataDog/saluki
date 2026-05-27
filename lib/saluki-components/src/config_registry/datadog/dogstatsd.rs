@@ -254,6 +254,28 @@ crate::declare_annotations! {
         test_json: None,
     };
 
+    /// `statsd_forward_host`—host for DogStatsD message forwarding.
+    STATSD_FORWARD_HOST = SalukiAnnotation {
+        schema: &schema::STATSD_FORWARD_HOST,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::DOGSTATSD_CONFIGURATION],
+        value_type_override: None,
+        test_json: Some(r#""127.0.0.1""#),
+    };
+
+    /// `statsd_forward_port`—port for DogStatsD message forwarding.
+    STATSD_FORWARD_PORT = SalukiAnnotation {
+        schema: &schema::STATSD_FORWARD_PORT,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::DOGSTATSD_CONFIGURATION],
+        value_type_override: Some(ValueType::Integer),
+        test_json: Some("9125"),
+    };
+
     /// `dogstatsd_string_interner_size`—context interner entry count. Schema Float; field u64.
     DOGSTATSD_STRING_INTERNER_SIZE = SalukiAnnotation {
         schema: &schema::DOGSTATSD_STRING_INTERNER_SIZE,

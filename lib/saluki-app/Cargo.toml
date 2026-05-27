@@ -22,9 +22,9 @@ http = { workspace = true }
 hyper = { workspace = true }
 iana-time-zone = { workspace = true }
 itoa = { workspace = true }
-memory-accounting = { workspace = true }
 metrics = { workspace = true }
 rcgen = { workspace = true, features = ["crypto", "aws_lc_rs", "pem"] }
+resource-accounting = { workspace = true }
 rustls = { workspace = true, features = ["tls12"] }
 rustls-pki-types = { workspace = true }
 ryu = { workspace = true }

@@ -4,8 +4,8 @@ use async_trait::async_trait;
 use ddsketch::DDSketch;
 use facet::Facet;
 use http::{HeaderValue, Method, Request};
-use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use protobuf::{rt::WireType, CodedOutputStream};
+use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_common::{
     buf::{ChunkedBytesBuffer, FrozenChunkedBytesBuffer},
     task::HandleExt as _,

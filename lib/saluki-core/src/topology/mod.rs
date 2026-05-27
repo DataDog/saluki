@@ -2,7 +2,7 @@
 
 use std::num::NonZeroUsize;
 
-use memory_accounting::ComponentRegistry;
+use resource_accounting::ComponentRegistry;
 
 use crate::data_model::payload::Payload;
 use crate::topology::interconnect::FixedSizeEventBuffer;

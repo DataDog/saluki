@@ -320,6 +320,8 @@ mod config_smoke {
 
 #[cfg(test)]
 mod tests {
+    use tracing::debug;
+
     use super::*;
 
     fn deserialize_no_proxy(json: serde_json::Value) -> Vec<String> {
@@ -602,7 +604,15 @@ mod tests {
     fn init_tls() {
         static INIT: std::sync::OnceLock<()> = std::sync::OnceLock::new();
         INIT.get_or_init(|| {
-            saluki_tls::initialize_default_crypto_provider().expect("failed to initialize TLS crypto provider");
+            if rustls::crypto::CryptoProvider::get_default().is_none() {
+                match saluki_tls::initialize_default_crypto_provider() {
+                    Ok(()) => {}
+                    Err(e) if rustls::crypto::CryptoProvider::get_default().is_some() => {
+                        debug!(error = %e, "TLS crypto provider was initialized by another test.");
+                    }
+                    Err(e) => panic!("failed to initialize TLS crypto provider: {e}"),
+                }
+            }
             saluki_tls::load_platform_root_certificates().expect("failed to load platform root certificates");
         });
     }

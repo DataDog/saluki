@@ -13,7 +13,7 @@ use std::{num::NonZeroUsize, time::Duration};
 use async_trait::async_trait;
 use foldhash::fast::RandomState as FoldHashState;
 use hashbrown::{HashMap, HashSet};
-use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
+use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_common::cache::{Cache, CacheBuilder};
 use saluki_config::GenericConfiguration;
 use saluki_context::{tags::Tag, Context, TagSetMutViewState};

@@ -35,8 +35,6 @@ tracking.
 | `log_format_rfc3339`                             | Use RFC3339 timestamp format          | [#1373] |
 | `serializer_experimental_use_v3_api.*`           | V3 metrics API migration flags        | [#1468] |
 | `sslkeylogfile`                                  | TLS key log file path                 | [#1372] |
-| `statsd_forward_host`                            | Host for packet forwarding            | [#1476] |
-| `statsd_forward_port`                            | Port for packet forwarding            | [#1476] |
 | `tls_handshake_timeout`                          | HTTP TLS handshake timeout            | [#178]  |
 
 <!-- section:unsupported-not-planned -->
@@ -92,6 +90,15 @@ doesn't support TLS 1.0 or TLS 1.1.
 
 This setting doesn't affect ADP IPC, local privileged APIs, ADP control-plane clients, OTLP
 proxying to the core agent, or unrelated HTTP clients.
+
+### DogStatsD forwarding (`statsd_forward_host` / `statsd_forward_port`)
+
+ADP supports DogStatsD forwarding when both `statsd_forward_host` and
+`statsd_forward_port` are set. ADP forwards each framed DogStatsD message over UDP to the
+configured destination before parsing, filtering, mapping, or aggregation. Forwarding doesn't
+preserve the core Agent's packet-buffer grouping, so forwarded UDP datagrams may be split
+differently while carrying the same DogStatsD messages. ADP logs setup failures and tracks send
+failures through telemetry.
 
 ### Datadog intake TLS validation (`skip_ssl_validation`)
 

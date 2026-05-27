@@ -1,9 +1,9 @@
 use datadog_agent_commons::ipc::{config::IpcAuthConfiguration, tls::build_ipc_server_tls_config};
-use memory_accounting::ComponentRegistry;
+use resource_accounting::ComponentRegistry;
 use saluki_api::EndpointType;
 use saluki_app::{
-    config::ConfigWorker, dynamic_api::DynamicAPIBuilder, logging::LoggingOverrideController,
-    memory::AllocationTelemetryWorker,
+    accounting::ResourceTelemetryWorker, config::ConfigWorker, dynamic_api::DynamicAPIBuilder,
+    logging::LoggingOverrideController,
 };
 use saluki_components::{destinations::DogStatsDStatisticsConfiguration, sources::DogStatsDCaptureAPIHandler};
 use saluki_config::GenericConfiguration;
@@ -57,7 +57,7 @@ pub async fn create_control_plane_supervisor(
         .with_restart_strategy(RestartStrategy::one_to_one());
 
     supervisor.add_worker(health_registry.worker());
-    supervisor.add_worker(AllocationTelemetryWorker::new(component_registry));
+    supervisor.add_worker(ResourceTelemetryWorker::new(component_registry));
     supervisor.add_worker(DynamicLogLevelWorker::new(config, logging_controller));
     supervisor.add_worker(ConfigWorker::new(config.clone()));
 

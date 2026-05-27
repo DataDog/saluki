@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use datadog_agent_commons::ipc::client::RemoteAgentClient;
 use datadog_protos::agent::{Container, KubernetesPod, WorkloadmetaEventType};
 use futures::{StreamExt as _, TryStreamExt as _};
-use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
+use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
 use saluki_context::origin::ExternalData;
 use saluki_core::health::Health;

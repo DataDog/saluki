@@ -76,7 +76,8 @@ async fn run_docker_correctness_test(name: String, config: Config, tctx: TestCon
         }),
         AnalysisMode::Events | AnalysisMode::Metrics | AnalysisMode::ServiceChecks => None,
     };
-    let analysis_runner = AnalysisRunner::new(config.analysis_mode, baseline_data, comparison_data, traces_options);
+    let analysis_runner = AnalysisRunner::new(config.analysis_mode, baseline_data, comparison_data, traces_options)
+        .with_dogstatsd_forwarding_requirement(config.require_dogstatsd_forwarded_packets);
     let analysis_result = analysis_runner.run_analysis();
     let analysis_duration = analysis_start.elapsed();
 

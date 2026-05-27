@@ -471,9 +471,11 @@ pub struct MatrixConfig {
     pub analysis_mode: AnalysisMode,
 
     /// Millstone configuration (shared across all variants).
+    #[serde(default)]
     pub millstone: CorrectnessMillstoneConfig,
 
     /// Datadog intake configuration (shared across all variants).
+    #[serde(default)]
     pub datadog_intake: CorrectnessDatadogIntakeConfig,
 
     /// Baseline target configuration (shared base; variant env vars are appended).
@@ -494,6 +496,10 @@ pub struct MatrixConfig {
     /// Propagated unchanged to every expanded [`CorrectnessConfig`].
     #[serde(default)]
     pub additional_span_ignore_fields: Vec<String>,
+
+    /// Whether each expanded correctness run must capture at least one forwarded DogStatsD packet.
+    #[serde(default)]
+    pub require_dogstatsd_forwarded_packets: bool,
 
     /// Matrix variants. Each entry produces one expanded test case.
     pub variants: Vec<MatrixVariant>,
@@ -565,7 +571,6 @@ impl MatrixConfig {
                     datadog_intake: CorrectnessDatadogIntakeConfig {
                         image: self.datadog_intake.image.clone(),
                         binary_path: self.datadog_intake.binary_path.clone(),
-                        config_path: self.get_canonicalized_config_path(&self.datadog_intake.config_path),
                     },
                     baseline: CorrectnessTargetConfig {
                         image: baseline.image,
@@ -591,6 +596,7 @@ impl MatrixConfig {
                     },
                     otlp_direct_analysis_mode: self.otlp_direct_analysis_mode,
                     additional_span_ignore_fields: self.additional_span_ignore_fields.clone(),
+                    require_dogstatsd_forwarded_packets: self.require_dogstatsd_forwarded_packets,
                     base_config_path: PathBuf::new(),
                 }
             })
@@ -644,7 +650,7 @@ pub fn discover_tests(dirs: &[PathBuf]) -> Result<Vec<Box<dyn Test>>, GenericErr
                             // Previously we had a warning here that cannot be seen in TUI-mode. It is better to fail
                             // loudly and fast when we have a bad test configuration than to falsely believe our test is
                             // working when we see that all tests passed.
-                            panic!("Failed to load test case, bad configuration: {e}");
+                            panic!("Failed to load test case, bad configuration: {e:?}");
                         }
                     }
                 }

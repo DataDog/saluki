@@ -542,13 +542,13 @@ test-all: test test-property test-docs test-miri test-loom
 test-correctness: build-panoramic build-correctness-tools-image build-datadog-agent-image-release
 test-correctness: ## Runs the complete correctness suite (all test cases in parallel)
 	@echo "[*] Running correctness test suite..."
-	@target/release/panoramic run -d $(shell pwd)/test/correctness $(if $(PANORAMIC_PARALLELISM),-p $(PANORAMIC_PARALLELISM))
+	@target/release/panoramic run -d $(shell pwd)/test/correctness/cases $(if $(PANORAMIC_PARALLELISM),-p $(PANORAMIC_PARALLELISM))
 
 .PHONY: test-correctness-case
 test-correctness-case: build-panoramic build-correctness-tools-image build-datadog-agent-image-release
 test-correctness-case: ## Runs a single correctness test case by name (usage: make test-correctness-case CASE=dsd-plain)
 	@echo "[*] Running '$(CASE)' correctness test case..."
-	@target/release/panoramic run -d $(shell pwd)/test/correctness -t $(CASE) --no-tui
+	@target/release/panoramic run -d $(shell pwd)/test/correctness/cases -t $(CASE) --no-tui
 
 .PHONY: build-panoramic
 build-panoramic: check-rust-build-tools

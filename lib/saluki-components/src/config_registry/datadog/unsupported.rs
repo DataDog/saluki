@@ -254,30 +254,6 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `statsd_forward_host` - host for packet forwarding.
-    STATSD_FORWARD_HOST = SalukiAnnotation {
-        schema: &schema::STATSD_FORWARD_HOST,
-        // Packet forwarding not implemented. #1476
-        support_level: SupportLevel::Incompatible(Severity::High),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-    };
-
-    /// `statsd_forward_port` - port for packet forwarding.
-    STATSD_FORWARD_PORT = SalukiAnnotation {
-        schema: &schema::STATSD_FORWARD_PORT,
-        // Packet forwarding not implemented. #1476
-        support_level: SupportLevel::Incompatible(Severity::High),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-    };
-
     /// `telemetry.enabled` - global telemetry toggle.
     TELEMETRY_ENABLED = SalukiAnnotation {
         schema: &schema::TELEMETRY_ENABLED,

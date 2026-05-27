@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use http::Uri;
-use memory_accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
+use resource_accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
 use saluki_common::buf::FrozenChunkedBytesBuffer;
 use saluki_config::GenericConfiguration;
 use saluki_core::{

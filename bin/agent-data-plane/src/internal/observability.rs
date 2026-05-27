@@ -5,8 +5,8 @@ use std::{
 };
 
 use async_trait::async_trait;
-use memory_accounting::{ComponentRegistry, MemoryLimiter};
 use prometheus_exposition::PrometheusRenderer;
+use resource_accounting::{ComponentRegistry, MemoryLimiter};
 use saluki_components::{
     destinations::{PrometheusConfiguration, PrometheusPayloadProvider},
     sources::InternalMetricsConfiguration,
