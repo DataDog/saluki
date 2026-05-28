@@ -16,7 +16,7 @@ use saluki_error::{ErrorContext as _, GenericError};
 use saluki_io::compression::CompressionScheme;
 use saluki_metrics::MetricsBuilder;
 use serde::Deserialize;
-use tracing::{error, warn};
+use tracing::{debug, error, warn};
 
 use crate::common::datadog::{
     clamp_payload_limits,
@@ -45,6 +45,10 @@ const fn default_max_payload_size() -> usize {
 
 const fn default_max_uncompressed_payload_size() -> usize {
     DEFAULT_SERIALIZER_UNCOMPRESSED_SIZE_LIMIT
+}
+
+const fn default_log_payloads() -> bool {
+    false
 }
 
 /// Datadog Service Checks incremental encoder.
@@ -95,6 +99,14 @@ pub struct DatadogServiceChecksConfiguration {
         default = "default_zstd_compressor_level"
     )]
     zstd_compressor_level: i32,
+
+    /// Whether to log service check payload contents before encoding.
+    ///
+    /// This logs decoded service check objects, not the encoded HTTP body.
+    ///
+    /// Defaults to `false`.
+    #[serde(default = "default_log_payloads")]
+    log_payloads: bool,
 }
 
 impl DatadogServiceChecksConfiguration {
@@ -136,6 +148,7 @@ impl IncrementalEncoderBuilder for DatadogServiceChecksConfiguration {
         Ok(DatadogServiceChecks {
             request_builder,
             telemetry,
+            log_payloads: self.log_payloads,
         })
     }
 }
@@ -164,6 +177,7 @@ impl MemoryBounds for DatadogServiceChecksConfiguration {
 pub struct DatadogServiceChecks {
     request_builder: RequestBuilder<ServiceChecksEndpointEncoder>,
     telemetry: ComponentTelemetry,
+    log_payloads: bool,
 }
 
 #[async_trait]
@@ -173,6 +187,10 @@ impl IncrementalEncoder for DatadogServiceChecks {
             Some(eventd) => eventd,
             None => return Ok(ProcessResult::Continue),
         };
+
+        if self.log_payloads {
+            debug!(service_check = ?service_check, "Flushing service check.");
+        }
 
         match self.request_builder.encode(service_check).await {
             Ok(None) => Ok(ProcessResult::Continue),
@@ -274,5 +292,21 @@ mod config_smoke {
                 .expect("DatadogServiceChecksConfiguration should deserialize")
         })
         .await
+    }
+
+    #[test]
+    fn log_payloads_defaults_to_false() {
+        let config: DatadogServiceChecksConfiguration =
+            serde_json::from_value(json!({})).expect("DatadogServiceChecksConfiguration should deserialize");
+
+        assert!(!config.log_payloads);
+    }
+
+    #[test]
+    fn deserializes_log_payloads() {
+        let config: DatadogServiceChecksConfiguration = serde_json::from_value(json!({ "log_payloads": true }))
+            .expect("DatadogServiceChecksConfiguration should deserialize");
+
+        assert!(config.log_payloads);
     }
 }

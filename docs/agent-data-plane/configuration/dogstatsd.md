@@ -1,6 +1,6 @@
 # Configuring DogStatsD on Agent Data Plane
 
-<!-- Last updated: 2026-05-20 -->
+<!-- Last updated: 2026-05-28 -->
 
 The DogStatsD implementation on ADP has been redesigned in Rust for better resource guarantees and
 efficiency. Because the architecture is different from the original implementation, certain
@@ -203,6 +203,20 @@ This debug log differs from the `dogstatsd_capture_*` settings. The debug log re
 summaries after DogStatsD parsing. The capture settings record raw DogStatsD traffic for packet-level
 investigation, and they remain tracked separately under [#1381].
 
+### Payload debug logging (`log_payloads`)
+
+ADP supports `log_payloads` for debugging metric, event, and service check payload contents before
+they enter Datadog encoders. To see these logs, set `log_payloads: true` and run with debug-level
+logging enabled.
+
+When enabled, ADP logs decoded payload objects: scalar series metrics, sketches/distributions,
+events, and service checks. These logs can contain high-volume customer data, including metric names,
+tags, host and container metadata, event text, and service check messages. Use this setting only
+while diagnosing payload content.
+
+ADP does not dump the exact encoded JSON or protobuf HTTP request body, and it does not log compressed
+wire payload bytes.
+
 ### `dogstatsd_mapper_cache_size`
 
 ADP and the core agent both cache mapper results to skip regex evaluation on repeat metric names.
@@ -250,9 +264,8 @@ ways that are not yet fully characterized.
 | `forwarder_max_concurrent_requests`                              | Max concurrent HTTP requests                    | [#1363] |
 | `forwarder_requeue_buffer_size`                                  | In-memory re-queue buffer size                  | [#1755] |
 | `forwarder_retry_queue_capacity_time_interval_sec`               | Retry queue time-based capacity                 | [#1365] |
-| `forwarder_stop_timeout`                                         | Timeout (s) for forwarder graceful stop         | [#1754] |
-| `heroku_dyno`                                                    | Override agent name for Heroku telemetry        | [#1753] |
-| `log_payloads`                                                   | Debug-log serialized payloads before send       | [#1750] |
+| `forwarder_stop_timeout`                                         | Timeout (s) for forwarder graceful stop         | [#1680] |
+| `heroku_dyno`                                                    | Override agent name for Heroku telemetry        | [#1685] |
 | `multi_region_failover.enabled`                                  | Enable multi-region failover mode               | [#1678] |
 | `multi_region_failover.failover_metrics`                         | Enable metrics forwarding to failover region    | [#1678] |
 | `multi_region_failover.metric_allowlist`                         | Metric name allowlist for MRF forwarding        | [#1678] |
@@ -407,6 +420,7 @@ when the receiving syslog daemon expects the Agent's RFC-style header.
 | `log_file_max_rolls`                             | Max rotated log files kept             |
 | `log_file_max_size`                              | Max log file size before rotate        |
 | `log_format_json`                                | Use JSON log format                    |
+| `log_payloads`                                   | Debug-log decoded payload contents     |
 | `log_to_console`                                 | Log to stdout/stderr                   |
 | `log_to_syslog`                                  | Log to syslog daemon                   |
 | `metric_filterlist`                              | Metric name blocklist                  |
