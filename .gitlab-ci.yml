@@ -14,6 +14,15 @@ stages:
 #
 # This mostly controls how we tag our ADP container images and set various bits of metadata.
 workflow:
+  # Auto-cancel any interruptible jobs from a previous pipeline when a new commit lands on the
+  # same ref. The default ('conservative') only cancels the pipeline if no non-interruptible
+  # job has started yet — since our Linux jobs are non-interruptible and start immediately,
+  # that mode effectively never cancels anything. 'interruptible' cancels just the jobs marked
+  # interruptible: true (currently the macOS unit + integration jobs, which run on scarce
+  # bare-metal runner capacity); non-interruptible jobs continue to completion as before.
+  # https://docs.gitlab.com/ci/yaml/#workflowauto_cancelon_new_commit
+  auto_cancel:
+    on_new_commit: interruptible
   rules:
     - if: $CI_COMMIT_TAG == null
       variables:
