@@ -203,7 +203,7 @@
     "action": "INVESTIGATE",
     "description": "Fleet Automation config ID tag for agent",
     "reason": "Marked for investigation; previously dismissed as not-applicable.",
-    "issue": "#1685",
+    "issue": "#1751",
     "adp_key": null
   },
   {
@@ -1040,7 +1040,7 @@
     "action": "INVESTIGATE",
     "description": "Pre-allocate shared compressor buffers",
     "reason": "Marked for investigation; previously dismissed as not-applicable.",
-    "issue": "#1686",
+    "issue": "#1749",
     "adp_key": null
   },
   {
@@ -1085,7 +1085,7 @@
     "action": "INVESTIGATE",
     "description": "Agent's own pod entity ID (set by DCA webhook)",
     "reason": "Marked for investigation; previously dismissed as not-applicable.",
-    "issue": "#1685",
+    "issue": "#1752",
     "adp_key": null
   },
   {
@@ -1256,7 +1256,7 @@
     "action": "INVESTIGATE",
     "description": "In-memory requeue buffer size for forwarder",
     "reason": "Marked for investigation; previously dismissed as not-applicable.",
-    "issue": "#1680",
+    "issue": "#1755",
     "adp_key": null
   },
   {
@@ -1292,7 +1292,7 @@
     "action": "INVESTIGATE",
     "description": "Timeout (sec) for forwarder graceful stop",
     "reason": "Marked for investigation; previously dismissed as not-applicable.",
-    "issue": "#1680",
+    "issue": "#1754",
     "adp_key": null
   },
   {
@@ -1337,7 +1337,7 @@
     "action": "INVESTIGATE",
     "description": "Override agent name for Heroku telemetry",
     "reason": "Marked for investigation; previously dismissed as not-applicable.",
-    "issue": "#1685",
+    "issue": "#1753",
     "adp_key": null
   },
   {
@@ -1454,7 +1454,7 @@
     "action": "INVESTIGATE",
     "description": "Debug-log serialized payloads before send",
     "reason": "Marked for investigation; previously dismissed as not-applicable.",
-    "issue": "#1686",
+    "issue": "#1750",
     "adp_key": null
   },
   {

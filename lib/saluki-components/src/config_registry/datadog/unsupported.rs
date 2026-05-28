@@ -346,7 +346,7 @@ crate::declare_annotations! {
     /// `config_id` - Fleet Automation config ID on payloads.
     CONFIG_ID = SalukiAnnotation {
         schema: &schema::CONFIG_ID,
-        // Not implemented. #1685
+        // Not implemented. #1751
         support_level: SupportLevel::Incompatible(Severity::Medium),
         additional_yaml_paths: &[],
         env_var_override: None,
@@ -379,7 +379,7 @@ crate::declare_annotations! {
     /// `enable_json_stream_shared_compressor_buffers` - shared JSON stream compressor buffer allocation.
     ENABLE_JSON_STREAM_SHARED_COMPRESSOR_BUFFERS = SalukiAnnotation {
         schema: &schema::ENABLE_JSON_STREAM_SHARED_COMPRESSOR_BUFFERS,
-        // Not implemented. #1686
+        // Not implemented. #1749
         support_level: SupportLevel::Incompatible(Severity::Low),
         additional_yaml_paths: &[],
         env_var_override: None,
@@ -390,7 +390,7 @@ crate::declare_annotations! {
     /// `entity_id` - agent pod entity ID injected by DCA webhook.
     ENTITY_ID = SalukiAnnotation {
         schema: &schema::ENTITY_ID,
-        // Not implemented. #1685
+        // Not implemented. #1752
         support_level: SupportLevel::Incompatible(Severity::Low),
         additional_yaml_paths: &[],
         env_var_override: None,
@@ -401,7 +401,7 @@ crate::declare_annotations! {
     /// `forwarder_requeue_buffer_size` - forwarder in-memory requeue buffer size.
     FORWARDER_REQUEUE_BUFFER_SIZE = SalukiAnnotation {
         schema: &schema::FORWARDER_REQUEUE_BUFFER_SIZE,
-        // Not implemented. #1680
+        // Not implemented. #1755
         support_level: SupportLevel::Incompatible(Severity::Low),
         additional_yaml_paths: &[],
         env_var_override: None,
@@ -412,7 +412,7 @@ crate::declare_annotations! {
     /// `forwarder_stop_timeout` - forwarder graceful stop drain timeout.
     FORWARDER_STOP_TIMEOUT = SalukiAnnotation {
         schema: &schema::FORWARDER_STOP_TIMEOUT,
-        // Not implemented. #1680
+        // Not implemented. #1754
         support_level: SupportLevel::Incompatible(Severity::Low),
         additional_yaml_paths: &[],
         env_var_override: None,
@@ -423,7 +423,7 @@ crate::declare_annotations! {
     /// `heroku_dyno` - Heroku dyno name override for agent telemetry.
     HEROKU_DYNO = SalukiAnnotation {
         schema: &schema::HEROKU_DYNO,
-        // Not implemented. #1685
+        // Not implemented. #1753
         support_level: SupportLevel::Incompatible(Severity::High),
         additional_yaml_paths: &[],
         env_var_override: None,
@@ -434,7 +434,7 @@ crate::declare_annotations! {
     /// `log_payloads` - debug-log serialized payloads before send.
     LOG_PAYLOADS = SalukiAnnotation {
         schema: &schema::LOG_PAYLOADS,
-        // Not implemented. #1686
+        // Not implemented. #1750
         support_level: SupportLevel::Incompatible(Severity::Low),
         additional_yaml_paths: &[],
         env_var_override: None,
