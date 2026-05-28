@@ -137,13 +137,12 @@ test-integration:
   variables:
     PANORAMIC_LOG_DIR: integration-logs
   before_script:
-    # Defensive: clean up any leftover Datadog Agent processes from prior runs on this shared
-    # runner before we begin. Otherwise a stranded trace-agent/process-agent can hold ports
-    # (e.g., 8126) and break the first converged test. Catch both:
-    #   - any pre-existing system install at /opt/datadog-agent (we don't use it, but a
-    #     conflicting one could still be running)
-    #   - our own sandbox install under /tmp/saluki-dda from a prior run on this shared runner
-    - sudo pkill -9 -f /opt/datadog-agent/ || true
+    # Defensive: clean up any leftover Agent processes from prior runs on this shared runner.
+    # All test-Agent ports are shifted out of the canonical range (see
+    # panoramic::unix_runner::test_port_isolation_env), so we don't need to touch a system
+    # install at /opt/datadog-agent; we only sweep our own sandbox under /tmp/saluki-dda where
+    # a stranded trace-agent / process-agent from a prior run could still hold our shifted
+    # ports and break the first converged test.
     - sudo pkill -9 -f /tmp/saluki-dda/ || true
   script:
     - make test-integration-macos-ci
