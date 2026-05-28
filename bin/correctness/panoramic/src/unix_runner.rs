@@ -195,25 +195,19 @@ impl UnixIntegrationRunner {
             };
             debug!(test = %test_name, binary = %agent_binary.display(), "Resolved Core Agent binary path.");
 
-            // The Agent and ADP must agree on the auth_token / ipc_cert.pem path. The Agent's
-            // authoritative config (sent to ADP via the config stream) overrides ADP's env vars
-            // by design, so the Agent must itself be told about the per-test path — otherwise
-            // it advertises the platform default (`/opt/datadog-agent/etc/auth_token`), ADP
-            // follows that advice for its post-config-stream IPC clients, and TLS fails with
-            // UnknownIssuer because the platform default cert does not match what the per-test
-            // Agent is actually serving.
             // Forced runner-owned bindings:
-            //   DD_AUTH_TOKEN_FILE_PATH: pin to the per-test path. The Agent's authoritative
-            //     config (sent to ADP via the config stream) would otherwise advertise the
-            //     platform default, ADP would follow that advice for its post-config-stream IPC
-            //     clients, and TLS would fail with UnknownIssuer because the platform default
-            //     cert does not match what the per-test Agent is actually serving.
-            //   DD_RUN_PATH: the Agent's default `run_path` is the install prefix's `run/`
-            //     directory (e.g., /opt/datadog-agent/run). Without overriding it, a relocated
-            //     Agent install would try to write its runtime state (remote-config db,
-            //     sockets, pid file) back to the canonical /opt path — typically not writable
-            //     in CI. Scope it to the per-test state directory so each test gets a clean
-            //     slate and nothing leaks across runs.
+            //   DD_AUTH_TOKEN_FILE_PATH — pin Agent + ADP to the same per-test path. The Agent's
+            //     authoritative config (sent to ADP via the config stream) overrides ADP's env
+            //     vars, so the Agent itself must be told about the per-test path; otherwise it
+            //     advertises the platform default (`/opt/datadog-agent/etc/auth_token`), ADP
+            //     follows that advice for its post-config-stream IPC clients, and TLS fails
+            //     with UnknownIssuer because the platform default cert does not match what the
+            //     per-test Agent is actually serving.
+            //   DD_RUN_PATH — Agent's default `run_path` is the install prefix's `run/` dir
+            //     (e.g., /opt/datadog-agent/run). Without overriding, a relocated Agent install
+            //     would try to write its runtime state (remote-config db, sockets, pid file)
+            //     back to /opt — typically not writable in CI. Scope it to the per-test state
+            //     directory so each test gets a clean slate and nothing leaks across runs.
             let agent_env = build_process_env(
                 &self.test_case.container.env,
                 &[
@@ -481,24 +475,18 @@ struct PanoramicLogSink {
 
 impl LogSink for PanoramicLogSink {
     fn push_line(&mut self, line: String, is_stderr: bool) {
-        // Try a non-blocking write first. If contended, spawn a task to defer the write so we
-        // don't stall the log pump (which is itself a tokio task).
-        if let Ok(mut buf) = self.buf.try_write() {
+        // The log pump (in airlock::unix) holds the LogSink's outer mutex while calling us,
+        // so writes from a single pump are already serialized. Spawn a small task to actually
+        // append to the buffer so we never block the pump on `.write().await` ordering with
+        // concurrent assertion readers.
+        let buf = self.buf.clone();
+        tokio::spawn(async move {
+            let mut buf = buf.write().await;
             if is_stderr {
                 buf.stderr.push(line);
             } else {
                 buf.stdout.push(line);
             }
-        } else {
-            let buf = self.buf.clone();
-            tokio::spawn(async move {
-                let mut buf = buf.write().await;
-                if is_stderr {
-                    buf.stderr.push(line);
-                } else {
-                    buf.stdout.push(line);
-                }
-            });
-        }
+        });
     }
 }

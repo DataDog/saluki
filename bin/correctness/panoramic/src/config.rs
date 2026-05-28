@@ -228,14 +228,6 @@ pub enum AssertionConfig {
         duration: HumanDuration,
     },
 
-    /// Check that the process exits with a specific exit code.
-    ProcessExitsWith {
-        /// The expected exit code.
-        expected_code: i64,
-        /// Timeout for waiting for the process to exit.
-        timeout: HumanDuration,
-    },
-
     /// Check that ADP itself exits with a specific exit code, abstracting over the runtime's
     /// observation mechanism.
     ///
@@ -367,9 +359,7 @@ impl AssertionConfig {
                     crate::dynamic_vars::resolve_placeholders(p, vars);
                 }
             }
-            AssertionConfig::ProcessStableFor { .. }
-            | AssertionConfig::ProcessExitsWith { .. }
-            | AssertionConfig::AdpExitsWith { .. } => {}
+            AssertionConfig::ProcessStableFor { .. } | AssertionConfig::AdpExitsWith { .. } => {}
         }
     }
 
@@ -392,9 +382,7 @@ impl AssertionConfig {
                     crate::dynamic_vars::find_unresolved(p, &mut out);
                 }
             }
-            AssertionConfig::ProcessStableFor { .. }
-            | AssertionConfig::ProcessExitsWith { .. }
-            | AssertionConfig::AdpExitsWith { .. } => {}
+            AssertionConfig::ProcessStableFor { .. } | AssertionConfig::AdpExitsWith { .. } => {}
         }
         out
     }

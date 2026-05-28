@@ -5,16 +5,18 @@ use crate::{
     config::LogStream,
 };
 
-/// Assertion that checks ADP exited with a specific exit code, abstracting over the runtime.
+/// Assertion that checks ADP exited with a specific exit code.
 ///
-/// On the `docker` runtime ADP runs under s6, which keeps the container alive across ADP
-/// restarts and logs `"agent-data-plane exited with code N"` from
-/// `docker/s6-services/agent-data-plane/finish` when ADP exits. We grep the captured log buffer
-/// for that line.
+/// The detection mechanism differs per runtime because ADP isn't a top-level process in every
+/// case:
 ///
-/// On the `mac` runtime there is no supervisor. The Unix runner observes ADP's child process
-/// exit directly and records the exit code in the shared cell on
-/// [`AssertionContext::host_process_exit_code`].
+/// - **`docker`**: ADP runs under s6 inside the converged container; s6 keeps the container
+///   alive across ADP restarts and logs `"agent-data-plane exited with code N"` from
+///   `docker/s6-services/agent-data-plane/finish` when ADP exits. We grep the captured log
+///   buffer for that line.
+/// - **`mac`** (and any host-process runtime): the Unix runner observes ADP's child process
+///   exit directly and records the exit code in the shared cell on
+///   [`AssertionContext::host_process_exit_code`]; we read it from there.
 pub struct AdpExitsWithAssertion {
     expected_code: i64,
     timeout: Duration,

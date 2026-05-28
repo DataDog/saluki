@@ -617,11 +617,9 @@ provision-macos-test-env: ## Installs the pinned Datadog Agent ($(MACOS_TEST_AGE
 			curl -fL "$(MACOS_TEST_AGENT_DMG_URL)" -o "$$DMG_PATH"; \
 		fi; \
 		MOUNT_DIR=$$(mktemp -d /tmp/saluki-dda-mount-XXXXXX); \
-		hdiutil detach "$$MOUNT_DIR" 2>/dev/null || true; \
 		hdiutil attach "$$DMG_PATH" -mountpoint "$$MOUNT_DIR" -nobrowse >/dev/null; \
 		PKG=$$(find "$$MOUNT_DIR" -name '*.pkg' | head -1); \
-		EXPAND_DIR=$$(mktemp -d /tmp/saluki-dda-expand-XXXXXX); \
-		rm -rf "$$EXPAND_DIR"; \
+		EXPAND_DIR=$$(mktemp -d /tmp/saluki-dda-expand-XXXXXX) && rm -rf "$$EXPAND_DIR"; \
 		pkgutil --expand-full "$$PKG" "$$EXPAND_DIR" >/dev/null; \
 		hdiutil detach "$$MOUNT_DIR" >/dev/null; \
 		rmdir "$$MOUNT_DIR" 2>/dev/null || true; \

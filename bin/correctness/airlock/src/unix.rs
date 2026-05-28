@@ -102,7 +102,6 @@ pub struct UnixProcess {
     /// PGID of the spawned process. We made the child the group leader at spawn time, so this
     /// equals the child's PID. `None` only if spawn failed to return a PID (very rare).
     process_group: Option<i32>,
-    exit_token: CancellationToken,
     exit_code: ExitCodeCell,
     log_tasks: Vec<JoinHandle<()>>,
     exit_task: Option<JoinHandle<()>>,
@@ -136,7 +135,6 @@ impl UnixProcess {
             .spawn()
             .with_error_context(|| format!("Failed to spawn '{}'.", config.binary_path.display()))?;
 
-        // PGID == child PID since we made the child the group leader (process_group(0)).
         let process_group = child.id().map(|pid| pid as i32);
 
         let stdout = child
@@ -151,13 +149,11 @@ impl UnixProcess {
         let stdout_task = spawn_log_pump(stdout, log_sink.clone(), false);
         let stderr_task = spawn_log_pump(stderr, log_sink, true);
 
-        // Real exit watcher: moves the child into the task, calls `wait()`, records the exit
-        // code, and fires the exit token so blocked assertions (process_stable_for /
-        // adp_exits_with) unblock immediately rather than waiting for the test's own
-        // cleanup phase.
+        // Exit watcher: moves the child into the task, calls `wait()`, records the exit code,
+        // and fires the exit token so blocked assertions (process_stable_for / adp_exits_with)
+        // unblock immediately rather than waiting for the test's own cleanup phase.
         let exit_code: ExitCodeCell = Arc::new(OnceLock::new());
         let exit_code_for_watcher = exit_code.clone();
-        let exit_token_for_watcher = exit_token.clone();
         let name_for_watcher = config.name.clone();
         let exit_task = tokio::spawn(async move {
             match child.wait().await {
@@ -171,13 +167,12 @@ impl UnixProcess {
                     let _ = exit_code_for_watcher.set(None);
                 }
             }
-            exit_token_for_watcher.cancel();
+            exit_token.cancel();
         });
 
         Ok(Self {
             name: config.name,
             process_group,
-            exit_token,
             exit_code,
             log_tasks: vec![stdout_task, stderr_task],
             exit_task: Some(exit_task),
@@ -215,14 +210,11 @@ impl UnixProcess {
             }
         }
 
-        // The exit watcher will have observed the kill and set the exit code + fired the token.
-        // Join it so we don't leak the task.
+        // The exit watcher will have observed the kill, set the exit code, and fired the exit
+        // token. Join it (and the log pumps) so we don't leak tasks.
         if let Some(handle) = self.exit_task.take() {
             let _ = handle.await;
         }
-        // Defensive: make sure the token is fired even if the watcher never set it (for example,
-        // on a failed wait).
-        self.exit_token.cancel();
         for handle in self.log_tasks.drain(..) {
             let _ = handle.await;
         }

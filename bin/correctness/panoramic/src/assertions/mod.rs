@@ -13,7 +13,6 @@ mod file_contains;
 mod http_check;
 mod log_contains;
 mod port_listening;
-mod process_exits;
 mod process_stable;
 
 pub use adp_exits::AdpExitsWithAssertion;
@@ -21,7 +20,6 @@ pub use file_contains::FileContainsAssertion;
 pub use http_check::HttpCheckAssertion;
 pub use log_contains::{LogContainsAssertion, LogNotContainsAssertion};
 pub use port_listening::PortListeningAssertion;
-pub use process_exits::ProcessExitsWithAssertion;
 pub use process_stable::ProcessStableForAssertion;
 
 /// Result of running an assertion.
@@ -133,9 +131,6 @@ pub trait Assertion: Send + Sync {
 pub fn create_assertion(config: &AssertionConfig) -> Result<Box<dyn Assertion>, GenericError> {
     match config {
         AssertionConfig::ProcessStableFor { duration } => Ok(Box::new(ProcessStableForAssertion::new(duration.0))),
-        AssertionConfig::ProcessExitsWith { expected_code, timeout } => {
-            Ok(Box::new(ProcessExitsWithAssertion::new(*expected_code, timeout.0)))
-        }
         AssertionConfig::AdpExitsWith { expected_code, timeout } => {
             Ok(Box::new(AdpExitsWithAssertion::new(*expected_code, timeout.0)))
         }
