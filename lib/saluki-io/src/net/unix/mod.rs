@@ -18,19 +18,14 @@ mod linux;
 #[cfg(target_os = "linux")]
 use self::linux::uds_recvmsg;
 #[cfg(target_os = "linux")]
-pub use self::linux::{enable_uds_socket_credentials, socket_reuseport_supported};
-
-#[cfg(target_os = "linux")]
-mod replay_send;
-#[cfg(target_os = "linux")]
-pub use self::replay_send::send_replay_packet;
+pub use self::linux::{enable_uds_socket_credentials, socket_reuseport_supported, uds_sendmsg_with_creds};
 
 #[cfg(not(target_os = "linux"))]
 mod non_linux;
 #[cfg(not(target_os = "linux"))]
 use self::non_linux::uds_recvmsg;
 #[cfg(not(target_os = "linux"))]
-pub use self::non_linux::{enable_uds_socket_credentials, send_replay_packet, socket_reuseport_supported};
+pub use self::non_linux::{enable_uds_socket_credentials, socket_reuseport_supported};
 use super::addr::ConnectionAddress;
 
 /// Ensures that the given path is read for use as a UNIX socket.

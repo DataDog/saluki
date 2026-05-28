@@ -1,21 +1,36 @@
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+#[cfg(target_os = "linux")]
+use std::path::Path;
+use std::path::PathBuf;
+use std::time::Duration;
+#[cfg(target_os = "linux")]
+use std::time::Instant;
 
 use argh::{FromArgValue, FromArgs};
 use comfy_table::{presets::ASCII_FULL_CONDENSED, Cell, ContentArrangement, Row, Table};
-use saluki_components::sources::{
-    TimestampResolution, TrafficCaptureReader, DEFAULT_REPLAY_LOOPS, REPLAY_CREDENTIALS_GID,
-};
+#[cfg(any(target_os = "linux", test))]
+use saluki_components::sources::TimestampResolution;
+#[cfg(target_os = "linux")]
+use saluki_components::sources::TrafficCaptureReader;
+use saluki_components::sources::DEFAULT_REPLAY_LOOPS;
+#[cfg(target_os = "linux")]
+use saluki_components::sources::REPLAY_CREDENTIALS_GID;
 use saluki_config::{DurationString, GenericConfiguration};
-use saluki_error::{generic_error, ErrorContext as _, GenericError};
-use saluki_io::net::unix::send_replay_packet;
+#[cfg(any(target_os = "linux", test))]
+use saluki_error::generic_error;
+use saluki_error::{ErrorContext as _, GenericError};
+#[cfg(target_os = "linux")]
+use saluki_io::net::{unix::uds_sendmsg_with_creds, ProcessCredentials};
 use serde::Deserialize;
 use tokio::io::{self, AsyncWriteExt};
+#[cfg(target_os = "linux")]
 use tokio::net::UnixDatagram;
+#[cfg(target_os = "linux")]
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info};
+#[cfg(target_os = "linux")]
+use tracing::debug;
+use tracing::{error, info};
 
 use crate::cli::utils::DataPlaneAPIClient;
 
@@ -175,8 +190,22 @@ pub async fn handle_dogstatsd_command(bootstrap_config: &GenericConfiguration, c
             }
         }
         DogstatsdSubcommand::Replay(config) => {
-            if let Err(e) = handle_dogstatsd_replay(&mut api_client, bootstrap_config, config).await {
-                error!("Failed to replay DogStatsD traffic: {:#}", e);
+            #[cfg(target_os = "linux")]
+            {
+                if let Err(e) = handle_dogstatsd_replay(&mut api_client, bootstrap_config, config).await {
+                    error!("Failed to replay DogStatsD traffic: {:#}", e);
+                    std::process::exit(1);
+                }
+            }
+
+            #[cfg(not(target_os = "linux"))]
+            {
+                let ReplayCommand {
+                    replay_file_path,
+                    loops,
+                } = config;
+                let _ = (replay_file_path, loops);
+                error!("DogStatsD replay is only supported on Linux.");
                 std::process::exit(1);
             }
         }
@@ -229,6 +258,7 @@ async fn handle_dogstatsd_capture(
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
 async fn handle_dogstatsd_replay(
     api_client: &mut DataPlaneAPIClient, config: &GenericConfiguration, cmd: ReplayCommand,
 ) -> Result<(), GenericError> {
@@ -279,6 +309,7 @@ async fn handle_dogstatsd_replay(
     }
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn dogstatsd_socket_path(config: &GenericConfiguration) -> Result<PathBuf, GenericError> {
     match config.try_get_typed::<String>("dogstatsd_socket")? {
         Some(path) if !path.is_empty() => Ok(PathBuf::from(path)),
@@ -288,6 +319,7 @@ fn dogstatsd_socket_path(config: &GenericConfiguration) -> Result<PathBuf, Gener
     }
 }
 
+#[cfg(target_os = "linux")]
 async fn run_dogstatsd_replay(
     replay_file_path: &Path, socket_path: &Path, loops: u32, cancel: &CancellationToken,
 ) -> Result<(), GenericError> {
@@ -316,6 +348,7 @@ async fn run_dogstatsd_replay(
     }
 }
 
+#[cfg(target_os = "linux")]
 async fn replay_one_iteration(
     replay_file_path: &Path, socket: &UnixDatagram, cancel: &CancellationToken,
 ) -> Result<(), GenericError> {
@@ -352,13 +385,20 @@ async fn replay_one_iteration(
             }
         }
 
-        send_replay_packet(socket, &msg.payload, msg.pid, REPLAY_CREDENTIALS_GID)
+        let credentials = ProcessCredentials {
+            pid: std::process::id() as i32,
+            uid: msg.pid as u32,
+            gid: REPLAY_CREDENTIALS_GID,
+        };
+
+        uds_sendmsg_with_creds(socket, &msg.payload, &credentials)
             .await
             .map_err(|err| generic_error!("Replay packet send failed (captured_pid={}): {}", msg.pid, err))?;
         packets_sent += 1;
     }
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn compute_target_offset(timestamp: i64, first_timestamp: i64, resolution: TimestampResolution) -> Duration {
     let delta = timestamp.saturating_sub(first_timestamp).max(0) as u64;
     match resolution {
