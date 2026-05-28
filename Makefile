@@ -635,6 +635,12 @@ provision-macos-test-env: ## Installs the pinned Datadog Agent ($(MACOS_TEST_AGE
 		mkdir -p $$(dirname $(MACOS_TEST_AGENT_INSTALL_DIR)); \
 		mv "$$PAYLOAD_DIR" $(MACOS_TEST_AGENT_INSTALL_DIR); \
 		rm -rf "$$EXPAND_DIR"; \
+		# Strip macOS provenance / quarantine xattrs from the entire sandbox. Out-of-band pkg \
+		# extraction (vs. running the .pkg through `installer`) leaves attributes (notably \
+		# com.apple.provenance on macOS 14+) that cause amfid to refuse to launch the binary \
+		# on Apple Silicon with a silent "Killed: 9" — no log output, codesign still verifies. \
+		# Clearing all xattrs after extraction is what `installer` effectively does for us. \
+		xattr -cr $(MACOS_TEST_AGENT_INSTALL_DIR) 2>/dev/null || true; \
 		test -x $(MACOS_TEST_AGENT_INSTALL_DIR)/bin/agent/agent; \
 	fi
 	@if [ ! -f $(MACOS_TEST_AGENT_INSTALL_DIR)/etc/ipc_cert.pem ] || [ ! -f $(MACOS_TEST_AGENT_INSTALL_DIR)/etc/auth_token ]; then \
