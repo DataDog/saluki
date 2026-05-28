@@ -18,8 +18,10 @@ indexmap = { workspace = true, features = ["std"] }
 metrics = { workspace = true }
 metrics-util = { workspace = true, features = ["recency", "registry"] }
 ordered-float = { workspace = true }
+papaya = { workspace = true }
 paste = { workspace = true }
 pin-project = { workspace = true }
+prometheus-exposition = { workspace = true }
 resource-accounting = { workspace = true }
 saluki-api = { workspace = true }
 saluki-common = { workspace = true }

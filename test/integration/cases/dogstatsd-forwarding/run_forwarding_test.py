@@ -27,7 +27,10 @@ DOGSTATSD_ADDR = ("127.0.0.1", 8125)
 DOGSTATSD_STREAM_ADDR = ("127.0.0.1", 9126)
 DOGSTATSD_UDS_PATH = "/tmp/dsd-forwarding.sock"
 DOGSTATSD_UDS_STREAM_PATH = "/tmp/dsd-forwarding-stream.sock"
-TELEMETRY_URLS = ("http://127.0.0.1:5102/metrics", "http://127.0.0.1:5102/compat/metrics")
+TELEMETRY_URLS = (
+    "http://127.0.0.1:5100/metrics",
+    "http://127.0.0.1:5100/compat/metrics",
+)
 PROBE_TIMEOUT_SECS = 60
 PROBE_INTERVAL_SECS = 0.25
 SOCKET_TIMEOUT_SECS = 0.2
@@ -122,13 +125,17 @@ def send_dogstatsd_stream_payload():
 
     while not stop_event.is_set() and time.monotonic() < deadline:
         try:
-            with socket.create_connection(DOGSTATSD_STREAM_ADDR, timeout=1) as stream_socket:
+            with socket.create_connection(
+                DOGSTATSD_STREAM_ADDR, timeout=1
+            ) as stream_socket:
                 stream_socket.sendall(stream_frame)
         except OSError:
             time.sleep(PROBE_INTERVAL_SECS)
             continue
 
-        if os.path.exists(FORWARDED_STREAM_ONE_PATH) and os.path.exists(FORWARDED_STREAM_TWO_PATH):
+        if os.path.exists(FORWARDED_STREAM_ONE_PATH) and os.path.exists(
+            FORWARDED_STREAM_TWO_PATH
+        ):
             return
         time.sleep(PROBE_INTERVAL_SECS)
 
@@ -159,7 +166,9 @@ def send_unix_datagram_payload():
 
 
 def send_unix_stream_payload():
-    stream_frame = len(UDS_STREAM_FRAME_PAYLOAD).to_bytes(4, "little") + UDS_STREAM_FRAME_PAYLOAD
+    stream_frame = (
+        len(UDS_STREAM_FRAME_PAYLOAD).to_bytes(4, "little") + UDS_STREAM_FRAME_PAYLOAD
+    )
     deadline = time.monotonic() + PROBE_TIMEOUT_SECS
 
     while not stop_event.is_set() and time.monotonic() < deadline:

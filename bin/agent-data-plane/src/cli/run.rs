@@ -338,16 +338,6 @@ fn check_and_warn_config(config: &GenericConfiguration) -> Result<(), GenericErr
             continue;
         }
 
-        // Return a warning with a custom message on how to enable ADP telemetry.
-        if key == "telemetry.enabled" {
-            warn!(
-                key = %key,
-                "The telemetry.enabled key is not read by ADP. \
-                 Use data_plane.telemetry_enabled and data_plane.telemetry_filter_level instead."
-            );
-            continue;
-        }
-
         match classification.support_level {
             SupportLevel::Full => {
                 trace!(key = %key, "Fully supported key with non-default value detected. Proceeding.")
