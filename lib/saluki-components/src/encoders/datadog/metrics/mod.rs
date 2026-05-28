@@ -979,6 +979,12 @@ fn write_metric_to_v3(writer: &mut v3::V3Writer, metric: &Metric, additional_tag
         }
     }
 
+    if metric_type != v3::V3MetricType::Sketch {
+        if let Some(unit) = metric.metadata().unit() {
+            builder.set_unit(unit);
+        }
+    }
+
     // Points based on metric type
     match metric.values() {
         MetricValues::Counter(points) | MetricValues::Gauge(points) => {
@@ -1102,7 +1108,12 @@ async fn create_v3_request(
 
 #[cfg(test)]
 mod tests {
-    use saluki_core::data_model::{event::Event, payload::Payload};
+    use saluki_context::Context;
+    use saluki_core::data_model::{
+        event::{metric::MetricMetadata, Event},
+        payload::Payload,
+    };
+    use stringtheory::MetaString;
     use tokio::time::timeout;
 
     use super::*;
@@ -1151,6 +1162,65 @@ serializer_experimental_use_v3_api:
         .expect("request should be created");
 
         assert_eq!("/api/intake/metrics/custom/series", request.uri());
+    }
+
+    #[test]
+    fn v3_series_metric_unit_refs_are_encoded_sparsely() {
+        let context = Context::from_static_parts("my.timer.avg", &[]);
+        let metadata = MetricMetadata::default().with_unit(MetaString::from_static("millisecond"));
+        let gauge = Metric::from_parts(context, MetricValues::gauge([1.0_f64]), metadata);
+        let context = Context::from_static_parts("my.counter", &[]);
+        let no_unit = Metric::from_parts(context, MetricValues::gauge([2.0_f64]), MetricMetadata::default());
+        let context = Context::from_static_parts("my.timer.max", &[]);
+        let metadata = MetricMetadata::default().with_unit(MetaString::from_static("millisecond"));
+        let same_unit = Metric::from_parts(context, MetricValues::gauge([3.0_f64]), metadata);
+
+        let payload = encode_v3_metrics_batch(&[gauge, no_unit, same_unit], &SharedTagSet::default())
+            .expect("V3 metric should encode successfully");
+
+        let expected_unit_dict = [
+            0xca, 0x01, // field 25, length-delimited.
+            0x0c, // field payload length: varint string length + string bytes.
+            0x0b, b'm', b'i', b'l', b'l', b'i', b's', b'e', b'c', b'o', b'n', b'd',
+        ];
+        assert!(
+            payload
+                .windows(expected_unit_dict.len())
+                .any(|window| window == expected_unit_dict),
+            "V3 payload should contain DictUnitStr field for 'millisecond', got bytes: {:?}",
+            payload
+        );
+
+        let expected_unit_ref = [
+            0xd2, 0x01, // field 26, length-delimited.
+            0x02, // packed field payload length.
+            0x02, 0x00, // sparse unit refs for metrics 1 and 3 only: refs [1, 1] -> deltas [1, 0].
+        ];
+        assert!(
+            payload
+                .windows(expected_unit_ref.len())
+                .any(|window| window == expected_unit_ref),
+            "V3 payload should contain UnitRef field for 'millisecond', got bytes: {:?}",
+            payload
+        );
+    }
+
+    #[test]
+    fn v3_sketch_metric_unit_not_encoded() {
+        let context = Context::from_static_parts("my.histogram", &[]);
+        let metadata = MetricMetadata::default().with_unit(MetaString::from_static("millisecond"));
+        let histogram = Metric::from_parts(context, MetricValues::histogram([1.0_f64]), metadata);
+
+        let payload = encode_v3_metrics_batch(&[histogram], &SharedTagSet::default())
+            .expect("V3 sketch metric should encode successfully");
+
+        assert!(
+            !payload
+                .windows(b"millisecond".len())
+                .any(|window| window == b"millisecond"),
+            "V3 sketch payload should not contain unit bytes, matching the Agent V3 sketch builder: {:?}",
+            payload
+        );
     }
 
     #[tokio::test]

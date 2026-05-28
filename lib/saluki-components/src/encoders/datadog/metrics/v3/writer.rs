@@ -11,6 +11,7 @@ use super::interner::Interner;
 use super::types::{value_type_for_values, V3MetricType, V3ValueType};
 
 const FLAG_NO_INDEX: u64 = 0x100;
+const FLAG_HAS_UNIT: u64 = 0x200;
 
 /// Encoded V3 payload data ready for protobuf serialization.
 ///
@@ -27,8 +28,9 @@ struct V3EncodedData {
     pub dict_resource_name: Vec<i64>,
     pub dict_source_type_bytes: Vec<u8>,
     pub dict_origin_info: Vec<i32>,
+    pub dict_unit_bytes: Vec<u8>,
 
-    // Per-metric columns (one entry per metric)
+    // Per-metric columns (one entry per metric, except conditional columns)
     pub types: Vec<u64>,
     pub names: Vec<i64>,
     pub tags: Vec<i64>,
@@ -37,6 +39,7 @@ struct V3EncodedData {
     pub num_points: Vec<u64>,
     pub source_type_names: Vec<i64>,
     pub origin_infos: Vec<i64>,
+    pub unit_refs: Vec<i64>, // Present only for metrics with FLAG_HAS_UNIT set.
 
     // Point data (varies per metric based on num_points)
     pub timestamps: Vec<i64>,
@@ -65,6 +68,7 @@ pub struct V3Writer {
     resource_interner: Interner<Vec<(i64, i64)>>,
     source_type_interner: Interner<String>,
     origin_interner: Interner<(i32, i32, i32)>,
+    unit_interner: Interner<String>,
 
     // Dictionary encoded bytes
     dict_name_bytes: Vec<u8>,
@@ -76,8 +80,9 @@ pub struct V3Writer {
     dict_resource_name: Vec<i64>,
     dict_source_type_bytes: Vec<u8>,
     dict_origin_info: Vec<i32>,
+    dict_unit_bytes: Vec<u8>,
 
-    // Per-metric columns
+    // Per-metric columns (one entry per metric, except conditional columns)
     types: Vec<u64>,
     names: Vec<i64>,
     tags: Vec<i64>,
@@ -86,6 +91,7 @@ pub struct V3Writer {
     num_points: Vec<u64>,
     source_type_names: Vec<i64>,
     origin_infos: Vec<i64>,
+    unit_refs: Vec<i64>, // Present only for metrics with FLAG_HAS_UNIT set.
 
     // Point data
     timestamps: Vec<i64>,
@@ -134,6 +140,7 @@ impl V3Writer {
             point_start_idx,
             sint64_start_idx,
             metric_idx,
+            unit_ref_idx: None,
         }
     }
 
@@ -144,6 +151,7 @@ impl V3Writer {
         delta_encode(&mut self.resources);
         delta_encode(&mut self.source_type_names);
         delta_encode(&mut self.origin_infos);
+        delta_encode(&mut self.unit_refs);
         delta_encode(&mut self.timestamps);
 
         V3EncodedData {
@@ -156,6 +164,7 @@ impl V3Writer {
             dict_resource_name: self.dict_resource_name,
             dict_source_type_bytes: self.dict_source_type_bytes,
             dict_origin_info: self.dict_origin_info,
+            dict_unit_bytes: self.dict_unit_bytes,
             types: self.types,
             names: self.names,
             tags: self.tags,
@@ -164,6 +173,7 @@ impl V3Writer {
             num_points: self.num_points,
             source_type_names: self.source_type_names,
             origin_infos: self.origin_infos,
+            unit_refs: self.unit_refs,
             timestamps: self.timestamps,
             vals_sint64: self.vals_sint64,
             vals_float32: self.vals_float32,
@@ -207,6 +217,9 @@ impl V3Writer {
         }
 
         os.write_repeated_packed_int32(DICT_ORIGIN_INFO_FIELD_NUMBER, &data.dict_origin_info)?;
+        if !data.dict_unit_bytes.is_empty() {
+            os.write_bytes(DICT_UNIT_STR_FIELD_NUMBER, &data.dict_unit_bytes)?;
+        }
 
         // Per-metric columns
         os.write_repeated_packed_uint64(TYPES_FIELD_NUMBER, &data.types)?;
@@ -217,6 +230,7 @@ impl V3Writer {
         os.write_repeated_packed_uint64(NUM_POINTS_FIELD_NUMBER, &data.num_points)?;
         os.write_repeated_packed_sint64(SOURCE_TYPE_NAME_FIELD_NUMBER, &data.source_type_names)?;
         os.write_repeated_packed_sint64(ORIGIN_INFO_FIELD_NUMBER, &data.origin_infos)?;
+        os.write_repeated_packed_sint64(UNIT_REFS_FIELD_NUMBER, &data.unit_refs)?;
 
         // Point data
         os.write_repeated_packed_sint64(TIMESTAMPS_FIELD_NUMBER, &data.timestamps)?;
@@ -363,6 +377,17 @@ impl V3Writer {
         }
         id
     }
+
+    fn intern_unit(&mut self, unit: &str) -> i64 {
+        if unit.is_empty() {
+            return 0;
+        }
+        let (id, is_new) = self.unit_interner.get_or_insert(unit);
+        if is_new {
+            append_len_str(&mut self.dict_unit_bytes, unit);
+        }
+        id
+    }
 }
 
 /// Builder for a single metric within a V3 payload.
@@ -374,6 +399,7 @@ pub struct V3MetricBuilder<'a> {
     point_start_idx: usize,
     sint64_start_idx: usize,
     metric_idx: usize,
+    unit_ref_idx: Option<usize>,
 }
 
 impl<'a> V3MetricBuilder<'a> {
@@ -421,6 +447,26 @@ impl<'a> V3MetricBuilder<'a> {
         if no_index {
             self.writer.types[self.metric_idx] |= FLAG_NO_INDEX;
         }
+    }
+
+    /// Sets the unit for this metric.
+    pub fn set_unit(&mut self, unit: &str) {
+        if unit.is_empty() {
+            self.writer.types[self.metric_idx] &= !FLAG_HAS_UNIT;
+            if let Some(unit_ref_idx) = self.unit_ref_idx.take() {
+                self.writer.unit_refs.remove(unit_ref_idx);
+            }
+            return;
+        }
+
+        let id = self.writer.intern_unit(unit);
+        if let Some(unit_ref_idx) = self.unit_ref_idx {
+            self.writer.unit_refs[unit_ref_idx] = id;
+        } else {
+            self.unit_ref_idx = Some(self.writer.unit_refs.len());
+            self.writer.unit_refs.push(id);
+        }
+        self.writer.types[self.metric_idx] |= FLAG_HAS_UNIT;
     }
 
     /// Adds a data point to this metric.
@@ -606,6 +652,37 @@ mod tests {
         assert_eq!(data.types.len(), 1);
         assert_eq!(data.names.len(), 1);
         assert_eq!(data.timestamps.len(), 2);
+    }
+
+    #[test]
+    fn test_writer_unit() {
+        let mut writer = V3Writer::new();
+
+        {
+            let mut metric = writer.write(V3MetricType::Gauge, "has.unit");
+            metric.set_unit("millisecond");
+            metric.add_point(1000, 42.0);
+            metric.close();
+        }
+        {
+            let mut metric = writer.write(V3MetricType::Gauge, "no.unit");
+            metric.add_point(1000, 43.0);
+            metric.close();
+        }
+        {
+            let mut metric = writer.write(V3MetricType::Gauge, "same.unit");
+            metric.set_unit("millisecond");
+            metric.add_point(1000, 44.0);
+            metric.close();
+        }
+
+        let data = writer.finalize_inner();
+
+        assert_eq!(data.unit_refs, vec![1, 0]);
+        assert_eq!(data.dict_unit_bytes, b"\x0bmillisecond");
+        assert_eq!(data.types[0] & FLAG_HAS_UNIT, FLAG_HAS_UNIT);
+        assert_eq!(data.types[1] & FLAG_HAS_UNIT, 0);
+        assert_eq!(data.types[2] & FLAG_HAS_UNIT, FLAG_HAS_UNIT);
     }
 
     #[test]
