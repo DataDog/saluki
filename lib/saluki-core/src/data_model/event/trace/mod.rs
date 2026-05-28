@@ -121,26 +121,18 @@ pub struct PayloadFields {
 /// A trace is a collection of spans that represent a distributed trace.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Trace {
-    // ── Core fields ──────────────────────────────────────────────────────────────
     /// The spans that make up this trace.
     spans: Vec<Span>,
-
-    // ── Unified fields (public) ──────────────────────────────────────────────────
     /// Upper 8 bytes of the 128-bit trace ID (big-endian). Zero for 64-bit-only sources.
     pub trace_id_high: u64,
     /// Lower 8 bytes of the 128-bit trace ID (big-endian).
     pub trace_id_low: u64,
     /// Trace origin string (for example, `"lambda"`, `"rum"`).
     pub origin: MetaString,
-
     /// Payload-level metadata (promoted from the tracer payload or OTLP resource).
     pub payload: PayloadFields,
-
-    /// Chunk-level or resource-level attributes (replaces `resource_tags` and
-    /// `V1TraceChunk.attributes` once downstream consumers are migrated).
+    /// Trace chunk-level or resource-level attributes.
     pub attributes: Arc<FastHashMap<MetaString, AttributeValue>>,
-
-    // Flat sampling fields.
     /// Sampling priority set by the tracer or a sampler.
     pub priority: Option<i32>,
     /// Whether this trace was dropped during sampling.
@@ -261,17 +253,15 @@ pub struct Span {
     span_links: Vec<SpanLink>,
     /// Events associated with this span.
     span_events: Vec<SpanEvent>,
-
-    // ── New V1 / unified fields ──────────────────────────────────────────────────
-    /// Per-span environment override (V1 path). Overrides `Trace.payload.env` when non-empty.
+    /// Per-span environment override. Overrides `Trace.payload.env` when non-empty.
     pub env: MetaString,
-    /// Per-span application version (V1 path).
+    /// Per-span application version.
     pub version: MetaString,
-    /// Instrumentation component name (V1 path).
+    /// Instrumentation component name.
     pub component: MetaString,
     /// Span kind (OTel values): 0=unspecified, 1=internal, 2=server, 3=client, 4=producer, 5=consumer.
     pub kind: u32,
-    /// Typed span-level attributes (replaces `meta`, `metrics`, and `meta_struct`).
+    /// Typed span-level attributes.
     pub attributes: FastHashMap<MetaString, AttributeValue>,
 }
 

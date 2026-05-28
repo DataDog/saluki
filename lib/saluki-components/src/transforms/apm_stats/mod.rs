@@ -245,19 +245,18 @@ impl ApmStats {
                 }
             });
 
-        let version = if !trace.payload.app_version.is_empty() {
-            trace.payload.app_version.clone()
-        } else {
-            root_span
-                .and_then(|s| {
-                    s.attributes
-                        .get("version")
-                        .and_then(AttributeValue::as_string)
-                        .filter(|s| !s.is_empty())
-                })
-                .cloned()
-                .unwrap_or_default()
-        };
+        // Version resolution mirrors Go agent pkg/trace/version/version.go:GetAppVersionFromTrace:
+        // root span meta["version"] (set by otel_span_to_dd_span with span-over-resource precedence)
+        // takes priority, falling back to the resource-level payload.app_version.
+        let version = root_span
+            .and_then(|s| {
+                s.attributes
+                    .get("version")
+                    .and_then(AttributeValue::as_string)
+                    .filter(|s| !s.is_empty())
+            })
+            .cloned()
+            .unwrap_or_else(|| trace.payload.app_version.clone());
 
         let container_id = if !trace.payload.container_id.is_empty() {
             trace.payload.container_id.clone()
@@ -1443,6 +1442,46 @@ mod tests {
         let max_entries_strategy = 1..=1000usize;
 
         (payloads_strategy, max_entries_strategy)
+    }
+
+    // Mirrors Go agent behavior: for OTLP traces the version on the root span's meta["version"]
+    // (set with span-over-resource precedence by otel_span_to_dd_span) should win over the
+    // resource-level version carried in payload.app_version.
+    // See: pkg/trace/version/version.go:GetAppVersionFromTrace and pkg/trace/api/otlp.go.
+    #[test]
+    fn test_version_span_beats_resource_for_otlp() {
+        let now = now_nanos();
+        let concentrator = SpanConcentrator::new(true, true, &[], now);
+        let transform = ApmStats {
+            concentrator,
+            flush_interval: DEFAULT_FLUSH_INTERVAL,
+            agent_env: MetaString::default(),
+            agent_hostname: MetaString::default(),
+            workload_provider: None,
+        };
+
+        // Root span carries a span-level version attribute (set by otel_span_to_dd_span with
+        // span-over-resource precedence).
+        let mut attrs = FastHashMap::default();
+        attrs.insert(
+            MetaString::from("version"),
+            AttributeValue::String(MetaString::from("span-v2")),
+        );
+        let root_span = Span::new("svc", "op", "res", "web", 1, 0, now, 1_000_000, 0).with_attributes(attrs);
+
+        let mut trace = Trace::new(vec![root_span]);
+        // Simulate OTLP resource extraction: payload.app_version comes from resource attrs only.
+        trace.payload.app_version = MetaString::from("resource-v1");
+
+        let key = transform.build_payload_key(&trace, "");
+
+        // The Go agent resolves version from root_span.meta["version"] first, which carries
+        // span-over-resource precedence. The span attribute ("span-v2") must win.
+        assert_eq!(
+            key.version.as_ref(),
+            "span-v2",
+            "span-level version must take precedence over resource-level payload.app_version for OTLP traces"
+        );
     }
 
     #[test_strategy::proptest]
