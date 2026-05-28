@@ -11,6 +11,7 @@ use facet::Facet;
 use http::{uri::PathAndQuery, HeaderName, HeaderValue, Method, Uri};
 use piecemeal::{ScratchBuffer, ScratchWriter};
 use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
+use saluki_common::collections::FastHashMap;
 use saluki_common::strings::StringBuilder;
 use saluki_common::task::HandleExt as _;
 use saluki_config::GenericConfiguration;
@@ -778,8 +779,7 @@ fn resolve_hostname_from_payload<'a>(
 }
 
 fn resolve_container_tags_from_attrs(
-    attributes: &saluki_common::collections::FastHashMap<MetaString, AttributeValue>, source: Option<&OtlpSource>,
-    ignore_missing_fields: bool,
+    attributes: &FastHashMap<MetaString, AttributeValue>, source: Option<&OtlpSource>, ignore_missing_fields: bool,
 ) -> Option<MetaString> {
     if let Some(AttributeValue::String(tags)) = attributes.get(KEY_DATADOG_CONTAINER_TAGS) {
         if !tags.is_empty() {
