@@ -600,13 +600,6 @@ MACOS_TEST_AGENT_DMG_URL ?= https://s3.amazonaws.com/dd-agent/datadog-agent-$(MA
 # may already have at a different, conflicting version) avoids surprises in both directions.
 MACOS_TEST_AGENT_INSTALL_DIR ?= /tmp/saluki-dda/datadog-agent
 
-# Note on `xattr -cr` in the install step:
-#
-# Out-of-band pkg extraction (vs. running the .pkg through `installer`) leaves filesystem
-# attributes (notably com.apple.provenance on macOS 14+) that cause amfid to refuse to launch
-# the binary on Apple Silicon with a silent "Killed: 9" — no log output, codesign still
-# verifies fine on disk. Clearing all xattrs after extraction is what `installer` effectively
-# does for us as part of its trust-establishment flow.
 .PHONY: provision-macos-test-env
 provision-macos-test-env: ## Installs the pinned Datadog Agent ($(MACOS_TEST_AGENT_VERSION)) into $(MACOS_TEST_AGENT_INSTALL_DIR) (a sandbox under /tmp) and bootstraps the IPC cert. Idempotent: re-uses the install if it already matches the pinned version.
 	@echo "[*] Provisioning macOS test environment..."
@@ -642,26 +635,10 @@ provision-macos-test-env: ## Installs the pinned Datadog Agent ($(MACOS_TEST_AGE
 		mkdir -p $$(dirname $(MACOS_TEST_AGENT_INSTALL_DIR)); \
 		mv "$$PAYLOAD_DIR" $(MACOS_TEST_AGENT_INSTALL_DIR); \
 		rm -rf "$$EXPAND_DIR"; \
-		xattr -cr $(MACOS_TEST_AGENT_INSTALL_DIR) 2>/dev/null || true; \
 		test -x $(MACOS_TEST_AGENT_INSTALL_DIR)/bin/agent/agent; \
 	fi
 	@if [ ! -f $(MACOS_TEST_AGENT_INSTALL_DIR)/etc/ipc_cert.pem ] || [ ! -f $(MACOS_TEST_AGENT_INSTALL_DIR)/etc/auth_token ]; then \
 		echo "[*] Bootstrapping IPC cert + auth_token by running the Agent briefly..."; \
-		echo "--- diag: host ---"; \
-		sw_vers; uname -a; \
-		echo "--- diag: install dir mount + perms ---"; \
-		mount | grep -E "$$(df $(MACOS_TEST_AGENT_INSTALL_DIR) | tail -1 | awk '{print $$NF}')" || true; \
-		ls -la $(MACOS_TEST_AGENT_INSTALL_DIR)/bin/agent/agent; \
-		file $(MACOS_TEST_AGENT_INSTALL_DIR)/bin/agent/agent; \
-		echo "--- diag: xattr ---"; \
-		xattr -l $(MACOS_TEST_AGENT_INSTALL_DIR)/bin/agent/agent || true; \
-		echo "--- diag: codesign ---"; \
-		codesign --verify --verbose=2 $(MACOS_TEST_AGENT_INSTALL_DIR)/bin/agent/agent 2>&1 || true; \
-		echo "--- diag: spctl ---"; \
-		spctl --assess --type execute --verbose $(MACOS_TEST_AGENT_INSTALL_DIR)/bin/agent/agent 2>&1 || true; \
-		echo "--- diag: try 'agent version' (cheap exec sanity check) ---"; \
-		$(MACOS_TEST_AGENT_INSTALL_DIR)/bin/agent/agent version || echo "  version subcommand failed with exit $$?"; \
-		echo "--- diag: end ---"; \
 		mkdir -p $(MACOS_TEST_AGENT_INSTALL_DIR)/etc $(MACOS_TEST_AGENT_INSTALL_DIR)/run; \
 		DD_API_KEY=bootstrap DD_HOSTNAME=bootstrap \
 			DD_RUN_PATH=$(MACOS_TEST_AGENT_INSTALL_DIR)/run \
@@ -680,14 +657,8 @@ provision-macos-test-env: ## Installs the pinned Datadog Agent ($(MACOS_TEST_AGE
 		kill $$AGENT_PID 2>/dev/null || true; \
 		wait $$AGENT_PID 2>/dev/null || true; \
 		if [ ! -f $(MACOS_TEST_AGENT_INSTALL_DIR)/etc/ipc_cert.pem ]; then \
-			echo "--- diag: bootstrap log (agent never wrote IPC cert) ---"; \
-			cat /tmp/saluki-agent-bootstrap.log 2>&1 || echo "  (log file empty or missing)"; \
-			echo "--- diag: post-failure file listings ---"; \
-			echo "sandbox etc/:"; ls -la $(MACOS_TEST_AGENT_INSTALL_DIR)/etc/ 2>&1 || true; \
-			echo "sandbox run/:"; ls -la $(MACOS_TEST_AGENT_INSTALL_DIR)/run/ 2>&1 || true; \
-			echo "any auth_token / ipc_cert.pem on the filesystem:"; \
-			find /tmp/saluki-dda /opt/datadog-agent /var/run /private/var $$HOME -name auth_token -o -name ipc_cert.pem 2>/dev/null || true; \
-			echo "--- diag: end ---"; \
+			echo "ERROR: bootstrap Agent did not write the IPC cert. Bootstrap log:" >&2; \
+			cat /tmp/saluki-agent-bootstrap.log >&2 2>/dev/null || true; \
 			exit 1; \
 		fi; \
 	else \

@@ -30,8 +30,8 @@ DOGSTATSD_STREAM_ADDR = ("127.0.0.1", 9126)
 DOGSTATSD_UDS_PATH = "/tmp/dsd-forwarding.sock"
 DOGSTATSD_UDS_STREAM_PATH = "/tmp/dsd-forwarding-stream.sock"
 TELEMETRY_URLS = (
-    "http://127.0.0.1:55100/metrics",
-    "http://127.0.0.1:55100/compat/metrics",
+    "http://127.0.0.1:5100/metrics",
+    "http://127.0.0.1:5100/compat/metrics",
 )
 PROBE_TIMEOUT_SECS = 60
 PROBE_INTERVAL_SECS = 0.25

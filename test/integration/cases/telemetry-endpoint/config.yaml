@@ -13,7 +13,7 @@ container:
     DD_DATA_PLANE_STANDALONE_MODE: "true"
     DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
   exposed_ports:
-    - "55100/tcp"
+    - "5100/tcp"
 
 assertions:
   # Make sure the process becomes healthy, and stays up without errors, with the telemetry routes
@@ -22,16 +22,16 @@ assertions:
       - type: process_stable_for
         duration: 10s
       - type: port_listening
-        port: 55100
+        port: 5100
         protocol: tcp
         timeout: 10s
       - type: http_check
-        endpoint: "http://localhost:55100/metrics"
+        endpoint: "http://localhost:5100/metrics"
         status:
           equal: 200
         timeout: 10s
       - type: http_check
-        endpoint: "http://localhost:55100/compat/metrics"
+        endpoint: "http://localhost:5100/compat/metrics"
         status:
           equal: 200
         timeout: 10s

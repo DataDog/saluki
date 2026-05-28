@@ -57,24 +57,22 @@ const DEFAULT_CORE_AGENT_BINARY_PATH: &str = "/tmp/saluki-dda/datadog-agent/bin/
 const CORE_AGENT_IPC_READY_TIMEOUT: Duration = Duration::from_secs(60);
 const CORE_AGENT_IPC_READY_POLL: Duration = Duration::from_millis(200);
 
-/// Framework-level env overrides that move every default-port the test target binds off its
-/// canonical value so the test Core Agent + ADP can coexist with anything else listening on
-/// those ports (for example, a running system Datadog Agent on a shared CI runner). Tests can
-/// override any of these via `container.env`; tests that test specific port behavior
-/// (`adp-cmd-port`) supply their own values.
+/// Framework-level env overrides that move every conflict-prone default port off its canonical
+/// value so the test Core Agent + ADP can coexist with a system Datadog Agent already running
+/// on a shared CI runner. Tests can override any of these via `container.env`; tests that test
+/// specific port behavior (`adp-cmd-port`) supply their own values.
 ///
 /// Naming convention: every default port that's 4 digits gets a `5` prepended (8125 -> 58125,
 /// 5001 -> 55001, etc.). The GUI is disabled outright since we don't exercise it.
 ///
-/// Note on scope: this also covers ADP-side ports (the `data_plane.*_listen_*` listen
-/// addresses and the OTLP receiver endpoints). Those don't conflict with the system Agent
-/// today (the system Agent doesn't bind them), but we shift them anyway so the test surface
-/// has a single consistent port table, and so future port additions on either side don't
-/// silently regress.
+/// Scope is intentionally narrow: only ports a stock Datadog Agent binds by default. ADP's own
+/// listen addresses (5100/5101/5102) and the OTLP receiver (4317/4318) are not bound by the
+/// system Agent and don't need to be shifted; keeping them on defaults means tests can assert
+/// against canonical port numbers with no extra plumbing.
 pub fn test_port_isolation_env() -> HashMap<String, String> {
     HashMap::from([
-        // ----- Core Agent ports -----
-        // CMD/IPC API. Shared key with ADP (used as the IPC client's destination port).
+        // CMD/IPC API. Shared key between the Core Agent (listener) and ADP (IPC client).
+        // `adp-cmd-port` overrides this via container.env to validate the non-default path.
         ("DD_CMD_PORT".to_string(), "55001".to_string()),
         // GUI — disabled outright. No integration test exercises it.
         ("DD_GUI_PORT".to_string(), "-1".to_string()),
@@ -88,30 +86,6 @@ pub fn test_port_isolation_env() -> HashMap<String, String> {
         // DD_DATA_PLANE_ENABLED so this mainly affects ADP (the actual listener) and the
         // bootstrap-mode Agent.
         ("DD_DOGSTATSD_PORT".to_string(), "58125".to_string()),
-        // ----- ADP ports -----
-        // API listen addresses are URI-style; ListenAddress accepts `tcp://host:port`.
-        (
-            "DD_DATA_PLANE_API_LISTEN_ADDRESS".to_string(),
-            "tcp://0.0.0.0:55100".to_string(),
-        ),
-        (
-            "DD_DATA_PLANE_SECURE_API_LISTEN_ADDRESS".to_string(),
-            "tcp://0.0.0.0:55101".to_string(),
-        ),
-        (
-            "DD_DATA_PLANE_TELEMETRY_LISTEN_ADDR".to_string(),
-            "tcp://0.0.0.0:55102".to_string(),
-        ),
-        // ----- OTLP receiver endpoints -----
-        // Matches the Datadog Agent's OTLP env var shape (DD_OTLP_CONFIG_*).
-        (
-            "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_ENDPOINT".to_string(),
-            "0.0.0.0:54317".to_string(),
-        ),
-        (
-            "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_ENDPOINT".to_string(),
-            "0.0.0.0:54318".to_string(),
-        ),
     ])
 }
 

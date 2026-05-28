@@ -15,8 +15,8 @@ container:
     DD_DATA_PLANE_OTLP_PROXY_ENABLED: "true"
     DD_DATA_PLANE_OTLP_PROXY_TRACES_ENABLED: "false"
   exposed_ports:
-    - "54317/tcp"
-    - "54318/tcp"
+    - "4317/tcp"
+    - "4318/tcp"
 
 assertions:
   # Make sure the process becomes healthy, and stays up without errors, listening for OTLP (HTTP and gRPC),
@@ -25,11 +25,11 @@ assertions:
       - type: process_stable_for
         duration: 10s
       - type: port_listening
-        port: 54317
+        port: 4317
         protocol: tcp
         timeout: 10s
       - type: port_listening
-        port: 54318
+        port: 4318
         protocol: tcp
         timeout: 10s
       - type: log_not_contains

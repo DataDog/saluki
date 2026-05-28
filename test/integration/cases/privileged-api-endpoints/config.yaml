@@ -13,14 +13,14 @@ container:
     DD_DATA_PLANE_STANDALONE_MODE: "true"
     DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
   exposed_ports:
-    - "55101/tcp"
+    - "5101/tcp"
 
 assertions:
   - parallel:
       - type: process_stable_for
         duration: 10s
       - type: port_listening
-        port: 55101
+        port: 5101
         protocol: tcp
         timeout: 20s
       # Each of the four routes below is registered as POST-only by the corresponding override
@@ -28,31 +28,31 @@ assertions:
       # if the worker failed to assert its DynamicRoute, the request would return 404 instead.
       # Asserting "status != 404" lets us verify route registration without exercising the routes.
       - type: http_check
-        endpoint: "https://localhost:55101/logging/override"
+        endpoint: "https://localhost:5101/logging/override"
         status:
           not_equal: 404
         insecure_skip_verify: true
         timeout: 20s
       - type: http_check
-        endpoint: "https://localhost:55101/logging/reset"
+        endpoint: "https://localhost:5101/logging/reset"
         status:
           not_equal: 404
         insecure_skip_verify: true
         timeout: 20s
       - type: http_check
-        endpoint: "https://localhost:55101/metrics/override"
+        endpoint: "https://localhost:5101/metrics/override"
         status:
           not_equal: 404
         insecure_skip_verify: true
         timeout: 20s
       - type: http_check
-        endpoint: "https://localhost:55101/metrics/reset"
+        endpoint: "https://localhost:5101/metrics/reset"
         status:
           not_equal: 404
         insecure_skip_verify: true
         timeout: 20s
       - type: http_check
-        endpoint: "https://localhost:55101/config"
+        endpoint: "https://localhost:5101/config"
         status:
           not_equal: 404
         insecure_skip_verify: true
