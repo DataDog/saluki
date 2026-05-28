@@ -21,6 +21,7 @@ use resource_accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
 use saluki_common::task::spawn_traced_named;
 use saluki_config::{deserialize_space_separated_or_seq, GenericConfiguration};
 use saluki_context::{
+    origin::RawOrigin,
     tags::{RawTags, RawTagsFilter},
     TagsResolver,
 };
@@ -49,7 +50,7 @@ use saluki_io::{
     },
     net::{
         listener::{Listener, ListenerError},
-        ConnectionAddress, ListenAddress, ProcessIdentity, Stream,
+        ConnectionAddress, ListenAddress, ProcessCredentials, ProcessIdentity, Stream,
     },
 };
 use serde::{Deserialize, Deserializer};
@@ -79,13 +80,16 @@ mod metrics;
 use self::metrics::{build_metrics, Metrics};
 
 mod replay;
-use self::replay::{CaptureRecord, TrafficCapture};
-pub use self::replay::{DogStatsDCaptureAPIHandler, DogStatsDCaptureControl};
+use self::replay::{CaptureRecord, CapturedTaggerHandle, TrafficCapture};
+pub use self::replay::{
+    DogStatsDCaptureAPIHandler, DogStatsDCaptureControl, DogStatsDReplayAPIHandler, DogStatsDReplayControl,
+    ReplaySession, TimestampResolution, TrafficCaptureReader, DEFAULT_REPLAY_LOOPS, REPLAY_CREDENTIALS_GID,
+};
 
 mod origin;
 use self::origin::{
-    origin_from_event_packet, origin_from_metric_packet, origin_from_service_check_packet, DogStatsDOriginTagResolver,
-    OriginEnrichmentConfiguration,
+    mark_replay_process_id, origin_from_event_packet, origin_from_metric_packet, origin_from_service_check_packet,
+    DogStatsDOriginTagResolver, OriginEnrichmentConfiguration,
 };
 
 mod resolver;
@@ -542,6 +546,10 @@ pub struct DogStatsDConfiguration {
     #[cfg_attr(test, derive_where(skip))]
     capture_control: DogStatsDCaptureControl,
 
+    #[serde(skip, default)]
+    #[cfg_attr(test, derive_where(skip))]
+    replay_control: DogStatsDReplayControl,
+
     /// Provider kind tag appended to all metrics as `provider_kind:<value>`.
     ///
     /// Set via `DD_PROVIDER_KIND` by the Helm chart on GKE Autopilot (`gke-autopilot`) and GKE on
@@ -714,6 +722,16 @@ impl DogStatsDConfiguration {
         DogStatsDCaptureAPIHandler::new(self.capture_control.clone())
     }
 
+    /// Returns the shared control handle for DogStatsD traffic replay.
+    pub fn replay_control(&self) -> DogStatsDReplayControl {
+        self.replay_control.clone()
+    }
+
+    /// Returns an HTTP API handler exposing the DogStatsD replay control surface.
+    pub fn replay_api_handler(&self) -> DogStatsDReplayAPIHandler {
+        DogStatsDReplayAPIHandler::new(self.replay_control.clone())
+    }
+
     fn fix_empty_capture_path(&mut self, config: &GenericConfiguration) {
         if self.capture_path.parent().is_some() {
             return;
@@ -835,10 +853,13 @@ impl SourceBuilder for DogStatsDConfiguration {
         }
 
         let origin_detection_enabled = self.origin_enrichment.enabled();
-        let maybe_origin_tags_resolver = self
-            .workload_provider
-            .clone()
-            .map(|provider| DogStatsDOriginTagResolver::new(self.origin_enrichment.clone(), provider));
+        // Single CapturedTaggerHandle is cloned to both the resolver (reader of the captured store) and the replay
+        // control surface (writer). Both sides reference the same atomic slot.
+        let captured_tagger = CapturedTaggerHandle::new();
+
+        let maybe_origin_tags_resolver = self.workload_provider.clone().map(|provider| {
+            DogStatsDOriginTagResolver::new(self.origin_enrichment.clone(), provider, captured_tagger.clone())
+        });
         let context_resolvers = ContextResolvers::new(self, &context, maybe_origin_tags_resolver)
             .error_context("Failed to create context resolvers.")?;
 
@@ -863,6 +884,8 @@ impl SourceBuilder for DogStatsDConfiguration {
         );
         self.capture_control.bind(traffic_capture.clone());
         let packet_forwarder_target = self.packet_forwarder_target();
+
+        self.replay_control.bind(captured_tagger);
 
         Ok(Box::new(DogStatsD {
             listeners,
@@ -1406,6 +1429,19 @@ fn process_id_from_peer_addr(peer_addr: &ConnectionAddress) -> Option<i32> {
     }
 }
 
+/// Applies SCM_CREDENTIALS to the origin, dispatching on the replay marker GID.
+///
+/// Live packets carry the sender process's real PID/UID/GID; we use `creds.pid` as the origin's process ID. Replay
+/// packets carry `gid == REPLAY_CREDENTIALS_GID` and pack the captured (original) PID into `creds.uid`; we recover
+/// that PID with an internal marker so downstream tag resolution consults the captured tagger store.
+fn apply_credentials_to_origin(origin: &mut RawOrigin<'_>, creds: &ProcessCredentials) {
+    if creds.gid == REPLAY_CREDENTIALS_GID {
+        origin.set_process_id(mark_replay_process_id(creds.uid));
+    } else {
+        origin.set_process_id(creds.pid as u32);
+    }
+}
+
 fn received_payload(buffer: &BytesBuffer, bytes_read: usize) -> &[u8] {
     let chunk = buffer.chunk();
     let start = chunk.len().saturating_sub(bytes_read);
@@ -1513,7 +1549,7 @@ fn handle_metric_packet(
 
     let mut origin = origin_from_metric_packet(&packet, &well_known_tags);
     if let Some(creds) = peer_addr.process_credentials() {
-        origin.set_process_id(creds.pid as u32);
+        apply_credentials_to_origin(&mut origin, creds);
     }
 
     // Choose the right context resolver based on whether or not this metric is pre-aggregated.
@@ -1551,7 +1587,7 @@ fn handle_event_packet(
 
     let mut origin = origin_from_event_packet(&packet, &well_known_tags);
     if let Some(creds) = peer_addr.process_credentials() {
-        origin.set_process_id(creds.pid as u32);
+        apply_credentials_to_origin(&mut origin, creds);
     }
     let origin_tags = tags_resolver.resolve_origin_tags(Some(origin));
 
@@ -1596,7 +1632,7 @@ fn handle_service_check_packet(
 
     let mut origin = origin_from_service_check_packet(&packet, &well_known_tags);
     if let Some(creds) = peer_addr.process_credentials() {
-        origin.set_process_id(creds.pid as u32);
+        apply_credentials_to_origin(&mut origin, creds);
     }
     let origin_tags = tags_resolver.resolve_origin_tags(Some(origin));
 
@@ -1711,7 +1747,7 @@ mod tests {
     use bytes::Bytes;
     use bytesize::ByteSize;
     use saluki_config::ConfigurationLoader;
-    use saluki_context::{ContextResolverBuilder, TagsResolverBuilder};
+    use saluki_context::{origin::RawOrigin, ContextResolverBuilder, TagsResolverBuilder};
     use saluki_core::{components::ComponentContext, topology::ComponentId};
     use saluki_env::workload::{CaptureEntityResolver, EntityId};
     use saluki_io::{
@@ -2534,6 +2570,36 @@ mod tests {
         stream_capture.update_peer_metadata(&ConnectionAddress::ProcessLike(ProcessIdentity::Unavailable));
 
         assert_eq!(stream_capture.last_pid, Some(42));
+    }
+
+    #[test]
+    fn apply_credentials_uses_live_pid_for_normal_packet() {
+        let mut origin = RawOrigin::default();
+        let creds = ProcessCredentials {
+            pid: 12345,
+            uid: 1000,
+            gid: 1000,
+        };
+        super::apply_credentials_to_origin(&mut origin, &creds);
+
+        assert_eq!(origin.process_id(), Some(12345));
+    }
+
+    #[test]
+    fn apply_credentials_unpacks_captured_pid_when_replay_gid_present() {
+        let mut origin = RawOrigin::default();
+        let captured_pid: u32 = 99887766;
+        let creds = ProcessCredentials {
+            pid: 12345,        // our PID (irrelevant for replay)
+            uid: captured_pid, // captured PID packed by the sender
+            gid: super::REPLAY_CREDENTIALS_GID,
+        };
+        super::apply_credentials_to_origin(&mut origin, &creds);
+
+        assert_eq!(
+            origin.process_id(),
+            Some(super::origin::mark_replay_process_id(captured_pid))
+        );
     }
 }
 
