@@ -34,6 +34,7 @@ use self::reporter::{OutputFormat, Reporter, TestResult, TestSuiteResult};
 
 mod runner;
 mod test;
+mod test_env;
 mod tui;
 mod unix_runner;
 mod utils;

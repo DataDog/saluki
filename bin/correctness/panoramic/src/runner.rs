@@ -697,7 +697,7 @@ impl IntegrationRunner {
         // defaults are applied first so the test's `env` block takes precedence. Keeps the test
         // surface consistent across the docker and `mac` runtimes — both see the same shifted
         // port table.
-        let mut merged_env = crate::unix_runner::test_port_isolation_env();
+        let mut merged_env = crate::test_env::port_isolation_env();
         for (k, v) in &self.test_case.env {
             merged_env.insert(k.clone(), v.clone());
         }
