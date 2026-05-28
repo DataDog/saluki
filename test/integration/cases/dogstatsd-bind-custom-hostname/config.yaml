@@ -45,7 +45,7 @@ container:
 
 assertions:
   - type: log_contains
-    pattern: 'listen_addr:"udp://{{PANORAMIC_DYNAMIC_CONTAINER_IP}}:8125"'
+    pattern: 'listen_addr:"udp://{{PANORAMIC_DYNAMIC_CONTAINER_IP}}:58125"'
     timeout: 15s
   - parallel:
       - type: process_stable_for

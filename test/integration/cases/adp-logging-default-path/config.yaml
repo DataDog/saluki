@@ -13,9 +13,8 @@ container:
     DD_DATA_PLANE_ENABLED: "true"
     DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT: "true"
     DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
-    DD_DOGSTATSD_PORT: "8125"
   exposed_ports:
-    - "8125/udp"
+    - "58125/udp"
 
 assertions:
   # Wait for ADP to receive its initial configuration from the Core Agent and reload logging.

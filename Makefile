@@ -585,6 +585,7 @@ build-adp-host: ## Builds the agent-data-plane binary for the current host (rele
 test-integration-macos-run: ## Runs the macOS host-process integration tests using already-built binaries (assumes target/release/{panoramic,agent-data-plane} exist). Defaults to all `mac`-runtime-eligible tests; narrow with CASE=<name>.
 	@echo "[*] Running macOS host-process integration tests..."
 	@ADP_BINARY_PATH="$(CURDIR)/target/release/agent-data-plane" \
+		CORE_AGENT_BINARY_PATH="$(MACOS_TEST_AGENT_INSTALL_DIR)/bin/agent/agent" \
 		target/release/panoramic run -d "$(CURDIR)/test/integration/cases" \
 		$(if $(CASE),-t $(CASE)) --no-tui -p 1 \
 		$(if $(PANORAMIC_LOG_DIR),-l $(PANORAMIC_LOG_DIR))
@@ -594,59 +595,71 @@ test-integration-macos-run: ## Runs the macOS host-process integration tests usi
 MACOS_TEST_AGENT_VERSION ?= 7.78.0
 MACOS_TEST_AGENT_DMG_DIR ?= /tmp/saluki-dda-dmg-cache
 MACOS_TEST_AGENT_DMG_URL ?= https://s3.amazonaws.com/dd-agent/datadog-agent-$(MACOS_TEST_AGENT_VERSION)-1.$(shell uname -m).dmg
+# Sandbox directory the Agent is installed into. Deliberately *not* /opt/datadog-agent: keeping
+# our install isolated from any pre-existing system install (which a CI runner or developer host
+# may already have at a different, conflicting version) avoids surprises in both directions.
+MACOS_TEST_AGENT_INSTALL_DIR ?= /tmp/saluki-dda/datadog-agent
 
 .PHONY: provision-macos-test-env
-provision-macos-test-env: ## Idempotently installs the pinned Datadog Agent ($(MACOS_TEST_AGENT_VERSION)) at /opt/datadog-agent and bootstraps the IPC cert. Fails if a different version is already installed.
+provision-macos-test-env: ## Installs the pinned Datadog Agent ($(MACOS_TEST_AGENT_VERSION)) into $(MACOS_TEST_AGENT_INSTALL_DIR) (a sandbox under /tmp) and bootstraps the IPC cert. Idempotent: re-uses the install if it already matches the pinned version.
 	@echo "[*] Provisioning macOS test environment..."
 	@if [ "$(shell uname -s)" != "Darwin" ]; then \
 		echo "provision-macos-test-env only runs on macOS hosts" >&2; exit 1; \
 	fi
-	@if [ -x /opt/datadog-agent/bin/agent/agent ]; then \
-		INSTALLED_VERSION=$$(/opt/datadog-agent/bin/agent/agent version 2>/dev/null | awk '{print $$2}'); \
-		if [ "$$INSTALLED_VERSION" = "$(MACOS_TEST_AGENT_VERSION)" ]; then \
-			echo "[*] Datadog Agent $$INSTALLED_VERSION already installed (matches expected version)"; \
-		else \
-			echo "ERROR: installed Datadog Agent version '$$INSTALLED_VERSION' does not match expected '$(MACOS_TEST_AGENT_VERSION)'." >&2; \
-			echo "       Remove /opt/datadog-agent or update MACOS_TEST_AGENT_VERSION and retry." >&2; \
-			exit 1; \
-		fi; \
+	@if [ -x $(MACOS_TEST_AGENT_INSTALL_DIR)/bin/agent/agent ] && \
+	   [ "$$($(MACOS_TEST_AGENT_INSTALL_DIR)/bin/agent/agent version 2>/dev/null | awk '{print $$2}')" = "$(MACOS_TEST_AGENT_VERSION)" ]; then \
+		echo "[*] Datadog Agent $(MACOS_TEST_AGENT_VERSION) already extracted to $(MACOS_TEST_AGENT_INSTALL_DIR)"; \
 	else \
-		echo "[*] Installing Datadog Agent $(MACOS_TEST_AGENT_VERSION)..."; \
+		echo "[*] Installing Datadog Agent $(MACOS_TEST_AGENT_VERSION) into $(MACOS_TEST_AGENT_INSTALL_DIR)..."; \
 		mkdir -p $(MACOS_TEST_AGENT_DMG_DIR); \
 		DMG_PATH=$(MACOS_TEST_AGENT_DMG_DIR)/datadog-agent-$(MACOS_TEST_AGENT_VERSION).dmg; \
 		if [ ! -f "$$DMG_PATH" ]; then \
 			curl -fL "$(MACOS_TEST_AGENT_DMG_URL)" -o "$$DMG_PATH"; \
 		fi; \
-		sudo hdiutil detach /Volumes/datadog_agent 2>/dev/null || true; \
-		sudo hdiutil attach "$$DMG_PATH" -mountpoint /Volumes/datadog_agent -nobrowse >/dev/null; \
-		PKG=$$(find /Volumes/datadog_agent -name '*.pkg' | head -1); \
-		echo "[*] Running installer (postinstall may fail; the binaries we need are written before postinstall runs)"; \
-		sudo /usr/sbin/installer -pkg "$$PKG" -target / >/dev/null 2>&1 || true; \
-		sudo hdiutil detach /Volumes/datadog_agent >/dev/null 2>&1; \
-		test -x /opt/datadog-agent/bin/agent/agent; \
+		MOUNT_DIR=$$(mktemp -d /tmp/saluki-dda-mount-XXXXXX); \
+		hdiutil detach "$$MOUNT_DIR" 2>/dev/null || true; \
+		hdiutil attach "$$DMG_PATH" -mountpoint "$$MOUNT_DIR" -nobrowse >/dev/null; \
+		PKG=$$(find "$$MOUNT_DIR" -name '*.pkg' | head -1); \
+		EXPAND_DIR=$$(mktemp -d /tmp/saluki-dda-expand-XXXXXX); \
+		rm -rf "$$EXPAND_DIR"; \
+		pkgutil --expand-full "$$PKG" "$$EXPAND_DIR" >/dev/null; \
+		hdiutil detach "$$MOUNT_DIR" >/dev/null; \
+		rmdir "$$MOUNT_DIR" 2>/dev/null || true; \
+		PAYLOAD_DIR=$$(find "$$EXPAND_DIR" -type d -name Payload | head -1); \
+		if [ -z "$$PAYLOAD_DIR" ] || [ ! -x "$$PAYLOAD_DIR/bin/agent/agent" ]; then \
+			echo "ERROR: pkg payload did not contain bin/agent/agent. Expanded layout:" >&2; \
+			find "$$EXPAND_DIR" -maxdepth 3 -type d >&2; \
+			exit 1; \
+		fi; \
+		rm -rf $(MACOS_TEST_AGENT_INSTALL_DIR); \
+		mkdir -p $$(dirname $(MACOS_TEST_AGENT_INSTALL_DIR)); \
+		mv "$$PAYLOAD_DIR" $(MACOS_TEST_AGENT_INSTALL_DIR); \
+		rm -rf "$$EXPAND_DIR"; \
+		test -x $(MACOS_TEST_AGENT_INSTALL_DIR)/bin/agent/agent; \
 	fi
-	@if [ ! -f /opt/datadog-agent/etc/ipc_cert.pem ] || [ ! -f /opt/datadog-agent/etc/auth_token ]; then \
+	@if [ ! -f $(MACOS_TEST_AGENT_INSTALL_DIR)/etc/ipc_cert.pem ] || [ ! -f $(MACOS_TEST_AGENT_INSTALL_DIR)/etc/auth_token ]; then \
 		echo "[*] Bootstrapping IPC cert + auth_token by running the Agent briefly..."; \
-		sudo mkdir -p /opt/datadog-agent/run /opt/datadog-agent/etc; \
-		sudo DD_API_KEY=bootstrap DD_HOSTNAME=bootstrap /opt/datadog-agent/bin/agent/agent run -c /opt/datadog-agent/etc >/tmp/saluki-agent-bootstrap.log 2>&1 & \
+		mkdir -p $(MACOS_TEST_AGENT_INSTALL_DIR)/etc $(MACOS_TEST_AGENT_INSTALL_DIR)/run; \
+		DD_API_KEY=bootstrap DD_HOSTNAME=bootstrap \
+			DD_RUN_PATH=$(MACOS_TEST_AGENT_INSTALL_DIR)/run \
+			DD_CMD_PORT=55001 DD_GUI_PORT=-1 \
+			DD_EXPVAR_PORT=55000 DD_APM_RECEIVER_PORT=58126 \
+			DD_PROCESS_CONFIG_CMD_PORT=56062 DD_AGENT_IPC_PORT=55004 \
+			DD_DOGSTATSD_PORT=58125 \
+			$(MACOS_TEST_AGENT_INSTALL_DIR)/bin/agent/agent run -c $(MACOS_TEST_AGENT_INSTALL_DIR)/etc >/tmp/saluki-agent-bootstrap.log 2>&1 & \
 		AGENT_PID=$$!; \
 		for i in $$(seq 1 30); do \
 			sleep 1; \
-			if [ -f /opt/datadog-agent/etc/ipc_cert.pem ] && [ -f /opt/datadog-agent/etc/auth_token ]; then break; fi; \
+			if [ -f $(MACOS_TEST_AGENT_INSTALL_DIR)/etc/ipc_cert.pem ] && [ -f $(MACOS_TEST_AGENT_INSTALL_DIR)/etc/auth_token ]; then break; fi; \
 		done; \
-		sudo kill $$AGENT_PID 2>/dev/null || true; \
+		kill $$AGENT_PID 2>/dev/null || true; \
 		wait $$AGENT_PID 2>/dev/null || true; \
-		test -f /opt/datadog-agent/etc/ipc_cert.pem; \
+		test -f $(MACOS_TEST_AGENT_INSTALL_DIR)/etc/ipc_cert.pem; \
 	else \
-		echo "[*] IPC cert already present at /opt/datadog-agent/etc/ipc_cert.pem"; \
-	fi
-	@echo "[*] Ensuring cert/auth_token readable by current user..."
-	@if ! cat /opt/datadog-agent/etc/ipc_cert.pem >/dev/null 2>&1 || ! cat /opt/datadog-agent/etc/auth_token >/dev/null 2>&1; then \
-		sudo chown $$(whoami) /opt/datadog-agent/etc/ipc_cert.pem /opt/datadog-agent/etc/auth_token; \
-	else \
-		echo "[*] Files already readable by $$(whoami)."; \
+		echo "[*] IPC cert already present at $(MACOS_TEST_AGENT_INSTALL_DIR)/etc/ipc_cert.pem"; \
 	fi
 	@echo "[*] macOS test environment ready."
+	@echo "[*] Agent binary: $(MACOS_TEST_AGENT_INSTALL_DIR)/bin/agent/agent"
 
 .PHONY: test-integration-macos-ci
 test-integration-macos-ci: build-panoramic build-adp-host provision-macos-test-env test-integration-macos-run ## CI entry point: builds binaries, ensures Agent + cert are provisioned, then runs the `mac`-runtime integration tests

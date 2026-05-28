@@ -21,7 +21,9 @@
 //! - ADP: `ADP_BINARY_PATH` env var, default `target/release/agent-data-plane` (resolved
 //!   relative to the current working directory).
 //! - Core Agent (converged only): `CORE_AGENT_BINARY_PATH` env var, default
-//!   `/opt/datadog-agent/bin/agent/agent`.
+//!   `/tmp/saluki-dda/datadog-agent/bin/agent/agent` (the sandbox install written by
+//!   `make provision-macos-test-env`). Set the env var explicitly to point at a different
+//!   install (for example, a system-wide `/opt/datadog-agent` on a developer host).
 
 use std::{
     collections::HashMap,
@@ -48,12 +50,91 @@ const ADP_BINARY_ENV_VAR: &str = "ADP_BINARY_PATH";
 const DEFAULT_ADP_BINARY_PATH: &str = "target/release/agent-data-plane";
 
 const CORE_AGENT_BINARY_ENV_VAR: &str = "CORE_AGENT_BINARY_PATH";
-const DEFAULT_CORE_AGENT_BINARY_PATH: &str = "/opt/datadog-agent/bin/agent/agent";
+const DEFAULT_CORE_AGENT_BINARY_PATH: &str = "/tmp/saluki-dda/datadog-agent/bin/agent/agent";
 
 /// How long to wait for the Core Agent to write its `auth_token` and `ipc_cert.pem` before
 /// giving up and failing the test.
 const CORE_AGENT_IPC_READY_TIMEOUT: Duration = Duration::from_secs(60);
 const CORE_AGENT_IPC_READY_POLL: Duration = Duration::from_millis(200);
+
+/// Framework-level env overrides that move every default-port the test target binds off its
+/// canonical value so the test Core Agent + ADP can coexist with anything else listening on
+/// those ports (e.g., a running system Datadog Agent on a shared CI runner). Tests can
+/// override any of these via `container.env`; tests that test specific port behavior
+/// (`adp-cmd-port`) supply their own values.
+///
+/// Naming convention: every default port that's 4 digits gets a `5` prepended (8125 -> 58125,
+/// 5001 -> 55001, etc.). The GUI is disabled outright since we don't exercise it.
+///
+/// Note on scope: this also covers ADP-side ports (the `data_plane.*_listen_*` listen
+/// addresses and the OTLP receiver endpoints). Those don't conflict with the system Agent
+/// today — the system Agent doesn't bind them — but we shift them anyway so the test surface
+/// has a single consistent port table, and so future port additions on either side don't
+/// silently regress.
+pub fn test_port_isolation_env() -> HashMap<String, String> {
+    HashMap::from([
+        // ----- Core Agent ports -----
+        // CMD/IPC API. Shared key with ADP (used as the IPC client's destination port).
+        ("DD_CMD_PORT".to_string(), "55001".to_string()),
+        // GUI — disabled outright. No integration test exercises it.
+        ("DD_GUI_PORT".to_string(), "-1".to_string()),
+        // expvar / APM / process / secondary IPC — not assertion targets, but the Agent will
+        // still try to bind them on startup, so shift them out of the way.
+        ("DD_EXPVAR_PORT".to_string(), "55000".to_string()),
+        ("DD_APM_RECEIVER_PORT".to_string(), "58126".to_string()),
+        ("DD_PROCESS_CONFIG_CMD_PORT".to_string(), "56062".to_string()),
+        ("DD_AGENT_IPC_PORT".to_string(), "55004".to_string()),
+        // DogStatsD UDP. In converged tests the Core Agent's DSD is disabled by
+        // DD_DATA_PLANE_ENABLED so this mainly affects ADP (the actual listener) and the
+        // bootstrap-mode Agent.
+        ("DD_DOGSTATSD_PORT".to_string(), "58125".to_string()),
+        // ----- ADP ports -----
+        // API listen addresses are URI-style; ListenAddress accepts `tcp://host:port`.
+        (
+            "DD_DATA_PLANE_API_LISTEN_ADDRESS".to_string(),
+            "tcp://0.0.0.0:55100".to_string(),
+        ),
+        (
+            "DD_DATA_PLANE_SECURE_API_LISTEN_ADDRESS".to_string(),
+            "tcp://0.0.0.0:55101".to_string(),
+        ),
+        (
+            "DD_DATA_PLANE_TELEMETRY_LISTEN_ADDR".to_string(),
+            "tcp://0.0.0.0:55102".to_string(),
+        ),
+        // ----- OTLP receiver endpoints -----
+        // Matches the Datadog Agent's OTLP env var shape (DD_OTLP_CONFIG_*).
+        (
+            "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_ENDPOINT".to_string(),
+            "0.0.0.0:54317".to_string(),
+        ),
+        (
+            "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_ENDPOINT".to_string(),
+            "0.0.0.0:54318".to_string(),
+        ),
+    ])
+}
+
+/// Builds the env for a target process (Core Agent or ADP) under the Unix runner.
+///
+/// Precedence (lowest to highest):
+///   1. framework port-isolation defaults (`test_port_isolation_env`)
+///   2. the test's declared `container.env`
+///   3. forced overrides supplied by the caller (auth token path, run path, …)
+///
+/// Forced overrides are bottom-of-stack from the framework's perspective but top-of-stack here
+/// because they're path-bindings tests must not be able to override (they identify per-test
+/// state directories that the runner owns).
+fn build_process_env(test_env: &HashMap<String, String>, forced: &[(&str, String)]) -> HashMap<String, String> {
+    let mut env = test_port_isolation_env();
+    for (k, v) in test_env {
+        env.insert(k.clone(), v.clone());
+    }
+    for (k, v) in forced {
+        env.insert((*k).to_string(), v.clone());
+    }
+    env
+}
 
 /// Runner for a single Unix-process integration test case.
 pub(crate) struct UnixIntegrationRunner {
@@ -147,8 +228,25 @@ impl UnixIntegrationRunner {
             // follows that advice for its post-config-stream IPC clients, and TLS fails with
             // UnknownIssuer because the platform default cert does not match what the per-test
             // Agent is actually serving.
-            let mut agent_env = self.test_case.container.env.clone();
-            agent_env.insert("DD_AUTH_TOKEN_FILE_PATH".to_string(), auth_token_path.clone());
+            // Forced runner-owned bindings:
+            //   DD_AUTH_TOKEN_FILE_PATH: pin to the per-test path. The Agent's authoritative
+            //     config (sent to ADP via the config stream) would otherwise advertise the
+            //     platform default, ADP would follow that advice for its post-config-stream IPC
+            //     clients, and TLS would fail with UnknownIssuer because the platform default
+            //     cert does not match what the per-test Agent is actually serving.
+            //   DD_RUN_PATH: the Agent's default `run_path` is the install prefix's `run/`
+            //     directory (e.g., /opt/datadog-agent/run). Without overriding it, a relocated
+            //     Agent install would try to write its runtime state (remote-config db,
+            //     sockets, pid file) back to the canonical /opt path — typically not writable
+            //     in CI. Scope it to the per-test state directory so each test gets a clean
+            //     slate and nothing leaks across runs.
+            let agent_env = build_process_env(
+                &self.test_case.container.env,
+                &[
+                    ("DD_AUTH_TOKEN_FILE_PATH", auth_token_path.clone()),
+                    ("DD_RUN_PATH", state_dir.to_string_lossy().into_owned()),
+                ],
+            );
 
             let agent_config = UnixProcessConfig::new(format!("{}-core-agent", self.test_case.name), agent_binary)
                 .with_args(vec![
@@ -194,12 +292,14 @@ impl UnixIntegrationRunner {
         // Phase: spawn ADP.
         let spawn_start = Instant::now();
         let config_path_str = config_path.to_string_lossy().into_owned();
-        let mut adp_env = self.test_case.container.env.clone();
-        if self.test_case.requires_core_agent {
+        let adp_forced: Vec<(&str, String)> = if self.test_case.requires_core_agent {
             // Point ADP's IPC client at the per-test auth token (and by derivation, the
             // per-test ipc_cert.pem in the same directory).
-            adp_env.insert("DD_AUTH_TOKEN_FILE_PATH".to_string(), auth_token_path);
-        }
+            vec![("DD_AUTH_TOKEN_FILE_PATH", auth_token_path)]
+        } else {
+            Vec::new()
+        };
+        let adp_env = build_process_env(&self.test_case.container.env, &adp_forced);
         let process_config = UnixProcessConfig::new(self.test_case.name.clone(), binary_path)
             .with_args(vec!["-c".to_string(), config_path_str, "run".to_string()])
             .with_env_map(adp_env);

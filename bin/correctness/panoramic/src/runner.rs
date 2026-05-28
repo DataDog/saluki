@@ -693,8 +693,15 @@ impl IntegrationRunner {
     async fn build_driver_config(&self) -> Result<DriverConfig, GenericError> {
         let container = &self.test_case.container;
 
-        // Convert env vars to the format expected by airlock.
-        let env_vars: Vec<String> = container.env.iter().map(|(k, v)| format!("{}={}", k, v)).collect();
+        // Merge framework-level port-isolation env vars with the test's own env. Framework
+        // defaults are applied first so the test's `container.env` (and any explicit override)
+        // takes precedence. Keeps the test surface consistent across the docker and `mac`
+        // runtimes — both see the same shifted port table.
+        let mut merged_env = crate::unix_runner::test_port_isolation_env();
+        for (k, v) in &container.env {
+            merged_env.insert(k.clone(), v.clone());
+        }
+        let env_vars: Vec<String> = merged_env.iter().map(|(k, v)| format!("{}={}", k, v)).collect();
 
         // Build the target config.
         let target_config = airlock::config::TargetConfig {

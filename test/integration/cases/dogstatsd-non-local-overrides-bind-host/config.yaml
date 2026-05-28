@@ -32,7 +32,7 @@ container:
 
 assertions:
   - type: log_contains
-    pattern: 'listen_addr:"udp://0.0.0.0:8125"'
+    pattern: 'listen_addr:"udp://0.0.0.0:58125"'
     timeout: 15s
   - parallel:
       - type: process_stable_for

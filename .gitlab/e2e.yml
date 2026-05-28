@@ -120,8 +120,10 @@ test-integration:
 # Runs the subset of integration tests that have opted in to the `mac` runtime
 # directly on a bare-metal macOS runner. No Docker, no virtualization: panoramic spawns ADP
 # (and the Core Agent for converged tests) as real macOS processes against a per-test temp
-# state directory. The Datadog Agent install at /opt/datadog-agent is provisioned by the
-# Makefile target (idempotent: re-uses an existing install if the runner has one).
+# state directory. The Datadog Agent is installed into a sandbox under /tmp/saluki-dda by
+# the Makefile target (idempotent: re-uses the install across runs if the pinned version is
+# already present). The sandbox install never touches /opt/datadog-agent, so any system
+# install on the runner is left alone.
 .test-integration-macos-base:
   stage: e2e
   needs: []
@@ -137,9 +139,12 @@ test-integration:
   before_script:
     # Defensive: clean up any leftover Datadog Agent processes from prior runs on this shared
     # runner before we begin. Otherwise a stranded trace-agent/process-agent can hold ports
-    # (e.g., 8126) and break the first converged test.
-    - sudo pkill -9 -f /opt/datadog-agent/bin/agent/agent || true
-    - sudo pkill -9 -f /opt/datadog-agent/embedded/bin/ || true
+    # (e.g., 8126) and break the first converged test. Catch both:
+    #   - any pre-existing system install at /opt/datadog-agent (we don't use it, but a
+    #     conflicting one could still be running)
+    #   - our own sandbox install under /tmp/saluki-dda from a prior run on this shared runner
+    - sudo pkill -9 -f /opt/datadog-agent/ || true
+    - sudo pkill -9 -f /tmp/saluki-dda/ || true
   script:
     - make test-integration-macos-ci
 

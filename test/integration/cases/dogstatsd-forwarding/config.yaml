@@ -16,7 +16,6 @@ container:
     DD_DATA_PLANE_ENABLED: "true"
     DD_DATA_PLANE_STANDALONE_MODE: "true"
     DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
-    DD_DOGSTATSD_PORT: "8125"
     DD_DOGSTATSD_TCP_PORT: "9126"
     DD_DOGSTATSD_SOCKET: "/tmp/dsd-forwarding.sock"
     DD_DOGSTATSD_STREAM_SOCKET: "/tmp/dsd-forwarding-stream.sock"
@@ -26,7 +25,7 @@ container:
   files:
     - "run_forwarding_test.py:/forwarding-test/run_forwarding_test.py"
   exposed_ports:
-    - "8125/udp"
+    - "58125/udp"
     - "9126/tcp"
 
 assertions:
@@ -65,7 +64,7 @@ assertions:
       - type: process_stable_for
         duration: 10s
       - type: port_listening
-        port: 8125
+        port: 58125
         protocol: udp
         timeout: 10s
       - type: port_listening

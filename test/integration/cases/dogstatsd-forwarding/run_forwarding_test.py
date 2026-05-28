@@ -23,13 +23,15 @@ FORWARDED_UDS_PATH = "/tmp/dsd-forwarded-uds-packet"
 FORWARDED_UDS_STREAM_PATH = "/tmp/dsd-forwarded-uds-stream-packet"
 PARSED_METRIC_PATH = "/tmp/dsd-metric-parsed"
 FORWARD_ADDR = ("127.0.0.1", 9125)
-DOGSTATSD_ADDR = ("127.0.0.1", 8125)
+# Matches the framework-level shifted default in panoramic::unix_runner::test_port_isolation_env.
+# When the framework provides DD_DOGSTATSD_PORT=58125, ADP binds DSD on 58125.
+DOGSTATSD_ADDR = ("127.0.0.1", 58125)
 DOGSTATSD_STREAM_ADDR = ("127.0.0.1", 9126)
 DOGSTATSD_UDS_PATH = "/tmp/dsd-forwarding.sock"
 DOGSTATSD_UDS_STREAM_PATH = "/tmp/dsd-forwarding-stream.sock"
 TELEMETRY_URLS = (
-    "http://127.0.0.1:5100/metrics",
-    "http://127.0.0.1:5100/compat/metrics",
+    "http://127.0.0.1:55100/metrics",
+    "http://127.0.0.1:55100/compat/metrics",
 )
 PROBE_TIMEOUT_SECS = 60
 PROBE_INTERVAL_SECS = 0.25

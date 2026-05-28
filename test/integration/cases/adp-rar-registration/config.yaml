@@ -14,9 +14,8 @@ container:
     DD_DATA_PLANE_STANDALONE_MODE: "false"
     DD_DATA_PLANE_REMOTE_AGENT_ENABLED: "true"
     DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
-    DD_DOGSTATSD_PORT: "8125"
   exposed_ports:
-    - "8125/udp"
+    - "58125/udp"
 
 assertions:
   # ADP should report registration success.
