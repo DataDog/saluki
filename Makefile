@@ -647,6 +647,21 @@ provision-macos-test-env: ## Installs the pinned Datadog Agent ($(MACOS_TEST_AGE
 	fi
 	@if [ ! -f $(MACOS_TEST_AGENT_INSTALL_DIR)/etc/ipc_cert.pem ] || [ ! -f $(MACOS_TEST_AGENT_INSTALL_DIR)/etc/auth_token ]; then \
 		echo "[*] Bootstrapping IPC cert + auth_token by running the Agent briefly..."; \
+		echo "--- diag: host ---"; \
+		sw_vers; uname -a; \
+		echo "--- diag: install dir mount + perms ---"; \
+		mount | grep -E "$$(df $(MACOS_TEST_AGENT_INSTALL_DIR) | tail -1 | awk '{print $$NF}')" || true; \
+		ls -la $(MACOS_TEST_AGENT_INSTALL_DIR)/bin/agent/agent; \
+		file $(MACOS_TEST_AGENT_INSTALL_DIR)/bin/agent/agent; \
+		echo "--- diag: xattr ---"; \
+		xattr -l $(MACOS_TEST_AGENT_INSTALL_DIR)/bin/agent/agent || true; \
+		echo "--- diag: codesign ---"; \
+		codesign --verify --verbose=2 $(MACOS_TEST_AGENT_INSTALL_DIR)/bin/agent/agent 2>&1 || true; \
+		echo "--- diag: spctl ---"; \
+		spctl --assess --type execute --verbose $(MACOS_TEST_AGENT_INSTALL_DIR)/bin/agent/agent 2>&1 || true; \
+		echo "--- diag: try 'agent version' (cheap exec sanity check) ---"; \
+		$(MACOS_TEST_AGENT_INSTALL_DIR)/bin/agent/agent version || echo "  version subcommand failed with exit $$?"; \
+		echo "--- diag: end ---"; \
 		mkdir -p $(MACOS_TEST_AGENT_INSTALL_DIR)/etc $(MACOS_TEST_AGENT_INSTALL_DIR)/run; \
 		DD_API_KEY=bootstrap DD_HOSTNAME=bootstrap \
 			DD_RUN_PATH=$(MACOS_TEST_AGENT_INSTALL_DIR)/run \
@@ -662,7 +677,12 @@ provision-macos-test-env: ## Installs the pinned Datadog Agent ($(MACOS_TEST_AGE
 		done; \
 		kill $$AGENT_PID 2>/dev/null || true; \
 		wait $$AGENT_PID 2>/dev/null || true; \
-		test -f $(MACOS_TEST_AGENT_INSTALL_DIR)/etc/ipc_cert.pem; \
+		if [ ! -f $(MACOS_TEST_AGENT_INSTALL_DIR)/etc/ipc_cert.pem ]; then \
+			echo "--- diag: bootstrap log (agent never wrote IPC cert) ---"; \
+			cat /tmp/saluki-agent-bootstrap.log 2>&1 || echo "  (log file empty or missing)"; \
+			echo "--- diag: end ---"; \
+			exit 1; \
+		fi; \
 	else \
 		echo "[*] IPC cert already present at $(MACOS_TEST_AGENT_INSTALL_DIR)/etc/ipc_cert.pem"; \
 	fi
