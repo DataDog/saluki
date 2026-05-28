@@ -155,4 +155,5 @@ default:
   tags: ["macos:sonoma-amd64", "specific:true"]
 
 .macos-arm64-test-job:
-  tags: ["macos:sonoma-arm64", "specific:true"]
+  tags: ["macos:tart"]
+  image: 486234852809.dkr.ecr.us-east-1.amazonaws.com/ci/ci-platform-machine-images/tart-vm:saluki-sonoma-latest
