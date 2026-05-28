@@ -4,17 +4,18 @@ description: "Verifies that memory limiting is disabled by default and bounds ve
 timeout: 120s
 runtimes: [docker, mac]
 
+env:
+  DD_API_KEY: "test-api-key"
+  DD_HOSTNAME: "integration-test"
+  DD_DATA_PLANE_ENABLED: "true"
+  DD_DATA_PLANE_STANDALONE_MODE: "true"
+  # An unrealistically small limit. With memory mode defaulted to "disabled", verification is
+  # skipped entirely and ADP uses an unbounded grant for the global limiter, so this value is
+  # intentionally ignored.
+  DD_MEMORY_LIMIT: "1"
+
 container:
   image: "saluki-images/datadog-agent:testing-devel"
-  env:
-    DD_API_KEY: "test-api-key"
-    DD_HOSTNAME: "integration-test"
-    DD_DATA_PLANE_ENABLED: "true"
-    DD_DATA_PLANE_STANDALONE_MODE: "true"
-    # An unrealistically small limit. With memory mode defaulted to "disabled", verification is
-    # skipped entirely and ADP uses an unbounded grant for the global limiter, so this value is
-    # intentionally ignored.
-    DD_MEMORY_LIMIT: "1"
 
 assertions:
   - type: log_contains

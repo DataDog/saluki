@@ -694,11 +694,11 @@ impl IntegrationRunner {
         let container = &self.test_case.container;
 
         // Merge framework-level port-isolation env vars with the test's own env. Framework
-        // defaults are applied first so the test's `container.env` (and any explicit override)
-        // takes precedence. Keeps the test surface consistent across the docker and `mac`
-        // runtimes — both see the same shifted port table.
+        // defaults are applied first so the test's `env` block takes precedence. Keeps the test
+        // surface consistent across the docker and `mac` runtimes — both see the same shifted
+        // port table.
         let mut merged_env = crate::unix_runner::test_port_isolation_env();
-        for (k, v) in &container.env {
+        for (k, v) in &self.test_case.env {
             merged_env.insert(k.clone(), v.clone());
         }
         let env_vars: Vec<String> = merged_env.iter().map(|(k, v)| format!("{}={}", k, v)).collect();

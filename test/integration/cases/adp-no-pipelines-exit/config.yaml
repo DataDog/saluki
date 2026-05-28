@@ -4,15 +4,16 @@ description: "Verify ADP exits with error when no data pipelines enabled"
 timeout: 120s
 runtimes: [docker, mac]
 
+env:
+  DD_API_KEY: "test-api-key"
+  DD_HOSTNAME: "integration-test"
+  DD_DATA_PLANE_ENABLED: "true"
+  DD_DATA_PLANE_STANDALONE_MODE: "true"
+  DD_DATA_PLANE_DOGSTATSD_ENABLED: "false"
+  DD_DATA_PLANE_OTLP_ENABLED: "false"
+
 container:
   image: "saluki-images/datadog-agent:testing-devel"
-  env:
-    DD_API_KEY: "test-api-key"
-    DD_HOSTNAME: "integration-test"
-    DD_DATA_PLANE_ENABLED: "true"
-    DD_DATA_PLANE_STANDALONE_MODE: "true"
-    DD_DATA_PLANE_DOGSTATSD_ENABLED: "false"
-    DD_DATA_PLANE_OTLP_ENABLED: "false"
 
 assertions:
   # ADP should log that no pipelines are enabled and exit.

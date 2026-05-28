@@ -4,16 +4,17 @@ description: "Verifies DogStatsD UDP listener autoscaling (SO_REUSEPORT) starts 
 timeout: 120s
 runtimes: [docker, mac]
 
+env:
+  DD_API_KEY: "test-api-key"
+  DD_HOSTNAME: "integration-test-dsd-autoscale"
+  DD_DATA_PLANE_ENABLED: "true"
+  DD_DATA_PLANE_STANDALONE_MODE: "true"
+  DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+  DD_DOGSTATSD_NON_LOCAL_TRAFFIC: "true"
+  DD_DOGSTATSD_AUTOSCALE_UDP_LISTENERS: "true"
+
 container:
   image: "saluki-images/datadog-agent:testing-devel"
-  env:
-    DD_API_KEY: "test-api-key"
-    DD_HOSTNAME: "integration-test-dsd-autoscale"
-    DD_DATA_PLANE_ENABLED: "true"
-    DD_DATA_PLANE_STANDALONE_MODE: "true"
-    DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
-    DD_DOGSTATSD_NON_LOCAL_TRAFFIC: "true"
-    DD_DOGSTATSD_AUTOSCALE_UDP_LISTENERS: "true"
   exposed_ports:
     - "58125/udp"
 

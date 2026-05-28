@@ -13,16 +13,17 @@ timeout: 120s
 runtimes: [docker, mac]
 requires_core_agent: true
 
+env:
+  DD_API_KEY: "test-api-key"
+  DD_HOSTNAME: "integration-test-config-exit"
+  DD_DATA_PLANE_ENABLED: "true"
+  DD_DATA_PLANE_STANDALONE_MODE: "false"
+  DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT: "true"
+  DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+  DD_HEROKU_DYNO: "true" # Incompatible(High) - triggers error and exit
+
 container:
   image: "saluki-images/datadog-agent:testing-devel"
-  env:
-    DD_API_KEY: "test-api-key"
-    DD_HOSTNAME: "integration-test-config-exit"
-    DD_DATA_PLANE_ENABLED: "true"
-    DD_DATA_PLANE_STANDALONE_MODE: "false"
-    DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT: "true"
-    DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
-    DD_HEROKU_DYNO: "true" # Incompatible(High) - triggers error and exit
 
 assertions:
   - type: log_contains

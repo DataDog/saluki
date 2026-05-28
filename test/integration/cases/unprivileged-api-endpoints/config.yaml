@@ -4,33 +4,34 @@ description: "Verifies the /ready, /live, and /memory/status endpoints are acces
 timeout: 120s
 runtimes: [docker, mac]
 
+env:
+  DD_API_KEY: "test-api-key"
+  DD_HOSTNAME: "integration-test-health"
+  DD_DATA_PLANE_ENABLED: "true"
+  DD_DATA_PLANE_STANDALONE_MODE: "true"
+  DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+
 container:
   image: "saluki-images/datadog-agent:testing-devel"
-  env:
-    DD_API_KEY: "test-api-key"
-    DD_HOSTNAME: "integration-test-health"
-    DD_DATA_PLANE_ENABLED: "true"
-    DD_DATA_PLANE_STANDALONE_MODE: "true"
-    DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
   exposed_ports:
-    - "5100/tcp"
+    - "55100/tcp"
 
 assertions:
   - parallel:
       - type: process_stable_for
         duration: 10s
       - type: http_check
-        endpoint: "http://localhost:5100/ready"
+        endpoint: "http://localhost:55100/ready"
         status:
           equal: 200
         timeout: 10s
       - type: http_check
-        endpoint: "http://localhost:5100/live"
+        endpoint: "http://localhost:55100/live"
         status:
           equal: 200
         timeout: 10s
       - type: http_check
-        endpoint: "http://localhost:5100/memory/status"
+        endpoint: "http://localhost:55100/memory/status"
         status:
           equal: 200
         timeout: 10s

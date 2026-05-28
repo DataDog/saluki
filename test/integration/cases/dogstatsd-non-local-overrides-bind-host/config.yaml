@@ -16,19 +16,20 @@ description: "Verifies dogstatsd_non_local_traffic takes precedence over bind_ho
 timeout: 120s
 runtimes: [docker, mac]
 
+env:
+  DD_API_KEY: "test-api-key"
+  DD_HOSTNAME: "integration-test-dsd-non-local-override"
+  DD_DATA_PLANE_ENABLED: "true"
+  DD_DATA_PLANE_STANDALONE_MODE: "true"
+  DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+  DD_DOGSTATSD_NON_LOCAL_TRAFFIC: "true"
+  # Arbitrary, unreachable IP: non_local_traffic=true wins over bind_host,
+  # so the value is ignored. Using something obviously-not-a-real-binding
+  # address makes the "the value doesn't matter" intent unmistakable.
+  DD_BIND_HOST: "10.9.8.7"
+
 container:
   image: "saluki-images/datadog-agent:testing-devel"
-  env:
-    DD_API_KEY: "test-api-key"
-    DD_HOSTNAME: "integration-test-dsd-non-local-override"
-    DD_DATA_PLANE_ENABLED: "true"
-    DD_DATA_PLANE_STANDALONE_MODE: "true"
-    DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
-    DD_DOGSTATSD_NON_LOCAL_TRAFFIC: "true"
-    # Arbitrary, unreachable IP: non_local_traffic=true wins over bind_host,
-    # so the value is ignored. Using something obviously-not-a-real-binding
-    # address makes the "the value doesn't matter" intent unmistakable.
-    DD_BIND_HOST: "10.9.8.7"
 
 assertions:
   - type: log_contains

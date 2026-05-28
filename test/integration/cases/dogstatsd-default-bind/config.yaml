@@ -14,14 +14,15 @@ description: "Verifies DogStatsD binds to 127.0.0.1 by default when bind_host is
 timeout: 120s
 runtimes: [docker, mac]
 
+env:
+  DD_API_KEY: "test-api-key"
+  DD_HOSTNAME: "integration-test-dsd-default-bind"
+  DD_DATA_PLANE_ENABLED: "true"
+  DD_DATA_PLANE_STANDALONE_MODE: "true"
+  DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+
 container:
   image: "saluki-images/datadog-agent:testing-devel"
-  env:
-    DD_API_KEY: "test-api-key"
-    DD_HOSTNAME: "integration-test-dsd-default-bind"
-    DD_DATA_PLANE_ENABLED: "true"
-    DD_DATA_PLANE_STANDALONE_MODE: "true"
-    DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
 
 assertions:
   - type: log_contains

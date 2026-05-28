@@ -9,18 +9,19 @@ runtimes: [docker]
 # runtime, so this assertion does not translate; re-enable once the Unix runner grows a
 # supervisor or the test is rewritten to assert on retry behavior directly.
 
+env:
+  DD_API_KEY: "test-api-key"
+  DD_HOSTNAME: "integration-test-rar-disabled"
+  # Core Agent setting to disable RAR
+  DD_REMOTE_AGENT_REGISTRY_ENABLED: "false"
+  # ADP settings - enable RAR integration (which will fail gracefully)
+  DD_DATA_PLANE_ENABLED: "true"
+  DD_DATA_PLANE_STANDALONE_MODE: "false"
+  DD_DATA_PLANE_REMOTE_AGENT_ENABLED: "true"
+  DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+
 container:
   image: "saluki-images/datadog-agent:testing-devel"
-  env:
-    DD_API_KEY: "test-api-key"
-    DD_HOSTNAME: "integration-test-rar-disabled"
-    # Core Agent setting to disable RAR
-    DD_REMOTE_AGENT_REGISTRY_ENABLED: "false"
-    # ADP settings - enable RAR integration (which will fail gracefully)
-    DD_DATA_PLANE_ENABLED: "true"
-    DD_DATA_PLANE_STANDALONE_MODE: "false"
-    DD_DATA_PLANE_REMOTE_AGENT_ENABLED: "true"
-    DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
   exposed_ports:
     - "58125/udp"
 

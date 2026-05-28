@@ -57,22 +57,24 @@ const DEFAULT_CORE_AGENT_BINARY_PATH: &str = "/tmp/saluki-dda/datadog-agent/bin/
 const CORE_AGENT_IPC_READY_TIMEOUT: Duration = Duration::from_secs(60);
 const CORE_AGENT_IPC_READY_POLL: Duration = Duration::from_millis(200);
 
-/// Framework-level env overrides that move every conflict-prone default port off its canonical
-/// value so the test Core Agent + ADP can coexist with a system Datadog Agent already running
-/// on a shared CI runner. Tests can override any of these via `container.env`; tests that test
-/// specific port behavior (`adp-cmd-port`) supply their own values.
+/// Framework-level env overrides that move every default port the test target binds off its
+/// canonical value, so concurrent test runs and any system Agent / system ADP on the host can
+/// coexist with the per-test processes. Tests can override any of these via their `env` block;
+/// tests that exercise specific port behavior (`adp-cmd-port`) supply their own values.
 ///
 /// Naming convention: every default port that's 4 digits gets a `5` prepended (8125 -> 58125,
 /// 5001 -> 55001, etc.). The GUI is disabled outright since we don't exercise it.
 ///
-/// Scope is intentionally narrow: only ports a stock Datadog Agent binds by default. ADP's own
-/// listen addresses (5100/5101/5102) and the OTLP receiver (4317/4318) are not bound by the
-/// system Agent and don't need to be shifted; keeping them on defaults means tests can assert
-/// against canonical port numbers with no extra plumbing.
+/// Note on env-var nesting: saluki-config (and figment) split env-var names on `__` to map to
+/// nested config keys. Single-underscore env vars like `DD_DATA_PLANE_API_LISTEN_ADDRESS` map
+/// to the flat key `data_plane_api_listen_address` and are silently ignored; we use double
+/// underscores at every dot boundary for the deep ADP / OTLP keys below. The top-level Agent
+/// env vars (`DD_CMD_PORT` etc.) are explicitly queried by the Agent so they don't need it.
 pub fn test_port_isolation_env() -> HashMap<String, String> {
     HashMap::from([
+        // ----- Core Agent ports -----
         // CMD/IPC API. Shared key between the Core Agent (listener) and ADP (IPC client).
-        // `adp-cmd-port` overrides this via container.env to validate the non-default path.
+        // `adp-cmd-port` overrides this via its `env` block to validate the non-default path.
         ("DD_CMD_PORT".to_string(), "55001".to_string()),
         // GUI — disabled outright. No integration test exercises it.
         ("DD_GUI_PORT".to_string(), "-1".to_string()),
@@ -86,6 +88,28 @@ pub fn test_port_isolation_env() -> HashMap<String, String> {
         // DD_DATA_PLANE_ENABLED so this mainly affects ADP (the actual listener) and the
         // bootstrap-mode Agent.
         ("DD_DOGSTATSD_PORT".to_string(), "58125".to_string()),
+        // ----- ADP listen addresses ----- (URI-style; ListenAddress accepts `tcp://host:port`)
+        (
+            "DD_DATA_PLANE__API_LISTEN_ADDRESS".to_string(),
+            "tcp://0.0.0.0:55100".to_string(),
+        ),
+        (
+            "DD_DATA_PLANE__SECURE_API_LISTEN_ADDRESS".to_string(),
+            "tcp://0.0.0.0:55101".to_string(),
+        ),
+        (
+            "DD_DATA_PLANE__TELEMETRY_LISTEN_ADDR".to_string(),
+            "tcp://0.0.0.0:55102".to_string(),
+        ),
+        // ----- OTLP receiver endpoints ----- (same shape as the Datadog Agent's OTLP env vars)
+        (
+            "DD_OTLP_CONFIG__RECEIVER__PROTOCOLS__GRPC__ENDPOINT".to_string(),
+            "0.0.0.0:54317".to_string(),
+        ),
+        (
+            "DD_OTLP_CONFIG__RECEIVER__PROTOCOLS__HTTP__ENDPOINT".to_string(),
+            "0.0.0.0:54318".to_string(),
+        ),
     ])
 }
 
@@ -93,7 +117,7 @@ pub fn test_port_isolation_env() -> HashMap<String, String> {
 ///
 /// Precedence (lowest to highest):
 ///   1. framework port-isolation defaults (`test_port_isolation_env`)
-///   2. the test's declared `container.env`
+///   2. the test's top-level `env` block
 ///   3. forced overrides supplied by the caller (auth token path, run path, …)
 ///
 /// Forced overrides are bottom-of-stack from the framework's perspective but top-of-stack here
@@ -209,7 +233,7 @@ impl UnixIntegrationRunner {
             //     back to /opt — typically not writable in CI. Scope it to the per-test state
             //     directory so each test gets a clean slate and nothing leaks across runs.
             let agent_env = build_process_env(
-                &self.test_case.container.env,
+                &self.test_case.env,
                 &[
                     ("DD_AUTH_TOKEN_FILE_PATH", auth_token_path.clone()),
                     ("DD_RUN_PATH", state_dir.to_string_lossy().into_owned()),
@@ -267,7 +291,7 @@ impl UnixIntegrationRunner {
         } else {
             Vec::new()
         };
-        let adp_env = build_process_env(&self.test_case.container.env, &adp_forced);
+        let adp_env = build_process_env(&self.test_case.env, &adp_forced);
         let process_config = UnixProcessConfig::new(self.test_case.name.clone(), binary_path)
             .with_args(vec!["-c".to_string(), config_path_str, "run".to_string()])
             .with_env_map(adp_env);

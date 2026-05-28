@@ -20,16 +20,17 @@ timeout: 120s
 # once dynamic resolution grows a portable mechanism.
 runtimes: [docker]
 
+env:
+  DD_API_KEY: "test-api-key"
+  DD_HOSTNAME: "integration-test-dsd-bind-host"
+  DD_DATA_PLANE_ENABLED: "true"
+  DD_DATA_PLANE_STANDALONE_MODE: "true"
+  DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+  PANORAMIC_DYNAMIC_CONTAINER_IP: "hostname -i | awk '{print $1}'"
+  DD_BIND_HOST: "{{PANORAMIC_DYNAMIC_CONTAINER_IP}}"
+
 container:
   image: "saluki-images/datadog-agent:testing-devel"
-  env:
-    DD_API_KEY: "test-api-key"
-    DD_HOSTNAME: "integration-test-dsd-bind-host"
-    DD_DATA_PLANE_ENABLED: "true"
-    DD_DATA_PLANE_STANDALONE_MODE: "true"
-    DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
-    PANORAMIC_DYNAMIC_CONTAINER_IP: "hostname -i | awk '{print $1}'"
-    DD_BIND_HOST: "{{PANORAMIC_DYNAMIC_CONTAINER_IP}}"
 
 assertions:
   - type: log_contains
