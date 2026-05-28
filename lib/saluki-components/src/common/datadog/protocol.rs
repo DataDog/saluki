@@ -3,10 +3,10 @@
 use facet::Facet;
 use serde::{Deserialize, Serialize};
 
-const DEFAULT_V3_BETA_SERIES_ROUTE: &str = "/api/intake/metrics/v3beta/series";
+use super::METRICS_SERIES_V3_BETA_PATH;
 
 fn default_v3_beta_series_route() -> String {
-    DEFAULT_V3_BETA_SERIES_ROUTE.to_owned()
+    METRICS_SERIES_V3_BETA_PATH.to_owned()
 }
 
 /// The type of metrics payload.

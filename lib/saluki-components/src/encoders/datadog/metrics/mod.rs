@@ -39,7 +39,8 @@ use crate::{
         protocol::{MetricsPayloadInfo, V3ApiConfig},
         request_builder::RequestBuilder,
         telemetry::ComponentTelemetry,
-        DEFAULT_SERIALIZER_COMPRESSED_SIZE_LIMIT, DEFAULT_SERIALIZER_UNCOMPRESSED_SIZE_LIMIT,
+        DEFAULT_SERIALIZER_COMPRESSED_SIZE_LIMIT, DEFAULT_SERIALIZER_UNCOMPRESSED_SIZE_LIMIT, METRICS_SERIES_V3_PATH,
+        METRICS_SKETCHES_V3_PATH,
     },
     encoders::datadog::metrics::v2::MetricsEndpointEncoder,
 };
@@ -52,8 +53,8 @@ mod v2;
 mod v3;
 
 const DEFAULT_SERIALIZER_COMPRESSOR_KIND: &str = "zstd";
-const V3_SERIES_ENDPOINT_URI: &str = "/api/intake/metrics/v3/series";
-const V3_SKETCHES_ENDPOINT_URI: &str = "/api/intake/metrics/v3/sketches";
+const V3_SERIES_ENDPOINT_URI: &str = METRICS_SERIES_V3_PATH;
+const V3_SKETCHES_ENDPOINT_URI: &str = METRICS_SKETCHES_V3_PATH;
 
 const fn default_max_metrics_per_payload() -> usize {
     10_000
