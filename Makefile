@@ -665,6 +665,8 @@ provision-macos-test-env: ## Installs the pinned Datadog Agent ($(MACOS_TEST_AGE
 		mkdir -p $(MACOS_TEST_AGENT_INSTALL_DIR)/etc $(MACOS_TEST_AGENT_INSTALL_DIR)/run; \
 		DD_API_KEY=bootstrap DD_HOSTNAME=bootstrap \
 			DD_RUN_PATH=$(MACOS_TEST_AGENT_INSTALL_DIR)/run \
+			DD_AUTH_TOKEN_FILE_PATH=$(MACOS_TEST_AGENT_INSTALL_DIR)/etc/auth_token \
+			DD_IPC_CERT_FILE_PATH=$(MACOS_TEST_AGENT_INSTALL_DIR)/etc/ipc_cert.pem \
 			DD_CMD_PORT=55001 DD_GUI_PORT=-1 \
 			DD_EXPVAR_PORT=55000 DD_APM_RECEIVER_PORT=58126 \
 			DD_PROCESS_CONFIG_CMD_PORT=56062 DD_AGENT_IPC_PORT=55004 \
@@ -680,6 +682,11 @@ provision-macos-test-env: ## Installs the pinned Datadog Agent ($(MACOS_TEST_AGE
 		if [ ! -f $(MACOS_TEST_AGENT_INSTALL_DIR)/etc/ipc_cert.pem ]; then \
 			echo "--- diag: bootstrap log (agent never wrote IPC cert) ---"; \
 			cat /tmp/saluki-agent-bootstrap.log 2>&1 || echo "  (log file empty or missing)"; \
+			echo "--- diag: post-failure file listings ---"; \
+			echo "sandbox etc/:"; ls -la $(MACOS_TEST_AGENT_INSTALL_DIR)/etc/ 2>&1 || true; \
+			echo "sandbox run/:"; ls -la $(MACOS_TEST_AGENT_INSTALL_DIR)/run/ 2>&1 || true; \
+			echo "any auth_token / ipc_cert.pem on the filesystem:"; \
+			find /tmp/saluki-dda /opt/datadog-agent /var/run /private/var $$HOME -name auth_token -o -name ipc_cert.pem 2>/dev/null || true; \
 			echo "--- diag: end ---"; \
 			exit 1; \
 		fi; \
