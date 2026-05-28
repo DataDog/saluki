@@ -11,7 +11,7 @@ use saluki_common::{
     task::HandleExt as _,
 };
 use saluki_config::GenericConfiguration;
-use saluki_context::tags::SharedTagSet;
+use saluki_context::tags::{SharedTagSet, Tag};
 use saluki_core::{
     components::{encoders::*, ComponentContext},
     data_model::{
@@ -932,6 +932,7 @@ fn write_metric_to_v3(writer: &mut v3::V3Writer, metric: &Metric, additional_tag
         MetricValues::Gauge(..) | MetricValues::Set(..) => v3::V3MetricType::Gauge,
         MetricValues::Histogram(..) | MetricValues::Distribution(..) => v3::V3MetricType::Sketch,
     };
+    let is_sketch = metric_type == v3::V3MetricType::Sketch;
 
     let mut builder = writer.write(metric_type, metric.context().name());
 
@@ -942,23 +943,37 @@ fn write_metric_to_v3(writer: &mut v3::V3Writer, metric: &Metric, additional_tag
         .into_iter()
         .chain(additional_tags)
         .chain(metric.context().origin_tags())
-        .filter(|t| !t.name().starts_with("dd.internal.resource"))
+        .filter(|t| is_sketch || !is_v3_series_resource_tag(t) && !is_v3_series_device_tag(t))
         .map(|t| t.as_str());
     builder.set_tags(all_tags);
 
-    // Resources - extract host and any dd.internal.resource tags
+    // Resources - extract host and, for series, promoted resource tags.
     let mut resources = Vec::new();
-    if let Some(host) = metric.metadata().hostname() {
+    if let Some(host) = metric.metadata().hostname().filter(|host| !host.is_empty()) {
         resources.push(("host", host));
     }
-    // Extract dd.internal.resource tags as resources
-    for tag in metric.context().tags().into_iter().chain(additional_tags) {
-        if tag.name() == "dd.internal.resource" {
-            if let Some(value) = tag.value() {
-                if let Some((rtype, rname)) = value.split_once(':') {
-                    resources.push((rtype, rname));
+    if !is_sketch {
+        let mut device_resource = None;
+        for tag in metric
+            .context()
+            .origin_tags()
+            .into_iter()
+            .chain(metric.context().tags())
+            .chain(additional_tags)
+        {
+            if is_v3_series_device_tag(tag) {
+                device_resource = tag.value().filter(|device| !device.is_empty());
+            } else if is_v3_series_resource_tag(tag) {
+                if let Some((rtype, rname)) = tag.value().and_then(|value| value.split_once(':')) {
+                    if !rtype.is_empty() && !rname.is_empty() {
+                        resources.push((rtype, rname));
+                    }
                 }
             }
+        }
+        if let Some(device) = device_resource {
+            let device_idx = usize::from(metric.metadata().hostname().is_some_and(|host| !host.is_empty()));
+            resources.insert(device_idx, ("device", device));
         }
     }
     builder.set_resources(&resources);
@@ -1049,6 +1064,14 @@ fn write_metric_to_v3(writer: &mut v3::V3Writer, metric: &Metric, additional_tag
     builder.close();
 }
 
+fn is_v3_series_device_tag(tag: &Tag) -> bool {
+    tag.name() == "device" && tag.value().is_some()
+}
+
+fn is_v3_series_resource_tag(tag: &Tag) -> bool {
+    tag.name() == "dd.internal.resource" && tag.value().is_some()
+}
+
 /// Creates a V3 HTTP request from encoded payload data.
 async fn create_v3_request(
     endpoint_uri: &str, payload: Vec<u8>, compression_scheme: CompressionScheme,
@@ -1102,7 +1125,16 @@ async fn create_v3_request(
 
 #[cfg(test)]
 mod tests {
-    use saluki_core::data_model::{event::Event, payload::Payload};
+    use std::sync::Arc;
+
+    use saluki_context::{
+        tags::{Tag, TagSet},
+        Context,
+    };
+    use saluki_core::data_model::{
+        event::{metric::MetricMetadata, Event},
+        payload::Payload,
+    };
     use tokio::time::timeout;
 
     use super::*;
@@ -1151,6 +1183,94 @@ serializer_experimental_use_v3_api:
         .expect("request should be created");
 
         assert_eq!("/api/intake/metrics/custom/series", request.uri());
+    }
+
+    #[test]
+    fn v3_series_promotes_device_and_internal_resource_tags_to_resources() {
+        let context = Context::from_static_parts(
+            "series.resources",
+            &[
+                "env:prod",
+                "device:switch1",
+                "dd.internal.resource:pod:pod-a",
+                "dd.internal.resource:malformed",
+            ],
+        );
+        let metadata = MetricMetadata::default().with_hostname(Some(Arc::from("host-a")));
+        let metric = Metric::from_parts(context, MetricValues::gauge([1.0_f64]), metadata);
+
+        let payload =
+            encode_v3_metrics_batch(&[metric], &SharedTagSet::default()).expect("V3 series should encode successfully");
+
+        assert_contains_bytes(&payload, b"env:prod");
+        assert!(!contains_bytes(&payload, b"device:switch1"));
+        assert!(!contains_bytes(&payload, b"dd.internal.resource:pod:pod-a"));
+        assert!(!contains_bytes(&payload, b"dd.internal.resource:malformed"));
+
+        let expected_resource_dict = [
+            0x22, // field 4, length-delimited.
+            0x25, // field payload length.
+            0x04, b'h', b'o', b's', b't', 0x06, b'h', b'o', b's', b't', b'-', b'a', 0x06, b'd', b'e', b'v', b'i', b'c',
+            b'e', 0x07, b's', b'w', b'i', b't', b'c', b'h', b'1', 0x03, b'p', b'o', b'd', 0x05, b'p', b'o', b'd', b'-',
+            b'a',
+        ];
+        assert_contains_bytes(&payload, &expected_resource_dict);
+    }
+
+    #[test]
+    fn v3_series_promotes_additional_and_origin_resource_tags_without_empty_host() {
+        let context = Context::from_static_parts("series.additional_origin_resources", &["env:prod"])
+            .with_origin_tags(tag_set(["dd.internal.resource:pod:pod-origin"]));
+        let additional_tags = SharedTagSet::from(tag_set([
+            "team:core",
+            "device:switch1",
+            "dd.internal.resource:container:container-a",
+        ]));
+        let metadata = MetricMetadata::default().with_hostname(Some(Arc::from("")));
+        let metric = Metric::from_parts(context, MetricValues::gauge([1.0_f64]), metadata);
+
+        let payload =
+            encode_v3_metrics_batch(&[metric], &additional_tags).expect("V3 series should encode successfully");
+
+        assert_contains_bytes(&payload, b"env:prod");
+        assert_contains_bytes(&payload, b"team:core");
+        assert!(!contains_bytes(&payload, b"device:switch1"));
+        assert!(!contains_bytes(&payload, b"dd.internal.resource:container:container-a"));
+        assert!(!contains_bytes(&payload, b"dd.internal.resource:pod:pod-origin"));
+
+        let expected_resource_dict = [
+            0x22, // field 4, length-delimited.
+            0x34, // field payload length.
+            0x06, b'd', b'e', b'v', b'i', b'c', b'e', 0x07, b's', b'w', b'i', b't', b'c', b'h', b'1', 0x03, b'p', b'o',
+            b'd', 0x0a, b'p', b'o', b'd', b'-', b'o', b'r', b'i', b'g', b'i', b'n', 0x09, b'c', b'o', b'n', b't', b'a',
+            b'i', b'n', b'e', b'r', 0x0b, b'c', b'o', b'n', b't', b'a', b'i', b'n', b'e', b'r', b'-', b'a',
+        ];
+        assert_contains_bytes(&payload, &expected_resource_dict);
+        assert!(!contains_bytes(&payload, b"host"));
+    }
+
+    #[test]
+    fn v3_sketch_keeps_device_and_internal_resource_tags_as_tags() {
+        let context = Context::from_static_parts(
+            "sketch.resources",
+            &["env:prod", "device:switch1", "dd.internal.resource:pod:pod-a"],
+        );
+        let metadata = MetricMetadata::default().with_hostname(Some(Arc::from("host-a")));
+        let metric = Metric::from_parts(context, MetricValues::histogram([1.0_f64]), metadata);
+
+        let payload =
+            encode_v3_metrics_batch(&[metric], &SharedTagSet::default()).expect("V3 sketch should encode successfully");
+
+        assert_contains_bytes(&payload, b"env:prod");
+        assert_contains_bytes(&payload, b"device:switch1");
+        assert_contains_bytes(&payload, b"dd.internal.resource:pod:pod-a");
+
+        let expected_resource_dict = [
+            0x22, // field 4, length-delimited.
+            0x0c, // field payload length.
+            0x04, b'h', b'o', b's', b't', 0x06, b'h', b'o', b's', b't', b'-', b'a',
+        ];
+        assert_contains_bytes(&payload, &expected_resource_dict);
     }
 
     #[tokio::test]
@@ -1225,6 +1345,23 @@ serializer_experimental_use_v3_api:
             .await
             .expect("request builder task should complete")
             .expect("request builder should stop cleanly");
+    }
+
+    fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
+        haystack.windows(needle.len()).any(|window| window == needle)
+    }
+
+    fn assert_contains_bytes(haystack: &[u8], needle: &[u8]) {
+        assert!(
+            contains_bytes(haystack, needle),
+            "expected payload to contain bytes {:?}, got {:?}",
+            needle,
+            haystack
+        );
+    }
+
+    fn tag_set<const N: usize>(tags: [&'static str; N]) -> TagSet {
+        tags.into_iter().map(Tag::from_static).collect()
     }
 }
 
