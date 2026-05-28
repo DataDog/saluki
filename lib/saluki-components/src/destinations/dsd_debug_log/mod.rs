@@ -6,7 +6,7 @@ use std::{
 use async_trait::async_trait;
 use bytesize::ByteSize;
 use chrono::{DateTime, Utc};
-use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
+use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_common::collections::FastHashMap;
 use saluki_config::GenericConfiguration;
 use saluki_context::tags::TagSet;

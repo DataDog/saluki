@@ -1,9 +1,9 @@
 use datadog_agent_commons::ipc::{config::IpcAuthConfiguration, tls::build_ipc_server_tls_config};
-use memory_accounting::ComponentRegistry;
+use resource_accounting::ComponentRegistry;
 use saluki_api::EndpointType;
 use saluki_app::{
-    config::ConfigWorker, dynamic_api::DynamicAPIBuilder, logging::LoggingOverrideController,
-    memory::AllocationTelemetryWorker,
+    accounting::ResourceTelemetryWorker, config::ConfigWorker, dynamic_api::DynamicAPIBuilder,
+    logging::LoggingOverrideController,
 };
 use saluki_components::{
     destinations::DogStatsDStatisticsConfiguration,
@@ -18,7 +18,9 @@ use saluki_error::GenericError;
 
 use crate::{
     config::DataPlaneConfiguration,
-    internal::{logging::DynamicLogLevelWorker, remote_agent::RemoteAgentBootstrap},
+    internal::{
+        logging::DynamicLogLevelWorker, remote_agent::RemoteAgentBootstrap, telemetry::InternalTelemetryAPIWorker,
+    },
 };
 
 /// DogStatsD-specific control plane integrations.
@@ -63,7 +65,8 @@ pub async fn create_control_plane_supervisor(
         .with_restart_strategy(RestartStrategy::one_to_one());
 
     supervisor.add_worker(health_registry.worker());
-    supervisor.add_worker(AllocationTelemetryWorker::new(component_registry));
+    supervisor.add_worker(ResourceTelemetryWorker::new(component_registry));
+    supervisor.add_worker(InternalTelemetryAPIWorker::new());
     supervisor.add_worker(DynamicLogLevelWorker::new(config, logging_controller));
     supervisor.add_worker(ConfigWorker::new(config.clone()));
 
@@ -90,12 +93,8 @@ pub async fn create_control_plane_supervisor(
     if let Some(ra_bootstrap) = &ra_bootstrap {
         privileged_api = privileged_api
             .with_grpc_service(ra_bootstrap.create_status_service())
-            .with_grpc_service(ra_bootstrap.create_flare_service());
-
-        // Only register the telemetry service if telemetry is actually enabled.
-        if let Some(telemetry_service) = ra_bootstrap.create_telemetry_service() {
-            privileged_api = privileged_api.with_grpc_service(telemetry_service);
-        }
+            .with_grpc_service(ra_bootstrap.create_flare_service())
+            .with_grpc_service(ra_bootstrap.create_telemetry_service());
     }
 
     supervisor.add_worker(privileged_api);

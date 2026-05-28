@@ -41,8 +41,6 @@ global:
       DD_DATA_PLANE_STANDALONE_MODE: "true"
 
       # Enable internal telemetry endpoint.
-      DD_DATA_PLANE_TELEMETRY_ENABLED: "true"
-      DD_DATA_PLANE_TELEMETRY_LISTEN_ADDR: tcp://127.0.0.1:5102
 
     profiling_environment:
       SMP_PROFILING_ENABLED: "true"
@@ -66,7 +64,7 @@ global:
 
     target_metrics:
       - prometheus:
-          uri: "http://127.0.0.1:5102/scrape"
+          uri: "http://127.0.0.1:5100/metrics"
 
 templates:
   # Base template for DogStatsD experiments

@@ -9,7 +9,7 @@ use datadog_protos::traces::{
 };
 use facet::Facet;
 use http::{uri::PathAndQuery, HeaderValue, Method, Uri};
-use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
+use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_common::task::HandleExt as _;
 use saluki_config::GenericConfiguration;
 use saluki_core::{

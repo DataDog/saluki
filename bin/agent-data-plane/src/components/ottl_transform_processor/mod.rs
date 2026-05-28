@@ -8,8 +8,8 @@
 //! [OpenTelemetry Transform processor]: https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/release/v0.144.x/processor/transformprocessor
 
 use async_trait::async_trait;
-use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use ottl::{CallbackMap, EnumMap, OttlParser};
+use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
 use saluki_context::tags::TagSet;
 use saluki_core::{

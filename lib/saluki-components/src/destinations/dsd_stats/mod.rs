@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
+use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_api::{
     extract::{Query, State},
     routing::{get, Router},

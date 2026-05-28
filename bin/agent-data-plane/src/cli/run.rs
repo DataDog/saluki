@@ -5,10 +5,10 @@ use std::{
 
 use argh::FromArgs;
 use datadog_agent_commons::platform::PlatformSettings;
-use memory_accounting::{ComponentBounds, ComponentRegistry};
+use resource_accounting::{ComponentBounds, ComponentRegistry};
 use saluki_app::{
+    accounting::{initialize_memory_bounds, MemoryBoundsConfiguration},
     bootstrap::BootstrapGuard,
-    memory::{initialize_memory_bounds, MemoryBoundsConfiguration},
     metrics::emit_startup_metrics,
 };
 use saluki_components::config_registry::{ConfigClassifier, Severity, SupportLevel};
@@ -345,16 +345,6 @@ fn check_and_warn_config(config: &GenericConfiguration) -> Result<(), GenericErr
         // The Agent populates default values into the config, so we do not consider keys with default values.
         if classification.is_default {
             trace!(key = %key, "Configuration key has a default value.");
-            continue;
-        }
-
-        // Return a warning with a custom message on how to enable ADP telemetry.
-        if key == "telemetry.enabled" {
-            warn!(
-                key = %key,
-                "The telemetry.enabled key is not read by ADP. \
-                 Use data_plane.telemetry_enabled and data_plane.telemetry_filter_level instead."
-            );
             continue;
         }
 

@@ -6,7 +6,7 @@ use std::{
 use async_trait::async_trait;
 use ddsketch::DDSketch;
 use hashbrown::{hash_map::Entry, HashMap};
-use memory_accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
+use resource_accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
 use saluki_common::time::get_unix_timestamp;
 use saluki_config::GenericConfiguration;
 use saluki_context::Context;

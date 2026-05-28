@@ -9,9 +9,6 @@ pub use self::dogstatsd::{
     ReplaySession, TimestampResolution, TrafficCaptureReader, DEFAULT_REPLAY_LOOPS, REPLAY_CREDENTIALS_GID,
 };
 
-mod internal_metrics;
-pub use self::internal_metrics::InternalMetricsConfiguration;
-
 mod heartbeat;
 pub use self::heartbeat::HeartbeatConfiguration;
 

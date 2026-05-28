@@ -8,8 +8,8 @@ use std::{
 };
 
 use async_trait::async_trait;
-use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use opentelemetry_semantic_conventions::resource::{CONTAINER_ID, K8S_POD_UID};
+use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
 use saluki_context::{origin::OriginTagCardinality, tags::TagSet};
 use saluki_core::{

@@ -1835,7 +1835,7 @@
 - name: log_to_syslog
   reason: initial bulk
 - name: logging_frequency
-  reason: 'accepted divergence: ADP logs success below info level'
+  reason: "accepted divergence: ADP logs success below info level"
 - name: logon_duration.enabled
   reason: initial bulk
 - name: logs_config.add_logsource_tag
@@ -3275,6 +3275,8 @@
 - name: tag_value_split_separator
   reason: initial bulk
 - name: tags
+  reason: initial bulk
+- name: telemetry.enabled
   reason: initial bulk
 - name: telemetry.checks
   reason: initial bulk

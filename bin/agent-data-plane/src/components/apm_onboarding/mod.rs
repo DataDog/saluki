@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
+use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_common::{
     collections::{FastHashSet, PrehashedHashMap},
     strings::unsigned_integer_to_string,

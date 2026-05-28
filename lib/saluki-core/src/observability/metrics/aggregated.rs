@@ -1,0 +1,424 @@
+//! Aggregated metrics state.
+//!
+//! Builds on the [`reflector`][super::reflector] machinery to maintain a long-lived view of every
+//! internal metric, keyed by metric context. Counters are summed, gauges keep the latest value by
+//! timestamp, and histograms accumulate into fixed-bucket [`AggregatedHistogram`]s.
+
+use std::sync::Arc;
+
+use futures::stream::StreamExt as _;
+use papaya::HashMap;
+use saluki_context::Context;
+use tokio::sync::OnceCell;
+
+use super::histogram::AggregatedHistogram;
+use super::reflector::{Processor, Reflector};
+use super::MetricsStream;
+use crate::data_model::event::{metric::MetricValues, Event};
+
+/// Aggregated metric value.
+#[derive(Clone, Debug)]
+pub enum AggregatedMetricValue {
+    /// A counter.
+    Counter(f64),
+
+    /// A gauge.
+    Gauge(f64),
+
+    /// A histogram with fixed buckets.
+    Histogram(AggregatedHistogram),
+}
+
+impl AggregatedMetricValue {
+    /// Returns the scalar value of the metric, if this is a counter or gauge.
+    ///
+    /// Returns `0.0` for histograms.
+    pub fn value(&self) -> f64 {
+        match self {
+            AggregatedMetricValue::Counter(value) => *value,
+            AggregatedMetricValue::Gauge(value) => *value,
+            AggregatedMetricValue::Histogram(_) => 0.0,
+        }
+    }
+
+    /// Merges two aggregated metric values.
+    ///
+    /// Counters are summed, gauges use last-write-wins (the incoming value is kept), histograms are merged per-bucket and
+    /// by sum/count.
+    pub fn merge(&mut self, incoming: &AggregatedMetricValue) {
+        match (self, incoming) {
+            (Self::Counter(a), Self::Counter(b)) => {
+                *a += *b;
+            }
+            (Self::Histogram(a), Self::Histogram(b)) => {
+                a.merge(b);
+            }
+            (Self::Gauge(a), Self::Gauge(b)) => *a = *b,
+            // When the existing and incoming type _don't_ match, take the incoming value.
+            (existing, incoming) => *existing = incoming.clone(),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct AggregatedMetric {
+    pub(crate) timestamp: Option<u64>,
+    pub(crate) value: AggregatedMetricValue,
+}
+
+impl AggregatedMetric {
+    fn counter(value: f64) -> Self {
+        Self {
+            timestamp: None,
+            value: AggregatedMetricValue::Counter(value),
+        }
+    }
+
+    fn gauge(timestamp: u64, value: f64) -> Self {
+        Self {
+            timestamp: Some(timestamp),
+            value: AggregatedMetricValue::Gauge(value),
+        }
+    }
+
+    fn histogram(histogram: AggregatedHistogram) -> Self {
+        Self {
+            timestamp: None,
+            value: AggregatedMetricValue::Histogram(histogram),
+        }
+    }
+
+    fn merge(&self, other: Self) -> Self {
+        match (&self.value, other.value) {
+            (AggregatedMetricValue::Counter(a), AggregatedMetricValue::Counter(b)) => Self {
+                timestamp: None,
+                value: AggregatedMetricValue::Counter(a + b),
+            },
+            (AggregatedMetricValue::Gauge(a), AggregatedMetricValue::Gauge(b)) => {
+                let ts_a = self.timestamp.unwrap_or(0);
+                let ts_b = other.timestamp.unwrap_or(0);
+                let (new_ts, new_value) = if ts_a > ts_b { (ts_a, *a) } else { (ts_b, b) };
+
+                Self {
+                    timestamp: Some(new_ts),
+                    value: AggregatedMetricValue::Gauge(new_value),
+                }
+            }
+            (AggregatedMetricValue::Histogram(a), AggregatedMetricValue::Histogram(b)) => {
+                let mut merged = a.clone();
+                merged.merge(&b);
+                Self {
+                    timestamp: None,
+                    value: AggregatedMetricValue::Histogram(merged),
+                }
+            }
+            (_, other_value) => Self {
+                timestamp: other.timestamp,
+                value: other_value,
+            },
+        }
+    }
+}
+
+struct Inner {
+    metrics: HashMap<Context, AggregatedMetric>,
+}
+
+/// Aggregated metrics state.
+pub struct AggregatedMetricsState {
+    inner: Arc<Inner>,
+}
+
+impl AggregatedMetricsState {
+    /// Visits all metrics.
+    pub fn visit_metrics<F>(&self, mut visitor: F)
+    where
+        F: FnMut(&Context, &AggregatedMetricValue),
+    {
+        self.inner
+            .metrics
+            .pin()
+            .iter()
+            .for_each(|(context, value)| visitor(context, &value.value));
+    }
+
+    /// Searches the state for a single metric with a matching name and tags.
+    ///
+    /// The latest value for the metric is returned. Histograms are skipped.
+    ///
+    /// If no metric is found with a matching name and tags, or if multiple metrics are found with a matching name and
+    /// tags, `None` is returned. Tags are matched on a partial basis: a metric must at least have the tags provided,
+    /// but may have additional tags as well.
+    pub fn find_single_with_tags(&self, name: &str, tags: &[&str]) -> Option<f64> {
+        let mut had_existing = false;
+        let mut maybe_metric = None;
+
+        self.visit_metrics(|context, value| {
+            if context.name() == name {
+                for tag in tags {
+                    if !context.tags().has_tag(tag) {
+                        return;
+                    }
+                }
+
+                match value {
+                    AggregatedMetricValue::Counter(v) | AggregatedMetricValue::Gauge(v) => {
+                        had_existing = maybe_metric.is_some();
+                        maybe_metric = Some(*v);
+                    }
+                    AggregatedMetricValue::Histogram(_) => {}
+                }
+            }
+        });
+
+        if had_existing {
+            None
+        } else {
+            maybe_metric
+        }
+    }
+
+    /// Searches the state for all counter metrics with a matching name and returns their aggregated value.
+    ///
+    /// This method allows rolling up counter metrics that share a common name. For example, a metric may be emitted
+    /// with the same name, but N different values for a specific tag, potentially as a way to break down the metric by
+    /// a certain facet. This method can allow re-aggregating the value of each different facet value into a single
+    /// value.
+    ///
+    /// If multiple metrics are found with a matching name, but they're not all counter metrics, or if no metrics are
+    /// found with a matching name, `0.0` is returned.
+    pub fn get_aggregated_with_tags(&self, name: &str, tags: &[&str]) -> f64 {
+        let mut total = 0.0;
+
+        self.visit_metrics(|context, value| {
+            if context.name() == name {
+                for tag in tags {
+                    if !context.tags().has_tag(tag) {
+                        return;
+                    }
+                }
+
+                if let AggregatedMetricValue::Counter(value) = value {
+                    total += *value;
+                }
+            }
+        });
+
+        total
+    }
+}
+
+/// Aggregated metrics processor.
+///
+/// This processor maintains a map of aggregated metrics, where each metric is represented by its context (name and
+/// tags), and the aggregated value of the metric. Counters, gauges, and histograms are supported; all other metric
+/// types are ignored.
+///
+/// Aggregation follows the following rules:
+///
+/// - Counters are summed together.
+/// - Gauges are represented by the latest value (by timestamp).
+/// - Histograms are merged: per-bucket counts, sum, and total count are summed.
+///
+/// Aggregated values have no concept of "points" -- specific values at a specific timestamp -- or multiple data
+/// points: each metric simply has a single value that represents the aggregated amount since the processor was created.
+#[derive(Clone)]
+pub struct AggregatedMetricsProcessor;
+
+impl Processor for AggregatedMetricsProcessor {
+    type Input = Event;
+    type State = AggregatedMetricsState;
+
+    fn build_initial_state(&self) -> Self::State {
+        AggregatedMetricsState {
+            inner: Arc::new(Inner {
+                metrics: HashMap::new(),
+            }),
+        }
+    }
+
+    fn process(&self, input: Self::Input, state: &Self::State) {
+        if let Some(metric) = input.try_into_metric() {
+            let (context, values, _) = metric.into_parts();
+            if let Some(agg_metric) = metric_values_to_aggregated(context.name(), values) {
+                state.inner.metrics.pin().update_or_insert_with(
+                    context,
+                    |existing| existing.merge(agg_metric.clone()),
+                    || agg_metric.clone(),
+                );
+            }
+        }
+    }
+}
+
+fn metric_values_to_aggregated(metric_name: &str, values: MetricValues) -> Option<AggregatedMetric> {
+    match values {
+        MetricValues::Counter(points) => {
+            // Extract all points and sum their values together.
+            let value = points.into_iter().map(|(_, value)| value).sum();
+            Some(AggregatedMetric::counter(value))
+        }
+        MetricValues::Gauge(points) => {
+            // Take the last point value, which will be the latest timestamped point, to represent the "current" value.
+            points
+                .into_iter()
+                .last()
+                .map(|(ts, value)| AggregatedMetric::gauge(ts.map(|ts| ts.get()).unwrap_or(0), value))
+        }
+        MetricValues::Histogram(points) => {
+            let mut aggregated = AggregatedHistogram::new(metric_name);
+            for (_, histogram) in points {
+                aggregated.merge_histogram(&histogram);
+            }
+            if aggregated.count() == 0 {
+                None
+            } else {
+                Some(AggregatedMetric::histogram(aggregated))
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Gets the shared metrics state, which provides unified access to internal metrics in a simplified interface.
+///
+/// This is lazily initialized and will only be created when it's first accessed.
+pub async fn get_shared_metrics_state() -> Reflector<AggregatedMetricsProcessor> {
+    static REFLECTOR: OnceCell<Reflector<AggregatedMetricsProcessor>> = OnceCell::const_new();
+    REFLECTOR
+        .get_or_init(|| async {
+            let metrics_stream = MetricsStream::register().map(Arc::unwrap_or_clone);
+            Reflector::new(metrics_stream, AggregatedMetricsProcessor).await
+        })
+        .await
+        .clone()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::data_model::event::metric::Metric;
+
+    fn process_metrics(metrics: Vec<Event>) -> Vec<(String, AggregatedMetricValue)> {
+        let processor = AggregatedMetricsProcessor;
+        let state = processor.build_initial_state();
+
+        for metric in metrics {
+            processor.process(metric, &state);
+        }
+
+        let mut result = Vec::new();
+        state.visit_metrics(|context, value| {
+            result.push((context.name().to_string(), value.clone()));
+        });
+
+        result.sort_by(|(name_a, _), (name_b, _)| name_a.cmp(name_b));
+
+        result
+    }
+
+    fn assert_counter(value: &AggregatedMetricValue, expected: f64) {
+        match value {
+            AggregatedMetricValue::Counter(v) => assert_eq!(*v, expected),
+            other => panic!("expected counter, got {other:?}"),
+        }
+    }
+
+    fn assert_gauge(value: &AggregatedMetricValue, expected: f64) {
+        match value {
+            AggregatedMetricValue::Gauge(v) => assert_eq!(*v, expected),
+            other => panic!("expected gauge, got {other:?}"),
+        }
+    }
+
+    fn assert_histogram<F: FnOnce(&AggregatedHistogram)>(value: &AggregatedMetricValue, check: F) {
+        match value {
+            AggregatedMetricValue::Histogram(h) => check(h),
+            other => panic!("expected histogram, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_aggregate_multiple() {
+        let input_metrics = vec![
+            Event::Metric(Metric::counter("counter", 14.0)),
+            Event::Metric(Metric::gauge("gauge", 28.0)),
+        ];
+
+        let aggregated_metrics = process_metrics(input_metrics);
+        assert_eq!(aggregated_metrics.len(), 2);
+        assert_eq!(aggregated_metrics[0].0, "counter");
+        assert_counter(&aggregated_metrics[0].1, 14.0);
+        assert_eq!(aggregated_metrics[1].0, "gauge");
+        assert_gauge(&aggregated_metrics[1].1, 28.0);
+    }
+
+    #[test]
+    fn test_aggregate_counters() {
+        let input_metrics = vec![
+            Event::Metric(Metric::counter("counter", 14.0)),
+            Event::Metric(Metric::counter("counter", [(123456, 22.0)])),
+            Event::Metric(Metric::counter("counter", [(123456, 67.0), (123457, 44.0)])),
+        ];
+
+        let aggregated_metrics = process_metrics(input_metrics);
+        assert_eq!(aggregated_metrics.len(), 1);
+        assert_eq!(aggregated_metrics[0].0, "counter");
+        assert_counter(&aggregated_metrics[0].1, 147.0);
+    }
+
+    #[test]
+    fn test_aggregate_gauges() {
+        let input_metrics = vec![
+            Event::Metric(Metric::gauge("gauge", 14.0)),
+            Event::Metric(Metric::gauge("gauge", [(123458, 44.0)])),
+            Event::Metric(Metric::gauge("gauge", [(123455, 67.0), (123457, 88.0)])),
+        ];
+
+        let aggregated_metrics = process_metrics(input_metrics);
+        assert_eq!(aggregated_metrics.len(), 1);
+        assert_gauge(&aggregated_metrics[0].1, 44.0);
+    }
+
+    #[test]
+    fn test_aggregate_gauges_bias_incoming() {
+        let input_metrics = vec![
+            Event::Metric(Metric::gauge("gauge", [(123456, 33.0)])),
+            Event::Metric(Metric::gauge("gauge", [(123456, 66.0)])),
+        ];
+
+        let aggregated_metrics = process_metrics(input_metrics);
+        assert_eq!(aggregated_metrics.len(), 1);
+        assert_gauge(&aggregated_metrics[0].1, 66.0);
+    }
+
+    #[test]
+    fn test_aggregate_type_change() {
+        // When aggregating metrics with identical contexts but different types (i.e. counter vs gauge), the aggregated
+        // metric should be the last type seen.
+        let input_metrics = vec![
+            Event::Metric(Metric::gauge("my_metric", 33.0)),
+            Event::Metric(Metric::counter("my_metric", 42.0)),
+        ];
+
+        let aggregated_metrics = process_metrics(input_metrics);
+        assert_eq!(aggregated_metrics.len(), 1);
+        assert_counter(&aggregated_metrics[0].1, 42.0);
+    }
+
+    #[test]
+    fn test_aggregate_histograms() {
+        // Histograms with the same context should merge: counts, sums, and per-bucket counts accumulate.
+        let input_metrics = vec![
+            Event::Metric(Metric::histogram("h", [1.0, 2.0, 3.0])),
+            Event::Metric(Metric::histogram("h", [4.0, 5.0])),
+        ];
+
+        let aggregated_metrics = process_metrics(input_metrics);
+        assert_eq!(aggregated_metrics.len(), 1);
+        assert_histogram(&aggregated_metrics[0].1, |hist| {
+            assert_eq!(hist.count(), 5);
+            assert_eq!(hist.sum(), 15.0);
+        });
+    }
+}

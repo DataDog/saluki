@@ -641,8 +641,6 @@
   "data_plane.otlp.proxy.metrics.enabled",
   "data_plane.otlp.proxy.receiver.protocols.grpc.endpoint",
   "data_plane.otlp.proxy.traces.enabled",
-  "data_plane.telemetry_enabled",
-  "data_plane.telemetry_listen_addr",
   "data_streams.forwarder.additional_endpoints",
   "data_streams.forwarder.batch_max_concurrent_send",
   "data_streams.forwarder.batch_max_content_size",

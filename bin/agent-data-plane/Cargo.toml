@@ -27,13 +27,11 @@ hashbrown = { workspace = true }
 http = { workspace = true }
 http-body-util = { workspace = true }
 hyper = { workspace = true }
-memory-accounting = { workspace = true }
 metrics = { workspace = true }
 ottl = { workspace = true }
-papaya = { workspace = true }
-prometheus-exposition = { workspace = true }
 prost = { workspace = true }
 prost-types = { workspace = true }
+resource-accounting = { workspace = true }
 saluki-api = { workspace = true }
 saluki-app = { workspace = true }
 saluki-common = { workspace = true }
