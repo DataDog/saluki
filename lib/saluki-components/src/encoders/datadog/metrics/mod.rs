@@ -984,8 +984,8 @@ fn split_v3_metric_ranges_by_point_limit(
     let mut current_start = None;
     let mut current_points = 0usize;
 
-    for idx in 0..metrics.len() {
-        let metric_points = metrics[idx].values().len();
+    for (idx, metric) in metrics.iter().enumerate() {
+        let metric_points = metric.values().len();
         if metric_points == 0 {
             // The Agent drops zero-point V3 metrics before writing them.
             if let Some(start) = current_start.take() {
