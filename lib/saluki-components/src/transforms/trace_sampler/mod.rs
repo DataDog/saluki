@@ -171,8 +171,7 @@ impl TraceSampler {
         if parent_id_to_child.len() != 1 {
             debug!(
                 "Didn't reliably find the root span for traceID:{:016x}{:016x}",
-                trace.trace_id_high,
-                trace.trace_id_low,
+                trace.trace_id_high, trace.trace_id_low,
             );
         }
 
