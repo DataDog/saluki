@@ -81,8 +81,7 @@ struct OtlpResourceMeta {
 /// **Hostname**: we capture only `datadog.host.name` here. The Go agent resolves hostname
 /// through up to six fallback steps (cloud-provider EC2/GCP/Azure, K8s node name, `host.name`,
 /// etc.). The encoder covers `host.name` + AWS ECS Fargate via `attributes_to_source`, but the
-/// cloud-provider and K8s steps are not yet implemented—this is a pre-existing gap, not a
-/// regression introduced by this PR.
+/// cloud-provider and K8s steps are not yet implemented.
 /// TODO: implement full hostnameFromAttributes parity.
 fn extract_resource_meta(
     attributes: &[otlp_common::KeyValue], ignore_missing_fields: bool, interner: &GenericMapInterner,

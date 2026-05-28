@@ -137,7 +137,7 @@ pub struct Trace {
     pub priority: Option<i32>,
     /// Whether this trace was dropped during sampling.
     pub dropped_trace: bool,
-    /// Sampling mechanism identifier (see Datadog trace agent constants).
+    /// The mechanism by which the sampling decision was made.
     pub sampling_mechanism: u32,
     /// Identifier of the component that made the final sampling decision.
     pub decision_maker: Option<MetaString>,

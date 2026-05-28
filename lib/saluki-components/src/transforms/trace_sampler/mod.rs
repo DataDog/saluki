@@ -169,7 +169,11 @@ impl TraceSampler {
 
         // Here, if the trace is valid, we should have `len(parent_id_to_child) == 1`.
         if parent_id_to_child.len() != 1 {
-            debug!("Didn't reliably find the root span");
+            debug!(
+                "Didn't reliably find the root span for traceID:{:016x}{:016x}",
+                trace.trace_id_high,
+                trace.trace_id_low,
+            );
         }
 
         // Have a safe behavior if that's not the case.
@@ -567,8 +571,7 @@ mod tests {
         }
     }
 
-    fn create_test_span(trace_id: u64, span_id: u64, error: i32) -> DdSpan {
-        let _ = trace_id; // trace_id now lives on Trace, not Span
+    fn create_test_span(span_id: u64, error: i32) -> DdSpan {
         DdSpan::new(
             MetaString::from("test-service"),
             MetaString::from("test-operation"),
@@ -582,21 +585,21 @@ mod tests {
         )
     }
 
-    fn create_test_span_with_metrics(trace_id: u64, span_id: u64, metrics: HashMap<String, f64>) -> DdSpan {
+    fn create_test_span_with_metrics(span_id: u64, metrics: HashMap<String, f64>) -> DdSpan {
         let attrs: saluki_common::collections::FastHashMap<MetaString, AttributeValue> = metrics
             .into_iter()
             .map(|(k, v)| (MetaString::from(k), AttributeValue::Float(v)))
             .collect();
-        create_test_span(trace_id, span_id, 0).with_attributes(attrs)
+        create_test_span(span_id, 0).with_attributes(attrs)
     }
 
     #[allow(dead_code)]
-    fn create_test_span_with_meta(trace_id: u64, span_id: u64, meta: HashMap<String, String>) -> DdSpan {
+    fn create_test_span_with_meta(span_id: u64, meta: HashMap<String, String>) -> DdSpan {
         let attrs: saluki_common::collections::FastHashMap<MetaString, AttributeValue> = meta
             .into_iter()
             .map(|(k, v)| (MetaString::from(k), AttributeValue::String(MetaString::from(v))))
             .collect();
-        create_test_span(trace_id, span_id, 0).with_attributes(attrs)
+        create_test_span(span_id, 0).with_attributes(attrs)
     }
 
     fn create_test_trace(spans: Vec<DdSpan>) -> Trace {
@@ -610,7 +613,7 @@ mod tests {
         // Test trace with user-set priority = 2 (UserKeep)
         let mut metrics = HashMap::new();
         metrics.insert(SAMPLING_PRIORITY_METRIC_KEY.to_string(), 2.0);
-        let span = create_test_span_with_metrics(12345, 1, metrics);
+        let span = create_test_span_with_metrics(1, metrics);
         let trace = create_test_trace(vec![span]);
         let root_idx = sampler.get_root_span_index(&trace).unwrap();
 
@@ -619,14 +622,14 @@ mod tests {
         // Test trace with user-set priority = -1 (UserDrop)
         let mut metrics = HashMap::new();
         metrics.insert(SAMPLING_PRIORITY_METRIC_KEY.to_string(), -1.0);
-        let span = create_test_span_with_metrics(12345, 1, metrics);
+        let span = create_test_span_with_metrics(1, metrics);
         let trace = create_test_trace(vec![span]);
         let root_idx = sampler.get_root_span_index(&trace).unwrap();
 
         assert_eq!(sampler.get_user_priority(&trace, root_idx), Some(-1));
 
         // Test trace without user priority
-        let span = create_test_span(12345, 1, 0);
+        let span = create_test_span(1, 0);
         let trace = create_test_trace(vec![span]);
         let root_idx = sampler.get_root_span_index(&trace).unwrap();
 
@@ -641,11 +644,11 @@ mod tests {
         // Create spans with different priorities - root has 0, later span has 2
         let mut metrics_root = HashMap::new();
         metrics_root.insert(SAMPLING_PRIORITY_METRIC_KEY.to_string(), 0.0);
-        let root_span = create_test_span_with_metrics(12345, 1, metrics_root);
+        let root_span = create_test_span_with_metrics(1, metrics_root);
 
         let mut metrics_later = HashMap::new();
         metrics_later.insert(SAMPLING_PRIORITY_METRIC_KEY.to_string(), 1.0);
-        let later_span = create_test_span_with_metrics(12345, 2, metrics_later).with_parent_id(1);
+        let later_span = create_test_span_with_metrics(2, metrics_later).with_parent_id(1);
 
         let mut trace = create_test_trace(vec![root_span, later_span]);
         let root_idx = sampler.get_root_span_index(&trace).unwrap();
@@ -660,7 +663,7 @@ mod tests {
         assert_eq!(sampler.get_user_priority(&trace, root_idx), Some(2));
 
         // Test that trace-level priority is used even when no span has priority
-        let span_no_priority = create_test_span(12345, 3, 0);
+        let span_no_priority = create_test_span(3, 0);
         let mut trace_only_trace_level = create_test_trace(vec![span_no_priority]);
         trace_only_trace_level.priority = Some(1);
         let root_idx = sampler.get_root_span_index(&trace_only_trace_level).unwrap();
@@ -674,7 +677,7 @@ mod tests {
         sampler.probabilistic_sampler_enabled = false; // Use legacy path that checks user priority
 
         // Test that manual keep (priority = 2) works via trace-level priority
-        let span = create_test_span(12345, 1, 0);
+        let span = create_test_span(1, 0);
         let mut trace = create_test_trace(vec![span]);
         trace.priority = Some(PRIORITY_USER_KEEP);
 
@@ -684,7 +687,7 @@ mod tests {
         assert_eq!(decision_maker, "");
 
         // Test manual drop (priority = -1) via trace-level priority
-        let span = create_test_span(12345, 1, 0);
+        let span = create_test_span(1, 0);
         let mut trace = create_test_trace(vec![span]);
         trace.priority = Some(PRIORITY_USER_DROP);
 
@@ -693,7 +696,7 @@ mod tests {
         assert_eq!(priority, PRIORITY_USER_DROP);
 
         // Test that priority = 1 (auto keep) via trace-level is also respected
-        let span = create_test_span(12345, 1, 0);
+        let span = create_test_span(1, 0);
         let mut trace = create_test_trace(vec![span]);
         trace.priority = Some(PRIORITY_AUTO_KEEP);
 
@@ -719,12 +722,12 @@ mod tests {
         let sampler = create_test_sampler();
 
         // Test trace with error field set
-        let span_with_error = create_test_span(12345, 1, 1);
+        let span_with_error = create_test_span(1, 1);
         let trace = create_test_trace(vec![span_with_error]);
         assert!(sampler.trace_contains_error(&trace, false));
 
         // Test trace without error
-        let span_without_error = create_test_span(12345, 1, 0);
+        let span_without_error = create_test_span(1, 0);
         let trace = create_test_trace(vec![span_without_error]);
         assert!(!sampler.trace_contains_error(&trace, false));
     }
@@ -738,8 +741,9 @@ mod tests {
 
         // Create trace with error that would be dropped by probabilistic
         // Using a trace ID that we know will be dropped at 50% rate
-        let span_with_error = create_test_span(u64::MAX - 1, 1, 1);
+        let span_with_error = create_test_span(1, 1);
         let mut trace = create_test_trace(vec![span_with_error]);
+        trace.trace_id_low = u64::MAX - 1;
 
         let (keep, priority, decision_maker, _) = sampler.run_samplers(&mut trace);
         assert!(keep);
@@ -752,7 +756,7 @@ mod tests {
 
         let mut metrics = HashMap::new();
         metrics.insert(SAMPLING_PRIORITY_METRIC_KEY.to_string(), 2.0);
-        let span = create_test_span_with_metrics(12345, 1, metrics);
+        let span = create_test_span_with_metrics(1, metrics);
         let mut trace = create_test_trace(vec![span]);
 
         let (keep, priority, decision_maker, _) = sampler.run_samplers(&mut trace);
@@ -820,8 +824,8 @@ mod tests {
         assert_eq!(trace.spans()[root_idx].span_id(), 3);
 
         // Test 3: Multiple root candidates: should return the last one found (index 1)
-        let span1 = create_test_span(12345, 1, 0);
-        let span2 = create_test_span(12345, 2, 0);
+        let span1 = create_test_span(1, 0);
+        let span2 = create_test_span(2, 0);
         let trace = create_test_trace(vec![span1, span2]);
         // Both have parent_id = 0, should return the last one found (span_id = 2)
         let root_idx = sampler.get_root_span_index(&trace).unwrap();
@@ -842,10 +846,10 @@ mod tests {
             MetaString::from(KEY_SPAN_SAMPLING_MECHANISM),
             AttributeValue::Float(8.0),
         );
-        let sss_span = create_test_span(12345, 1, 0).with_attributes(attrs_map.clone());
+        let sss_span = create_test_span(1, 0).with_attributes(attrs_map.clone());
 
         // Create regular span without SSS
-        let regular_span = create_test_span(12345, 2, 0);
+        let regular_span = create_test_span(2, 0);
 
         let mut trace = create_test_trace(vec![sss_span.clone(), regular_span]);
 
@@ -859,7 +863,7 @@ mod tests {
         assert_eq!(trace.priority, Some(PRIORITY_USER_KEEP));
 
         // Test 2: Trace without SSS tags should not be modified
-        let trace_without_sss = create_test_trace(vec![create_test_span(12345, 3, 0)]);
+        let trace_without_sss = create_test_trace(vec![create_test_span(3, 0)]);
         let mut trace_copy = trace_without_sss.clone();
         let modified = sampler.single_span_sampling(&mut trace_copy);
         assert!(!modified);
@@ -873,8 +877,8 @@ mod tests {
         // Test 1: Trace with analyzed spans
         let mut attrs_map = saluki_common::collections::FastHashMap::default();
         attrs_map.insert(MetaString::from(KEY_ANALYZED_SPANS), AttributeValue::Float(1.0));
-        let analyzed_span = create_test_span(12345, 1, 0).with_attributes(attrs_map.clone());
-        let regular_span = create_test_span(12345, 2, 0);
+        let analyzed_span = create_test_span(1, 0).with_attributes(attrs_map.clone());
+        let regular_span = create_test_span(2, 0);
 
         let mut trace = create_test_trace(vec![analyzed_span.clone(), regular_span]);
 
@@ -894,7 +898,7 @@ mod tests {
         assert_eq!(trace.priority, Some(PRIORITY_USER_KEEP));
 
         // Test 2: Trace without analyzed spans
-        let trace_no_analytics = create_test_trace(vec![create_test_span(12345, 3, 0)]);
+        let trace_no_analytics = create_test_trace(vec![create_test_span(3, 0)]);
         let mut trace_no_analytics_copy = trace_no_analytics.clone();
         let analyzed_span_ids: Vec<u64> = trace_no_analytics
             .spans()
@@ -976,10 +980,10 @@ mod tests {
     ///
     /// The rare sampler only considers spans that have `_top_level=1` or `_dd.measured=1`.
     /// This helper sets `_top_level=1` so that the rare sampler can consider the span.
-    fn create_top_level_span(trace_id: u64, span_id: u64) -> DdSpan {
+    fn create_top_level_span(span_id: u64) -> DdSpan {
         let mut attrs = saluki_common::collections::FastHashMap::default();
         attrs.insert(MetaString::from("_top_level"), AttributeValue::Float(1.0));
-        create_test_span(trace_id, span_id, 0).with_attributes(attrs)
+        create_test_span(span_id, 0).with_attributes(attrs)
     }
 
     /// Create a `TraceSampler` with the rare sampler enabled and a very high TPS limit so it
@@ -1000,7 +1004,7 @@ mod tests {
         sampler.sampling_rate = 0.0; // probabilistic drops everything
         sampler.probabilistic_sampler_enabled = true;
 
-        let span = create_top_level_span(111, 1);
+        let span = create_top_level_span(1);
         let mut trace = create_test_trace(vec![span]);
 
         let (keep, priority, decision_maker, _) = sampler.run_samplers(&mut trace);
@@ -1018,7 +1022,7 @@ mod tests {
         sampler.sampling_rate = 0.0;
         sampler.probabilistic_sampler_enabled = true;
 
-        let span = create_top_level_span(222, 1);
+        let span = create_top_level_span(1);
         let mut trace = create_test_trace(vec![span]);
 
         let (keep, _, _, root_idx) = sampler.run_samplers(&mut trace);
@@ -1044,14 +1048,14 @@ mod tests {
         sampler.probabilistic_sampler_enabled = true;
 
         // First trace: rare catches it.
-        let span1 = create_top_level_span(333, 1);
+        let span1 = create_top_level_span(1);
         let mut trace1 = create_test_trace(vec![span1]);
         let (keep1, _, _, _) = sampler.run_samplers(&mut trace1);
         assert!(keep1, "first occurrence should be kept by rare sampler");
 
         // Second trace: same signature (same service/operation/resource on the top-level span),
         // still within TTL → rare won't catch it; probabilistic at 0% drops it.
-        let span2 = create_top_level_span(333, 2);
+        let span2 = create_top_level_span(2);
         let mut trace2 = create_test_trace(vec![span2]);
         let (keep2, priority2, _, _) = sampler.run_samplers(&mut trace2);
         assert!(!keep2, "second occurrence within TTL should be dropped");
@@ -1067,7 +1071,7 @@ mod tests {
         sampler.sampling_rate = 0.0;
         sampler.probabilistic_sampler_enabled = true;
 
-        let span = create_top_level_span(444, 1);
+        let span = create_top_level_span(1);
         let mut trace = create_test_trace(vec![span]);
 
         let (keep, priority, _, _) = sampler.run_samplers(&mut trace);
@@ -1088,7 +1092,7 @@ mod tests {
             MetaString::from(SAMPLING_PRIORITY_METRIC_KEY),
             AttributeValue::Float(PRIORITY_AUTO_DROP as f64),
         );
-        let span = create_test_span(555, 1, 0).with_attributes(attrs);
+        let span = create_test_span(1, 0).with_attributes(attrs);
         let mut trace = create_test_trace(vec![span]);
 
         let (keep, priority, decision_maker, _) = sampler.run_samplers(&mut trace);
@@ -1110,7 +1114,7 @@ mod tests {
             MetaString::from(SAMPLING_PRIORITY_METRIC_KEY),
             AttributeValue::Float(2.0),
         ); // UserKeep
-        let span = create_test_span(556, 1, 0).with_attributes(attrs);
+        let span = create_test_span(1, 0).with_attributes(attrs);
         let mut trace = create_test_trace(vec![span]);
 
         let (keep, priority, _, _) = sampler.run_samplers(&mut trace);
@@ -1125,7 +1129,7 @@ mod tests {
         sampler.sampling_rate = 1.0;
         sampler.probabilistic_sampler_enabled = true;
 
-        let span = create_top_level_span(666, 1);
+        let span = create_top_level_span(1);
         let mut trace = create_test_trace(vec![span]);
 
         let (keep, priority, decision_maker, _) = sampler.run_samplers(&mut trace);
@@ -1142,7 +1146,7 @@ mod tests {
         sampler.probabilistic_sampler_enabled = true;
         sampler.error_sampling_enabled = false;
 
-        let span = create_top_level_span(777, 1);
+        let span = create_top_level_span(1);
         let mut trace = create_test_trace(vec![span]);
 
         let (keep, priority, _, _) = sampler.run_samplers(&mut trace);
@@ -1159,7 +1163,7 @@ mod tests {
         sampler.error_sampling_enabled = false;
         sampler.otlp_sampling_rate = 0.0;
 
-        let mut span = create_top_level_span(888, 1);
+        let mut span = create_top_level_span(1);
         span.attributes.insert(
             MetaString::from_static(OTEL_TRACE_ID_META_KEY),
             AttributeValue::String(MetaString::from("00000000000000000000000000000001")),
@@ -1193,7 +1197,7 @@ mod tests {
         sampler.sampling_rate = 1.0;
         sampler.probabilistic_sampler_enabled = true;
 
-        let span = create_top_level_span(901, 1);
+        let span = create_top_level_span(1);
         let mut trace = create_test_trace(vec![span]);
 
         let (keep, priority, decision_maker, _) = sampler.run_samplers(&mut trace);
@@ -1212,8 +1216,8 @@ mod tests {
         sampler.probabilistic_sampler_enabled = false;
         sampler.error_sampling_enabled = true;
 
-        let span = create_top_level_span(902, 1);
-        let error_span = create_test_span(902, 2, 1); // error=1
+        let span = create_top_level_span(1);
+        let error_span = create_test_span(2, 1); // error=1
         let mut trace = create_test_trace(vec![span, error_span]);
 
         let (keep, priority, decision_maker, _) = sampler.run_samplers(&mut trace);
@@ -1237,7 +1241,7 @@ mod tests {
             MetaString::from(SAMPLING_PRIORITY_METRIC_KEY),
             AttributeValue::Float(-1.0),
         ); // UserDrop
-        let span = create_test_span(903, 1, 0).with_attributes(attrs);
+        let span = create_test_span(1, 0).with_attributes(attrs);
         let mut trace = create_test_trace(vec![span]);
 
         let (keep, priority, _, _) = sampler.run_samplers(&mut trace);
@@ -1260,7 +1264,7 @@ mod tests {
     fn ets_keeps_trace_with_error() {
         let mut sampler = create_sampler_with_ets();
 
-        let span = create_test_span(100, 1, 1); // error=1
+        let span = create_test_span(1, 1); // error=1
         let mut trace = create_test_trace(vec![span]);
 
         let (keep, priority, decision_maker, _) = sampler.run_samplers(&mut trace);
@@ -1274,7 +1278,7 @@ mod tests {
     fn ets_drops_trace_without_error() {
         let mut sampler = create_sampler_with_ets();
 
-        let span = create_test_span(101, 1, 0); // error=0
+        let span = create_test_span(1, 0); // error=0
         let mut trace = create_test_trace(vec![span]);
 
         let (keep, priority, _, _) = sampler.run_samplers(&mut trace);
@@ -1293,7 +1297,7 @@ mod tests {
             MetaString::from(KEY_SPAN_SAMPLING_MECHANISM),
             AttributeValue::Float(8.0),
         );
-        let span = create_test_span(102, 1, 0).with_attributes(attrs);
+        let span = create_test_span(1, 0).with_attributes(attrs);
         let mut trace = create_test_trace(vec![span]);
 
         let forwarded = sampler.process_trace(&mut trace);
@@ -1312,7 +1316,7 @@ mod tests {
             MetaString::from("_dd.span_events.has_exception"),
             AttributeValue::String(MetaString::from("true")),
         );
-        let span = create_test_span(104, 1, 0).with_attributes(attrs);
+        let span = create_test_span(1, 0).with_attributes(attrs);
         let mut trace = create_test_trace(vec![span]);
 
         let (keep, _, _, _) = sampler.run_samplers(&mut trace);
@@ -1326,7 +1330,7 @@ mod tests {
         sampler.sampling_rate = 1.0;
         sampler.probabilistic_sampler_enabled = true;
 
-        let span = create_test_span(105, 1, 0); // no error
+        let span = create_test_span(1, 0); // no error
         let mut trace = create_test_trace(vec![span]);
 
         let (keep, _, decision_maker, _) = sampler.run_samplers(&mut trace);
@@ -1339,13 +1343,13 @@ mod tests {
     // priority/dm before runSamplersV1, so ETS sees those values even when it
     // short-circuits. See: pkg/trace/api/otlp.go#L561-L585.
 
-    fn create_otlp_test_span(trace_id: u64, span_id: u64, error: i32) -> DdSpan {
+    fn create_otlp_test_span(span_id: u64, error: i32) -> DdSpan {
         let mut attrs = saluki_common::collections::FastHashMap::default();
         attrs.insert(
             MetaString::from_static(OTEL_TRACE_ID_META_KEY),
             AttributeValue::String(MetaString::from("0000000000000000deadbeefcafebabe")),
         );
-        create_test_span(trace_id, span_id, error).with_attributes(attrs)
+        create_test_span(span_id, error).with_attributes(attrs)
     }
 
     fn create_sampler_with_ets_legacy() -> TraceSampler {
@@ -1363,7 +1367,7 @@ mod tests {
     fn ets_otlp_non_error_gets_presample_priority_and_dm() {
         let mut sampler = create_sampler_with_ets_legacy();
 
-        let span = create_otlp_test_span(200, 1, 0); // no error
+        let span = create_otlp_test_span(1, 0); // no error
         let mut trace = create_test_trace(vec![span]);
 
         let (keep, priority, dm, _) = sampler.run_samplers(&mut trace);
@@ -1380,7 +1384,7 @@ mod tests {
     fn ets_otlp_error_gets_presample_priority_and_dm() {
         let mut sampler = create_sampler_with_ets_legacy();
 
-        let span = create_otlp_test_span(201, 1, 1); // error=1
+        let span = create_otlp_test_span(1, 1); // error=1
         let mut trace = create_test_trace(vec![span]);
 
         let (keep, priority, dm, _) = sampler.run_samplers(&mut trace);
@@ -1396,7 +1400,7 @@ mod tests {
         let mut sampler = create_sampler_with_ets_legacy();
         sampler.probabilistic_sampler_enabled = true; // override to prob path
 
-        let span = create_otlp_test_span(202, 1, 0); // no error
+        let span = create_otlp_test_span(1, 0); // no error
         let mut trace = create_test_trace(vec![span]);
 
         let (keep, priority, dm, _) = sampler.run_samplers(&mut trace);
@@ -1413,7 +1417,7 @@ mod tests {
     fn ets_non_otlp_unaffected_by_presample() {
         let mut sampler = create_sampler_with_ets_legacy();
 
-        let span = create_test_span(203, 1, 0); // no error, no OTLP meta
+        let span = create_test_span(1, 0); // no error, no OTLP meta
         let mut trace = create_test_trace(vec![span]);
 
         let (keep, priority, dm, _) = sampler.run_samplers(&mut trace);
@@ -1427,7 +1431,7 @@ mod tests {
     fn ets_otlp_user_priority_gets_manual_dm() {
         let mut sampler = create_sampler_with_ets_legacy();
 
-        let mut span = create_otlp_test_span(204, 1, 0);
+        let mut span = create_otlp_test_span(1, 0);
         span.attributes.insert(
             MetaString::from(SAMPLING_PRIORITY_METRIC_KEY),
             AttributeValue::Float(2.0),
