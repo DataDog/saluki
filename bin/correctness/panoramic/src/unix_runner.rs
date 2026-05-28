@@ -59,7 +59,7 @@ const CORE_AGENT_IPC_READY_POLL: Duration = Duration::from_millis(200);
 
 /// Framework-level env overrides that move every default-port the test target binds off its
 /// canonical value so the test Core Agent + ADP can coexist with anything else listening on
-/// those ports (e.g., a running system Datadog Agent on a shared CI runner). Tests can
+/// those ports (for example, a running system Datadog Agent on a shared CI runner). Tests can
 /// override any of these via `container.env`; tests that test specific port behavior
 /// (`adp-cmd-port`) supply their own values.
 ///
@@ -68,7 +68,7 @@ const CORE_AGENT_IPC_READY_POLL: Duration = Duration::from_millis(200);
 ///
 /// Note on scope: this also covers ADP-side ports (the `data_plane.*_listen_*` listen
 /// addresses and the OTLP receiver endpoints). Those don't conflict with the system Agent
-/// today — the system Agent doesn't bind them — but we shift them anyway so the test surface
+/// today (the system Agent doesn't bind them), but we shift them anyway so the test surface
 /// has a single consistent port table, and so future port additions on either side don't
 /// silently regress.
 pub fn test_port_isolation_env() -> HashMap<String, String> {
