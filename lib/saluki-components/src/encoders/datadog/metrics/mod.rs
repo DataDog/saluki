@@ -988,7 +988,13 @@ fn split_v3_metric_ranges_by_point_limit(
         let metric_points = metrics[idx].values().len();
         if metric_points == 0 {
             // The Agent drops zero-point V3 metrics before writing them.
+            if let Some(start) = current_start.take() {
+                if start < idx {
+                    ranges.push_back(start..idx);
+                }
+            }
             context.telemetry.events_dropped_encoder().increment(1);
+            current_points = 0;
             continue;
         }
 
@@ -1418,6 +1424,25 @@ serializer_experimental_use_v3_api:
             .collect::<Vec<_>>();
 
         assert_eq!(vec![0..1, 1..3], ranges);
+    }
+
+    #[test]
+    fn v3_metric_ranges_skip_zero_point_metrics() {
+        let metrics = vec![
+            Metric::counter("v3.points.zero.before", 1.0),
+            Metric::counter("v3.points.zero.empty", &[] as &[f64]),
+            Metric::counter("v3.points.zero.after", 2.0),
+        ];
+        let limits = V3PayloadLimits::new(usize::MAX, usize::MAX, 10_000, 10_000);
+        let ep_config = EndpointConfiguration::new(CompressionScheme::noop(), 10_000, None);
+        let telemetry = ComponentTelemetry::from_builder(&MetricsBuilder::default());
+        let context = test_v3_flush_context(&ep_config, limits, &telemetry);
+
+        let ranges = split_v3_metric_ranges_by_point_limit(&metrics, context, "series")
+            .into_iter()
+            .collect::<Vec<_>>();
+
+        assert_eq!(vec![0..1, 2..3], ranges);
     }
 
     #[tokio::test]
