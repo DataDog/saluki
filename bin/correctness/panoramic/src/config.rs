@@ -114,7 +114,7 @@ pub struct IntegrationConfig {
     /// Environment variables to set on the target process(es).
     ///
     /// Top-level (not under `container`) because both the docker and `mac` runtimes apply
-    /// these the same way — docker injects them as container env, the Unix runner passes them
+    /// these the same way: docker injects them as container env, the Unix runner passes them
     /// to the spawned ADP / Core Agent processes.
     #[serde(default)]
     pub env: HashMap<String, String>,
