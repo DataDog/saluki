@@ -638,6 +638,7 @@ provision-macos-test-env: ## Installs the pinned Datadog Agent ($(MACOS_TEST_AGE
 	@if [ ! -f $(MACOS_TEST_AGENT_INSTALL_DIR)/etc/ipc_cert.pem ] || [ ! -f $(MACOS_TEST_AGENT_INSTALL_DIR)/etc/auth_token ]; then \
 		echo "[*] Bootstrapping IPC cert + auth_token by running the Agent briefly..."; \
 		mkdir -p $(MACOS_TEST_AGENT_INSTALL_DIR)/etc $(MACOS_TEST_AGENT_INSTALL_DIR)/run; \
+		touch $(MACOS_TEST_AGENT_INSTALL_DIR)/etc/datadog.yaml; \
 		DD_API_KEY=bootstrap DD_HOSTNAME=bootstrap \
 			DD_RUN_PATH=$(MACOS_TEST_AGENT_INSTALL_DIR)/run \
 			DD_AUTH_TOKEN_FILE_PATH=$(MACOS_TEST_AGENT_INSTALL_DIR)/etc/auth_token \
