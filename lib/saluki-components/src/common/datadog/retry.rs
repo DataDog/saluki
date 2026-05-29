@@ -142,7 +142,7 @@ pub struct RetryConfiguration {
     /// each time it starts. This prevents unbounded disk growth from stale retry data left
     /// behind after long outages.
     ///
-    /// Setting this to `0` removes all retry files on startup. Defaults to 10.
+    /// Defaults to 10.
     #[serde(
         default = "default_outdated_file_in_days",
         rename = "forwarder_outdated_file_in_days"

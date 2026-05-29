@@ -435,7 +435,7 @@ mod tests {
                 u64::MAX,
                 1.0,
                 Arc::new(DiskUsageRetrieverImpl::new(root_path.clone())),
-                0,
+                10,
             )
             .await
             .expect("should not fail to create retry queue with disk persistence");
