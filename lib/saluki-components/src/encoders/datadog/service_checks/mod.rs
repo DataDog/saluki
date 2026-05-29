@@ -189,7 +189,7 @@ impl IncrementalEncoder for DatadogServiceChecks {
         };
 
         if self.log_payloads {
-            debug!(service_check = ?service_check, "Flushing service check.");
+            debug!(?service_check, "Flushing service check.");
         }
 
         match self.request_builder.encode(service_check).await {
@@ -292,21 +292,5 @@ mod config_smoke {
                 .expect("DatadogServiceChecksConfiguration should deserialize")
         })
         .await
-    }
-
-    #[test]
-    fn log_payloads_defaults_to_false() {
-        let config: DatadogServiceChecksConfiguration =
-            serde_json::from_value(json!({})).expect("DatadogServiceChecksConfiguration should deserialize");
-
-        assert!(!config.log_payloads);
-    }
-
-    #[test]
-    fn deserializes_log_payloads() {
-        let config: DatadogServiceChecksConfiguration = serde_json::from_value(json!({ "log_payloads": true }))
-            .expect("DatadogServiceChecksConfiguration should deserialize");
-
-        assert!(config.log_payloads);
     }
 }

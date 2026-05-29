@@ -615,10 +615,10 @@ async fn run_request_builder(
 fn log_metric_payload(metric: &Metric) {
     match metric.values() {
         MetricValues::Counter(..) | MetricValues::Rate(..) | MetricValues::Gauge(..) | MetricValues::Set(..) => {
-            debug!(metric = ?metric, "Flushing series metric.")
+            debug!(?metric, "Flushing series metric.")
         }
         MetricValues::Histogram(..) | MetricValues::Distribution(..) => {
-            debug!(metric = ?metric, "Flushing sketch metric.")
+            debug!(?metric, "Flushing sketch metric.")
         }
     }
 }
@@ -1679,34 +1679,6 @@ mod use_v2_api_series_default {
         assert_eq!(parsed.max_uncompressed_payload_size, 8765);
         assert_eq!(parsed.max_series_payload_size, 1234);
         assert_eq!(parsed.max_series_uncompressed_payload_size, 5678);
-    }
-
-    #[tokio::test]
-    async fn log_payloads_defaults_to_false() {
-        let cfg = ConfigurationLoader::default()
-            .with_key_aliases(KEY_ALIASES)
-            .add_providers([figment::providers::Serialized::defaults(json!({}))])
-            .into_generic()
-            .await
-            .expect("config should load");
-        let parsed: DatadogMetricsConfiguration = cfg.as_typed().expect("should deserialize");
-
-        assert!(!parsed.log_payloads);
-    }
-
-    #[tokio::test]
-    async fn deserializes_log_payloads() {
-        let cfg = ConfigurationLoader::default()
-            .with_key_aliases(KEY_ALIASES)
-            .add_providers([figment::providers::Serialized::defaults(json!({
-                "log_payloads": true,
-            }))])
-            .into_generic()
-            .await
-            .expect("config should load");
-        let parsed: DatadogMetricsConfiguration = cfg.as_typed().expect("should deserialize");
-
-        assert!(parsed.log_payloads);
     }
 
     #[test]

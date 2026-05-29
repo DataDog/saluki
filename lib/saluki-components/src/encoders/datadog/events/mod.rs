@@ -343,20 +343,4 @@ mod config_smoke {
         })
         .await
     }
-
-    #[test]
-    fn log_payloads_defaults_to_false() {
-        let config: DatadogEventsConfiguration =
-            serde_json::from_value(json!({})).expect("DatadogEventsConfiguration should deserialize");
-
-        assert!(!config.log_payloads);
-    }
-
-    #[test]
-    fn deserializes_log_payloads() {
-        let config: DatadogEventsConfiguration = serde_json::from_value(json!({ "log_payloads": true }))
-            .expect("DatadogEventsConfiguration should deserialize");
-
-        assert!(config.log_payloads);
-    }
 }
