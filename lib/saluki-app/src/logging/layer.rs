@@ -504,26 +504,25 @@ fn get_delayed_format_now(rfc3339: bool) -> DelayedFormat<impl Iterator<Item = &
             .unwrap_or(Tz::UTC)
     });
 
-    let now = Utc::now().with_timezone(system_tz);
-
-    if rfc3339 {
+    let format_items: &[Item<'static>] = if rfc3339 {
         static RFC3339_FORMAT_ITEMS: OnceLock<Vec<Item<'static>>> = OnceLock::new();
-        let format_items = RFC3339_FORMAT_ITEMS.get_or_init(|| {
+        RFC3339_FORMAT_ITEMS.get_or_init(|| {
             StrftimeItems::new("%+")
                 .parse()
                 .expect("should not fail to parse datetime format")
-        });
-        now.format_with_items(format_items.iter())
+        })
     } else {
-        // Timestamp format to end up with the equivalent of `2024-12-31 23:59:59 UTC`.
         static FORMAT_ITEMS: OnceLock<Vec<Item<'static>>> = OnceLock::new();
-        let format_items = FORMAT_ITEMS.get_or_init(|| {
+        FORMAT_ITEMS.get_or_init(|| {
             StrftimeItems::new("%Y-%m-%d %H:%M:%S %Z")
                 .parse()
                 .expect("should not fail to parse datetime format")
-        });
-        now.format_with_items(format_items.iter())
-    }
+        })
+    };
+
+    Utc::now()
+        .with_timezone(system_tz)
+        .format_with_items(format_items.iter())
 }
 
 #[cfg(test)]
