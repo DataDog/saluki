@@ -460,11 +460,11 @@ async fn create_directory_recursive(path: PathBuf) -> Result<(), GenericError> {
 }
 
 /// Deletes files in `queue_path` whose filename-embedded creation timestamp is older than
-/// `max_age_days`. Does nothing if `max_age_days` is 0 or the directory does not exist.
+/// `max_age_days`. Does nothing if the directory does not exist.
+///
+/// Setting `max_age_days` to `0` deletes all retry files (cutoff = now), matching the behavior
+/// of the core Agent's `FileRemovalPolicy` with `outdatedFileDayCount = 0`.
 async fn remove_outdated_retry_files(queue_path: &Path, max_age_days: u32) {
-    if max_age_days == 0 {
-        return;
-    }
     let mut dir = match tokio::fs::read_dir(queue_path).await {
         Ok(d) => d,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
@@ -964,17 +964,28 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn zero_days_disables_cleanup() {
+        async fn zero_days_removes_all_retry_files() {
+            // max_age_days=0 sets cutoff=now, so all retry files (which were created before now)
+            // are deleted — matching the core Agent's FileRemovalPolicy behavior with
+            // outdatedFileDayCount=0.
             let dir = TempDir::new().unwrap();
             let path = dir.path();
 
-            let old = retry_filename_days_old(100, 100000004);
-            write_file(path, &old).await;
+            let just_created = retry_filename_days_old(0, 100000004);
+            write_file(path, &just_created).await;
+            write_file(path, "other-file.json").await;
 
             remove_outdated_retry_files(path, 0).await;
 
             let remaining = names_in(path).await;
-            assert!(remaining.contains(&old), "cleanup disabled; file should survive");
+            assert!(
+                !remaining.contains(&just_created),
+                "0-day cutoff should delete all retry files"
+            );
+            assert!(
+                remaining.contains(&"other-file.json".to_string()),
+                "non-retry file must survive"
+            );
         }
 
         #[tokio::test]

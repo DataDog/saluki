@@ -137,11 +137,12 @@ pub struct RetryConfiguration {
 
     /// Maximum age in days for retry files on disk before they are deleted at startup.
     ///
-    /// When disk persistence is enabled, ADP removes any `retry-*.json` files in
-    /// `forwarder_storage_path` that are older than this many days each time it starts. This
-    /// prevents unbounded disk growth from stale retry data left behind after long outages.
+    /// When disk persistence is enabled, ADP removes any `retry-*.json` files in the
+    /// per-queue subdirectory of `forwarder_storage_path` that are older than this many days
+    /// each time it starts. This prevents unbounded disk growth from stale retry data left
+    /// behind after long outages.
     ///
-    /// Set to `0` to disable age-based cleanup. Defaults to 10.
+    /// Setting this to `0` removes all retry files on startup. Defaults to 10.
     #[serde(
         default = "default_outdated_file_in_days",
         rename = "forwarder_outdated_file_in_days"
