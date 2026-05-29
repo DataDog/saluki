@@ -48,5 +48,30 @@
   //   - `prConcurrentLimit` and `prHourlyLimit` (does not count against caps)
   //   - grouping (gets its own focused PR rather than being bundled in the
   //     weekly non-major group)
-  "osvVulnerabilityAlerts": true
+  "osvVulnerabilityAlerts": true,
+
+  // Package-manager-specific rules.
+  "packageRules": [
+    // Use Cargo's semver interpretation for all Cargo dependencies. Cargo
+    // treats `^0.x` as `>=0.x.0, <0.x+1.0`, so a bump from `0.9` to `0.10`
+    // is a breaking (major) change. Without this, Renovate uses standard
+    // semver where such a bump is classified as "minor" and incorrectly
+    // lands in the non-major group PR — which cannot fix compilation errors
+    // caused by removed features or API changes.
+    {
+      "matchManagers": ["cargo"],
+      "versioning": "cargo"
+    },
+    // Warn reviewers that Cargo major updates (including `0.x` → `0.y`)
+    // often require manual fixes: removed features, changed APIs, etc.
+    // Renovate creates the branch and bumps the version; a human must verify
+    // compilation and resolve any breaking changes before merging.
+    {
+      "matchManagers": ["cargo"],
+      "matchUpdateTypes": ["major"],
+      "prBodyNotes": [
+        "**Cargo major update** — Cargo's semver treats `0.x` → `0.y` as breaking. Before merging, verify the workspace compiles and check upstream release notes for removed features or API changes."
+      ]
+    }
+  ]
 }
