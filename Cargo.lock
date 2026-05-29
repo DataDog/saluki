@@ -4343,9 +4343,11 @@ dependencies = [
 name = "saluki-tls"
 version = "0.1.0"
 dependencies = [
+ "rcgen",
  "rustls",
  "rustls-native-certs",
  "saluki-error",
+ "tempfile",
  "tracing",
 ]
 
