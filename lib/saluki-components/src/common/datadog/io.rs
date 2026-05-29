@@ -288,7 +288,8 @@ async fn run_io_loop<B>(
 
     // Listen for transactions to forward, and send a copy of each one to the matching endpoint I/O tasks.
     while let Some(transaction) = transactions_rx.recv().await {
-        let is_metrics_request = is_metrics_request_uri(transaction.request_uri());
+        let is_metrics_request =
+            is_metrics_request_uri(transaction.request_uri(), config.v3_api().series.beta_route.as_str());
         for endpoint_sender in &endpoint_txs {
             if !should_route_to_endpoint(is_metrics_request, has_metrics_primary, endpoint_sender.route) {
                 continue;
@@ -332,8 +333,8 @@ where
     tx: mpsc::Sender<Transaction<B>>,
 }
 
-fn is_metrics_request_uri(uri: &Uri) -> bool {
-    METRIC_INTAKE_PATHS.contains(&uri.path())
+fn is_metrics_request_uri(uri: &Uri, v3_beta_series_route: &str) -> bool {
+    METRIC_INTAKE_PATHS.contains(&uri.path()) || uri.path() == v3_beta_series_route
 }
 
 fn should_route_to_endpoint(is_metrics_request: bool, has_metrics_primary: bool, route: EndpointRoute) -> bool {
@@ -888,10 +889,17 @@ mod tests {
 
     use super::*;
     use crate::common::datadog::transaction::{Metadata as TxnMetadata, Transaction};
-    use crate::common::datadog::{METRICS_SERIES_V1_PATH, METRICS_SERIES_V2_PATH, METRICS_SKETCHES_PATH};
+    use crate::common::datadog::{
+        METRICS_SERIES_V1_PATH, METRICS_SERIES_V2_PATH, METRICS_SERIES_V3_BETA_PATH, METRICS_SERIES_V3_PATH,
+        METRICS_SKETCHES_PATH, METRICS_SKETCHES_V3_PATH,
+    };
 
     fn uri(path: &'static str) -> Uri {
         Uri::from_static(path)
+    }
+
+    fn is_metrics_request_path(path: &'static str) -> bool {
+        is_metrics_request_uri(&uri(path), METRICS_SERIES_V3_BETA_PATH)
     }
 
     fn forwarder_config_from_value(value: serde_json::Value) -> ForwarderConfiguration {
@@ -900,11 +908,26 @@ mod tests {
 
     #[test]
     fn identifies_metrics_request_paths() {
-        assert!(is_metrics_request_uri(&uri(METRICS_SERIES_V1_PATH)));
-        assert!(is_metrics_request_uri(&uri(METRICS_SERIES_V2_PATH)));
-        assert!(is_metrics_request_uri(&uri(METRICS_SKETCHES_PATH)));
-        assert!(!is_metrics_request_uri(&uri("/api/v2/logs")));
-        assert!(!is_metrics_request_uri(&uri("/api/v0.2/traces")));
+        assert!(is_metrics_request_path(METRICS_SERIES_V1_PATH));
+        assert!(is_metrics_request_path(METRICS_SERIES_V2_PATH));
+        assert!(is_metrics_request_path(METRICS_SERIES_V3_PATH));
+        assert!(is_metrics_request_path(METRICS_SERIES_V3_BETA_PATH));
+        assert!(is_metrics_request_path(METRICS_SKETCHES_PATH));
+        assert!(is_metrics_request_path(METRICS_SKETCHES_V3_PATH));
+        assert!(!is_metrics_request_path("/api/v2/logs"));
+        assert!(!is_metrics_request_path("/api/v0.2/traces"));
+    }
+
+    #[test]
+    fn identifies_configured_v3_beta_series_route_as_metrics_path() {
+        assert!(is_metrics_request_uri(
+            &uri("/custom/v3beta/series"),
+            "/custom/v3beta/series"
+        ));
+        assert!(!is_metrics_request_uri(
+            &uri("/custom/v3beta/series"),
+            METRICS_SERIES_V3_BETA_PATH
+        ));
     }
 
     #[test]
