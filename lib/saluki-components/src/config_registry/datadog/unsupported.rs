@@ -261,65 +261,9 @@ crate::declare_annotations! {
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD, Pipeline::Checks, Pipeline::Traces]),
     };
 
-    /// `serializer_max_payload_size` - max compressed payload size.
-    SERIALIZER_MAX_PAYLOAD_SIZE = SalukiAnnotation {
-        schema: &schema::SERIALIZER_MAX_PAYLOAD_SIZE,
-        // Not configurable in ADP. #1354
-        support_level: SupportLevel::Incompatible(Severity::Low),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-        // Metrics encoder (dd_metrics_encode) is used by DogStatsD, Checks, and OTLP native (Traces active); APM traces use a separate encoder.
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD, Pipeline::Checks, Pipeline::Traces]),
-    };
-
-    /// `serializer_max_series_payload_size` - max series compressed size.
-    SERIALIZER_MAX_SERIES_PAYLOAD_SIZE = SalukiAnnotation {
-        schema: &schema::SERIALIZER_MAX_SERIES_PAYLOAD_SIZE,
-        // Not configurable in ADP. #1354
-        support_level: SupportLevel::Incompatible(Severity::Low),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-        // Metrics encoder (dd_metrics_encode) is used by DogStatsD, Checks, and OTLP native (Traces active); APM traces use a separate encoder.
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD, Pipeline::Checks, Pipeline::Traces]),
-    };
-
     /// `serializer_max_series_points_per_payload` - max series points per payload.
     SERIALIZER_MAX_SERIES_POINTS_PER_PAYLOAD = SalukiAnnotation {
         schema: &schema::SERIALIZER_MAX_SERIES_POINTS_PER_PAYLOAD,
-        // Not configurable in ADP. #1354
-        support_level: SupportLevel::Incompatible(Severity::Low),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-        // Metrics encoder (dd_metrics_encode) is used by DogStatsD, Checks, and OTLP native (Traces active); APM traces use a separate encoder.
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD, Pipeline::Checks, Pipeline::Traces]),
-    };
-
-    /// `serializer_max_series_uncompressed_payload_size` - max series uncompressed size.
-    SERIALIZER_MAX_SERIES_UNCOMPRESSED_PAYLOAD_SIZE = SalukiAnnotation {
-        schema: &schema::SERIALIZER_MAX_SERIES_UNCOMPRESSED_PAYLOAD_SIZE,
-        // Not configurable in ADP. #1354
-        support_level: SupportLevel::Incompatible(Severity::Low),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-        // Metrics encoder (dd_metrics_encode) is used by DogStatsD, Checks, and OTLP native (Traces active); APM traces use a separate encoder.
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD, Pipeline::Checks, Pipeline::Traces]),
-    };
-
-    /// `serializer_max_uncompressed_payload_size` - max uncompressed payload size.
-    SERIALIZER_MAX_UNCOMPRESSED_PAYLOAD_SIZE = SalukiAnnotation {
-        schema: &schema::SERIALIZER_MAX_UNCOMPRESSED_PAYLOAD_SIZE,
         // Not configurable in ADP. #1354
         support_level: SupportLevel::Incompatible(Severity::Low),
         additional_yaml_paths: &[],
@@ -344,47 +288,6 @@ crate::declare_annotations! {
         // TLS is process-wide.
         pipeline_affinity: PipelineAffinity::CrossCutting,
     };
-
-    /// `statsd_forward_host` - host for packet forwarding.
-    STATSD_FORWARD_HOST = SalukiAnnotation {
-        schema: &schema::STATSD_FORWARD_HOST,
-        // Packet forwarding not implemented. #1476
-        support_level: SupportLevel::Incompatible(Severity::High),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
-    };
-
-    /// `statsd_forward_port` - port for packet forwarding.
-    STATSD_FORWARD_PORT = SalukiAnnotation {
-        schema: &schema::STATSD_FORWARD_PORT,
-        // Packet forwarding not implemented. #1476
-        support_level: SupportLevel::Incompatible(Severity::High),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
-    };
-
-    /// `telemetry.enabled` - global telemetry toggle.
-    TELEMETRY_ENABLED = SalukiAnnotation {
-        schema: &schema::TELEMETRY_ENABLED,
-        // ADP uses data_plane.telemetry_enabled instead. #1338
-        support_level: SupportLevel::Incompatible(Severity::Medium),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-        // Process-wide telemetry toggle; ADP uses data_plane.telemetry_enabled.
-        pipeline_affinity: PipelineAffinity::CrossCutting,
-    };
-
 
     /// `tls_handshake_timeout` - HTTP TLS handshake timeout.
     TLS_HANDSHAKE_TIMEOUT = SalukiAnnotation {
