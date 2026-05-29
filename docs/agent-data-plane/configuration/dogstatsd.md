@@ -45,7 +45,7 @@ architecture is fundamentally different or the feature is platform-specific.
 | Config Key                                     | Description                        | Reason                                                       |
 | ---------------------------------------------- | ---------------------------------- | ------------------------------------------------------------ |
 | `dogstatsd_host_socket_path`                   | Host UDS socket dir for DSD        | Not read by DSD server; admission controller only            |
-| `dogstatsd_mem_based_rate_limiter.*`           | Memory-based rate limiter (11 keys) | Go GC–specific; ADP uses `memory_limit` (see below)         |
+| `dogstatsd_mem_based_rate_limiter.*`           | Memory-based rate limiter          | Go GC–specific; ADP uses `memory_limit` (see below)         |
 | `dogstatsd_no_aggregation_pipeline_batch_size` | No-aggregation pipeline batch size | Fixed in ADP topology                                        |
 | `dogstatsd_packet_buffer_flush_timeout`        | Packet buffer flush timeout        | ADP decodes inline                                           |
 | `dogstatsd_packet_buffer_size`                 | Datagrams per packet buffer        | ADP decodes inline                                           |
