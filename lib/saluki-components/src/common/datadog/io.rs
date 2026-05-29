@@ -37,7 +37,6 @@ use super::{
     config::ForwarderConfiguration,
     endpoints::{EndpointRoute, ResolvedEndpoint, RoutableEndpoint},
     middleware::{for_resolved_endpoint, with_allow_arbitrary_tags, with_version_info},
-    retry::remove_outdated_retry_files,
     telemetry::{ComponentTelemetry, SharedTransactionQueueTelemetry, TransactionQueueTelemetry},
     transaction::{Metadata, Transaction, TransactionBody},
     METRIC_INTAKE_PATHS,
@@ -393,11 +392,6 @@ async fn run_endpoint_io_loop<B>(
 
     // If the storage size is set, enable disk persistence for the retry queue.
     if config.retry().storage_max_size_bytes() > 0 {
-        // Remove stale retry files before opening the queue. Pass the per-queue subdirectory
-        // (storage_path/{queue_id}) because that is where with_disk_persistence writes files.
-        let queue_path = config.retry().storage_path().join(&queue_id);
-        remove_outdated_retry_files(&queue_path, config.retry().outdated_file_in_days()).await;
-
         retry_queue = retry_queue
             .with_disk_persistence(
                 PathBuf::from(config.retry().storage_path()),
@@ -406,6 +400,7 @@ async fn run_endpoint_io_loop<B>(
                 Arc::new(DiskUsageRetrieverImpl::new(PathBuf::from(
                     config.retry().storage_path(),
                 ))),
+                config.retry().outdated_file_in_days(),
             )
             .await
             .unwrap_or_else(|e| {

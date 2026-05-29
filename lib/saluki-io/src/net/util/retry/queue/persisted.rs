@@ -111,12 +111,17 @@ where
     /// shrink the directory to fit the given maximum size, an error is returned.
     pub async fn from_root_path(
         root_path: PathBuf, max_on_disk_bytes: u64, storage_max_disk_ratio: f64,
-        disk_usage_retriever: DiskUsageRetrieverWrapper,
+        disk_usage_retriever: DiskUsageRetrieverWrapper, max_age_days: u32,
     ) -> Result<Self, GenericError> {
         // Make sure the directory exists first.
         create_directory_recursive(root_path.clone())
             .await
             .with_error_context(|| format!("Failed to create retry directory '{}'.", root_path.display()))?;
+
+        // Remove stale retry files before loading state. This must run after directory creation
+        // but before refresh_entry_state so the queue doesn't load files that are about to be
+        // removed.
+        remove_outdated_retry_files(&root_path, max_age_days).await;
 
         let mut persisted_requests = Self {
             root_path: root_path.clone(),
@@ -407,7 +412,7 @@ fn generate_timestamped_filename() -> (PathBuf, u128) {
     (filename, now_ts)
 }
 
-pub fn decode_timestamped_filename(path: &Path) -> Option<u128> {
+fn decode_timestamped_filename(path: &Path) -> Option<u128> {
     let filename = path.file_stem()?.to_str()?;
     let mut filename_parts = filename.split('-');
 
@@ -452,6 +457,61 @@ async fn create_directory_recursive(path: PathBuf) -> Result<(), GenericError> {
     })
     .await
     .error_context("Failed to spawn directory creation blocking task.")?
+}
+
+/// Deletes files in `queue_path` whose filename-embedded creation timestamp is older than
+/// `max_age_days`. Does nothing if `max_age_days` is 0 or the directory does not exist.
+async fn remove_outdated_retry_files(queue_path: &Path, max_age_days: u32) {
+    if max_age_days == 0 {
+        return;
+    }
+    let mut dir = match tokio::fs::read_dir(queue_path).await {
+        Ok(d) => d,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+        Err(e) => {
+            warn!(path = %queue_path.display(), error = %e, "Failed to open retry queue directory for age-based cleanup.");
+            return;
+        }
+    };
+    let now_ns = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let cutoff_ns = now_ns.saturating_sub(max_age_days as u128 * 24 * 3600 * 1_000_000_000);
+    let mut removed = 0u32;
+    loop {
+        let entry = match dir.next_entry().await {
+            Ok(Some(e)) => e,
+            Ok(None) => break,
+            Err(e) => {
+                warn!(error = %e, "Error reading retry queue directory during age-based cleanup.");
+                break;
+            }
+        };
+        let file_ts = match decode_timestamped_filename(&entry.path()) {
+            Some(ts) => ts,
+            None => continue,
+        };
+        if file_ts < cutoff_ns {
+            let name_str = entry.file_name();
+            let name = name_str.to_string_lossy();
+            match tokio::fs::remove_file(entry.path()).await {
+                Ok(()) => {
+                    debug!(file = %name, "Removed outdated retry file.");
+                    removed += 1;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    debug!(file = %name, "Retry file already removed by concurrent cleanup.");
+                }
+                Err(e) => {
+                    warn!(file = %name, error = %e, "Failed to remove outdated retry file.");
+                }
+            }
+        }
+    }
+    if removed > 0 {
+        info!(count = removed, max_age_days, "Removed outdated retry files from disk.");
+    }
 }
 
 #[cfg(test)]
@@ -518,6 +578,7 @@ mod tests {
             1024,
             0.8,
             DiskUsageRetrieverWrapper::new(Arc::new(DiskUsageRetrieverImpl::new(root_path.clone()))),
+            0,
         )
         .await
         .expect("should not fail to create persisted queue");
@@ -557,6 +618,7 @@ mod tests {
             1,
             0.8,
             DiskUsageRetrieverWrapper::new(Arc::new(DiskUsageRetrieverImpl::new(root_path.clone()))),
+            0,
         )
         .await
         .expect("should not fail to create persisted queue");
@@ -587,6 +649,7 @@ mod tests {
             32,
             0.8,
             DiskUsageRetrieverWrapper::new(Arc::new(DiskUsageRetrieverImpl::new(root_path.clone()))),
+            0,
         )
         .await
         .expect("should not fail to create persisted queue");
@@ -636,6 +699,7 @@ mod tests {
             80,
             0.35,
             DiskUsageRetrieverWrapper::new(Arc::new(MockDiskUsageRetriever {})),
+            0,
         )
         .await
         .expect("should not fail to create persisted queue");
@@ -694,6 +758,7 @@ mod tests {
             1024,
             0.8,
             DiskUsageRetrieverWrapper::new(Arc::new(MockDiskUsageRetriever {})),
+            0,
         )
         .await
         .expect("should not fail to create persisted queue");
@@ -742,6 +807,7 @@ mod tests {
             1024,
             0.8,
             DiskUsageRetrieverWrapper::new(Arc::new(MockDiskUsageRetriever {})),
+            0,
         )
         .await
         .expect("should not fail to create persisted queue");
@@ -780,6 +846,7 @@ mod tests {
             1024,
             0.8,
             DiskUsageRetrieverWrapper::new(Arc::new(MockDiskUsageRetriever {})),
+            0,
         )
         .await
         .expect("should not fail to create persisted queue");
@@ -809,6 +876,7 @@ mod tests {
             32,
             0.8,
             DiskUsageRetrieverWrapper::new(Arc::new(MockDiskUsageRetriever {})),
+            0,
         )
         .await
         .expect("should not fail to create persisted queue");
@@ -839,5 +907,81 @@ mod tests {
             .expect("should have a valid entry");
         assert_eq!(data, actual);
         assert_eq!(0, files_in_dir(&root_path).await);
+    }
+
+    mod outdated_file_cleanup {
+        use std::path::Path;
+
+        use chrono::{Duration, Utc};
+        use tempfile::TempDir;
+        use tokio::fs;
+
+        use super::super::remove_outdated_retry_files;
+
+        fn retry_filename_days_old(days_old: i64, nonce: u64) -> String {
+            let ts = Utc::now() - Duration::days(days_old);
+            format!("retry-{}-{}.json", ts.format("%Y%m%d%H%M%S%f"), nonce)
+        }
+
+        async fn write_file(dir: &Path, name: &str) {
+            fs::write(dir.join(name), b"{}").await.unwrap();
+        }
+
+        async fn names_in(dir: &Path) -> Vec<String> {
+            let mut entries = fs::read_dir(dir).await.unwrap();
+            let mut names = Vec::new();
+            while let Some(e) = entries.next_entry().await.unwrap() {
+                names.push(e.file_name().to_string_lossy().into_owned());
+            }
+            names.sort();
+            names
+        }
+
+        #[tokio::test]
+        async fn removes_old_retry_files_only() {
+            let dir = TempDir::new().unwrap();
+            let path = dir.path();
+
+            let old_1 = retry_filename_days_old(15, 100000001);
+            let old_2 = retry_filename_days_old(11, 100000002);
+            let recent = retry_filename_days_old(1, 100000003);
+
+            write_file(path, &old_1).await;
+            write_file(path, &old_2).await;
+            write_file(path, &recent).await;
+            write_file(path, "other-file.json").await; // not a valid retry filename, must not be touched
+
+            remove_outdated_retry_files(path, 10).await;
+
+            let remaining = names_in(path).await;
+            assert!(!remaining.contains(&old_1), "15-day-old file should be removed");
+            assert!(!remaining.contains(&old_2), "11-day-old file should be removed");
+            assert!(remaining.contains(&recent), "1-day-old file should be kept");
+            assert!(
+                remaining.contains(&"other-file.json".to_string()),
+                "non-retry file must not be touched"
+            );
+        }
+
+        #[tokio::test]
+        async fn zero_days_disables_cleanup() {
+            let dir = TempDir::new().unwrap();
+            let path = dir.path();
+
+            let old = retry_filename_days_old(100, 100000004);
+            write_file(path, &old).await;
+
+            remove_outdated_retry_files(path, 0).await;
+
+            let remaining = names_in(path).await;
+            assert!(remaining.contains(&old), "cleanup disabled; file should survive");
+        }
+
+        #[tokio::test]
+        async fn nonexistent_directory_is_noop() {
+            let dir = TempDir::new().unwrap();
+            let missing = dir.path().join("does-not-exist");
+            remove_outdated_retry_files(&missing, 10).await;
+        }
     }
 }

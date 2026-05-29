@@ -5,7 +5,7 @@ use serde::{de::DeserializeOwned, Serialize};
 use tracing::debug;
 
 mod persisted;
-pub use self::persisted::{decode_timestamped_filename, DiskUsageRetrieverImpl};
+pub use self::persisted::DiskUsageRetrieverImpl;
 use self::persisted::{DiskUsageRetriever, DiskUsageRetrieverWrapper, PersistedQueue};
 
 /// A container that holds events.
@@ -124,7 +124,7 @@ where
     /// If there is an error initializing the disk persistence layer, an error is returned.
     pub async fn with_disk_persistence(
         mut self, root_path: PathBuf, max_disk_size_bytes: u64, storage_max_disk_ratio: f64,
-        disk_usage_retriever: Arc<dyn DiskUsageRetriever + Send + Sync>,
+        disk_usage_retriever: Arc<dyn DiskUsageRetriever + Send + Sync>, max_age_days: u32,
     ) -> Result<Self, GenericError> {
         // Make sure the root storage path is non-empty, as otherwise we can't generate a valid path
         // for the persisted entries in this retry queue.
@@ -138,6 +138,7 @@ where
             max_disk_size_bytes,
             storage_max_disk_ratio,
             DiskUsageRetrieverWrapper::new(disk_usage_retriever),
+            max_age_days,
         )
         .await?;
         self.persisted_pending = Some(persisted_pending);
@@ -434,6 +435,7 @@ mod tests {
                 u64::MAX,
                 1.0,
                 Arc::new(DiskUsageRetrieverImpl::new(root_path.clone())),
+                0,
             )
             .await
             .expect("should not fail to create retry queue with disk persistence");
