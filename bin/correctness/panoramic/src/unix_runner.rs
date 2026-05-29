@@ -388,8 +388,8 @@ fn build_core_agent_forced_env(
         ("DD_RUN_PATH", state_dir.to_string_lossy().into_owned()),
     ];
 
-    if env_is_true(test_env, "DD_DATA_PLANE_DOGSTATSD_ENABLED") {
-        forced.push(("DD_USE_DOGSTATSD", "0".to_string()));
+    if adp_owns_dogstatsd(test_env) {
+        forced.push(("DD_USE_DOGSTATSD", "false".to_string()));
     }
 
     if env_is_true(test_env, "DD_DATA_PLANE_OTLP_ENABLED") {
@@ -410,6 +410,10 @@ fn build_core_agent_forced_env(
 
 fn build_adp_forced_env(auth_token_path: String) -> Vec<(&'static str, String)> {
     vec![("DD_AUTH_TOKEN_FILE_PATH", auth_token_path)]
+}
+
+fn adp_owns_dogstatsd(env: &HashMap<String, String>) -> bool {
+    env_is_true(env, "DD_DATA_PLANE_ENABLED") && env.get("DD_DATA_PLANE_DOGSTATSD_ENABLED").is_none_or(|v| v != "false")
 }
 
 fn env_is_true(env: &HashMap<String, String>, key: &str) -> bool {
@@ -522,6 +526,7 @@ mod tests {
         let state_dir = PathBuf::from("/tmp/panoramic-unix-test");
         let auth_token_path = state_dir.join("auth_token").to_string_lossy().into_owned();
         let test_env = HashMap::from([
+            ("DD_DATA_PLANE_ENABLED".to_string(), "true".to_string()),
             ("DD_DATA_PLANE_DOGSTATSD_ENABLED".to_string(), "true".to_string()),
             ("DD_DATA_PLANE_OTLP_ENABLED".to_string(), "true".to_string()),
         ]);
@@ -532,7 +537,7 @@ mod tests {
 
         assert_eq!(env.get("DD_AUTH_TOKEN_FILE_PATH"), Some(&auth_token_path));
         assert_eq!(env.get("DD_RUN_PATH"), Some(&state_dir.to_string_lossy().into_owned()));
-        assert_eq!(env.get("DD_USE_DOGSTATSD"), Some(&"0".to_string()));
+        assert_eq!(env.get("DD_USE_DOGSTATSD"), Some(&"false".to_string()));
         assert_eq!(
             env.get("DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_ENDPOINT"),
             Some(&"127.0.0.1:14317".to_string())
@@ -541,5 +546,34 @@ mod tests {
             env.get("DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_ENDPOINT"),
             Some(&"127.0.0.1:14318".to_string())
         );
+    }
+
+    #[test]
+    fn core_agent_dogstatsd_is_disabled_when_adp_uses_default_dogstatsd_setting() {
+        let state_dir = PathBuf::from("/tmp/panoramic-unix-test");
+        let auth_token_path = state_dir.join("auth_token").to_string_lossy().into_owned();
+        let test_env = HashMap::from([("DD_DATA_PLANE_ENABLED".to_string(), "true".to_string())]);
+
+        let env: HashMap<_, _> = build_core_agent_forced_env(&test_env, &state_dir, auth_token_path)
+            .into_iter()
+            .collect();
+
+        assert_eq!(env.get("DD_USE_DOGSTATSD"), Some(&"false".to_string()));
+    }
+
+    #[test]
+    fn core_agent_dogstatsd_is_not_disabled_when_adp_dogstatsd_is_explicitly_disabled() {
+        let state_dir = PathBuf::from("/tmp/panoramic-unix-test");
+        let auth_token_path = state_dir.join("auth_token").to_string_lossy().into_owned();
+        let test_env = HashMap::from([
+            ("DD_DATA_PLANE_ENABLED".to_string(), "true".to_string()),
+            ("DD_DATA_PLANE_DOGSTATSD_ENABLED".to_string(), "false".to_string()),
+        ]);
+
+        let env: HashMap<_, _> = build_core_agent_forced_env(&test_env, &state_dir, auth_token_path)
+            .into_iter()
+            .collect();
+
+        assert!(!env.contains_key("DD_USE_DOGSTATSD"));
     }
 }
