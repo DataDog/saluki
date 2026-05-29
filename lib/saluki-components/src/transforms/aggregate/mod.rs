@@ -1,4 +1,5 @@
 use std::{
+    cmp::max,
     num::NonZeroU64,
     time::{Duration, Instant},
 };
@@ -34,6 +35,7 @@ use self::telemetry::Telemetry;
 mod config;
 use self::config::{HistogramConfiguration, HistogramStatistic};
 
+const MINIMUM_BUCKET_WIDTH: Duration = Duration::from_secs(1);
 const PASSTHROUGH_IDLE_FLUSH_CHECK_INTERVAL: Duration = Duration::from_secs(2);
 
 const fn default_window_duration() -> Duration {
@@ -87,6 +89,8 @@ pub struct AggregateConfiguration {
     /// Metrics are aggregated into fixed-size windows, such that all updates to the same metric within a window are
     /// aggregated into a single metric. The window size controls how efficiently metrics are aggregated, and in turn,
     /// how many data points are emitted downstream.
+    ///
+    /// Window duration will be clamped to a minimum of one second.
     ///
     /// Defaults to 10 seconds.
     #[serde(rename = "aggregate_window_duration", default = "default_window_duration")]
@@ -443,7 +447,7 @@ impl PassthroughBatcher {
             active_buffer_start: Instant::now(),
             last_processed_at: Instant::now(),
             idle_flush_timeout,
-            bucket_width,
+            bucket_width: max(bucket_width, MINIMUM_BUCKET_WIDTH),
             telemetry,
         }
     }
@@ -550,7 +554,7 @@ impl AggregationState {
             contexts: HashMap::default(),
             contexts_remove_buf: Vec::new(),
             context_limit,
-            bucket_width_secs: bucket_width.as_secs(),
+            bucket_width_secs: max(bucket_width, MINIMUM_BUCKET_WIDTH).as_secs(),
             counter_expire_secs,
             last_flush: 0,
             hist_config,
@@ -1510,6 +1514,28 @@ mod tests {
         assert_eq!(
             recorder.gauge(("aggregate_active_contexts_by_type", &[("metric_type", "gauge")])),
             Some(0.0)
+        );
+    }
+
+    // This test asserts that we clamp our bucket width ("window duration") to at least one second.
+    //
+    // Our math for aligning metrics into the correct aggregation bucket works on a secondly-basis, so we need a bucket
+    // width of at least one second otherwise we would be doing division-by-zero things and would immediately panic.
+    #[tokio::test]
+    async fn sub_second_aggregate_window_clamped_to_one_second() {
+        // We create the aggregation state with a sub-second window, which is not handled properly, should lead to a
+        // panic when we try to insert a metric.
+        let mut state = AggregationState::new(
+            Duration::from_millis(500),
+            100,
+            COUNTER_EXPIRE,
+            HistogramConfiguration::default(),
+            Telemetry::noop(),
+        );
+
+        assert!(
+            state.insert(insert_ts(1), Metric::counter("metric1", 1.0)),
+            "a sub-second aggregate window must be handled without panicking"
         );
     }
 }
