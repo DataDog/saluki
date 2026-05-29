@@ -151,10 +151,10 @@ pub struct TagFilterlistConfiguration {
     #[serde(default, rename = "metric_tag_filterlist")]
     entries: Vec<MetricTagFilterEntry>,
 
-    /// Maximum number of entries in the per-context dedup cache used by the tag filter.
+    /// Maximum number of entries in the per-context deduplication cache used by the tag filter.
     ///
     /// Each cache entry tracks whether a given metric context has already had its tags filtered,
-    /// avoiding redundant work on repeated submissions of the same metric.
+    /// avoiding redundant work on repeated submissions of the same metric context.
     ///
     /// Defaults to 100,000. The core Agent defaults to 1,000 for its own aggregator; ADP uses a
     /// higher value to accommodate the greater metric throughput it handles. When `data_plane.enabled`
