@@ -509,7 +509,7 @@ fn get_delayed_format_now(rfc3339: bool) -> DelayedFormat<impl Iterator<Item = &
     if rfc3339 {
         static RFC3339_FORMAT_ITEMS: OnceLock<Vec<Item<'static>>> = OnceLock::new();
         let format_items = RFC3339_FORMAT_ITEMS.get_or_init(|| {
-            StrftimeItems::new("%Y-%m-%dT%H:%M:%SZ")
+            StrftimeItems::new("%+")
                 .parse()
                 .expect("should not fail to parse datetime format")
         });
