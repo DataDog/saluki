@@ -156,13 +156,10 @@ pub struct TagFilterlistConfiguration {
     /// Each cache entry tracks whether a given metric context has already had its tags filtered,
     /// avoiding redundant work on repeated submissions of the same metric context.
     ///
-    /// Defaults to 100,000. The core Agent defaults to 1,000 for its own aggregator; ADP uses a
-    /// higher value to accommodate the greater metric throughput it handles. When `data_plane.enabled`
-    /// and `data_plane.dogstatsd.enabled` are both true, the Agent raises its own default to 100,000
-    /// via the config stream so that a single value in `datadog.yaml` controls both processes.
-    ///
     /// High-throughput deployments with many unique metric contexts may benefit from increasing this
     /// value to reduce cache churn.
+    ///
+    /// Defaults to 100,000.
     #[serde(
         rename = "aggregator_tag_filter_cache_capacity",
         default = "default_context_cache_capacity"
