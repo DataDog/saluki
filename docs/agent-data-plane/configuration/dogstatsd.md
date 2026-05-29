@@ -58,7 +58,7 @@ architecture is fundamentally different or the feature is platform-specific.
 
 ### Memory-based rate limiter (`dogstatsd_mem_based_rate_limiter.*`)
 
-The core agent exposes 11 keys under this prefix to apply backpressure when the Go process
+The core agent exposes configuration under this prefix to apply backpressure when the Go process
 approaches its memory limit. They work by manipulating Go's garbage collector
 (`debug.SetGCPercent`, `debug.FreeOSMemory`), allocating a large heap ballast to adjust GC
 heuristics, and blocking goroutines to slow packet ingestion. None of these mechanisms have
