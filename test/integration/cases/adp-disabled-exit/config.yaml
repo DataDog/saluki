@@ -3,7 +3,6 @@ name: "adp-disabled-exit"
 description: "Verify ADP exits cleanly when data plane is not enabled"
 timeout: 120s
 runtimes: [docker, mac]
-requires_core_agent: true
 
 env:
   DD_API_KEY: "test-api-key"

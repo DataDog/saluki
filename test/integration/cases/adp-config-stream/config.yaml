@@ -3,7 +3,6 @@ name: "adp-config-stream"
 description: "Verify ADP receives configuration from Core Agent via config stream"
 timeout: 120s
 runtimes: [docker, mac]
-requires_core_agent: true
 
 env:
   DD_API_KEY: "test-api-key"

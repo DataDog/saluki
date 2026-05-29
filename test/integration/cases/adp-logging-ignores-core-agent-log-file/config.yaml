@@ -3,7 +3,6 @@ name: "adp-logging-ignores-core-agent-log-file"
 description: "Verifies ADP ignores the Core Agent's `log_file` setting and continues to use its own per-subagent log file path"
 timeout: 120s
 runtimes: [docker]
-requires_core_agent: true
 
 env:
   DD_API_KEY: "test-api-key"

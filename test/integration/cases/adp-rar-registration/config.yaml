@@ -3,7 +3,6 @@ name: "adp-rar-registration"
 description: "Verify ADP successfully registers with Remote Agent Registry"
 timeout: 120s
 runtimes: [docker, mac]
-requires_core_agent: true
 
 env:
   DD_API_KEY: "test-api-key"

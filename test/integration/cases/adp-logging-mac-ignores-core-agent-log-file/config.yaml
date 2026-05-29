@@ -3,7 +3,6 @@ name: "adp-logging-mac-ignores-core-agent-log-file"
 description: "Verifies ADP ignores the Core Agent's `log_file` setting on the macOS host-process runtime"
 timeout: 120s
 runtimes: [mac]
-requires_core_agent: true
 
 env:
   DD_API_KEY: "test-api-key"

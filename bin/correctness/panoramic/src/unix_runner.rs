@@ -9,12 +9,12 @@
 //!
 //! # Supported test shapes
 //!
-//! - **Standalone**: only ADP is spawned. The default for tests that don't set
-//!   `requires_core_agent: true`.
-//! - **Converged**: the Datadog Core Agent is spawned alongside ADP (when
-//!   `requires_core_agent: true`), sharing a per-test config directory so they authenticate
-//!   over IPC the same way they would in production. See the per-phase comments in
-//!   [`UnixIntegrationRunner::run`] for the cert/auth_token plumbing.
+//! The Datadog Core Agent is always spawned alongside ADP, matching the Docker integration image's
+//! fixture shape. Tests still control ADP behavior through configuration: standalone-mode tests set
+//! `DD_DATA_PLANE_STANDALONE_MODE=true`, while converged tests enable remote-agent/config-stream
+//! behavior. Both processes share a per-test config directory so they authenticate over IPC the same
+//! way they would in production. See the per-phase comments in [`UnixIntegrationRunner::run`] for
+//! the cert/auth_token plumbing.
 //!
 //! # Binary discovery
 //!
@@ -35,8 +35,7 @@ use std::{
 };
 
 use airlock::unix::{LogSink, UnixProcess, UnixProcessConfig};
-use rand::distr::{Alphanumeric, SampleString as _};
-use rcgen::{generate_simple_self_signed, CertifiedKey};
+use rand::distr::SampleString as _;
 use saluki_error::{ErrorContext as _, GenericError};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
@@ -145,101 +144,83 @@ impl UnixIntegrationRunner {
             buf: self.log_buffer.clone(),
         }));
 
-        // Path that both the Agent and ADP use for auth_token / ipc_cert.pem. Always computed,
-        // only inserted into env when the Agent is in the picture (see comments below).
+        // Path that both the Agent and ADP use for auth_token / ipc_cert.pem.
         let auth_token_path = state_dir.join("auth_token").to_string_lossy().into_owned();
 
-        // Optional Phase: spawn the Core Agent (converged tests).
+        // Phase: spawn the Core Agent.
         //
-        // Converged tests need both the Core Agent and ADP running side-by-side, sharing a
-        // config directory so they can authenticate over IPC. We spawn the Agent first against
-        // the per-test state dir, wait until it has written `auth_token` and `ipc_cert.pem`,
-        // then spawn ADP with `DD_AUTH_TOKEN_FILE_PATH` pointing at the per-test auth token so
-        // ADP's IPC client uses the same per-test credentials (and ADP's own API server uses
-        // the matching cert).
-        let mut core_agent: Option<UnixProcess> = None;
-        if self.test_case.requires_core_agent {
-            let agent_spawn_start = Instant::now();
-            let agent_binary = match resolve_core_agent_binary_path() {
-                Ok(p) => p,
-                Err(e) => return make_error_result(test_name, started, "resolve_core_agent", e, phase_timings),
-            };
-            debug!(test = %test_name, binary = %agent_binary.display(), "Resolved Core Agent binary path.");
+        // The Docker integration image always runs the Core Agent beside ADP via s6. Do the
+        // same for the Unix runner so mac tests keep the same fixture shape: standalone-mode
+        // tests still configure ADP not to use the Agent, but the Agent process exists.
+        let agent_spawn_start = Instant::now();
+        let agent_binary = match resolve_core_agent_binary_path() {
+            Ok(p) => p,
+            Err(e) => return make_error_result(test_name, started, "resolve_core_agent", e, phase_timings),
+        };
+        debug!(test = %test_name, binary = %agent_binary.display(), "Resolved Core Agent binary path.");
 
-            // Forced runner-owned bindings:
-            //   DD_AUTH_TOKEN_FILE_PATH — pin Agent + ADP to the same per-test path. The Agent's
-            //     authoritative config (sent to ADP via the config stream) overrides ADP's env
-            //     vars, so the Agent itself must be told about the per-test path; otherwise it
-            //     advertises the platform default (`/opt/datadog-agent/etc/auth_token`), ADP
-            //     follows that advice for its post-config-stream IPC clients, and TLS fails
-            //     with UnknownIssuer because the platform default cert does not match what the
-            //     per-test Agent is actually serving.
-            //   DD_RUN_PATH — Agent's default `run_path` is the install prefix's `run/` dir
-            //     (e.g., /opt/datadog-agent/run). Without overriding, a relocated Agent install
-            //     would try to write its runtime state (remote-config db, sockets, pid file)
-            //     back to /opt — typically not writable in CI. Scope it to the per-test state
-            //     directory so each test gets a clean slate and nothing leaks across runs.
-            let agent_env = build_process_env(
-                &self.test_case.env,
-                &[
-                    ("DD_AUTH_TOKEN_FILE_PATH", auth_token_path.clone()),
-                    ("DD_RUN_PATH", state_dir.to_string_lossy().into_owned()),
-                ],
-            );
+        // Forced runner-owned bindings:
+        //   DD_AUTH_TOKEN_FILE_PATH — pin Agent + ADP to the same per-test path. The Agent's
+        //     authoritative config (sent to ADP via the config stream) overrides ADP's env
+        //     vars, so the Agent itself must be told about the per-test path; otherwise it
+        //     advertises the platform default (`/opt/datadog-agent/etc/auth_token`), ADP
+        //     follows that advice for its post-config-stream IPC clients, and TLS fails
+        //     with UnknownIssuer because the platform default cert does not match what the
+        //     per-test Agent is actually serving.
+        //   DD_RUN_PATH — Agent's default `run_path` is the install prefix's `run/` dir
+        //     (e.g., /opt/datadog-agent/run). Without overriding, a relocated Agent install
+        //     would try to write its runtime state (remote-config db, sockets, pid file)
+        //     back to /opt — typically not writable in CI. Scope it to the per-test state
+        //     directory so each test gets a clean slate and nothing leaks across runs.
+        //   DD_USE_DOGSTATSD / OTLP endpoint overrides — mirror the Docker cont-init script's
+        //     collision avoidance when ADP owns those listeners.
+        let agent_forced = build_core_agent_forced_env(&self.test_case.env, &state_dir, auth_token_path.clone());
+        let agent_env = build_process_env(&self.test_case.env, &agent_forced);
 
-            let agent_config = UnixProcessConfig::new(format!("{}-core-agent", self.test_case.name), agent_binary)
-                .with_args(vec![
-                    "run".to_string(),
-                    "-c".to_string(),
-                    state_dir.to_string_lossy().into_owned(),
-                ])
-                .with_env_map(agent_env);
+        let agent_config = UnixProcessConfig::new(format!("{}-core-agent", self.test_case.name), agent_binary)
+            .with_args(vec![
+                "run".to_string(),
+                "-c".to_string(),
+                state_dir.to_string_lossy().into_owned(),
+            ])
+            .with_env_map(agent_env);
 
-            let agent = match UnixProcess::spawn(agent_config, log_sink.clone(), CancellationToken::new()).await {
-                Ok(p) => p,
-                Err(e) => {
-                    phase_timings.push(PhaseTiming {
-                        phase: "core_agent_spawn".to_string(),
-                        duration: agent_spawn_start.elapsed(),
-                    });
-                    return make_error_result(test_name, started, "core_agent_spawn", e, phase_timings);
-                }
-            };
-            phase_timings.push(PhaseTiming {
-                phase: "core_agent_spawn".to_string(),
-                duration: agent_spawn_start.elapsed(),
-            });
-            info!(test = %test_name, "Core Agent process started.");
-
-            let wait_start = Instant::now();
-            if let Err(e) = wait_for_agent_ipc_ready(&state_dir, CORE_AGENT_IPC_READY_TIMEOUT).await {
-                agent.cleanup().await;
+        let agent = match UnixProcess::spawn(agent_config, log_sink.clone(), CancellationToken::new()).await {
+            Ok(p) => p,
+            Err(e) => {
                 phase_timings.push(PhaseTiming {
-                    phase: "core_agent_ipc_ready".to_string(),
-                    duration: wait_start.elapsed(),
+                    phase: "core_agent_spawn".to_string(),
+                    duration: agent_spawn_start.elapsed(),
                 });
-                return make_error_result(test_name, started, "core_agent_ipc_ready", e, phase_timings);
+                return make_error_result(test_name, started, "core_agent_spawn", e, phase_timings);
             }
+        };
+        phase_timings.push(PhaseTiming {
+            phase: "core_agent_spawn".to_string(),
+            duration: agent_spawn_start.elapsed(),
+        });
+        info!(test = %test_name, "Core Agent process started.");
+
+        let wait_start = Instant::now();
+        if let Err(e) = wait_for_agent_ipc_ready(&state_dir, CORE_AGENT_IPC_READY_TIMEOUT).await {
+            agent.cleanup().await;
             phase_timings.push(PhaseTiming {
                 phase: "core_agent_ipc_ready".to_string(),
                 duration: wait_start.elapsed(),
             });
-            debug!(test = %test_name, "Core Agent IPC credentials present.");
-            core_agent = Some(agent);
+            return make_error_result(test_name, started, "core_agent_ipc_ready", e, phase_timings);
         }
+        phase_timings.push(PhaseTiming {
+            phase: "core_agent_ipc_ready".to_string(),
+            duration: wait_start.elapsed(),
+        });
+        debug!(test = %test_name, "Core Agent IPC credentials present.");
+        let mut core_agent = Some(agent);
 
         // Phase: spawn ADP.
         let spawn_start = Instant::now();
         let config_path_str = config_path.to_string_lossy().into_owned();
-        if !self.test_case.requires_core_agent {
-            if let Err(e) = seed_standalone_ipc_credentials(&state_dir, &auth_token_path) {
-                if let Some(agent) = core_agent.take() {
-                    agent.cleanup().await;
-                }
-                return make_error_result(test_name, started, "prepare_standalone_ipc", e, phase_timings);
-            }
-        }
-        let adp_forced = build_adp_forced_env(self.test_case.requires_core_agent, &state_dir, auth_token_path);
+        let adp_forced = build_adp_forced_env(auth_token_path);
         let adp_env = build_process_env(&self.test_case.env, &adp_forced);
         let process_config = UnixProcessConfig::new(self.test_case.name.clone(), binary_path)
             .with_args(vec!["-c".to_string(), config_path_str, "run".to_string()])
@@ -399,34 +380,40 @@ fn resolve_core_agent_binary_path() -> Result<PathBuf, GenericError> {
     })
 }
 
-fn build_adp_forced_env(
-    requires_core_agent: bool, state_dir: &Path, auth_token_path: String,
+fn build_core_agent_forced_env(
+    test_env: &HashMap<String, String>, state_dir: &Path, auth_token_path: String,
 ) -> Vec<(&'static str, String)> {
-    if requires_core_agent {
-        vec![("DD_AUTH_TOKEN_FILE_PATH", auth_token_path)]
-    } else {
-        vec![
-            ("DD_AUTH_TOKEN_FILE_PATH", auth_token_path),
-            (
-                "DD_IPC_CERT_FILE_PATH",
-                state_dir.join("ipc_cert.pem").to_string_lossy().into_owned(),
-            ),
-        ]
+    let mut forced = vec![
+        ("DD_AUTH_TOKEN_FILE_PATH", auth_token_path),
+        ("DD_RUN_PATH", state_dir.to_string_lossy().into_owned()),
+    ];
+
+    if env_is_true(test_env, "DD_DATA_PLANE_DOGSTATSD_ENABLED") {
+        forced.push(("DD_USE_DOGSTATSD", "0".to_string()));
     }
+
+    if env_is_true(test_env, "DD_DATA_PLANE_OTLP_ENABLED") {
+        forced.extend([
+            (
+                "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_ENDPOINT",
+                "127.0.0.1:14317".to_string(),
+            ),
+            (
+                "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_ENDPOINT",
+                "127.0.0.1:14318".to_string(),
+            ),
+        ]);
+    }
+
+    forced
 }
 
-fn seed_standalone_ipc_credentials(state_dir: &Path, auth_token_path: &str) -> Result<(), GenericError> {
-    let auth_token = Alphanumeric.sample_string(&mut rand::rng(), 32);
-    std::fs::write(auth_token_path, auth_token)
-        .with_error_context(|| format!("Failed to write auth token at '{}'.", auth_token_path))?;
+fn build_adp_forced_env(auth_token_path: String) -> Vec<(&'static str, String)> {
+    vec![("DD_AUTH_TOKEN_FILE_PATH", auth_token_path)]
+}
 
-    let CertifiedKey { cert, signing_key } = generate_simple_self_signed(["localhost".to_string()])
-        .error_context("Failed to generate self-signed IPC certificate.")?;
-    let cert_path = state_dir.join("ipc_cert.pem");
-    std::fs::write(&cert_path, format!("{}{}", cert.pem(), signing_key.serialize_pem()))
-        .with_error_context(|| format!("Failed to write IPC certificate at '{}'.", cert_path.display()))?;
-
-    Ok(())
+fn env_is_true(env: &HashMap<String, String>, key: &str) -> bool {
+    env.get(key).is_some_and(|v| v == "true")
 }
 
 async fn wait_for_agent_ipc_ready(state_dir: &Path, timeout: Duration) -> Result<(), GenericError> {
@@ -522,18 +509,37 @@ mod tests {
     use super::*;
 
     #[test]
-    fn standalone_adp_env_points_ipc_credentials_at_test_state_dir() {
+    fn adp_env_points_ipc_credentials_at_test_state_dir() {
+        let auth_token_path = "/tmp/panoramic-unix-test/auth_token".to_string();
+
+        let env: HashMap<_, _> = build_adp_forced_env(auth_token_path.clone()).into_iter().collect();
+
+        assert_eq!(env.get("DD_AUTH_TOKEN_FILE_PATH"), Some(&auth_token_path));
+    }
+
+    #[test]
+    fn core_agent_env_mirrors_docker_listener_collision_avoidance() {
         let state_dir = PathBuf::from("/tmp/panoramic-unix-test");
         let auth_token_path = state_dir.join("auth_token").to_string_lossy().into_owned();
+        let test_env = HashMap::from([
+            ("DD_DATA_PLANE_DOGSTATSD_ENABLED".to_string(), "true".to_string()),
+            ("DD_DATA_PLANE_OTLP_ENABLED".to_string(), "true".to_string()),
+        ]);
 
-        let env: HashMap<_, _> = build_adp_forced_env(false, &state_dir, auth_token_path.clone())
+        let env: HashMap<_, _> = build_core_agent_forced_env(&test_env, &state_dir, auth_token_path.clone())
             .into_iter()
             .collect();
 
         assert_eq!(env.get("DD_AUTH_TOKEN_FILE_PATH"), Some(&auth_token_path));
+        assert_eq!(env.get("DD_RUN_PATH"), Some(&state_dir.to_string_lossy().into_owned()));
+        assert_eq!(env.get("DD_USE_DOGSTATSD"), Some(&"0".to_string()));
         assert_eq!(
-            env.get("DD_IPC_CERT_FILE_PATH"),
-            Some(&state_dir.join("ipc_cert.pem").to_string_lossy().into_owned())
+            env.get("DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_ENDPOINT"),
+            Some(&"127.0.0.1:14317".to_string())
+        );
+        assert_eq!(
+            env.get("DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_ENDPOINT"),
+            Some(&"127.0.0.1:14318".to_string())
         );
     }
 }

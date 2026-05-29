@@ -3,7 +3,6 @@ name: "adp-logging-default-path"
 description: "Verifies ADP writes to the platform-default Linux log file path (/var/log/datadog/agent-data-plane.log) when no override is provided"
 timeout: 120s
 runtimes: [docker]
-requires_core_agent: true
 
 env:
   DD_API_KEY: "test-api-key"

@@ -132,18 +132,6 @@ pub struct IntegrationConfig {
     #[serde(default = "default_integration_runtimes")]
     pub runtimes: Vec<String>,
 
-    /// Whether this test requires a Core Agent process to be running alongside ADP.
-    ///
-    /// When `true`, host-process runtimes (such as `mac`) spawn the Datadog Core Agent as a side process before
-    /// starting ADP, sharing a per-test config directory so they communicate over IPC the same
-    /// way they would in production. When `false` (the default), only ADP is spawned (standalone
-    /// mode).
-    ///
-    /// On the `docker` runtime this field is informational; the converged image always runs
-    /// both processes via s6.
-    #[serde(default)]
-    pub requires_core_agent: bool,
-
     /// Active runtime for this test instance.
     ///
     /// Empty at parse time; the discovery layer sets it to whichever runtime the CLI is scoped

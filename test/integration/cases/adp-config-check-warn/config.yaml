@@ -8,7 +8,6 @@ name: "adp-config-check-warn"
 description: "Verify config check warns on medium-severity incompatible keys without exiting"
 timeout: 120s
 runtimes: [docker, mac]
-requires_core_agent: true
 
 env:
   DD_API_KEY: "test-api-key"

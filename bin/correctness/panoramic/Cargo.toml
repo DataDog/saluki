@@ -22,7 +22,6 @@ k8s-openapi = { workspace = true }
 kube = { workspace = true, features = ["client", "http-proxy", "rustls-tls", "ws"] }
 rand = { workspace = true, features = ["std", "std_rng", "thread_rng"] }
 rand_distr = { workspace = true }
-rcgen = { workspace = true, features = ["crypto", "aws_lc_rs", "pem"] }
 regex = { workspace = true, features = ["std"] }
 reqwest = { workspace = true, features = ["json", "zstd", "rustls", "query"] }
 rustls = { workspace = true }
