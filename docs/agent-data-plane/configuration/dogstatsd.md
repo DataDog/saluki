@@ -32,7 +32,6 @@ tracking.
 | `dogstatsd_windows_pipe_security_descriptor`     | Windows named pipe ACL descriptor     | [#1466] |
 | `forwarder_http_protocol`                        | HTTP version (auto/http1)             | [#1361] |
 | `forwarder_outdated_file_in_days`                | Retry file retention (days)           | [#1360] |
-| `log_format_rfc3339`                             | Use RFC3339 timestamp format          | [#1373] |
 | `serializer_experimental_use_v3_api.*`           | V3 metrics API migration flags        | [#1468] |
 | `sslkeylogfile`                                  | TLS key log file path                 | [#1372] |
 | `statsd_forward_host`                            | Host for packet forwarding            | [#1476] |

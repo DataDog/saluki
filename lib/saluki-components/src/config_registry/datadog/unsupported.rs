@@ -158,18 +158,6 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `log_format_rfc3339` - use RFC3339 timestamp format.
-    LOG_FORMAT_RFC3339 = SalukiAnnotation {
-        schema: &schema::LOG_FORMAT_RFC3339,
-        // Not implemented. #1373
-        support_level: SupportLevel::Incompatible(Severity::Medium),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-    };
-
     /// `serializer_experimental_use_v3_api.compression_level` - V3 API compression level.
     SERIALIZER_EXPERIMENTAL_USE_V3_API_COMPRESSION_LEVEL = SalukiAnnotation {
         schema: &schema::SERIALIZER_EXPERIMENTAL_USE_V3_API_COMPRESSION_LEVEL,

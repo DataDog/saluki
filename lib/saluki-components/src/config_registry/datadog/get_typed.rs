@@ -14,6 +14,17 @@ crate::declare_annotations! {
         test_json: Some("5101"),
     };
 
+    /// `log_format_rfc3339`—use RFC 3339 timestamp format in log output.
+    LOG_FORMAT_RFC3339 = SalukiAnnotation {
+        schema: &schema::LOG_FORMAT_RFC3339,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::GET_TYPED],
+        value_type_override: None,
+        test_json: None,
+    };
+
     /// `syslog_rfc`—use RFC 5424 syslog format when syslog logging is enabled.
     SYSLOG_RFC = SalukiAnnotation {
         schema: &schema::SYSLOG_RFC,
