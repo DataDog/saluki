@@ -38,6 +38,7 @@ jobs:
             agent-data-plane
             aggregate
             airlock
+            antithesis
             api
             apm stats
             app
@@ -70,9 +71,7 @@ jobs:
             heartbeat
             host enrichment
             integration
-            internal metrics
             io
-            resource-accounting
             metadata
             metric router
             metrics
@@ -85,6 +84,7 @@ jobs:
             process-memory
             prometheus
             prometheus-exposition
+            resource-accounting
             stele
             stringtheory
             test
