@@ -821,6 +821,46 @@ mod tests {
         }
     }
 
+    // antithesis-research property `rss-bounded-under-cardinality` (root cause shared with
+    // `interner-full-bounded`).
+    //
+    // Why/how the bug happens: ADP advertises "deterministic resource usage" / bounded memory, but
+    // `allow_heap_allocations` defaults to `true` (`ContextResolverBuilder::build` -> `unwrap_or(true)`).
+    // With that default, once the fixed-size string interner is full, context strings silently spill
+    // to the heap (`MetaString` heap allocation) instead of the interner, and `resolve` NEVER returns
+    // `None`. Nothing applies backpressure, so a high-cardinality flood grows memory without bound.
+    //
+    // This test asserts the DESIRED invariant — under the default config a full interner bounds
+    // resolution (refuses some contexts) — so it FAILS today (all 1000 resolve via heap fallback).
+    // Make it pass by bounding default-config resolution / applying backpressure when the interner is
+    // full. No fix applied.
+    #[test]
+    fn bug_default_heap_fallback_makes_context_resolution_unbounded() {
+        // Names long enough that they cannot be inlined and cannot fit a 1-byte interner, forcing
+        // either an interner entry or (when full) a heap allocation.
+        let long_name = |i: usize| format!("adp.unbounded.context.name.number.{i:08}");
+        let no_tags: &[&str] = &[];
+
+        // DEFAULT config: `for_tests()` uses a 1-byte interner with heap allocations allowed -- the
+        // production default for the heap-fallback flag -- so it models default behavior exactly.
+        let mut resolver = ContextResolverBuilder::for_tests().build();
+        let mut resolved = 0usize;
+        for i in 0..1000 {
+            let name = long_name(i);
+            if resolver.resolve(name.as_str(), no_tags, None).is_some() {
+                resolved += 1;
+            }
+        }
+
+        // DESIRED: the default config bounds memory by refusing some contexts once the 1-byte interner
+        // is full. Today all 1000 resolve (silent heap spill, no backpressure), so this fails.
+        assert!(
+            resolved < 1000,
+            "default config resolved all {resolved} contexts against a 1-byte interner -> unbounded \
+             heap growth; a full interner must apply backpressure (refuse) rather than spill without limit"
+        );
+    }
+
     #[test]
     fn basic() {
         let mut resolver = ContextResolverBuilder::for_tests().build();

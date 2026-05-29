@@ -738,6 +738,36 @@ fn generate_bins(bins: &mut SmallVec<[Bin; 4]>, k: i16, n: u64) {
 mod tests {
     use super::*;
 
+    // BUG (RED) — antithesis-research property `ddsketch-no-nan-poison`.
+    //
+    // This test asserts the DESIRED invariant: a non-finite sample must not corrupt the sketch's
+    // `sum`/`avg`. It currently FAILS (red), demonstrating the bug: `adjust_basic_stats` does
+    // `self.sum += v * n` and the running `avg` update with no finiteness check, so a single NaN
+    // permanently poisons `sum` and `avg` (NaN is sticky), while `count`/`min`/`max` stay valid — a
+    // silent corruption. Finiteness is enforced only per-source (the DSD codec); a non-DSD producer
+    // (e.g. a `checks_ipc` Histogram NaN reaching the metrics encoder's `insert_n`) bypasses it. Make
+    // green by rejecting/sanitizing non-finite values at the sketch boundary. Do not delete.
+    #[test]
+    fn bug_nan_sample_poisons_sum_and_avg() {
+        let mut sketch = DDSketch::default();
+        sketch.insert(1.0);
+        assert_eq!(sketch.sum(), Some(1.0));
+
+        // A single NaN sample reaches the sketch boundary.
+        sketch.insert(f64::NAN);
+
+        // DESIRED: sum/avg remain finite (NaN rejected/sanitized at the boundary). Today they are
+        // NaN, so these assertions fail (red).
+        assert!(
+            sketch.sum().expect("non-empty").is_finite(),
+            "sum must stay finite after a non-finite sample (it is silently poisoned to NaN today)"
+        );
+        assert!(
+            sketch.avg().expect("non-empty").is_finite(),
+            "avg must stay finite after a non-finite sample (it is silently poisoned to NaN today)"
+        );
+    }
+
     // Helper: build a SmallVec<[Bin; 4]> from (k, n) pairs. Assumes input is already sorted by k.
     fn make_bins(pairs: &[(i16, u32)]) -> SmallVec<[Bin; 4]> {
         pairs.iter().map(|&(k, n)| Bin { k, n }).collect()

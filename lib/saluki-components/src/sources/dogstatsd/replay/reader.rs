@@ -256,6 +256,70 @@ mod tests {
         assert!(reader.read_next().expect("clean EOF on truncation").is_none());
     }
 
+    // BUG (RED) — antithesis-research property `replay-corruption-not-silent-eof`.
+    //
+    // This test asserts the DESIRED invariant: a corrupt/oversized length prefix mid-stream must be
+    // surfaced as an error, NOT silently treated as a clean end-of-stream. It currently FAILS (red),
+    // demonstrating the bug: `read_next` returns `Ok(None)` for any prefix that would overrun the
+    // buffer, so a single corrupt prefix silently truncates the entire remaining record stream —
+    // every well-formed record after it is dropped with no error and no diagnostic (false replay
+    // fidelity / silent data loss). Make green by surfacing an error (or otherwise distinguishing
+    // corruption from a clean trailer/EOF). Do not delete.
+    //
+    // Stream: [header][len=N][record1][corrupt oversized prefix][len=M][record2]. Today the reader
+    // yields record1, then returns Ok(None) at the corrupt prefix, never reaching the well-formed
+    // record2.
+    #[test]
+    fn bug_corrupt_length_prefix_silently_drops_following_records() {
+        let rec1 = UnixDogstatsdMsg {
+            payload: b"metric.a:1|c".to_vec(),
+            ..Default::default()
+        }
+        .encode_to_vec();
+        let rec2 = UnixDogstatsdMsg {
+            payload: b"metric.b:2|c".to_vec(),
+            ..Default::default()
+        }
+        .encode_to_vec();
+        assert!(!rec1.is_empty() && !rec2.is_empty());
+
+        let mut bytes = Vec::new();
+        // Valid capture header at file version 3 (VERSION_INDEX == 4).
+        let mut header = DATADOG_HEADER;
+        header[4] |= 3;
+        bytes.extend_from_slice(&header);
+        // record 1: 4-byte little-endian length prefix + protobuf body.
+        bytes.extend_from_slice(&(rec1.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&rec1);
+        // A corrupt, oversized length prefix mid-stream (claims far more bytes than remain).
+        bytes.extend_from_slice(&0xFFFF_FFFFu32.to_le_bytes());
+        // A perfectly well-formed record that follows -- this is what gets silently dropped.
+        bytes.extend_from_slice(&(rec2.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&rec2);
+
+        let path = unique_path("reader-corrupt-prefix");
+        fs::write(&path, &bytes).expect("write corrupt capture");
+
+        let mut reader = TrafficCaptureReader::from_path(&path).expect("reader should open");
+
+        let first = reader
+            .read_next()
+            .expect("record 1 reads without error")
+            .expect("record 1 is present");
+        assert_eq!(first.payload, b"metric.a:1|c");
+
+        // DESIRED: the corrupt/oversized length prefix is surfaced as an error rather than a clean
+        // end-of-stream, so the trailing well-formed record is not silently dropped. Today
+        // `read_next` returns `Ok(None)` here, so this assertion fails (red).
+        let second = reader.read_next();
+        let _ = fs::remove_file(&path);
+        assert!(
+            second.is_err(),
+            "a corrupt/oversized length prefix must surface an error, not a silent clean EOF that \
+             drops the following well-formed record"
+        );
+    }
+
     #[test]
     fn bad_header_is_rejected() {
         let tmp = unique_path("reader-bad-header");

@@ -895,6 +895,34 @@ mod tests {
         ));
     }
 
+    // antithesis-research property `config-stall-no-deadlock`.
+    //
+    // Why/how the bug happens: when dynamic configuration is enabled, `GenericConfiguration::ready()`
+    // awaits the first config snapshot via a bare `ready_rx.await` with NO internal timeout. In
+    // production, ADP startup blocks on `ready()` waiting for the Core Agent's authoritative config;
+    // if the Agent never sends it (slow, crashed, or a partitioned config stream), ADP hangs forever
+    // with no diagnostic deadline.
+    //
+    // This test asserts the DESIRED invariant — `ready()` must not block indefinitely when no snapshot
+    // arrives — so it FAILS today. We enable dynamic config, hold the sender open but silent (modeling
+    // "the Agent never sends config"), and require `ready()` to complete within a generous bound; it
+    // never does. Make it pass by giving `ready()` an internal timeout/deadline. No fix applied.
+    #[tokio::test]
+    async fn bug_config_ready_hangs_forever_without_snapshot() {
+        let (config, sender) = ConfigurationLoader::for_tests(None, None, true).await;
+        // Hold the sender open (do NOT drop it): an open-but-silent stream models "the Agent never
+        // sends config". A dropped sender would instead unblock ready() with an error.
+        let _sender = sender.expect("dynamic configuration should provide a sender");
+
+        // DESIRED: ready() resolves within a bound rather than blocking startup forever. Today it has
+        // no internal timeout, so the outer timeout fires and this assertion fails.
+        let result = tokio::time::timeout(std::time::Duration::from_millis(500), config.ready()).await;
+        assert!(
+            result.is_ok(),
+            "ready() hung with no config snapshot; startup must not block indefinitely (ready() needs an internal timeout/deadline)"
+        );
+    }
+
     #[tokio::test]
     async fn test_dynamic_configuration() {
         let (cfg, sender) = ConfigurationLoader::for_tests(

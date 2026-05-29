@@ -1106,6 +1106,80 @@ mod tests {
         assert_eq!(input_metrics[3].context(), flushed_metrics[1].context());
     }
 
+    // BUG (RED) — antithesis-research property `aggregate-no-panic-any-window`.
+    //
+    // This test asserts the DESIRED invariant: a sub-second `aggregate_window_duration` must be
+    // handled without crashing. It currently FAILS (red), demonstrating the bug:
+    // `AggregationState::new` stores `bucket_width_secs = bucket_width.as_secs()`, which truncates any
+    // sub-second window (e.g. 500ms) to 0, and `align_to_bucket_start` then panics on `timestamp % 0`
+    // at the first insert (the flush path has the same hazard via `step_by(0)`). No config validation
+    // rejects sub-second windows. Make this green by validating/clamping the window (>= 1s) or
+    // supporting true sub-second bucketing. Do not delete; do not weaken to `#[should_panic]`.
+    #[tokio::test]
+    async fn bug_sub_second_aggregate_window_panics_on_insert() {
+        let mut state = AggregationState::new(
+            Duration::from_millis(500), // sub-second window -> bucket_width_secs == 0 (the defect)
+            100,
+            COUNTER_EXPIRE,
+            HistogramConfiguration::default(),
+            Telemetry::noop(),
+        );
+
+        // DESIRED: the insert is handled without panicking. Today this line panics inside
+        // `align_to_bucket_start` on `timestamp % 0`, so the test fails (red).
+        let accepted = state.insert(insert_ts(1), Metric::counter("metric1", 1.0));
+        assert!(
+            accepted,
+            "a sub-second aggregate window must be handled without panicking"
+        );
+    }
+
+    // BUG (RED) — antithesis-research property `aggregate-clock-skew-stable`.
+    //
+    // This test asserts the DESIRED invariant: a forward wall-clock jump must not flood — one idle
+    // counter should emit a bounded number of points regardless of the jump size. It currently FAILS
+    // (red), demonstrating the bug: bucket alignment uses the wall clock while the flush cadence uses
+    // a monotonic timer, and `flush` has no guard that `current_time >= last_flush`, so it builds
+    // `zero_value_buckets` over the entire `(align(last_flush)..current_time)` interval (O(jump) work
+    // and allocation) and floods each kept-alive counter with that many backfilled points. Make green
+    // by bounding zero-value emission / guarding against non-monotonic time. Do not delete.
+    #[tokio::test]
+    async fn bug_forward_clock_jump_floods_zero_value_points() {
+        const JUMP_WINDOWS: u64 = 1000;
+        // A bounded number of points we'd accept from one idle counter regardless of the jump size.
+        const MAX_REASONABLE_POINTS: usize = 8;
+        // Expiry large enough that the backfilled zero-value buckets are retained across the jump.
+        let big_expire = Some(Duration::from_secs(JUMP_WINDOWS * BUCKET_WIDTH_SECS * 2));
+        let mut state = AggregationState::new(
+            BUCKET_WIDTH,
+            100,
+            big_expire,
+            HistogramConfiguration::default(),
+            Telemetry::noop(),
+        );
+
+        // One counter, one real value; initial flush establishes `last_flush`.
+        assert!(state.insert(insert_ts(1), Metric::counter("metric1", 1.0)));
+        let _ = get_flushed_metrics(flush_ts(1), &mut state).await;
+
+        // Simulate a forward wall-clock jump of 1000 buckets, then flush.
+        let jumped_time = flush_ts(1) + JUMP_WINDOWS * BUCKET_WIDTH_SECS;
+        let flushed = get_flushed_metrics(jumped_time, &mut state).await;
+
+        assert_eq!(flushed.len(), 1, "the single idle counter should flush");
+        let point_count = match flushed[0].values() {
+            MetricValues::Counter(p) | MetricValues::Gauge(p) | MetricValues::Rate(p, _) => p.len(),
+            _ => panic!("unexpected flushed value type for an aggregated counter"),
+        };
+        // DESIRED: emission is bounded regardless of the jump. Today `point_count` is ~JUMP_WINDOWS,
+        // so this fails (red).
+        assert!(
+            point_count <= MAX_REASONABLE_POINTS,
+            "a forward clock jump flooded {point_count} points (expected <= {MAX_REASONABLE_POINTS}); \
+             aggregation must bound zero-value emission regardless of wall-clock jumps"
+        );
+    }
+
     #[tokio::test]
     async fn context_limit_with_zero_value_counters() {
         // We test here to ensure that zero-value counters contribute to the context limit.
