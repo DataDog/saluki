@@ -58,7 +58,7 @@ build-panoramic-binary:
   script:
     - make build-panoramic
 
-# Scan test/correctness/ and emit a child-pipeline YAML with one job per test
+# Scan test/correctness/cases/ and emit a child-pipeline YAML with one job per test
 # directory. Each emitted job extends mixins from .gitlab/correctness-mixins.yml.
 generate-correctness-pipeline:
   stage: e2e

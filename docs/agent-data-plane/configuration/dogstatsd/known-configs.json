@@ -54,7 +54,7 @@
     "adp_key": null
   },
   {
-    "key": "aggregate_window_duration",
+    "key": "aggregate_window_duration_seconds",
     "feature_state": "ADP_ONLY",
     "action": "NONE",
     "description": "Aggregation window size",
@@ -203,7 +203,7 @@
     "action": "INVESTIGATE",
     "description": "Fleet Automation config ID tag for agent",
     "reason": "Marked for investigation; previously dismissed as not-applicable.",
-    "issue": "#1685",
+    "issue": "#1751",
     "adp_key": null
   },
   {
@@ -1040,7 +1040,7 @@
     "action": "INVESTIGATE",
     "description": "Pre-allocate shared compressor buffers",
     "reason": "Marked for investigation; previously dismissed as not-applicable.",
-    "issue": "#1686",
+    "issue": "#1749",
     "adp_key": null
   },
   {
@@ -1085,7 +1085,7 @@
     "action": "INVESTIGATE",
     "description": "Agent's own pod entity ID (set by DCA webhook)",
     "reason": "Marked for investigation; previously dismissed as not-applicable.",
-    "issue": "#1685",
+    "issue": "#1752",
     "adp_key": null
   },
   {
@@ -1256,7 +1256,7 @@
     "action": "INVESTIGATE",
     "description": "In-memory requeue buffer size for forwarder",
     "reason": "Marked for investigation; previously dismissed as not-applicable.",
-    "issue": "#1680",
+    "issue": "#1755",
     "adp_key": null
   },
   {
@@ -1292,7 +1292,7 @@
     "action": "INVESTIGATE",
     "description": "Timeout (sec) for forwarder graceful stop",
     "reason": "Marked for investigation; previously dismissed as not-applicable.",
-    "issue": "#1680",
+    "issue": "#1754",
     "adp_key": null
   },
   {
@@ -1337,7 +1337,7 @@
     "action": "INVESTIGATE",
     "description": "Override agent name for Heroku telemetry",
     "reason": "Marked for investigation; previously dismissed as not-applicable.",
-    "issue": "#1685",
+    "issue": "#1753",
     "adp_key": null
   },
   {
@@ -1450,11 +1450,11 @@
   },
   {
     "key": "log_payloads",
-    "feature_state": "MISSING",
-    "action": "INVESTIGATE",
-    "description": "Debug-log serialized payloads before send",
-    "reason": "Marked for investigation; previously dismissed as not-applicable.",
-    "issue": "#1686",
+    "feature_state": "PARITY",
+    "action": "NONE",
+    "description": "Debug-log decoded payload contents before encoding",
+    "reason": "Implemented in ADP for decoded metrics, sketches, events, and service checks. ADP does not dump encoded HTTP bodies.",
+    "issue": null,
     "adp_key": null
   },
   {
@@ -1837,46 +1837,46 @@
   },
   {
     "key": "serializer_max_payload_size",
-    "feature_state": "MISSING",
-    "action": "INVESTIGATE",
+    "feature_state": "PARITY",
+    "action": "NONE",
     "description": "Max compressed payload size (generic)",
-    "reason": "Missing in ADP; ADP hardcodes limits per endpoint type. Investigation needed to determine whether configurable limits are needed.",
+    "reason": "ADP reads this Agent key for V1 series, sketches, events, and service check payload compressed size limits. Defaults match the core agent.",
     "issue": "#1354",
     "adp_key": null
   },
   {
     "key": "serializer_max_series_payload_size",
-    "feature_state": "MISSING",
-    "action": "INVESTIGATE",
+    "feature_state": "PARITY",
+    "action": "NONE",
     "description": "Max compressed V2 series payload size",
-    "reason": "Missing in ADP; ADP hardcodes series compressed size limit. Investigation needed to determine whether configurable limits are needed.",
+    "reason": "ADP reads this Agent key for V2 series payload compressed size limits. Defaults match the core agent.",
     "issue": "#1354",
     "adp_key": null
   },
   {
     "key": "serializer_max_series_points_per_payload",
-    "feature_state": "MISSING",
-    "action": "INVESTIGATE",
+    "feature_state": "NOT_APPLICABLE",
+    "action": "NONE",
     "description": "Max data points per series payload",
-    "reason": "ADP has serializer_max_metrics_per_payload which counts metrics not points.",
+    "reason": "Removed from the core Agent; ADP intentionally does not support it.",
     "issue": "#1354",
-    "adp_key": "serializer_max_metrics_per_payload"
+    "adp_key": null
   },
   {
     "key": "serializer_max_series_uncompressed_payload_size",
-    "feature_state": "MISSING",
-    "action": "INVESTIGATE",
+    "feature_state": "PARITY",
+    "action": "NONE",
     "description": "Max uncompressed V2 series payload size",
-    "reason": "Missing in ADP; ADP hardcodes series uncompressed size limit. Investigation needed to determine whether configurable limits are needed.",
+    "reason": "ADP reads this Agent key for V2 series payload uncompressed size limits. Defaults match the core agent.",
     "issue": "#1354",
     "adp_key": null
   },
   {
     "key": "serializer_max_uncompressed_payload_size",
-    "feature_state": "MISSING",
-    "action": "INVESTIGATE",
+    "feature_state": "PARITY",
+    "action": "NONE",
     "description": "Max uncompressed payload size (generic)",
-    "reason": "Missing in ADP; ADP hardcodes 60MB vs Agent 4MB for non-series payloads. Significant divergence.",
+    "reason": "ADP reads this Agent key for V1 series, sketches, events, and service check payload uncompressed size limits. Defaults match the core agent.",
     "issue": "#1354",
     "adp_key": null
   },
@@ -1918,20 +1918,20 @@
   },
   {
     "key": "statsd_forward_host",
-    "feature_state": "MISSING",
-    "action": "IMPLEMENT",
+    "feature_state": "PARITY",
+    "action": "NONE",
     "description": "UDP packet forwarding destination host",
-    "reason": "Forwards raw DogStatsD packets to another statsd server. Identified as customer-important; tracked for implementation.",
-    "issue": "#1476",
+    "reason": "ADP forwards framed DogStatsD messages over UDP to the configured host before parsing.",
+    "issue": null,
     "adp_key": null
   },
   {
     "key": "statsd_forward_port",
-    "feature_state": "MISSING",
-    "action": "IMPLEMENT",
+    "feature_state": "PARITY",
+    "action": "NONE",
     "description": "UDP packet forwarding destination port",
-    "reason": "Forwards raw DogStatsD packets to another statsd server. Identified as customer-important; tracked for implementation.",
-    "issue": "#1476",
+    "reason": "ADP forwards framed DogStatsD messages over UDP to the configured port before parsing.",
+    "issue": null,
     "adp_key": null
   },
   {
@@ -2041,15 +2041,6 @@
     "reason": "Marked for investigation; previously dismissed as not-applicable.",
     "issue": "#1679",
     "adp_key": null
-  },
-  {
-    "key": "telemetry.enabled",
-    "feature_state": "DIVERGENT",
-    "action": "DOCUMENTED",
-    "description": "Global telemetry toggle",
-    "reason": "ADP uses data_plane.telemetry_enabled instead of telemetry.enabled. Operator setting telemetry.enabled won't affect ADP; must use ADP's key.",
-    "issue": "#1338",
-    "adp_key": "data_plane.telemetry_enabled"
   },
   {
     "key": "tls_handshake_timeout",

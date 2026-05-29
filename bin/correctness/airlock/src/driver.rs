@@ -27,7 +27,16 @@ use tracing::{debug, error, trace};
 use crate::config::{DatadogIntakeConfig, MillstoneConfig, TargetConfig};
 
 const MILLSTONE_CONFIG_PATH_INTERNAL: &str = "/etc/millstone/config.toml";
-const DATADOG_INTAKE_CONFIG_PATH_INTERNAL: &str = "/etc/datadog-intake/config.toml";
+const DATADOG_INTAKE_HEALTHCHECK_INTERVAL: Duration = Duration::from_secs(1);
+const DATADOG_INTAKE_HEALTHCHECK_TIMEOUT: Duration = Duration::from_secs(1);
+const DATADOG_INTAKE_HEALTHCHECK_RETRIES: i64 = 30;
+const DATADOG_INTAKE_HEALTHCHECK_START_PERIOD: Duration = Duration::from_secs(1);
+const DATADOG_INTAKE_HEALTHCHECK_START_INTERVAL: Duration = Duration::from_secs(1);
+const DATADOG_INTAKE_HEALTHCHECK_COMMAND: &str = concat!(
+    "exec 3<>/dev/tcp/127.0.0.1/2049 && ",
+    "printf 'GET /ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && ",
+    "grep -q '200 OK' <&3"
+);
 
 pub enum ExitStatus {
     Success,
@@ -114,35 +123,25 @@ impl DriverConfig {
     }
 
     pub async fn datadog_intake(config: DatadogIntakeConfig) -> Result<Self, GenericError> {
-        // Ensure the given configuration file path actually exists.
-        match tokio::fs::metadata(&config.config_path).await {
-            Ok(metadata) if metadata.is_file() => {}
-            Ok(_) => {
-                return Err(generic_error!(
-                    "Specified datadog-intake configuration ({}) does not point to a file.",
-                    config.config_path.display()
-                ))
-            }
-            Err(e) => {
-                return Err(generic_error!(
-                    "Failed to ensure specified datadog-intake configuration ({}) exists locally: {}",
-                    config.config_path.display(),
-                    e
-                ))
-            }
-        }
-
         let datadog_intake_binary_path = config
             .binary_path
             .unwrap_or_else(|| "/usr/local/bin/datadog-intake".to_string());
-        let entrypoint = vec![
-            datadog_intake_binary_path,
-            DATADOG_INTAKE_CONFIG_PATH_INTERNAL.to_string(),
-        ];
+        let entrypoint = vec![datadog_intake_binary_path];
 
         let driver_config = DriverConfig::from_image("datadog-intake", config.image)
             .with_entrypoint(entrypoint)
-            .with_bind_mount(config.config_path, DATADOG_INTAKE_CONFIG_PATH_INTERNAL)
+            .with_healthcheck(
+                vec![
+                    "/bin/bash".to_string(),
+                    "-c".to_string(),
+                    DATADOG_INTAKE_HEALTHCHECK_COMMAND.to_string(),
+                ],
+                DATADOG_INTAKE_HEALTHCHECK_INTERVAL,
+                DATADOG_INTAKE_HEALTHCHECK_TIMEOUT,
+                DATADOG_INTAKE_HEALTHCHECK_RETRIES,
+                DATADOG_INTAKE_HEALTHCHECK_START_PERIOD,
+                DATADOG_INTAKE_HEALTHCHECK_START_INTERVAL,
+            )
             // Map our intake port to an ephemeral port on the host side, which we'll query once the container has been
             // started so that we can connect to it.
             .with_exposed_port("tcp", 2049);
@@ -883,11 +882,19 @@ impl Driver {
                     }
 
                     // Not healthy yet, so we'll keep waiting.
-                    HealthStatusEnum::STARTING | HealthStatusEnum::UNHEALTHY => {
+                    HealthStatusEnum::STARTING => {
                         debug!(
                             driver_id = self.config.driver_id,
                             "Container '{}' not yet healthy. Waiting...", &self.container_name
                         );
+                    }
+
+                    HealthStatusEnum::UNHEALTHY => {
+                        return Err(generic_error!(
+                            "Container became unhealthy (driver_id: {}, container: {}). Check logs in the test run directory.",
+                            self.config.driver_id,
+                            self.container_name
+                        ));
                     }
                 }
             } else {

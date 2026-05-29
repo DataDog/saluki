@@ -287,7 +287,9 @@ pub fn initialize_default_crypto_provider() -> Result<(), GenericError> {
 ///
 /// ## Errors
 ///
-/// If any error occurs during the locating or loading the platform's native certificate store, an error will be returned.
+/// If errors occur during certificate loading and no certificates were ultimately added to the store, an error is
+/// returned. Missing files or directories referenced by `SSL_CERT_FILE`/`SSL_CERT_DIR` are tolerated and treated as
+/// "no certificates available" rather than as a load failure.
 ///
 /// [c_rehash]: https://www.openssl.org/docs/manmaster/man1/c_rehash.html
 pub fn load_platform_root_certificates() -> Result<(), GenericError> {
@@ -300,23 +302,44 @@ pub fn load_platform_root_certificates() -> Result<(), GenericError> {
         ));
     }
 
+    let root_cert_store = load_platform_root_certificates_inner()?;
+
+    // The reason it should be impossible is that we intentionally only set it _here_, and we do so after acquiring the
+    // mutex, and only then do we make sure that it hasn't been set before proceeding to try to set it.
+    DEFAULT_ROOT_CERT_STORE
+        .set(Arc::new(root_cert_store))
+        .expect("should be impossible for DEFAULT_ROOT_CERT_STORE to be initialized twice");
+
+    Ok(())
+}
+
+/// Builds a `RootCertStore` from the platform's native certificate store.
+///
+/// Behaves identically to [`load_platform_root_certificates`] with respect to which certificates are loaded, but
+/// returns the constructed store instead of writing it into the process-wide default.
+///
+/// # Errors
+///
+/// If errors occur during certificate loading and no certificates were ultimately added to the store, an error is
+/// returned. Otherwise, even if some certificates failed to parse, the store is returned with whatever certificates were
+/// successfully added. Missing files or directories referenced by `SSL_CERT_FILE`/`SSL_CERT_DIR` are tolerated and do
+/// not produce an error.
+pub fn load_platform_root_certificates_inner() -> Result<RootCertStore, GenericError> {
     let mut root_cert_store = RootCertStore::empty();
 
-    let result = rustls_native_certs::load_native_certs();
-    if !result.errors.is_empty() {
-        let joined_errors = result
-            .errors
-            .iter()
-            .map(|e| e.to_string())
-            .collect::<Vec<_>>()
-            .join(", ");
+    let mut result = rustls_native_certs::load_native_certs();
 
-        return Err(generic_error!(
-            "Failed to load certificates from platform's native certificate store: {}",
-            joined_errors
-        ));
-    }
+    // Drop "not found" IO errors before evaluating success or failure: a missing `SSL_CERT_FILE` or `SSL_CERT_DIR`
+    // should look like "no certificates available" rather than a load failure, since callers may simply not have set
+    // those env vars on this host.
+    result.errors.retain(|err| {
+        !matches!(
+            &err.kind,
+            rustls_native_certs::ErrorKind::Io { inner, .. } if inner.kind() == std::io::ErrorKind::NotFound,
+        )
+    });
 
+    // For whatever certificates we _did_ get back, try and add them to the root certificate store.
     let (added, failed) = root_cert_store.add_parsable_certificates(result.certs);
     if failed == 0 && added > 0 {
         debug!(
@@ -326,18 +349,29 @@ pub fn load_platform_root_certificates() -> Result<(), GenericError> {
     } else if failed > 0 && added > 0 {
         debug!("Added {} certificates from environment to the default root certificate store, but failed to add {} certificates.", added, failed);
     } else {
-        return Err(generic_error!(
-            "Failed to add any certificates from environment to the default root certificate store."
-        ));
+        // When we don't manage to add any certificates, it either means that:
+        // - we found no certificates to add
+        // - we hit an error when loading the certificates
+        // - we hit an error when trying to add the certificates to our root certificate store
+        //
+        // We only consider this operation to have truly failed if there were errors during the initial loading of the
+        // certificates.
+        if !result.errors.is_empty() {
+            let joined_errors = result
+                .errors
+                .iter()
+                .map(|e| e.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+
+            return Err(generic_error!(
+                "Failed to load certificates from platform's native certificate store: {}",
+                joined_errors
+            ));
+        }
     }
 
-    // The reason it should be impossible is that we intentionally only set it _here_, and we do so after acquiring the
-    // mutex, and only then do we make sure that it hasn't been set before proceeding to try to set it.
-    DEFAULT_ROOT_CERT_STORE
-        .set(Arc::new(root_cert_store))
-        .expect("should be impossible for DEFAULT_ROOT_CERT_STORE to be initialized twice");
-
-    Ok(())
+    Ok(root_cert_store)
 }
 
 #[cfg(test)]

@@ -17,11 +17,11 @@ use std::{
 use async_trait::async_trait;
 use bytes::{Buf, BufMut};
 use bytesize::ByteSize;
-use memory_accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
-use metrics::{Counter, Gauge, Histogram};
+use resource_accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
 use saluki_common::task::spawn_traced_named;
 use saluki_config::{deserialize_space_separated_or_seq, GenericConfiguration};
 use saluki_context::{
+    origin::RawOrigin,
     tags::{RawTags, RawTagsFilter},
     TagsResolver,
 };
@@ -33,7 +33,6 @@ use saluki_core::data_model::event::{
 };
 use saluki_core::{
     components::{sources::*, ComponentContext},
-    observability::ComponentMetricsExt as _,
     pooling::FixedSizeObjectPool,
     topology::{
         interconnect::EventBufferManager,
@@ -51,11 +50,10 @@ use saluki_io::{
     },
     net::{
         listener::{Listener, ListenerError},
-        ConnectionAddress, ListenAddress, ProcessIdentity, Stream,
+        ConnectionAddress, ListenAddress, ProcessCredentials, ProcessIdentity, Stream,
     },
 };
-use saluki_metrics::MetricsBuilder;
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use serde_with::{serde_as, NoneAsEmptyString};
 use snafu::{ResultExt as _, Snafu};
 use stringtheory::MetaString;
@@ -64,6 +62,9 @@ use tokio::{
     time::{interval, MissedTickBehavior},
 };
 use tracing::{debug, error, info, trace, warn};
+
+mod forwarder;
+use self::forwarder::{PacketForwarder, PacketForwarderTarget};
 
 mod framer;
 use self::framer::{get_framer, DsdFramer};
@@ -75,14 +76,20 @@ use self::filters::EnablePayloadsFilter;
 mod io_buffer;
 use self::io_buffer::IoBufferManager;
 
+mod metrics;
+use self::metrics::{build_metrics, Metrics};
+
 mod replay;
-use self::replay::{CaptureRecord, TrafficCapture};
-pub use self::replay::{DogStatsDCaptureAPIHandler, DogStatsDCaptureControl};
+use self::replay::{CaptureRecord, CapturedTaggerHandle, TrafficCapture};
+pub use self::replay::{
+    DogStatsDCaptureAPIHandler, DogStatsDCaptureControl, DogStatsDReplayAPIHandler, DogStatsDReplayControl,
+    ReplaySession, TimestampResolution, TrafficCaptureReader, DEFAULT_REPLAY_LOOPS, REPLAY_CREDENTIALS_GID,
+};
 
 mod origin;
 use self::origin::{
-    origin_from_event_packet, origin_from_metric_packet, origin_from_service_check_packet, DogStatsDOriginTagResolver,
-    OriginEnrichmentConfiguration,
+    mark_replay_process_id, origin_from_event_packet, origin_from_metric_packet, origin_from_service_check_packet,
+    DogStatsDOriginTagResolver, OriginEnrichmentConfiguration,
 };
 
 mod resolver;
@@ -109,8 +116,6 @@ enum Error {
     BindHostHasNoAddresses { host: String },
 }
 
-const ERROR_TYPE_ORIGIN_DETECTION: &str = "origin_detection";
-
 /// Baseline byte cost per interner entry, used to convert the Core Agent's entry-count-based
 /// `dogstatsd_string_interner_size` to a byte size.
 ///
@@ -130,6 +135,10 @@ const fn default_port() -> u16 {
 }
 
 const fn default_tcp_port() -> u16 {
+    0
+}
+
+const fn default_statsd_forward_port() -> u16 {
     0
 }
 
@@ -221,6 +230,14 @@ const fn default_capture_depth() -> usize {
 
 const DOGSTATSD_CAPTURE_DIR: &str = "dsd_capture";
 
+fn deserialize_empty_metastring_as_none<'de, D>(deserializer: D) -> Result<Option<MetaString>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<MetaString>::deserialize(deserializer)?;
+    Ok(value.filter(|host| !host.is_empty()))
+}
+
 /// DogStatsD source.
 ///
 /// Accepts metrics over TCP, UDP, or Unix Domain Sockets in the StatsD/DogStatsD format.
@@ -270,6 +287,27 @@ pub struct DogStatsDConfiguration {
     /// Defaults to 0.
     #[serde(rename = "dogstatsd_tcp_port", default = "default_tcp_port")]
     tcp_port: u16,
+
+    /// The host to forward framed DogStatsD messages to over UDP.
+    ///
+    /// Forwarding is enabled only when this value is non-empty and `statsd_forward_port` is non-zero. Setup failures
+    /// are logged, and send failures are tracked through telemetry.
+    ///
+    /// Defaults to unset.
+    #[serde(
+        rename = "statsd_forward_host",
+        default,
+        deserialize_with = "deserialize_empty_metastring_as_none"
+    )]
+    statsd_forward_host: Option<MetaString>,
+
+    /// The port to forward framed DogStatsD messages to over UDP.
+    ///
+    /// Forwarding is enabled only when this value is non-zero and `statsd_forward_host` is non-empty.
+    ///
+    /// Defaults to 0.
+    #[serde(rename = "statsd_forward_port", default = "default_statsd_forward_port")]
+    statsd_forward_port: u16,
 
     /// The Unix domain socket path to listen on, in datagram mode.
     ///
@@ -508,6 +546,10 @@ pub struct DogStatsDConfiguration {
     #[cfg_attr(test, derive_where(skip))]
     capture_control: DogStatsDCaptureControl,
 
+    #[serde(skip, default)]
+    #[cfg_attr(test, derive_where(skip))]
+    replay_control: DogStatsDReplayControl,
+
     /// Provider kind tag appended to all metrics as `provider_kind:<value>`.
     ///
     /// Set via `DD_PROVIDER_KIND` by the Helm chart on GKE Autopilot (`gke-autopilot`) and GKE on
@@ -608,6 +650,20 @@ impl DogStatsDConfiguration {
         EolRequired::from_config_values(&self.eol_required)
     }
 
+    fn statsd_forward_target(&self) -> Option<(&MetaString, u16)> {
+        let host = self.statsd_forward_host.as_ref()?;
+        if self.statsd_forward_port == 0 {
+            return None;
+        }
+
+        Some((host, self.statsd_forward_port))
+    }
+
+    fn packet_forwarder_target(&self) -> Option<PacketForwarderTarget> {
+        let (host, port) = self.statsd_forward_target()?;
+        Some(PacketForwarderTarget::new(host.clone(), port))
+    }
+
     /// Returns the number of UDP stream handlers to spawn, derived from `dogstatsd_autoscale_udp_listeners` and
     /// the number of available vCPUs.
     ///
@@ -664,6 +720,16 @@ impl DogStatsDConfiguration {
     /// Returns an HTTP API handler exposing the DogStatsD capture control surface.
     pub fn capture_api_handler(&self) -> DogStatsDCaptureAPIHandler {
         DogStatsDCaptureAPIHandler::new(self.capture_control.clone())
+    }
+
+    /// Returns the shared control handle for DogStatsD traffic replay.
+    pub fn replay_control(&self) -> DogStatsDReplayControl {
+        self.replay_control.clone()
+    }
+
+    /// Returns an HTTP API handler exposing the DogStatsD replay control surface.
+    pub fn replay_api_handler(&self) -> DogStatsDReplayAPIHandler {
+        DogStatsDReplayAPIHandler::new(self.replay_control.clone())
     }
 
     fn fix_empty_capture_path(&mut self, config: &GenericConfiguration) {
@@ -787,10 +853,13 @@ impl SourceBuilder for DogStatsDConfiguration {
         }
 
         let origin_detection_enabled = self.origin_enrichment.enabled();
-        let maybe_origin_tags_resolver = self
-            .workload_provider
-            .clone()
-            .map(|provider| DogStatsDOriginTagResolver::new(self.origin_enrichment.clone(), provider));
+        // Single CapturedTaggerHandle is cloned to both the resolver (reader of the captured store) and the replay
+        // control surface (writer). Both sides reference the same atomic slot.
+        let captured_tagger = CapturedTaggerHandle::new();
+
+        let maybe_origin_tags_resolver = self.workload_provider.clone().map(|provider| {
+            DogStatsDOriginTagResolver::new(self.origin_enrichment.clone(), provider, captured_tagger.clone())
+        });
         let context_resolvers = ContextResolvers::new(self, &context, maybe_origin_tags_resolver)
             .error_context("Failed to create context resolvers.")?;
 
@@ -814,6 +883,9 @@ impl SourceBuilder for DogStatsDConfiguration {
             self.workload_provider.clone(),
         );
         self.capture_control.bind(traffic_capture.clone());
+        let packet_forwarder_target = self.packet_forwarder_target();
+
+        self.replay_control.bind(captured_tagger);
 
         Ok(Box::new(DogStatsD {
             listeners,
@@ -829,6 +901,7 @@ impl SourceBuilder for DogStatsDConfiguration {
             additional_tags: self.additional_tags().into(),
             capture_entity_resolver: self.capture_entity_resolver.clone(),
             traffic_capture,
+            packet_forwarder_target,
         }))
     }
 
@@ -878,6 +951,7 @@ pub struct DogStatsD {
     additional_tags: Arc<[String]>,
     capture_entity_resolver: Option<Arc<dyn CaptureEntityResolver + Send + Sync>>,
     traffic_capture: TrafficCapture,
+    packet_forwarder_target: Option<PacketForwarderTarget>,
 }
 
 struct ListenerContext {
@@ -892,6 +966,7 @@ struct ListenerContext {
     additional_tags: Arc<[String]>,
     capture_entity_resolver: Option<Arc<dyn CaptureEntityResolver + Send + Sync>>,
     traffic_capture: TrafficCapture,
+    packet_forwarder_target: Option<PacketForwarderTarget>,
 }
 
 struct HandlerContext {
@@ -906,152 +981,7 @@ struct HandlerContext {
     additional_tags: Arc<[String]>,
     capture_entity_resolver: Option<Arc<dyn CaptureEntityResolver + Send + Sync>>,
     traffic_capture: TrafficCapture,
-}
-
-struct Metrics {
-    metrics_received: Counter,
-    events_received: Counter,
-    service_checks_received: Counter,
-    bytes_received: Counter,
-    bytes_received_size: Histogram,
-    framing_errors: Counter,
-    metric_decoder_errors: Counter,
-    event_decoder_errors: Counter,
-    service_check_decoder_errors: Counter,
-    origin_detection_errors: Counter,
-    failed_context_resolve_total: Counter,
-    connections_active: Gauge,
-    packet_receive_success: Counter,
-    packet_receive_failure: Counter,
-}
-
-impl Metrics {
-    fn metrics_received(&self) -> &Counter {
-        &self.metrics_received
-    }
-
-    fn events_received(&self) -> &Counter {
-        &self.events_received
-    }
-
-    fn service_checks_received(&self) -> &Counter {
-        &self.service_checks_received
-    }
-
-    fn bytes_received(&self) -> &Counter {
-        &self.bytes_received
-    }
-
-    fn bytes_received_size(&self) -> &Histogram {
-        &self.bytes_received_size
-    }
-
-    fn framing_errors(&self) -> &Counter {
-        &self.framing_errors
-    }
-
-    fn metric_decode_failed(&self) -> &Counter {
-        &self.metric_decoder_errors
-    }
-
-    fn event_decode_failed(&self) -> &Counter {
-        &self.event_decoder_errors
-    }
-
-    fn service_check_decode_failed(&self) -> &Counter {
-        &self.service_check_decoder_errors
-    }
-
-    fn origin_detection_errors(&self) -> &Counter {
-        &self.origin_detection_errors
-    }
-
-    fn failed_context_resolve_total(&self) -> &Counter {
-        &self.failed_context_resolve_total
-    }
-
-    fn connections_active(&self) -> &Gauge {
-        &self.connections_active
-    }
-
-    fn packet_receive_success(&self) -> &Counter {
-        &self.packet_receive_success
-    }
-
-    fn packet_receive_failure(&self) -> &Counter {
-        &self.packet_receive_failure
-    }
-}
-
-fn build_metrics(listen_addr: &ListenAddress, component_context: &ComponentContext) -> Metrics {
-    let builder = MetricsBuilder::from_component_context(component_context);
-
-    let listener_type = match listen_addr {
-        ListenAddress::Tcp(_) => "tcp",
-        ListenAddress::Udp(_) => "udp",
-        ListenAddress::Unix(_) => "unix",
-        ListenAddress::Unixgram(_) => "unixgram",
-    };
-
-    Metrics {
-        metrics_received: builder.register_counter_with_tags(
-            "component_events_received_total",
-            [("message_type", "metrics"), ("listener_type", listener_type)],
-        ),
-        events_received: builder.register_counter_with_tags(
-            "component_events_received_total",
-            [("message_type", "events"), ("listener_type", listener_type)],
-        ),
-        service_checks_received: builder.register_counter_with_tags(
-            "component_events_received_total",
-            [("message_type", "service_checks"), ("listener_type", listener_type)],
-        ),
-        bytes_received: builder
-            .register_counter_with_tags("component_bytes_received_total", [("listener_type", listener_type)]),
-        bytes_received_size: builder
-            .register_trace_histogram_with_tags("component_bytes_received_size", [("listener_type", listener_type)]),
-        framing_errors: builder.register_counter_with_tags(
-            "component_errors_total",
-            [("listener_type", listener_type), ("error_type", "framing")],
-        ),
-        metric_decoder_errors: builder.register_counter_with_tags(
-            "component_errors_total",
-            [
-                ("listener_type", listener_type),
-                ("error_type", "decode"),
-                ("message_type", "metrics"),
-            ],
-        ),
-        event_decoder_errors: builder.register_counter_with_tags(
-            "component_errors_total",
-            [
-                ("listener_type", listener_type),
-                ("error_type", "decode"),
-                ("message_type", "events"),
-            ],
-        ),
-        service_check_decoder_errors: builder.register_counter_with_tags(
-            "component_errors_total",
-            [
-                ("listener_type", listener_type),
-                ("error_type", "decode"),
-                ("message_type", "service_checks"),
-            ],
-        ),
-        origin_detection_errors: builder
-            .register_counter_with_tags("component_errors_total", [("error_type", ERROR_TYPE_ORIGIN_DETECTION)]),
-        connections_active: builder
-            .register_gauge_with_tags("component_connections_active", [("listener_type", listener_type)]),
-        packet_receive_success: builder.register_counter_with_tags(
-            "component_packets_received_total",
-            [("listener_type", listener_type), ("state", "ok")],
-        ),
-        packet_receive_failure: builder.register_counter_with_tags(
-            "component_packets_received_total",
-            [("listener_type", listener_type), ("state", "error")],
-        ),
-        failed_context_resolve_total: builder.register_counter("component_failed_context_resolve_total"),
-    }
+    packet_forwarder: Option<PacketForwarder>,
 }
 
 #[async_trait]
@@ -1084,6 +1014,7 @@ impl Source for DogStatsD {
                 additional_tags: self.additional_tags.clone(),
                 capture_entity_resolver: self.capture_entity_resolver.clone(),
                 traffic_capture: self.traffic_capture.clone(),
+                packet_forwarder_target: self.packet_forwarder_target.clone(),
             };
 
             spawn_traced_named(
@@ -1134,10 +1065,19 @@ async fn process_listener(
         additional_tags,
         capture_entity_resolver,
         traffic_capture,
+        packet_forwarder_target,
     } = listener_context;
     tokio::pin!(shutdown_handle);
 
     let listen_addr = listener.listen_address().clone();
+    let metrics = build_metrics(&listen_addr, source_context.component_context());
+    let packet_forwarder = packet_forwarder_target
+        .as_ref()
+        .map(|target| target.to_forwarder(metrics.clone()));
+    if let Some(packet_forwarder) = &packet_forwarder {
+        packet_forwarder.spawn_connect();
+    }
+
     let mut stream_shutdown_coordinator = DynamicShutdownCoordinator::default();
     let mut stream_idx: u32 = 0;
 
@@ -1158,13 +1098,14 @@ async fn process_listener(
                         framer: get_framer(&listen_addr, eol_required.for_listener(&listen_addr)),
                         codec: codec.clone(),
                         io_buffer_pool: io_buffer_pool.clone(),
-                        metrics: build_metrics(&listen_addr, source_context.component_context()),
+                        metrics: metrics.clone(),
                         context_resolvers: context_resolvers.clone(),
                         origin_detection_enabled,
                         stream_log_too_big,
                         additional_tags: additional_tags.clone(),
                         capture_entity_resolver: capture_entity_resolver.clone(),
                         traffic_capture: traffic_capture.clone(),
+                        packet_forwarder: packet_forwarder.clone(),
                     };
 
                     let task_name = format!(
@@ -1218,6 +1159,7 @@ async fn drive_stream(
         additional_tags,
         capture_entity_resolver,
         traffic_capture,
+        packet_forwarder,
     } = handler_context;
 
     debug!(%listen_addr, "Stream handler started.");
@@ -1252,13 +1194,14 @@ async fn drive_stream(
                     }
 
                     let is_connectionless = stream.is_connectionless();
+                    let payload = received_payload(io_buffer, bytes_read);
 
                     capture_uds_traffic(
                         &listen_addr,
                         &traffic_capture,
                         capture_entity_resolver.as_deref(),
                         &peer_addr,
-                        received_payload(io_buffer, bytes_read),
+                        payload,
                         &mut stream_capture,
                     );
 
@@ -1303,6 +1246,9 @@ async fn drive_stream(
                         match frame_result {
                             Ok(Some(frame)) => {
                                 trace!(%listen_addr, %peer_addr, ?frame, "Decoded frame.");
+                                if let Some(forwarder) = &packet_forwarder {
+                                    forwarder.forward(frame.clone()).await;
+                                }
                                 match handle_frame(&frame[..], &codec, &mut context_resolvers, &metrics, &peer_addr, enabled_filter, &additional_tags) {
                                     Ok(Some(event)) => {
                                         if let Some(event_buffer) = event_buffer_manager.try_push(event) {
@@ -1377,6 +1323,7 @@ async fn drive_stream(
                     dispatch_events(event_buffer, &source_context, &listen_addr).await;
                 }
             },
+
         }
     }
 
@@ -1479,6 +1426,19 @@ fn process_id_from_peer_addr(peer_addr: &ConnectionAddress) -> Option<i32> {
     match peer_addr {
         ConnectionAddress::ProcessLike(ProcessIdentity::Credentials(creds)) => Some(creds.pid),
         _ => None,
+    }
+}
+
+/// Applies SCM_CREDENTIALS to the origin, dispatching on the replay marker GID.
+///
+/// Live packets carry the sender process's real PID/UID/GID; we use `creds.pid` as the origin's process ID. Replay
+/// packets carry `gid == REPLAY_CREDENTIALS_GID` and pack the captured (original) PID into `creds.uid`; we recover
+/// that PID with an internal marker so downstream tag resolution consults the captured tagger store.
+fn apply_credentials_to_origin(origin: &mut RawOrigin<'_>, creds: &ProcessCredentials) {
+    if creds.gid == REPLAY_CREDENTIALS_GID {
+        origin.set_process_id(mark_replay_process_id(creds.uid));
+    } else {
+        origin.set_process_id(creds.pid as u32);
     }
 }
 
@@ -1589,7 +1549,7 @@ fn handle_metric_packet(
 
     let mut origin = origin_from_metric_packet(&packet, &well_known_tags);
     if let Some(creds) = peer_addr.process_credentials() {
-        origin.set_process_id(creds.pid as u32);
+        apply_credentials_to_origin(&mut origin, creds);
     }
 
     // Choose the right context resolver based on whether or not this metric is pre-aggregated.
@@ -1627,7 +1587,7 @@ fn handle_event_packet(
 
     let mut origin = origin_from_event_packet(&packet, &well_known_tags);
     if let Some(creds) = peer_addr.process_credentials() {
-        origin.set_process_id(creds.pid as u32);
+        apply_credentials_to_origin(&mut origin, creds);
     }
     let origin_tags = tags_resolver.resolve_origin_tags(Some(origin));
 
@@ -1672,7 +1632,7 @@ fn handle_service_check_packet(
 
     let mut origin = origin_from_service_check_packet(&packet, &well_known_tags);
     if let Some(creds) = peer_addr.process_credentials() {
-        origin.set_process_id(creds.pid as u32);
+        apply_credentials_to_origin(&mut origin, creds);
     }
     let origin_tags = tags_resolver.resolve_origin_tags(Some(origin));
 
@@ -1777,24 +1737,45 @@ const fn get_adjusted_buffer_size(buffer_size: usize) -> usize {
 mod tests {
     use std::{
         collections::HashMap,
+        io::ErrorKind,
         net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4},
         path::PathBuf,
+        sync::{Arc, OnceLock},
+        time::Duration,
     };
 
+    use bytes::Bytes;
     use bytesize::ByteSize;
     use saluki_config::ConfigurationLoader;
-    use saluki_context::{ContextResolverBuilder, TagsResolverBuilder};
+    use saluki_context::{origin::RawOrigin, ContextResolverBuilder, TagsResolverBuilder};
+    use saluki_core::{components::ComponentContext, topology::ComponentId};
     use saluki_env::workload::{CaptureEntityResolver, EntityId};
     use saluki_io::{
         deser::codec::dogstatsd::{DogStatsDCodec, DogStatsDCodecConfiguration, ParsedPacket},
         net::{ConnectionAddress, ListenAddress, ProcessCredentials, ProcessIdentity},
     };
+    use saluki_metrics::test::TestRecorder;
     use serde_json::json;
+    use stringtheory::MetaString;
+    use tokio::{net::UdpSocket, sync::mpsc, time::timeout};
 
     use super::{
-        handle_metric_packet, resolve_capture_container_id, ContextResolvers, DogStatsDConfiguration,
-        DOGSTATSD_CAPTURE_DIR, MIN_CAPTURE_DEPTH,
+        forwarder::{
+            ConnectedPacketForwarder, ForwardPacket, PacketForwarder, PacketForwarderTarget, FORWARDER_QUEUE_CAPACITY,
+        },
+        handle_metric_packet,
+        metrics::build_metrics,
+        resolve_capture_container_id, ContextResolvers, DogStatsDConfiguration, DOGSTATSD_CAPTURE_DIR,
+        MIN_CAPTURE_DEPTH,
     };
+
+    const LINUX_EAFNOSUPPORT: i32 = 97;
+    const MACOS_EAFNOSUPPORT: i32 = 47;
+
+    fn is_ipv6_unavailable_error(error: &std::io::Error) -> bool {
+        matches!(error.kind(), ErrorKind::AddrNotAvailable | ErrorKind::Unsupported)
+            || matches!(error.raw_os_error(), Some(LINUX_EAFNOSUPPORT | MACOS_EAFNOSUPPORT))
+    }
 
     #[derive(Default)]
     struct CaptureTestEntityResolver {
@@ -1813,6 +1794,15 @@ mod tests {
         fn resolve_container_entity_for_live_pid(&self, process_id: u32) -> Option<EntityId> {
             self.pid_map.get(&process_id).cloned()
         }
+    }
+
+    fn packet_forwarder_from_sender(
+        target_port: u16, packets_tx: mpsc::Sender<ForwardPacket>, metrics: super::metrics::Metrics,
+    ) -> PacketForwarder {
+        let mut forwarder =
+            PacketForwarderTarget::new(MetaString::from_static("127.0.0.1"), target_port).to_forwarder(metrics);
+        forwarder.connected = Arc::new(OnceLock::from(packets_tx));
+        forwarder
     }
 
     #[test]
@@ -1922,6 +1912,196 @@ mod tests {
     fn stream_log_too_big_from_config() {
         let config = deser_config(r#"{"dogstatsd_stream_log_too_big": true}"#);
         assert!(config.stream_log_too_big);
+    }
+
+    #[test]
+    fn statsd_forward_defaults_disabled() {
+        let config = deser_config("{}");
+        assert!(config.statsd_forward_host.is_none());
+        assert_eq!(config.statsd_forward_port, 0);
+        assert!(config.statsd_forward_target().is_none());
+    }
+
+    #[test]
+    fn statsd_forward_empty_host_disabled() {
+        let config = deser_config(r#"{"statsd_forward_host": "", "statsd_forward_port": 9125}"#);
+        assert!(config.statsd_forward_host.is_none());
+        assert!(config.statsd_forward_target().is_none());
+    }
+
+    #[test]
+    fn statsd_forward_zero_port_disabled() {
+        let config = deser_config(r#"{"statsd_forward_host": "127.0.0.1", "statsd_forward_port": 0}"#);
+        assert_eq!(config.statsd_forward_host.as_deref(), Some("127.0.0.1"));
+        assert!(config.statsd_forward_target().is_none());
+    }
+
+    #[test]
+    fn statsd_forward_host_and_port_enabled() {
+        let config = deser_config(r#"{"statsd_forward_host": "127.0.0.1", "statsd_forward_port": 9125}"#);
+        let (host, port) = config.statsd_forward_target().expect("forwarding should be enabled");
+        assert_eq!(host.as_ref(), "127.0.0.1");
+        assert_eq!(port, 9125);
+    }
+
+    #[test]
+    fn statsd_forward_invalid_target_still_builds_forwarder_handle() {
+        let config = deser_config(r#"{"statsd_forward_host": "not a valid host", "statsd_forward_port": 9125}"#);
+        assert!(config.packet_forwarder_target().is_some());
+    }
+
+    #[tokio::test]
+    async fn packet_forwarder_sends_payload_bytes() {
+        let receiver = UdpSocket::bind("127.0.0.1:0").await.expect("receiver should bind");
+        let receiver_addr = receiver.local_addr().expect("receiver should have an address");
+        let forwarder = ConnectedPacketForwarder::connect("127.0.0.1", receiver_addr.port())
+            .await
+            .expect("forwarder should connect");
+        let payload = b"daemon:666|g|#sometag1:somevalue1,sometag2:somevalue2";
+
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let listen_addr = ListenAddress::Udp(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 8125)));
+        let context = ComponentContext::source(ComponentId::try_from("dogstatsd_test").expect("valid component ID"));
+        let metrics = build_metrics(&listen_addr, &context);
+        let (packets_tx, packets_rx) = mpsc::channel(1);
+        let worker = tokio::spawn(forwarder.run(packets_rx, metrics.clone()));
+        let packet_forwarder = packet_forwarder_from_sender(receiver_addr.port(), packets_tx, metrics);
+
+        packet_forwarder.forward(Bytes::copy_from_slice(payload)).await;
+
+        let mut actual = [0u8; 128];
+        let (received_len, _) = timeout(Duration::from_secs(1), receiver.recv_from(&mut actual))
+            .await
+            .expect("receive should not time out")
+            .expect("receiver should receive payload");
+
+        assert_eq!(&actual[..received_len], payload);
+        assert_eq!(
+            recorder.counter((
+                "component_packets_forwarded_total",
+                &[
+                    ("component_id", "dogstatsd_test"),
+                    ("component_type", "source"),
+                    ("listener_type", "udp"),
+                    ("state", "ok"),
+                ]
+            )),
+            Some(1)
+        );
+        assert_eq!(
+            recorder.counter((
+                "component_bytes_forwarded_total",
+                &[
+                    ("component_id", "dogstatsd_test"),
+                    ("component_type", "source"),
+                    ("listener_type", "udp"),
+                ]
+            )),
+            Some(payload.len() as u64)
+        );
+        worker.abort();
+    }
+
+    #[tokio::test]
+    async fn packet_forwarder_sends_payload_bytes_to_ipv6_target() {
+        let receiver = match UdpSocket::bind("[::1]:0").await {
+            Ok(receiver) => receiver,
+            Err(e) if is_ipv6_unavailable_error(&e) => return,
+            Err(e) => panic!("receiver should bind: {e}"),
+        };
+        let receiver_addr = receiver.local_addr().expect("receiver should have an address");
+        let forwarder = ConnectedPacketForwarder::connect("::1", receiver_addr.port())
+            .await
+            .expect("forwarder should connect");
+        let payload = b"daemon:666|g|#ip:6";
+
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let listen_addr = ListenAddress::Udp(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 8125)));
+        let context = ComponentContext::source(ComponentId::try_from("dogstatsd_test").expect("valid component ID"));
+        let metrics = build_metrics(&listen_addr, &context);
+        let (packets_tx, packets_rx) = mpsc::channel(1);
+        let worker = tokio::spawn(forwarder.run(packets_rx, metrics.clone()));
+        let packet_forwarder = packet_forwarder_from_sender(receiver_addr.port(), packets_tx, metrics);
+
+        packet_forwarder.forward(Bytes::copy_from_slice(payload)).await;
+
+        let mut actual = [0u8; 128];
+        let (received_len, _) = timeout(Duration::from_secs(1), receiver.recv_from(&mut actual))
+            .await
+            .expect("receive should not time out")
+            .expect("receiver should receive payload");
+
+        assert_eq!(&actual[..received_len], payload);
+        worker.abort();
+    }
+
+    #[tokio::test]
+    async fn packet_forwarder_waits_when_queue_is_full() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let listen_addr = ListenAddress::Udp(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 8125)));
+        let context = ComponentContext::source(ComponentId::try_from("dogstatsd_test").expect("valid component ID"));
+        let metrics = build_metrics(&listen_addr, &context);
+        let (packets_tx, _packets_rx) = mpsc::channel(FORWARDER_QUEUE_CAPACITY);
+        let packet_forwarder = packet_forwarder_from_sender(9125, packets_tx, metrics);
+
+        for _ in 0..FORWARDER_QUEUE_CAPACITY {
+            packet_forwarder.forward(Bytes::from_static(b"queued:1|c")).await;
+        }
+
+        assert!(
+            timeout(
+                Duration::from_millis(100),
+                packet_forwarder.forward(Bytes::from_static(b"blocked:1|c")),
+            )
+            .await
+            .is_err(),
+            "forwarding should wait for queue capacity instead of dropping"
+        );
+    }
+
+    #[tokio::test]
+    async fn packet_forwarder_send_error_increments_error_telemetry() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let listen_addr = ListenAddress::Udp(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 8125)));
+        let context = ComponentContext::source(ComponentId::try_from("dogstatsd_test").expect("valid component ID"));
+        let metrics = build_metrics(&listen_addr, &context);
+        let socket = UdpSocket::bind("127.0.0.1:0").await.expect("socket should bind");
+        let forwarder = ConnectedPacketForwarder {
+            socket,
+            target: SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 9125)),
+        };
+        let (packets_tx, packets_rx) = mpsc::channel(1);
+        let worker = tokio::spawn(forwarder.run(packets_rx, metrics.clone()));
+        let packet_forwarder = packet_forwarder_from_sender(9125, packets_tx, metrics);
+
+        packet_forwarder.forward(Bytes::from_static(b"daemon:666|g")).await;
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+        loop {
+            if recorder.counter((
+                "component_packets_forwarded_total",
+                &[
+                    ("component_id", "dogstatsd_test"),
+                    ("component_type", "source"),
+                    ("listener_type", "udp"),
+                    ("state", "error"),
+                ],
+            )) == Some(1)
+            {
+                break;
+            }
+
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "forwarding error telemetry should be recorded"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        worker.abort();
     }
 
     #[test]
@@ -2390,6 +2570,36 @@ mod tests {
         stream_capture.update_peer_metadata(&ConnectionAddress::ProcessLike(ProcessIdentity::Unavailable));
 
         assert_eq!(stream_capture.last_pid, Some(42));
+    }
+
+    #[test]
+    fn apply_credentials_uses_live_pid_for_normal_packet() {
+        let mut origin = RawOrigin::default();
+        let creds = ProcessCredentials {
+            pid: 12345,
+            uid: 1000,
+            gid: 1000,
+        };
+        super::apply_credentials_to_origin(&mut origin, &creds);
+
+        assert_eq!(origin.process_id(), Some(12345));
+    }
+
+    #[test]
+    fn apply_credentials_unpacks_captured_pid_when_replay_gid_present() {
+        let mut origin = RawOrigin::default();
+        let captured_pid: u32 = 99887766;
+        let creds = ProcessCredentials {
+            pid: 12345,        // our PID (irrelevant for replay)
+            uid: captured_pid, // captured PID packed by the sender
+            gid: super::REPLAY_CREDENTIALS_GID,
+        };
+        super::apply_credentials_to_origin(&mut origin, &creds);
+
+        assert_eq!(
+            origin.process_id(),
+            Some(super::origin::mark_replay_process_id(captured_pid))
+        );
     }
 }
 

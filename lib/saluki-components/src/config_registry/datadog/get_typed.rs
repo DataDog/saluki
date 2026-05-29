@@ -1,6 +1,6 @@
 //! Annotations for keys consumed via `get_typed` / `try_get_typed` rather than struct
 //! deserialization.
-use crate::config_registry::{generated::schema, structs, SalukiAnnotation, SupportLevel};
+use crate::config_registry::{generated::schema, structs, PipelineAffinity, SalukiAnnotation, SupportLevel};
 
 crate::declare_annotations! {
     /// `cmd_port`—port for the Datadog Agent IPC/CMD API server.
@@ -12,6 +12,8 @@ crate::declare_annotations! {
         used_by: &[structs::REMOTE_AGENT_CLIENT_CONFIGURATION],
         value_type_override: None,
         test_json: Some("5101"),
+        // Affects how ADP receives commands.
+        pipeline_affinity: PipelineAffinity::CrossCutting,
     };
 
     /// `log_format_rfc3339`—use RFC 3339 timestamp format in log output.
@@ -23,6 +25,8 @@ crate::declare_annotations! {
         used_by: &[structs::GET_TYPED],
         value_type_override: None,
         test_json: None,
+        // Logging is process-wide.
+        pipeline_affinity: PipelineAffinity::CrossCutting,
     };
 
     /// `syslog_rfc`—use RFC 5424 syslog format when syslog logging is enabled.
@@ -34,6 +38,8 @@ crate::declare_annotations! {
         used_by: &[structs::GET_TYPED],
         value_type_override: None,
         test_json: None,
+        // Affects how ADP writes logs.
+        pipeline_affinity: PipelineAffinity::CrossCutting,
     };
 
     /// `syslog_uri`—destination URI for syslog output.
@@ -45,5 +51,7 @@ crate::declare_annotations! {
         used_by: &[structs::GET_TYPED],
         value_type_override: None,
         test_json: None,
+        // Affects how ADP access the syslog.
+        pipeline_affinity: PipelineAffinity::CrossCutting,
     };
 }

@@ -1,6 +1,6 @@
 # Configuring DogStatsD on Agent Data Plane
 
-<!-- Last updated: 2026-05-19 -->
+<!-- Last updated: 2026-05-28 -->
 
 The DogStatsD implementation on ADP has been redesigned in Rust for better resource guarantees and
 efficiency. Because the architecture is different from the original implementation, certain
@@ -34,8 +34,6 @@ tracking.
 | `forwarder_outdated_file_in_days`                | Retry file retention (days)           | [#1360] |
 | `serializer_experimental_use_v3_api.*`           | V3 metrics API migration flags        | [#1468] |
 | `sslkeylogfile`                                  | TLS key log file path                 | [#1372] |
-| `statsd_forward_host`                            | Host for packet forwarding            | [#1476] |
-| `statsd_forward_port`                            | Port for packet forwarding            | [#1476] |
 | `tls_handshake_timeout`                          | HTTP TLS handshake timeout            | [#178]  |
 
 <!-- section:unsupported-not-planned -->
@@ -77,7 +75,6 @@ default values.
 | `min_tls_version`                   | Minimum outbound TLS version     | Supports TLS 1.0, 1.1, 1.2, and 1.3            | Supports TLS 1.2+ and TLS 1.3-only; clamps TLS 1.0/1.1 to 1.2  |
 | `serializer_zstd_compressor_level`  | Zstd compression level           | Default level 1                                | Default level 3 (intentional)                                  |
 | `skip_ssl_validation`               | Skip TLS cert validation         | Disables validation for outbound HTTPS clients | Applies to the shared Datadog forwarder; rejected in FIPS mode |
-| `telemetry.enabled`                 | Global telemetry toggle          | Agent toggle                                   | Use `data_plane.telemetry_enabled` ([#1338])                   |
 
 ### Datadog intake TLS protocol version (`min_tls_version`)
 
@@ -91,6 +88,15 @@ doesn't support TLS 1.0 or TLS 1.1.
 
 This setting doesn't affect ADP IPC, local privileged APIs, ADP control-plane clients, OTLP
 proxying to the core agent, or unrelated HTTP clients.
+
+### DogStatsD forwarding (`statsd_forward_host` / `statsd_forward_port`)
+
+ADP supports DogStatsD forwarding when both `statsd_forward_host` and
+`statsd_forward_port` are set. ADP forwards each framed DogStatsD message over UDP to the
+configured destination before parsing, filtering, mapping, or aggregation. Forwarding doesn't
+preserve the core Agent's packet-buffer grouping, so forwarded UDP datagrams may be split
+differently while carrying the same DogStatsD messages. ADP logs setup failures and tracks send
+failures through telemetry.
 
 ### Datadog intake TLS validation (`skip_ssl_validation`)
 
@@ -152,12 +158,12 @@ topology, but only collects data during a time-bounded request. To collect stati
 window, then returns count and last-seen time per metric context inline as JSON. The CLI uses the
 same API and renders the result as either summary or cardinality analysis.
 
-ADP also exposes internal DogStatsD telemetry through its OpenMetrics endpoint when
-`data_plane.telemetry_enabled` is enabled. Scrape `data_plane.telemetry_listen_addr` to collect
-aggregate DogStatsD counters such as processed message counts, packet and byte counts, packet pool
-usage, and channel latency. This telemetry endpoint is separate from `/dogstatsd/stats`: it does not
-return the per-metric count and last-seen map, and it is not controlled by the core agent's
-`dogstatsd_stats_*` keys.
+ADP also exposes internal DogStatsD telemetry through its OpenMetrics endpoint, always-on at
+`http://<api_listen_address>/metrics` (the unprivileged API endpoint; default port `5100`). Scrape
+that endpoint to collect aggregate DogStatsD counters such as processed message counts, packet and
+byte counts, packet pool usage, and channel latency. This endpoint is separate from
+`/dogstatsd/stats`: it does not return the per-metric count and last-seen map, and it is not
+controlled by the core agent's `dogstatsd_stats_*` keys.
 
 ADP does not expose the core agent's packet-per-second expvar endpoint or a persistent per-metric
 DogStatsD statistics endpoint to scrape. You do not need to set up scraper configuration for this
@@ -196,12 +202,19 @@ This debug log differs from the `dogstatsd_capture_*` settings. The debug log re
 summaries after DogStatsD parsing. The capture settings record raw DogStatsD traffic for packet-level
 investigation, and they remain tracked separately under [#1381].
 
-### `telemetry.enabled`
+### Payload debug logging (`log_payloads`)
 
-The core agent enables internal Prometheus metrics via `telemetry.enabled` and ingests them with an
-OpenMetrics check pointed at the agent's own telemetry endpoint. ADP has a separate telemetry
-endpoint controlled by `data_plane.telemetry_enabled`. Customers enabling ADP telemetry must
-configure a separate OpenMetrics check pointed at ADP's endpoint. See [#1338].
+ADP supports `log_payloads` for debugging metric, event, and service check payload contents before
+they enter Datadog encoders. To see these logs, set `log_payloads: true` and run with debug-level
+logging enabled.
+
+When enabled, ADP logs decoded payload objects: scalar series metrics, sketches/distributions,
+events, and service checks. These logs can contain high-volume customer data, including metric names,
+tags, host and container metadata, event text, and service check messages. Use this setting only
+while diagnosing payload content.
+
+ADP does not dump the exact encoded JSON or protobuf HTTP request body, and it does not log compressed
+wire payload bytes.
 
 ### `dogstatsd_mapper_cache_size`
 
@@ -237,30 +250,24 @@ ways that are not yet fully characterized.
 | `anomaly_detection.metrics.enabled`                              | Enable metric ingestion for anomaly detection   | [#1683] |
 | `autoscaling.failover.enabled`                                   | Enable autoscaling failover metric routing      | [#1684] |
 | `autoscaling.failover.metrics`                                   | Metric names forwarded to DCA for failover      | [#1684] |
-| `config_id`                                                      | Fleet Automation config ID tag for agent        | [#1685] |
+| `config_id`                                                      | Fleet Automation config ID tag for agent        | [#1751] |
 | `dogstatsd_disable_verbose_logs`                                 | Suppress noisy parse error logs                 | [#1350] |
 | `dogstatsd_experimental_http.enabled`                            | Enable experimental HTTP/H2C DSD listener       | [#1682] |
 | `dogstatsd_experimental_http.listen_address`                     | Bind address for experimental HTTP DSD listener | [#1682] |
-| `enable_json_stream_shared_compressor_buffers`                   | Pre-allocate shared compressor buffers          | [#1686] |
-| `entity_id`                                                      | Agent's own pod entity ID (DCA webhook)         | [#1685] |
+| `enable_json_stream_shared_compressor_buffers`                   | Pre-allocate shared compressor buffers          | [#1749] |
+| `entity_id`                                                      | Agent's own pod entity ID (DCA webhook)         | [#1752] |
 | `forwarder_apikey_validation_interval`                           | API key check interval (minutes)                | [#1357] |
 | `forwarder_flush_to_disk_mem_ratio`                              | Mem-to-disk flush threshold                     | [#1364] |
 | `forwarder_high_prio_buffer_size`                                | High-priority request queue size                | [#1362] |
 | `forwarder_low_prio_buffer_size`                                 | Low-priority request queue size                 | [#1362] |
 | `forwarder_max_concurrent_requests`                              | Max concurrent HTTP requests                    | [#1363] |
-| `forwarder_requeue_buffer_size`                                  | In-memory re-queue buffer size                  | [#1680] |
+| `forwarder_requeue_buffer_size`                                  | In-memory re-queue buffer size                  | [#1755] |
 | `forwarder_retry_queue_capacity_time_interval_sec`               | Retry queue time-based capacity                 | [#1365] |
 | `forwarder_stop_timeout`                                         | Timeout (s) for forwarder graceful stop         | [#1680] |
 | `heroku_dyno`                                                    | Override agent name for Heroku telemetry        | [#1685] |
-| `log_payloads`                                                   | Debug-log serialized payloads before send       | [#1686] |
 | `multi_region_failover.enabled`                                  | Enable multi-region failover mode               | [#1678] |
 | `multi_region_failover.failover_metrics`                         | Enable metrics forwarding to failover region    | [#1678] |
 | `multi_region_failover.metric_allowlist`                         | Metric name allowlist for MRF forwarding        | [#1678] |
-| `serializer_max_payload_size`                                    | Max compressed payload size                     | [#1354] |
-| `serializer_max_series_payload_size`                             | Max series compressed size                      | [#1354] |
-| `serializer_max_series_points_per_payload`                       | Max series points per payload                   | [#1354] |
-| `serializer_max_series_uncompressed_payload_size`                | Max series uncompressed size                    | [#1354] |
-| `serializer_max_uncompressed_payload_size`                       | Max uncompressed payload size                   | [#1354] |
 | `telemetry.dogstatsd.aggregator_channel_latency_buckets`         | Histogram buckets: DSD aggregator channel lag   | [#1679] |
 | `telemetry.dogstatsd.listeners_channel_latency_buckets`          | Histogram buckets: listener channel latency     | [#1679] |
 | `telemetry.dogstatsd.listeners_latency_buckets`                  | Histogram buckets: listener processing          | [#1679] |
@@ -278,7 +285,7 @@ The following settings are specific to ADP and have no equivalent in the core ag
 | `aggregate_flush_interval`                  | Aggregator flush period                    |         |
 | `aggregate_flush_open_windows`              | Flush open windows on stop                 |         |
 | `aggregate_passthrough_idle_flush_timeout`  | Passthrough buffer flush delay             |         |
-| `aggregate_window_duration`                 | Aggregation window size                    |         |
+| `aggregate_window_duration_seconds`            | Aggregation window size                    |         |
 | `connect_retry_attempts`                    | IPC client connect retries                 |         |
 | `connect_retry_backoff`                     | IPC client retry delay                     |         |
 | `counter_expiry_seconds`                    | Idle counter keep-alive duration           | 300     |
@@ -412,6 +419,7 @@ when the receiving syslog daemon expects the Agent's RFC-style header.
 | `log_file_max_rolls`                             | Max rotated log files kept             |
 | `log_file_max_size`                              | Max log file size before rotate        |
 | `log_format_json`                                | Use JSON log format                    |
+| `log_payloads`                                   | Debug-log decoded payload contents     |
 | `log_to_console`                                 | Log to stdout/stderr                   |
 | `log_to_syslog`                                  | Log to syslog daemon                   |
 | `metric_filterlist`                              | Metric name blocklist                  |
@@ -480,12 +488,16 @@ when the receiving syslog daemon expects the Agent's RFC-style header.
 [#1667]: https://github.com/DataDog/saluki/issues/1667
 [#1678]: https://github.com/DataDog/saluki/issues/1678
 [#1679]: https://github.com/DataDog/saluki/issues/1679
-[#1680]: https://github.com/DataDog/saluki/issues/1680
 [#1681]: https://github.com/DataDog/saluki/issues/1681
 [#1682]: https://github.com/DataDog/saluki/issues/1682
 [#1683]: https://github.com/DataDog/saluki/issues/1683
 [#1684]: https://github.com/DataDog/saluki/issues/1684
-[#1685]: https://github.com/DataDog/saluki/issues/1685
-[#1686]: https://github.com/DataDog/saluki/issues/1686
+[#1749]: https://github.com/DataDog/saluki/issues/1749
+[#1750]: https://github.com/DataDog/saluki/issues/1750
+[#1751]: https://github.com/DataDog/saluki/issues/1751
+[#1752]: https://github.com/DataDog/saluki/issues/1752
+[#1753]: https://github.com/DataDog/saluki/issues/1753
+[#1754]: https://github.com/DataDog/saluki/issues/1754
+[#1755]: https://github.com/DataDog/saluki/issues/1755
 
 [#1687]: https://github.com/DataDog/saluki/issues/1687

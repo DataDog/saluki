@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use ottl::{EvalContextFamily, Field, IndexExpr, PathAccessor, PathResolverMap, Value};
-use saluki_context::tags::TagSet;
-use saluki_core::data_model::event::trace::Span;
+use saluki_common::collections::FastHashMap;
+use saluki_core::data_model::event::trace::{AttributeValue, Span};
 use stringtheory::MetaString;
 
 /// Family type for the span transform evaluation context.
@@ -21,15 +21,15 @@ pub struct SpanTransformContext<'a> {
     /// Mutable reference to the span being transformed.
     pub(super) span: &'a mut Span,
 
-    /// Reference to the trace's resource-level tags (read-only).
-    pub(super) resource_tags: &'a TagSet,
+    /// Reference to the trace's resource-level attributes (read-only).
+    pub(super) resource_attrs: &'a FastHashMap<MetaString, AttributeValue>,
 }
 
 impl<'a> SpanTransformContext<'a> {
-    /// Creates a context from a mutable span reference and immutable resource tags.
+    /// Creates a context from a mutable span reference and immutable resource attributes.
     #[inline]
-    pub fn new(span: &'a mut Span, resource_tags: &'a TagSet) -> Self {
-        Self { span, resource_tags }
+    pub fn new(span: &'a mut Span, resource_attrs: &'a FastHashMap<MetaString, AttributeValue>) -> Self {
+        Self { span, resource_attrs }
     }
 }
 
@@ -44,8 +44,9 @@ impl PathAccessor<SpanTransformFamily> for SpanAttributesAccessor {
     fn get<'a>(&self, ctx: &SpanTransformContext<'a>, fields: &[Field]) -> ottl::Result<Value> {
         let value = if let Some(IndexExpr::String(key)) = fields.first().and_then(|f| f.keys.first()) {
             ctx.span
-                .meta()
+                .attributes
                 .get(key.as_str())
+                .and_then(AttributeValue::as_string)
                 .map(|v| Value::string(v.as_ref()))
                 .unwrap_or(Value::Nil)
         } else {
@@ -58,27 +59,30 @@ impl PathAccessor<SpanTransformFamily> for SpanAttributesAccessor {
         if let Some(IndexExpr::String(key)) = fields.first().and_then(|f| f.keys.first()) {
             match value {
                 Value::Nil => {
-                    ctx.span.meta_mut().remove(key.as_str());
+                    ctx.span.attributes.remove(key.as_str());
                 }
                 Value::String(s) => {
-                    ctx.span
-                        .meta_mut()
-                        .insert(MetaString::from(key.as_str()), MetaString::from(Arc::clone(s)));
+                    ctx.span.attributes.insert(
+                        MetaString::from(key.as_str()),
+                        AttributeValue::String(MetaString::from(Arc::clone(s))),
+                    );
                 }
                 Value::Int(n) => {
-                    ctx.span
-                        .meta_mut()
-                        .insert(MetaString::from(key.as_str()), MetaString::from(n.to_string().as_str()));
+                    ctx.span.attributes.insert(
+                        MetaString::from(key.as_str()),
+                        AttributeValue::String(MetaString::from(n.to_string().as_str())),
+                    );
                 }
                 Value::Float(f) => {
-                    ctx.span
-                        .meta_mut()
-                        .insert(MetaString::from(key.as_str()), MetaString::from(f.to_string().as_str()));
+                    ctx.span.attributes.insert(
+                        MetaString::from(key.as_str()),
+                        AttributeValue::String(MetaString::from(f.to_string().as_str())),
+                    );
                 }
                 Value::Bool(b) => {
-                    ctx.span.meta_mut().insert(
+                    ctx.span.attributes.insert(
                         MetaString::from(key.as_str()),
-                        MetaString::from(if *b { "true" } else { "false" }),
+                        AttributeValue::String(MetaString::from(if *b { "true" } else { "false" })),
                     );
                 }
                 _ => {
@@ -104,10 +108,10 @@ impl PathAccessor<SpanTransformFamily> for ResourceAttributesAccessor {
     fn get<'a>(&self, ctx: &SpanTransformContext<'a>, fields: &[Field]) -> ottl::Result<Value> {
         let attrs_field = fields.get(1);
         let value = if let Some(IndexExpr::String(key)) = attrs_field.and_then(|f| f.keys.first()) {
-            ctx.resource_tags
-                .get_single_tag(key.as_str())
-                .and_then(|t| t.value())
-                .map(Value::string)
+            ctx.resource_attrs
+                .get(key.as_str())
+                .and_then(AttributeValue::as_string)
+                .map(|v| Value::string(v.as_ref()))
                 .unwrap_or(Value::Nil)
         } else if attrs_field.is_none_or(|f| f.keys.is_empty()) {
             Value::Map(HashMap::new())

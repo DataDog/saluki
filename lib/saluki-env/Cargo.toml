@@ -18,9 +18,9 @@ datadog-protos = { workspace = true }
 fnv = { workspace = true }
 futures = { workspace = true }
 hyper-util = { workspace = true }
-memory-accounting = { workspace = true }
 prost = { workspace = true }
 regex = { workspace = true, features = ["std", "perf"] }
+resource-accounting = { workspace = true }
 saluki-common = { workspace = true }
 saluki-config = { workspace = true }
 saluki-context = { workspace = true }

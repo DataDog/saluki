@@ -60,7 +60,7 @@ mod registry_tests {
     use std::collections::HashSet;
 
     use super::*;
-    use crate::config_registry::{Schema, SupportLevel, ALL_SCHEMA_ENTRIES, IGNORED_ENTRIES};
+    use crate::config_registry::{PipelineAffinity, Schema, SupportLevel, ALL_SCHEMA_ENTRIES, IGNORED_ENTRIES};
 
     fn check_for_duplicates(it: impl Iterator<Item = impl AsRef<str>>) -> Result<(), String> {
         let mut seen = std::collections::HashSet::new();
@@ -76,6 +76,21 @@ mod registry_tests {
             Ok(())
         } else {
             Err(format!("\n{}", duplicates.join("\n")))
+        }
+    }
+
+    #[test]
+    fn pipelines_affinity_slice_is_non_empty() {
+        for annotation in ALL_ANNOTATIONS.iter() {
+            if let PipelineAffinity::Pipelines(ps) = annotation.pipeline_affinity {
+                assert!(
+                    !ps.is_empty(),
+                    "annotation '{}' has PipelineAffinity::Pipelines(&[]) - \
+                     At least one affected Pipeline is required. If all pipelines are affected, \
+                     use Pipeline::CrossCutting.",
+                    annotation.yaml_path(),
+                );
+            }
         }
     }
 

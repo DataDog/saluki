@@ -21,7 +21,7 @@ use tracing::{debug, error, warn};
 use zstd::stream::write::Encoder as ZstdEncoder;
 
 use super::super::MIN_CAPTURE_DEPTH;
-use super::file::write_header;
+use super::file_header::write_header;
 
 const FILE_TEMPLATE_PREFIX: &str = "datadog-capture";
 
@@ -480,7 +480,7 @@ fn entity_id_to_remote_entity_id(entity_id: &EntityId) -> RemoteEntityId {
     }
 }
 
-fn parse_entity_id_str(value: &str) -> Option<EntityId> {
+pub(super) fn parse_entity_id_str(value: &str) -> Option<EntityId> {
     const CONTAINER_ID_PREFIX: &str = "container_id://";
     const POD_UID_PREFIX: &str = "kubernetes_pod_uid://";
     const CONTAINER_PID_PREFIX: &str = "container_pid://";
@@ -525,7 +525,7 @@ mod tests {
     use super::{
         CaptureRecord, CaptureTargetDir, TaggerState, TrafficCaptureWriter, UnixDogstatsdMsg, MIN_CAPTURE_DEPTH,
     };
-    use crate::sources::dogstatsd::replay::file::datadog_matcher;
+    use crate::sources::dogstatsd::replay::file_header::valid_header;
 
     #[derive(Default)]
     struct MockWorkloadProvider {
@@ -754,7 +754,7 @@ mod tests {
     }
 
     fn assert_capture_contents(bytes: &[u8]) {
-        assert!(datadog_matcher(bytes));
+        assert!(valid_header(bytes));
 
         let header_len = 8;
         let record_size =

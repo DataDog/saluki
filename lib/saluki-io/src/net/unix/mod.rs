@@ -18,7 +18,7 @@ mod linux;
 #[cfg(target_os = "linux")]
 use self::linux::uds_recvmsg;
 #[cfg(target_os = "linux")]
-pub use self::linux::{enable_uds_socket_credentials, socket_reuseport_supported};
+pub use self::linux::{enable_uds_socket_credentials, socket_reuseport_supported, uds_sendmsg_with_creds};
 
 #[cfg(not(target_os = "linux"))]
 mod non_linux;

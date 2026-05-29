@@ -8,16 +8,17 @@
 //! [OpenTelemetry Transform processor]: https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/release/v0.144.x/processor/transformprocessor
 
 use async_trait::async_trait;
-use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use ottl::{CallbackMap, EnumMap, OttlParser};
+use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
+use saluki_common::collections::FastHashMap;
 use saluki_config::GenericConfiguration;
-use saluki_context::tags::TagSet;
 use saluki_core::{
     components::{transforms::*, ComponentContext},
-    data_model::event::trace::Span,
+    data_model::event::trace::{AttributeValue, Span},
     topology::EventsBuffer,
 };
 use saluki_error::{generic_error, GenericError};
+use stringtheory::MetaString;
 use tracing::{debug, error};
 
 mod config;
@@ -107,8 +108,8 @@ impl OttlTransform {
     /// Each statement is executed in order. For editor statements (for example, `set`), the `where`
     /// clause is evaluated first; if it matches (or is absent), the editor function runs.
     /// Errors are handled according to `error_mode`.
-    fn transform_span(&self, span: &mut Span, resource_tags: &TagSet) {
-        let mut ctx = SpanTransformContext::new(span, resource_tags);
+    fn transform_span(&self, span: &mut Span, resource_attrs: &FastHashMap<MetaString, AttributeValue>) {
+        let mut ctx = SpanTransformContext::new(span, resource_attrs);
 
         for parser in &self.span_parsers {
             match parser.execute(&mut ctx) {
@@ -139,9 +140,9 @@ impl SynchronousTransform for OttlTransform {
 
         for event in event_buffer {
             if let Some(trace) = event.try_as_trace_mut() {
-                let resource_tags = trace.resource_tags().clone();
+                let resource_attrs = std::sync::Arc::clone(&trace.attributes);
                 for span in trace.spans_mut() {
-                    self.transform_span(span, &resource_tags);
+                    self.transform_span(span, &resource_attrs);
                 }
             }
         }
@@ -151,15 +152,15 @@ impl SynchronousTransform for OttlTransform {
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::sync::Arc;
 
     use saluki_common::collections::FastHashMap;
     use saluki_config::ConfigurationLoader;
-    use saluki_context::tags::TagSet;
     use saluki_core::{
         components::{transforms::*, ComponentContext},
         data_model::event::{
             service_check::{CheckStatus, ServiceCheck},
-            trace::{Span, Trace},
+            trace::{AttributeValue, Span, Trace},
             Event,
         },
         topology::{ComponentId, EventsBuffer},
@@ -170,22 +171,26 @@ mod tests {
 
     // ---- Helpers ----
 
-    fn make_span(trace_id: u64, span_id: u64, meta: HashMap<String, String>) -> Span {
-        let mut meta_map = FastHashMap::default();
+    fn make_span(_trace_id: u64, span_id: u64, meta: HashMap<String, String>) -> Span {
+        let mut attr_map = FastHashMap::default();
         for (k, v) in meta {
-            meta_map.insert(MetaString::from(k), MetaString::from(v));
+            attr_map.insert(MetaString::from(k), AttributeValue::String(MetaString::from(v)));
         }
-        Span::new("svc", "op", "res", "web", trace_id, span_id, 0, 0, 1000, 0).with_meta(meta_map)
+        Span::new("svc", "op", "res", "web", span_id, 0, 0, 0, 0).with_attributes(attr_map)
     }
 
     fn make_trace(spans: Vec<Span>, resource_tags: Option<Vec<&'static str>>) -> Trace {
-        let mut tag_set = TagSet::default();
+        let mut trace = Trace::new(spans);
         if let Some(tags) = resource_tags {
+            let mut attrs = FastHashMap::default();
             for t in tags {
-                tag_set.insert_tag(t);
+                if let Some((k, v)) = t.split_once(':') {
+                    attrs.insert(MetaString::from(k), AttributeValue::String(MetaString::from(v)));
+                }
             }
+            trace.attributes = Arc::new(attrs);
         }
-        Trace::new(spans, tag_set)
+        trace
     }
 
     fn get_span_attr(buffer: &EventsBuffer, span_index: usize, key: &str) -> Option<String> {
@@ -197,7 +202,13 @@ mod tests {
             })
             .flat_map(|spans| spans.iter())
             .nth(span_index)
-            .and_then(|span| span.meta().get(key).map(|v| v.as_ref().to_string()))
+            .and_then(|span| {
+                let k = MetaString::from(key);
+                span.attributes.get(&k).and_then(|v| match v {
+                    AttributeValue::String(s) => Some(s.as_ref().to_string()),
+                    _ => None,
+                })
+            })
     }
 
     async fn build_transform(cfg_json: Option<serde_json::Value>) -> Box<dyn SynchronousTransform + Send> {
@@ -722,9 +733,12 @@ mod tests {
             })
             .expect("trace should still be in buffer");
         let tag_val = trace_out
-            .resource_tags()
-            .get_single_tag("key")
-            .and_then(|t| t.value().map(|v| v.to_string()));
+            .attributes
+            .get(&MetaString::from("key"))
+            .and_then(|v| match v {
+                AttributeValue::String(s) => Some(s.as_ref().to_string()),
+                _ => None,
+            });
         assert_eq!(
             tag_val.as_deref(),
             Some("original"),
@@ -813,10 +827,13 @@ mod tests {
             match event {
                 Event::ServiceCheck(_) => saw_service_check = true,
                 Event::Trace(t) => {
-                    trace_span_x = t
-                        .spans()
-                        .first()
-                        .and_then(|s| s.meta().get("x").map(|v| v.as_ref().to_string()));
+                    trace_span_x = t.spans().first().and_then(|s| {
+                        let k = MetaString::from("x");
+                        s.attributes.get(&k).and_then(|v| match v {
+                            AttributeValue::String(sv) => Some(sv.as_ref().to_string()),
+                            _ => None,
+                        })
+                    });
                 }
                 _ => {}
             }

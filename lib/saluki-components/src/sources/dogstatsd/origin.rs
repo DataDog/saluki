@@ -9,7 +9,21 @@ use saluki_io::deser::codec::dogstatsd::{EventPacket, MetricPacket, ServiceCheck
 use serde::Deserialize;
 use tracing::trace;
 
-use super::tags::WellKnownTags;
+use super::{replay::CapturedTaggerHandle, tags::WellKnownTags};
+
+const REPLAY_PROCESS_ID_MARKER: u32 = 1u32 << 31;
+
+pub(super) fn mark_replay_process_id(process_id: u32) -> u32 {
+    process_id | REPLAY_PROCESS_ID_MARKER
+}
+
+fn captured_process_id_from_replay(process_id: u32) -> Option<u32> {
+    if process_id & REPLAY_PROCESS_ID_MARKER != 0 {
+        Some(process_id & !REPLAY_PROCESS_ID_MARKER)
+    } else {
+        None
+    }
+}
 
 const fn default_tag_cardinality() -> OriginTagCardinality {
     OriginTagCardinality::Low
@@ -108,15 +122,18 @@ impl OriginEnrichmentConfiguration {
 pub(super) struct DogStatsDOriginTagResolver {
     config: OriginEnrichmentConfiguration,
     workload_provider: Arc<dyn WorkloadProvider + Send + Sync>,
+    captured_tagger: CapturedTaggerHandle,
 }
 
 impl DogStatsDOriginTagResolver {
     pub fn new(
         config: OriginEnrichmentConfiguration, workload_provider: Arc<dyn WorkloadProvider + Send + Sync>,
+        captured_tagger: CapturedTaggerHandle,
     ) -> Self {
         Self {
             config,
             workload_provider,
+            captured_tagger,
         }
     }
 
@@ -218,6 +235,20 @@ impl DogStatsDOriginTagResolver {
 
 impl OriginTagsResolver for DogStatsDOriginTagResolver {
     fn resolve_origin_tags(&self, origin: RawOrigin<'_>) -> SharedTagSet {
+        // Replay traffic is tagged by setting the marker bit on the origin process ID. It bypasses the live enrichment
+        // pipeline entirely: the captured `TaggerState` already contains fully-resolved tags per entity, so the
+        // resolver's entity-ID-walking logic has nothing to add.
+        if let Some(captured_process_id) = origin.process_id().and_then(captured_process_id_from_replay) {
+            if let Some(store) = self.captured_tagger.current() {
+                let cardinality = origin.cardinality().unwrap_or(self.config.tag_cardinality);
+                return store
+                    .lookup(captured_process_id as i32, cardinality)
+                    .unwrap_or_default();
+            }
+            trace!(?origin, "Replay-flagged origin but no captured tagger available.");
+            return SharedTagSet::default();
+        }
+
         match self.workload_provider.get_resolved_origin(origin.clone()) {
             Some(resolved_origin) => self.collect_origin_tags(resolved_origin),
             None => {
@@ -355,7 +386,7 @@ mod tests {
 
         let erased_workload_provider = Arc::new(workload_provider);
 
-        DogStatsDOriginTagResolver::new(config, erased_workload_provider)
+        DogStatsDOriginTagResolver::new(config, erased_workload_provider, CapturedTaggerHandle::new())
     }
 
     #[test]
@@ -669,5 +700,72 @@ mod tests {
         let resolved_origin = origin(Some(&EID_PID), None, None, None);
         let actual_tags = origin_tags_resolver.collect_origin_tags(resolved_origin);
         assert!(actual_tags.is_empty());
+    }
+
+    #[test]
+    fn resolve_origin_tags_dispatches_to_captured_store_when_replay_flag_set() {
+        use datadog_protos::agent::{Entity as ProtoEntity, TaggerState};
+
+        // Build a captured store with a single entity keyed by PID 7777.
+        let mut entities = HashMap::new();
+        entities.insert(
+            "container_id://captured-container".to_string(),
+            ProtoEntity {
+                low_cardinality_tags: vec!["env:captured".into(), "service:replayed".into()],
+                ..Default::default()
+            },
+        );
+        let mut pid_map = HashMap::new();
+        pid_map.insert(7777, "container_id://captured-container".to_string());
+        let state = TaggerState {
+            state: entities,
+            pid_map,
+            duration: 0,
+        };
+        let captured_tagger = CapturedTaggerHandle::new();
+        captured_tagger.set_current(Some(super::super::replay::CapturedTaggerStore::from_tagger_state(
+            state,
+        )));
+
+        // Build a resolver whose live workload provider is empty; if the replay path is wired wrong, we'd get
+        // no tags. If it's wired right, we get the captured tags.
+        let config = OriginEnrichmentConfiguration {
+            enabled: true,
+            tag_cardinality: OriginTagCardinality::Low,
+            ..Default::default()
+        };
+        let live = Arc::new(MockWorkloadProvider::default());
+        let resolver = DogStatsDOriginTagResolver::new(config, live, captured_tagger);
+
+        let mut origin = RawOrigin::default();
+        origin.set_process_id(mark_replay_process_id(7777));
+        origin.set_cardinality(OriginTagCardinality::Low);
+
+        let tags = resolver.resolve_origin_tags(origin);
+        let tag_strs: Vec<String> = tags.into_iter().map(|t| t.as_str().to_string()).collect();
+        assert!(tag_strs.contains(&"env:captured".to_string()));
+        assert!(tag_strs.contains(&"service:replayed".to_string()));
+    }
+
+    #[test]
+    fn resolve_origin_tags_returns_empty_when_replay_flag_set_but_no_captured_store() {
+        // If the replay flag is set but no captured store is current, the resolver returns an empty tag set
+        // (no fallback to the live tagger). This guards against accidentally serving live tags for replay packets.
+        let config = OriginEnrichmentConfiguration {
+            enabled: true,
+            tag_cardinality: OriginTagCardinality::Low,
+            ..Default::default()
+        };
+        let live = Arc::new(MockWorkloadProvider::default());
+        let resolver = DogStatsDOriginTagResolver::new(config, live, CapturedTaggerHandle::new());
+
+        let mut origin = RawOrigin::default();
+        origin.set_process_id(mark_replay_process_id(7777));
+
+        let tags = resolver.resolve_origin_tags(origin);
+        assert!(
+            tags.is_empty(),
+            "replay path with no captured store must return empty tags"
+        );
     }
 }

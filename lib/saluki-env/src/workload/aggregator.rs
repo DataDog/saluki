@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
+use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::health::Health;
 use saluki_core::runtime::{InitializationError, ProcessShutdown, Supervisable, SupervisorFuture};
 use saluki_error::{generic_error, GenericError};

@@ -2,7 +2,6 @@
 //!
 //! # Missing
 //!
-//! - Account for dynamic API key updates when deriving endpoint queue IDs.
 //! - Avoid initializing the process-wide crypto provider from tests.
 
 use std::{collections::VecDeque, error::Error as _, path::PathBuf, sync::Arc, time::Duration};
@@ -513,18 +512,18 @@ async fn run_endpoint_io_loop<B>(
 }
 
 fn generate_retry_queue_id(context: ComponentContext, endpoint: &ResolvedEndpoint) -> String {
-    // TODO: This logic does not take into account cases where the API key is updated dynamically. While a running
-    // process would just keep using the existing retry queue, based on the queue ID we generate here... the next time
-    // the process restarted, the retry queue ID would change, which could leave behind old transactions that wouldn't
-    // end up being retried.
+    // For additional endpoints we hash over the api_key_index (the stable position of this key in
+    // the additional_endpoints config list) rather than the raw API key value. This means the queue
+    // ID survives API key rotations pushed via the config stream — previously-persisted transactions
+    // are still retried even after the key changes.
     //
-    // The Core Agent is also susceptible to this, I believe... but we should double check that and see what they're
-    // doing if they actually _do_ handle this case.
-
-    // We set our queue ID/name to be unique for the component/endpoint/API key combination, which ensures that two
-    // instances of the same destination cannot collide with each other if they're using the same endpoint/API key
-    // combination.
-    let hash = hash_single_stable((context.component_id(), endpoint.endpoint(), endpoint.cached_api_key()));
+    // For primary and OPW endpoints we omit the key entirely; a single primary endpoint per
+    // component instance is sufficient to guarantee uniqueness.
+    let hash = if let Some((raw_url, index)) = endpoint.additional_endpoint_queue_key() {
+        hash_single_stable((context.component_id(), raw_url, index))
+    } else {
+        hash_single_stable((context.component_id(), endpoint.endpoint()))
+    };
 
     let endpoint_host = endpoint
         .endpoint()
@@ -844,6 +843,7 @@ mod tests {
     use tokio_rustls::TlsAcceptor;
 
     use super::*;
+    use crate::common::datadog::endpoints::AdditionalEndpoints;
     use crate::common::datadog::transaction::{Metadata as TxnMetadata, Transaction};
     use crate::common::datadog::{METRICS_SERIES_V1_PATH, METRICS_SERIES_V2_PATH, METRICS_SKETCHES_PATH};
 
@@ -883,6 +883,57 @@ mod tests {
         assert!(should_route_to_endpoint(false, true, EndpointRoute::Primary));
         assert!(!should_route_to_endpoint(false, true, EndpointRoute::MetricsPrimary));
         assert!(should_route_to_endpoint(false, true, EndpointRoute::Additional));
+    }
+
+    #[test]
+    fn retry_queue_id_uses_raw_additional_endpoint_url() {
+        let context =
+            ComponentContext::forwarder(ComponentId::try_from("test_forwarder").expect("component ID should be valid"));
+        let additional: AdditionalEndpoints = serde_yaml::from_str(
+            r#"
+app.datadoghq.com: [key-a]
+https://app.datadoghq.com: [key-b]
+"#,
+        )
+        .expect("additional endpoints should deserialize");
+        let endpoints = additional.resolved_endpoints(None).expect("endpoints should resolve");
+
+        assert_eq!(endpoints.len(), 2);
+        assert_eq!(endpoints[0].endpoint(), endpoints[1].endpoint());
+
+        let first_queue_id = generate_retry_queue_id(context.clone(), &endpoints[0]);
+        let second_queue_id = generate_retry_queue_id(context, &endpoints[1]);
+
+        assert_ne!(first_queue_id, second_queue_id);
+    }
+
+    #[test]
+    fn retry_queue_id_uses_additional_endpoint_api_key_index() {
+        let context =
+            ComponentContext::forwarder(ComponentId::try_from("test_forwarder").expect("component ID should be valid"));
+        let additional: AdditionalEndpoints = serde_yaml::from_str(
+            r#"
+app.datadoghq.com: [key-a, key-b]
+"#,
+        )
+        .expect("additional endpoints should deserialize");
+        let endpoints = additional.resolved_endpoints(None).expect("endpoints should resolve");
+
+        assert_eq!(endpoints.len(), 2);
+        assert_eq!(endpoints[0].endpoint(), endpoints[1].endpoint());
+        assert_eq!(
+            endpoints[0].additional_endpoint_queue_key(),
+            Some(("app.datadoghq.com", 0))
+        );
+        assert_eq!(
+            endpoints[1].additional_endpoint_queue_key(),
+            Some(("app.datadoghq.com", 1))
+        );
+
+        let first_queue_id = generate_retry_queue_id(context.clone(), &endpoints[0]);
+        let second_queue_id = generate_retry_queue_id(context, &endpoints[1]);
+
+        assert_ne!(first_queue_id, second_queue_id);
     }
 
     fn init_tls_crypto_provider() {

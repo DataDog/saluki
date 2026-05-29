@@ -4,6 +4,7 @@ use serde::Deserialize;
 mod collected;
 pub use self::collected::CollectedData;
 
+mod dogstatsd_forwarding;
 mod events;
 mod metrics;
 mod service_checks;
@@ -41,6 +42,7 @@ pub struct AnalysisRunner {
     baseline_data: CollectedData,
     comparison_data: CollectedData,
     traces_options: Option<TracesAnalysisOptions>,
+    require_dogstatsd_forwarded_packets: bool,
 }
 
 impl AnalysisRunner {
@@ -56,7 +58,14 @@ impl AnalysisRunner {
             baseline_data,
             comparison_data,
             traces_options,
+            require_dogstatsd_forwarded_packets: false,
         }
+    }
+
+    /// Sets whether forwarded DogStatsD packets are required for this analysis run.
+    pub const fn with_dogstatsd_forwarding_requirement(mut self, require_packets: bool) -> Self {
+        self.require_dogstatsd_forwarded_packets = require_packets;
+        self
     }
 
     /// Runs the configured analysis.
@@ -89,6 +98,12 @@ impl AnalysisRunner {
                     .map_err(|e| (e, vec![]))?;
                 analyzer.run_analysis()
             }
-        }
+        }?;
+
+        dogstatsd_forwarding::run_analysis(
+            self.baseline_data.dogstatsd_forwarded_packets(),
+            self.comparison_data.dogstatsd_forwarded_packets(),
+            self.require_dogstatsd_forwarded_packets,
+        )
     }
 }
