@@ -2,7 +2,7 @@
 #![allow(dead_code)]
 use std::time::SystemTime;
 
-use saluki_core::data_model::event::trace::Trace;
+use saluki_core::data_model::event::trace::{AttributeValue, Trace};
 use stringtheory::MetaString;
 
 use super::{
@@ -91,8 +91,10 @@ impl PrioritySampler {
         // ignore the tracer specific logic
 
         let rate = self.sampler.get_signature_sample_rate(signature);
-        root.metrics_mut()
-            .insert(MetaString::from_static(DEPRECATED_RATE_KEY), rate);
+        root.attributes.insert(
+            MetaString::from_static(DEPRECATED_RATE_KEY),
+            AttributeValue::Float(rate),
+        );
         rate
     }
 }
@@ -110,7 +112,6 @@ mod tests {
     // logic for these tests are taken from here: https://github.com/DataDog/datadog-agent/blob/main/pkg/trace/sampler/prioritysampler_test.go
     use std::time::{Duration, SystemTime};
 
-    use saluki_context::tags::TagSet;
     use saluki_core::data_model::event::trace::{Span, Trace};
     use stringtheory::MetaString;
 
@@ -130,7 +131,6 @@ mod tests {
             MetaString::from("root-operation"),
             MetaString::from("root-resource"),
             MetaString::from("web"),
-            trace_id,
             1,       // span_id
             0,       // parent_id
             42,      // start
@@ -143,7 +143,6 @@ mod tests {
             MetaString::from("child-operation"),
             MetaString::from("child-resource"),
             MetaString::from("sql"),
-            trace_id,
             2,      // span_id
             1,      // parent_id
             100,    // start
@@ -151,7 +150,8 @@ mod tests {
             0,      // error
         );
 
-        let trace = Trace::new(vec![root, child], TagSet::default());
+        let mut trace = Trace::new(vec![root, child]);
+        trace.trace_id_low = trace_id;
         (trace, 0)
     }
 
