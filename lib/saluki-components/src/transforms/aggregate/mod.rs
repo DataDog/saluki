@@ -37,8 +37,7 @@ use self::config::{HistogramConfiguration, HistogramStatistic};
 const PASSTHROUGH_IDLE_FLUSH_CHECK_INTERVAL: Duration = Duration::from_secs(2);
 
 const fn default_window_duration_seconds() -> NonZeroU64 {
-    // SAFETY: It's clearly not zero.
-    unsafe { NonZeroU64::new_unchecked(1) }
+    NonZeroU64::new(1).expect("not zero")
 }
 
 const fn default_primary_flush_interval() -> Duration {
