@@ -44,6 +44,10 @@ const fn default_storage_max_disk_ratio() -> f64 {
     0.8
 }
 
+const fn default_outdated_file_in_days() -> u32 {
+    10
+}
+
 /// Datadog Agent-specific forwarder retry configuration.
 #[derive(Clone, Deserialize, Facet)]
 #[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
@@ -130,6 +134,19 @@ pub struct RetryConfiguration {
         rename = "forwarder_storage_max_disk_ratio"
     )]
     storage_max_disk_ratio: f64,
+
+    /// Maximum age in days for retry files on disk before they are deleted at startup.
+    ///
+    /// When disk persistence is enabled, ADP removes any `retry-*.json` files in
+    /// `forwarder_storage_path` that are older than this many days each time it starts. This
+    /// prevents unbounded disk growth from stale retry data left behind after long outages.
+    ///
+    /// Set to `0` to disable age-based cleanup. Defaults to 10.
+    #[serde(
+        default = "default_outdated_file_in_days",
+        rename = "forwarder_outdated_file_in_days"
+    )]
+    outdated_file_in_days: u32,
 }
 
 impl RetryConfiguration {
@@ -180,6 +197,11 @@ impl RetryConfiguration {
         self.storage_max_disk_ratio
     }
 
+    /// Returns the maximum age in days for retry files on disk before they are deleted at startup.
+    pub const fn outdated_file_in_days(&self) -> u32 {
+        self.outdated_file_in_days
+    }
+
     /// Creates a new [`DefaultHttpRetryPolicy`] based on the forwarder configuration.
     ///
     /// If a [`GenericConfiguration`] is supplied, the policy captures it and checks whether
@@ -206,6 +228,73 @@ impl RetryConfiguration {
         let recovery_error_decrease_factor = (!self.recovery_reset).then_some(self.recovery_error_decrease_factor);
         DefaultHttpRetryPolicy::with_backoff_and_classifier(retry_backoff, classifier)
             .with_recovery_error_decrease_factor(recovery_error_decrease_factor)
+    }
+}
+
+/// Deletes `retry-*.json` files in `storage_path` whose filesystem mtime exceeds `max_age_days`.
+///
+/// Called once at startup, before disk persistence is opened, to prevent stale retry data from
+/// accumulating after long outages. Errors and unrecognised files are skipped non-fatally.
+/// Does nothing if `max_age_days` is 0 or if `storage_path` does not exist.
+pub(super) async fn remove_outdated_retry_files(storage_path: &std::path::Path, max_age_days: u32) {
+    if max_age_days == 0 {
+        return;
+    }
+
+    let mut dir = match tokio::fs::read_dir(storage_path).await {
+        Ok(d) => d,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+        Err(e) => {
+            tracing::warn!(path = %storage_path.display(), error = %e, "Failed to open retry storage directory for age-based cleanup.");
+            return;
+        }
+    };
+
+    let cutoff = std::time::SystemTime::now()
+        .checked_sub(std::time::Duration::from_secs(max_age_days as u64 * 24 * 3600))
+        .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+
+    let mut removed = 0u32;
+    loop {
+        let entry = match dir.next_entry().await {
+            Ok(Some(e)) => e,
+            Ok(None) => break,
+            Err(e) => {
+                tracing::warn!(error = %e, "Error reading retry storage directory during age-based cleanup.");
+                continue;
+            }
+        };
+
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        // Only consider retry files written by ADP.
+        if !name_str.starts_with("retry-") || !name_str.ends_with(".json") {
+            continue;
+        }
+
+        let mtime = match entry.metadata().await.and_then(|m| m.modified()) {
+            Ok(t) => t,
+            Err(e) => {
+                tracing::debug!(file = %name_str, error = %e, "Could not read mtime; skipping.");
+                continue;
+            }
+        };
+
+        if mtime < cutoff {
+            match tokio::fs::remove_file(entry.path()).await {
+                Ok(()) => {
+                    tracing::debug!(file = %name_str, "Removed outdated retry file.");
+                    removed += 1;
+                }
+                Err(e) => {
+                    tracing::warn!(file = %name_str, error = %e, "Failed to remove outdated retry file.");
+                }
+            }
+        }
+    }
+
+    if removed > 0 {
+        tracing::info!(count = removed, max_age_days, "Removed outdated retry files from disk.");
     }
 }
 
@@ -419,5 +508,85 @@ mod tests {
 
         // The same policy instance must now retry 403 because the predicate reads the live cached secrets flag.
         assert!(would_retry(&mut policy, ok_response(StatusCode::FORBIDDEN)));
+    }
+
+    mod outdated_files {
+        use std::{
+            path::Path,
+            time::{Duration, SystemTime},
+        };
+
+        use tempfile::TempDir;
+        use tokio::fs;
+
+        use super::super::remove_outdated_retry_files;
+
+        async fn write_file(dir: &Path, name: &str) {
+            fs::write(dir.join(name), b"{}").await.unwrap();
+        }
+
+        async fn set_mtime_old(dir: &Path, name: &str, days_old: u32) {
+            let path = dir.join(name);
+            let old_time = SystemTime::now()
+                .checked_sub(Duration::from_secs(days_old as u64 * 24 * 3600))
+                .unwrap();
+            let ft = filetime::FileTime::from_system_time(old_time);
+            filetime::set_file_mtime(&path, ft).unwrap();
+        }
+
+        async fn names_in(dir: &Path) -> Vec<String> {
+            let mut entries = fs::read_dir(dir).await.unwrap();
+            let mut names = Vec::new();
+            while let Some(e) = entries.next_entry().await.unwrap() {
+                names.push(e.file_name().to_string_lossy().into_owned());
+            }
+            names.sort();
+            names
+        }
+
+        #[tokio::test]
+        async fn removes_old_retry_files_only() {
+            let dir = TempDir::new().unwrap();
+            let path = dir.path();
+
+            write_file(path, "retry-old-1.json").await;
+            write_file(path, "retry-old-2.json").await;
+            write_file(path, "retry-recent.json").await;
+            write_file(path, "other-file.json").await; // non-retry file, must not be touched
+
+            set_mtime_old(path, "retry-old-1.json", 15).await;
+            set_mtime_old(path, "retry-old-2.json", 11).await;
+            // retry-recent.json and other-file.json keep their current mtime
+
+            remove_outdated_retry_files(path, 10).await;
+
+            let remaining = names_in(path).await;
+            assert!(!remaining.contains(&"retry-old-1.json".to_string()));
+            assert!(!remaining.contains(&"retry-old-2.json".to_string()));
+            assert!(remaining.contains(&"retry-recent.json".to_string()));
+            assert!(remaining.contains(&"other-file.json".to_string()));
+        }
+
+        #[tokio::test]
+        async fn zero_days_disables_cleanup() {
+            let dir = TempDir::new().unwrap();
+            let path = dir.path();
+
+            write_file(path, "retry-old.json").await;
+            set_mtime_old(path, "retry-old.json", 100).await;
+
+            remove_outdated_retry_files(path, 0).await;
+
+            let remaining = names_in(path).await;
+            assert!(remaining.contains(&"retry-old.json".to_string()));
+        }
+
+        #[tokio::test]
+        async fn nonexistent_directory_is_noop() {
+            let dir = TempDir::new().unwrap();
+            let missing = dir.path().join("does-not-exist");
+            // Must not panic or error.
+            remove_outdated_retry_files(&missing, 10).await;
+        }
     }
 }
