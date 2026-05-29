@@ -329,7 +329,7 @@ crate::declare_annotations! {
         additional_yaml_paths: &[],
         env_var_override: None,
         used_by: &[structs::FORWARDER_CONFIGURATION],
-        value_type_override: None,
+        value_type_override: Some(ValueType::Integer),
         test_json: None,
         pipeline_affinity: PipelineAffinity::CrossCutting,
     };
