@@ -411,7 +411,7 @@ fn check_and_warn_config(
     Ok(())
 }
 
-/// Returns true if at least one of the `active_pipelines` is affected based on `pipeline_affinity`.
+/// Returns `true` if at least one of the `active_pipelines` is affected based on `pipeline_affinity`.
 fn is_a_pipeline_affected(active_pipelines: &HashSet<Pipeline>, pipeline_affinity: &PipelineAffinity) -> bool {
     match pipeline_affinity {
         PipelineAffinity::Pipelines(affected_pipelines) => {
