@@ -909,90 +909,64 @@ mod tests {
         assert_eq!(0, files_in_dir(&root_path).await);
     }
 
-    mod outdated_file_cleanup {
-        use std::path::Path;
+    fn retry_filename_days_old(days_old: i64, nonce: u64) -> String {
+        let ts = chrono::Utc::now() - chrono::Duration::days(days_old);
+        format!("retry-{}-{}.json", ts.format("%Y%m%d%H%M%S%f"), nonce)
+    }
 
-        use chrono::{Duration, Utc};
-        use tempfile::TempDir;
-        use tokio::fs;
+    #[tokio::test]
+    async fn outdated_retry_files_are_removed_on_startup() {
+        let temp_dir = tempfile::tempdir().expect("should not fail to create temporary directory");
+        let root_path = temp_dir.path().to_path_buf();
 
-        use super::super::remove_outdated_retry_files;
+        let old_1 = retry_filename_days_old(15, 100000001);
+        let old_2 = retry_filename_days_old(11, 100000002);
+        let recent = retry_filename_days_old(1, 100000003);
+        let non_retry = "other-file.json";
 
-        fn retry_filename_days_old(days_old: i64, nonce: u64) -> String {
-            let ts = Utc::now() - Duration::days(days_old);
-            format!("retry-{}-{}.json", ts.format("%Y%m%d%H%M%S%f"), nonce)
+        for name in [&old_1, &old_2, &recent, non_retry] {
+            tokio::fs::write(root_path.join(name), b"{}").await.unwrap();
         }
 
-        async fn write_file(dir: &Path, name: &str) {
-            fs::write(dir.join(name), b"{}").await.unwrap();
+        // 4 files before cleanup; after removing files older than 10 days, 2 should remain
+        // (the 1-day-old retry file and the non-retry file).
+        assert_eq!(4, files_in_dir(&root_path).await);
+        remove_outdated_retry_files(&root_path, 10).await;
+        assert_eq!(2, files_in_dir(&root_path).await);
+
+        // The non-retry file must survive regardless of age.
+        assert!(root_path.join(non_retry).exists(), "non-retry file must not be touched");
+        assert!(root_path.join(&recent).exists(), "1-day-old retry file should be kept");
+    }
+
+    #[tokio::test]
+    async fn zero_age_removes_all_retry_files() {
+        // max_age_days=0 sets cutoff=now, matching the core Agent's FileRemovalPolicy with
+        // outdatedFileDayCount=0 — all retry files are deleted, non-retry files are untouched.
+        let temp_dir = tempfile::tempdir().expect("should not fail to create temporary directory");
+        let root_path = temp_dir.path().to_path_buf();
+
+        let retry_file = retry_filename_days_old(0, 100000004);
+        let non_retry = "other-file.json";
+
+        for name in [&retry_file, non_retry] {
+            tokio::fs::write(root_path.join(name), b"{}").await.unwrap();
         }
 
-        async fn names_in(dir: &Path) -> Vec<String> {
-            let mut entries = fs::read_dir(dir).await.unwrap();
-            let mut names = Vec::new();
-            while let Some(e) = entries.next_entry().await.unwrap() {
-                names.push(e.file_name().to_string_lossy().into_owned());
-            }
-            names.sort();
-            names
-        }
+        remove_outdated_retry_files(&root_path, 0).await;
 
-        #[tokio::test]
-        async fn removes_old_retry_files_only() {
-            let dir = TempDir::new().unwrap();
-            let path = dir.path();
+        assert!(
+            !root_path.join(&retry_file).exists(),
+            "retry file should be deleted with 0-day cutoff"
+        );
+        assert!(root_path.join(non_retry).exists(), "non-retry file must survive");
+    }
 
-            let old_1 = retry_filename_days_old(15, 100000001);
-            let old_2 = retry_filename_days_old(11, 100000002);
-            let recent = retry_filename_days_old(1, 100000003);
-
-            write_file(path, &old_1).await;
-            write_file(path, &old_2).await;
-            write_file(path, &recent).await;
-            write_file(path, "other-file.json").await; // not a valid retry filename, must not be touched
-
-            remove_outdated_retry_files(path, 10).await;
-
-            let remaining = names_in(path).await;
-            assert!(!remaining.contains(&old_1), "15-day-old file should be removed");
-            assert!(!remaining.contains(&old_2), "11-day-old file should be removed");
-            assert!(remaining.contains(&recent), "1-day-old file should be kept");
-            assert!(
-                remaining.contains(&"other-file.json".to_string()),
-                "non-retry file must not be touched"
-            );
-        }
-
-        #[tokio::test]
-        async fn zero_days_removes_all_retry_files() {
-            // max_age_days=0 sets cutoff=now, so all retry files (which were created before now)
-            // are deleted — matching the core Agent's FileRemovalPolicy behavior with
-            // outdatedFileDayCount=0.
-            let dir = TempDir::new().unwrap();
-            let path = dir.path();
-
-            let just_created = retry_filename_days_old(0, 100000004);
-            write_file(path, &just_created).await;
-            write_file(path, "other-file.json").await;
-
-            remove_outdated_retry_files(path, 0).await;
-
-            let remaining = names_in(path).await;
-            assert!(
-                !remaining.contains(&just_created),
-                "0-day cutoff should delete all retry files"
-            );
-            assert!(
-                remaining.contains(&"other-file.json".to_string()),
-                "non-retry file must survive"
-            );
-        }
-
-        #[tokio::test]
-        async fn nonexistent_directory_is_noop() {
-            let dir = TempDir::new().unwrap();
-            let missing = dir.path().join("does-not-exist");
-            remove_outdated_retry_files(&missing, 10).await;
-        }
+    #[tokio::test]
+    async fn outdated_file_cleanup_is_noop_for_missing_directory() {
+        let temp_dir = tempfile::tempdir().expect("should not fail to create temporary directory");
+        let missing = temp_dir.path().join("does-not-exist");
+        // Must not panic or error.
+        remove_outdated_retry_files(&missing, 10).await;
     }
 }
