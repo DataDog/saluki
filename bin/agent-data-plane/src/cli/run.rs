@@ -337,7 +337,7 @@ fn active_pipelines(dp_config: &DataPlaneConfiguration) -> HashSet<Pipeline> {
 
 /// Check the resolved configuration against the config registry for incompatibilities.
 ///
-/// Classifies each flattened key in `keys` with the config registry `Classifier`. Returns an
+/// Classifies each flattened key in `config` with the config registry `Classifier`. Returns an
 /// `Error` if one or more high severity incompatibility is discovered. Emits warnings for less
 /// severe incompatibilities. Keys are only considered incompatible when they have non-default
 /// values and the pipelines they affect are active.
