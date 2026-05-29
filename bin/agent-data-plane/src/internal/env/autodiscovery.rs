@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -8,7 +9,6 @@ use saluki_core::runtime::{InitializationError, ProcessShutdown, Supervisable, S
 use saluki_env::autodiscovery::AutodiscoveryEvent;
 use saluki_env::AutodiscoveryProvider;
 use saluki_error::GenericError;
-use std::sync::Arc;
 use tokio::select;
 use tokio::sync::mpsc::{self, Receiver, Sender};
 use tokio::sync::Mutex;
