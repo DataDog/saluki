@@ -231,7 +231,7 @@ impl RetryConfiguration {
     }
 }
 
-/// Deletes `retry-*.json` files in `storage_path` whose filesystem mtime exceeds `max_age_days`.
+/// Deletes `retry-*.json` files in `storage_path` whose filesystem modification time exceeds `max_age_days`.
 ///
 /// Called once at startup, before disk persistence is opened, to prevent stale retry data from
 /// accumulating after long outages. Errors and unrecognised files are skipped non-fatally.
@@ -272,15 +272,15 @@ pub(super) async fn remove_outdated_retry_files(storage_path: &std::path::Path, 
             continue;
         }
 
-        let mtime = match entry.metadata().await.and_then(|m| m.modified()) {
+        let file_mod_time = match entry.metadata().await.and_then(|m| m.modified()) {
             Ok(t) => t,
             Err(e) => {
-                tracing::debug!(file = %name_str, error = %e, "Could not read mtime; skipping.");
+                tracing::debug!(file = %name_str, error = %e, "Could not read modification time; skipping.");
                 continue;
             }
         };
 
-        if mtime < cutoff {
+        if file_mod_time < cutoff {
             match tokio::fs::remove_file(entry.path()).await {
                 Ok(()) => {
                     tracing::debug!(file = %name_str, "Removed outdated retry file.");
@@ -525,7 +525,7 @@ mod tests {
             fs::write(dir.join(name), b"{}").await.unwrap();
         }
 
-        async fn set_mtime_old(dir: &Path, name: &str, days_old: u32) {
+        async fn set_file_age(dir: &Path, name: &str, days_old: u32) {
             let path = dir.join(name);
             let old_time = SystemTime::now()
                 .checked_sub(Duration::from_secs(days_old as u64 * 24 * 3600))
@@ -554,9 +554,9 @@ mod tests {
             write_file(path, "retry-recent.json").await;
             write_file(path, "other-file.json").await; // non-retry file, must not be touched
 
-            set_mtime_old(path, "retry-old-1.json", 15).await;
-            set_mtime_old(path, "retry-old-2.json", 11).await;
-            // retry-recent.json and other-file.json keep their current mtime
+            set_file_age(path, "retry-old-1.json", 15).await;
+            set_file_age(path, "retry-old-2.json", 11).await;
+            // retry-recent.json and other-file.json are freshly created, so they are not outdated.
 
             remove_outdated_retry_files(path, 10).await;
 
@@ -573,7 +573,7 @@ mod tests {
             let path = dir.path();
 
             write_file(path, "retry-old.json").await;
-            set_mtime_old(path, "retry-old.json", 100).await;
+            set_file_age(path, "retry-old.json", 100).await;
 
             remove_outdated_retry_files(path, 0).await;
 
