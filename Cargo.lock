@@ -2976,6 +2976,7 @@ dependencies = [
  "kube",
  "rand 0.10.1",
  "rand_distr",
+ "rcgen",
  "regex",
  "reqwest",
  "rustls",

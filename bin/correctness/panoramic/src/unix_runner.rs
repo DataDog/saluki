@@ -28,13 +28,14 @@
 use std::sync::RwLock;
 use std::{
     collections::HashMap,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant},
 };
 
 use airlock::unix::{LogSink, UnixProcess, UnixProcessConfig};
-use rand::distr::SampleString as _;
+use rand::distr::{Alphanumeric, SampleString as _};
+use rcgen::{generate_simple_self_signed, CertifiedKey};
 use saluki_error::{ErrorContext as _, GenericError};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
@@ -229,13 +230,15 @@ impl UnixIntegrationRunner {
         // Phase: spawn ADP.
         let spawn_start = Instant::now();
         let config_path_str = config_path.to_string_lossy().into_owned();
-        let adp_forced: Vec<(&str, String)> = if self.test_case.requires_core_agent {
-            // Point ADP's IPC client at the per-test auth token (and by derivation, the
-            // per-test ipc_cert.pem in the same directory).
-            vec![("DD_AUTH_TOKEN_FILE_PATH", auth_token_path)]
-        } else {
-            Vec::new()
-        };
+        if !self.test_case.requires_core_agent {
+            if let Err(e) = seed_standalone_ipc_credentials(&state_dir, &auth_token_path) {
+                if let Some(agent) = core_agent.take() {
+                    agent.cleanup().await;
+                }
+                return make_error_result(test_name, started, "prepare_standalone_ipc", e, phase_timings);
+            }
+        }
+        let adp_forced = build_adp_forced_env(self.test_case.requires_core_agent, &state_dir, auth_token_path);
         let adp_env = build_process_env(&self.test_case.env, &adp_forced);
         let process_config = UnixProcessConfig::new(self.test_case.name.clone(), binary_path)
             .with_args(vec!["-c".to_string(), config_path_str, "run".to_string()])
@@ -395,7 +398,37 @@ fn resolve_core_agent_binary_path() -> Result<PathBuf, GenericError> {
     })
 }
 
-async fn wait_for_agent_ipc_ready(state_dir: &std::path::Path, timeout: Duration) -> Result<(), GenericError> {
+fn build_adp_forced_env(
+    requires_core_agent: bool, state_dir: &Path, auth_token_path: String,
+) -> Vec<(&'static str, String)> {
+    if requires_core_agent {
+        vec![("DD_AUTH_TOKEN_FILE_PATH", auth_token_path)]
+    } else {
+        vec![
+            ("DD_AUTH_TOKEN_FILE_PATH", auth_token_path),
+            (
+                "DD_IPC_CERT_FILE_PATH",
+                state_dir.join("ipc_cert.pem").to_string_lossy().into_owned(),
+            ),
+        ]
+    }
+}
+
+fn seed_standalone_ipc_credentials(state_dir: &Path, auth_token_path: &str) -> Result<(), GenericError> {
+    let auth_token = Alphanumeric.sample_string(&mut rand::rng(), 32);
+    std::fs::write(auth_token_path, auth_token)
+        .with_error_context(|| format!("Failed to write auth token at '{}'.", auth_token_path))?;
+
+    let CertifiedKey { cert, signing_key } = generate_simple_self_signed(["localhost".to_string()])
+        .error_context("Failed to generate self-signed IPC certificate.")?;
+    let cert_path = state_dir.join("ipc_cert.pem");
+    std::fs::write(&cert_path, format!("{}{}", cert.pem(), signing_key.serialize_pem()))
+        .with_error_context(|| format!("Failed to write IPC certificate at '{}'.", cert_path.display()))?;
+
+    Ok(())
+}
+
+async fn wait_for_agent_ipc_ready(state_dir: &Path, timeout: Duration) -> Result<(), GenericError> {
     let auth_token = state_dir.join("auth_token");
     let ipc_cert = state_dir.join("ipc_cert.pem");
     let deadline = Instant::now() + timeout;
@@ -454,5 +487,26 @@ impl LogSink for PanoramicLogSink {
         } else {
             buf.stdout.push(line);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn standalone_adp_env_points_ipc_credentials_at_test_state_dir() {
+        let state_dir = PathBuf::from("/tmp/panoramic-unix-test");
+        let auth_token_path = state_dir.join("auth_token").to_string_lossy().into_owned();
+
+        let env: HashMap<_, _> = build_adp_forced_env(false, &state_dir, auth_token_path.clone())
+            .into_iter()
+            .collect();
+
+        assert_eq!(env.get("DD_AUTH_TOKEN_FILE_PATH"), Some(&auth_token_path));
+        assert_eq!(
+            env.get("DD_IPC_CERT_FILE_PATH"),
+            Some(&state_dir.join("ipc_cert.pem").to_string_lossy().into_owned())
+        );
     }
 }
