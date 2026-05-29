@@ -407,7 +407,7 @@ fn generate_timestamped_filename() -> (PathBuf, u128) {
     (filename, now_ts)
 }
 
-fn decode_timestamped_filename(path: &Path) -> Option<u128> {
+pub fn decode_timestamped_filename(path: &Path) -> Option<u128> {
     let filename = path.file_stem()?.to_str()?;
     let mut filename_parts = filename.split('-');
 

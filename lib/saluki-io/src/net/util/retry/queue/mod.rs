@@ -5,7 +5,7 @@ use serde::{de::DeserializeOwned, Serialize};
 use tracing::debug;
 
 mod persisted;
-pub use self::persisted::DiskUsageRetrieverImpl;
+pub use self::persisted::{decode_timestamped_filename, DiskUsageRetrieverImpl};
 use self::persisted::{DiskUsageRetriever, DiskUsageRetrieverWrapper, PersistedQueue};
 
 /// A container that holds events.

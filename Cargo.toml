@@ -88,7 +88,6 @@ zstd = { version = "0.13.3", default-features = false }
 bitmask-enum = { version = "2.2", default-features = false }
 facet = { version = "0.46.0", default-features = false, features = ["std"] }
 figment = { version = "0.10", default-features = false }
-filetime = { version = "0.2", default-features = false }
 foldhash = { version = "0.2", default-features = false, features = ["std"] }
 headers = { version = "0.4", default-features = false }
 http = { version = "1", default-features = false }

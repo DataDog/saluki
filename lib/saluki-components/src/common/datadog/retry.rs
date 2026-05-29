@@ -8,7 +8,7 @@ use facet::Facet;
 use http::StatusCode;
 use saluki_config::GenericConfiguration;
 use saluki_io::net::util::retry::{
-    DefaultHttpRetryPolicy, ExponentialBackoff, HttpRetryPredicate, StandardHttpClassifier,
+    decode_timestamped_filename, DefaultHttpRetryPolicy, ExponentialBackoff, HttpRetryPredicate, StandardHttpClassifier,
 };
 use serde::Deserialize;
 use tracing::debug;
@@ -231,28 +231,33 @@ impl RetryConfiguration {
     }
 }
 
-/// Deletes `retry-*.json` files in `storage_path` whose filesystem modification time exceeds `max_age_days`.
+/// Deletes `retry-*.json` files in `queue_path` whose creation timestamp exceeds `max_age_days`.
 ///
-/// Called once at startup, before disk persistence is opened, to prevent stale retry data from
-/// accumulating after long outages. Errors and unrecognised files are skipped non-fatally.
-/// Does nothing if `max_age_days` is 0 or if `storage_path` does not exist.
-pub(super) async fn remove_outdated_retry_files(storage_path: &std::path::Path, max_age_days: u32) {
+/// Called at startup, before disk persistence is opened, to prevent stale retry data from
+/// accumulating after long outages. `queue_path` must be the per-queue subdirectory (i.e.
+/// `forwarder_storage_path/{queue_id}`), not the storage root. Age is determined by the
+/// creation timestamp embedded in each filename, not filesystem mtime. Errors are skipped
+/// non-fatally. Does nothing if `max_age_days` is 0 or `queue_path` does not exist.
+pub(super) async fn remove_outdated_retry_files(queue_path: &std::path::Path, max_age_days: u32) {
     if max_age_days == 0 {
         return;
     }
 
-    let mut dir = match tokio::fs::read_dir(storage_path).await {
+    let mut dir = match tokio::fs::read_dir(queue_path).await {
         Ok(d) => d,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
         Err(e) => {
-            tracing::warn!(path = %storage_path.display(), error = %e, "Failed to open retry storage directory for age-based cleanup.");
+            tracing::warn!(path = %queue_path.display(), error = %e, "Failed to open retry queue directory for age-based cleanup.");
             return;
         }
     };
 
-    let cutoff = std::time::SystemTime::now()
-        .checked_sub(std::time::Duration::from_secs(max_age_days as u64 * 24 * 3600))
-        .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+    // Cutoff as nanoseconds since Unix epoch, matching the u128 returned by decode_timestamped_filename.
+    let now_ns = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let cutoff_ns = now_ns.saturating_sub(max_age_days as u128 * 24 * 3600 * 1_000_000_000);
 
     let mut removed = 0u32;
     loop {
@@ -260,34 +265,31 @@ pub(super) async fn remove_outdated_retry_files(storage_path: &std::path::Path, 
             Ok(Some(e)) => e,
             Ok(None) => break,
             Err(e) => {
-                tracing::warn!(error = %e, "Error reading retry storage directory during age-based cleanup.");
-                continue;
+                tracing::warn!(error = %e, "Error reading retry queue directory during age-based cleanup.");
+                break;
             }
         };
 
-        let name = entry.file_name();
-        let name_str = name.to_string_lossy();
-        // Only consider retry files written by ADP.
-        if !name_str.starts_with("retry-") || !name_str.ends_with(".json") {
-            continue;
-        }
-
-        let file_mod_time = match entry.metadata().await.and_then(|m| m.modified()) {
-            Ok(t) => t,
-            Err(e) => {
-                tracing::debug!(file = %name_str, error = %e, "Could not read modification time; skipping.");
-                continue;
-            }
+        // decode_timestamped_filename returns None for any file that is not a valid ADP retry file.
+        let file_ts = match decode_timestamped_filename(&entry.path()) {
+            Some(ts) => ts,
+            None => continue,
         };
 
-        if file_mod_time < cutoff {
+        if file_ts < cutoff_ns {
+            let name_str = entry.file_name();
+            let name = name_str.to_string_lossy();
             match tokio::fs::remove_file(entry.path()).await {
                 Ok(()) => {
-                    tracing::debug!(file = %name_str, "Removed outdated retry file.");
+                    tracing::debug!(file = %name, "Removed outdated retry file.");
                     removed += 1;
                 }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    // Concurrent cleanup from a sibling endpoint task already deleted it.
+                    tracing::debug!(file = %name, "Retry file already removed by concurrent cleanup.");
+                }
                 Err(e) => {
-                    tracing::warn!(file = %name_str, error = %e, "Failed to remove outdated retry file.");
+                    tracing::warn!(file = %name, error = %e, "Failed to remove outdated retry file.");
                 }
             }
         }
@@ -511,27 +513,21 @@ mod tests {
     }
 
     mod outdated_files {
-        use std::{
-            path::Path,
-            time::{Duration, SystemTime},
-        };
+        use std::path::Path;
 
+        use chrono::{Duration, Utc};
         use tempfile::TempDir;
         use tokio::fs;
 
         use super::super::remove_outdated_retry_files;
 
-        async fn write_file(dir: &Path, name: &str) {
-            fs::write(dir.join(name), b"{}").await.unwrap();
+        fn retry_filename_days_old(days_old: i64, nonce: u64) -> String {
+            let ts = Utc::now() - Duration::days(days_old);
+            format!("retry-{}-{}.json", ts.format("%Y%m%d%H%M%S%f"), nonce)
         }
 
-        async fn set_file_age(dir: &Path, name: &str, days_old: u32) {
-            let path = dir.join(name);
-            let old_time = SystemTime::now()
-                .checked_sub(Duration::from_secs(days_old as u64 * 24 * 3600))
-                .unwrap();
-            let ft = filetime::FileTime::from_system_time(old_time);
-            filetime::set_file_mtime(&path, ft).unwrap();
+        async fn write_file(dir: &Path, name: &str) {
+            fs::write(dir.join(name), b"{}").await.unwrap();
         }
 
         async fn names_in(dir: &Path) -> Vec<String> {
@@ -549,22 +545,25 @@ mod tests {
             let dir = TempDir::new().unwrap();
             let path = dir.path();
 
-            write_file(path, "retry-old-1.json").await;
-            write_file(path, "retry-old-2.json").await;
-            write_file(path, "retry-recent.json").await;
-            write_file(path, "other-file.json").await; // non-retry file, must not be touched
+            let old_1 = retry_filename_days_old(15, 100000001);
+            let old_2 = retry_filename_days_old(11, 100000002);
+            let recent = retry_filename_days_old(1, 100000003);
 
-            set_file_age(path, "retry-old-1.json", 15).await;
-            set_file_age(path, "retry-old-2.json", 11).await;
-            // retry-recent.json and other-file.json are freshly created, so they are not outdated.
+            write_file(path, &old_1).await;
+            write_file(path, &old_2).await;
+            write_file(path, &recent).await;
+            write_file(path, "other-file.json").await; // not a valid retry filename, must not be touched
 
             remove_outdated_retry_files(path, 10).await;
 
             let remaining = names_in(path).await;
-            assert!(!remaining.contains(&"retry-old-1.json".to_string()));
-            assert!(!remaining.contains(&"retry-old-2.json".to_string()));
-            assert!(remaining.contains(&"retry-recent.json".to_string()));
-            assert!(remaining.contains(&"other-file.json".to_string()));
+            assert!(!remaining.contains(&old_1), "15-day-old file should be removed");
+            assert!(!remaining.contains(&old_2), "11-day-old file should be removed");
+            assert!(remaining.contains(&recent), "1-day-old file should be kept");
+            assert!(
+                remaining.contains(&"other-file.json".to_string()),
+                "non-retry file must not be touched"
+            );
         }
 
         #[tokio::test]
@@ -572,13 +571,13 @@ mod tests {
             let dir = TempDir::new().unwrap();
             let path = dir.path();
 
-            write_file(path, "retry-old.json").await;
-            set_file_age(path, "retry-old.json", 100).await;
+            let old = retry_filename_days_old(100, 100000004);
+            write_file(path, &old).await;
 
             remove_outdated_retry_files(path, 0).await;
 
             let remaining = names_in(path).await;
-            assert!(remaining.contains(&"retry-old.json".to_string()));
+            assert!(remaining.contains(&old), "cleanup disabled; file should survive");
         }
 
         #[tokio::test]
