@@ -491,19 +491,6 @@ crate::declare_annotations! {
         // Agent/host metadata applied to all payloads.
         pipeline_affinity: PipelineAffinity::CrossCutting,
     };
-    /// `log_payloads` - debug-log serialized payloads before send.
-    LOG_PAYLOADS = SalukiAnnotation {
-        schema: &schema::LOG_PAYLOADS,
-        // Not implemented. #1750
-        support_level: SupportLevel::Incompatible(Severity::Low),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-        // Logging is process-wide.
-        pipeline_affinity: PipelineAffinity::CrossCutting,
-    };
     /// `multi_region_failover.api_key` - API key for the MRF failover region.
     MULTI_REGION_FAILOVER_API_KEY = SalukiAnnotation {
         schema: &schema::MULTI_REGION_FAILOVER_API_KEY,

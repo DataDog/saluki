@@ -86,6 +86,22 @@ crate::declare_annotations! {
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Checks, Pipeline::DogStatsD]),
     };
 
+    /// `log_payloads`—debug-log decoded metric, event, and service check payload contents before encoding.
+    LOG_PAYLOADS = SalukiAnnotation {
+        schema: &schema::LOG_PAYLOADS,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[
+            structs::DATADOG_EVENTS_CONFIGURATION,
+            structs::DATADOG_METRICS_CONFIGURATION,
+            structs::DATADOG_SERVICE_CHECKS_CONFIGURATION,
+        ],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Checks, Pipeline::DogStatsD, Pipeline::Traces]),
+    };
+
     /// `serializer_max_payload_size`—max compressed generic payload size.
     SERIALIZER_MAX_PAYLOAD_SIZE = SalukiAnnotation {
         schema: &schema::SERIALIZER_MAX_PAYLOAD_SIZE,

@@ -1450,11 +1450,11 @@
   },
   {
     "key": "log_payloads",
-    "feature_state": "MISSING",
-    "action": "INVESTIGATE",
-    "description": "Debug-log serialized payloads before send",
-    "reason": "Marked for investigation; previously dismissed as not-applicable.",
-    "issue": "#1750",
+    "feature_state": "PARITY",
+    "action": "NONE",
+    "description": "Debug-log decoded payload contents before encoding",
+    "reason": "Implemented in ADP for decoded metrics, sketches, events, and service checks. ADP does not dump encoded HTTP bodies.",
+    "issue": null,
     "adp_key": null
   },
   {

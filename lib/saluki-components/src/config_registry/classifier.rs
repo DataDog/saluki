@@ -159,6 +159,14 @@ mod tests {
     }
 
     #[test]
+    fn log_payloads_is_supported() {
+        let c = classifier();
+        let result = c.classify("log_payloads", &Value::Bool(true)).unwrap();
+        assert_eq!(result.support_level, SupportLevel::Full);
+        assert!(!result.is_default);
+    }
+
+    #[test]
     fn none_default_null_is_default() {
         let c = classifier();
         let ann = ALL_ANNOTATIONS
