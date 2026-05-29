@@ -368,7 +368,7 @@ fn check_and_warn_config(
             continue;
         };
 
-        // Ignore it if none of the affected_pipelines are active.
+// Ignore it if none of the affected pipelines are active.
         if !is_a_pipeline_affected(active_pipelines, &classification.pipeline_affinity) {
             continue;
         }
