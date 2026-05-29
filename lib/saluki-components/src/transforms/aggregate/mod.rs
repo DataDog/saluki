@@ -1,5 +1,4 @@
 use std::{
-    cmp::max,
     num::NonZeroU64,
     time::{Duration, Instant},
 };
@@ -35,11 +34,11 @@ use self::telemetry::Telemetry;
 mod config;
 use self::config::{HistogramConfiguration, HistogramStatistic};
 
-const MINIMUM_BUCKET_WIDTH: Duration = Duration::from_secs(1);
 const PASSTHROUGH_IDLE_FLUSH_CHECK_INTERVAL: Duration = Duration::from_secs(2);
 
-const fn default_window_duration() -> Duration {
-    Duration::from_secs(10)
+const fn default_window_duration_secs() -> NonZeroU64 {
+    // SAFETY: It's clearly not zero.
+    unsafe { NonZeroU64::new_unchecked(1) }
 }
 
 const fn default_primary_flush_interval() -> Duration {
@@ -84,17 +83,17 @@ const fn default_passthrough_idle_flush_timeout() -> Duration {
 #[derive(Deserialize)]
 #[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
 pub struct AggregateConfiguration {
-    /// Size of the aggregation window.
+    /// Size of the aggregation window, in seconds.
     ///
     /// Metrics are aggregated into fixed-size windows, such that all updates to the same metric within a window are
     /// aggregated into a single metric. The window size controls how efficiently metrics are aggregated, and in turn,
     /// how many data points are emitted downstream.
     ///
-    /// Window duration will be clamped to a minimum of one second.
+    /// Window durations cannot be zero.
     ///
     /// Defaults to 10 seconds.
-    #[serde(rename = "aggregate_window_duration", default = "default_window_duration")]
-    window_duration: Duration,
+    #[serde(rename = "aggregate_window_duration_secs", default = "default_window_duration_secs")]
+    window_duration_secs: NonZeroU64,
 
     /// How often to flush buckets.
     ///
@@ -195,7 +194,7 @@ impl AggregateConfiguration {
     /// Creates a new `AggregateConfiguration` with default values.
     pub fn with_defaults() -> Self {
         Self {
-            window_duration: default_window_duration(),
+            window_duration_secs: default_window_duration_secs(),
             primary_flush_interval: default_primary_flush_interval(),
             context_limit: default_context_limit(),
             flush_open_windows: false,
@@ -214,7 +213,7 @@ impl TransformBuilder for AggregateConfiguration {
         let telemetry = Telemetry::new(&metrics_builder);
 
         let state = AggregationState::new(
-            self.window_duration,
+            self.window_duration_secs,
             self.context_limit,
             self.counter_expiry_seconds.filter(|s| *s != 0).map(Duration::from_secs),
             self.hist_config.clone(),
@@ -223,7 +222,7 @@ impl TransformBuilder for AggregateConfiguration {
 
         let passthrough_batcher = PassthroughBatcher::new(
             self.passthrough_idle_flush_timeout,
-            self.window_duration,
+            self.window_duration_secs,
             telemetry.clone(),
         )
         .await;
@@ -434,12 +433,12 @@ struct PassthroughBatcher {
     active_buffer_start: Instant,
     last_processed_at: Instant,
     idle_flush_timeout: Duration,
-    bucket_width: Duration,
+    bucket_width_secs: NonZeroU64,
     telemetry: Telemetry,
 }
 
 impl PassthroughBatcher {
-    async fn new(idle_flush_timeout: Duration, bucket_width: Duration, telemetry: Telemetry) -> Self {
+    async fn new(idle_flush_timeout: Duration, bucket_width_secs: NonZeroU64, telemetry: Telemetry) -> Self {
         let active_buffer = EventsBuffer::default();
 
         Self {
@@ -447,7 +446,7 @@ impl PassthroughBatcher {
             active_buffer_start: Instant::now(),
             last_processed_at: Instant::now(),
             idle_flush_timeout,
-            bucket_width: max(bucket_width, MINIMUM_BUCKET_WIDTH),
+            bucket_width_secs,
             telemetry,
         }
     }
@@ -459,7 +458,7 @@ impl PassthroughBatcher {
         // you say it out loud is sort of confusing and nonsensical since the whole point is that these are
         // _pre-aggregated_ metrics but we have to match the behavior of the Datadog Agent. ¯\_(ツ)_/¯
         let (context, values, metadata) = metric.into_parts();
-        let adjusted_values = counter_values_to_rate(values, self.bucket_width);
+        let adjusted_values = counter_values_to_rate(values, self.bucket_width_secs);
         let metric = Metric::from_parts(context, adjusted_values, metadata);
 
         // Try pushing the metric into our active buffer.
@@ -533,7 +532,7 @@ struct AggregationState {
     contexts: HashMap<Context, AggregatedMetric, foldhash::quality::RandomState>,
     contexts_remove_buf: Vec<Context>,
     context_limit: usize,
-    bucket_width_secs: u64,
+    bucket_width_secs: NonZeroU64,
     counter_expire_secs: Option<NonZeroU64>,
     last_flush: u64,
     hist_config: HistogramConfiguration,
@@ -545,7 +544,7 @@ struct AggregationState {
 
 impl AggregationState {
     fn new(
-        bucket_width: Duration, context_limit: usize, counter_expiration: Option<Duration>,
+        bucket_width_secs: NonZeroU64, context_limit: usize, counter_expiration: Option<Duration>,
         hist_config: HistogramConfiguration, telemetry: Telemetry,
     ) -> Self {
         let counter_expire_secs = counter_expiration.map(|d| d.as_secs()).and_then(NonZeroU64::new);
@@ -554,7 +553,7 @@ impl AggregationState {
             contexts: HashMap::default(),
             contexts_remove_buf: Vec::new(),
             context_limit,
-            bucket_width_secs: max(bucket_width, MINIMUM_BUCKET_WIDTH).as_secs(),
+            bucket_width_secs,
             counter_expire_secs,
             last_flush: 0,
             hist_config,
@@ -631,7 +630,7 @@ impl AggregationState {
         if self.last_flush != 0 {
             let start = align_to_bucket_start(self.last_flush, bucket_width_secs);
 
-            for bucket_start in (start..current_time).step_by(bucket_width_secs as usize) {
+            for bucket_start in (start..current_time).step_by(bucket_width_secs.get() as usize) {
                 if is_bucket_closed(current_time, bucket_start, bucket_width_secs, flush_open_buckets) {
                     zero_value_buckets.push((bucket_start, MetricValues::counter((bucket_start, 0.0))));
                 }
@@ -730,10 +729,10 @@ impl AggregationState {
 }
 
 async fn transform_and_push_metric(
-    context: Context, mut values: MetricValues, metadata: MetricMetadata, bucket_width_secs: u64,
+    context: Context, mut values: MetricValues, metadata: MetricMetadata, bucket_width_secs: NonZeroU64,
     hist_config: &HistogramConfiguration, dispatcher: &mut BufferedDispatcher<'_, EventsBuffer>,
 ) -> Result<(), GenericError> {
-    let bucket_width = Duration::from_secs(bucket_width_secs);
+    let bucket_width = Duration::from_secs(bucket_width_secs.get());
 
     match values {
         // If we're dealing with a histogram, we calculate a configured set of aggregates/percentiles from it, and emit
@@ -803,7 +802,7 @@ async fn transform_and_push_metric(
         // If we're not dealing with a histogram, then all we need to worry about is converting counters to rates before
         // forwarding our single, aggregated metric.
         values => {
-            let adjusted_values = counter_values_to_rate(values, bucket_width);
+            let adjusted_values = counter_values_to_rate(values, bucket_width_secs);
 
             let metric = Metric::from_parts(context, adjusted_values, metadata);
             dispatcher.push(Event::Metric(metric)).await
@@ -811,19 +810,19 @@ async fn transform_and_push_metric(
     }
 }
 
-fn counter_values_to_rate(values: MetricValues, interval: Duration) -> MetricValues {
+fn counter_values_to_rate(values: MetricValues, interval_secs: NonZeroU64) -> MetricValues {
     match values {
-        MetricValues::Counter(points) => MetricValues::rate(points, interval),
+        MetricValues::Counter(points) => MetricValues::rate(points, Duration::from_secs(interval_secs.get())),
         values => values,
     }
 }
 
-const fn align_to_bucket_start(timestamp: u64, bucket_width_secs: u64) -> u64 {
-    timestamp - (timestamp % bucket_width_secs)
+const fn align_to_bucket_start(timestamp: u64, bucket_width_secs: NonZeroU64) -> u64 {
+    timestamp - (timestamp % bucket_width_secs.get())
 }
 
 const fn is_bucket_closed(
-    current_time: u64, bucket_start: u64, bucket_width_secs: u64, flush_open_buckets: bool,
+    current_time: u64, bucket_start: u64, bucket_width_secs: NonZeroU64, flush_open_buckets: bool,
 ) -> bool {
     // A bucket is considered "closed" if the current time is greater than the end of the bucket, or if
     // `flush_open_buckets` is `true`.
@@ -843,7 +842,7 @@ const fn is_bucket_closed(
     // time has to be _greater_ than `start + width - 1`. For example, if the current time is 19, then no buckets are
     // closed, and if the current time is 29, then bucket 1 is closed but buckets 2 and 3 are still open, and if the
     // current time is 30, then both buckets 1 and 2 are closed, but bucket 3 is still open.
-    (bucket_start + bucket_width_secs - 1) < current_time || flush_open_buckets
+    (bucket_start + bucket_width_secs.get() - 1) < current_time || flush_open_buckets
 }
 
 // TODO: One thing we ought to consider is a property test, specifically a state machine property test, where we
@@ -863,8 +862,8 @@ mod tests {
     use super::config::HistogramStatistic;
     use super::*;
 
-    const BUCKET_WIDTH_SECS: u64 = 10;
-    const BUCKET_WIDTH: Duration = Duration::from_secs(BUCKET_WIDTH_SECS);
+    const BUCKET_WIDTH_SECS: NonZeroU64 = NonZeroU64::new(10).expect("not zero");
+    const BUCKET_WIDTH: Duration = Duration::from_secs(BUCKET_WIDTH_SECS.get());
     const COUNTER_EXPIRE_SECS: u64 = 20;
     const COUNTER_EXPIRE: Option<Duration> = Some(Duration::from_secs(COUNTER_EXPIRE_SECS));
 
@@ -875,12 +874,12 @@ mod tests {
 
     /// Gets the insert timestamp for the given step.
     const fn insert_ts(step: u64) -> u64 {
-        (BUCKET_WIDTH_SECS * (step + 1)) - 2
+        (BUCKET_WIDTH_SECS.get() * (step + 1)) - 2
     }
 
     /// Gets the flush timestamp for the given step.
     const fn flush_ts(step: u64) -> u64 {
-        BUCKET_WIDTH_SECS * (step + 1)
+        BUCKET_WIDTH_SECS.get() * (step + 1)
     }
 
     struct DispatcherReceiver {
@@ -1025,14 +1024,14 @@ mod tests {
         // (current time, bucket start, bucket width, flush open buckets, expected result)
         let cases = [
             // Bucket goes from [995, 1005), current time of 1000, so bucket is open.
-            (1000, 995, 10, false, false),
-            (1000, 995, 10, true, true),
+            (1000, 995, BUCKET_WIDTH_SECS, false, false),
+            (1000, 995, BUCKET_WIDTH_SECS, true, true),
             // Bucket goes from [1000, 1010), current time of 1000, so bucket is open.
-            (1000, 1000, 10, false, false),
-            (1000, 1000, 10, true, true),
+            (1000, 1000, BUCKET_WIDTH_SECS, false, false),
+            (1000, 1000, BUCKET_WIDTH_SECS, true, true),
             // Bucket goes from [1000, 1010), current time of 1010, so bucket is closed.
-            (1010, 1000, 10, false, true),
-            (1010, 1000, 10, true, true),
+            (1010, 1000, BUCKET_WIDTH_SECS, false, true),
+            (1010, 1000, BUCKET_WIDTH_SECS, true, true),
         ];
 
         for (current_time, bucket_start, bucket_width_secs, flush_open_buckets, expected) in cases {
@@ -1059,7 +1058,7 @@ mod tests {
     async fn context_limit() {
         // Create our aggregation state with a context limit of 2.
         let mut state = AggregationState::new(
-            BUCKET_WIDTH,
+            BUCKET_WIDTH_SECS,
             2,
             COUNTER_EXPIRE,
             HistogramConfiguration::default(),
@@ -1109,7 +1108,7 @@ mod tests {
     async fn context_limit_with_zero_value_counters() {
         // We test here to ensure that zero-value counters contribute to the context limit.
         let mut state = AggregationState::new(
-            BUCKET_WIDTH,
+            BUCKET_WIDTH_SECS,
             2,
             COUNTER_EXPIRE,
             HistogramConfiguration::default(),
@@ -1164,7 +1163,7 @@ mod tests {
     async fn zero_value_counters() {
         // We're testing that we properly emit and expire zero-value counters in all relevant scenarios.
         let mut state = AggregationState::new(
-            BUCKET_WIDTH,
+            BUCKET_WIDTH_SECS,
             10,
             COUNTER_EXPIRE,
             HistogramConfiguration::default(),
@@ -1213,7 +1212,7 @@ mod tests {
     async fn merge_identical_timestamped_values_on_flush() {
         // We're testing that we properly emit and expire zero-value counters in all relevant scenarios.
         let mut state = AggregationState::new(
-            BUCKET_WIDTH,
+            BUCKET_WIDTH_SECS,
             10,
             COUNTER_EXPIRE,
             HistogramConfiguration::default(),
@@ -1247,7 +1246,7 @@ mod tests {
             false,
             "".into(),
         );
-        let mut state = AggregationState::new(BUCKET_WIDTH, 10, COUNTER_EXPIRE, hist_config, Telemetry::noop());
+        let mut state = AggregationState::new(BUCKET_WIDTH_SECS, 10, COUNTER_EXPIRE, hist_config, Telemetry::noop());
 
         // Create one multi-value histogram and insert it.
         let input_metric = Metric::histogram("metric1", [1.0, 2.0, 3.0, 4.0, 5.0]);
@@ -1260,7 +1259,7 @@ mod tests {
 
         // Create versions of the metric for each of the statistics we're expecting to emit. The values themselves don't
         // matter here, but we do need a `Metric` for it to compare the context to.
-        let count_metric = Metric::rate("metric1.count", 0.0, Duration::from_secs(BUCKET_WIDTH_SECS));
+        let count_metric = Metric::rate("metric1.count", 0.0, Duration::from_secs(BUCKET_WIDTH_SECS.get()));
         let sum_metric = Metric::gauge("metric1.sum", 0.0);
         let p50_metric = Metric::gauge("metric1.p50", 0.0);
 
@@ -1286,7 +1285,7 @@ mod tests {
             false,
             "".into(),
         );
-        let mut state = AggregationState::new(BUCKET_WIDTH, 10, COUNTER_EXPIRE, hist_config, Telemetry::noop());
+        let mut state = AggregationState::new(BUCKET_WIDTH_SECS, 10, COUNTER_EXPIRE, hist_config, Telemetry::noop());
 
         // Build a histogram with unit = "millisecond", simulating what arrives from a DogStatsD `ms` metric.
         let context = Context::from_static_parts("metric1", &[]);
@@ -1327,7 +1326,7 @@ mod tests {
     async fn distributions() {
         // We're testing that we pass through distributions untouched.
         let mut state = AggregationState::new(
-            BUCKET_WIDTH,
+            BUCKET_WIDTH_SECS,
             10,
             COUNTER_EXPIRE,
             HistogramConfiguration::default(),
@@ -1361,7 +1360,7 @@ mod tests {
             true,
             "dist_prefix.".into(),
         );
-        let mut state = AggregationState::new(BUCKET_WIDTH, 10, COUNTER_EXPIRE, hist_config, Telemetry::noop());
+        let mut state = AggregationState::new(BUCKET_WIDTH_SECS, 10, COUNTER_EXPIRE, hist_config, Telemetry::noop());
 
         // Create one multi-value histogram and insert it.
         let values = [1.0, 2.0, 3.0, 4.0, 5.0];
@@ -1375,7 +1374,7 @@ mod tests {
 
         // Create versions of the metric for each of the statistics we're expecting to emit. The values themselves don't
         // matter here, but we do need a `Metric` for it to compare the context to.
-        let count_metric = Metric::rate("metric1.count", 0.0, Duration::from_secs(BUCKET_WIDTH_SECS));
+        let count_metric = Metric::rate("metric1.count", 0.0, BUCKET_WIDTH);
         let sum_metric = Metric::gauge("metric1.sum", 0.0);
         let p50_metric = Metric::gauge("metric1.p50", 0.0);
         let expected_distribution = Metric::distribution("dist_prefix.metric1", &values[..]);
@@ -1391,11 +1390,10 @@ mod tests {
     #[tokio::test]
     async fn nonaggregated_counters_to_rate() {
         let counter_value = 42.0;
-        let bucket_width = BUCKET_WIDTH;
 
         // Create a basic aggregation state.
         let mut state = AggregationState::new(
-            bucket_width,
+            BUCKET_WIDTH_SECS,
             10,
             COUNTER_EXPIRE,
             HistogramConfiguration::default(),
@@ -1420,10 +1418,9 @@ mod tests {
     async fn preaggregated_counters_to_rate() {
         let counter_value = 42.0;
         let timestamp = 123456;
-        let bucket_width = BUCKET_WIDTH;
 
         // Create a basic passthrough batcher and forwarder.
-        let mut batcher = PassthroughBatcher::new(Duration::from_nanos(1), bucket_width, Telemetry::noop()).await;
+        let mut batcher = PassthroughBatcher::new(Duration::from_nanos(1), BUCKET_WIDTH_SECS, Telemetry::noop()).await;
         let (dispatcher, mut dispatcher_receiver) = build_basic_dispatcher();
 
         // Create a simple pre-aggregated counter, and batch it.
@@ -1437,7 +1434,7 @@ mod tests {
         let mut flushed_metrics = dispatcher_receiver.collect_next();
         assert_eq!(flushed_metrics.len(), 1);
         assert_eq!(
-            Metric::rate("metric1", (timestamp, counter_value), bucket_width),
+            Metric::rate("metric1", (timestamp, counter_value), BUCKET_WIDTH),
             flushed_metrics.remove(0)
         );
     }
@@ -1457,7 +1454,7 @@ mod tests {
         let telemetry = Telemetry::new(&builder);
 
         let mut state = AggregationState::new(
-            BUCKET_WIDTH,
+            BUCKET_WIDTH_SECS,
             2,
             COUNTER_EXPIRE,
             HistogramConfiguration::default(),
@@ -1516,28 +1513,6 @@ mod tests {
             Some(0.0)
         );
     }
-
-    // This test asserts that we clamp our bucket width ("window duration") to at least one second.
-    //
-    // Our math for aligning metrics into the correct aggregation bucket works on a secondly-basis, so we need a bucket
-    // width of at least one second otherwise we would be doing division-by-zero things and would immediately panic.
-    #[tokio::test]
-    async fn sub_second_aggregate_window_clamped_to_one_second() {
-        // We create the aggregation state with a sub-second window, which is not handled properly, should lead to a
-        // panic when we try to insert a metric.
-        let mut state = AggregationState::new(
-            Duration::from_millis(500),
-            100,
-            COUNTER_EXPIRE,
-            HistogramConfiguration::default(),
-            Telemetry::noop(),
-        );
-
-        assert!(
-            state.insert(insert_ts(1), Metric::counter("metric1", 1.0)),
-            "a sub-second aggregate window must be handled without panicking"
-        );
-    }
 }
 
 #[cfg(test)]
@@ -1557,7 +1532,6 @@ mod config_smoke {
             &[
                 "aggregate_flush_interval.nanos",
                 "aggregate_passthrough_idle_flush_timeout.nanos",
-                "aggregate_window_duration.nanos",
             ],
             json!({}),
             |cfg| {

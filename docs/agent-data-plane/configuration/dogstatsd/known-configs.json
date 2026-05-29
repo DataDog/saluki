@@ -54,7 +54,7 @@
     "adp_key": null
   },
   {
-    "key": "aggregate_window_duration",
+    "key": "aggregate_window_duration_secs",
     "feature_state": "ADP_ONLY",
     "action": "NONE",
     "description": "Aggregation window size",
