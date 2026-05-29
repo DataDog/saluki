@@ -1,8 +1,8 @@
 use std::{fmt, path::Path, str::FromStr as _, sync::OnceLock};
 
 use chrono::{
-    format::{DelayedFormat, Item, StrftimeItems},
-    Utc,
+    format::{Item, StrftimeItems},
+    SecondsFormat, Utc,
 };
 use chrono_tz::Tz;
 use serde_json::{Map as JsonMap, Number as JsonNumber, Value as JsonValue};
@@ -33,7 +33,7 @@ where
             .boxed()
     } else {
         Layer::new()
-            .event_format(AgentLikeFormatter::new())
+            .event_format(AgentLikeFormatter::new(config.log_format_rfc3339))
             .with_writer(writer)
             .boxed()
     }
@@ -54,15 +54,17 @@ where
 
 struct AgentLikeFormatter {
     app_name: String,
+    rfc3339: bool,
 }
 
 impl AgentLikeFormatter {
-    fn new() -> Self {
+    fn new(rfc3339: bool) -> Self {
         // Get the configured short name for the current data plane and transform it to a consistent format.
         //
         // This will take something like "data-plane" or "Data Plane" and turn it into "DATAPLANE".
         Self {
             app_name: get_agent_logger_name(),
+            rfc3339,
         }
     }
 }
@@ -79,7 +81,7 @@ where
         write!(
             writer,
             "{} | {} | {} | ",
-            get_delayed_format_now(),
+            format_now(self.rfc3339),
             self.app_name,
             metadata.level()
         )?;
@@ -488,8 +490,19 @@ impl field::Visit for AgentLikeJsonFieldVisitor {
     }
 }
 
-/// Gets a delayed formatter for the current time.
-fn get_delayed_format_now() -> DelayedFormat<impl Iterator<Item = &'static Item<'static>> + Clone> {
+/// Formats the current time as a string.
+///
+/// When `rfc3339` is `true`, returns RFC 3339 format (`2024-12-31T23:59:59Z`, UTC).
+/// When `false`, returns the legacy Agent format (`2024-12-31 23:59:59 UTC`, system timezone).
+fn format_now(rfc3339: bool) -> String {
+    if rfc3339 {
+        Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true)
+    } else {
+        format_now_legacy()
+    }
+}
+
+fn format_now_legacy() -> String {
     // Determine the system's timezone.
     //
     // We fallback to using UTC if something goes wrong during timezone detection.
@@ -509,7 +522,7 @@ fn get_delayed_format_now() -> DelayedFormat<impl Iterator<Item = &'static Item<
     });
 
     let now = Utc::now().with_timezone(system_tz);
-    now.format_with_items(format_items.iter())
+    now.format_with_items(format_items.iter()).to_string()
 }
 
 #[cfg(test)]

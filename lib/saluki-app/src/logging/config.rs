@@ -22,6 +22,14 @@ pub struct LoggingConfiguration {
     /// Whether to emit log records as JSON instead of the default human-readable format.
     pub log_format_json: bool,
 
+    /// Whether to use RFC 3339 timestamps (`2024-12-31T23:59:59Z`) in log output.
+    ///
+    /// When `false` (the default), timestamps use the legacy format (`2024-12-31 23:59:59 UTC`).
+    /// Corresponds to the core Agent's `log_format_rfc3339` setting.
+    ///
+    /// Defaults to `false`.
+    pub log_format_rfc3339: bool,
+
     /// Whether to write log records to standard output.
     pub log_to_console: bool,
 
@@ -65,6 +73,7 @@ impl LoggingConfiguration {
         Self {
             log_level: LevelFilter::INFO.into(),
             log_format_json: false,
+            log_format_rfc3339: false,
             log_to_console: true,
             log_to_syslog: false,
             syslog_uri: String::new(),
@@ -86,6 +95,7 @@ mod tests {
 
         assert_eq!(config.log_level.as_env_filter().to_string(), "info");
         assert!(!config.log_format_json);
+        assert!(!config.log_format_rfc3339);
         assert!(config.log_to_console);
         assert!(!config.log_to_syslog);
         assert!(config.syslog_uri.is_empty());

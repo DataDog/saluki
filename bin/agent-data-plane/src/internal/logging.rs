@@ -75,6 +75,10 @@ impl LoggingConfigurationTranslator {
             logging.log_format_json = format_json;
         }
 
+        if let Some(format_rfc3339) = read_permissive_bool(config, "log_format_rfc3339")? {
+            logging.log_format_rfc3339 = format_rfc3339;
+        }
+
         if let Some(to_console) = read_permissive_bool(config, "log_to_console")? {
             logging.log_to_console = to_console;
         }
