@@ -22,6 +22,12 @@ export ADP_APP_BUILD_TIME := $(APP_BUILD_TIME)
 # ADP-specific settings used when running.
 export ADP_STANDALONE_IPC_CERT_FILE := /tmp/adp-ipc-cert.pem
 
+# macOS integration-test settings.
+MACOS_TEST_AGENT_VERSION ?= 7.78.0
+MACOS_TEST_AGENT_DMG_DIR ?= /tmp/saluki-dda-dmg-cache
+MACOS_TEST_AGENT_DMG_URL ?= https://s3.amazonaws.com/dd-agent/datadog-agent-$(MACOS_TEST_AGENT_VERSION)-1.$(shell uname -m).dmg
+MACOS_TEST_AGENT_INSTALL_DIR ?= /tmp/saluki-dda/datadog-agent
+
 # General build settings used for tooling, etc.
 export GO_BUILD_IMAGE ?= golang:1.23-bullseye
 export GO_APP_IMAGE ?= ubuntu:24.04
@@ -589,16 +595,6 @@ test-integration-macos-run: ## Runs the macOS host-process integration tests usi
 		target/release/panoramic run -d "$(CURDIR)/test/integration/cases" \
 		$(if $(CASE),-t $(CASE)) --no-tui -p 1 \
 		$(if $(PANORAMIC_LOG_DIR),-l $(PANORAMIC_LOG_DIR))
-
-# Version of the Datadog Agent installed by `provision-macos-test-env`. Pinned for
-# reproducibility; bump when the integration tests need newer Agent behavior.
-MACOS_TEST_AGENT_VERSION ?= 7.78.0
-MACOS_TEST_AGENT_DMG_DIR ?= /tmp/saluki-dda-dmg-cache
-MACOS_TEST_AGENT_DMG_URL ?= https://s3.amazonaws.com/dd-agent/datadog-agent-$(MACOS_TEST_AGENT_VERSION)-1.$(shell uname -m).dmg
-# Sandbox directory the Agent is installed into. Deliberately *not* /opt/datadog-agent: keeping
-# our install isolated from any pre-existing system install (which a CI runner or developer host
-# may already have at a different, conflicting version) avoids surprises in both directions.
-MACOS_TEST_AGENT_INSTALL_DIR ?= /tmp/saluki-dda/datadog-agent
 
 .PHONY: provision-macos-test-env
 provision-macos-test-env: ## Installs the pinned Datadog Agent ($(MACOS_TEST_AGENT_VERSION)) into $(MACOS_TEST_AGENT_INSTALL_DIR) (a sandbox under /tmp) and bootstraps the IPC cert. Idempotent: re-uses the install if it already matches the pinned version.

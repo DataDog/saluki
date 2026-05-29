@@ -28,6 +28,7 @@
 use std::sync::RwLock;
 use std::{
     collections::HashMap,
+    ops::Deref,
     path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant},
@@ -445,14 +446,40 @@ async fn wait_for_agent_ipc_ready(state_dir: &Path, timeout: Duration) -> Result
     ))
 }
 
-fn create_test_state_dir() -> Result<PathBuf, GenericError> {
-    let suffix = rand::distr::Alphanumeric
-        .sample_string(&mut rand::rng(), 8)
-        .to_lowercase();
-    let dir = std::env::temp_dir().join(format!("panoramic-unix-{}", suffix));
-    std::fs::create_dir_all(&dir)
-        .with_error_context(|| format!("Failed to create state directory '{}'.", dir.display()))?;
-    Ok(dir)
+struct TestStateDir {
+    path: PathBuf,
+}
+
+impl TestStateDir {
+    fn create() -> Result<Self, GenericError> {
+        let suffix = rand::distr::Alphanumeric
+            .sample_string(&mut rand::rng(), 8)
+            .to_lowercase();
+        let path = std::env::temp_dir().join(format!("panoramic-unix-{}", suffix));
+        std::fs::create_dir_all(&path)
+            .with_error_context(|| format!("Failed to create state directory '{}'.", path.display()))?;
+        Ok(Self { path })
+    }
+}
+
+impl Deref for TestStateDir {
+    type Target = Path;
+
+    fn deref(&self) -> &Self::Target {
+        &self.path
+    }
+}
+
+impl Drop for TestStateDir {
+    fn drop(&mut self) {
+        if let Err(e) = std::fs::remove_dir_all(&self.path) {
+            debug!(state_dir = %self.path.display(), error = %e, "Failed to remove per-test state directory.");
+        }
+    }
+}
+
+fn create_test_state_dir() -> Result<TestStateDir, GenericError> {
+    TestStateDir::create()
 }
 
 fn make_error_result(
