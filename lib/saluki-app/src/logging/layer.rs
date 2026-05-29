@@ -1,8 +1,8 @@
 use std::{fmt, path::Path, str::FromStr as _, sync::OnceLock};
 
 use chrono::{
-    format::{Item, StrftimeItems},
-    SecondsFormat, Utc,
+    format::{DelayedFormat, Item, StrftimeItems},
+    Utc,
 };
 use chrono_tz::Tz;
 use serde_json::{Map as JsonMap, Number as JsonNumber, Value as JsonValue};
@@ -490,39 +490,44 @@ impl field::Visit for AgentLikeJsonFieldVisitor {
     }
 }
 
-/// Formats the current time as a string.
+/// Gets a delayed formatter for the current time.
 ///
 /// When `rfc3339` is `true`, returns RFC 3339 format (`2024-12-31T23:59:59Z`, UTC).
 /// When `false`, returns the legacy Agent format (`2024-12-31 23:59:59 UTC`, system timezone).
-fn format_now(rfc3339: bool) -> String {
+fn format_now(rfc3339: bool) -> DelayedFormat<impl Iterator<Item = &'static Item<'static>> + Clone> {
     if rfc3339 {
-        Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true)
+        // RFC 3339: UTC time with a literal 'Z' suffix. The trailing Z in the format string is
+        // a literal character, not a timezone specifier, so this always produces e.g.
+        // `2024-12-31T23:59:59Z` regardless of the system timezone.
+        static RFC3339_FORMAT_ITEMS: OnceLock<Vec<Item<'static>>> = OnceLock::new();
+        let format_items = RFC3339_FORMAT_ITEMS.get_or_init(|| {
+            StrftimeItems::new("%Y-%m-%dT%H:%M:%SZ")
+                .parse()
+                .expect("should not fail to parse datetime format")
+        });
+        Utc::now().format_with_items(format_items.iter())
     } else {
-        format_now_legacy()
+        // We fallback to using UTC if something goes wrong during timezone detection.
+        static SYSTEM_TZ: OnceLock<Tz> = OnceLock::new();
+        let system_tz = SYSTEM_TZ.get_or_init(|| {
+            iana_time_zone::get_timezone()
+                .map_err(|_| ())
+                .and_then(|raw_tz| Tz::from_str(&raw_tz).map_err(|_| ()))
+                .unwrap_or(Tz::UTC)
+        });
+
+        // Timestamp format to end up with the equivalent of `2024-12-31 23:59:59 UTC`.
+        static FORMAT_ITEMS: OnceLock<Vec<Item<'static>>> = OnceLock::new();
+        let format_items = FORMAT_ITEMS.get_or_init(|| {
+            StrftimeItems::new("%Y-%m-%d %H:%M:%S %Z")
+                .parse()
+                .expect("should not fail to parse datetime format")
+        });
+
+        Utc::now()
+            .with_timezone(system_tz)
+            .format_with_items(format_items.iter())
     }
-}
-
-fn format_now_legacy() -> String {
-    // Determine the system's timezone.
-    //
-    // We fallback to using UTC if something goes wrong during timezone detection.
-    static SYSTEM_TZ: OnceLock<Tz> = OnceLock::new();
-    let system_tz = SYSTEM_TZ.get_or_init(|| {
-        iana_time_zone::get_timezone()
-            .map_err(|_| ())
-            .and_then(|raw_tz| Tz::from_str(&raw_tz).map_err(|_| ()))
-            .unwrap_or(Tz::UTC)
-    });
-
-    // Timestamp format to end up with the equivalent of `2024-12-31 23:59:59 UTC`.
-    static FORMAT_ITEMS: OnceLock<Vec<Item<'static>>> = OnceLock::new();
-    let format_items = FORMAT_ITEMS.get_or_init(|| {
-        let parser = StrftimeItems::new("%Y-%m-%d %H:%M:%S %Z");
-        parser.parse().expect("should not fail to parse datetime format")
-    });
-
-    let now = Utc::now().with_timezone(system_tz);
-    now.format_with_items(format_items.iter()).to_string()
 }
 
 #[cfg(test)]
