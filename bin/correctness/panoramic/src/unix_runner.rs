@@ -58,6 +58,9 @@ const DEFAULT_CORE_AGENT_BINARY_PATH: &str = "/tmp/saluki-dda/datadog-agent/bin/
 /// giving up and failing the test.
 const CORE_AGENT_IPC_READY_TIMEOUT: Duration = Duration::from_secs(60);
 const CORE_AGENT_IPC_READY_POLL: Duration = Duration::from_millis(200);
+const DATA_PLANE_LOG_FILE_ENV_VAR: &str = "DD_DATA_PLANE_LOG_FILE";
+const DOCKER_DEFAULT_ADP_LOG_FILE: &str = "/var/log/datadog/agent-data-plane.log";
+const MACOS_DEFAULT_ADP_LOG_FILE: &str = "/opt/datadog-agent/logs/agent-data-plane.log";
 
 /// Builds the env for a target process (Core Agent or ADP) under the Unix runner.
 ///
@@ -230,6 +233,7 @@ impl UnixIntegrationRunner {
         // Phase: spawn ADP.
         let spawn_start = Instant::now();
         let config_path_str = config_path.to_string_lossy().into_owned();
+        prepare_host_process_adp_log_file(&mut self.test_case, &state_dir);
         if !self.test_case.requires_core_agent {
             if let Err(e) = seed_standalone_ipc_credentials(&state_dir, &auth_token_path) {
                 if let Some(agent) = core_agent.take() {
@@ -398,6 +402,39 @@ fn resolve_core_agent_binary_path() -> Result<PathBuf, GenericError> {
     })
 }
 
+fn prepare_host_process_adp_log_file(test_case: &mut IntegrationConfig, state_dir: &Path) {
+    let adp_log_file = test_case
+        .env
+        .entry(DATA_PLANE_LOG_FILE_ENV_VAR.to_string())
+        .or_insert_with(|| state_dir.join("agent-data-plane.log").to_string_lossy().into_owned())
+        .clone();
+
+    rewrite_default_adp_log_file_assertions(&mut test_case.assertions, &adp_log_file);
+}
+
+fn rewrite_default_adp_log_file_assertions(assertions: &mut [crate::config::AssertionStep], adp_log_file: &str) {
+    for step in assertions {
+        match step {
+            crate::config::AssertionStep::Single(assertion) => {
+                rewrite_default_adp_log_file_assertion(assertion, adp_log_file);
+            }
+            crate::config::AssertionStep::Parallel { parallel } => {
+                for assertion in parallel {
+                    rewrite_default_adp_log_file_assertion(assertion, adp_log_file);
+                }
+            }
+        }
+    }
+}
+
+fn rewrite_default_adp_log_file_assertion(assertion: &mut crate::config::AssertionConfig, adp_log_file: &str) {
+    if let crate::config::AssertionConfig::FileContains { path, .. } = assertion {
+        if path == DOCKER_DEFAULT_ADP_LOG_FILE || path == MACOS_DEFAULT_ADP_LOG_FILE {
+            *path = adp_log_file.to_string();
+        }
+    }
+}
+
 fn build_adp_forced_env(
     requires_core_agent: bool, state_dir: &Path, auth_token_path: String,
 ) -> Vec<(&'static str, String)> {
@@ -493,6 +530,25 @@ impl LogSink for PanoramicLogSink {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn host_process_adp_log_file_defaults_to_test_state_dir_and_rewrites_assertions() {
+        let config_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../test/integration/cases/adp-logging-default-path/config.yaml");
+        let mut test_case = IntegrationConfig::from_yaml(config_path).expect("load test case");
+        let state_dir = PathBuf::from("/tmp/panoramic-unix-test");
+        let expected_log_file = state_dir.join("agent-data-plane.log").to_string_lossy().into_owned();
+
+        prepare_host_process_adp_log_file(&mut test_case, &state_dir);
+
+        assert_eq!(test_case.env.get(DATA_PLANE_LOG_FILE_ENV_VAR), Some(&expected_log_file));
+        let crate::config::AssertionStep::Single(crate::config::AssertionConfig::FileContains { path, .. }) =
+            &test_case.assertions[1]
+        else {
+            panic!("expected second assertion to be file_contains");
+        };
+        assert_eq!(path, &expected_log_file);
+    }
 
     #[test]
     fn standalone_adp_env_points_ipc_credentials_at_test_state_dir() {
