@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"struct":["ChecksIPCConfiguration","DogStatsDCaptureAPIHandler","DogStatsDConfiguration","HeartbeatConfiguration","InternalMetricsConfiguration","OtlpConfiguration"]};
+window.SIDEBAR_ITEMS = {"constant":["DEFAULT_REPLAY_LOOPS","REPLAY_CREDENTIALS_GID"],"enum":["TimestampResolution"],"struct":["ChecksIPCConfiguration","DogStatsDCaptureAPIHandler","DogStatsDConfiguration","DogStatsDReplayAPIHandler","DogStatsDReplayControl","HeartbeatConfiguration","OtlpConfiguration","ReplaySession","TrafficCaptureReader"]};

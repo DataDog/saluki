@@ -1,8 +1,8 @@
-<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Source of the Rust file `lib/saluki-components/src/transforms/trace_sampler/priority_sampler.rs`."><title>priority_sampler.rs - source</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../../../static.files/rustdoc-17e0aaed.css"><meta name="rustdoc-vars" data-root-path="../../../../" data-static-root-path="../../../../static.files/" data-current-crate="saluki_components" data-themes="" data-resource-suffix="" data-rustdoc-version="1.98.0-nightly (d1fc603d1 2026-05-26)" data-channel="nightly" data-search-js="search-fd9372ac.js" data-stringdex-js="stringdex-2da4960a.js" data-settings-js="settings-170eb4bf.js" ><script src="../../../../static.files/storage-41dd4d93.js"></script><script defer src="../../../../static.files/src-script-813739b1.js"></script><script defer src="../../../../src-files.js"></script><script defer src="../../../../static.files/main-fcd733ba.js"></script><noscript><link rel="stylesheet" href="../../../../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../../../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../../../static.files/favicon-044be391.svg"></head><body class="rustdoc src"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><nav class="sidebar"><div class="src-sidebar-title"><h2>Files</h2></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><h1><div class="sub-heading">saluki_components/transforms/trace_sampler/</div>priority_sampler.rs</h1><rustdoc-toolbar></rustdoc-toolbar></div><div class="example-wrap digits-3"><pre class="rust"><code><a href=#1 id=1 data-nosnippet>1</a><span class="doccomment">//! Priority sampler for trace sampling based on service rates.
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Source of the Rust file `lib/saluki-components/src/transforms/trace_sampler/priority_sampler.rs`."><title>priority_sampler.rs - source</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../../../static.files/rustdoc-17e0aaed.css"><meta name="rustdoc-vars" data-root-path="../../../../" data-static-root-path="../../../../static.files/" data-current-crate="saluki_components" data-themes="" data-resource-suffix="" data-rustdoc-version="1.98.0-nightly (cced03bfd 2026-05-28)" data-channel="nightly" data-search-js="search-fd9372ac.js" data-stringdex-js="stringdex-2da4960a.js" data-settings-js="settings-170eb4bf.js" ><script src="../../../../static.files/storage-41dd4d93.js"></script><script defer src="../../../../static.files/src-script-813739b1.js"></script><script defer src="../../../../src-files.js"></script><script defer src="../../../../static.files/main-fcd733ba.js"></script><noscript><link rel="stylesheet" href="../../../../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../../../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../../../static.files/favicon-044be391.svg"></head><body class="rustdoc src"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><nav class="sidebar"><div class="src-sidebar-title"><h2>Files</h2></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><h1><div class="sub-heading">saluki_components/transforms/trace_sampler/</div>priority_sampler.rs</h1><rustdoc-toolbar></rustdoc-toolbar></div><div class="example-wrap digits-3"><pre class="rust"><code><a href=#1 id=1 data-nosnippet>1</a><span class="doccomment">//! Priority sampler for trace sampling based on service rates.
 <a href=#2 id=2 data-nosnippet>2</a></span><span class="attr">#![allow(dead_code)]
 <a href=#3 id=3 data-nosnippet>3</a></span><span class="kw">use </span>std::time::SystemTime;
 <a href=#4 id=4 data-nosnippet>4</a>
-<a href=#5 id=5 data-nosnippet>5</a><span class="kw">use </span>saluki_core::data_model::event::trace::Trace;
+<a href=#5 id=5 data-nosnippet>5</a><span class="kw">use </span>saluki_core::data_model::event::trace::{AttributeValue, Trace};
 <a href=#6 id=6 data-nosnippet>6</a><span class="kw">use </span>stringtheory::MetaString;
 <a href=#7 id=7 data-nosnippet>7</a>
 <a href=#8 id=8 data-nosnippet>8</a><span class="kw">use super</span>::{
@@ -91,46 +91,46 @@
 <a href=#91 id=91 data-nosnippet>91</a>        <span class="comment">// ignore the tracer specific logic
 <a href=#92 id=92 data-nosnippet>92</a>
 <a href=#93 id=93 data-nosnippet>93</a>        </span><span class="kw">let </span>rate = <span class="self">self</span>.sampler.get_signature_sample_rate(signature);
-<a href=#94 id=94 data-nosnippet>94</a>        root.metrics_mut()
-<a href=#95 id=95 data-nosnippet>95</a>            .insert(MetaString::from_static(DEPRECATED_RATE_KEY), rate);
-<a href=#96 id=96 data-nosnippet>96</a>        rate
-<a href=#97 id=97 data-nosnippet>97</a>    }
-<a href=#98 id=98 data-nosnippet>98</a>}
-<a href=#99 id=99 data-nosnippet>99</a>
-<a href=#100 id=100 data-nosnippet>100</a><span class="kw">fn </span>to_sampler_env(tracer_env: <span class="kw-2">&amp;</span>str, agent_env: <span class="kw-2">&amp;</span>MetaString) -&gt; MetaString {
-<a href=#101 id=101 data-nosnippet>101</a>    <span class="kw">if </span>tracer_env.is_empty() {
-<a href=#102 id=102 data-nosnippet>102</a>        agent_env.clone()
-<a href=#103 id=103 data-nosnippet>103</a>    } <span class="kw">else </span>{
-<a href=#104 id=104 data-nosnippet>104</a>        MetaString::from(tracer_env)
-<a href=#105 id=105 data-nosnippet>105</a>    }
-<a href=#106 id=106 data-nosnippet>106</a>}
-<a href=#107 id=107 data-nosnippet>107</a>
-<a href=#108 id=108 data-nosnippet>108</a><span class="attr">#[cfg(test)]
-<a href=#109 id=109 data-nosnippet>109</a></span><span class="kw">mod </span>tests {
-<a href=#110 id=110 data-nosnippet>110</a>    <span class="comment">// logic for these tests are taken from here: https://github.com/DataDog/datadog-agent/blob/main/pkg/trace/sampler/prioritysampler_test.go
-<a href=#111 id=111 data-nosnippet>111</a>    </span><span class="kw">use </span>std::time::{Duration, SystemTime};
-<a href=#112 id=112 data-nosnippet>112</a>
-<a href=#113 id=113 data-nosnippet>113</a>    <span class="kw">use </span>saluki_context::tags::TagSet;
-<a href=#114 id=114 data-nosnippet>114</a>    <span class="kw">use </span>saluki_core::data_model::event::trace::{Span, Trace};
-<a href=#115 id=115 data-nosnippet>115</a>    <span class="kw">use </span>stringtheory::MetaString;
-<a href=#116 id=116 data-nosnippet>116</a>
-<a href=#117 id=117 data-nosnippet>117</a>    <span class="kw">use super</span>::<span class="kw-2">*</span>;
-<a href=#118 id=118 data-nosnippet>118</a>    <span class="kw">use </span><span class="kw">crate</span>::transforms::trace_sampler::signature::ServiceSignature;
-<a href=#119 id=119 data-nosnippet>119</a>
-<a href=#120 id=120 data-nosnippet>120</a>    <span class="kw">const </span>BUCKET_DURATION: Duration = Duration::from_secs(<span class="number">5</span>);
-<a href=#121 id=121 data-nosnippet>121</a>    <span class="kw">const </span>PRIORITY_USER_DROP: i32 = -<span class="number">1</span>;
-<a href=#122 id=122 data-nosnippet>122</a>
-<a href=#123 id=123 data-nosnippet>123</a>    <span class="kw">fn </span>get_test_priority_sampler(target_tps: f64) -&gt; PrioritySampler {
-<a href=#124 id=124 data-nosnippet>124</a>        PrioritySampler::new(MetaString::from(<span class="string">"agent-env"</span>), <span class="number">1.0</span>, target_tps)
-<a href=#125 id=125 data-nosnippet>125</a>    }
-<a href=#126 id=126 data-nosnippet>126</a>
-<a href=#127 id=127 data-nosnippet>127</a>    <span class="kw">fn </span>get_test_trace_with_service(service: <span class="kw-2">&amp;</span>str, trace_id: u64) -&gt; (Trace, usize) {
-<a href=#128 id=128 data-nosnippet>128</a>        <span class="kw">let </span>root = Span::new(
-<a href=#129 id=129 data-nosnippet>129</a>            MetaString::from(service),
-<a href=#130 id=130 data-nosnippet>130</a>            MetaString::from(<span class="string">"root-operation"</span>),
-<a href=#131 id=131 data-nosnippet>131</a>            MetaString::from(<span class="string">"root-resource"</span>),
-<a href=#132 id=132 data-nosnippet>132</a>            MetaString::from(<span class="string">"web"</span>),
-<a href=#133 id=133 data-nosnippet>133</a>            trace_id,
+<a href=#94 id=94 data-nosnippet>94</a>        root.attributes.insert(
+<a href=#95 id=95 data-nosnippet>95</a>            MetaString::from_static(DEPRECATED_RATE_KEY),
+<a href=#96 id=96 data-nosnippet>96</a>            AttributeValue::Float(rate),
+<a href=#97 id=97 data-nosnippet>97</a>        );
+<a href=#98 id=98 data-nosnippet>98</a>        rate
+<a href=#99 id=99 data-nosnippet>99</a>    }
+<a href=#100 id=100 data-nosnippet>100</a>}
+<a href=#101 id=101 data-nosnippet>101</a>
+<a href=#102 id=102 data-nosnippet>102</a><span class="kw">fn </span>to_sampler_env(tracer_env: <span class="kw-2">&amp;</span>str, agent_env: <span class="kw-2">&amp;</span>MetaString) -&gt; MetaString {
+<a href=#103 id=103 data-nosnippet>103</a>    <span class="kw">if </span>tracer_env.is_empty() {
+<a href=#104 id=104 data-nosnippet>104</a>        agent_env.clone()
+<a href=#105 id=105 data-nosnippet>105</a>    } <span class="kw">else </span>{
+<a href=#106 id=106 data-nosnippet>106</a>        MetaString::from(tracer_env)
+<a href=#107 id=107 data-nosnippet>107</a>    }
+<a href=#108 id=108 data-nosnippet>108</a>}
+<a href=#109 id=109 data-nosnippet>109</a>
+<a href=#110 id=110 data-nosnippet>110</a><span class="attr">#[cfg(test)]
+<a href=#111 id=111 data-nosnippet>111</a></span><span class="kw">mod </span>tests {
+<a href=#112 id=112 data-nosnippet>112</a>    <span class="comment">// logic for these tests are taken from here: https://github.com/DataDog/datadog-agent/blob/main/pkg/trace/sampler/prioritysampler_test.go
+<a href=#113 id=113 data-nosnippet>113</a>    </span><span class="kw">use </span>std::time::{Duration, SystemTime};
+<a href=#114 id=114 data-nosnippet>114</a>
+<a href=#115 id=115 data-nosnippet>115</a>    <span class="kw">use </span>saluki_core::data_model::event::trace::{Span, Trace};
+<a href=#116 id=116 data-nosnippet>116</a>    <span class="kw">use </span>stringtheory::MetaString;
+<a href=#117 id=117 data-nosnippet>117</a>
+<a href=#118 id=118 data-nosnippet>118</a>    <span class="kw">use super</span>::<span class="kw-2">*</span>;
+<a href=#119 id=119 data-nosnippet>119</a>    <span class="kw">use </span><span class="kw">crate</span>::transforms::trace_sampler::signature::ServiceSignature;
+<a href=#120 id=120 data-nosnippet>120</a>
+<a href=#121 id=121 data-nosnippet>121</a>    <span class="kw">const </span>BUCKET_DURATION: Duration = Duration::from_secs(<span class="number">5</span>);
+<a href=#122 id=122 data-nosnippet>122</a>    <span class="kw">const </span>PRIORITY_USER_DROP: i32 = -<span class="number">1</span>;
+<a href=#123 id=123 data-nosnippet>123</a>
+<a href=#124 id=124 data-nosnippet>124</a>    <span class="kw">fn </span>get_test_priority_sampler(target_tps: f64) -&gt; PrioritySampler {
+<a href=#125 id=125 data-nosnippet>125</a>        PrioritySampler::new(MetaString::from(<span class="string">"agent-env"</span>), <span class="number">1.0</span>, target_tps)
+<a href=#126 id=126 data-nosnippet>126</a>    }
+<a href=#127 id=127 data-nosnippet>127</a>
+<a href=#128 id=128 data-nosnippet>128</a>    <span class="kw">fn </span>get_test_trace_with_service(service: <span class="kw-2">&amp;</span>str, trace_id: u64) -&gt; (Trace, usize) {
+<a href=#129 id=129 data-nosnippet>129</a>        <span class="kw">let </span>root = Span::new(
+<a href=#130 id=130 data-nosnippet>130</a>            MetaString::from(service),
+<a href=#131 id=131 data-nosnippet>131</a>            MetaString::from(<span class="string">"root-operation"</span>),
+<a href=#132 id=132 data-nosnippet>132</a>            MetaString::from(<span class="string">"root-resource"</span>),
+<a href=#133 id=133 data-nosnippet>133</a>            MetaString::from(<span class="string">"web"</span>),
 <a href=#134 id=134 data-nosnippet>134</a>            <span class="number">1</span>,       <span class="comment">// span_id
 <a href=#135 id=135 data-nosnippet>135</a>            </span><span class="number">0</span>,       <span class="comment">// parent_id
 <a href=#136 id=136 data-nosnippet>136</a>            </span><span class="number">42</span>,      <span class="comment">// start
@@ -143,15 +143,15 @@
 <a href=#143 id=143 data-nosnippet>143</a>            MetaString::from(<span class="string">"child-operation"</span>),
 <a href=#144 id=144 data-nosnippet>144</a>            MetaString::from(<span class="string">"child-resource"</span>),
 <a href=#145 id=145 data-nosnippet>145</a>            MetaString::from(<span class="string">"sql"</span>),
-<a href=#146 id=146 data-nosnippet>146</a>            trace_id,
-<a href=#147 id=147 data-nosnippet>147</a>            <span class="number">2</span>,      <span class="comment">// span_id
-<a href=#148 id=148 data-nosnippet>148</a>            </span><span class="number">1</span>,      <span class="comment">// parent_id
-<a href=#149 id=149 data-nosnippet>149</a>            </span><span class="number">100</span>,    <span class="comment">// start
-<a href=#150 id=150 data-nosnippet>150</a>            </span><span class="number">200000</span>, <span class="comment">// duration
-<a href=#151 id=151 data-nosnippet>151</a>            </span><span class="number">0</span>,      <span class="comment">// error
-<a href=#152 id=152 data-nosnippet>152</a>        </span>);
-<a href=#153 id=153 data-nosnippet>153</a>
-<a href=#154 id=154 data-nosnippet>154</a>        <span class="kw">let </span>trace = Trace::new(<span class="macro">vec!</span>[root, child], TagSet::default());
+<a href=#146 id=146 data-nosnippet>146</a>            <span class="number">2</span>,      <span class="comment">// span_id
+<a href=#147 id=147 data-nosnippet>147</a>            </span><span class="number">1</span>,      <span class="comment">// parent_id
+<a href=#148 id=148 data-nosnippet>148</a>            </span><span class="number">100</span>,    <span class="comment">// start
+<a href=#149 id=149 data-nosnippet>149</a>            </span><span class="number">200000</span>, <span class="comment">// duration
+<a href=#150 id=150 data-nosnippet>150</a>            </span><span class="number">0</span>,      <span class="comment">// error
+<a href=#151 id=151 data-nosnippet>151</a>        </span>);
+<a href=#152 id=152 data-nosnippet>152</a>
+<a href=#153 id=153 data-nosnippet>153</a>        <span class="kw">let </span><span class="kw-2">mut </span>trace = Trace::new(<span class="macro">vec!</span>[root, child]);
+<a href=#154 id=154 data-nosnippet>154</a>        trace.trace_id_low = trace_id;
 <a href=#155 id=155 data-nosnippet>155</a>        (trace, <span class="number">0</span>)
 <a href=#156 id=156 data-nosnippet>156</a>    }
 <a href=#157 id=157 data-nosnippet>157</a>

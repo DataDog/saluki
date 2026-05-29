@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"enum":["AttributeScalarValue","AttributeValue"],"struct":["Span","SpanEvent","SpanLink","Trace","TraceSampling"]};
+window.SIDEBAR_ITEMS = {"enum":["AttributeValue"],"struct":["PayloadFields","Span","SpanEvent","SpanLink","Trace"]};

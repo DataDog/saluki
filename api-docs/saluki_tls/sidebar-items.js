@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"enum":["TlsMinimumVersion"],"fn":["initialize_default_crypto_provider","load_platform_root_certificates"],"struct":["ClientTLSConfigBuilder"]};
+window.SIDEBAR_ITEMS = {"enum":["TlsMinimumVersion"],"fn":["initialize_default_crypto_provider","load_platform_root_certificates","load_platform_root_certificates_inner"],"struct":["ClientTLSConfigBuilder"]};

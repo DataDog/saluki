@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"fn":["enable_uds_socket_credentials","socket_reuseport_supported","unix_recvmsg","unixgram_recvmsg"]};
+window.SIDEBAR_ITEMS = {"fn":["enable_uds_socket_credentials","socket_reuseport_supported","uds_sendmsg_with_creds","unix_recvmsg","unixgram_recvmsg"]};

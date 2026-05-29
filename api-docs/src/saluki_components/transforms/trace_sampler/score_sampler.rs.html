@@ -1,7 +1,7 @@
-<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Source of the Rust file `lib/saluki-components/src/transforms/trace_sampler/score_sampler.rs`."><title>score_sampler.rs - source</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../../../static.files/rustdoc-17e0aaed.css"><meta name="rustdoc-vars" data-root-path="../../../../" data-static-root-path="../../../../static.files/" data-current-crate="saluki_components" data-themes="" data-resource-suffix="" data-rustdoc-version="1.98.0-nightly (d1fc603d1 2026-05-26)" data-channel="nightly" data-search-js="search-fd9372ac.js" data-stringdex-js="stringdex-2da4960a.js" data-settings-js="settings-170eb4bf.js" ><script src="../../../../static.files/storage-41dd4d93.js"></script><script defer src="../../../../static.files/src-script-813739b1.js"></script><script defer src="../../../../src-files.js"></script><script defer src="../../../../static.files/main-fcd733ba.js"></script><noscript><link rel="stylesheet" href="../../../../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../../../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../../../static.files/favicon-044be391.svg"></head><body class="rustdoc src"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><nav class="sidebar"><div class="src-sidebar-title"><h2>Files</h2></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><h1><div class="sub-heading">saluki_components/transforms/trace_sampler/</div>score_sampler.rs</h1><rustdoc-toolbar></rustdoc-toolbar></div><div class="example-wrap digits-3"><pre class="rust"><code><a href=#1 id=1 data-nosnippet>1</a><span class="kw">use </span>std::time::SystemTime;
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Source of the Rust file `lib/saluki-components/src/transforms/trace_sampler/score_sampler.rs`."><title>score_sampler.rs - source</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../../../static.files/rustdoc-17e0aaed.css"><meta name="rustdoc-vars" data-root-path="../../../../" data-static-root-path="../../../../static.files/" data-current-crate="saluki_components" data-themes="" data-resource-suffix="" data-rustdoc-version="1.98.0-nightly (cced03bfd 2026-05-28)" data-channel="nightly" data-search-js="search-fd9372ac.js" data-stringdex-js="stringdex-2da4960a.js" data-settings-js="settings-170eb4bf.js" ><script src="../../../../static.files/storage-41dd4d93.js"></script><script defer src="../../../../static.files/src-script-813739b1.js"></script><script defer src="../../../../src-files.js"></script><script defer src="../../../../static.files/main-fcd733ba.js"></script><noscript><link rel="stylesheet" href="../../../../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../../../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../../../static.files/favicon-044be391.svg"></head><body class="rustdoc src"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><nav class="sidebar"><div class="src-sidebar-title"><h2>Files</h2></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><h1><div class="sub-heading">saluki_components/transforms/trace_sampler/</div>score_sampler.rs</h1><rustdoc-toolbar></rustdoc-toolbar></div><div class="example-wrap digits-3"><pre class="rust"><code><a href=#1 id=1 data-nosnippet>1</a><span class="kw">use </span>std::time::SystemTime;
 <a href=#2 id=2 data-nosnippet>2</a>
 <a href=#3 id=3 data-nosnippet>3</a><span class="kw">use </span>saluki_common::collections::FastHashMap;
-<a href=#4 id=4 data-nosnippet>4</a><span class="kw">use </span>saluki_core::data_model::event::trace::{Span, Trace};
+<a href=#4 id=4 data-nosnippet>4</a><span class="kw">use </span>saluki_core::data_model::event::trace::{AttributeValue, Span, Trace};
 <a href=#5 id=5 data-nosnippet>5</a><span class="kw">use </span>stringtheory::MetaString;
 <a href=#6 id=6 data-nosnippet>6</a>
 <a href=#7 id=7 data-nosnippet>7</a><span class="kw">use </span><span class="kw">super</span>::signature::{compute_signature_with_root_and_env, Signature};
@@ -97,15 +97,15 @@
 <a href=#97 id=97 data-nosnippet>97</a>        </span><span class="kw">let </span>rate = <span class="self">self</span>.sampler.get_signature_sample_rate(<span class="kw-2">&amp;</span>signature);
 <a href=#98 id=98 data-nosnippet>98</a>
 <a href=#99 id=99 data-nosnippet>99</a>        <span class="comment">// Apply the sampling decision
-<a href=#100 id=100 data-nosnippet>100</a>        </span><span class="kw">let </span>root = <span class="kw-2">&amp;mut </span>trace.spans_mut()[root_idx];
-<a href=#101 id=101 data-nosnippet>101</a>        <span class="self">self</span>.apply_sample_rate(root, rate)
-<a href=#102 id=102 data-nosnippet>102</a>    }
-<a href=#103 id=103 data-nosnippet>103</a>
-<a href=#104 id=104 data-nosnippet>104</a>    <span class="doccomment">/// Apply the sampling rate to determine if the trace should be kept.
-<a href=#105 id=105 data-nosnippet>105</a>    </span><span class="kw">fn </span>apply_sample_rate(<span class="kw-2">&amp;</span><span class="self">self</span>, root: <span class="kw-2">&amp;mut </span>Span, rate: f64) -&gt; bool {
-<a href=#106 id=106 data-nosnippet>106</a>        <span class="kw">let </span>initial_rate = get_global_rate(root);
-<a href=#107 id=107 data-nosnippet>107</a>        <span class="kw">let </span>new_rate = initial_rate * rate;
-<a href=#108 id=108 data-nosnippet>108</a>        <span class="kw">let </span>trace_id = root.trace_id();
+<a href=#100 id=100 data-nosnippet>100</a>        </span><span class="kw">let </span>trace_id_low = trace.trace_id_low;
+<a href=#101 id=101 data-nosnippet>101</a>        <span class="kw">let </span>root = <span class="kw-2">&amp;mut </span>trace.spans_mut()[root_idx];
+<a href=#102 id=102 data-nosnippet>102</a>        <span class="self">self</span>.apply_sample_rate(root, trace_id_low, rate)
+<a href=#103 id=103 data-nosnippet>103</a>    }
+<a href=#104 id=104 data-nosnippet>104</a>
+<a href=#105 id=105 data-nosnippet>105</a>    <span class="doccomment">/// Apply the sampling rate to determine if the trace should be kept.
+<a href=#106 id=106 data-nosnippet>106</a>    </span><span class="kw">fn </span>apply_sample_rate(<span class="kw-2">&amp;</span><span class="self">self</span>, root: <span class="kw-2">&amp;mut </span>Span, trace_id: u64, rate: f64) -&gt; bool {
+<a href=#107 id=107 data-nosnippet>107</a>        <span class="kw">let </span>initial_rate = get_global_rate(root);
+<a href=#108 id=108 data-nosnippet>108</a>        <span class="kw">let </span>new_rate = initial_rate * rate;
 <a href=#109 id=109 data-nosnippet>109</a>        <span class="kw">let </span>sampled = sample_by_rate(trace_id, new_rate);
 <a href=#110 id=110 data-nosnippet>110</a>
 <a href=#111 id=111 data-nosnippet>111</a>        <span class="kw">if </span>sampled {
@@ -146,8 +146,8 @@
 <a href=#146 id=146 data-nosnippet>146</a>
 <a href=#147 id=147 data-nosnippet>147</a>    <span class="doccomment">/// Set the sampling rate metric on a span.
 <a href=#148 id=148 data-nosnippet>148</a>    </span><span class="kw">pub fn </span>set_sampling_rate_metric(<span class="kw-2">&amp;</span><span class="self">self</span>, span: <span class="kw-2">&amp;mut </span>Span, rate: f64) {
-<a href=#149 id=149 data-nosnippet>149</a>        span.metrics_mut()
-<a href=#150 id=150 data-nosnippet>150</a>            .insert(MetaString::from(<span class="self">self</span>.sampling_rate_key), rate);
+<a href=#149 id=149 data-nosnippet>149</a>        span.attributes
+<a href=#150 id=150 data-nosnippet>150</a>            .insert(MetaString::from(<span class="self">self</span>.sampling_rate_key), AttributeValue::Float(rate));
 <a href=#151 id=151 data-nosnippet>151</a>    }
 <a href=#152 id=152 data-nosnippet>152</a>}
 <a href=#153 id=153 data-nosnippet>153</a>
@@ -169,16 +169,16 @@
 <a href=#169 id=169 data-nosnippet>169</a><span class="doccomment">/// Calculate the weight from the span's global rate and presampler rate.
 <a href=#170 id=170 data-nosnippet>170</a></span><span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">fn </span>weight_root(span: <span class="kw-2">&amp;</span>Span) -&gt; f32 {
 <a href=#171 id=171 data-nosnippet>171</a>    <span class="kw">let </span>client_rate = span
-<a href=#172 id=172 data-nosnippet>172</a>        .metrics()
+<a href=#172 id=172 data-nosnippet>172</a>        .attributes
 <a href=#173 id=173 data-nosnippet>173</a>        .get(KEY_SAMPLING_RATE_GLOBAL)
-<a href=#174 id=174 data-nosnippet>174</a>        .copied()
+<a href=#174 id=174 data-nosnippet>174</a>        .and_then(AttributeValue::as_num)
 <a href=#175 id=175 data-nosnippet>175</a>        .filter(|<span class="kw-2">&amp;</span>r| r &gt; <span class="number">0.0 </span>&amp;&amp; r &lt;= <span class="number">1.0</span>)
 <a href=#176 id=176 data-nosnippet>176</a>        .unwrap_or(<span class="number">1.0</span>);
 <a href=#177 id=177 data-nosnippet>177</a>
 <a href=#178 id=178 data-nosnippet>178</a>    <span class="kw">let </span>pre_sampler_rate = span
-<a href=#179 id=179 data-nosnippet>179</a>        .metrics()
+<a href=#179 id=179 data-nosnippet>179</a>        .attributes
 <a href=#180 id=180 data-nosnippet>180</a>        .get(KEY_SAMPLING_RATE_PRE_SAMPLER)
-<a href=#181 id=181 data-nosnippet>181</a>        .copied()
+<a href=#181 id=181 data-nosnippet>181</a>        .and_then(AttributeValue::as_num)
 <a href=#182 id=182 data-nosnippet>182</a>        .filter(|<span class="kw-2">&amp;</span>r| r &gt; <span class="number">0.0 </span>&amp;&amp; r &lt;= <span class="number">1.0</span>)
 <a href=#183 id=183 data-nosnippet>183</a>        .unwrap_or(<span class="number">1.0</span>);
 <a href=#184 id=184 data-nosnippet>184</a>
@@ -187,6 +187,9 @@
 <a href=#187 id=187 data-nosnippet>187</a>
 <a href=#188 id=188 data-nosnippet>188</a><span class="doccomment">/// Get the cumulative sample rate of the trace to which this span belongs.
 <a href=#189 id=189 data-nosnippet>189</a></span><span class="kw">fn </span>get_global_rate(span: <span class="kw-2">&amp;</span>Span) -&gt; f64 {
-<a href=#190 id=190 data-nosnippet>190</a>    span.metrics().get(KEY_SAMPLING_RATE_GLOBAL).copied().unwrap_or(<span class="number">1.0</span>)
-<a href=#191 id=191 data-nosnippet>191</a>}
+<a href=#190 id=190 data-nosnippet>190</a>    span.attributes
+<a href=#191 id=191 data-nosnippet>191</a>        .get(KEY_SAMPLING_RATE_GLOBAL)
+<a href=#192 id=192 data-nosnippet>192</a>        .and_then(AttributeValue::as_num)
+<a href=#193 id=193 data-nosnippet>193</a>        .unwrap_or(<span class="number">1.0</span>)
+<a href=#194 id=194 data-nosnippet>194</a>}
 </code></pre></div></section></main></body></html>

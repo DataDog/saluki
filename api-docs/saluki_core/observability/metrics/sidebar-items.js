@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"fn":["initialize_metrics"],"struct":["FilterHandle","MetricsFlusherWorker","MetricsStream"],"type":["SharedEvents"]};
+window.SIDEBAR_ITEMS = {"enum":["AggregatedMetricValue"],"fn":["get_shared_metrics_state","initialize_metrics"],"struct":["AggregatedHistogram","AggregatedMetricsProcessor","AggregatedMetricsState","FilterHandle","MetricsFlusherWorker","MetricsStream","Reflector","RemappedMetric","RemapperRule","TelemetryProcessor"],"trait":["Processor"],"type":["SharedEvents"]};
