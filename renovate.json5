@@ -62,15 +62,29 @@
       "matchManagers": ["cargo"],
       "versioning": "cargo"
     },
-    // Warn reviewers that Cargo major updates (including `0.x` → `0.y`)
-    // often require manual fixes: removed features, changed APIs, etc.
-    // Renovate creates the branch and bumps the version; a human must verify
-    // compilation and resolve any breaking changes before merging.
+    // Cargo pre-1.0 breaking updates: `0.x` → `0.y` is a breaking change in
+    // Cargo's semver (`^0.9` covers `>=0.9.0, <0.10.0`), but Renovate still
+    // assigns `updateType: "minor"` because the major version digit (`0`) does
+    // not change. That means `group:allNonMajor` captures these bumps in the
+    // weekly batch PR, where Renovate cannot fix compilation errors from
+    // removed features or API changes. Override `groupName` so they land in a
+    // dedicated PR that clearly signals manual review is required.
+    {
+      "matchManagers": ["cargo"],
+      "matchCurrentVersion": "/^0\\.[0-9]/",
+      "matchUpdateTypes": ["minor"],
+      "groupName": "cargo pre-1.0 breaking updates",
+      "prBodyNotes": [
+        "**Cargo breaking update (pre-v1.0)** — `0.x` → `0.y` is a breaking change in Cargo's semver. Before merging, verify the workspace compiles and check upstream release notes for removed features or API changes."
+      ]
+    },
+    // Warn reviewers that genuine Cargo major updates (1.x → 2.0, etc.) may
+    // also require manual fixes for removed features or API changes.
     {
       "matchManagers": ["cargo"],
       "matchUpdateTypes": ["major"],
       "prBodyNotes": [
-        "**Cargo major update** — Cargo's semver treats `0.x` → `0.y` as breaking. Before merging, verify the workspace compiles and check upstream release notes for removed features or API changes."
+        "**Cargo major update** — Before merging, verify the workspace compiles and check upstream release notes for removed features or API changes."
       ]
     }
   ]
