@@ -25,7 +25,6 @@ pub struct LoggingConfiguration {
     /// Whether to use RFC 3339 timestamps (`2024-12-31T23:59:59Z`) in log output.
     ///
     /// When `false` (the default), timestamps use the legacy format (`2024-12-31 23:59:59 UTC`).
-    /// Corresponds to the core Agent's `log_format_rfc3339` setting.
     ///
     /// Defaults to `false`.
     pub log_format_rfc3339: bool,

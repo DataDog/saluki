@@ -81,7 +81,7 @@ where
         write!(
             writer,
             "{} | {} | {} | ",
-            format_now(self.rfc3339),
+            get_delayed_format_now(self.rfc3339),
             self.app_name,
             metadata.level()
         )?;
@@ -493,8 +493,8 @@ impl field::Visit for AgentLikeJsonFieldVisitor {
 /// Gets a delayed formatter for the current time.
 ///
 /// When `rfc3339` is `true`, returns RFC 3339 format (`2024-12-31T23:59:59Z`, UTC).
-/// When `false`, returns the legacy Agent format (`2024-12-31 23:59:59 UTC`, system timezone).
-fn format_now(rfc3339: bool) -> DelayedFormat<impl Iterator<Item = &'static Item<'static>> + Clone> {
+/// When `false`, returns the legacy format (`2024-12-31 23:59:59 UTC`, system timezone).
+fn get_delayed_format_now(rfc3339: bool) -> DelayedFormat<impl Iterator<Item = &'static Item<'static>> + Clone> {
     if rfc3339 {
         // RFC 3339: UTC time with a literal 'Z' suffix. The trailing Z in the format string is
         // a literal character, not a timezone specifier, so this always produces e.g.
