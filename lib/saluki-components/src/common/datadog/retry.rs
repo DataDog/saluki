@@ -234,10 +234,10 @@ impl RetryConfiguration {
 /// Deletes `retry-*.json` files in `queue_path` whose creation timestamp exceeds `max_age_days`.
 ///
 /// Called at startup, before disk persistence is opened, to prevent stale retry data from
-/// accumulating after long outages. `queue_path` must be the per-queue subdirectory (i.e.
-/// `forwarder_storage_path/{queue_id}`), not the storage root. Age is determined by the
-/// creation timestamp embedded in each filename, not filesystem mtime. Errors are skipped
-/// non-fatally. Does nothing if `max_age_days` is 0 or `queue_path` does not exist.
+/// accumulating after long outages. `queue_path` must be the per-queue subdirectory under
+/// `forwarder_storage_path`, not the storage root. Age is determined by the creation
+/// timestamp embedded in each filename, not the filesystem modification time. Errors are
+/// skipped non-fatally. Does nothing if `max_age_days` is 0 or `queue_path` does not exist.
 pub(super) async fn remove_outdated_retry_files(queue_path: &std::path::Path, max_age_days: u32) {
     if max_age_days == 0 {
         return;
