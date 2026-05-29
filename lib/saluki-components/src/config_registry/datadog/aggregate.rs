@@ -5,9 +5,9 @@ use crate::config_registry::{
 };
 
 // ADP-specific keys not present in the vendored Agent schema.
-static AGGREGATE_WINDOW_DURATION_SECS_SCHEMA: SchemaEntry = SchemaEntry {
+static AGGREGATE_WINDOW_DURATION_SECONDS_SCHEMA: SchemaEntry = SchemaEntry {
     schema: Schema::Saluki,
-    yaml_path: "aggregate_window_duration_secs",
+    yaml_path: "aggregate_window_duration_seconds",
     env_vars: &[],
     value_type: ValueType::Integer,
     default: None,
@@ -47,8 +47,8 @@ static AGGREGATE_PASSTHROUGH_IDLE_FLUSH_TIMEOUT_SCHEMA: SchemaEntry = SchemaEntr
 
 crate::declare_annotations! {
     /// `aggregate_window_duration`—size of each aggregation window.
-    AGGREGATE_WINDOW_DURATION_SECS = SalukiAnnotation {
-        schema: &AGGREGATE_WINDOW_DURATION_SECS_SCHEMA,
+    AGGREGATE_WINDOW_DURATION_SECONDS = SalukiAnnotation {
+        schema: &AGGREGATE_WINDOW_DURATION_SECONDS_SCHEMA,
         support_level: SupportLevel::Full,
         additional_yaml_paths: &[],
         env_var_override: None,

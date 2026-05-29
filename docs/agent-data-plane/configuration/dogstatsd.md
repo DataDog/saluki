@@ -273,7 +273,7 @@ The following settings are specific to ADP and have no equivalent in the core ag
 | `aggregate_flush_interval`                  | Aggregator flush period                    |         |
 | `aggregate_flush_open_windows`              | Flush open windows on stop                 |         |
 | `aggregate_passthrough_idle_flush_timeout`  | Passthrough buffer flush delay             |         |
-| `aggregate_window_duration_secs`            | Aggregation window size                    |         |
+| `aggregate_window_duration_seconds`            | Aggregation window size                    |         |
 | `connect_retry_attempts`                    | IPC client connect retries                 |         |
 | `connect_retry_backoff`                     | IPC client retry delay                     |         |
 | `counter_expiry_seconds`                    | Idle counter keep-alive duration           | 300     |

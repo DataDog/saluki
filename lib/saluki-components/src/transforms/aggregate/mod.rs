@@ -36,7 +36,7 @@ use self::config::{HistogramConfiguration, HistogramStatistic};
 
 const PASSTHROUGH_IDLE_FLUSH_CHECK_INTERVAL: Duration = Duration::from_secs(2);
 
-const fn default_window_duration_secs() -> NonZeroU64 {
+const fn default_window_duration_seconds() -> NonZeroU64 {
     // SAFETY: It's clearly not zero.
     unsafe { NonZeroU64::new_unchecked(1) }
 }
@@ -92,8 +92,11 @@ pub struct AggregateConfiguration {
     /// Window durations cannot be zero.
     ///
     /// Defaults to 10 seconds.
-    #[serde(rename = "aggregate_window_duration_secs", default = "default_window_duration_secs")]
-    window_duration_secs: NonZeroU64,
+    #[serde(
+        rename = "aggregate_window_duration_seconds",
+        default = "default_window_duration_seconds"
+    )]
+    window_duration_seconds: NonZeroU64,
 
     /// How often to flush buckets.
     ///
@@ -194,7 +197,7 @@ impl AggregateConfiguration {
     /// Creates a new `AggregateConfiguration` with default values.
     pub fn with_defaults() -> Self {
         Self {
-            window_duration_secs: default_window_duration_secs(),
+            window_duration_seconds: default_window_duration_seconds(),
             primary_flush_interval: default_primary_flush_interval(),
             context_limit: default_context_limit(),
             flush_open_windows: false,
@@ -213,7 +216,7 @@ impl TransformBuilder for AggregateConfiguration {
         let telemetry = Telemetry::new(&metrics_builder);
 
         let state = AggregationState::new(
-            self.window_duration_secs,
+            self.window_duration_seconds,
             self.context_limit,
             self.counter_expiry_seconds.filter(|s| *s != 0).map(Duration::from_secs),
             self.hist_config.clone(),
@@ -222,7 +225,7 @@ impl TransformBuilder for AggregateConfiguration {
 
         let passthrough_batcher = PassthroughBatcher::new(
             self.passthrough_idle_flush_timeout,
-            self.window_duration_secs,
+            self.window_duration_seconds,
             telemetry.clone(),
         )
         .await;
