@@ -4,6 +4,7 @@
 //! is used regardless of output mode (TUI or plain). Events are emitted to a channel
 //! and consumed by either a TUI renderer or logging consumer.
 
+use std::sync::RwLock;
 use std::{
     collections::HashMap,
     io::Write as _,
@@ -16,7 +17,7 @@ use airlock::driver::{Driver, DriverConfig, DriverDetails};
 use bollard::container::LogOutput;
 use futures::stream::{self, StreamExt as _};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
-use tokio::sync::{mpsc, RwLock, Semaphore};
+use tokio::sync::{mpsc, Semaphore};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
@@ -779,7 +780,7 @@ impl IntegrationRunner {
             while let Some(log_result) = log_stream.next().await {
                 match log_result {
                     Ok(log) => {
-                        let mut buffer = log_buffer.write().await;
+                        let mut buffer = log_buffer.write().unwrap();
                         match log {
                             LogOutput::StdOut { message } => {
                                 if let Ok(line) = String::from_utf8(message.to_vec()) {
@@ -843,7 +844,7 @@ impl IntegrationRunner {
         let log_dir = self.tctx.log_dir();
 
         // Get the log buffer contents.
-        let buffer = self.log_buffer.read().await;
+        let buffer = self.log_buffer.read().unwrap();
 
         // Write stdout.
         let stdout_path = log_dir.join("stdout.log");

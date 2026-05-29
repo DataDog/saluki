@@ -1,8 +1,8 @@
+use std::sync::RwLock;
 use std::{sync::Arc, time::Duration};
 
 use futures::future;
 use saluki_error::GenericError;
-use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error};
 

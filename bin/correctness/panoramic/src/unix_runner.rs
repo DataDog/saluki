@@ -25,6 +25,7 @@
 //!   `make provision-macos-test-env`). Set the env var explicitly to point at a different
 //!   install (for example, a system-wide `/opt/datadog-agent` on a developer host).
 
+use std::sync::RwLock;
 use std::{
     collections::HashMap,
     path::PathBuf,
@@ -35,7 +36,7 @@ use std::{
 use airlock::unix::{LogSink, UnixProcess, UnixProcessConfig};
 use rand::distr::SampleString as _;
 use saluki_error::{ErrorContext as _, GenericError};
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info};
 
@@ -329,7 +330,7 @@ impl UnixIntegrationRunner {
         use std::io::Write as _;
 
         let log_dir = self.tctx.log_dir();
-        let buffer = self.log_buffer.read().await;
+        let buffer = self.log_buffer.read().unwrap();
 
         let stdout_path = log_dir.join("stdout.log");
         let mut stdout_file = std::fs::File::create(&stdout_path)
@@ -443,18 +444,15 @@ struct PanoramicLogSink {
 
 impl LogSink for PanoramicLogSink {
     fn push_line(&mut self, line: String, is_stderr: bool) {
-        // The log pump (in airlock::unix) holds the LogSink's outer mutex while calling us,
-        // so writes from a single pump are already serialized. Spawn a small task to actually
-        // append to the buffer so we never block the pump on `.write().await` ordering with
-        // concurrent assertion readers.
-        let buf = self.buf.clone();
-        tokio::spawn(async move {
-            let mut buf = buf.write().await;
-            if is_stderr {
-                buf.stderr.push(line);
-            } else {
-                buf.stdout.push(line);
-            }
-        });
+        // Synchronous write into the shared LogBuffer. The lock is briefly contended with
+        // assertion readers; the critical section is just a Vec::push, so it's cheap. Doing
+        // this synchronously (rather than spawning a tokio task per line) guarantees the
+        // buffer is up-to-date by the time the assertion polls.
+        let mut buf = self.buf.write().unwrap();
+        if is_stderr {
+            buf.stderr.push(line);
+        } else {
+            buf.stdout.push(line);
+        }
     }
 }

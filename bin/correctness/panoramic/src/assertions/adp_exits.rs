@@ -135,8 +135,11 @@ impl AdpExitsWithAssertion {
                     duration: started.elapsed(),
                 };
             }
-            let buf = ctx.log_buffer.read().await;
-            if buf.contains_match(&pattern, false, &LogStream::Both) {
+            let matched = {
+                let buf = ctx.log_buffer.read().unwrap();
+                buf.contains_match(&pattern, false, &LogStream::Both)
+            };
+            if matched {
                 return AssertionResult {
                     name: self.name().to_string(),
                     passed: true,
@@ -144,7 +147,6 @@ impl AdpExitsWithAssertion {
                     duration: started.elapsed(),
                 };
             }
-            drop(buf);
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
     }

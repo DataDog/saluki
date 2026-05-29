@@ -78,7 +78,7 @@ impl Assertion for LogContainsAssertion {
 
             // Check the log buffer.
             {
-                let buffer = ctx.log_buffer.read().await;
+                let buffer = ctx.log_buffer.read().unwrap();
                 if buffer.contains_match(&self.pattern, self.is_regex, &self.stream) {
                     return AssertionResult {
                         name: self.name().to_string(),
@@ -187,7 +187,7 @@ impl Assertion for LogNotContainsAssertion {
 
             // Check the log buffer for the unwanted pattern.
             {
-                let buffer = ctx.log_buffer.read().await;
+                let buffer = ctx.log_buffer.read().unwrap();
                 if let Some(matching_line) = buffer.find_match(&self.pattern, self.is_regex, &self.stream) {
                     // Truncate the matching line for display.
                     let display_line = if matching_line.len() > 100 {
