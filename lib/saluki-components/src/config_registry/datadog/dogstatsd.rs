@@ -280,6 +280,7 @@ crate::declare_annotations! {
         used_by: &[structs::DOGSTATSD_CONFIGURATION],
         value_type_override: None,
         test_json: Some(r#""127.0.0.1""#),
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
 
     /// `statsd_forward_port`—port for DogStatsD message forwarding.
@@ -291,6 +292,7 @@ crate::declare_annotations! {
         used_by: &[structs::DOGSTATSD_CONFIGURATION],
         value_type_override: Some(ValueType::Integer),
         test_json: Some("9125"),
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
 
     /// `dogstatsd_string_interner_size`—context interner entry count. Schema Float; field u64.

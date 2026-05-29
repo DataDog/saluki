@@ -99,6 +99,7 @@ crate::declare_annotations! {
         ],
         value_type_override: Some(ValueType::Integer),
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Checks, Pipeline::DogStatsD]),
     };
 
     /// `serializer_max_uncompressed_payload_size`—max uncompressed generic payload size.
@@ -114,6 +115,7 @@ crate::declare_annotations! {
         ],
         value_type_override: Some(ValueType::Integer),
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Checks, Pipeline::DogStatsD]),
     };
 
     /// `serializer_max_series_payload_size`—max compressed V2 series payload size.
@@ -125,6 +127,7 @@ crate::declare_annotations! {
         used_by: &[structs::DATADOG_METRICS_CONFIGURATION],
         value_type_override: Some(ValueType::Integer),
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Checks, Pipeline::DogStatsD]),
     };
 
     /// `serializer_max_series_uncompressed_payload_size`—max uncompressed V2 series payload size.
@@ -136,6 +139,7 @@ crate::declare_annotations! {
         used_by: &[structs::DATADOG_METRICS_CONFIGURATION],
         value_type_override: Some(ValueType::Integer),
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Checks, Pipeline::DogStatsD]),
     };
 
     /// `use_v2_api.series`—when `false`, send series metrics to the legacy V1 JSON intake at `/api/v1/series`.
