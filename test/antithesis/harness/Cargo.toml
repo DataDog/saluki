@@ -16,8 +16,12 @@ clap = { workspace = true, features = [
   "std",
   "usage",
 ] }
+num-traits = { workspace = true }
 rand = { workspace = true }
+rand_distr = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
+serde_yaml = { workspace = true }
 
 [lints.clippy]
 all = "deny"
