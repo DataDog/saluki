@@ -472,7 +472,7 @@ async fn remove_outdated_retry_files(queue_path: &Path, max_age_days: u32) {
     };
     let now_ns = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
+        .unwrap_or_default() // clock before epoch: treat cutoff as 0, skipping all deletions
         .as_nanos();
     let cutoff_ns = now_ns.saturating_sub(max_age_days as u128 * 24 * 3600 * 1_000_000_000);
     let mut removed = 0u32;
@@ -906,18 +906,6 @@ mod tests {
         assert_eq!(0, files_in_dir(&root_path).await);
     }
 
-    async fn make_persisted_queue(root_path: PathBuf, max_age_days: u32) -> PersistedQueue<FakeData> {
-        PersistedQueue::<FakeData>::from_root_path(
-            root_path.clone(),
-            1024 * 1024,
-            0.8,
-            DiskUsageRetrieverWrapper::new(Arc::new(DiskUsageRetrieverImpl::new(root_path))),
-            max_age_days,
-        )
-        .await
-        .expect("should not fail to create persisted queue")
-    }
-
     #[tokio::test]
     async fn persisted_queue_removes_outdated_files_on_initialization() {
         let data = FakeData::random();
@@ -939,7 +927,15 @@ mod tests {
 
         // Initialize the queue with a 10-day age limit.
         // The stale file must be deleted before entries are loaded.
-        let queue = make_persisted_queue(root_path.clone(), 10).await;
+        let queue = PersistedQueue::<FakeData>::from_root_path(
+            root_path.clone(),
+            1024 * 1024,
+            0.8,
+            DiskUsageRetrieverWrapper::new(Arc::new(DiskUsageRetrieverImpl::new(root_path.clone()))),
+            10,
+        )
+        .await
+        .expect("should not fail to create persisted queue");
 
         assert_eq!(0, files_in_dir(&root_path).await);
         assert!(queue.is_empty());
@@ -955,12 +951,28 @@ mod tests {
         let root_path = temp_dir.path().to_path_buf();
 
         // Seed with a freshly-written entry via a normal queue.
-        let mut seeding_queue = make_persisted_queue(root_path.clone(), 10).await;
+        let mut seeding_queue = PersistedQueue::<FakeData>::from_root_path(
+            root_path.clone(),
+            1024 * 1024,
+            0.8,
+            DiskUsageRetrieverWrapper::new(Arc::new(DiskUsageRetrieverImpl::new(root_path.clone()))),
+            10,
+        )
+        .await
+        .expect("should not fail to create persisted queue");
         let _ = seeding_queue.push(data).await.expect("should not fail to push data");
         assert_eq!(1, files_in_dir(&root_path).await);
 
         // Re-open with max_age_days=0: the just-written file must also be deleted.
-        let queue = make_persisted_queue(root_path.clone(), 0).await;
+        let queue = PersistedQueue::<FakeData>::from_root_path(
+            root_path.clone(),
+            1024 * 1024,
+            0.8,
+            DiskUsageRetrieverWrapper::new(Arc::new(DiskUsageRetrieverImpl::new(root_path.clone()))),
+            0,
+        )
+        .await
+        .expect("should not fail to create persisted queue");
 
         assert_eq!(0, files_in_dir(&root_path).await);
         assert!(queue.is_empty());
