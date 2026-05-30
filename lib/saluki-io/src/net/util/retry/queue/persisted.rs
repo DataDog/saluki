@@ -578,7 +578,7 @@ mod tests {
             1024,
             0.8,
             DiskUsageRetrieverWrapper::new(Arc::new(DiskUsageRetrieverImpl::new(root_path.clone()))),
-            0,
+            10,
         )
         .await
         .expect("should not fail to create persisted queue");
@@ -618,7 +618,7 @@ mod tests {
             1,
             0.8,
             DiskUsageRetrieverWrapper::new(Arc::new(DiskUsageRetrieverImpl::new(root_path.clone()))),
-            0,
+            10,
         )
         .await
         .expect("should not fail to create persisted queue");
@@ -649,7 +649,7 @@ mod tests {
             32,
             0.8,
             DiskUsageRetrieverWrapper::new(Arc::new(DiskUsageRetrieverImpl::new(root_path.clone()))),
-            0,
+            10,
         )
         .await
         .expect("should not fail to create persisted queue");
@@ -699,7 +699,7 @@ mod tests {
             80,
             0.35,
             DiskUsageRetrieverWrapper::new(Arc::new(MockDiskUsageRetriever {})),
-            0,
+            10,
         )
         .await
         .expect("should not fail to create persisted queue");
@@ -758,7 +758,7 @@ mod tests {
             1024,
             0.8,
             DiskUsageRetrieverWrapper::new(Arc::new(MockDiskUsageRetriever {})),
-            0,
+            10,
         )
         .await
         .expect("should not fail to create persisted queue");
@@ -807,7 +807,7 @@ mod tests {
             1024,
             0.8,
             DiskUsageRetrieverWrapper::new(Arc::new(MockDiskUsageRetriever {})),
-            0,
+            10,
         )
         .await
         .expect("should not fail to create persisted queue");
@@ -846,7 +846,7 @@ mod tests {
             1024,
             0.8,
             DiskUsageRetrieverWrapper::new(Arc::new(MockDiskUsageRetriever {})),
-            0,
+            10,
         )
         .await
         .expect("should not fail to create persisted queue");
@@ -876,7 +876,7 @@ mod tests {
             32,
             0.8,
             DiskUsageRetrieverWrapper::new(Arc::new(MockDiskUsageRetriever {})),
-            0,
+            10,
         )
         .await
         .expect("should not fail to create persisted queue");
