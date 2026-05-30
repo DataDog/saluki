@@ -167,12 +167,14 @@ pub async fn handle_run_command(
     let dsd_stats_config = DogStatsDStatisticsConfiguration::new();
 
     // Create the blueprint for our primary topology.
+
     let (blueprint, control_surfaces) = create_topology(
         &config,
         &dp_config,
         &env_provider,
         &component_registry,
         dsd_stats_config.clone(),
+        &ra_bootstrap,
     )
     .await?;
     let (dsd_capture_api_handler, dsd_replay_api_handler) = match control_surfaces.dogstatsd {
@@ -441,6 +443,7 @@ struct DogStatsDControlSurface {
 async fn create_topology(
     config: &GenericConfiguration, dp_config: &DataPlaneConfiguration, env_provider: &ADPEnvironmentProvider,
     component_registry: &ComponentRegistry, dsd_stats_config: DogStatsDStatisticsConfiguration,
+    ra_bootstrap: &Option<RemoteAgentBootstrap>,
 ) -> Result<(TopologyBlueprint, TopologyControlSurfaces), GenericError> {
     let mut blueprint = TopologyBlueprint::new("primary", component_registry);
     let mut control_surfaces = TopologyControlSurfaces::default();
@@ -465,8 +468,13 @@ async fn create_topology(
         || dp_config.service_checks_pipeline_required()
         || dp_config.traces_pipeline_required()
     {
-        let dd_forwarder_config =
+        let mut dd_forwarder_config =
             DatadogConfiguration::from_configuration(config).error_context("Failed to configure Datadog forwarder.")?;
+
+        if let Some(ra_bootstrap) = ra_bootstrap {
+            dd_forwarder_config = dd_forwarder_config
+                .with_config_update_retry_predicate(ra_bootstrap.create_config_update_retry_predicate());
+        }
         blueprint.add_forwarder("dd_out", dd_forwarder_config)?;
     }
 

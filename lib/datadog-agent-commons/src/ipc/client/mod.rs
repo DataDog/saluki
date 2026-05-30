@@ -16,9 +16,9 @@ use saluki_io::net::client::http::HttpsCapableConnectorBuilder;
 use tonic::{
     service::interceptor::InterceptedService,
     transport::{Channel, Endpoint},
-    Code, Request, Response,
+    Code, Request, Response, Status,
 };
-use tracing::warn;
+use tracing::{debug, warn};
 
 use crate::ipc::{config::RemoteAgentClientConfiguration, session::SessionId, tls::build_ipc_client_ipc_tls_config};
 
@@ -222,6 +222,38 @@ impl RemoteAgentClient {
 
         StreamingResponse::from_response_future(async move { client.stream_config_events(request).await })
     }
+
+    /// Requests that the Agent refresh its configuration and publish updates.
+    ///
+    /// A successful RPC response only means the request was delivered to the Agent. Configuration recovery still depends
+    /// on the config stream publishing updated values.
+    ///
+    /// # Errors
+    ///
+    /// If there is an error sending the request to the Agent API, an error will be returned. Older Agents that do not
+    /// implement the RPC are treated as successful no-ops.
+    pub async fn request_config_updates(&self, session_id: &SessionId) -> Result<Response<()>, GenericError> {
+        let mut client = self.secure_client.clone();
+        let mut request = Request::new(());
+
+        request
+            .metadata_mut()
+            .insert("session_id", session_id.to_grpc_header_value());
+
+        match client.request_config_updates(request).await {
+            Ok(response) => Ok(response.map(|_| ())),
+            Err(status) => handle_request_config_updates_error(status).map_err(Into::into),
+        }
+    }
+}
+
+fn handle_request_config_updates_error(status: Status) -> Result<Response<()>, Status> {
+    if status.code() == Code::Unimplemented {
+        debug!("Datadog Agent does not implement RequestConfigUpdates. Continuing without config refresh requests.");
+        Ok(Response::new(()))
+    } else {
+        Err(status)
+    }
 }
 
 async fn try_query_agent_api(
@@ -242,5 +274,28 @@ async fn try_query_agent_api(
             )),
             _ => Err(e.into()),
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tonic::Code;
+
+    use super::*;
+
+    #[test]
+    fn request_config_updates_treats_unimplemented_as_noop() {
+        let response = handle_request_config_updates_error(Status::new(Code::Unimplemented, "unknown method"))
+            .expect("unimplemented should be treated as a no-op");
+
+        assert_eq!(response.into_inner(), ());
+    }
+
+    #[test]
+    fn request_config_updates_preserves_other_errors() {
+        let status = handle_request_config_updates_error(Status::new(Code::Unavailable, "agent unavailable"))
+            .expect_err("non-unimplemented errors should be preserved");
+
+        assert_eq!(status.code(), Code::Unavailable);
     }
 }

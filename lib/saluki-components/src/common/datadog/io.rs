@@ -94,7 +94,6 @@ where
 pub struct TransactionForwarder<B> {
     context: ComponentContext,
     config: ForwarderConfiguration,
-    live_config: Option<GenericConfiguration>,
     telemetry: ComponentTelemetry,
     metrics_builder: MetricsBuilder,
     client: HttpClient,
@@ -180,7 +179,6 @@ where
         Ok(Self {
             context,
             config,
-            live_config,
             telemetry,
             metrics_builder,
             client,
@@ -201,7 +199,6 @@ where
         let Self {
             context,
             config,
-            live_config,
             telemetry,
             metrics_builder,
             client,
@@ -216,7 +213,6 @@ where
                 io_shutdown_tx,
                 context,
                 config,
-                live_config,
                 client,
                 telemetry,
                 metrics_builder,
@@ -234,9 +230,8 @@ where
 #[allow(clippy::too_many_arguments)]
 async fn run_io_loop<B>(
     mut transactions_rx: mpsc::Receiver<Transaction<B>>, io_shutdown_tx: oneshot::Sender<()>,
-    context: ComponentContext, config: ForwarderConfiguration, live_config: Option<GenericConfiguration>,
-    service: HttpClient, telemetry: ComponentTelemetry, metrics_builder: MetricsBuilder,
-    resolved_endpoints: Vec<RoutableEndpoint>,
+    context: ComponentContext, config: ForwarderConfiguration, service: HttpClient, telemetry: ComponentTelemetry,
+    metrics_builder: MetricsBuilder, resolved_endpoints: Vec<RoutableEndpoint>,
 ) where
     B: Body + Buf + Clone + Send + Sync + 'static,
     B::Data: Send,
@@ -269,7 +264,6 @@ async fn run_io_loop<B>(
                 task_barrier,
                 context.clone(),
                 config.clone(),
-                live_config.clone(),
                 service.clone(),
                 telemetry.clone(),
                 txnq_telemetry,
@@ -350,8 +344,8 @@ fn should_route_to_endpoint(is_metrics_request: bool, has_metrics_primary: bool,
 #[allow(clippy::too_many_arguments)]
 async fn run_endpoint_io_loop<B>(
     mut txns_rx: mpsc::Receiver<Transaction<B>>, task_barrier: Arc<Barrier>, context: ComponentContext,
-    config: ForwarderConfiguration, live_config: Option<GenericConfiguration>, service: HttpClient,
-    telemetry: ComponentTelemetry, txnq_telemetry: TransactionQueueTelemetry, endpoint: ResolvedEndpoint,
+    config: ForwarderConfiguration, service: HttpClient, telemetry: ComponentTelemetry,
+    txnq_telemetry: TransactionQueueTelemetry, endpoint: ResolvedEndpoint,
 ) where
     B: Body + Buf + Clone + Send + Sync + 'static,
     B::Data: Send,
@@ -383,7 +377,7 @@ async fn run_endpoint_io_loop<B>(
         .map_request(with_version_info())
         .concurrency_limit(config.endpoint_concurrency())
         .layer(RetryCircuitBreakerLayer::new(
-            config.retry().to_default_http_retry_policy(live_config),
+            config.retry().to_default_http_retry_policy(),
         ))
         .map_request(|req: Request<TransactionBody<B>>| req.map(into_client_body))
         .service(service);
@@ -830,9 +824,10 @@ mod tests {
         RootCertStore, ServerConfig,
     };
     use saluki_common::buf::FrozenChunkedBytesBuffer;
-    use saluki_config::ConfigurationLoader;
+    use saluki_config::{dynamic::ConfigUpdate, ConfigurationLoader};
     use saluki_core::{observability::ComponentMetricsExt as _, topology::ComponentId};
     use saluki_io::net::client::http::TlsMinimumVersion;
+    use saluki_io::net::util::retry::HttpRetryPredicate;
     use serde_json::json;
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
@@ -1273,8 +1268,81 @@ app.datadoghq.com: [key-a, key-b]
         None
     }
 
+    async fn start_api_key_recording_http_server(success_api_key: &'static str) -> (String, mpsc::Receiver<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (api_key_tx, api_key_rx) = mpsc::channel(16);
+
+        tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = match listener.accept().await {
+                    Ok(pair) => pair,
+                    Err(_) => return,
+                };
+                let api_key_tx = api_key_tx.clone();
+
+                tokio::spawn(async move {
+                    let mut request = Vec::new();
+                    let mut buf = [0u8; 1024];
+                    loop {
+                        match stream.read(&mut buf).await {
+                            Ok(0) => return,
+                            Ok(n) => {
+                                request.extend_from_slice(&buf[..n]);
+                                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                                    break;
+                                }
+                            }
+                            Err(_) => return,
+                        }
+                    }
+
+                    let request_str = String::from_utf8_lossy(&request).into_owned();
+                    let content_length = parse_content_length(&request_str).unwrap_or(0);
+                    let header_end = request
+                        .windows(4)
+                        .position(|w| w == b"\r\n\r\n")
+                        .map_or(request.len(), |idx| idx + 4);
+                    let mut already_read_body = request.len().saturating_sub(header_end);
+                    while already_read_body < content_length {
+                        match stream.read(&mut buf).await {
+                            Ok(0) => break,
+                            Ok(n) => already_read_body += n,
+                            Err(_) => return,
+                        }
+                    }
+
+                    let api_key = parse_header_value(&request_str, "dd-api-key").unwrap_or_default();
+                    let status = if api_key == success_api_key {
+                        StatusCode::OK
+                    } else {
+                        StatusCode::FORBIDDEN
+                    };
+                    let _ = api_key_tx.send(api_key).await;
+
+                    let response = format!(
+                        "HTTP/1.1 {} {}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                        status.as_u16(),
+                        status.canonical_reason().unwrap_or(""),
+                    );
+                    let _ = stream.write_all(response.as_bytes()).await;
+                    let _ = stream.shutdown().await;
+                });
+            }
+        });
+
+        (format!("http://127.0.0.1:{port}/"), api_key_rx)
+    }
+
+    fn parse_header_value(request: &str, header_name: &str) -> Option<String> {
+        request.lines().find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case(header_name).then(|| value.trim().to_string())
+        })
+    }
+
     fn build_test_forwarder(
-        forwarder_url: &str, live_config: Option<GenericConfiguration>,
+        forwarder_url: &str, live_config: GenericConfiguration, config_update_retry_predicate: HttpRetryPredicate,
     ) -> TransactionForwarder<FrozenChunkedBytesBuffer> {
         // The HTTP client builder requires the process-wide TLS crypto provider to be initialized, even when the
         // forwarder is pointed at a plain HTTP endpoint.
@@ -1296,7 +1364,8 @@ app.datadoghq.com: [key-a, key-b]
             // populated. We are talking to a plain HTTP endpoint anyway, so disable validation to skip that path.
             "skip_ssl_validation": true,
         });
-        let forwarder_config = forwarder_config_from_value(value);
+        let mut forwarder_config = forwarder_config_from_value(value);
+        forwarder_config.with_config_update_retry_predicate(live_config.clone(), config_update_retry_predicate);
         let context =
             ComponentContext::forwarder(ComponentId::try_from("test_forwarder").expect("component ID should be valid"));
         let metrics_builder = MetricsBuilder::from_component_context(&context);
@@ -1305,7 +1374,7 @@ app.datadoghq.com: [key-a, key-b]
         TransactionForwarder::<FrozenChunkedBytesBuffer>::from_config(
             context,
             forwarder_config,
-            live_config,
+            Some(live_config),
             |_uri: &Uri| None,
             telemetry,
             metrics_builder,
@@ -1351,7 +1420,7 @@ app.datadoghq.com: [key-a, key-b]
         // at least one retry to observe the second request.
         let (server_url, counter) = start_recording_http_server(vec![StatusCode::FORBIDDEN, StatusCode::OK]).await;
         let live_config = config_with(json!({ "secret_backend_command": "/bin/true" })).await;
-        let forwarder = build_test_forwarder(&server_url, Some(live_config));
+        let forwarder = build_test_forwarder(&server_url, live_config, Arc::new(|_| true));
 
         let handle = forwarder.spawn().await;
         handle
@@ -1367,5 +1436,78 @@ app.datadoghq.com: [key-a, key-b]
             "with secrets configured, 403 must be retried at least once (saw {} requests)",
             observed
         );
+    }
+
+    #[tokio::test]
+    async fn forwarder_requests_config_update_and_retries_with_rotated_api_key() {
+        let (server_url, mut api_key_rx) = start_api_key_recording_http_server("new-api-key").await;
+        let (live_config, sender) = ConfigurationLoader::for_tests(None, None, true).await;
+        let sender = sender.expect("dynamic configuration sender should be present");
+
+        sender
+            .send(ConfigUpdate::Snapshot(json!({
+                "api_key": "old-api-key",
+                "secret_backend_command": "/bin/true",
+            })))
+            .await
+            .expect("should send initial snapshot");
+        live_config.ready().await;
+
+        let (refresh_tx, mut refresh_rx) = mpsc::channel(4);
+        let forwarder = build_test_forwarder(
+            &server_url,
+            live_config.clone(),
+            Arc::new(move |_| {
+                let _ = refresh_tx.try_send(());
+                true
+            }),
+        );
+
+        let handle = forwarder.spawn().await;
+        handle
+            .send_transaction(build_test_transaction())
+            .await
+            .expect("send should succeed");
+
+        let first_api_key = timeout(Duration::from_secs(2), api_key_rx.recv())
+            .await
+            .expect("timed out waiting for first request")
+            .expect("server should still be running");
+        assert_eq!(first_api_key, "old-api-key");
+
+        timeout(Duration::from_secs(2), refresh_rx.recv())
+            .await
+            .expect("timed out waiting for config update request signal")
+            .expect("refresh signal channel should still be open");
+
+        let mut watcher = live_config.watch_for_updates("api_key");
+        sender
+            .send(ConfigUpdate::Partial {
+                key: "api_key".to_string(),
+                value: json!("new-api-key"),
+            })
+            .await
+            .expect("should send rotated API key");
+        timeout(Duration::from_secs(2), watcher.changed::<String>())
+            .await
+            .expect("timed out waiting for rotated API key");
+
+        let observed_new_key = async {
+            while let Some(api_key) = api_key_rx.recv().await {
+                if api_key == "new-api-key" {
+                    return true;
+                }
+            }
+
+            false
+        };
+        assert!(
+            timeout(Duration::from_secs(3), observed_new_key)
+                .await
+                .expect("timed out waiting for retry with rotated API key"),
+            "forwarder should retry queued transaction with rotated API key"
+        );
+
+        handle.shutdown().await;
     }
 }

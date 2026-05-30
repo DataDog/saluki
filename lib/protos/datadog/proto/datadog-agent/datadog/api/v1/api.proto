@@ -65,4 +65,7 @@ service AgentSecure {
 
     // Streams config events to the remote agent.
     rpc StreamConfigEvents(datadog.model.v1.ConfigStreamRequest) returns (stream datadog.model.v1.ConfigEvent);
+
+    // Requests that the Agent refresh its configuration and publish updates.
+    rpc RequestConfigUpdates(google.protobuf.Empty) returns (google.protobuf.Empty);
 }

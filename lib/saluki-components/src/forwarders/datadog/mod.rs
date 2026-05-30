@@ -9,6 +9,7 @@ use saluki_core::{
     observability::ComponentMetricsExt as _,
 };
 use saluki_error::GenericError;
+use saluki_io::net::util::retry::HttpRetryPredicate;
 use saluki_metrics::MetricsBuilder;
 use stringtheory::MetaString;
 use tokio::select;
@@ -67,6 +68,15 @@ impl DatadogConfiguration {
         endpoint.set_api_key(api_key);
         self.forwarder_config.clear_opw_metrics_endpoint();
 
+        self
+    }
+
+    /// Configures the predicate used to request Core Agent configuration updates for retryable 403 responses.
+    pub fn with_config_update_retry_predicate(mut self, predicate: HttpRetryPredicate) -> Self {
+        if let Some(config) = self.configuration.clone() {
+            self.forwarder_config
+                .with_config_update_retry_predicate(config, predicate);
+        }
         self
     }
 }

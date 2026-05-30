@@ -10,7 +10,7 @@ use tracing::warn;
 use super::{
     endpoints::{EndpointConfiguration, EndpointRoute, RoutableEndpoint},
     proxy::ProxyConfiguration,
-    retry::RetryConfiguration,
+    retry::{retryable_forbidden_predicate_for_config, RetryConfiguration},
 };
 
 const fn default_endpoint_concurrency() -> usize {
@@ -329,6 +329,14 @@ impl ForwarderConfiguration {
     /// Returns a reference to the retry configuration.
     pub const fn retry(&self) -> &RetryConfiguration {
         &self.retry
+    }
+
+    /// Configures the retry predicate used to request Core Agent configuration updates for retryable 403 responses.
+    pub(crate) fn with_config_update_retry_predicate(
+        &mut self, config: GenericConfiguration, predicate: saluki_io::net::util::retry::HttpRetryPredicate,
+    ) {
+        self.retry
+            .with_retry_predicate(retryable_forbidden_predicate_for_config(config, predicate));
     }
 
     /// Returns a reference to the proxy configuration.

@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::{collections::hash_map::Entry, time::Duration};
+use std::{collections::hash_map::Entry, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -20,6 +20,7 @@ use saluki_core::observability::metrics::{
     get_shared_metrics_state, AggregatedMetricsProcessor, Reflector, TelemetryProcessor,
 };
 use saluki_error::{generic_error, GenericError};
+use saluki_io::net::util::retry::HttpRetryPredicate;
 use saluki_io::net::GrpcTargetAddress;
 use serde_json::{Map, Value};
 use tokio::{
@@ -145,6 +146,31 @@ impl RemoteAgentBootstrap {
         tokio::spawn(run_config_stream_event_loop(client, sender, session_id));
 
         receiver
+    }
+
+    /// Creates a predicate that requests Agent configuration updates when a 403 response is retried.
+    pub fn create_config_update_retry_predicate(&self) -> HttpRetryPredicate {
+        let client = self.client.clone();
+        let session_id = self.session_id.clone();
+
+        Arc::new(move |_| {
+            let Some(current_session_id) = session_id.get() else {
+                debug!("Cannot request Datadog Agent config updates because no remote agent session ID is available.");
+                return true;
+            };
+
+            let client = client.clone();
+            spawn_traced_named("adp-request-config-updates", async move {
+                match client.request_config_updates(&current_session_id).await {
+                    Ok(_) => debug!(session_id = %current_session_id, "Requested Datadog Agent config updates."),
+                    Err(e) => {
+                        warn!(session_id = %current_session_id, error = %e, "Failed to request Datadog Agent config updates.")
+                    }
+                }
+            });
+
+            true
+        })
     }
 }
 
