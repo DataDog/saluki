@@ -909,64 +909,63 @@ mod tests {
         assert_eq!(0, files_in_dir(&root_path).await);
     }
 
-    fn retry_filename_days_old(days_old: i64, nonce: u64) -> String {
-        let ts = chrono::Utc::now() - chrono::Duration::days(days_old);
-        format!("retry-{}-{}.json", ts.format("%Y%m%d%H%M%S%f"), nonce)
+    async fn make_persisted_queue(root_path: PathBuf, max_age_days: u32) -> PersistedQueue<FakeData> {
+        PersistedQueue::<FakeData>::from_root_path(
+            root_path.clone(),
+            1024 * 1024,
+            0.8,
+            DiskUsageRetrieverWrapper::new(Arc::new(DiskUsageRetrieverImpl::new(root_path))),
+            max_age_days,
+        )
+        .await
+        .expect("should not fail to create persisted queue")
     }
 
     #[tokio::test]
-    async fn outdated_retry_files_are_removed_on_startup() {
+    async fn persisted_queue_removes_outdated_files_on_initialization() {
+        let data = FakeData::random();
+
         let temp_dir = tempfile::tempdir().expect("should not fail to create temporary directory");
         let root_path = temp_dir.path().to_path_buf();
 
-        let old_1 = retry_filename_days_old(15, 100000001);
-        let old_2 = retry_filename_days_old(11, 100000002);
-        let recent = retry_filename_days_old(1, 100000003);
-        let non_retry = "other-file.json";
+        // Pre-seed a year-2000 retry file containing valid data that would be loaded as an entry
+        // if it were not cleaned up first.
+        let stale_content = serde_json::to_vec(&data).unwrap();
+        tokio::fs::write(
+            root_path.join("retry-20000101000000000000000-100000000.json"),
+            &stale_content,
+        )
+        .await
+        .unwrap();
 
-        for name in [&old_1, &old_2, &recent, non_retry] {
-            tokio::fs::write(root_path.join(name), b"{}").await.unwrap();
-        }
+        assert_eq!(1, files_in_dir(&root_path).await);
 
-        // 4 files before cleanup; after removing files older than 10 days, 2 should remain
-        // (the 1-day-old retry file and the non-retry file).
-        assert_eq!(4, files_in_dir(&root_path).await);
-        remove_outdated_retry_files(&root_path, 10).await;
-        assert_eq!(2, files_in_dir(&root_path).await);
+        // Initialize the queue with a 10-day age limit.
+        // The stale file must be deleted before entries are loaded.
+        let queue = make_persisted_queue(root_path.clone(), 10).await;
 
-        // The non-retry file must survive regardless of age.
-        assert!(root_path.join(non_retry).exists(), "non-retry file must not be touched");
-        assert!(root_path.join(&recent).exists(), "1-day-old retry file should be kept");
+        assert_eq!(0, files_in_dir(&root_path).await);
+        assert!(queue.is_empty());
     }
 
     #[tokio::test]
-    async fn zero_age_removes_all_retry_files() {
-        // max_age_days=0 sets cutoff=now, matching the core Agent's FileRemovalPolicy with
-        // outdatedFileDayCount=0 — all retry files are deleted, non-retry files are untouched.
+    async fn persisted_queue_zero_age_removes_all_retry_files_on_initialization() {
+        // max_age_days=0 sets cutoff=now, matching the core Agent's FileRemovalPolicy behavior
+        // with outdatedFileDayCount=0 — all retry files are removed on startup.
+        let data = FakeData::random();
+
         let temp_dir = tempfile::tempdir().expect("should not fail to create temporary directory");
         let root_path = temp_dir.path().to_path_buf();
 
-        let retry_file = retry_filename_days_old(0, 100000004);
-        let non_retry = "other-file.json";
+        // Seed with a freshly-written entry via a normal queue.
+        let mut seeding_queue = make_persisted_queue(root_path.clone(), 10).await;
+        let _ = seeding_queue.push(data).await.expect("should not fail to push data");
+        assert_eq!(1, files_in_dir(&root_path).await);
 
-        for name in [&retry_file, non_retry] {
-            tokio::fs::write(root_path.join(name), b"{}").await.unwrap();
-        }
+        // Re-open with max_age_days=0: the just-written file must also be deleted.
+        let queue = make_persisted_queue(root_path.clone(), 0).await;
 
-        remove_outdated_retry_files(&root_path, 0).await;
-
-        assert!(
-            !root_path.join(&retry_file).exists(),
-            "retry file should be deleted with 0-day cutoff"
-        );
-        assert!(root_path.join(non_retry).exists(), "non-retry file must survive");
-    }
-
-    #[tokio::test]
-    async fn outdated_file_cleanup_is_noop_for_missing_directory() {
-        let temp_dir = tempfile::tempdir().expect("should not fail to create temporary directory");
-        let missing = temp_dir.path().join("does-not-exist");
-        // Must not panic or error.
-        remove_outdated_retry_files(&missing, 10).await;
+        assert_eq!(0, files_in_dir(&root_path).await);
+        assert!(queue.is_empty());
     }
 }
