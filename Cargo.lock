@@ -1676,8 +1676,12 @@ dependencies = [
  "antithesis_sdk",
  "anyhow",
  "clap",
+ "num-traits",
  "rand 0.10.1",
+ "rand_distr",
+ "serde",
  "serde_json",
+ "serde_yaml",
 ]
 
 [[package]]

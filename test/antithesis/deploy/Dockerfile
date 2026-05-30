@@ -74,11 +74,13 @@ RUN --mount=type=cache,target=/tools/target,id=antithesis-tools-target \
     --mount=type=cache,target=/root/.cargo/git,id=cargo-git \
     cargo build --release \
         --bin datadog-intake --bin millstone \
-        --bin parallel_driver_send_dogstatsd --bin finally_verify_delivery && \
+        --bin parallel_driver_send_dogstatsd --bin finally_verify_delivery \
+        --bin datadog_yaml_config_gen && \
     cp /tools/target/release/datadog-intake /usr/local/bin/datadog-intake && \
     cp /tools/target/release/millstone /usr/local/bin/millstone && \
     cp /tools/target/release/parallel_driver_send_dogstatsd /usr/local/bin/parallel_driver_send_dogstatsd && \
-    cp /tools/target/release/finally_verify_delivery /usr/local/bin/finally_verify_delivery
+    cp /tools/target/release/finally_verify_delivery /usr/local/bin/finally_verify_delivery && \
+    cp /tools/target/release/datadog_yaml_config_gen /usr/local/bin/datadog_yaml_config_gen
 
 # ---------------------------------------------------------------------------
 # Runtime: Agent Data Plane (SUT).
@@ -92,8 +94,12 @@ RUN apt-get update && \
 COPY --from=adp-builder /usr/local/bin/agent-data-plane /usr/local/bin/agent-data-plane
 # Expose DWARF/build-id symbols to Antithesis for symbolization (one-hop symlink to the unstripped binary).
 RUN mkdir -p /symbols && ln -s /usr/local/bin/agent-data-plane /symbols/agent-data-plane
-# main.rs requires the bootstrap config file to exist at the default path; ship a minimal standalone config.
+# main.rs requires the bootstrap config file to exist at the default path; ship a minimal standalone
+# config as a fallback. The boot wrapper overwrites it with the per-replay config drawn by the
+# datadog-yaml-config-gen service onto the shared `agent-config` volume.
 COPY test/antithesis/deploy/adp/datadog.yaml /etc/datadog-agent/datadog.yaml
+# Boot wrapper: waits for the drawn config sentinel, copies the config into place, then execs ADP.
+COPY --chmod=755 test/antithesis/deploy/adp/entrypoint.sh /entrypoint.sh
 # ADP's control-plane secure API requires an IPC TLS cert (a single PEM holding both certificate and
 # private key) that the Core Agent normally generates. In standalone mode there is no Core Agent, so
 # generate a self-signed cert+key. An empty auth_token satisfies the IPC auth config at startup.
@@ -103,7 +109,7 @@ RUN openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
     cat /tmp/ipc_cert.pem /tmp/ipc_key.pem > /etc/datadog-agent/ipc_cert.pem && \
     rm -f /tmp/ipc_cert.pem /tmp/ipc_key.pem && \
     touch /etc/datadog-agent/auth_token
-ENTRYPOINT ["/usr/local/bin/agent-data-plane"]
+ENTRYPOINT ["/entrypoint.sh"]
 CMD ["run"]
 
 # ---------------------------------------------------------------------------
@@ -113,6 +119,18 @@ FROM ${APP_IMAGE} AS intake
 ENV NO_COLOR=1
 COPY --from=tools-builder /usr/local/bin/datadog-intake /usr/local/bin/datadog-intake
 ENTRYPOINT ["/usr/local/bin/datadog-intake"]
+
+# ---------------------------------------------------------------------------
+# Runtime: datadog-yaml-config-gen (one-shot per-replay datadog.yaml generator).
+#
+# Fires the Antithesis setup_complete snapshot, generates a randomized datadog.yaml using SDK
+# randomness, writes it to the shared `agent-config` volume with a `ready` sentinel, then exits. ADP
+# gates its boot on the sentinel. Uninstrumented harness tooling, not the SUT.
+# ---------------------------------------------------------------------------
+FROM ${APP_IMAGE} AS datadog-yaml-config-gen
+ENV NO_COLOR=1
+COPY --from=tools-builder /usr/local/bin/datadog_yaml_config_gen /usr/local/bin/datadog_yaml_config_gen
+ENTRYPOINT ["/usr/local/bin/datadog_yaml_config_gen"]
 
 # ---------------------------------------------------------------------------
 # Runtime: workload client (millstone load generator + test templates).

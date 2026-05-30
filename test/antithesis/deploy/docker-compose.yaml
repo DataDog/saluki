@@ -20,6 +20,25 @@ services:
       timeout: 2s
       retries: 30
 
+  datadog-yaml-config-gen:
+    container_name: datadog-yaml-config-gen
+    hostname: datadog-yaml-config-gen
+    platform: linux/amd64
+    init: true
+    build:
+      context: ../../..
+      dockerfile: test/antithesis/deploy/Dockerfile
+      target: datadog-yaml-config-gen
+    image: datadog-yaml-config-gen:latest
+    environment:
+      NO_COLOR: "1"
+    volumes:
+      - agent-config:/agent-config
+    depends_on:
+      intake:
+        condition: service_healthy
+    # One-shot: fires setup_complete, generates the per-replay datadog.yaml, then exits 0.
+
   adp:
     container_name: adp
     hostname: adp
@@ -40,9 +59,13 @@ services:
       DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
     volumes:
       - dogstatsd-socket:/var/run/datadog
+      # Read-only: the boot wrapper copies the drawn datadog.yaml from here into /etc/datadog-agent.
+      - agent-config:/agent-config:ro
     depends_on:
       intake:
         condition: service_healthy
+      datadog-yaml-config-gen:
+        condition: service_completed_successfully
     healthcheck:
       # ADP's unprivileged API listens on TCP :5100 once the internal supervisor is up.
       test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/localhost/5100'"]
@@ -78,3 +101,4 @@ services:
 
 volumes:
   dogstatsd-socket:
+  agent-config:

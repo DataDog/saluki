@@ -4,9 +4,13 @@ set -euo pipefail
 # Workload client entrypoint.
 #
 # By the time this runs, docker-compose has gated startup on the `adp` and `intake` services being
-# healthy (depends_on: condition: service_healthy). We re-confirm reachability defensively, emit the
-# Antithesis `setup_complete` signal, then idle so Antithesis can run test commands from the test
-# template at /opt/antithesis/test/v1/.
+# healthy (depends_on: condition: service_healthy). We re-confirm reachability defensively, then idle
+# so Antithesis can run test commands from the test template at /opt/antithesis/test/v1/.
+#
+# The Antithesis `setup_complete` signal is NOT emitted here. The datadog-yaml-config-gen service owns it: it
+# fires `setup_complete` (the snapshot boundary) before ADP boots, then draws a per-replay
+# datadog.yaml. Emitting setup_complete here (after ADP is healthy) would freeze ADP's config across
+# every replay branch.
 
 ADP_HOST="${ADP_HOST:-adp}"
 ADP_API_PORT="${ADP_API_PORT:-5100}"
@@ -46,8 +50,7 @@ wait_for_tcp "${ADP_HOST}" "${ADP_API_PORT}" "agent-data-plane API"
 wait_for_socket "${DSD_SOCKET}" "agent-data-plane DogStatsD socket"
 wait_for_tcp "${INTAKE_HOST}" "${INTAKE_PORT}" "datadog-intake"
 
-echo "System is ready. Emitting setup_complete."
-/opt/antithesis/setup-complete.sh
+echo "System is ready. setup_complete is emitted by the datadog-yaml-config-gen service, not here."
 
 echo "Workload client idle; awaiting Antithesis test commands."
 exec tail -f /dev/null
