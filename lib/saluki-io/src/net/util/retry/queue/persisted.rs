@@ -461,9 +461,6 @@ async fn create_directory_recursive(path: PathBuf) -> Result<(), GenericError> {
 
 /// Deletes files in `queue_path` whose filename-embedded creation timestamp is older than
 /// `max_age_days`. Does nothing if the directory does not exist.
-///
-/// Setting `max_age_days` to `0` deletes all retry files (cutoff = now), matching the behavior
-/// of the core Agent's `FileRemovalPolicy` with `outdatedFileDayCount = 0`.
 async fn remove_outdated_retry_files(queue_path: &Path, max_age_days: u32) {
     let mut dir = match tokio::fs::read_dir(queue_path).await {
         Ok(d) => d,
