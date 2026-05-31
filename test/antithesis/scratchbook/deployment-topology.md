@@ -44,7 +44,7 @@ containers so every link is faultable.
 ```text
 +------------------------+        DogStatsD          +------------------------+      HTTP (Datadog      +------------------------+
 | workload-client        |  (UDP/TCP, faultable)     | adp                    |       intake API,       | mock-intake            |
-| - millstone load gen   | ------------------------> | agent-data-plane       |  faultable, retryable)  | datadog-intake         |
+| - dogstatsd driver     | ------------------------> | agent-data-plane       |  faultable, retryable)  | datadog-intake         |
 | - Antithesis SDK       |                           | (standalone mode)      | ----------------------> | (mock fakeintake)      |
 | - test template        | <------------------------ | UDP/TCP/UDS listeners  | <---------------------- | records payloads,      |
 +------------------------+   backpressure / health   +------------------------+      acks / 5xx / hang  | queryable for asserts  |
@@ -55,22 +55,24 @@ containers so every link is faultable.
 |---|---|---|---|---|---|
 | `adp` | Service (SUT) | reuse `docker/Dockerfile.agent-data-plane` (standalone build) | `agent-data-plane run` in **standalone mode** (`DD_DATA_PLANE_STANDALONE_MODE=true`, `DD_DATA_PLANE_DOGSTATSD_ENABLED=true`), no Core Agent dependency | receives DogStatsD from `workload-client`; forwards to `mock-intake` over HTTP | 1 |
 | `mock-intake` | Dependency | reuse `docker/Dockerfile.correctness-tools` (the `datadog-intake` binary) | mock Datadog intake; record + count forwarded payloads; expose a query API the workload reads for assertions | receives ADP forwarder traffic; queried by `workload-client` | 1 |
-| `workload-client` | Client (test driver) | new thin Dockerfile layering the `millstone` binary + test template + Antithesis Rust SDK | emits `setup_complete`, then test commands drive `millstone` load and run assertions against `mock-intake` | sends DogStatsD to `adp`; queries `mock-intake` | 1 |
+| `workload-client` | Client (test driver) | thin Dockerfile layering the compiled test-command binaries + test templates + Antithesis Rust SDK | emits `setup_complete`, then `parallel_driver_send_dogstatsd` samples DogStatsD load (the `harness::payload::dogstatsd` feral/clean generator) and `finally_verify_delivery` checks the intake | sends DogStatsD to `adp`; queries `mock-intake` | 1 |
 
 Notes:
-- **Use UDP or TCP, not UDS, between `workload-client` and `adp`.** UDS requires a shared volume
-  (same fate / no faulting), and it couples origin-detection credentials. UDP/TCP keeps the intake
-  *and* the DSD-intake links independently faultable and lets `malformed-dsd-no-crash` exercise the
-  network listeners. (UDS-specific listener behavior can be a secondary case with a shared-volume
-  sidecar — see "Listener-coverage variant".)
+- **The DSD link between `workload-client` and `adp` currently uses UDS** via a shared
+  `dogstatsd-socket` volume (`DSD_SOCKET`). The tradeoff: the ingress link is no longer independently
+  faultable (shared volume, same fate) and it couples origin-detection credentials. A UDP/TCP
+  variant would keep the intake *and* the DSD-intake links independently faultable and let
+  `malformed-dsd-no-crash` exercise the network listeners; track it as a follow-up (see
+  "Listener-coverage variant").
 - **Point ADP's forwarder at `mock-intake`** via `DD_URL` / forwarder endpoint config; set a real
   (fake) API key. This is the link that unlocks the entire egress data-loss cluster.
-- `millstone` already supports deterministic seeds and fixed payload counts (`millstone.yaml`),
-  so the workload is reproducible; Antithesis adds the fault dimension on top.
+- The driver samples all randomness through `AntithesisRng` (boundary-biased `Probe`/`Boundary`
+  samples and `random_choice` selections), so the workload is deterministic and simulator-steerable;
+  Antithesis adds the fault dimension on top.
 
 ### What the primary topology covers
 
-- **Memory & resource bounds (Cat A):** high-cardinality / many-timestamp `millstone` corpus +
+- **Memory & resource bounds (Cat A):** high-cardinality / many-timestamp load from the driver +
   `memory_mode`/`memory_limit` set on `adp`; node-throttling on `adp` to stress the limiter timing;
   observe RSS vs grant. `rss-bounded-under-cardinality`, `aggregate-context-limit-enforced`,
   `interner-full-bounded`, `memory-limiter-survives-rss-read-failure` (needs `/proc` fault — see
@@ -91,8 +93,8 @@ Notes:
   SUT-side assertions (`interner-reclamation-no-corruption`, `non-finite-values-handled-consistently`).
 - **Events & service-checks (Cat B/E additions):** the workload must emit well-formed *and*
   malformed events + service-checks so `events-sc-no-silent-loss`, `malformed-event-sc-no-crash`, and
-  the anti-vacuity anchor `events-sc-pipeline-reachable` are exercised — a metrics-only `millstone`
-  corpus leaves these vacuous.
+  the anti-vacuity anchor `events-sc-pipeline-reachable` are exercised — a metrics-only workload
+  leaves these vacuous.
 - **Transformer correctness (Cat G, primary-runnable subset):** `mapper-interner-bounded` rides a
   high-cardinality flood of distinct *mappable* names against a small `dogstatsd_mapper_string_interner_size`.
   The differential Cat G properties (`mapper-output-matches-agent`, `prefix-filter-ordering-matches-agent`)
@@ -209,7 +211,7 @@ needs a script.
   Confirm whether the existing binary supports this or needs a small extension.
 - **A minimal Core Agent config-stub** must be built (or the full `datadog-agent` image adapted) to
   send adversarial config the real Agent wouldn't — needed for Add-on 1.
-- Whether the workload can drive DogStatsD over **UDP/TCP at the volume `millstone` targets** without
+- Whether the workload can drive DogStatsD over **UDP/TCP at the volume the driver targets** without
   loss confounding the assertions (UDP is lossy by nature; for no-loss assertions prefer TCP/UDS, and
   scope UDP cases to no-crash rather than no-loss).
 - The `checks_ipc` Histogram NaN bypass (`ddsketch-no-nan-poison`) needs a **checks-IPC producer** in
