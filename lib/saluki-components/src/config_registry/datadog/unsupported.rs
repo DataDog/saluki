@@ -361,19 +361,6 @@ crate::declare_annotations! {
         // Autoscaling failover routes metric series to the Cluster Agent for HPA; applies to DogStatsD and Checks metric producers, not APM.
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD, Pipeline::Checks]),
     };
-    /// `config_id` - Fleet Automation config ID on payloads.
-    CONFIG_ID = SalukiAnnotation {
-        schema: &schema::CONFIG_ID,
-        // Not implemented. #1751
-        support_level: SupportLevel::Incompatible(Severity::Medium),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-        // Agent/host metadata applied to all payloads.
-        pipeline_affinity: PipelineAffinity::CrossCutting,
-    };
     /// `dogstatsd_experimental_http.enabled` - experimental HTTP/H2C DSD listener toggle.
     DOGSTATSD_EXPERIMENTAL_HTTP_ENABLED = SalukiAnnotation {
         schema: &schema::DOGSTATSD_EXPERIMENTAL_HTTP_ENABLED,

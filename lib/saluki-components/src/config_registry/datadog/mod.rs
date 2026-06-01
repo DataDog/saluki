@@ -10,6 +10,7 @@ pub mod forwarder;
 pub mod get_typed;
 pub mod otlp;
 pub mod proxy;
+pub mod tag_filterlist;
 pub mod trace_obfuscation;
 pub(super) mod unsupported;
 
@@ -33,6 +34,7 @@ pub(crate) static SUPPORTED_ANNOTATIONS: LazyLock<Vec<&'static SalukiAnnotation>
     v.extend_from_slice(encoders::ALL);
     v.extend_from_slice(otlp::ALL);
     v.extend_from_slice(proxy::ALL);
+    v.extend_from_slice(tag_filterlist::ALL);
     v.extend_from_slice(trace_obfuscation::ALL);
     v
 });
