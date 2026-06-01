@@ -4,26 +4,30 @@
 # the IPC/CMD API server listens on. ADP connects to this port for
 # remote agent registration and config streaming.
 #
-# When cmd_port is set to a non-default value (5101 instead of 5001),
-# ADP must read cmd_port and connect to the correct port. Without this
-# fix, ADP tries to connect to the hardcoded default (5001) and
-# crash-loops.
+# When cmd_port is set to a non-default value (7777 in this test), ADP
+# must read cmd_port and connect to the correct port. Without this fix,
+# ADP tries to connect to its hardcoded default and crash-loops.
+# This test explicitly overrides the framework-level cmd_port default
+# (see panoramic::unix_runner::test_port_isolation_env) to validate the
+# non-default path end-to-end.
 
 type: integration
 name: "adp-cmd-port"
 description: "Verifies ADP connects to the correct port when cmd_port is set"
 timeout: 120s
+runtimes: [docker, mac]
+
+env:
+  DD_API_KEY: "test-api-key"
+  DD_HOSTNAME: "integration-test-cmd-port"
+  DD_DATA_PLANE_ENABLED: "true"
+  DD_DATA_PLANE_STANDALONE_MODE: "false"
+  DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+  DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT: "true"
+  DD_CMD_PORT: "7777"
 
 container:
   image: "saluki-images/datadog-agent:testing-devel"
-  env:
-    DD_API_KEY: "test-api-key"
-    DD_HOSTNAME: "integration-test-cmd-port"
-    DD_DATA_PLANE_ENABLED: "true"
-    DD_DATA_PLANE_STANDALONE_MODE: "false"
-    DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
-    DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT: "true"
-    DD_CMD_PORT: "7777"
 
 assertions:
   # ADP should reach out for config from the core agent on the correct port.

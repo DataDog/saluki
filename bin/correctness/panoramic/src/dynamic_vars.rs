@@ -72,7 +72,7 @@ const PLACEHOLDER_NEEDLE: &str = "{{PANORAMIC_DYNAMIC_";
 
 /// Returns `true` if the test case defines any `PANORAMIC_DYNAMIC_*` env vars.
 pub fn has_dynamic_vars(test_case: &IntegrationConfig) -> bool {
-    test_case.container.env.keys().any(|k| k.starts_with(ENV_PREFIX))
+    test_case.env.keys().any(|k| k.starts_with(ENV_PREFIX))
 }
 
 /// Reads resolved dynamic variable values from `/airlock/dynamic/` inside the container.
