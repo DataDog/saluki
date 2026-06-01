@@ -1,6 +1,6 @@
 # Memory Management
 
-ADP takes a different approach to memory management than the core Agent, which relies on Go's
+ADP takes a different approach to memory management than the Core Agent, which relies on Go's
 garbage collector to reclaim memory and uses runtime GC tuning as backpressure. ADP instead uses
 explicit, static memory accounting and a process-level limit.
 
@@ -44,9 +44,9 @@ ADP enforces memory bounds through three complementary mechanisms:
 - **Structural backpressure**: bounded channels between components provide back-pressure
   independently of memory monitoring.
 
-## Comparison with core Agent
+## Comparison with Core Agent
 
-The core Agent exposes `dogstatsd_mem_based_rate_limiter.*` settings to apply backpressure when
+The Core Agent exposes `dogstatsd_mem_based_rate_limiter.*` settings to apply backpressure when
 the Go process approaches its memory limit. Those settings work by manipulating Go's garbage
 collector (`debug.SetGCPercent`, `debug.FreeOSMemory`), allocating a large heap ballast to
 adjust GC heuristics, and blocking goroutines to slow packet ingestion. None of these mechanisms
