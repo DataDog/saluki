@@ -49,33 +49,22 @@ fn get_finalized_corpus_blueprint(config: &Config) -> Result<CorpusBlueprint, Ge
     // used, etc.
     let mut blueprint = config.corpus.clone();
 
-    configure_dogstatsd_payload_for_target(&mut blueprint.payload, &config.target);
+    // When generating DogStatsD payloads, we need to set the length-delimited framing mode when UDS is being used in
+    // SOCK_STREAM mode.
+    match &mut blueprint.payload {
+        Payload::DogStatsD(dsd_config) => {
+            if let TargetAddress::Unix(_) = config.target {
+                dsd_config.length_prefix_framed = true;
+            }
+        }
+        Payload::OpenTelemetryMetrics(_) | Payload::OpenTelemetryTraces(_) => {}
+    }
 
     // Validate that the blueprint is valid from a payload generation standpoint.
     blueprint.validate()?;
 
     Ok(blueprint)
 }
-
-fn configure_dogstatsd_payload_for_target(payload: &mut Payload, target: &TargetAddress) {
-    if let Payload::DogStatsD(dsd_config) = payload {
-        configure_dogstatsd_framing_for_target(dsd_config, target);
-    }
-}
-
-#[cfg(unix)]
-fn configure_dogstatsd_framing_for_target(
-    dsd_config: &mut Box<lading_payload::dogstatsd::Config>, target: &TargetAddress,
-) {
-    // When generating DogStatsD payloads, we need to set the length-delimited framing mode when UDS is being used in
-    // SOCK_STREAM mode.
-    if let TargetAddress::Unix(_) = target {
-        dsd_config.length_prefix_framed = true;
-    }
-}
-
-#[cfg(not(unix))]
-fn configure_dogstatsd_framing_for_target(_: &mut Box<lading_payload::dogstatsd::Config>, _: &TargetAddress) {}
 
 fn generate_payloads(mut rng: StdRng, blueprint: CorpusBlueprint) -> Result<(Vec<Bytes>, ByteSize), GenericError> {
     let mut payloads = Vec::new();

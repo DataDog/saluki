@@ -1,9 +1,8 @@
-#[cfg(unix)]
-use std::os::unix::net::{UnixDatagram, UnixStream};
 use std::{
     fs::File,
     io::Write as _,
     net::{Ipv4Addr, TcpStream, UdpSocket},
+    os::unix::net::{UnixDatagram, UnixStream},
     path::Path,
 };
 
@@ -16,9 +15,7 @@ use crate::config::{Config, TargetAddress};
 enum TargetBackend {
     Tcp(TcpStream),
     Udp(UdpSocket),
-    #[cfg(unix)]
     UnixDatagram(UnixDatagram),
-    #[cfg(unix)]
     Unix(UnixStream),
     Grpc(GrpcBackend),
     File(File),
@@ -72,7 +69,6 @@ impl TargetSender {
 
                 (TargetBackend::Udp(socket), None)
             }
-            #[cfg(unix)]
             TargetAddress::UnixDatagram(path) => {
                 let datagram = UnixDatagram::unbound().error_context("Failed to bind Unix datagram socket.")?;
                 datagram.connect(path).with_error_context(|| {
@@ -81,7 +77,6 @@ impl TargetSender {
 
                 (TargetBackend::UnixDatagram(datagram), None)
             }
-            #[cfg(unix)]
             TargetAddress::Unix(path) => {
                 let stream = UnixStream::connect(path)
                     .with_error_context(|| format!("Failed to connect to Unix stream target '{}'.", path.display()))?;
@@ -107,9 +102,7 @@ impl TargetSender {
         let n = match &mut self.backend {
             TargetBackend::Tcp(stream) => stream.write_all(payload).map(|_| payload.len())?,
             TargetBackend::Udp(socket) => socket.send(payload)?,
-            #[cfg(unix)]
             TargetBackend::UnixDatagram(datagram) => datagram.send(payload)?,
-            #[cfg(unix)]
             TargetBackend::Unix(stream) => stream.write_all(payload).map(|_| payload.len())?,
             TargetBackend::Grpc(backend) => {
                 let channel = backend.channel.clone();

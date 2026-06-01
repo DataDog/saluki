@@ -4,10 +4,10 @@
 #![deny(missing_docs)]
 
 use saluki_error::{ErrorContext as _, GenericError};
-#[cfg(unix)]
-use tokio::signal::unix::{signal, SignalKind};
 use tokio::{
     net::{TcpListener, UdpSocket},
+    select,
+    signal::unix::{signal, SignalKind},
     sync::mpsc,
 };
 use tracing::{error, info, warn};
@@ -70,13 +70,12 @@ async fn run() -> Result<(), GenericError> {
         .map_err(Into::into)
 }
 
-#[cfg(unix)]
 fn spawn_signal_handlers(shutdown_tx: mpsc::Sender<()>) -> Result<(), GenericError> {
     let mut sigint_handler = signal(SignalKind::interrupt()).error_context("Failed to set up SIGINT handler.")?;
     let mut sigterm_handler = signal(SignalKind::terminate()).error_context("Failed to set up SIGTERM handler.")?;
 
     tokio::spawn(async move {
-        tokio::select! {
+        select! {
             _ = sigint_handler.recv() => {
                 info!("Received SIGINT, shutting down...");
             }
@@ -85,31 +84,12 @@ fn spawn_signal_handlers(shutdown_tx: mpsc::Sender<()>) -> Result<(), GenericErr
             }
         }
 
-        send_shutdown_signal(shutdown_tx).await;
-    });
-
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn spawn_signal_handlers(shutdown_tx: mpsc::Sender<()>) -> Result<(), GenericError> {
-    tokio::spawn(async move {
-        if let Err(e) = tokio::signal::ctrl_c().await {
-            error!("Failed to wait for Ctrl-C: {:?}", e);
-        } else {
-            info!("Received Ctrl-C, shutting down...");
+        if let Err(e) = shutdown_tx.send(()).await {
+            error!("Failed to send shutdown signal: {:?}", e);
         }
-
-        send_shutdown_signal(shutdown_tx).await;
     });
 
     Ok(())
-}
-
-async fn send_shutdown_signal(shutdown_tx: mpsc::Sender<()>) {
-    if let Err(e) = shutdown_tx.send(()).await {
-        error!("Failed to send shutdown signal: {:?}", e);
-    }
 }
 
 async fn capture_dogstatsd_forwarded_packets(socket: UdpSocket, state: DogStatsDForwardingState) {

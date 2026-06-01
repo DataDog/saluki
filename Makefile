@@ -56,7 +56,7 @@ export LADING_VERSION ?= sha-d608ffbce8f8c77b147d6750b3bb6d6948af239a
 # Windows cross-compilation settings. These targets currently assume a local macOS host.
 export WINDOWS_CROSS_TARGET ?= x86_64-pc-windows-msvc
 export WINDOWS_CROSS_LLVM_BIN ?= /opt/homebrew/opt/llvm/bin
-export WINDOWS_CROSS_CARGO_ARGS ?= --workspace
+export WINDOWS_CROSS_CARGO_ARGS ?= --package agent-data-plane
 
 # Version of source repositories (Git tag) for vendored Protocol Buffers definitions.
 export PROTOBUF_SRC_REPO_DD_AGENT ?= 7.73.x
@@ -232,7 +232,7 @@ endif
 		(echo "Missing llvm-lib at $(WINDOWS_CROSS_LLVM_BIN)/llvm-lib. Set WINDOWS_CROSS_LLVM_BIN or install Homebrew LLVM." && exit 1)
 
 .PHONY: build-windows-cross
-build-windows-cross: install-windows-cross-tools ## Builds the workspace for Windows from a local macOS host (override WINDOWS_CROSS_CARGO_ARGS as needed)
+build-windows-cross: install-windows-cross-tools ## Builds ADP for Windows from a local macOS host (override WINDOWS_CROSS_CARGO_ARGS as needed)
 	@echo "[*] Building Windows cross target ($(WINDOWS_CROSS_TARGET)): cargo build $(WINDOWS_CROSS_CARGO_ARGS)"
 	@PATH="$(WINDOWS_CROSS_LLVM_BIN):$$PATH" cargo xwin build --target $(WINDOWS_CROSS_TARGET) $(WINDOWS_CROSS_CARGO_ARGS)
 
