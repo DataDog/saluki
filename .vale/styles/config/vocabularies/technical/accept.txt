@@ -233,3 +233,5 @@ profiler
 launchd
 Wireshark
 testsupport
+varint
+serializer

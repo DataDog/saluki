@@ -69,6 +69,7 @@ stele = { path = "bin/correctness/stele" }
 stringtheory = { path = "lib/stringtheory" }
 ottl = { path = "lib/ottl" }
 otlp-protos = { path = "lib/protos/otlp" }
+anymap3 = { version = "1", default-features = false, features = ["std"] }
 async-trait = { version = "0.1", default-features = false }
 atty = { version = "0.2", default-features = false }
 axum = { version = "0.8", default-features = false }
