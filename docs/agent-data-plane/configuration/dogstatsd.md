@@ -44,6 +44,7 @@ architecture is fundamentally different or the feature is platform-specific.
 
 | Config Key                                     | Description                        | Reason                                                       |
 | ---------------------------------------------- | ---------------------------------- | ------------------------------------------------------------ |
+| `config_id`                                    | Fleet Automation config ID tag     | Core Agent uses this only on Agent HA telemetry metrics      |
 | `dogstatsd_host_socket_path`                   | Host UDS socket dir for DSD        | Not read by DSD server; admission controller only            |
 | `dogstatsd_mem_based_rate_limiter.enabled`     | Enable memory rate limiter         | Go GC specific; use `memory_limit`                           |
 | `dogstatsd_no_aggregation_pipeline_batch_size` | No-aggregation pipeline batch size | Fixed in ADP topology                                        |
@@ -249,7 +250,6 @@ ways that are not yet fully characterized.
 | `anomaly_detection.metrics.enabled`                              | Enable metric ingestion for anomaly detection   | [#1683] |
 | `autoscaling.failover.enabled`                                   | Enable autoscaling failover metric routing      | [#1684] |
 | `autoscaling.failover.metrics`                                   | Metric names forwarded to DCA for failover      | [#1684] |
-| `config_id`                                                      | Fleet Automation config ID tag for agent        | [#1751] |
 | `dogstatsd_disable_verbose_logs`                                 | Suppress noisy parse error logs                 | [#1350] |
 | `dogstatsd_experimental_http.enabled`                            | Enable experimental HTTP/H2C DSD listener       | [#1682] |
 | `dogstatsd_experimental_http.listen_address`                     | Bind address for experimental HTTP DSD listener | [#1682] |
