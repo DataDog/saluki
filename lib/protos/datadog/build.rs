@@ -107,6 +107,20 @@ fn main() {
         .customize_callback(SerdeCapableStructs)
         .run_from_script();
 
+    // Separate invocation for idx proto types to avoid filename collision with
+    // `trace_protos/tracer_payload.rs` — both directories have a file named
+    // `tracer_payload.proto` so they cannot share an output directory.
+    protobuf_codegen::Codegen::new()
+        .protoc()
+        .includes(["proto/datadog-agent"])
+        .inputs([
+            "proto/datadog-agent/datadog/trace/idx/tracer_payload.proto",
+            "proto/datadog-agent/datadog/trace/idx/span.proto",
+        ])
+        .cargo_out_dir("idx_trace_protos")
+        .customize(codegen_customize.clone())
+        .run_from_script();
+
     protobuf_codegen::Codegen::new()
         .protoc()
         .includes(["proto/sketches-go"])
