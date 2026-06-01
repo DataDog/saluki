@@ -24,7 +24,7 @@ use self::cli::{Cli, Command};
 mod config;
 mod dynamic_vars;
 mod mounts;
-use self::config::discover_tests;
+use self::config::{default_host_runtime, discover_tests};
 
 mod events;
 use self::events::{create_event_channel, TestEvent};
@@ -34,7 +34,9 @@ use self::reporter::{OutputFormat, Reporter, TestResult, TestSuiteResult};
 
 mod runner;
 mod test;
+mod test_env;
 mod tui;
+mod unix_runner;
 mod utils;
 
 #[tokio::main]
@@ -107,7 +109,11 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
         return ExitCode::from(2);
     }
 
-    let test_cases = match discover_tests(&cmd.test_dirs) {
+    let integration_runtime = cmd
+        .runtime
+        .clone()
+        .unwrap_or_else(|| default_host_runtime().to_string());
+    let test_cases = match discover_tests(&cmd.test_dirs, &integration_runtime) {
         Ok(tests) => tests,
         Err(e) => {
             if use_tui {
@@ -187,8 +193,13 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
         .with_fail_fast(cmd.fail_fast)
         .with_event_sender(tx);
 
-    if let Some(ref filter_str) = cmd.tests {
-        let names: Vec<String> = filter_str.split(',').map(|s| s.trim().to_string()).collect();
+    // The runtime scope is already applied at discovery time. The optional -t name filter
+    // narrows further. When unset, every discovered test runs.
+    let name_filter: Option<Vec<String>> = cmd
+        .tests
+        .as_ref()
+        .map(|s| s.split(',').map(|n| n.trim().to_string()).collect());
+    if let Some(names) = name_filter {
         args = args.with_filter(Box::new(move |t: &dyn test::Test| names.iter().any(|n| *n == t.name())));
     }
 
@@ -374,7 +385,11 @@ async fn list_tests(cmd: cli::ListCommand) -> ExitCode {
         info!("Discovering test cases from: {}...", dirs_str.join(", "));
     }
 
-    let test_cases = match discover_tests(&cmd.test_dirs) {
+    let integration_runtime = cmd
+        .runtime
+        .clone()
+        .unwrap_or_else(|| default_host_runtime().to_string());
+    let test_cases = match discover_tests(&cmd.test_dirs, &integration_runtime) {
         Ok(tests) => tests,
         Err(e) => {
             error!("Failed to discover tests: {}", e);
