@@ -1,6 +1,6 @@
 //! Annotations for multi-region failover configuration keys.
 
-use crate::config_registry::{generated::schema, structs, SalukiAnnotation, SupportLevel, ValueType};
+use crate::config_registry::{generated::schema, structs, PipelineAffinity, SalukiAnnotation, SupportLevel, ValueType};
 
 crate::declare_annotations! {
     /// `multi_region_failover.api_key` - API key for the MRF failover region.
@@ -12,6 +12,7 @@ crate::declare_annotations! {
         used_by: &[structs::MRF_CONFIGURATION],
         value_type_override: Some(ValueType::String),
         test_json: None,
+        pipeline_affinity: PipelineAffinity::CrossCutting,
     };
 
     /// `multi_region_failover.dd_url` - intake URL for the MRF failover region.
@@ -23,6 +24,7 @@ crate::declare_annotations! {
         used_by: &[structs::MRF_CONFIGURATION],
         value_type_override: Some(ValueType::String),
         test_json: None,
+        pipeline_affinity: PipelineAffinity::CrossCutting,
     };
 
     /// `multi_region_failover.enabled` - multi-region failover mode.
@@ -34,6 +36,7 @@ crate::declare_annotations! {
         used_by: &[structs::MRF_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::CrossCutting,
     };
 
     /// `multi_region_failover.failover_metrics` - metrics forwarding to the failover region.
@@ -45,6 +48,7 @@ crate::declare_annotations! {
         used_by: &[structs::MRF_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::CrossCutting,
     };
 
     /// `multi_region_failover.metric_allowlist` - metric name allowlist for MRF forwarding.
@@ -56,6 +60,7 @@ crate::declare_annotations! {
         used_by: &[structs::MRF_CONFIGURATION],
         value_type_override: Some(ValueType::StringList),
         test_json: None,
+        pipeline_affinity: PipelineAffinity::CrossCutting,
     };
 
     /// `multi_region_failover.site` - Datadog site for the MRF failover region.
@@ -67,5 +72,6 @@ crate::declare_annotations! {
         used_by: &[structs::MRF_CONFIGURATION],
         value_type_override: Some(ValueType::String),
         test_json: None,
+        pipeline_affinity: PipelineAffinity::CrossCutting,
     };
 }
