@@ -282,6 +282,15 @@ where
                 );
 
                 push_result.track_dropped_item(&oldest_entry);
+
+                // Anchor the overflow-drop path: a prolonged outage saturates the queue and sheds the oldest entry
+                // (bounded memory at the cost of counted data loss).
+                #[cfg(feature = "antithesis")]
+                antithesis_sdk::assert_sometimes!(
+                    true,
+                    "retry queue dropped oldest in-memory entry on overflow",
+                    &serde_json::json!({})
+                );
             }
 
             self.total_in_memory_bytes -= oldest_entry_size;
@@ -290,6 +299,17 @@ where
 
         self.pending.push_back(entry);
         self.total_in_memory_bytes += current_entry_size;
+
+        // The eviction loop above guarantees we stay within the in-memory byte cap. Assert the invariant; numeric form
+        // hands the search the headroom to the cap as a gradient.
+        #[cfg(feature = "antithesis")]
+        antithesis_sdk::assert_always_less_than_or_equal_to!(
+            self.total_in_memory_bytes,
+            self.max_in_memory_bytes,
+            "retry queue in-memory bytes within cap",
+            &serde_json::json!({ "bytes": self.total_in_memory_bytes, "cap": self.max_in_memory_bytes })
+        );
+
         debug!(entry.len = current_entry_size, "Enqueued in-memory entry.");
 
         Ok(push_result)

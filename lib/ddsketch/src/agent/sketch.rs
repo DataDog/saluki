@@ -186,6 +186,10 @@ impl DDSketch {
     }
 
     fn adjust_basic_stats(&mut self, v: f64, n: u64) {
+        // Every insert path funnels through here, so this is the single finiteness boundary.
+        #[cfg(feature = "antithesis")]
+        antithesis_sdk::assert_always!(v.is_finite(), "DDSketch sample is finite at insert");
+
         if v < self.min {
             self.min = v;
         }
@@ -196,6 +200,9 @@ impl DDSketch {
 
         self.count += n;
         self.sum += v * n as f64;
+
+        #[cfg(feature = "antithesis")]
+        antithesis_sdk::assert_always!(self.sum.is_finite(), "sketch sum stays finite after insert");
 
         if n == 1 {
             self.avg += (v - self.avg) / self.count as f64;
@@ -711,6 +718,18 @@ fn trim_left(bins: &mut SmallVec<[Bin; 4]>, bin_limit: u16) {
 
     // Drop the removed prefix, leaving exactly bin_limit bins.
     bins.drain(0..num_to_remove);
+
+    // This is the one place every mutating method routes through, so asserting here guards the bin-count bound for
+    // all of them.
+    #[cfg(feature = "antithesis")]
+    {
+        antithesis_sdk::assert_reachable!("DDSketch bin collapse reached");
+        antithesis_sdk::assert_always_less_than_or_equal_to!(
+            bins.len(),
+            bin_limit,
+            "DDSketch bin count within bin_limit"
+        );
+    }
 }
 
 #[allow(clippy::cast_possible_truncation)]

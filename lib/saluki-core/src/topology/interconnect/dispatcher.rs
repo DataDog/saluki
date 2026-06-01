@@ -88,6 +88,14 @@ where
             // Track discarded events when no senders are attached to this output
             let item_count = item.item_count() as u64;
             self.metrics.events_discarded_total().increment(item_count);
+            // Anchor the legitimate zero-sender discard. A wired edge never reaches this branch, so this stays a
+            // disconnected-output signal — not a silent-loss-on-a-wired-edge violation.
+            #[cfg(feature = "antithesis")]
+            antithesis_sdk::assert_sometimes!(
+                true,
+                "events discarded on a zero-sender output",
+                &serde_json::json!({ "items": item_count })
+            );
             return Ok(());
         }
 
