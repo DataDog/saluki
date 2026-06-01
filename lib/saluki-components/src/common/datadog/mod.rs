@@ -4,6 +4,7 @@ pub mod endpoints;
 pub mod io;
 pub mod middleware;
 pub mod obfuscation;
+pub mod protocol;
 mod proxy;
 pub mod request_builder;
 mod retry;
@@ -45,14 +46,29 @@ pub(crate) const METRICS_SERIES_V1_PATH: &str = "/api/v1/series";
 /// V2 metric series intake path.
 pub(crate) const METRICS_SERIES_V2_PATH: &str = "/api/v2/series";
 
+/// V3 metric series intake path.
+pub(crate) const METRICS_SERIES_V3_PATH: &str = "/api/intake/metrics/v3/series";
+
+/// V3 beta metric series intake path.
+pub(crate) const METRICS_SERIES_V3_BETA_PATH: &str = "/api/intake/metrics/v3beta/series";
+
 /// Metric sketches intake path.
 pub(crate) const METRICS_SKETCHES_PATH: &str = "/api/beta/sketches";
+
+/// V3 metric sketches intake path.
+pub(crate) const METRICS_SKETCHES_V3_PATH: &str = "/api/intake/metrics/v3/sketches";
 
 /// Metric intake paths emitted by the encoder and matched by OPW routing.
 ///
 /// Keep these paths in one place so metric encoding and OPW routing don't drift.
-pub(crate) const METRIC_INTAKE_PATHS: [&str; 3] =
-    [METRICS_SERIES_V1_PATH, METRICS_SERIES_V2_PATH, METRICS_SKETCHES_PATH];
+pub(crate) const METRIC_INTAKE_PATHS: [&str; 6] = [
+    METRICS_SERIES_V1_PATH,
+    METRICS_SERIES_V2_PATH,
+    METRICS_SERIES_V3_PATH,
+    METRICS_SERIES_V3_BETA_PATH,
+    METRICS_SKETCHES_PATH,
+    METRICS_SKETCHES_V3_PATH,
+];
 
 /// Metadata tag used to store the sampling decision maker (`_dd.p.dm`).
 pub const TAG_DECISION_MAKER: &str = "_dd.p.dm";
