@@ -1,8 +1,16 @@
+use std::any::Any;
+
+use anymap3::{CloneAny, Map};
+
 /// Payload metadata.
+///
+/// Contains the event count and an extensible map of typed metadata values.
+/// Components can store and retrieve arbitrary typed data using the `set` and `get` methods.
 #[derive(Clone)]
 pub struct PayloadMetadata {
     event_count: usize,
     data_point_count: usize,
+    extensions: Map<dyn CloneAny + Send + Sync>,
 }
 
 impl PayloadMetadata {
@@ -11,6 +19,7 @@ impl PayloadMetadata {
         PayloadMetadata {
             event_count,
             data_point_count: 0,
+            extensions: Map::new(),
         }
     }
 
@@ -19,6 +28,7 @@ impl PayloadMetadata {
         PayloadMetadata {
             event_count,
             data_point_count,
+            extensions: Map::new(),
         }
     }
 
@@ -30,5 +40,21 @@ impl PayloadMetadata {
     /// Returns the number of metric data points in the payload.
     pub fn data_point_count(&self) -> usize {
         self.data_point_count
+    }
+
+    /// Gets a reference to a typed extension value, if present.
+    pub fn get<T: Any + Clone + Send + Sync>(&self) -> Option<&T> {
+        self.extensions.get::<T>()
+    }
+
+    /// Sets a typed extension value, returning `self` for chaining.
+    pub fn with<T: Any + Clone + Send + Sync>(mut self, value: T) -> Self {
+        self.extensions.insert(value);
+        self
+    }
+
+    /// Sets a typed extension value in place.
+    pub fn set<T: Any + Clone + Send + Sync>(&mut self, value: T) {
+        self.extensions.insert(value);
     }
 }

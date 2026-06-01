@@ -84,6 +84,7 @@ tracing = { workspace = true }
 tracing-appender = { workspace = true }
 tracing-rolling-file = { workspace = true }
 url = { workspace = true }
+uuid = { workspace = true, features = ["std", "v7"] }
 zstd = { workspace = true }
 
 [dev-dependencies]

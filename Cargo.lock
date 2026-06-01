@@ -217,6 +217,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2a4385e2e34eb35d6b3efe798b9eb88096925d87726c0798709bf56d9ed84af3"
 
 [[package]]
+name = "anymap3"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "170433209e817da6aae2c51aa0dd443009a613425dd041ebfb2492d1c4c11a25"
+
+[[package]]
 name = "arc-swap"
 version = "1.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4433,6 +4439,7 @@ dependencies = [
  "tracing-appender",
  "tracing-rolling-file",
  "url",
+ "uuid",
  "zstd",
 ]
 
@@ -4478,6 +4485,8 @@ dependencies = [
 name = "saluki-core"
 version = "0.1.0"
 dependencies = [
+ "antithesis_sdk",
+ "anymap3",
  "async-trait",
  "bitmask-enum",
  "ddsketch",
