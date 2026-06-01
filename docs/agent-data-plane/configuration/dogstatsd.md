@@ -290,41 +290,42 @@ ways that are not yet fully characterized.
 
 The following settings are specific to ADP and have no equivalent in the core agent.
 
-| Config Key                                  | Description                                | Default |
-| ------------------------------------------- | ------------------------------------------ | ------- |
-| `agent_ipc_endpoint`                        | Remote agent IPC URI                       |         |
-| `aggregate_flush_interval`                  | Aggregator flush period                    |         |
-| `aggregate_flush_open_windows`              | Flush open windows on stop                 |         |
-| `aggregate_passthrough_idle_flush_timeout`  | Passthrough buffer flush delay             |         |
-| `aggregate_window_duration_seconds`            | Aggregation window size                    |         |
-| `connect_retry_attempts`                    | IPC client connect retries                 |         |
-| `connect_retry_backoff`                     | IPC client retry delay                     |         |
-| `counter_expiry_seconds`                    | Idle counter keep-alive duration           | 300     |
-| `data_plane.api_listen_address`             | ADP unprivileged API address               |         |
-| `data_plane.remote_agent_enabled`           | Register as remote agent                   |         |
-| `data_plane.secure_api_listen_address`      | ADP privileged API address                 |         |
-| `data_plane.standalone_mode`                | ADP standalone mode toggle                 |         |
-| `data_plane.use_new_config_stream_endpoint` | Use new config stream endpoint             |         |
-| `dogstatsd_allow_context_heap_allocs`       | Allow heap allocations for contexts        |         |
-| `dogstatsd_autoscale_udp_listeners`         | Bind multiple UDP sockets via SO_REUSEPORT |         |
-| `dogstatsd_buffer_count`                    | Number of receive buffers                  |         |
-| `dogstatsd_cached_contexts_limit`           | Max cached metric contexts                 |         |
-| `dogstatsd_cached_tagsets_limit`            | Max cached tagsets                         |         |
-| `dogstatsd_mapper_string_interner_size`     | Mapper string interner capacity            |         |
-| `dogstatsd_minimum_sample_rate`             | Floor for metric sample rates              |         |
-| `dogstatsd_permissive_decoding`             | Relaxes decoder strictness                 | true    |
-| `dogstatsd_string_interner_size_bytes`      | Explicit byte budget for context interner  |         |
-| `dogstatsd_tcp_port`                        | TCP listen port for DSD                    |         |
-| `enable_global_limiter`                     | Toggle global memory limiter               |         |
-| `flush_timeout_secs`                        | Encoder flush timeout (secs)               |         |
-| `memory_limit`                              | Process memory limit (bytes)               |         |
-| `memory_mode`                               | ADP global memory limiter mode             |         |
-| `memory_slop_factor`                        | Memory headroom fraction                   |         |
-| `metrics_level`                             | ADP internal metrics emission level        |         |
-| `otlp_string_interner_size`                 | OTLP context interner capacity             |         |
-| `remote_agent_string_interner_size_bytes`   | Tag string interner capacity               | 512 KB  |
-| `serializer_max_metrics_per_payload`        | Max metrics per payload                    |         |
-| `statsd_metric_namespace_blocklist`         | Renamed alias for blacklist key            |         |
+| Config Key                                                  | Description                                | Default |
+| ----------------------------------------------------------- | ------------------------------------------ | ------- |
+| `agent_ipc_endpoint`                                        | Remote agent IPC URI                       |         |
+| `aggregate_flush_interval`                                  | Aggregator flush period                    |         |
+| `aggregate_flush_open_windows`                              | Flush open windows on stop                 |         |
+| `aggregate_passthrough_idle_flush_timeout`                  | Passthrough buffer flush delay             |         |
+| `aggregate_window_duration_seconds`                         | Aggregation window size                    |         |
+| `connect_retry_attempts`                                    | IPC client connect retries                 |         |
+| `connect_retry_backoff`                                     | IPC client retry delay                     |         |
+| `counter_expiry_seconds`                                    | Idle counter keep-alive duration           | 300     |
+| `data_plane.api_listen_address`                             | ADP unprivileged API address               |         |
+| `data_plane.dogstatsd.aggregator_tag_filter_cache_capacity` | Tag-filter deduplication cache size        | 100000  |
+| `data_plane.remote_agent_enabled`                           | Register as remote agent                   |         |
+| `data_plane.secure_api_listen_address`                      | ADP privileged API address                 |         |
+| `data_plane.standalone_mode`                                | ADP standalone mode toggle                 |         |
+| `data_plane.use_new_config_stream_endpoint`                 | Use new config stream endpoint             |         |
+| `dogstatsd_allow_context_heap_allocs`                       | Allow heap allocations for contexts        |         |
+| `dogstatsd_autoscale_udp_listeners`                         | Bind multiple UDP sockets via SO_REUSEPORT |         |
+| `dogstatsd_buffer_count`                                    | Number of receive buffers                  |         |
+| `dogstatsd_cached_contexts_limit`                           | Max cached metric contexts                 |         |
+| `dogstatsd_cached_tagsets_limit`                            | Max cached tagsets                         |         |
+| `dogstatsd_mapper_string_interner_size`                     | Mapper string interner capacity            |         |
+| `dogstatsd_minimum_sample_rate`                             | Floor for metric sample rates              |         |
+| `dogstatsd_permissive_decoding`                             | Relaxes decoder strictness                 | true    |
+| `dogstatsd_string_interner_size_bytes`                      | Explicit byte budget for context interner  |         |
+| `dogstatsd_tcp_port`                                        | TCP listen port for DSD                    |         |
+| `enable_global_limiter`                                     | Toggle global memory limiter               |         |
+| `flush_timeout_secs`                                        | Encoder flush timeout (secs)               |         |
+| `memory_limit`                                              | Process memory limit (bytes)               |         |
+| `memory_mode`                                               | ADP global memory limiter mode             |         |
+| `memory_slop_factor`                                        | Memory headroom fraction                   |         |
+| `metrics_level`                                             | ADP internal metrics emission level        |         |
+| `otlp_string_interner_size`                                 | OTLP context interner capacity             |         |
+| `remote_agent_string_interner_size_bytes`                   | Tag string interner capacity               | 512 KB  |
+| `serializer_max_metrics_per_payload`                        | Max metrics per payload                    |         |
+| `statsd_metric_namespace_blocklist`                         | Renamed alias for blacklist key            |         |
 
 ### `memory_limit` / `memory_slop_factor`
 
@@ -374,7 +375,6 @@ when the receiving syslog daemon expects the Agent's RFC-style header.
 | `container_cgroup_root`                                     | Cgroup filesystem root path               |
 | `container_proc_root`                                       | Procfs root path for containers           |
 | `cri_socket_path`                                           | CRI/containerd socket path                |
-| `data_plane.dogstatsd.aggregator_tag_filter_cache_capacity` | Tag-filter deduplication cache size (ADP) |
 | `data_plane.dogstatsd.enabled`                              | Enable DSD in data plane                  |
 | `data_plane.enabled`                                        | Enable ADP globally                       |
 | `dd_url`                                                    | Override intake endpoint URL              |
