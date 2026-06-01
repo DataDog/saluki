@@ -38,6 +38,7 @@ dependencies = [
  "hyper",
  "metrics",
  "ottl",
+ "prost",
  "prost-types",
  "resource-accounting",
  "saluki-api",
@@ -58,6 +59,7 @@ dependencies = [
  "stringtheory",
  "tikv-jemallocator",
  "tokio",
+ "tokio-util",
  "tonic",
  "tracing",
  "uuid",
@@ -4082,6 +4084,7 @@ dependencies = [
 name = "saluki-components"
 version = "0.1.0"
 dependencies = [
+ "arc-swap",
  "async-trait",
  "axum",
  "base64",
@@ -4342,9 +4345,11 @@ dependencies = [
 name = "saluki-tls"
 version = "0.1.0"
 dependencies = [
+ "rcgen",
  "rustls",
  "rustls-native-certs",
  "saluki-error",
+ "tempfile",
  "tracing",
 ]
 

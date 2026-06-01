@@ -33,7 +33,7 @@ where
             .boxed()
     } else {
         Layer::new()
-            .event_format(AgentLikeFormatter::new())
+            .event_format(AgentLikeFormatter::new(config.log_format_rfc3339))
             .with_writer(writer)
             .boxed()
     }
@@ -54,15 +54,17 @@ where
 
 struct AgentLikeFormatter {
     app_name: String,
+    rfc3339: bool,
 }
 
 impl AgentLikeFormatter {
-    fn new() -> Self {
+    fn new(rfc3339: bool) -> Self {
         // Get the configured short name for the current data plane and transform it to a consistent format.
         //
         // This will take something like "data-plane" or "Data Plane" and turn it into "DATAPLANE".
         Self {
             app_name: get_agent_logger_name(),
+            rfc3339,
         }
     }
 }
@@ -79,7 +81,7 @@ where
         write!(
             writer,
             "{} | {} | {} | ",
-            get_delayed_format_now(),
+            get_delayed_format_now(self.rfc3339),
             self.app_name,
             metadata.level()
         )?;
@@ -489,9 +491,10 @@ impl field::Visit for AgentLikeJsonFieldVisitor {
 }
 
 /// Gets a delayed formatter for the current time.
-fn get_delayed_format_now() -> DelayedFormat<impl Iterator<Item = &'static Item<'static>> + Clone> {
-    // Determine the system's timezone.
-    //
+///
+/// When `rfc3339` is `true`, returns RFC 3339 format (`2024-12-31T23:59:59Z`, system timezone).
+/// When `false`, returns the legacy format (`2024-12-31 23:59:59 UTC`, system timezone).
+fn get_delayed_format_now(rfc3339: bool) -> DelayedFormat<impl Iterator<Item = &'static Item<'static>> + Clone> {
     // We fallback to using UTC if something goes wrong during timezone detection.
     static SYSTEM_TZ: OnceLock<Tz> = OnceLock::new();
     let system_tz = SYSTEM_TZ.get_or_init(|| {
@@ -501,15 +504,25 @@ fn get_delayed_format_now() -> DelayedFormat<impl Iterator<Item = &'static Item<
             .unwrap_or(Tz::UTC)
     });
 
-    // Timestamp format to end up with the equivalent of `2024-12-31 23:59:59 UTC`.
-    static FORMAT_ITEMS: OnceLock<Vec<Item<'static>>> = OnceLock::new();
-    let format_items = FORMAT_ITEMS.get_or_init(|| {
-        let parser = StrftimeItems::new("%Y-%m-%d %H:%M:%S %Z");
-        parser.parse().expect("should not fail to parse datetime format")
-    });
+    let format_items: &[Item<'static>] = if rfc3339 {
+        static RFC3339_FORMAT_ITEMS: OnceLock<Vec<Item<'static>>> = OnceLock::new();
+        RFC3339_FORMAT_ITEMS.get_or_init(|| {
+            StrftimeItems::new("%+")
+                .parse()
+                .expect("should not fail to parse datetime format")
+        })
+    } else {
+        static FORMAT_ITEMS: OnceLock<Vec<Item<'static>>> = OnceLock::new();
+        FORMAT_ITEMS.get_or_init(|| {
+            StrftimeItems::new("%Y-%m-%d %H:%M:%S %Z")
+                .parse()
+                .expect("should not fail to parse datetime format")
+        })
+    };
 
-    let now = Utc::now().with_timezone(system_tz);
-    now.format_with_items(format_items.iter())
+    Utc::now()
+        .with_timezone(system_tz)
+        .format_with_items(format_items.iter())
 }
 
 #[cfg(test)]

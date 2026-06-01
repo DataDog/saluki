@@ -1,7 +1,13 @@
 use futures::TryFutureExt as _;
 use http::{header::CONTENT_TYPE, uri::PathAndQuery, Request, Response, StatusCode, Uri};
 use http_body_util::BodyExt as _;
+#[cfg(target_os = "linux")]
+use http_body_util::Full;
+#[cfg(target_os = "linux")]
+use hyper::body::Bytes;
 use hyper::body::Incoming;
+#[cfg(target_os = "linux")]
+use prost::Message as _;
 use saluki_config::GenericConfiguration;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_io::net::{client::http::HttpClient, ListenAddress};
@@ -26,6 +32,12 @@ struct DogStatsDCaptureBody<'a> {
 #[derive(Deserialize)]
 struct DogStatsDCaptureResponseBody {
     path: String,
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Deserialize)]
+struct DogStatsDReplaySessionResponseBody {
+    session_id: String,
 }
 
 impl DataPlaneAPIClient {
@@ -216,6 +228,52 @@ impl DataPlaneAPIClient {
         Ok(response.path)
     }
 
+    /// Starts a DogStatsD replay session.
+    ///
+    /// # Errors
+    ///
+    /// If the request fails, if ADP rejects the session, or if the response body can't be decoded, an error is
+    /// returned.
+    #[cfg(target_os = "linux")]
+    pub async fn dogstatsd_replay_start_session(
+        &mut self, state: Option<&datadog_protos::agent::TaggerState>,
+    ) -> Result<String, GenericError> {
+        let uri = self.build_uri("/dogstatsd/replay/session", None);
+        let body = state.map_or_else(Bytes::new, |state| Bytes::from(state.encode_to_vec()));
+        let req = Request::post(uri)
+            .header(CONTENT_TYPE, "application/x-protobuf")
+            .body(Full::new(body))
+            .expect("valid request");
+        let response_body = self
+            .client
+            .send(req)
+            .and_then(process_response_body)
+            .await
+            .and_then(body_when_replay_session_success)?;
+        let response = serde_json::from_str::<DogStatsDReplaySessionResponseBody>(&response_body)
+            .error_context("Failed to deserialize DogStatsD replay session response.")?;
+
+        Ok(response.session_id)
+    }
+
+    /// Finishes a DogStatsD replay session.
+    ///
+    /// # Errors
+    ///
+    /// If the request fails, or if ADP rejects the session release, an error is returned.
+    #[cfg(target_os = "linux")]
+    pub async fn dogstatsd_replay_finish_session(&mut self, session_id: &str) -> Result<(), GenericError> {
+        let uri = self.build_uri(&format!("/dogstatsd/replay/session/{session_id}"), None);
+        let req = Request::delete(uri)
+            .body(Full::new(Bytes::new()))
+            .expect("valid request");
+        self.client
+            .send(req)
+            .and_then(process_response_body)
+            .await
+            .and_then(empty_when_replay_session_success)
+    }
+
     /// Retrieves the configuration of the process.
     ///
     /// This is a point-in-time snapshot of the configuration, which could change over time if dynamic configuration is enabled.
@@ -307,6 +365,21 @@ fn body_when_capture_success(resp: Response<String>) -> Result<String, GenericEr
     }
 }
 
+#[cfg(target_os = "linux")]
+fn body_when_replay_session_success(resp: Response<String>) -> Result<String, GenericError> {
+    match resp.status() {
+        status if status.is_success() => Ok(resp.into_body()),
+        StatusCode::BAD_REQUEST | StatusCode::CONFLICT | StatusCode::PRECONDITION_FAILED => {
+            Err(generic_error!("{}", resp.into_body()))
+        }
+        status => Err(generic_error!(
+            "Failed to start DogStatsD replay session ({}): {}.",
+            status,
+            resp.into_body()
+        )),
+    }
+}
+
 fn body_when_success(resp: Response<String>) -> Result<String, GenericError> {
     if resp.status().is_success() {
         Ok(resp.into_body())
@@ -331,11 +404,26 @@ fn empty_when_success(resp: Response<String>) -> Result<(), GenericError> {
     }
 }
 
+#[cfg(target_os = "linux")]
+fn empty_when_replay_session_success(resp: Response<String>) -> Result<(), GenericError> {
+    match resp.status() {
+        status if status.is_success() => Ok(()),
+        StatusCode::CONFLICT | StatusCode::PRECONDITION_FAILED => Err(generic_error!("{}", resp.into_body())),
+        status => Err(generic_error!(
+            "Failed to finish DogStatsD replay session ({}): {}.",
+            status,
+            resp.into_body()
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use http::{Response, StatusCode};
 
     use super::body_when_capture_success;
+    #[cfg(target_os = "linux")]
+    use super::{body_when_replay_session_success, empty_when_replay_session_success};
 
     #[test]
     fn dogstatsd_capture_failed_precondition_surfaces_server_message() {
@@ -370,5 +458,29 @@ mod tests {
         let message = error.to_string();
         assert!(message.contains("Failed to start DogStatsD capture"));
         assert!(message.contains("route not found"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn dogstatsd_replay_session_conflict_surfaces_server_message() {
+        let response = Response::builder()
+            .status(StatusCode::CONFLICT)
+            .body("DogStatsD replay already in progress.".to_string())
+            .expect("valid response");
+        let error = body_when_replay_session_success(response).expect_err("conflict should be an error");
+
+        assert_eq!(error.to_string(), "DogStatsD replay already in progress.");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn dogstatsd_replay_finish_conflict_surfaces_server_message() {
+        let response = Response::builder()
+            .status(StatusCode::CONFLICT)
+            .body("session does not own active replay".to_string())
+            .expect("valid response");
+        let error = empty_when_replay_session_success(response).expect_err("conflict should be an error");
+
+        assert_eq!(error.to_string(), "session does not own active replay");
     }
 }

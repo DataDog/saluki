@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use serde_json::Value;
 
-use super::{SchemaEntry, SupportLevel, ALL_ANNOTATIONS};
+use super::{PipelineAffinity, SchemaEntry, SupportLevel, ALL_ANNOTATIONS};
 
 /// Result of classifying a single config key/value pair against the registry.
 pub struct Classification {
@@ -10,6 +10,8 @@ pub struct Classification {
     pub support_level: SupportLevel,
     /// Whether the value matches the schema default.
     pub is_default: bool,
+    /// Which pipelines this key's incompatibility warning applies to.
+    pub pipeline_affinity: PipelineAffinity,
 }
 
 /// Classifies the support level of config keys and determines if a value is default.
@@ -17,7 +19,7 @@ pub struct Classification {
 /// Only knows about annotated keys (`ALL_ANNOTATIONS`). Keys not in the registry - whether ignored,
 /// unrecognized, or anything else - return `None` from [`classify`](Self::classify).
 pub struct ConfigClassifier {
-    lookup: HashMap<&'static str, (&'static SchemaEntry, SupportLevel)>,
+    lookup: HashMap<&'static str, (&'static SchemaEntry, SupportLevel, PipelineAffinity)>,
 }
 
 impl ConfigClassifier {
@@ -26,7 +28,11 @@ impl ConfigClassifier {
         let mut lookup = HashMap::new();
 
         for &annotation in ALL_ANNOTATIONS.iter() {
-            let entry = (annotation.schema, annotation.support_level);
+            let entry = (
+                annotation.schema,
+                annotation.support_level,
+                annotation.pipeline_affinity,
+            );
             lookup.insert(annotation.yaml_path(), entry);
             for alias in annotation.additional_yaml_paths {
                 lookup.insert(alias, entry);
@@ -40,10 +46,11 @@ impl ConfigClassifier {
     ///
     /// Returns `None` for keys not in `ALL_ANNOTATIONS` (ignored, unrecognized, etc.).
     pub fn classify(&self, key: &str, value: &Value) -> Option<Classification> {
-        let &(schema, support_level) = self.lookup.get(key)?;
+        let &(schema, support_level, pipeline_affinity) = self.lookup.get(key)?;
         Some(Classification {
             support_level,
             is_default: is_default_value(schema, value),
+            pipeline_affinity,
         })
     }
 }
@@ -149,6 +156,14 @@ mod tests {
         let alias = c.classify("dogstatsd_expiry_seconds", &Value::Null).unwrap();
         assert!(canonical.is_default);
         assert!(alias.is_default);
+    }
+
+    #[test]
+    fn log_payloads_is_supported() {
+        let c = classifier();
+        let result = c.classify("log_payloads", &Value::Bool(true)).unwrap();
+        assert_eq!(result.support_level, SupportLevel::Full);
+        assert!(!result.is_default);
     }
 
     #[test]

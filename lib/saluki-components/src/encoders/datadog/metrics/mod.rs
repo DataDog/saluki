@@ -132,6 +132,10 @@ const fn default_use_v2_api_series() -> bool {
     true
 }
 
+const fn default_log_payloads() -> bool {
+    false
+}
+
 /// Datadog Metrics encoder.
 ///
 /// Generates Datadog metrics payloads for the Datadog platform.
@@ -247,6 +251,14 @@ pub struct DatadogMetricsConfiguration {
     #[serde(default = "default_use_v2_api_series")]
     use_v2_api_series: bool,
 
+    /// Whether to log metric payload contents before encoding.
+    ///
+    /// This logs decoded metric objects, not the encoded JSON/protobuf HTTP body.
+    ///
+    /// Defaults to `false`.
+    #[serde(default = "default_log_payloads")]
+    log_payloads: bool,
+
     /// Additional tags to apply to all forwarded metrics.
     #[serde(default, skip)]
     #[facet(opaque)]
@@ -334,6 +346,7 @@ impl EncoderBuilder for DatadogMetricsConfiguration {
             sketches_rb,
             telemetry,
             flush_timeout,
+            log_payloads: self.log_payloads,
         }))
     }
 }
@@ -367,6 +380,7 @@ pub struct DatadogMetrics {
     sketches_rb: RequestBuilder<MetricsEndpointEncoder>,
     telemetry: ComponentTelemetry,
     flush_timeout: Duration,
+    log_payloads: bool,
 }
 
 #[async_trait]
@@ -377,6 +391,7 @@ impl Encoder for DatadogMetrics {
             sketches_rb,
             telemetry,
             flush_timeout,
+            log_payloads,
         } = *self;
 
         let mut health = context.take_health_handle();
@@ -384,8 +399,15 @@ impl Encoder for DatadogMetrics {
         // Spawn our request builder task.
         let (events_tx, events_rx) = mpsc::channel(8);
         let (payloads_tx, mut payloads_rx) = mpsc::channel(8);
-        let request_builder_fut =
-            run_request_builder(series_rb, sketches_rb, telemetry, events_rx, payloads_tx, flush_timeout);
+        let request_builder_fut = run_request_builder(
+            series_rb,
+            sketches_rb,
+            telemetry,
+            events_rx,
+            payloads_tx,
+            flush_timeout,
+            log_payloads,
+        );
         let request_builder_handle = context
             .topology_context()
             .global_thread_pool()
@@ -442,6 +464,7 @@ async fn run_request_builder(
     mut series_request_builder: RequestBuilder<MetricsEndpointEncoder>,
     mut sketches_request_builder: RequestBuilder<MetricsEndpointEncoder>, telemetry: ComponentTelemetry,
     mut events_rx: mpsc::Receiver<EventsBuffer>, payloads_tx: mpsc::Sender<PayloadsBuffer>, flush_timeout: Duration,
+    log_payloads: bool,
 ) -> Result<(), GenericError> {
     let mut pending_flush = false;
     let pending_flush_timeout = sleep(flush_timeout);
@@ -455,6 +478,10 @@ async fn run_request_builder(
                         Some(metric) => metric,
                         None => continue,
                     };
+
+                    if log_payloads {
+                        log_metric_payload(&metric);
+                    }
 
                     // Series metrics (counters, gauges, rates, sets) and sketch metrics (histograms, distributions)
                     // route to their respective request builders. Whether the series builder targets the V1 or V2
@@ -479,7 +506,6 @@ async fn run_request_builder(
                             continue;
                         }
                     };
-
 
                     let maybe_requests = request_builder.flush().await;
                     if maybe_requests.is_empty() {
@@ -584,6 +610,17 @@ async fn run_request_builder(
     }
 
     Ok(())
+}
+
+fn log_metric_payload(metric: &Metric) {
+    match metric.values() {
+        MetricValues::Counter(..) | MetricValues::Rate(..) | MetricValues::Gauge(..) | MetricValues::Set(..) => {
+            debug!(?metric, "Flushing series metric.")
+        }
+        MetricValues::Histogram(..) | MetricValues::Distribution(..) => {
+            debug!(?metric, "Flushing sketch metric.")
+        }
+    }
 }
 
 /// Metrics intake endpoint.

@@ -1,0 +1,34 @@
+# Verify the config check suppresses warnings for incompatible keys whose pipeline is inactive.
+#
+# Mirrors adp-config-check-warn but with DogStatsD disabled. The same medium-severity
+# DogStatsD-specific key (dogstatsd_telemetry_enabled_listener_id) is set, and its
+# pipeline_affinity is Pipelines(&[Pipeline::DogStatsD]). With DogStatsD inactive, the warning
+# must not fire.
+
+type: integration
+name: "adp-config-check-no-warn"
+description: "Verify config check suppresses warnings for incompatible keys whose pipeline is inactive"
+timeout: 120s
+
+container:
+  image: "saluki-images/datadog-agent:testing-devel"
+  env:
+    DD_API_KEY: "test-api-key"
+    DD_HOSTNAME: "integration-test-config-no-warn"
+    DD_DATA_PLANE_ENABLED: "true"
+    DD_DATA_PLANE_STANDALONE_MODE: "false"
+    DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT: "true"
+    DD_DATA_PLANE_DOGSTATSD_ENABLED: "false"             # DogStatsD pipeline inactive
+    DD_DOGSTATSD_TELEMETRY_ENABLED_LISTENER_ID: "true"   # Incompatible(Medium, DogStatsD)
+
+assertions:
+  - parallel:
+      - type: process_stable_for
+        duration: 10s
+      - type: log_not_contains
+        pattern: "Unsupported configuration key"
+        during: 10s
+      - type: log_not_contains
+        pattern: "panic|PANIC"
+        regex: true
+        during: 10s
