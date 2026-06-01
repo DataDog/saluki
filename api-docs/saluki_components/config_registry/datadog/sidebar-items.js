@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"mod":["aggregate","containerd","dogstatsd","dogstatsd_mapper","dogstatsd_prefix_filter","encoders","forwarder","get_typed","otlp","proxy","trace_obfuscation"]};
+window.SIDEBAR_ITEMS = {"mod":["aggregate","containerd","dogstatsd","dogstatsd_mapper","dogstatsd_prefix_filter","encoders","forwarder","get_typed","otlp","proxy","tag_filterlist","trace_obfuscation"]};
