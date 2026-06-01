@@ -1,6 +1,6 @@
 # Configuring DogStatsD on Agent Data Plane
 
-<!-- Last updated: 2026-05-28 -->
+<!-- Last updated: 2026-05-29 -->
 
 The DogStatsD implementation on ADP has been redesigned in Rust for better resource guarantees and
 efficiency. Because the architecture is different from the original implementation, certain
@@ -46,7 +46,7 @@ architecture is fundamentally different or the feature is platform-specific.
 | ---------------------------------------------- | ---------------------------------- | ------------------------------------------------------------ |
 | `config_id`                                    | Fleet Automation config ID tag     | Core Agent uses this only on Agent HA telemetry metrics      |
 | `dogstatsd_host_socket_path`                   | Host UDS socket dir for DSD        | Not read by DSD server; admission controller only            |
-| `dogstatsd_mem_based_rate_limiter.enabled`     | Enable memory rate limiter         | Go GC specific; use `memory_limit`                           |
+| `dogstatsd_mem_based_rate_limiter.*`           | Memory-based rate limiter          | Go GC–specific; ADP uses `memory_limit` (see below)          |
 | `dogstatsd_no_aggregation_pipeline_batch_size` | No-aggregation pipeline batch size | Fixed in ADP topology                                        |
 | `dogstatsd_packet_buffer_flush_timeout`        | Packet buffer flush timeout        | ADP decodes inline                                           |
 | `dogstatsd_packet_buffer_size`                 | Datagrams per packet buffer        | ADP decodes inline                                           |
@@ -56,6 +56,18 @@ architecture is fundamentally different or the feature is platform-specific.
 | `dogstatsd_telemetry_enabled_listener_id`      | Per-listener telemetry tagging     | Not feasible to thread through                               |
 | `dogstatsd_workers_count`                      | Number of DSD processing workers   | ADP uses async tasks                                         |
 | `use_dogstatsd`                                | Master DogStatsD enable toggle     | Core Agent evaluates and sets `data_plane.dogstatsd.enabled` |
+
+### Memory-based rate limiter (`dogstatsd_mem_based_rate_limiter.*`)
+
+The Core Agent exposes configuration under this prefix to apply backpressure when the Go process
+approaches its memory limit. They work by manipulating Go's garbage collector
+(`debug.SetGCPercent`, `debug.FreeOSMemory`), allocating a large heap ballast to adjust GC
+heuristics, and blocking goroutines to slow packet ingestion. None of these mechanisms have
+an equivalent in Rust, and ADP does not use a Go runtime.
+
+ADP takes a different approach to the same problem using explicit static memory accounting and a
+process-level RSS limit. All 11 `dogstatsd_mem_based_rate_limiter.*` keys are ignored. See
+[Memory Management](../memory.md) for details.
 
 ## Behavioral Differences
 
