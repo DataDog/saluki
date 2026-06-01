@@ -244,7 +244,6 @@ ways that are not yet fully characterized.
 | `aggregator_flush_metrics_and_serialize_in_parallel_buffer_size` | Parallel flush: series/sketch buffer size       | [#1681] |
 | `aggregator_flush_metrics_and_serialize_in_parallel_chan_size`   | Parallel flush: channel size                    | [#1681] |
 | `aggregator_stop_timeout`                                        | Timeout (s) for aggregator flush on stop        | [#1681] |
-| `aggregator_tag_filter_cache_capacity`                           | Tag-filter deduplication cache size             | [#1667] |
 | `aggregator_use_tags_store`                                      | Enable shared tag deduplication store           | [#1681] |
 | `anomaly_detection.enabled`                                      | Enable anomaly detection observer pipeline      | [#1683] |
 | `anomaly_detection.metrics.enabled`                              | Enable metric ingestion for anomaly detection   | [#1683] |

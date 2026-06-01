@@ -40,7 +40,7 @@ ifeq ($(CI),true)
 	override CARGO_BINSTALL_STRATEGIES = compile
 endif
 export CARGO_TOOL_VERSION_cargo-binstall ?= 1.18.1
-export CARGO_TOOL_VERSION_dd-rust-license-tool ?= 1.0.3
+export CARGO_TOOL_VERSION_dd-rust-license-tool ?= 1.0.6
 export CARGO_TOOL_VERSION_cargo-deny ?= 0.18.9
 export CARGO_TOOL_VERSION_cargo-hack ?= 0.6.30
 export CARGO_TOOL_VERSION_cargo-nextest ?= 0.9.99
