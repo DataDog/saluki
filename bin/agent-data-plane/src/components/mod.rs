@@ -1,4 +1,5 @@
 pub mod apm_onboarding;
+pub mod config_id;
 mod dogstatsd_filterlist;
 pub mod dogstatsd_post_aggregate_filter;
 pub mod dogstatsd_prefix_filter;

@@ -65,6 +65,7 @@ default values.
 
 | Config Key                          | Description                      | Agent Behavior                                 | ADP Behavior                                                   |
 | ----------------------------------- | -------------------------------- | ---------------------------------------------- | -------------------------------------------------------------- |
+| `config_id`                         | Fleet Automation config ID tag   | Added to agent-running telemetry metrics when non-empty | Added to serialized metric payloads when non-empty after trimming whitespace; configured value wins |
 | `dogstatsd_mapper_cache_size`       | Mapper result LRU cache size     | `0` disables mapping; positive sizes the LRU   | `0` disables the cache only; mapping still runs ([#1687])      |
 | `dogstatsd_metrics_stats_enable`    | Enable per-metric debug stats    | Config toggle                                  | Gates debug log; stats API on-demand ([#1352], [#1356])        |
 | `dogstatsd_stats_enable`            | Enable internal stats endpoint   | Config toggle                                  | On-demand via API ([#1352])                                    |
@@ -250,7 +251,6 @@ ways that are not yet fully characterized.
 | `anomaly_detection.metrics.enabled`                              | Enable metric ingestion for anomaly detection   | [#1683] |
 | `autoscaling.failover.enabled`                                   | Enable autoscaling failover metric routing      | [#1684] |
 | `autoscaling.failover.metrics`                                   | Metric names forwarded to DCA for failover      | [#1684] |
-| `config_id`                                                      | Fleet Automation config ID tag for agent        | [#1751] |
 | `dogstatsd_disable_verbose_logs`                                 | Suppress noisy parse error logs                 | [#1350] |
 | `dogstatsd_experimental_http.enabled`                            | Enable experimental HTTP/H2C DSD listener       | [#1682] |
 | `dogstatsd_experimental_http.listen_address`                     | Bind address for experimental HTTP DSD listener | [#1682] |

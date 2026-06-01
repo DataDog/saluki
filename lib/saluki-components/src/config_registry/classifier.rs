@@ -76,7 +76,7 @@ fn is_default_value(schema: &SchemaEntry, value: &Value) -> bool {
 mod tests {
     use super::*;
     use crate::config_registry::datadog::unsupported;
-    use crate::config_registry::SUPPORTED_ANNOTATIONS;
+    use crate::config_registry::{Pipeline, SUPPORTED_ANNOTATIONS};
 
     fn classifier() -> ConfigClassifier {
         ConfigClassifier::new()
@@ -163,6 +163,18 @@ mod tests {
         let c = classifier();
         let result = c.classify("log_payloads", &Value::Bool(true)).unwrap();
         assert_eq!(result.support_level, SupportLevel::Full);
+        assert!(!result.is_default);
+    }
+
+    #[test]
+    fn config_id_is_supported() {
+        let c = classifier();
+        let result = c.classify("config_id", &Value::String("test-config01".into())).unwrap();
+        assert_eq!(result.support_level, SupportLevel::Full);
+        assert_eq!(
+            result.pipeline_affinity,
+            PipelineAffinity::Pipelines(&[Pipeline::DogStatsD, Pipeline::Checks, Pipeline::Otlp])
+        );
         assert!(!result.is_default);
     }
 

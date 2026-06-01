@@ -1,6 +1,6 @@
 //! Annotations for keys consumed via `get_typed` / `try_get_typed` rather than struct
 //! deserialization.
-use crate::config_registry::{generated::schema, structs, PipelineAffinity, SalukiAnnotation, SupportLevel};
+use crate::config_registry::{generated::schema, structs, Pipeline, PipelineAffinity, SalukiAnnotation, SupportLevel};
 
 crate::declare_annotations! {
     /// `cmd_port`—port for the Datadog Agent IPC/CMD API server.
@@ -14,6 +14,19 @@ crate::declare_annotations! {
         test_json: Some("5101"),
         // Affects how ADP receives commands.
         pipeline_affinity: PipelineAffinity::CrossCutting,
+    };
+
+    /// `config_id` - Fleet Automation config ID on payloads.
+    CONFIG_ID = SalukiAnnotation {
+        schema: &schema::CONFIG_ID,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::GET_TYPED],
+        value_type_override: None,
+        test_json: None,
+        // Agent/host metadata applied to outbound metric payloads.
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD, Pipeline::Checks, Pipeline::Otlp]),
     };
 
     /// `log_format_rfc3339`—use RFC 3339 timestamp format in log output.

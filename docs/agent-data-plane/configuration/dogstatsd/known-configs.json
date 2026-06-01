@@ -199,10 +199,10 @@
   },
   {
     "key": "config_id",
-    "feature_state": "MISSING",
-    "action": "INVESTIGATE",
+    "feature_state": "DIVERGENT",
+    "action": "DOCUMENTED",
     "description": "Fleet Automation config ID tag for agent",
-    "reason": "Marked for investigation; previously dismissed as not-applicable.",
+    "reason": "ADP reads config_id and stamps it as an authoritative tag on serialized metric payloads when the value is non-empty after trimming whitespace. This is intentionally broader than the core agent, which only adds config_id to agent-running telemetry metrics and only skips the exact empty string. Incoming normal and origin config_id tags are replaced by the configured value.",
     "issue": "#1751",
     "adp_key": null
   },

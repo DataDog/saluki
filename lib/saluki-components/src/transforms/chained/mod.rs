@@ -39,6 +39,11 @@ impl ChainedConfiguration {
             .push((subtransform_id, Box::new(subtransform_builder)));
         self
     }
+
+    /// Returns the configured subtransform IDs in execution order.
+    pub fn subtransform_ids(&self) -> impl Iterator<Item = &str> {
+        self.subtransform_builders.iter().map(|(id, _)| id.as_str())
+    }
 }
 
 impl MemoryBounds for ChainedConfiguration {

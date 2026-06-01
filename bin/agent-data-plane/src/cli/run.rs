@@ -44,7 +44,7 @@ use tracing::{debug, error, info, trace, warn};
 
 use crate::{
     components::{
-        apm_onboarding::ApmOnboardingConfiguration,
+        apm_onboarding::ApmOnboardingConfiguration, config_id::ConfigIdEnrichmentConfiguration,
         dogstatsd_post_aggregate_filter::DogStatsDPostAggregateFilterConfiguration,
         dogstatsd_prefix_filter::DogStatsDPrefixFilterConfiguration, host_tags::HostTagsConfiguration,
         ottl_filter_processor::OttlFilterConfiguration, ottl_transform_processor::OttlTransformConfiguration,
@@ -536,6 +536,8 @@ async fn add_baseline_metrics_pipeline_to_blueprint(
         metrics_enrich_config = metrics_enrich_config.with_transform_builder("host_tags", host_tags_config);
     }
 
+    metrics_enrich_config = with_config_id_enrichment_transform(metrics_enrich_config, config)?;
+
     let dd_metrics_config = DatadogMetricsConfiguration::from_configuration(config)
         .error_context("Failed to configure Datadog Metrics encoder.")?;
 
@@ -549,6 +551,17 @@ async fn add_baseline_metrics_pipeline_to_blueprint(
         .connect_component("dd_out", ["dd_metrics_encode"])?;
 
     Ok(())
+}
+
+fn with_config_id_enrichment_transform(
+    metrics_enrich_config: ChainedConfiguration, config: &GenericConfiguration,
+) -> Result<ChainedConfiguration, GenericError> {
+    let config_id_config = ConfigIdEnrichmentConfiguration::from_configuration(config)?;
+    if config_id_config.enabled() {
+        Ok(metrics_enrich_config.with_transform_builder("config_id", config_id_config))
+    } else {
+        Ok(metrics_enrich_config)
+    }
 }
 
 async fn add_baseline_logs_pipeline_to_blueprint(
@@ -825,4 +838,39 @@ fn write_sizing_guide(bounds: ComponentBounds) -> Result<(), GenericError> {
     output.flush()?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use saluki_config::ConfigurationLoader;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn config_id_enrichment_is_appended_after_existing_metric_enrichers() {
+        let (config, _) =
+            ConfigurationLoader::for_tests(Some(serde_json::json!({ "config_id": "test-config01" })), None, false)
+                .await;
+        let host_tags_placeholder = ConfigIdEnrichmentConfiguration::from_configuration(&config).unwrap();
+        let metrics_enrich_config =
+            ChainedConfiguration::default().with_transform_builder("host_tags", host_tags_placeholder);
+
+        let metrics_enrich_config = with_config_id_enrichment_transform(metrics_enrich_config, &config).unwrap();
+
+        let subtransform_ids: Vec<_> = metrics_enrich_config.subtransform_ids().collect();
+        assert_eq!(subtransform_ids, vec!["0_host_tags", "1_config_id"]);
+    }
+
+    #[tokio::test]
+    async fn disabled_config_id_enrichment_is_not_appended() {
+        let (config, _) = ConfigurationLoader::for_tests(Some(serde_json::json!({})), None, false).await;
+        let host_tags_placeholder = ConfigIdEnrichmentConfiguration::from_configuration(&config).unwrap();
+        let metrics_enrich_config =
+            ChainedConfiguration::default().with_transform_builder("host_tags", host_tags_placeholder);
+
+        let metrics_enrich_config = with_config_id_enrichment_transform(metrics_enrich_config, &config).unwrap();
+
+        let subtransform_ids: Vec<_> = metrics_enrich_config.subtransform_ids().collect();
+        assert_eq!(subtransform_ids, vec!["0_host_tags"]);
+    }
 }
