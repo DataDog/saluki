@@ -149,10 +149,10 @@
 <a href=#149 id=149 data-nosnippet>149</a>        </span>pipeline_affinity: PipelineAffinity::CrossCutting,
 <a href=#150 id=150 data-nosnippet>150</a>    };
 <a href=#151 id=151 data-nosnippet>151</a>
-<a href=#152 id=152 data-nosnippet>152</a>    <span class="doccomment">/// `forwarder_outdated_file_in_days` - retry file retention period.
-<a href=#153 id=153 data-nosnippet>153</a>    </span>FORWARDER_OUTDATED_FILE_IN_DAYS = SalukiAnnotation {
-<a href=#154 id=154 data-nosnippet>154</a>        schema: <span class="kw-2">&amp;</span>schema::FORWARDER_OUTDATED_FILE_IN_DAYS,
-<a href=#155 id=155 data-nosnippet>155</a>        <span class="comment">// Retry file retention not implemented. #1360
+<a href=#152 id=152 data-nosnippet>152</a>    <span class="doccomment">/// `forwarder_retry_queue_capacity_time_interval_sec` - retry queue time-based capacity.
+<a href=#153 id=153 data-nosnippet>153</a>    </span>FORWARDER_RETRY_QUEUE_CAPACITY_TIME_INTERVAL_SEC = SalukiAnnotation {
+<a href=#154 id=154 data-nosnippet>154</a>        schema: <span class="kw-2">&amp;</span>schema::FORWARDER_RETRY_QUEUE_CAPACITY_TIME_INTERVAL_SEC,
+<a href=#155 id=155 data-nosnippet>155</a>        <span class="comment">// Not implemented. #1365
 <a href=#156 id=156 data-nosnippet>156</a>        </span>support_level: SupportLevel::Incompatible(Severity::Medium),
 <a href=#157 id=157 data-nosnippet>157</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
 <a href=#158 id=158 data-nosnippet>158</a>        env_var_override: <span class="prelude-val">None</span>,
@@ -163,23 +163,23 @@
 <a href=#163 id=163 data-nosnippet>163</a>        </span>pipeline_affinity: PipelineAffinity::CrossCutting,
 <a href=#164 id=164 data-nosnippet>164</a>    };
 <a href=#165 id=165 data-nosnippet>165</a>
-<a href=#166 id=166 data-nosnippet>166</a>    <span class="doccomment">/// `forwarder_retry_queue_capacity_time_interval_sec` - retry queue time-based capacity.
-<a href=#167 id=167 data-nosnippet>167</a>    </span>FORWARDER_RETRY_QUEUE_CAPACITY_TIME_INTERVAL_SEC = SalukiAnnotation {
-<a href=#168 id=168 data-nosnippet>168</a>        schema: <span class="kw-2">&amp;</span>schema::FORWARDER_RETRY_QUEUE_CAPACITY_TIME_INTERVAL_SEC,
-<a href=#169 id=169 data-nosnippet>169</a>        <span class="comment">// Not implemented. #1365
-<a href=#170 id=170 data-nosnippet>170</a>        </span>support_level: SupportLevel::Incompatible(Severity::Medium),
+<a href=#166 id=166 data-nosnippet>166</a>    <span class="doccomment">/// `serializer_experimental_use_v3_api.compression_level` - V3 API compression level.
+<a href=#167 id=167 data-nosnippet>167</a>    </span>SERIALIZER_EXPERIMENTAL_USE_V3_API_COMPRESSION_LEVEL = SalukiAnnotation {
+<a href=#168 id=168 data-nosnippet>168</a>        schema: <span class="kw-2">&amp;</span>schema::SERIALIZER_EXPERIMENTAL_USE_V3_API_COMPRESSION_LEVEL,
+<a href=#169 id=169 data-nosnippet>169</a>        <span class="comment">// V3 metrics API not implemented. #1468
+<a href=#170 id=170 data-nosnippet>170</a>        </span>support_level: SupportLevel::Incompatible(Severity::Low),
 <a href=#171 id=171 data-nosnippet>171</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
 <a href=#172 id=172 data-nosnippet>172</a>        env_var_override: <span class="prelude-val">None</span>,
 <a href=#173 id=173 data-nosnippet>173</a>        used_by: <span class="kw-2">&amp;</span>[],
 <a href=#174 id=174 data-nosnippet>174</a>        value_type_override: <span class="prelude-val">None</span>,
 <a href=#175 id=175 data-nosnippet>175</a>        test_json: <span class="prelude-val">None</span>,
-<a href=#176 id=176 data-nosnippet>176</a>        <span class="comment">// The forwarder is potentially used by any pipeline.
-<a href=#177 id=177 data-nosnippet>177</a>        </span>pipeline_affinity: PipelineAffinity::CrossCutting,
+<a href=#176 id=176 data-nosnippet>176</a>        <span class="comment">// Metrics encoder (dd_metrics_encode) is used by DogStatsD, Checks, and OTLP native (Traces active); APM traces use a separate encoder.
+<a href=#177 id=177 data-nosnippet>177</a>        </span>pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::DogStatsD, Pipeline::Checks, Pipeline::Traces]),
 <a href=#178 id=178 data-nosnippet>178</a>    };
 <a href=#179 id=179 data-nosnippet>179</a>
-<a href=#180 id=180 data-nosnippet>180</a>    <span class="doccomment">/// `serializer_experimental_use_v3_api.compression_level` - V3 API compression level.
-<a href=#181 id=181 data-nosnippet>181</a>    </span>SERIALIZER_EXPERIMENTAL_USE_V3_API_COMPRESSION_LEVEL = SalukiAnnotation {
-<a href=#182 id=182 data-nosnippet>182</a>        schema: <span class="kw-2">&amp;</span>schema::SERIALIZER_EXPERIMENTAL_USE_V3_API_COMPRESSION_LEVEL,
+<a href=#180 id=180 data-nosnippet>180</a>    <span class="doccomment">/// `serializer_experimental_use_v3_api.series.endpoints` - V3 API series endpoints.
+<a href=#181 id=181 data-nosnippet>181</a>    </span>SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_ENDPOINTS = SalukiAnnotation {
+<a href=#182 id=182 data-nosnippet>182</a>        schema: <span class="kw-2">&amp;</span>schema::SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_ENDPOINTS,
 <a href=#183 id=183 data-nosnippet>183</a>        <span class="comment">// V3 metrics API not implemented. #1468
 <a href=#184 id=184 data-nosnippet>184</a>        </span>support_level: SupportLevel::Incompatible(Severity::Low),
 <a href=#185 id=185 data-nosnippet>185</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
@@ -191,9 +191,9 @@
 <a href=#191 id=191 data-nosnippet>191</a>        </span>pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::DogStatsD, Pipeline::Checks, Pipeline::Traces]),
 <a href=#192 id=192 data-nosnippet>192</a>    };
 <a href=#193 id=193 data-nosnippet>193</a>
-<a href=#194 id=194 data-nosnippet>194</a>    <span class="doccomment">/// `serializer_experimental_use_v3_api.series.endpoints` - V3 API series endpoints.
-<a href=#195 id=195 data-nosnippet>195</a>    </span>SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_ENDPOINTS = SalukiAnnotation {
-<a href=#196 id=196 data-nosnippet>196</a>        schema: <span class="kw-2">&amp;</span>schema::SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_ENDPOINTS,
+<a href=#194 id=194 data-nosnippet>194</a>    <span class="doccomment">/// `serializer_experimental_use_v3_api.series.validate` - V3 API series validation.
+<a href=#195 id=195 data-nosnippet>195</a>    </span>SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_VALIDATE = SalukiAnnotation {
+<a href=#196 id=196 data-nosnippet>196</a>        schema: <span class="kw-2">&amp;</span>schema::SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_VALIDATE,
 <a href=#197 id=197 data-nosnippet>197</a>        <span class="comment">// V3 metrics API not implemented. #1468
 <a href=#198 id=198 data-nosnippet>198</a>        </span>support_level: SupportLevel::Incompatible(Severity::Low),
 <a href=#199 id=199 data-nosnippet>199</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
@@ -205,9 +205,9 @@
 <a href=#205 id=205 data-nosnippet>205</a>        </span>pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::DogStatsD, Pipeline::Checks, Pipeline::Traces]),
 <a href=#206 id=206 data-nosnippet>206</a>    };
 <a href=#207 id=207 data-nosnippet>207</a>
-<a href=#208 id=208 data-nosnippet>208</a>    <span class="doccomment">/// `serializer_experimental_use_v3_api.series.validate` - V3 API series validation.
-<a href=#209 id=209 data-nosnippet>209</a>    </span>SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_VALIDATE = SalukiAnnotation {
-<a href=#210 id=210 data-nosnippet>210</a>        schema: <span class="kw-2">&amp;</span>schema::SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_VALIDATE,
+<a href=#208 id=208 data-nosnippet>208</a>    <span class="doccomment">/// `serializer_experimental_use_v3_api.sketches.endpoints` - V3 API sketches endpoints.
+<a href=#209 id=209 data-nosnippet>209</a>    </span>SERIALIZER_EXPERIMENTAL_USE_V3_API_SKETCHES_ENDPOINTS = SalukiAnnotation {
+<a href=#210 id=210 data-nosnippet>210</a>        schema: <span class="kw-2">&amp;</span>schema::SERIALIZER_EXPERIMENTAL_USE_V3_API_SKETCHES_ENDPOINTS,
 <a href=#211 id=211 data-nosnippet>211</a>        <span class="comment">// V3 metrics API not implemented. #1468
 <a href=#212 id=212 data-nosnippet>212</a>        </span>support_level: SupportLevel::Incompatible(Severity::Low),
 <a href=#213 id=213 data-nosnippet>213</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
@@ -219,9 +219,9 @@
 <a href=#219 id=219 data-nosnippet>219</a>        </span>pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::DogStatsD, Pipeline::Checks, Pipeline::Traces]),
 <a href=#220 id=220 data-nosnippet>220</a>    };
 <a href=#221 id=221 data-nosnippet>221</a>
-<a href=#222 id=222 data-nosnippet>222</a>    <span class="doccomment">/// `serializer_experimental_use_v3_api.sketches.endpoints` - V3 API sketches endpoints.
-<a href=#223 id=223 data-nosnippet>223</a>    </span>SERIALIZER_EXPERIMENTAL_USE_V3_API_SKETCHES_ENDPOINTS = SalukiAnnotation {
-<a href=#224 id=224 data-nosnippet>224</a>        schema: <span class="kw-2">&amp;</span>schema::SERIALIZER_EXPERIMENTAL_USE_V3_API_SKETCHES_ENDPOINTS,
+<a href=#222 id=222 data-nosnippet>222</a>    <span class="doccomment">/// `serializer_experimental_use_v3_api.sketches.validate` - V3 API sketches validation.
+<a href=#223 id=223 data-nosnippet>223</a>    </span>SERIALIZER_EXPERIMENTAL_USE_V3_API_SKETCHES_VALIDATE = SalukiAnnotation {
+<a href=#224 id=224 data-nosnippet>224</a>        schema: <span class="kw-2">&amp;</span>schema::SERIALIZER_EXPERIMENTAL_USE_V3_API_SKETCHES_VALIDATE,
 <a href=#225 id=225 data-nosnippet>225</a>        <span class="comment">// V3 metrics API not implemented. #1468
 <a href=#226 id=226 data-nosnippet>226</a>        </span>support_level: SupportLevel::Incompatible(Severity::Low),
 <a href=#227 id=227 data-nosnippet>227</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
@@ -233,10 +233,10 @@
 <a href=#233 id=233 data-nosnippet>233</a>        </span>pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::DogStatsD, Pipeline::Checks, Pipeline::Traces]),
 <a href=#234 id=234 data-nosnippet>234</a>    };
 <a href=#235 id=235 data-nosnippet>235</a>
-<a href=#236 id=236 data-nosnippet>236</a>    <span class="doccomment">/// `serializer_experimental_use_v3_api.sketches.validate` - V3 API sketches validation.
-<a href=#237 id=237 data-nosnippet>237</a>    </span>SERIALIZER_EXPERIMENTAL_USE_V3_API_SKETCHES_VALIDATE = SalukiAnnotation {
-<a href=#238 id=238 data-nosnippet>238</a>        schema: <span class="kw-2">&amp;</span>schema::SERIALIZER_EXPERIMENTAL_USE_V3_API_SKETCHES_VALIDATE,
-<a href=#239 id=239 data-nosnippet>239</a>        <span class="comment">// V3 metrics API not implemented. #1468
+<a href=#236 id=236 data-nosnippet>236</a>    <span class="doccomment">/// `serializer_max_series_points_per_payload` - max series points per payload.
+<a href=#237 id=237 data-nosnippet>237</a>    </span>SERIALIZER_MAX_SERIES_POINTS_PER_PAYLOAD = SalukiAnnotation {
+<a href=#238 id=238 data-nosnippet>238</a>        schema: <span class="kw-2">&amp;</span>schema::SERIALIZER_MAX_SERIES_POINTS_PER_PAYLOAD,
+<a href=#239 id=239 data-nosnippet>239</a>        <span class="comment">// Not configurable in ADP. #1354
 <a href=#240 id=240 data-nosnippet>240</a>        </span>support_level: SupportLevel::Incompatible(Severity::Low),
 <a href=#241 id=241 data-nosnippet>241</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
 <a href=#242 id=242 data-nosnippet>242</a>        env_var_override: <span class="prelude-val">None</span>,
@@ -247,24 +247,24 @@
 <a href=#247 id=247 data-nosnippet>247</a>        </span>pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::DogStatsD, Pipeline::Checks, Pipeline::Traces]),
 <a href=#248 id=248 data-nosnippet>248</a>    };
 <a href=#249 id=249 data-nosnippet>249</a>
-<a href=#250 id=250 data-nosnippet>250</a>    <span class="doccomment">/// `serializer_max_series_points_per_payload` - max series points per payload.
-<a href=#251 id=251 data-nosnippet>251</a>    </span>SERIALIZER_MAX_SERIES_POINTS_PER_PAYLOAD = SalukiAnnotation {
-<a href=#252 id=252 data-nosnippet>252</a>        schema: <span class="kw-2">&amp;</span>schema::SERIALIZER_MAX_SERIES_POINTS_PER_PAYLOAD,
-<a href=#253 id=253 data-nosnippet>253</a>        <span class="comment">// Not configurable in ADP. #1354
-<a href=#254 id=254 data-nosnippet>254</a>        </span>support_level: SupportLevel::Incompatible(Severity::Low),
+<a href=#250 id=250 data-nosnippet>250</a>    <span class="doccomment">/// `sslkeylogfile` - TLS key log file path.
+<a href=#251 id=251 data-nosnippet>251</a>    </span>SSLKEYLOGFILE = SalukiAnnotation {
+<a href=#252 id=252 data-nosnippet>252</a>        schema: <span class="kw-2">&amp;</span>schema::SSLKEYLOGFILE,
+<a href=#253 id=253 data-nosnippet>253</a>        <span class="comment">// Not implemented. #1372
+<a href=#254 id=254 data-nosnippet>254</a>        </span>support_level: SupportLevel::Incompatible(Severity::Medium),
 <a href=#255 id=255 data-nosnippet>255</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
 <a href=#256 id=256 data-nosnippet>256</a>        env_var_override: <span class="prelude-val">None</span>,
 <a href=#257 id=257 data-nosnippet>257</a>        used_by: <span class="kw-2">&amp;</span>[],
 <a href=#258 id=258 data-nosnippet>258</a>        value_type_override: <span class="prelude-val">None</span>,
 <a href=#259 id=259 data-nosnippet>259</a>        test_json: <span class="prelude-val">None</span>,
-<a href=#260 id=260 data-nosnippet>260</a>        <span class="comment">// Metrics encoder (dd_metrics_encode) is used by DogStatsD, Checks, and OTLP native (Traces active); APM traces use a separate encoder.
-<a href=#261 id=261 data-nosnippet>261</a>        </span>pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::DogStatsD, Pipeline::Checks, Pipeline::Traces]),
+<a href=#260 id=260 data-nosnippet>260</a>        <span class="comment">// TLS is process-wide.
+<a href=#261 id=261 data-nosnippet>261</a>        </span>pipeline_affinity: PipelineAffinity::CrossCutting,
 <a href=#262 id=262 data-nosnippet>262</a>    };
 <a href=#263 id=263 data-nosnippet>263</a>
-<a href=#264 id=264 data-nosnippet>264</a>    <span class="doccomment">/// `sslkeylogfile` - TLS key log file path.
-<a href=#265 id=265 data-nosnippet>265</a>    </span>SSLKEYLOGFILE = SalukiAnnotation {
-<a href=#266 id=266 data-nosnippet>266</a>        schema: <span class="kw-2">&amp;</span>schema::SSLKEYLOGFILE,
-<a href=#267 id=267 data-nosnippet>267</a>        <span class="comment">// Not implemented. #1372
+<a href=#264 id=264 data-nosnippet>264</a>    <span class="doccomment">/// `tls_handshake_timeout` - HTTP TLS handshake timeout.
+<a href=#265 id=265 data-nosnippet>265</a>    </span>TLS_HANDSHAKE_TIMEOUT = SalukiAnnotation {
+<a href=#266 id=266 data-nosnippet>266</a>        schema: <span class="kw-2">&amp;</span>schema::TLS_HANDSHAKE_TIMEOUT,
+<a href=#267 id=267 data-nosnippet>267</a>        <span class="comment">// Not implemented. Request timeout covers the gap. #178
 <a href=#268 id=268 data-nosnippet>268</a>        </span>support_level: SupportLevel::Incompatible(Severity::Medium),
 <a href=#269 id=269 data-nosnippet>269</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
 <a href=#270 id=270 data-nosnippet>270</a>        env_var_override: <span class="prelude-val">None</span>,
@@ -275,335 +275,321 @@
 <a href=#275 id=275 data-nosnippet>275</a>        </span>pipeline_affinity: PipelineAffinity::CrossCutting,
 <a href=#276 id=276 data-nosnippet>276</a>    };
 <a href=#277 id=277 data-nosnippet>277</a>
-<a href=#278 id=278 data-nosnippet>278</a>    <span class="doccomment">/// `tls_handshake_timeout` - HTTP TLS handshake timeout.
-<a href=#279 id=279 data-nosnippet>279</a>    </span>TLS_HANDSHAKE_TIMEOUT = SalukiAnnotation {
-<a href=#280 id=280 data-nosnippet>280</a>        schema: <span class="kw-2">&amp;</span>schema::TLS_HANDSHAKE_TIMEOUT,
-<a href=#281 id=281 data-nosnippet>281</a>        <span class="comment">// Not implemented. Request timeout covers the gap. #178
-<a href=#282 id=282 data-nosnippet>282</a>        </span>support_level: SupportLevel::Incompatible(Severity::Medium),
+<a href=#278 id=278 data-nosnippet>278</a>    <span class="doccomment">/// `aggregator_buffer_size` - aggregator input channel depth.
+<a href=#279 id=279 data-nosnippet>279</a>    </span>AGGREGATOR_BUFFER_SIZE = SalukiAnnotation {
+<a href=#280 id=280 data-nosnippet>280</a>        schema: <span class="kw-2">&amp;</span>schema::AGGREGATOR_BUFFER_SIZE,
+<a href=#281 id=281 data-nosnippet>281</a>        <span class="comment">// Not implemented. #1681
+<a href=#282 id=282 data-nosnippet>282</a>        </span>support_level: SupportLevel::Incompatible(Severity::Low),
 <a href=#283 id=283 data-nosnippet>283</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
 <a href=#284 id=284 data-nosnippet>284</a>        env_var_override: <span class="prelude-val">None</span>,
 <a href=#285 id=285 data-nosnippet>285</a>        used_by: <span class="kw-2">&amp;</span>[],
 <a href=#286 id=286 data-nosnippet>286</a>        value_type_override: <span class="prelude-val">None</span>,
 <a href=#287 id=287 data-nosnippet>287</a>        test_json: <span class="prelude-val">None</span>,
-<a href=#288 id=288 data-nosnippet>288</a>        <span class="comment">// TLS is process-wide.
-<a href=#289 id=289 data-nosnippet>289</a>        </span>pipeline_affinity: PipelineAffinity::CrossCutting,
-<a href=#290 id=290 data-nosnippet>290</a>    };
-<a href=#291 id=291 data-nosnippet>291</a>
-<a href=#292 id=292 data-nosnippet>292</a>    <span class="doccomment">/// `aggregator_buffer_size` - aggregator input channel depth.
-<a href=#293 id=293 data-nosnippet>293</a>    </span>AGGREGATOR_BUFFER_SIZE = SalukiAnnotation {
-<a href=#294 id=294 data-nosnippet>294</a>        schema: <span class="kw-2">&amp;</span>schema::AGGREGATOR_BUFFER_SIZE,
-<a href=#295 id=295 data-nosnippet>295</a>        <span class="comment">// Not implemented. #1681
-<a href=#296 id=296 data-nosnippet>296</a>        </span>support_level: SupportLevel::Incompatible(Severity::Low),
-<a href=#297 id=297 data-nosnippet>297</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
-<a href=#298 id=298 data-nosnippet>298</a>        env_var_override: <span class="prelude-val">None</span>,
-<a href=#299 id=299 data-nosnippet>299</a>        used_by: <span class="kw-2">&amp;</span>[],
-<a href=#300 id=300 data-nosnippet>300</a>        value_type_override: <span class="prelude-val">None</span>,
-<a href=#301 id=301 data-nosnippet>301</a>        test_json: <span class="prelude-val">None</span>,
-<a href=#302 id=302 data-nosnippet>302</a>        pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::DogStatsD]),
-<a href=#303 id=303 data-nosnippet>303</a>    };
-<a href=#304 id=304 data-nosnippet>304</a>    <span class="doccomment">/// `aggregator_flush_metrics_and_serialize_in_parallel_buffer_size` - parallel flush buffer size.
-<a href=#305 id=305 data-nosnippet>305</a>    </span>AGGREGATOR_FLUSH_METRICS_AND_SERIALIZE_IN_PARALLEL_BUFFER_SIZE = SalukiAnnotation {
-<a href=#306 id=306 data-nosnippet>306</a>        schema: <span class="kw-2">&amp;</span>schema::AGGREGATOR_FLUSH_METRICS_AND_SERIALIZE_IN_PARALLEL_BUFFER_SIZE,
-<a href=#307 id=307 data-nosnippet>307</a>        <span class="comment">// Not implemented. #1681
-<a href=#308 id=308 data-nosnippet>308</a>        </span>support_level: SupportLevel::Incompatible(Severity::Low),
-<a href=#309 id=309 data-nosnippet>309</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
-<a href=#310 id=310 data-nosnippet>310</a>        env_var_override: <span class="prelude-val">None</span>,
-<a href=#311 id=311 data-nosnippet>311</a>        used_by: <span class="kw-2">&amp;</span>[],
-<a href=#312 id=312 data-nosnippet>312</a>        value_type_override: <span class="prelude-val">None</span>,
-<a href=#313 id=313 data-nosnippet>313</a>        test_json: <span class="prelude-val">None</span>,
-<a href=#314 id=314 data-nosnippet>314</a>        pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::DogStatsD]),
-<a href=#315 id=315 data-nosnippet>315</a>    };
-<a href=#316 id=316 data-nosnippet>316</a>    <span class="doccomment">/// `aggregator_flush_metrics_and_serialize_in_parallel_chan_size` - parallel flush channel size.
-<a href=#317 id=317 data-nosnippet>317</a>    </span>AGGREGATOR_FLUSH_METRICS_AND_SERIALIZE_IN_PARALLEL_CHAN_SIZE = SalukiAnnotation {
-<a href=#318 id=318 data-nosnippet>318</a>        schema: <span class="kw-2">&amp;</span>schema::AGGREGATOR_FLUSH_METRICS_AND_SERIALIZE_IN_PARALLEL_CHAN_SIZE,
-<a href=#319 id=319 data-nosnippet>319</a>        <span class="comment">// Not implemented. #1681
-<a href=#320 id=320 data-nosnippet>320</a>        </span>support_level: SupportLevel::Incompatible(Severity::Low),
-<a href=#321 id=321 data-nosnippet>321</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
-<a href=#322 id=322 data-nosnippet>322</a>        env_var_override: <span class="prelude-val">None</span>,
-<a href=#323 id=323 data-nosnippet>323</a>        used_by: <span class="kw-2">&amp;</span>[],
-<a href=#324 id=324 data-nosnippet>324</a>        value_type_override: <span class="prelude-val">None</span>,
-<a href=#325 id=325 data-nosnippet>325</a>        test_json: <span class="prelude-val">None</span>,
-<a href=#326 id=326 data-nosnippet>326</a>        pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::DogStatsD]),
-<a href=#327 id=327 data-nosnippet>327</a>    };
-<a href=#328 id=328 data-nosnippet>328</a>    <span class="doccomment">/// `aggregator_stop_timeout` - aggregator shutdown drain timeout.
-<a href=#329 id=329 data-nosnippet>329</a>    </span>AGGREGATOR_STOP_TIMEOUT = SalukiAnnotation {
-<a href=#330 id=330 data-nosnippet>330</a>        schema: <span class="kw-2">&amp;</span>schema::AGGREGATOR_STOP_TIMEOUT,
-<a href=#331 id=331 data-nosnippet>331</a>        <span class="comment">// Not implemented. #1681
-<a href=#332 id=332 data-nosnippet>332</a>        </span>support_level: SupportLevel::Incompatible(Severity::Low),
-<a href=#333 id=333 data-nosnippet>333</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
-<a href=#334 id=334 data-nosnippet>334</a>        env_var_override: <span class="prelude-val">None</span>,
-<a href=#335 id=335 data-nosnippet>335</a>        used_by: <span class="kw-2">&amp;</span>[],
-<a href=#336 id=336 data-nosnippet>336</a>        value_type_override: <span class="prelude-val">None</span>,
-<a href=#337 id=337 data-nosnippet>337</a>        test_json: <span class="prelude-val">None</span>,
-<a href=#338 id=338 data-nosnippet>338</a>        pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::DogStatsD]),
-<a href=#339 id=339 data-nosnippet>339</a>    };
-<a href=#340 id=340 data-nosnippet>340</a>    <span class="doccomment">/// `aggregator_use_tags_store` - shared tag deduplication store toggle.
-<a href=#341 id=341 data-nosnippet>341</a>    </span>AGGREGATOR_USE_TAGS_STORE = SalukiAnnotation {
-<a href=#342 id=342 data-nosnippet>342</a>        schema: <span class="kw-2">&amp;</span>schema::AGGREGATOR_USE_TAGS_STORE,
-<a href=#343 id=343 data-nosnippet>343</a>        <span class="comment">// Not implemented. #1681
-<a href=#344 id=344 data-nosnippet>344</a>        </span>support_level: SupportLevel::Incompatible(Severity::Low),
-<a href=#345 id=345 data-nosnippet>345</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
-<a href=#346 id=346 data-nosnippet>346</a>        env_var_override: <span class="prelude-val">None</span>,
-<a href=#347 id=347 data-nosnippet>347</a>        used_by: <span class="kw-2">&amp;</span>[],
-<a href=#348 id=348 data-nosnippet>348</a>        value_type_override: <span class="prelude-val">None</span>,
-<a href=#349 id=349 data-nosnippet>349</a>        test_json: <span class="prelude-val">None</span>,
-<a href=#350 id=350 data-nosnippet>350</a>        pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::DogStatsD]),
-<a href=#351 id=351 data-nosnippet>351</a>    };
-<a href=#352 id=352 data-nosnippet>352</a>    <span class="doccomment">/// `autoscaling.failover.enabled` - autoscaling failover metric routing via DCA.
-<a href=#353 id=353 data-nosnippet>353</a>    </span>AUTOSCALING_FAILOVER_ENABLED = SalukiAnnotation {
-<a href=#354 id=354 data-nosnippet>354</a>        schema: <span class="kw-2">&amp;</span>schema::AUTOSCALING_FAILOVER_ENABLED,
-<a href=#355 id=355 data-nosnippet>355</a>        <span class="comment">// Not implemented. #1684
-<a href=#356 id=356 data-nosnippet>356</a>        </span>support_level: SupportLevel::Incompatible(Severity::Medium),
-<a href=#357 id=357 data-nosnippet>357</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
-<a href=#358 id=358 data-nosnippet>358</a>        env_var_override: <span class="prelude-val">None</span>,
-<a href=#359 id=359 data-nosnippet>359</a>        used_by: <span class="kw-2">&amp;</span>[],
-<a href=#360 id=360 data-nosnippet>360</a>        value_type_override: <span class="prelude-val">None</span>,
-<a href=#361 id=361 data-nosnippet>361</a>        test_json: <span class="prelude-val">None</span>,
-<a href=#362 id=362 data-nosnippet>362</a>        <span class="comment">// Autoscaling failover routes metric series to the Cluster Agent for HPA; applies to DogStatsD and Checks metric producers, not APM.
-<a href=#363 id=363 data-nosnippet>363</a>        </span>pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::DogStatsD, Pipeline::Checks]),
-<a href=#364 id=364 data-nosnippet>364</a>    };
-<a href=#365 id=365 data-nosnippet>365</a>    <span class="doccomment">/// `autoscaling.failover.metrics` - metric names forwarded to DCA for failover.
-<a href=#366 id=366 data-nosnippet>366</a>    </span>AUTOSCALING_FAILOVER_METRICS = SalukiAnnotation {
-<a href=#367 id=367 data-nosnippet>367</a>        schema: <span class="kw-2">&amp;</span>schema::AUTOSCALING_FAILOVER_METRICS,
-<a href=#368 id=368 data-nosnippet>368</a>        <span class="comment">// Not implemented. #1684
-<a href=#369 id=369 data-nosnippet>369</a>        </span>support_level: SupportLevel::Incompatible(Severity::Medium),
-<a href=#370 id=370 data-nosnippet>370</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
-<a href=#371 id=371 data-nosnippet>371</a>        env_var_override: <span class="prelude-val">None</span>,
-<a href=#372 id=372 data-nosnippet>372</a>        used_by: <span class="kw-2">&amp;</span>[],
-<a href=#373 id=373 data-nosnippet>373</a>        value_type_override: <span class="prelude-val">None</span>,
-<a href=#374 id=374 data-nosnippet>374</a>        test_json: <span class="prelude-val">None</span>,
-<a href=#375 id=375 data-nosnippet>375</a>        <span class="comment">// Autoscaling failover routes metric series to the Cluster Agent for HPA; applies to DogStatsD and Checks metric producers, not APM.
-<a href=#376 id=376 data-nosnippet>376</a>        </span>pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::DogStatsD, Pipeline::Checks]),
-<a href=#377 id=377 data-nosnippet>377</a>    };
-<a href=#378 id=378 data-nosnippet>378</a>    <span class="doccomment">/// `dogstatsd_experimental_http.enabled` - experimental HTTP/H2C DSD listener toggle.
-<a href=#379 id=379 data-nosnippet>379</a>    </span>DOGSTATSD_EXPERIMENTAL_HTTP_ENABLED = SalukiAnnotation {
-<a href=#380 id=380 data-nosnippet>380</a>        schema: <span class="kw-2">&amp;</span>schema::DOGSTATSD_EXPERIMENTAL_HTTP_ENABLED,
-<a href=#381 id=381 data-nosnippet>381</a>        <span class="comment">// Not implemented. #1682
-<a href=#382 id=382 data-nosnippet>382</a>        </span>support_level: SupportLevel::Incompatible(Severity::High),
-<a href=#383 id=383 data-nosnippet>383</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
-<a href=#384 id=384 data-nosnippet>384</a>        env_var_override: <span class="prelude-val">None</span>,
-<a href=#385 id=385 data-nosnippet>385</a>        used_by: <span class="kw-2">&amp;</span>[],
-<a href=#386 id=386 data-nosnippet>386</a>        value_type_override: <span class="prelude-val">None</span>,
-<a href=#387 id=387 data-nosnippet>387</a>        test_json: <span class="prelude-val">None</span>,
-<a href=#388 id=388 data-nosnippet>388</a>        pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::DogStatsD]),
-<a href=#389 id=389 data-nosnippet>389</a>    };
-<a href=#390 id=390 data-nosnippet>390</a>    <span class="doccomment">/// `dogstatsd_experimental_http.listen_address` - experimental HTTP DSD listener bind address.
-<a href=#391 id=391 data-nosnippet>391</a>    </span>DOGSTATSD_EXPERIMENTAL_HTTP_LISTEN_ADDRESS = SalukiAnnotation {
-<a href=#392 id=392 data-nosnippet>392</a>        schema: <span class="kw-2">&amp;</span>schema::DOGSTATSD_EXPERIMENTAL_HTTP_LISTEN_ADDRESS,
-<a href=#393 id=393 data-nosnippet>393</a>        <span class="comment">// Not implemented. #1682
-<a href=#394 id=394 data-nosnippet>394</a>        </span>support_level: SupportLevel::Incompatible(Severity::High),
-<a href=#395 id=395 data-nosnippet>395</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
-<a href=#396 id=396 data-nosnippet>396</a>        env_var_override: <span class="prelude-val">None</span>,
-<a href=#397 id=397 data-nosnippet>397</a>        used_by: <span class="kw-2">&amp;</span>[],
-<a href=#398 id=398 data-nosnippet>398</a>        value_type_override: <span class="prelude-val">None</span>,
-<a href=#399 id=399 data-nosnippet>399</a>        test_json: <span class="prelude-val">None</span>,
-<a href=#400 id=400 data-nosnippet>400</a>        pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::DogStatsD]),
-<a href=#401 id=401 data-nosnippet>401</a>    };
-<a href=#402 id=402 data-nosnippet>402</a>    <span class="doccomment">/// `enable_json_stream_shared_compressor_buffers` - shared JSON stream compressor buffer allocation.
-<a href=#403 id=403 data-nosnippet>403</a>    </span>ENABLE_JSON_STREAM_SHARED_COMPRESSOR_BUFFERS = SalukiAnnotation {
-<a href=#404 id=404 data-nosnippet>404</a>        schema: <span class="kw-2">&amp;</span>schema::ENABLE_JSON_STREAM_SHARED_COMPRESSOR_BUFFERS,
-<a href=#405 id=405 data-nosnippet>405</a>        <span class="comment">// Not implemented. #1749
-<a href=#406 id=406 data-nosnippet>406</a>        </span>support_level: SupportLevel::Incompatible(Severity::Low),
-<a href=#407 id=407 data-nosnippet>407</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
-<a href=#408 id=408 data-nosnippet>408</a>        env_var_override: <span class="prelude-val">None</span>,
-<a href=#409 id=409 data-nosnippet>409</a>        used_by: <span class="kw-2">&amp;</span>[],
-<a href=#410 id=410 data-nosnippet>410</a>        value_type_override: <span class="prelude-val">None</span>,
-<a href=#411 id=411 data-nosnippet>411</a>        test_json: <span class="prelude-val">None</span>,
-<a href=#412 id=412 data-nosnippet>412</a>        <span class="comment">// Metrics encoder (dd_metrics_encode) is used by DogStatsD, Checks, and OTLP native (Traces active); APM traces use a separate encoder.
-<a href=#413 id=413 data-nosnippet>413</a>        </span>pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::DogStatsD, Pipeline::Checks, Pipeline::Traces]),
-<a href=#414 id=414 data-nosnippet>414</a>    };
-<a href=#415 id=415 data-nosnippet>415</a>    <span class="doccomment">/// `entity_id` - agent pod entity ID injected by DCA webhook.
-<a href=#416 id=416 data-nosnippet>416</a>    </span>ENTITY_ID = SalukiAnnotation {
-<a href=#417 id=417 data-nosnippet>417</a>        schema: <span class="kw-2">&amp;</span>schema::ENTITY_ID,
-<a href=#418 id=418 data-nosnippet>418</a>        <span class="comment">// Not implemented. #1752
-<a href=#419 id=419 data-nosnippet>419</a>        </span>support_level: SupportLevel::Incompatible(Severity::Low),
-<a href=#420 id=420 data-nosnippet>420</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
-<a href=#421 id=421 data-nosnippet>421</a>        env_var_override: <span class="prelude-val">None</span>,
-<a href=#422 id=422 data-nosnippet>422</a>        used_by: <span class="kw-2">&amp;</span>[],
-<a href=#423 id=423 data-nosnippet>423</a>        value_type_override: <span class="prelude-val">None</span>,
-<a href=#424 id=424 data-nosnippet>424</a>        test_json: <span class="prelude-val">None</span>,
-<a href=#425 id=425 data-nosnippet>425</a>        <span class="comment">// Agent/host metadata applied to all payloads.
-<a href=#426 id=426 data-nosnippet>426</a>        </span>pipeline_affinity: PipelineAffinity::CrossCutting,
-<a href=#427 id=427 data-nosnippet>427</a>    };
-<a href=#428 id=428 data-nosnippet>428</a>    <span class="doccomment">/// `forwarder_requeue_buffer_size` - forwarder in-memory requeue buffer size.
-<a href=#429 id=429 data-nosnippet>429</a>    </span>FORWARDER_REQUEUE_BUFFER_SIZE = SalukiAnnotation {
-<a href=#430 id=430 data-nosnippet>430</a>        schema: <span class="kw-2">&amp;</span>schema::FORWARDER_REQUEUE_BUFFER_SIZE,
-<a href=#431 id=431 data-nosnippet>431</a>        <span class="comment">// Not implemented. #1755
-<a href=#432 id=432 data-nosnippet>432</a>        </span>support_level: SupportLevel::Incompatible(Severity::Low),
-<a href=#433 id=433 data-nosnippet>433</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
-<a href=#434 id=434 data-nosnippet>434</a>        env_var_override: <span class="prelude-val">None</span>,
-<a href=#435 id=435 data-nosnippet>435</a>        used_by: <span class="kw-2">&amp;</span>[],
-<a href=#436 id=436 data-nosnippet>436</a>        value_type_override: <span class="prelude-val">None</span>,
-<a href=#437 id=437 data-nosnippet>437</a>        test_json: <span class="prelude-val">None</span>,
-<a href=#438 id=438 data-nosnippet>438</a>        <span class="comment">// The forwarder is potentially used by any pipeline.
-<a href=#439 id=439 data-nosnippet>439</a>        </span>pipeline_affinity: PipelineAffinity::CrossCutting,
-<a href=#440 id=440 data-nosnippet>440</a>    };
-<a href=#441 id=441 data-nosnippet>441</a>    <span class="doccomment">/// `forwarder_stop_timeout` - forwarder graceful stop drain timeout.
-<a href=#442 id=442 data-nosnippet>442</a>    </span>FORWARDER_STOP_TIMEOUT = SalukiAnnotation {
-<a href=#443 id=443 data-nosnippet>443</a>        schema: <span class="kw-2">&amp;</span>schema::FORWARDER_STOP_TIMEOUT,
-<a href=#444 id=444 data-nosnippet>444</a>        <span class="comment">// Not implemented. #1754
-<a href=#445 id=445 data-nosnippet>445</a>        </span>support_level: SupportLevel::Incompatible(Severity::Low),
-<a href=#446 id=446 data-nosnippet>446</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
-<a href=#447 id=447 data-nosnippet>447</a>        env_var_override: <span class="prelude-val">None</span>,
-<a href=#448 id=448 data-nosnippet>448</a>        used_by: <span class="kw-2">&amp;</span>[],
-<a href=#449 id=449 data-nosnippet>449</a>        value_type_override: <span class="prelude-val">None</span>,
-<a href=#450 id=450 data-nosnippet>450</a>        test_json: <span class="prelude-val">None</span>,
-<a href=#451 id=451 data-nosnippet>451</a>        <span class="comment">// The forwarder is potentially used by any pipeline.
-<a href=#452 id=452 data-nosnippet>452</a>        </span>pipeline_affinity: PipelineAffinity::CrossCutting,
-<a href=#453 id=453 data-nosnippet>453</a>    };
-<a href=#454 id=454 data-nosnippet>454</a>    <span class="doccomment">/// `heroku_dyno` - Heroku dyno name override for agent telemetry.
-<a href=#455 id=455 data-nosnippet>455</a>    </span>HEROKU_DYNO = SalukiAnnotation {
-<a href=#456 id=456 data-nosnippet>456</a>        schema: <span class="kw-2">&amp;</span>schema::HEROKU_DYNO,
-<a href=#457 id=457 data-nosnippet>457</a>        <span class="comment">// Not implemented. #1753
-<a href=#458 id=458 data-nosnippet>458</a>        </span>support_level: SupportLevel::Incompatible(Severity::High),
-<a href=#459 id=459 data-nosnippet>459</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
-<a href=#460 id=460 data-nosnippet>460</a>        env_var_override: <span class="prelude-val">None</span>,
-<a href=#461 id=461 data-nosnippet>461</a>        used_by: <span class="kw-2">&amp;</span>[],
-<a href=#462 id=462 data-nosnippet>462</a>        value_type_override: <span class="prelude-val">None</span>,
-<a href=#463 id=463 data-nosnippet>463</a>        test_json: <span class="prelude-val">None</span>,
-<a href=#464 id=464 data-nosnippet>464</a>        <span class="comment">// Agent/host metadata applied to all payloads.
-<a href=#465 id=465 data-nosnippet>465</a>        </span>pipeline_affinity: PipelineAffinity::CrossCutting,
-<a href=#466 id=466 data-nosnippet>466</a>    };
-<a href=#467 id=467 data-nosnippet>467</a>    <span class="doccomment">/// `multi_region_failover.api_key` - API key for the MRF failover region.
-<a href=#468 id=468 data-nosnippet>468</a>    </span>MULTI_REGION_FAILOVER_API_KEY = SalukiAnnotation {
-<a href=#469 id=469 data-nosnippet>469</a>        schema: <span class="kw-2">&amp;</span>schema::MULTI_REGION_FAILOVER_API_KEY,
-<a href=#470 id=470 data-nosnippet>470</a>        <span class="comment">// Not implemented. #1678
-<a href=#471 id=471 data-nosnippet>471</a>        </span>support_level: SupportLevel::Incompatible(Severity::Medium),
-<a href=#472 id=472 data-nosnippet>472</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
-<a href=#473 id=473 data-nosnippet>473</a>        env_var_override: <span class="prelude-val">None</span>,
-<a href=#474 id=474 data-nosnippet>474</a>        used_by: <span class="kw-2">&amp;</span>[],
-<a href=#475 id=475 data-nosnippet>475</a>        value_type_override: <span class="prelude-val">None</span>,
-<a href=#476 id=476 data-nosnippet>476</a>        test_json: <span class="prelude-val">None</span>,
-<a href=#477 id=477 data-nosnippet>477</a>        <span class="comment">// MRF operates at the dd_out forwarder level; dd_out is used by DogStatsD, Checks, and Traces (OTLP native). Proxy mode bypasses dd_out.
-<a href=#478 id=478 data-nosnippet>478</a>        </span>pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::DogStatsD, Pipeline::Checks, Pipeline::Traces]),
-<a href=#479 id=479 data-nosnippet>479</a>    };
-<a href=#480 id=480 data-nosnippet>480</a>    <span class="doccomment">/// `multi_region_failover.dd_url` - intake URL for the MRF failover region.
-<a href=#481 id=481 data-nosnippet>481</a>    </span>MULTI_REGION_FAILOVER_DD_URL = SalukiAnnotation {
-<a href=#482 id=482 data-nosnippet>482</a>        schema: <span class="kw-2">&amp;</span>schema::MULTI_REGION_FAILOVER_DD_URL,
-<a href=#483 id=483 data-nosnippet>483</a>        <span class="comment">// Not implemented. #1678
-<a href=#484 id=484 data-nosnippet>484</a>        </span>support_level: SupportLevel::Incompatible(Severity::Medium),
-<a href=#485 id=485 data-nosnippet>485</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
-<a href=#486 id=486 data-nosnippet>486</a>        env_var_override: <span class="prelude-val">None</span>,
-<a href=#487 id=487 data-nosnippet>487</a>        used_by: <span class="kw-2">&amp;</span>[],
-<a href=#488 id=488 data-nosnippet>488</a>        value_type_override: <span class="prelude-val">None</span>,
-<a href=#489 id=489 data-nosnippet>489</a>        test_json: <span class="prelude-val">None</span>,
-<a href=#490 id=490 data-nosnippet>490</a>        <span class="comment">// MRF operates at the dd_out forwarder level; dd_out is used by DogStatsD, Checks, and Traces (OTLP native). Proxy mode bypasses dd_out.
-<a href=#491 id=491 data-nosnippet>491</a>        </span>pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::DogStatsD, Pipeline::Checks, Pipeline::Traces]),
-<a href=#492 id=492 data-nosnippet>492</a>    };
-<a href=#493 id=493 data-nosnippet>493</a>    <span class="doccomment">/// `multi_region_failover.enabled` - multi-region failover mode.
-<a href=#494 id=494 data-nosnippet>494</a>    </span>MULTI_REGION_FAILOVER_ENABLED = SalukiAnnotation {
-<a href=#495 id=495 data-nosnippet>495</a>        schema: <span class="kw-2">&amp;</span>schema::MULTI_REGION_FAILOVER_ENABLED,
-<a href=#496 id=496 data-nosnippet>496</a>        <span class="comment">// Not implemented. #1678
-<a href=#497 id=497 data-nosnippet>497</a>        </span>support_level: SupportLevel::Incompatible(Severity::High),
-<a href=#498 id=498 data-nosnippet>498</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
-<a href=#499 id=499 data-nosnippet>499</a>        env_var_override: <span class="prelude-val">None</span>,
-<a href=#500 id=500 data-nosnippet>500</a>        used_by: <span class="kw-2">&amp;</span>[],
-<a href=#501 id=501 data-nosnippet>501</a>        value_type_override: <span class="prelude-val">None</span>,
-<a href=#502 id=502 data-nosnippet>502</a>        test_json: <span class="prelude-val">None</span>,
-<a href=#503 id=503 data-nosnippet>503</a>        <span class="comment">// MRF operates at the dd_out forwarder level; dd_out is used by DogStatsD, Checks, and Traces (OTLP native). Proxy mode bypasses dd_out.
-<a href=#504 id=504 data-nosnippet>504</a>        </span>pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::DogStatsD, Pipeline::Checks, Pipeline::Traces]),
-<a href=#505 id=505 data-nosnippet>505</a>    };
-<a href=#506 id=506 data-nosnippet>506</a>    <span class="doccomment">/// `multi_region_failover.failover_metrics` - metrics forwarding to the failover region.
-<a href=#507 id=507 data-nosnippet>507</a>    </span>MULTI_REGION_FAILOVER_FAILOVER_METRICS = SalukiAnnotation {
-<a href=#508 id=508 data-nosnippet>508</a>        schema: <span class="kw-2">&amp;</span>schema::MULTI_REGION_FAILOVER_FAILOVER_METRICS,
-<a href=#509 id=509 data-nosnippet>509</a>        <span class="comment">// Not implemented. #1678
-<a href=#510 id=510 data-nosnippet>510</a>        </span>support_level: SupportLevel::Incompatible(Severity::Medium),
-<a href=#511 id=511 data-nosnippet>511</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
-<a href=#512 id=512 data-nosnippet>512</a>        env_var_override: <span class="prelude-val">None</span>,
-<a href=#513 id=513 data-nosnippet>513</a>        used_by: <span class="kw-2">&amp;</span>[],
-<a href=#514 id=514 data-nosnippet>514</a>        value_type_override: <span class="prelude-val">None</span>,
-<a href=#515 id=515 data-nosnippet>515</a>        test_json: <span class="prelude-val">None</span>,
-<a href=#516 id=516 data-nosnippet>516</a>        <span class="comment">// MRF operates at the dd_out forwarder level; dd_out is used by DogStatsD, Checks, and Traces (OTLP native). Proxy mode bypasses dd_out.
-<a href=#517 id=517 data-nosnippet>517</a>        </span>pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::DogStatsD, Pipeline::Checks, Pipeline::Traces]),
-<a href=#518 id=518 data-nosnippet>518</a>    };
-<a href=#519 id=519 data-nosnippet>519</a>    <span class="doccomment">/// `multi_region_failover.metric_allowlist` - metric name allowlist for MRF forwarding.
-<a href=#520 id=520 data-nosnippet>520</a>    </span>MULTI_REGION_FAILOVER_METRIC_ALLOWLIST = SalukiAnnotation {
-<a href=#521 id=521 data-nosnippet>521</a>        schema: <span class="kw-2">&amp;</span>schema::MULTI_REGION_FAILOVER_METRIC_ALLOWLIST,
-<a href=#522 id=522 data-nosnippet>522</a>        <span class="comment">// Not implemented. #1678
-<a href=#523 id=523 data-nosnippet>523</a>        </span>support_level: SupportLevel::Incompatible(Severity::Medium),
-<a href=#524 id=524 data-nosnippet>524</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
-<a href=#525 id=525 data-nosnippet>525</a>        env_var_override: <span class="prelude-val">None</span>,
-<a href=#526 id=526 data-nosnippet>526</a>        used_by: <span class="kw-2">&amp;</span>[],
-<a href=#527 id=527 data-nosnippet>527</a>        value_type_override: <span class="prelude-val">None</span>,
-<a href=#528 id=528 data-nosnippet>528</a>        test_json: <span class="prelude-val">None</span>,
-<a href=#529 id=529 data-nosnippet>529</a>        <span class="comment">// MRF operates at the dd_out forwarder level; dd_out is used by DogStatsD, Checks, and Traces (OTLP native). Proxy mode bypasses dd_out.
-<a href=#530 id=530 data-nosnippet>530</a>        </span>pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::DogStatsD, Pipeline::Checks, Pipeline::Traces]),
-<a href=#531 id=531 data-nosnippet>531</a>    };
-<a href=#532 id=532 data-nosnippet>532</a>    <span class="doccomment">/// `multi_region_failover.site` - Datadog site for the MRF failover region.
-<a href=#533 id=533 data-nosnippet>533</a>    </span>MULTI_REGION_FAILOVER_SITE = SalukiAnnotation {
-<a href=#534 id=534 data-nosnippet>534</a>        schema: <span class="kw-2">&amp;</span>schema::MULTI_REGION_FAILOVER_SITE,
-<a href=#535 id=535 data-nosnippet>535</a>        <span class="comment">// Not implemented. #1678
-<a href=#536 id=536 data-nosnippet>536</a>        </span>support_level: SupportLevel::Incompatible(Severity::Medium),
-<a href=#537 id=537 data-nosnippet>537</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
-<a href=#538 id=538 data-nosnippet>538</a>        env_var_override: <span class="prelude-val">None</span>,
-<a href=#539 id=539 data-nosnippet>539</a>        used_by: <span class="kw-2">&amp;</span>[],
-<a href=#540 id=540 data-nosnippet>540</a>        value_type_override: <span class="prelude-val">None</span>,
-<a href=#541 id=541 data-nosnippet>541</a>        test_json: <span class="prelude-val">None</span>,
-<a href=#542 id=542 data-nosnippet>542</a>        <span class="comment">// MRF operates at the dd_out forwarder level; dd_out is used by DogStatsD, Checks, and Traces (OTLP native). Proxy mode bypasses dd_out.
-<a href=#543 id=543 data-nosnippet>543</a>        </span>pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::DogStatsD, Pipeline::Checks, Pipeline::Traces]),
-<a href=#544 id=544 data-nosnippet>544</a>    };
-<a href=#545 id=545 data-nosnippet>545</a>    <span class="doccomment">/// `telemetry.dogstatsd.aggregator_channel_latency_buckets` - DSD-to-aggregator channel latency histogram buckets.
-<a href=#546 id=546 data-nosnippet>546</a>    </span>TELEMETRY_DOGSTATSD_AGGREGATOR_CHANNEL_LATENCY_BUCKETS = SalukiAnnotation {
-<a href=#547 id=547 data-nosnippet>547</a>        schema: <span class="kw-2">&amp;</span>schema::TELEMETRY_DOGSTATSD_AGGREGATOR_CHANNEL_LATENCY_BUCKETS,
-<a href=#548 id=548 data-nosnippet>548</a>        <span class="comment">// Not implemented. #1679
-<a href=#549 id=549 data-nosnippet>549</a>        </span>support_level: SupportLevel::Incompatible(Severity::Low),
-<a href=#550 id=550 data-nosnippet>550</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
-<a href=#551 id=551 data-nosnippet>551</a>        env_var_override: <span class="prelude-val">None</span>,
-<a href=#552 id=552 data-nosnippet>552</a>        used_by: <span class="kw-2">&amp;</span>[],
-<a href=#553 id=553 data-nosnippet>553</a>        value_type_override: <span class="prelude-val">None</span>,
-<a href=#554 id=554 data-nosnippet>554</a>        test_json: <span class="prelude-val">None</span>,
-<a href=#555 id=555 data-nosnippet>555</a>        pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::DogStatsD]),
-<a href=#556 id=556 data-nosnippet>556</a>    };
-<a href=#557 id=557 data-nosnippet>557</a>    <span class="doccomment">/// `telemetry.dogstatsd.listeners_channel_latency_buckets` - DSD listener channel latency histogram buckets.
-<a href=#558 id=558 data-nosnippet>558</a>    </span>TELEMETRY_DOGSTATSD_LISTENERS_CHANNEL_LATENCY_BUCKETS = SalukiAnnotation {
-<a href=#559 id=559 data-nosnippet>559</a>        schema: <span class="kw-2">&amp;</span>schema::TELEMETRY_DOGSTATSD_LISTENERS_CHANNEL_LATENCY_BUCKETS,
-<a href=#560 id=560 data-nosnippet>560</a>        <span class="comment">// Not implemented. #1679
-<a href=#561 id=561 data-nosnippet>561</a>        </span>support_level: SupportLevel::Incompatible(Severity::Low),
-<a href=#562 id=562 data-nosnippet>562</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
-<a href=#563 id=563 data-nosnippet>563</a>        env_var_override: <span class="prelude-val">None</span>,
-<a href=#564 id=564 data-nosnippet>564</a>        used_by: <span class="kw-2">&amp;</span>[],
-<a href=#565 id=565 data-nosnippet>565</a>        value_type_override: <span class="prelude-val">None</span>,
-<a href=#566 id=566 data-nosnippet>566</a>        test_json: <span class="prelude-val">None</span>,
-<a href=#567 id=567 data-nosnippet>567</a>        pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::DogStatsD]),
-<a href=#568 id=568 data-nosnippet>568</a>    };
-<a href=#569 id=569 data-nosnippet>569</a>    <span class="doccomment">/// `telemetry.dogstatsd.listeners_latency_buckets` - DSD listener processing latency histogram buckets.
-<a href=#570 id=570 data-nosnippet>570</a>    </span>TELEMETRY_DOGSTATSD_LISTENERS_LATENCY_BUCKETS = SalukiAnnotation {
-<a href=#571 id=571 data-nosnippet>571</a>        schema: <span class="kw-2">&amp;</span>schema::TELEMETRY_DOGSTATSD_LISTENERS_LATENCY_BUCKETS,
-<a href=#572 id=572 data-nosnippet>572</a>        <span class="comment">// Not implemented. #1679
-<a href=#573 id=573 data-nosnippet>573</a>        </span>support_level: SupportLevel::Incompatible(Severity::Low),
-<a href=#574 id=574 data-nosnippet>574</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
-<a href=#575 id=575 data-nosnippet>575</a>        env_var_override: <span class="prelude-val">None</span>,
-<a href=#576 id=576 data-nosnippet>576</a>        used_by: <span class="kw-2">&amp;</span>[],
-<a href=#577 id=577 data-nosnippet>577</a>        value_type_override: <span class="prelude-val">None</span>,
-<a href=#578 id=578 data-nosnippet>578</a>        test_json: <span class="prelude-val">None</span>,
-<a href=#579 id=579 data-nosnippet>579</a>        pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::DogStatsD]),
-<a href=#580 id=580 data-nosnippet>580</a>    };
-<a href=#581 id=581 data-nosnippet>581</a>    <span class="doccomment">/// `telemetry.dogstatsd_origin` - per-origin processed-metric telemetry counters.
-<a href=#582 id=582 data-nosnippet>582</a>    </span>TELEMETRY_DOGSTATSD_ORIGIN = SalukiAnnotation {
-<a href=#583 id=583 data-nosnippet>583</a>        schema: <span class="kw-2">&amp;</span>schema::TELEMETRY_DOGSTATSD_ORIGIN,
-<a href=#584 id=584 data-nosnippet>584</a>        <span class="comment">// Not implemented. #1679
-<a href=#585 id=585 data-nosnippet>585</a>        </span>support_level: SupportLevel::Incompatible(Severity::Low),
-<a href=#586 id=586 data-nosnippet>586</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
-<a href=#587 id=587 data-nosnippet>587</a>        env_var_override: <span class="prelude-val">None</span>,
-<a href=#588 id=588 data-nosnippet>588</a>        used_by: <span class="kw-2">&amp;</span>[],
-<a href=#589 id=589 data-nosnippet>589</a>        value_type_override: <span class="prelude-val">None</span>,
-<a href=#590 id=590 data-nosnippet>590</a>        test_json: <span class="prelude-val">None</span>,
-<a href=#591 id=591 data-nosnippet>591</a>        pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::DogStatsD]),
+<a href=#288 id=288 data-nosnippet>288</a>        pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::DogStatsD]),
+<a href=#289 id=289 data-nosnippet>289</a>    };
+<a href=#290 id=290 data-nosnippet>290</a>    <span class="doccomment">/// `aggregator_flush_metrics_and_serialize_in_parallel_buffer_size` - parallel flush buffer size.
+<a href=#291 id=291 data-nosnippet>291</a>    </span>AGGREGATOR_FLUSH_METRICS_AND_SERIALIZE_IN_PARALLEL_BUFFER_SIZE = SalukiAnnotation {
+<a href=#292 id=292 data-nosnippet>292</a>        schema: <span class="kw-2">&amp;</span>schema::AGGREGATOR_FLUSH_METRICS_AND_SERIALIZE_IN_PARALLEL_BUFFER_SIZE,
+<a href=#293 id=293 data-nosnippet>293</a>        <span class="comment">// Not implemented. #1681
+<a href=#294 id=294 data-nosnippet>294</a>        </span>support_level: SupportLevel::Incompatible(Severity::Low),
+<a href=#295 id=295 data-nosnippet>295</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
+<a href=#296 id=296 data-nosnippet>296</a>        env_var_override: <span class="prelude-val">None</span>,
+<a href=#297 id=297 data-nosnippet>297</a>        used_by: <span class="kw-2">&amp;</span>[],
+<a href=#298 id=298 data-nosnippet>298</a>        value_type_override: <span class="prelude-val">None</span>,
+<a href=#299 id=299 data-nosnippet>299</a>        test_json: <span class="prelude-val">None</span>,
+<a href=#300 id=300 data-nosnippet>300</a>        pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::DogStatsD]),
+<a href=#301 id=301 data-nosnippet>301</a>    };
+<a href=#302 id=302 data-nosnippet>302</a>    <span class="doccomment">/// `aggregator_flush_metrics_and_serialize_in_parallel_chan_size` - parallel flush channel size.
+<a href=#303 id=303 data-nosnippet>303</a>    </span>AGGREGATOR_FLUSH_METRICS_AND_SERIALIZE_IN_PARALLEL_CHAN_SIZE = SalukiAnnotation {
+<a href=#304 id=304 data-nosnippet>304</a>        schema: <span class="kw-2">&amp;</span>schema::AGGREGATOR_FLUSH_METRICS_AND_SERIALIZE_IN_PARALLEL_CHAN_SIZE,
+<a href=#305 id=305 data-nosnippet>305</a>        <span class="comment">// Not implemented. #1681
+<a href=#306 id=306 data-nosnippet>306</a>        </span>support_level: SupportLevel::Incompatible(Severity::Low),
+<a href=#307 id=307 data-nosnippet>307</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
+<a href=#308 id=308 data-nosnippet>308</a>        env_var_override: <span class="prelude-val">None</span>,
+<a href=#309 id=309 data-nosnippet>309</a>        used_by: <span class="kw-2">&amp;</span>[],
+<a href=#310 id=310 data-nosnippet>310</a>        value_type_override: <span class="prelude-val">None</span>,
+<a href=#311 id=311 data-nosnippet>311</a>        test_json: <span class="prelude-val">None</span>,
+<a href=#312 id=312 data-nosnippet>312</a>        pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::DogStatsD]),
+<a href=#313 id=313 data-nosnippet>313</a>    };
+<a href=#314 id=314 data-nosnippet>314</a>    <span class="doccomment">/// `aggregator_stop_timeout` - aggregator shutdown drain timeout.
+<a href=#315 id=315 data-nosnippet>315</a>    </span>AGGREGATOR_STOP_TIMEOUT = SalukiAnnotation {
+<a href=#316 id=316 data-nosnippet>316</a>        schema: <span class="kw-2">&amp;</span>schema::AGGREGATOR_STOP_TIMEOUT,
+<a href=#317 id=317 data-nosnippet>317</a>        <span class="comment">// Not implemented. #1681
+<a href=#318 id=318 data-nosnippet>318</a>        </span>support_level: SupportLevel::Incompatible(Severity::Low),
+<a href=#319 id=319 data-nosnippet>319</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
+<a href=#320 id=320 data-nosnippet>320</a>        env_var_override: <span class="prelude-val">None</span>,
+<a href=#321 id=321 data-nosnippet>321</a>        used_by: <span class="kw-2">&amp;</span>[],
+<a href=#322 id=322 data-nosnippet>322</a>        value_type_override: <span class="prelude-val">None</span>,
+<a href=#323 id=323 data-nosnippet>323</a>        test_json: <span class="prelude-val">None</span>,
+<a href=#324 id=324 data-nosnippet>324</a>        pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::DogStatsD]),
+<a href=#325 id=325 data-nosnippet>325</a>    };
+<a href=#326 id=326 data-nosnippet>326</a>    <span class="doccomment">/// `aggregator_use_tags_store` - shared tag deduplication store toggle.
+<a href=#327 id=327 data-nosnippet>327</a>    </span>AGGREGATOR_USE_TAGS_STORE = SalukiAnnotation {
+<a href=#328 id=328 data-nosnippet>328</a>        schema: <span class="kw-2">&amp;</span>schema::AGGREGATOR_USE_TAGS_STORE,
+<a href=#329 id=329 data-nosnippet>329</a>        <span class="comment">// Not implemented. #1681
+<a href=#330 id=330 data-nosnippet>330</a>        </span>support_level: SupportLevel::Incompatible(Severity::Low),
+<a href=#331 id=331 data-nosnippet>331</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
+<a href=#332 id=332 data-nosnippet>332</a>        env_var_override: <span class="prelude-val">None</span>,
+<a href=#333 id=333 data-nosnippet>333</a>        used_by: <span class="kw-2">&amp;</span>[],
+<a href=#334 id=334 data-nosnippet>334</a>        value_type_override: <span class="prelude-val">None</span>,
+<a href=#335 id=335 data-nosnippet>335</a>        test_json: <span class="prelude-val">None</span>,
+<a href=#336 id=336 data-nosnippet>336</a>        pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::DogStatsD]),
+<a href=#337 id=337 data-nosnippet>337</a>    };
+<a href=#338 id=338 data-nosnippet>338</a>    <span class="doccomment">/// `autoscaling.failover.enabled` - autoscaling failover metric routing via DCA.
+<a href=#339 id=339 data-nosnippet>339</a>    </span>AUTOSCALING_FAILOVER_ENABLED = SalukiAnnotation {
+<a href=#340 id=340 data-nosnippet>340</a>        schema: <span class="kw-2">&amp;</span>schema::AUTOSCALING_FAILOVER_ENABLED,
+<a href=#341 id=341 data-nosnippet>341</a>        <span class="comment">// Not implemented. #1684
+<a href=#342 id=342 data-nosnippet>342</a>        </span>support_level: SupportLevel::Incompatible(Severity::Medium),
+<a href=#343 id=343 data-nosnippet>343</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
+<a href=#344 id=344 data-nosnippet>344</a>        env_var_override: <span class="prelude-val">None</span>,
+<a href=#345 id=345 data-nosnippet>345</a>        used_by: <span class="kw-2">&amp;</span>[],
+<a href=#346 id=346 data-nosnippet>346</a>        value_type_override: <span class="prelude-val">None</span>,
+<a href=#347 id=347 data-nosnippet>347</a>        test_json: <span class="prelude-val">None</span>,
+<a href=#348 id=348 data-nosnippet>348</a>        <span class="comment">// Autoscaling failover routes metric series to the Cluster Agent for HPA; applies to DogStatsD and Checks metric producers, not APM.
+<a href=#349 id=349 data-nosnippet>349</a>        </span>pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::DogStatsD, Pipeline::Checks]),
+<a href=#350 id=350 data-nosnippet>350</a>    };
+<a href=#351 id=351 data-nosnippet>351</a>    <span class="doccomment">/// `autoscaling.failover.metrics` - metric names forwarded to DCA for failover.
+<a href=#352 id=352 data-nosnippet>352</a>    </span>AUTOSCALING_FAILOVER_METRICS = SalukiAnnotation {
+<a href=#353 id=353 data-nosnippet>353</a>        schema: <span class="kw-2">&amp;</span>schema::AUTOSCALING_FAILOVER_METRICS,
+<a href=#354 id=354 data-nosnippet>354</a>        <span class="comment">// Not implemented. #1684
+<a href=#355 id=355 data-nosnippet>355</a>        </span>support_level: SupportLevel::Incompatible(Severity::Medium),
+<a href=#356 id=356 data-nosnippet>356</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
+<a href=#357 id=357 data-nosnippet>357</a>        env_var_override: <span class="prelude-val">None</span>,
+<a href=#358 id=358 data-nosnippet>358</a>        used_by: <span class="kw-2">&amp;</span>[],
+<a href=#359 id=359 data-nosnippet>359</a>        value_type_override: <span class="prelude-val">None</span>,
+<a href=#360 id=360 data-nosnippet>360</a>        test_json: <span class="prelude-val">None</span>,
+<a href=#361 id=361 data-nosnippet>361</a>        <span class="comment">// Autoscaling failover routes metric series to the Cluster Agent for HPA; applies to DogStatsD and Checks metric producers, not APM.
+<a href=#362 id=362 data-nosnippet>362</a>        </span>pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::DogStatsD, Pipeline::Checks]),
+<a href=#363 id=363 data-nosnippet>363</a>    };
+<a href=#364 id=364 data-nosnippet>364</a>    <span class="doccomment">/// `dogstatsd_experimental_http.enabled` - experimental HTTP/H2C DSD listener toggle.
+<a href=#365 id=365 data-nosnippet>365</a>    </span>DOGSTATSD_EXPERIMENTAL_HTTP_ENABLED = SalukiAnnotation {
+<a href=#366 id=366 data-nosnippet>366</a>        schema: <span class="kw-2">&amp;</span>schema::DOGSTATSD_EXPERIMENTAL_HTTP_ENABLED,
+<a href=#367 id=367 data-nosnippet>367</a>        <span class="comment">// Not implemented. #1682
+<a href=#368 id=368 data-nosnippet>368</a>        </span>support_level: SupportLevel::Incompatible(Severity::High),
+<a href=#369 id=369 data-nosnippet>369</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
+<a href=#370 id=370 data-nosnippet>370</a>        env_var_override: <span class="prelude-val">None</span>,
+<a href=#371 id=371 data-nosnippet>371</a>        used_by: <span class="kw-2">&amp;</span>[],
+<a href=#372 id=372 data-nosnippet>372</a>        value_type_override: <span class="prelude-val">None</span>,
+<a href=#373 id=373 data-nosnippet>373</a>        test_json: <span class="prelude-val">None</span>,
+<a href=#374 id=374 data-nosnippet>374</a>        pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::DogStatsD]),
+<a href=#375 id=375 data-nosnippet>375</a>    };
+<a href=#376 id=376 data-nosnippet>376</a>    <span class="doccomment">/// `dogstatsd_experimental_http.listen_address` - experimental HTTP DSD listener bind address.
+<a href=#377 id=377 data-nosnippet>377</a>    </span>DOGSTATSD_EXPERIMENTAL_HTTP_LISTEN_ADDRESS = SalukiAnnotation {
+<a href=#378 id=378 data-nosnippet>378</a>        schema: <span class="kw-2">&amp;</span>schema::DOGSTATSD_EXPERIMENTAL_HTTP_LISTEN_ADDRESS,
+<a href=#379 id=379 data-nosnippet>379</a>        <span class="comment">// Not implemented. #1682
+<a href=#380 id=380 data-nosnippet>380</a>        </span>support_level: SupportLevel::Incompatible(Severity::High),
+<a href=#381 id=381 data-nosnippet>381</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
+<a href=#382 id=382 data-nosnippet>382</a>        env_var_override: <span class="prelude-val">None</span>,
+<a href=#383 id=383 data-nosnippet>383</a>        used_by: <span class="kw-2">&amp;</span>[],
+<a href=#384 id=384 data-nosnippet>384</a>        value_type_override: <span class="prelude-val">None</span>,
+<a href=#385 id=385 data-nosnippet>385</a>        test_json: <span class="prelude-val">None</span>,
+<a href=#386 id=386 data-nosnippet>386</a>        pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::DogStatsD]),
+<a href=#387 id=387 data-nosnippet>387</a>    };
+<a href=#388 id=388 data-nosnippet>388</a>    <span class="doccomment">/// `enable_json_stream_shared_compressor_buffers` - shared JSON stream compressor buffer allocation.
+<a href=#389 id=389 data-nosnippet>389</a>    </span>ENABLE_JSON_STREAM_SHARED_COMPRESSOR_BUFFERS = SalukiAnnotation {
+<a href=#390 id=390 data-nosnippet>390</a>        schema: <span class="kw-2">&amp;</span>schema::ENABLE_JSON_STREAM_SHARED_COMPRESSOR_BUFFERS,
+<a href=#391 id=391 data-nosnippet>391</a>        <span class="comment">// Not implemented. #1749
+<a href=#392 id=392 data-nosnippet>392</a>        </span>support_level: SupportLevel::Incompatible(Severity::Low),
+<a href=#393 id=393 data-nosnippet>393</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
+<a href=#394 id=394 data-nosnippet>394</a>        env_var_override: <span class="prelude-val">None</span>,
+<a href=#395 id=395 data-nosnippet>395</a>        used_by: <span class="kw-2">&amp;</span>[],
+<a href=#396 id=396 data-nosnippet>396</a>        value_type_override: <span class="prelude-val">None</span>,
+<a href=#397 id=397 data-nosnippet>397</a>        test_json: <span class="prelude-val">None</span>,
+<a href=#398 id=398 data-nosnippet>398</a>        <span class="comment">// Metrics encoder (dd_metrics_encode) is used by DogStatsD, Checks, and OTLP native (Traces active); APM traces use a separate encoder.
+<a href=#399 id=399 data-nosnippet>399</a>        </span>pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::DogStatsD, Pipeline::Checks, Pipeline::Traces]),
+<a href=#400 id=400 data-nosnippet>400</a>    };
+<a href=#401 id=401 data-nosnippet>401</a>    <span class="doccomment">/// `entity_id` - agent pod entity ID injected by DCA webhook.
+<a href=#402 id=402 data-nosnippet>402</a>    </span>ENTITY_ID = SalukiAnnotation {
+<a href=#403 id=403 data-nosnippet>403</a>        schema: <span class="kw-2">&amp;</span>schema::ENTITY_ID,
+<a href=#404 id=404 data-nosnippet>404</a>        <span class="comment">// Not implemented. #1752
+<a href=#405 id=405 data-nosnippet>405</a>        </span>support_level: SupportLevel::Incompatible(Severity::Low),
+<a href=#406 id=406 data-nosnippet>406</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
+<a href=#407 id=407 data-nosnippet>407</a>        env_var_override: <span class="prelude-val">None</span>,
+<a href=#408 id=408 data-nosnippet>408</a>        used_by: <span class="kw-2">&amp;</span>[],
+<a href=#409 id=409 data-nosnippet>409</a>        value_type_override: <span class="prelude-val">None</span>,
+<a href=#410 id=410 data-nosnippet>410</a>        test_json: <span class="prelude-val">None</span>,
+<a href=#411 id=411 data-nosnippet>411</a>        <span class="comment">// Agent/host metadata applied to all payloads.
+<a href=#412 id=412 data-nosnippet>412</a>        </span>pipeline_affinity: PipelineAffinity::CrossCutting,
+<a href=#413 id=413 data-nosnippet>413</a>    };
+<a href=#414 id=414 data-nosnippet>414</a>    <span class="doccomment">/// `forwarder_requeue_buffer_size` - forwarder in-memory requeue buffer size.
+<a href=#415 id=415 data-nosnippet>415</a>    </span>FORWARDER_REQUEUE_BUFFER_SIZE = SalukiAnnotation {
+<a href=#416 id=416 data-nosnippet>416</a>        schema: <span class="kw-2">&amp;</span>schema::FORWARDER_REQUEUE_BUFFER_SIZE,
+<a href=#417 id=417 data-nosnippet>417</a>        <span class="comment">// Not implemented. #1755
+<a href=#418 id=418 data-nosnippet>418</a>        </span>support_level: SupportLevel::Incompatible(Severity::Low),
+<a href=#419 id=419 data-nosnippet>419</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
+<a href=#420 id=420 data-nosnippet>420</a>        env_var_override: <span class="prelude-val">None</span>,
+<a href=#421 id=421 data-nosnippet>421</a>        used_by: <span class="kw-2">&amp;</span>[],
+<a href=#422 id=422 data-nosnippet>422</a>        value_type_override: <span class="prelude-val">None</span>,
+<a href=#423 id=423 data-nosnippet>423</a>        test_json: <span class="prelude-val">None</span>,
+<a href=#424 id=424 data-nosnippet>424</a>        <span class="comment">// The forwarder is potentially used by any pipeline.
+<a href=#425 id=425 data-nosnippet>425</a>        </span>pipeline_affinity: PipelineAffinity::CrossCutting,
+<a href=#426 id=426 data-nosnippet>426</a>    };
+<a href=#427 id=427 data-nosnippet>427</a>    <span class="doccomment">/// `forwarder_stop_timeout` - forwarder graceful stop drain timeout.
+<a href=#428 id=428 data-nosnippet>428</a>    </span>FORWARDER_STOP_TIMEOUT = SalukiAnnotation {
+<a href=#429 id=429 data-nosnippet>429</a>        schema: <span class="kw-2">&amp;</span>schema::FORWARDER_STOP_TIMEOUT,
+<a href=#430 id=430 data-nosnippet>430</a>        <span class="comment">// Not implemented. #1754
+<a href=#431 id=431 data-nosnippet>431</a>        </span>support_level: SupportLevel::Incompatible(Severity::Low),
+<a href=#432 id=432 data-nosnippet>432</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
+<a href=#433 id=433 data-nosnippet>433</a>        env_var_override: <span class="prelude-val">None</span>,
+<a href=#434 id=434 data-nosnippet>434</a>        used_by: <span class="kw-2">&amp;</span>[],
+<a href=#435 id=435 data-nosnippet>435</a>        value_type_override: <span class="prelude-val">None</span>,
+<a href=#436 id=436 data-nosnippet>436</a>        test_json: <span class="prelude-val">None</span>,
+<a href=#437 id=437 data-nosnippet>437</a>        <span class="comment">// The forwarder is potentially used by any pipeline.
+<a href=#438 id=438 data-nosnippet>438</a>        </span>pipeline_affinity: PipelineAffinity::CrossCutting,
+<a href=#439 id=439 data-nosnippet>439</a>    };
+<a href=#440 id=440 data-nosnippet>440</a>    <span class="doccomment">/// `heroku_dyno` - Heroku dyno name override for agent telemetry.
+<a href=#441 id=441 data-nosnippet>441</a>    </span>HEROKU_DYNO = SalukiAnnotation {
+<a href=#442 id=442 data-nosnippet>442</a>        schema: <span class="kw-2">&amp;</span>schema::HEROKU_DYNO,
+<a href=#443 id=443 data-nosnippet>443</a>        <span class="comment">// Not implemented. #1753
+<a href=#444 id=444 data-nosnippet>444</a>        </span>support_level: SupportLevel::Incompatible(Severity::High),
+<a href=#445 id=445 data-nosnippet>445</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
+<a href=#446 id=446 data-nosnippet>446</a>        env_var_override: <span class="prelude-val">None</span>,
+<a href=#447 id=447 data-nosnippet>447</a>        used_by: <span class="kw-2">&amp;</span>[],
+<a href=#448 id=448 data-nosnippet>448</a>        value_type_override: <span class="prelude-val">None</span>,
+<a href=#449 id=449 data-nosnippet>449</a>        test_json: <span class="prelude-val">None</span>,
+<a href=#450 id=450 data-nosnippet>450</a>        <span class="comment">// Agent/host metadata applied to all payloads.
+<a href=#451 id=451 data-nosnippet>451</a>        </span>pipeline_affinity: PipelineAffinity::CrossCutting,
+<a href=#452 id=452 data-nosnippet>452</a>    };
+<a href=#453 id=453 data-nosnippet>453</a>    <span class="doccomment">/// `multi_region_failover.api_key` - API key for the MRF failover region.
+<a href=#454 id=454 data-nosnippet>454</a>    </span>MULTI_REGION_FAILOVER_API_KEY = SalukiAnnotation {
+<a href=#455 id=455 data-nosnippet>455</a>        schema: <span class="kw-2">&amp;</span>schema::MULTI_REGION_FAILOVER_API_KEY,
+<a href=#456 id=456 data-nosnippet>456</a>        <span class="comment">// Not implemented. #1678
+<a href=#457 id=457 data-nosnippet>457</a>        </span>support_level: SupportLevel::Incompatible(Severity::Medium),
+<a href=#458 id=458 data-nosnippet>458</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
+<a href=#459 id=459 data-nosnippet>459</a>        env_var_override: <span class="prelude-val">None</span>,
+<a href=#460 id=460 data-nosnippet>460</a>        used_by: <span class="kw-2">&amp;</span>[],
+<a href=#461 id=461 data-nosnippet>461</a>        value_type_override: <span class="prelude-val">None</span>,
+<a href=#462 id=462 data-nosnippet>462</a>        test_json: <span class="prelude-val">None</span>,
+<a href=#463 id=463 data-nosnippet>463</a>        <span class="comment">// MRF operates at the dd_out forwarder level; dd_out is used by DogStatsD, Checks, and Traces (OTLP native). Proxy mode bypasses dd_out.
+<a href=#464 id=464 data-nosnippet>464</a>        </span>pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::DogStatsD, Pipeline::Checks, Pipeline::Traces]),
+<a href=#465 id=465 data-nosnippet>465</a>    };
+<a href=#466 id=466 data-nosnippet>466</a>    <span class="doccomment">/// `multi_region_failover.dd_url` - intake URL for the MRF failover region.
+<a href=#467 id=467 data-nosnippet>467</a>    </span>MULTI_REGION_FAILOVER_DD_URL = SalukiAnnotation {
+<a href=#468 id=468 data-nosnippet>468</a>        schema: <span class="kw-2">&amp;</span>schema::MULTI_REGION_FAILOVER_DD_URL,
+<a href=#469 id=469 data-nosnippet>469</a>        <span class="comment">// Not implemented. #1678
+<a href=#470 id=470 data-nosnippet>470</a>        </span>support_level: SupportLevel::Incompatible(Severity::Medium),
+<a href=#471 id=471 data-nosnippet>471</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
+<a href=#472 id=472 data-nosnippet>472</a>        env_var_override: <span class="prelude-val">None</span>,
+<a href=#473 id=473 data-nosnippet>473</a>        used_by: <span class="kw-2">&amp;</span>[],
+<a href=#474 id=474 data-nosnippet>474</a>        value_type_override: <span class="prelude-val">None</span>,
+<a href=#475 id=475 data-nosnippet>475</a>        test_json: <span class="prelude-val">None</span>,
+<a href=#476 id=476 data-nosnippet>476</a>        <span class="comment">// MRF operates at the dd_out forwarder level; dd_out is used by DogStatsD, Checks, and Traces (OTLP native). Proxy mode bypasses dd_out.
+<a href=#477 id=477 data-nosnippet>477</a>        </span>pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::DogStatsD, Pipeline::Checks, Pipeline::Traces]),
+<a href=#478 id=478 data-nosnippet>478</a>    };
+<a href=#479 id=479 data-nosnippet>479</a>    <span class="doccomment">/// `multi_region_failover.enabled` - multi-region failover mode.
+<a href=#480 id=480 data-nosnippet>480</a>    </span>MULTI_REGION_FAILOVER_ENABLED = SalukiAnnotation {
+<a href=#481 id=481 data-nosnippet>481</a>        schema: <span class="kw-2">&amp;</span>schema::MULTI_REGION_FAILOVER_ENABLED,
+<a href=#482 id=482 data-nosnippet>482</a>        <span class="comment">// Not implemented. #1678
+<a href=#483 id=483 data-nosnippet>483</a>        </span>support_level: SupportLevel::Incompatible(Severity::High),
+<a href=#484 id=484 data-nosnippet>484</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
+<a href=#485 id=485 data-nosnippet>485</a>        env_var_override: <span class="prelude-val">None</span>,
+<a href=#486 id=486 data-nosnippet>486</a>        used_by: <span class="kw-2">&amp;</span>[],
+<a href=#487 id=487 data-nosnippet>487</a>        value_type_override: <span class="prelude-val">None</span>,
+<a href=#488 id=488 data-nosnippet>488</a>        test_json: <span class="prelude-val">None</span>,
+<a href=#489 id=489 data-nosnippet>489</a>        <span class="comment">// MRF operates at the dd_out forwarder level; dd_out is used by DogStatsD, Checks, and Traces (OTLP native). Proxy mode bypasses dd_out.
+<a href=#490 id=490 data-nosnippet>490</a>        </span>pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::DogStatsD, Pipeline::Checks, Pipeline::Traces]),
+<a href=#491 id=491 data-nosnippet>491</a>    };
+<a href=#492 id=492 data-nosnippet>492</a>    <span class="doccomment">/// `multi_region_failover.failover_metrics` - metrics forwarding to the failover region.
+<a href=#493 id=493 data-nosnippet>493</a>    </span>MULTI_REGION_FAILOVER_FAILOVER_METRICS = SalukiAnnotation {
+<a href=#494 id=494 data-nosnippet>494</a>        schema: <span class="kw-2">&amp;</span>schema::MULTI_REGION_FAILOVER_FAILOVER_METRICS,
+<a href=#495 id=495 data-nosnippet>495</a>        <span class="comment">// Not implemented. #1678
+<a href=#496 id=496 data-nosnippet>496</a>        </span>support_level: SupportLevel::Incompatible(Severity::Medium),
+<a href=#497 id=497 data-nosnippet>497</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
+<a href=#498 id=498 data-nosnippet>498</a>        env_var_override: <span class="prelude-val">None</span>,
+<a href=#499 id=499 data-nosnippet>499</a>        used_by: <span class="kw-2">&amp;</span>[],
+<a href=#500 id=500 data-nosnippet>500</a>        value_type_override: <span class="prelude-val">None</span>,
+<a href=#501 id=501 data-nosnippet>501</a>        test_json: <span class="prelude-val">None</span>,
+<a href=#502 id=502 data-nosnippet>502</a>        <span class="comment">// MRF operates at the dd_out forwarder level; dd_out is used by DogStatsD, Checks, and Traces (OTLP native). Proxy mode bypasses dd_out.
+<a href=#503 id=503 data-nosnippet>503</a>        </span>pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::DogStatsD, Pipeline::Checks, Pipeline::Traces]),
+<a href=#504 id=504 data-nosnippet>504</a>    };
+<a href=#505 id=505 data-nosnippet>505</a>    <span class="doccomment">/// `multi_region_failover.metric_allowlist` - metric name allowlist for MRF forwarding.
+<a href=#506 id=506 data-nosnippet>506</a>    </span>MULTI_REGION_FAILOVER_METRIC_ALLOWLIST = SalukiAnnotation {
+<a href=#507 id=507 data-nosnippet>507</a>        schema: <span class="kw-2">&amp;</span>schema::MULTI_REGION_FAILOVER_METRIC_ALLOWLIST,
+<a href=#508 id=508 data-nosnippet>508</a>        <span class="comment">// Not implemented. #1678
+<a href=#509 id=509 data-nosnippet>509</a>        </span>support_level: SupportLevel::Incompatible(Severity::Medium),
+<a href=#510 id=510 data-nosnippet>510</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
+<a href=#511 id=511 data-nosnippet>511</a>        env_var_override: <span class="prelude-val">None</span>,
+<a href=#512 id=512 data-nosnippet>512</a>        used_by: <span class="kw-2">&amp;</span>[],
+<a href=#513 id=513 data-nosnippet>513</a>        value_type_override: <span class="prelude-val">None</span>,
+<a href=#514 id=514 data-nosnippet>514</a>        test_json: <span class="prelude-val">None</span>,
+<a href=#515 id=515 data-nosnippet>515</a>        <span class="comment">// MRF operates at the dd_out forwarder level; dd_out is used by DogStatsD, Checks, and Traces (OTLP native). Proxy mode bypasses dd_out.
+<a href=#516 id=516 data-nosnippet>516</a>        </span>pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::DogStatsD, Pipeline::Checks, Pipeline::Traces]),
+<a href=#517 id=517 data-nosnippet>517</a>    };
+<a href=#518 id=518 data-nosnippet>518</a>    <span class="doccomment">/// `multi_region_failover.site` - Datadog site for the MRF failover region.
+<a href=#519 id=519 data-nosnippet>519</a>    </span>MULTI_REGION_FAILOVER_SITE = SalukiAnnotation {
+<a href=#520 id=520 data-nosnippet>520</a>        schema: <span class="kw-2">&amp;</span>schema::MULTI_REGION_FAILOVER_SITE,
+<a href=#521 id=521 data-nosnippet>521</a>        <span class="comment">// Not implemented. #1678
+<a href=#522 id=522 data-nosnippet>522</a>        </span>support_level: SupportLevel::Incompatible(Severity::Medium),
+<a href=#523 id=523 data-nosnippet>523</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
+<a href=#524 id=524 data-nosnippet>524</a>        env_var_override: <span class="prelude-val">None</span>,
+<a href=#525 id=525 data-nosnippet>525</a>        used_by: <span class="kw-2">&amp;</span>[],
+<a href=#526 id=526 data-nosnippet>526</a>        value_type_override: <span class="prelude-val">None</span>,
+<a href=#527 id=527 data-nosnippet>527</a>        test_json: <span class="prelude-val">None</span>,
+<a href=#528 id=528 data-nosnippet>528</a>        <span class="comment">// MRF operates at the dd_out forwarder level; dd_out is used by DogStatsD, Checks, and Traces (OTLP native). Proxy mode bypasses dd_out.
+<a href=#529 id=529 data-nosnippet>529</a>        </span>pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::DogStatsD, Pipeline::Checks, Pipeline::Traces]),
+<a href=#530 id=530 data-nosnippet>530</a>    };
+<a href=#531 id=531 data-nosnippet>531</a>    <span class="doccomment">/// `telemetry.dogstatsd.aggregator_channel_latency_buckets` - DSD-to-aggregator channel latency histogram buckets.
+<a href=#532 id=532 data-nosnippet>532</a>    </span>TELEMETRY_DOGSTATSD_AGGREGATOR_CHANNEL_LATENCY_BUCKETS = SalukiAnnotation {
+<a href=#533 id=533 data-nosnippet>533</a>        schema: <span class="kw-2">&amp;</span>schema::TELEMETRY_DOGSTATSD_AGGREGATOR_CHANNEL_LATENCY_BUCKETS,
+<a href=#534 id=534 data-nosnippet>534</a>        <span class="comment">// Not implemented. #1679
+<a href=#535 id=535 data-nosnippet>535</a>        </span>support_level: SupportLevel::Incompatible(Severity::Low),
+<a href=#536 id=536 data-nosnippet>536</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
+<a href=#537 id=537 data-nosnippet>537</a>        env_var_override: <span class="prelude-val">None</span>,
+<a href=#538 id=538 data-nosnippet>538</a>        used_by: <span class="kw-2">&amp;</span>[],
+<a href=#539 id=539 data-nosnippet>539</a>        value_type_override: <span class="prelude-val">None</span>,
+<a href=#540 id=540 data-nosnippet>540</a>        test_json: <span class="prelude-val">None</span>,
+<a href=#541 id=541 data-nosnippet>541</a>        pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::DogStatsD]),
+<a href=#542 id=542 data-nosnippet>542</a>    };
+<a href=#543 id=543 data-nosnippet>543</a>    <span class="doccomment">/// `telemetry.dogstatsd.listeners_channel_latency_buckets` - DSD listener channel latency histogram buckets.
+<a href=#544 id=544 data-nosnippet>544</a>    </span>TELEMETRY_DOGSTATSD_LISTENERS_CHANNEL_LATENCY_BUCKETS = SalukiAnnotation {
+<a href=#545 id=545 data-nosnippet>545</a>        schema: <span class="kw-2">&amp;</span>schema::TELEMETRY_DOGSTATSD_LISTENERS_CHANNEL_LATENCY_BUCKETS,
+<a href=#546 id=546 data-nosnippet>546</a>        <span class="comment">// Not implemented. #1679
+<a href=#547 id=547 data-nosnippet>547</a>        </span>support_level: SupportLevel::Incompatible(Severity::Low),
+<a href=#548 id=548 data-nosnippet>548</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
+<a href=#549 id=549 data-nosnippet>549</a>        env_var_override: <span class="prelude-val">None</span>,
+<a href=#550 id=550 data-nosnippet>550</a>        used_by: <span class="kw-2">&amp;</span>[],
+<a href=#551 id=551 data-nosnippet>551</a>        value_type_override: <span class="prelude-val">None</span>,
+<a href=#552 id=552 data-nosnippet>552</a>        test_json: <span class="prelude-val">None</span>,
+<a href=#553 id=553 data-nosnippet>553</a>        pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::DogStatsD]),
+<a href=#554 id=554 data-nosnippet>554</a>    };
+<a href=#555 id=555 data-nosnippet>555</a>    <span class="doccomment">/// `telemetry.dogstatsd.listeners_latency_buckets` - DSD listener processing latency histogram buckets.
+<a href=#556 id=556 data-nosnippet>556</a>    </span>TELEMETRY_DOGSTATSD_LISTENERS_LATENCY_BUCKETS = SalukiAnnotation {
+<a href=#557 id=557 data-nosnippet>557</a>        schema: <span class="kw-2">&amp;</span>schema::TELEMETRY_DOGSTATSD_LISTENERS_LATENCY_BUCKETS,
+<a href=#558 id=558 data-nosnippet>558</a>        <span class="comment">// Not implemented. #1679
+<a href=#559 id=559 data-nosnippet>559</a>        </span>support_level: SupportLevel::Incompatible(Severity::Low),
+<a href=#560 id=560 data-nosnippet>560</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
+<a href=#561 id=561 data-nosnippet>561</a>        env_var_override: <span class="prelude-val">None</span>,
+<a href=#562 id=562 data-nosnippet>562</a>        used_by: <span class="kw-2">&amp;</span>[],
+<a href=#563 id=563 data-nosnippet>563</a>        value_type_override: <span class="prelude-val">None</span>,
+<a href=#564 id=564 data-nosnippet>564</a>        test_json: <span class="prelude-val">None</span>,
+<a href=#565 id=565 data-nosnippet>565</a>        pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::DogStatsD]),
+<a href=#566 id=566 data-nosnippet>566</a>    };
+<a href=#567 id=567 data-nosnippet>567</a>    <span class="doccomment">/// `telemetry.dogstatsd_origin` - per-origin processed-metric telemetry counters.
+<a href=#568 id=568 data-nosnippet>568</a>    </span>TELEMETRY_DOGSTATSD_ORIGIN = SalukiAnnotation {
+<a href=#569 id=569 data-nosnippet>569</a>        schema: <span class="kw-2">&amp;</span>schema::TELEMETRY_DOGSTATSD_ORIGIN,
+<a href=#570 id=570 data-nosnippet>570</a>        <span class="comment">// Not implemented. #1679
+<a href=#571 id=571 data-nosnippet>571</a>        </span>support_level: SupportLevel::Incompatible(Severity::Low),
+<a href=#572 id=572 data-nosnippet>572</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
+<a href=#573 id=573 data-nosnippet>573</a>        env_var_override: <span class="prelude-val">None</span>,
+<a href=#574 id=574 data-nosnippet>574</a>        used_by: <span class="kw-2">&amp;</span>[],
+<a href=#575 id=575 data-nosnippet>575</a>        value_type_override: <span class="prelude-val">None</span>,
+<a href=#576 id=576 data-nosnippet>576</a>        test_json: <span class="prelude-val">None</span>,
+<a href=#577 id=577 data-nosnippet>577</a>        pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::DogStatsD]),
+<a href=#578 id=578 data-nosnippet>578</a>    };
+<a href=#579 id=579 data-nosnippet>579</a>
+<a href=#580 id=580 data-nosnippet>580</a>    <span class="doccomment">/// `cluster_agent.enabled` - enable Cluster Agent connectivity.
+<a href=#581 id=581 data-nosnippet>581</a>    </span>CLUSTER_AGENT_ENABLED = SalukiAnnotation {
+<a href=#582 id=582 data-nosnippet>582</a>        schema: <span class="kw-2">&amp;</span>schema::CLUSTER_AGENT_ENABLED,
+<a href=#583 id=583 data-nosnippet>583</a>        <span class="comment">// Not implemented. Required for autoscaling failover routing. #1684
+<a href=#584 id=584 data-nosnippet>584</a>        </span>support_level: SupportLevel::Incompatible(Severity::Low),
+<a href=#585 id=585 data-nosnippet>585</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
+<a href=#586 id=586 data-nosnippet>586</a>        env_var_override: <span class="prelude-val">None</span>,
+<a href=#587 id=587 data-nosnippet>587</a>        used_by: <span class="kw-2">&amp;</span>[],
+<a href=#588 id=588 data-nosnippet>588</a>        value_type_override: <span class="prelude-val">None</span>,
+<a href=#589 id=589 data-nosnippet>589</a>        test_json: <span class="prelude-val">None</span>,
+<a href=#590 id=590 data-nosnippet>590</a>        <span class="comment">// DCA connectivity is needed in Saluki for autoscaling failover (#1684), which affects DogStatsD and Checks metric pipelines.
+<a href=#591 id=591 data-nosnippet>591</a>        </span>pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::DogStatsD, Pipeline::Checks]),
 <a href=#592 id=592 data-nosnippet>592</a>    };
 <a href=#593 id=593 data-nosnippet>593</a>
-<a href=#594 id=594 data-nosnippet>594</a>    <span class="doccomment">/// `cluster_agent.enabled` - enable Cluster Agent connectivity.
-<a href=#595 id=595 data-nosnippet>595</a>    </span>CLUSTER_AGENT_ENABLED = SalukiAnnotation {
-<a href=#596 id=596 data-nosnippet>596</a>        schema: <span class="kw-2">&amp;</span>schema::CLUSTER_AGENT_ENABLED,
-<a href=#597 id=597 data-nosnippet>597</a>        <span class="comment">// Not implemented. Required for autoscaling failover routing. #1684
-<a href=#598 id=598 data-nosnippet>598</a>        </span>support_level: SupportLevel::Incompatible(Severity::Low),
-<a href=#599 id=599 data-nosnippet>599</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
-<a href=#600 id=600 data-nosnippet>600</a>        env_var_override: <span class="prelude-val">None</span>,
-<a href=#601 id=601 data-nosnippet>601</a>        used_by: <span class="kw-2">&amp;</span>[],
-<a href=#602 id=602 data-nosnippet>602</a>        value_type_override: <span class="prelude-val">None</span>,
-<a href=#603 id=603 data-nosnippet>603</a>        test_json: <span class="prelude-val">None</span>,
-<a href=#604 id=604 data-nosnippet>604</a>        <span class="comment">// DCA connectivity is needed in Saluki for autoscaling failover (#1684), which affects DogStatsD and Checks metric pipelines.
-<a href=#605 id=605 data-nosnippet>605</a>        </span>pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::DogStatsD, Pipeline::Checks]),
-<a href=#606 id=606 data-nosnippet>606</a>    };
-<a href=#607 id=607 data-nosnippet>607</a>
-<a href=#608 id=608 data-nosnippet>608</a>}
+<a href=#594 id=594 data-nosnippet>594</a>}
 </code></pre></div></section></main></body></html>
