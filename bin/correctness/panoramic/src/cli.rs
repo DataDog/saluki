@@ -26,9 +26,16 @@ pub struct RunCommand {
     #[argh(option, short = 'd')]
     pub test_dirs: Vec<PathBuf>,
 
-    /// run only specific test(s) by name (comma-separated)
+    /// run only specific tests by name (comma-separated)
     #[argh(option, short = 't')]
     pub tests: Option<String>,
+
+    /// integration-test runtime to scope discovery to (for example, `docker` or `mac`).
+    /// Only integration tests whose `runtimes:` list contains this value are eligible to run.
+    /// Defaults to `mac` on macOS hosts and `docker` everywhere else. Correctness tests
+    /// are unaffected by this flag.
+    #[argh(option)]
+    pub runtime: Option<String>,
 
     /// number of tests to run in parallel
     #[argh(option, short = 'p', default = "4")]
@@ -73,7 +80,7 @@ pub struct RunCommand {
 }
 
 impl RunCommand {
-    /// Gets the user supplied log_dir from CLI arguments or environment variable, or else returns a temp dir.
+    /// Gets the user-supplied `log_dir` from CLI arguments or environment variable, or else returns a temporary directory.
     pub fn log_dir(&self) -> PathBuf {
         let base = std::env::var("PANORAMIC_LOG_DIR")
             .ok()
@@ -100,7 +107,12 @@ pub struct ListCommand {
     #[argh(option, short = 'd')]
     pub test_dirs: Vec<PathBuf>,
 
-    /// output the discovered tests as json along with their image dependencies. a ci script depends on this for dynamic
+    /// integration-test runtime to scope discovery to. Same semantics as on `run`: defaults to
+    /// `mac` on macOS, `docker` everywhere else. Correctness tests are unaffected.
+    #[argh(option)]
+    pub runtime: Option<String>,
+
+    /// output the discovered tests as json along with their image dependencies. a `ci` script depends on this for dynamic
     /// pipeline creation.
     #[argh(switch)]
     pub json: bool,

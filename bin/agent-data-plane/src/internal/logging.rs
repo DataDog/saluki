@@ -25,7 +25,7 @@ const FIRST_PARTY_LOG_TARGETS: &[&str] = &[
     "datadog_protos",
     "datadog_agent_commons",
     "ddsketch",
-    "memory_accounting",
+    "resource_accounting",
     "otlp_protos",
     "ottl",
     "process_memory",
@@ -73,6 +73,10 @@ impl LoggingConfigurationTranslator {
 
         if let Some(format_json) = read_permissive_bool(config, "log_format_json")? {
             logging.log_format_json = format_json;
+        }
+
+        if let Some(format_rfc3339) = read_permissive_bool(config, "log_format_rfc3339")? {
+            logging.log_format_rfc3339 = format_rfc3339;
         }
 
         if let Some(to_console) = read_permissive_bool(config, "log_to_console")? {

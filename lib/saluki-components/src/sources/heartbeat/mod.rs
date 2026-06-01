@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
-use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
+use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_context::Context;
 use saluki_core::components::{sources::*, ComponentContext};
 use saluki_core::data_model::event::{metric::Metric, Event, EventType};

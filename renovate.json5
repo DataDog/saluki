@@ -48,5 +48,44 @@
   //   - `prConcurrentLimit` and `prHourlyLimit` (does not count against caps)
   //   - grouping (gets its own focused PR rather than being bundled in the
   //     weekly non-major group)
-  "osvVulnerabilityAlerts": true
+  "osvVulnerabilityAlerts": true,
+
+  // Package-manager-specific rules.
+  "packageRules": [
+    // Use Cargo's semver interpretation for all Cargo dependencies. Cargo
+    // treats `^0.x` as `>=0.x.0, <0.x+1.0`, so a bump from `0.9` to `0.10`
+    // is a breaking (major) change. Without this, Renovate uses standard
+    // semver where such a bump is classified as "minor" and incorrectly
+    // lands in the non-major group PR — which cannot fix compilation errors
+    // caused by removed features or API changes.
+    {
+      "matchManagers": ["cargo"],
+      "versioning": "cargo"
+    },
+    // Cargo pre-1.0 breaking updates: `0.x` → `0.y` is a breaking change in
+    // Cargo's semver (`^0.9` covers `>=0.9.0, <0.10.0`), but Renovate still
+    // assigns `updateType: "minor"` because the major version digit (`0`) does
+    // not change. That means `group:allNonMajor` captures these bumps in the
+    // weekly batch PR, where Renovate cannot fix compilation errors from
+    // removed features or API changes. Override `groupName` so they land in a
+    // dedicated PR that clearly signals manual review is required.
+    {
+      "matchManagers": ["cargo"],
+      "matchCurrentVersion": "/^0\\.[0-9]/",
+      "matchUpdateTypes": ["minor"],
+      "groupName": "cargo pre-1.0 breaking updates",
+      "prBodyNotes": [
+        "**Cargo breaking update (pre-v1.0)** — `0.x` → `0.y` is a breaking change in Cargo's semver. Before merging, verify the workspace compiles and check upstream release notes for removed features or API changes."
+      ]
+    },
+    // Warn reviewers that genuine Cargo major updates (1.x → 2.0, etc.) may
+    // also require manual fixes for removed features or API changes.
+    {
+      "matchManagers": ["cargo"],
+      "matchUpdateTypes": ["major"],
+      "prBodyNotes": [
+        "**Cargo major update** — Before merging, verify the workspace compiles and check upstream release notes for removed features or API changes."
+      ]
+    }
+  ]
 }

@@ -1,6 +1,6 @@
 # Contributing
 
-First of all, thank you for looking to contribute to Saluki! We're excited to have you here.
+First of all, thank you for looking to contribute to Saluki. We're excited to have you here.
 
 This document covers some simple guidelines for both filing issues and contributing code to the project.
 
@@ -16,7 +16,7 @@ you can.
 ## Pull requests
 
 You've gotten to the point of working on a fix or a new feature, and now you want to contribute that upstream. This is
-awesome!
+awesome.
 
 We strive for a high level of quality in terms of pull requests, and this guide is meant to help you understand what we
 expect from a PR so that you're not surprised during the review process.
@@ -84,9 +84,9 @@ ready for actual reviews.
 
 #### Before the first PR review
 
-Before the first PR review, meaningful commits are best: logically-encapsulated commits help the reviews go quicker and
+Before the first PR review, meaningful commits are best: logically encapsulated commits help the reviews go quicker and
 make the job for the reviewer easier. Conflicts with `main` can be resolved with a `git rebase origin/main` and a force
-push if it makes future review(s) easier.
+push if it makes future reviews easier.
 
 #### After the first review
 

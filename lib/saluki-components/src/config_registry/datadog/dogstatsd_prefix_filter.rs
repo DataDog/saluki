@@ -1,5 +1,5 @@
 //! Annotations for DogStatsD prefix filter transform configuration keys.
-use crate::config_registry::{generated::schema, structs, SalukiAnnotation, SupportLevel};
+use crate::config_registry::{generated::schema, structs, Pipeline, PipelineAffinity, SalukiAnnotation, SupportLevel};
 
 crate::declare_annotations! {
     /// `metric_filterlist`—explicit list of metric names to allow through the filter.
@@ -11,6 +11,7 @@ crate::declare_annotations! {
         used_by: &[structs::DOGSTATSD_PREFIX_FILTER_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
 
     /// `metric_filterlist_match_prefix`—whether filterlist entries match as prefixes.
@@ -22,6 +23,7 @@ crate::declare_annotations! {
         used_by: &[structs::DOGSTATSD_PREFIX_FILTER_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
 
     /// `statsd_metric_blocklist`—metric names to block.
@@ -33,6 +35,7 @@ crate::declare_annotations! {
         used_by: &[structs::DOGSTATSD_PREFIX_FILTER_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
 
     /// `statsd_metric_blocklist_match_prefix`—whether blocklist entries match as prefixes.
@@ -44,6 +47,7 @@ crate::declare_annotations! {
         used_by: &[structs::DOGSTATSD_PREFIX_FILTER_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
 
     /// `statsd_metric_namespace`—prefix to prepend to every metric name.
@@ -55,6 +59,7 @@ crate::declare_annotations! {
         used_by: &[structs::DOGSTATSD_PREFIX_FILTER_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
 
     /// `statsd_metric_namespace_blacklist` / `statsd_metric_namespace_blocklist`—namespace prefixes to block from forwarding.
@@ -66,5 +71,6 @@ crate::declare_annotations! {
         used_by: &[structs::DOGSTATSD_PREFIX_FILTER_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
 }

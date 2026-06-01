@@ -46,7 +46,9 @@ pub struct Tui {
 /// A formatted line ready to print.
 struct FormattedLine {
     timestamp: String,
-    /// Optional colored prefix (for example, "PASS", "FAIL").
+    /// Optional colored prefix.
+    ///
+    /// Useful for adding typical status/outcome prefixes, such as "PASS" colored in green, or "FAIL" colored in red.
     prefix: Option<(String, LineColor)>,
     /// Main text content (always white).
     text: String,
@@ -252,13 +254,14 @@ impl Tui {
         };
 
         let elapsed_str = format!(" ({:.1}s)", elapsed.as_secs_f64());
+        let status = truncate_status_bar(&progress, &active, &elapsed_str);
 
         write!(
             stdout,
             "{}{}{}",
-            progress.cyan().bold(),
-            active.yellow(),
-            elapsed_str.dimmed()
+            status.progress.cyan().bold(),
+            status.active.yellow(),
+            status.elapsed.dimmed()
         )?;
 
         Ok(())
@@ -309,6 +312,55 @@ impl Drop for Tui {
     fn drop(&mut self) {
         let _ = self.shutdown();
     }
+}
+
+struct StatusBar {
+    progress: String,
+    active: String,
+    elapsed: String,
+}
+
+fn truncate_status_bar(progress: &str, active: &str, elapsed: &str) -> StatusBar {
+    let Ok((columns, _)) = terminal::size() else {
+        return StatusBar {
+            progress: progress.to_string(),
+            active: active.to_string(),
+            elapsed: elapsed.to_string(),
+        };
+    };
+
+    let max_width = usize::from(columns);
+    let fixed_width = progress.chars().count() + elapsed.chars().count();
+    let active = if fixed_width >= max_width {
+        String::new()
+    } else {
+        truncate_to_width(active, max_width - fixed_width)
+    };
+
+    StatusBar {
+        progress: progress.to_string(),
+        active,
+        elapsed: elapsed.to_string(),
+    }
+}
+
+fn truncate_to_width(value: &str, max_width: usize) -> String {
+    let width = value.chars().count();
+    if width <= max_width {
+        return value.to_string();
+    }
+
+    if max_width == 0 {
+        return String::new();
+    }
+
+    if max_width == 1 {
+        return "…".to_string();
+    }
+
+    let mut truncated = value.chars().take(max_width - 1).collect::<String>();
+    truncated.push('…');
+    truncated
 }
 
 /// Run the TUI event consumer.

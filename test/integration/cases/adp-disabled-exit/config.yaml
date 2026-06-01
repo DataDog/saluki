@@ -1,15 +1,17 @@
 type: integration
 name: "adp-disabled-exit"
 description: "Verify ADP exits cleanly when data plane is not enabled"
-timeout: 45s
+timeout: 120s
+runtimes: [docker, mac]
+
+env:
+  DD_API_KEY: "test-api-key"
+  DD_HOSTNAME: "integration-test"
+  DD_DATA_PLANE_ENABLED: "false"
+  DD_DATA_PLANE_STANDALONE_MODE: "false"
 
 container:
   image: "saluki-images/datadog-agent:testing-devel"
-  env:
-    DD_API_KEY: "test-api-key"
-    DD_HOSTNAME: "integration-test"
-    DD_DATA_PLANE_ENABLED: "false"
-    DD_DATA_PLANE_STANDALONE_MODE: "false"
 
 assertions:
   # ADP should log that it's not enabled and exit.

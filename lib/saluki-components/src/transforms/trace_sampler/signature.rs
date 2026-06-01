@@ -4,7 +4,7 @@
 //! - a small FNV-1a 32-bit helper (used by probabilistic sampling)
 //! - a signature newtype + compute helper (for score/TPS samplers)
 
-use saluki_core::data_model::event::trace::{Span, Trace};
+use saluki_core::data_model::event::trace::{AttributeValue, Span, Trace};
 use stringtheory::MetaString;
 
 use crate::common::datadog::get_trace_env;
@@ -49,7 +49,7 @@ impl ServiceSignature {
         }
     }
 
-    /// Computes FNV-1a hash matching Go's ServiceSignature.Hash().
+    /// Computes FNV-1a hash matching Go's `ServiceSignature.Hash()`.
     ///
     /// The hash is computed over: `name + "," + env`
     pub(super) fn hash(&self) -> Signature {
@@ -114,10 +114,14 @@ pub(super) fn compute_span_hash(span: &Span, env: &str, with_resource: bool) -> 
     if with_resource {
         h = write_hash(h, span.resource().as_bytes());
     }
-    if let Some(code) = span.meta().get(KEY_HTTP_STATUS_CODE) {
+    if let Some(code) = span
+        .attributes
+        .get(KEY_HTTP_STATUS_CODE)
+        .and_then(AttributeValue::as_string)
+    {
         h = write_hash(h, code.as_ref().as_bytes());
     }
-    if let Some(typ) = span.meta().get(KEY_ERROR_TYPE) {
+    if let Some(typ) = span.attributes.get(KEY_ERROR_TYPE).and_then(AttributeValue::as_string) {
         h = write_hash(h, typ.as_ref().as_bytes());
     }
     h

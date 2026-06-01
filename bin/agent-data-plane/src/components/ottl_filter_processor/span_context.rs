@@ -11,8 +11,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use ottl::{EvalContextFamily, Field, IndexExpr, PathAccessor, PathResolverMap, Value};
-use saluki_context::tags::TagSet;
-use saluki_core::data_model::event::trace::Span;
+use saluki_common::collections::FastHashMap;
+use saluki_core::data_model::event::trace::{AttributeValue, Span};
+use stringtheory::MetaString;
 
 /// Family type for the span filter evaluation context.
 ///
@@ -25,23 +26,23 @@ impl EvalContextFamily for SpanFilterFamily {
     type Context<'a> = SpanFilterContext<'a>;
 }
 
-/// Context holding references to the current span and trace resource tags for OTTL evaluation.
+/// Context holding references to the current span and trace resource attributes for OTTL evaluation.
 ///
 /// Used when evaluating filter conditions: created on the stack in `should_drop_span`
-/// with the current span and the trace's resource tags, then passed to each condition
+/// with the current span and the trace's resource attributes, then passed to each condition
 /// parser. No copying; the context only holds references for the duration of the call.
 pub struct SpanFilterContext<'a> {
     /// Reference to the span being evaluated.
     pub(super) span: &'a Span,
-    /// Reference to the trace's resource-level tags.
-    pub(super) resource_tags: &'a TagSet,
+    /// Reference to the trace's resource-level attributes.
+    pub(super) resource_attrs: &'a FastHashMap<MetaString, AttributeValue>,
 }
 
 impl<'a> SpanFilterContext<'a> {
-    /// Creates a context from references to the current span and resource tags.
+    /// Creates a context from references to the current span and resource attributes.
     #[inline]
-    pub fn new(span: &'a Span, resource_tags: &'a TagSet) -> Self {
-        Self { span, resource_tags }
+    pub fn new(span: &'a Span, resource_attrs: &'a FastHashMap<MetaString, AttributeValue>) -> Self {
+        Self { span, resource_attrs }
     }
 }
 
@@ -55,8 +56,9 @@ impl PathAccessor<SpanFilterFamily> for SpanAttributesAccessor {
     fn get<'a>(&self, ctx: &SpanFilterContext<'a>, fields: &[Field]) -> ottl::Result<Value> {
         let value = if let Some(IndexExpr::String(key)) = fields.first().and_then(|f| f.keys.first()) {
             ctx.span
-                .meta()
+                .attributes
                 .get(key.as_str())
+                .and_then(AttributeValue::as_string)
                 .map(|v| Value::string(v.as_ref()))
                 .unwrap_or(Value::Nil)
         } else {
@@ -85,10 +87,10 @@ impl PathAccessor<SpanFilterFamily> for ResourceAttributesAccessor {
     fn get<'a>(&self, ctx: &SpanFilterContext<'a>, fields: &[Field]) -> ottl::Result<Value> {
         let attrs_field = fields.get(1);
         let value = if let Some(IndexExpr::String(key)) = attrs_field.and_then(|f| f.keys.first()) {
-            ctx.resource_tags
-                .get_single_tag(key.as_str())
-                .and_then(|t| t.value())
-                .map(Value::string)
+            ctx.resource_attrs
+                .get(key.as_str())
+                .and_then(AttributeValue::as_string)
+                .map(|v| Value::string(v.as_ref()))
                 .unwrap_or(Value::Nil)
         } else if attrs_field.is_none_or(|f| f.keys.is_empty()) {
             Value::Map(HashMap::new())

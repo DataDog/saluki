@@ -74,13 +74,18 @@ pub(crate) struct AdditionalEndpoints(#[serde_as(as = "PickFirst<(DisplayFromStr
 impl AdditionalEndpoints {
     /// Returns the resolved endpoints from the additional endpoint configuration.
     ///
-    /// This will generate a `ResolvedEndpoint` for each unique endpoint/API key pair.
+    /// This will generate a [`ResolvedEndpoint`] for each unique endpoint/API key pair, assigning
+    /// each endpoint an `api_key_index` equal to the raw position of its key in the config's key
+    /// list for that URL (the `enumerate()` index, not a post-dedup counter). Empty and duplicate
+    /// keys are skipped; their positions are consumed but no endpoint is created.
     ///
     /// # Errors
     ///
     /// If any of the additional endpoints aren't valid URLs, or a valid URL couldn't be constructed after applying
     /// the necessary normalization / modifications, an error will be returned.
-    pub fn resolved_endpoints(&self) -> Result<Vec<ResolvedEndpoint>, EndpointError> {
+    pub fn resolved_endpoints(
+        &self, configuration: Option<GenericConfiguration>,
+    ) -> Result<Vec<ResolvedEndpoint>, EndpointError> {
         let mut resolved = Vec::new();
 
         for (raw_endpoint, api_keys) in self.0.mappings() {
@@ -88,11 +93,10 @@ impl AdditionalEndpoints {
             let logs_authority = compute_logs_authority(&endpoint);
             let traces_authority = compute_traces_authority(&endpoint);
 
-            // With our fully parsed and versioned endpoint, we'll now create a resolved version for each associated API
-            // key attached to it.
+            // Create a resolved endpoint for each unique, non-empty key. The index is the raw
+            // position in the config list so that live lookups can use `vec[index]` directly.
             let mut seen = HashSet::new();
-            for api_key in &api_keys.0 {
-                // Filter out empty or duplicate API keys for this endpoint.
+            for (index, api_key) in api_keys.0.iter().enumerate() {
                 let trimmed_api_key = api_key.trim();
                 if trimmed_api_key.is_empty() || seen.contains(trimmed_api_key) {
                     continue;
@@ -102,7 +106,9 @@ impl AdditionalEndpoints {
                 resolved.push(ResolvedEndpoint {
                     endpoint: endpoint.clone(),
                     api_key: trimmed_api_key.to_string(),
-                    config: None,
+                    config: configuration.clone(),
+                    api_key_index: Some(index),
+                    raw_additional_url: Some(raw_endpoint.to_string()),
                     logs_authority: logs_authority.clone(),
                     traces_authority: traces_authority.clone(),
                 });
@@ -186,26 +192,37 @@ impl EndpointConfiguration {
 
     /// Builds the resolved additional endpoints.
     ///
+    /// If a [`GenericConfiguration`] is supplied, each additional endpoint will hold a live
+    /// reference to it and refresh its API key on every request via [`ResolvedEndpoint::api_key`].
+    ///
     /// # Errors
     ///
     /// If any additional endpoint isn't a valid URL, or a valid URL couldn't be constructed after applying the
     /// necessary normalization / modifications to a particular endpoint, an error will be returned.
-    pub(crate) fn build_additional_endpoints(&self) -> Result<Vec<ResolvedEndpoint>, GenericError> {
+    pub(crate) fn build_additional_endpoints(
+        &self, configuration: Option<GenericConfiguration>,
+    ) -> Result<Vec<ResolvedEndpoint>, GenericError> {
         self.additional_endpoints
-            .resolved_endpoints()
+            .resolved_endpoints(configuration)
             .error_context("Failed parsing/resolving the additional destination endpoints.")
     }
 }
 
 /// A single API endpoint and its associated API key.
 ///
-/// An endpoint is defined as a unique, fully-qualified domain name that metrics will be sent to, such as
+/// An endpoint is defined as a unique, fully qualified domain name that metrics will be sent to, such as
 /// `https://app.datadoghq.com`.
 #[derive(Clone, Debug)]
 pub struct ResolvedEndpoint {
     endpoint: Url,
     api_key: String,
     config: Option<GenericConfiguration>,
+    /// Position of this key in the `additional_endpoints` config key list for its URL (raw
+    /// `enumerate()` index, not a post-dedup counter). `None` for primary and OPW endpoints.
+    api_key_index: Option<usize>,
+    /// The raw (pre-normalization) URL string from `additional_endpoints`, used as the HashMap
+    /// key for live API key lookups. `None` for primary and OPW endpoints.
+    raw_additional_url: Option<String>,
     /// Pre-computed logs intake authority (for example, `agent-http-intake.logs.datadoghq.com`).
     /// This is derived from the endpoint host when it contains `.agent.` marker.
     logs_authority: Option<Authority>,
@@ -271,6 +288,8 @@ impl ResolvedEndpoint {
             endpoint,
             api_key: api_key.to_string(),
             config: None,
+            api_key_index: None,
+            raw_additional_url: None,
             logs_authority,
             traces_authority,
         })
@@ -282,6 +301,8 @@ impl ResolvedEndpoint {
             endpoint: self.endpoint,
             api_key: self.api_key,
             config,
+            api_key_index: self.api_key_index,
+            raw_additional_url: self.raw_additional_url,
             logs_authority: self.logs_authority,
             traces_authority: self.traces_authority,
         }
@@ -296,17 +317,41 @@ impl ResolvedEndpoint {
     ///
     /// If a [`GenericConfiguration`] has been configured, the API key will be queried from the configuration and
     /// stored if it has been updated since the last time `api_key` was called.
+    ///
+    /// For additional endpoints (those with an [`api_key_index`][Self::api_key_index]), the key is
+    /// looked up by position in the `additional_endpoints` config value. For the primary endpoint,
+    /// the `api_key` config key is used directly.
     pub fn api_key(&mut self) -> &str {
         if let Some(config) = &self.config {
-            match config.try_get_typed::<String>("api_key") {
-                Ok(Some(api_key)) => {
-                    if !api_key.is_empty() && self.api_key != api_key {
-                        debug!(endpoint = %self.endpoint, "Refreshed API key.");
-                        self.api_key = api_key;
+            if let (Some(index), Some(raw_url)) = (self.api_key_index, self.raw_additional_url.as_deref()) {
+                // Additional endpoint: look up current key by raw index in this URL's key list.
+                match lookup_additional_key(config, raw_url, index) {
+                    Some(key) if key != self.api_key => {
+                        debug!(endpoint = %self.endpoint, index, "Refreshed additional endpoint API key.");
+                        self.api_key = key;
                     }
+                    None => {
+                        debug!(
+                            endpoint = %self.endpoint,
+                            index,
+                            "Could not refresh additional endpoint key from config (index out of range or \
+                             parse error). Continuing with last known valid API key."
+                        );
+                    }
+                    _ => {}
                 }
-                Ok(None) | Err(_) => {
-                    debug!("Failed to retrieve API key from remote source (missing or wrong type). Continuing with last known valid API key.");
+            } else {
+                // Primary / OPW endpoint: refresh from the top-level `api_key` config key.
+                match config.try_get_typed::<String>("api_key") {
+                    Ok(Some(api_key)) => {
+                        if !api_key.is_empty() && self.api_key != api_key {
+                            debug!(endpoint = %self.endpoint, "Refreshed API key.");
+                            self.api_key = api_key;
+                        }
+                    }
+                    Ok(None) | Err(_) => {
+                        debug!("Failed to retrieve API key from remote source (missing or wrong type). Continuing with last known valid API key.");
+                    }
                 }
             }
         }
@@ -314,14 +359,40 @@ impl ResolvedEndpoint {
     }
 
     /// Returns the API key associated with the endpoint without refreshing it.
+    #[cfg(test)]
     pub fn cached_api_key(&self) -> &str {
         self.api_key.as_str()
+    }
+
+    /// Returns the position of this endpoint's API key in the `additional_endpoints` config list for
+    /// its URL. `None` for primary and OPW endpoints.
+    #[cfg(test)]
+    pub(crate) fn api_key_index(&self) -> Option<usize> {
+        self.api_key_index
+    }
+
+    /// Returns the raw (pre-normalization) URL and key index for additional endpoints.
+    ///
+    /// Using the raw URL in queue IDs prevents collisions when two different raw URLs (for example,
+    /// `app.datadoghq.com` and `https://app.datadoghq.com`) normalize to the same host.
+    /// Returns `None` for primary and OPW endpoints.
+    pub(crate) fn additional_endpoint_queue_key(&self) -> Option<(&str, usize)> {
+        match (self.raw_additional_url.as_deref(), self.api_key_index) {
+            (Some(raw_url), Some(index)) => Some((raw_url, index)),
+            _ => None,
+        }
     }
 
     /// Returns whether this endpoint can refresh its API key from dynamic configuration.
     #[cfg(test)]
     pub(crate) fn has_configuration(&self) -> bool {
         self.config.is_some()
+    }
+
+    /// Returns whether this endpoint has an `api_key_index` (that is, is an additional endpoint).
+    #[cfg(test)]
+    pub(crate) fn has_api_key_index(&self) -> bool {
+        self.api_key_index.is_some()
     }
 
     /// Returns the pre-computed logs intake authority, if available.
@@ -439,6 +510,27 @@ fn calculate_resolved_endpoint(
     ResolvedEndpoint::from_raw_endpoint(&raw_endpoint, api_key)
 }
 
+/// Returns the API key at position `index` in `raw_url`'s key list from the live config.
+///
+/// `raw_url` is the pre-normalization URL string (for example `"app.datadoghq.eu"`) as it appears as a
+/// key in the `additional_endpoints` config value. `index` is the raw `enumerate()` position of
+/// the key in that URLs list (not a post-dedup counter).
+///
+/// Returns `None` if the URL is not present in the current config, if `index` is out of range, or
+/// if the key at that position is empty.
+fn lookup_additional_key(config: &GenericConfiguration, raw_url: &str, index: usize) -> Option<String> {
+    let additional = config
+        .try_get_typed::<AdditionalEndpoints>("additional_endpoints")
+        .ok()??
+        .0;
+    let key = additional.0.get(raw_url)?.0.get(index)?.trim();
+    if key.is_empty() {
+        None
+    } else {
+        Some(key.to_string())
+    }
+}
+
 /// Computes the logs intake authority from a resolved endpoint URL.
 ///
 /// If the endpoint host contains the `.agent.` marker (for example, `7-52-0-adp.agent.datadoghq.com`),
@@ -472,6 +564,8 @@ fn compute_traces_authority(endpoint: &Url) -> Option<Authority> {
 
 #[cfg(test)]
 mod tests {
+    use saluki_config::{dynamic::ConfigUpdate, ConfigurationLoader};
+
     use super::*;
 
     fn additional_endpoints_to_sorted_strings(endpoints: &AdditionalEndpoints) -> Vec<String> {
@@ -540,6 +634,94 @@ mod tests {
         ];
         let actual = additional_endpoints_to_sorted_strings(&result);
         assert_eq!(expected, actual);
+    }
+
+    #[test]
+    fn additional_endpoints_api_key_index_uses_raw_config_position() {
+        // Keys at positions 0, 1 are valid; position 2 is empty (skipped); position 3 is a
+        // duplicate of position 0 (skipped); position 4 is valid. Only positions 0, 1, 4 produce
+        // ResolvedEndpoints, and their api_key_index should be 0, 1, 4 respectively.
+        let raw_input = r#""app.datadoghq.com": ["key-a", "key-b", "", "key-a", "key-c"]"#;
+        let raw_yaml = format!("{{{}}}", raw_input);
+        let endpoints: AdditionalEndpoints = serde_yaml::from_str(&raw_yaml).expect("should deserialize");
+
+        let resolved = endpoints.resolved_endpoints(None).expect("should resolve");
+
+        assert_eq!(
+            resolved.len(),
+            3,
+            "should have 3 endpoints (skipping empty and duplicate)"
+        );
+        assert_eq!(resolved[0].cached_api_key(), "key-a");
+        assert_eq!(resolved[0].api_key_index(), Some(0));
+        assert_eq!(resolved[1].cached_api_key(), "key-b");
+        assert_eq!(resolved[1].api_key_index(), Some(1));
+        assert_eq!(resolved[2].cached_api_key(), "key-c");
+        assert_eq!(
+            resolved[2].api_key_index(),
+            Some(4),
+            "index 4 — not 2 — because original positions are used"
+        );
+
+        // Two URLs have independent index spaces (both start from 0).
+        let raw_yaml2 = r#"app.datadoghq.eu: [eu-key-a, eu-key-b]"#;
+        let endpoints2: AdditionalEndpoints = serde_yaml::from_str(raw_yaml2).expect("should deserialize");
+        let resolved2 = endpoints2.resolved_endpoints(None).expect("should resolve");
+        assert_eq!(resolved2[0].api_key_index(), Some(0));
+        assert_eq!(resolved2[1].api_key_index(), Some(1));
+    }
+
+    #[tokio::test]
+    async fn api_key_dynamically_refreshes_from_additional_endpoints_config() {
+        use std::time::{Duration, Instant};
+
+        // No static initial values for additional_endpoints — all from dynamic config only.
+        // This avoids figment's admerge concatenating the static array with the dynamic array,
+        // which would leave the old key-1 in position 0.
+        let (config, sender) = ConfigurationLoader::for_tests(None, None, true).await;
+        let sender = sender.expect("dynamic configuration sender should be present");
+
+        // Apply an initial snapshot with key-1 and wait for readiness.
+        sender
+            .send(ConfigUpdate::Snapshot(serde_json::json!({
+                "additional_endpoints": { "http://extra.example.com": ["key-1"] }
+            })))
+            .await
+            .expect("should send initial snapshot");
+        config.ready().await;
+
+        // Build the additional endpoint with a live config reference.
+        let raw = r#"http://extra.example.com: [key-1]"#;
+        let additional: AdditionalEndpoints = serde_yaml::from_str(raw).expect("should deserialize");
+        let mut endpoints = additional
+            .resolved_endpoints(Some(config.clone()))
+            .expect("should resolve");
+        let endpoint = &mut endpoints[0];
+
+        // Before the update, api_key() returns the original key.
+        assert_eq!(endpoint.api_key(), "key-1");
+
+        // Push a snapshot that rotates the key.
+        sender
+            .send(ConfigUpdate::Snapshot(serde_json::json!({
+                "additional_endpoints": { "http://extra.example.com": ["key-2"] }
+            })))
+            .await
+            .expect("should send rotation snapshot");
+
+        // Poll api_key() until it reflects the new value; api_key() re-reads from live config on
+        // every call so no watcher or rebuild is needed.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if endpoint.api_key() == "key-2" {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "timed out — api_key() did not refresh after additional_endpoints rotation"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
     }
 
     #[test]

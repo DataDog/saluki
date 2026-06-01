@@ -19,7 +19,7 @@ use tracing::{debug, warn};
 ///
 /// This provider is based primarily on the remote autodiscovery API exposed by the Datadog Agent, which handles the
 /// bulk of the work by detecting changes to underlying environment (such as containers starting and stopping), and
-/// determing if they have services associated with them that require checks to be run against them. The remote
+/// determining if they have services associated with them that require checks to be run against them. The remote
 /// autodiscovery API operates in a streaming fashion, which the provider uses to then broadcast updates to subscribers.
 #[derive(Clone)]
 pub struct RemoteAgentAutodiscoveryProvider {

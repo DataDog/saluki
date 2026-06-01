@@ -1,6 +1,7 @@
 //! Annotations for trace obfuscation transform configuration keys.
 use crate::config_registry::{
-    generated::schema, structs, SalukiAnnotation, Schema, SchemaEntry, SupportLevel, ValueType,
+    generated::schema, structs, Pipeline, PipelineAffinity, SalukiAnnotation, Schema, SchemaEntry, SupportLevel,
+    ValueType,
 };
 
 // Custom statics for SQL obfuscation fields: no corresponding entries exist in the
@@ -56,6 +57,7 @@ crate::declare_annotations! {
         used_by: &[structs::TRACE_OBFUSCATION_CONFIGURATION],
         value_type_override: None,
         test_json: Some("true"),
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Traces]),
     };
 
     /// `apm_config.obfuscation.credit_cards.keep_values`
@@ -67,6 +69,7 @@ crate::declare_annotations! {
         used_by: &[structs::TRACE_OBFUSCATION_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Traces]),
     };
 
     /// `apm_config.obfuscation.credit_cards.luhn`
@@ -78,6 +81,7 @@ crate::declare_annotations! {
         used_by: &[structs::TRACE_OBFUSCATION_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Traces]),
     };
 
     /// `apm_config.obfuscation.elasticsearch.enabled`
@@ -89,6 +93,7 @@ crate::declare_annotations! {
         used_by: &[structs::TRACE_OBFUSCATION_CONFIGURATION],
         value_type_override: None,
         test_json: Some("true"),
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Traces]),
     };
 
     /// `apm_config.obfuscation.elasticsearch.keep_values`
@@ -100,6 +105,7 @@ crate::declare_annotations! {
         used_by: &[structs::TRACE_OBFUSCATION_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Traces]),
     };
 
     /// `apm_config.obfuscation.elasticsearch.obfuscate_sql_values`
@@ -111,6 +117,7 @@ crate::declare_annotations! {
         used_by: &[structs::TRACE_OBFUSCATION_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Traces]),
     };
 
     /// `apm_config.obfuscation.http.remove_paths_with_digits`
@@ -122,6 +129,7 @@ crate::declare_annotations! {
         used_by: &[structs::TRACE_OBFUSCATION_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Traces]),
     };
 
     /// `apm_config.obfuscation.http.remove_query_string`
@@ -133,6 +141,7 @@ crate::declare_annotations! {
         used_by: &[structs::TRACE_OBFUSCATION_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Traces]),
     };
 
     /// `apm_config.obfuscation.memcached.enabled`
@@ -144,6 +153,7 @@ crate::declare_annotations! {
         used_by: &[structs::TRACE_OBFUSCATION_CONFIGURATION],
         value_type_override: None,
         test_json: Some("true"),
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Traces]),
     };
 
     /// `apm_config.obfuscation.memcached.keep_command`
@@ -155,6 +165,7 @@ crate::declare_annotations! {
         used_by: &[structs::TRACE_OBFUSCATION_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Traces]),
     };
 
     /// `apm_config.obfuscation.mongodb.enabled`
@@ -166,6 +177,7 @@ crate::declare_annotations! {
         used_by: &[structs::TRACE_OBFUSCATION_CONFIGURATION],
         value_type_override: None,
         test_json: Some("true"),
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Traces]),
     };
 
     /// `apm_config.obfuscation.mongodb.keep_values`
@@ -177,6 +189,7 @@ crate::declare_annotations! {
         used_by: &[structs::TRACE_OBFUSCATION_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Traces]),
     };
 
     /// `apm_config.obfuscation.mongodb.obfuscate_sql_values`
@@ -188,6 +201,7 @@ crate::declare_annotations! {
         used_by: &[structs::TRACE_OBFUSCATION_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Traces]),
     };
 
     /// `apm_config.obfuscation.opensearch.enabled`
@@ -199,6 +213,7 @@ crate::declare_annotations! {
         used_by: &[structs::TRACE_OBFUSCATION_CONFIGURATION],
         value_type_override: None,
         test_json: Some("true"),
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Traces]),
     };
 
     /// `apm_config.obfuscation.opensearch.keep_values`
@@ -210,6 +225,7 @@ crate::declare_annotations! {
         used_by: &[structs::TRACE_OBFUSCATION_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Traces]),
     };
 
     /// `apm_config.obfuscation.opensearch.obfuscate_sql_values`
@@ -221,6 +237,7 @@ crate::declare_annotations! {
         used_by: &[structs::TRACE_OBFUSCATION_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Traces]),
     };
 
     /// `apm_config.obfuscation.redis.enabled`
@@ -232,6 +249,7 @@ crate::declare_annotations! {
         used_by: &[structs::TRACE_OBFUSCATION_CONFIGURATION],
         value_type_override: None,
         test_json: Some("true"),
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Traces]),
     };
 
     /// `apm_config.obfuscation.redis.remove_all_args`
@@ -243,6 +261,7 @@ crate::declare_annotations! {
         used_by: &[structs::TRACE_OBFUSCATION_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Traces]),
     };
 
     /// `apm_config.obfuscation.sql.dbms`
@@ -254,6 +273,7 @@ crate::declare_annotations! {
         used_by: &[structs::TRACE_OBFUSCATION_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Traces]),
     };
 
     /// `apm_config.obfuscation.sql.dollar_quoted_func`
@@ -265,6 +285,7 @@ crate::declare_annotations! {
         used_by: &[structs::TRACE_OBFUSCATION_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Traces]),
     };
 
     /// `apm_config.obfuscation.sql.keep_sql_alias`
@@ -276,6 +297,7 @@ crate::declare_annotations! {
         used_by: &[structs::TRACE_OBFUSCATION_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Traces]),
     };
 
     /// `apm_config.obfuscation.sql.replace_digits`
@@ -287,6 +309,7 @@ crate::declare_annotations! {
         used_by: &[structs::TRACE_OBFUSCATION_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Traces]),
     };
 
     /// `apm_config.obfuscation.sql.table_names`
@@ -298,6 +321,7 @@ crate::declare_annotations! {
         used_by: &[structs::TRACE_OBFUSCATION_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Traces]),
     };
 
     /// `apm_config.obfuscation.valkey.enabled`
@@ -309,6 +333,7 @@ crate::declare_annotations! {
         used_by: &[structs::TRACE_OBFUSCATION_CONFIGURATION],
         value_type_override: None,
         test_json: Some("true"),
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Traces]),
     };
 
     /// `apm_config.obfuscation.valkey.remove_all_args`
@@ -320,5 +345,6 @@ crate::declare_annotations! {
         used_by: &[structs::TRACE_OBFUSCATION_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Traces]),
     };
 }

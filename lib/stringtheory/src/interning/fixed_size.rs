@@ -103,7 +103,7 @@ struct EntryHeader {
     /// while `EntryHeader::capacity` would report `16`. Likewise, `EntryHeader::entry_len` would report `40`,
     /// accounting for the string capacity (16) as well as the header length itself (24).
     ///
-    /// As explained in the description of `PackedLengthCapacity`, this does mean strings can't be larger than ~4GB on
+    /// As explained in the description of `PackedLengthCapacity`, this does mean strings can't be larger than ~4 GB on
     /// 64-bit platforms, which isn't a problem we've.
     len_cap: PackedLengthCapacity,
 }
@@ -617,7 +617,7 @@ impl<const SHARD_FACTOR: usize> InternerState<SHARD_FACTOR> {
 /// ## `InternedString`
 ///
 /// The `InternedString` type is a handle to the entry header, and thus the string data, for an interned string. It's
-/// designed to be small -- 8 bytes! -- and cheap to clone, as it contains an atomic reference to the entry header and a
+/// designed to be small -- 8 bytes. -- and cheap to clone, as it contains an atomic reference to the entry header and a
 /// reference to the interner that owns the string. It dereferences to the underlying string with relatively low
 /// overhead: two pointer indirections.
 ///

@@ -18,11 +18,11 @@ OK, so why does this matter? This structure allows components to be easily compo
 allow for a component to send data to multiple downstream components _or_ for a component to receive
 data from multiple upstream components.
 
-Topologies are required to have an input component and an output component, as we need a way for
-data to enter the topology as well as leave it. This means a topology needs to have _at least_ two
+Topologies are required to have an input component and an output component, as we need a way for data
+to enter the topology as well as leave it. This means a topology needs to have _at least_ two
 components, but could have arbitrarily more. Connections between components are manually specified
-using the unique identifiers, such as declaring a connection between "A" and "B", where "A" and "B"
-are both the names of components in the topology.
+using the unique identifiers, such as declaring a connection between **A** and **B**, where **A** and
+**B** are both the names of components in the topology.
 
 Below is an visual example of a simple topology -- source, transform, and destination -- as well as
 an example of a more complex topology with multiple sources, transforms, and destinations:
@@ -228,7 +228,7 @@ such as the ones built with Saluki.
 
 #### Concurrency and parallelism
 
-Asynchronous runtimes in Rust are based on "futures", which models computation that depends on
+Asynchronous runtimes in Rust are based on _futures_, which models computation that depends on
 external resources (I/O, timers, messages, etc) which may become ready at an arbitrary point in time
 in the _future_. We spawn these futures as _tasks_. If you're familiar with JavaScript's _promises_,
 or Go's _goroutines_, you can think of futures as a similar concept. These tasks are scheduled

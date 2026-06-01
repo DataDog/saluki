@@ -1,12 +1,12 @@
 use async_trait::async_trait;
-use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
+use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_common::{
     collections::{FastHashSet, PrehashedHashMap},
     strings::unsigned_integer_to_string,
 };
 use saluki_core::{
     components::{transforms::*, ComponentContext},
-    data_model::event::trace::{Span, Trace},
+    data_model::event::trace::{AttributeValue, Span, Trace},
     topology::EventsBuffer,
 };
 use saluki_error::GenericError;
@@ -102,6 +102,7 @@ impl SynchronousTransform for ApmOnboarding {
 }
 
 fn get_root_span_from_trace_mut(trace: &mut Trace) -> Option<&mut Span> {
+    let trace_id = trace.trace_id_low;
     let spans = trace.spans_mut();
     if spans.is_empty() {
         return None;
@@ -129,10 +130,7 @@ fn get_root_span_from_trace_mut(trace: &mut Trace) -> Option<&mut Span> {
     }
 
     if parent_to_child.len() != 1 {
-        debug!(
-            trace_id = spans[0].trace_id(),
-            "Failed to reliably identify a root span for a trace."
-        );
+        debug!(trace_id, "Failed to reliably identify a root span for a trace.");
     }
 
     // Grab the root span from the parent-child map.
@@ -155,7 +153,8 @@ fn add_onboarding_metadata_to_span(span: &mut Span, install_info: &InstallInfo) 
 }
 
 fn add_meta_entry_if_missing(span: &mut Span, key: &MetaString, value: &MetaString) {
-    if !span.meta().contains_key(key) {
-        span.meta_mut().insert(key.clone(), value.clone());
+    if !span.attributes.contains_key(key) {
+        span.attributes
+            .insert(key.clone(), AttributeValue::String(value.clone()));
     }
 }

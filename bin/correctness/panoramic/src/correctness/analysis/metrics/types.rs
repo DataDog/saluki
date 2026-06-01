@@ -113,7 +113,7 @@ impl NormalizedMetric {
         context: NormalizedMetricContext, mut raw_values: Vec<(u64, MetricValue)>,
     ) -> Result<Self, GenericError> {
         // We need to first sort the raw values by timestamp, to ensure we have proper ordering semantics.
-        raw_values.sort_by(|a, b| a.0.cmp(&b.0));
+        raw_values.sort_by_key(|a| a.0);
         let value = try_normalize_values(&raw_values)
             .with_error_context(|| format!("Failed to normalize values for metric '{}'", context.name()))?;
 

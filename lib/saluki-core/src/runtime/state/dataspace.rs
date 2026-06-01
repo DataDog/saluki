@@ -208,7 +208,7 @@ struct DataspaceRegistryInner {
 ///
 /// # Thread Safety
 ///
-/// `DataspaceRegistry` is `Clone` and can be safely shared across threadVs and tasks. All operations are thread-safe.
+/// `DataspaceRegistry` is `Clone` and can be safely shared across threads and tasks. All operations are thread-safe.
 #[derive(Clone)]
 pub struct DataspaceRegistry {
     inner: Arc<DataspaceRegistryInner>,

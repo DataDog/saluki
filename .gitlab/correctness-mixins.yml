@@ -1,5 +1,5 @@
 # Mixins extended by every correctness-test job in the dynamically generated
-# child pipeline (see tooling/generate-correctness-pipeline.sh).
+# child pipeline (see ci/tooling/generate-correctness-pipeline.sh).
 #
 # Why mixins: the generator emits one stanza per test that is identical except
 # for CORRECTNESS_TEST_CASE and (optionally) the baseline-image override.
@@ -31,7 +31,7 @@
     PANORAMIC_DATADOG_INTAKE__IMAGE: ${SALUKI_IMAGE_REPO_BASE}/correctness-tools:${CI_COMMIT_SHA}
     PANORAMIC_COMPARISON__IMAGE: ${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}
   script:
-    - target/release/panoramic run -d $(pwd)/test/correctness -t ${CORRECTNESS_TEST_CASE} --no-tui
+    - target/release/panoramic run -d $(pwd)/test/correctness/cases -t ${CORRECTNESS_TEST_CASE} --no-tui
 
 # Added when the test's config.yaml names a saluki-images/ baseline (a
 # placeholder valid only locally). Replaces it with the CI-built image.

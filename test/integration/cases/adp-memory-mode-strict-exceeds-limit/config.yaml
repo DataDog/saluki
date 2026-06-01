@@ -1,24 +1,27 @@
 type: integration
 name: "adp-memory-mode-strict-exceeds-limit"
 description: "Verifies that strict mode causes ADP to exit with code 1 when the calculated bounds exceed the configured limit"
-timeout: 60s
+timeout: 120s
+runtimes: [docker, mac]
+
+env:
+  DD_API_KEY: "test-api-key"
+  DD_HOSTNAME: "integration-test"
+  DD_DATA_PLANE_ENABLED: "true"
+  DD_DATA_PLANE_STANDALONE_MODE: "true"
+  DD_MEMORY_MODE: "strict"
+  DD_MEMORY_LIMIT: "256mb"
+  # Bumped well above the default of 1,000,000 to drive the firm bound for the aggregate
+  # transform far past the configured memory limit.
+  DD_AGGREGATE_CONTEXT_LIMIT: "10000000"
 
 container:
   image: "saluki-images/datadog-agent:testing-devel"
-  env:
-    DD_API_KEY: "test-api-key"
-    DD_HOSTNAME: "integration-test"
-    DD_DATA_PLANE_ENABLED: "true"
-    DD_DATA_PLANE_STANDALONE_MODE: "true"
-    DD_MEMORY_MODE: "strict"
-    DD_MEMORY_LIMIT: "256mb"
-    # Bumped well above the default of 1,000,000 to drive the firm bound for the aggregate
-    # transform far past the configured memory limit.
-    DD_AGGREGATE_CONTEXT_LIMIT: "10000000"
 
 assertions:
-  # The container's s6 supervisor restarts ADP after every exit, so the container itself never
-  # exits. Match on the supervisor's exit log instead, which reports ADP's actual exit code.
-  - type: log_contains
-    pattern: "agent-data-plane exited with code 1"
+  # Observe ADP's actual exit code, regardless of runtime. On docker (s6) this greps the
+  # supervisor's exit log line; on mac this reads the exit code recorded by the
+  # Unix runner.
+  - type: adp_exits_with
+    expected_code: 1
     timeout: 30s

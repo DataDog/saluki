@@ -4,7 +4,7 @@ use async_stream::stream;
 use async_trait::async_trait;
 use containerd_protos::services::namespaces::v1::Namespace;
 use futures::{stream::select_all, Stream, StreamExt as _};
-use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
+use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
 use saluki_core::health::Health;
 use saluki_error::GenericError;

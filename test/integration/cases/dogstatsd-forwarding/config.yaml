@@ -1,0 +1,78 @@
+type: integration
+name: "dogstatsd-forwarding"
+description: "Verifies DogStatsD message forwarding mirrors framed payloads and preserves ingestion"
+timeout: 90s
+# Not yet validated under mac; opt in by adding `mac` to this list once verified.
+runtimes: [docker]
+
+env:
+  DD_API_KEY: "test-api-key"
+  DD_HOSTNAME: "integration-test-dsd-forwarding"
+  DD_DATA_PLANE_ENABLED: "true"
+  DD_DATA_PLANE_STANDALONE_MODE: "true"
+  DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+  DD_DOGSTATSD_TCP_PORT: "9126"
+  DD_DOGSTATSD_SOCKET: "/tmp/dsd-forwarding.sock"
+  DD_DOGSTATSD_STREAM_SOCKET: "/tmp/dsd-forwarding-stream.sock"
+  DD_DOGSTATSD_NON_LOCAL_TRAFFIC: "true"
+  DD_STATSD_FORWARD_HOST: "127.0.0.1"
+  DD_STATSD_FORWARD_PORT: "9125"
+
+container:
+  image: "saluki-images/datadog-agent:testing-devel"
+  entrypoint:
+    - "/opt/datadog-agent/embedded/bin/python3"
+    - "/forwarding-test/run_forwarding_test.py"
+  files:
+    - "run_forwarding_test.py:/forwarding-test/run_forwarding_test.py"
+  exposed_ports:
+    - "58125/udp"
+    - "9126/tcp"
+
+assertions:
+  - type: log_contains
+    pattern: "DogStatsD packet forwarding enabled"
+    timeout: 15s
+  - type: file_contains
+    path: "/tmp/dsd-forwarded-udp-malformed"
+    pattern: "this is not dogstatsd"
+    timeout: 30s
+  - type: file_contains
+    path: "/tmp/dsd-forwarded-udp-metric"
+    pattern: "adp.forwarding.integration:1|c|#source:integration"
+    timeout: 30s
+  - type: file_contains
+    path: "/tmp/dsd-forwarded-stream-one"
+    pattern: "adp.forwarding.stream_one:1|c"
+    timeout: 30s
+  - type: file_contains
+    path: "/tmp/dsd-forwarded-stream-two"
+    pattern: "adp.forwarding.stream_two:2|c"
+    timeout: 30s
+  - type: file_contains
+    path: "/tmp/dsd-forwarded-uds-packet"
+    pattern: "adp.forwarding.uds_datagram:1|c"
+    timeout: 30s
+  - type: file_contains
+    path: "/tmp/dsd-forwarded-uds-stream-packet"
+    pattern: "adp.forwarding.uds_stream:1|c"
+    timeout: 30s
+  - type: file_contains
+    path: "/tmp/dsd-metric-parsed"
+    pattern: "component_events_received_total"
+    timeout: 30s
+  - parallel:
+      - type: process_stable_for
+        duration: 10s
+      - type: port_listening
+        port: 58125
+        protocol: udp
+        timeout: 10s
+      - type: port_listening
+        port: 9126
+        protocol: tcp
+        timeout: 10s
+      - type: log_not_contains
+        pattern: "Unsupported configuration key|panic|PANIC"
+        regex: true
+        during: 10s

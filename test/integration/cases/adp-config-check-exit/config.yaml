@@ -1,27 +1,28 @@
 # Verify the config check exits ADP when a high-severity incompatible key has a non-default value.
 #
-# statsd_forward_host is set to a non-default value. This key controls raw UDP packet mirroring
-# to a secondary host, a feature architecturally foreign to Saluki's metric processing pipeline.
+# `heroku_dyno` is set to a non-default value. This key controls Heroku-specific
+# hostname behavior, which ADP doesn't implement.
 #
-# If statsd_forward_host is implemented in the future, this test will fail. At that point, either
-# replace the key with another high-severity incompatible key, or delete this test if no suitable
-# key remains.
+# If `heroku_dyno` is implemented in the future, replace this key with another
+# high-severity incompatible key, or delete this test if no suitable key remains.
 
 type: integration
 name: "adp-config-check-exit"
 description: "Verify config check exits ADP on high-severity incompatible key"
-timeout: 45s
+timeout: 120s
+runtimes: [docker, mac]
+
+env:
+  DD_API_KEY: "test-api-key"
+  DD_HOSTNAME: "integration-test-config-exit"
+  DD_DATA_PLANE_ENABLED: "true"
+  DD_DATA_PLANE_STANDALONE_MODE: "false"
+  DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT: "true"
+  DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+  DD_HEROKU_DYNO: "true" # Incompatible(High) - triggers error and exit
 
 container:
   image: "saluki-images/datadog-agent:testing-devel"
-  env:
-    DD_API_KEY: "test-api-key"
-    DD_HOSTNAME: "integration-test-config-exit"
-    DD_DATA_PLANE_ENABLED: "true"
-    DD_DATA_PLANE_STANDALONE_MODE: "false"
-    DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT: "true"
-    DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
-    DD_STATSD_FORWARD_HOST: "192.168.1.100" # Incompatible(High) - triggers error and exit
 
 assertions:
   - type: log_contains
@@ -30,10 +31,9 @@ assertions:
   - type: log_contains
     pattern: "incompatible configuration detected"
     timeout: 30s
-  # The bundled image runs ADP under s6, which logs this line from
-  # docker/s6-services/agent-data-plane/finish when the ADP process exits.
-  # Asserting it proves ADP actually terminated rather than logging the
-  # error and continuing.
-  - type: log_contains
-    pattern: "agent-data-plane exited with code"
+  # Verify ADP actually exited (not just logged the error and continued). On docker this
+  # observes the s6 supervisor's exit log; on mac it observes the process exit code
+  # directly. Expected code is 1 because the high-severity check returns a non-zero status.
+  - type: adp_exits_with
+    expected_code: 1
     timeout: 30s

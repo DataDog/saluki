@@ -308,10 +308,9 @@ where
 /// # Instrumentation
 ///
 /// Supervisors automatically create their own allocation group
-/// ([`TrackingAllocator`][memory_accounting::allocator::TrackingAllocator]), which is used to track both the memory
-/// usage of the supervisor itself and its children. Additionally, individual worker processes are wrapped in a
-/// dedicated [`tracing::Span`] to allow tracing the causal relationship between arbitrary code and the worker executing
-/// it.
+/// ([`TrackingAllocator`][resource_accounting::TrackingAllocator]), which is used to track both the memory usage of the
+/// supervisor itself and its children. Additionally, individual worker processes are wrapped in a dedicated
+/// [`tracing::Span`] to allow tracing the causal relationship between arbitrary code and the worker executing it.
 ///
 /// # Restart Strategies
 ///
@@ -361,7 +360,7 @@ impl Supervisor {
 
     /// Configures this supervisor to run in a dedicated runtime.
     ///
-    /// When this supervisor is added as a child to another supervisor, it will spawn its own OS thread(s) and Tokio
+    /// When this supervisor is added as a child to another supervisor, it will spawn its own OS threads and Tokio
     /// runtime instead of running on the parent's ambient runtime.
     ///
     /// This provides runtime isolation, which can be useful for:

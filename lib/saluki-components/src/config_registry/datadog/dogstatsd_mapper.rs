@@ -1,6 +1,7 @@
 //! Annotations for DogStatsD mapper transform configuration keys.
 use crate::config_registry::{
-    generated::schema, structs, SalukiAnnotation, Schema, SchemaEntry, SupportLevel, ValueType,
+    generated::schema, structs, Pipeline, PipelineAffinity, SalukiAnnotation, Schema, SchemaEntry, SupportLevel,
+    ValueType,
 };
 
 // ADP-specific keys not present in the vendored Agent schema.
@@ -13,6 +14,19 @@ static DOGSTATSD_MAPPER_STRING_INTERNER_SIZE_SCHEMA: SchemaEntry = SchemaEntry {
 };
 
 crate::declare_annotations! {
+    /// `dogstatsd_mapper_cache_size`—per-name result cache capacity for the mapper transform.
+    /// Schema Float; field usize.
+    DOGSTATSD_MAPPER_CACHE_SIZE = SalukiAnnotation {
+        schema: &schema::DOGSTATSD_MAPPER_CACHE_SIZE,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::DOGSTATSD_MAPPER_CONFIGURATION],
+        value_type_override: Some(ValueType::Integer),
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
+    };
+
     /// `dogstatsd_mapper_profiles`—JSON-encoded list of DogStatsD metric mapping profiles.
     /// Uses a custom test value since the generic String test value isn't valid mapper JSON.
     DOGSTATSD_MAPPER_PROFILES = SalukiAnnotation {
@@ -23,6 +37,7 @@ crate::declare_annotations! {
         used_by: &[structs::DOGSTATSD_MAPPER_CONFIGURATION],
         value_type_override: None,
         test_json: Some(r#"[{"name":"test","prefix":"test.","mappings":[]}]"#),
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
 
     /// `dogstatsd_mapper_string_interner_size`—interner byte budget for the mapper transform.
@@ -35,5 +50,6 @@ crate::declare_annotations! {
         used_by: &[structs::DOGSTATSD_MAPPER_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
 }

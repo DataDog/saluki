@@ -17,3 +17,7 @@ rustls = { workspace = true, features = ["std"] }
 rustls-native-certs = { workspace = true }
 saluki-error = { workspace = true }
 tracing = { workspace = true }
+
+[dev-dependencies]
+rcgen = { workspace = true, features = ["crypto", "aws_lc_rs", "pem"] }
+tempfile = { workspace = true }

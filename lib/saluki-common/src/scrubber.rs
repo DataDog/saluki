@@ -40,7 +40,7 @@ pub struct Replacer {
 
 static DEFAULT_SCRUBBER: OnceLock<Scrubber> = OnceLock::new();
 
-/// Returns a reference to the default, lazily-initialized global scrubber.
+/// Returns a reference to the default, lazily initialized global scrubber.
 ///
 /// This function ensures that the default scrubber, with its associated regex compilation,
 /// is only initialized once for the lifetime of the application.

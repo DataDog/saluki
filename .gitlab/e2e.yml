@@ -58,7 +58,7 @@ build-panoramic-binary:
   script:
     - make build-panoramic
 
-# Scan test/correctness/ and emit a child-pipeline YAML with one job per test
+# Scan test/correctness/cases/ and emit a child-pipeline YAML with one job per test
 # directory. Each emitted job extends mixins from .gitlab/correctness-mixins.yml.
 generate-correctness-pipeline:
   stage: e2e
@@ -68,7 +68,7 @@ generate-correctness-pipeline:
     - build-correctness-tools-image
     - build-panoramic-binary
   script:
-    - bash tooling/generate-correctness-pipeline.sh > generated-correctness.yml
+    - bash ci/tooling/generate-correctness-pipeline.sh > generated-correctness.yml
   artifacts:
     paths: [generated-correctness.yml]
 
@@ -116,3 +116,59 @@ test-integration:
     - docker pull ${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}
     - docker tag ${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA} saluki-images/datadog-agent:testing-devel
     - make test-integration-quick
+
+# Runs the subset of integration tests that have opted in to the `mac` runtime
+# directly on a bare-metal macOS runner. No Docker, no virtualization: panoramic spawns ADP
+# (and the Core Agent for converged tests) as real macOS processes against a per-test temp
+# state directory. The Datadog Agent is installed into a sandbox under /tmp/saluki-dda by
+# the Makefile target (idempotent: re-uses the install across runs if the pinned version is
+# already present). The sandbox install never touches /opt/datadog-agent, so any system
+# install on the runner is left alone.
+.test-integration-macos-base:
+  stage: e2e
+  needs: []
+  retry: 2
+  timeout: 30m
+  artifacts:
+    expire_in: 1 week
+    paths:
+      - integration-logs/
+    when: always
+  variables:
+    PANORAMIC_LOG_DIR: integration-logs
+  before_script:
+    # Defensive: clean up any leftover Agent/ADP processes from prior runs on this shared
+    # runner. All test-Agent ports are shifted out of the canonical range (see
+    # panoramic::test_env::port_isolation_env), so we don't need to touch a system
+    # install at /opt/datadog-agent. We do need to sweep:
+    #   - our own Core Agent sandbox under /tmp/saluki-dda (trace-agent / process-agent
+    #     children that survived a non-graceful job termination still hold our shifted ports)
+    #   - any stranded agent-data-plane process from a prior pipeline (built into
+    #     $CI_PROJECT_DIR/target/release/, holds UDP 58125 / TCP 5100–5102 etc. across runs)
+    - sudo pkill -9 -f /tmp/saluki-dda/ || true
+    - sudo pkill -9 -f /target/release/agent-data-plane || true
+  script:
+    - make test-integration-macos-ci
+  after_script:
+    # Collect host-level diagnostics into the artifact so we have something to debug from
+    # when something fails outside panoramic's per-test log capture (bootstrap-Agent failures,
+    # system state, stranded processes from this run). Runs whether the test step passed or
+    # failed.
+    - mkdir -p integration-logs/host-diag
+    - sw_vers > integration-logs/host-diag/sw_vers.txt 2>&1 || true
+    - uname -a > integration-logs/host-diag/uname.txt 2>&1 || true
+    - mount > integration-logs/host-diag/mount.txt 2>&1 || true
+    - df -h > integration-logs/host-diag/df.txt 2>&1 || true
+    - ps -axo pid,ppid,user,command > integration-logs/host-diag/ps.txt 2>&1 || true
+    - cp /tmp/saluki-agent-bootstrap.log integration-logs/host-diag/saluki-agent-bootstrap.log 2>/dev/null || true
+    - ls -la /tmp/saluki-dda/datadog-agent/etc/ > integration-logs/host-diag/sandbox-etc.txt 2>&1 || true
+
+test-integration-macos-arm64:
+  extends:
+    - .macos-arm64-test-job
+    - .test-integration-macos-base
+
+test-integration-macos-amd64:
+  extends:
+    - .macos-amd64-test-job
+    - .test-integration-macos-base

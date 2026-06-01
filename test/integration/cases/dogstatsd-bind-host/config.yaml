@@ -14,22 +14,27 @@
 type: integration
 name: "dogstatsd-bind-host"
 description: "Verifies DogStatsD binds to the address specified by bind_host"
-timeout: 90s
+timeout: 120s
+# Docker-only: uses PANORAMIC_DYNAMIC shell hooks that run `hostname -i` and write /etc/hosts
+# from inside the container. Neither translates to the mac host runtime; re-enable
+# once dynamic resolution grows a portable mechanism.
+runtimes: [docker]
+
+env:
+  DD_API_KEY: "test-api-key"
+  DD_HOSTNAME: "integration-test-dsd-bind-host"
+  DD_DATA_PLANE_ENABLED: "true"
+  DD_DATA_PLANE_STANDALONE_MODE: "true"
+  DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+  PANORAMIC_DYNAMIC_CONTAINER_IP: "hostname -i | awk '{print $1}'"
+  DD_BIND_HOST: "{{PANORAMIC_DYNAMIC_CONTAINER_IP}}"
 
 container:
   image: "saluki-images/datadog-agent:testing-devel"
-  env:
-    DD_API_KEY: "test-api-key"
-    DD_HOSTNAME: "integration-test-dsd-bind-host"
-    DD_DATA_PLANE_ENABLED: "true"
-    DD_DATA_PLANE_STANDALONE_MODE: "true"
-    DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
-    PANORAMIC_DYNAMIC_CONTAINER_IP: "hostname -i | awk '{print $1}'"
-    DD_BIND_HOST: "{{PANORAMIC_DYNAMIC_CONTAINER_IP}}"
 
 assertions:
   - type: log_contains
-    pattern: 'listen_addr:"udp://{{PANORAMIC_DYNAMIC_CONTAINER_IP}}:8125"'
+    pattern: 'listen_addr:"udp://{{PANORAMIC_DYNAMIC_CONTAINER_IP}}:58125"'
     timeout: 15s
   - parallel:
       - type: process_stable_for

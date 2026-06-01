@@ -11,6 +11,7 @@ pub struct CollectedData {
     service_checks: Vec<ServiceCheck>,
     spans: Vec<Span>,
     trace_stats: ClientStatisticsAggregator,
+    dogstatsd_forwarded_packets: Vec<String>,
 }
 
 impl CollectedData {
@@ -25,6 +26,7 @@ impl CollectedData {
         let service_checks = get_captured_service_checks(datadog_intake_port).await?;
         let spans = get_captured_spans(datadog_intake_port).await?;
         let trace_stats = get_captured_trace_stats(datadog_intake_port).await?;
+        let dogstatsd_forwarded_packets = get_captured_dogstatsd_forwarded_packets(datadog_intake_port).await?;
 
         Ok(Self {
             events,
@@ -32,6 +34,7 @@ impl CollectedData {
             service_checks,
             spans,
             trace_stats,
+            dogstatsd_forwarded_packets,
         })
     }
 
@@ -58,6 +61,11 @@ impl CollectedData {
     /// Returns a reference to the collected trace statistics.
     pub fn trace_stats(&self) -> &ClientStatisticsAggregator {
         &self.trace_stats
+    }
+
+    /// Returns a reference to the forwarded DogStatsD packets captured by datadog-intake.
+    pub fn dogstatsd_forwarded_packets(&self) -> &[String] {
+        &self.dogstatsd_forwarded_packets
     }
 }
 
@@ -149,4 +157,23 @@ async fn get_captured_trace_stats(datadog_intake_port: u16) -> Result<ClientStat
     debug!("Trace stats dumped successfully.");
 
     Ok(stats)
+}
+
+async fn get_captured_dogstatsd_forwarded_packets(datadog_intake_port: u16) -> Result<Vec<String>, GenericError> {
+    let client = reqwest::Client::new();
+    let packets = client
+        .get(format!(
+            "http://localhost:{}/dogstatsd-forwarding/dump",
+            datadog_intake_port
+        ))
+        .send()
+        .await
+        .error_context("Failed to call forwarded DogStatsD packet dump endpoint on datadog-intake server.")?
+        .json::<Vec<String>>()
+        .await
+        .error_context("Failed to decode dumped forwarded DogStatsD packets from datadog-intake response.")?;
+
+    debug!("Forwarded DogStatsD packets dumped successfully.");
+
+    Ok(packets)
 }

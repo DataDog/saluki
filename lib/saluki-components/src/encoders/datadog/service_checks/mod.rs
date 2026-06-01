@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use facet::Facet;
 use http::{uri::PathAndQuery, HeaderValue, Method, Uri};
-use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
+use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
 use saluki_core::{
     components::{encoders::*, ComponentContext},
@@ -16,13 +16,14 @@ use saluki_error::{ErrorContext as _, GenericError};
 use saluki_io::compression::CompressionScheme;
 use saluki_metrics::MetricsBuilder;
 use serde::Deserialize;
-use tracing::{error, warn};
+use tracing::{debug, error, warn};
 
 use crate::common::datadog::{
+    clamp_payload_limits,
     io::RB_BUFFER_CHUNK_SIZE,
     request_builder::{EndpointEncoder, RequestBuilder},
     telemetry::ComponentTelemetry,
-    DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT, DEFAULT_INTAKE_UNCOMPRESSED_SIZE_LIMIT,
+    DEFAULT_SERIALIZER_COMPRESSED_SIZE_LIMIT, DEFAULT_SERIALIZER_UNCOMPRESSED_SIZE_LIMIT,
 };
 
 const DEFAULT_SERIALIZER_COMPRESSOR_KIND: &str = "zstd";
@@ -38,12 +39,49 @@ const fn default_zstd_compressor_level() -> i32 {
     3
 }
 
+const fn default_max_payload_size() -> usize {
+    DEFAULT_SERIALIZER_COMPRESSED_SIZE_LIMIT
+}
+
+const fn default_max_uncompressed_payload_size() -> usize {
+    DEFAULT_SERIALIZER_UNCOMPRESSED_SIZE_LIMIT
+}
+
+const fn default_log_payloads() -> bool {
+    false
+}
+
 /// Datadog Service Checks incremental encoder.
 ///
 /// Generates Datadog Service Checks payloads for the Datadog platform.
 #[derive(Deserialize, Facet)]
 #[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
 pub struct DatadogServiceChecksConfiguration {
+    /// Maximum compressed size, in bytes, of a service check payload.
+    ///
+    /// This matches the Datadog Agent's generic payload limit for service checks. The effective value is
+    /// clamped to the Agent's default intake-safe limit of 2,621,440 bytes, so larger configured values do not allow
+    /// payloads that intake may reject. If set to `0`, every non-empty compressed payload exceeds the limit and is
+    /// dropped during flush.
+    ///
+    /// Defaults to 2,621,440 bytes.
+    #[serde(rename = "serializer_max_payload_size", default = "default_max_payload_size")]
+    max_payload_size: usize,
+
+    /// Maximum uncompressed size, in bytes, of a service check payload.
+    ///
+    /// This matches the Datadog Agent's generic payload limit for service checks. The effective value is
+    /// clamped to the Agent's default intake-safe limit of 4,194,304 bytes, so larger configured values do not allow
+    /// payloads that intake may reject. Values smaller than the minimum endpoint framing size prevent the request
+    /// builder from starting.
+    ///
+    /// Defaults to 4,194,304 bytes.
+    #[serde(
+        rename = "serializer_max_uncompressed_payload_size",
+        default = "default_max_uncompressed_payload_size"
+    )]
+    max_uncompressed_payload_size: usize,
+
     /// Compression kind to use for the request payloads.
     ///
     /// Defaults to `zstd`.
@@ -61,6 +99,14 @@ pub struct DatadogServiceChecksConfiguration {
         default = "default_zstd_compressor_level"
     )]
     zstd_compressor_level: i32,
+
+    /// Whether to log service check payload contents before encoding.
+    ///
+    /// This logs decoded service check objects, not the encoded HTTP body.
+    ///
+    /// Defaults to `false`.
+    #[serde(default = "default_log_payloads")]
+    log_payloads: bool,
 }
 
 impl DatadogServiceChecksConfiguration {
@@ -90,11 +136,19 @@ impl IncrementalEncoderBuilder for DatadogServiceChecksConfiguration {
         // Create our request builder.
         let mut request_builder =
             RequestBuilder::new(ServiceChecksEndpointEncoder, compression_scheme, RB_BUFFER_CHUNK_SIZE).await?;
+        let (uncompressed_limit, compressed_limit) = clamp_payload_limits(
+            self.max_uncompressed_payload_size,
+            self.max_payload_size,
+            DEFAULT_SERIALIZER_UNCOMPRESSED_SIZE_LIMIT,
+            DEFAULT_SERIALIZER_COMPRESSED_SIZE_LIMIT,
+        );
+        request_builder.with_len_limits(uncompressed_limit, compressed_limit)?;
         request_builder.with_max_inputs_per_payload(MAX_SERVICE_CHECKS_PER_PAYLOAD);
 
         Ok(DatadogServiceChecks {
             request_builder,
             telemetry,
+            log_payloads: self.log_payloads,
         })
     }
 }
@@ -123,6 +177,7 @@ impl MemoryBounds for DatadogServiceChecksConfiguration {
 pub struct DatadogServiceChecks {
     request_builder: RequestBuilder<ServiceChecksEndpointEncoder>,
     telemetry: ComponentTelemetry,
+    log_payloads: bool,
 }
 
 #[async_trait]
@@ -132,6 +187,10 @@ impl IncrementalEncoder for DatadogServiceChecks {
             Some(eventd) => eventd,
             None => return Ok(ProcessResult::Continue),
         };
+
+        if self.log_payloads {
+            debug!(?service_check, "Flushing service check.");
+        }
 
         match self.request_builder.encode(service_check).await {
             Ok(None) => Ok(ProcessResult::Continue),
@@ -182,11 +241,11 @@ impl EndpointEncoder for ServiceChecksEndpointEncoder {
     }
 
     fn compressed_size_limit(&self) -> usize {
-        DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT
+        DEFAULT_SERIALIZER_COMPRESSED_SIZE_LIMIT
     }
 
     fn uncompressed_size_limit(&self) -> usize {
-        DEFAULT_INTAKE_UNCOMPRESSED_SIZE_LIMIT
+        DEFAULT_SERIALIZER_UNCOMPRESSED_SIZE_LIMIT
     }
 
     fn encode(&mut self, input: &Self::Input, buffer: &mut Vec<u8>) -> Result<(), Self::EncodeError> {

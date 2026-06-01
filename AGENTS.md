@@ -60,15 +60,13 @@ Check these facts against the Makefile as this is a fast-moving project.
 - Suite "integration": `make test-integration`. Only use `make test-integration-quick` when we know that the images(s)
   we depend on are up-to-date with the current state of the codebase. Failure to rebuild the images can lead to a
   confusing experience for you and the user both.
-- Suite "correctness":
-  - Build prerequisite containers:
-    `make build-correctness-tools-image build-datadog-agent-image build-datadog-agent-image-release`
-  - Run tests: `make test-correctness` or one test case by name `make test-correctness-case CASE=dsd-mapper-blocklist`
+- Suite "correctness": `make test-correctness` or one test case by name
+  `make test-correctness-case CASE=dsd-mapper-blocklist`
 
 Alternatively, `panoramic` can be invoked directly, for example if the user requests certain command-line options like
 `--no-tui`. Examples:
-- `cargo run --release --bin panoramic -- run -d test/correctness --no-tui`
-- `cargo run --release --bin panoramic -- run -d test/correctness -t test-name-1 -t test-name-2`
+- `cargo run --release --bin panoramic -- run -d test/correctness/cases --no-tui`
+- `cargo run --release --bin panoramic -- run -d test/correctness/cases -t test-name-1 -t test-name-2`
 - `cargo run --release --bin panoramic -- --help`
 
 ## Agent guidelines

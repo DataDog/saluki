@@ -22,6 +22,12 @@ export ADP_APP_BUILD_TIME := $(APP_BUILD_TIME)
 # ADP-specific settings used when running.
 export ADP_STANDALONE_IPC_CERT_FILE := /tmp/adp-ipc-cert.pem
 
+# macOS integration-test settings.
+MACOS_TEST_AGENT_VERSION ?= 7.78.0
+MACOS_TEST_AGENT_DMG_DIR ?= /tmp/saluki-dda-dmg-cache
+MACOS_TEST_AGENT_DMG_URL ?= https://s3.amazonaws.com/dd-agent/datadog-agent-$(MACOS_TEST_AGENT_VERSION)-1.$(shell uname -m).dmg
+MACOS_TEST_AGENT_INSTALL_DIR ?= /tmp/saluki-dda/datadog-agent
+
 # General build settings used for tooling, etc.
 export GO_BUILD_IMAGE ?= golang:1.23-bullseye
 export GO_APP_IMAGE ?= ubuntu:24.04
@@ -34,7 +40,7 @@ ifeq ($(CI),true)
 	override CARGO_BINSTALL_STRATEGIES = compile
 endif
 export CARGO_TOOL_VERSION_cargo-binstall ?= 1.18.1
-export CARGO_TOOL_VERSION_dd-rust-license-tool ?= 1.0.3
+export CARGO_TOOL_VERSION_dd-rust-license-tool ?= 1.0.6
 export CARGO_TOOL_VERSION_cargo-deny ?= 0.18.9
 export CARGO_TOOL_VERSION_cargo-hack ?= 0.6.30
 export CARGO_TOOL_VERSION_cargo-nextest ?= 0.9.99
@@ -223,11 +229,6 @@ endif
 		--file ./docker/Dockerfile.proxy-dumper \
 		test/build/dd-agent-benchmarks/docker/proxy-dumper
 
-.PHONY: build-dsd-client
-build-dsd-client: ## Builds the DogStatsD client (used for sending DSD payloads)
-	@echo "[*] Building DogStatsD client..."
-	@go build -C tooling/dogstatsd_client -o ../bin/dogstatsd_client .
-
 .PHONY: check-rust-build-tools
 check-rust-build-tools:
 ifeq ($(shell command -v cargo >/dev/null || echo not-found), not-found)
@@ -288,7 +289,6 @@ endif
 	@echo "[*] Running ADP..."
 	@DD_DATA_PLANE_ENABLED=true DD_DATA_PLANE_DOGSTATSD_ENABLED=true \
 	DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
-	DD_DATA_PLANE_TELEMETRY_ENABLED=true DD_DATA_PLANE_TELEMETRY_LISTEN_ADDR=tcp://127.0.0.1:5102 \
 	DD_AUTH_TOKEN_FILE_PATH=/etc/datadog-agent/auth_token \
 	target/devel/agent-data-plane run
 
@@ -304,7 +304,6 @@ endif
 	@echo "[*] Running ADP..."
 	@DD_DATA_PLANE_ENABLED=true DD_DATA_PLANE_DOGSTATSD_ENABLED=true \
 	DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
-	DD_DATA_PLANE_TELEMETRY_ENABLED=true DD_DATA_PLANE_TELEMETRY_LISTEN_ADDR=tcp://127.0.0.1:5102 \
 	DD_AUTH_TOKEN_FILE_PATH=/etc/datadog-agent/auth_token \
 	target/release/agent-data-plane run
 
@@ -315,7 +314,6 @@ run-adp-standalone: ## Runs ADP locally in standalone mode (debug)
 	@DD_DATA_PLANE_STANDALONE_MODE=true DD_DATA_PLANE_DOGSTATSD_ENABLED=true \
  	DD_API_KEY=api-key-adp-standalone DD_HOSTNAME=adp-standalone \
 	DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
-	DD_DATA_PLANE_TELEMETRY_ENABLED=true DD_DATA_PLANE_TELEMETRY_LISTEN_ADDR=tcp://127.0.0.1:5102 \
 	DD_IPC_CERT_FILE_PATH=$(ADP_STANDALONE_IPC_CERT_FILE) \
 	target/devel/agent-data-plane --config /tmp/adp-empty-config.yaml run
 
@@ -326,24 +324,8 @@ run-adp-standalone-release: ## Runs ADP locally in standalone mode (release)
 	@DD_DATA_PLANE_STANDALONE_MODE=true DD_DATA_PLANE_DOGSTATSD_ENABLED=true \
 	DD_API_KEY=api-key-adp-standalone DD_HOSTNAME=adp-standalone \
 	DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
-	DD_DATA_PLANE_TELEMETRY_ENABLED=true DD_DATA_PLANE_TELEMETRY_LISTEN_ADDR=tcp://127.0.0.1:5102 \
 	DD_IPC_CERT_FILE_PATH=$(ADP_STANDALONE_IPC_CERT_FILE) \
 	target/release/agent-data-plane --config /tmp/adp-empty-config.yaml run
-
-.PHONY: run-dsd-basic-udp
-run-dsd-basic-udp: build-dsd-client ## Runs a basic set of metrics via the Dogstatsd client (UDP)
-	@echo "[*] Sending basic metrics via Dogstatsd (UDP, 127.0.0.1:9191)..."
-	@./tooling/bin/dogstatsd_client 127.0.0.1:9191 count:1,gauge:2,histogram:3,distribution:4,set:five
-
-.PHONY: run-dsd-basic-uds
-run-dsd-basic-uds: build-dsd-client ## Runs a basic set of metrics via the Dogstatsd client (UDS)
-	@echo "[*] Sending basic metrics via Dogstatsd (unixgram:///tmp/adp-dogstatsd-dgram.sock)..."
-	@./tooling/bin/dogstatsd_client unixgram:///tmp/adp-dogstatsd-dgram.sock count:1,gauge:2,histogram:3,distribution:4,set:five
-
-.PHONY: run-dsd-basic-uds-stream
-run-dsd-basic-uds-stream: build-dsd-client ## Runs a basic set of metrics via the Dogstatsd client (UDS Stream)
-	@echo "[*] Sending basic metrics via Dogstatsd (unix:///tmp/adp-dogstatsd-stream.sock)..."
-	@./tooling/bin/dogstatsd_client unix:///tmp/adp-dogstatsd-stream.sock count:1,gauge:2,histogram:3,distribution:4,set:five
 
 ##@ Kubernetes
 
@@ -462,7 +444,7 @@ endif
 
 .PHONY: check-all
 check-all: ## Check everything
-check-all: check-fmt check-clippy check-features check-deny check-licenses generate-api-docs
+check-all: check-fmt check-clippy check-docs check-deny check-licenses check-unused-deps generate-api-docs check-features
 
 .PHONY: generate-api-docs
 generate-api-docs: check-rust-build-tools
@@ -514,7 +496,8 @@ check-unused-deps: ## Checks for any imported dependencies that are not used in 
 .PHONY: check-docs
 check-docs: check-lint-tools
 check-docs: ## Checks prose/code documentation against our style guide
-	@vale docs lib bin
+	@echo "[*] Checking prose/code documentation against our style guide..."
+	@vale --minAlertLevel=error --glob='!{lib/*/target/*,docs/.vitepress/*}' docs lib bin
 
 .PHONY: sync-docs-config
 sync-docs-config: check-lint-tools
@@ -558,16 +541,16 @@ test-all: ## Test everything
 test-all: test test-property test-docs test-miri test-loom
 
 .PHONY: test-correctness
-test-correctness: build-panoramic
+test-correctness: build-panoramic build-correctness-tools-image build-datadog-agent-image-release
 test-correctness: ## Runs the complete correctness suite (all test cases in parallel)
 	@echo "[*] Running correctness test suite..."
-	@target/release/panoramic run -d $(shell pwd)/test/correctness $(if $(PANORAMIC_PARALLELISM),-p $(PANORAMIC_PARALLELISM))
+	@target/release/panoramic run -d $(shell pwd)/test/correctness/cases $(if $(PANORAMIC_PARALLELISM),-p $(PANORAMIC_PARALLELISM))
 
 .PHONY: test-correctness-case
-test-correctness-case: build-panoramic
+test-correctness-case: build-panoramic build-correctness-tools-image build-datadog-agent-image-release
 test-correctness-case: ## Runs a single correctness test case by name (usage: make test-correctness-case CASE=dsd-plain)
 	@echo "[*] Running '$(CASE)' correctness test case..."
-	@target/release/panoramic run -d $(shell pwd)/test/correctness -t $(CASE) --no-tui
+	@target/release/panoramic run -d $(shell pwd)/test/correctness/cases -t $(CASE) --no-tui
 
 .PHONY: build-panoramic
 build-panoramic: check-rust-build-tools
@@ -591,6 +574,96 @@ test-integration-quick: ## Runs ADP integration tests (assumes images already bu
 list-integration-tests: build-panoramic
 list-integration-tests: ## Lists available ADP integration tests
 	@target/release/panoramic list -d $(shell pwd)/test/integration/cases
+
+.PHONY: build-adp-host
+build-adp-host: check-rust-build-tools
+build-adp-host: ## Builds the agent-data-plane binary for the current host (release profile)
+	@echo "[*] Building agent-data-plane (release, host target)..."
+	@APP_FULL_NAME="$(ADP_APP_FULL_NAME)" \
+		APP_SHORT_NAME="$(ADP_APP_SHORT_NAME)" \
+		APP_IDENTIFIER="$(ADP_APP_IDENTIFIER)" \
+		APP_GIT_HASH="$(ADP_APP_GIT_HASH)" \
+		APP_VERSION="$(ADP_APP_VERSION)" \
+		APP_BUILD_DATE="$(ADP_APP_BUILD_DATE)" \
+		cargo build --release --bin agent-data-plane
+
+.PHONY: test-integration-macos-run
+test-integration-macos-run: ## Runs the macOS host-process integration tests using already-built binaries (assumes target/release/{panoramic,agent-data-plane} exist). Defaults to all `mac`-runtime-eligible tests; narrow with CASE=<name>.
+	@echo "[*] Running macOS host-process integration tests..."
+	@ADP_BINARY_PATH="$(CURDIR)/target/release/agent-data-plane" \
+		CORE_AGENT_BINARY_PATH="$(MACOS_TEST_AGENT_INSTALL_DIR)/bin/agent/agent" \
+		target/release/panoramic run -d "$(CURDIR)/test/integration/cases" \
+		$(if $(CASE),-t $(CASE)) --no-tui -p 1 \
+		$(if $(PANORAMIC_LOG_DIR),-l $(PANORAMIC_LOG_DIR))
+
+.PHONY: provision-macos-test-env
+provision-macos-test-env: ## Installs the pinned Datadog Agent ($(MACOS_TEST_AGENT_VERSION)) into $(MACOS_TEST_AGENT_INSTALL_DIR) (a sandbox under /tmp) and bootstraps the IPC cert. Idempotent: re-uses the install if it already matches the pinned version.
+	@echo "[*] Provisioning macOS test environment..."
+	@if [ "$(shell uname -s)" != "Darwin" ]; then \
+		echo "provision-macos-test-env only runs on macOS hosts" >&2; exit 1; \
+	fi
+	@if [ -x $(MACOS_TEST_AGENT_INSTALL_DIR)/bin/agent/agent ] && \
+	   [ "$$($(MACOS_TEST_AGENT_INSTALL_DIR)/bin/agent/agent version 2>/dev/null | awk '{print $$2}')" = "$(MACOS_TEST_AGENT_VERSION)" ]; then \
+		echo "[*] Datadog Agent $(MACOS_TEST_AGENT_VERSION) already extracted to $(MACOS_TEST_AGENT_INSTALL_DIR)"; \
+	else \
+		echo "[*] Installing Datadog Agent $(MACOS_TEST_AGENT_VERSION) into $(MACOS_TEST_AGENT_INSTALL_DIR)..."; \
+		mkdir -p $(MACOS_TEST_AGENT_DMG_DIR); \
+		DMG_PATH=$(MACOS_TEST_AGENT_DMG_DIR)/datadog-agent-$(MACOS_TEST_AGENT_VERSION).dmg; \
+		if [ ! -f "$$DMG_PATH" ]; then \
+			curl -fL "$(MACOS_TEST_AGENT_DMG_URL)" -o "$$DMG_PATH"; \
+		fi; \
+		MOUNT_DIR=$$(mktemp -d /tmp/saluki-dda-mount-XXXXXX); \
+		hdiutil attach "$$DMG_PATH" -mountpoint "$$MOUNT_DIR" -nobrowse >/dev/null; \
+		PKG=$$(find "$$MOUNT_DIR" -name '*.pkg' | head -1); \
+		EXPAND_DIR=$$(mktemp -d /tmp/saluki-dda-expand-XXXXXX) && rm -rf "$$EXPAND_DIR"; \
+		pkgutil --expand-full "$$PKG" "$$EXPAND_DIR" >/dev/null; \
+		hdiutil detach "$$MOUNT_DIR" >/dev/null; \
+		rmdir "$$MOUNT_DIR" 2>/dev/null || true; \
+		PAYLOAD_DIR=$$(find "$$EXPAND_DIR" -type d -name Payload | head -1); \
+		if [ -z "$$PAYLOAD_DIR" ] || [ ! -x "$$PAYLOAD_DIR/bin/agent/agent" ]; then \
+			echo "ERROR: pkg payload did not contain bin/agent/agent. Expanded layout:" >&2; \
+			find "$$EXPAND_DIR" -maxdepth 3 -type d >&2; \
+			exit 1; \
+		fi; \
+		rm -rf $(MACOS_TEST_AGENT_INSTALL_DIR); \
+		mkdir -p $$(dirname $(MACOS_TEST_AGENT_INSTALL_DIR)); \
+		mv "$$PAYLOAD_DIR" $(MACOS_TEST_AGENT_INSTALL_DIR); \
+		rm -rf "$$EXPAND_DIR"; \
+		test -x $(MACOS_TEST_AGENT_INSTALL_DIR)/bin/agent/agent; \
+	fi
+	@if [ ! -f $(MACOS_TEST_AGENT_INSTALL_DIR)/etc/ipc_cert.pem ] || [ ! -f $(MACOS_TEST_AGENT_INSTALL_DIR)/etc/auth_token ]; then \
+		echo "[*] Bootstrapping IPC cert + auth_token by running the Agent briefly..."; \
+		mkdir -p $(MACOS_TEST_AGENT_INSTALL_DIR)/etc $(MACOS_TEST_AGENT_INSTALL_DIR)/run; \
+		touch $(MACOS_TEST_AGENT_INSTALL_DIR)/etc/datadog.yaml; \
+		DD_API_KEY=bootstrap DD_HOSTNAME=bootstrap \
+			DD_RUN_PATH=$(MACOS_TEST_AGENT_INSTALL_DIR)/run \
+			DD_AUTH_TOKEN_FILE_PATH=$(MACOS_TEST_AGENT_INSTALL_DIR)/etc/auth_token \
+			DD_IPC_CERT_FILE_PATH=$(MACOS_TEST_AGENT_INSTALL_DIR)/etc/ipc_cert.pem \
+			DD_CMD_PORT=55001 DD_GUI_PORT=-1 \
+			DD_EXPVAR_PORT=55000 DD_APM_RECEIVER_PORT=58126 \
+			DD_PROCESS_CONFIG_CMD_PORT=56062 DD_AGENT_IPC_PORT=55004 \
+			DD_DOGSTATSD_PORT=58125 \
+			$(MACOS_TEST_AGENT_INSTALL_DIR)/bin/agent/agent run -c $(MACOS_TEST_AGENT_INSTALL_DIR)/etc >/tmp/saluki-agent-bootstrap.log 2>&1 & \
+		AGENT_PID=$$!; \
+		for i in $$(seq 1 30); do \
+			sleep 1; \
+			if [ -f $(MACOS_TEST_AGENT_INSTALL_DIR)/etc/ipc_cert.pem ] && [ -f $(MACOS_TEST_AGENT_INSTALL_DIR)/etc/auth_token ]; then break; fi; \
+		done; \
+		kill $$AGENT_PID 2>/dev/null || true; \
+		wait $$AGENT_PID 2>/dev/null || true; \
+		if [ ! -f $(MACOS_TEST_AGENT_INSTALL_DIR)/etc/ipc_cert.pem ]; then \
+			echo "ERROR: bootstrap Agent did not write the IPC cert. Bootstrap log:" >&2; \
+			cat /tmp/saluki-agent-bootstrap.log >&2 2>/dev/null || true; \
+			exit 1; \
+		fi; \
+	else \
+		echo "[*] IPC cert already present at $(MACOS_TEST_AGENT_INSTALL_DIR)/etc/ipc_cert.pem"; \
+	fi
+	@echo "[*] macOS test environment ready."
+	@echo "[*] Agent binary: $(MACOS_TEST_AGENT_INSTALL_DIR)/bin/agent/agent"
+
+.PHONY: test-integration-macos-ci
+test-integration-macos-ci: build-panoramic build-adp-host provision-macos-test-env test-integration-macos-run ## CI entry point: builds binaries, ensures Agent + cert are provisioned, then runs the `mac`-runtime integration tests
 
 .PHONY: ensure-rust-miri
 ensure-rust-miri:
@@ -621,7 +694,6 @@ endif
 	DD_DATA_PLANE_STANDALONE_MODE=true \
 	DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
 	DD_ADP_OTLP_ENABLED=true DD_OTLP_CONFIG="{}" \
-	DD_DATA_PLANE_TELEMETRY_ENABLED=true DD_DATA_PLANE_TELEMETRY_LISTEN_ADDR=tcp://127.0.0.1:5102 \
 	./test/ddprof/bin/ddprof --service adp --environment local --service-version $(GIT_COMMIT) \
 	--url unix:///var/run/datadog/apm.socket \
 	--inlined-functions true --timeline --upload-period 10 --preset cpu_live_heap \
@@ -716,15 +788,15 @@ update-protos: ## Updates all vendored Protocol Buffers definitions from their s
 	AGENT_PAYLOAD_GIT_TAG=$(PROTOBUF_SRC_REPO_AGENT_PAYLOAD) \
 	CONTAINERD_GIT_TAG=$(PROTOBUF_SRC_REPO_CONTAINERD) \
 	SKETCHES_GO_GIT_TAG=$(PROTOBUF_SRC_REPO_SKETCHES_GO) \
-	./tooling/update-protos.sh
+	./ci/tooling/update-protos.sh
 
 .PHONY: update-pr-title-scopes
 update-pr-title-scopes: ## Updates allowed PR title scopes in the CI workflow based on the codebase
-	@./tooling/update-pr-title-scopes.sh update
+	@./ci/tooling/update-pr-title-scopes.sh update
 
 .PHONY: check-pr-title-scopes
 check-pr-title-scopes: ## Checks that PR title scopes in the CI workflow are up-to-date
-	@./tooling/update-pr-title-scopes.sh check
+	@./ci/tooling/update-pr-title-scopes.sh check
 
 .PHONY: clean
 clean: check-rust-build-tools

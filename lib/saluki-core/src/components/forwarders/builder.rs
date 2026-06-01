@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use memory_accounting::MemoryBounds;
+use resource_accounting::MemoryBounds;
 use saluki_error::GenericError;
 
 use super::Forwarder;

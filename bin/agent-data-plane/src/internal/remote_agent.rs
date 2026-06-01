@@ -13,11 +13,12 @@ use datadog_protos::agent::{
     ConfigSnapshot,
 };
 use futures::StreamExt;
-use prometheus_exposition::PrometheusRenderer;
 use prost_types::value::Kind;
 use saluki_common::task::spawn_traced_named;
 use saluki_config::{dynamic::ConfigUpdate, upsert, GenericConfiguration};
-use saluki_core::state::reflector::Reflector;
+use saluki_core::observability::metrics::{
+    get_shared_metrics_state, AggregatedMetricsProcessor, Reflector, TelemetryProcessor,
+};
 use saluki_error::{generic_error, GenericError};
 use saluki_io::net::GrpcTargetAddress;
 use serde_json::{Map, Value};
@@ -29,9 +30,7 @@ use tonic::{server::NamedService, Status};
 use tracing::{debug, error, info, warn};
 
 use crate::config::DataPlaneConfiguration;
-use crate::state::metrics::{
-    get_datadog_agent_remappings, get_shared_metrics_state, render_telemetry, AggregatedMetricsProcessor, RemapperRule,
-};
+use crate::state::metrics::get_datadog_agent_remappings;
 
 const DEFAULT_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 const REFRESH_FAILED_RETRY_INTERVAL: Duration = Duration::from_secs(5);
@@ -59,7 +58,6 @@ pub struct RemoteAgentBootstrap {
     client: RemoteAgentClient,
     session_id: SessionIdHandle,
     internal_metrics: Reflector<AggregatedMetricsProcessor>,
-    telemetry_enabled: bool,
 }
 
 impl RemoteAgentBootstrap {
@@ -78,14 +76,11 @@ impl RemoteAgentBootstrap {
             .ok_or_else(|| generic_error!("Failed to get valid gRPC target address from secure API listen address."))?;
 
         // Generate our remote agent state, which is mostly fixed but has a few dynamic bits.
-        let mut service_names = vec![
+        let service_names = vec![
             <StatusProviderServer<()> as NamedService>::NAME.to_string(),
             <FlareProviderServer<()> as NamedService>::NAME.to_string(),
+            <TelemetryProviderServer<()> as NamedService>::NAME.to_string(),
         ];
-
-        if dp_config.telemetry_enabled() {
-            service_names.push(<TelemetryProviderServer<()> as NamedService>::NAME.to_string());
-        }
 
         let (state, init_reg_rx) = RemoteAgentState::new(api_listen_addr, service_names);
         let session_id = state.session_id.clone();
@@ -113,7 +108,6 @@ impl RemoteAgentBootstrap {
             client,
             session_id,
             internal_metrics: get_shared_metrics_state().await,
-            telemetry_enabled: dp_config.telemetry_enabled(),
         })
     }
 
@@ -121,9 +115,7 @@ impl RemoteAgentBootstrap {
         RemoteAgentImpl {
             started: Utc::now(),
             internal_metrics: self.internal_metrics.clone(),
-            telemetry_enabled: self.telemetry_enabled,
-            remapper_rules: get_datadog_agent_remappings(),
-            renderer: Mutex::new(PrometheusRenderer::new()),
+            processor: Mutex::new(TelemetryProcessor::new().with_remapper_rules(get_datadog_agent_remappings())),
             session_id: self.session_id.clone(),
         }
     }
@@ -134,11 +126,8 @@ impl RemoteAgentBootstrap {
     }
 
     /// Creates a new `TelemetryProviderServer` tied to this remote agent.
-    ///
-    /// Returns `None` if telemetry isn't enabled.
-    pub fn create_telemetry_service(&self) -> Option<TelemetryProviderServer<RemoteAgentImpl>> {
-        self.telemetry_enabled
-            .then(|| TelemetryProviderServer::new(self.build_impl()))
+    pub fn create_telemetry_service(&self) -> TelemetryProviderServer<RemoteAgentImpl> {
+        TelemetryProviderServer::new(self.build_impl())
     }
 
     /// Creates a new `FlareProviderServer` tied to this remote agent.
@@ -365,9 +354,7 @@ fn proto_value_to_serde_value(proto_val: &Option<prost_types::Value>) -> Value {
 pub struct RemoteAgentImpl {
     started: DateTime<Utc>,
     internal_metrics: Reflector<AggregatedMetricsProcessor>,
-    telemetry_enabled: bool,
-    remapper_rules: Vec<RemapperRule>,
-    renderer: Mutex<PrometheusRenderer>,
+    processor: Mutex<TelemetryProcessor>,
     session_id: SessionIdHandle,
 }
 
@@ -472,13 +459,9 @@ impl TelemetryProvider for RemoteAgentImpl {
     ) -> Result<tonic::Response<GetTelemetryResponse>, Status> {
         return self
             .session_id_middleware(async || {
-                if !self.telemetry_enabled {
-                    return Ok(tonic::Response::new(GetTelemetryResponse { payload: None }));
-                }
-
                 let state = self.internal_metrics.state();
-                let mut renderer = self.renderer.lock().await;
-                let prom_text = render_telemetry(state, &self.remapper_rules, &mut renderer);
+                let mut processor = self.processor.lock().await;
+                let prom_text = processor.process(state);
 
                 Ok(tonic::Response::new(GetTelemetryResponse {
                     payload: Some(Payload::PromText(prom_text)),

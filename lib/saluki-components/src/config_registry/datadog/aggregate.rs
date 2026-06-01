@@ -1,14 +1,15 @@
 //! Annotations for the aggregate transform configuration keys.
 use crate::config_registry::{
-    generated::schema, structs, SalukiAnnotation, Schema, SchemaEntry, SupportLevel, ValueType,
+    generated::schema, structs, Pipeline, PipelineAffinity, SalukiAnnotation, Schema, SchemaEntry, SupportLevel,
+    ValueType,
 };
 
 // ADP-specific keys not present in the vendored Agent schema.
-static AGGREGATE_WINDOW_DURATION_SCHEMA: SchemaEntry = SchemaEntry {
+static AGGREGATE_WINDOW_DURATION_SECONDS_SCHEMA: SchemaEntry = SchemaEntry {
     schema: Schema::Saluki,
-    yaml_path: "aggregate_window_duration",
+    yaml_path: "aggregate_window_duration_seconds",
     env_vars: &[],
-    value_type: ValueType::String,
+    value_type: ValueType::Integer,
     default: None,
 };
 
@@ -46,15 +47,15 @@ static AGGREGATE_PASSTHROUGH_IDLE_FLUSH_TIMEOUT_SCHEMA: SchemaEntry = SchemaEntr
 
 crate::declare_annotations! {
     /// `aggregate_window_duration`—size of each aggregation window.
-    /// Duration fields serialize as {secs, nanos}; inject as object with test_json.
-    AGGREGATE_WINDOW_DURATION = SalukiAnnotation {
-        schema: &AGGREGATE_WINDOW_DURATION_SCHEMA,
+    AGGREGATE_WINDOW_DURATION_SECONDS = SalukiAnnotation {
+        schema: &AGGREGATE_WINDOW_DURATION_SECONDS_SCHEMA,
         support_level: SupportLevel::Full,
         additional_yaml_paths: &[],
         env_var_override: None,
         used_by: &[structs::AGGREGATE_CONFIGURATION],
         value_type_override: None,
-        test_json: Some(r#"{"secs": 42, "nanos": 0}"#),
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD, Pipeline::Checks]),
     };
 
     /// `aggregate_flush_interval`—how often to flush aggregation buckets.
@@ -66,6 +67,7 @@ crate::declare_annotations! {
         used_by: &[structs::AGGREGATE_CONFIGURATION],
         value_type_override: None,
         test_json: Some(r#"{"secs": 42, "nanos": 0}"#),
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD, Pipeline::Checks]),
     };
 
     /// `aggregate_context_limit`—max distinct metric contexts per window.
@@ -77,6 +79,7 @@ crate::declare_annotations! {
         used_by: &[structs::AGGREGATE_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD, Pipeline::Checks]),
     };
 
     /// `dogstatsd_flush_incomplete_buckets`—flush open buckets on shutdown.
@@ -88,6 +91,7 @@ crate::declare_annotations! {
         used_by: &[structs::AGGREGATE_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD, Pipeline::Checks]),
     };
 
     /// `counter_expiry_seconds`—idle counter lifetime before removal.
@@ -99,6 +103,7 @@ crate::declare_annotations! {
         used_by: &[structs::AGGREGATE_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD, Pipeline::Checks]),
     };
 
     /// `dogstatsd_no_aggregation_pipeline`—pass through pre-timestamped metrics immediately.
@@ -110,6 +115,7 @@ crate::declare_annotations! {
         used_by: &[structs::AGGREGATE_CONFIGURATION, structs::DOGSTATSD_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD, Pipeline::Checks]),
     };
 
     /// `aggregate_passthrough_idle_flush_timeout`—max buffer time for passthrough metrics.
@@ -121,6 +127,7 @@ crate::declare_annotations! {
         used_by: &[structs::AGGREGATE_CONFIGURATION],
         value_type_override: None,
         test_json: Some(r#"{"secs": 42, "nanos": 0}"#),
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD, Pipeline::Checks]),
     };
 
     /// `histogram_aggregates`—list of aggregates to compute for histogram metrics.
@@ -132,6 +139,7 @@ crate::declare_annotations! {
         used_by: &[structs::AGGREGATE_CONFIGURATION],
         value_type_override: None,
         test_json: Some(r#"["count"]"#),
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD, Pipeline::Checks]),
     };
 
     /// `histogram_copy_to_distribution`—also emit histograms as distributions.
@@ -143,6 +151,7 @@ crate::declare_annotations! {
         used_by: &[structs::AGGREGATE_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD, Pipeline::Checks]),
     };
 
     /// `histogram_copy_to_distribution_prefix`—prefix for distribution copies of histograms.
@@ -154,5 +163,6 @@ crate::declare_annotations! {
         used_by: &[structs::AGGREGATE_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD, Pipeline::Checks]),
     };
 }

@@ -23,7 +23,7 @@
       - any-glob-to-any-file:
           - ".gitlab/**/*"
           - ".github/**/*"
-          - ".ci/**/*"
+          - "ci/**/*"
           - ".gitlab-ci.yml"
 
 "area/components":
@@ -45,7 +45,7 @@
 "area/memory":
   - changed-files:
       - any-glob-to-any-file:
-          - "lib/memory-accounting/**/*"
+          - "lib/resource-accounting/**/*"
           - "lib/process-memory/**/*"
           - "lib/stringtheory/**/*"
 

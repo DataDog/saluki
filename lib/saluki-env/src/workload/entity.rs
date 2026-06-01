@@ -109,7 +109,7 @@ impl EntityId {
 
     /// Creates an `EntityId` from a Kubernetes pod UID.
     ///
-    /// If the pod UID value is "none", this will return `None`.
+    /// If the pod UID value is `"none"`, this will return `None`.
     pub fn from_pod_uid<S>(pod_uid: S) -> Option<Self>
     where
         S: AsRef<str> + Into<MetaString>,

@@ -1,17 +1,18 @@
 use std::{
+    collections::HashSet,
     path::PathBuf,
     time::{Duration, Instant},
 };
 
 use argh::FromArgs;
 use datadog_agent_commons::platform::PlatformSettings;
-use memory_accounting::{ComponentBounds, ComponentRegistry};
+use resource_accounting::{ComponentBounds, ComponentRegistry};
 use saluki_app::{
+    accounting::{initialize_memory_bounds, MemoryBoundsConfiguration},
     bootstrap::BootstrapGuard,
-    memory::{initialize_memory_bounds, MemoryBoundsConfiguration},
     metrics::emit_startup_metrics,
 };
-use saluki_components::config_registry::{ConfigClassifier, Severity, SupportLevel};
+use saluki_components::config_registry::{ConfigClassifier, Pipeline, PipelineAffinity, Severity, SupportLevel};
 use saluki_components::{
     config::{DatadogRemapper, KEY_ALIASES},
     decoders::otlp::OtlpDecoderConfiguration,
@@ -23,7 +24,10 @@ use saluki_components::{
     },
     forwarders::{DatadogConfiguration, OtlpForwarderConfiguration},
     relays::otlp::OtlpRelayConfiguration,
-    sources::{ChecksIPCConfiguration, DogStatsDCaptureAPIHandler, DogStatsDConfiguration, OtlpConfiguration},
+    sources::{
+        ChecksIPCConfiguration, DogStatsDCaptureAPIHandler, DogStatsDConfiguration, DogStatsDReplayAPIHandler,
+        OtlpConfiguration,
+    },
     transforms::{
         AggregateConfiguration, ApmStatsTransformConfiguration, ChainedConfiguration, DogStatsDMapperConfiguration,
         HostEnrichmentConfiguration, TraceObfuscationConfiguration, TraceSamplerConfiguration,
@@ -107,9 +111,9 @@ pub async fn handle_run_command(
             // level, etc.
             let dynamic_config = ConfigurationLoader::default()
                 .with_key_aliases(KEY_ALIASES)
-                .with_dynamic_configuration(ra_bootstrap.create_config_stream())
                 .add_providers([DatadogRemapper::new()])
                 .from_environment(PlatformSettings::get_env_var_prefix())?
+                .with_dynamic_configuration(ra_bootstrap.create_config_stream())
                 .into_generic()
                 .await?;
 
@@ -151,7 +155,8 @@ pub async fn handle_run_command(
         return Ok(());
     }
 
-    check_and_warn_config(&config).error_context("Incompatible configuration detected.")?;
+    let active_pipelines = active_pipelines(&dp_config);
+    check_and_warn_config(&config, &active_pipelines).error_context("Incompatible configuration detected.")?;
 
     // Set up all of the building blocks for building our topologies and launching internal processes.
     let component_registry = ComponentRegistry::default();
@@ -162,7 +167,7 @@ pub async fn handle_run_command(
     let dsd_stats_config = DogStatsDStatisticsConfiguration::new();
 
     // Create the blueprint for our primary topology.
-    let (blueprint, dsd_capture_api_handler) = create_topology(
+    let (blueprint, control_surfaces) = create_topology(
         &config,
         &dp_config,
         &env_provider,
@@ -170,6 +175,13 @@ pub async fn handle_run_command(
         dsd_stats_config.clone(),
     )
     .await?;
+    let (dsd_capture_api_handler, dsd_replay_api_handler) = match control_surfaces.dogstatsd {
+        Some(DogStatsDControlSurface {
+            capture_api_handler,
+            replay_api_handler,
+        }) => (Some(capture_api_handler), Some(replay_api_handler)),
+        None => (None, None),
+    };
 
     // Create the internal supervisor which drives our control plane and internal observability.
     let mut internal_supervisor = create_internal_supervisor(
@@ -177,7 +189,7 @@ pub async fn handle_run_command(
         &dp_config,
         &component_registry,
         health_registry.clone(),
-        DogStatsDControlPlaneConfiguration::new(dsd_stats_config, dsd_capture_api_handler),
+        DogStatsDControlPlaneConfiguration::new(dsd_stats_config, dsd_capture_api_handler, dsd_replay_api_handler),
         ra_bootstrap,
         bootstrap_guard.logging().controller(),
     )
@@ -305,12 +317,35 @@ pub async fn handle_run_command(
     }
 }
 
+/// Returns the set of [`Pipeline`] variants that are active based on our configuration.
+fn active_pipelines(dp_config: &DataPlaneConfiguration) -> HashSet<Pipeline> {
+    let mut s = HashSet::new();
+    if dp_config.dogstatsd().enabled() {
+        s.insert(Pipeline::DogStatsD);
+    }
+    if dp_config.checks().enabled() {
+        s.insert(Pipeline::Checks);
+    }
+    if dp_config.otlp().enabled() {
+        s.insert(Pipeline::Otlp);
+    }
+    if dp_config.traces_pipeline_required() {
+        s.insert(Pipeline::Traces);
+    }
+    s
+}
+
 /// Check the resolved configuration against the config registry for incompatibilities.
 ///
 /// Classifies each flattened key in `config` with the config registry `Classifier`. Returns an
 /// `Error` if one or more high severity incompatibility is discovered. Emits warnings for less
 /// severe incompatibilities. Keys are only considered incompatible when they have non-default
-/// values.
+/// values and the pipelines they affect are active.
+///
+/// # Input
+///
+/// - `config`: the state of our configuration which we will flatten and consider all keys from.
+/// - `active_pipelines`: the list of pipelines that are enabled based on the configuration.
 ///
 /// # Error
 ///
@@ -318,9 +353,10 @@ pub async fn handle_run_command(
 /// keys, all keys are checked before returning. The error reports the count of incompatible keys;
 /// individual keys are logged at error level during iteration.
 ///
-fn check_and_warn_config(config: &GenericConfiguration) -> Result<(), GenericError> {
-    // Analyze the config and respond to configurations that may be incompatible with ADP.
-    let config_classifier = ConfigClassifier::new();
+fn check_and_warn_config(
+    config: &GenericConfiguration, active_pipelines: &HashSet<Pipeline>,
+) -> Result<(), GenericError> {
+    let classifier = ConfigClassifier::new();
     let mut high_severity_incompatibilities = 0u32;
     debug!("Analyzing configuration.");
     for (key, val) in config
@@ -328,23 +364,18 @@ fn check_and_warn_config(config: &GenericConfiguration) -> Result<(), GenericErr
         .error_context("Unable to flatten configuration into a list of dot-separated keys.")?
     {
         // Get the classification. The classifier returns None if the config key is invalid or not-applicable to ADP.
-        let Some(classification) = config_classifier.classify(&key, &val) else {
+        let Some(classification) = classifier.classify(&key, &val) else {
             continue;
         };
+
+        // Ignore it if none of the affected pipelines are active.
+        if !is_a_pipeline_affected(active_pipelines, &classification.pipeline_affinity) {
+            continue;
+        }
 
         // The Agent populates default values into the config, so we do not consider keys with default values.
         if classification.is_default {
             trace!(key = %key, "Configuration key has a default value.");
-            continue;
-        }
-
-        // Return a warning with a custom message on how to enable ADP telemetry.
-        if key == "telemetry.enabled" {
-            warn!(
-                key = %key,
-                "The telemetry.enabled key is not read by ADP. \
-                 Use data_plane.telemetry_enabled and data_plane.telemetry_filter_level instead."
-            );
             continue;
         }
 
@@ -380,12 +411,39 @@ fn check_and_warn_config(config: &GenericConfiguration) -> Result<(), GenericErr
     Ok(())
 }
 
+/// Returns `true` if at least one of the `active_pipelines` is affected based on `pipeline_affinity`.
+fn is_a_pipeline_affected(active_pipelines: &HashSet<Pipeline>, pipeline_affinity: &PipelineAffinity) -> bool {
+    match pipeline_affinity {
+        PipelineAffinity::Pipelines(affected_pipelines) => {
+            for affected_pipeline in *affected_pipelines {
+                if active_pipelines.contains(affected_pipeline) {
+                    // We found an active pipeline that is in the affected list. Early return true.
+                    return true;
+                }
+            }
+            // We checked all affected pipelines against those that are active and none matched.
+            false
+        }
+        PipelineAffinity::CrossCutting => true,
+    }
+}
+
+#[derive(Default)]
+struct TopologyControlSurfaces {
+    dogstatsd: Option<DogStatsDControlSurface>,
+}
+
+struct DogStatsDControlSurface {
+    capture_api_handler: DogStatsDCaptureAPIHandler,
+    replay_api_handler: DogStatsDReplayAPIHandler,
+}
+
 async fn create_topology(
     config: &GenericConfiguration, dp_config: &DataPlaneConfiguration, env_provider: &ADPEnvironmentProvider,
     component_registry: &ComponentRegistry, dsd_stats_config: DogStatsDStatisticsConfiguration,
-) -> Result<(TopologyBlueprint, Option<DogStatsDCaptureAPIHandler>), GenericError> {
+) -> Result<(TopologyBlueprint, TopologyControlSurfaces), GenericError> {
     let mut blueprint = TopologyBlueprint::new("primary", component_registry);
-    let mut dsd_capture_api_handler = None;
+    let mut control_surfaces = TopologyControlSurfaces::default();
 
     // If no data pipelines are enabled, then there's nothing for us to do.
     if !dp_config.data_pipelines_enabled() {
@@ -438,7 +496,7 @@ async fn create_topology(
     }
 
     if dp_config.dogstatsd().enabled() {
-        dsd_capture_api_handler =
+        control_surfaces.dogstatsd =
             Some(add_dsd_pipeline_to_blueprint(&mut blueprint, config, env_provider, dsd_stats_config).await?);
     }
 
@@ -446,7 +504,7 @@ async fn create_topology(
         add_otlp_pipeline_to_blueprint(&mut blueprint, config, dp_config, env_provider)?;
     }
 
-    Ok((blueprint, dsd_capture_api_handler))
+    Ok((blueprint, control_surfaces))
 }
 
 async fn add_checks_pipeline_to_blueprint(
@@ -583,7 +641,7 @@ async fn add_baseline_traces_pipeline_to_blueprint(
 async fn add_dsd_pipeline_to_blueprint(
     blueprint: &mut TopologyBlueprint, config: &GenericConfiguration, env_provider: &ADPEnvironmentProvider,
     dsd_stats_config: DogStatsDStatisticsConfiguration,
-) -> Result<DogStatsDCaptureAPIHandler, GenericError> {
+) -> Result<DogStatsDControlSurface, GenericError> {
     // We're creating the "front half" of the DogStatsD pipeline, which deals solely with accepting DogStatsD payloads,
     // and enriching/processing them in DSD-specific ways, relevant to how the Datadog Agent is expected to behave.
     //
@@ -624,6 +682,7 @@ async fn add_dsd_pipeline_to_blueprint(
         .with_workload_provider(env_provider.workload().clone())
         .with_capture_entity_resolver(env_provider.workload().clone());
     let dsd_capture_api_handler = dsd_config.capture_api_handler();
+    let dsd_replay_api_handler = dsd_config.replay_api_handler();
     let dsd_prefix_filter_configuration = DogStatsDPrefixFilterConfiguration::from_configuration(config)?;
     let dsd_mapper_config = DogStatsDMapperConfiguration::from_configuration(config)?;
     let dsd_enrich_config =
@@ -680,7 +739,10 @@ async fn add_dsd_pipeline_to_blueprint(
             .add_destination("dsd_debug_log_out", dsd_debug_log_config)?
             .connect_component("dsd_debug_log_out", ["dsd_in.metrics"])?;
     }
-    Ok(dsd_capture_api_handler)
+    Ok(DogStatsDControlSurface {
+        capture_api_handler: dsd_capture_api_handler,
+        replay_api_handler: dsd_replay_api_handler,
+    })
 }
 
 fn add_otlp_pipeline_to_blueprint(

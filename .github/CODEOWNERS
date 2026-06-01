@@ -8,5 +8,8 @@
 # any processes/requirements they have in place for the normal Datadog Agent releases.
 /.gitlab/release.yml @DataDog/agent-delivery
 
- # Workspaces prebuild image auto-updates
- /.devcontainer/datadog/default/ @DataDog/agent-data-plane @robot-github-sre
+# Workspaces prebuild image auto-updates
+/.devcontainer/datadog/default/ @DataDog/agent-data-plane @robot-github-sre
+
+# tests/antithesis is a shared SMP / ADP testing effort
+/test/antithesis @DataDog/single-machine-performance @DataDog/agent-data-plane

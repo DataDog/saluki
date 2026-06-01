@@ -11,7 +11,7 @@ use stringtheory::MetaString;
 pub struct Log {
     /// Log message body.
     message: MetaString,
-    /// Log status/severity (for example, "info", "warn", "error").
+    /// Log status/severity (for example, `"info"`, `"warn"`, `"error"`).
     status: Option<LogStatus>,
     /// Log source
     source: Option<MetaString>,
@@ -109,7 +109,7 @@ impl Log {
         self
     }
 
-    /// Sets the addtional properties map.
+    /// Sets the additional properties map.
     pub fn with_additional_properties(
         mut self, additional_properties: impl Into<Option<HashMap<MetaString, JsonValue>>>,
     ) -> Self {

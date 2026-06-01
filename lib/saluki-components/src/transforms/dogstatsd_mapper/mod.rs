@@ -6,9 +6,12 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use bytesize::ByteSize;
-use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use regex::Regex;
+use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
+use saluki_common::cache::{Cache, CacheBuilder};
 use saluki_config::GenericConfiguration;
+use saluki_context::tags::SharedTagSet;
+use saluki_context::tags::TagSet;
 use saluki_context::{Context, ContextResolver, ContextResolverBuilder};
 use saluki_core::{
     components::{
@@ -20,6 +23,7 @@ use saluki_core::{
 use saluki_error::{generic_error, ErrorContext, GenericError};
 use serde::{Deserialize, Serialize};
 use serde_with::{serde_as, DisplayFromStr, PickFirst};
+use stringtheory::MetaString;
 
 const MATCH_TYPE_WILDCARD: &str = "wildcard";
 const MATCH_TYPE_REGEX: &str = "regex";
@@ -29,6 +33,10 @@ static ALLOWED_WILDCARD_MATCH_PATTERN: LazyLock<Regex> =
 
 const fn default_context_string_interner_size() -> ByteSize {
     ByteSize::kib(64)
+}
+
+const fn default_dogstatsd_mapper_cache_size() -> usize {
+    1000
 }
 /// DogStatsD mapper transform.
 #[serde_as]
@@ -45,6 +53,19 @@ pub struct DogStatsDMapperConfiguration {
         default = "default_context_string_interner_size"
     )]
     context_string_interner_bytes: ByteSize,
+
+    /// Maximum number of mapped results to cache.
+    ///
+    /// When enabled, mapped metrics will be cached by name to avoid repeat evaluation of the configured mapper rules.
+    ///
+    /// When set to `0`, the cache is disabled.
+    ///
+    /// Defaults to `1000`.
+    #[serde(
+        rename = "dogstatsd_mapper_cache_size",
+        default = "default_dogstatsd_mapper_cache_size"
+    )]
+    cache_size: usize,
 
     /// Configuration related to metric mapping.
     #[serde_as(as = "PickFirst<(DisplayFromStr, _)>")]
@@ -79,7 +100,7 @@ impl std::fmt::Display for MapperProfileConfigs {
 
 impl MapperProfileConfigs {
     fn build(
-        &self, context: ComponentContext, context_string_interner_bytes: ByteSize,
+        &self, context: ComponentContext, context_string_interner_bytes: ByteSize, cache_size: usize,
     ) -> Result<MetricMapper, GenericError> {
         let mut profiles = Vec::with_capacity(self.0.len());
         for (i, config_profile) in self.0.iter().enumerate() {
@@ -145,9 +166,19 @@ impl MapperProfileConfigs {
                 .with_idle_context_expiration(Duration::from_secs(30))
                 .build();
 
+        let cache = match NonZeroUsize::new(cache_size) {
+            Some(capacity) => Some(
+                CacheBuilder::from_identifier(format!("{}/dsd_mapper/result_cache", context.component_id()))?
+                    .with_capacity(capacity)
+                    .build(),
+            ),
+            None => None,
+        };
+
         Ok(MetricMapper {
             context_resolver,
             profiles,
+            cache,
         })
     }
 }
@@ -212,16 +243,50 @@ struct MetricMapping {
     regex: Regex,
 }
 
+#[derive(Clone)]
+struct CachedMapResult {
+    name: MetaString,
+    extra_tags: SharedTagSet,
+}
+
 struct MetricMapper {
     profiles: Vec<MappingProfile>,
     context_resolver: ContextResolver,
+    cache: Option<Cache<MetaString, Option<CachedMapResult>>>,
 }
 
 impl MetricMapper {
     fn try_map(&mut self, context: &Context) -> Option<Context> {
+        // TODO: We should really be able to immutably borrow both the incoming tag set and the cached extra tags and
+        // chain them together for our call into `resolve_with_origin_tags`, avoiding any allocations... but we need
+        // some supporting work on the `TagSet` side to make it possible.
+
         let metric_name = context.name();
         let tags = context.tags();
         let origin_tags = context.origin_tags();
+
+        // See if we have a cached result for this metric name.
+        if let Some(cache) = &self.cache {
+            if let Some(cached) = cache.get(metric_name) {
+                return match cached {
+                    None => None,
+                    Some(result) => {
+                        let mut merged_tags = tags.clone();
+                        merged_tags.merge_shared(&result.extra_tags);
+
+                        self.context_resolver.resolve_with_origin_tags(
+                            result.name.clone(),
+                            merged_tags,
+                            origin_tags.clone(),
+                        )
+                    }
+                };
+            }
+        }
+
+        // Slow path: iterate profiles and run regexes.
+        let mut new_name = String::new();
+        let mut expanded_tag_value = String::new();
 
         for profile in &self.profiles {
             if !metric_name.starts_with(&profile.prefix) && profile.prefix != "*" {
@@ -230,21 +295,55 @@ impl MetricMapper {
 
             for mapping in &profile.mappings {
                 if let Some(captures) = mapping.regex.captures(metric_name) {
-                    let mut name = String::new();
-                    captures.expand(&mapping.name, &mut name);
-                    let mut new_tags: Vec<String> = tags.into_iter().map(|tag| tag.as_str().to_owned()).collect();
+                    new_name.clear();
+                    captures.expand(&mapping.name, &mut new_name);
+
+                    let mut extra_tags = TagSet::with_capacity(mapping.tags.len());
                     for (tag_key, tag_value_expr) in &mapping.tags {
-                        let mut expanded_value = String::new();
-                        captures.expand(tag_value_expr, &mut expanded_value);
-                        new_tags.push(format!("{}:{}", tag_key, expanded_value));
+                        expanded_tag_value.clear();
+                        expanded_tag_value.push_str(tag_key);
+                        expanded_tag_value.push(':');
+                        captures.expand(tag_value_expr, &mut expanded_tag_value);
+
+                        extra_tags.insert_tag(expanded_tag_value.as_str());
                     }
-                    return self
-                        .context_resolver
-                        .resolve_with_origin_tags(&name, new_tags, origin_tags.clone());
+
+                    // Freeze the tags here so they can be shared / cached.
+                    let extra_tags = extra_tags.into_shared();
+
+                    let mut merged_tags = tags.clone();
+                    merged_tags.merge_shared(&extra_tags);
+
+                    let resolved = self.context_resolver.resolve_with_origin_tags(
+                        new_name.as_str(),
+                        merged_tags,
+                        origin_tags.clone(),
+                    )?;
+
+                    if let Some(cache) = &self.cache {
+                        cache.insert(
+                            metric_name.clone(),
+                            Some(CachedMapResult {
+                                name: resolved.name().clone(),
+                                extra_tags,
+                            }),
+                        );
+                    }
+                    return Some(resolved);
                 }
             }
         }
+
+        // We also cache "negative" results -- no match for this metric in the configured profiles -- to save ourselves some work.
+        if let Some(cache) = &self.cache {
+            cache.insert(metric_name.clone(), None);
+        }
         None
+    }
+
+    #[cfg(test)]
+    fn cache_len(&self) -> Option<usize> {
+        self.cache.as_ref().map(|c| c.len())
     }
 }
 
@@ -258,22 +357,27 @@ impl DogStatsDMapperConfiguration {
 #[async_trait]
 impl SynchronousTransformBuilder for DogStatsDMapperConfiguration {
     async fn build(&self, context: ComponentContext) -> Result<Box<dyn SynchronousTransform + Send>, GenericError> {
-        let metric_mapper = self
-            .dogstatsd_mapper_profiles
-            .build(context, self.context_string_interner_bytes)?;
+        let metric_mapper =
+            self.dogstatsd_mapper_profiles
+                .build(context, self.context_string_interner_bytes, self.cache_size)?;
         Ok(Box::new(DogStatsDMapper { metric_mapper }))
     }
 }
 
 impl MemoryBounds for DogStatsDMapperConfiguration {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
-        builder
-            .minimum()
+        let mut min = builder.minimum();
+        min
             // Capture the size of the heap allocation when the component is built.
             .with_single_value::<DogStatsDMapper>("component struct")
             // We also allocate the backing storage for the string interner up front, which is used by our context
             // resolver.
             .with_fixed_amount("string interner", self.context_string_interner_bytes.as_u64() as usize);
+
+        // Account for the per-name result cache when enabled.
+        if self.cache_size > 0 {
+            min.with_array::<(MetaString, Option<CachedMapResult>)>("mapper result cache", self.cache_size);
+        }
     }
 }
 
@@ -310,10 +414,14 @@ mod tests {
     }
 
     fn mapper(json_data: Value) -> Result<MetricMapper, GenericError> {
+        mapper_with_cache(json_data, 1000)
+    }
+
+    fn mapper_with_cache(json_data: Value, cache_size: usize) -> Result<MetricMapper, GenericError> {
         let context = ComponentContext::transform(ComponentId::try_from("test_mapper").unwrap());
         let mpc: MapperProfileConfigs = serde_json::from_value(json_data)?;
         let context_string_interner_bytes = ByteSize::kib(64);
-        mpc.build(context, context_string_interner_bytes)
+        mpc.build(context, context_string_interner_bytes, cache_size)
     }
 
     fn assert_tags(context: &Context, expected_tags: &[&str]) {
@@ -927,6 +1035,130 @@ mod tests {
             ]
         }]);
         assert!(mapper(json_data).is_err());
+    }
+
+    fn simple_mapping_profile() -> Value {
+        json!([{
+            "name": "test",
+            "prefix": "test.",
+            "mappings": [
+                {
+                    "match": "test.job.duration.*.*",
+                    "name": "test.job.duration",
+                    "tags": {
+                        "job_type": "$1",
+                        "job_name": "$2"
+                    }
+                }
+            ]
+        }])
+    }
+
+    #[tokio::test]
+    async fn test_cache_hit_returns_same_result_as_miss() {
+        let mut mapper = mapper_with_cache(simple_mapping_profile(), 1000).expect("should have parsed mapping config");
+        assert_eq!(mapper.cache_len(), Some(0));
+
+        let metric = counter_metric("test.job.duration.my_type.my_name", &[]);
+        let first = mapper.try_map(metric.context()).expect("should have remapped");
+        assert_eq!(mapper.cache_len(), Some(1));
+
+        let metric = counter_metric("test.job.duration.my_type.my_name", &[]);
+        let second = mapper.try_map(metric.context()).expect("should have remapped");
+        assert_eq!(mapper.cache_len(), Some(1));
+
+        assert_eq!(first.name(), second.name());
+        assert_eq!(first.name(), "test.job.duration");
+        assert_tags(&first, &["job_type:my_type", "job_name:my_name"]);
+        assert_tags(&second, &["job_type:my_type", "job_name:my_name"]);
+    }
+
+    #[tokio::test]
+    async fn test_negative_cache() {
+        let mut mapper = mapper_with_cache(simple_mapping_profile(), 1000).expect("should have parsed mapping config");
+
+        let metric = counter_metric("unrelated.metric.name", &[]);
+        assert!(mapper.try_map(metric.context()).is_none());
+        assert_eq!(mapper.cache_len(), Some(1));
+
+        let metric = counter_metric("unrelated.metric.name", &[]);
+        assert!(mapper.try_map(metric.context()).is_none());
+        assert_eq!(mapper.cache_len(), Some(1));
+    }
+
+    #[tokio::test]
+    async fn test_cache_disabled_when_zero() {
+        let mut mapper = mapper_with_cache(simple_mapping_profile(), 0).expect("should have parsed mapping config");
+        assert_eq!(mapper.cache_len(), None);
+
+        let metric = counter_metric("test.job.duration.my_type.my_name", &[]);
+        let context = mapper.try_map(metric.context()).expect("should have remapped");
+        assert_eq!(context.name(), "test.job.duration");
+        assert_tags(&context, &["job_type:my_type", "job_name:my_name"]);
+
+        assert!(mapper
+            .try_map(counter_metric("unrelated.metric", &[]).context())
+            .is_none());
+        assert_eq!(mapper.cache_len(), None);
+    }
+
+    #[tokio::test]
+    async fn test_cache_eviction() {
+        let mut mapper = mapper_with_cache(simple_mapping_profile(), 2).expect("should have parsed mapping config");
+
+        for suffix in ["a", "b", "c"] {
+            let name = format!("test.job.duration.t.{}", suffix);
+            let metric = counter_metric(Box::leak(name.into_boxed_str()), &[]);
+            mapper.try_map(metric.context()).expect("should have remapped");
+        }
+
+        assert!(
+            mapper.cache_len().unwrap() <= 2,
+            "cache should not exceed configured capacity (got {})",
+            mapper.cache_len().unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_flood_does_not_grow_cache() {
+        // Many profiles, only the last one matches the test metric. A flood of identical
+        // names should be served from the cache after the first call.
+        let mut profiles: Vec<Value> = (0..50)
+            .map(|i| {
+                json!({
+                    "name": format!("noise-{}", i),
+                    "prefix": format!("noise{}.", i),
+                    "mappings": [{
+                        "match": format!("noise{}.*", i),
+                        "name": "noise.mapped"
+                    }]
+                })
+            })
+            .collect();
+        profiles.push(json!({
+            "name": "real",
+            "prefix": "real.",
+            "mappings": [{
+                "match": "real.metric.*",
+                "name": "real.mapped",
+                "tags": { "x": "$1" }
+            }]
+        }));
+        let json_data = Value::Array(profiles);
+
+        let mut mapper = mapper_with_cache(json_data, 16).expect("should have parsed mapping config");
+
+        for _ in 0..10_000 {
+            let metric = counter_metric("real.metric.flood", &[]);
+            let context = mapper.try_map(metric.context()).expect("should have remapped");
+            assert_eq!(context.name(), "real.mapped");
+        }
+
+        assert_eq!(
+            mapper.cache_len(),
+            Some(1),
+            "flood of identical names should populate exactly one cache entry"
+        );
     }
 }
 

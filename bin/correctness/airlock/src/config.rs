@@ -34,12 +34,6 @@ pub struct DatadogIntakeConfig {
     ///
     /// Defaults to `/usr/local/bin/datadog-intake`.
     pub binary_path: Option<String>,
-
-    /// Path to the datadog-intake configuration file to use.
-    ///
-    /// This file is mapped into the datadog-intake container and so it must exist on the system where this command is run
-    /// from.
-    pub config_path: PathBuf,
 }
 
 /// Target configuration.

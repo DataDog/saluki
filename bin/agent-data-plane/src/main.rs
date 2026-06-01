@@ -28,18 +28,24 @@ pub(crate) mod state;
 
 #[cfg(all(target_os = "linux", not(system_allocator)))]
 #[global_allocator]
-static ALLOC: memory_accounting::allocator::TrackingAllocator<tikv_jemallocator::Jemalloc> =
-    memory_accounting::allocator::TrackingAllocator::new(tikv_jemallocator::Jemalloc);
+static ALLOC: resource_accounting::TrackingAllocator<tikv_jemallocator::Jemalloc> =
+    resource_accounting::TrackingAllocator::new(tikv_jemallocator::Jemalloc);
 
 #[cfg(any(not(target_os = "linux"), system_allocator))]
 #[global_allocator]
-static ALLOC: memory_accounting::allocator::TrackingAllocator<std::alloc::System> =
-    memory_accounting::allocator::TrackingAllocator::new(std::alloc::System);
+static ALLOC: resource_accounting::TrackingAllocator<std::alloc::System> =
+    resource_accounting::TrackingAllocator::new(std::alloc::System);
 
 #[tokio::main]
 async fn main() -> Result<(), GenericError> {
     let started = Instant::now();
     let cli: Cli = argh::from_env();
+
+    // Print version and exit early without requiring config.
+    if let Action::Version(v) = &cli.action {
+        handle_version_command(v.json).await;
+        return Ok(());
+    }
 
     // Load our "bootstrap" configuration -- static configuration on disk or from environment variables -- so we can
     // initialize basic subsystems before executing the given subcommand.
@@ -153,6 +159,7 @@ async fn run_inner(
         Action::Debug(cmd) => handle_debug_command(&bootstrap_config, cmd).await,
         Action::Config(_) => handle_config_command(&bootstrap_config).await,
         Action::Dogstatsd(cmd) => handle_dogstatsd_command(&bootstrap_config, cmd).await,
+        Action::Version(v) => handle_version_command(v.json).await,
     }
 
     Ok(None)

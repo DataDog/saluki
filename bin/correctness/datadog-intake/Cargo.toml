@@ -10,6 +10,7 @@ workspace = true
 
 [dependencies]
 axum = { workspace = true, features = ["http1", "json", "tokio", "tracing"] }
+base64 = { workspace = true }
 datadog-protos = { workspace = true }
 protobuf = { workspace = true }
 rmp-serde = { workspace = true }
@@ -19,6 +20,7 @@ serde_json = { workspace = true }
 stele = { workspace = true }
 tokio = { workspace = true, features = [
   "macros",
+  "net",
   "rt",
   "rt-multi-thread",
   "signal",

@@ -8,14 +8,13 @@ use std::{
 };
 
 use async_trait::async_trait;
-use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
-use opentelemetry_semantic_conventions::resource::{CONTAINER_ID, K8S_POD_UID};
+use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
 use saluki_context::{origin::OriginTagCardinality, tags::TagSet};
 use saluki_core::{
     components::{transforms::*, ComponentContext},
     data_model::event::{
-        trace::Trace,
+        trace::{AttributeValue, Trace},
         trace_stats::{ClientStatsPayload, TraceStats},
         Event, EventType,
     },
@@ -29,16 +28,13 @@ use stringtheory::MetaString;
 use tokio::{select, time::interval};
 use tracing::{debug, error};
 
-use crate::common::{
-    datadog::apm::ApmConfig,
-    otlp::util::{extract_container_tags_from_resource_tagset, KEY_DATADOG_CONTAINER_ID},
-};
+use crate::common::{datadog::apm::ApmConfig, otlp::util::extract_container_tags_from_attributes_map};
 
 mod aggregation;
-use self::aggregation::{process_tags_hash, PayloadAggregationKey};
+pub(crate) use self::aggregation::{process_tags_hash, PayloadAggregationKey};
 
 mod span_concentrator;
-use self::span_concentrator::{InfraTags, SpanConcentrator};
+pub(crate) use self::span_concentrator::{InfraTags, SpanConcentrator};
 
 mod statsraw;
 
@@ -165,7 +161,7 @@ impl ApmStats {
         let origin = trace
             .spans()
             .first()
-            .and_then(|s| s.meta().get("_dd.origin"))
+            .and_then(|s| s.attributes.get("_dd.origin").and_then(AttributeValue::as_string))
             .map(|s| s.as_ref())
             .unwrap_or("");
 
@@ -178,15 +174,15 @@ impl ApmStats {
     }
 
     fn build_infra_tags(&self, trace: &Trace, process_tags: &str) -> InfraTags {
-        let resource_tags = trace.resource_tags();
-        let container_id = resolve_container_id(resource_tags);
+        let container_id = trace.payload.container_id.clone();
         let mut container_tags = if container_id.is_empty() {
             TagSet::default()
         } else {
-            extract_container_tags(resource_tags)
+            let mut tags = TagSet::default();
+            extract_container_tags_from_attributes_map(&trace.attributes, &mut tags);
+            tags
         };
 
-        // Query the workload provider for additional container tags.
         if !container_id.is_empty() {
             if let Some(workload_provider) = &self.workload_provider {
                 let entity_id = EntityId::Container(container_id.clone());
@@ -206,39 +202,99 @@ impl ApmStats {
             .find(|s| s.parent_id() == 0)
             .or_else(|| trace.spans().first());
 
-        let span_env = root_span.and_then(|s| s.meta().get("env")).filter(|s| !s.is_empty());
-        let env = span_env.cloned().unwrap_or_else(|| self.agent_env.clone());
+        // env fallback order mirrors get_trace_env (Go agent pkg/trace/traceutil/trace.go:GetEnv):
+        // root span attrs → all span attrs → trace.payload.env (ADP extension) → agent_env.
+        let env = root_span
+            .and_then(|s| {
+                s.attributes
+                    .get("env")
+                    .and_then(AttributeValue::as_string)
+                    .filter(|s| !s.is_empty())
+            })
+            .cloned()
+            .or_else(|| {
+                trace.spans().iter().find_map(|s| {
+                    s.attributes
+                        .get("env")
+                        .and_then(AttributeValue::as_string)
+                        .filter(|s| !s.is_empty())
+                        .cloned()
+                })
+            })
+            .unwrap_or_else(|| {
+                if !trace.payload.env.is_empty() {
+                    trace.payload.env.clone()
+                } else {
+                    self.agent_env.clone()
+                }
+            });
 
         let hostname = root_span
-            .and_then(|s| s.meta().get("_dd.hostname"))
-            .filter(|s| !s.is_empty())
+            .and_then(|s| {
+                s.attributes
+                    .get("_dd.hostname")
+                    .and_then(AttributeValue::as_string)
+                    .filter(|s| !s.is_empty())
+            })
             .cloned()
-            .unwrap_or_else(|| self.agent_hostname.clone());
+            .unwrap_or_else(|| {
+                if !trace.payload.hostname.is_empty() {
+                    trace.payload.hostname.clone()
+                } else {
+                    self.agent_hostname.clone()
+                }
+            });
 
+        // Version resolution mirrors Go agent pkg/trace/version/version.go:GetAppVersionFromTrace:
+        // root span meta["version"] (set by otel_span_to_dd_span with span-over-resource precedence)
+        // takes priority, falling back to the resource-level payload.app_version.
         let version = root_span
-            .and_then(|s| s.meta().get("version"))
+            .and_then(|s| {
+                s.attributes
+                    .get("version")
+                    .and_then(AttributeValue::as_string)
+                    .filter(|s| !s.is_empty())
+            })
             .cloned()
-            .unwrap_or_default();
+            .unwrap_or_else(|| trace.payload.app_version.clone());
 
-        let container_id = root_span
-            .and_then(|s| s.meta().get("_dd.container_id"))
-            .cloned()
-            .unwrap_or_default();
+        let container_id = if !trace.payload.container_id.is_empty() {
+            trace.payload.container_id.clone()
+        } else {
+            root_span
+                .and_then(|s| s.attributes.get("_dd.container_id").and_then(AttributeValue::as_string))
+                .cloned()
+                .unwrap_or_default()
+        };
 
         let git_commit_sha = root_span
-            .and_then(|s| s.meta().get("_dd.git.commit.sha"))
+            .and_then(|s| {
+                s.attributes
+                    .get("_dd.git.commit.sha")
+                    .and_then(AttributeValue::as_string)
+                    .filter(|s| !s.is_empty())
+            })
             .cloned()
             .unwrap_or_default();
 
         let image_tag = root_span
-            .and_then(|s| s.meta().get("_dd.image_tag"))
+            .and_then(|s| {
+                s.attributes
+                    .get("_dd.image_tag")
+                    .and_then(AttributeValue::as_string)
+                    .filter(|s| !s.is_empty())
+            })
             .cloned()
             .unwrap_or_default();
 
-        let lang = root_span
-            .and_then(|s| s.meta().get("language"))
-            .cloned()
-            .unwrap_or_default();
+        let lang = if !trace.payload.language_name.is_empty() {
+            trace.payload.language_name.clone()
+        } else {
+            root_span
+                .and_then(|s| s.attributes.get("language").and_then(AttributeValue::as_string))
+                .cloned()
+                .unwrap_or_default()
+        };
 
         PayloadAggregationKey {
             env,
@@ -421,37 +477,28 @@ fn now_nanos() -> u64 {
         .as_nanos() as u64
 }
 
-/// Resolves container ID from OTLP resource tags.
-fn resolve_container_id(resource_tags: &TagSet) -> MetaString {
-    for key in [KEY_DATADOG_CONTAINER_ID, CONTAINER_ID, K8S_POD_UID] {
-        if let Some(tag) = resource_tags.get_single_tag(key) {
-            if let Some(value) = tag.value() {
-                if !value.is_empty() {
-                    return MetaString::from(value);
-                }
-            }
-        }
-    }
-
-    MetaString::empty()
-}
-
-/// Extracts container tags from OTLP resource tags.
-fn extract_container_tags(resource_tags: &TagSet) -> TagSet {
-    let mut container_tags_set = TagSet::default();
-    extract_container_tags_from_resource_tagset(resource_tags, &mut container_tags_set);
-
-    container_tags_set
-}
-
-/// Extracts process tags from trace.
+/// Extracts process tags from trace, checking both span and trace attributes.
 fn extract_process_tags(trace: &Trace) -> MetaString {
-    if let Some(first_span) = trace.spans().first() {
-        if let Some(process_tags) = first_span.meta().get(TAG_PROCESS_TAGS) {
-            return process_tags.clone();
+    let root_span = trace
+        .spans()
+        .iter()
+        .find(|s| s.parent_id() == 0)
+        .or_else(|| trace.spans().first());
+    if let Some(span) = root_span {
+        if let Some(tags) = span
+            .attributes
+            .get(TAG_PROCESS_TAGS)
+            .and_then(AttributeValue::as_string)
+            .filter(|s| !s.is_empty())
+        {
+            return tags.clone();
         }
     }
-
+    if let Some(AttributeValue::String(tags)) = trace.attributes.get(TAG_PROCESS_TAGS) {
+        if !tags.is_empty() {
+            return tags.clone();
+        }
+    }
     MetaString::empty()
 }
 
@@ -459,9 +506,9 @@ fn extract_process_tags(trace: &Trace) -> MetaString {
 mod tests {
     use proptest::prelude::*;
     use saluki_common::collections::FastHashMap;
-    use saluki_context::tags::TagSet;
+    use saluki_core::data_model::event::trace::{AttributeValue, Span};
+    use saluki_core::data_model::event::trace_stats::ClientGroupedStats;
     use saluki_core::data_model::event::trace_stats::ClientStatsBucket;
-    use saluki_core::data_model::event::{trace::Span, trace_stats::ClientGroupedStats};
 
     use super::aggregation::BUCKET_DURATION_NS;
     use super::span_concentrator::METRIC_PARTIAL_VERSION;
@@ -479,28 +526,30 @@ mod tests {
         resource: &str, error: i32, meta: Option<FastHashMap<MetaString, MetaString>>,
         metrics: Option<FastHashMap<MetaString, f64>>,
     ) -> Span {
-        // Calculate start time so that span ends in the correct bucket
-        // End time = start + duration, and we want end time to be in bucket (aligned_now - offset * bsize)
-        // Use BUCKET_DURATION_NS as the bucket size (matches the concentrator)
         let bucket_start = aligned_now - bucket_offset * BUCKET_DURATION_NS;
         let start = bucket_start - duration;
 
+        let mut attrs: FastHashMap<MetaString, AttributeValue> = FastHashMap::default();
+        if let Some(m) = meta {
+            attrs.extend(m.into_iter().map(|(k, v)| (k, AttributeValue::String(v))));
+        }
+        if let Some(m) = metrics {
+            attrs.extend(m.into_iter().map(|(k, v)| (k, AttributeValue::Float(v))));
+        }
         Span::new(
-            service, "query", resource, "db", 1, span_id, parent_id, start, duration, error,
+            service, "query", resource, "db", span_id, parent_id, start, duration, error,
         )
-        .with_meta(meta)
-        .with_metrics(metrics)
+        .with_attributes(attrs)
     }
 
     /// Creates a simple measured span for basic tests
     fn make_test_span(service: &str, name: &str, resource: &str) -> Span {
-        let mut metrics = FastHashMap::default();
-        metrics.insert(MetaString::from("_dd.measured"), 1.0);
-
-        Span::new(service, name, resource, "web", 1, 1, 0, 1000000000, 100000000, 0).with_metrics(metrics)
+        let mut attrs = FastHashMap::default();
+        attrs.insert(MetaString::from("_dd.measured"), AttributeValue::Float(1.0));
+        Span::new(service, name, resource, "web", 1, 0, 1000000000, 100000000, 0).with_attributes(attrs)
     }
 
-    /// Creates a top-level span (parent_id = 0, has _top_level metric)
+    /// Creates a top-level span (`parent_id` = 0, has `_top_level` metric)
     fn make_top_level_span(
         aligned_now: u64, span_id: u64, duration: u64, bucket_offset: u64, service: &str, resource: &str, error: i32,
         meta: Option<FastHashMap<MetaString, MetaString>>,
@@ -535,7 +584,7 @@ mod tests {
         };
 
         let span = make_test_span("test-service", "test-operation", "test-resource");
-        let trace = Trace::new(vec![span], TagSet::default());
+        let trace = Trace::new(vec![span]);
 
         transform.process_trace(&trace);
 
@@ -558,9 +607,9 @@ mod tests {
         };
 
         // Create a span with 0.5 sample rate (weight = 2.0)
-        let mut metrics = FastHashMap::default();
-        metrics.insert(MetaString::from("_dd.measured"), 1.0);
-        metrics.insert(MetaString::from("_sample_rate"), 0.5);
+        let mut attrs = FastHashMap::default();
+        attrs.insert(MetaString::from("_dd.measured"), AttributeValue::Float(1.0));
+        attrs.insert(MetaString::from("_sample_rate"), AttributeValue::Float(0.5));
 
         let span = Span::new(
             "test-service",
@@ -568,15 +617,14 @@ mod tests {
             "test-resource",
             "web",
             1,
-            1,
             0,
             now,
             100000000,
             0,
         )
-        .with_metrics(metrics);
+        .with_attributes(attrs);
 
-        let trace = Trace::new(vec![span], TagSet::default());
+        let trace = Trace::new(vec![span]);
         transform.process_trace(&trace);
 
         let stats = transform.concentrator.flush(now + BUCKET_DURATION_NS * 2, true);
@@ -598,7 +646,7 @@ mod tests {
 
         // Add a span
         let span = make_top_level_span(aligned_now, 1, 50, 5, "A1", "resource1", 0, None);
-        let trace = Trace::new(vec![span], TagSet::default());
+        let trace = Trace::new(vec![span]);
 
         let payload_key = PayloadAggregationKey {
             env: MetaString::from("test"),
@@ -639,7 +687,7 @@ mod tests {
         metrics.insert(MetaString::from(METRIC_PARTIAL_VERSION), 830604.0);
 
         let span = test_span(aligned_now, 1, 0, 50, 5, "A1", "resource1", 0, None, Some(metrics));
-        let trace = Trace::new(vec![span], TagSet::default());
+        let trace = Trace::new(vec![span]);
 
         let payload_key = PayloadAggregationKey {
             env: MetaString::from("test"),
@@ -811,10 +859,9 @@ mod tests {
         {
             let mut concentrator = SpanConcentrator::new(false, true, &[], now);
 
-            // Create a simple top-level span using the same pattern as make_test_span (which works)
-            let mut metrics = FastHashMap::default();
-            metrics.insert(MetaString::from("_top_level"), 1.0);
-            let span = Span::new("myservice", "query", "GET /users", "web", 1, 1, 0, now, 500, 0).with_metrics(metrics);
+            let mut attrs = FastHashMap::default();
+            attrs.insert(MetaString::from("_top_level"), AttributeValue::Float(1.0));
+            let span = Span::new("myservice", "query", "GET /users", "web", 1, 0, now, 500, 0).with_attributes(attrs);
 
             let payload_key = PayloadAggregationKey {
                 env: MetaString::from("test"),
@@ -828,10 +875,13 @@ mod tests {
 
             // Client span with span.kind=client but no _top_level or _dd.measured
             // Should NOT produce stats when compute_stats_by_span_kind is disabled
-            let mut client_meta = FastHashMap::default();
-            client_meta.insert(MetaString::from("span.kind"), MetaString::from("client"));
-            let client_span = Span::new("myservice", "postgres.query", "SELECT ...", "db", 1, 2, 1, now, 75, 0)
-                .with_meta(client_meta);
+            let mut client_attrs = FastHashMap::default();
+            client_attrs.insert(
+                MetaString::from("span.kind"),
+                AttributeValue::String(MetaString::from("client")),
+            );
+            let client_span = Span::new("myservice", "postgres.query", "SELECT ...", "db", 2, 1, now, 75, 0)
+                .with_attributes(client_attrs);
 
             if let Some(stat_span) = concentrator.new_stat_span_from_span(&client_span) {
                 concentrator.add_span(&stat_span, 1.0, &payload_key, &infra_tags, "");
@@ -854,10 +904,9 @@ mod tests {
         {
             let mut concentrator = SpanConcentrator::new(true, true, &[], now);
 
-            // Create a simple top-level span
-            let mut metrics = FastHashMap::default();
-            metrics.insert(MetaString::from("_top_level"), 1.0);
-            let span = Span::new("myservice", "query", "GET /users", "web", 1, 1, 0, now, 500, 0).with_metrics(metrics);
+            let mut attrs = FastHashMap::default();
+            attrs.insert(MetaString::from("_top_level"), AttributeValue::Float(1.0));
+            let span = Span::new("myservice", "query", "GET /users", "web", 1, 0, now, 500, 0).with_attributes(attrs);
 
             let payload_key = PayloadAggregationKey {
                 env: MetaString::from("test"),
@@ -871,10 +920,13 @@ mod tests {
 
             // Client span with span.kind=client
             // SHOULD produce stats when compute_stats_by_span_kind is enabled
-            let mut client_meta = FastHashMap::default();
-            client_meta.insert(MetaString::from("span.kind"), MetaString::from("client"));
-            let client_span = Span::new("myservice", "postgres.query", "SELECT ...", "db", 1, 2, 1, now, 75, 0)
-                .with_meta(client_meta);
+            let mut client_attrs = FastHashMap::default();
+            client_attrs.insert(
+                MetaString::from("span.kind"),
+                AttributeValue::String(MetaString::from("client")),
+            );
+            let client_span = Span::new("myservice", "postgres.query", "SELECT ...", "db", 2, 1, now, 75, 0)
+                .with_attributes(client_attrs);
 
             if let Some(stat_span) = concentrator.new_stat_span_from_span(&client_span) {
                 concentrator.add_span(&stat_span, 1.0, &payload_key, &infra_tags, "");
@@ -902,16 +954,22 @@ mod tests {
         {
             let mut concentrator = SpanConcentrator::new(true, false, &[], now);
 
-            // Client span with db tags and _dd.measured
-            let mut client_meta = FastHashMap::default();
-            client_meta.insert(MetaString::from("span.kind"), MetaString::from("client"));
-            client_meta.insert(MetaString::from("db.instance"), MetaString::from("i-1234"));
-            client_meta.insert(MetaString::from("db.system"), MetaString::from("postgres"));
-            let mut client_metrics = FastHashMap::default();
-            client_metrics.insert(MetaString::from("_dd.measured"), 1.0);
-            let client_span = Span::new("myservice", "postgres.query", "SELECT ...", "db", 1, 2, 1, now, 75, 0)
-                .with_meta(client_meta)
-                .with_metrics(client_metrics);
+            let mut attrs = FastHashMap::default();
+            attrs.insert(
+                MetaString::from("span.kind"),
+                AttributeValue::String(MetaString::from("client")),
+            );
+            attrs.insert(
+                MetaString::from("db.instance"),
+                AttributeValue::String(MetaString::from("i-1234")),
+            );
+            attrs.insert(
+                MetaString::from("db.system"),
+                AttributeValue::String(MetaString::from("postgres")),
+            );
+            attrs.insert(MetaString::from("_dd.measured"), AttributeValue::Float(1.0));
+            let client_span =
+                Span::new("myservice", "postgres.query", "SELECT ...", "db", 2, 1, now, 75, 0).with_attributes(attrs);
 
             let payload_key = PayloadAggregationKey {
                 env: MetaString::from("test"),
@@ -943,16 +1001,22 @@ mod tests {
             // Note: BASE_PEER_TAGS already includes db.instance and db.system
             let mut concentrator = SpanConcentrator::new(true, true, &[], now);
 
-            // Client span with db tags and _dd.measured
-            let mut client_meta = FastHashMap::default();
-            client_meta.insert(MetaString::from("span.kind"), MetaString::from("client"));
-            client_meta.insert(MetaString::from("db.instance"), MetaString::from("i-1234"));
-            client_meta.insert(MetaString::from("db.system"), MetaString::from("postgres"));
-            let mut client_metrics = FastHashMap::default();
-            client_metrics.insert(MetaString::from("_dd.measured"), 1.0);
-            let client_span = Span::new("myservice", "postgres.query", "SELECT ...", "db", 1, 2, 1, now, 75, 0)
-                .with_meta(client_meta)
-                .with_metrics(client_metrics);
+            let mut attrs = FastHashMap::default();
+            attrs.insert(
+                MetaString::from("span.kind"),
+                AttributeValue::String(MetaString::from("client")),
+            );
+            attrs.insert(
+                MetaString::from("db.instance"),
+                AttributeValue::String(MetaString::from("i-1234")),
+            );
+            attrs.insert(
+                MetaString::from("db.system"),
+                AttributeValue::String(MetaString::from("postgres")),
+            );
+            attrs.insert(MetaString::from("_dd.measured"), AttributeValue::Float(1.0));
+            let client_span =
+                Span::new("myservice", "postgres.query", "SELECT ...", "db", 2, 1, now, 75, 0).with_attributes(attrs);
 
             let payload_key = PayloadAggregationKey {
                 env: MetaString::from("test"),
@@ -1096,27 +1160,33 @@ mod tests {
         // Test with no process tags
         {
             let span = Span::default();
-            let trace = Trace::new(vec![span], TagSet::default());
+            let trace = Trace::new(vec![span]);
             let process_tags = extract_process_tags(&trace);
             assert!(process_tags.is_empty(), "Should be empty when no _dd.tags.process");
         }
 
         // Test with process tags in first span meta
         {
-            let mut meta = FastHashMap::default();
-            meta.insert(MetaString::from(TAG_PROCESS_TAGS), MetaString::from("a:1,b:2,c:3"));
-            let span = Span::default().with_meta(meta);
-            let trace = Trace::new(vec![span], TagSet::default());
+            let mut attrs = FastHashMap::default();
+            attrs.insert(
+                MetaString::from(TAG_PROCESS_TAGS),
+                AttributeValue::String(MetaString::from("a:1,b:2,c:3")),
+            );
+            let span = Span::default().with_attributes(attrs);
+            let trace = Trace::new(vec![span]);
             let process_tags = extract_process_tags(&trace);
             assert_eq!(process_tags, "a:1,b:2,c:3");
         }
 
         // Test with empty process tags
         {
-            let mut meta = FastHashMap::default();
-            meta.insert(MetaString::from(TAG_PROCESS_TAGS), MetaString::from(""));
-            let span = Span::default().with_meta(meta);
-            let trace = Trace::new(vec![span], TagSet::default());
+            let mut attrs = FastHashMap::default();
+            attrs.insert(
+                MetaString::from(TAG_PROCESS_TAGS),
+                AttributeValue::String(MetaString::from("")),
+            );
+            let span = Span::default().with_attributes(attrs);
+            let trace = Trace::new(vec![span]);
             let process_tags = extract_process_tags(&trace);
             assert!(
                 process_tags.is_empty(),
@@ -1126,7 +1196,7 @@ mod tests {
 
         // Test with empty trace
         {
-            let trace = Trace::new(vec![], TagSet::default());
+            let trace = Trace::new(vec![]);
             let process_tags = extract_process_tags(&trace);
             assert!(process_tags.is_empty(), "Should be empty when trace has no spans");
         }
@@ -1363,15 +1433,55 @@ mod tests {
     /// Strategy to generate test inputs for the split function.
     ///
     /// Parameters:
-    /// - num_payloads: 1..=10
-    /// - num_buckets_per_payload: 1..=5
-    /// - num_stats_per_bucket: 0..=500
-    /// - max_entries_per_event: 1..=1000 (never zero)
+    /// - `num_payloads`: 1..=10
+    /// - `num_buckets_per_payload`: 1..=5
+    /// - `num_stats_per_bucket`: 0..=500
+    /// - `max_entries_per_event`: 1..=1000 (never zero)
     fn arb_split_inputs() -> impl Strategy<Value = (Vec<ClientStatsPayload>, usize)> {
         let payloads_strategy = proptest::collection::vec(arb_payload(5, 500), 1..=10);
         let max_entries_strategy = 1..=1000usize;
 
         (payloads_strategy, max_entries_strategy)
+    }
+
+    // Mirrors Go agent behavior: for OTLP traces the version on the root span's meta["version"]
+    // (set with span-over-resource precedence by otel_span_to_dd_span) should win over the
+    // resource-level version carried in payload.app_version.
+    // See: pkg/trace/version/version.go:GetAppVersionFromTrace and pkg/trace/api/otlp.go.
+    #[test]
+    fn test_version_span_beats_resource_for_otlp() {
+        let now = now_nanos();
+        let concentrator = SpanConcentrator::new(true, true, &[], now);
+        let transform = ApmStats {
+            concentrator,
+            flush_interval: DEFAULT_FLUSH_INTERVAL,
+            agent_env: MetaString::default(),
+            agent_hostname: MetaString::default(),
+            workload_provider: None,
+        };
+
+        // Root span carries a span-level version attribute (set by otel_span_to_dd_span with
+        // span-over-resource precedence).
+        let mut attrs = FastHashMap::default();
+        attrs.insert(
+            MetaString::from("version"),
+            AttributeValue::String(MetaString::from("span-v2")),
+        );
+        let root_span = Span::new("svc", "op", "res", "web", 1, 0, now, 1_000_000, 0).with_attributes(attrs);
+
+        let mut trace = Trace::new(vec![root_span]);
+        // Simulate OTLP resource extraction: payload.app_version comes from resource attrs only.
+        trace.payload.app_version = MetaString::from("resource-v1");
+
+        let key = transform.build_payload_key(&trace, "");
+
+        // The Go agent resolves version from root_span.meta["version"] first, which carries
+        // span-over-resource precedence. The span attribute ("span-v2") must win.
+        assert_eq!(
+            key.version.as_ref(),
+            "span-v2",
+            "span-level version must take precedence over resource-level payload.app_version for OTLP traces"
+        );
     }
 
     #[test_strategy::proptest]

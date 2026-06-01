@@ -660,7 +660,7 @@ struct Inner {
 
 /// A generic configuration object.
 ///
-/// This represents the merged configuration derived from [`ConfigurationLoader`] in its raw form.  Values can be
+/// This represents the merged configuration derived from [`ConfigurationLoader`] in its raw form. Values can be
 /// queried by key, and can be extracted either as typed values or in their raw form.
 ///
 /// Keys must be in the form of `a.b.c`, where periods (`.`) as used to indicate a nested value.

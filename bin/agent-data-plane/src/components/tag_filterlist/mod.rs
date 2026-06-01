@@ -13,7 +13,7 @@ use std::{num::NonZeroUsize, time::Duration};
 use async_trait::async_trait;
 use foldhash::fast::RandomState as FoldHashState;
 use hashbrown::{HashMap, HashSet};
-use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
+use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_common::cache::{Cache, CacheBuilder};
 use saluki_config::GenericConfiguration;
 use saluki_context::{tags::Tag, Context, TagSetMutViewState};
@@ -37,9 +37,12 @@ use tracing::{debug, error, warn};
 
 use crate::components::dogstatsd_filterlist::METRIC_TAG_FILTERLIST_CONFIG_KEY;
 
-const CONTEXT_CACHE_CAPACITY: usize = 100_000;
 const CONTEXT_CACHE_TTI: Duration = Duration::from_secs(30);
 const CONTEXT_CACHE_EXPIRATION_INTERVAL: Duration = Duration::from_secs(1);
+
+fn default_context_cache_capacity() -> usize {
+    100_000
+}
 
 use self::telemetry::Telemetry;
 
@@ -86,7 +89,7 @@ pub struct MetricTagFilterEntry {
     pub tags: Vec<String>,
 }
 
-/// Compiled filter table: metric name → (is_exclude, set of tag key names).
+/// Compiled filter table: metric name → (`is_exclude`, set of tag key names).
 pub type CompiledFilters = HashMap<String, (bool, HashSet<String, FoldHashState>), FoldHashState>;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -148,6 +151,21 @@ pub struct TagFilterlistConfiguration {
     #[serde(default, rename = "metric_tag_filterlist")]
     entries: Vec<MetricTagFilterEntry>,
 
+    /// Maximum number of entries in the per-context deduplication cache used by the tag filter.
+    ///
+    /// Each cache entry tracks whether a given metric context has already had its tags filtered,
+    /// avoiding redundant work on repeated submissions of the same metric context.
+    ///
+    /// High-throughput deployments with many unique metric contexts may benefit from increasing this
+    /// value to reduce cache churn.
+    ///
+    /// Defaults to 100,000.
+    #[serde(
+        rename = "aggregator_tag_filter_cache_capacity",
+        default = "default_context_cache_capacity"
+    )]
+    context_cache_capacity: usize,
+
     #[serde(skip)]
     configuration: Option<GenericConfiguration>,
 }
@@ -182,7 +200,8 @@ impl TransformBuilder for TagFilterlistConfiguration {
                 .clone()
                 .expect("configuration must be set via from_configuration"),
             telemetry: Telemetry::new(&metrics_builder),
-            context_cache: build_context_cache(),
+            context_cache: build_context_cache(self.context_cache_capacity),
+            context_cache_capacity: self.context_cache_capacity,
         }))
     }
 }
@@ -193,7 +212,7 @@ impl MemoryBounds for TagFilterlistConfiguration {
 
         builder
             .firm()
-            .with_fixed_amount("context cache", CONTEXT_CACHE_CAPACITY * 64);
+            .with_fixed_amount("context cache", self.context_cache_capacity * 64);
     }
 }
 
@@ -202,12 +221,14 @@ struct TagFilterlist {
     configuration: GenericConfiguration,
     telemetry: Telemetry,
     context_cache: Cache<Context, Option<(Context, usize)>>,
+    context_cache_capacity: usize,
 }
 
-fn build_context_cache() -> Cache<Context, Option<(Context, usize)>> {
+fn build_context_cache(capacity: usize) -> Cache<Context, Option<(Context, usize)>> {
+    let capacity = NonZeroUsize::new(capacity).unwrap_or(NonZeroUsize::MIN);
     CacheBuilder::from_identifier("tag_filterlist/context_cache")
         .expect("identifier cannot be empty")
-        .with_capacity(NonZeroUsize::new(CONTEXT_CACHE_CAPACITY).unwrap())
+        .with_capacity(capacity)
         .with_time_to_idle(Some(CONTEXT_CACHE_TTI))
         .with_expiration_interval(CONTEXT_CACHE_EXPIRATION_INTERVAL)
         .build()
@@ -273,7 +294,7 @@ impl Transform for TagFilterlist {
                 },
                 (_, new_entries) = watcher.changed::<Vec<MetricTagFilterEntry>>() => {
                     self.filters = compile_filters(new_entries.as_deref().unwrap_or(&[]));
-                    self.context_cache = build_context_cache();
+                    self.context_cache = build_context_cache(self.context_cache_capacity);
                     debug!("Updated metric tag filterlist.");
                 },
             }

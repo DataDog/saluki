@@ -1,0 +1,47 @@
+seed: [3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 131, 137]
+target: "udp://$GROUP:8125"
+aggregation_bucket_width_secs: 10
+volume: 10
+# Send a short burst while comparing forwarded DogStatsD messages, so differing UDP packet
+# boundaries between implementations do not make this case flaky.
+send_delay_us: 500
+corpus:
+  size: 10
+  payload:
+    dogstatsd:
+      contexts:
+        constant: 10
+      name_length:
+        inclusive:
+          min: 1
+          max: 8
+      tag_length:
+        inclusive:
+          min: 3
+          max: 6
+      tags_per_msg:
+        inclusive:
+          min: 1
+          max: 2
+      value:
+        float_probability: 0.5
+        range:
+          inclusive:
+            min: -100
+            max: 100
+      multivalue_count:
+        inclusive:
+          min: 1
+          max: 2
+      multivalue_pack_probability: 0
+      kind_weights:
+        metric: 100
+        event: 0
+        service_check: 0
+      metric_weights:
+        count: 1
+        gauge: 1
+        timer: 0
+        distribution: 0
+        set: 0
+        histogram: 0

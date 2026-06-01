@@ -1,0 +1,56 @@
+# Automatically fixes non-conforming PR titles opened by bots so they satisfy
+# the Semantic PR Title Check (check-pr-title.yml, requireScope: true).
+name: "Fix Bot PR Titles"
+
+on:
+  pull_request_target:
+    types: [opened, edited]
+
+jobs:
+  fix-title:
+    # Only run for bot-authored PRs; avoids clobbering human-edited titles.
+    if: github.event.pull_request.user.type == 'Bot'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      id-token: write
+    steps:
+      - name: Get access token from dd-octo-sts
+        uses: DataDog/dd-octo-sts-action@96a25462dbcb10ebf0bfd6e2ccc917d2ab235b9a # v1.0.4
+        id: octo-sts
+        with:
+          scope: DataDog/saluki
+          policy: self.fix-bot-pr-title
+
+      - name: Fix PR title if needed
+        env:
+          GH_TOKEN: ${{ steps.octo-sts.outputs.token }}
+          BRANCH: ${{ github.event.pull_request.head.ref }}
+          CURRENT_TITLE: ${{ github.event.pull_request.title }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          # Skip if already matches conventional commits format: type(scope): ...
+          title_re='^[a-z]+\([a-z][a-z0-9 _/-]*\): '
+          if [[ "$CURRENT_TITLE" =~ $title_re ]]; then
+            echo "Title already in conventional commits format, skipping"
+            exit 0
+          fi
+
+          NEW_TITLE=""
+
+          if [[ "$BRANCH" =~ ^engraver-auto-bump-feature- ]] || \
+             [[ "$BRANCH" =~ ^engraver-auto-workspaces-devcontainer-update- ]]; then
+            # Devcontainer feature/image bump: plain title, add chore(dev): prefix.
+            NEW_TITLE="chore(dev): ${CURRENT_TITLE}"
+          elif [[ "$BRANCH" =~ ^engraver-auto-version-upgrade- ]]; then
+            # Version upgrade: strip old all-caps prefix, add chore(deps): prefix.
+            # Handles: "DEPENDENCY UPGRADE: ...", "VULN UPGRADE: ...", etc.
+            STRIPPED=$(echo "$CURRENT_TITLE" | sed 's/^[A-Z][A-Z0-9 _/-]*:[[:space:]]*//')
+            NEW_TITLE="chore(deps): ${STRIPPED}"
+          else
+            echo "Branch pattern '${BRANCH}' not recognised, skipping"
+            exit 0
+          fi
+
+          echo "Updating title to: ${NEW_TITLE}"
+          gh pr edit "${PR_NUMBER}" --repo DataDog/saluki --title "${NEW_TITLE}"

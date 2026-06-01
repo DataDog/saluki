@@ -1,6 +1,7 @@
 //! Annotations for OTLP source, decoder, and relay configuration keys.
 use crate::config_registry::{
-    generated::schema, structs, SalukiAnnotation, Schema, SchemaEntry, SupportLevel, ValueType,
+    generated::schema, structs, Pipeline, PipelineAffinity, SalukiAnnotation, Schema, SchemaEntry, SupportLevel,
+    ValueType,
 };
 
 static OTLP_CONFIG_TRACES_ENABLE_TOP_LEVEL_BY_SPAN_KIND_SCHEMA: SchemaEntry = SchemaEntry {
@@ -79,6 +80,7 @@ crate::declare_annotations! {
         used_by: &[structs::OTLP_RELAY_CONFIGURATION, structs::OTLP_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
     };
 
     /// `otlp_config.receiver.protocols.grpc.max_recv_msg_size_mib`
@@ -91,6 +93,7 @@ crate::declare_annotations! {
         used_by: &[structs::OTLP_RELAY_CONFIGURATION, structs::OTLP_CONFIGURATION],
         value_type_override: Some(ValueType::Integer),
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
     };
 
     /// `otlp_config.receiver.protocols.grpc.transport`
@@ -102,6 +105,7 @@ crate::declare_annotations! {
         used_by: &[structs::OTLP_RELAY_CONFIGURATION, structs::OTLP_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
     };
 
     /// `otlp_config.receiver.protocols.http.endpoint`
@@ -113,6 +117,7 @@ crate::declare_annotations! {
         used_by: &[structs::OTLP_RELAY_CONFIGURATION, structs::OTLP_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
     };
 
     /// `otlp_config.receiver.protocols.http.transport`—ADP-specific, not in Agent schema.
@@ -124,6 +129,7 @@ crate::declare_annotations! {
         used_by: &[structs::OTLP_RELAY_CONFIGURATION, structs::OTLP_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
     };
 
     // ── Traces ────────────────────────────────────────────────────────────────
@@ -137,6 +143,7 @@ crate::declare_annotations! {
         used_by: &[structs::OTLP_DECODER_CONFIGURATION, structs::OTLP_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Traces]),
     };
 
     /// `otlp_config.traces.ignore_missing_datadog_fields`—ADP-specific, default false.
@@ -148,6 +155,7 @@ crate::declare_annotations! {
         used_by: &[structs::OTLP_DECODER_CONFIGURATION, structs::OTLP_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Traces]),
     };
 
     /// `otlp_config.traces.enable_otlp_compute_top_level_by_span_kind`.
@@ -159,6 +167,7 @@ crate::declare_annotations! {
         used_by: &[structs::OTLP_DECODER_CONFIGURATION, structs::OTLP_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Traces]),
     };
 
     /// `otlp_config.traces.internal_port`—schema says Float but field is u16.
@@ -170,6 +179,7 @@ crate::declare_annotations! {
         used_by: &[structs::OTLP_DECODER_CONFIGURATION, structs::OTLP_CONFIGURATION],
         value_type_override: Some(ValueType::Integer),
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Traces]),
     };
 
     /// `otlp_config.traces.probabilistic_sampler.sampling_percentage`—default 100.0.
@@ -181,6 +191,7 @@ crate::declare_annotations! {
         used_by: &[structs::OTLP_DECODER_CONFIGURATION, structs::OTLP_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Traces]),
     };
 
     /// `otlp_config.traces.string_interner_size`—ADP-specific; default 512 KiB.
@@ -192,11 +203,12 @@ crate::declare_annotations! {
         used_by: &[structs::OTLP_DECODER_CONFIGURATION, structs::OTLP_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Traces]),
     };
 
     // ── Logs / Metrics ────────────────────────────────────────────────────────
 
-    /// `otlp_config.logs.enabled`—schema default is false but saluki defaults to true; test_json injects false explicitly.
+    /// `otlp_config.logs.enabled`—schema default is false but saluki defaults to true; `test_json` injects false explicitly.
     OTLP_CONFIG_LOGS_ENABLED = SalukiAnnotation {
         schema: &schema::OTLP_CONFIG_LOGS_ENABLED,
         support_level: SupportLevel::Full,
@@ -205,6 +217,7 @@ crate::declare_annotations! {
         used_by: &[structs::OTLP_CONFIGURATION],
         value_type_override: None,
         test_json: Some("false"),
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
     };
 
     /// `otlp_config.metrics.enabled`.
@@ -216,6 +229,7 @@ crate::declare_annotations! {
         used_by: &[structs::OTLP_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
     };
 
     // ── OtlpConfiguration source-specific ─────────────────────────────────────
@@ -229,6 +243,7 @@ crate::declare_annotations! {
         used_by: &[structs::OTLP_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
     };
 
     /// `otlp_cached_contexts_limit`—ADP-specific, default 500,000.
@@ -240,6 +255,7 @@ crate::declare_annotations! {
         used_by: &[structs::OTLP_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
     };
 
     /// `otlp_cached_tagsets_limit`—ADP-specific, default 500,000.
@@ -251,6 +267,7 @@ crate::declare_annotations! {
         used_by: &[structs::OTLP_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
     };
 
     /// `otlp_string_interner_size`—ADP-specific; default 2 MiB.
@@ -262,5 +279,6 @@ crate::declare_annotations! {
         used_by: &[structs::OTLP_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
     };
 }

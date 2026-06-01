@@ -75,7 +75,7 @@ pub enum RuntimeMode {
 
     /// Run on a dedicated runtime with the given configuration.
     ///
-    /// The supervisor spawns its own OS thread(s) and Tokio runtime, providing runtime isolation from the parent
+    /// The supervisor spawns its own OS threads and Tokio runtime, providing runtime isolation from the parent
     /// supervisor.
     Dedicated(RuntimeConfiguration),
 }
