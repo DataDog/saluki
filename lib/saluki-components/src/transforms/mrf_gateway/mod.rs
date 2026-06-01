@@ -42,11 +42,11 @@ impl MrfMetricsGatewayConfiguration {
 /// Routing and filtering state for the MRF metrics gateway.
 #[derive(Debug)]
 enum GatewayMode {
-    /// MRF is disabled or improperly configured — drop all events.
+    /// MRF is disabled or improperly configured; drop all events.
     Inactive,
-    /// MRF is active and no allowlist is configured — forward all events.
+    /// MRF is active and no allowlist is configured; forward all events.
     ForwardAll,
-    /// MRF is active and an allowlist is configured — forward only matching events.
+    /// MRF is active and an allowlist is configured; forward only matching events.
     FilteredForward { allowlist: HashSet<String> },
 }
 
