@@ -8,7 +8,7 @@ use facet::Facet;
 use http::{uri::PathAndQuery, HeaderName, HeaderValue, Method, Uri};
 use piecemeal::{ScratchBuffer, ScratchWriter};
 use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
-use saluki_common::collections::FastHashMap;
+use saluki_common::collections::{FastHashMap, FastIndexSet};
 use saluki_common::strings::StringBuilder;
 use saluki_common::task::HandleExt as _;
 use saluki_config::GenericConfiguration;
@@ -68,8 +68,7 @@ const TAG_ETS_STANDALONE_ERROR_VALUE: &str = "true";
 /// Index 0 is always the empty string. All other strings are assigned indices in insertion order.
 #[derive(Debug)]
 struct StringTable {
-    strings: Vec<MetaString>,
-    indices: FastHashMap<MetaString, u32>,
+    indices: FastIndexSet<MetaString>,
 }
 
 impl Default for StringTable {
@@ -81,29 +80,21 @@ impl Default for StringTable {
 impl StringTable {
     fn new() -> Self {
         let mut t = Self {
-            strings: Vec::new(),
-            indices: FastHashMap::default(),
+            indices: FastIndexSet::default(),
         };
         t.intern("");
         t
     }
 
     fn clear(&mut self) {
-        self.strings.clear();
         self.indices.clear();
         self.intern("");
     }
 
     /// Interns `s`, returning its index. If `s` was already interned, returns the existing index.
     fn intern(&mut self, s: &str) -> u32 {
-        if let Some(&idx) = self.indices.get(s) {
-            return idx;
-        }
-        let idx = self.strings.len() as u32;
-        let ms = MetaString::from(s);
-        self.strings.push(ms.clone());
-        self.indices.insert(ms, idx);
-        idx
+        let (idx, _) = self.indices.insert_full(MetaString::from(s));
+        idx as u32
     }
 }
 
@@ -731,7 +722,7 @@ impl TraceEndpointEncoder {
             // Protobuf allows fields in any order; decoders that do a full parse before
             // resolving refs handle strings-after-refs correctly.
             tp.strings(|sb| {
-                for s in &self.string_table.strings {
+                for s in self.string_table.indices.iter() {
                     sb.add(s.as_ref())?;
                 }
                 Ok(())

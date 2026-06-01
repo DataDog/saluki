@@ -29,3 +29,6 @@ pub type PrehashedHashSet<T> = std::collections::HashSet<T, NoopU64BuildHasher>;
 /// This is only suitable when using `u64` for the key type, or another type which only wraps over a `u64` value. See
 /// [`NoopU64Hasher`][crate::hash::NoopU64Hasher] for more details.
 pub type PrehashedHashMap<K, V> = std::collections::HashMap<K, V, NoopU64BuildHasher>;
+
+/// A hash set with stable insertion order based on `indexset` ([`IndexSet`][indexmap::IndexSet]) using [`FastHasher`][crate::hash::FastHasher].
+pub type FastIndexSet<K> = indexmap::IndexSet<K, FastBuildHasher>;
