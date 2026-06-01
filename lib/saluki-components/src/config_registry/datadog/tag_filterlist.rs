@@ -1,5 +1,5 @@
 //! Annotations for metric tag filterlist transform configuration keys.
-use crate::config_registry::{generated::schema, structs, Pipeline, PipelineAffinity, SalukiAnnotation, SupportLevel};
+use crate::config_registry::{generated::schema, structs, Pipeline, PipelineAffinity, SalukiAnnotation, SupportLevel, ValueType};
 
 crate::declare_annotations! {
     /// `aggregator_tag_filter_cache_capacity`—maximum entries in the per-context deduplication cache.
@@ -9,7 +9,7 @@ crate::declare_annotations! {
         additional_yaml_paths: &[],
         env_var_override: None,
         used_by: &[structs::TAG_FILTERLIST_CONFIGURATION],
-        value_type_override: None,
+        value_type_override: Some(ValueType::Integer),
         test_json: None,
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
