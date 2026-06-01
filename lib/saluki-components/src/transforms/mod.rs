@@ -3,9 +3,6 @@
 mod aggregate;
 pub use self::aggregate::AggregateConfiguration;
 
-mod allowlist_filter;
-pub use self::allowlist_filter::AllowlistFilterConfiguration;
-
 mod chained;
 pub use self::chained::ChainedConfiguration;
 
