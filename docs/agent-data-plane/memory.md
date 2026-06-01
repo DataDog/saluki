@@ -8,7 +8,7 @@ explicit, static memory accounting and a process-level limit.
 
 | Config Key              | Description                                              |
 | ----------------------- | -------------------------------------------------------- |
-| `memory_limit`          | Process memory limit (bytes, or SI string e.g. `512MB`) |
+| `memory_limit`          | Process memory limit (bytes, or SI string, for example `512MB`) |
 | `memory_slop_factor`    | Fraction of `memory_limit` held back as headroom         |
 | `memory_mode`           | Bounds validation and global limiter behavior            |
 | `enable_global_limiter` | Toggle dynamic RSS-based backpressure (default: `true`)  |
@@ -24,7 +24,7 @@ explicit, static memory accounting and a process-level limit.
 ### `memory_slop_factor`
 
 `memory_slop_factor` is applied as a reduction to `memory_limit` before bounds validation.
-A factor of `0.25` withholds 25 % of the limit — for example, a 100 MB limit becomes an
+A factor of `0.25` withholds 25 % of the limit. For example, a 100 MB limit becomes an
 effective 75 MB budget. This accounts for allocations that ADP's static accounting doesn't
 track.
 
@@ -35,8 +35,9 @@ ADP enforces memory bounds through three complementary mechanisms:
 - **Static bounds**: components declare their memory footprint at startup via `MemoryBounds`.
   ADP validates that declared bounds fit within the effective limit (`memory_limit` ×
   (1 − `memory_slop_factor`)). Under `strict` mode, ADP refuses to start if bounds are
-  exceeded, preventing over-commitment before any traffic arrives. This covers interners
-  (context strings, tag strings, OTLP strings), aggregation state, and other bounded caches.
+  exceeded, preventing over-commitment before any traffic arrives. This covers string
+  interning caches (context strings, tag strings, OTLP strings), aggregation state, and
+  other bounded allocations.
 - **Dynamic limiting**: a `MemoryLimiter` polls the process RSS every 250 ms. When usage
   exceeds 95 % of the effective limit it applies proportional async backpressure (1–25 ms)
   to ingestion tasks. Disable with `enable_global_limiter: false`.
