@@ -537,6 +537,7 @@
   "compression_level",
   "conf_path",
   "confd_path",
+  "config_id",
   "config_providers",
   "config_providers.ca_file",
   "config_providers.ca_path",
