@@ -560,26 +560,26 @@ fn add_mrf_metrics_pipeline_to_blueprint(
     let mrf_config = MrfConfiguration::from_configuration(config)
         .error_context("Failed to configure Multi-Region Failover metrics pipeline.")?;
 
-    let mrf_gateway_config = MrfMetricsGatewayConfiguration::new(mrf_config.clone());
+    let Some((mrf_dd_url, mrf_api_key)) = mrf_config.metrics_endpoint_override() else {
+        if mrf_config.is_enabled() {
+            warn!(
+                "Multi-Region Failover is enabled, but multi_region_failover.api_key and one of \
+                 multi_region_failover.dd_url or multi_region_failover.site are required for metrics forwarding. The \
+                 MRF metrics branch will not be wired, and primary forwarding will continue. Restart ADP after \
+                 configuring the static MRF endpoint settings."
+            );
+        }
+
+        return Ok(());
+    };
+
+    let mrf_gateway_config = MrfMetricsGatewayConfiguration::new(mrf_config.clone(), config.clone());
     let mrf_metrics_config = DatadogMetricsConfiguration::from_configuration(config)
         .error_context("Failed to configure Multi-Region Failover Datadog Metrics encoder.")?;
 
-    let mrf_forwarder_base = DatadogConfiguration::from_configuration(config)
+    let mrf_forwarder_config = DatadogConfiguration::from_configuration(config)
+        .map(|config| config.with_endpoint_override(mrf_dd_url, mrf_api_key))
         .error_context("Failed to configure Multi-Region Failover Datadog forwarder.")?;
-    let mrf_forwarder_config = if mrf_config.is_metrics_active() {
-        match (mrf_config.metrics_endpoint_url(), mrf_config.api_key()) {
-            (Some(dd_url), Some(api_key)) => mrf_forwarder_base.with_endpoint_override(dd_url, api_key.to_string()),
-            _ => {
-                warn!(
-                    "Multi-Region Failover metrics forwarding is enabled, but endpoint or API key configuration is \
-                     missing. The MRF metrics gateway will drop all events."
-                );
-                mrf_forwarder_base
-            }
-        }
-    } else {
-        mrf_forwarder_base
-    };
 
     blueprint
         .add_transform("mrf_metrics_gateway", mrf_gateway_config)?
