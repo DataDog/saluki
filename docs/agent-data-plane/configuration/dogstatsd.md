@@ -64,20 +64,9 @@ approaches its memory limit. They work by manipulating Go's garbage collector
 heuristics, and blocking goroutines to slow packet ingestion. None of these mechanisms have
 an equivalent in Rust, and ADP does not use a Go runtime.
 
-ADP takes a different approach to the same problem:
-
-- **Static bounds**: components declare their memory footprint at startup via `MemoryBounds`.
-  ADP refuses to start if declared bounds exceed the configured `memory_limit`, preventing
-  over-commitment before any traffic arrives.
-- **Dynamic limiting**: a `MemoryLimiter` polls the process RSS every 250 ms. When usage
-  exceeds 95 % of the effective limit it applies proportional async backpressure (1–25 ms)
-  to ingestion tasks.
-- **Structural backpressure**: bounded channels between components provide back-pressure
-  independently of memory monitoring.
-
-To set a process memory limit in ADP, use `memory_limit` (bytes). The `memory_slop_factor`
-setting reserves a headroom fraction to account for allocations not tracked by ADP's internal
-accounting. All 11 `dogstatsd_mem_based_rate_limiter.*` keys are ignored by ADP.
+ADP takes a different approach to the same problem using explicit static memory accounting and a
+process-level RSS limit. All 11 `dogstatsd_mem_based_rate_limiter.*` keys are ignored. See
+[Memory Management](../memory.md) for details.
 
 ## Behavioral Differences
 
