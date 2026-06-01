@@ -11,6 +11,7 @@ pub mod get_typed;
 pub mod mrf;
 pub mod otlp;
 pub mod proxy;
+pub mod tag_filterlist;
 pub mod trace_obfuscation;
 pub(super) mod unsupported;
 
@@ -35,6 +36,7 @@ pub(crate) static SUPPORTED_ANNOTATIONS: LazyLock<Vec<&'static SalukiAnnotation>
     v.extend_from_slice(encoders::ALL);
     v.extend_from_slice(otlp::ALL);
     v.extend_from_slice(proxy::ALL);
+    v.extend_from_slice(tag_filterlist::ALL);
     v.extend_from_slice(trace_obfuscation::ALL);
     v
 });
@@ -62,7 +64,7 @@ mod registry_tests {
     use std::collections::HashSet;
 
     use super::*;
-    use crate::config_registry::{Schema, SupportLevel, ALL_SCHEMA_ENTRIES, IGNORED_ENTRIES};
+    use crate::config_registry::{PipelineAffinity, Schema, SupportLevel, ALL_SCHEMA_ENTRIES, IGNORED_ENTRIES};
 
     fn check_for_duplicates(it: impl Iterator<Item = impl AsRef<str>>) -> Result<(), String> {
         let mut seen = std::collections::HashSet::new();
@@ -78,6 +80,21 @@ mod registry_tests {
             Ok(())
         } else {
             Err(format!("\n{}", duplicates.join("\n")))
+        }
+    }
+
+    #[test]
+    fn pipelines_affinity_slice_is_non_empty() {
+        for annotation in ALL_ANNOTATIONS.iter() {
+            if let PipelineAffinity::Pipelines(ps) = annotation.pipeline_affinity {
+                assert!(
+                    !ps.is_empty(),
+                    "annotation '{}' has PipelineAffinity::Pipelines(&[]) - \
+                     At least one affected Pipeline is required. If all pipelines are affected, \
+                     use Pipeline::CrossCutting.",
+                    annotation.yaml_path(),
+                );
+            }
         }
     }
 

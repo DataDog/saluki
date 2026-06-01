@@ -14,17 +14,17 @@ pub mod env;
 
 pub mod logging;
 
-mod observability;
-pub use self::observability::create_observability_supervisor;
-
 pub mod remote_agent;
 use self::remote_agent::RemoteAgentBootstrap;
 
-/// Creates the root internal supervisor containing control plane and observability subsystems.
+mod telemetry;
+
+/// Creates the root internal supervisor containing control plane and environment subsystems.
 ///
 /// The internal supervisor manages:
-/// - **Control plane**: Health registry, unprivileged and privileged APIs, remote agent registration
-/// - **Observability**: Internal telemetry topology (Prometheus metrics endpoint)
+/// - **Control plane**: Health registry, unprivileged and privileged APIs (including the
+///   `/metrics` and `/compat/metrics` telemetry routes), remote agent registration, and the rest
+///   of ADP's internal HTTP/gRPC surface.
 ///
 /// Each subsystem runs on its own dedicated single-threaded runtime for isolation.
 ///
@@ -54,11 +54,6 @@ pub async fn create_internal_supervisor(
         )
         .await?,
     );
-
-    // Add observability supervisor if telemetry is enabled (dedicated single-threaded runtime)
-    if let Some(observability_sup) = create_observability_supervisor(dp_config, component_registry, health_registry)? {
-        root.add_worker(observability_sup);
-    }
 
     Ok(root)
 }

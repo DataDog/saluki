@@ -1,5 +1,5 @@
 //! Annotations for proxy configuration keys.
-use crate::config_registry::{generated::schema, structs, SalukiAnnotation, SupportLevel};
+use crate::config_registry::{generated::schema, structs, PipelineAffinity, SalukiAnnotation, SupportLevel};
 
 crate::declare_annotations! {
     /// `proxy.http` → `ProxyConfiguration::http_server`
@@ -11,6 +11,8 @@ crate::declare_annotations! {
         used_by: &[structs::FORWARDER_CONFIGURATION, structs::PROXY_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        // Proxy configuration can affect all networking.
+        pipeline_affinity: PipelineAffinity::CrossCutting,
     };
 
     /// `proxy.https` → `ProxyConfiguration::https_server`
@@ -22,6 +24,8 @@ crate::declare_annotations! {
         used_by: &[structs::FORWARDER_CONFIGURATION, structs::PROXY_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        // Proxy configuration can affect all networking.
+        pipeline_affinity: PipelineAffinity::CrossCutting,
     };
 
     /// `proxy.no_proxy` → `ProxyConfiguration::no_proxy`
@@ -33,6 +37,8 @@ crate::declare_annotations! {
         used_by: &[structs::FORWARDER_CONFIGURATION, structs::PROXY_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        // Proxy configuration can affect all networking.
+        pipeline_affinity: PipelineAffinity::CrossCutting,
     };
 
     /// `no_proxy_nonexact_match` → `ProxyConfiguration::no_proxy_nonexact_match`
@@ -44,6 +50,8 @@ crate::declare_annotations! {
         used_by: &[structs::FORWARDER_CONFIGURATION, structs::PROXY_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        // Proxy configuration can affect all networking.
+        pipeline_affinity: PipelineAffinity::CrossCutting,
     };
 
     /// `use_proxy_for_cloud_metadata` → `ProxyConfiguration::use_proxy_for_cloud_metadata`
@@ -55,5 +63,7 @@ crate::declare_annotations! {
         used_by: &[structs::FORWARDER_CONFIGURATION, structs::PROXY_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        // Proxy configuration can affect all networking.
+        pipeline_affinity: PipelineAffinity::CrossCutting,
     };
 }

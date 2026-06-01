@@ -11,8 +11,6 @@ pub struct DataPlaneConfiguration {
     remote_agent_enabled: bool,
     api_listen_address: ListenAddress,
     secure_api_listen_address: ListenAddress,
-    telemetry_enabled: bool,
-    telemetry_listen_addr: ListenAddress,
     checks: DataPlaneChecksConfiguration,
     dogstatsd: DataPlaneDogStatsDConfiguration,
     otlp: DataPlaneOtlpConfiguration,
@@ -45,10 +43,6 @@ impl DataPlaneConfiguration {
             secure_api_listen_address: config
                 .try_get_typed("data_plane.secure_api_listen_address")?
                 .unwrap_or_else(|| ListenAddress::any_tcp(5101)),
-            telemetry_enabled: config.try_get_typed("data_plane.telemetry_enabled")?.unwrap_or(true),
-            telemetry_listen_addr: config
-                .try_get_typed("data_plane.telemetry_listen_addr")?
-                .unwrap_or_else(|| ListenAddress::any_tcp(5102)),
             checks: DataPlaneChecksConfiguration::from_configuration(config)?,
             dogstatsd: DataPlaneDogStatsDConfiguration::from_configuration(config)?,
             otlp: DataPlaneOtlpConfiguration::from_configuration(config)?,
@@ -87,16 +81,6 @@ impl DataPlaneConfiguration {
     /// This is also referred to as the "privileged" API.
     pub const fn secure_api_listen_address(&self) -> &ListenAddress {
         &self.secure_api_listen_address
-    }
-
-    /// Returns `true` if telemetry is enabled.
-    pub const fn telemetry_enabled(&self) -> bool {
-        self.telemetry_enabled
-    }
-
-    /// Returns a reference to the telemetry listen address.
-    pub const fn telemetry_listen_addr(&self) -> &ListenAddress {
-        &self.telemetry_listen_addr
     }
 
     /// Returns a reference to the Checks-specific data plane configuration.

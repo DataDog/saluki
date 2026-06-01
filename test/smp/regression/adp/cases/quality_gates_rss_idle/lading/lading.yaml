@@ -3,5 +3,5 @@ blackhole:
     binding_addr: 127.0.0.1:9091
 target_metrics:
 - prometheus:
-    uri: http://127.0.0.1:5102/scrape
+    uri: http://127.0.0.1:5100/metrics
 generator: []

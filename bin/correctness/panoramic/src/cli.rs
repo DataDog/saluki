@@ -30,6 +30,13 @@ pub struct RunCommand {
     #[argh(option, short = 't')]
     pub tests: Option<String>,
 
+    /// integration-test runtime to scope discovery to (for example, `docker` or `mac`).
+    /// Only integration tests whose `runtimes:` list contains this value are eligible to run.
+    /// Defaults to `mac` on macOS hosts and `docker` everywhere else. Correctness tests
+    /// are unaffected by this flag.
+    #[argh(option)]
+    pub runtime: Option<String>,
+
     /// number of tests to run in parallel
     #[argh(option, short = 'p', default = "4")]
     pub parallelism: usize,
@@ -99,6 +106,11 @@ pub struct ListCommand {
     /// path to a test cases directory (can be specified multiple times)
     #[argh(option, short = 'd')]
     pub test_dirs: Vec<PathBuf>,
+
+    /// integration-test runtime to scope discovery to. Same semantics as on `run`: defaults to
+    /// `mac` on macOS, `docker` everywhere else. Correctness tests are unaffected.
+    #[argh(option)]
+    pub runtime: Option<String>,
 
     /// output the discovered tests as json along with their image dependencies. a `ci` script depends on this for dynamic
     /// pipeline creation.

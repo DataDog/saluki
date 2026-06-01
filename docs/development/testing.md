@@ -30,7 +30,7 @@ used to assert correctness.
 **Terminology Note:** Correctness tests ***are integration tests*** in the sense that they run the entire system.
 However, in our repository, *integration tests* refer to a specific set of smoke tests [below](#integration-tests-panoramic).
 
-Correctness test cases are specified by YAML configuration files found in `test/correctness`.
+Correctness test cases are specified by YAML configuration files found in `test/correctness/cases`.
 
 ### Binaries and program flow
 
@@ -43,7 +43,7 @@ All binaries live under `bin/correctness/`:
 | **datadog-intake** | Mock Datadog API: receives test output                                                   |
 | **airlock**        | Library for running containers in isolated groups.                                       |
 
-Test case configs live in `test/correctness/` (for example, `test/correctness/dsd-plain/config.yaml`).
+Test case configs live in `test/correctness/cases/` (for example, `test/correctness/cases/dsd-plain/config.yaml`).
 
 ### Program flow
 

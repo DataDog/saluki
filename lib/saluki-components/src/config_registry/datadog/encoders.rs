@@ -1,6 +1,7 @@
 //! Annotations for shared Datadog encoder configuration keys.
 use crate::config_registry::{
-    generated::schema, structs, SalukiAnnotation, Schema, SchemaEntry, SupportLevel, ValueType,
+    generated::schema, structs, Pipeline, PipelineAffinity, SalukiAnnotation, Schema, SchemaEntry, SupportLevel,
+    ValueType,
 };
 
 static FLUSH_TIMEOUT_SECS_SCHEMA: SchemaEntry = SchemaEntry {
@@ -35,6 +36,7 @@ crate::declare_annotations! {
         ],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::CrossCutting,
     };
 
     /// `serializer_zstd_compressor_level`—zstd compression level for encoder request payloads.
@@ -53,6 +55,7 @@ crate::declare_annotations! {
         ],
         value_type_override: Some(ValueType::Integer),
         test_json: None,
+        pipeline_affinity: PipelineAffinity::CrossCutting,
     };
 
     /// `flush_timeout_secs`—how long to wait before force-flushing an in-flight payload. ADP-specific.
@@ -68,6 +71,7 @@ crate::declare_annotations! {
         ],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Checks, Pipeline::Traces, Pipeline::DogStatsD]),
     };
 
     /// `serializer_max_metrics_per_payload`—max metrics per encoded request payload. ADP-specific.
@@ -79,6 +83,23 @@ crate::declare_annotations! {
         used_by: &[structs::DATADOG_METRICS_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Checks, Pipeline::DogStatsD]),
+    };
+
+    /// `log_payloads`—debug-log decoded metric, event, and service check payload contents before encoding.
+    LOG_PAYLOADS = SalukiAnnotation {
+        schema: &schema::LOG_PAYLOADS,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[
+            structs::DATADOG_EVENTS_CONFIGURATION,
+            structs::DATADOG_METRICS_CONFIGURATION,
+            structs::DATADOG_SERVICE_CHECKS_CONFIGURATION,
+        ],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Checks, Pipeline::DogStatsD, Pipeline::Traces]),
     };
 
     /// `serializer_max_payload_size`—max compressed generic payload size.
@@ -94,6 +115,7 @@ crate::declare_annotations! {
         ],
         value_type_override: Some(ValueType::Integer),
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Checks, Pipeline::DogStatsD]),
     };
 
     /// `serializer_max_uncompressed_payload_size`—max uncompressed generic payload size.
@@ -109,6 +131,7 @@ crate::declare_annotations! {
         ],
         value_type_override: Some(ValueType::Integer),
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Checks, Pipeline::DogStatsD]),
     };
 
     /// `serializer_max_series_payload_size`—max compressed V2 series payload size.
@@ -120,6 +143,7 @@ crate::declare_annotations! {
         used_by: &[structs::DATADOG_METRICS_CONFIGURATION],
         value_type_override: Some(ValueType::Integer),
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Checks, Pipeline::DogStatsD]),
     };
 
     /// `serializer_max_series_uncompressed_payload_size`—max uncompressed V2 series payload size.
@@ -131,6 +155,7 @@ crate::declare_annotations! {
         used_by: &[structs::DATADOG_METRICS_CONFIGURATION],
         value_type_override: Some(ValueType::Integer),
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Checks, Pipeline::DogStatsD]),
     };
 
     /// `use_v2_api.series`—when `false`, send series metrics to the legacy V1 JSON intake at `/api/v1/series`.
@@ -142,6 +167,7 @@ crate::declare_annotations! {
         used_by: &[structs::DATADOG_METRICS_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Checks, Pipeline::DogStatsD]),
     };
 
     /// `env`—the environment name attached to all emitted telemetry.
@@ -156,5 +182,6 @@ crate::declare_annotations! {
         ],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Traces]),
     };
 }

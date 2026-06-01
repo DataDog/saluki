@@ -1,40 +1,38 @@
 type: integration
 name: "telemetry-endpoint"
-description: "Verifies the internal telemetry endpoint is accessible"
+description: "Verifies the internal telemetry routes are exposed on the unprivileged API endpoint"
 timeout: 120s
+runtimes: [docker, mac]
+
+env:
+  DD_API_KEY: "test-api-key"
+  DD_HOSTNAME: "integration-test-telemetry"
+  DD_DATA_PLANE_ENABLED: "true"
+  DD_DATA_PLANE_STANDALONE_MODE: "true"
+  DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
 
 container:
   image: "saluki-images/datadog-agent:testing-devel"
-  env:
-    DD_API_KEY: "test-api-key"
-    DD_HOSTNAME: "integration-test-telemetry"
-    DD_DATA_PLANE_ENABLED: "true"
-    DD_DATA_PLANE_STANDALONE_MODE: "true"
-    DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
-    DD_DATA_PLANE_TELEMETRY_LISTEN_ADDR: "tcp://0.0.0.0:5102"
   exposed_ports:
-    - "5102/tcp"
+    - "55100/tcp"
 
 assertions:
-  # Make sure the process becomes healthy, and stays up without errors, listening on the telemetry endpoint,
-  # for ~10 seconds after.
+  # Make sure the process becomes healthy, and stays up without errors, with the telemetry routes
+  # served on the unprivileged API endpoint.
   - parallel:
       - type: process_stable_for
         duration: 10s
-      - type: log_contains
-        pattern: "Internal telemetry enabled."
-        timeout: 10s
       - type: port_listening
-        port: 5102
+        port: 55100
         protocol: tcp
         timeout: 10s
       - type: http_check
-        endpoint: "http://localhost:5102/metrics"
+        endpoint: "http://localhost:55100/metrics"
         status:
           equal: 200
         timeout: 10s
       - type: http_check
-        endpoint: "http://localhost:5102/compat/metrics"
+        endpoint: "http://localhost:55100/compat/metrics"
         status:
           equal: 200
         timeout: 10s

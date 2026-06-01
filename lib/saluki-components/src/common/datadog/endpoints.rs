@@ -359,6 +359,7 @@ impl ResolvedEndpoint {
     }
 
     /// Returns the API key associated with the endpoint without refreshing it.
+    #[cfg(test)]
     pub fn cached_api_key(&self) -> &str {
         self.api_key.as_str()
     }
@@ -368,6 +369,18 @@ impl ResolvedEndpoint {
     #[cfg(test)]
     pub(crate) fn api_key_index(&self) -> Option<usize> {
         self.api_key_index
+    }
+
+    /// Returns the raw (pre-normalization) URL and key index for additional endpoints.
+    ///
+    /// Using the raw URL in queue IDs prevents collisions when two different raw URLs (for example,
+    /// `app.datadoghq.com` and `https://app.datadoghq.com`) normalize to the same host.
+    /// Returns `None` for primary and OPW endpoints.
+    pub(crate) fn additional_endpoint_queue_key(&self) -> Option<(&str, usize)> {
+        match (self.raw_additional_url.as_deref(), self.api_key_index) {
+            (Some(raw_url), Some(index)) => Some((raw_url, index)),
+            _ => None,
+        }
     }
 
     /// Returns whether this endpoint can refresh its API key from dynamic configuration.
@@ -508,8 +521,9 @@ fn calculate_resolved_endpoint(
 fn lookup_additional_key(config: &GenericConfiguration, raw_url: &str, index: usize) -> Option<String> {
     let additional = config
         .try_get_typed::<AdditionalEndpoints>("additional_endpoints")
-        .ok()??;
-    let key = additional.0 .0.get(raw_url)?.0.get(index)?.trim();
+        .ok()??
+        .0;
+    let key = additional.0.get(raw_url)?.0.get(index)?.trim();
     if key.is_empty() {
         None
     } else {
