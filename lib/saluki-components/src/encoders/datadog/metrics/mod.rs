@@ -106,6 +106,14 @@ const fn default_log_payloads() -> bool {
     false
 }
 
+fn series_shadow_config_for_endpoint(series_endpoint: MetricsEndpoint, sample_rate: f64) -> SeriesShadowConfig {
+    SeriesShadowConfig::new(if series_endpoint == MetricsEndpoint::SeriesV2 {
+        sample_rate
+    } else {
+        0.0
+    })
+}
+
 /// Encoding mode for a metrics endpoint.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum MetricsEncoderMode {
@@ -336,19 +344,19 @@ impl EncoderBuilder for DatadogMetricsConfiguration {
             MetricsEncoderMode::from_config(self.v3_api.use_v3_series(), self.v3_api.use_v3_series_validate());
         let sketches_mode =
             MetricsEncoderMode::from_config(self.v3_api.use_v3_sketches(), self.v3_api.use_v3_sketches_validate());
-        let series_shadow_config = SeriesShadowConfig::new(self.v3_api.series.shadow_sample_rate);
+        let series_endpoint = if self.use_v2_api_series {
+            MetricsEndpoint::SeriesV2
+        } else {
+            MetricsEndpoint::SeriesV1
+        };
+        let series_shadow_config =
+            series_shadow_config_for_endpoint(series_endpoint, self.v3_api.series.shadow_sample_rate);
         let v3_runtime_config = V3RuntimeConfig {
             endpoint_config,
             payload_limits,
             series_endpoint_uri,
             shadow_series_endpoint_uri,
             series_shadow_config,
-        };
-
-        let series_endpoint = if self.use_v2_api_series {
-            MetricsEndpoint::SeriesV2
-        } else {
-            MetricsEndpoint::SeriesV1
         };
         let generic_payload_limits = clamp_payload_limits(
             self.max_uncompressed_payload_size,
@@ -1541,6 +1549,12 @@ serializer_experimental_use_v3_api:
         assert!(!shadow_sample_matches(0.5, 0.6));
     }
 
+    #[test]
+    fn shadow_sampling_is_disabled_for_v1_series_baseline() {
+        assert!(series_shadow_config_for_endpoint(MetricsEndpoint::SeriesV2, 1.0).is_enabled());
+        assert!(!series_shadow_config_for_endpoint(MetricsEndpoint::SeriesV1, 1.0).is_enabled());
+    }
+
     #[tokio::test]
     async fn create_v3_request_uses_configured_endpoint_uri() {
         let request = create_v3_request(
@@ -2039,6 +2053,7 @@ serializer_experimental_use_v3_api:
             events_rx,
             payloads_tx,
             Duration::from_millis(10),
+            false,
         ));
 
         let mut events = EventsBuffer::default();
@@ -2115,6 +2130,7 @@ serializer_experimental_use_v3_api:
             events_rx,
             payloads_tx,
             Duration::from_millis(10),
+            false,
         ));
 
         let mut events = EventsBuffer::default();
