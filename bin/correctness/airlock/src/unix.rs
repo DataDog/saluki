@@ -9,23 +9,29 @@
 //! Only the small subset of the Docker driver surface needed by the panoramic Unix runner is
 //! implemented: spawn, log capture, exit watching, and cleanup.
 
+#[cfg(unix)]
+use std::process::Stdio;
+#[cfg(unix)]
+use std::time::Duration;
 use std::{
     collections::HashMap,
     path::PathBuf,
-    process::Stdio,
     sync::{Arc, OnceLock},
-    time::Duration,
 };
 
-use saluki_error::{generic_error, ErrorContext as _, GenericError};
+#[cfg(unix)]
+use saluki_error::ErrorContext as _;
+use saluki_error::{generic_error, GenericError};
+#[cfg(unix)]
 use tokio::{
     io::{AsyncBufReadExt as _, AsyncRead, BufReader},
     process::Command,
-    sync::Mutex,
-    task::JoinHandle,
 };
+use tokio::{sync::Mutex, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, warn};
+#[cfg(unix)]
+use tracing::debug;
+use tracing::warn;
 
 /// Shared cell that receives the exit code of a spawned [`UnixProcess`].
 ///
@@ -101,6 +107,7 @@ pub struct UnixProcess {
     name: String,
     /// PGID of the spawned process. We made the child the group leader at spawn time, so this
     /// equals the child's PID. `None` only if spawn failed to return a PID (very rare).
+    #[cfg(unix)]
     process_group: Option<i32>,
     exit_code: ExitCodeCell,
     log_tasks: Vec<JoinHandle<()>>,
@@ -113,70 +120,80 @@ impl UnixProcess {
     pub async fn spawn(
         config: UnixProcessConfig, log_sink: Arc<Mutex<dyn LogSink>>, exit_token: CancellationToken,
     ) -> Result<Self, GenericError> {
-        if !config.binary_path.exists() {
+        #[cfg(not(unix))]
+        {
+            let _ = (config, log_sink, exit_token);
             return Err(generic_error!(
-                "Binary not found at expected path: {}",
-                config.binary_path.display()
+                "UnixProcess is unsupported on non-Unix platforms; use a platform-specific process driver"
             ));
         }
 
-        let mut cmd = Command::new(&config.binary_path);
-        cmd.args(&config.args)
-            .envs(&config.env)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
-        // Always place the spawned process in a new process group so cleanup can signal the
-        // entire group (parent + any forked helpers) without leaking orphans.
         #[cfg(unix)]
-        cmd.process_group(0);
-
-        let mut child = cmd
-            .spawn()
-            .with_error_context(|| format!("Failed to spawn '{}'.", config.binary_path.display()))?;
-
-        let process_group = child.id().map(|pid| pid as i32);
-
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| generic_error!("Failed to capture stdout."))?;
-        let stderr = child
-            .stderr
-            .take()
-            .ok_or_else(|| generic_error!("Failed to capture stderr."))?;
-
-        let stdout_task = spawn_log_pump(stdout, log_sink.clone(), false);
-        let stderr_task = spawn_log_pump(stderr, log_sink, true);
-
-        // Exit watcher: moves the child into the task, calls `wait()`, records the exit code,
-        // and fires the exit token so blocked assertions (process_stable_for / adp_exits_with)
-        // unblock immediately rather than waiting for the test's own cleanup phase.
-        let exit_code: ExitCodeCell = Arc::new(OnceLock::new());
-        let exit_code_for_watcher = exit_code.clone();
-        let name_for_watcher = config.name.clone();
-        let exit_task = tokio::spawn(async move {
-            match child.wait().await {
-                Ok(status) => {
-                    let code = status.code();
-                    debug!(name = %name_for_watcher, ?code, "Unix process exited.");
-                    let _ = exit_code_for_watcher.set(code);
-                }
-                Err(e) => {
-                    warn!(name = %name_for_watcher, error = %e, "Failed to wait on Unix process; treating as exited.");
-                    let _ = exit_code_for_watcher.set(None);
-                }
+        {
+            if !config.binary_path.exists() {
+                return Err(generic_error!(
+                    "Binary not found at expected path: {}",
+                    config.binary_path.display()
+                ));
             }
-            exit_token.cancel();
-        });
 
-        Ok(Self {
-            name: config.name,
-            process_group,
-            exit_code,
-            log_tasks: vec![stdout_task, stderr_task],
-            exit_task: Some(exit_task),
-        })
+            let mut cmd = Command::new(&config.binary_path);
+            cmd.args(&config.args)
+                .envs(&config.env)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .kill_on_drop(true);
+            // Always place the spawned process in a new process group so cleanup can signal the
+            // entire group (parent + any forked helpers) without leaking orphans.
+            cmd.process_group(0);
+
+            let mut child = cmd
+                .spawn()
+                .with_error_context(|| format!("Failed to spawn '{}'.", config.binary_path.display()))?;
+
+            let process_group = child.id().map(|pid| pid as i32);
+
+            let stdout = child
+                .stdout
+                .take()
+                .ok_or_else(|| generic_error!("Failed to capture stdout."))?;
+            let stderr = child
+                .stderr
+                .take()
+                .ok_or_else(|| generic_error!("Failed to capture stderr."))?;
+
+            let stdout_task = spawn_log_pump(stdout, log_sink.clone(), false);
+            let stderr_task = spawn_log_pump(stderr, log_sink, true);
+
+            // Exit watcher: moves the child into the task, calls `wait()`, records the exit code,
+            // and fires the exit token so blocked assertions (process_stable_for / adp_exits_with)
+            // unblock immediately rather than waiting for the test's own cleanup phase.
+            let exit_code: ExitCodeCell = Arc::new(OnceLock::new());
+            let exit_code_for_watcher = exit_code.clone();
+            let name_for_watcher = config.name.clone();
+            let exit_task = tokio::spawn(async move {
+                match child.wait().await {
+                    Ok(status) => {
+                        let code = status.code();
+                        debug!(name = %name_for_watcher, ?code, "Unix process exited.");
+                        let _ = exit_code_for_watcher.set(code);
+                    }
+                    Err(e) => {
+                        warn!(name = %name_for_watcher, error = %e, "Failed to wait on Unix process; treating as exited.");
+                        let _ = exit_code_for_watcher.set(None);
+                    }
+                }
+                exit_token.cancel();
+            });
+
+            Ok(Self {
+                name: config.name,
+                process_group,
+                exit_code,
+                log_tasks: vec![stdout_task, stderr_task],
+                exit_task: Some(exit_task),
+            })
+        }
     }
 
     /// Returns the display name of the process.
@@ -232,6 +249,7 @@ impl Drop for UnixProcess {
     }
 }
 
+#[cfg(unix)]
 fn spawn_log_pump<R>(reader: R, sink: Arc<Mutex<dyn LogSink>>, is_stderr: bool) -> JoinHandle<()>
 where
     R: AsyncRead + Unpin + Send + 'static,

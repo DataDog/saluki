@@ -1,7 +1,6 @@
-use std::{
-    num::NonZeroUsize,
-    path::{Path, PathBuf},
-};
+#[cfg(unix)]
+use std::path::PathBuf;
+use std::{num::NonZeroUsize, path::Path};
 
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use serde::Deserialize;
@@ -22,9 +21,11 @@ pub enum TargetAddress {
     Udp(String),
 
     /// Unix Domain Socket in SOCK_DGRAM mode.
+    #[cfg(unix)]
     UnixDatagram(PathBuf),
 
     /// Unix Domain Socket in SOCK_STREAM mode.
+    #[cfg(unix)]
     Unix(PathBuf),
 
     /// gRPC endpoint with service/method path.
@@ -56,7 +57,9 @@ impl TryFrom<String> for TargetAddress {
                         Err(format!("invalid UDP address '{}': expected host:port", addr_data))
                     }
                 }
+                #[cfg(unix)]
                 "unixgram" => Ok(Self::UnixDatagram(PathBuf::from(addr_data))),
+                #[cfg(unix)]
                 "unix" => Ok(Self::Unix(PathBuf::from(addr_data))),
                 "grpc" => Ok(Self::Grpc(addr_data.to_string())),
                 _ => Err(format!("invalid scheme '{}' for target address '{}'", scheme, value)),

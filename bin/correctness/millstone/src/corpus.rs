@@ -7,7 +7,9 @@ use rand::{rngs::StdRng, SeedableRng as _};
 use saluki_error::{generic_error, GenericError};
 use tracing::info;
 
-use crate::config::{Config, CorpusBlueprint, Payload, TargetAddress};
+#[cfg(unix)]
+use crate::config::TargetAddress;
+use crate::config::{Config, CorpusBlueprint, Payload};
 
 /// A generated test corpus.
 pub struct Corpus {
@@ -53,9 +55,12 @@ fn get_finalized_corpus_blueprint(config: &Config) -> Result<CorpusBlueprint, Ge
     // SOCK_STREAM mode.
     match &mut blueprint.payload {
         Payload::DogStatsD(dsd_config) => {
+            #[cfg(unix)]
             if let TargetAddress::Unix(_) = config.target {
                 dsd_config.length_prefix_framed = true;
             }
+            #[cfg(not(unix))]
+            let _ = dsd_config;
         }
         Payload::OpenTelemetryMetrics(_) | Payload::OpenTelemetryTraces(_) => {}
     }

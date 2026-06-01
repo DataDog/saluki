@@ -1,11 +1,15 @@
 use std::path::PathBuf;
 
 use saluki_config::GenericConfiguration;
+#[cfg(unix)]
 use tracing::{debug, error};
 
-use super::{is_running_inside_docker, path_contains, path_empty};
-use crate::features::{find_first_available_unix_socket, with_host_mount_prefixes};
+#[cfg(unix)]
+use super::{
+    find_first_available_unix_socket, is_running_inside_docker, path_contains, path_empty, with_host_mount_prefixes,
+};
 
+#[cfg(unix)]
 const DEFAULT_CONTAINERD_SOCKET_PATH_LINUX: &str = "/var/run/containerd/containerd.sock";
 
 /// Helper type for detecting if containerd is available.
@@ -19,6 +23,7 @@ impl ContainerdDetector {
     ///
     /// If the socket path is configured or detected, and is a valid Unix domain socket, `Some` is returned with the
     /// socket path. Otherwise, `None` is returned.
+    #[cfg(unix)]
     pub fn detect_grpc_socket_path(config: &GenericConfiguration) -> Option<PathBuf> {
         // Try and read the socket path from either the configuration, or if it's not present there, from the possible
         // default paths we would expect it to be listening at.
@@ -47,5 +52,11 @@ impl ContainerdDetector {
         } else {
             None
         }
+    }
+
+    /// Returns `None` because containerd Unix socket detection isn't supported on this platform.
+    #[cfg(not(unix))]
+    pub fn detect_grpc_socket_path(_: &GenericConfiguration) -> Option<PathBuf> {
+        None
     }
 }

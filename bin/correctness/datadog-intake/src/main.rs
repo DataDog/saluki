@@ -4,10 +4,10 @@
 #![deny(missing_docs)]
 
 use saluki_error::{ErrorContext as _, GenericError};
+#[cfg(unix)]
+use tokio::signal::unix::{signal, SignalKind};
 use tokio::{
     net::{TcpListener, UdpSocket},
-    select,
-    signal::unix::{signal, SignalKind},
     sync::mpsc,
 };
 use tracing::{error, info, warn};
@@ -71,17 +71,33 @@ async fn run() -> Result<(), GenericError> {
 }
 
 fn spawn_signal_handlers(shutdown_tx: mpsc::Sender<()>) -> Result<(), GenericError> {
-    let mut sigint_handler = signal(SignalKind::interrupt()).error_context("Failed to set up SIGINT handler.")?;
-    let mut sigterm_handler = signal(SignalKind::terminate()).error_context("Failed to set up SIGTERM handler.")?;
+    #[cfg(unix)]
+    {
+        let mut sigint_handler = signal(SignalKind::interrupt()).error_context("Failed to set up SIGINT handler.")?;
+        let mut sigterm_handler = signal(SignalKind::terminate()).error_context("Failed to set up SIGTERM handler.")?;
 
+        tokio::spawn(async move {
+            tokio::select! {
+                _ = sigint_handler.recv() => {
+                    info!("Received SIGINT, shutting down...");
+                }
+                _ = sigterm_handler.recv() => {
+                    info!("Received SIGTERM, shutting down...");
+                }
+            }
+
+            if let Err(e) = shutdown_tx.send(()).await {
+                error!("Failed to send shutdown signal: {:?}", e);
+            }
+        });
+    }
+
+    #[cfg(not(unix))]
     tokio::spawn(async move {
-        select! {
-            _ = sigint_handler.recv() => {
-                info!("Received SIGINT, shutting down...");
-            }
-            _ = sigterm_handler.recv() => {
-                info!("Received SIGTERM, shutting down...");
-            }
+        if let Err(e) = tokio::signal::ctrl_c().await {
+            error!("Failed to wait for Ctrl-C: {:?}", e);
+        } else {
+            info!("Received Ctrl-C, shutting down...");
         }
 
         if let Err(e) = shutdown_tx.send(()).await {

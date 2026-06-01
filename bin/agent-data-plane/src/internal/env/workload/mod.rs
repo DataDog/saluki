@@ -12,13 +12,17 @@ use saluki_core::{
     health::{Health, HealthRegistry},
     runtime::{RestartStrategy, Supervisor},
 };
+#[cfg(unix)]
+use saluki_env::features::Feature;
 #[cfg(target_os = "linux")]
 use saluki_env::workload::collectors::CgroupsMetadataCollector;
+#[cfg(unix)]
+use saluki_env::workload::collectors::ContainerdMetadataCollector;
 use saluki_env::{
-    features::{Feature, FeatureDetector},
+    features::FeatureDetector,
     workload::{
         aggregator::MetadataAggregator,
-        collectors::{ContainerdMetadataCollector, MetadataCollectorWorker},
+        collectors::MetadataCollectorWorker,
         entity::EntityId,
         origin::{OriginResolver, ResolvedOrigin},
         stores::{ExternalDataStore, TagStore, TagStoreQuerier},
@@ -108,6 +112,7 @@ impl RemoteAgentWorkloadProvider {
 
         // Add the containerd collector if the feature is available.
         let feature_detector = FeatureDetector::automatic(config);
+        #[cfg(unix)]
         if feature_detector.is_feature_available(Feature::Containerd) {
             let cri_collector = build_collector("containerd", health_registry, &mut collector_bounds, |health| {
                 ContainerdMetadataCollector::from_configuration(config, health, string_interner.clone())

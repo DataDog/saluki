@@ -52,6 +52,7 @@ impl DataPlaneAPIClient {
 
         let listen_address = dp_config.secure_api_listen_address();
 
+        #[cfg_attr(not(unix), allow(unused_mut))]
         let mut builder = HttpClient::builder().with_tls_config(|b| b.danger_accept_invalid_certs());
 
         let authority = match listen_address {
