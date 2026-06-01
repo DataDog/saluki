@@ -840,6 +840,8 @@
   reason: initial bulk
 - name: confd_path
   reason: initial bulk
+- name: config_id
+  reason: Core Agent only uses this on Agent HA telemetry metrics; ADP does not need it for metric payloads.
 - name: config_providers
   reason: initial bulk
 - name: container_cgroup_root
