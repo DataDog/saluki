@@ -1,5 +1,7 @@
 //! Annotations for metric tag filterlist transform configuration keys.
-use crate::config_registry::{generated::schema, structs, Pipeline, PipelineAffinity, SalukiAnnotation, SupportLevel, ValueType};
+use crate::config_registry::{
+    generated::schema, structs, Pipeline, PipelineAffinity, SalukiAnnotation, SupportLevel, ValueType,
+};
 
 crate::declare_annotations! {
     /// `aggregator_tag_filter_cache_capacity`—maximum entries in the per-context deduplication cache.
