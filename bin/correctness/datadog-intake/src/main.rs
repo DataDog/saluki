@@ -70,29 +70,29 @@ async fn run() -> Result<(), GenericError> {
         .map_err(Into::into)
 }
 
+#[cfg(unix)]
 fn spawn_signal_handlers(shutdown_tx: mpsc::Sender<()>) -> Result<(), GenericError> {
-    #[cfg(unix)]
-    {
-        let mut sigint_handler = signal(SignalKind::interrupt()).error_context("Failed to set up SIGINT handler.")?;
-        let mut sigterm_handler = signal(SignalKind::terminate()).error_context("Failed to set up SIGTERM handler.")?;
+    let mut sigint_handler = signal(SignalKind::interrupt()).error_context("Failed to set up SIGINT handler.")?;
+    let mut sigterm_handler = signal(SignalKind::terminate()).error_context("Failed to set up SIGTERM handler.")?;
 
-        tokio::spawn(async move {
-            tokio::select! {
-                _ = sigint_handler.recv() => {
-                    info!("Received SIGINT, shutting down...");
-                }
-                _ = sigterm_handler.recv() => {
-                    info!("Received SIGTERM, shutting down...");
-                }
+    tokio::spawn(async move {
+        tokio::select! {
+            _ = sigint_handler.recv() => {
+                info!("Received SIGINT, shutting down...");
             }
-
-            if let Err(e) = shutdown_tx.send(()).await {
-                error!("Failed to send shutdown signal: {:?}", e);
+            _ = sigterm_handler.recv() => {
+                info!("Received SIGTERM, shutting down...");
             }
-        });
-    }
+        }
 
-    #[cfg(not(unix))]
+        send_shutdown_signal(shutdown_tx).await;
+    });
+
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn spawn_signal_handlers(shutdown_tx: mpsc::Sender<()>) -> Result<(), GenericError> {
     tokio::spawn(async move {
         if let Err(e) = tokio::signal::ctrl_c().await {
             error!("Failed to wait for Ctrl-C: {:?}", e);
@@ -100,12 +100,16 @@ fn spawn_signal_handlers(shutdown_tx: mpsc::Sender<()>) -> Result<(), GenericErr
             info!("Received Ctrl-C, shutting down...");
         }
 
-        if let Err(e) = shutdown_tx.send(()).await {
-            error!("Failed to send shutdown signal: {:?}", e);
-        }
+        send_shutdown_signal(shutdown_tx).await;
     });
 
     Ok(())
+}
+
+async fn send_shutdown_signal(shutdown_tx: mpsc::Sender<()>) {
+    if let Err(e) = shutdown_tx.send(()).await {
+        error!("Failed to send shutdown signal: {:?}", e);
+    }
 }
 
 async fn capture_dogstatsd_forwarded_packets(socket: UdpSocket, state: DogStatsDForwardingState) {
