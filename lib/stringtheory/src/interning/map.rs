@@ -494,11 +494,15 @@ impl InternerState {
         // have no reclaimed entries, then we'll just try to fit it in the remaining capacity of our data buffer.
         let maybe_reclaimed_entry = self.storage.reclaimed.take_if(|entry| entry.capacity() >= required_cap);
         let (entry_offset, entry_ptr) = if let Some(reclaimed_entry) = maybe_reclaimed_entry {
+            #[cfg(feature = "antithesis")]
+            antithesis_sdk::assert_sometimes!(true, "reclaimed interner slot reused for a new string");
             self.storage.write_to_reclaimed_entry(reclaimed_entry, s)
         } else if required_cap <= self.storage.available_unoccupied() {
             self.storage.write_to_unoccupied(s)
         } else {
             // We don't have enough space to intern this string at all, so we'll just return `None`.
+            #[cfg(feature = "antithesis")]
+            antithesis_sdk::assert_sometimes!(true, "interner full — no capacity to intern");
             return None;
         };
 

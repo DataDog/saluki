@@ -211,6 +211,12 @@ pub(crate) struct DatadogConfig {
     dd_url: String,
     /// Agent log verbosity. Sampled; restricted to quiet levels (see [`LogLevel`]).
     log_level: LogLevel,
+    /// Aggregate transform context cap, the `aggregate_context_limit` key. ADP
+    /// defaults to `1_000_000` contexts per flush window, far above what the
+    /// workload reaches in a window, so the breach path never fired. Sampled
+    /// with [`Probe`] so it often lands small enough for the workload to reach
+    /// and exercise the cap, and occasionally large to probe the headroom.
+    aggregate_context_limit: u64,
     /// `DogStatsD` options, flattened to top-level `dogstatsd_*` keys.
     #[serde(flatten)]
     dogstatsd: DogStatsdConfig,
@@ -228,6 +234,7 @@ impl DatadogConfig {
             api_key: api_key.to_owned(),
             dd_url: dd_url.to_owned(),
             log_level: rng.random(),
+            aggregate_context_limit: Probe.sample(rng),
             dogstatsd: DogStatsdConfig::sample(rng, dogstatsd_socket),
         }
     }

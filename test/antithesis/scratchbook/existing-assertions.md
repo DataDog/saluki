@@ -1,6 +1,6 @@
 ---
 sut_path: /home/ssm-user/src/saluki
-commit: 21b2072b4743ddbf4c84891d93abac7299dc4ce8
+commit: a31a487f1b8f676391dae88064c7d3f64f202245
 updated: 2026-06-01
 external_references:
   - path: https://datadoghq.atlassian.net/wiki/spaces/DADP/
@@ -15,8 +15,9 @@ external_references:
 
 ## Summary
 
-**A bootstrap-and-workload assertion set exists, now with the first liveness instrumentation.** It
-comprises **11 SDK call sites**: one lifecycle init and one bootstrap reachability probe in ADP, a
+**A bootstrap-and-workload assertion set exists, plus the first liveness and Tier-1 property
+instrumentation.** It comprises **23 SDK call sites** (11 prior + 12 Tier-1 property assertions landed
+2026-06-01, tabled below): one lifecycle init and one bootstrap reachability probe in ADP, a
 `finally_verify_delivery` `assert_reachable!`/`assert_sometimes!` pair, the
 `parallel_driver_send_dogstatsd` anchors (one `assert_reachable!` plus four `assert_sometimes!` —
 delivered, clean, feral, mixed batch composition), the external `eventually_adp_alive` liveness
@@ -30,8 +31,9 @@ forwarder 2xx site in `saluki-components`. All ADP/`saluki-components` sites are
 > [!NOTE]
 > History: an early version of this file claimed no SDK assertions existed (true before the harness
 > commit; corrected 2026-05-30). Updated 2026-05-31 when the liveness pieces landed (6 → 8 sites),
-> and again when `parallel_driver_send_dogstatsd` added the clean/feral/mixed batch assertions
-> (8 → 11 sites).
+> again when `parallel_driver_send_dogstatsd` added the clean/feral/mixed batch assertions
+> (8 → 11 sites), and again when the 12 Tier-1 in-SUT property assertions landed 2026-06-01
+> (11 → 23 sites).
 
 ## Assertions present
 
@@ -79,6 +81,23 @@ Searched the repository with ripgrep over `*.rs` and `*.toml`:
 - `rg "assert_always|assert_sometimes|assert_reachable|assert_unreachable|antithesis_sdk" -g '*.rs'`
   — the 11 call sites tabled above (`assert_always!` now present in `eventually_adp_alive`); **no
   `assert_unreachable!` anywhere yet.**
+
+## Tier-1 in-SUT property assertions (landed 2026-06-01)
+
+The first batch of net-new in-SUT **property** assertions landed in `saluki-components` behind the
+existing `antithesis` feature — **12 call sites**, all using the numeric-guidance macros for bounded
+invariants. They give three already-reproduced bugs an in-run falsification target.
+
+| Site | Type | Property |
+|------|------|----------|
+| `transforms/aggregate/mod.rs` `insert` | `assert_always_less_than_or_equal_to!(contexts.len() <= context_limit)` + `assert_sometimes!(breached)` | `aggregate-context-limit-enforced` |
+| `transforms/aggregate/mod.rs` `flush` | `assert_always!(current_time >= last_flush)` + `assert_always_less_than_or_equal_to!(bucket span)` + `assert_sometimes!(zero-value buckets generated)` | `aggregate-clock-skew-stable` (CONFIRMED bug) |
+| `encoders/datadog/metrics/mod.rs` `encode_sketch_metric` | `assert_always!(value.is_finite())` at the sketch insert | `ddsketch-no-nan-poison` (CONFIRMED bug; encoder-bypass stopgap) |
+| `sources/dogstatsd/replay/reader.rs` `read_next` | `assert_always_or_unreachable!(size == 0)` at the trailer/corruption fork | `replay-corruption-not-silent-eof` (CONFIRMED bug) |
+| `sources/dogstatsd/mod.rs` `dispatch_events` | 2× `assert_unreachable!(output missing)` + 3× `assert_sometimes!(dispatch failed)` | `source-dispatch-no-misroute` |
+
+The remaining net-new assertions (Tiers 2-3) each add the `antithesis` feature to one more crate; the
+code-verified plan with HEAD lines, macros, and conditions is in `sut-side-instrumentation.md`.
 
 ## Implication for property work
 
