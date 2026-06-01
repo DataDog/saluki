@@ -54,9 +54,9 @@ impl DatadogConfiguration {
     /// This can be used to preserve other configuration settings (forwarder settings, retry, etc) while still allowing
     /// for overriding _where_ payloads are sent to.
     ///
-    /// # Errors
+    /// The override API key is fixed when this method is called. Live refresh from the top-level `api_key`
+    /// configuration key is disabled because that key may belong to a different endpoint.
     ///
-    /// If the given request path isn't valid, an error is returned.
     pub fn with_endpoint_override(mut self, dd_url: String, api_key: String) -> Self {
         // Clear any existing additional endpoints, and set the new DD URL and API key.
         //
@@ -66,6 +66,7 @@ impl DatadogConfiguration {
         endpoint.set_dd_url(dd_url);
         endpoint.set_api_key(api_key);
         self.forwarder_config.clear_opw_metrics_endpoint();
+        self.configuration = None;
 
         self
     }
@@ -183,5 +184,33 @@ fn get_dd_endpoint_name(uri: &Uri) -> Option<MetaString> {
         "/api/v1/events_batch" => Some(MetaString::from_static("events_batch_v1")),
         "/api/v0.2/traces" => Some(MetaString::from_static("traces_v0.2")),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use saluki_config::ConfigurationLoader;
+    use serde_json::json;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn endpoint_override_uses_static_api_key() {
+        let (generic_config, _) =
+            ConfigurationLoader::for_tests(Some(json!({ "api_key": "primary-api-key" })), None, false).await;
+        let config = DatadogConfiguration::from_configuration(&generic_config)
+            .expect("DatadogConfiguration should parse")
+            .with_endpoint_override("http://mrf.example.test".to_string(), "mrf-api-key".to_string());
+
+        let mut endpoints = config
+            .forwarder_config
+            .build_routable_endpoints(config.configuration.clone())
+            .expect("endpoint should resolve");
+
+        assert_eq!(endpoints.len(), 1);
+        let (_, mut endpoint) = endpoints.pop().unwrap().into_parts();
+        assert_eq!(endpoint.cached_api_key(), "mrf-api-key");
+        assert!(!endpoint.has_configuration());
+        assert_eq!(endpoint.api_key(), "mrf-api-key");
     }
 }

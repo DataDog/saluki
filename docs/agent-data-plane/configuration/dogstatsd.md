@@ -1,6 +1,6 @@
 # Configuring DogStatsD on Agent Data Plane
 
-<!-- Last updated: 2026-05-20 -->
+<!-- Last updated: 2026-05-29 -->
 
 The DogStatsD implementation on ADP has been redesigned in Rust for better resource guarantees and
 efficiency. Because the architecture is different from the original implementation, certain
@@ -99,6 +99,25 @@ configured destination before parsing, filtering, mapping, or aggregation. Forwa
 preserve the core Agent's packet-buffer grouping, so forwarded UDP datagrams may be split
 differently while carrying the same DogStatsD messages. ADP logs setup failures and tracks send
 failures through telemetry.
+
+### Multi-region failover metrics
+
+ADP supports multi-region failover for metrics. When `multi_region_failover.enabled` and
+`multi_region_failover.failover_metrics` are both `true`, ADP forwards metrics to the primary
+Datadog endpoint and to a second MRF endpoint.
+
+To enable MRF metric forwarding, configure `multi_region_failover.api_key` and one of
+`multi_region_failover.site` or `multi_region_failover.dd_url`. If required credentials are
+missing, ADP skips the MRF branch and continues forwarding to the primary endpoint.
+
+| Config Key                                | Behavior                                                                 | Default |
+| ----------------------------------------- | ------------------------------------------------------------------------ | ------- |
+| `multi_region_failover.enabled`           | Enables multi-region failover mode.                                      | `false` |
+| `multi_region_failover.failover_metrics`  | Enables metrics forwarding to the failover region when MRF is enabled.   | `false` |
+| `multi_region_failover.metric_allowlist`  | Exact metric names to forward to MRF. Empty or unset forwards all metrics. | `[]`    |
+| `multi_region_failover.api_key`           | API key for the failover-region endpoint.                                | unset   |
+| `multi_region_failover.site`              | Datadog site for the failover region, used as `https://app.mrf.<site>`.  | unset   |
+| `multi_region_failover.dd_url`            | Explicit failover intake URL. Takes precedence over `site` when set.     | unset   |
 
 ### Datadog intake TLS validation (`skip_ssl_validation`)
 
@@ -261,9 +280,6 @@ ways that are not yet fully characterized.
 | `forwarder_stop_timeout`                                         | Timeout (s) for forwarder graceful stop         | [#1680] |
 | `heroku_dyno`                                                    | Override agent name for Heroku telemetry        | [#1685] |
 | `log_payloads`                                                   | Debug-log serialized payloads before send       | [#1686] |
-| `multi_region_failover.enabled`                                  | Enable multi-region failover mode               | [#1678] |
-| `multi_region_failover.failover_metrics`                         | Enable metrics forwarding to failover region    | [#1678] |
-| `multi_region_failover.metric_allowlist`                         | Metric name allowlist for MRF forwarding        | [#1678] |
 | `telemetry.dogstatsd.aggregator_channel_latency_buckets`         | Histogram buckets: DSD aggregator channel lag   | [#1679] |
 | `telemetry.dogstatsd.listeners_channel_latency_buckets`          | Histogram buckets: listener channel latency     | [#1679] |
 | `telemetry.dogstatsd.listeners_latency_buckets`                  | Histogram buckets: listener processing          | [#1679] |
@@ -420,6 +436,12 @@ when the receiving syslog daemon expects the Agent's RFC-style header.
 | `metric_filterlist`                              | Metric name blocklist                  |
 | `metric_filterlist_match_prefix`                 | Blocklist uses prefix matching         |
 | `metric_tag_filterlist`                          | Per-metric tag include/exclude         |
+| `multi_region_failover.api_key`                  | API key for MRF endpoint auth          |
+| `multi_region_failover.dd_url`                   | Override MRF intake endpoint URL       |
+| `multi_region_failover.enabled`                  | Enable multi-region failover mode      |
+| `multi_region_failover.failover_metrics`         | Forward metrics to MRF endpoint        |
+| `multi_region_failover.metric_allowlist`         | Metric names forwarded to MRF endpoint |
+| `multi_region_failover.site`                     | Datadog site for MRF endpoint          |
 | `no_proxy_nonexact_match`                        | Domain/CIDR `no_proxy` matching        |
 | `observability_pipelines_worker.metrics.enabled` | Route metrics to OPW instance          |
 | `observability_pipelines_worker.metrics.url`     | OPW metrics intake URL                 |

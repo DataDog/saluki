@@ -8,6 +8,7 @@ pub mod dogstatsd_prefix_filter;
 pub mod encoders;
 pub mod forwarder;
 pub mod get_typed;
+pub mod mrf;
 pub mod otlp;
 pub mod proxy;
 pub mod trace_obfuscation;
@@ -29,6 +30,7 @@ pub(crate) static SUPPORTED_ANNOTATIONS: LazyLock<Vec<&'static SalukiAnnotation>
     v.extend_from_slice(dogstatsd_mapper::ALL);
     v.extend_from_slice(forwarder::ALL);
     v.extend_from_slice(get_typed::ALL);
+    v.extend_from_slice(mrf::ALL);
     v.extend_from_slice(dogstatsd_prefix_filter::ALL);
     v.extend_from_slice(encoders::ALL);
     v.extend_from_slice(otlp::ALL);

@@ -25,8 +25,9 @@ use saluki_components::{
     relays::otlp::OtlpRelayConfiguration,
     sources::{ChecksIPCConfiguration, DogStatsDCaptureAPIHandler, DogStatsDConfiguration, OtlpConfiguration},
     transforms::{
-        AggregateConfiguration, ApmStatsTransformConfiguration, ChainedConfiguration, DogStatsDMapperConfiguration,
-        HostEnrichmentConfiguration, TraceObfuscationConfiguration, TraceSamplerConfiguration,
+        AggregateConfiguration, AllowlistFilterConfiguration, ApmStatsTransformConfiguration, ChainedConfiguration,
+        DogStatsDMapperConfiguration, HostEnrichmentConfiguration, TraceObfuscationConfiguration,
+        TraceSamplerConfiguration,
     },
 };
 use saluki_config::{ConfigurationLoader, GenericConfiguration};
@@ -43,8 +44,8 @@ use crate::{
         apm_onboarding::ApmOnboardingConfiguration,
         dogstatsd_post_aggregate_filter::DogStatsDPostAggregateFilterConfiguration,
         dogstatsd_prefix_filter::DogStatsDPrefixFilterConfiguration, host_tags::HostTagsConfiguration,
-        ottl_filter_processor::OttlFilterConfiguration, ottl_transform_processor::OttlTransformConfiguration,
-        tag_filterlist::TagFilterlistConfiguration,
+        mrf::MrfConfiguration, ottl_filter_processor::OttlFilterConfiguration,
+        ottl_transform_processor::OttlTransformConfiguration, tag_filterlist::TagFilterlistConfiguration,
     },
     internal::{
         create_internal_supervisor, logging::LoggingConfigurationTranslator, remote_agent::RemoteAgentBootstrap,
@@ -489,6 +490,62 @@ async fn add_baseline_metrics_pipeline_to_blueprint(
         .connect_component("dd_metrics_encode", ["metrics_enrich"])?
         // Forwarding.
         .connect_component("dd_out", ["dd_metrics_encode"])?;
+
+    let mrf_config = MrfConfiguration::from_configuration(config)
+        .error_context("Failed to configure Multi-Region Failover metrics pipeline.")?;
+    add_mrf_metrics_pipeline_to_blueprint(blueprint, config, mrf_config)?;
+
+    Ok(())
+}
+
+fn add_mrf_metrics_pipeline_to_blueprint(
+    blueprint: &mut TopologyBlueprint, config: &GenericConfiguration, mrf_config: MrfConfiguration,
+) -> Result<(), GenericError> {
+    if !mrf_config.is_metrics_active() {
+        return Ok(());
+    }
+
+    let Some(api_key) = mrf_config.api_key().map(str::to_string) else {
+        warn!(
+            "Multi-Region Failover metrics forwarding is enabled, but `multi_region_failover.api_key` is unset. \
+             Skipping the MRF metrics pipeline."
+        );
+        return Ok(());
+    };
+
+    let Some(dd_url) = mrf_config.metrics_endpoint_url() else {
+        warn!(
+            "Multi-Region Failover metrics forwarding is enabled, but neither `multi_region_failover.site` nor \
+             `multi_region_failover.dd_url` is set. Skipping the MRF metrics pipeline."
+        );
+        return Ok(());
+    };
+
+    let mrf_metrics_config = DatadogMetricsConfiguration::from_configuration(config)
+        .error_context("Failed to configure Multi-Region Failover Datadog Metrics encoder.")?;
+    let mrf_forwarder_config = DatadogConfiguration::from_configuration(config)
+        .map(|config| config.with_endpoint_override(dd_url, api_key))
+        .error_context("Failed to configure Multi-Region Failover Datadog forwarder.")?;
+
+    blueprint
+        .add_encoder("mrf_metrics_encode", mrf_metrics_config)?
+        .add_forwarder("mrf_dd_out", mrf_forwarder_config)?;
+
+    if mrf_config.metric_allowlist().is_empty() {
+        blueprint
+            .connect_component("mrf_metrics_encode", ["metrics_enrich"])?
+            .connect_component("mrf_dd_out", ["mrf_metrics_encode"])?;
+    } else {
+        let mrf_allowlist_config = AllowlistFilterConfiguration {
+            metric_names: mrf_config.metric_allowlist().to_vec(),
+        };
+
+        blueprint
+            .add_transform("mrf_allowlist_filter", mrf_allowlist_config)?
+            .connect_component("mrf_allowlist_filter", ["metrics_enrich"])?
+            .connect_component("mrf_metrics_encode", ["mrf_allowlist_filter"])?
+            .connect_component("mrf_dd_out", ["mrf_metrics_encode"])?;
+    }
 
     Ok(())
 }
