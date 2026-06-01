@@ -53,6 +53,11 @@ impl MrfConfiguration {
         self.failover_metrics = failover_metrics;
     }
 
+    /// Updates the metric allowlist.
+    pub(crate) fn set_metric_allowlist(&mut self, metric_allowlist: Vec<String>) {
+        self.metric_allowlist = metric_allowlist;
+    }
+
     /// Returns the metric allowlist.
     pub fn metric_allowlist(&self) -> &[String] {
         &self.metric_allowlist

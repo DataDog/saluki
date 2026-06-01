@@ -29,7 +29,8 @@ use crate::config::MrfConfiguration;
 /// - When MRF is enabled with an allowlist, only matching events are forwarded.
 ///
 /// The transform reads static MRF configuration from a snapshot taken at build time, and watches
-/// `multi_region_failover.failover_metrics` for dynamic updates.
+/// `multi_region_failover.failover_metrics` and `multi_region_failover.metric_allowlist` for
+/// dynamic updates.
 pub struct MrfMetricsGatewayConfiguration {
     mrf_config: MrfConfiguration,
     configuration: GenericConfiguration,
@@ -88,6 +89,11 @@ impl MrfMetricsGateway {
 
     fn update_failover_metrics(&mut self, failover_metrics: bool) {
         self.mrf_config.set_failover_metrics(failover_metrics);
+        self.mode = Self::mode_for_config(&self.mrf_config);
+    }
+
+    fn update_metric_allowlist(&mut self, metric_allowlist: Vec<String>) {
+        self.mrf_config.set_metric_allowlist(metric_allowlist);
         self.mode = Self::mode_for_config(&self.mrf_config);
     }
 
@@ -170,6 +176,9 @@ impl Transform for MrfMetricsGateway {
         let mut failover_metrics_watcher = self
             .configuration
             .watch_for_updates("multi_region_failover.failover_metrics");
+        let mut metric_allowlist_watcher = self
+            .configuration
+            .watch_for_updates("multi_region_failover.metric_allowlist");
 
         health.mark_ready();
         debug!(mode = ?self.mode, "MRF metrics gateway transform started.");
@@ -193,6 +202,11 @@ impl Transform for MrfMetricsGateway {
                         self.update_failover_metrics(failover_metrics);
                     }
                 },
+                (_, maybe_metric_allowlist) = metric_allowlist_watcher.changed::<Vec<String>>() => {
+                    if let Some(metric_allowlist) = maybe_metric_allowlist {
+                        self.update_metric_allowlist(metric_allowlist);
+                    }
+                },
             }
         }
 
@@ -208,12 +222,6 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-
-    async fn gateway_from_config(value: serde_json::Value) -> MrfMetricsGateway {
-        let (config, _) = ConfigurationLoader::for_tests(Some(value), None, false).await;
-        let mrf_config = MrfConfiguration::from_configuration(&config).expect("MRF configuration should deserialize");
-        MrfMetricsGateway::new(mrf_config, config)
-    }
 
     async fn dynamic_gateway_from_config(
         value: serde_json::Value,
@@ -277,19 +285,37 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn filtered_forward_passes_only_matching_events() {
-        let gw = gateway_from_config(json!({
+    async fn metric_allowlist_dynamic_update_changes_filtering() {
+        let (mut gw, sender) = dynamic_gateway_from_config(json!({
             "multi_region_failover": {
                 "enabled": true,
                 "failover_metrics": true,
                 "api_key": "mrf-api-key",
-                "dd_url": "https://mrf.example.com",
-                "metric_allowlist": ["allowed.metric", "also.allowed"]
+                "dd_url": "https://mrf.example.com"
             }
         }))
         .await;
+        let mut watcher = gw
+            .configuration
+            .watch_for_updates("multi_region_failover.metric_allowlist");
 
         assert!(gw.should_forward(&Event::Metric(Metric::counter("allowed.metric", 1.0))));
+        assert!(gw.should_forward(&Event::Metric(Metric::counter("also.allowed", 1.0))));
+
+        sender
+            .send(ConfigUpdate::Partial {
+                key: "multi_region_failover.metric_allowlist".to_string(),
+                value: json!(["also.allowed"]),
+            })
+            .await
+            .expect("dynamic update should be sent");
+        let (_, maybe_metric_allowlist) =
+            tokio::time::timeout(std::time::Duration::from_secs(2), watcher.changed::<Vec<String>>())
+                .await
+                .expect("metric allowlist update should be received");
+        gw.update_metric_allowlist(maybe_metric_allowlist.expect("update should have a new value"));
+
+        assert!(!gw.should_forward(&Event::Metric(Metric::counter("allowed.metric", 1.0))));
         assert!(gw.should_forward(&Event::Metric(Metric::counter("also.allowed", 1.0))));
         assert!(!gw.should_forward(&Event::Metric(Metric::counter("blocked.metric", 1.0))));
     }
