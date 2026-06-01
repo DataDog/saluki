@@ -256,6 +256,8 @@
   reason: initial bulk
 - name: allowed_additional_checks
   reason: initial bulk
+- name: aggregator_tag_filter_cache_capacity
+  reason: ADP uses data_plane.dogstatsd.aggregator_tag_filter_cache_capacity instead; this core-agent key is expected to be set alongside the ADP key and should not trigger any warning
 - name: apm_config.additional_endpoints
   reason: initial bulk
 - name: apm_config.additional_profile_tags

@@ -325,17 +325,6 @@ crate::declare_annotations! {
         test_json: None,
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
-    /// `aggregator_tag_filter_cache_capacity` - not read by ADP; use `data_plane.dogstatsd.aggregator_tag_filter_cache_capacity` instead.
-    AGGREGATOR_TAG_FILTER_CACHE_CAPACITY = SalukiAnnotation {
-        schema: &schema::AGGREGATOR_TAG_FILTER_CACHE_CAPACITY,
-        support_level: SupportLevel::Incompatible(Severity::Low),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
-    };
     /// `aggregator_stop_timeout` - aggregator shutdown drain timeout.
     AGGREGATOR_STOP_TIMEOUT = SalukiAnnotation {
         schema: &schema::AGGREGATOR_STOP_TIMEOUT,
