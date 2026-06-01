@@ -11,6 +11,8 @@ use windows_sys::Win32::{
     System::Registry::{RegGetValueW, HKEY, HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ, RRF_SUBKEY_WOW6464KEY},
 };
 
+// TODO: Add Windows-specific tests for registry-backed path resolution once we have Windows CI coverage.
+
 /// Default configuration directory for the Datadog Agent.
 ///
 /// The Datadog Agent Windows installer stores the effective configuration root in
