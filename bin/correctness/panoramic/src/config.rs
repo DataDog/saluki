@@ -111,12 +111,64 @@ pub struct IntegrationConfig {
     /// Container configuration.
     pub container: ContainerConfig,
 
+    /// Environment variables to set on the target process(es).
+    ///
+    /// Top-level (not under `container`) because both the docker and `mac` runtimes apply
+    /// these the same way: docker injects them as container env, the Unix runner passes them
+    /// to the spawned ADP / Core Agent processes.
+    #[serde(default)]
+    pub env: HashMap<String, String>,
+
     /// List of assertion steps to run.
     pub assertions: Vec<AssertionStep>,
+
+    /// Runtimes under which this test is eligible to run.
+    ///
+    /// Each value must be either `"docker"` (the default) or `"mac"`. The active
+    /// runtime for any given panoramic invocation is chosen at the CLI level (`--runtime`,
+    /// defaulting to the host's native runtime); a test discovers only when this list contains
+    /// that active runtime. Tests with multiple entries are portable across runtimes, but still
+    /// execute only once per invocation, in the active runtime.
+    #[serde(default = "default_integration_runtimes")]
+    pub runtimes: Vec<String>,
+
+    /// Active runtime for this test instance.
+    ///
+    /// Empty at parse time; the discovery layer sets it to whichever runtime the CLI is scoped
+    /// to (after confirming that runtime is listed in `runtimes`). Used by `Test::run` to
+    /// dispatch to the right runner and by `Test::runtime` / `Test::images` to report the
+    /// effective runtime to the CI pipeline generator.
+    #[serde(skip)]
+    pub active_runtime: String,
 
     /// Base path for resolving relative file paths.
     #[serde(skip)]
     pub base_path: PathBuf,
+}
+
+fn default_integration_runtimes() -> Vec<String> {
+    vec![default_host_runtime().to_string()]
+}
+
+/// Runtime identifier for integration tests that run as host processes on macOS (no Docker, no
+/// virtualization). Validated on macOS only today; future host-process runtimes for other Unix
+/// platforms will get their own identifiers (for example, `linux`).
+pub const MAC_RUNTIME: &str = "mac";
+
+/// Runtime identifier for integration tests that run inside a Docker container.
+pub const DOCKER_RUNTIME: &str = "docker";
+
+/// Returns the integration-test runtime that is native to the host OS.
+///
+/// `mac` on macOS hosts, `docker` everywhere else. Used as the default when a panoramic
+/// subcommand is invoked without an explicit `--runtime` flag, so that callers on the most
+/// common host get the most common runtime without having to spell it out.
+pub fn default_host_runtime() -> &'static str {
+    if cfg!(target_os = "macos") {
+        MAC_RUNTIME
+    } else {
+        DOCKER_RUNTIME
+    }
 }
 
 /// Container configuration for a test case.
@@ -132,10 +184,6 @@ pub struct ContainerConfig {
     /// Optional command override.
     #[serde(default)]
     pub command: Vec<String>,
-
-    /// Environment variables to set.
-    #[serde(default)]
-    pub env: HashMap<String, String>,
 
     /// Files to mount (host_path:container_path format).
     #[serde(default)]
@@ -172,11 +220,18 @@ pub enum AssertionConfig {
         duration: HumanDuration,
     },
 
-    /// Check that the process exits with a specific exit code.
-    ProcessExitsWith {
+    /// Check that ADP itself exits with a specific exit code, abstracting over the runtime's
+    /// observation mechanism.
+    ///
+    /// On the `docker` runtime the converged image wraps ADP under s6, which keeps the
+    /// container alive across ADP restarts and logs `agent-data-plane exited with code N` from
+    /// `docker/s6-services/agent-data-plane/finish`. This assertion greps the log buffer for
+    /// that line. On the `mac` runtime ADP is spawned directly; the assertion reads
+    /// the exit code recorded by the Unix runner when ADP's child process exited.
+    AdpExitsWith {
         /// The expected exit code.
         expected_code: i64,
-        /// Timeout for waiting for the process to exit.
+        /// Timeout for waiting for the exit to be observed.
         timeout: HumanDuration,
     },
 
@@ -296,7 +351,7 @@ impl AssertionConfig {
                     crate::dynamic_vars::resolve_placeholders(p, vars);
                 }
             }
-            AssertionConfig::ProcessStableFor { .. } | AssertionConfig::ProcessExitsWith { .. } => {}
+            AssertionConfig::ProcessStableFor { .. } | AssertionConfig::AdpExitsWith { .. } => {}
         }
     }
 
@@ -319,7 +374,7 @@ impl AssertionConfig {
                     crate::dynamic_vars::find_unresolved(p, &mut out);
                 }
             }
-            AssertionConfig::ProcessStableFor { .. } | AssertionConfig::ProcessExitsWith { .. } => {}
+            AssertionConfig::ProcessStableFor { .. } | AssertionConfig::AdpExitsWith { .. } => {}
         }
         out
     }
@@ -367,13 +422,34 @@ impl Test for IntegrationConfig {
 
     fn images(&self) -> BTreeMap<&str, String> {
         let mut m = BTreeMap::new();
-        m.insert("container", self.container.image.clone());
+        // Host-process runtimes (such as `mac`) don't need a container image; the test's
+        // `container.image` field is informational for them.
+        if self.active_runtime != MAC_RUNTIME {
+            m.insert("container", self.container.image.clone());
+        }
         m
     }
 
+    fn runtime(&self) -> String {
+        if self.active_runtime.is_empty() {
+            DOCKER_RUNTIME.to_string()
+        } else {
+            self.active_runtime.clone()
+        }
+    }
+
     async fn run(&self, tctx: TestContext) -> TestResult {
-        let mut runner = crate::runner::IntegrationRunner::new(self.clone(), tctx);
-        runner.run().await
+        match self.active_runtime.as_str() {
+            MAC_RUNTIME => {
+                let mut runner = crate::unix_runner::UnixIntegrationRunner::new(self.clone(), tctx);
+                runner.run().await
+            }
+            // Default to the existing Docker path for "docker" or unset.
+            _ => {
+                let mut runner = crate::runner::IntegrationRunner::new(self.clone(), tctx);
+                runner.run().await
+            }
+        }
     }
 }
 
@@ -626,7 +702,11 @@ fn canonicalize_file_entry(entry: &str, base_path: &Path) -> String {
 /// Each `config.yaml` found in a direct subdirectory must have a top-level `type` field set to
 /// `"integration"`, `"correctness"`, or `"correctness_matrix"`. Files with a missing or unknown
 /// `type` cause a panic. Multiple test types may coexist freely within the same directory.
-pub fn discover_tests(dirs: &[PathBuf]) -> Result<Vec<Box<dyn Test>>, GenericError> {
+///
+/// `integration_runtime` scopes integration-test discovery to a single runtime: an integration
+/// test is included if and only if its `runtimes:` list contains this value. Correctness tests
+/// are unaffected; they always discover.
+pub fn discover_tests(dirs: &[PathBuf], integration_runtime: &str) -> Result<Vec<Box<dyn Test>>, GenericError> {
     let mut tests: Vec<Box<dyn Test>> = Vec::new();
 
     for base_path in dirs {
@@ -644,7 +724,7 @@ pub fn discover_tests(dirs: &[PathBuf]) -> Result<Vec<Box<dyn Test>>, GenericErr
             if path.is_dir() {
                 let config_path = path.join("config.yaml");
                 if config_path.exists() {
-                    match try_load_test(&config_path, &path) {
+                    match try_load_test(&config_path, &path, integration_runtime) {
                         Ok(loaded) => tests.extend(loaded),
                         Err(e) => {
                             // Previously we had a warning here that cannot be seen in TUI-mode. It is better to fail
@@ -667,9 +747,12 @@ pub fn discover_tests(dirs: &[PathBuf]) -> Result<Vec<Box<dyn Test>>, GenericErr
 /// Load one or more test cases from a config file, dispatching on the top-level `type` field.
 ///
 /// Returns a `Vec` because a `correctness_matrix` config expands into multiple independent test
-/// cases—one per variant—while `integration` and `correctness` configs each produce exactly
-/// one test case.
-fn try_load_test(config_path: &Path, dir_path: &Path) -> Result<Vec<Box<dyn Test>>, GenericError> {
+/// cases—one per variant. `integration` configs produce zero or one test case depending on
+/// whether the active `integration_runtime` is in the test's `runtimes:` list. `correctness`
+/// configs produce exactly one test case.
+fn try_load_test(
+    config_path: &Path, dir_path: &Path, integration_runtime: &str,
+) -> Result<Vec<Box<dyn Test>>, GenericError> {
     let content = std::fs::read_to_string(config_path)
         .error_context(format!("Failed to read config file: {}", config_path.display()))?;
 
@@ -685,7 +768,32 @@ fn try_load_test(config_path: &Path, dir_path: &Path) -> Result<Vec<Box<dyn Test
     match test_type {
         "integration" => {
             let config = IntegrationConfig::from_yaml(config_path)?;
-            Ok(vec![Box::new(config)])
+            if config.runtimes.is_empty() {
+                return Err(generic_error!(
+                    "integration test '{}' has empty runtimes list",
+                    config.name
+                ));
+            }
+            // Validate every declared runtime up front so a typo in any list surfaces at discovery
+            // time, even on hosts that wouldn't actually run that runtime.
+            for runtime in &config.runtimes {
+                if runtime != DOCKER_RUNTIME && runtime != MAC_RUNTIME {
+                    return Err(generic_error!(
+                        "integration test '{}' declares unknown runtime '{}' (expected '{}' or '{}')",
+                        config.name,
+                        runtime,
+                        DOCKER_RUNTIME,
+                        MAC_RUNTIME
+                    ));
+                }
+            }
+            // Scope to the active runtime: skip tests that don't opt in to it.
+            if !config.runtimes.iter().any(|r| r == integration_runtime) {
+                return Ok(Vec::new());
+            }
+            let mut variant = config.clone();
+            variant.active_runtime = integration_runtime.to_string();
+            Ok(vec![Box::new(variant)])
         }
         "correctness" => {
             let config_path_str = config_path

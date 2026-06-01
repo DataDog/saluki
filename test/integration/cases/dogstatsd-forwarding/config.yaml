@@ -2,29 +2,31 @@ type: integration
 name: "dogstatsd-forwarding"
 description: "Verifies DogStatsD message forwarding mirrors framed payloads and preserves ingestion"
 timeout: 90s
+# Not yet validated under mac; opt in by adding `mac` to this list once verified.
+runtimes: [docker]
+
+env:
+  DD_API_KEY: "test-api-key"
+  DD_HOSTNAME: "integration-test-dsd-forwarding"
+  DD_DATA_PLANE_ENABLED: "true"
+  DD_DATA_PLANE_STANDALONE_MODE: "true"
+  DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+  DD_DOGSTATSD_TCP_PORT: "9126"
+  DD_DOGSTATSD_SOCKET: "/tmp/dsd-forwarding.sock"
+  DD_DOGSTATSD_STREAM_SOCKET: "/tmp/dsd-forwarding-stream.sock"
+  DD_DOGSTATSD_NON_LOCAL_TRAFFIC: "true"
+  DD_STATSD_FORWARD_HOST: "127.0.0.1"
+  DD_STATSD_FORWARD_PORT: "9125"
 
 container:
   image: "saluki-images/datadog-agent:testing-devel"
   entrypoint:
     - "/opt/datadog-agent/embedded/bin/python3"
     - "/forwarding-test/run_forwarding_test.py"
-  env:
-    DD_API_KEY: "test-api-key"
-    DD_HOSTNAME: "integration-test-dsd-forwarding"
-    DD_DATA_PLANE_ENABLED: "true"
-    DD_DATA_PLANE_STANDALONE_MODE: "true"
-    DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
-    DD_DOGSTATSD_PORT: "8125"
-    DD_DOGSTATSD_TCP_PORT: "9126"
-    DD_DOGSTATSD_SOCKET: "/tmp/dsd-forwarding.sock"
-    DD_DOGSTATSD_STREAM_SOCKET: "/tmp/dsd-forwarding-stream.sock"
-    DD_DOGSTATSD_NON_LOCAL_TRAFFIC: "true"
-    DD_STATSD_FORWARD_HOST: "127.0.0.1"
-    DD_STATSD_FORWARD_PORT: "9125"
   files:
     - "run_forwarding_test.py:/forwarding-test/run_forwarding_test.py"
   exposed_ports:
-    - "8125/udp"
+    - "58125/udp"
     - "9126/tcp"
 
 assertions:
@@ -63,7 +65,7 @@ assertions:
       - type: process_stable_for
         duration: 10s
       - type: port_listening
-        port: 8125
+        port: 58125
         protocol: udp
         timeout: 10s
       - type: port_listening

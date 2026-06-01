@@ -30,7 +30,8 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           # Skip if already matches conventional commits format: type(scope): ...
-          if [[ "$CURRENT_TITLE" =~ ^[a-z]+\([a-z][a-z0-9\ _/-]*\):\ ]]; then
+          title_re='^[a-z]+\([a-z][a-z0-9 _/-]*\): '
+          if [[ "$CURRENT_TITLE" =~ $title_re ]]; then
             echo "Title already in conventional commits format, skipping"
             exit 0
           fi
@@ -44,7 +45,7 @@ jobs:
           elif [[ "$BRANCH" =~ ^engraver-auto-version-upgrade- ]]; then
             # Version upgrade: strip old all-caps prefix, add chore(deps): prefix.
             # Handles: "DEPENDENCY UPGRADE: ...", "VULN UPGRADE: ...", etc.
-            STRIPPED=$(echo "$CURRENT_TITLE" | sed 's/^[A-Z][A-Z0-9 _\/-]*:[[:space:]]*//')
+            STRIPPED=$(echo "$CURRENT_TITLE" | sed 's/^[A-Z][A-Z0-9 _/-]*:[[:space:]]*//')
             NEW_TITLE="chore(deps): ${STRIPPED}"
           else
             echo "Branch pattern '${BRANCH}' not recognised, skipping"
