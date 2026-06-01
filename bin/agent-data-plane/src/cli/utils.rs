@@ -52,22 +52,18 @@ impl DataPlaneAPIClient {
 
         let listen_address = dp_config.secure_api_listen_address();
 
-        #[cfg_attr(not(unix), allow(unused_mut))]
-        let mut builder = HttpClient::builder().with_tls_config(|b| b.danger_accept_invalid_certs());
+        let builder = HttpClient::builder().with_tls_config(|b| b.danger_accept_invalid_certs());
 
-        let authority = match listen_address {
+        let (builder, authority) = match listen_address {
             ListenAddress::Tcp(_) => {
                 let local_address = listen_address
                     .as_local_connect_addr()
                     .expect("should get local address for TCP");
-                local_address.to_string()
+                (builder, local_address.to_string())
             }
 
             #[cfg(unix)]
-            ListenAddress::Unix(path) => {
-                builder = builder.with_unix_socket_path(path);
-                "127.0.0.1".to_string()
-            }
+            ListenAddress::Unix(path) => (builder.with_unix_socket_path(path), "127.0.0.1".to_string()),
 
             _ => {
                 return Err(generic_error!(
