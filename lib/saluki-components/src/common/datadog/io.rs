@@ -367,10 +367,12 @@ async fn run_endpoint_io_loop<B>(
     let v3_api = config.v3_api();
     let endpoint_v3_settings = EndpointV3Settings::from_endpoint_url(
         &configured_endpoint,
+        endpoint.endpoint(),
         &v3_api.series.endpoints,
         &v3_api.sketches.endpoints,
         v3_api.series.validate,
         v3_api.sketches.validate,
+        &v3_api.series.shadow_sites,
     );
     debug!(
         endpoint_url,
