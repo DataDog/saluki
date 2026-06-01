@@ -410,6 +410,15 @@ properties:
     example: '2'
     tags:
     - template_section:Common
+  aggregator_tag_filter_cache_capacity:
+    node_type: setting
+    type: number
+    default: 1000
+    visibility: public
+    description: Maximum number of entries in the per-context deduplication cache used by the metric tag filterlist.
+    example: '1000'
+    tags:
+    - template_section:Common
   aggregator_buffer_size:
     node_type: setting
     type: number
