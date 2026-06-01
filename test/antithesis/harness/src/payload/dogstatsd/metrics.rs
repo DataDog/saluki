@@ -5,7 +5,7 @@ use rand::distr::Distribution;
 use rand::Rng;
 
 use super::common::{self, Vibe};
-use crate::rand::{Boundary, Probe};
+use crate::rand::{Boundary, Wide};
 
 const METRIC_TYPES: &[&[u8]] = &[b"c", b"g", b"ms", b"h", b"s", b"d"];
 
@@ -36,7 +36,7 @@ const EXT_SEPARATORS: &[u8] = b",";
 enum ValueKind {
     Aberrant,
     Int,
-    Float,
+    Wide,
 }
 
 /// A metric extension field.
@@ -63,28 +63,28 @@ pub(crate) fn write<R: Rng + ?Sized>(rng: &mut R, buf: &mut Vec<u8>, vibe: Vibe)
     buf.push(b'\n');
 }
 
-/// Clean: a compact integer. Feral: an aberrant literal, or an int/float in a
-/// compact or cursed-but-equivalent expanded encoding.
+/// Clean: a wide log-uniform value. Feral: an aberrant literal, a wide integer,
+/// or a wide float in a compact or cursed-but-equivalent expanded encoding.
 fn write_value<R: Rng + ?Sized>(rng: &mut R, buf: &mut Vec<u8>, vibe: Vibe) {
-    let mut itoa = itoa::Buffer::new();
+    let mut ryu = ryu::Buffer::new();
     match vibe {
         Vibe::Clean => {
-            let v = Boundary::<i64>::new().sample(rng);
-            buf.extend_from_slice(itoa.format(v).as_bytes());
+            let v: f64 = Wide.sample(rng);
+            buf.extend_from_slice(ryu.format(v).as_bytes());
         }
-        Vibe::Feral => match random_choice(&[ValueKind::Aberrant, ValueKind::Int, ValueKind::Float]) {
+        Vibe::Feral => match random_choice(&[ValueKind::Aberrant, ValueKind::Int, ValueKind::Wide]) {
             Some(ValueKind::Aberrant) => {
                 if let Some(&v) = random_choice(common::ABERRANT_VALUES) {
                     buf.extend_from_slice(v);
                 }
             }
-            Some(ValueKind::Float) => {
-                let v: f64 = Probe.sample(rng);
-                let mut ryu = ryu::Buffer::new();
+            Some(ValueKind::Wide) => {
+                let v: f64 = Wide.sample(rng);
                 common::write_number(rng, buf, ryu.format(v).as_bytes());
             }
             _ => {
-                let v = Boundary::<i64>::new().sample(rng);
+                let mut itoa = itoa::Buffer::new();
+                let v: i64 = Wide.sample(rng);
                 common::write_number(rng, buf, itoa.format(v).as_bytes());
             }
         },

@@ -93,6 +93,16 @@ impl TrafficCaptureReader {
         // The writer emits a zero-length prefix to mark the start of the tagger state trailer; treat
         // that (and any size that would overrun the buffer) as the end of the record stream.
         if size == 0 || self.offset + size > self.contents.len() {
+            // A zero-length prefix is the legitimate trailer marker. A non-zero `size` that overruns the buffer is a
+            // corrupt/oversized length prefix being silently read as clean EOF, which drops every following
+            // well-formed record. Surface the corrupt case as distinct from a real trailer.
+            #[cfg(feature = "antithesis")]
+            antithesis_sdk::assert_always_or_unreachable!(
+                size == 0,
+                "replay read_next stopped at the real trailer, not on a corrupt length prefix",
+                &serde_json::json!({ "size": size, "offset": self.offset, "len": self.contents.len() })
+            );
+
             return Ok(None);
         }
 

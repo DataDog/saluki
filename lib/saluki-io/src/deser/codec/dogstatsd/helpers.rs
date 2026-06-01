@@ -87,9 +87,14 @@ pub fn utf8(input: &[u8]) -> IResult<&[u8], &str> {
 #[inline]
 pub fn ascii_alphanum_and_seps(input: &[u8]) -> IResult<&[u8], &str> {
     let valid_char = |c: u8| c.is_ascii_alphanumeric() || c == b' ' || c == b'_' || c == b'-' || c == b'.';
-    map(take_while1(valid_char), |b| {
+    map(take_while1(valid_char), |b: &[u8]| {
         // SAFETY: We know the bytes in `b` can only be comprised of ASCII characters, which ensures that it's valid to
         // interpret the bytes directly as UTF-8.
+        #[cfg(feature = "antithesis")]
+        antithesis_sdk::assert_always!(
+            b.is_ascii(),
+            "DogStatsD name bytes are ASCII before unchecked UTF-8 conversion"
+        );
         unsafe { std::str::from_utf8_unchecked(b) }
     })
     .parse(input)
@@ -137,9 +142,14 @@ pub fn local_data(input: &[u8]) -> IResult<&[u8], &str> {
     //
     // In some cases, it might contain _multiple_ of these values, separated by a comma.
     let valid_char = |c: u8| c.is_ascii_alphanumeric() || c == b'-' || c == b',';
-    map(take_while1(valid_char), |b| {
+    map(take_while1(valid_char), |b: &[u8]| {
         // SAFETY: We know the bytes in `b` can only be comprised of ASCII characters, which ensures that it's valid to
         // interpret the bytes directly as UTF-8.
+        #[cfg(feature = "antithesis")]
+        antithesis_sdk::assert_always!(
+            b.is_ascii(),
+            "DogStatsD local-data bytes are ASCII before unchecked UTF-8 conversion"
+        );
         unsafe { std::str::from_utf8_unchecked(b) }
     })
     .parse(input)
@@ -159,9 +169,14 @@ pub fn external_data(input: &[u8]) -> IResult<&[u8], &str> {
     // We don't go the full nine yards with enforcing the "starts with a letter and number" bit.. but we _do_ allow
     // commas since individual items in the External Data string are comma-separated.
     let valid_char = |c: u8| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-' || c == b',';
-    map(take_while1(valid_char), |b| {
+    map(take_while1(valid_char), |b: &[u8]| {
         // SAFETY: We know the bytes in `b` can only be comprised of ASCII characters, which ensures that it's valid to
         // interpret the bytes directly as UTF-8.
+        #[cfg(feature = "antithesis")]
+        antithesis_sdk::assert_always!(
+            b.is_ascii(),
+            "DogStatsD external-data bytes are ASCII before unchecked UTF-8 conversion"
+        );
         unsafe { std::str::from_utf8_unchecked(b) }
     })
     .parse(input)

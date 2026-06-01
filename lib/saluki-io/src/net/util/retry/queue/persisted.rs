@@ -232,6 +232,15 @@ where
         ));
         self.total_on_disk_bytes += serialized.len() as u64;
 
+        // The eviction above keeps us within the on-disk byte cap. Assert the invariant.
+        #[cfg(feature = "antithesis")]
+        antithesis_sdk::assert_always_less_than_or_equal_to!(
+            self.total_on_disk_bytes,
+            self.max_on_disk_bytes,
+            "retry queue on-disk bytes within cap",
+            &serde_json::json!({ "bytes": self.total_on_disk_bytes, "cap": self.max_on_disk_bytes })
+        );
+
         debug!(entry.len = serialized.len(), "Enqueued persisted entry.");
 
         Ok(push_result)
@@ -275,6 +284,16 @@ where
 
                     self.total_on_disk_bytes -= entry.size_bytes;
                     self.entries_dropped += 1;
+
+                    // Poison-drop: a corrupt/torn on-disk entry is dropped so it can't wedge recovery forever. Anchor
+                    // that recovery continues past it rather than aborting.
+                    #[cfg(feature = "antithesis")]
+                    antithesis_sdk::assert_sometimes!(
+                        true,
+                        "corrupt persisted retry entry dropped, recovery continues",
+                        &serde_json::json!({})
+                    );
+
                     continue;
                 }
             }
@@ -358,6 +377,16 @@ where
 
                     self.total_on_disk_bytes -= entry.size_bytes;
                     self.entries_dropped += 1;
+
+                    // Poison-drop: a corrupt/torn on-disk entry is dropped so it can't wedge recovery forever. Anchor
+                    // that recovery continues past it rather than aborting.
+                    #[cfg(feature = "antithesis")]
+                    antithesis_sdk::assert_sometimes!(
+                        true,
+                        "corrupt persisted retry entry dropped, recovery continues",
+                        &serde_json::json!({})
+                    );
+
                     continue;
                 }
             };
