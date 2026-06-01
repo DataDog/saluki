@@ -1,12 +1,12 @@
-use std::{collections::VecDeque, path::PathBuf, sync::Arc};
+use std::collections::VecDeque;
 
 use saluki_error::{generic_error, GenericError};
 use serde::{de::DeserializeOwned, Serialize};
-use tracing::debug;
+use tracing::{debug, info, warn};
 
 mod persisted;
-pub use self::persisted::DiskUsageRetrieverImpl;
-use self::persisted::{DiskUsageRetriever, DiskUsageRetrieverWrapper, PersistedQueue};
+use self::persisted::PersistedQueue;
+pub use self::persisted::{DiskUsageRetriever, DiskUsageRetrieverImpl, PersistedQueueArgs};
 
 /// A container that holds events.
 ///
@@ -117,30 +117,27 @@ where
     /// provides priority to the most recent entries added to the queue, but allows for bursting over the configured
     /// in-memory size limit without having to immediately discard entries.
     ///
-    /// Files are stored in a subdirectory, with the same name as the given queue name, within the given `root_path`.
+    /// Files are stored in a subdirectory, with the same name as the given queue name, within `args.root_path`.
     ///
     /// # Errors
     ///
     /// If there is an error initializing the disk persistence layer, an error is returned.
-    pub async fn with_disk_persistence(
-        mut self, root_path: PathBuf, max_disk_size_bytes: u64, storage_max_disk_ratio: f64,
-        disk_usage_retriever: Arc<dyn DiskUsageRetriever + Send + Sync>, max_age_days: u32,
-    ) -> Result<Self, GenericError> {
+    pub async fn with_disk_persistence(mut self, mut args: PersistedQueueArgs) -> Result<Self, GenericError> {
         // Make sure the root storage path is non-empty, as otherwise we can't generate a valid path
         // for the persisted entries in this retry queue.
-        if root_path.as_os_str().is_empty() {
+        if args.root_path.as_os_str().is_empty() {
             return Err(generic_error!("Storage path cannot be empty."));
         }
 
-        let queue_root_path = root_path.join(&self.queue_name);
-        let persisted_pending = PersistedQueue::from_root_path(
-            queue_root_path,
-            max_disk_size_bytes,
-            storage_max_disk_ratio,
-            DiskUsageRetrieverWrapper::new(disk_usage_retriever),
-            max_age_days,
-        )
-        .await?;
+        args.root_path = args.root_path.join(&self.queue_name);
+        let mut persisted_pending = PersistedQueue::from_root_path(args).await?;
+        match persisted_pending.remove_stale_files().await {
+            Ok(removed) if removed > 0 => {
+                info!(count = removed, "Removed outdated retry files from disk.");
+            }
+            Ok(_) => {}
+            Err(e) => warn!(error = %e, "Failed to remove stale retry files."),
+        }
         self.persisted_pending = Some(persisted_pending);
         Ok(self)
     }
@@ -282,7 +279,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
+    use std::{path::Path, sync::Arc};
 
     use rand::RngExt as _;
     use rand_distr::Alphanumeric;
@@ -430,13 +427,13 @@ mod tests {
         assert_eq!(0, file_count_recursive(&root_path));
 
         let mut retry_queue = RetryQueue::<FakeData>::new("test".to_string(), u64::MAX)
-            .with_disk_persistence(
-                root_path.clone(),
-                u64::MAX,
-                1.0,
-                Arc::new(DiskUsageRetrieverImpl::new(root_path.clone())),
-                10,
-            )
+            .with_disk_persistence(PersistedQueueArgs {
+                root_path: root_path.clone(),
+                max_on_disk_bytes: u64::MAX,
+                storage_max_disk_ratio: 1.0,
+                disk_usage_retriever: Arc::new(DiskUsageRetrieverImpl::new(root_path.clone())),
+                max_age_days: 10,
+            })
             .await
             .expect("should not fail to create retry queue with disk persistence");
 
