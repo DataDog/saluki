@@ -11,7 +11,16 @@ workspace = true
 [features]
 default = []
 fips = ["saluki-io/fips"]
-antithesis = ["dep:antithesis_sdk", "antithesis_sdk/full"]
+antithesis = [
+  "dep:antithesis_sdk",
+  "antithesis_sdk/full",
+  "ddsketch/antithesis",
+  "saluki-config/antithesis",
+  "saluki-context/antithesis",
+  "saluki-core/antithesis",
+  "saluki-io/antithesis",
+  "stringtheory/antithesis",
+]
 
 [dependencies]
 antithesis_sdk = { workspace = true, optional = true }

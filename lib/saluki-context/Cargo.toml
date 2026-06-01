@@ -8,7 +8,11 @@ repository = { workspace = true }
 [lints]
 workspace = true
 
+[features]
+antithesis = ["dep:antithesis_sdk", "antithesis_sdk/full", "stringtheory/antithesis"]
+
 [dependencies]
+antithesis_sdk = { workspace = true, optional = true }
 indexmap = { workspace = true }
 memchr = { workspace = true }
 metrics = { workspace = true }

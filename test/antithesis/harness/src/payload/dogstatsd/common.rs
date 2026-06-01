@@ -2,7 +2,7 @@
 
 use antithesis_sdk::random::random_choice;
 use rand::distr::Distribution;
-use rand::Rng;
+use rand::{Rng, RngExt};
 
 use crate::rand::Boundary;
 
@@ -129,12 +129,26 @@ pub(crate) fn extend_choice(buf: &mut Vec<u8>, vibe: Vibe, compliant: &[&[u8]], 
     }
 }
 
+/// Repeated-element counts (segments, tags) for clean payloads: a small body, no boundary cases.
+const ELEMENT_COUNTS_CLEAN: &[u8] = &[1, 1, 2, 2, 3, 3, 4, 5, 6];
+
+/// Repeated-element counts for feral payloads: the clean body plus a `0`/large boundary tail.
+const ELEMENT_COUNTS_FERAL: &[u8] = &[1, 1, 2, 2, 3, 3, 4, 5, 6, 0, 127, 255];
+
+fn sample_count<R: Rng + ?Sized>(rng: &mut R, vibe: Vibe) -> u8 {
+    let counts = match vibe {
+        Vibe::Clean => ELEMENT_COUNTS_CLEAN,
+        Vibe::Feral => ELEMENT_COUNTS_FERAL,
+    };
+    counts[rng.random_range(0..counts.len())]
+}
+
 /// Sample a count of segments and join them with sampled `separators`. A pool of
 /// `N` segments over a count `c` gives `N^c` results.
 pub(crate) fn write_segments<R: Rng + ?Sized>(
     rng: &mut R, buf: &mut Vec<u8>, vibe: Vibe, compliant: &[&[u8]], aberrant: &[&[u8]], separators: &[u8],
 ) {
-    let count = Boundary::<u8>::new().sample(rng);
+    let count = sample_count(rng, vibe);
     for i in 0..count {
         if i > 0 {
             if let Some(&sep) = random_choice(separators) {
@@ -157,11 +171,12 @@ pub(crate) fn write_field(buf: &mut Vec<u8>, vibe: Vibe, prefix: &[u8], complian
     extend_choice(buf, vibe, compliant, aberrant);
 }
 
-/// A boundary-sampled count of `key:value` tags joined by ','. A count of zero
-/// writes no tags. Clean draws compliant keys and values; feral mixes aberrant
-/// ones in, key and value independently.
+/// A vibe-sampled count of `key:value` tags joined by ','. Feral can sample a
+/// count of zero (no tags) or a large boundary count; clean stays in the small
+/// body. Clean draws compliant keys and values; feral mixes aberrant ones in,
+/// key and value independently.
 pub(crate) fn write_tags<R: Rng + ?Sized>(rng: &mut R, buf: &mut Vec<u8>, vibe: Vibe) {
-    let count = Boundary::<u8>::new().sample(rng);
+    let count = sample_count(rng, vibe);
     for t in 0..count {
         if t == 0 {
             buf.extend_from_slice(b"|#");
