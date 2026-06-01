@@ -229,3 +229,5 @@ mpmc
 dhat
 profiler
 launchd
+varint
+serializer

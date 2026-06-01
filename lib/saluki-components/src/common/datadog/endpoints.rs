@@ -16,6 +16,8 @@ use snafu::{ResultExt, Snafu};
 use tracing::debug;
 use url::Url;
 
+use super::protocol::{MetricsPayloadInfo, MetricsProtocolVersion};
+
 static DD_URL_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^app(\.mrf)?(\.[a-z]{2}\d)?\.(datad(oghq|0g)\.(com|eu)|ddog-gov\.com)$").unwrap());
 
@@ -23,6 +25,104 @@ pub const DEFAULT_SITE: &str = "datadoghq.com";
 
 fn default_site() -> String {
     DEFAULT_SITE.to_owned()
+}
+
+/// Per-endpoint V3 protocol settings.
+///
+/// These settings control which protocol versions an endpoint will accept for metrics payloads.
+/// Settings are derived from a global `V3ApiConfig` by matching the endpoint URL against the
+/// configured V3 endpoint lists.
+#[derive(Clone, Debug, Default)]
+pub struct EndpointV3Settings {
+    /// Whether this endpoint accepts V3 series payloads.
+    pub use_v3_series: bool,
+
+    /// Whether this endpoint accepts V3 sketches payloads.
+    pub use_v3_sketches: bool,
+
+    /// Whether validation mode is enabled for series (send both V2 and V3).
+    pub series_validation_mode: bool,
+
+    /// Whether validation mode is enabled for sketches (send both V2 and V3).
+    pub sketches_validation_mode: bool,
+}
+
+impl EndpointV3Settings {
+    /// Creates V3 settings for a specific endpoint based on URL matching.
+    ///
+    /// The `v3_series_endpoints` and `v3_sketches_endpoints` are lists of configured endpoint names.
+    /// If the endpoint name matches any entry, V3 is enabled for that metric type.
+    pub fn from_endpoint_url(
+        configured_endpoint: &str, v3_series_endpoints: &[String], v3_sketches_endpoints: &[String],
+        series_validate: bool, sketches_validate: bool,
+    ) -> Self {
+        let use_v3_series = v3_series_endpoints.iter().any(|e| configured_endpoint == e);
+        let use_v3_sketches = v3_sketches_endpoints.iter().any(|e| configured_endpoint == e);
+
+        Self {
+            use_v3_series,
+            use_v3_sketches,
+            series_validation_mode: use_v3_series && series_validate,
+            sketches_validation_mode: use_v3_sketches && sketches_validate,
+        }
+    }
+
+    /// Determines if this endpoint should receive a payload with the given payload info.
+    ///
+    /// Returns `true` if the endpoint should receive the payload, `false` otherwise.
+    ///
+    /// The logic is:
+    /// - V2 series payload: accept if series V3 is disabled OR series validation mode is enabled
+    /// - V2 sketches payload: accept if sketches V3 is disabled OR sketches validation mode is enabled
+    /// - V3 series payload: accept if series V3 is enabled
+    /// - V3 sketches payload: accept if sketches V3 is enabled
+    /// - Non-metrics payloads (None): always accept
+    pub fn should_receive_payload(&self, payload_info: Option<MetricsPayloadInfo>) -> bool {
+        let Some(info) = payload_info else {
+            // No payload info - this is a non-metrics payload or legacy payload, always accept.
+            return true;
+        };
+
+        let is_sketch = info.is_sketch();
+
+        match info.version {
+            MetricsProtocolVersion::V2 => {
+                if is_sketch {
+                    // V2 sketches: accept if V3 sketches is disabled OR validation mode is enabled
+                    !self.use_v3_sketches || self.sketches_validation_mode
+                } else {
+                    // V2 series: accept if V3 series is disabled OR validation mode is enabled
+                    !self.use_v3_series || self.series_validation_mode
+                }
+            }
+
+            MetricsProtocolVersion::V3 => {
+                if is_sketch {
+                    // V3 sketches: accept if V3 sketches is enabled
+                    self.use_v3_sketches
+                } else {
+                    // V3 series: accept if V3 series is enabled
+                    self.use_v3_series
+                }
+            }
+        }
+    }
+
+    /// Determines if this endpoint should receive metrics validation headers.
+    ///
+    /// Validation headers are endpoint-scoped: they should only be sent to endpoints that are
+    /// receiving both V2 and V3 payloads for the payload's metric family.
+    pub fn should_receive_validation_headers(&self, payload_info: Option<MetricsPayloadInfo>) -> bool {
+        let Some(info) = payload_info else {
+            return false;
+        };
+
+        if info.is_sketch() {
+            self.sketches_validation_mode
+        } else {
+            self.series_validation_mode
+        }
+    }
 }
 
 /// Error type for invalid endpoints.
@@ -105,6 +205,7 @@ impl AdditionalEndpoints {
                 seen.insert(trimmed_api_key);
                 resolved.push(ResolvedEndpoint {
                     endpoint: endpoint.clone(),
+                    configured_endpoint: raw_endpoint.to_string(),
                     api_key: trimmed_api_key.to_string(),
                     config: configuration.clone(),
                     api_key_index: Some(index),
@@ -215,6 +316,7 @@ impl EndpointConfiguration {
 #[derive(Clone, Debug)]
 pub struct ResolvedEndpoint {
     endpoint: Url,
+    configured_endpoint: String,
     api_key: String,
     config: Option<GenericConfiguration>,
     /// Position of this key in the `additional_endpoints` config key list for its URL (raw
@@ -286,6 +388,7 @@ impl ResolvedEndpoint {
         let traces_authority = compute_traces_authority(&endpoint);
         Ok(Self {
             endpoint,
+            configured_endpoint: raw_endpoint.to_string(),
             api_key: api_key.to_string(),
             config: None,
             api_key_index: None,
@@ -299,6 +402,7 @@ impl ResolvedEndpoint {
     pub fn with_configuration(self, config: Option<GenericConfiguration>) -> Self {
         Self {
             endpoint: self.endpoint,
+            configured_endpoint: self.configured_endpoint,
             api_key: self.api_key,
             config,
             api_key_index: self.api_key_index,
@@ -311,6 +415,13 @@ impl ResolvedEndpoint {
     /// Returns the endpoint of the resolver.
     pub fn endpoint(&self) -> &Url {
         &self.endpoint
+    }
+
+    /// Returns the endpoint string as it was provided by configuration.
+    ///
+    /// Unlike [`ResolvedEndpoint::endpoint`], this is not rewritten with the data plane version prefix.
+    pub fn configured_endpoint(&self) -> &str {
+        &self.configured_endpoint
     }
 
     /// Returns the API key associated with the endpoint.
@@ -409,15 +520,19 @@ impl ResolvedEndpoint {
     }
 }
 
+fn endpoint_with_default_scheme(raw_endpoint: &str) -> String {
+    if !raw_endpoint.starts_with("http://") && !raw_endpoint.starts_with("https://") {
+        format!("https://{}", raw_endpoint)
+    } else {
+        raw_endpoint.to_string()
+    }
+}
+
 fn parse_and_normalize_endpoint(raw_endpoint: &str) -> Result<Url, EndpointError> {
     // Start out by parsing the given domain/endpoint, which means ensuring first that it has a scheme.
     //
     // If no scheme is present, we assume HTTPS.
-    let raw_endpoint = if !raw_endpoint.starts_with("http://") && !raw_endpoint.starts_with("https://") {
-        format!("https://{}", raw_endpoint)
-    } else {
-        raw_endpoint.to_string()
-    };
+    let raw_endpoint = endpoint_with_default_scheme(raw_endpoint);
 
     let endpoint = Url::parse(&raw_endpoint).context(Parse { endpoint: raw_endpoint })?;
 
@@ -503,7 +618,7 @@ fn calculate_resolved_endpoint(
             //
             // We also do a little bit of prefixing to get it in the right shape before creating the resolved endpoint.
             let base_domain = if site.is_empty() { DEFAULT_SITE } else { site };
-            format!("app.{}", base_domain)
+            format!("https://app.{}", base_domain)
         }
     };
 
@@ -819,5 +934,72 @@ mod tests {
         let resolved = calculate_resolved_endpoint(Some(override_url), "us3.datadoghq.com", "")
             .expect("error calculating override API endpoint");
         assert_eq!(expected_endpoint, resolved.endpoint().to_string());
+    }
+
+    #[test]
+    fn validation_headers_are_scoped_to_payload_family() {
+        let settings = EndpointV3Settings {
+            use_v3_series: true,
+            use_v3_sketches: false,
+            series_validation_mode: true,
+            sketches_validation_mode: false,
+        };
+
+        assert!(settings.should_receive_validation_headers(Some(MetricsPayloadInfo::v2_series())));
+        assert!(settings.should_receive_validation_headers(Some(MetricsPayloadInfo::v3_series())));
+        assert!(!settings.should_receive_validation_headers(Some(MetricsPayloadInfo::v2_sketches())));
+        assert!(!settings.should_receive_validation_headers(Some(MetricsPayloadInfo::v3_sketches())));
+        assert!(!settings.should_receive_validation_headers(None));
+    }
+
+    #[test]
+    fn v3_endpoint_matching_uses_configured_endpoint_before_version_prefix() {
+        let resolved = ResolvedEndpoint::from_raw_endpoint("https://app.datadoghq.com", "fake-api-key")
+            .expect("endpoint should resolve");
+
+        assert_eq!("https://app.datadoghq.com", resolved.configured_endpoint());
+        assert_ne!("app.datadoghq.com", resolved.endpoint().host_str().unwrap());
+
+        let v3_series_endpoints = vec!["https://app.datadoghq.com".to_string()];
+        let settings = EndpointV3Settings::from_endpoint_url(
+            resolved.configured_endpoint(),
+            &v3_series_endpoints,
+            &[],
+            false,
+            false,
+        );
+
+        assert!(settings.use_v3_series);
+    }
+
+    #[test]
+    fn v3_endpoint_matching_is_endpoint_based() {
+        let v3_series_endpoints = vec!["https://app.us".to_string()];
+        let settings = EndpointV3Settings::from_endpoint_url(
+            "https://app.us5.datadoghq.com",
+            &v3_series_endpoints,
+            &[],
+            false,
+            false,
+        );
+
+        assert!(!settings.use_v3_series);
+    }
+
+    #[test]
+    fn v3_endpoint_matching_requires_exact_configured_endpoint() {
+        let v3_series_endpoints = vec!["app.datadoghq.com/".to_string()];
+        let settings =
+            EndpointV3Settings::from_endpoint_url("https://app.datadoghq.com", &v3_series_endpoints, &[], false, false);
+
+        assert!(!settings.use_v3_series);
+    }
+
+    #[test]
+    fn calculated_site_endpoint_uses_agent_configured_endpoint_shape() {
+        let resolved =
+            calculate_resolved_endpoint(None, "datadoghq.com", "").expect("error calculating default API endpoint");
+
+        assert_eq!("https://app.datadoghq.com", resolved.configured_endpoint());
     }
 }

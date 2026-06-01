@@ -6,4 +6,4 @@ Agent/Agent Data Plane send telemetry payloads to.
 ## Source
 
 **Repository:** https://github.com/DataDog/agent-payload.git
-**Branch / Tag**: v5.0.164
+**Branch / Tag**: v5.0.180
