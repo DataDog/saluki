@@ -171,4 +171,12 @@ $Panoramic = Join-Path $env:CARGO_TARGET_DIR "release\panoramic.exe"
 $TestDir = Join-Path $RepoRoot "test\integration\cases"
 
 Write-Host "[*] Running Windows integration tests..."
-Invoke-Native $Panoramic run -d $TestDir --runtime windows --no-tui -p 1 -l $env:PANORAMIC_LOG_DIR
+$PanoramicArgs = @(
+    "run",
+    "-d", $TestDir,
+    "--runtime", "windows",
+    "--no-tui",
+    "-p", "1",
+    "-l", $env:PANORAMIC_LOG_DIR
+)
+Invoke-Native -FilePath $Panoramic -Arguments $PanoramicArgs

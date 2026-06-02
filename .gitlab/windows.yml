@@ -53,7 +53,7 @@ unit-tests-windows-amd64:
       powershell.exe -NoProfile -NonInteractive -File c:\mnt\ci\tooling\windows-unit-tests.ps1
     - If ($lastExitCode -ne "0") { exit "$lastExitCode" }
 
-integration-tests-windows-amd64:
+test-integration-windows-amd64:
   extends: .windows-amd64-test-job
   stage: e2e
   cache:
