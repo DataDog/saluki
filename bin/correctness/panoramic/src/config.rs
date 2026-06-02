@@ -124,7 +124,7 @@ pub struct IntegrationConfig {
 
     /// Runtimes under which this test is eligible to run.
     ///
-    /// Each value must be either `"docker"` (the default) or `"mac"`. The active
+    /// Each value must be `"docker"` (the default), `"mac"`, or `"windows"`. The active
     /// runtime for any given panoramic invocation is chosen at the CLI level (`--runtime`,
     /// defaulting to the host's native runtime); a test discovers only when this list contains
     /// that active runtime. Tests with multiple entries are portable across runtimes, but still
@@ -155,17 +155,22 @@ fn default_integration_runtimes() -> Vec<String> {
 /// platforms will get their own identifiers (for example, `linux`).
 pub const MAC_RUNTIME: &str = "mac";
 
-/// Runtime identifier for integration tests that run inside a Docker container.
+/// Runtime identifier for integration tests that run inside a Linux Docker container.
 pub const DOCKER_RUNTIME: &str = "docker";
+
+/// Runtime identifier for integration tests that run inside a Windows Docker container.
+pub const WINDOWS_RUNTIME: &str = "windows";
 
 /// Returns the integration-test runtime that is native to the host OS.
 ///
-/// `mac` on macOS hosts, `docker` everywhere else. Used as the default when a panoramic
+/// `mac` on macOS hosts, `windows` on Windows hosts, and `docker` everywhere else. Used as the default when a panoramic
 /// subcommand is invoked without an explicit `--runtime` flag, so that callers on the most
 /// common host get the most common runtime without having to spell it out.
 pub fn default_host_runtime() -> &'static str {
     if cfg!(target_os = "macos") {
         MAC_RUNTIME
+    } else if cfg!(target_os = "windows") {
+        WINDOWS_RUNTIME
     } else {
         DOCKER_RUNTIME
     }
@@ -777,13 +782,14 @@ fn try_load_test(
             // Validate every declared runtime up front so a typo in any list surfaces at discovery
             // time, even on hosts that wouldn't actually run that runtime.
             for runtime in &config.runtimes {
-                if runtime != DOCKER_RUNTIME && runtime != MAC_RUNTIME {
+                if runtime != DOCKER_RUNTIME && runtime != MAC_RUNTIME && runtime != WINDOWS_RUNTIME {
                     return Err(generic_error!(
-                        "integration test '{}' declares unknown runtime '{}' (expected '{}' or '{}')",
+                        "integration test '{}' declares unknown runtime '{}' (expected '{}', '{}', or '{}')",
                         config.name,
                         runtime,
                         DOCKER_RUNTIME,
-                        MAC_RUNTIME
+                        MAC_RUNTIME,
+                        WINDOWS_RUNTIME
                     ));
                 }
             }
@@ -910,5 +916,84 @@ mod tests {
         assert_eq!(container, "/etc/config.yaml");
 
         assert!(parse_file_spec("nocolon").is_err());
+    }
+
+    #[test]
+    fn test_windows_runtime_is_valid_for_integration_discovery() {
+        let base_dir = create_test_case_dir(
+            "windows-smoke",
+            r#"
+type: integration
+name: windows-smoke
+timeout: 10s
+runtimes: [windows]
+container:
+  image: saluki-images/agent-data-plane:testing-windows
+assertions: []
+"#,
+        );
+
+        let tests = discover_tests(&[base_dir.path().to_path_buf()], "windows").unwrap();
+
+        assert_eq!(tests.len(), 1);
+        assert_eq!(tests[0].name(), "windows-smoke");
+        assert_eq!(tests[0].runtime(), "windows");
+    }
+
+    #[test]
+    fn test_windows_runtime_reports_container_image_dependency() {
+        let base_dir = create_test_case_dir(
+            "windows-smoke",
+            r#"
+type: integration
+name: windows-smoke
+timeout: 10s
+runtimes: [windows]
+container:
+  image: saluki-images/agent-data-plane:testing-windows
+assertions: []
+"#,
+        );
+
+        let tests = discover_tests(&[base_dir.path().to_path_buf()], "windows").unwrap();
+        let images = tests[0].images();
+
+        assert_eq!(
+            images.get("container"),
+            Some(&"saluki-images/agent-data-plane:testing-windows".to_string())
+        );
+    }
+
+    struct TestCaseDir {
+        path: PathBuf,
+    }
+
+    impl TestCaseDir {
+        fn path(&self) -> &Path {
+            &self.path
+        }
+    }
+
+    impl Drop for TestCaseDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+
+    fn create_test_case_dir(case_name: &str, config: &str) -> TestCaseDir {
+        let unique = format!(
+            "panoramic-config-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let base_dir = std::env::temp_dir().join(unique);
+        let case_dir = base_dir.join(case_name);
+        std::fs::create_dir_all(&case_dir).unwrap();
+        std::fs::write(case_dir.join("config.yaml"), config).unwrap();
+
+        TestCaseDir { path: base_dir }
     }
 }

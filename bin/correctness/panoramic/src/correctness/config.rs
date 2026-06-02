@@ -7,7 +7,7 @@ use airlock::{
         DatadogIntakeConfig as AirlockDatadogIntakeConfig, MillstoneConfig as AirlockMillstoneConfig,
         TargetConfig as AirlockTargetConfig,
     },
-    driver::DriverConfig,
+    driver::{ContainerOs, DriverConfig},
 };
 use async_trait::async_trait;
 use saluki_config::ConfigurationLoader;
@@ -261,6 +261,7 @@ impl Config {
             entrypoint: target_config.entrypoint.clone(),
             command: target_config.command.clone(),
             additional_env_vars: target_config.additional_env_vars.clone(),
+            container_os: ContainerOs::Linux,
         };
 
         let mut driver_config = DriverConfig::target("target", airlock_target_config).await?;

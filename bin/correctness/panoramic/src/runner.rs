@@ -13,7 +13,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use airlock::driver::{Driver, DriverConfig, DriverDetails};
+use airlock::driver::{ContainerOs, Driver, DriverConfig, DriverDetails};
 use bollard::container::LogOutput;
 use futures::stream::{self, StreamExt as _};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
@@ -37,6 +37,10 @@ pub(crate) type EventSender = mpsc::UnboundedSender<TestEvent>;
 
 /// The amount of time a test has to clean up after cancellation or timing out.
 const GRACE_TIME: Duration = Duration::from_secs(30);
+
+fn should_apply_target_mounts(runtime: &str) -> bool {
+    runtime != crate::config::WINDOWS_RUNTIME
+}
 
 pub(crate) struct RunArgs {
     /// The number of tests to run in parallel.
@@ -705,17 +709,26 @@ impl IntegrationRunner {
         let env_vars: Vec<String> = merged_env.iter().map(|(k, v)| format!("{}={}", k, v)).collect();
 
         // Build the target config.
+        let container_os = if self.test_case.active_runtime == crate::config::WINDOWS_RUNTIME {
+            ContainerOs::Windows
+        } else {
+            ContainerOs::Linux
+        };
+
         let target_config = airlock::config::TargetConfig {
             image: container.image.clone(),
             entrypoint: container.entrypoint.clone(),
             command: container.command.clone(),
             additional_env_vars: env_vars,
+            container_os,
         };
 
         let mut config = DriverConfig::target("target", target_config).await?;
 
         // Apply panoramic's read-only file overlays before any test-specific bind mounts.
-        config = crate::mounts::apply_target_mounts(config, self.tctx.mounts_dir())?;
+        if should_apply_target_mounts(&self.test_case.active_runtime) {
+            config = crate::mounts::apply_target_mounts(config, self.tctx.mounts_dir())?;
+        }
 
         // Add file mounts.
         for file_spec in &container.files {
@@ -964,5 +977,20 @@ impl TestResult {
             phase_timings: vec![],
             assertion_details: vec![],
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn windows_runtime_skips_linux_target_mounts() {
+        assert!(!should_apply_target_mounts(crate::config::WINDOWS_RUNTIME));
+    }
+
+    #[test]
+    fn docker_runtime_applies_linux_target_mounts() {
+        assert!(should_apply_target_mounts(crate::config::DOCKER_RUNTIME));
     }
 }

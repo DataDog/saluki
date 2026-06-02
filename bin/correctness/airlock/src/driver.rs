@@ -52,6 +52,15 @@ impl fmt::Display for ExitStatus {
     }
 }
 
+/// Container operating system for a driver target.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ContainerOs {
+    /// Linux container defaults.
+    Linux,
+    /// Windows container defaults.
+    Windows,
+}
+
 /// Driver configuration.
 ///
 /// This is the basic set of configuration options needed to spawn the container for a given driver.
@@ -65,6 +74,7 @@ pub struct DriverConfig {
     binds: Vec<String>,
     healthcheck: Option<HealthConfig>,
     exposed_ports: Vec<(&'static str, u16)>,
+    container_os: ContainerOs,
     /// Additional named Docker volume mounts, in `volume_name:/container/path` format.
     ///
     /// Unlike bind mounts specified via [`with_bind_mount`][Self::with_bind_mount], these reference
@@ -153,7 +163,8 @@ impl DriverConfig {
         let driver_config = DriverConfig::from_image(target_id, config.image)
             .with_entrypoint(config.entrypoint)
             .with_command(config.command)
-            .with_env_vars(config.additional_env_vars);
+            .with_env_vars(config.additional_env_vars)
+            .with_container_os(config.container_os);
 
         Ok(driver_config)
     }
@@ -169,6 +180,7 @@ impl DriverConfig {
             binds: vec![],
             healthcheck: None,
             exposed_ports: vec![],
+            container_os: ContainerOs::Linux,
             additional_volume_mounts: vec![],
             network_aliases: vec![],
             additional_networks: vec![],
@@ -306,6 +318,33 @@ impl DriverConfig {
         self.exposed_ports.push((protocol, internal_port));
         self
     }
+
+    /// Sets the operating system defaults used when creating this container.
+    pub fn with_container_os(mut self, container_os: ContainerOs) -> Self {
+        self.container_os = container_os;
+        self
+    }
+
+    fn needs_shared_volume_permission_fixup(&self) -> bool {
+        self.container_os == ContainerOs::Linux
+    }
+
+    fn container_binds_from(&self, isolation_group_name: &str, mut binds: Vec<String>) -> Vec<String> {
+        match self.container_os {
+            ContainerOs::Linux => {
+                binds.push(format!("{}:/airlock:z", isolation_group_name));
+                binds.push("/proc:/host/proc:ro".to_string());
+                binds.push("/sys/fs/cgroup:/host/sys/fs/cgroup:ro".to_string());
+                binds.push("/var/run/docker.sock:/var/run/docker.sock:ro".to_string());
+            }
+            ContainerOs::Windows => {
+                binds.push(format!("{}:C:\\airlock", isolation_group_name));
+            }
+        }
+
+        binds.extend(self.additional_volume_mounts.clone());
+        binds
+    }
 }
 
 /// Detailed information about the spawned container.
@@ -313,6 +352,15 @@ impl DriverConfig {
 pub struct DriverDetails {
     container_name: String,
     port_mappings: Option<HashMap<String, u16>>,
+}
+
+fn record_port_mapping(
+    port_mappings: &mut HashMap<String, u16>, internal_port: impl Into<String>, _host_ip: Option<&str>,
+    host_port: Option<&str>,
+) {
+    if let Some(host_port) = host_port.and_then(|value| value.parse::<u16>().ok()) {
+        port_mappings.insert(internal_port.into(), host_port);
+    }
 }
 
 impl DriverDetails {
@@ -624,22 +672,9 @@ impl Driver {
 
     async fn create_container_inner(
         &self, container_name: String, image: String, entrypoint: Option<Vec<String>>, cmd: Option<Vec<String>>,
-        mut binds: Vec<String>, env: Option<Vec<String>>,
+        binds: Vec<String>, env: Option<Vec<String>>,
     ) -> Result<String, GenericError> {
-        // Take the configured binds for the container and add in our shared volume that all containers in this
-        // isolation group will use.
-        binds.push(format!("{}:/airlock:z", self.isolation_group_name));
-
-        // Map specific host-level paths into the containers so they can access host-level resources needed for origin
-        // detection.
-        binds.push("/proc:/host/proc:ro".to_string());
-        binds.push("/sys/fs/cgroup:/host/sys/fs/cgroup:ro".to_string());
-        binds.push("/var/run/docker.sock:/var/run/docker.sock:ro".to_string());
-
-        // Append any additional named volume mounts (for example, cross-group volumes for shared millstone).
-        for mount in &self.config.additional_volume_mounts {
-            binds.push(mount.clone());
-        }
+        let binds = self.config.container_binds_from(&self.isolation_group_name, binds);
 
         // Set up NetworkingConfig to apply aliases on the primary network, if any are configured.
         let networking_config = if !self.config.network_aliases.is_empty() {
@@ -673,6 +708,11 @@ impl Driver {
             (Some(true), Some(exposed_ports))
         };
 
+        let pid_mode = match self.config.container_os {
+            ContainerOs::Linux => Some("host".to_string()),
+            ContainerOs::Windows => None,
+        };
+
         let container_config = ContainerCreateBody {
             hostname: Some(self.config.driver_id.to_string()),
             env,
@@ -683,7 +723,7 @@ impl Driver {
                 binds: Some(binds),
                 network_mode: Some(self.isolation_group_name.clone()),
                 publish_all_ports,
-                pid_mode: Some("host".to_string()),
+                pid_mode,
                 ..Default::default()
             }),
             healthcheck: self.config.healthcheck.clone(),
@@ -748,16 +788,14 @@ impl Driver {
                 for (internal_port, bindings) in ports {
                     if let Some(bindings) = bindings {
                         for binding in bindings {
-                            if let Some(host_ip) = binding.host_ip.as_deref() {
-                                if host_ip == "0.0.0.0" {
-                                    let maybe_host_port =
-                                        binding.host_port.as_ref().and_then(|value| value.parse::<u16>().ok());
-
-                                    if let Some(host_port) = maybe_host_port {
-                                        port_mappings.insert(internal_port, host_port);
-                                        break;
-                                    }
-                                }
+                            record_port_mapping(
+                                port_mappings,
+                                internal_port.clone(),
+                                binding.host_ip.as_deref(),
+                                binding.host_port.as_deref(),
+                            );
+                            if port_mappings.contains_key(&internal_port) {
+                                break;
                             }
                         }
                     }
@@ -836,7 +874,9 @@ impl Driver {
         self.create_network_if_missing().await?;
         self.create_image_if_missing().await?;
         self.create_volume_if_missing().await?;
-        self.adjust_shared_volume_permissions().await?;
+        if self.config.needs_shared_volume_permission_fixup() {
+            self.adjust_shared_volume_permissions().await?;
+        }
 
         self.create_container().await?;
         self.connect_to_additional_networks().await?;
@@ -1177,4 +1217,76 @@ fn get_default_airlock_labels(isolation_group_id: &str) -> HashMap<String, Strin
     labels.insert("created_by".to_string(), "airlock".to_string());
     labels.insert("airlock-isolation-group".to_string(), isolation_group_id.to_string());
     labels
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_linux_container_binds_include_airlock_and_linux_host_resources() {
+        let config = DriverConfig::from_image("target", "example:latest".to_string());
+
+        let binds = config.container_binds_from("airlock-test", config.binds.clone());
+
+        assert!(binds.contains(&"airlock-test:/airlock:z".to_string()));
+        assert!(binds.contains(&"/proc:/host/proc:ro".to_string()));
+        assert!(binds.contains(&"/sys/fs/cgroup:/host/sys/fs/cgroup:ro".to_string()));
+        assert!(binds.contains(&"/var/run/docker.sock:/var/run/docker.sock:ro".to_string()));
+    }
+
+    #[test]
+    fn windows_container_binds_use_windows_airlock_and_skip_linux_host_resources() {
+        let config =
+            DriverConfig::from_image("target", "example:latest".to_string()).with_container_os(ContainerOs::Windows);
+
+        let binds = config.container_binds_from("airlock-test", config.binds.clone());
+
+        assert!(binds.contains(&"airlock-test:C:\\airlock".to_string()));
+        assert!(!binds.iter().any(|bind| bind.contains("/proc")));
+        assert!(!binds.iter().any(|bind| bind.contains("/sys/fs/cgroup")));
+        assert!(!binds.iter().any(|bind| bind.contains("/var/run/docker.sock")));
+        assert!(!binds.iter().any(|bind| bind.ends_with(":z")));
+    }
+
+    #[tokio::test]
+    async fn target_config_preserves_windows_container_os() {
+        let target = TargetConfig {
+            image: "example:latest".to_string(),
+            entrypoint: vec![],
+            command: vec![],
+            additional_env_vars: vec![],
+            container_os: ContainerOs::Windows,
+        };
+
+        let config = DriverConfig::target("target", target).await.unwrap();
+
+        assert_eq!(config.container_os, ContainerOs::Windows);
+    }
+
+    #[test]
+    fn port_mapping_accepts_non_wildcard_host_ip() {
+        let mut mappings = HashMap::new();
+
+        record_port_mapping(&mut mappings, "55100/tcp", Some("127.0.0.1"), Some("49152"));
+
+        assert_eq!(mappings.get("55100/tcp"), Some(&49152));
+    }
+
+    #[test]
+    fn port_mapping_ignores_invalid_host_port() {
+        let mut mappings = HashMap::new();
+
+        record_port_mapping(&mut mappings, "55100/tcp", Some("127.0.0.1"), Some("not-a-port"));
+
+        assert!(!mappings.contains_key("55100/tcp"));
+    }
+
+    #[test]
+    fn windows_container_skips_shared_volume_permission_fixup() {
+        let config =
+            DriverConfig::from_image("target", "example:latest".to_string()).with_container_os(ContainerOs::Windows);
+
+        assert!(!config.needs_shared_volume_permission_fixup());
+    }
 }
