@@ -60,7 +60,7 @@ impl RemoteAgentClient {
             let ipc_cert_file_path = config.auth().ipc_cert_file_path();
             let client_tls_config = build_ipc_client_ipc_tls_config(ipc_cert_file_path).await?;
             let connector_builder = HttpsCapableConnectorBuilder::default();
-            #[cfg(all(feature = "vsock", target_os = "linux"))]
+            #[cfg(target_os = "linux")]
             let connector_builder = if let Some(cid) = config.vsock_cid() {
                 connector_builder.with_vsock_cid(cid)
             } else {

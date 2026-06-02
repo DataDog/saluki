@@ -160,7 +160,7 @@ pub struct RemoteAgentClientConfiguration {
     /// Common CID values: `2` (VMADDR_CID_HOST) to connect from a guest to the host.
     ///
     /// Defaults to unset (TCP connection).
-    #[cfg(all(feature = "vsock", target_os = "linux"))]
+    #[cfg(target_os = "linux")]
     vsock_addr: Option<u32>,
 }
 
@@ -200,7 +200,7 @@ impl RemoteAgentClientConfiguration {
     }
 
     /// Returns the vsock CID to use for connecting to the Agent IPC endpoint, if configured.
-    #[cfg(all(feature = "vsock", target_os = "linux"))]
+    #[cfg(target_os = "linux")]
     pub fn vsock_cid(&self) -> Option<u32> {
         self.vsock_addr
     }

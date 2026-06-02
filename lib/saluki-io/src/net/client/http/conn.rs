@@ -62,7 +62,7 @@ enum Transport {
     Tcp(TokioIo<TcpStream>),
     #[cfg(unix)]
     Unix(TokioIo<tokio::net::UnixStream>),
-    #[cfg(all(feature = "vsock", target_os = "linux"))]
+    #[cfg(target_os = "linux")]
     Vsock(TokioIo<tokio_vsock::VsockStream>),
 }
 
@@ -72,7 +72,7 @@ impl Connection for Transport {
             Self::Tcp(s) => s.connected(),
             #[cfg(unix)]
             Self::Unix(_) => Connected::new(),
-            #[cfg(all(feature = "vsock", target_os = "linux"))]
+            #[cfg(target_os = "linux")]
             Self::Vsock(_) => Connected::new(),
         }
     }
@@ -86,7 +86,7 @@ impl hyper::rt::Read for Transport {
             Self::Tcp(s) => Pin::new(s).poll_read(cx, buf),
             #[cfg(unix)]
             Self::Unix(s) => Pin::new(s).poll_read(cx, buf),
-            #[cfg(all(feature = "vsock", target_os = "linux"))]
+            #[cfg(target_os = "linux")]
             Self::Vsock(s) => Pin::new(s).poll_read(cx, buf),
         }
     }
@@ -98,7 +98,7 @@ impl hyper::rt::Write for Transport {
             Self::Tcp(s) => Pin::new(s).poll_write(cx, buf),
             #[cfg(unix)]
             Self::Unix(s) => Pin::new(s).poll_write(cx, buf),
-            #[cfg(all(feature = "vsock", target_os = "linux"))]
+            #[cfg(target_os = "linux")]
             Self::Vsock(s) => Pin::new(s).poll_write(cx, buf),
         }
     }
@@ -108,7 +108,7 @@ impl hyper::rt::Write for Transport {
             Self::Tcp(s) => Pin::new(s).poll_flush(cx),
             #[cfg(unix)]
             Self::Unix(s) => Pin::new(s).poll_flush(cx),
-            #[cfg(all(feature = "vsock", target_os = "linux"))]
+            #[cfg(target_os = "linux")]
             Self::Vsock(s) => Pin::new(s).poll_flush(cx),
         }
     }
@@ -118,7 +118,7 @@ impl hyper::rt::Write for Transport {
             Self::Tcp(s) => Pin::new(s).poll_shutdown(cx),
             #[cfg(unix)]
             Self::Unix(s) => Pin::new(s).poll_shutdown(cx),
-            #[cfg(all(feature = "vsock", target_os = "linux"))]
+            #[cfg(target_os = "linux")]
             Self::Vsock(s) => Pin::new(s).poll_shutdown(cx),
         }
     }
@@ -128,7 +128,7 @@ impl hyper::rt::Write for Transport {
             Self::Tcp(s) => s.is_write_vectored(),
             #[cfg(unix)]
             Self::Unix(s) => s.is_write_vectored(),
-            #[cfg(all(feature = "vsock", target_os = "linux"))]
+            #[cfg(target_os = "linux")]
             Self::Vsock(s) => s.is_write_vectored(),
         }
     }
@@ -140,7 +140,7 @@ impl hyper::rt::Write for Transport {
             Self::Tcp(s) => Pin::new(s).poll_write_vectored(cx, bufs),
             #[cfg(unix)]
             Self::Unix(s) => Pin::new(s).poll_write_vectored(cx, bufs),
-            #[cfg(all(feature = "vsock", target_os = "linux"))]
+            #[cfg(target_os = "linux")]
             Self::Vsock(s) => Pin::new(s).poll_write_vectored(cx, bufs),
         }
     }
@@ -256,7 +256,7 @@ struct InnerConnector {
     error_telemetry: Option<HttpTransactionErrorTelemetry>,
     #[cfg(unix)]
     unix_socket_path: Option<Arc<std::path::Path>>,
-    #[cfg(all(feature = "vsock", target_os = "linux"))]
+    #[cfg(target_os = "linux")]
     vsock_cid: Option<u32>,
 }
 
@@ -273,7 +273,7 @@ impl Service<Uri> for InnerConnector {
             return Poll::Ready(Ok(()));
         }
 
-        #[cfg(all(feature = "vsock", target_os = "linux"))]
+        #[cfg(target_os = "linux")]
         if self.vsock_cid.is_some() {
             return Poll::Ready(Ok(()));
         }
@@ -305,7 +305,7 @@ impl Service<Uri> for InnerConnector {
             });
         }
 
-        #[cfg(all(feature = "vsock", target_os = "linux"))]
+        #[cfg(target_os = "linux")]
         if let Some(cid) = self.vsock_cid {
             let connect_timeout = self.connect_timeout;
             let error_telemetry = self.error_telemetry.clone();
@@ -421,7 +421,7 @@ pub struct HttpsCapableConnectorBuilder {
     http_protocol: HttpProtocol,
     #[cfg(unix)]
     unix_socket_path: Option<PathBuf>,
-    #[cfg(all(feature = "vsock", target_os = "linux"))]
+    #[cfg(target_os = "linux")]
     vsock_cid: Option<u32>,
 }
 
@@ -495,7 +495,7 @@ impl HttpsCapableConnectorBuilder {
     /// Mirrors the Agent's `vsock_addr` configuration key.
     ///
     /// Defaults to unset (TCP connections via DNS).
-    #[cfg(all(feature = "vsock", target_os = "linux"))]
+    #[cfg(target_os = "linux")]
     pub fn with_vsock_cid(mut self, cid: u32) -> Self {
         self.vsock_cid = Some(cid);
         self
@@ -523,7 +523,7 @@ impl HttpsCapableConnectorBuilder {
             error_telemetry: self.error_telemetry.clone(),
             #[cfg(unix)]
             unix_socket_path: self.unix_socket_path.map(PathBuf::into_boxed_path).map(Arc::from),
-            #[cfg(all(feature = "vsock", target_os = "linux"))]
+            #[cfg(target_os = "linux")]
             vsock_cid: self.vsock_cid,
         };
 
