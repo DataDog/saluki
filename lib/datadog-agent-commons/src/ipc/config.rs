@@ -150,18 +150,40 @@ pub struct RemoteAgentClientConfiguration {
     )]
     grpc_max_message_size: usize,
 
-    /// vsock Context ID (CID) for connecting to the Agent IPC endpoint via AF_VSOCK.
+    /// vsock address for connecting to the Agent IPC endpoint via AF_VSOCK.
     ///
-    /// When set, the IPC client connects over a vsock socket using this CID with the port taken
-    /// from the configured endpoint. This mirrors the Datadog Agent's `vsock_addr` configuration,
-    /// which enables communication with Agent processes running in a host or hypervisor from within
-    /// a guest VM (e.g., on Nitro Enclaves or Terrapin microVM environments).
+    /// When set, the IPC client connects over a vsock socket using the resolved CID with the port
+    /// taken from the configured endpoint. This mirrors the Datadog Agent's `vsock_addr`
+    /// configuration, enabling communication from within a guest VM (e.g., Nitro Enclaves or
+    /// Terrapin microVM environments) to an Agent process running on the host or hypervisor.
     ///
-    /// Common CID values: `2` (VMADDR_CID_HOST) to connect from a guest to the host.
+    /// Accepted values:
+    /// - `host` — connect to the host (CID 2, `VMADDR_CID_HOST`)
+    /// - `hypervisor` — connect to the hypervisor (CID 0, `VMADDR_CID_HYPERVISOR`)
+    /// - `local` — connect to the local VM (CID 3, `VMADDR_CID_LOCAL`)
     ///
     /// Defaults to unset (TCP connection).
     #[cfg(target_os = "linux")]
+    #[serde(default, deserialize_with = "deserialize_vsock_addr")]
     vsock_addr: Option<u32>,
+}
+
+#[cfg(target_os = "linux")]
+fn deserialize_vsock_addr<'de, D>(deserializer: D) -> Result<Option<u32>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error as _;
+    match Option::<String>::deserialize(deserializer)?.as_deref() {
+        None | Some("") => Ok(None),
+        Some("host") => Ok(Some(2)),       // VMADDR_CID_HOST
+        Some("hypervisor") => Ok(Some(0)), // VMADDR_CID_HYPERVISOR
+        Some("local") => Ok(Some(3)),      // VMADDR_CID_LOCAL
+        Some(other) => Err(D::Error::custom(format!(
+            "invalid vsock address '{}'; expected one of: host, hypervisor, local",
+            other
+        ))),
+    }
 }
 
 impl RemoteAgentClientConfiguration {
@@ -362,5 +384,49 @@ mod tests {
         values.insert("agent_ipc_endpoint".to_string(), "https://10.0.0.1:3333".into());
         let config = config_from_values(values).await;
         assert_eq!(config.endpoint().unwrap().to_string(), "https://10.0.0.1:3333/");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn vsock_addr_unset_gives_none() {
+        let config = config_from_values(serde_json::Map::new()).await;
+        assert_eq!(config.vsock_cid(), None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn vsock_addr_host_gives_cid_2() {
+        let mut values = serde_json::Map::new();
+        values.insert("vsock_addr".to_string(), "host".into());
+        let config = config_from_values(values).await;
+        assert_eq!(config.vsock_cid(), Some(2));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn vsock_addr_hypervisor_gives_cid_0() {
+        let mut values = serde_json::Map::new();
+        values.insert("vsock_addr".to_string(), "hypervisor".into());
+        let config = config_from_values(values).await;
+        assert_eq!(config.vsock_cid(), Some(0));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn vsock_addr_local_gives_cid_3() {
+        let mut values = serde_json::Map::new();
+        values.insert("vsock_addr".to_string(), "local".into());
+        let config = config_from_values(values).await;
+        assert_eq!(config.vsock_cid(), Some(3));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn vsock_addr_invalid_value_errors() {
+        let mut values = serde_json::Map::new();
+        values.insert("vsock_addr".to_string(), "invalid".into());
+        let (base_config, _) =
+            ConfigurationLoader::for_tests(Some(serde_json::Value::Object(values)), None, false).await;
+        assert!(RemoteAgentClientConfiguration::from_configuration(&base_config).is_err());
     }
 }
