@@ -543,10 +543,8 @@ async fn add_baseline_metrics_pipeline_to_blueprint(
         // Components.
         .add_transform("metrics_enrich", metrics_enrich_config)?
         .add_encoder("dd_metrics_encode", dd_metrics_config)?
-        // Metrics.
-        .connect_component("dd_metrics_encode", ["metrics_enrich"])?
-        // Forwarding.
-        .connect_component("dd_out", ["dd_metrics_encode"])?;
+        // Metrics, then forwarding.
+        .connect_components_in_order(["metrics_enrich", "dd_metrics_encode", "dd_out"])?;
 
     Ok(())
 }
@@ -719,17 +717,23 @@ async fn add_dsd_pipeline_to_blueprint(
         .add_transform("service_checks_enrich", service_checks_enrich_config)?
         .add_destination("dsd_stats_out", dsd_stats_config)?
         // Metrics.
-        .connect_component("dsd_enrich", ["dsd_in.metrics"])?
-        .connect_component("dsd_prefix_filter", ["dsd_enrich"])?
-        .connect_component("dsd_tag_filterlist", ["dsd_prefix_filter"])?
-        .connect_component("dsd_agg", ["dsd_tag_filterlist"])?
-        .connect_component("dsd_post_agg_filter", ["dsd_agg"])?
-        .connect_component("metrics_enrich", ["dsd_post_agg_filter"])?
+        .connect_components_in_order([
+            "dsd_in.metrics",
+            "dsd_enrich",
+            "dsd_prefix_filter",
+            "dsd_tag_filterlist",
+            "dsd_agg",
+            "dsd_post_agg_filter",
+            "metrics_enrich",
+        ])?
         // Events.
-        .connect_component("events_enrich", ["dsd_in.events"])?
-        .connect_component("dd_events_encode", ["events_enrich"])?
-        .connect_component("service_checks_enrich", ["dsd_in.service_checks"])?
-        .connect_component("dd_service_checks_encode", ["service_checks_enrich"])?
+        .connect_components_in_order(["dsd_in.events", "events_enrich", "dd_events_encode"])?
+        // Service checks.
+        .connect_components_in_order([
+            "dsd_in.service_checks",
+            "service_checks_enrich",
+            "dd_service_checks_encode",
+        ])?
         // DogStatsD Stats.
         .connect_component("dsd_stats_out", ["dsd_in.metrics"])?;
 
@@ -782,8 +786,7 @@ fn add_otlp_pipeline_to_blueprint(
             blueprint
                 .add_decoder("otlp_traces_decode", otlp_decoder_config)?
                 // Traces to decoder, then to the trace pipeline: obfuscation, enrichment, encoding, stats, forwarding.
-                .connect_component("otlp_traces_decode", ["otlp_relay_in.traces"])?
-                .connect_component("traces_enrich", ["otlp_traces_decode"])?;
+                .connect_components_in_order(["otlp_relay_in.traces", "otlp_traces_decode", "traces_enrich"])?;
         }
     } else {
         info!("OTLP proxy mode disabled. OTLP signals will be handled natively.");
