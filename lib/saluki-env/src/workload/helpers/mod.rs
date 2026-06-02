@@ -2,6 +2,7 @@ use std::{fmt, slice, vec};
 
 #[cfg(target_os = "linux")]
 pub mod cgroups;
+#[cfg(unix)]
 pub mod containerd;
 
 /// Container that can hold one or many values of a given type.

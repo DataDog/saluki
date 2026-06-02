@@ -589,7 +589,6 @@ impl EolRequired {
         match listen_addr {
             ListenAddress::Udp(_) => self.udp,
             ListenAddress::Tcp(_) => false,
-            #[cfg(unix)]
             ListenAddress::Unixgram(_) | ListenAddress::Unix(_) => self.uds,
         }
     }

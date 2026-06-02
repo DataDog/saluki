@@ -1,12 +1,12 @@
 use std::{
     future::Future,
     io,
-    path::PathBuf,
     pin::Pin,
-    sync::Arc,
     task::{Context, Poll},
     time::{Duration, Instant},
 };
+#[cfg(unix)]
+use std::{path::PathBuf, sync::Arc};
 
 use hickory_resolver::net::NetError;
 use http::{Extensions, Uri};
@@ -234,6 +234,7 @@ impl hyper::rt::Write for HttpsCapableConnection {
 #[derive(Clone)]
 struct InnerConnector {
     http: HickoryHttpConnector,
+    #[cfg(unix)]
     connect_timeout: Duration,
     error_telemetry: Option<HttpTransactionErrorTelemetry>,
     #[cfg(unix)]
@@ -442,6 +443,7 @@ impl HttpsCapableConnectorBuilder {
 
         let inner_connector = InnerConnector {
             http: http_connector,
+            #[cfg(unix)]
             connect_timeout,
             error_telemetry: self.error_telemetry.clone(),
             #[cfg(unix)]

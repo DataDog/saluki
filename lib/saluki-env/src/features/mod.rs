@@ -3,15 +3,12 @@
 //! This module provides helpers for detecting the presence of various "features" in the environment, such as if
 //! containerd is running, and so on. Feature detection is useful for knowing what capabilities are available, and what
 //! code should or shouldn't be run.
-use std::{
-    io::ErrorKind,
-    net::Shutdown,
-    os::unix::fs::FileTypeExt as _,
-    path::{Path, PathBuf},
-    time::Duration,
-};
+use std::path::{Path, PathBuf};
+#[cfg(unix)]
+use std::{io::ErrorKind, net::Shutdown, os::unix::fs::FileTypeExt as _, time::Duration};
 
 use bitmask_enum::bitmask;
+#[cfg(unix)]
 use socket2::{Domain, SockAddr, Socket, Type};
 use tracing::debug;
 
@@ -22,6 +19,7 @@ mod detector;
 pub use self::detector::FeatureDetector;
 
 const CONTAINER_HOST_MOUNT_PATH: &str = "/host";
+#[cfg(unix)]
 const SOCKET_CHECK_CONNECT_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// Features are distinct markers or indicators of a particular technology or platform that's present.
@@ -62,6 +60,7 @@ where
     std::fs::metadata(path).is_ok()
 }
 
+#[cfg(unix)]
 fn path_empty<P>(path: P) -> bool
 where
     P: AsRef<Path>,
@@ -69,6 +68,7 @@ where
     path.as_ref().as_os_str().is_empty()
 }
 
+#[cfg(unix)]
 fn path_contains<P>(path: P, fragment: &str) -> bool
 where
     P: AsRef<Path>,
@@ -83,6 +83,7 @@ where
 ///
 /// Reachability is determined as either being able to connect or having the permissions to do so. We do this because it
 /// is likely that if no process is _currently_ listening on the socket, one will likely be in the future.
+#[cfg(unix)]
 fn check_unix_socket(path: &Path) -> Option<bool> {
     // Make sure the path exists and is a socket.
     let metadata = match std::fs::metadata(path) {
@@ -129,6 +130,7 @@ fn check_unix_socket(path: &Path) -> Option<bool> {
     )
 }
 
+#[cfg(unix)]
 fn find_first_available_unix_socket<I, P>(socket_paths: I) -> Option<PathBuf>
 where
     I: IntoIterator<Item = P>,
@@ -168,6 +170,7 @@ fn is_running_inside_container() -> bool {
     is_containerized
 }
 
+#[cfg(unix)]
 fn is_running_inside_docker() -> bool {
     // This file is mounted into a container's filesystem by Docker itself, and implies that we're currently _inside_
     // the Docker runtime. `is_docker_present` detects the presence of the Docker runtime on the host itself, at the OS
@@ -175,6 +178,7 @@ fn is_running_inside_docker() -> bool {
     file_exists("/.dockerenv")
 }
 
+#[cfg(unix)]
 fn with_host_mount_prefixes<I, P>(paths: I) -> Vec<PathBuf>
 where
     I: IntoIterator<Item = P>,

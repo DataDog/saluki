@@ -34,9 +34,7 @@ pub fn get_framer(listen_address: &ListenAddress, eol_required: bool) -> DsdFram
     match listen_address {
         ListenAddress::Tcp(_) => DsdFramer::Stream(NestedFramer::new(newline_framer, LengthDelimitedFramer)),
         ListenAddress::Udp(_) => DsdFramer::NonStream(newline_framer),
-        #[cfg(unix)]
         ListenAddress::Unixgram(_) => DsdFramer::NonStream(newline_framer),
-        #[cfg(unix)]
         ListenAddress::Unix(_) => DsdFramer::Stream(NestedFramer::new(newline_framer, LengthDelimitedFramer)),
     }
 }

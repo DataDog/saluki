@@ -32,11 +32,9 @@ pub enum ListenAddress {
     Udp(SocketAddr),
 
     /// A Unix datagram listen address.
-    #[cfg(unix)]
     Unixgram(PathBuf),
 
     /// A Unix stream listen address.
-    #[cfg(unix)]
     Unix(PathBuf),
 }
 
@@ -51,9 +49,7 @@ impl ListenAddress {
         match self {
             Self::Tcp(_) => "tcp",
             Self::Udp(_) => "udp",
-            #[cfg(unix)]
             Self::Unixgram(_) => "unixgram",
-            #[cfg(unix)]
             Self::Unix(_) => "unix",
         }
     }
@@ -84,9 +80,7 @@ impl ListenAddress {
             }
             // TODO: why did i do this? it's totally possible to connect to a unix domain socket locally...
             // in fact, it's kind of the only way to connect to a unix domain socket :thonk:
-            #[cfg(unix)]
             Self::Unixgram(_) => None,
-            #[cfg(unix)]
             Self::Unix(_) => None,
         }
     }
@@ -96,7 +90,6 @@ impl ListenAddress {
     /// Returns `None` otherwise.
     pub fn as_unix_stream_path(&self) -> Option<&Path> {
         match self {
-            #[cfg(unix)]
             Self::Unix(path) => Some(path),
             _ => None,
         }
@@ -108,9 +101,7 @@ impl fmt::Display for ListenAddress {
         match self {
             Self::Tcp(addr) => write!(f, "tcp://{}", addr),
             Self::Udp(addr) => write!(f, "udp://{}", addr),
-            #[cfg(unix)]
             Self::Unixgram(path) => write!(f, "unixgram://{}", path.display()),
-            #[cfg(unix)]
             Self::Unix(path) => write!(f, "unix://{}", path.display()),
         }
     }
@@ -155,7 +146,6 @@ impl<'a> TryFrom<&'a str> for ListenAddress {
                     Ok(Self::Udp(socket_addresses.swap_remove(0)))
                 }
             }
-            #[cfg(unix)]
             "unixgram" => {
                 let path = url.path();
                 if path.is_empty() {
@@ -169,7 +159,6 @@ impl<'a> TryFrom<&'a str> for ListenAddress {
 
                 Ok(Self::Unixgram(path_buf))
             }
-            #[cfg(unix)]
             "unix" => {
                 let path = url.path();
                 if path.is_empty() {
@@ -196,7 +185,6 @@ impl<'a> TryFrom<&'a str> for ListenAddress {
 ///
 /// In some cases, this information can be useful for identifying the remote peer and enriching the received data in an
 /// automatic way.
-#[cfg(unix)]
 #[derive(Clone)]
 pub struct ProcessCredentials {
     /// Process ID of the remote peer.
@@ -210,7 +198,6 @@ pub struct ProcessCredentials {
 }
 
 /// Reason UDS process credential detection failed.
-#[cfg(unix)]
 #[derive(Clone, Copy)]
 pub enum ProcessCredentialsError {
     /// Ancillary data was present but didn't contain usable process credentials.
@@ -223,7 +210,6 @@ pub enum ProcessCredentialsError {
     UnsupportedPlatform,
 }
 
-#[cfg(unix)]
 impl ProcessCredentialsError {
     /// Returns a concise identifier for the failure reason.
     pub const fn identifier(&self) -> &'static str {
@@ -235,7 +221,6 @@ impl ProcessCredentialsError {
     }
 }
 
-#[cfg(unix)]
 impl fmt::Display for ProcessCredentialsError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -247,7 +232,6 @@ impl fmt::Display for ProcessCredentialsError {
 }
 
 /// Process identity associated with a Unix domain socket peer.
-#[cfg(unix)]
 #[derive(Clone)]
 pub enum ProcessIdentity {
     /// Process credentials were detected.
@@ -260,7 +244,6 @@ pub enum ProcessIdentity {
     Unavailable,
 }
 
-#[cfg(unix)]
 impl ProcessIdentity {
     /// Returns process credentials, if they were detected.
     pub fn credentials(&self) -> Option<&ProcessCredentials> {
@@ -286,7 +269,6 @@ pub enum ConnectionAddress {
     SocketLike(SocketAddr),
 
     /// A process-like address.
-    #[cfg(unix)]
     ProcessLike(ProcessIdentity),
 }
 
@@ -294,7 +276,6 @@ impl fmt::Display for ConnectionAddress {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::SocketLike(addr) => write!(f, "{}", addr),
-            #[cfg(unix)]
             Self::ProcessLike(identity) => match identity {
                 ProcessIdentity::Credentials(creds) => {
                     write!(f, "<pid={} uid={} gid={}>", creds.pid, creds.uid, creds.gid)
@@ -308,7 +289,6 @@ impl fmt::Display for ConnectionAddress {
 
 impl ConnectionAddress {
     /// Returns process credentials for a Unix domain socket peer, if available.
-    #[cfg(unix)]
     pub fn process_credentials(&self) -> Option<&ProcessCredentials> {
         match self {
             Self::ProcessLike(identity) => identity.credentials(),
@@ -317,7 +297,6 @@ impl ConnectionAddress {
     }
 
     /// Returns `true` if Unix domain socket process credential detection failed.
-    #[cfg(unix)]
     pub const fn has_process_credential_error(&self) -> bool {
         match self {
             Self::ProcessLike(identity) => identity.is_error(),
@@ -332,7 +311,6 @@ impl From<SocketAddr> for ConnectionAddress {
     }
 }
 
-#[cfg(unix)]
 impl From<ProcessCredentials> for ConnectionAddress {
     fn from(creds: ProcessCredentials) -> Self {
         Self::ProcessLike(ProcessIdentity::Credentials(creds))
