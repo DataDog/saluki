@@ -145,6 +145,50 @@ CMD ["-c", "C:\\adp\\datadog.yaml", "run"]
 
     Write-Host "[*] Building Windows ADP test image ${ImageTag} from ${BaseImage}..."
     Invoke-Native docker build --tag $ImageTag $ContextDir
+
+    return $ImageTag
+}
+
+function Test-WindowsAdpImage {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ImageTag
+    )
+
+    $ContainerName = "saluki-windows-adp-preflight"
+    docker rm -f $ContainerName *> $null
+
+    Write-Host "[*] Preflight: starting ${ImageTag} directly..."
+    $DockerRunArgs = @(
+        "run",
+        "--detach",
+        "--name", $ContainerName,
+        "-e", "DD_API_KEY=test-api-key",
+        "-e", "DD_HOSTNAME=windows-integration-preflight",
+        "-e", "DD_DATA_PLANE__STANDALONE_MODE=true",
+        "-e", "DD_DATA_PLANE__DOGSTATSD__ENABLED=true",
+        "-e", "DD_LOG_TO_CONSOLE=true",
+        "-e", "DD_DISABLE_FILE_LOGGING=true",
+        $ImageTag
+    )
+    Invoke-Native -FilePath docker -Arguments $DockerRunArgs
+
+    Start-Sleep -Seconds 10
+
+    Write-Host "[*] Preflight: docker logs ${ContainerName}"
+    docker logs $ContainerName
+
+    $State = docker inspect $ContainerName --format '{{json .State}}'
+    Write-Host "[*] Preflight: container state: ${State}"
+
+    $Status = docker inspect $ContainerName --format '{{.State.Status}}'
+    if ($Status -ne "running") {
+        $ExitCode = docker inspect $ContainerName --format '{{.State.ExitCode}}'
+        docker rm -f $ContainerName *> $null
+        throw "Windows ADP preflight container exited early with status=${Status}, exit_code=${ExitCode}."
+    }
+
+    docker rm -f $ContainerName *> $null
 }
 
 $RepoRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..")
@@ -160,7 +204,8 @@ Invoke-Native docker version
 Write-Host "[*] Building Panoramic and Agent Data Plane for Windows..."
 Invoke-Native cargo build --release --package panoramic --package agent-data-plane
 
-Build-WindowsAdpImage
+$WindowsAdpImage = Build-WindowsAdpImage
+Test-WindowsAdpImage -ImageTag $WindowsAdpImage
 
 if (-not $env:PANORAMIC_LOG_DIR) {
     $env:PANORAMIC_LOG_DIR = "integration-logs"
