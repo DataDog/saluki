@@ -12,6 +12,7 @@ workspace = true
 default = []
 fips = ["saluki-app/tls-fips", "saluki-components/fips"]
 antithesis = ["dep:antithesis_sdk", "antithesis_sdk/full", "dep:antithesis-instrumentation"]
+vsock = ["datadog-agent-commons/vsock"]
 
 [dependencies]
 antithesis-instrumentation = { workspace = true, optional = true }

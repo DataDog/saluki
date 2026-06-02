@@ -59,7 +59,14 @@ impl RemoteAgentClient {
             let auth_interceptor = BearerAuthInterceptor::from_file(&config.auth().auth_token_file_path()).await?;
             let ipc_cert_file_path = config.auth().ipc_cert_file_path();
             let client_tls_config = build_ipc_client_ipc_tls_config(ipc_cert_file_path).await?;
-            let https_connector = HttpsCapableConnectorBuilder::default().build(client_tls_config)?;
+            let connector_builder = HttpsCapableConnectorBuilder::default();
+            #[cfg(all(feature = "vsock", target_os = "linux"))]
+            let connector_builder = if let Some(cid) = config.vsock_cid() {
+                connector_builder.with_vsock_cid(cid)
+            } else {
+                connector_builder
+            };
+            let https_connector = connector_builder.build(client_tls_config)?;
             let endpoint = config.endpoint()?;
             let channel = Endpoint::from(endpoint.clone())
                 .connect_timeout(Duration::from_secs(2))

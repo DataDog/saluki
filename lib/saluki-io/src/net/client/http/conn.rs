@@ -54,7 +54,7 @@ impl ConnectionAgeLimit {
     }
 }
 
-/// An inner transport that abstracts over TCP and Unix domain socket connections.
+/// An inner transport that abstracts over TCP, Unix domain socket, and vsock connections.
 ///
 /// This allows using a single monomorphization of the HTTP/2 and TLS stacks regardless of the
 /// underlying transport, avoiding duplicate code generation for each transport type.
@@ -62,6 +62,8 @@ enum Transport {
     Tcp(TokioIo<TcpStream>),
     #[cfg(unix)]
     Unix(TokioIo<tokio::net::UnixStream>),
+    #[cfg(all(feature = "vsock", target_os = "linux"))]
+    Vsock(TokioIo<tokio_vsock::VsockStream>),
 }
 
 impl Connection for Transport {
@@ -70,6 +72,8 @@ impl Connection for Transport {
             Self::Tcp(s) => s.connected(),
             #[cfg(unix)]
             Self::Unix(_) => Connected::new(),
+            #[cfg(all(feature = "vsock", target_os = "linux"))]
+            Self::Vsock(_) => Connected::new(),
         }
     }
 }
@@ -82,6 +86,8 @@ impl hyper::rt::Read for Transport {
             Self::Tcp(s) => Pin::new(s).poll_read(cx, buf),
             #[cfg(unix)]
             Self::Unix(s) => Pin::new(s).poll_read(cx, buf),
+            #[cfg(all(feature = "vsock", target_os = "linux"))]
+            Self::Vsock(s) => Pin::new(s).poll_read(cx, buf),
         }
     }
 }
@@ -92,6 +98,8 @@ impl hyper::rt::Write for Transport {
             Self::Tcp(s) => Pin::new(s).poll_write(cx, buf),
             #[cfg(unix)]
             Self::Unix(s) => Pin::new(s).poll_write(cx, buf),
+            #[cfg(all(feature = "vsock", target_os = "linux"))]
+            Self::Vsock(s) => Pin::new(s).poll_write(cx, buf),
         }
     }
 
@@ -100,6 +108,8 @@ impl hyper::rt::Write for Transport {
             Self::Tcp(s) => Pin::new(s).poll_flush(cx),
             #[cfg(unix)]
             Self::Unix(s) => Pin::new(s).poll_flush(cx),
+            #[cfg(all(feature = "vsock", target_os = "linux"))]
+            Self::Vsock(s) => Pin::new(s).poll_flush(cx),
         }
     }
 
@@ -108,6 +118,8 @@ impl hyper::rt::Write for Transport {
             Self::Tcp(s) => Pin::new(s).poll_shutdown(cx),
             #[cfg(unix)]
             Self::Unix(s) => Pin::new(s).poll_shutdown(cx),
+            #[cfg(all(feature = "vsock", target_os = "linux"))]
+            Self::Vsock(s) => Pin::new(s).poll_shutdown(cx),
         }
     }
 
@@ -116,6 +128,8 @@ impl hyper::rt::Write for Transport {
             Self::Tcp(s) => s.is_write_vectored(),
             #[cfg(unix)]
             Self::Unix(s) => s.is_write_vectored(),
+            #[cfg(all(feature = "vsock", target_os = "linux"))]
+            Self::Vsock(s) => s.is_write_vectored(),
         }
     }
 
@@ -126,6 +140,8 @@ impl hyper::rt::Write for Transport {
             Self::Tcp(s) => Pin::new(s).poll_write_vectored(cx, bufs),
             #[cfg(unix)]
             Self::Unix(s) => Pin::new(s).poll_write_vectored(cx, bufs),
+            #[cfg(all(feature = "vsock", target_os = "linux"))]
+            Self::Vsock(s) => Pin::new(s).poll_write_vectored(cx, bufs),
         }
     }
 }
@@ -227,10 +243,12 @@ impl hyper::rt::Write for HttpsCapableConnection {
     }
 }
 
-/// An inner connector that routes to either TCP (via DNS) or a Unix domain socket.
+/// An inner connector that routes to TCP (via DNS), a Unix domain socket, or a vsock socket.
 ///
 /// When a Unix socket path is configured, all connections are routed through that socket regardless
-/// of the URI host. Otherwise, connections are routed via the standard DNS + TCP path.
+/// of the URI host. When a vsock CID is configured, all connections are routed through that vsock
+/// socket using the port from the destination URI. Otherwise, connections use the standard DNS +
+/// TCP path.
 #[derive(Clone)]
 struct InnerConnector {
     http: HickoryHttpConnector,
@@ -238,6 +256,8 @@ struct InnerConnector {
     error_telemetry: Option<HttpTransactionErrorTelemetry>,
     #[cfg(unix)]
     unix_socket_path: Option<Arc<std::path::Path>>,
+    #[cfg(all(feature = "vsock", target_os = "linux"))]
+    vsock_cid: Option<u32>,
 }
 
 impl Service<Uri> for InnerConnector {
@@ -246,10 +266,15 @@ impl Service<Uri> for InnerConnector {
     type Future = Pin<Box<dyn Future<Output = Result<Transport, BoxError>> + Send>>;
 
     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        // When routing via a Unix domain socket, the TCP/DNS connector is not used, so we consider
-        // the service immediately ready.
+        // When routing via a Unix domain socket or vsock, the TCP/DNS connector is not used, so we
+        // consider the service immediately ready.
         #[cfg(unix)]
         if self.unix_socket_path.is_some() {
+            return Poll::Ready(Ok(()));
+        }
+
+        #[cfg(all(feature = "vsock", target_os = "linux"))]
+        if self.vsock_cid.is_some() {
             return Poll::Ready(Ok(()));
         }
 
@@ -277,6 +302,41 @@ impl Service<Uri> for InnerConnector {
                         Box::new(e)
                     })?;
                 Ok(Transport::Unix(TokioIo::new(stream)))
+            });
+        }
+
+        #[cfg(all(feature = "vsock", target_os = "linux"))]
+        if let Some(cid) = self.vsock_cid {
+            let connect_timeout = self.connect_timeout;
+            let error_telemetry = self.error_telemetry.clone();
+            // Port is taken from the destination URI; vsock replaces the TCP transport but still
+            // uses the URI's port to identify which service to connect to on the host.
+            let port = match dst.port_u16() {
+                Some(port) => u32::from(port),
+                None => {
+                    return Box::pin(std::future::ready(Err(Box::new(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "vsock: destination URI must have an explicit port",
+                    )) as BoxError)));
+                }
+            };
+            return Box::pin(async move {
+                let addr = tokio_vsock::VsockAddr::new(cid, port);
+                let stream = tokio::time::timeout(connect_timeout, tokio_vsock::VsockStream::connect(addr))
+                    .await
+                    .map_err(|_| -> BoxError {
+                        if let Some(error_telemetry) = &error_telemetry {
+                            error_telemetry.increment_connection_error();
+                        }
+                        Box::new(io::Error::new(io::ErrorKind::TimedOut, "vsock connect timed out"))
+                    })?
+                    .map_err(|e| -> BoxError {
+                        if let Some(error_telemetry) = &error_telemetry {
+                            error_telemetry.increment_connection_error();
+                        }
+                        Box::new(e)
+                    })?;
+                Ok(Transport::Vsock(TokioIo::new(stream)))
             });
         }
 
@@ -361,6 +421,8 @@ pub struct HttpsCapableConnectorBuilder {
     http_protocol: HttpProtocol,
     #[cfg(unix)]
     unix_socket_path: Option<PathBuf>,
+    #[cfg(all(feature = "vsock", target_os = "linux"))]
+    vsock_cid: Option<u32>,
 }
 
 impl HttpsCapableConnectorBuilder {
@@ -424,6 +486,21 @@ impl HttpsCapableConnectorBuilder {
         self
     }
 
+    /// Sets a vsock Context ID (CID) to route all connections through.
+    ///
+    /// When set, the connector will connect via AF_VSOCK using this CID, with the port taken from
+    /// the destination URI. This allows connecting to a Datadog Agent running in a host or
+    /// hypervisor context from within a guest VM (e.g., on Nitro Enclaves or microVM environments).
+    ///
+    /// Mirrors the Agent's `vsock_addr` configuration key.
+    ///
+    /// Defaults to unset (TCP connections via DNS).
+    #[cfg(all(feature = "vsock", target_os = "linux"))]
+    pub fn with_vsock_cid(mut self, cid: u32) -> Self {
+        self.vsock_cid = Some(cid);
+        self
+    }
+
     /// Builds the `HttpsCapableConnector` from the given TLS configuration.
     pub fn build(self, tls_config: ClientConfig) -> Result<HttpsCapableConnector, GenericError> {
         let connect_timeout = self.connect_timeout.unwrap_or(Duration::from_secs(30));
@@ -446,6 +523,8 @@ impl HttpsCapableConnectorBuilder {
             error_telemetry: self.error_telemetry.clone(),
             #[cfg(unix)]
             unix_socket_path: self.unix_socket_path.map(PathBuf::into_boxed_path).map(Arc::from),
+            #[cfg(all(feature = "vsock", target_os = "linux"))]
+            vsock_cid: self.vsock_cid,
         };
 
         // Create the HTTPS connector.

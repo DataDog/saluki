@@ -149,6 +149,19 @@ pub struct RemoteAgentClientConfiguration {
         default = "default_grpc_max_message_size"
     )]
     grpc_max_message_size: usize,
+
+    /// vsock Context ID (CID) for connecting to the Agent IPC endpoint via AF_VSOCK.
+    ///
+    /// When set, the IPC client connects over a vsock socket using this CID with the port taken
+    /// from the configured endpoint. This mirrors the Datadog Agent's `vsock_addr` configuration,
+    /// which enables communication with Agent processes running in a host or hypervisor from within
+    /// a guest VM (e.g., on Nitro Enclaves or Terrapin microVM environments).
+    ///
+    /// Common CID values: `2` (VMADDR_CID_HOST) to connect from a guest to the host.
+    ///
+    /// Defaults to unset (TCP connection).
+    #[cfg(all(feature = "vsock", target_os = "linux"))]
+    vsock_addr: Option<u32>,
 }
 
 impl RemoteAgentClientConfiguration {
@@ -184,6 +197,12 @@ impl RemoteAgentClientConfiguration {
     /// Returns the maximum message size for gRPC.
     pub fn grpc_max_message_size(&self) -> usize {
         self.grpc_max_message_size
+    }
+
+    /// Returns the vsock CID to use for connecting to the Agent IPC endpoint, if configured.
+    #[cfg(all(feature = "vsock", target_os = "linux"))]
+    pub fn vsock_cid(&self) -> Option<u32> {
+        self.vsock_addr
     }
 }
 
