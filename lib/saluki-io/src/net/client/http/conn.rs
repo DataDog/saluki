@@ -412,6 +412,17 @@ impl Service<Uri> for HttpsCapableConnector {
     }
 }
 
+fn build_dns_resolver(
+    error_telemetry: &Option<HttpTransactionErrorTelemetry>,
+) -> Result<HickoryResolver, GenericError> {
+    let mut r = HickoryResolver::from_system_conf()
+        .error_context("Failed to load system DNS configuration when creating DNS resolver for HTTP client.")?;
+    if let Some(et) = error_telemetry {
+        r = r.with_lookup_errors_counter(et.dns_errors());
+    }
+    Ok(r)
+}
+
 /// A builder for `HttpsCapableConnector`.
 #[derive(Default)]
 pub struct HttpsCapableConnectorBuilder {
@@ -508,20 +519,17 @@ impl HttpsCapableConnectorBuilder {
 
         // On Linux with vsock configured, the DNS resolver is never called — vsock connections
         // bypass the TCP/DNS stack entirely. Use a noop resolver to avoid failures in environments
-        // without system DNS configuration (e.g., Nitro Enclaves).
+        // without system DNS configuration (for example, Nitro Enclaves).
         #[cfg(target_os = "linux")]
-        let mut hickory_resolver = if self.vsock_cid.is_some() {
+        let vsock_only = self.vsock_cid.is_some();
+        #[cfg(not(target_os = "linux"))]
+        let vsock_only = false;
+
+        let hickory_resolver = if vsock_only {
             HickoryResolver::noop()
         } else {
-            HickoryResolver::from_system_conf()
-                .error_context("Failed to load system DNS configuration when creating DNS resolver for HTTP client.")?
+            build_dns_resolver(&self.error_telemetry)?
         };
-        #[cfg(not(target_os = "linux"))]
-        let mut hickory_resolver = HickoryResolver::from_system_conf()
-            .error_context("Failed to load system DNS configuration when creating DNS resolver for HTTP client.")?;
-        if let Some(error_telemetry) = &self.error_telemetry {
-            hickory_resolver = hickory_resolver.with_lookup_errors_counter(error_telemetry.dns_errors());
-        }
 
         // Create the HTTP connector, and ensure that we don't enforce _only_ HTTP, since that will break being able to
         // wrap this in an HTTPS connector.
