@@ -235,10 +235,25 @@ impl RemoteAgentClientConfiguration {
         self.grpc_max_message_size
     }
 
-    /// Returns the vsock CID to use for connecting to the Agent IPC endpoint, if configured.
+    /// Returns the vsock address to use for connecting to the IPC endpoint, if configured.
+    ///
+    /// Combines the CID from `vsock_addr` with the port resolved from `endpoint()`. Returns
+    /// an error if `vsock_addr` is set but the endpoint has no explicit port.
+    ///
+    /// # Errors
+    ///
+    /// If the configured endpoint has no explicit port.
     #[cfg(target_os = "linux")]
-    pub fn vsock_cid(&self) -> Option<u32> {
-        self.vsock_addr
+    pub fn vsock_addr(&self) -> Result<Option<tokio_vsock::VsockAddr>, GenericError> {
+        let Some(cid) = self.vsock_addr else {
+            return Ok(None);
+        };
+        let port = self
+            .endpoint()?
+            .port_u16()
+            .map(u32::from)
+            .ok_or_else(|| saluki_error::generic_error!("vsock requires an explicit port in the IPC endpoint"))?;
+        Ok(Some(tokio_vsock::VsockAddr::new(cid, port)))
     }
 }
 
@@ -403,6 +418,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn vsock_addr_valid_values() {
+        // (vsock_addr input, expected CID — port always comes from cmd_port=5001)
         let cases: &[(&str, Option<u32>)] = &[
             ("", None),
             ("host", Some(2)),
@@ -413,8 +429,12 @@ mod tests {
         for (input, expected_cid) in cases {
             let mut values = serde_json::Map::new();
             values.insert("vsock_addr".to_string(), (*input).into());
+            values.insert("cmd_port".to_string(), 5001u16.into());
             let config = config_from_values(values).await;
-            assert_eq!(config.vsock_cid(), *expected_cid, "input: {input:?}");
+            let result = config
+                .vsock_addr()
+                .expect("vsock_addr() should not error with cmd_port set");
+            assert_eq!(result.map(|a| a.cid()), *expected_cid, "input: {input:?}");
         }
     }
 

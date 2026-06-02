@@ -259,7 +259,7 @@ struct InnerConnector {
     #[cfg(unix)]
     unix_socket_path: Option<Arc<std::path::Path>>,
     #[cfg(target_os = "linux")]
-    vsock_cid: Option<u32>,
+    vsock_addr: Option<VsockAddr>,
 }
 
 impl Service<Uri> for InnerConnector {
@@ -272,7 +272,7 @@ impl Service<Uri> for InnerConnector {
         // consider the service immediately ready. vsock takes priority over Unix (matching Agent
         // behavior) when both are configured.
         #[cfg(target_os = "linux")]
-        if self.vsock_cid.is_some() {
+        if self.vsock_addr.is_some() {
             return Poll::Ready(Ok(()));
         }
 
@@ -286,22 +286,10 @@ impl Service<Uri> for InnerConnector {
 
     fn call(&mut self, dst: Uri) -> Self::Future {
         #[cfg(target_os = "linux")]
-        if let Some(cid) = self.vsock_cid {
-            // Port is taken from the destination URI; vsock replaces the TCP transport but still
-            // uses the URI's port to identify which service to connect to on the host.
-            let port = match dst.port_u16() {
-                Some(port) => u32::from(port),
-                None => {
-                    return Box::pin(std::future::ready(Err(Box::new(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        "vsock: destination URI must have an explicit port",
-                    )) as BoxError)));
-                }
-            };
+        if let Some(addr) = self.vsock_addr {
             let connect_timeout = self.connect_timeout;
             let error_telemetry = self.error_telemetry.clone();
             return Box::pin(async move {
-                let addr = VsockAddr::new(cid, port);
                 let stream = tokio::time::timeout(connect_timeout, VsockStream::connect(addr))
                     .await
                     .map_err(|_| -> BoxError {
@@ -436,7 +424,7 @@ pub struct HttpsCapableConnectorBuilder {
     #[cfg(unix)]
     unix_socket_path: Option<PathBuf>,
     #[cfg(target_os = "linux")]
-    vsock_cid: Option<u32>,
+    vsock_addr: Option<VsockAddr>,
 }
 
 impl HttpsCapableConnectorBuilder {
@@ -500,16 +488,16 @@ impl HttpsCapableConnectorBuilder {
         self
     }
 
-    /// Sets a vsock Context ID (CID) to route all connections through.
+    /// Sets a vsock address to route all connections through.
     ///
-    /// When set, the connector will connect via AF_VSOCK using this CID, with the port taken from
-    /// the destination URI. This allows connecting to a Datadog Agent running in a host or
-    /// hypervisor context from within a guest VM (for example, Nitro Enclaves).
+    /// When set, the connector will connect via AF_VSOCK using the given address, bypassing
+    /// DNS and TCP. This allows connecting to a server process running in a host or hypervisor
+    /// context from within a guest VM (for example, Nitro Enclaves).
     ///
     /// Defaults to unset (TCP connections via DNS).
     #[cfg(target_os = "linux")]
-    pub fn with_vsock_cid(mut self, cid: u32) -> Self {
-        self.vsock_cid = Some(cid);
+    pub fn with_vsock_addr(mut self, addr: VsockAddr) -> Self {
+        self.vsock_addr = Some(addr);
         self
     }
 
@@ -521,7 +509,7 @@ impl HttpsCapableConnectorBuilder {
         // bypass the TCP/DNS stack entirely. Use a noop resolver to avoid failures in environments
         // without system DNS configuration (for example, Nitro Enclaves).
         #[cfg(target_os = "linux")]
-        let vsock_only = self.vsock_cid.is_some();
+        let vsock_only = self.vsock_addr.is_some();
         #[cfg(not(target_os = "linux"))]
         let vsock_only = false;
 
@@ -544,7 +532,7 @@ impl HttpsCapableConnectorBuilder {
             #[cfg(unix)]
             unix_socket_path: self.unix_socket_path.map(PathBuf::into_boxed_path).map(Arc::from),
             #[cfg(target_os = "linux")]
-            vsock_cid: self.vsock_cid,
+            vsock_addr: self.vsock_addr,
         };
 
         // Create the HTTPS connector.
@@ -646,8 +634,8 @@ mod tests {
     }
 
     // vsock takes priority over unix when both are configured, matching Agent behavior.
-    // We verify by using a port-less URI: vsock returns an immediate InvalidInput error
-    // before connecting; unix would attempt a socket connect and give a different error.
+    // We verify by checking the error does not mention "unix" — if unix had priority it would
+    // fail with a socket-path error; vsock produces a connection or device error instead.
     #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn vsock_takes_priority_over_unix_when_both_set() {
@@ -655,7 +643,7 @@ mod tests {
 
         use tower::Service as _;
 
-        use super::InnerConnector;
+        use super::{InnerConnector, VsockAddr};
         use crate::net::dns::HickoryResolver;
 
         let mut connector = InnerConnector {
@@ -663,15 +651,16 @@ mod tests {
             connect_timeout: std::time::Duration::from_secs(1),
             error_telemetry: None,
             unix_socket_path: Some(Arc::from(std::path::Path::new("/tmp/test.sock"))),
-            vsock_cid: Some(2),
+            vsock_addr: Some(VsockAddr::new(2, 5001)),
         };
 
-        let uri: http::Uri = "https://127.0.0.1/".parse().unwrap();
-        let err = connector.call(uri).await.err().expect("expected an error");
+        // Verify vsock path was taken: if unix had priority the error would mention the socket
+        // path or "unix"; a vsock attempt produces a connection or device error instead.
+        let uri: http::Uri = "https://127.0.0.1:5001/".parse().unwrap();
+        let err = connector.call(uri).await.err().expect("expected a connection error");
         assert!(
-            err.to_string()
-                .contains("vsock: destination URI must have an explicit port"),
-            "expected vsock error indicating vsock path was taken, got: {err}"
+            !err.to_string().contains("unix"),
+            "expected vsock error (not unix socket error), got: {err}"
         );
     }
 }
