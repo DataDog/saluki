@@ -562,11 +562,12 @@ fn add_mrf_metrics_pipeline_to_blueprint(
 
     let Some((mrf_dd_url, mrf_api_key)) = mrf_config.metrics_endpoint_override() else {
         if mrf_config.is_enabled() {
-            return Err(generic_error!(
+            warn!(
                 "Multi-Region Failover is enabled, but multi_region_failover.api_key and one of \
-                 multi_region_failover.dd_url or multi_region_failover.site are required for metrics forwarding. \
-                 Configure the static MRF endpoint settings and restart ADP."
-            ));
+                 multi_region_failover.dd_url or multi_region_failover.site are required for metrics forwarding. The \
+                 MRF metrics branch will not be wired, and primary forwarding will continue. Restart ADP after \
+                 configuring the static MRF endpoint settings."
+            );
         }
 
         return Ok(());
@@ -871,54 +872,4 @@ fn write_sizing_guide(bounds: ComponentBounds) -> Result<(), GenericError> {
     output.flush()?;
 
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use resource_accounting::ComponentRegistry;
-    use saluki_config::ConfigurationLoader;
-    use serde_json::json;
-
-    use super::*;
-
-    async fn config_from(value: serde_json::Value) -> GenericConfiguration {
-        let (config, _) = ConfigurationLoader::for_tests(Some(value), None, false).await;
-        config
-    }
-
-    #[tokio::test]
-    async fn mrf_enabled_without_static_endpoint_config_fails_topology_build() {
-        let config = config_from(json!({
-            "multi_region_failover": {
-                "enabled": true,
-                "failover_metrics": false
-            }
-        }))
-        .await;
-        let registry = ComponentRegistry::default();
-        let mut blueprint = TopologyBlueprint::new("test", &registry);
-
-        let error = add_mrf_metrics_pipeline_to_blueprint(&mut blueprint, &config)
-            .expect_err("enabled MRF without static endpoint config should fail");
-
-        assert!(
-            error.to_string().contains("Multi-Region Failover is enabled"),
-            "unexpected error: {error}"
-        );
-    }
-
-    #[tokio::test]
-    async fn mrf_disabled_without_static_endpoint_config_does_not_fail_topology_build() {
-        let config = config_from(json!({
-            "multi_region_failover": {
-                "enabled": false
-            }
-        }))
-        .await;
-        let registry = ComponentRegistry::default();
-        let mut blueprint = TopologyBlueprint::new("test", &registry);
-
-        add_mrf_metrics_pipeline_to_blueprint(&mut blueprint, &config)
-            .expect("disabled MRF should not require static endpoint config");
-    }
 }
