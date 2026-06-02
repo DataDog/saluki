@@ -7,7 +7,10 @@ runtimes: [windows]
 env:
   DD_API_KEY: "test-api-key"
   DD_HOSTNAME: "windows-integration-test"
-  DD_DATA_PLANE_STANDALONE_MODE: "true"
+  DD_DATA_PLANE__STANDALONE_MODE: "true"
+  DD_DATA_PLANE__DOGSTATSD__ENABLED: "true"
+  DD_LOG_TO_CONSOLE: "true"
+  DD_DISABLE_FILE_LOGGING: "true"
 
 container:
   image: "saluki-images/agent-data-plane:testing-windows"
