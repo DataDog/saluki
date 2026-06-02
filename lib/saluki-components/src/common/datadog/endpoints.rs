@@ -20,6 +20,9 @@ use super::protocol::{MetricsPayloadInfo, MetricsProtocolVersion};
 
 static DD_URL_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^app(\.mrf)?(\.[a-z]{2}\d)?\.(datad(oghq|0g)\.(com|eu)|ddog-gov\.com)$").unwrap());
+static DD_SITE_FROM_HOSTNAME_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?:^|\.)([a-z]{2,}\d{1,2}\.)?(datad(?:oghq|0g)\.(?:com|eu)|ddog-gov\.com)\.?$").unwrap()
+});
 
 pub const DEFAULT_SITE: &str = "datadoghq.com";
 
@@ -45,6 +48,9 @@ pub struct EndpointV3Settings {
 
     /// Whether validation mode is enabled for sketches (send both V2 and V3).
     pub sketches_validation_mode: bool,
+
+    /// Whether this endpoint accepts sampled V3 beta series shadow payloads.
+    pub series_shadow_mode: bool,
 }
 
 impl EndpointV3Settings {
@@ -53,17 +59,22 @@ impl EndpointV3Settings {
     /// The `v3_series_endpoints` and `v3_sketches_endpoints` are lists of configured endpoint names.
     /// If the endpoint name matches any entry, V3 is enabled for that metric type.
     pub fn from_endpoint_url(
-        configured_endpoint: &str, v3_series_endpoints: &[String], v3_sketches_endpoints: &[String],
-        series_validate: bool, sketches_validate: bool,
+        configured_endpoint: &str, resolved_endpoint: &Url, v3_series_endpoints: &[String],
+        v3_sketches_endpoints: &[String], series_validate: bool, sketches_validate: bool,
+        series_shadow_sites: &[String],
     ) -> Self {
         let use_v3_series = v3_series_endpoints.iter().any(|e| configured_endpoint == e);
         let use_v3_sketches = v3_sketches_endpoints.iter().any(|e| configured_endpoint == e);
+        let series_shadow_mode = !use_v3_series
+            && extract_site_from_url(resolved_endpoint.as_str())
+                .is_some_and(|site| series_shadow_sites.iter().any(|shadow_site| shadow_site == &site));
 
         Self {
             use_v3_series,
             use_v3_sketches,
             series_validation_mode: use_v3_series && series_validate,
             sketches_validation_mode: use_v3_sketches && sketches_validate,
+            series_shadow_mode,
         }
     }
 
@@ -100,8 +111,11 @@ impl EndpointV3Settings {
                 if is_sketch {
                     // V3 sketches: accept if V3 sketches is enabled
                     self.use_v3_sketches
+                } else if info.is_shadow() {
+                    // V3 shadow series: accept only when this V2-authoritative endpoint is shadow-enabled.
+                    self.series_shadow_mode
                 } else {
-                    // V3 series: accept if V3 series is enabled
+                    // V3 series: accept if V3 series is enabled.
                     self.use_v3_series
                 }
             }
@@ -117,12 +131,23 @@ impl EndpointV3Settings {
             return false;
         };
 
-        if info.is_sketch() {
+        if info.is_shadow() {
+            self.series_shadow_mode
+        } else if info.is_sketch() {
             self.sketches_validation_mode
         } else {
             self.series_validation_mode
         }
     }
+}
+
+pub(crate) fn extract_site_from_url(raw_url: &str) -> Option<String> {
+    let url = Url::parse(raw_url).ok()?;
+    let hostname = url.host_str()?.trim_end_matches('.').to_ascii_lowercase();
+    let captures = DD_SITE_FROM_HOSTNAME_REGEX.captures(&hostname)?;
+    let datacenter = captures.get(1).map_or("", |m| m.as_str());
+    let domain = captures.get(2)?.as_str();
+    Some(format!("{datacenter}{domain}"))
 }
 
 /// Error type for invalid endpoints.
@@ -963,6 +988,7 @@ mod tests {
             use_v3_sketches: false,
             series_validation_mode: true,
             sketches_validation_mode: false,
+            series_shadow_mode: false,
         };
 
         assert!(settings.should_receive_validation_headers(Some(MetricsPayloadInfo::v2_series())));
@@ -970,6 +996,79 @@ mod tests {
         assert!(!settings.should_receive_validation_headers(Some(MetricsPayloadInfo::v2_sketches())));
         assert!(!settings.should_receive_validation_headers(Some(MetricsPayloadInfo::v3_sketches())));
         assert!(!settings.should_receive_validation_headers(None));
+    }
+
+    #[test]
+    fn extract_site_from_url_matches_datadog_domains() {
+        assert_eq!(
+            Some("datadoghq.com".to_string()),
+            extract_site_from_url("https://1-2-3-agent.datadoghq.com/api/v2/series")
+        );
+        assert_eq!(
+            Some("us3.datadoghq.com".to_string()),
+            extract_site_from_url("https://intake.profile.us3.datadoghq.com/v1/input")
+        );
+        assert_eq!(None, extract_site_from_url("https://vector.example.test/api/v2/series"));
+    }
+
+    #[test]
+    fn shadow_payloads_are_endpoint_scoped() {
+        let resolved = ResolvedEndpoint::from_raw_endpoint("https://app.datadoghq.com", "fake-api-key")
+            .expect("endpoint should resolve");
+        let settings = EndpointV3Settings::from_endpoint_url(
+            resolved.configured_endpoint(),
+            resolved.endpoint(),
+            &[],
+            &[],
+            false,
+            false,
+            &["datadoghq.com".to_string()],
+        );
+
+        assert!(settings.should_receive_payload(Some(MetricsPayloadInfo::v2_shadow_series())));
+        assert!(settings.should_receive_payload(Some(MetricsPayloadInfo::v3_shadow_series())));
+        assert!(!settings.should_receive_payload(Some(MetricsPayloadInfo::v3_series())));
+        assert!(settings.should_receive_validation_headers(Some(MetricsPayloadInfo::v2_shadow_series())));
+        assert!(settings.should_receive_validation_headers(Some(MetricsPayloadInfo::v3_shadow_series())));
+    }
+
+    #[test]
+    fn shadow_payloads_require_allowed_site_and_v2_authoritative_endpoint() {
+        let us3 = ResolvedEndpoint::from_raw_endpoint("https://app.us3.datadoghq.com", "fake-api-key")
+            .expect("endpoint should resolve");
+        let settings = EndpointV3Settings::from_endpoint_url(
+            us3.configured_endpoint(),
+            us3.endpoint(),
+            &[],
+            &[],
+            false,
+            false,
+            &["datadoghq.com".to_string()],
+        );
+        assert!(!settings.should_receive_payload(Some(MetricsPayloadInfo::v3_shadow_series())));
+
+        let settings = EndpointV3Settings::from_endpoint_url(
+            us3.configured_endpoint(),
+            us3.endpoint(),
+            &[],
+            &[],
+            false,
+            false,
+            &["us3.datadoghq.com".to_string()],
+        );
+        assert!(settings.should_receive_payload(Some(MetricsPayloadInfo::v3_shadow_series())));
+
+        let v3_series_endpoints = vec![us3.configured_endpoint().to_string()];
+        let settings = EndpointV3Settings::from_endpoint_url(
+            us3.configured_endpoint(),
+            us3.endpoint(),
+            &v3_series_endpoints,
+            &[],
+            false,
+            false,
+            &["us3.datadoghq.com".to_string()],
+        );
+        assert!(!settings.should_receive_payload(Some(MetricsPayloadInfo::v3_shadow_series())));
     }
 
     #[test]
@@ -983,10 +1082,12 @@ mod tests {
         let v3_series_endpoints = vec!["https://app.datadoghq.com".to_string()];
         let settings = EndpointV3Settings::from_endpoint_url(
             resolved.configured_endpoint(),
+            resolved.endpoint(),
             &v3_series_endpoints,
             &[],
             false,
             false,
+            &["datadoghq.com".to_string()],
         );
 
         assert!(settings.use_v3_series);
@@ -995,12 +1096,16 @@ mod tests {
     #[test]
     fn v3_endpoint_matching_is_endpoint_based() {
         let v3_series_endpoints = vec!["https://app.us".to_string()];
+        let resolved = ResolvedEndpoint::from_raw_endpoint("https://app.us5.datadoghq.com", "fake-api-key")
+            .expect("endpoint should resolve");
         let settings = EndpointV3Settings::from_endpoint_url(
-            "https://app.us5.datadoghq.com",
+            resolved.configured_endpoint(),
+            resolved.endpoint(),
             &v3_series_endpoints,
             &[],
             false,
             false,
+            &["datadoghq.com".to_string()],
         );
 
         assert!(!settings.use_v3_series);
@@ -1009,8 +1114,17 @@ mod tests {
     #[test]
     fn v3_endpoint_matching_requires_exact_configured_endpoint() {
         let v3_series_endpoints = vec!["app.datadoghq.com/".to_string()];
-        let settings =
-            EndpointV3Settings::from_endpoint_url("https://app.datadoghq.com", &v3_series_endpoints, &[], false, false);
+        let resolved = ResolvedEndpoint::from_raw_endpoint("https://app.datadoghq.com", "fake-api-key")
+            .expect("endpoint should resolve");
+        let settings = EndpointV3Settings::from_endpoint_url(
+            resolved.configured_endpoint(),
+            resolved.endpoint(),
+            &v3_series_endpoints,
+            &[],
+            false,
+            false,
+            &["datadoghq.com".to_string()],
+        );
 
         assert!(!settings.use_v3_series);
     }

@@ -9,6 +9,14 @@ fn default_v3_beta_series_route() -> String {
     METRICS_SERIES_V3_BETA_PATH.to_owned()
 }
 
+const fn default_v3_series_shadow_sample_rate() -> f64 {
+    0.001
+}
+
+fn default_v3_series_shadow_sites() -> Vec<String> {
+    vec!["datadoghq.com".to_string()]
+}
+
 /// The type of metrics payload.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MetricsPayloadType {
@@ -40,6 +48,10 @@ pub struct MetricsPayloadInfo {
 
     /// The type of metrics (series or sketches).
     pub payload_type: MetricsPayloadType,
+
+    /// Whether this payload is part of sampled V3 shadow validation.
+    #[serde(default)]
+    pub shadow: bool,
 }
 
 impl MetricsPayloadInfo {
@@ -48,6 +60,7 @@ impl MetricsPayloadInfo {
         Self {
             version: MetricsProtocolVersion::V2,
             payload_type: MetricsPayloadType::Series,
+            shadow: false,
         }
     }
 
@@ -56,6 +69,7 @@ impl MetricsPayloadInfo {
         Self {
             version: MetricsProtocolVersion::V2,
             payload_type: MetricsPayloadType::Sketches,
+            shadow: false,
         }
     }
 
@@ -64,6 +78,7 @@ impl MetricsPayloadInfo {
         Self {
             version: MetricsProtocolVersion::V3,
             payload_type: MetricsPayloadType::Series,
+            shadow: false,
         }
     }
 
@@ -72,12 +87,36 @@ impl MetricsPayloadInfo {
         Self {
             version: MetricsProtocolVersion::V3,
             payload_type: MetricsPayloadType::Sketches,
+            shadow: false,
+        }
+    }
+
+    /// Creates a new V2 series payload info for sampled shadow validation.
+    pub const fn v2_shadow_series() -> Self {
+        Self {
+            version: MetricsProtocolVersion::V2,
+            payload_type: MetricsPayloadType::Series,
+            shadow: true,
+        }
+    }
+
+    /// Creates a new V3 series payload info for sampled shadow validation.
+    pub const fn v3_shadow_series() -> Self {
+        Self {
+            version: MetricsProtocolVersion::V3,
+            payload_type: MetricsPayloadType::Series,
+            shadow: true,
         }
     }
 
     /// Returns true if this is a sketch payload.
     pub const fn is_sketch(&self) -> bool {
         matches!(self.payload_type, MetricsPayloadType::Sketches)
+    }
+
+    /// Returns true if this payload is part of sampled shadow validation.
+    pub const fn is_shadow(&self) -> bool {
+        self.shadow
     }
 }
 
@@ -109,6 +148,22 @@ pub struct V3ApiSettings {
     /// Defaults to `/api/intake/metrics/v3beta/series`.
     #[serde(default = "default_v3_beta_series_route")]
     pub beta_route: String,
+
+    /// Per-flush probability of sending a sampled V3 beta shadow payload.
+    ///
+    /// This only applies to series metrics when V3 is not authoritative.
+    ///
+    /// Defaults to `0.001`.
+    #[serde(default = "default_v3_series_shadow_sample_rate")]
+    pub shadow_sample_rate: f64,
+
+    /// Datadog sites eligible for sampled V3 beta shadow payloads.
+    ///
+    /// This only applies to series metrics when V3 is not authoritative.
+    ///
+    /// Defaults to `["datadoghq.com"]`.
+    #[serde(default = "default_v3_series_shadow_sites")]
+    pub shadow_sites: Vec<String>,
 }
 
 impl Default for V3ApiSettings {
@@ -118,6 +173,8 @@ impl Default for V3ApiSettings {
             validate: false,
             use_beta: false,
             beta_route: default_v3_beta_series_route(),
+            shadow_sample_rate: default_v3_series_shadow_sample_rate(),
+            shadow_sites: default_v3_series_shadow_sites(),
         }
     }
 }
