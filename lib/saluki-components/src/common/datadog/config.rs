@@ -1045,6 +1045,8 @@ mod config_smoke {
             structs::FORWARDER_CONFIGURATION,
             &[
                 "serializer_experimental_use_v3_api.sketches.beta_route",
+                "serializer_experimental_use_v3_api.sketches.shadow_sample_rate",
+                "serializer_experimental_use_v3_api.sketches.shadow_sites",
                 "serializer_experimental_use_v3_api.sketches.use_beta",
             ],
             json!({ "api_key": "smoke-test-api-key" }),

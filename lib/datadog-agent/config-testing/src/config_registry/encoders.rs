@@ -153,4 +153,103 @@ crate::declare_annotations! {
         test_json: None,
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Traces]),
     };
+    /// `serializer_experimental_use_v3_api.compression_level`-Compression level for V3 payloads
+    SERIALIZER_EXPERIMENTAL_USE_V3_API_COMPRESSION_LEVEL = SalukiAnnotation {
+        schema: &schema::SERIALIZER_EXPERIMENTAL_USE_V3_API_COMPRESSION_LEVEL,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::DATADOG_METRICS_CONFIGURATION, structs::FORWARDER_CONFIGURATION],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD, Pipeline::Checks, Pipeline::Traces]),
+    };
+    /// `serializer_experimental_use_v3_api.series.beta_route`-Intake route for V3 beta series payloads
+    SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_BETA_ROUTE = SalukiAnnotation {
+        schema: &schema::SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_BETA_ROUTE,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::DATADOG_METRICS_CONFIGURATION, structs::FORWARDER_CONFIGURATION],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD, Pipeline::Checks, Pipeline::Traces]),
+    };
+    /// `serializer_experimental_use_v3_api.series.endpoints`-Additional endpoints for V3 series payloads
+    SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_ENDPOINTS = SalukiAnnotation {
+        schema: &schema::SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_ENDPOINTS,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::DATADOG_METRICS_CONFIGURATION, structs::FORWARDER_CONFIGURATION],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD, Pipeline::Checks, Pipeline::Traces]),
+    };
+    /// `serializer_experimental_use_v3_api.series.shadow_sample_rate`-Sample rate for V3 series shadow payloads
+    SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_SHADOW_SAMPLE_RATE = SalukiAnnotation {
+        schema: &schema::SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_SHADOW_SAMPLE_RATE,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::DATADOG_METRICS_CONFIGURATION, structs::FORWARDER_CONFIGURATION],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD, Pipeline::Checks, Pipeline::Traces]),
+    };
+    /// `serializer_experimental_use_v3_api.series.shadow_sites`-Sites enabled for V3 series shadow payloads
+    SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_SHADOW_SITES = SalukiAnnotation {
+        schema: &schema::SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_SHADOW_SITES,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::DATADOG_METRICS_CONFIGURATION, structs::FORWARDER_CONFIGURATION],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD, Pipeline::Checks, Pipeline::Traces]),
+    };
+    /// `serializer_experimental_use_v3_api.series.use_beta`-Whether to send V3 series payloads to the beta route
+    SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_USE_BETA = SalukiAnnotation {
+        schema: &schema::SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_USE_BETA,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::DATADOG_METRICS_CONFIGURATION, structs::FORWARDER_CONFIGURATION],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD, Pipeline::Checks, Pipeline::Traces]),
+    };
+    /// `serializer_experimental_use_v3_api.series.validate`-Enable V2/V3 validation mode for series payloads
+    SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_VALIDATE = SalukiAnnotation {
+        schema: &schema::SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_VALIDATE,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::DATADOG_METRICS_CONFIGURATION, structs::FORWARDER_CONFIGURATION],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD, Pipeline::Checks, Pipeline::Traces]),
+    };
+    /// `serializer_experimental_use_v3_api.sketches.endpoints`-Additional endpoints for V3 sketch payloads
+    SERIALIZER_EXPERIMENTAL_USE_V3_API_SKETCHES_ENDPOINTS = SalukiAnnotation {
+        schema: &schema::SERIALIZER_EXPERIMENTAL_USE_V3_API_SKETCHES_ENDPOINTS,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::DATADOG_METRICS_CONFIGURATION, structs::FORWARDER_CONFIGURATION],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD, Pipeline::Checks, Pipeline::Traces]),
+    };
+    /// `serializer_experimental_use_v3_api.sketches.validate`-Enable V2/V3 validation mode for sketch payloads
+    SERIALIZER_EXPERIMENTAL_USE_V3_API_SKETCHES_VALIDATE = SalukiAnnotation {
+        schema: &schema::SERIALIZER_EXPERIMENTAL_USE_V3_API_SKETCHES_VALIDATE,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::DATADOG_METRICS_CONFIGURATION, structs::FORWARDER_CONFIGURATION],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD, Pipeline::Checks, Pipeline::Traces]),
+    };
 }

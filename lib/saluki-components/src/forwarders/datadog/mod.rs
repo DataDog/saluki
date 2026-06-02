@@ -5,7 +5,7 @@ use saluki_common::buf::FrozenChunkedBytesBuffer;
 use saluki_config::GenericConfiguration;
 use saluki_core::{
     components::{forwarders::*, ComponentContext},
-    data_model::payload::PayloadType,
+    data_model::payload::{PayloadMetadata, PayloadType},
     observability::ComponentMetricsExt as _,
 };
 use saluki_error::GenericError;
@@ -17,6 +17,7 @@ use tracing::debug;
 use crate::common::datadog::{
     config::ForwarderConfiguration,
     io::TransactionForwarder,
+    protocol::MetricsPayloadInfo,
     telemetry::ComponentTelemetry,
     transaction::{Metadata, Transaction},
     validation::ValidationReadiness,
@@ -157,10 +158,7 @@ impl Forwarder for Datadog {
                 maybe_payload = context.payloads().next() => match maybe_payload {
                     Some(payload) => if let Some(http_payload) = payload.try_into_http_payload() {
                         let (payload_meta, request) = http_payload.into_parts();
-                        let transaction_meta = Metadata::from_event_and_data_point_count(
-                            payload_meta.event_count(),
-                            payload_meta.data_point_count(),
-                        );
+                        let transaction_meta = transaction_metadata_from_payload_metadata(&payload_meta);
                         let transaction = Transaction::from_original(transaction_meta, request);
 
                         forwarder.send_transaction(transaction).await?;
@@ -178,6 +176,13 @@ impl Forwarder for Datadog {
 
         Ok(())
     }
+}
+
+fn transaction_metadata_from_payload_metadata(payload_meta: &PayloadMetadata) -> Metadata {
+    let mut transaction_meta =
+        Metadata::from_event_and_data_point_count(payload_meta.event_count(), payload_meta.data_point_count());
+    transaction_meta.payload_info = payload_meta.get::<MetricsPayloadInfo>().copied();
+    transaction_meta
 }
 
 fn get_dd_endpoint_name(uri: &Uri) -> Option<MetaString> {
