@@ -111,6 +111,30 @@ preserve the core Agent's packet-buffer grouping, so forwarded UDP datagrams may
 differently while carrying the same DogStatsD messages. ADP logs setup failures and tracks send
 failures through telemetry.
 
+### Multi-region failover metrics
+
+ADP supports multi-region failover for metrics. When `multi_region_failover.enabled` and
+`multi_region_failover.failover_metrics` are both `true`, ADP forwards metrics to the primary
+Datadog endpoint and to a second MRF endpoint.
+
+To enable the MRF metrics branch at startup, configure `multi_region_failover.api_key` and one of
+`multi_region_failover.site` or `multi_region_failover.dd_url`. If the MRF endpoint configuration is
+incomplete, ADP skips the MRF branch and continues forwarding to the primary endpoint.
+
+ADP does not fall back to the primary `api_key`, `site`, or `dd_url` for MRF traffic.
+`multi_region_failover.enabled` and endpoint selection are resolved at startup.
+`multi_region_failover.failover_metrics`, `multi_region_failover.metric_allowlist`, and
+`multi_region_failover.api_key` can refresh from live configuration after the MRF branch is enabled.
+
+| Config Key                               | Behavior                                                                   | Default |
+| ---------------------------------------- | -------------------------------------------------------------------------- | ------- |
+| `multi_region_failover.enabled`          | Enables multi-region failover mode.                                        | `false` |
+| `multi_region_failover.failover_metrics` | Enables metrics forwarding to the failover region when MRF is enabled.     | `false` |
+| `multi_region_failover.metric_allowlist` | Exact metric names to forward to MRF. Empty or unset forwards all metrics. | `[]`    |
+| `multi_region_failover.api_key`          | API key for the failover-region endpoint.                                  | unset   |
+| `multi_region_failover.site`             | Datadog site for the failover region, used as `https://app.mrf.<site>`.    | unset   |
+| `multi_region_failover.dd_url`           | Explicit failover intake URL. Takes precedence over `site` when set.       | unset   |
+
 ### Datadog intake TLS validation (`skip_ssl_validation`)
 
 ADP supports `skip_ssl_validation` for Datadog intake forwarding through the shared Datadog
@@ -276,9 +300,6 @@ ways that are not yet fully characterized.
 | `forwarder_retry_queue_capacity_time_interval_sec`               | Retry queue time-based capacity                 | [#1365] |
 | `forwarder_stop_timeout`                                         | Timeout (s) for forwarder graceful stop         | [#1680] |
 | `heroku_dyno`                                                    | Override agent name for Heroku telemetry        | [#1685] |
-| `multi_region_failover.enabled`                                  | Enable multi-region failover mode               | [#1678] |
-| `multi_region_failover.failover_metrics`                         | Enable metrics forwarding to failover region    | [#1678] |
-| `multi_region_failover.metric_allowlist`                         | Metric name allowlist for MRF forwarding        | [#1678] |
 | `telemetry.dogstatsd.aggregator_channel_latency_buckets`         | Histogram buckets: DSD aggregator channel lag   | [#1679] |
 | `telemetry.dogstatsd.listeners_channel_latency_buckets`          | Histogram buckets: listener channel latency     | [#1679] |
 | `telemetry.dogstatsd.listeners_latency_buckets`                  | Histogram buckets: listener processing          | [#1679] |

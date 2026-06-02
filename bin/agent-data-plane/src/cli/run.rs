@@ -14,7 +14,7 @@ use saluki_app::{
 };
 use saluki_components::config_registry::{ConfigClassifier, Pipeline, PipelineAffinity, Severity, SupportLevel};
 use saluki_components::{
-    config::{DatadogRemapper, KEY_ALIASES},
+    config::{DatadogRemapper, MrfConfiguration, KEY_ALIASES},
     decoders::otlp::OtlpDecoderConfiguration,
     destinations::{DogStatsDDebugLogConfiguration, DogStatsDStatisticsConfiguration},
     encoders::{
@@ -30,7 +30,8 @@ use saluki_components::{
     },
     transforms::{
         AggregateConfiguration, ApmStatsTransformConfiguration, ChainedConfiguration, DogStatsDMapperConfiguration,
-        HostEnrichmentConfiguration, TraceObfuscationConfiguration, TraceSamplerConfiguration,
+        HostEnrichmentConfiguration, MrfMetricsGatewayConfiguration, TraceObfuscationConfiguration,
+        TraceSamplerConfiguration,
     },
 };
 use saluki_config::{ConfigurationLoader, GenericConfiguration};
@@ -545,6 +546,52 @@ async fn add_baseline_metrics_pipeline_to_blueprint(
         .add_encoder("dd_metrics_encode", dd_metrics_config)?
         // Metrics, then forwarding.
         .connect_components_in_order(["metrics_enrich", "dd_metrics_encode", "dd_out"])?;
+
+    add_mrf_metrics_pipeline_to_blueprint(blueprint, config)?;
+
+    Ok(())
+}
+
+fn add_mrf_metrics_pipeline_to_blueprint(
+    blueprint: &mut TopologyBlueprint, config: &GenericConfiguration,
+) -> Result<(), GenericError> {
+    let mrf_config = MrfConfiguration::from_configuration(config)
+        .error_context("Failed to configure Multi-Region Failover metrics pipeline.")?;
+
+    let Some((mrf_dd_url, mrf_api_key)) = mrf_config.metrics_endpoint_override() else {
+        if mrf_config.is_enabled() {
+            warn!(
+                "Multi-Region Failover is enabled, but multi_region_failover.api_key and one of \
+                 multi_region_failover.dd_url or multi_region_failover.site are required for metrics forwarding. The \
+                 MRF metrics branch will not be wired, and primary forwarding will continue. Restart ADP after \
+                 configuring the static MRF endpoint settings."
+            );
+        }
+
+        return Ok(());
+    };
+
+    let mrf_gateway_config = MrfMetricsGatewayConfiguration::new(mrf_config.clone(), config.clone());
+    let mrf_metrics_config = DatadogMetricsConfiguration::from_configuration(config)
+        .error_context("Failed to configure Multi-Region Failover Datadog Metrics encoder.")?;
+
+    let mrf_forwarder_config = DatadogConfiguration::from_configuration(config)
+        .map(|config| {
+            config.with_endpoint_override_and_api_key_refresh_config_path(
+                mrf_dd_url,
+                mrf_api_key,
+                "multi_region_failover.api_key",
+            )
+        })
+        .error_context("Failed to configure Multi-Region Failover Datadog forwarder.")?;
+
+    blueprint
+        .add_transform("mrf_metrics_gateway", mrf_gateway_config)?
+        .add_encoder("mrf_metrics_encode", mrf_metrics_config)?
+        .add_forwarder("mrf_dd_out", mrf_forwarder_config)?
+        .connect_component("mrf_metrics_gateway", ["metrics_enrich"])?
+        .connect_component("mrf_metrics_encode", ["mrf_metrics_gateway"])?
+        .connect_component("mrf_dd_out", ["mrf_metrics_encode"])?;
 
     Ok(())
 }
