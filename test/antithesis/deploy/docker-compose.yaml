@@ -41,6 +41,8 @@ services:
       - dogstatsd-socket:/var/run/datadog
       # first_sample_config (workload) writes this timeline's datadog.yaml + ready sentinel here.
       - agent-config:/agent-config:ro
+      # Forwarder on-disk retry queue. Persists across node termination so restart can recover it.
+      - forwarder-storage:/var/lib/adp-storage
     depends_on:
       intake:
         condition: service_healthy
@@ -69,3 +71,4 @@ services:
 volumes:
   dogstatsd-socket:
   agent-config:
+  forwarder-storage:
