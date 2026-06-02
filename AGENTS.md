@@ -115,8 +115,8 @@ When writing or updating documentation, follow these guidelines. For full detail
 
 #### Audience and scope
 
-Core library crates (`lib/saluki-*`, `lib/saluki-io`, `lib/datadog-agent-commons`, etc.) are
-general-purpose infrastructure. Their documentation and code comments MUST NOT reference:
+Generic saluki crates (`lib/saluki-*`, `lib/saluki-io`) are general-purpose infrastructure.
+Their documentation and code comments MUST NOT reference:
 
 - The Datadog Agent by name (use "the server process", "the remote endpoint", or the specific
   protocol instead)
@@ -124,8 +124,9 @@ general-purpose infrastructure. Their documentation and code comments MUST NOT r
   product, but internal Datadog project names are not)
 - Datadog-specific deployment topologies (use generic terms like "guest VM", "host process", etc.)
 
-This rule does NOT apply to `bin/agent-data-plane`, which is explicitly Datadog Agent-specific, or
-to configuration registry annotations and known-configs documentation.
+This rule does NOT apply to `bin/agent-data-plane`, `lib/datadog-agent-commons`, configuration
+registry annotations, or known-configs documentation — all of which are explicitly
+Datadog Agent-specific.
 
 #### Rustdoc (code documentation)
 
