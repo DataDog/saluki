@@ -87,8 +87,8 @@ mod tests {
 
         fn set_string_value(&self, name: &str, value: &str) {
             let key = CURRENT_USER
-                .open(&self.subkey)
-                .expect("temporary registry key should open");
+                .create(&self.subkey)
+                .expect("temporary registry key should open for writes");
             key.set_string(name, value)
                 .expect("registry string value should be written");
         }
