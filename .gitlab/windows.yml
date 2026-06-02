@@ -3,8 +3,8 @@
   interruptible: true
   variables:
     ARCH: "x64"
-    # Mirrors the Datadog Agent Windows LTSC2022 build image.
-    WINBUILDIMAGE: registry.ddbuild.io/ci/datadog-agent-buildimages/windows_ltsc2022_x64:latest
+    # Use the Windows LTSC2022 build image pre-cached on the Windows runner image.
+    WINBUILDIMAGE: registry.ddbuild.io/ci/datadog-agent-buildimages/windows_ltsc2022_x64:v114471858-795a98da
     OVERRIDE_GIT_STRATEGY: "clone"
 
 unit-tests-windows-amd64:
@@ -21,7 +21,13 @@ unit-tests-windows-amd64:
     - docker images --format "table {{.Repository}}\t{{.Tag}}\t{{.ID}}\t{{.CreatedSince}}\t{{.Size}}" | Select-String "datadog-agent-buildimages/windows"
     - Write-Host "Cached LTSC2022 build image tags before pull:"
     - docker images registry.ddbuild.io/ci/datadog-agent-buildimages/windows_ltsc2022_x64 --format "table {{.Repository}}\t{{.Tag}}\t{{.ID}}\t{{.CreatedSince}}\t{{.Size}}"
-    - docker pull ${WINBUILDIMAGE}
+    - |
+      if (docker image inspect ${WINBUILDIMAGE} *> $null) {
+        Write-Host "Using cached Windows build image: ${WINBUILDIMAGE}"
+      } else {
+        Write-Host "Cached Windows build image not found, pulling: ${WINBUILDIMAGE}"
+        docker pull ${WINBUILDIMAGE}
+      }
     - >
       docker run --rm
       -m 24576M
