@@ -145,8 +145,6 @@ CMD ["-c", "C:\\adp\\datadog.yaml", "run"]
 
     Write-Host "[*] Building Windows ADP test image ${ImageTag} from ${BaseImage}..."
     Invoke-Native docker build --tag $ImageTag $ContextDir
-
-    return $ImageTag
 }
 
 function Test-WindowsAdpImage {
@@ -204,7 +202,8 @@ Invoke-Native docker version
 Write-Host "[*] Building Panoramic and Agent Data Plane for Windows..."
 Invoke-Native cargo build --release --package panoramic --package agent-data-plane
 
-$WindowsAdpImage = Build-WindowsAdpImage
+$WindowsAdpImage = if ($env:WINDOWS_ADP_IMAGE_TAG) { $env:WINDOWS_ADP_IMAGE_TAG } else { "saluki-images/agent-data-plane:testing-windows" }
+Build-WindowsAdpImage
 Test-WindowsAdpImage -ImageTag $WindowsAdpImage
 
 if (-not $env:PANORAMIC_LOG_DIR) {
