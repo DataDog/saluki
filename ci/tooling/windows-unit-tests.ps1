@@ -94,4 +94,5 @@ foreach ($Package in $Packages) {
 }
 
 Write-Host "[*] Running Windows unit tests for packages: $($Packages -join ', ')"
-Invoke-Native cargo nextest run @PackageArgs --lib --bins --no-fail-fast -E 'not test(/property_test_*/)'
+$NextestArgs = @("nextest", "run") + $PackageArgs + @("--lib", "--bins", "--no-fail-fast", "-E", "not test(/property_test_*/)")
+Invoke-Native -FilePath cargo -Arguments $NextestArgs
