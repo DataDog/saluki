@@ -9,12 +9,13 @@
 //! Only the small subset of the Docker driver surface needed by the panoramic Unix runner is
 //! implemented: spawn, log capture, exit watching, and cleanup.
 
+#[cfg(unix)]
+use std::time::Duration;
 use std::{
     collections::HashMap,
     path::PathBuf,
     process::Stdio,
     sync::{Arc, OnceLock},
-    time::Duration,
 };
 
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
@@ -101,6 +102,7 @@ pub struct UnixProcess {
     name: String,
     /// PGID of the spawned process. We made the child the group leader at spawn time, so this
     /// equals the child's PID. `None` only if spawn failed to return a PID (very rare).
+    #[cfg(unix)]
     process_group: Option<i32>,
     exit_code: ExitCodeCell,
     log_tasks: Vec<JoinHandle<()>>,
@@ -135,6 +137,7 @@ impl UnixProcess {
             .spawn()
             .with_error_context(|| format!("Failed to spawn '{}'.", config.binary_path.display()))?;
 
+        #[cfg(unix)]
         let process_group = child.id().map(|pid| pid as i32);
 
         let stdout = child
@@ -172,6 +175,7 @@ impl UnixProcess {
 
         Ok(Self {
             name: config.name,
+            #[cfg(unix)]
             process_group,
             exit_code,
             log_tasks: vec![stdout_task, stderr_task],

@@ -43,7 +43,6 @@ unit-tests-windows-amd64:
       -e CARGO_TARGET_DIR="c:\mnt\target\windows-ci"
       -e CARGO_NEXTEST_VERSION="0.9.99"
       -e PROTOC_VERSION="29.3"
-      -e WINDOWS_CI_PACKAGES="datadog-agent-commons,process-memory,saluki-error,ddsketch,prometheus-exposition,saluki-config"
       ${WINBUILDIMAGE}
       powershell.exe -NoProfile -NonInteractive -File c:\mnt\ci\tooling\windows-unit-tests.ps1
     - If ($lastExitCode -ne "0") { exit "$lastExitCode" }

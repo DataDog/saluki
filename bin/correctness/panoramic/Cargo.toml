@@ -16,7 +16,7 @@ base64 = { workspace = true }
 bollard = { workspace = true, features = ["time"] }
 chrono = { workspace = true }
 colored = { workspace = true }
-crossterm = { workspace = true, features = ["events"] }
+crossterm = { workspace = true, features = ["events", "windows"] }
 futures = { workspace = true }
 k8s-openapi = { workspace = true }
 kube = { workspace = true, features = ["client", "http-proxy", "rustls-tls", "ws"] }

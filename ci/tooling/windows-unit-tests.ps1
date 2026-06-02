@@ -75,10 +75,6 @@ if (-not $env:PROTOC_VERSION) {
 if (-not $env:WINDOWS_CI_PROTOC_HOME) {
     $env:WINDOWS_CI_PROTOC_HOME = Join-Path $RepoRoot ".ci-cache\protoc\$env:PROTOC_VERSION"
 }
-if (-not $env:WINDOWS_CI_PACKAGES) {
-    $env:WINDOWS_CI_PACKAGES = "datadog-agent-commons,process-memory,saluki-error,ddsketch,prometheus-exposition,saluki-config"
-}
-
 New-Item -ItemType Directory -Force $env:WINDOWS_CI_CARGO_HOME | Out-Null
 New-Item -ItemType Directory -Force $env:WINDOWS_CI_PROTOC_HOME | Out-Null
 New-Item -ItemType Directory -Force $env:RUSTUP_HOME | Out-Null
@@ -127,6 +123,10 @@ foreach ($Package in $Packages) {
     $PackageArgs += @("-p", $Package)
 }
 
-Write-Host "[*] Running Windows unit tests for packages: $($Packages -join ', ')"
+if ($Packages.Count -eq 0) {
+    Write-Host "[*] Running Windows unit tests for the full default workspace scope."
+} else {
+    Write-Host "[*] Running Windows unit tests for packages: $($Packages -join ', ')"
+}
 $NextestArgs = @("nextest", "run") + $PackageArgs + @("--lib", "--bins", "--no-fail-fast", "-E", "not test(/property_test_*/)")
 Invoke-Native -FilePath cargo -Arguments $NextestArgs
