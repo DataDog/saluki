@@ -659,7 +659,7 @@ mod tests {
         };
 
         let uri: http::Uri = "https://127.0.0.1/".parse().unwrap();
-        let err = connector.call(uri).await.unwrap_err();
+        let err = connector.call(uri).await.err().expect("expected an error");
         assert!(
             err.to_string()
                 .contains("vsock: destination URI must have an explicit port"),
