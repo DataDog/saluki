@@ -147,6 +147,18 @@ CMD ["-c", "C:\\adp\\datadog.yaml", "run"]
     Invoke-Native docker build --tag $ImageTag $ContextDir
 }
 
+function Remove-DockerContainerIfExists {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ContainerName
+    )
+
+    $previousErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    docker rm -f $ContainerName *> $null
+    $ErrorActionPreference = $previousErrorActionPreference
+}
+
 function Test-WindowsAdpImage {
     param(
         [Parameter(Mandatory = $true)]
@@ -154,7 +166,7 @@ function Test-WindowsAdpImage {
     )
 
     $ContainerName = "saluki-windows-adp-preflight"
-    docker rm -f $ContainerName *> $null
+    Remove-DockerContainerIfExists -ContainerName $ContainerName
 
     Write-Host "[*] Preflight: starting ${ImageTag} directly..."
     $DockerRunArgs = @(
@@ -182,11 +194,11 @@ function Test-WindowsAdpImage {
     $Status = docker inspect $ContainerName --format '{{.State.Status}}'
     if ($Status -ne "running") {
         $ExitCode = docker inspect $ContainerName --format '{{.State.ExitCode}}'
-        docker rm -f $ContainerName *> $null
+        Remove-DockerContainerIfExists -ContainerName $ContainerName
         throw "Windows ADP preflight container exited early with status=${Status}, exit_code=${ExitCode}."
     }
 
-    docker rm -f $ContainerName *> $null
+    Remove-DockerContainerIfExists -ContainerName $ContainerName
 }
 
 $RepoRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..")
