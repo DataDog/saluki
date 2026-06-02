@@ -206,7 +206,7 @@ impl RemoteAgentClientConfiguration {
 
         #[cfg(not(target_os = "linux"))]
         if this.vsock_addr.is_some() {
-            warn!("`vsock_addr` is configured but vsock is only supported on Linux; the setting will be ignored");
+            warn!("`vsock_addr` is configured but vsock is only supported on Linux. Setting will be ignored.");
         }
 
         Ok(this)
