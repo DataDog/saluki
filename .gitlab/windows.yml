@@ -31,7 +31,7 @@ unit-tests-windows-amd64:
       -e CI_COMMIT_SHA
       -e CI_PROJECT_NAME
       -e CI_COMMIT_REF_NAME
-      -e CARGO_HOME="c:\mnt\.ci-cache\cargo"
+      -e WINDOWS_CI_CARGO_HOME="c:\mnt\.ci-cache\cargo"
       -e RUSTUP_HOME="c:\mnt\.ci-cache\rustup"
       -e CARGO_TARGET_DIR="c:\mnt\target\windows-ci"
       -e CARGO_NEXTEST_VERSION="0.9.99"

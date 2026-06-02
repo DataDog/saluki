@@ -30,11 +30,12 @@ function Add-PathEntry {
 $RepoRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..")
 Set-Location $RepoRoot
 
-if (-not $env:CARGO_HOME) {
-    $env:CARGO_HOME = "c:\cargo"
+$OriginalCargoHome = $env:CARGO_HOME
+if (-not $env:WINDOWS_CI_CARGO_HOME) {
+    $env:WINDOWS_CI_CARGO_HOME = Join-Path $RepoRoot ".ci-cache\cargo"
 }
 if (-not $env:RUSTUP_HOME) {
-    $env:RUSTUP_HOME = "c:\rustup"
+    $env:RUSTUP_HOME = Join-Path $RepoRoot ".ci-cache\rustup"
 }
 if (-not $env:CARGO_TARGET_DIR) {
     $env:CARGO_TARGET_DIR = Join-Path $RepoRoot "target\windows-ci"
@@ -46,10 +47,12 @@ if (-not $env:WINDOWS_CI_PACKAGES) {
     $env:WINDOWS_CI_PACKAGES = "datadog-agent-commons,process-memory,saluki-error,ddsketch,prometheus-exposition,saluki-config"
 }
 
-New-Item -ItemType Directory -Force $env:CARGO_HOME | Out-Null
+New-Item -ItemType Directory -Force $env:WINDOWS_CI_CARGO_HOME | Out-Null
 New-Item -ItemType Directory -Force $env:RUSTUP_HOME | Out-Null
 New-Item -ItemType Directory -Force $env:CARGO_TARGET_DIR | Out-Null
-Add-PathEntry (Join-Path $env:CARGO_HOME "bin")
+if ($OriginalCargoHome) {
+    Add-PathEntry (Join-Path $OriginalCargoHome "bin")
+}
 Add-PathEntry (Join-Path $env:USERPROFILE ".cargo\bin")
 
 if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
@@ -57,7 +60,9 @@ if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
     $RustupInit = Join-Path $env:TEMP "rustup-init.exe"
     Invoke-WebRequest -UseBasicParsing -Uri "https://win.rustup.rs/x86_64" -OutFile $RustupInit
     Invoke-Native $RustupInit -y --profile minimal --default-toolchain none
-    Add-PathEntry (Join-Path $env:CARGO_HOME "bin")
+    if ($env:CARGO_HOME) {
+        Add-PathEntry (Join-Path $env:CARGO_HOME "bin")
+    }
     Add-PathEntry (Join-Path $env:USERPROFILE ".cargo\bin")
 }
 
@@ -72,6 +77,9 @@ Invoke-Native rustup toolchain install --profile minimal $Toolchain
 Invoke-Native rustup default $Toolchain
 Invoke-Native rustup show
 Invoke-Native cargo --version
+
+$env:CARGO_HOME = $env:WINDOWS_CI_CARGO_HOME
+Add-PathEntry (Join-Path $env:CARGO_HOME "bin")
 
 if (-not (Get-Command cargo-nextest -ErrorAction SilentlyContinue)) {
     Write-Host "[*] cargo-nextest not found; installing cargo-nextest@$env:CARGO_NEXTEST_VERSION..."
