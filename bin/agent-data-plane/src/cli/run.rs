@@ -577,7 +577,13 @@ fn add_mrf_metrics_pipeline_to_blueprint(
         .error_context("Failed to configure Multi-Region Failover Datadog Metrics encoder.")?;
 
     let mrf_forwarder_config = DatadogConfiguration::from_configuration(config)
-        .map(|config| config.with_endpoint_override(mrf_dd_url, mrf_api_key))
+        .map(|config| {
+            config.with_endpoint_override_and_api_key_refresh_config_path(
+                mrf_dd_url,
+                mrf_api_key,
+                "multi_region_failover.api_key",
+            )
+        })
         .error_context("Failed to configure Multi-Region Failover Datadog forwarder.")?;
 
     blueprint
