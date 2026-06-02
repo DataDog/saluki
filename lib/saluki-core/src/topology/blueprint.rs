@@ -1,7 +1,7 @@
 use std::{collections::HashMap, num::NonZeroUsize};
 
 use resource_accounting::{ComponentRegistry, Track as _, UsageExpr};
-use saluki_error::{ErrorContext as _, GenericError};
+use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use snafu::Snafu;
 
 use super::{
@@ -379,6 +379,54 @@ impl TopologyBlueprint {
         Ok(self)
     }
 
+    /// Connects a set of component IDs to one another in a pairwise fashion.
+    ///
+    /// This can be used to connect multiple components -- each sharing only a single edge between one another -- in a
+    /// single call instead of multiple calls. Components are connected from left to right, instead of the reversed
+    /// order of `connect_component` that takes the destination component first and source components second.
+    ///
+    /// For example, passing `["first", "second", "third"]` would connect `first`'s output to `second`'s input, and
+    /// `second`'s output to `third`'s input.
+    ///
+    /// # Errors
+    ///
+    /// If any of the component IDs are invalid or don't exist, or if the data types between one of the
+    /// source/destination component pairs is incompatible, or if less than two component IDs are provided, an error is
+    /// returned.
+    ///
+    /// Care should be taken on failure as this method will not rollback any previously successful connections, which
+    /// could leave the blueprint in an indeterminate state if some connections are made prior to hitting an error.
+    pub fn connect_components_in_order<IT, I>(&mut self, ordered_component_ids: IT) -> Result<&mut Self, GenericError>
+    where
+        IT: IntoIterator<Item = I>,
+        I: AsRef<str>,
+    {
+        let mut pending_output_component_id: Option<I> = None;
+        let mut connected_any = false;
+
+        for component_id in ordered_component_ids.into_iter() {
+            if let Some(output_component_id) = pending_output_component_id.take() {
+                self.graph
+                    .add_edge(output_component_id.as_ref(), component_id.as_ref())
+                    .error_context("Failed to add component connection to topology graph.")?;
+
+                connected_any = true;
+            }
+
+            // Store the _current_ component ID so we can chain its connection to the next component, and so on.
+            pending_output_component_id = Some(component_id);
+        }
+
+        // Make sure we connected at least one pair of components together, otherwise this is an invalid connection attempt.
+        if !connected_any {
+            return Err(generic_error!(
+                "Two or more components must be provided for connection."
+            ));
+        }
+
+        Ok(self)
+    }
+
     /// Builds the topology.
     ///
     /// # Errors
@@ -526,5 +574,91 @@ impl TopologyBlueprint {
             self.component_registry.token(),
             self.interconnect_capacity,
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use resource_accounting::ComponentRegistry;
+
+    use super::TopologyBlueprint;
+    use crate::{
+        data_model::event::EventType,
+        topology::test_util::{TestDestinationBuilder, TestSourceBuilder, TestTransformBuilder},
+    };
+
+    /// Builds a blueprint pre-populated with a source, transform, and destination, all dealing in event-D events.
+    ///
+    /// No connections are made between the components.
+    fn blueprint_with_components() -> TopologyBlueprint {
+        let component_registry = ComponentRegistry::default();
+        let mut blueprint = TopologyBlueprint::new("test", &component_registry);
+
+        blueprint
+            .add_source("source", TestSourceBuilder::default_output(EventType::EventD))
+            .expect("should not fail to add source")
+            .add_transform(
+                "transform",
+                TestTransformBuilder::default_output(EventType::EventD, EventType::EventD),
+            )
+            .expect("should not fail to add transform")
+            .add_destination(
+                "destination",
+                TestDestinationBuilder::with_input_type(EventType::EventD),
+            )
+            .expect("should not fail to add destination");
+
+        blueprint
+    }
+
+    /// Collects the blueprint's directed connections as a sorted list of `(from, to)` component ID pairs.
+    fn connected_pairs(blueprint: &TopologyBlueprint) -> Vec<(String, String)> {
+        let outbound_edges = blueprint.graph.get_outbound_directed_edges();
+
+        let mut pairs = Vec::new();
+        for (from, outputs) in &outbound_edges {
+            for targets in outputs.values() {
+                for to in targets {
+                    pairs.push((from.component_id().to_string(), to.component_id().to_string()));
+                }
+            }
+        }
+        pairs.sort();
+        pairs
+    }
+
+    #[test]
+    fn connect_components_in_order_errors_with_fewer_than_two_ids() {
+        let mut blueprint = blueprint_with_components();
+
+        // No component IDs at all.
+        let result = blueprint.connect_components_in_order(Vec::<&str>::new()).map(|_| ());
+        assert!(result.is_err());
+
+        // A single component ID is still not enough to form a connection.
+        let result = blueprint.connect_components_in_order(["source"]).map(|_| ());
+        assert!(result.is_err());
+
+        // Neither attempt should have added any connections to the graph.
+        assert!(connected_pairs(&blueprint).is_empty());
+    }
+
+    #[test]
+    fn connect_components_in_order_connects_pairwise_left_to_right() {
+        let mut blueprint = blueprint_with_components();
+
+        blueprint
+            .connect_components_in_order(["source", "transform", "destination"])
+            .expect("should not fail to connect components in order");
+
+        // Adjacent components should be connected from left to right (`source` -> `transform` -> `destination`), with
+        // a single edge shared between each pair.
+        assert_eq!(
+            connected_pairs(&blueprint),
+            vec![
+                ("source".to_string(), "transform".to_string()),
+                ("transform".to_string(), "destination".to_string()),
+            ],
+        );
     }
 }
