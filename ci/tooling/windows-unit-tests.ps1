@@ -118,7 +118,10 @@ if (-not (Get-Command cargo-nextest -ErrorAction SilentlyContinue)) {
 Invoke-Native cargo nextest --version
 
 $PackageArgs = @()
-$Packages = $env:WINDOWS_CI_PACKAGES -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+$Packages = @()
+if (-not [string]::IsNullOrWhiteSpace($env:WINDOWS_CI_PACKAGES)) {
+    $Packages = @($env:WINDOWS_CI_PACKAGES -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+}
 foreach ($Package in $Packages) {
     $PackageArgs += @("-p", $Package)
 }
