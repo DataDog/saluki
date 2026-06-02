@@ -116,7 +116,7 @@ When writing or updating documentation, follow these guidelines. For full detail
 #### Audience and scope
 
 Generic saluki crates (`lib/saluki-*`, `lib/saluki-io`) are general-purpose infrastructure.
-Their documentation and code comments MUST NOT reference:
+Their documentation and code comments **SHOULD NOT** reference:
 
 - The Datadog Agent by name (use "the server process", "the remote endpoint", or the specific
   protocol instead)
