@@ -1,4 +1,4 @@
-//! Docker daemon connection with non-standard socket discovery.
+//! Docker daemon connection helpers.
 
 #[cfg(unix)]
 use std::{env, path::PathBuf};
@@ -22,35 +22,15 @@ const DEFAULT_TIMEOUT: u64 = 120;
 #[cfg(unix)]
 const STANDARD_SOCKET: &str = "/var/run/docker.sock";
 
-/// Connect to the Docker daemon, searching non-standard socket locations on macOS.
+/// Connects to the Docker daemon.
 ///
-/// Resolution order:
-///
-/// 1. If `DOCKER_HOST` is set **or** `/var/run/docker.sock` exists on disk, defer to bollard's
-///    default connection logic: no extra work needed.
-/// 2. Otherwise, try each candidate socket path in order and use the first that exists.
-/// 3. If no candidate is found, fall back to `Docker::connect_with_defaults()` so the error
-///    message comes from bollard rather than from us.
-///
-/// # Candidate paths
-///
-/// These are checked (in order) when the standard socket is absent:
-///
-/// | Path | Environment |
-/// |------|-------------|
-/// | `$HOME/.docker/run/docker.sock` | Docker Desktop |
-/// | `$HOME/.orbstack/run/docker.sock` | OrbStack |
-/// | `$HOME/.rd/docker.sock` | Rancher Desktop |
-/// | `$HOME/.lima/default/sock/docker.sock` | Lima (default instance) |
-/// | `$HOME/.lima/docker/sock/docker.sock` | Lima (docker instance) |
-/// | `$HOME/.colima/default/docker.sock` | Colima |
-/// | `$HOME/.colima/docker/docker.sock` | Colima (docker profile) |
-/// | `$HOME/.local/share/containers/podman/machine/podman.sock` | Podman Desktop (macOS) |
+/// On Unix hosts, this searches common non-standard Docker socket locations when `DOCKER_HOST` is unset and the
+/// standard `/var/run/docker.sock` path is absent. On Windows, this uses Bollard's platform default connection logic.
 ///
 /// # Errors
 ///
-/// Returns an error if no reachable Docker daemon can be found. When connecting through a
-/// discovered non-standard path, the error includes the path that was attempted.
+/// Returns an error if no reachable Docker daemon can be found. When connecting through a discovered non-standard Unix
+/// socket path, the error includes the path that was attempted.
 pub fn connect() -> Result<Docker, GenericError> {
     connect_inner()
 }

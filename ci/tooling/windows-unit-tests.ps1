@@ -117,19 +117,6 @@ if (-not (Get-Command cargo-nextest -ErrorAction SilentlyContinue)) {
 }
 Invoke-Native cargo nextest --version
 
-$PackageArgs = @()
-$Packages = @()
-if (-not [string]::IsNullOrWhiteSpace($env:WINDOWS_CI_PACKAGES)) {
-    $Packages = @($env:WINDOWS_CI_PACKAGES -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
-}
-foreach ($Package in $Packages) {
-    $PackageArgs += @("-p", $Package)
-}
-
-if ($Packages.Count -eq 0) {
-    Write-Host "[*] Running Windows unit tests for the full default workspace scope."
-} else {
-    Write-Host "[*] Running Windows unit tests for packages: $($Packages -join ', ')"
-}
-$NextestArgs = @("nextest", "run") + $PackageArgs + @("--lib", "--bins", "--no-fail-fast", "-E", "not test(/property_test_*/)")
+Write-Host "[*] Running Windows unit tests for the full default workspace scope."
+$NextestArgs = @("nextest", "run", "--lib", "--bins", "--no-fail-fast", "-E", "not test(/property_test_*/)")
 Invoke-Native -FilePath cargo -Arguments $NextestArgs
