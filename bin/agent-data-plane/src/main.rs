@@ -7,6 +7,11 @@
 #![deny(missing_docs)]
 use std::time::Instant;
 
+// Pull in the Antithesis coverage-instrumentation runtime shim only when
+// building for antithesis. Load-baring: equired to avoid the shim being dropped
+// as unused.
+#[cfg(feature = "antithesis")]
+use antithesis_instrumentation as _;
 use datadog_agent_commons::platform::PlatformSettings;
 use metrics::Level;
 use saluki_app::bootstrap::{AppBootstrapper, Bootstrap, BootstrapGuard};
@@ -39,6 +44,12 @@ static ALLOC: resource_accounting::TrackingAllocator<std::alloc::System> =
 #[tokio::main]
 async fn main() -> Result<(), GenericError> {
     let started = Instant::now();
+
+    // Initialize the Antithesis SDK as early as possible so assertions and lifecycle hooks register
+    // their catalog before any are evaluated. No-op outside Antithesis and absent in production builds.
+    #[cfg(feature = "antithesis")]
+    antithesis_sdk::antithesis_init();
+
     let cli: Cli = argh::from_env();
 
     // Print version and exit early without requiring config.
@@ -82,6 +93,11 @@ async fn main() -> Result<(), GenericError> {
         .bootstrap()
         .await
         .error_context("Failed to complete bootstrap phase.")?;
+
+    // Bootstrap-integration probe: proves the Antithesis SDK is linked, cataloging works, and the
+    // instrumentation path is wired.
+    #[cfg(feature = "antithesis")]
+    antithesis_sdk::assert_reachable!("agent-data-plane completed bootstrap", &serde_json::json!({}));
 
     // Run the given subcommand. The bootstrap supervisor is forwarded by value; only the long-lived `run`
     // subcommand actually drives it (it is added as a child of the internal supervisor inside

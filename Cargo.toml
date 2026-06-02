@@ -29,6 +29,7 @@ members = [
   "lib/saluki-metrics",
   "lib/saluki-tls",
   "lib/stringtheory",
+  "test/antithesis/harness",
 ]
 resolver = "2"
 
@@ -66,6 +67,7 @@ async-trait = { version = "0.1", default-features = false }
 atty = { version = "0.2", default-features = false }
 axum = { version = "0.8", default-features = false }
 bytes = { version = "1", default-features = false }
+clap = { version = "4", default-features = false, features = [] }
 protobuf = { version = "3.7", default-features = false, features = [
   "with-bytes",
 ] }
@@ -223,6 +225,8 @@ chumsky = { version = "0.13", default-features = false }
 logos = { version = "0.16", default-features = false }
 lru-slab = { version = "0.1.2", default-features = false }
 hickory-resolver = { version = "0.26", default-features = false }
+antithesis-instrumentation = { version = "0.1" }
+antithesis_sdk = { git = "https://github.com/antithesishq/antithesis-sdk-rust", rev = "6829a946e7e970cc743ffe17c3cee7d2bc25425a", default-features = false } # 0.2.8 is pinned to rand 0.8, rev version allows us to select workspace rand
 
 [patch.crates-io]
 # Forked version of `hyper-http-proxy` that removes an unused dependency on `rustls-native-certs`, which transitively depends
