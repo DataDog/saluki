@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"constant":["KEY_ALIASES"],"struct":["DatadogRemapper"]};
+window.SIDEBAR_ITEMS = {"constant":["KEY_ALIASES"],"mod":["mrf"],"struct":["DatadogRemapper"]};
