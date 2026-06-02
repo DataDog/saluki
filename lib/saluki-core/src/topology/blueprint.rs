@@ -388,6 +388,11 @@ impl TopologyBlueprint {
     /// For example, passing `["first", "second", "third"]` would connect `first`'s output to `second`'s input, and
     /// `second`'s output to `third`'s input.
     ///
+    /// One caveat is that only the default output of a component can be used for connections past the first pair, as the
+    /// identifier given must be able to describe both the component ID to _send_ to as well as the component output ID
+    /// to connect to the subsequent component. This limitation does not exist on the first component ID, since it is only
+    /// used in the context of being a component output ID.
+    ///
     /// # Errors
     ///
     /// If any of the component IDs are invalid or don't exist, or if the data types between one of the
