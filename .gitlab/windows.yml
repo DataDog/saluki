@@ -3,8 +3,8 @@
   interruptible: true
   variables:
     ARCH: "x64"
-    # Mirrors the current Datadog Agent Windows LTSC2022 build image.
-    WINBUILDIMAGE: registry.ddbuild.io/ci/datadog-agent-buildimages/windows_ltsc2022_x64:v110159745-8628883e
+    # Mirrors the Datadog Agent Windows LTSC2022 build image.
+    WINBUILDIMAGE: registry.ddbuild.io/ci/datadog-agent-buildimages/windows_ltsc2022_x64:latest
     OVERRIDE_GIT_STRATEGY: "clone"
 
 unit-tests-windows-amd64:
