@@ -1,3 +1,4 @@
+//! Component and component output identifiers.
 use core::fmt;
 use std::{borrow::Cow, ops::Deref};
 
@@ -289,6 +290,34 @@ impl TypedComponentOutputId {
     /// Returns the output data type.
     pub fn output_ty(&self) -> DataType {
         self.output_ty
+    }
+}
+
+/// Disambiguation marker for [`IntoComponentIds`] when a single component ID is given.
+pub struct Single;
+
+/// Disambiguation marker for [`IntoComponentIds`] when multiple component IDs are given.
+pub struct Multiple;
+
+/// Conversion into an iterator of component IDs.
+///
+/// Intended for use in methods that accept component IDs as string references, where a single or multiple IDs may be
+/// passed within a single parameter. This allows being generic over those possibilities such that callers can use more
+/// natural values rather than contrived values (such as always having to wrap a single string in a slice, etc).
+pub trait IntoComponentIds<Marker> {
+    /// Converts `self` into an iterator of component output IDs.
+    fn into_component_ids(self) -> impl Iterator<Item: AsRef<str>>;
+}
+
+impl<T: AsRef<str>> IntoComponentIds<Single> for T {
+    fn into_component_ids(self) -> impl Iterator<Item: AsRef<str>> {
+        std::iter::once(self)
+    }
+}
+
+impl<I: IntoIterator<Item: AsRef<str>>> IntoComponentIds<Multiple> for I {
+    fn into_component_ids(self) -> impl Iterator<Item: AsRef<str>> {
+        self.into_iter()
     }
 }
 

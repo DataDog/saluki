@@ -16,7 +16,7 @@ use crate::{
         ComponentContext,
     },
     data_model::event::Event,
-    topology::{EventsBuffer, DEFAULT_EVENTS_BUFFER_CAPACITY},
+    topology::{ids::IntoComponentIds, EventsBuffer, DEFAULT_EVENTS_BUFFER_CAPACITY},
 };
 
 /// A topology blueprint error.
@@ -362,15 +362,14 @@ impl TopologyBlueprint {
     ///
     /// If the destination component ID, or any of the source component IDs, are invalid or don't exist, or if the data
     /// types between one of the source/destination component pairs is incompatible, an error is returned.
-    pub fn connect_component<DI, SI, I>(
-        &mut self, destination_component_id: DI, source_output_component_ids: SI,
+    pub fn connect_component<M, SI, DI>(
+        &mut self, source_output_component_ids: SI, destination_component_id: DI,
     ) -> Result<&mut Self, GenericError>
     where
+        SI: IntoComponentIds<M>,
         DI: AsRef<str>,
-        SI: IntoIterator<Item = I>,
-        I: AsRef<str>,
     {
-        for source_output_component_id in source_output_component_ids.into_iter() {
+        for source_output_component_id in source_output_component_ids.into_component_ids() {
             self.graph
                 .add_edge(source_output_component_id, destination_component_id.as_ref())
                 .error_context("Failed to add component connection to topology graph.")?;
