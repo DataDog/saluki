@@ -76,7 +76,7 @@ impl MrfMetricsGateway {
     }
 
     fn mode_for_config(mrf_config: &MrfConfiguration) -> GatewayMode {
-        if !mrf_config.is_metrics_active() {
+        if !mrf_config.is_metrics_forwarding_requested() {
             GatewayMode::Inactive
         } else if mrf_config.metric_allowlist().is_empty() {
             GatewayMode::ForwardAll

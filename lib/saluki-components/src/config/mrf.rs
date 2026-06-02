@@ -43,11 +43,6 @@ impl MrfConfiguration {
         self.enabled && self.failover_metrics
     }
 
-    /// Returns whether metrics multi-region failover has enough configuration to forward events.
-    pub fn is_metrics_active(&self) -> bool {
-        self.is_metrics_forwarding_requested() && self.metrics_endpoint_override().is_some()
-    }
-
     /// Updates whether metrics forwarding to the failover region is enabled.
     pub(crate) const fn set_failover_metrics(&mut self, failover_metrics: bool) {
         self.failover_metrics = failover_metrics;
@@ -123,7 +118,7 @@ mod tests {
         }))
         .await;
 
-        assert!(config.is_metrics_active());
+        assert!(config.is_metrics_forwarding_requested());
         assert_eq!(config.metric_allowlist(), ["first.metric", "second.metric"]);
         assert_eq!(config.api_key(), Some("mrf-api-key"));
         assert_eq!(
@@ -133,7 +128,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn metrics_active_requires_api_key_and_endpoint() {
+    async fn metrics_endpoint_override_requires_api_key_and_endpoint() {
         let missing_api_key = mrf_config_from(json!({
             "multi_region_failover": {
                 "enabled": true,
@@ -142,7 +137,7 @@ mod tests {
             }
         }))
         .await;
-        assert!(!missing_api_key.is_metrics_active());
+        assert_eq!(missing_api_key.metrics_endpoint_override(), None);
 
         let missing_endpoint = mrf_config_from(json!({
             "multi_region_failover": {
@@ -152,7 +147,7 @@ mod tests {
             }
         }))
         .await;
-        assert!(!missing_endpoint.is_metrics_active());
+        assert_eq!(missing_endpoint.metrics_endpoint_override(), None);
 
         let ready = mrf_config_from(json!({
             "multi_region_failover": {
@@ -163,7 +158,10 @@ mod tests {
             }
         }))
         .await;
-        assert!(ready.is_metrics_active());
+        assert_eq!(
+            ready.metrics_endpoint_override(),
+            Some(("https://mrf.example.com".to_string(), "mrf-api-key".to_string()))
+        );
     }
 
     #[tokio::test]
@@ -178,7 +176,7 @@ mod tests {
         }))
         .await;
 
-        assert!(!config.is_metrics_active());
+        assert!(!config.is_metrics_forwarding_requested());
         assert_eq!(
             config.metrics_endpoint_override(),
             Some(("https://mrf.example.com".to_string(), "mrf-api-key".to_string()))
