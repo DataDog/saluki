@@ -47,7 +47,7 @@ impl HickoryResolver {
     /// Creates a placeholder [`HickoryResolver`] with no configured nameservers.
     ///
     /// This resolver will never successfully resolve any names. It exists solely as a
-    /// placeholder for code paths where DNS resolution is never needed (e.g., vsock
+    /// placeholder for code paths where DNS resolution is never needed (for example, vsock
     /// transport), avoiding initialization failures in environments without system DNS
     /// configuration such as Nitro Enclaves.
     pub fn noop() -> Self {

@@ -491,7 +491,7 @@ impl HttpsCapableConnectorBuilder {
     ///
     /// When set, the connector will connect via AF_VSOCK using this CID, with the port taken from
     /// the destination URI. This allows connecting to a Datadog Agent running in a host or
-    /// hypervisor context from within a guest VM (e.g., on Nitro Enclaves or microVM environments).
+    /// hypervisor context from within a guest VM (for example, Nitro Enclaves or microVM environments).
     ///
     /// Mirrors the Agent's `vsock_addr` configuration key.
     ///
@@ -647,6 +647,7 @@ mod tests {
 
         use tower::Service as _;
 
+        use super::InnerConnector;
         use crate::net::dns::HickoryResolver;
 
         let mut connector = InnerConnector {
