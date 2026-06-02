@@ -14,13 +14,10 @@ unit-tests-windows-amd64:
     key: windows-amd64-cargo
     paths:
       - .ci-cache/cargo/
+      - .ci-cache/protoc/
       - .ci-cache/rustup/
   script:
     - $ErrorActionPreference = "Stop"
-    - Write-Host "Cached Datadog Agent Windows build images before pull:"
-    - docker images --format "table {{.Repository}}\t{{.Tag}}\t{{.ID}}\t{{.CreatedSince}}\t{{.Size}}" | Select-String "datadog-agent-buildimages/windows"
-    - Write-Host "Cached LTSC2022 build image tags before pull:"
-    - docker images registry.ddbuild.io/ci/datadog-agent-buildimages/windows_ltsc2022_x64 --format "table {{.Repository}}\t{{.Tag}}\t{{.ID}}\t{{.CreatedSince}}\t{{.Size}}"
     - |
       if (docker image inspect ${WINBUILDIMAGE} *> $null) {
         Write-Host "Using cached Windows build image: ${WINBUILDIMAGE}"
@@ -45,6 +42,7 @@ unit-tests-windows-amd64:
       -e RUSTUP_HOME="c:\mnt\.ci-cache\rustup"
       -e CARGO_TARGET_DIR="c:\mnt\target\windows-ci"
       -e CARGO_NEXTEST_VERSION="0.9.99"
+      -e PROTOC_VERSION="29.3"
       -e WINDOWS_CI_PACKAGES="datadog-agent-commons,process-memory,saluki-error,ddsketch,prometheus-exposition,saluki-config"
       ${WINBUILDIMAGE}
       powershell.exe -NoProfile -NonInteractive -File c:\mnt\ci\tooling\windows-unit-tests.ps1

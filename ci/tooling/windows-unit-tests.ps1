@@ -27,6 +27,32 @@ function Add-PathEntry {
     }
 }
 
+function Ensure-Protoc {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Version,
+
+        [Parameter(Mandatory = $true)]
+        [string]$InstallRoot
+    )
+
+    $ProtocBin = Join-Path $InstallRoot "bin\protoc.exe"
+    if (-not (Test-Path $ProtocBin)) {
+        Write-Host "[*] protoc not found; installing protoc ${Version}..."
+        $Archive = Join-Path $env:TEMP "protoc-${Version}-win64.zip"
+        $ExtractRoot = Join-Path $env:TEMP "protoc-${Version}-win64"
+        Remove-Item -Recurse -Force $ExtractRoot -ErrorAction SilentlyContinue
+        New-Item -ItemType Directory -Force $InstallRoot | Out-Null
+        Invoke-WebRequest -UseBasicParsing -Uri "https://github.com/protocolbuffers/protobuf/releases/download/v${Version}/protoc-${Version}-win64.zip" -OutFile $Archive
+        Expand-Archive -Path $Archive -DestinationPath $ExtractRoot -Force
+        Copy-Item -Recurse -Force (Join-Path $ExtractRoot "*") $InstallRoot
+    }
+
+    $env:PROTOC = $ProtocBin
+    Add-PathEntry (Join-Path $InstallRoot "bin")
+    Invoke-Native $ProtocBin --version
+}
+
 $RepoRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..")
 Set-Location $RepoRoot
 
@@ -43,11 +69,18 @@ if (-not $env:CARGO_TARGET_DIR) {
 if (-not $env:CARGO_NEXTEST_VERSION) {
     $env:CARGO_NEXTEST_VERSION = "0.9.99"
 }
+if (-not $env:PROTOC_VERSION) {
+    $env:PROTOC_VERSION = "29.3"
+}
+if (-not $env:WINDOWS_CI_PROTOC_HOME) {
+    $env:WINDOWS_CI_PROTOC_HOME = Join-Path $RepoRoot ".ci-cache\protoc\$env:PROTOC_VERSION"
+}
 if (-not $env:WINDOWS_CI_PACKAGES) {
     $env:WINDOWS_CI_PACKAGES = "datadog-agent-commons,process-memory,saluki-error,ddsketch,prometheus-exposition,saluki-config"
 }
 
 New-Item -ItemType Directory -Force $env:WINDOWS_CI_CARGO_HOME | Out-Null
+New-Item -ItemType Directory -Force $env:WINDOWS_CI_PROTOC_HOME | Out-Null
 New-Item -ItemType Directory -Force $env:RUSTUP_HOME | Out-Null
 New-Item -ItemType Directory -Force $env:CARGO_TARGET_DIR | Out-Null
 if ($OriginalCargoHome) {
@@ -80,6 +113,7 @@ Invoke-Native cargo --version
 
 $env:CARGO_HOME = $env:WINDOWS_CI_CARGO_HOME
 Add-PathEntry (Join-Path $env:CARGO_HOME "bin")
+Ensure-Protoc -Version $env:PROTOC_VERSION -InstallRoot $env:WINDOWS_CI_PROTOC_HOME
 
 if (-not (Get-Command cargo-nextest -ErrorAction SilentlyContinue)) {
     Write-Host "[*] cargo-nextest not found; installing cargo-nextest@$env:CARGO_NEXTEST_VERSION..."
