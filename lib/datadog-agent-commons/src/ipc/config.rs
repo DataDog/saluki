@@ -7,6 +7,8 @@ use saluki_config::GenericConfiguration;
 use saluki_error::{ErrorContext as _, GenericError};
 use serde::Deserialize;
 use tonic::transport::Uri;
+#[cfg(not(target_os = "linux"))]
+use tracing::warn;
 
 use crate::platform::PlatformSettings;
 
@@ -166,6 +168,11 @@ pub struct RemoteAgentClientConfiguration {
     #[cfg(target_os = "linux")]
     #[serde(default, deserialize_with = "deserialize_vsock_addr")]
     vsock_addr: Option<u32>,
+
+    // Non-Linux: capture raw value solely to emit a warning when misconfigured.
+    #[cfg(not(target_os = "linux"))]
+    #[serde(default)]
+    vsock_addr: Option<String>,
 }
 
 #[cfg(target_os = "linux")]
@@ -193,9 +200,16 @@ impl RemoteAgentClientConfiguration {
     ///
     /// If the configuration is invalid, an error is returned.
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        config
+        let this = config
             .as_typed::<Self>()
-            .error_context("Failed to parse Datadog Agent IPC client configuration.")
+            .error_context("Failed to parse Datadog Agent IPC client configuration.")?;
+
+        #[cfg(not(target_os = "linux"))]
+        if this.vsock_addr.is_some() {
+            warn!("`vsock_addr` is configured but vsock is only supported on Linux; the setting will be ignored");
+        }
+
+        Ok(this)
     }
 
     /// Returns a reference to the authentication configuration for the Remote Agent client.
@@ -388,45 +402,36 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[tokio::test]
-    async fn vsock_addr_unset_gives_none() {
-        let config = config_from_values(serde_json::Map::new()).await;
-        assert_eq!(config.vsock_cid(), None);
+    async fn vsock_addr_valid_values() {
+        let cases: &[(&str, Option<u32>)] = &[
+            ("", None),
+            ("host", Some(2)),
+            ("hypervisor", Some(0)),
+            ("local", Some(3)),
+        ];
+
+        for (input, expected_cid) in cases {
+            let mut values = serde_json::Map::new();
+            values.insert("vsock_addr".to_string(), (*input).into());
+            let config = config_from_values(values).await;
+            assert_eq!(config.vsock_cid(), *expected_cid, "input: {input:?}");
+        }
     }
 
     #[cfg(target_os = "linux")]
     #[tokio::test]
-    async fn vsock_addr_host_gives_cid_2() {
-        let mut values = serde_json::Map::new();
-        values.insert("vsock_addr".to_string(), "host".into());
-        let config = config_from_values(values).await;
-        assert_eq!(config.vsock_cid(), Some(2));
-    }
+    async fn vsock_addr_invalid_values() {
+        let cases = &["invalid", "2", "HOST", "host ", "vm0"];
 
-    #[cfg(target_os = "linux")]
-    #[tokio::test]
-    async fn vsock_addr_hypervisor_gives_cid_0() {
-        let mut values = serde_json::Map::new();
-        values.insert("vsock_addr".to_string(), "hypervisor".into());
-        let config = config_from_values(values).await;
-        assert_eq!(config.vsock_cid(), Some(0));
-    }
-
-    #[cfg(target_os = "linux")]
-    #[tokio::test]
-    async fn vsock_addr_local_gives_cid_3() {
-        let mut values = serde_json::Map::new();
-        values.insert("vsock_addr".to_string(), "local".into());
-        let config = config_from_values(values).await;
-        assert_eq!(config.vsock_cid(), Some(3));
-    }
-
-    #[cfg(target_os = "linux")]
-    #[tokio::test]
-    async fn vsock_addr_invalid_value_errors() {
-        let mut values = serde_json::Map::new();
-        values.insert("vsock_addr".to_string(), "invalid".into());
-        let (base_config, _) =
-            ConfigurationLoader::for_tests(Some(serde_json::Value::Object(values)), None, false).await;
-        assert!(RemoteAgentClientConfiguration::from_configuration(&base_config).is_err());
+        for input in cases {
+            let mut values = serde_json::Map::new();
+            values.insert("vsock_addr".to_string(), (*input).into());
+            let (base_config, _) =
+                ConfigurationLoader::for_tests(Some(serde_json::Value::Object(values)), None, false).await;
+            assert!(
+                RemoteAgentClientConfiguration::from_configuration(&base_config).is_err(),
+                "expected error for input: {input:?}",
+            );
+        }
     }
 }
