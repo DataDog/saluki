@@ -24,8 +24,30 @@ const STANDARD_SOCKET: &str = "/var/run/docker.sock";
 
 /// Connects to the Docker daemon.
 ///
-/// On Unix hosts, this searches common non-standard Docker socket locations when `DOCKER_HOST` is unset and the
-/// standard `/var/run/docker.sock` path is absent. On Windows, this uses Bollard's platform default connection logic.
+/// On Windows, this uses Bollard's platform default connection logic.
+///
+/// On Unix hosts, this searches non-standard socket locations before falling back to Bollard's default connection logic.
+/// Resolution order:
+///
+/// 1. If `DOCKER_HOST` is set **or** `/var/run/docker.sock` exists on disk, defer to Bollard's default connection
+///    logic.
+/// 2. Otherwise, try each candidate socket path in order and use the first that exists.
+/// 3. If no candidate is found, fall back to `Docker::connect_with_defaults()` so the error message comes from Bollard.
+///
+/// # Unix candidate paths
+///
+/// These are checked in order when the standard socket is absent:
+///
+/// | Path | Environment |
+/// |------|-------------|
+/// | `$HOME/.docker/run/docker.sock` | Docker Desktop |
+/// | `$HOME/.orbstack/run/docker.sock` | OrbStack |
+/// | `$HOME/.rd/docker.sock` | Rancher Desktop |
+/// | `$HOME/.lima/default/sock/docker.sock` | Lima (default instance) |
+/// | `$HOME/.lima/docker/sock/docker.sock` | Lima (docker instance) |
+/// | `$HOME/.colima/default/docker.sock` | Colima |
+/// | `$HOME/.colima/docker/docker.sock` | Colima (docker profile) |
+/// | `$HOME/.local/share/containers/podman/machine/podman.sock` | Podman Desktop (macOS) |
 ///
 /// # Errors
 ///
