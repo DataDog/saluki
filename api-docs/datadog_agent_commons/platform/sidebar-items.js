@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"constant":["DATADOG_AGENT_CONF_DIR","DATADOG_AGENT_DEFAULT_SYSLOG_URI","DATADOG_AGENT_ENV_VAR_PREFIX","DATADOG_AGENT_LOG_DIR"],"struct":["PlatformSettings"]};
+window.SIDEBAR_ITEMS = {"constant":["DATADOG_AGENT_CONF_DIR","DATADOG_AGENT_DEFAULT_SYSLOG_URI","DATADOG_AGENT_ENV_VAR_PREFIX","DATADOG_AGENT_LOG_DIR"],"fn":["get_config_dir_path","get_log_dir_path"],"struct":["PlatformSettings"]};
