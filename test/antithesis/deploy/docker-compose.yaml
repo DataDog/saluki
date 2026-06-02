@@ -1,0 +1,80 @@
+name: saluki
+
+services:
+  intake:
+    container_name: intake
+    hostname: intake
+    platform: linux/amd64
+    init: true
+    build:
+      context: ../../..
+      dockerfile: test/antithesis/deploy/Dockerfile
+      target: intake
+    image: intake:latest
+    environment:
+      NO_COLOR: "1"
+    healthcheck:
+      # datadog-intake serves HTTP on :2049. /dev/tcp avoids needing curl in the image.
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/localhost/2049'"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  adp:
+    container_name: adp
+    hostname: adp
+    platform: linux/amd64
+    init: true
+    build:
+      context: ../../..
+      dockerfile: test/antithesis/deploy/Dockerfile
+      target: adp
+    image: adp:latest
+    command: ["run"]
+    environment:
+      NO_COLOR: "1"
+      RUST_BACKTRACE: "1"
+      DD_API_KEY: "antithesis-test-api-key"
+      DD_DATA_PLANE_ENABLED: "true"
+      DD_DATA_PLANE_STANDALONE_MODE: "true"
+      DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+    volumes:
+      - dogstatsd-socket:/var/run/datadog
+    depends_on:
+      intake:
+        condition: service_healthy
+    healthcheck:
+      # ADP's unprivileged API listens on TCP :5100 once the internal supervisor is up.
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/localhost/5100'"]
+      interval: 2s
+      timeout: 2s
+      retries: 60
+
+  workload:
+    container_name: workload
+    hostname: workload
+    platform: linux/amd64
+    init: true
+    build:
+      context: ../../..
+      dockerfile: test/antithesis/deploy/Dockerfile
+      target: workload
+    image: workload:latest
+    environment:
+      NO_COLOR: "1"
+      ADP_HOST: "adp"
+      ADP_API_PORT: "5100"
+      DSD_SOCKET: "/var/run/datadog/dsd.socket"
+      INTAKE_ADDR: "intake:2049"
+      INTAKE_HOST: "intake"
+      INTAKE_PORT: "2049"
+    volumes:
+      - dogstatsd-socket:/var/run/datadog
+    depends_on:
+      adp:
+        condition: service_healthy
+      intake:
+        condition: service_healthy
+
+volumes:
+  dogstatsd-socket:

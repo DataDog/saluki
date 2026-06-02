@@ -340,7 +340,7 @@ run-adp-standalone: build-adp create-dummy-agent-config create-dummy-ipc-cert
 run-adp-standalone: ## Runs ADP locally in standalone mode (debug)
 	@echo "[*] Running ADP..."
 	@DD_DATA_PLANE_STANDALONE_MODE=true DD_DATA_PLANE_DOGSTATSD_ENABLED=true \
- 	DD_API_KEY=api-key-adp-standalone DD_HOSTNAME=adp-standalone \
+	DD_API_KEY=api-key-adp-standalone DD_HOSTNAME=adp-standalone \
 	DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
 	DD_IPC_CERT_FILE_PATH=$(ADP_STANDALONE_IPC_CERT_FILE) \
 	target/devel/agent-data-plane --config /tmp/adp-empty-config.yaml run
@@ -702,6 +702,28 @@ endif
 	@rustup toolchain install nightly-2025-06-16 --component miri
 	@echo "[*] Ensuring Miri is setup..."
 	@cargo +nightly-2025-06-16 miri setup
+
+##@ Antithesis
+
+ANTITHESIS_CONFIG_DIR := test/antithesis/deploy
+ANTITHESIS_COMPOSE_FILE := $(ANTITHESIS_CONFIG_DIR)/docker-compose.yaml
+
+.PHONY: check-antithesis-tools
+check-antithesis-tools:
+ifeq ($(shell command -v snouty >/dev/null || echo not-found), not-found)
+	$(error "snouty must be present to validate the Antithesis harness, see https://github.com/antithesishq/snouty")
+endif
+
+.PHONY: antithesis-build
+antithesis-build: ## Builds the Antithesis harness container images
+	@echo "[*] Building Antithesis harness images..."
+	@docker compose -f $(ANTITHESIS_COMPOSE_FILE) build
+
+.PHONY: antithesis-validate
+antithesis-validate: check-antithesis-tools antithesis-build
+antithesis-validate: ## Validates the Antithesis harness: builds images, runs 'snouty validate'
+	@echo "[*] Validating Antithesis harness with snouty..."
+	@snouty validate $(ANTITHESIS_CONFIG_DIR)
 
 ##@ Profiling
 

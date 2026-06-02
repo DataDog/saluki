@@ -1,17 +1,9 @@
 use std::{
-    ffi::{OsStr, OsString},
-    os::windows::ffi::{OsStrExt as _, OsStringExt as _},
     path::{Path, PathBuf},
-    ptr,
     sync::OnceLock,
 };
 
-use windows_sys::Win32::{
-    Foundation::ERROR_SUCCESS,
-    System::Registry::{RegGetValueW, HKEY, HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ, RRF_SUBKEY_WOW6464KEY},
-};
-
-// TODO: Add Windows-specific tests for registry-backed path resolution once we have Windows CI coverage.
+use windows_registry::{Key, LOCAL_MACHINE};
 
 /// Default configuration directory for the Datadog Agent.
 ///
@@ -50,64 +42,84 @@ pub fn get_log_dir_path() -> &'static Path {
 }
 
 fn read_config_root_from_registry() -> Option<PathBuf> {
-    read_registry_string(
-        HKEY_LOCAL_MACHINE,
+    read_config_root_from_registry_key(
+        LOCAL_MACHINE,
         DATADOG_AGENT_REGISTRY_SUBKEY,
         DATADOG_AGENT_CONFIG_ROOT_VALUE,
     )
-    .filter(|value| !value.as_os_str().is_empty())
-    .map(PathBuf::from)
 }
 
-fn read_registry_string(hkey: HKEY, subkey: &str, value: &str) -> Option<OsString> {
-    let subkey_wide = to_wide_null(subkey);
-    let value_wide = to_wide_null(value);
-    let mut byte_len = 0u32;
-
-    // SAFETY: `subkey_wide` and `value_wide` are null-terminated UTF-16 strings. Passing a null data pointer with a
-    // valid byte-count pointer asks Windows for the required buffer size without writing data.
-    let status = unsafe {
-        RegGetValueW(
-            hkey,
-            subkey_wide.as_ptr(),
-            value_wide.as_ptr(),
-            RRF_RT_REG_SZ | RRF_SUBKEY_WOW6464KEY,
-            ptr::null_mut(),
-            ptr::null_mut(),
-            &mut byte_len,
-        )
-    };
-    if status != ERROR_SUCCESS || byte_len == 0 {
-        return None;
-    }
-
-    let mut buffer = vec![0u16; byte_len as usize / size_of::<u16>()];
-    // SAFETY: `buffer` is sized from the preceding `RegGetValueW` query and is passed as a writable byte buffer with
-    // the corresponding byte count. The input strings remain valid and null-terminated for the duration of the call.
-    let status = unsafe {
-        RegGetValueW(
-            hkey,
-            subkey_wide.as_ptr(),
-            value_wide.as_ptr(),
-            RRF_RT_REG_SZ | RRF_SUBKEY_WOW6464KEY,
-            ptr::null_mut(),
-            buffer.as_mut_ptr().cast(),
-            &mut byte_len,
-        )
-    };
-    if status != ERROR_SUCCESS {
-        return None;
-    }
-
-    let value_len = byte_len as usize / size_of::<u16>();
-    buffer.truncate(value_len);
-    if buffer.last() == Some(&0) {
-        buffer.pop();
-    }
-
-    Some(OsString::from_wide(&buffer))
+fn read_config_root_from_registry_key(root: &Key, subkey: &str, value_name: &str) -> Option<PathBuf> {
+    root.open(subkey)
+        .and_then(|key| key.get_string(value_name))
+        .ok()
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
 }
 
-fn to_wide_null(value: &str) -> Vec<u16> {
-    OsStr::new(value).encode_wide().chain([0]).collect()
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use windows_registry::CURRENT_USER;
+
+    use super::read_config_root_from_registry_key;
+
+    const TEST_VALUE_NAME: &str = "ConfigRoot";
+
+    struct TestRegistryKey {
+        subkey: String,
+    }
+
+    impl TestRegistryKey {
+        fn create() -> Self {
+            let subkey = format!(
+                r"SOFTWARE\Datadog\SalukiPlatformTests\{}-{:?}",
+                std::process::id(),
+                std::thread::current().id()
+            );
+            CURRENT_USER
+                .create(&subkey)
+                .expect("temporary registry key should be created");
+
+            Self { subkey }
+        }
+
+        fn set_string_value(&self, name: &str, value: &str) {
+            let key = CURRENT_USER
+                .open(&self.subkey)
+                .expect("temporary registry key should open");
+            key.set_string(name, value)
+                .expect("registry string value should be written");
+        }
+    }
+
+    impl Drop for TestRegistryKey {
+        fn drop(&mut self) {
+            let _ = CURRENT_USER.remove_tree(&self.subkey);
+        }
+    }
+
+    #[test]
+    fn read_config_root_from_registry_key_reads_config_root_path() {
+        let key = TestRegistryKey::create();
+        let expected = r"C:\ProgramData\Datadog Test 🐕";
+        key.set_string_value(TEST_VALUE_NAME, expected);
+
+        let actual =
+            read_config_root_from_registry_key(CURRENT_USER, &key.subkey, TEST_VALUE_NAME).expect("value should exist");
+
+        assert_eq!(actual, PathBuf::from(expected));
+    }
+
+    #[test]
+    fn read_config_root_from_registry_key_returns_none_for_missing_and_empty_values() {
+        let key = TestRegistryKey::create();
+
+        assert!(read_config_root_from_registry_key(CURRENT_USER, &key.subkey, TEST_VALUE_NAME).is_none());
+
+        key.set_string_value(TEST_VALUE_NAME, "");
+
+        assert!(read_config_root_from_registry_key(CURRENT_USER, &key.subkey, TEST_VALUE_NAME).is_none());
+    }
 }

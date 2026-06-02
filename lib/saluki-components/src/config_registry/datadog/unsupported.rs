@@ -149,20 +149,6 @@ crate::declare_annotations! {
         pipeline_affinity: PipelineAffinity::CrossCutting,
     };
 
-    /// `forwarder_outdated_file_in_days` - retry file retention period.
-    FORWARDER_OUTDATED_FILE_IN_DAYS = SalukiAnnotation {
-        schema: &schema::FORWARDER_OUTDATED_FILE_IN_DAYS,
-        // Retry file retention not implemented. #1360
-        support_level: SupportLevel::Incompatible(Severity::Medium),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-        // The forwarder is potentially used by any pipeline.
-        pipeline_affinity: PipelineAffinity::CrossCutting,
-    };
-
     /// `forwarder_retry_queue_capacity_time_interval_sec` - retry queue time-based capacity.
     FORWARDER_RETRY_QUEUE_CAPACITY_TIME_INTERVAL_SEC = SalukiAnnotation {
         schema: &schema::FORWARDER_RETRY_QUEUE_CAPACITY_TIME_INTERVAL_SEC,
@@ -374,19 +360,6 @@ crate::declare_annotations! {
         test_json: None,
         // Autoscaling failover routes metric series to the Cluster Agent for HPA; applies to DogStatsD and Checks metric producers, not APM.
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD, Pipeline::Checks]),
-    };
-    /// `config_id` - Fleet Automation config ID on payloads.
-    CONFIG_ID = SalukiAnnotation {
-        schema: &schema::CONFIG_ID,
-        // Not implemented. #1751
-        support_level: SupportLevel::Incompatible(Severity::Medium),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-        // Agent/host metadata applied to all payloads.
-        pipeline_affinity: PipelineAffinity::CrossCutting,
     };
     /// `dogstatsd_experimental_http.enabled` - experimental HTTP/H2C DSD listener toggle.
     DOGSTATSD_EXPERIMENTAL_HTTP_ENABLED = SalukiAnnotation {

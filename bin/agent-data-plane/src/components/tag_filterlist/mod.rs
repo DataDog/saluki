@@ -153,17 +153,12 @@ pub struct TagFilterlistConfiguration {
 
     /// Maximum number of entries in the per-context deduplication cache used by the tag filter.
     ///
-    /// Each cache entry tracks whether a given metric context has already had its tags filtered,
-    /// avoiding redundant work on repeated submissions of the same metric context.
-    ///
-    /// High-throughput deployments with many unique metric contexts may benefit from increasing this
-    /// value to reduce cache churn.
+    /// Configured via `data_plane.dogstatsd.aggregator_tag_filter_cache_capacity` in the agent config
+    /// stream. High-throughput deployments with many unique metric contexts may benefit from
+    /// increasing this value to reduce cache churn.
     ///
     /// Defaults to 100,000.
-    #[serde(
-        rename = "aggregator_tag_filter_cache_capacity",
-        default = "default_context_cache_capacity"
-    )]
+    #[serde(skip)]
     context_cache_capacity: usize,
 
     #[serde(skip)]
@@ -174,6 +169,9 @@ impl TagFilterlistConfiguration {
     /// Creates a new `TagFilterlistConfiguration` from the given configuration.
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
         let mut typed: Self = config.as_typed()?;
+        typed.context_cache_capacity = config
+            .try_get_typed("data_plane.dogstatsd.aggregator_tag_filter_cache_capacity")?
+            .unwrap_or_else(default_context_cache_capacity);
         typed.configuration = Some(config.clone());
         Ok(typed)
     }

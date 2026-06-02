@@ -4,9 +4,9 @@ use crate::config_registry::{
 };
 
 crate::declare_annotations! {
-    /// `aggregator_tag_filter_cache_capacity`—maximum entries in the per-context deduplication cache.
-    AGGREGATOR_TAG_FILTER_CACHE_CAPACITY = SalukiAnnotation {
-        schema: &schema::AGGREGATOR_TAG_FILTER_CACHE_CAPACITY,
+    /// `data_plane.dogstatsd.aggregator_tag_filter_cache_capacity`—maximum entries in the per-context deduplication cache used by ADP.
+    DATA_PLANE_DOGSTATSD_AGGREGATOR_TAG_FILTER_CACHE_CAPACITY = SalukiAnnotation {
+        schema: &schema::DATA_PLANE_DOGSTATSD_AGGREGATOR_TAG_FILTER_CACHE_CAPACITY,
         support_level: SupportLevel::Full,
         additional_yaml_paths: &[],
         env_var_override: None,
