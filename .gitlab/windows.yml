@@ -19,7 +19,12 @@ unit-tests-windows-amd64:
   script:
     - $ErrorActionPreference = "Stop"
     - |
-      if (docker image inspect ${WINBUILDIMAGE} *> $null) {
+      $previousErrorActionPreference = $ErrorActionPreference
+      $ErrorActionPreference = "Continue"
+      docker image inspect ${WINBUILDIMAGE} *> $null
+      $imageInspectExitCode = $LASTEXITCODE
+      $ErrorActionPreference = $previousErrorActionPreference
+      if ($imageInspectExitCode -eq 0) {
         Write-Host "Using cached Windows build image: ${WINBUILDIMAGE}"
       } else {
         Write-Host "Cached Windows build image not found, pulling: ${WINBUILDIMAGE}"
