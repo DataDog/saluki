@@ -307,8 +307,6 @@ impl Service<Uri> for InnerConnector {
 
         #[cfg(target_os = "linux")]
         if let Some(cid) = self.vsock_cid {
-            let connect_timeout = self.connect_timeout;
-            let error_telemetry = self.error_telemetry.clone();
             // Port is taken from the destination URI; vsock replaces the TCP transport but still
             // uses the URI's port to identify which service to connect to on the host.
             let port = match dst.port_u16() {
@@ -320,6 +318,8 @@ impl Service<Uri> for InnerConnector {
                     )) as BoxError)));
                 }
             };
+            let connect_timeout = self.connect_timeout;
+            let error_telemetry = self.error_telemetry.clone();
             return Box::pin(async move {
                 let addr = tokio_vsock::VsockAddr::new(cid, port);
                 let stream = tokio::time::timeout(connect_timeout, tokio_vsock::VsockStream::connect(addr))
@@ -505,6 +505,17 @@ impl HttpsCapableConnectorBuilder {
     pub fn build(self, tls_config: ClientConfig) -> Result<HttpsCapableConnector, GenericError> {
         let connect_timeout = self.connect_timeout.unwrap_or(Duration::from_secs(30));
 
+        // On Linux with vsock configured, the DNS resolver is never called — vsock connections
+        // bypass the TCP/DNS stack entirely. Use a noop resolver to avoid failures in environments
+        // without system DNS configuration (e.g., Nitro Enclaves).
+        #[cfg(target_os = "linux")]
+        let mut hickory_resolver = if self.vsock_cid.is_some() {
+            HickoryResolver::noop()
+        } else {
+            HickoryResolver::from_system_conf()
+                .error_context("Failed to load system DNS configuration when creating DNS resolver for HTTP client.")?
+        };
+        #[cfg(not(target_os = "linux"))]
         let mut hickory_resolver = HickoryResolver::from_system_conf()
             .error_context("Failed to load system DNS configuration when creating DNS resolver for HTTP client.")?;
         if let Some(error_telemetry) = &self.error_telemetry {

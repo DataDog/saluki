@@ -44,6 +44,24 @@ impl HickoryResolver {
         })
     }
 
+    /// Creates a placeholder [`HickoryResolver`] with no configured nameservers.
+    ///
+    /// This resolver will never successfully resolve any names. It exists solely as a
+    /// placeholder for code paths where DNS resolution is never needed (e.g., vsock
+    /// transport), avoiding initialization failures in environments without system DNS
+    /// configuration such as Nitro Enclaves.
+    pub fn noop() -> Self {
+        use hickory_resolver::{config::ResolverConfig, net::runtime::TokioRuntimeProvider};
+        let config = ResolverConfig::from_parts(None, vec![], vec![]);
+        let resolver = TokioResolver::builder_with_config(config, TokioRuntimeProvider::default())
+            .build()
+            .expect("noop resolver with empty config should always succeed");
+        Self {
+            resolver: Arc::new(resolver),
+            lookup_errors: None,
+        }
+    }
+
     /// Sets a counter that's incremented when DNS lookup fails.
     pub fn with_lookup_errors_counter(mut self, counter: Counter) -> Self {
         self.lookup_errors = Some(counter);
