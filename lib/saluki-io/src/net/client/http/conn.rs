@@ -266,15 +266,16 @@ impl Service<Uri> for InnerConnector {
     type Future = Pin<Box<dyn Future<Output = Result<Transport, BoxError>> + Send>>;
 
     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        // When routing via a Unix domain socket or vsock, the TCP/DNS connector is not used, so we
-        // consider the service immediately ready.
-        #[cfg(unix)]
-        if self.unix_socket_path.is_some() {
+        // When routing via vsock or a Unix domain socket, the TCP/DNS connector is not used, so we
+        // consider the service immediately ready. vsock takes priority over Unix (matching Agent
+        // behavior) when both are configured.
+        #[cfg(target_os = "linux")]
+        if self.vsock_cid.is_some() {
             return Poll::Ready(Ok(()));
         }
 
-        #[cfg(target_os = "linux")]
-        if self.vsock_cid.is_some() {
+        #[cfg(unix)]
+        if self.unix_socket_path.is_some() {
             return Poll::Ready(Ok(()));
         }
 
@@ -282,29 +283,6 @@ impl Service<Uri> for InnerConnector {
     }
 
     fn call(&mut self, dst: Uri) -> Self::Future {
-        #[cfg(unix)]
-        if let Some(path) = self.unix_socket_path.clone() {
-            let connect_timeout = self.connect_timeout;
-            let error_telemetry = self.error_telemetry.clone();
-            return Box::pin(async move {
-                let stream = tokio::time::timeout(connect_timeout, tokio::net::UnixStream::connect(&*path))
-                    .await
-                    .map_err(|_| -> BoxError {
-                        if let Some(error_telemetry) = &error_telemetry {
-                            error_telemetry.increment_connection_error();
-                        }
-                        Box::new(io::Error::new(io::ErrorKind::TimedOut, "unix socket connect timed out"))
-                    })?
-                    .map_err(|e| -> BoxError {
-                        if let Some(error_telemetry) = &error_telemetry {
-                            error_telemetry.increment_connection_error();
-                        }
-                        Box::new(e)
-                    })?;
-                Ok(Transport::Unix(TokioIo::new(stream)))
-            });
-        }
-
         #[cfg(target_os = "linux")]
         if let Some(cid) = self.vsock_cid {
             // Port is taken from the destination URI; vsock replaces the TCP transport but still
@@ -337,6 +315,29 @@ impl Service<Uri> for InnerConnector {
                         Box::new(e)
                     })?;
                 Ok(Transport::Vsock(TokioIo::new(stream)))
+            });
+        }
+
+        #[cfg(unix)]
+        if let Some(path) = self.unix_socket_path.clone() {
+            let connect_timeout = self.connect_timeout;
+            let error_telemetry = self.error_telemetry.clone();
+            return Box::pin(async move {
+                let stream = tokio::time::timeout(connect_timeout, tokio::net::UnixStream::connect(&*path))
+                    .await
+                    .map_err(|_| -> BoxError {
+                        if let Some(error_telemetry) = &error_telemetry {
+                            error_telemetry.increment_connection_error();
+                        }
+                        Box::new(io::Error::new(io::ErrorKind::TimedOut, "unix socket connect timed out"))
+                    })?
+                    .map_err(|e| -> BoxError {
+                        if let Some(error_telemetry) = &error_telemetry {
+                            error_telemetry.increment_connection_error();
+                        }
+                        Box::new(e)
+                    })?;
+                Ok(Transport::Unix(TokioIo::new(stream)))
             });
         }
 
@@ -634,5 +635,34 @@ mod tests {
         let tls_config = configure_tls_alpn_for_http_protocol(empty_tls_config(), HttpProtocol::Http1);
 
         assert!(tls_config.alpn_protocols.is_empty());
+    }
+
+    // vsock takes priority over unix when both are configured, matching Agent behavior.
+    // We verify by using a port-less URI: vsock returns an immediate InvalidInput error
+    // before connecting; unix would attempt a socket connect and give a different error.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn vsock_takes_priority_over_unix_when_both_set() {
+        use std::sync::Arc;
+
+        use tower::Service as _;
+
+        use crate::net::dns::HickoryResolver;
+
+        let mut connector = InnerConnector {
+            http: HickoryResolver::noop().into_http_connector(),
+            connect_timeout: std::time::Duration::from_secs(1),
+            error_telemetry: None,
+            unix_socket_path: Some(Arc::from(std::path::Path::new("/tmp/test.sock"))),
+            vsock_cid: Some(2),
+        };
+
+        let uri: http::Uri = "https://127.0.0.1/".parse().unwrap();
+        let err = connector.call(uri).await.unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("vsock: destination URI must have an explicit port"),
+            "expected vsock error indicating vsock path was taken, got: {err}"
+        );
     }
 }
