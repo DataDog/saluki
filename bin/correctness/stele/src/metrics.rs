@@ -435,13 +435,26 @@ impl Metric {
         let mut metrics = Vec::with_capacity(num_metrics);
 
         for i in 0..num_metrics {
-            let type_field = data.types[i];
+            let type_field = data
+                .types
+                .get(i)
+                .copied()
+                .ok_or_else(|| generic_error!("Ran out of metric types"))?;
             let metric_type = type_field & 0x0F;
             let value_type = type_field & 0xF0;
-            let num_points = data.numPoints[i] as usize;
+            let num_points = data
+                .numPoints
+                .get(i)
+                .copied()
+                .ok_or_else(|| generic_error!("Ran out of numPoints"))
+                .and_then(|num_points| u64_to_usize(num_points, "numPoints"))?;
 
             // Resolve name (1-based index).
-            let name_ref = name_refs[i] as usize;
+            let name_ref = name_refs
+                .get(i)
+                .copied()
+                .ok_or_else(|| generic_error!("Ran out of nameRefs"))
+                .and_then(|name_ref| i64_to_usize(name_ref, "name ref"))?;
             let name = if name_ref == 0 {
                 String::new()
             } else {
@@ -452,7 +465,11 @@ impl Metric {
             };
 
             // Resolve tags (1-based index).
-            let tagset_ref = tagset_refs[i] as usize;
+            let tagset_ref = tagset_refs
+                .get(i)
+                .copied()
+                .ok_or_else(|| generic_error!("Ran out of tagsetRefs"))
+                .and_then(|tagset_ref| i64_to_usize(tagset_ref, "tagset ref"))?;
             let mut tags = if tagset_ref == 0 {
                 Vec::new()
             } else {
@@ -464,7 +481,12 @@ impl Metric {
                     .clone()
             };
 
-            let resource_ref = resources_refs.get(i).copied().unwrap_or(0) as usize;
+            let resource_ref = resources_refs
+                .get(i)
+                .copied()
+                .map(|resource_ref| i64_to_usize(resource_ref, "resource ref"))
+                .transpose()?
+                .unwrap_or(0);
             if resource_ref != 0 {
                 let resources = resources_dict.get(resource_ref - 1).ok_or_else(|| {
                     generic_error!(
@@ -586,7 +608,11 @@ impl Metric {
                     let metric_value = match metric_type {
                         V3_METRIC_TYPE_COUNT => MetricValue::Count { value },
                         V3_METRIC_TYPE_RATE => MetricValue::Rate {
-                            interval: data.intervals[i],
+                            interval: data
+                                .intervals
+                                .get(i)
+                                .copied()
+                                .ok_or_else(|| generic_error!("Ran out of intervals"))?,
                             value,
                         },
                         V3_METRIC_TYPE_GAUGE => MetricValue::Gauge { value },
@@ -664,7 +690,7 @@ fn parse_tagsets(dict_tagsets: &[i64], tags_dict: &[String]) -> Result<Vec<Vec<S
     let mut tagsets = Vec::new();
     let mut offset = 0;
     while offset < dict_tagsets.len() {
-        let count = dict_tagsets[offset] as usize;
+        let count = i64_to_usize(dict_tagsets[offset], "tagset length")?;
         offset += 1;
         if offset + count > dict_tagsets.len() {
             return Err(generic_error!("Tagset extends past end of dictTagsets array"));
@@ -677,7 +703,7 @@ fn parse_tagsets(dict_tagsets: &[i64], tags_dict: &[String]) -> Result<Vec<Vec<S
         // Resolve tag indices (1-based) to tag strings.
         let mut tags = Vec::with_capacity(count);
         for &idx in &tag_indices {
-            let idx = idx as usize;
+            let idx = i64_to_usize(idx, "tag index")?;
             if idx == 0 {
                 continue;
             }
@@ -690,6 +716,14 @@ fn parse_tagsets(dict_tagsets: &[i64], tags_dict: &[String]) -> Result<Vec<Vec<S
         offset += count;
     }
     Ok(tagsets)
+}
+
+fn u64_to_usize(value: u64, field: &str) -> Result<usize, GenericError> {
+    usize::try_from(value).map_err(|_| generic_error!("Invalid {}: {}", field, value))
+}
+
+fn i64_to_usize(value: i64, field: &str) -> Result<usize, GenericError> {
+    usize::try_from(value).map_err(|_| generic_error!("Invalid negative {}: {}", field, value))
 }
 
 /// Parse resource sets from V3 resource dictionaries.
