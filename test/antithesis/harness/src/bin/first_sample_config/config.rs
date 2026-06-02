@@ -176,6 +176,16 @@ fn sample_buffer_size<R: Rng + ?Sized>(rng: &mut R) -> u64 {
     }
 }
 
+/// Forwarder on-disk retry cap. Half the time a real size so disk persistence is
+/// on and the persisted-retry path runs, half the time 0 for in-memory-only.
+fn sample_storage_max_bytes<R: Rng + ?Sized>(rng: &mut R) -> u64 {
+    if rng.random_ratio(1, 2) {
+        0
+    } else {
+        rng.random_range(1_048_576..=268_435_456)
+    }
+}
+
 impl DogStatsdConfig {
     /// Sample the `DogStatsD` options from `rng`, taking the socket from the
     /// environment.
@@ -230,6 +240,16 @@ pub(crate) struct DatadogConfig {
     /// with [`Probe`] so it often lands small enough for the workload to reach
     /// and exercise the cap, and occasionally large to probe the headroom.
     aggregate_context_limit: u64,
+    /// Forwarder on-disk retry cap, `forwarder_storage_max_size_in_bytes`. ADP
+    /// defaults to 0, which disables disk persistence and leaves the persisted
+    /// retry path dead. Sampled half the time nonzero to turn persistence on,
+    /// half the time 0 to cover the in-memory-only path.
+    #[serde(rename = "forwarder_storage_max_size_in_bytes")]
+    forwarder_storage_max_size_bytes: u64,
+    /// Forwarder storage directory, `forwarder_storage_path`. A mounted volume
+    /// that survives node termination, so a restart can recover the queue.
+    #[serde(rename = "forwarder_storage_path")]
+    forwarder_storage_path: &'static str,
     /// `DogStatsD` options, flattened to top-level `dogstatsd_*` keys.
     #[serde(flatten)]
     dogstatsd: DogStatsdConfig,
@@ -248,6 +268,8 @@ impl DatadogConfig {
             dd_url: dd_url.to_owned(),
             log_level: rng.random(),
             aggregate_context_limit: Probe.sample(rng),
+            forwarder_storage_max_size_bytes: sample_storage_max_bytes(rng),
+            forwarder_storage_path: "/var/lib/adp-storage",
             dogstatsd: DogStatsdConfig::sample(rng, dogstatsd_socket),
         }
     }
