@@ -40,15 +40,11 @@ services:
       DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
     volumes:
       - dogstatsd-socket:/var/run/datadog
+      # first_sample_config (workload) writes this timeline's datadog.yaml + ready sentinel here.
+      - agent-config:/agent-config:ro
     depends_on:
       intake:
         condition: service_healthy
-    healthcheck:
-      # ADP's unprivileged API listens on TCP :5100 once the internal supervisor is up.
-      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/localhost/5100'"]
-      interval: 2s
-      timeout: 2s
-      retries: 60
 
   workload:
     container_name: workload
@@ -62,19 +58,15 @@ services:
     image: workload:latest
     environment:
       NO_COLOR: "1"
-      ADP_HOST: "adp"
-      ADP_API_PORT: "5100"
       DSD_SOCKET: "/var/run/datadog/dsd.socket"
       INTAKE_ADDR: "intake:2049"
-      INTAKE_HOST: "intake"
-      INTAKE_PORT: "2049"
     volumes:
       - dogstatsd-socket:/var/run/datadog
+      - agent-config:/agent-config
     depends_on:
-      adp:
-        condition: service_healthy
       intake:
         condition: service_healthy
 
 volumes:
   dogstatsd-socket:
+  agent-config:

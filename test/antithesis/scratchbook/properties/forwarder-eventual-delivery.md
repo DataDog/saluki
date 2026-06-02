@@ -5,7 +5,7 @@ commit: 042f41db3bd97118c38981765fd49696fce9d318
 updated: 2026-05-28
 type: Liveness
 priority: High
-assertion_status: MISSING (net-new instrumentation)
+assertion_status: PARTIAL — in-SUT `Sometimes(forwarded a payload)` landed 2026-05-31; recovery-reconciliation `Sometimes` still net-new
 ---
 
 # Property: After a transient intake outage clears, accepted-and-retryable transactions are eventually delivered
@@ -79,12 +79,18 @@ expectation: every transaction that was (a) accepted and (b) retryable is eventu
 - Circuit breaker backoff schedule (exponential + jitter) — sets recovery latency, hence the size
   of the "eventually" window the assertion must allow.
 
-## Suggested assertion (MISSING — net-new)
-- **Sometimes(all-accepted-retryable-delivered-after-recovery)**: at least once, after a transient
-  outage clears and within a bounded window, the count of delivered transactions equals the count
-  of accepted-and-retryable transactions submitted before/during the outage (queue did not overflow).
-  This proves recovery actually happens. Best evaluated workload-side by reconciling the controlled
-  input set against the mock-intake received set.
+## Suggested assertion
+- **Landed 2026-05-31 — in-SUT delivery anchor:** `assert_sometimes!("ADP forwarded a payload to the
+  intake", { domain })` at the success branch of `process_http_response` (io.rs:553, behind
+  `saluki-components/antithesis`). This is the in-SUT proof that delivery *happens* (a 2xx from the
+  intake) and a replay checkpoint on a healthy-forwarding state — but it is **not** the recovery
+  property: a run-wide `Sometimes(forwarded)` is satisfied by any single delivery and says nothing
+  about *post-outage* completeness.
+- **Still net-new — Sometimes(all-accepted-retryable-delivered-after-recovery):** at least once, after
+  a transient outage clears and within a bounded window, the count of delivered transactions equals
+  the count of accepted-and-retryable transactions submitted before/during the outage (queue did not
+  overflow). This proves recovery actually happens. Best evaluated workload-side by reconciling the
+  controlled input set against the mock-intake received set.
 - Supporting **Reachable**: the `Error::Open` re-enqueue path (`io.rs:468-474`) is hit at least once
   (proves the circuit breaker engaged and re-enqueued, not silently dropped).
 

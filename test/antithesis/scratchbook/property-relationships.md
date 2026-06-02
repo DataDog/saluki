@@ -1,7 +1,7 @@
 ---
 sut_path: /home/ssm-user/src/saluki
-commit: fc4bb29728814ddf9321572b954ec28f58faeb53
-updated: 2026-05-30
+commit: 2e4ae1b8be45143882f0dbeb5e74998021c5faf9
+updated: 2026-05-31
 external_references:
   - path: https://datadoghq.atlassian.net/wiki/spaces/DADP/
     why: ADP Confluence space — headline guarantees and gap analyses that seed properties.
@@ -15,7 +15,7 @@ external_references:
 
 # Property Relationships
 
-Lightweight clustering of the 35 catalog properties by shared code paths, failure mechanisms, and
+Lightweight clustering of the 37 catalog properties by shared code paths, failure mechanisms, and
 suspected dominance. Slugs match `property-catalog.md`.
 
 ## Cluster 1 — Bounded memory (the determinism story)
@@ -160,7 +160,28 @@ Properties: `events-sc-no-silent-loss`, `malformed-event-sc-no-crash`, `events-s
 - **Anti-vacuity dependency:** `events-sc-pipeline-reachable` is the R4 anchor that keeps the other
   two from passing trivially under a metrics-dominated workload — a hard dependency, not just a relation.
 
-## Shared-scenario pairs (R10 — count is not 35 independent test efforts)
+## Cluster 10 — Liveness & availability observers (added 2026-05-31)
+
+Properties: `adp-stays-alive`, `adp-keeps-delivering`.
+
+- **Status (2026-05-31): landed.** `adp-stays-alive` is realized as the external `eventually_adp_alive`
+  command; the good-function half of `adp-keeps-delivering` is realized as an in-SUT
+  `assert_sometimes!` at the forwarder 2xx site. The per-branch "alive but wedged" `assert_always` for
+  `adp-keeps-delivering` remains net-new.
+- **The external catch for every crash property.** Clusters 1, 4, 5, and 6 predict crashes
+  (interner/RSS overflow, aggregate panics, config-driven startup refusal, malformed-input panics);
+  Cluster 10 is what turns those into counterexamples, with the *death* check from *outside* the SUT
+  (a panicking ADP cannot self-assert) and the *good-function* check from inside. `adp-stays-alive`
+  dominates — `adp-keeps-delivering` adds the "alive but wedged" facet; its landed half lives at the
+  forwarder 2xx site, and its pending per-branch wedge detector would share the `finally_verify_delivery`
+  site.
+- **Fault-gated, not fault-blind.** Both evaluate in a faults-paused window (`eventually_`/`finally_`
+  or `ANTITHESIS_STOP_FAULTS`), which is the line between a self-inflicted crash (persists → fail)
+  and an injected node fault (recovers → pass). This is a hard design dependency, not a relation.
+- **Image dependency (R5).** Valid only because the harness adp image has no auto-restart supervisor;
+  on a production s6 image these become restart-count assertions (R1).
+
+## Shared-scenario pairs (R10 — count is not 37 independent test efforts)
 
 These pairs share a fault scenario / assertion site and should be implemented together; treat them as
 one test effort each for portfolio-sizing:

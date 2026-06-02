@@ -6,7 +6,9 @@
 //! grow without bound under sustained high cardinality).
 
 use std::os::unix::net::UnixDatagram;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::thread::sleep;
+use std::time::{Duration, Instant};
 
 use antithesis_sdk::prelude::*;
 use antithesis_sdk::random::AntithesisRng;
@@ -49,8 +51,7 @@ fn main() -> anyhow::Result<()> {
     };
     let count: u64 = rng.random_range(50..=2000);
 
-    let socket = UnixDatagram::unbound()?;
-    socket.connect(&config.dogstatsd_socket)?;
+    let socket = connect_with_retry(&config.dogstatsd_socket)?;
 
     let names = ["adp.test.foo", "adp.test.bar", "adp.test.balkajsldfkjasdlfkjasdfz"];
     let metric_types = ["c", "g"];
@@ -91,4 +92,17 @@ fn main() -> anyhow::Result<()> {
     );
 
     Ok(())
+}
+
+// Wait for ADP to bind the socket, intentionally naive.
+fn connect_with_retry(path: &Path) -> anyhow::Result<UnixDatagram> {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let socket = UnixDatagram::unbound()?;
+        match socket.connect(path) {
+            Ok(()) => return Ok(socket),
+            Err(_) if Instant::now() < deadline => sleep(Duration::from_millis(250)),
+            Err(e) => return Err(e).with_context(|| format!("ADP did not bind {} within 30s", path.display())),
+        }
+    }
 }

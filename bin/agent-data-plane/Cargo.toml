@@ -11,7 +11,7 @@ workspace = true
 [features]
 default = []
 fips = ["saluki-app/tls-fips", "saluki-components/fips"]
-antithesis = ["dep:antithesis_sdk", "antithesis_sdk/full", "dep:antithesis-instrumentation"]
+antithesis = ["dep:antithesis_sdk", "antithesis_sdk/full", "dep:antithesis-instrumentation", "saluki-components/antithesis"]
 
 [dependencies]
 antithesis-instrumentation = { workspace = true, optional = true }

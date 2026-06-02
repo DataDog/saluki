@@ -1,7 +1,7 @@
 ---
 sut_path: /home/ssm-user/src/saluki
-commit: fc4bb29728814ddf9321572b954ec28f58faeb53
-updated: 2026-05-30
+commit: 2e4ae1b8be45143882f0dbeb5e74998021c5faf9
+updated: 2026-05-31
 external_references:
   - path: https://datadoghq.atlassian.net/wiki/spaces/DADP/
     why: ADP Confluence space — headline guarantees, Phase 1 bug bash, gap analyses, weekly summaries.
@@ -305,3 +305,34 @@ into aggregation**, and **timing/interleaving** in the forwarder and interner. T
 mirrors the correctness harness — ADP + a controllable mock intake + a deterministic load generator —
 but adds Antithesis fault injection (network, process, clock) that the harness lacks. See
 `property-catalog.md` and `deployment-topology.md`.
+
+### 10a. Liveness observability & fault-gating (added 2026-05-31)
+
+The harness generates configs/load that *should* crash ADP, but nothing observed whether ADP is
+alive, so those crashes were invisible **in-run** (Category H closes this; **landed 2026-05-31**).
+Two facts shape the design:
+
+- **Where liveness is observable, and which check goes where:** the process/container, the
+  unprivileged API on `:5100`, the DogStatsD socket, and end-to-end delivery at the mock intake.
+  - *Death-liveness must be external:* a panicking process cannot self-assert, so "did ADP stay up?"
+    is observed from a workload-side command (`eventually_adp_alive`).
+  - *Good-function can be in-SUT:* a *booted* ADP can report that it works. `saluki-components` gained
+    an `antithesis` feature + SDK dep for an `assert_sometimes!` at the forwarder 2xx site — proving
+    the pipeline ran. (The death case and the good-function case are different questions; only the
+    former is forced external.)
+- **Detection provenance (clarification):** the config-driven boot panic (oversized interner →
+  `isize::MAX`) was first seen via local `snouty validate` on a *single* config — not by an in-run
+  timeline. `validate`-rejects-a-config is not the same as a shot finding the bug across the drawn
+  config space; `eventually_adp_alive` is the in-run catch that was missing.
+- **Image matters:** the harness adp image is a bare binary + boot wrapper (`deploy/Dockerfile` adp
+  stage, no s6 supervisor), so external `:5100` liveness is a *valid, non-vacuous* signal here — a
+  deterministic config/load crash leaves `:5100` permanently unbound. The production s6 image would
+  auto-restart and make this vacuous (catalog R1); there, use a restart-count assertion.
+- **Distinguishing self-inflicted death from injected faults:** evaluate liveness in a **quiet
+  period** (`eventually_`/`finally_` run faults-paused; `ANTITHESIS_STOP_FAULTS` for mid-run). A
+  fault-killed container is restored during the quiet period → passes; a self-inflicted crash
+  persists → fails. This is exactly "trigger on panic-on-startup / crash-from-load, not on node
+  faults."
+- **Caveat:** runs to date inject **zero** faults (the `node - *` / `clock - skip` total-event
+  properties report `0/0`), so the gating is currently moot but is the right design for when faults
+  are enabled; the launch webhook's fault configuration needs confirming.
