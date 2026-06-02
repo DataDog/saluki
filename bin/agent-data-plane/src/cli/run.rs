@@ -14,7 +14,7 @@ use saluki_app::{
 };
 use saluki_components::config_registry::{ConfigClassifier, Pipeline, PipelineAffinity, Severity, SupportLevel};
 use saluki_components::{
-    config::{DatadogRemapper, KEY_ALIASES},
+    config::{DatadogRemapper, MrfConfiguration, KEY_ALIASES},
     decoders::otlp::OtlpDecoderConfiguration,
     destinations::{DogStatsDDebugLogConfiguration, DogStatsDStatisticsConfiguration},
     encoders::{
@@ -30,7 +30,8 @@ use saluki_components::{
     },
     transforms::{
         AggregateConfiguration, ApmStatsTransformConfiguration, ChainedConfiguration, DogStatsDMapperConfiguration,
-        HostEnrichmentConfiguration, TraceObfuscationConfiguration, TraceSamplerConfiguration,
+        HostEnrichmentConfiguration, MrfMetricsGatewayConfiguration, TraceObfuscationConfiguration,
+        TraceSamplerConfiguration,
     },
 };
 use saluki_config::{ConfigurationLoader, GenericConfiguration};
@@ -543,10 +544,54 @@ async fn add_baseline_metrics_pipeline_to_blueprint(
         // Components.
         .add_transform("metrics_enrich", metrics_enrich_config)?
         .add_encoder("dd_metrics_encode", dd_metrics_config)?
-        // Metrics.
-        .connect_component("dd_metrics_encode", ["metrics_enrich"])?
-        // Forwarding.
-        .connect_component("dd_out", ["dd_metrics_encode"])?;
+        // Metrics, then forwarding.
+        .connect_components_in_order(["metrics_enrich", "dd_metrics_encode", "dd_out"])?;
+
+    add_mrf_metrics_pipeline_to_blueprint(blueprint, config)?;
+
+    Ok(())
+}
+
+fn add_mrf_metrics_pipeline_to_blueprint(
+    blueprint: &mut TopologyBlueprint, config: &GenericConfiguration,
+) -> Result<(), GenericError> {
+    let mrf_config = MrfConfiguration::from_configuration(config)
+        .error_context("Failed to configure Multi-Region Failover metrics pipeline.")?;
+
+    let Some((mrf_dd_url, mrf_api_key)) = mrf_config.metrics_endpoint_override() else {
+        if mrf_config.is_enabled() {
+            warn!(
+                "Multi-Region Failover is enabled, but multi_region_failover.api_key and one of \
+                 multi_region_failover.dd_url or multi_region_failover.site are required for metrics forwarding. The \
+                 MRF metrics branch will not be wired, and primary forwarding will continue. Restart ADP after \
+                 configuring the static MRF endpoint settings."
+            );
+        }
+
+        return Ok(());
+    };
+
+    let mrf_gateway_config = MrfMetricsGatewayConfiguration::new(mrf_config.clone(), config.clone());
+    let mrf_metrics_config = DatadogMetricsConfiguration::from_configuration(config)
+        .error_context("Failed to configure Multi-Region Failover Datadog Metrics encoder.")?;
+
+    let mrf_forwarder_config = DatadogConfiguration::from_configuration(config)
+        .map(|config| {
+            config.with_endpoint_override_and_api_key_refresh_config_path(
+                mrf_dd_url,
+                mrf_api_key,
+                "multi_region_failover.api_key",
+            )
+        })
+        .error_context("Failed to configure Multi-Region Failover Datadog forwarder.")?;
+
+    blueprint
+        .add_transform("mrf_metrics_gateway", mrf_gateway_config)?
+        .add_encoder("mrf_metrics_encode", mrf_metrics_config)?
+        .add_forwarder("mrf_dd_out", mrf_forwarder_config)?
+        .connect_component("mrf_metrics_gateway", ["metrics_enrich"])?
+        .connect_component("mrf_metrics_encode", ["mrf_metrics_gateway"])?
+        .connect_component("mrf_dd_out", ["mrf_metrics_encode"])?;
 
     Ok(())
 }
@@ -719,17 +764,23 @@ async fn add_dsd_pipeline_to_blueprint(
         .add_transform("service_checks_enrich", service_checks_enrich_config)?
         .add_destination("dsd_stats_out", dsd_stats_config)?
         // Metrics.
-        .connect_component("dsd_enrich", ["dsd_in.metrics"])?
-        .connect_component("dsd_prefix_filter", ["dsd_enrich"])?
-        .connect_component("dsd_tag_filterlist", ["dsd_prefix_filter"])?
-        .connect_component("dsd_agg", ["dsd_tag_filterlist"])?
-        .connect_component("dsd_post_agg_filter", ["dsd_agg"])?
-        .connect_component("metrics_enrich", ["dsd_post_agg_filter"])?
+        .connect_components_in_order([
+            "dsd_in.metrics",
+            "dsd_enrich",
+            "dsd_prefix_filter",
+            "dsd_tag_filterlist",
+            "dsd_agg",
+            "dsd_post_agg_filter",
+            "metrics_enrich",
+        ])?
         // Events.
-        .connect_component("events_enrich", ["dsd_in.events"])?
-        .connect_component("dd_events_encode", ["events_enrich"])?
-        .connect_component("service_checks_enrich", ["dsd_in.service_checks"])?
-        .connect_component("dd_service_checks_encode", ["service_checks_enrich"])?
+        .connect_components_in_order(["dsd_in.events", "events_enrich", "dd_events_encode"])?
+        // Service checks.
+        .connect_components_in_order([
+            "dsd_in.service_checks",
+            "service_checks_enrich",
+            "dd_service_checks_encode",
+        ])?
         // DogStatsD Stats.
         .connect_component("dsd_stats_out", ["dsd_in.metrics"])?;
 
@@ -782,8 +833,7 @@ fn add_otlp_pipeline_to_blueprint(
             blueprint
                 .add_decoder("otlp_traces_decode", otlp_decoder_config)?
                 // Traces to decoder, then to the trace pipeline: obfuscation, enrichment, encoding, stats, forwarding.
-                .connect_component("otlp_traces_decode", ["otlp_relay_in.traces"])?
-                .connect_component("traces_enrich", ["otlp_traces_decode"])?;
+                .connect_components_in_order(["otlp_relay_in.traces", "otlp_traces_decode", "traces_enrich"])?;
         }
     } else {
         info!("OTLP proxy mode disabled. OTLP signals will be handled natively.");

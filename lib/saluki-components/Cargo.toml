@@ -12,8 +12,10 @@ workspace = true
 default = []
 config-test-support = []
 fips = ["saluki-io/fips"]
+antithesis = ["dep:antithesis_sdk", "antithesis_sdk/full"]
 
 [dependencies]
+antithesis_sdk = { workspace = true, optional = true }
 arc-swap = { workspace = true }
 async-trait = { workspace = true }
 axum = { workspace = true }

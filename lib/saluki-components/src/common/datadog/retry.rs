@@ -44,6 +44,10 @@ const fn default_storage_max_disk_ratio() -> f64 {
     0.8
 }
 
+const fn default_outdated_file_in_days() -> u32 {
+    10
+}
+
 /// Datadog Agent-specific forwarder retry configuration.
 #[derive(Clone, Deserialize, Facet)]
 #[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
@@ -130,6 +134,20 @@ pub struct RetryConfiguration {
         rename = "forwarder_storage_max_disk_ratio"
     )]
     storage_max_disk_ratio: f64,
+
+    /// Maximum age in days for retry files on disk before they are deleted at startup.
+    ///
+    /// When disk persistence is enabled, ADP removes any `retry-*.json` files in the
+    /// per-queue subdirectory of `forwarder_storage_path` that are older than this many days
+    /// each time it starts. This prevents unbounded disk growth from stale retry data left
+    /// behind after long outages.
+    ///
+    /// Defaults to 10.
+    #[serde(
+        default = "default_outdated_file_in_days",
+        rename = "forwarder_outdated_file_in_days"
+    )]
+    outdated_file_in_days: u32,
 }
 
 impl RetryConfiguration {
@@ -178,6 +196,11 @@ impl RetryConfiguration {
     /// Returns the maximum disk usage ratio for storing transactions on disk.
     pub const fn storage_max_disk_ratio(&self) -> f64 {
         self.storage_max_disk_ratio
+    }
+
+    /// Returns the maximum age in days for retry files on disk before they are deleted at startup.
+    pub const fn outdated_file_in_days(&self) -> u32 {
+        self.outdated_file_in_days
     }
 
     /// Creates a new [`DefaultHttpRetryPolicy`] based on the forwarder configuration.

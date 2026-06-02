@@ -6,15 +6,21 @@ use socket2::SockRef;
 use tokio::net::{TcpListener, UdpSocket as TokioUdpSocket};
 use tracing::warn;
 
+#[cfg(target_os = "linux")]
+use super::unix::socket_reuseport_supported;
+#[cfg(unix)]
+use super::unix::{enable_uds_socket_credentials, ensure_unix_socket_free, set_unix_socket_write_only};
 use super::{
     addr::ListenAddress,
     stream::{Connection, Stream},
-    unix::{
-        enable_uds_socket_credentials, ensure_unix_socket_free, set_unix_socket_write_only, socket_reuseport_supported,
-    },
 };
 
 const SOCKET_RECV_BUFFER_SIZE_SETTING: &str = "SO_RCVBUF";
+
+#[cfg(not(target_os = "linux"))]
+const fn socket_reuseport_supported() -> bool {
+    false
+}
 
 /// A listener error.
 #[derive(Debug, Snafu)]
@@ -191,6 +197,12 @@ impl Listener {
                     })?;
 
                 listener
+            }
+            #[cfg(not(unix))]
+            ListenAddress::Unixgram(_) | ListenAddress::Unix(_) => {
+                return Err(ListenerError::InvalidConfiguration {
+                    reason: "Unix listen addresses are not supported on this platform",
+                });
             }
         };
 
@@ -410,7 +422,10 @@ impl ConnectionOrientedListener {
             }
             _ => {
                 return Err(ListenerError::InvalidConfiguration {
+                    #[cfg(unix)]
                     reason: "only TCP and Unix listen addresses are supported",
+                    #[cfg(not(unix))]
+                    reason: "only TCP listen addresses are supported on this platform",
                 })
             }
         };

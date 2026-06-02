@@ -6,8 +6,9 @@ use windows_sys::Win32::System::{
 };
 
 /// A memory usage querier.
+#[derive(Default)]
 pub struct Querier {
-    source: StatSource,
+    _priv: (),
 }
 
 impl Querier {

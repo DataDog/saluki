@@ -149,20 +149,6 @@ crate::declare_annotations! {
         pipeline_affinity: PipelineAffinity::CrossCutting,
     };
 
-    /// `forwarder_outdated_file_in_days` - retry file retention period.
-    FORWARDER_OUTDATED_FILE_IN_DAYS = SalukiAnnotation {
-        schema: &schema::FORWARDER_OUTDATED_FILE_IN_DAYS,
-        // Retry file retention not implemented. #1360
-        support_level: SupportLevel::Incompatible(Severity::Medium),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-        // The forwarder is potentially used by any pipeline.
-        pipeline_affinity: PipelineAffinity::CrossCutting,
-    };
-
     /// `forwarder_retry_queue_capacity_time_interval_sec` - retry queue time-based capacity.
     FORWARDER_RETRY_QUEUE_CAPACITY_TIME_INTERVAL_SEC = SalukiAnnotation {
         schema: &schema::FORWARDER_RETRY_QUEUE_CAPACITY_TIME_INTERVAL_SEC,
@@ -463,84 +449,6 @@ crate::declare_annotations! {
         test_json: None,
         // Agent/host metadata applied to all payloads.
         pipeline_affinity: PipelineAffinity::CrossCutting,
-    };
-    /// `multi_region_failover.api_key` - API key for the MRF failover region.
-    MULTI_REGION_FAILOVER_API_KEY = SalukiAnnotation {
-        schema: &schema::MULTI_REGION_FAILOVER_API_KEY,
-        // Not implemented. #1678
-        support_level: SupportLevel::Incompatible(Severity::Medium),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-        // MRF operates at the dd_out forwarder level; dd_out is used by DogStatsD, Checks, and Traces (OTLP native). Proxy mode bypasses dd_out.
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD, Pipeline::Checks, Pipeline::Traces]),
-    };
-    /// `multi_region_failover.dd_url` - intake URL for the MRF failover region.
-    MULTI_REGION_FAILOVER_DD_URL = SalukiAnnotation {
-        schema: &schema::MULTI_REGION_FAILOVER_DD_URL,
-        // Not implemented. #1678
-        support_level: SupportLevel::Incompatible(Severity::Medium),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-        // MRF operates at the dd_out forwarder level; dd_out is used by DogStatsD, Checks, and Traces (OTLP native). Proxy mode bypasses dd_out.
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD, Pipeline::Checks, Pipeline::Traces]),
-    };
-    /// `multi_region_failover.enabled` - multi-region failover mode.
-    MULTI_REGION_FAILOVER_ENABLED = SalukiAnnotation {
-        schema: &schema::MULTI_REGION_FAILOVER_ENABLED,
-        // Not implemented. #1678
-        support_level: SupportLevel::Incompatible(Severity::High),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-        // MRF operates at the dd_out forwarder level; dd_out is used by DogStatsD, Checks, and Traces (OTLP native). Proxy mode bypasses dd_out.
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD, Pipeline::Checks, Pipeline::Traces]),
-    };
-    /// `multi_region_failover.failover_metrics` - metrics forwarding to the failover region.
-    MULTI_REGION_FAILOVER_FAILOVER_METRICS = SalukiAnnotation {
-        schema: &schema::MULTI_REGION_FAILOVER_FAILOVER_METRICS,
-        // Not implemented. #1678
-        support_level: SupportLevel::Incompatible(Severity::Medium),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-        // MRF operates at the dd_out forwarder level; dd_out is used by DogStatsD, Checks, and Traces (OTLP native). Proxy mode bypasses dd_out.
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD, Pipeline::Checks, Pipeline::Traces]),
-    };
-    /// `multi_region_failover.metric_allowlist` - metric name allowlist for MRF forwarding.
-    MULTI_REGION_FAILOVER_METRIC_ALLOWLIST = SalukiAnnotation {
-        schema: &schema::MULTI_REGION_FAILOVER_METRIC_ALLOWLIST,
-        // Not implemented. #1678
-        support_level: SupportLevel::Incompatible(Severity::Medium),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-        // MRF operates at the dd_out forwarder level; dd_out is used by DogStatsD, Checks, and Traces (OTLP native). Proxy mode bypasses dd_out.
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD, Pipeline::Checks, Pipeline::Traces]),
-    };
-    /// `multi_region_failover.site` - Datadog site for the MRF failover region.
-    MULTI_REGION_FAILOVER_SITE = SalukiAnnotation {
-        schema: &schema::MULTI_REGION_FAILOVER_SITE,
-        // Not implemented. #1678
-        support_level: SupportLevel::Incompatible(Severity::Medium),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-        // MRF operates at the dd_out forwarder level; dd_out is used by DogStatsD, Checks, and Traces (OTLP native). Proxy mode bypasses dd_out.
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD, Pipeline::Checks, Pipeline::Traces]),
     };
     /// `telemetry.dogstatsd.aggregator_channel_latency_buckets` - DSD-to-aggregator channel latency histogram buckets.
     TELEMETRY_DOGSTATSD_AGGREGATOR_CHANNEL_LATENCY_BUCKETS = SalukiAnnotation {

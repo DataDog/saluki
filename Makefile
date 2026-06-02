@@ -44,6 +44,7 @@ export CARGO_TOOL_VERSION_dd-rust-license-tool ?= 1.0.6
 export CARGO_TOOL_VERSION_cargo-deny ?= 0.18.9
 export CARGO_TOOL_VERSION_cargo-hack ?= 0.6.30
 export CARGO_TOOL_VERSION_cargo-nextest ?= 0.9.99
+export CARGO_TOOL_VERSION_cargo-xwin ?= 0.22.0
 export CARGO_TOOL_VERSION_cargo-autoinherit ?= 0.1.5
 export CARGO_TOOL_VERSION_cargo-sort ?= 1.0.9
 export CARGO_TOOL_VERSION_dummyhttp ?= 1.1.0
@@ -51,6 +52,11 @@ export CARGO_TOOL_VERSION_cargo-machete ?= 0.9.1
 export CARGO_TOOL_VERSION_rustfilt ?= 0.2.1
 export DDPROF_VERSION ?= 0.20.0
 export LADING_VERSION ?= sha-d608ffbce8f8c77b147d6750b3bb6d6948af239a
+
+# Windows cross-compilation settings. These targets currently assume a local macOS host.
+export WINDOWS_CROSS_TARGET ?= x86_64-pc-windows-msvc
+export WINDOWS_CROSS_LLVM_BIN ?= /opt/homebrew/opt/llvm/bin
+export WINDOWS_CROSS_CARGO_ARGS ?= --package agent-data-plane
 
 # Version of source repositories (Git tag) for vendored Protocol Buffers definitions.
 export PROTOBUF_SRC_REPO_DD_AGENT ?= 7.73.x
@@ -208,6 +214,28 @@ build-correctness-tools-image: ## Builds the correctness tools suite (datadog-in
 		--file ./docker/Dockerfile.correctness-tools \
 		.
 
+.PHONY: install-windows-cross-tools
+install-windows-cross-tools: check-rust-build-tools ## Installs local macOS tools for Windows Rust cross-compilation
+ifneq ($(shell uname -s),Darwin)
+	$(error "install-windows-cross-tools currently supports local macOS hosts only")
+endif
+ifeq ($(shell command -v brew >/dev/null || echo not-found), not-found)
+	$(error "Please install Homebrew: https://brew.sh/")
+endif
+	@echo "[*] Installing Rust Windows target ($(WINDOWS_CROSS_TARGET))..."
+	@rustup target add $(WINDOWS_CROSS_TARGET)
+	@echo "[*] Ensuring cargo-xwin@$(CARGO_TOOL_VERSION_cargo-xwin) is installed..."
+	@test -f "$(CARGO_BIN_DIR)/cargo-xwin" || cargo install cargo-xwin --version "$(CARGO_TOOL_VERSION_cargo-xwin)" --locked
+	@echo "[*] Ensuring Homebrew LLVM is installed..."
+	@brew list llvm >/dev/null 2>&1 || brew install llvm
+	@test -x "$(WINDOWS_CROSS_LLVM_BIN)/llvm-lib" || \
+		(echo "Missing llvm-lib at $(WINDOWS_CROSS_LLVM_BIN)/llvm-lib. Set WINDOWS_CROSS_LLVM_BIN or install Homebrew LLVM." && exit 1)
+
+.PHONY: build-windows-cross
+build-windows-cross: install-windows-cross-tools ## Builds ADP for Windows from a local macOS host (override WINDOWS_CROSS_CARGO_ARGS as needed)
+	@echo "[*] Building Windows cross target ($(WINDOWS_CROSS_TARGET)): cargo build $(WINDOWS_CROSS_CARGO_ARGS)"
+	@PATH="$(WINDOWS_CROSS_LLVM_BIN):$$PATH" cargo xwin build --target $(WINDOWS_CROSS_TARGET) $(WINDOWS_CROSS_CARGO_ARGS)
+
 .PHONY: build-proxy-dumper-image
 build-proxy-dumper-image: check-proxy-dumper-tools ## Builds the proxy-dumper container image ('latest' tag)
 ifeq ($(shell test -d test/build/dd-agent-benchmarks || echo not-found), not-found)
@@ -312,7 +340,7 @@ run-adp-standalone: build-adp create-dummy-agent-config create-dummy-ipc-cert
 run-adp-standalone: ## Runs ADP locally in standalone mode (debug)
 	@echo "[*] Running ADP..."
 	@DD_DATA_PLANE_STANDALONE_MODE=true DD_DATA_PLANE_DOGSTATSD_ENABLED=true \
- 	DD_API_KEY=api-key-adp-standalone DD_HOSTNAME=adp-standalone \
+	DD_API_KEY=api-key-adp-standalone DD_HOSTNAME=adp-standalone \
 	DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
 	DD_IPC_CERT_FILE_PATH=$(ADP_STANDALONE_IPC_CERT_FILE) \
 	target/devel/agent-data-plane --config /tmp/adp-empty-config.yaml run
@@ -674,6 +702,28 @@ endif
 	@rustup toolchain install nightly-2025-06-16 --component miri
 	@echo "[*] Ensuring Miri is setup..."
 	@cargo +nightly-2025-06-16 miri setup
+
+##@ Antithesis
+
+ANTITHESIS_CONFIG_DIR := test/antithesis/deploy
+ANTITHESIS_COMPOSE_FILE := $(ANTITHESIS_CONFIG_DIR)/docker-compose.yaml
+
+.PHONY: check-antithesis-tools
+check-antithesis-tools:
+ifeq ($(shell command -v snouty >/dev/null || echo not-found), not-found)
+	$(error "snouty must be present to validate the Antithesis harness, see https://github.com/antithesishq/snouty")
+endif
+
+.PHONY: antithesis-build
+antithesis-build: ## Builds the Antithesis harness container images
+	@echo "[*] Building Antithesis harness images..."
+	@docker compose -f $(ANTITHESIS_COMPOSE_FILE) build
+
+.PHONY: antithesis-validate
+antithesis-validate: check-antithesis-tools antithesis-build
+antithesis-validate: ## Validates the Antithesis harness: builds images, runs 'snouty validate'
+	@echo "[*] Validating Antithesis harness with snouty..."
+	@snouty validate $(ANTITHESIS_CONFIG_DIR)
 
 ##@ Profiling
 
