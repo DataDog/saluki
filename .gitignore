@@ -1,4 +1,5 @@
 target/
+.ci-cache/
 .vscode/
 test/k8s/charts/
 test/build/
