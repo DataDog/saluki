@@ -33,6 +33,9 @@ function Ensure-Protoc {
         [string]$Version,
 
         [Parameter(Mandatory = $true)]
+        [string]$ExpectedSha256,
+
+        [Parameter(Mandatory = $true)]
         [string]$InstallRoot
     )
 
@@ -44,6 +47,12 @@ function Ensure-Protoc {
         Remove-Item -Recurse -Force $ExtractRoot -ErrorAction SilentlyContinue
         New-Item -ItemType Directory -Force $InstallRoot | Out-Null
         Invoke-WebRequest -UseBasicParsing -Uri "https://github.com/protocolbuffers/protobuf/releases/download/v${Version}/protoc-${Version}-win64.zip" -OutFile $Archive
+
+        $ActualSha256 = (Get-FileHash -Algorithm SHA256 -Path $Archive).Hash.ToLowerInvariant()
+        if ($ActualSha256 -ne $ExpectedSha256.ToLowerInvariant()) {
+            throw "protoc archive checksum mismatch: expected ${ExpectedSha256}, got ${ActualSha256}"
+        }
+
         Expand-Archive -Path $Archive -DestinationPath $ExtractRoot -Force
         Copy-Item -Recurse -Force (Join-Path $ExtractRoot "*") $InstallRoot
     }
@@ -72,6 +81,9 @@ if (-not $env:CARGO_NEXTEST_VERSION) {
 if (-not $env:PROTOC_VERSION) {
     $env:PROTOC_VERSION = "29.3"
 }
+if (-not $env:PROTOC_SHA256) {
+    $env:PROTOC_SHA256 = "57ea59e9f551ad8d71ffaa9b5cfbe0ca1f4e720972a1db7ec2d12ab44bff9383"
+}
 if (-not $env:WINDOWS_CI_PROTOC_HOME) {
     $env:WINDOWS_CI_PROTOC_HOME = Join-Path $RepoRoot ".ci-cache\protoc\$env:PROTOC_VERSION"
 }
@@ -85,14 +97,10 @@ if ($OriginalCargoHome) {
 Add-PathEntry (Join-Path $env:USERPROFILE ".cargo\bin")
 
 if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
-    Write-Host "[*] Rust toolchain not found; installing rustup..."
-    $RustupInit = Join-Path $env:TEMP "rustup-init.exe"
-    Invoke-WebRequest -UseBasicParsing -Uri "https://win.rustup.rs/x86_64" -OutFile $RustupInit
-    Invoke-Native $RustupInit -y --profile minimal --default-toolchain none
-    if ($env:CARGO_HOME) {
-        Add-PathEntry (Join-Path $env:CARGO_HOME "bin")
-    }
-    Add-PathEntry (Join-Path $env:USERPROFILE ".cargo\bin")
+    throw "Rust toolchain not found in Windows build image. Install Rust in the image instead of downloading rustup at job runtime."
+}
+if (-not (Get-Command rustup -ErrorAction SilentlyContinue)) {
+    throw "rustup not found in Windows build image. Install rustup in the image instead of downloading it at job runtime."
 }
 
 $ToolchainMatch = Select-String -Path "rust-toolchain.toml" -Pattern 'channel\s*=\s*"([^"]+)"' | Select-Object -First 1
@@ -109,7 +117,7 @@ Invoke-Native cargo --version
 
 $env:CARGO_HOME = $env:WINDOWS_CI_CARGO_HOME
 Add-PathEntry (Join-Path $env:CARGO_HOME "bin")
-Ensure-Protoc -Version $env:PROTOC_VERSION -InstallRoot $env:WINDOWS_CI_PROTOC_HOME
+Ensure-Protoc -Version $env:PROTOC_VERSION -ExpectedSha256 $env:PROTOC_SHA256 -InstallRoot $env:WINDOWS_CI_PROTOC_HOME
 
 if (-not (Get-Command cargo-nextest -ErrorAction SilentlyContinue)) {
     Write-Host "[*] cargo-nextest not found; installing cargo-nextest@$env:CARGO_NEXTEST_VERSION..."

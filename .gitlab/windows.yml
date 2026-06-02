@@ -48,6 +48,7 @@ unit-tests-windows-amd64:
       -e CARGO_TARGET_DIR="c:\mnt\target\windows-ci"
       -e CARGO_NEXTEST_VERSION="0.9.99"
       -e PROTOC_VERSION="29.3"
+      -e PROTOC_SHA256="57ea59e9f551ad8d71ffaa9b5cfbe0ca1f4e720972a1db7ec2d12ab44bff9383"
       ${WINBUILDIMAGE}
       powershell.exe -NoProfile -NonInteractive -File c:\mnt\ci\tooling\windows-unit-tests.ps1
     - If ($lastExitCode -ne "0") { exit "$lastExitCode" }
