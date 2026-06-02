@@ -1,6 +1,6 @@
 use std::fmt;
 
-use datadog_protos::metrics::{MetricPayload, MetricType, SketchPayload};
+use datadog_protos::metrics::{v3::Payload as V3Payload, Dogsketch, MetricPayload, MetricType, SketchPayload};
 use ddsketch::DDSketch;
 use float_cmp::ApproxEqRatio as _;
 use saluki_error::{generic_error, GenericError};
@@ -350,6 +350,459 @@ impl Metric {
     }
 }
 
+// V3 metric type constants (from intake_v3.proto metricType enum).
+const V3_METRIC_TYPE_COUNT: u64 = 1;
+const V3_METRIC_TYPE_RATE: u64 = 2;
+const V3_METRIC_TYPE_GAUGE: u64 = 3;
+const V3_METRIC_TYPE_SKETCH: u64 = 4;
+
+// V3 value type constants (from intake_v3.proto valueType enum).
+const V3_VALUE_TYPE_ZERO: u64 = 0x00;
+const V3_VALUE_TYPE_SINT64: u64 = 0x10;
+const V3_VALUE_TYPE_FLOAT32: u64 = 0x20;
+const V3_VALUE_TYPE_FLOAT64: u64 = 0x30;
+
+/// Tracks cursors into the various value arrays of a v3 payload during decoding.
+struct V3ValueCursors {
+    timestamp: usize,
+    sint64: usize,
+    float32: usize,
+    float64: usize,
+    sketch_point: usize,
+    sketch_bin_key: usize,
+    sketch_bin_cnt: usize,
+}
+
+impl V3ValueCursors {
+    fn new() -> Self {
+        Self {
+            timestamp: 0,
+            sint64: 0,
+            float32: 0,
+            float64: 0,
+            sketch_point: 0,
+            sketch_bin_key: 0,
+            sketch_bin_cnt: 0,
+        }
+    }
+}
+
+impl Metric {
+    /// Attempts to parse metrics from a v3 payload.
+    ///
+    /// The v3 format uses columnar encoding with dictionary deduplication and delta encoding.
+    ///
+    /// # Errors
+    ///
+    /// If the payload contains invalid data, an error will be returned.
+    pub fn try_from_v3(mut payload: V3Payload) -> Result<Vec<Self>, GenericError> {
+        let data = payload
+            .metricData
+            .take()
+            .ok_or_else(|| generic_error!("V3 payload missing metricData"))?;
+
+        let num_metrics = data.types.len();
+        if num_metrics == 0 {
+            return Ok(Vec::new());
+        }
+
+        // Parse dictionaries.
+        let names_dict = parse_dict_strings(&data.dictNameStr)?;
+        let tags_dict = parse_dict_strings(&data.dictTagStr)?;
+        let tagsets_dict = parse_tagsets(&data.dictTagsets, &tags_dict)?;
+        let resources_dict = parse_resources(
+            &data.dictResourceLen,
+            &data.dictResourceType,
+            &data.dictResourceName,
+            &parse_dict_strings(&data.dictResourceStr)?,
+        )?;
+
+        // Delta-decode index arrays.
+        let mut name_refs = data.nameRefs;
+        let mut tagset_refs = data.tagsetRefs;
+        let mut resources_refs = data.resourcesRefs;
+        let mut timestamps = data.timestamps;
+        delta_decode(&mut name_refs);
+        delta_decode(&mut tagset_refs);
+        delta_decode(&mut resources_refs);
+        delta_decode(&mut timestamps);
+
+        // Delta-decode sketch bin keys (per-sketch sequences are individually delta-encoded,
+        // but we handle that during iteration).
+        let mut sketch_bin_keys = data.sketchBinKeys;
+
+        let mut cursors = V3ValueCursors::new();
+        let mut metrics = Vec::with_capacity(num_metrics);
+
+        for i in 0..num_metrics {
+            let type_field = data
+                .types
+                .get(i)
+                .copied()
+                .ok_or_else(|| generic_error!("Ran out of metric types"))?;
+            let metric_type = type_field & 0x0F;
+            let value_type = type_field & 0xF0;
+            let num_points = data
+                .numPoints
+                .get(i)
+                .copied()
+                .ok_or_else(|| generic_error!("Ran out of numPoints"))
+                .and_then(|num_points| u64_to_usize(num_points, "numPoints"))?;
+
+            // Resolve name (1-based index).
+            let name_ref = name_refs
+                .get(i)
+                .copied()
+                .ok_or_else(|| generic_error!("Ran out of nameRefs"))
+                .and_then(|name_ref| i64_to_usize(name_ref, "name ref"))?;
+            let name = if name_ref == 0 {
+                String::new()
+            } else {
+                names_dict
+                    .get(name_ref - 1)
+                    .ok_or_else(|| generic_error!("Invalid name ref {} (dict size {})", name_ref, names_dict.len()))?
+                    .clone()
+            };
+
+            // Resolve tags (1-based index).
+            let tagset_ref = tagset_refs
+                .get(i)
+                .copied()
+                .ok_or_else(|| generic_error!("Ran out of tagsetRefs"))
+                .and_then(|tagset_ref| i64_to_usize(tagset_ref, "tagset ref"))?;
+            let mut tags = if tagset_ref == 0 {
+                Vec::new()
+            } else {
+                tagsets_dict
+                    .get(tagset_ref - 1)
+                    .ok_or_else(|| {
+                        generic_error!("Invalid tagset ref {} (dict size {})", tagset_ref, tagsets_dict.len())
+                    })?
+                    .clone()
+            };
+
+            let resource_ref = resources_refs
+                .get(i)
+                .copied()
+                .map(|resource_ref| i64_to_usize(resource_ref, "resource ref"))
+                .transpose()?
+                .unwrap_or(0);
+            if resource_ref != 0 {
+                let resources = resources_dict.get(resource_ref - 1).ok_or_else(|| {
+                    generic_error!(
+                        "Invalid resource ref {} (dict size {})",
+                        resource_ref,
+                        resources_dict.len()
+                    )
+                })?;
+                if let Some((_, host_name)) = resources
+                    .iter()
+                    .find(|(resource_type, resource_name)| resource_type == "host" && !resource_name.is_empty())
+                {
+                    tags.push(format!("host:{}", host_name));
+                }
+            }
+
+            let mut values = Vec::with_capacity(num_points);
+
+            if metric_type == V3_METRIC_TYPE_SKETCH {
+                for _ in 0..num_points {
+                    // Read timestamp.
+                    let ts = *timestamps
+                        .get(cursors.timestamp)
+                        .ok_or_else(|| generic_error!("Ran out of timestamps"))?;
+                    let timestamp = u64::try_from(ts).map_err(|_| generic_error!("Invalid timestamp: {}", ts))?;
+                    cursors.timestamp += 1;
+
+                    // The Agent writes sketch summaries as sum, min, max, then count. Count is always in valsSint64,
+                    // but integer summaries can share that column, so count must be read after the summary values.
+                    let sum = read_value(
+                        value_type,
+                        &mut cursors,
+                        &data.valsSint64,
+                        &data.valsFloat32,
+                        &data.valsFloat64,
+                    )?;
+                    let min = read_value(
+                        value_type,
+                        &mut cursors,
+                        &data.valsSint64,
+                        &data.valsFloat32,
+                        &data.valsFloat64,
+                    )?;
+                    let max = read_value(
+                        value_type,
+                        &mut cursors,
+                        &data.valsSint64,
+                        &data.valsFloat32,
+                        &data.valsFloat64,
+                    )?;
+                    let cnt = *data
+                        .valsSint64
+                        .get(cursors.sint64)
+                        .ok_or_else(|| generic_error!("Ran out of sint64 values for sketch count"))?;
+                    cursors.sint64 += 1;
+                    let avg = if cnt != 0 { sum / cnt as f64 } else { 0.0 };
+
+                    // Read bin data.
+                    let num_bins = *data
+                        .sketchNumBins
+                        .get(cursors.sketch_point)
+                        .ok_or_else(|| generic_error!("Ran out of sketchNumBins"))?
+                        as usize;
+                    cursors.sketch_point += 1;
+
+                    let bin_key_start = cursors.sketch_bin_key;
+                    let bin_key_end = bin_key_start + num_bins;
+                    if bin_key_end > sketch_bin_keys.len() {
+                        return Err(generic_error!("Ran out of sketch bin keys"));
+                    }
+
+                    // Delta-decode this sketch's bin keys.
+                    delta_decode_i32(&mut sketch_bin_keys[bin_key_start..bin_key_end]);
+
+                    let k: Vec<i32> = sketch_bin_keys[bin_key_start..bin_key_end].to_vec();
+                    cursors.sketch_bin_key = bin_key_end;
+
+                    let bin_cnt_start = cursors.sketch_bin_cnt;
+                    let bin_cnt_end = bin_cnt_start + num_bins;
+                    if bin_cnt_end > data.sketchBinCnts.len() {
+                        return Err(generic_error!("Ran out of sketch bin counts"));
+                    }
+                    let n: Vec<u32> = data.sketchBinCnts[bin_cnt_start..bin_cnt_end].to_vec();
+                    cursors.sketch_bin_cnt = bin_cnt_end;
+
+                    // Build a Dogsketch proto and use the existing TryFrom conversion.
+                    let mut dogsketch = Dogsketch::new();
+                    dogsketch.ts = ts;
+                    dogsketch.cnt = cnt;
+                    dogsketch.min = min;
+                    dogsketch.max = max;
+                    dogsketch.avg = avg;
+                    dogsketch.sum = sum;
+                    dogsketch.set_k(k);
+                    dogsketch.set_n(n);
+
+                    let sketch = DDSketch::try_from(dogsketch)
+                        .map_err(|e| generic_error!("Failed to convert v3 sketch to DDSketch: {}", e))?;
+                    values.push((timestamp, MetricValue::Sketch { sketch }));
+                }
+            } else {
+                for _ in 0..num_points {
+                    // Read timestamp.
+                    let ts = *timestamps
+                        .get(cursors.timestamp)
+                        .ok_or_else(|| generic_error!("Ran out of timestamps"))?;
+                    let timestamp = u64::try_from(ts).map_err(|_| generic_error!("Invalid timestamp: {}", ts))?;
+                    cursors.timestamp += 1;
+
+                    // Read point value.
+                    let value = read_value(
+                        value_type,
+                        &mut cursors,
+                        &data.valsSint64,
+                        &data.valsFloat32,
+                        &data.valsFloat64,
+                    )?;
+
+                    let metric_value = match metric_type {
+                        V3_METRIC_TYPE_COUNT => MetricValue::Count { value },
+                        V3_METRIC_TYPE_RATE => MetricValue::Rate {
+                            interval: data
+                                .intervals
+                                .get(i)
+                                .copied()
+                                .ok_or_else(|| generic_error!("Ran out of intervals"))?,
+                            value,
+                        },
+                        V3_METRIC_TYPE_GAUGE => MetricValue::Gauge { value },
+                        other => return Err(generic_error!("Unknown v3 metric type: {}", other)),
+                    };
+
+                    values.push((timestamp, metric_value));
+                }
+            }
+
+            metrics.push(Metric {
+                context: MetricContext { name, tags },
+                values,
+            });
+        }
+
+        Ok(metrics)
+    }
+}
+
+/// Delta-decode in place: convert deltas to absolute values (prefix sum).
+fn delta_decode(s: &mut [i64]) {
+    for i in 1..s.len() {
+        s[i] += s[i - 1];
+    }
+}
+
+/// Delta-decode i32 values in place.
+fn delta_decode_i32(s: &mut [i32]) {
+    for i in 1..s.len() {
+        s[i] += s[i - 1];
+    }
+}
+
+/// Read a varint from a byte slice, returning `(value, bytes_consumed)`.
+fn read_varint(data: &[u8]) -> Result<(u64, usize), GenericError> {
+    let mut value: u64 = 0;
+    let mut shift = 0;
+    for (i, &byte) in data.iter().enumerate() {
+        value |= ((byte & 0x7F) as u64) << shift;
+        if byte & 0x80 == 0 {
+            return Ok((value, i + 1));
+        }
+        shift += 7;
+        if shift >= 64 {
+            return Err(generic_error!("Varint too large"));
+        }
+    }
+    Err(generic_error!("Unexpected end of data reading varint"))
+}
+
+/// Parse varint-length-prefixed strings from a byte buffer.
+fn parse_dict_strings(data: &[u8]) -> Result<Vec<String>, GenericError> {
+    let mut strings = Vec::new();
+    let mut offset = 0;
+    while offset < data.len() {
+        let (len, varint_size) = read_varint(&data[offset..])?;
+        offset += varint_size;
+        let len = len as usize;
+        if offset + len > data.len() {
+            return Err(generic_error!("Dictionary string extends past end of buffer"));
+        }
+        let s = simdutf8::basic::from_utf8(&data[offset..offset + len])
+            .map_err(|e| generic_error!("Invalid UTF-8 in dictionary string: {}", e))?;
+        strings.push(s.to_string());
+        offset += len;
+    }
+    Ok(strings)
+}
+
+/// Parse tagsets from the `dictTagsets` array using the tag dictionary.
+///
+/// Each tagset in `dict_tagsets` is encoded as: length, then that many delta-encoded tag indices.
+fn parse_tagsets(dict_tagsets: &[i64], tags_dict: &[String]) -> Result<Vec<Vec<String>>, GenericError> {
+    let mut tagsets = Vec::new();
+    let mut offset = 0;
+    while offset < dict_tagsets.len() {
+        let count = i64_to_usize(dict_tagsets[offset], "tagset length")?;
+        offset += 1;
+        if offset + count > dict_tagsets.len() {
+            return Err(generic_error!("Tagset extends past end of dictTagsets array"));
+        }
+
+        // Delta-decode the tag indices within this tagset.
+        let mut tag_indices: Vec<i64> = dict_tagsets[offset..offset + count].to_vec();
+        delta_decode(&mut tag_indices);
+
+        // Resolve tag indices (1-based) to tag strings.
+        let mut tags = Vec::with_capacity(count);
+        for &idx in &tag_indices {
+            let idx = i64_to_usize(idx, "tag index")?;
+            if idx == 0 {
+                continue;
+            }
+            let tag = tags_dict
+                .get(idx - 1)
+                .ok_or_else(|| generic_error!("Invalid tag index {} (dict size {})", idx, tags_dict.len()))?;
+            tags.push(tag.clone());
+        }
+        tagsets.push(tags);
+        offset += count;
+    }
+    Ok(tagsets)
+}
+
+fn u64_to_usize(value: u64, field: &str) -> Result<usize, GenericError> {
+    usize::try_from(value).map_err(|_| generic_error!("Invalid {}: {}", field, value))
+}
+
+fn i64_to_usize(value: i64, field: &str) -> Result<usize, GenericError> {
+    usize::try_from(value).map_err(|_| generic_error!("Invalid negative {}: {}", field, value))
+}
+
+/// Parse resource sets from V3 resource dictionaries.
+///
+/// Each resource set is encoded as one length entry plus that many locally delta-encoded type/name dictionary indexes.
+fn parse_resources(
+    dict_resource_len: &[i64], dict_resource_type: &[i64], dict_resource_name: &[i64], resource_strings: &[String],
+) -> Result<Vec<Vec<(String, String)>>, GenericError> {
+    let mut resources = Vec::with_capacity(dict_resource_len.len());
+    let mut offset = 0;
+
+    for &count in dict_resource_len {
+        let count = usize::try_from(count).map_err(|_| generic_error!("Invalid negative resource count: {}", count))?;
+        if offset + count > dict_resource_type.len() || offset + count > dict_resource_name.len() {
+            return Err(generic_error!("Resource set extends past resource dictionary arrays"));
+        }
+
+        let mut type_indices = dict_resource_type[offset..offset + count].to_vec();
+        let mut name_indices = dict_resource_name[offset..offset + count].to_vec();
+        delta_decode(&mut type_indices);
+        delta_decode(&mut name_indices);
+
+        let mut resource_set = Vec::with_capacity(count);
+        for (&type_idx, &name_idx) in type_indices.iter().zip(name_indices.iter()) {
+            let resource_type = resource_strings
+                .get(resource_index(type_idx)?)
+                .ok_or_else(|| generic_error!("Invalid resource type index {}", type_idx))?
+                .clone();
+            let resource_name = resource_strings
+                .get(resource_index(name_idx)?)
+                .ok_or_else(|| generic_error!("Invalid resource name index {}", name_idx))?
+                .clone();
+            resource_set.push((resource_type, resource_name));
+        }
+
+        resources.push(resource_set);
+        offset += count;
+    }
+
+    Ok(resources)
+}
+
+fn resource_index(idx: i64) -> Result<usize, GenericError> {
+    let idx = usize::try_from(idx).map_err(|_| generic_error!("Invalid negative resource index: {}", idx))?;
+    idx.checked_sub(1)
+        .ok_or_else(|| generic_error!("Invalid zero resource index"))
+}
+
+/// Read the next f64 value from the appropriate value array based on `value_type`.
+fn read_value(
+    value_type: u64, cursors: &mut V3ValueCursors, vals_sint64: &[i64], vals_float32: &[f32], vals_float64: &[f64],
+) -> Result<f64, GenericError> {
+    match value_type {
+        V3_VALUE_TYPE_ZERO => Ok(0.0),
+        V3_VALUE_TYPE_SINT64 => {
+            let v = *vals_sint64
+                .get(cursors.sint64)
+                .ok_or_else(|| generic_error!("Ran out of sint64 values"))?;
+            cursors.sint64 += 1;
+            Ok(v as f64)
+        }
+        V3_VALUE_TYPE_FLOAT32 => {
+            let v = *vals_float32
+                .get(cursors.float32)
+                .ok_or_else(|| generic_error!("Ran out of float32 values"))?;
+            cursors.float32 += 1;
+            Ok(v as f64)
+        }
+        V3_VALUE_TYPE_FLOAT64 => {
+            let v = *vals_float64
+                .get(cursors.float64)
+                .ok_or_else(|| generic_error!("Ran out of float64 values"))?;
+            cursors.float64 += 1;
+            Ok(v)
+        }
+        _ => Err(generic_error!("Unknown v3 value type: {:#x}", value_type)),
+    }
+}
+
 fn approx_eq_ratio_optional(a: Option<f64>, b: Option<f64>, ratio: f64) -> bool {
     match (a, b) {
         (Some(a), Some(b)) => a.approx_eq_ratio(&b, ratio),
@@ -483,5 +936,79 @@ mod tests {
         assert_eq!(metrics.len(), 1);
         assert!(metrics[0].context.tags.contains(&"host:server-1".to_string()));
         assert!(metrics[0].context.tags.contains(&"env:prod".to_string()));
+    }
+
+    #[test]
+    fn try_from_v3_folds_host_resource_into_tags() {
+        use datadog_protos::metrics::v3::{MetricData, Payload};
+
+        let mut data = MetricData::new();
+        data.dictNameStr = length_prefixed_strings(["my.metric"]);
+        data.dictTagStr = length_prefixed_strings(["env:prod"]);
+        data.dictTagsets = vec![1, 1];
+        data.dictResourceStr = length_prefixed_strings(["host", "server-1", "device", "eth0"]);
+        data.dictResourceLen = vec![2];
+        data.dictResourceType = vec![1, 2];
+        data.dictResourceName = vec![2, 2];
+        data.types = vec![V3_METRIC_TYPE_COUNT | V3_VALUE_TYPE_ZERO];
+        data.nameRefs = vec![1];
+        data.tagsetRefs = vec![1];
+        data.resourcesRefs = vec![1];
+        data.intervals = vec![0];
+        data.numPoints = vec![1];
+        data.timestamps = vec![1];
+
+        let mut payload = Payload::new();
+        payload.metricData = Some(data).into();
+
+        let metrics = Metric::try_from_v3(payload).expect("parse should succeed");
+        assert_eq!(metrics.len(), 1);
+        assert!(metrics[0].context.tags.contains(&"env:prod".to_string()));
+        assert!(metrics[0].context.tags.contains(&"host:server-1".to_string()));
+        assert!(!metrics[0].context.tags.iter().any(|tag| tag.starts_with("device:")));
+    }
+
+    #[test]
+    fn try_from_v3_decodes_integer_sketch_summary_order() {
+        use datadog_protos::metrics::v3::{MetricData, Payload};
+
+        let mut data = MetricData::new();
+        data.dictNameStr = length_prefixed_strings(["my.sketch"]);
+        data.types = vec![V3_METRIC_TYPE_SKETCH | V3_VALUE_TYPE_SINT64];
+        data.nameRefs = vec![1];
+        data.tagsetRefs = vec![0];
+        data.resourcesRefs = vec![0];
+        data.intervals = vec![0];
+        data.numPoints = vec![1];
+        data.timestamps = vec![123];
+        // Agent V3 sketch ordering is sum, min, max, count when integer summaries share valsSint64.
+        data.valsSint64 = vec![10, 1, 4, 4];
+        data.sketchNumBins = vec![1];
+        data.sketchBinKeys = vec![0];
+        data.sketchBinCnts = vec![4];
+
+        let mut payload = Payload::new();
+        payload.metricData = Some(data).into();
+
+        let metrics = Metric::try_from_v3(payload).expect("parse should succeed");
+        assert_eq!(metrics.len(), 1);
+
+        let MetricValue::Sketch { sketch } = &metrics[0].values[0].1 else {
+            panic!("expected sketch value");
+        };
+        assert_eq!(sketch.count(), 4);
+        assert_eq!(sketch.sum(), Some(10.0));
+        assert_eq!(sketch.min(), Some(1.0));
+        assert_eq!(sketch.max(), Some(4.0));
+        assert_eq!(sketch.avg(), Some(2.5));
+    }
+
+    fn length_prefixed_strings(strings: impl IntoIterator<Item = &'static str>) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        for s in strings {
+            bytes.push(s.len() as u8);
+            bytes.extend_from_slice(s.as_bytes());
+        }
+        bytes
     }
 }

@@ -230,6 +230,36 @@ crate::declare_annotations! {
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD, Pipeline::Checks, Pipeline::Traces]),
     };
 
+    /// `serializer_experimental_use_v3_api.series.shadow_sample_rate`—sample rate for V3 beta series shadows.
+    SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_SHADOW_SAMPLE_RATE = SalukiAnnotation {
+        schema: &schema::SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_SHADOW_SAMPLE_RATE,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[
+            structs::DATADOG_METRICS_CONFIGURATION,
+            structs::FORWARDER_CONFIGURATION,
+        ],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD, Pipeline::Checks, Pipeline::Traces]),
+    };
+
+    /// `serializer_experimental_use_v3_api.series.shadow_sites`—Datadog sites eligible for V3 beta shadows.
+    SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_SHADOW_SITES = SalukiAnnotation {
+        schema: &schema::SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_SHADOW_SITES,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[
+            structs::DATADOG_METRICS_CONFIGURATION,
+            structs::FORWARDER_CONFIGURATION,
+        ],
+        value_type_override: None,
+        test_json: Some(r#"["us3.datadoghq.com"]"#),
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD, Pipeline::Checks, Pipeline::Traces]),
+    };
+
     /// `serializer_experimental_use_v3_api.series.use_beta`—whether to send V3 series payloads to the beta route.
     SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_USE_BETA = SalukiAnnotation {
         schema: &schema::SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_USE_BETA,
