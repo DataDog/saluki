@@ -17,6 +17,10 @@ unit-tests-windows-amd64:
       - .ci-cache/rustup/
   script:
     - $ErrorActionPreference = "Stop"
+    - Write-Host "Cached Datadog Agent Windows build images before pull:"
+    - docker images --format "table {{.Repository}}\t{{.Tag}}\t{{.ID}}\t{{.CreatedSince}}\t{{.Size}}" | Select-String "datadog-agent-buildimages/windows"
+    - Write-Host "Cached LTSC2022 build image tags before pull:"
+    - docker images registry.ddbuild.io/ci/datadog-agent-buildimages/windows_ltsc2022_x64 --format "table {{.Repository}}\t{{.Tag}}\t{{.ID}}\t{{.CreatedSince}}\t{{.Size}}"
     - docker pull ${WINBUILDIMAGE}
     - >
       docker run --rm
