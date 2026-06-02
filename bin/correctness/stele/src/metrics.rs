@@ -657,7 +657,7 @@ fn parse_dict_strings(data: &[u8]) -> Result<Vec<String>, GenericError> {
     Ok(strings)
 }
 
-/// Parse tagsets from the dictTagsets array using the tag dictionary.
+/// Parse tagsets from the `dictTagsets` array using the tag dictionary.
 ///
 /// Each tagset in `dict_tagsets` is encoded as: length, then that many delta-encoded tag indices.
 fn parse_tagsets(dict_tagsets: &[i64], tags_dict: &[String]) -> Result<Vec<Vec<String>>, GenericError> {
