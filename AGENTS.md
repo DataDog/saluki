@@ -120,8 +120,8 @@ general-purpose infrastructure. Their documentation and code comments MUST NOT r
 
 - The Datadog Agent by name (use "the server process", "the remote endpoint", or the specific
   protocol instead)
-- Internal Datadog codenames or project names (for example, "Terrapin", "Nitro Enclaves" is fine
-  as a well-known AWS product, but internal names are not)
+- Internal Datadog codenames or project names ("Nitro Enclaves" is fine as a well-known AWS
+  product, but internal Datadog project names are not)
 - Datadog-specific deployment topologies (use generic terms like "guest VM", "host process", etc.)
 
 This rule does NOT apply to `bin/agent-data-plane`, which is explicitly Datadog Agent-specific, or
