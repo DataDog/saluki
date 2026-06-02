@@ -6,12 +6,6 @@
     # Mirrors the current Datadog Agent Windows LTSC2022 build image.
     WINBUILDIMAGE: registry.ddbuild.io/ci/datadog-agent-buildimages/windows_ltsc2022_x64:v110159745-8628883e
     OVERRIDE_GIT_STRATEGY: "clone"
-    AWS_SHARED_CREDENTIALS_FILE: '${CI_PROJECT_DIR}\.aws\credentials-by-job-id\${CI_JOB_ID}'
-  before_script:
-    - C:\ci-identities-gitlab-job-client.exe assume-role
-  id_tokens:
-    CI_IDENTITIES_GITLAB_ID_TOKEN:
-      aud: ci-identities
 
 unit-tests-windows-amd64:
   extends: .windows-amd64-test-job
@@ -37,7 +31,6 @@ unit-tests-windows-amd64:
       -e CI_COMMIT_SHA
       -e CI_PROJECT_NAME
       -e CI_COMMIT_REF_NAME
-      -e CI_IDENTITIES_GITLAB_ID_TOKEN
       -e CARGO_HOME="c:\mnt\.ci-cache\cargo"
       -e RUSTUP_HOME="c:\mnt\.ci-cache\rustup"
       -e CARGO_TARGET_DIR="c:\mnt\target\windows-ci"
