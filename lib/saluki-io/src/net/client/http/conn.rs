@@ -20,6 +20,8 @@ use pin_project_lite::pin_project;
 use rustls::ClientConfig;
 use saluki_error::{ErrorContext as _, GenericError};
 use tokio::net::TcpStream;
+#[cfg(target_os = "linux")]
+use tokio_vsock::{VsockAddr, VsockStream};
 use tower::{BoxError, Service};
 use tracing::debug;
 
@@ -63,7 +65,7 @@ enum Transport {
     #[cfg(unix)]
     Unix(TokioIo<tokio::net::UnixStream>),
     #[cfg(target_os = "linux")]
-    Vsock(TokioIo<tokio_vsock::VsockStream>),
+    Vsock(TokioIo<VsockStream>),
 }
 
 impl Connection for Transport {
@@ -299,8 +301,8 @@ impl Service<Uri> for InnerConnector {
             let connect_timeout = self.connect_timeout;
             let error_telemetry = self.error_telemetry.clone();
             return Box::pin(async move {
-                let addr = tokio_vsock::VsockAddr::new(cid, port);
-                let stream = tokio::time::timeout(connect_timeout, tokio_vsock::VsockStream::connect(addr))
+                let addr = VsockAddr::new(cid, port);
+                let stream = tokio::time::timeout(connect_timeout, VsockStream::connect(addr))
                     .await
                     .map_err(|_| -> BoxError {
                         if let Some(error_telemetry) = &error_telemetry {
@@ -502,9 +504,7 @@ impl HttpsCapableConnectorBuilder {
     ///
     /// When set, the connector will connect via AF_VSOCK using this CID, with the port taken from
     /// the destination URI. This allows connecting to a Datadog Agent running in a host or
-    /// hypervisor context from within a guest VM (for example, Nitro Enclaves or microVM environments).
-    ///
-    /// Mirrors the Agent's `vsock_addr` configuration key.
+    /// hypervisor context from within a guest VM (for example, Nitro Enclaves).
     ///
     /// Defaults to unset (TCP connections via DNS).
     #[cfg(target_os = "linux")]

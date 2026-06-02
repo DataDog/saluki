@@ -156,8 +156,8 @@ pub struct RemoteAgentClientConfiguration {
     ///
     /// When set, the IPC client connects over a vsock socket using the resolved CID with the port
     /// taken from the configured endpoint. This mirrors the Datadog Agent's `vsock_addr`
-    /// configuration, enabling communication from within a guest VM (for example, Nitro Enclaves or
-    /// Terrapin microVM environments) to an Agent process running on the host or hypervisor.
+    /// configuration, enabling communication from within a guest VM (for example, Nitro Enclaves)
+    /// to an Agent process running on the host or hypervisor.
     ///
     /// Accepted values:
     /// - `host`: connect to the host (CID 2, `VMADDR_CID_HOST`)
