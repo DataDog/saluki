@@ -329,6 +329,13 @@ impl DriverConfig {
         self.container_os == ContainerOs::Linux
     }
 
+    fn network_driver(&self) -> &'static str {
+        match self.container_os {
+            ContainerOs::Linux => "bridge",
+            ContainerOs::Windows => "nat",
+        }
+    }
+
     fn container_binds_from(&self, isolation_group_name: &str, mut binds: Vec<String>) -> Vec<String> {
         match self.container_os {
             ContainerOs::Linux => {
@@ -541,7 +548,7 @@ impl Driver {
         // Create the network since it doesn't yet exist.
         let network_options = NetworkCreateRequest {
             name: self.isolation_group_name.clone(),
-            driver: Some("bridge".to_string()),
+            driver: Some(self.config.network_driver().to_string()),
             ipam: Some(Ipam::default()),
             enable_ipv6: Some(false),
             labels: Some(get_default_airlock_labels(self.isolation_group_id.as_str())),
@@ -1288,5 +1295,20 @@ mod tests {
             DriverConfig::from_image("target", "example:latest".to_string()).with_container_os(ContainerOs::Windows);
 
         assert!(!config.needs_shared_volume_permission_fixup());
+    }
+
+    #[test]
+    fn windows_container_uses_nat_network_driver() {
+        let config =
+            DriverConfig::from_image("target", "example:latest".to_string()).with_container_os(ContainerOs::Windows);
+
+        assert_eq!(config.network_driver(), "nat");
+    }
+
+    #[test]
+    fn linux_container_uses_bridge_network_driver() {
+        let config = DriverConfig::from_image("target", "example:latest".to_string());
+
+        assert_eq!(config.network_driver(), "bridge");
     }
 }
