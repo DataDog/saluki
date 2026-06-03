@@ -170,6 +170,7 @@ where
     compressed_len_limit: usize,
     uncompressed_len_limit: usize,
     max_inputs_per_payload: usize,
+    max_data_points_per_payload: usize,
     encoded_inputs: Vec<E::Input>,
 }
 
@@ -201,6 +202,7 @@ where
             compressed_len_limit,
             uncompressed_len_limit,
             max_inputs_per_payload: usize::MAX,
+            max_data_points_per_payload: usize::MAX,
             encoded_inputs: Vec::new(),
         })
     }
@@ -208,6 +210,15 @@ where
     /// Sets the maximum number of inputs that can be encoded in a single payload.
     pub fn with_max_inputs_per_payload(&mut self, max_inputs_per_payload: usize) -> &mut Self {
         self.max_inputs_per_payload = max_inputs_per_payload;
+        self
+    }
+
+    /// Sets the maximum number of data points that can be encoded in a single payload.
+    ///
+    /// When an input would cause the cumulative data point count across all inputs in the current payload to exceed this
+    /// limit, encoding returns the input to the caller so they can flush the current payload first.
+    pub fn with_max_data_points_per_payload(&mut self, max_data_points_per_payload: usize) -> &mut Self {
+        self.max_data_points_per_payload = max_data_points_per_payload;
         self
     }
 
@@ -324,6 +335,16 @@ where
         if self.encoded_inputs.len() >= self.max_inputs_per_payload {
             trace!("Maximum number of inputs per payload reached.");
             return Ok(Some(input));
+        }
+
+        // Make sure adding this input's data points wouldn't exceed the per-payload data point limit.
+        let input_data_points = self.encoder.input_data_point_count(&input);
+        if input_data_points > 0 && self.max_data_points_per_payload != usize::MAX {
+            let current_data_points = self.encoded_data_point_count(&self.encoded_inputs);
+            if current_data_points + input_data_points > self.max_data_points_per_payload {
+                trace!("Maximum data points per payload reached.");
+                return Ok(Some(input));
+            }
         }
 
         // Try encoding the input.
@@ -1042,6 +1063,31 @@ mod tests {
         // Since we know we could fit the same three inputs in the first request builder when there was no limit on the
         // number of inputs per payload, we know we're not being instructed to flush here due to hitting (un)compressed
         // size limits.
+    }
+
+    #[tokio::test]
+    async fn obeys_max_data_points_per_payload() {
+        // TestEncoder uses input.len() as the data point count, so each character is one data point.
+        // "aaa" = 3 points, "bbb" = 3 points, "ccc" = 3 points.
+        let input1 = "aaa".to_string();
+        let input2 = "bbb".to_string();
+        let input3 = "ccc".to_string();
+
+        // No data point limit — all three fit.
+        let encoder = TestEncoder::new(usize::MAX, usize::MAX, "/submit");
+        let mut request_builder = create_no_compression_request_builder(encoder.clone()).await;
+
+        assert_eq!(None, request_builder.encode(input1.clone()).await.unwrap());
+        assert_eq!(None, request_builder.encode(input2.clone()).await.unwrap());
+        assert_eq!(None, request_builder.encode(input3.clone()).await.unwrap());
+
+        // Limit of 6 data points — first two inputs fit (3 + 3 = 6), third is returned to caller.
+        let mut request_builder = create_no_compression_request_builder(encoder).await;
+        request_builder.with_max_data_points_per_payload(6);
+
+        assert_eq!(None, request_builder.encode(input1).await.unwrap());
+        assert_eq!(None, request_builder.encode(input2).await.unwrap());
+        assert_eq!(Some(input3.clone()), request_builder.encode(input3).await.unwrap());
     }
 
     #[tokio::test]
