@@ -1348,6 +1348,8 @@
   reason: initial bulk
 - name: enhanced_metrics
   reason: initial bulk
+- name: entity_id
+  reason: ADP does not emit internal DogStatsD metrics; its own DogStatsD telemetry is exposed via OpenMetrics.
 - name: event_management.forwarder.additional_endpoints
   reason: initial bulk
 - name: event_management.forwarder.batch_max_concurrent_send
