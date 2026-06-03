@@ -60,12 +60,9 @@ function Start-CoreAgent {
     }
 
     Write-Host "[*] Starting Datadog Agent container entrypoint..."
-    $AgentStdoutLog = "C:\ProgramData\Datadog\saluki-core-agent.stdout.log"
-    $AgentStderrLog = "C:\ProgramData\Datadog\saluki-core-agent.stderr.log"
     $Agent = Start-Process -FilePath "C:\entrypoint.exe" `
         -ArgumentList @("datadogagent") `
-        -RedirectStandardOutput $AgentStdoutLog `
-        -RedirectStandardError $AgentStderrLog `
+        -NoNewWindow `
         -PassThru
 
     return $Agent

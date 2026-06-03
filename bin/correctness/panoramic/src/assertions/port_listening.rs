@@ -88,7 +88,7 @@ impl Assertion for PortListeningAssertion {
 
             let is_listening = match self.protocol.as_str() {
                 "tcp" if ctx.use_container_exec_for_network_checks => {
-                    check_tcp_port_in_container(&ctx.container_name, target.1).await
+                    check_tcp_port_in_container(&ctx.container_name, &target.0, target.1).await
                 }
                 "tcp" => check_tcp_port(&target.0, target.1).await,
                 "udp" => check_udp_port(&target.0, target.1).await,
@@ -133,14 +133,14 @@ async fn check_udp_port(host: &str, port: u16) -> bool {
     }
 }
 
-async fn check_tcp_port_in_container(container_name: &str, port: u16) -> bool {
+async fn check_tcp_port_in_container(container_name: &str, host: &str, port: u16) -> bool {
     let command = format!(
         "$c=New-Object System.Net.Sockets.TcpClient; \
-         $a=$c.BeginConnect('127.0.0.1',{},$null,$null); \
+         $a=$c.BeginConnect('{}',{},$null,$null); \
          if ($a.AsyncWaitHandle.WaitOne(1000)) {{ \
              try {{ $c.EndConnect($a); $c.Close(); exit 0 }} catch {{ $c.Close(); exit 1 }} \
          }} else {{ $c.Close(); exit 1 }}",
-        port
+        host, port
     );
 
     exec_status(
