@@ -277,7 +277,7 @@ flavor used by the core Agent aggregator so the running heartbeat is emitted as
 `datadog.heroku_agent.running`.
 
 ADP does not run in the supported Heroku Agent package path: the Heroku Agent package excludes the
-`agent-data-plane` dependency, and the Heroku buildpack launches the core Agent, trace Agent, and
+`agent-data-plane` dependency, and the Heroku Datadog launch script starts the core Agent, trace Agent, and
 optionally process Agent without launching an `agent-data-plane` process. ADP also does not emit the
 core Agent's `datadog.<agentName>.running` series.
 
