@@ -1081,10 +1081,10 @@
   },
   {
     "key": "entity_id",
-    "feature_state": "MISSING",
-    "action": "INVESTIGATE",
+    "feature_state": "NOT_APPLICABLE",
+    "action": "NONE",
     "description": "Agent's own pod entity ID (set by DCA webhook)",
-    "reason": "Marked for investigation; previously dismissed as not-applicable.",
+    "reason": "ADP does not emit internal DogStatsD metrics; its own DogStatsD telemetry is exposed via OpenMetrics.",
     "issue": "#1752",
     "adp_key": null
   },

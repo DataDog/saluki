@@ -425,19 +425,6 @@ crate::declare_annotations! {
         // Metrics encoder (dd_metrics_encode) is used by DogStatsD, Checks, and OTLP native (Traces active); APM traces use a separate encoder.
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD, Pipeline::Checks, Pipeline::Traces]),
     };
-    /// `entity_id` - agent pod entity ID injected by DCA webhook.
-    ENTITY_ID = SalukiAnnotation {
-        schema: &schema::ENTITY_ID,
-        // Not implemented. #1752
-        support_level: SupportLevel::Incompatible(Severity::Low),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-        // Agent/host metadata applied to all payloads.
-        pipeline_affinity: PipelineAffinity::CrossCutting,
-    };
     /// `forwarder_requeue_buffer_size` - forwarder in-memory requeue buffer size.
     FORWARDER_REQUEUE_BUFFER_SIZE = SalukiAnnotation {
         schema: &schema::FORWARDER_REQUEUE_BUFFER_SIZE,
