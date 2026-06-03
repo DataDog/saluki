@@ -42,6 +42,71 @@ fn should_apply_target_mounts(runtime: &str) -> bool {
     runtime != crate::config::WINDOWS_RUNTIME
 }
 
+fn normalize_env_for_runtime(mut env: HashMap<String, String>, runtime: &str) -> HashMap<String, String> {
+    if runtime == crate::config::WINDOWS_RUNTIME {
+        add_env_alias(&mut env, "DD_DATA_PLANE_ENABLED", "DD_DATA_PLANE__ENABLED");
+        add_env_alias(
+            &mut env,
+            "DD_DATA_PLANE_STANDALONE_MODE",
+            "DD_DATA_PLANE__STANDALONE_MODE",
+        );
+        add_env_alias(
+            &mut env,
+            "DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT",
+            "DD_DATA_PLANE__USE_NEW_CONFIG_STREAM_ENDPOINT",
+        );
+        add_env_alias(
+            &mut env,
+            "DD_DATA_PLANE_REMOTE_AGENT_ENABLED",
+            "DD_DATA_PLANE__REMOTE_AGENT_ENABLED",
+        );
+        add_env_alias(
+            &mut env,
+            "DD_DATA_PLANE_DOGSTATSD_ENABLED",
+            "DD_DATA_PLANE__DOGSTATSD__ENABLED",
+        );
+        add_env_alias(&mut env, "DD_DATA_PLANE_OTLP_ENABLED", "DD_DATA_PLANE__OTLP__ENABLED");
+        add_env_alias(
+            &mut env,
+            "DD_DATA_PLANE_OTLP_PROXY_ENABLED",
+            "DD_DATA_PLANE__OTLP__PROXY__ENABLED",
+        );
+        add_env_alias(
+            &mut env,
+            "DD_DATA_PLANE_OTLP_PROXY_TRACES_ENABLED",
+            "DD_DATA_PLANE__OTLP__PROXY__TRACES__ENABLED",
+        );
+        add_env_alias(
+            &mut env,
+            "DD_DATA_PLANE_OTLP_PROXY_METRICS_ENABLED",
+            "DD_DATA_PLANE__OTLP__PROXY__METRICS__ENABLED",
+        );
+        add_env_alias(
+            &mut env,
+            "DD_DATA_PLANE_OTLP_PROXY_LOGS_ENABLED",
+            "DD_DATA_PLANE__OTLP__PROXY__LOGS__ENABLED",
+        );
+        add_env_alias(&mut env, "DD_DATA_PLANE_LOG_FILE", "DD_DATA_PLANE__LOG_FILE");
+    }
+
+    env
+}
+
+fn add_env_alias(env: &mut HashMap<String, String>, source: &str, target: &str) {
+    if let Some(value) = env.get(source).cloned() {
+        env.entry(target.to_string()).or_insert(value);
+    }
+}
+
+fn target_image_for_runtime(configured_image: &str, runtime: &str) -> String {
+    if runtime == crate::config::WINDOWS_RUNTIME {
+        std::env::var("PANORAMIC_WINDOWS_ADP_IMAGE")
+            .unwrap_or_else(|_| crate::config::DEFAULT_WINDOWS_ADP_IMAGE.to_string())
+    } else {
+        configured_image.to_string()
+    }
+}
+
 pub(crate) struct RunArgs {
     /// The number of tests to run in parallel.
     parallelism: usize,
@@ -706,6 +771,7 @@ impl IntegrationRunner {
         for (k, v) in &self.test_case.env {
             merged_env.insert(k.clone(), v.clone());
         }
+        let merged_env = normalize_env_for_runtime(merged_env, &self.test_case.active_runtime);
         let env_vars: Vec<String> = merged_env.iter().map(|(k, v)| format!("{}={}", k, v)).collect();
 
         // Build the target config.
@@ -716,7 +782,7 @@ impl IntegrationRunner {
         };
 
         let target_config = airlock::config::TargetConfig {
-            image: container.image.clone(),
+            image: target_image_for_runtime(&container.image, &self.test_case.active_runtime),
             entrypoint: container.entrypoint.clone(),
             command: container.command.clone(),
             additional_env_vars: env_vars,
@@ -992,5 +1058,87 @@ mod tests {
     #[test]
     fn docker_runtime_applies_linux_target_mounts() {
         assert!(should_apply_target_mounts(crate::config::DOCKER_RUNTIME));
+    }
+
+    #[test]
+    fn windows_runtime_adds_adp_native_env_aliases() {
+        let env = HashMap::from([
+            ("DD_DATA_PLANE_ENABLED".to_string(), "true".to_string()),
+            ("DD_DATA_PLANE_STANDALONE_MODE".to_string(), "true".to_string()),
+            ("DD_DATA_PLANE_DOGSTATSD_ENABLED".to_string(), "false".to_string()),
+            ("DD_DATA_PLANE_OTLP_ENABLED".to_string(), "true".to_string()),
+            ("DD_DATA_PLANE_OTLP_PROXY_ENABLED".to_string(), "false".to_string()),
+            (
+                "DD_DATA_PLANE_OTLP_PROXY_TRACES_ENABLED".to_string(),
+                "false".to_string(),
+            ),
+        ]);
+
+        let normalized = normalize_env_for_runtime(env, crate::config::WINDOWS_RUNTIME);
+
+        assert_eq!(normalized.get("DD_DATA_PLANE__ENABLED"), Some(&"true".to_string()));
+        assert_eq!(
+            normalized.get("DD_DATA_PLANE__STANDALONE_MODE"),
+            Some(&"true".to_string())
+        );
+        assert_eq!(
+            normalized.get("DD_DATA_PLANE__DOGSTATSD__ENABLED"),
+            Some(&"false".to_string())
+        );
+        assert_eq!(
+            normalized.get("DD_DATA_PLANE__OTLP__ENABLED"),
+            Some(&"true".to_string())
+        );
+        assert_eq!(
+            normalized.get("DD_DATA_PLANE__OTLP__PROXY__ENABLED"),
+            Some(&"false".to_string())
+        );
+        assert_eq!(
+            normalized.get("DD_DATA_PLANE__OTLP__PROXY__TRACES__ENABLED"),
+            Some(&"false".to_string())
+        );
+    }
+
+    #[test]
+    fn windows_runtime_preserves_explicit_adp_native_env_values() {
+        let env = HashMap::from([
+            ("DD_DATA_PLANE_ENABLED".to_string(), "true".to_string()),
+            ("DD_DATA_PLANE__ENABLED".to_string(), "false".to_string()),
+        ]);
+
+        let normalized = normalize_env_for_runtime(env, crate::config::WINDOWS_RUNTIME);
+
+        assert_eq!(normalized.get("DD_DATA_PLANE__ENABLED"), Some(&"false".to_string()));
+    }
+
+    #[test]
+    fn docker_runtime_does_not_add_adp_native_env_aliases() {
+        let env = HashMap::from([("DD_DATA_PLANE_ENABLED".to_string(), "true".to_string())]);
+
+        let normalized = normalize_env_for_runtime(env, crate::config::DOCKER_RUNTIME);
+
+        assert!(!normalized.contains_key("DD_DATA_PLANE__ENABLED"));
+    }
+
+    #[test]
+    fn windows_runtime_uses_windows_adp_image() {
+        assert_eq!(
+            target_image_for_runtime(
+                "saluki-images/datadog-agent:testing-devel",
+                crate::config::WINDOWS_RUNTIME
+            ),
+            crate::config::DEFAULT_WINDOWS_ADP_IMAGE
+        );
+    }
+
+    #[test]
+    fn docker_runtime_uses_configured_image() {
+        assert_eq!(
+            target_image_for_runtime(
+                "saluki-images/datadog-agent:testing-devel",
+                crate::config::DOCKER_RUNTIME
+            ),
+            "saluki-images/datadog-agent:testing-devel"
+        );
     }
 }

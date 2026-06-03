@@ -161,6 +161,9 @@ pub const DOCKER_RUNTIME: &str = "docker";
 /// Runtime identifier for integration tests that run inside a Windows Docker container.
 pub const WINDOWS_RUNTIME: &str = "windows";
 
+/// Default Windows ADP image used by Windows-runtime integration tests.
+pub const DEFAULT_WINDOWS_ADP_IMAGE: &str = "saluki-images/agent-data-plane:testing-windows";
+
 /// Returns the integration-test runtime that is native to the host OS.
 ///
 /// `mac` on macOS hosts, `windows` on Windows hosts, and `docker` everywhere else. Used as the default when a panoramic
@@ -429,8 +432,14 @@ impl Test for IntegrationConfig {
         let mut m = BTreeMap::new();
         // Host-process runtimes (such as `mac`) don't need a container image; the test's
         // `container.image` field is informational for them.
-        if self.active_runtime != MAC_RUNTIME {
-            m.insert("container", self.container.image.clone());
+        match self.active_runtime.as_str() {
+            MAC_RUNTIME => {}
+            WINDOWS_RUNTIME => {
+                m.insert("container", DEFAULT_WINDOWS_ADP_IMAGE.to_string());
+            }
+            _ => {
+                m.insert("container", self.container.image.clone());
+            }
         }
         m
     }
@@ -950,7 +959,7 @@ name: windows-smoke
 timeout: 10s
 runtimes: [windows]
 container:
-  image: saluki-images/agent-data-plane:testing-windows
+  image: saluki-images/datadog-agent:testing-devel
 assertions: []
 "#,
         );
@@ -958,10 +967,7 @@ assertions: []
         let tests = discover_tests(&[base_dir.path().to_path_buf()], "windows").unwrap();
         let images = tests[0].images();
 
-        assert_eq!(
-            images.get("container"),
-            Some(&"saluki-images/agent-data-plane:testing-windows".to_string())
-        );
+        assert_eq!(images.get("container"), Some(&DEFAULT_WINDOWS_ADP_IMAGE.to_string()));
     }
 
     struct TestCaseDir {
