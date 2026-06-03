@@ -117,6 +117,41 @@ function Initialize-RustEnvironment {
     Ensure-Protoc -Version $env:PROTOC_VERSION -ExpectedSha256 $env:PROTOC_SHA256 -InstallRoot $env:WINDOWS_CI_PROTOC_HOME
 }
 
+function Copy-WindowsRuntimeDlls {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Destination
+    )
+
+    $SearchRoots = @(
+        "C:\Windows\System32",
+        "C:\BuildTools",
+        "C:\Program Files",
+        "C:\Program Files (x86)"
+    )
+    $DllNames = @("vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll")
+
+    foreach ($DllName in $DllNames) {
+        $Found = $null
+        foreach ($Root in $SearchRoots) {
+            if (Test-Path $Root) {
+                $Found = Get-ChildItem -Path $Root -Recurse -Filter $DllName -ErrorAction SilentlyContinue |
+                    Select-Object -First 1
+                if ($Found) {
+                    break
+                }
+            }
+        }
+
+        if ($Found) {
+            Write-Host "[*] Found runtime DLL ${DllName} at $($Found.FullName)"
+            Copy-Item -Force $Found.FullName (Join-Path $Destination $DllName)
+        } else {
+            Write-Host "[*] Runtime DLL ${DllName} not found in build container."
+        }
+    }
+}
+
 function Build-WindowsAdpImage {
     $AdpBinary = Join-Path $env:CARGO_TARGET_DIR "release\agent-data-plane.exe"
     if (-not (Test-Path $AdpBinary)) {
@@ -130,6 +165,7 @@ function Build-WindowsAdpImage {
     Remove-Item -Recurse -Force $ContextDir -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Force $ContextDir | Out-Null
     Copy-Item -Force $AdpBinary (Join-Path $ContextDir "agent-data-plane.exe")
+    Copy-WindowsRuntimeDlls -Destination $ContextDir
     Copy-Item -Force (Join-Path $RepoRoot "ci\tooling\windows-adp-entrypoint.ps1") (Join-Path $ContextDir "entrypoint.ps1")
     Copy-Item -Force (Join-Path $RepoRoot "test\smp\regression\adp\shared\cert.pem") (Join-Path $ContextDir "ipc_cert.pem")
     [System.IO.File]::WriteAllText((Join-Path $ContextDir "auth_token"), "windows-integration-test-token", [System.Text.Encoding]::ASCII)
@@ -139,6 +175,7 @@ function Build-WindowsAdpImage {
 FROM ${BaseImage}
 WORKDIR C:\adp
 RUN New-Item -ItemType Directory -Force C:\ProgramData\Datadog
+COPY *.dll C:\adp\
 COPY agent-data-plane.exe C:\adp\agent-data-plane.exe
 COPY entrypoint.ps1 C:\adp\entrypoint.ps1
 COPY auth_token C:\ProgramData\Datadog\auth_token
