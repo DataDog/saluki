@@ -104,6 +104,8 @@ pub struct AssertionContext {
     pub port_mappings: std::collections::HashMap<String, u16>,
     /// Container IP address on its primary Docker network, if known.
     pub container_ip: Option<String>,
+    /// Whether network assertions should run from inside the target container.
+    pub use_container_exec_for_network_checks: bool,
     /// Name of the container being tested.
     pub container_name: String,
     /// Whether the test is running natively (no container). When `true`, assertions that would

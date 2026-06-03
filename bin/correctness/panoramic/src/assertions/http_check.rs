@@ -1,5 +1,11 @@
 use std::time::{Duration, Instant};
 
+use airlock::docker;
+use bollard::{
+    container::LogOutput,
+    exec::{CreateExecOptions, StartExecResults},
+};
+use futures::TryStreamExt as _;
 use reqwest::ClientBuilder;
 use tracing::trace;
 
@@ -83,18 +89,22 @@ impl Assertion for HttpCheckAssertion {
 
         let endpoint = self.resolve_endpoint(ctx);
 
-        let client = match ClientBuilder::new()
-            .danger_accept_invalid_certs(self.insecure_skip_verify)
-            .build()
-        {
-            Ok(client) => client,
-            Err(e) => {
-                return AssertionResult {
-                    name: self.name().to_string(),
-                    passed: false,
-                    message: format!("Failed to build HTTP client: {}.", e),
-                    duration: started.elapsed(),
-                };
+        let client = if ctx.use_container_exec_for_network_checks {
+            None
+        } else {
+            match ClientBuilder::new()
+                .danger_accept_invalid_certs(self.insecure_skip_verify)
+                .build()
+            {
+                Ok(client) => Some(client),
+                Err(e) => {
+                    return AssertionResult {
+                        name: self.name().to_string(),
+                        passed: false,
+                        message: format!("Failed to build HTTP client: {}.", e),
+                        duration: started.elapsed(),
+                    };
+                }
             }
         };
 
@@ -117,9 +127,19 @@ impl Assertion for HttpCheckAssertion {
                 };
             }
 
-            match client.get(&endpoint).send().await {
-                Ok(resp) => {
-                    let actual = resp.status().as_u16();
+            let response_status = if ctx.use_container_exec_for_network_checks {
+                get_status_in_container(&ctx.container_name, &endpoint).await
+            } else if let Some(client) = client.as_ref() {
+                match client.get(&endpoint).send().await {
+                    Ok(resp) => Ok(Some(resp.status().as_u16())),
+                    Err(e) => Err(e.to_string()),
+                }
+            } else {
+                Ok(None)
+            };
+
+            match response_status {
+                Ok(Some(actual)) => {
                     if self.status_matches(actual) {
                         return AssertionResult {
                             name: self.name().to_string(),
@@ -134,6 +154,9 @@ impl Assertion for HttpCheckAssertion {
                         "HTTP check returned non-matching status, retrying..."
                     );
                 }
+                Ok(None) => {
+                    trace!(endpoint = %endpoint, "HTTP check produced no status, retrying...");
+                }
                 Err(e) => {
                     trace!(
                         endpoint = %endpoint,
@@ -146,4 +169,58 @@ impl Assertion for HttpCheckAssertion {
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
     }
+}
+
+async fn get_status_in_container(container_name: &str, endpoint: &str) -> Result<Option<u16>, String> {
+    let docker = docker::connect().map_err(|e| format!("Failed to connect to Docker: {}", e))?;
+    let endpoint = endpoint.replace("localhost", "127.0.0.1");
+    let exec = docker
+        .create_exec(
+            container_name,
+            CreateExecOptions::<String> {
+                cmd: Some(vec![
+                    "curl.exe".to_string(),
+                    "-k".to_string(),
+                    "-s".to_string(),
+                    "-o".to_string(),
+                    "NUL".to_string(),
+                    "-w".to_string(),
+                    "%{http_code}".to_string(),
+                    endpoint,
+                ]),
+                attach_stdout: Some(true),
+                attach_stderr: Some(false),
+                ..Default::default()
+            },
+        )
+        .await
+        .map_err(|e| format!("Failed to create exec: {}", e))?;
+    let exec_id = exec.id.clone();
+    let result = docker
+        .start_exec(&exec_id, None)
+        .await
+        .map_err(|e| format!("Failed to start exec: {}", e))?;
+
+    let mut stdout = String::new();
+    if let StartExecResults::Attached { mut output, .. } = result {
+        while let Some(chunk) = output
+            .try_next()
+            .await
+            .map_err(|e| format!("Failed to read exec output: {}", e))?
+        {
+            if let LogOutput::StdOut { message } = chunk {
+                stdout.push_str(&String::from_utf8_lossy(&message));
+            }
+        }
+    }
+
+    let inspect = docker
+        .inspect_exec(&exec_id)
+        .await
+        .map_err(|e| format!("Failed to inspect exec: {}", e))?;
+    if inspect.exit_code != Some(0) {
+        return Ok(None);
+    }
+
+    Ok(stdout.trim().parse::<u16>().ok().filter(|status| *status != 0))
 }

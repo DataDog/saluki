@@ -1,5 +1,8 @@
 use std::time::{Duration, Instant};
 
+use airlock::docker;
+use bollard::exec::{CreateExecOptions, StartExecResults};
+use futures::TryStreamExt as _;
 use tokio::net::TcpStream;
 use tracing::trace;
 
@@ -35,11 +38,12 @@ impl Assertion for PortListeningAssertion {
     async fn check(&self, ctx: &AssertionContext) -> AssertionResult {
         let started = Instant::now();
 
-        // Look up the mapped host port, or use the container IP directly when available (Windows containers).
+        // Look up the mapped host port unless checks run inside the target container.
         let port_key = format!("{}/{}", self.port, self.protocol);
-        let target = match ctx.container_ip.as_deref() {
-            Some(container_ip) => (container_ip.to_string(), self.port),
-            None => match ctx.port_mappings.get(&port_key) {
+        let target = if ctx.use_container_exec_for_network_checks {
+            ("127.0.0.1".to_string(), self.port)
+        } else {
+            match ctx.port_mappings.get(&port_key) {
                 Some(port) => ("127.0.0.1".to_string(), *port),
                 None => {
                     return AssertionResult {
@@ -52,7 +56,7 @@ impl Assertion for PortListeningAssertion {
                         duration: started.elapsed(),
                     };
                 }
-            },
+            }
         };
 
         let deadline = Instant::now() + self.timeout;
@@ -80,6 +84,9 @@ impl Assertion for PortListeningAssertion {
             }
 
             let is_listening = match self.protocol.as_str() {
+                "tcp" if ctx.use_container_exec_for_network_checks => {
+                    check_tcp_port_in_container(&ctx.container_name, target.1).await
+                }
                 "tcp" => check_tcp_port(&target.0, target.1).await,
                 "udp" => check_udp_port(&target.0, target.1).await,
                 _ => false,
@@ -121,4 +128,56 @@ async fn check_udp_port(host: &str, port: u16) -> bool {
         Ok(socket) => socket.connect((host, port)).await.is_ok(),
         Err(_) => false,
     }
+}
+
+async fn check_tcp_port_in_container(container_name: &str, port: u16) -> bool {
+    let command = format!(
+        "$c=New-Object System.Net.Sockets.TcpClient; \
+         $a=$c.BeginConnect('127.0.0.1',{},$null,$null); \
+         if ($a.AsyncWaitHandle.WaitOne(1000)) {{ \
+             try {{ $c.EndConnect($a); $c.Close(); exit 0 }} catch {{ $c.Close(); exit 1 }} \
+         }} else {{ $c.Close(); exit 1 }}",
+        port
+    );
+
+    exec_status(
+        container_name,
+        vec!["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", &command],
+    )
+    .await
+    .unwrap_or(false)
+}
+
+async fn exec_status(container_name: &str, cmd: Vec<&str>) -> Result<bool, String> {
+    let docker = docker::connect().map_err(|e| format!("Failed to connect to Docker: {}", e))?;
+    let exec = docker
+        .create_exec(
+            container_name,
+            CreateExecOptions::<String> {
+                cmd: Some(cmd.into_iter().map(String::from).collect()),
+                attach_stdout: Some(true),
+                attach_stderr: Some(true),
+                ..Default::default()
+            },
+        )
+        .await
+        .map_err(|e| format!("Failed to create exec: {}", e))?;
+    let exec_id = exec.id.clone();
+    let result = docker
+        .start_exec(&exec_id, None)
+        .await
+        .map_err(|e| format!("Failed to start exec: {}", e))?;
+    if let StartExecResults::Attached { mut output, .. } = result {
+        while output
+            .try_next()
+            .await
+            .map_err(|e| format!("Failed to read exec output: {}", e))?
+            .is_some()
+        {}
+    }
+    let inspect = docker
+        .inspect_exec(&exec_id)
+        .await
+        .map_err(|e| format!("Failed to inspect exec: {}", e))?;
+    Ok(inspect.exit_code == Some(0))
 }

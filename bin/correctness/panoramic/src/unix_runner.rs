@@ -343,6 +343,7 @@ impl UnixIntegrationRunner {
             cancel_token: self.tctx.test_cancel_token(),
             port_mappings: self.build_port_mappings(),
             container_ip: None,
+            use_container_exec_for_network_checks: false,
             container_name: process_display_name,
             is_host_process: true,
             host_process_exit_code: Some(exit_code_cell),

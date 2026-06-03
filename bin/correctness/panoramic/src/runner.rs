@@ -916,6 +916,7 @@ impl IntegrationRunner {
             cancel_token: self.tctx.test_cancel_token(),
             port_mappings: port_mappings.clone(),
             container_ip: container_ip.map(str::to_string),
+            use_container_exec_for_network_checks: self.test_case.active_runtime == crate::config::WINDOWS_RUNTIME,
             container_name: container_name.to_string(),
             is_host_process: false,
             host_process_exit_code: None,
