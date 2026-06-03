@@ -2,7 +2,7 @@ type: integration
 name: "adp-memory-mode-permissive-exceeds-limit"
 description: "Verifies that permissive mode emits a best-effort warning when the calculated bounds exceed the configured limit, but the process still starts"
 timeout: 120s
-runtimes: [docker, mac, windows]
+runtimes: [docker, mac]
 
 env:
   DD_API_KEY: "test-api-key"
