@@ -41,7 +41,10 @@ impl Assertion for PortListeningAssertion {
         // Look up the mapped host port unless checks run inside the target container.
         let port_key = format!("{}/{}", self.port, self.protocol);
         let target = if ctx.use_container_exec_for_network_checks {
-            ("127.0.0.1".to_string(), self.port)
+            (
+                ctx.container_ip.clone().unwrap_or_else(|| "127.0.0.1".to_string()),
+                self.port,
+            )
         } else {
             match ctx.port_mappings.get(&port_key) {
                 Some(port) => ("127.0.0.1".to_string(), *port),
