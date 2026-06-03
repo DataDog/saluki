@@ -138,10 +138,7 @@ function Build-WindowsAdpImage {
     $Dockerfile = @"
 # escape=``
 FROM ${BuildImage} AS winbuild
-RUN New-Item -ItemType Directory -Force C:\adp-runtime; `
-    Get-ChildItem -Path C:\ -Recurse -Include vcruntime140.dll,vcruntime140_1.dll,msvcp140.dll -ErrorAction SilentlyContinue | `
-    Select-Object -First 20 | `
-    ForEach-Object { Copy-Item -Force `$_.FullName C:\adp-runtime\ }
+RUN powershell.exe -NoProfile -NonInteractive -Command "New-Item -ItemType Directory -Force C:\adp-runtime; Get-ChildItem -Path C:\ -Recurse -Include vcruntime140.dll,vcruntime140_1.dll,msvcp140.dll -ErrorAction SilentlyContinue | Select-Object -First 20 | ForEach-Object { Copy-Item -Force `$_.FullName C:\adp-runtime\ }"
 FROM ${BaseImage}
 WORKDIR C:\adp
 RUN New-Item -ItemType Directory -Force C:\ProgramData\Datadog
