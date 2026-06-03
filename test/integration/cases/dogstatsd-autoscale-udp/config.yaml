@@ -2,7 +2,7 @@ type: integration
 name: "dogstatsd-autoscale-udp"
 description: "Verifies DogStatsD UDP listener autoscaling (SO_REUSEPORT) starts cleanly on Linux"
 timeout: 120s
-runtimes: [docker, mac]
+runtimes: [docker, mac, windows]
 
 env:
   DD_API_KEY: "test-api-key"
