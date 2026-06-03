@@ -233,19 +233,6 @@ crate::declare_annotations! {
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD, Pipeline::Checks, Pipeline::Traces]),
     };
 
-    /// `serializer_max_series_points_per_payload` - max series points per payload.
-    SERIALIZER_MAX_SERIES_POINTS_PER_PAYLOAD = SalukiAnnotation {
-        schema: &schema::SERIALIZER_MAX_SERIES_POINTS_PER_PAYLOAD,
-        // Not configurable in ADP. #1354
-        support_level: SupportLevel::Incompatible(Severity::Low),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-        // Metrics encoder (dd_metrics_encode) is used by DogStatsD, Checks, and OTLP native (Traces active); APM traces use a separate encoder.
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD, Pipeline::Checks, Pipeline::Traces]),
-    };
 
     /// `sslkeylogfile` - TLS key log file path.
     SSLKEYLOGFILE = SalukiAnnotation {

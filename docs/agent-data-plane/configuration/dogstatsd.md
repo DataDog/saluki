@@ -487,6 +487,7 @@ when the receiving syslog daemon expects the Agent's RFC-style header.
 | `serializer_compressor_kind`                      | Payload compression algorithm                |
 | `serializer_max_payload_size`                     | Max compressed payload size                  |
 | `serializer_max_series_payload_size`              | Max series compressed payload size           |
+| `serializer_max_series_points_per_payload`         | Max data points per series payload           |
 | `serializer_max_series_uncompressed_payload_size` | Max series uncompressed payload size         |
 | `serializer_max_uncompressed_payload_size`        | Max uncompressed payload size                |
 | `site`                                            | Datadog site domain                          |
@@ -501,6 +502,7 @@ when the receiving syslog daemon expects the Agent's RFC-style header.
 | `use_v2_api.series`                               | Send series via V2 protobuf endpoint         |
 | `vector.metrics.enabled`                          | Route metrics to OPW (legacy alias)          |
 | `vector.metrics.url`                              | OPW metrics intake URL (legacy alias)        |
+
 
 [#178]: https://github.com/DataDog/saluki/issues/178
 [#1330]: https://github.com/DataDog/saluki/issues/1330

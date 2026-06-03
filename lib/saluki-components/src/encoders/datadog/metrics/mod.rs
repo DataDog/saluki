@@ -116,6 +116,10 @@ const fn default_max_series_uncompressed_payload_size() -> usize {
     SERIES_V2_UNCOMPRESSED_SIZE_LIMIT
 }
 
+const fn default_max_series_points_per_payload() -> usize {
+    10_000
+}
+
 const fn default_flush_timeout_secs() -> u64 {
     2
 }
@@ -210,6 +214,20 @@ pub struct DatadogMetricsConfiguration {
         default = "default_max_series_uncompressed_payload_size"
     )]
     max_series_uncompressed_payload_size: usize,
+
+    /// Maximum number of data points, across all series, to encode into a single series request payload.
+    ///
+    /// This applies only to series metrics (counters, gauges, rates, sets) and not to sketch metrics (histograms,
+    /// distributions). A single metric series may contribute multiple data points when it carries more than one
+    /// timestamp/value pair. When encoding an input would cause the running data point total to exceed this limit, the
+    /// current payload is flushed first and the input is placed in the next payload.
+    ///
+    /// Defaults to 10,000.
+    #[serde(
+        rename = "serializer_max_series_points_per_payload",
+        default = "default_max_series_points_per_payload"
+    )]
+    max_series_points_per_payload: usize,
 
     /// Flush timeout for pending requests, in seconds.
     ///
@@ -310,6 +328,7 @@ impl EncoderBuilder for DatadogMetricsConfiguration {
 
         let mut series_rb = RequestBuilder::new(series_encoder, compression_scheme, RB_BUFFER_CHUNK_SIZE).await?;
         series_rb.with_max_inputs_per_payload(self.max_metrics_per_payload);
+        series_rb.with_max_data_points_per_payload(self.max_series_points_per_payload);
 
         let generic_payload_limits = clamp_payload_limits(
             self.max_uncompressed_payload_size,
@@ -1679,6 +1698,31 @@ mod use_v2_api_series_default {
         assert_eq!(parsed.max_uncompressed_payload_size, 8765);
         assert_eq!(parsed.max_series_payload_size, 1234);
         assert_eq!(parsed.max_series_uncompressed_payload_size, 5678);
+    }
+
+    #[tokio::test]
+    async fn deserializes_max_series_points_per_payload() {
+        // Default should be 10,000.
+        let cfg = ConfigurationLoader::default()
+            .with_key_aliases(KEY_ALIASES)
+            .add_providers([figment::providers::Serialized::defaults(json!({}))])
+            .into_generic()
+            .await
+            .expect("config should load");
+        let parsed: DatadogMetricsConfiguration = cfg.as_typed().expect("should deserialize");
+        assert_eq!(parsed.max_series_points_per_payload, 10_000);
+
+        // Explicit value should round-trip.
+        let cfg = ConfigurationLoader::default()
+            .with_key_aliases(KEY_ALIASES)
+            .add_providers([figment::providers::Serialized::defaults(json!({
+                "serializer_max_series_points_per_payload": 500,
+            }))])
+            .into_generic()
+            .await
+            .expect("config should load");
+        let parsed: DatadogMetricsConfiguration = cfg.as_typed().expect("should deserialize");
+        assert_eq!(parsed.max_series_points_per_payload, 500);
     }
 
     #[test]
