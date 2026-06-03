@@ -138,7 +138,7 @@ function Build-WindowsAdpImage {
 # escape=``
 FROM ${BaseImage}
 WORKDIR C:\adp
-RUN powershell.exe -NoProfile -NonInteractive -Command New-Item -ItemType Directory -Force C:\ProgramData\Datadog ^| Out-Null
+RUN New-Item -ItemType Directory -Force C:\ProgramData\Datadog
 COPY agent-data-plane.exe C:\adp\agent-data-plane.exe
 COPY datadog.yaml C:\adp\datadog.yaml
 COPY auth_token C:\ProgramData\Datadog\auth_token
