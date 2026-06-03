@@ -20,7 +20,7 @@ use saluki_io::net::{
     client::http::{into_client_body, HttpClient, HttpClientBuilder},
     util::{
         middleware::{RetryCircuitBreakerError, RetryCircuitBreakerLayer},
-        retry::{DiskUsageRetrieverImpl, PushResult, RetryQueue, Retryable},
+        retry::{DiskUsageRetrieverImpl, PersistedQueueArgs, PushResult, RetryQueue, Retryable},
     },
 };
 use saluki_metrics::MetricsBuilder;
@@ -393,14 +393,15 @@ async fn run_endpoint_io_loop<B>(
     // If the storage size is set, enable disk persistence for the retry queue.
     if config.retry().storage_max_size_bytes() > 0 {
         retry_queue = retry_queue
-            .with_disk_persistence(
-                PathBuf::from(config.retry().storage_path()),
-                config.retry().storage_max_size_bytes(),
-                config.retry().storage_max_disk_ratio(),
-                Arc::new(DiskUsageRetrieverImpl::new(PathBuf::from(
+            .with_disk_persistence(PersistedQueueArgs {
+                root_path: PathBuf::from(config.retry().storage_path()),
+                max_on_disk_bytes: config.retry().storage_max_size_bytes(),
+                storage_max_disk_ratio: config.retry().storage_max_disk_ratio(),
+                disk_usage_retriever: Arc::new(DiskUsageRetrieverImpl::new(PathBuf::from(
                     config.retry().storage_path(),
                 ))),
-            )
+                max_age_days: config.retry().outdated_file_in_days(),
+            })
             .await
             .unwrap_or_else(|e| {
                 error!(endpoint_url, error = %e, "Failed to initialize disk persistence for retry queue. Transactions will not be persisted.");
@@ -544,6 +545,19 @@ async fn process_http_response(
     let status = response.status();
     if status.is_success() {
         debug!(endpoint_url, %status, "Request completed.");
+
+        // Reaching a successful intake response means the whole pipeline
+        // ran. This is a useful signal for process health but also
+        // acts as a checkpoint anchor for Antithesis replay: at this point
+        // there is a nominally functional system.
+        //
+        // No-op outside the `antithesis` feature build.
+        #[cfg(feature = "antithesis")]
+        antithesis_sdk::assert_sometimes!(
+            true,
+            "ADP forwarded a payload to the intake",
+            &serde_json::json!({ "domain": domain })
+        );
 
         telemetry.track_successful_transaction(&metadata, domain);
     } else {

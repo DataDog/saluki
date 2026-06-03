@@ -14,7 +14,7 @@ pub mod test;
 #[doc(hidden)]
 pub mod reexport {
     pub use ::metrics;
-    pub use paste::paste;
+    pub use pastey::paste;
 }
 
 /// A type that can be converted into a `SharedString`.

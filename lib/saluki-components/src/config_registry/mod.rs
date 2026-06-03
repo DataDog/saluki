@@ -129,6 +129,8 @@ pub mod structs {
     pub const DATADOG_SERVICE_CHECKS_CONFIGURATION: &str = "DatadogServiceChecksConfiguration";
     /// Identifier for `DatadogApmStatsEncoderConfiguration`.
     pub const DATADOG_APM_STATS_ENCODER_CONFIGURATION: &str = "DatadogApmStatsEncoderConfiguration";
+    /// Identifier for `MrfConfiguration`.
+    pub const MRF_CONFIGURATION: &str = "MrfConfiguration";
     /// Identifier for `OtlpDecoderConfiguration`.
     pub const OTLP_DECODER_CONFIGURATION: &str = "OtlpDecoderConfiguration";
     /// Identifier for `OtlpRelayConfiguration`.
@@ -137,6 +139,8 @@ pub mod structs {
     pub const TRACE_OBFUSCATION_CONFIGURATION: &str = "TraceObfuscationConfiguration";
     /// Identifier for `RemoteAgentClientConfiguration`.
     pub const REMOTE_AGENT_CLIENT_CONFIGURATION: &str = "RemoteAgentClientConfiguration";
+    /// Identifier for `TagFilterlistConfiguration`.
+    pub const TAG_FILTERLIST_CONFIGURATION: &str = "TagFilterlistConfiguration";
     /// Keys read via `get_typed` / `try_get_typed` rather than struct deserialization.
     pub const GET_TYPED: &str = "get_typed";
 }

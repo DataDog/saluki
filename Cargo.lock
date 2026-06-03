@@ -21,6 +21,8 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 name = "agent-data-plane"
 version = "1.2.0"
 dependencies = [
+ "antithesis-instrumentation",
+ "antithesis_sdk",
  "argh",
  "async-trait",
  "bytesize",
@@ -81,8 +83,10 @@ dependencies = [
  "bollard",
  "futures",
  "home",
+ "libc",
  "saluki-error",
  "tokio",
+ "tokio-util",
  "tracing",
 ]
 
@@ -121,6 +125,31 @@ name = "anstyle"
 version = "1.0.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "940b3a0ca603d1eade50a4846a2afffd5ef57a9feac2c0e2ec2e14f9ead76000"
+
+[[package]]
+name = "antithesis-instrumentation"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eb6b548668212c6d3a942a4ac7be13bc4fc25715bf661328438f30e3fd342cf0"
+dependencies = [
+ "cc",
+]
+
+[[package]]
+name = "antithesis_sdk"
+version = "0.2.8"
+source = "git+https://github.com/antithesishq/antithesis-sdk-rust?rev=6829a946e7e970cc743ffe17c3cee7d2bc25425a#6829a946e7e970cc743ffe17c3cee7d2bc25425a"
+dependencies = [
+ "libc",
+ "libloading",
+ "linkme",
+ "once_cell",
+ "rand 0.8.6",
+ "rand_core 0.10.1",
+ "rustc_version_runtime",
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "anyhow"
@@ -700,6 +729,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ddb117e43bbf7dacf0a4190fef4d345b9bad68dfc649cb349e7d17d28428e51"
 dependencies = [
  "clap_builder",
+ "clap_derive",
 ]
 
 [[package]]
@@ -710,6 +740,18 @@ checksum = "714a53001bf66416adb0e2ef5ac857140e7dc3a0c48fb28b2f10762fc4b5069f"
 dependencies = [
  "anstyle",
  "clap_lex",
+]
+
+[[package]]
+name = "clap_derive"
+version = "4.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f2ce8604710f6733aa641a2b3731eaa1e8b3d9973d5e3565da11800813f997a9"
+dependencies = [
+ "heck",
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]
@@ -1042,6 +1084,7 @@ dependencies = [
  "tokio",
  "tonic",
  "tracing",
+ "windows-registry",
 ]
 
 [[package]]
@@ -1267,9 +1310,9 @@ dependencies = [
 
 [[package]]
 name = "facet"
-version = "0.46.2"
+version = "0.46.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6620c8bb0c880ba0b495c55275d8fea9dc781982c7412ca2535e9603df66411f"
+checksum = "7d2e9d2422c2f014d96058366bf19f67a967737c23db12ce564cd3f3f3224cdc"
 dependencies = [
  "autocfg",
  "facet-core",
@@ -1278,9 +1321,9 @@ dependencies = [
 
 [[package]]
 name = "facet-core"
-version = "0.46.2"
+version = "0.46.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "19b0598b1c7c7562496a2b9ccdb2765e2c153e940c30834a06cab3e23287b791"
+checksum = "90aa26642b1616b332ca0c6dbec82d9fd5ff8ed32a76905daf3a2818666818c9"
 dependencies = [
  "autocfg",
  "const-fnv1a-hash",
@@ -1290,9 +1333,9 @@ dependencies = [
 
 [[package]]
 name = "facet-macro-parse"
-version = "0.46.2"
+version = "0.46.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1859e6f9a2b567c8985bf78c4d929df051789b750e947d7af471dbe0ae0446ff"
+checksum = "c5ab349bd1823fbfa129e595a826ef7fb4d1b9c7215428b28de18044d009dbc1"
 dependencies = [
  "facet-macro-types",
  "proc-macro2",
@@ -1301,9 +1344,9 @@ dependencies = [
 
 [[package]]
 name = "facet-macro-types"
-version = "0.46.2"
+version = "0.46.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1deccbe6e01860d0496be71c553f875a6792c9c2492d3761f764933978120cd8"
+checksum = "79622a74665b47d1744998dd0d15b73eb0eecdfeb16630b436c5f03365b02e55"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1312,18 +1355,18 @@ dependencies = [
 
 [[package]]
 name = "facet-macros"
-version = "0.46.2"
+version = "0.46.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9879c7e89e288b10e45765665aa4ea568aa5d871371eed7bcba9eff8a69a3dd0"
+checksum = "a6656fc7457975f5e1c86791b7a810c40ba53993823ae655f7c331e808c4b5ff"
 dependencies = [
  "facet-macros-impl",
 ]
 
 [[package]]
 name = "facet-macros-impl"
-version = "0.46.2"
+version = "0.46.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0f4ee4556c43e0aa917bc70cb54650a881e01d16b6d6bea911e397adf533680b"
+checksum = "f462bad2b5a574b2c94e9ad54162704ceacf3200741b4f0fb88020936b9003ec"
 dependencies = [
  "facet-macro-parse",
  "facet-macro-types",
@@ -1627,6 +1670,21 @@ dependencies = [
  "cfg-if",
  "crunchy",
  "zerocopy",
+]
+
+[[package]]
+name = "harness"
+version = "0.1.0"
+dependencies = [
+ "antithesis_sdk",
+ "anyhow",
+ "clap",
+ "num-traits",
+ "rand 0.10.1",
+ "rand_distr",
+ "serde",
+ "serde_json",
+ "serde_yaml",
 ]
 
 [[package]]
@@ -2395,7 +2453,7 @@ dependencies = [
 [[package]]
 name = "lading-payload"
 version = "0.1.0"
-source = "git+https://github.com/DataDog/lading?rev=7a050d935c8b7e6035eacbabe21fdafffcc6f1c4#7a050d935c8b7e6035eacbabe21fdafffcc6f1c4"
+source = "git+https://github.com/DataDog/lading?rev=e98e30524c8caa31d585703da790e15fd6f92573#e98e30524c8caa31d585703da790e15fd6f92573"
 dependencies = [
  "byte-unit",
  "bytes",
@@ -2449,6 +2507,26 @@ name = "libm"
 version = "0.2.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
+
+[[package]]
+name = "linkme"
+version = "0.3.36"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e83272d46373fb8decca684579ac3e7c8f3d71d4cc3aa693df8759e260ae41cf"
+dependencies = [
+ "linkme-impl",
+]
+
+[[package]]
+name = "linkme-impl"
+version = "0.3.36"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32d59e20403c7d08fe62b4376edfe5c7fb2ef1e6b1465379686d0f21c8df444b"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
 
 [[package]]
 name = "linux-raw-sys"
@@ -3027,10 +3105,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "paste"
-version = "1.0.15"
+name = "pastey"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
+checksum = "2ee67f1008b1ba2321834326597b8e186293b049a023cdef258527550b9935b4"
 
 [[package]]
 name = "pear"
@@ -3872,6 +3950,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "rustc_version_runtime"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2dd18cd2bae1820af0b6ad5e54f4a51d0f3fcc53b05f845675074efcc7af071d"
+dependencies = [
+ "rustc_version",
+ "semver",
+]
+
+[[package]]
 name = "rusticata-macros"
 version = "4.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4082,6 +4170,7 @@ dependencies = [
 name = "saluki-components"
 version = "0.1.0"
 dependencies = [
+ "antithesis_sdk",
  "arc-swap",
  "async-trait",
  "axum",
@@ -4205,7 +4294,7 @@ dependencies = [
  "metrics-util",
  "ordered-float 5.3.0",
  "papaya",
- "paste",
+ "pastey",
  "pin-project",
  "prometheus-exposition",
  "proptest",
@@ -4335,7 +4424,7 @@ name = "saluki-metrics"
 version = "0.1.0"
 dependencies = [
  "metrics",
- "paste",
+ "pastey",
  "trybuild",
 ]
 
@@ -4494,9 +4583,9 @@ dependencies = [
 
 [[package]]
 name = "serde_json"
-version = "1.0.149"
+version = "1.0.150"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "83fc039473c5595ace860d8c4fafa220ff474b3fc6bfdb4293327f1a37e94d86"
+checksum = "e8014e44b4736ed0538adeecded0fce2a272f22dc9578a7eb6b2d9993c74cfb9"
 dependencies = [
  "itoa",
  "memchr",

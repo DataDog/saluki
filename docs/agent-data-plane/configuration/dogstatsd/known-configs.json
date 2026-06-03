@@ -199,10 +199,10 @@
   },
   {
     "key": "config_id",
-    "feature_state": "MISSING",
-    "action": "INVESTIGATE",
+    "feature_state": "NOT_APPLICABLE",
+    "action": "NONE",
     "description": "Fleet Automation config ID tag for agent",
-    "reason": "Marked for investigation; previously dismissed as not-applicable.",
+    "reason": "Core Agent only adds config_id to Agent HA telemetry metrics. ADP does not need to stamp it on serialized metric payloads.",
     "issue": "#1751",
     "adp_key": null
   },

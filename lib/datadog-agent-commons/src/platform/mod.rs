@@ -14,6 +14,12 @@ mod macos_impl;
 #[cfg(target_os = "macos")]
 pub use self::macos_impl::*;
 
+#[cfg(windows)]
+mod windows_impl;
+
+#[cfg(windows)]
+pub use self::windows_impl::*;
+
 /// Prefix for all environment variables used by the Datadog Agent.
 pub const DATADOG_AGENT_ENV_VAR_PREFIX: &str = "DD";
 
@@ -23,7 +29,7 @@ pub struct PlatformSettings;
 impl PlatformSettings {
     /// Returns the path to the default Datadog Agent configuration directory.
     pub fn get_config_dir_path() -> &'static Path {
-        Path::new(DATADOG_AGENT_CONF_DIR)
+        get_config_dir_path()
     }
 
     /// Returns the path to the default Datadog Agent configuration file.
@@ -43,12 +49,12 @@ impl PlatformSettings {
 
     /// Returns the default log file path for the Agent Data Plane.
     pub fn get_default_log_file_path() -> PathBuf {
-        Path::new(DATADOG_AGENT_LOG_DIR).join("agent-data-plane.log")
+        Self::get_log_dir_path().join("agent-data-plane.log")
     }
 
     /// Returns the default DogStatsD debug log file path.
     pub fn get_default_dogstatsd_log_file_path() -> PathBuf {
-        Path::new(DATADOG_AGENT_LOG_DIR)
+        Self::get_log_dir_path()
             .join("dogstatsd_info")
             .join("dogstatsd-stats.log")
     }
@@ -58,8 +64,31 @@ impl PlatformSettings {
         DATADOG_AGENT_DEFAULT_SYSLOG_URI
     }
 
+    fn get_log_dir_path() -> &'static Path {
+        get_log_dir_path()
+    }
+
     /// Returns the prefix for all environment variables used by the Datadog Agent.
     pub const fn get_env_var_prefix() -> &'static str {
         DATADOG_AGENT_ENV_VAR_PREFIX
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PlatformSettings;
+
+    #[test]
+    fn default_log_files_are_derived_from_platform_log_dir() {
+        assert_eq!(
+            PlatformSettings::get_default_log_file_path(),
+            PlatformSettings::get_log_dir_path().join("agent-data-plane.log")
+        );
+        assert_eq!(
+            PlatformSettings::get_default_dogstatsd_log_file_path(),
+            PlatformSettings::get_log_dir_path()
+                .join("dogstatsd_info")
+                .join("dogstatsd-stats.log")
+        );
     }
 }

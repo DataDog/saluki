@@ -14,6 +14,15 @@ stages:
 #
 # This mostly controls how we tag our ADP container images and set various bits of metadata.
 workflow:
+  # Auto-cancel any interruptible jobs from a previous pipeline when a new commit lands on the
+  # same ref. The default ('conservative') only cancels the pipeline if no non-interruptible
+  # job has started yet — since our Linux jobs are non-interruptible and start immediately,
+  # that mode effectively never cancels anything. 'interruptible' cancels just the jobs marked
+  # interruptible: true (currently the macOS unit + integration jobs, which run on scarce
+  # bare-metal runner capacity); non-interruptible jobs continue to completion as before.
+  # https://docs.gitlab.com/ci/yaml/#workflowauto_cancelon_new_commit
+  auto_cancel:
+    on_new_commit: interruptible
   rules:
     - if: $CI_COMMIT_TAG == null
       variables:
@@ -151,8 +160,23 @@ default:
     KUBERNETES_MEMORY_REQUEST: "8Gi"
     KUBERNETES_MEMORY_LIMIT: "12Gi"
 
+# Shared mixins for macOS runner jobs.
+#
+# arm64 jobs use the shared virtualized macOS Tart runner pool (`macos:tart`). Each job runs
+# in a fresh VM, which gives clean isolation between pipelines, decouples the host toolchain,
+# and lets two jobs share a single `mac2.metal` host. amd64 still uses the dedicated bare-metal
+# pool (`macos:sonoma-amd64`); migrating it requires equivalent infra that isn't yet in place.
+#
+# `interruptible: true` is set here so every macOS job inherits it. macOS runner capacity in
+# the GitLab fleet is finite; auto-cancelling superseded pipelines (for example, after a quick
+# fixup push to an open PR) frees the runner immediately instead of holding the slot for the
+# duration of the now-stale run. See:
+# https://docs.gitlab.com/ci/yaml/#interruptible
 .macos-amd64-test-job:
   tags: ["macos:sonoma-amd64", "specific:true"]
+  interruptible: true
 
 .macos-arm64-test-job:
-  tags: ["macos:sonoma-arm64", "specific:true"]
+  tags: ["macos:tart"]
+  image: 486234852809.dkr.ecr.us-east-1.amazonaws.com/ci/ci-platform-machine-images/tart-vm:saluki-sonoma-latest
+  interruptible: true

@@ -1,0 +1,53 @@
+[package]
+name = "harness"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+publish = false
+
+[dependencies]
+antithesis_sdk = { workspace = true, features = ["full", "rand_v0_10"] }
+anyhow = { workspace = true, features = ["std"] }
+clap = { workspace = true, features = [
+  "derive",
+  "env",
+  "error-context",
+  "help",
+  "std",
+  "usage",
+] }
+num-traits = { workspace = true }
+rand = { workspace = true }
+rand_distr = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+
+[lints.clippy]
+all = "deny"
+complexity = "deny"
+dbg_macro = "deny"
+float_cmp = "deny"
+large_futures = "deny"
+large_stack_arrays = "deny"
+manual_memcpy = "deny"
+mod_module_files = "deny"
+pedantic = "deny"
+perf = "deny"
+print_stderr = "deny"
+print_stdout = "deny"
+rc_buffer = "deny"
+redundant_allocation = "deny"
+suspicious = "deny"
+unnecessary_to_owned = "deny"
+unwrap_used = "deny"
+
+[lints.rust]
+missing_copy_implementations = "deny"
+missing_debug_implementations = "deny"
+missing_docs = "deny"
+unreachable_pub = "deny"
+unused_allocation = "deny"
+unused_assignments = "deny"
+unused_comparisons = "deny"
+unused_extern_crates = "deny"

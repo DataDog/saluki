@@ -22,6 +22,12 @@ export ADP_APP_BUILD_TIME := $(APP_BUILD_TIME)
 # ADP-specific settings used when running.
 export ADP_STANDALONE_IPC_CERT_FILE := /tmp/adp-ipc-cert.pem
 
+# macOS integration-test settings.
+MACOS_TEST_AGENT_VERSION ?= 7.78.0
+MACOS_TEST_AGENT_DMG_DIR ?= /tmp/saluki-dda-dmg-cache
+MACOS_TEST_AGENT_DMG_URL ?= https://s3.amazonaws.com/dd-agent/datadog-agent-$(MACOS_TEST_AGENT_VERSION)-1.$(shell uname -m).dmg
+MACOS_TEST_AGENT_INSTALL_DIR ?= /tmp/saluki-dda/datadog-agent
+
 # General build settings used for tooling, etc.
 export GO_BUILD_IMAGE ?= golang:1.23-bullseye
 export GO_APP_IMAGE ?= ubuntu:24.04
@@ -34,10 +40,11 @@ ifeq ($(CI),true)
 	override CARGO_BINSTALL_STRATEGIES = compile
 endif
 export CARGO_TOOL_VERSION_cargo-binstall ?= 1.18.1
-export CARGO_TOOL_VERSION_dd-rust-license-tool ?= 1.0.3
+export CARGO_TOOL_VERSION_dd-rust-license-tool ?= 1.0.6
 export CARGO_TOOL_VERSION_cargo-deny ?= 0.18.9
 export CARGO_TOOL_VERSION_cargo-hack ?= 0.6.30
 export CARGO_TOOL_VERSION_cargo-nextest ?= 0.9.99
+export CARGO_TOOL_VERSION_cargo-xwin ?= 0.22.0
 export CARGO_TOOL_VERSION_cargo-autoinherit ?= 0.1.5
 export CARGO_TOOL_VERSION_cargo-sort ?= 1.0.9
 export CARGO_TOOL_VERSION_dummyhttp ?= 1.1.0
@@ -45,6 +52,11 @@ export CARGO_TOOL_VERSION_cargo-machete ?= 0.9.1
 export CARGO_TOOL_VERSION_rustfilt ?= 0.2.1
 export DDPROF_VERSION ?= 0.20.0
 export LADING_VERSION ?= sha-d608ffbce8f8c77b147d6750b3bb6d6948af239a
+
+# Windows cross-compilation settings. These targets currently assume a local macOS host.
+export WINDOWS_CROSS_TARGET ?= x86_64-pc-windows-msvc
+export WINDOWS_CROSS_LLVM_BIN ?= /opt/homebrew/opt/llvm/bin
+export WINDOWS_CROSS_CARGO_ARGS ?= --package agent-data-plane
 
 # Version of source repositories (Git tag) for vendored Protocol Buffers definitions.
 export PROTOBUF_SRC_REPO_DD_AGENT ?= 7.73.x
@@ -202,6 +214,28 @@ build-correctness-tools-image: ## Builds the correctness tools suite (datadog-in
 		--file ./docker/Dockerfile.correctness-tools \
 		.
 
+.PHONY: install-windows-cross-tools
+install-windows-cross-tools: check-rust-build-tools ## Installs local macOS tools for Windows Rust cross-compilation
+ifneq ($(shell uname -s),Darwin)
+	$(error "install-windows-cross-tools currently supports local macOS hosts only")
+endif
+ifeq ($(shell command -v brew >/dev/null || echo not-found), not-found)
+	$(error "Please install Homebrew: https://brew.sh/")
+endif
+	@echo "[*] Installing Rust Windows target ($(WINDOWS_CROSS_TARGET))..."
+	@rustup target add $(WINDOWS_CROSS_TARGET)
+	@echo "[*] Ensuring cargo-xwin@$(CARGO_TOOL_VERSION_cargo-xwin) is installed..."
+	@test -f "$(CARGO_BIN_DIR)/cargo-xwin" || cargo install cargo-xwin --version "$(CARGO_TOOL_VERSION_cargo-xwin)" --locked
+	@echo "[*] Ensuring Homebrew LLVM is installed..."
+	@brew list llvm >/dev/null 2>&1 || brew install llvm
+	@test -x "$(WINDOWS_CROSS_LLVM_BIN)/llvm-lib" || \
+		(echo "Missing llvm-lib at $(WINDOWS_CROSS_LLVM_BIN)/llvm-lib. Set WINDOWS_CROSS_LLVM_BIN or install Homebrew LLVM." && exit 1)
+
+.PHONY: build-windows-cross
+build-windows-cross: install-windows-cross-tools ## Builds ADP for Windows from a local macOS host (override WINDOWS_CROSS_CARGO_ARGS as needed)
+	@echo "[*] Building Windows cross target ($(WINDOWS_CROSS_TARGET)): cargo build $(WINDOWS_CROSS_CARGO_ARGS)"
+	@PATH="$(WINDOWS_CROSS_LLVM_BIN):$$PATH" cargo xwin build --target $(WINDOWS_CROSS_TARGET) $(WINDOWS_CROSS_CARGO_ARGS)
+
 .PHONY: build-proxy-dumper-image
 build-proxy-dumper-image: check-proxy-dumper-tools ## Builds the proxy-dumper container image ('latest' tag)
 ifeq ($(shell test -d test/build/dd-agent-benchmarks || echo not-found), not-found)
@@ -306,7 +340,7 @@ run-adp-standalone: build-adp create-dummy-agent-config create-dummy-ipc-cert
 run-adp-standalone: ## Runs ADP locally in standalone mode (debug)
 	@echo "[*] Running ADP..."
 	@DD_DATA_PLANE_STANDALONE_MODE=true DD_DATA_PLANE_DOGSTATSD_ENABLED=true \
- 	DD_API_KEY=api-key-adp-standalone DD_HOSTNAME=adp-standalone \
+	DD_API_KEY=api-key-adp-standalone DD_HOSTNAME=adp-standalone \
 	DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
 	DD_IPC_CERT_FILE_PATH=$(ADP_STANDALONE_IPC_CERT_FILE) \
 	target/devel/agent-data-plane --config /tmp/adp-empty-config.yaml run
@@ -569,6 +603,96 @@ list-integration-tests: build-panoramic
 list-integration-tests: ## Lists available ADP integration tests
 	@target/release/panoramic list -d $(shell pwd)/test/integration/cases
 
+.PHONY: build-adp-host
+build-adp-host: check-rust-build-tools
+build-adp-host: ## Builds the agent-data-plane binary for the current host (release profile)
+	@echo "[*] Building agent-data-plane (release, host target)..."
+	@APP_FULL_NAME="$(ADP_APP_FULL_NAME)" \
+		APP_SHORT_NAME="$(ADP_APP_SHORT_NAME)" \
+		APP_IDENTIFIER="$(ADP_APP_IDENTIFIER)" \
+		APP_GIT_HASH="$(ADP_APP_GIT_HASH)" \
+		APP_VERSION="$(ADP_APP_VERSION)" \
+		APP_BUILD_DATE="$(ADP_APP_BUILD_DATE)" \
+		cargo build --release --bin agent-data-plane
+
+.PHONY: test-integration-macos-run
+test-integration-macos-run: ## Runs the macOS host-process integration tests using already-built binaries (assumes target/release/{panoramic,agent-data-plane} exist). Defaults to all `mac`-runtime-eligible tests; narrow with CASE=<name>.
+	@echo "[*] Running macOS host-process integration tests..."
+	@ADP_BINARY_PATH="$(CURDIR)/target/release/agent-data-plane" \
+		CORE_AGENT_BINARY_PATH="$(MACOS_TEST_AGENT_INSTALL_DIR)/bin/agent/agent" \
+		target/release/panoramic run -d "$(CURDIR)/test/integration/cases" \
+		$(if $(CASE),-t $(CASE)) --no-tui -p 1 \
+		$(if $(PANORAMIC_LOG_DIR),-l $(PANORAMIC_LOG_DIR))
+
+.PHONY: provision-macos-test-env
+provision-macos-test-env: ## Installs the pinned Datadog Agent ($(MACOS_TEST_AGENT_VERSION)) into $(MACOS_TEST_AGENT_INSTALL_DIR) (a sandbox under /tmp) and bootstraps the IPC cert. Idempotent: re-uses the install if it already matches the pinned version.
+	@echo "[*] Provisioning macOS test environment..."
+	@if [ "$(shell uname -s)" != "Darwin" ]; then \
+		echo "provision-macos-test-env only runs on macOS hosts" >&2; exit 1; \
+	fi
+	@if [ -x $(MACOS_TEST_AGENT_INSTALL_DIR)/bin/agent/agent ] && \
+	   [ "$$($(MACOS_TEST_AGENT_INSTALL_DIR)/bin/agent/agent version 2>/dev/null | awk '{print $$2}')" = "$(MACOS_TEST_AGENT_VERSION)" ]; then \
+		echo "[*] Datadog Agent $(MACOS_TEST_AGENT_VERSION) already extracted to $(MACOS_TEST_AGENT_INSTALL_DIR)"; \
+	else \
+		echo "[*] Installing Datadog Agent $(MACOS_TEST_AGENT_VERSION) into $(MACOS_TEST_AGENT_INSTALL_DIR)..."; \
+		mkdir -p $(MACOS_TEST_AGENT_DMG_DIR); \
+		DMG_PATH=$(MACOS_TEST_AGENT_DMG_DIR)/datadog-agent-$(MACOS_TEST_AGENT_VERSION).dmg; \
+		if [ ! -f "$$DMG_PATH" ]; then \
+			curl -fL "$(MACOS_TEST_AGENT_DMG_URL)" -o "$$DMG_PATH"; \
+		fi; \
+		MOUNT_DIR=$$(mktemp -d /tmp/saluki-dda-mount-XXXXXX); \
+		hdiutil attach "$$DMG_PATH" -mountpoint "$$MOUNT_DIR" -nobrowse >/dev/null; \
+		PKG=$$(find "$$MOUNT_DIR" -name '*.pkg' | head -1); \
+		EXPAND_DIR=$$(mktemp -d /tmp/saluki-dda-expand-XXXXXX) && rm -rf "$$EXPAND_DIR"; \
+		pkgutil --expand-full "$$PKG" "$$EXPAND_DIR" >/dev/null; \
+		hdiutil detach "$$MOUNT_DIR" >/dev/null; \
+		rmdir "$$MOUNT_DIR" 2>/dev/null || true; \
+		PAYLOAD_DIR=$$(find "$$EXPAND_DIR" -type d -name Payload | head -1); \
+		if [ -z "$$PAYLOAD_DIR" ] || [ ! -x "$$PAYLOAD_DIR/bin/agent/agent" ]; then \
+			echo "ERROR: pkg payload did not contain bin/agent/agent. Expanded layout:" >&2; \
+			find "$$EXPAND_DIR" -maxdepth 3 -type d >&2; \
+			exit 1; \
+		fi; \
+		rm -rf $(MACOS_TEST_AGENT_INSTALL_DIR); \
+		mkdir -p $$(dirname $(MACOS_TEST_AGENT_INSTALL_DIR)); \
+		mv "$$PAYLOAD_DIR" $(MACOS_TEST_AGENT_INSTALL_DIR); \
+		rm -rf "$$EXPAND_DIR"; \
+		test -x $(MACOS_TEST_AGENT_INSTALL_DIR)/bin/agent/agent; \
+	fi
+	@if [ ! -f $(MACOS_TEST_AGENT_INSTALL_DIR)/etc/ipc_cert.pem ] || [ ! -f $(MACOS_TEST_AGENT_INSTALL_DIR)/etc/auth_token ]; then \
+		echo "[*] Bootstrapping IPC cert + auth_token by running the Agent briefly..."; \
+		mkdir -p $(MACOS_TEST_AGENT_INSTALL_DIR)/etc $(MACOS_TEST_AGENT_INSTALL_DIR)/run; \
+		touch $(MACOS_TEST_AGENT_INSTALL_DIR)/etc/datadog.yaml; \
+		DD_API_KEY=bootstrap DD_HOSTNAME=bootstrap \
+			DD_RUN_PATH=$(MACOS_TEST_AGENT_INSTALL_DIR)/run \
+			DD_AUTH_TOKEN_FILE_PATH=$(MACOS_TEST_AGENT_INSTALL_DIR)/etc/auth_token \
+			DD_IPC_CERT_FILE_PATH=$(MACOS_TEST_AGENT_INSTALL_DIR)/etc/ipc_cert.pem \
+			DD_CMD_PORT=55001 DD_GUI_PORT=-1 \
+			DD_EXPVAR_PORT=55000 DD_APM_RECEIVER_PORT=58126 \
+			DD_PROCESS_CONFIG_CMD_PORT=56062 DD_AGENT_IPC_PORT=55004 \
+			DD_DOGSTATSD_PORT=58125 \
+			$(MACOS_TEST_AGENT_INSTALL_DIR)/bin/agent/agent run -c $(MACOS_TEST_AGENT_INSTALL_DIR)/etc >/tmp/saluki-agent-bootstrap.log 2>&1 & \
+		AGENT_PID=$$!; \
+		for i in $$(seq 1 30); do \
+			sleep 1; \
+			if [ -f $(MACOS_TEST_AGENT_INSTALL_DIR)/etc/ipc_cert.pem ] && [ -f $(MACOS_TEST_AGENT_INSTALL_DIR)/etc/auth_token ]; then break; fi; \
+		done; \
+		kill $$AGENT_PID 2>/dev/null || true; \
+		wait $$AGENT_PID 2>/dev/null || true; \
+		if [ ! -f $(MACOS_TEST_AGENT_INSTALL_DIR)/etc/ipc_cert.pem ]; then \
+			echo "ERROR: bootstrap Agent did not write the IPC cert. Bootstrap log:" >&2; \
+			cat /tmp/saluki-agent-bootstrap.log >&2 2>/dev/null || true; \
+			exit 1; \
+		fi; \
+	else \
+		echo "[*] IPC cert already present at $(MACOS_TEST_AGENT_INSTALL_DIR)/etc/ipc_cert.pem"; \
+	fi
+	@echo "[*] macOS test environment ready."
+	@echo "[*] Agent binary: $(MACOS_TEST_AGENT_INSTALL_DIR)/bin/agent/agent"
+
+.PHONY: test-integration-macos-ci
+test-integration-macos-ci: build-panoramic build-adp-host provision-macos-test-env test-integration-macos-run ## CI entry point: builds binaries, ensures Agent + cert are provisioned, then runs the `mac`-runtime integration tests
+
 .PHONY: ensure-rust-miri
 ensure-rust-miri:
 ifeq ($(shell command -v rustup >/dev/null || echo not-found), not-found)
@@ -578,6 +702,28 @@ endif
 	@rustup toolchain install nightly-2025-06-16 --component miri
 	@echo "[*] Ensuring Miri is setup..."
 	@cargo +nightly-2025-06-16 miri setup
+
+##@ Antithesis
+
+ANTITHESIS_CONFIG_DIR := test/antithesis/deploy
+ANTITHESIS_COMPOSE_FILE := $(ANTITHESIS_CONFIG_DIR)/docker-compose.yaml
+
+.PHONY: check-antithesis-tools
+check-antithesis-tools:
+ifeq ($(shell command -v snouty >/dev/null || echo not-found), not-found)
+	$(error "snouty must be present to validate the Antithesis harness, see https://github.com/antithesishq/snouty")
+endif
+
+.PHONY: antithesis-build
+antithesis-build: ## Builds the Antithesis harness container images
+	@echo "[*] Building Antithesis harness images..."
+	@docker compose -f $(ANTITHESIS_COMPOSE_FILE) build
+
+.PHONY: antithesis-validate
+antithesis-validate: check-antithesis-tools antithesis-build
+antithesis-validate: ## Validates the Antithesis harness: builds images, runs 'snouty validate'
+	@echo "[*] Validating Antithesis harness with snouty..."
+	@snouty validate $(ANTITHESIS_CONFIG_DIR)
 
 ##@ Profiling
 

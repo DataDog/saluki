@@ -1,10 +1,11 @@
 #[cfg(unix)]
 use std::os::unix::net::{UnixDatagram, UnixStream};
+#[cfg(unix)]
+use std::path::PathBuf;
 use std::{
     fmt, io,
     io::Write,
     net::{Shutdown, SocketAddr, TcpStream, ToSocketAddrs, UdpSocket},
-    path::PathBuf,
 };
 
 use url::Url;
@@ -246,7 +247,12 @@ mod tests {
         io::{Read as _, Write as _},
         net::{TcpListener, UdpSocket},
         thread,
-        time::{Duration, SystemTime, UNIX_EPOCH},
+        time::Duration,
+    };
+    #[cfg(unix)]
+    use std::{
+        path::PathBuf,
+        time::{SystemTime, UNIX_EPOCH},
     };
 
     use super::*;

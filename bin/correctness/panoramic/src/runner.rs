@@ -4,6 +4,7 @@
 //! is used regardless of output mode (TUI or plain). Events are emitted to a channel
 //! and consumed by either a TUI renderer or logging consumer.
 
+use std::sync::RwLock;
 use std::{
     collections::HashMap,
     io::Write as _,
@@ -14,19 +15,16 @@ use std::{
 
 use airlock::driver::{Driver, DriverConfig, DriverDetails};
 use bollard::container::LogOutput;
-use futures::{
-    future,
-    stream::{self, StreamExt as _},
-};
+use futures::stream::{self, StreamExt as _};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
-use tokio::sync::{mpsc, RwLock, Semaphore};
+use tokio::sync::{mpsc, Semaphore};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 use crate::test::{Test, TestContext};
 use crate::{
-    assertions::{create_assertion, AssertionContext, AssertionResult, LogBuffer},
-    config::{parse_file_spec, parse_port_spec, AssertionStep, IntegrationConfig},
+    assertions::{AssertionContext, AssertionResult, LogBuffer},
+    config::{parse_file_spec, parse_port_spec, IntegrationConfig},
     events::TestEvent,
     reporter::{PhaseTiming, TestResult},
 };
@@ -696,8 +694,15 @@ impl IntegrationRunner {
     async fn build_driver_config(&self) -> Result<DriverConfig, GenericError> {
         let container = &self.test_case.container;
 
-        // Convert env vars to the format expected by airlock.
-        let env_vars: Vec<String> = container.env.iter().map(|(k, v)| format!("{}={}", k, v)).collect();
+        // Merge framework-level port-isolation env vars with the test's own env. Framework
+        // defaults are applied first so the test's `env` block takes precedence. Keeps the test
+        // surface consistent across the docker and `mac` runtimes — both see the same shifted
+        // port table.
+        let mut merged_env = crate::test_env::port_isolation_env();
+        for (k, v) in &self.test_case.env {
+            merged_env.insert(k.clone(), v.clone());
+        }
+        let env_vars: Vec<String> = merged_env.iter().map(|(k, v)| format!("{}={}", k, v)).collect();
 
         // Build the target config.
         let target_config = airlock::config::TargetConfig {
@@ -775,7 +780,7 @@ impl IntegrationRunner {
             while let Some(log_result) = log_stream.next().await {
                 match log_result {
                     Ok(log) => {
-                        let mut buffer = log_buffer.write().await;
+                        let mut buffer = log_buffer.write().unwrap();
                         match log {
                             LogOutput::StdOut { message } => {
                                 if let Ok(line) = String::from_utf8(message.to_vec()) {
@@ -808,124 +813,16 @@ impl IntegrationRunner {
     async fn run_assertions(
         &self, port_mappings: &HashMap<String, u16>, container_name: &str, exit_token: &CancellationToken,
     ) -> Vec<AssertionResult> {
-        let mut results = Vec::new();
-        let total_steps = self.test_case.assertions.len();
-
         let ctx = AssertionContext {
             log_buffer: self.log_buffer.clone(),
             container_exit_token: exit_token.clone(),
             cancel_token: self.tctx.test_cancel_token(),
             port_mappings: port_mappings.clone(),
             container_name: container_name.to_string(),
+            is_host_process: false,
+            host_process_exit_code: None,
         };
-
-        for (step_index, step) in self.test_case.assertions.iter().enumerate() {
-            match step {
-                AssertionStep::Single(assertion_config) => {
-                    let assertion = match create_assertion(assertion_config) {
-                        Ok(a) => a,
-                        Err(e) => {
-                            error!(error = %e, "Failed to create assertion from configuration.");
-                            results.push(AssertionResult {
-                                name: "config_error".to_string(),
-                                passed: false,
-                                message: format!("Failed to create assertion: {}.", e),
-                                duration: Duration::ZERO,
-                            });
-                            break;
-                        }
-                    };
-
-                    debug!(
-                        step = step_index + 1,
-                        step_total = total_steps,
-                        assertion_type = assertion.name(),
-                        description = %assertion.description(),
-                        "Running assertion..."
-                    );
-
-                    let result = assertion.check(&ctx).await;
-
-                    if result.passed {
-                        debug!(
-                            assertion_type = assertion.name(),
-                            duration = ?result.duration,
-                            "Assertion passed."
-                        );
-                    } else {
-                        debug!(
-                            assertion_type = assertion.name(),
-                            duration = ?result.duration,
-                            message = %result.message,
-                            "Assertion failed."
-                        );
-                    }
-
-                    let failed = !result.passed;
-                    results.push(result);
-
-                    if failed {
-                        debug!("Stopping assertion execution due to failure (fail-fast).");
-                        break;
-                    }
-                }
-
-                AssertionStep::Parallel { parallel } => {
-                    let mut assertions = Vec::new();
-                    let mut config_error = false;
-
-                    for assertion_config in parallel {
-                        match create_assertion(assertion_config) {
-                            Ok(a) => assertions.push(a),
-                            Err(e) => {
-                                error!(error = %e, "Failed to create assertion from configuration.");
-                                results.push(AssertionResult {
-                                    name: "config_error".to_string(),
-                                    passed: false,
-                                    message: format!("Failed to create assertion: {}.", e),
-                                    duration: Duration::ZERO,
-                                });
-                                config_error = true;
-                                break;
-                            }
-                        }
-                    }
-
-                    if config_error {
-                        break;
-                    }
-
-                    debug!(
-                        step = step_index + 1,
-                        step_total = total_steps,
-                        assertion_count = assertions.len(),
-                        "Running parallel assertion block..."
-                    );
-
-                    let futures: Vec<_> = assertions.iter().map(|a| a.check(&ctx)).collect();
-                    let parallel_results = future::join_all(futures).await;
-
-                    let any_failed = parallel_results.iter().any(|r| !r.passed);
-
-                    for result in parallel_results {
-                        debug!(
-                            assertion_type = %result.name,
-                            passed = result.passed,
-                            duration = ?result.duration,
-                            "Parallel assertion completed."
-                        );
-                        results.push(result);
-                    }
-
-                    if any_failed {
-                        debug!("Stopping assertion execution due to failure in parallel block (fail-fast).");
-                        break;
-                    }
-                }
-            }
-        }
-
-        results
+        crate::assertions::run_assertion_steps(&self.test_case, &ctx).await
     }
 
     async fn cleanup(&self, _driver: &Driver) -> Result<(), GenericError> {
@@ -947,7 +844,7 @@ impl IntegrationRunner {
         let log_dir = self.tctx.log_dir();
 
         // Get the log buffer contents.
-        let buffer = self.log_buffer.read().await;
+        let buffer = self.log_buffer.read().unwrap();
 
         // Write stdout.
         let stdout_path = log_dir.join("stdout.log");
