@@ -304,19 +304,29 @@ pub struct Multiple;
 /// Intended for use in methods that accept component IDs as string references, where a single or multiple IDs may be
 /// passed within a single parameter. This allows being generic over those possibilities such that callers can use more
 /// natural values rather than contrived values (such as always having to wrap a single string in a slice, etc).
-pub trait IntoComponentIds<Marker> {
+pub trait AsComponentIds<Marker> {
     /// Converts `self` into an iterator of component output IDs.
-    fn into_component_ids(self) -> impl Iterator<Item: AsRef<str>>;
+    ///
+    /// This borrows `self` -- rather than consuming it as the `into_` prefix would normally imply -- so that the
+    /// iterator can be built multiple times from the same value, which is necessary for connecting every upstream ID
+    /// to every downstream ID when making many-to-many connections.
+    fn as_component_ids(&self) -> impl Iterator<Item: AsRef<str>>;
 }
 
-impl<T: AsRef<str>> IntoComponentIds<Single> for T {
-    fn into_component_ids(self) -> impl Iterator<Item: AsRef<str>> {
+impl<T> AsComponentIds<Single> for T
+where
+    T: AsRef<str>,
+{
+    fn as_component_ids(&self) -> impl Iterator<Item: AsRef<str>> {
         std::iter::once(self)
     }
 }
 
-impl<I: IntoIterator<Item: AsRef<str>>> IntoComponentIds<Multiple> for I {
-    fn into_component_ids(self) -> impl Iterator<Item: AsRef<str>> {
+impl<I> AsComponentIds<Multiple> for I
+where
+    for<'a> &'a I: IntoIterator<Item: AsRef<str>>,
+{
+    fn as_component_ids(&self) -> impl Iterator<Item: AsRef<str>> {
         self.into_iter()
     }
 }
