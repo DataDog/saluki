@@ -1,6 +1,6 @@
 # Configuring DogStatsD on Agent Data Plane
 
-<!-- Last updated: 2026-05-29 -->
+<!-- Last updated: 2026-06-03 -->
 
 The DogStatsD implementation on ADP has been redesigned in Rust for better resource guarantees and
 efficiency. Because the architecture is different from the original implementation, certain
@@ -389,12 +389,15 @@ when the receiving syslog daemon expects the Agent's RFC-style header.
 | ----------------------------------------------------------- | ----------------------------------------- |
 | `additional_endpoints`                                      | Dual-ship to extra endpoints              |
 | `aggregate_context_limit`                                   | Max contexts per aggregation window       |
+| `allow_arbitrary_tags`                                      | Relax backend tag validation via HTTP header |
 | `api_key`                                                   | API key for endpoint auth                 |
 | `auth_token_file_path`                                      | IPC auth token file path                  |
 | `bind_host`                                                 | Global listen host fallback               |
 | `cmd_port`                                                  | Agent IPC/CMD API port                    |
 | `container_cgroup_root`                                     | Cgroup filesystem root path               |
 | `container_proc_root`                                       | Procfs root path for containers           |
+| `cri_connection_timeout`                                    | CRI runtime connection timeout (s)        |
+| `cri_query_timeout`                                         | CRI runtime query timeout (s)             |
 | `cri_socket_path`                                           | CRI/containerd socket path                |
 | `data_plane.dogstatsd.enabled`                              | Enable DSD in data plane                  |
 | `data_plane.enabled`                                        | Enable ADP globally                       |
@@ -468,6 +471,10 @@ when the receiving syslog daemon expects the Agent's RFC-style header.
 | `secret_backend_command`                                    | Secret resolver executable path           |
 | `secret_backend_timeout`                                    | Secret backend timeout (seconds)          |
 | `serializer_compressor_kind`                                | Payload compression algorithm             |
+| `serializer_max_payload_size`                               | Max compressed payload size               |
+| `serializer_max_series_payload_size`                        | Max series compressed payload size        |
+| `serializer_max_series_uncompressed_payload_size`           | Max series uncompressed payload size      |
+| `serializer_max_uncompressed_payload_size`                  | Max uncompressed payload size             |
 | `site`                                                      | Datadog site domain                       |
 | `statsd_metric_blocklist`                                   | Metric name blocklist                     |
 | `statsd_metric_blocklist_match_prefix`                      | Blocklist uses prefix matching            |
