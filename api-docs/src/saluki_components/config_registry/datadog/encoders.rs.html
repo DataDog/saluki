@@ -158,31 +158,43 @@
 <a href=#158 id=158 data-nosnippet>158</a>        pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::Checks, Pipeline::DogStatsD]),
 <a href=#159 id=159 data-nosnippet>159</a>    };
 <a href=#160 id=160 data-nosnippet>160</a>
-<a href=#161 id=161 data-nosnippet>161</a>    <span class="doccomment">/// `use_v2_api.series`—when `false`, send series metrics to the legacy V1 JSON intake at `/api/v1/series`.
-<a href=#162 id=162 data-nosnippet>162</a>    </span>USE_V2_API_SERIES = SalukiAnnotation {
-<a href=#163 id=163 data-nosnippet>163</a>        schema: <span class="kw-2">&amp;</span>schema::USE_V2_API_SERIES,
+<a href=#161 id=161 data-nosnippet>161</a>    <span class="doccomment">/// `serializer_max_series_points_per_payload`—max data points across all series in a single series request payload.
+<a href=#162 id=162 data-nosnippet>162</a>    </span>SERIALIZER_MAX_SERIES_POINTS_PER_PAYLOAD = SalukiAnnotation {
+<a href=#163 id=163 data-nosnippet>163</a>        schema: <span class="kw-2">&amp;</span>schema::SERIALIZER_MAX_SERIES_POINTS_PER_PAYLOAD,
 <a href=#164 id=164 data-nosnippet>164</a>        support_level: SupportLevel::Full,
 <a href=#165 id=165 data-nosnippet>165</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
 <a href=#166 id=166 data-nosnippet>166</a>        env_var_override: <span class="prelude-val">None</span>,
 <a href=#167 id=167 data-nosnippet>167</a>        used_by: <span class="kw-2">&amp;</span>[structs::DATADOG_METRICS_CONFIGURATION],
-<a href=#168 id=168 data-nosnippet>168</a>        value_type_override: <span class="prelude-val">None</span>,
+<a href=#168 id=168 data-nosnippet>168</a>        value_type_override: <span class="prelude-val">Some</span>(ValueType::Integer),
 <a href=#169 id=169 data-nosnippet>169</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#170 id=170 data-nosnippet>170</a>        pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::Checks, Pipeline::DogStatsD]),
 <a href=#171 id=171 data-nosnippet>171</a>    };
 <a href=#172 id=172 data-nosnippet>172</a>
-<a href=#173 id=173 data-nosnippet>173</a>    <span class="doccomment">/// `env`—the environment name attached to all emitted telemetry.
-<a href=#174 id=174 data-nosnippet>174</a>    </span>ENV = SalukiAnnotation {
-<a href=#175 id=175 data-nosnippet>175</a>        schema: <span class="kw-2">&amp;</span>schema::ENV,
+<a href=#173 id=173 data-nosnippet>173</a>    <span class="doccomment">/// `use_v2_api.series`—when `false`, send series metrics to the legacy V1 JSON intake at `/api/v1/series`.
+<a href=#174 id=174 data-nosnippet>174</a>    </span>USE_V2_API_SERIES = SalukiAnnotation {
+<a href=#175 id=175 data-nosnippet>175</a>        schema: <span class="kw-2">&amp;</span>schema::USE_V2_API_SERIES,
 <a href=#176 id=176 data-nosnippet>176</a>        support_level: SupportLevel::Full,
 <a href=#177 id=177 data-nosnippet>177</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
 <a href=#178 id=178 data-nosnippet>178</a>        env_var_override: <span class="prelude-val">None</span>,
-<a href=#179 id=179 data-nosnippet>179</a>        used_by: <span class="kw-2">&amp;</span>[
-<a href=#180 id=180 data-nosnippet>180</a>            structs::DATADOG_APM_STATS_ENCODER_CONFIGURATION,
-<a href=#181 id=181 data-nosnippet>181</a>            structs::DATADOG_TRACE_CONFIGURATION,
-<a href=#182 id=182 data-nosnippet>182</a>        ],
-<a href=#183 id=183 data-nosnippet>183</a>        value_type_override: <span class="prelude-val">None</span>,
-<a href=#184 id=184 data-nosnippet>184</a>        test_json: <span class="prelude-val">None</span>,
-<a href=#185 id=185 data-nosnippet>185</a>        pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::Traces]),
-<a href=#186 id=186 data-nosnippet>186</a>    };
-<a href=#187 id=187 data-nosnippet>187</a>}
+<a href=#179 id=179 data-nosnippet>179</a>        used_by: <span class="kw-2">&amp;</span>[structs::DATADOG_METRICS_CONFIGURATION],
+<a href=#180 id=180 data-nosnippet>180</a>        value_type_override: <span class="prelude-val">None</span>,
+<a href=#181 id=181 data-nosnippet>181</a>        test_json: <span class="prelude-val">None</span>,
+<a href=#182 id=182 data-nosnippet>182</a>        pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::Checks, Pipeline::DogStatsD]),
+<a href=#183 id=183 data-nosnippet>183</a>    };
+<a href=#184 id=184 data-nosnippet>184</a>
+<a href=#185 id=185 data-nosnippet>185</a>    <span class="doccomment">/// `env`—the environment name attached to all emitted telemetry.
+<a href=#186 id=186 data-nosnippet>186</a>    </span>ENV = SalukiAnnotation {
+<a href=#187 id=187 data-nosnippet>187</a>        schema: <span class="kw-2">&amp;</span>schema::ENV,
+<a href=#188 id=188 data-nosnippet>188</a>        support_level: SupportLevel::Full,
+<a href=#189 id=189 data-nosnippet>189</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
+<a href=#190 id=190 data-nosnippet>190</a>        env_var_override: <span class="prelude-val">None</span>,
+<a href=#191 id=191 data-nosnippet>191</a>        used_by: <span class="kw-2">&amp;</span>[
+<a href=#192 id=192 data-nosnippet>192</a>            structs::DATADOG_APM_STATS_ENCODER_CONFIGURATION,
+<a href=#193 id=193 data-nosnippet>193</a>            structs::DATADOG_TRACE_CONFIGURATION,
+<a href=#194 id=194 data-nosnippet>194</a>        ],
+<a href=#195 id=195 data-nosnippet>195</a>        value_type_override: <span class="prelude-val">None</span>,
+<a href=#196 id=196 data-nosnippet>196</a>        test_json: <span class="prelude-val">None</span>,
+<a href=#197 id=197 data-nosnippet>197</a>        pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::Traces]),
+<a href=#198 id=198 data-nosnippet>198</a>    };
+<a href=#199 id=199 data-nosnippet>199</a>}
 </code></pre></div></section></main></body></html>
