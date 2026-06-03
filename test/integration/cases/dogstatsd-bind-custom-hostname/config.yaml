@@ -27,7 +27,7 @@ timeout: 120s
 # Docker-only: uses PANORAMIC_DYNAMIC shell hooks that run `hostname -i` and write /etc/hosts
 # from inside the container. Neither translates to the mac host runtime; re-enable
 # once dynamic resolution grows a portable mechanism.
-runtimes: [docker]
+runtimes: [docker, windows]
 
 env:
   DD_API_KEY: "test-api-key"

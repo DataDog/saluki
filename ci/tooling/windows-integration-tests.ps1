@@ -237,7 +237,7 @@ $PanoramicArgs = @(
     "-d", $TestDir,
     "--runtime", "windows",
     "--no-tui",
-    "-p", "1",
+    "-p", "4",
     "-l", $env:PANORAMIC_LOG_DIR
 )
 Invoke-Native -FilePath $Panoramic -Arguments $PanoramicArgs
