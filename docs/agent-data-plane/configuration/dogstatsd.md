@@ -446,6 +446,7 @@ when the receiving syslog daemon expects the Agent's RFC-style header.
 | `secret_backend_command`                         | Secret resolver executable path        |
 | `secret_backend_timeout`                         | Secret backend timeout (seconds)       |
 | `serializer_compressor_kind`                     | Payload compression algorithm          |
+| `serializer_max_series_points_per_payload`       | Max data points per series payload     |
 | `site`                                           | Datadog site domain                    |
 | `statsd_metric_blocklist`                        | Metric name blocklist                  |
 | `statsd_metric_blocklist_match_prefix`           | Blocklist uses prefix matching         |
