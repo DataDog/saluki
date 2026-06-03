@@ -16,9 +16,11 @@ clap = { workspace = true, features = [
   "std",
   "usage",
 ] }
+itoa = { workspace = true }
 num-traits = { workspace = true }
 rand = { workspace = true }
 rand_distr = { workspace = true }
+ryu = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }

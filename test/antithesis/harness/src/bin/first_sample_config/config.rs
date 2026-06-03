@@ -64,17 +64,17 @@ impl Distribution<DurationSeconds> for Probe {
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum LogLevel {
-    /// Warnings and above.
-    Warn,
-    /// Errors only.
+    /// Errors only — the quietest level that still logs.
     Error,
+    /// No logs at all — the floor of the log-output budget.
+    Off,
 }
 
 impl Distribution<LogLevel> for StandardUniform {
     fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> LogLevel {
         match rng.random_range(0..2u8) {
-            0 => LogLevel::Warn,
-            _ => LogLevel::Error,
+            0 => LogLevel::Error,
+            _ => LogLevel::Off,
         }
     }
 }
