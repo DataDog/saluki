@@ -71,30 +71,8 @@ function Start-CoreAgent {
     return $Agent
 }
 
-function Wait-ForCoreAgentIpc {
-    $Deadline = (Get-Date).AddSeconds(60)
-    while ((Get-Date) -lt $Deadline) {
-        if ((Test-Path "C:\ProgramData\Datadog\auth_token") -and (Test-Path "C:\ProgramData\Datadog\ipc_cert.pem")) {
-            Write-Host "[*] Core Agent IPC credentials are present."
-            return
-        }
-        Start-Sleep -Seconds 1
-    }
-
-    foreach ($Path in @("C:\ProgramData\Datadog\saluki-core-agent.stdout.log", "C:\ProgramData\Datadog\saluki-core-agent.stderr.log")) {
-        if (Test-Path $Path) {
-            Write-Host "[*] Core Agent log: ${Path}"
-            Get-Content $Path
-        }
-    }
-    throw "Timed out waiting for Core Agent IPC credentials."
-}
-
 Resolve-PanoramicDynamicEnvironment
 $Agent = Start-CoreAgent
-if ($Agent) {
-    Wait-ForCoreAgentIpc
-}
 
 & "C:\adp\agent-data-plane.exe" @args
 $ExitCode = $LASTEXITCODE
