@@ -385,19 +385,6 @@ crate::declare_annotations! {
         test_json: None,
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
-    /// `enable_json_stream_shared_compressor_buffers` - shared JSON stream compressor buffer allocation.
-    ENABLE_JSON_STREAM_SHARED_COMPRESSOR_BUFFERS = SalukiAnnotation {
-        schema: &schema::ENABLE_JSON_STREAM_SHARED_COMPRESSOR_BUFFERS,
-        // Not implemented. #1749
-        support_level: SupportLevel::Incompatible(Severity::Low),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-        // Metrics encoder (dd_metrics_encode) is used by DogStatsD, Checks, and OTLP native (Traces active); APM traces use a separate encoder.
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD, Pipeline::Checks, Pipeline::Traces]),
-    };
     /// `forwarder_requeue_buffer_size` - forwarder in-memory requeue buffer size.
     FORWARDER_REQUEUE_BUFFER_SIZE = SalukiAnnotation {
         schema: &schema::FORWARDER_REQUEUE_BUFFER_SIZE,

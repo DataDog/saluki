@@ -55,6 +55,7 @@ architecture is fundamentally different or the feature is platform-specific.
 | `dogstatsd_queue_size`                         | Packet channel buffer size         | ADP uses async tasks                                         |
 | `dogstatsd_telemetry_enabled_listener_id`      | Per-listener telemetry tagging     | Not feasible to thread through                               |
 | `dogstatsd_workers_count`                      | Number of DSD processing workers   | ADP uses async tasks                                         |
+| `enable_json_stream_shared_compressor_buffers` | Shared compressor buffer pool      | Rust request builders own fixed-capacity buffers             |
 | `entity_id`                                    | Agent pod entity ID                | ADP internal DogStatsD telemetry uses OpenMetrics            |
 | `use_dogstatsd`                                | Master DogStatsD enable toggle     | Core Agent evaluates and sets `data_plane.dogstatsd.enabled` |
 
@@ -290,7 +291,6 @@ ways that are not yet fully characterized.
 | `dogstatsd_disable_verbose_logs`                                 | Suppress noisy parse error logs                 | [#1350] |
 | `dogstatsd_experimental_http.enabled`                            | Enable experimental HTTP/H2C DSD listener       | [#1682] |
 | `dogstatsd_experimental_http.listen_address`                     | Bind address for experimental HTTP DSD listener | [#1682] |
-| `enable_json_stream_shared_compressor_buffers`                   | Pre-allocate shared compressor buffers          | [#1749] |
 | `forwarder_apikey_validation_interval`                           | API key check interval (minutes)                | [#1357] |
 | `forwarder_flush_to_disk_mem_ratio`                              | Mem-to-disk flush threshold                     | [#1364] |
 | `forwarder_high_prio_buffer_size`                                | High-priority request queue size                | [#1362] |
