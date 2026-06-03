@@ -18,8 +18,10 @@ pub use self::context::TopologyContext;
 
 mod graph;
 
-mod ids;
-pub use self::ids::*;
+pub mod ids;
+pub use self::ids::{
+    ComponentId, ComponentOutputId, OutputDefinition, OutputName, TypedComponentId, TypedComponentOutputId,
+};
 
 pub mod interconnect;
 use self::interconnect::{Consumer, Dispatcher};
