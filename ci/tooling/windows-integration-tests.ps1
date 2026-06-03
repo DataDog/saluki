@@ -125,6 +125,7 @@ function Build-WindowsAdpImage {
 
     $ImageTag = if ($env:WINDOWS_ADP_IMAGE_TAG) { $env:WINDOWS_ADP_IMAGE_TAG } else { "saluki-images/agent-data-plane:testing-windows" }
     $BaseImage = if ($env:WINDOWS_ADP_BASE_IMAGE) { $env:WINDOWS_ADP_BASE_IMAGE } else { "mcr.microsoft.com/windows/servercore:ltsc2022" }
+    $BuildImage = if ($env:WINBUILDIMAGE) { $env:WINBUILDIMAGE } else { $BaseImage }
     $ContextDir = Join-Path $env:TEMP "saluki-windows-adp-image"
 
     Remove-Item -Recurse -Force $ContextDir -ErrorAction SilentlyContinue
@@ -136,9 +137,13 @@ function Build-WindowsAdpImage {
 
     $Dockerfile = @"
 # escape=``
+FROM ${BuildImage} AS winbuild
 FROM ${BaseImage}
 WORKDIR C:\adp
 RUN New-Item -ItemType Directory -Force C:\ProgramData\Datadog
+COPY --from=winbuild C:\Windows\System32\vcruntime140.dll C:\adp\vcruntime140.dll
+COPY --from=winbuild C:\Windows\System32\vcruntime140_1.dll C:\adp\vcruntime140_1.dll
+COPY --from=winbuild C:\Windows\System32\msvcp140.dll C:\adp\msvcp140.dll
 COPY agent-data-plane.exe C:\adp\agent-data-plane.exe
 COPY entrypoint.ps1 C:\adp\entrypoint.ps1
 COPY auth_token C:\ProgramData\Datadog\auth_token

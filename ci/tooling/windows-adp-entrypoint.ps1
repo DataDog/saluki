@@ -74,6 +74,9 @@ function Start-CoreAgent {
 Resolve-PanoramicDynamicEnvironment
 $Agent = Start-CoreAgent
 
+Write-Host "[*] ADP runtime directory:"
+Get-ChildItem "C:\adp" | ForEach-Object { Write-Host "  $($_.Name)" }
+
 & "C:\adp\agent-data-plane.exe" @args
 $ExitCode = $LASTEXITCODE
 
