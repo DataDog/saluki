@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["OutputName"],"struct":["ComponentId","ComponentOutputId","Multiple","OutputDefinition","Single","TypedComponentId","TypedComponentOutputId"],"trait":["AsComponentIds"]};
