@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["Vibe"],"fn":["sample_vibe","send"]};
