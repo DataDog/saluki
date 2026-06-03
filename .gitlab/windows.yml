@@ -101,7 +101,7 @@ test-integration-windows-amd64:
       -e WINDOWS_CI_CARGO_HOME="c:\mnt\.ci-cache\cargo"
       -e RUSTUP_HOME="c:\mnt\.ci-cache\rustup"
       -e CARGO_TARGET_DIR="c:\mnt\target\windows-ci"
-      -e WINDOWS_ADP_BASE_IMAGE="registry.datadoghq.com/agent:7.78.0-servercore-ltsc2022"
+      -e WINDOWS_ADP_BASE_IMAGE="registry.datadoghq.com/agent:7.78.0-ltsc2022"
       -e PROTOC_VERSION="29.3"
       -e PROTOC_SHA256="57ea59e9f551ad8d71ffaa9b5cfbe0ca1f4e720972a1db7ec2d12ab44bff9383"
       -e PANORAMIC_LOG_DIR="c:\mnt\integration-logs"
