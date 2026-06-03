@@ -370,7 +370,7 @@ impl TopologyBlueprint {
     ///
     /// If any of the upstream or downstream component IDs are invalid or don't exist, or if the data types between one
     /// of the upstream/downstream component pairs is incompatible, an error is returned.
-    pub fn connect_component<MS, SI, MD, DI>(
+    pub fn connect_components<MS, SI, MD, DI>(
         &mut self, upstream_output_component_ids: SI, downstream_component_ids: DI,
     ) -> Result<&mut Self, GenericError>
     where
@@ -708,7 +708,7 @@ mod tests {
         let mut blueprint = blueprint_with_sources_and_destinations(&["source"], &["dest_a", "dest_b"]);
 
         blueprint
-            .connect_component("source", ["dest_a", "dest_b"])
+            .connect_components("source", ["dest_a", "dest_b"])
             .expect("should not fail to connect component");
 
         assert_eq!(
@@ -727,7 +727,7 @@ mod tests {
         let mut blueprint = blueprint_with_sources_and_destinations(&["source_a", "source_b"], &["dest"]);
 
         blueprint
-            .connect_component(["source_a", "source_b"], "dest")
+            .connect_components(["source_a", "source_b"], "dest")
             .expect("should not fail to connect component");
 
         assert_eq!(
@@ -746,7 +746,7 @@ mod tests {
         let mut blueprint = blueprint_with_sources_and_destinations(&["source_a", "source_b"], &["dest_a", "dest_b"]);
 
         blueprint
-            .connect_component(["source_a", "source_b"], ["dest_a", "dest_b"])
+            .connect_components(["source_a", "source_b"], ["dest_a", "dest_b"])
             .expect("should not fail to connect component");
 
         assert_eq!(
