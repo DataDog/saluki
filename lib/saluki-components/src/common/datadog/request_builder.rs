@@ -118,6 +118,15 @@ where
     },
     #[snafu(display("input was invalid for request builder: {:?}'", input))]
     InvalidInput { input: E::Input },
+    #[snafu(display(
+        "input data point count ({}) exceeds per-payload data point limit ({})",
+        data_point_count,
+        data_point_limit
+    ))]
+    InputExceedsDataPointLimit {
+        data_point_count: usize,
+        data_point_limit: usize,
+    },
     #[snafu(display("failed to encode/write payload: {}", source))]
     FailedToEncode { source: E::EncodeError },
     #[snafu(display(
@@ -171,6 +180,7 @@ where
     uncompressed_len_limit: usize,
     max_inputs_per_payload: usize,
     max_data_points_per_payload: usize,
+    encoded_data_points: usize,
     encoded_inputs: Vec<E::Input>,
 }
 
@@ -203,6 +213,7 @@ where
             uncompressed_len_limit,
             max_inputs_per_payload: usize::MAX,
             max_data_points_per_payload: usize::MAX,
+            encoded_data_points: 0,
             encoded_inputs: Vec::new(),
         })
     }
@@ -331,20 +342,31 @@ where
             return Err(RequestBuilderError::InvalidInput { input });
         }
 
+        let input_data_point_count = self.encoder.input_data_point_count(&input);
+
+        // If this input alone exceeds the data point limit, it can never fit in any payload: return an error
+        // immediately rather than signaling a flush (which would loop forever on an empty buffer).
+        if input_data_point_count > self.max_data_points_per_payload {
+            return Err(RequestBuilderError::InputExceedsDataPointLimit {
+                data_point_count: input_data_point_count,
+                data_point_limit: self.max_data_points_per_payload,
+            });
+        }
+
         // Make sure we haven't hit the maximum number of inputs per payload.
         if self.encoded_inputs.len() >= self.max_inputs_per_payload {
             trace!("Maximum number of inputs per payload reached.");
             return Ok(Some(input));
         }
 
-        // Make sure adding this input's data points wouldn't exceed the per-payload data point limit.
-        let input_data_points = self.encoder.input_data_point_count(&input);
-        if input_data_points > 0 && self.max_data_points_per_payload != usize::MAX {
-            let current_data_points = self.encoded_data_point_count(&self.encoded_inputs);
-            if current_data_points + input_data_points > self.max_data_points_per_payload {
-                trace!("Maximum data points per payload reached.");
-                return Ok(Some(input));
-            }
+        // Make sure adding this input's data points wouldn't exceed the per-payload data point limit. We allow the
+        // first input through above only if it fits by itself, so this branch only signals a normal flush boundary
+        // for a non-empty payload.
+        if self.encoded_data_points > 0
+            && self.encoded_data_points.saturating_add(input_data_point_count) > self.max_data_points_per_payload
+        {
+            trace!("Maximum data points per payload reached.");
+            return Ok(Some(input));
         }
 
         // Try encoding the input.
@@ -356,6 +378,7 @@ where
         // Otherwise, we wrote the encoded input successfully so we'll hold on to that input for now in case we need to
         // split the payload later.
         if self.encode_inner(&input).await? {
+            self.encoded_data_points += input_data_point_count;
             self.encoded_inputs.push(input);
             Ok(None)
         } else {
@@ -533,6 +556,7 @@ where
     fn clear_encoded_inputs(&mut self) -> usize {
         let len = self.encoded_inputs.len();
         self.encoded_inputs.clear();
+        self.encoded_data_points = 0;
         len
     }
 
@@ -577,6 +601,7 @@ where
         //
         // We can do this by swapping it out with a new `Vec<E::Input>` since empty vectors don't allocate at all.
         let mut encoded_inputs = std::mem::take(&mut self.encoded_inputs);
+        self.encoded_data_points = 0;
         let encoded_inputs_pivot = encoded_inputs.len() / 2;
 
         let first_half_encoded_inputs = &encoded_inputs[0..encoded_inputs_pivot];
@@ -1088,6 +1113,28 @@ mod tests {
         assert_eq!(None, request_builder.encode(input1).await.unwrap());
         assert_eq!(None, request_builder.encode(input2).await.unwrap());
         assert_eq!(Some(input3.clone()), request_builder.encode(input3).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn input_exceeding_max_data_points_returns_error() {
+        // An input whose data point count exceeds the limit alone must return an error (not Ok(Some)),
+        // so the caller is not signaled to flush an empty buffer (which would panic).
+        let encoder = TestEncoder::new(usize::MAX, usize::MAX, "/submit");
+        let mut request_builder = create_no_compression_request_builder(encoder).await;
+        request_builder.with_max_data_points_per_payload(2);
+
+        // "hello" has 5 data points > limit of 2.
+        let result = request_builder.encode("hello".to_string()).await;
+        match result {
+            Err(RequestBuilderError::InputExceedsDataPointLimit {
+                data_point_count,
+                data_point_limit,
+            }) => {
+                assert_eq!(data_point_count, 5);
+                assert_eq!(data_point_limit, 2);
+            }
+            other => panic!("expected InputExceedsDataPointLimit, got: {:?}", other),
+        }
     }
 
     #[tokio::test]
