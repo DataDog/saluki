@@ -138,7 +138,7 @@ FROM ${BaseImage}
 WORKDIR C:\adp
 COPY agent-data-plane.exe C:\adp\agent-data-plane.exe
 COPY entrypoint.ps1 C:\adp\entrypoint.ps1
-ENTRYPOINT ["powershell.exe", "-NoProfile", "-NonInteractive", "-File", "C:\\adp\\entrypoint.ps1"]
+ENTRYPOINT ["pwsh", "-NoProfile", "-NonInteractive", "-File", "C:\\adp\\entrypoint.ps1"]
 CMD ["-c", "C:\\ProgramData\\Datadog\\datadog.yaml", "run"]
 "@
     Set-Content -Path (Join-Path $ContextDir "Dockerfile") -Value $Dockerfile -Encoding ASCII
