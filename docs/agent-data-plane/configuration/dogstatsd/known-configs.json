@@ -1855,10 +1855,10 @@
   },
   {
     "key": "serializer_max_series_points_per_payload",
-    "feature_state": "NOT_APPLICABLE",
+    "feature_state": "PARITY",
     "action": "NONE",
     "description": "Max data points per series payload",
-    "reason": "Removed from the core Agent; ADP intentionally does not support it.",
+    "reason": "ADP reads this Agent key for V2 series payload data point limits. Defaults match the core agent.",
     "issue": "#1354",
     "adp_key": null
   },
