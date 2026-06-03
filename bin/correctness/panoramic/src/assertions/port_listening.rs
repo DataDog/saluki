@@ -134,18 +134,10 @@ async fn check_udp_port(host: &str, port: u16) -> bool {
 }
 
 async fn check_tcp_port_in_container(container_name: &str, host: &str, port: u16) -> bool {
-    let command = format!(
-        "$c=New-Object System.Net.Sockets.TcpClient; \
-         $a=$c.BeginConnect('{}',{},$null,$null); \
-         if ($a.AsyncWaitHandle.WaitOne(1000)) {{ \
-             try {{ $c.EndConnect($a); $c.Close(); exit 0 }} catch {{ $c.Close(); exit 1 }} \
-         }} else {{ $c.Close(); exit 1 }}",
-        host, port
-    );
-
+    let endpoint = format!("telnet://{}:{}", host, port);
     exec_status(
         container_name,
-        vec!["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", &command],
+        vec!["curl.exe", "-sS", "--connect-timeout", "1", &endpoint],
     )
     .await
     .unwrap_or(false)

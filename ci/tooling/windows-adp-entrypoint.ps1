@@ -62,6 +62,7 @@ function Start-CoreAgent {
     Write-Host "[*] Starting Datadog Agent container entrypoint..."
     $Agent = Start-Process -FilePath "C:\entrypoint.exe" `
         -ArgumentList @("datadogagent") `
+        -WorkingDirectory "C:\" `
         -NoNewWindow `
         -PassThru
 
