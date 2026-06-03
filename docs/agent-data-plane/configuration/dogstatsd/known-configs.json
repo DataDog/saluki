@@ -1036,10 +1036,10 @@
   },
   {
     "key": "enable_json_stream_shared_compressor_buffers",
-    "feature_state": "MISSING",
-    "action": "INVESTIGATE",
+    "feature_state": "NOT_APPLICABLE",
+    "action": "NONE",
     "description": "Pre-allocate shared compressor buffers",
-    "reason": "Marked for investigation; previously dismissed as not-applicable.",
+    "reason": "ADP does not use a shared compressor buffer pool; Rust request builders own fixed-capacity scratch and compression buffers.",
     "issue": "#1749",
     "adp_key": null
   },

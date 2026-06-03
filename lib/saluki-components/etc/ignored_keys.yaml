@@ -1338,6 +1338,8 @@
   reason: initial bulk
 - name: enable_gohai
   reason: initial bulk
+- name: enable_json_stream_shared_compressor_buffers
+  reason: ADP does not use a shared compressor buffer pool; Rust request builders own fixed-capacity scratch and compression buffers.
 - name: enable_metadata_collection
   reason: initial bulk
 - name: enable_payloads.json_to_v1_intake
