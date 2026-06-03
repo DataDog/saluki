@@ -1333,10 +1333,10 @@
   },
   {
     "key": "heroku_dyno",
-    "feature_state": "MISSING",
-    "action": "INVESTIGATE",
-    "description": "Override agent name for Heroku telemetry",
-    "reason": "Marked for investigation; previously dismissed as not-applicable.",
+    "feature_state": "NOT_APPLICABLE",
+    "action": "NONE",
+    "description": "Heroku dyno telemetry mode",
+    "reason": "Core Agent-owned Heroku Agent heartbeat behavior; ADP is not launched in the supported Heroku Agent package path and does not emit datadog.<agentName>.running.",
     "issue": "#1753",
     "adp_key": null
   },

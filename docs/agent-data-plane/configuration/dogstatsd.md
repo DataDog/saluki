@@ -56,6 +56,7 @@ architecture is fundamentally different or the feature is platform-specific.
 | `dogstatsd_telemetry_enabled_listener_id`      | Per-listener telemetry tagging     | Not feasible to thread through                               |
 | `dogstatsd_workers_count`                      | Number of DSD processing workers   | ADP uses async tasks                                         |
 | `entity_id`                                    | Agent pod entity ID                | ADP internal DogStatsD telemetry uses OpenMetrics            |
+| `heroku_dyno`                                  | Heroku dyno telemetry mode         | Core Agent-owned Heroku Agent heartbeat behavior             |
 | `use_dogstatsd`                                | Master DogStatsD enable toggle     | Core Agent evaluates and sets `data_plane.dogstatsd.enabled` |
 
 ### Memory-based rate limiter (`dogstatsd_mem_based_rate_limiter.*`)
@@ -269,6 +270,20 @@ only; mapping profiles still run, so each metric pays the regex evaluation cost 
 If you previously set `dogstatsd_mapper_cache_size: 0` in the core agent to turn off the mapper,
 clear `dogstatsd_mapper_profiles` instead when running ADP. See [#1687].
 
+## Heroku dyno telemetry (`heroku_dyno`)
+
+The `heroku_dyno` setting affects the core Agent's self-telemetry heartbeat. It changes the Agent
+flavor used by the core Agent aggregator so the running heartbeat is emitted as
+`datadog.heroku_agent.running`.
+
+ADP does not run in the supported Heroku Agent package path: the Heroku Agent package excludes the
+`agent-data-plane` dependency, and the Heroku buildpack launches the core Agent, trace Agent, and
+optionally process Agent without launching an `agent-data-plane` process. ADP also does not emit the
+core Agent's `datadog.<agentName>.running` series.
+
+Because the affected heartbeat is core-Agent-owned and ADP is not part of the supported Heroku
+deployment path, ADP does not implement `heroku_dyno`. See [#1753].
+
 ## Compatibility Unknown
 
 <!-- section:compatibility-unknown -->
@@ -299,7 +314,6 @@ ways that are not yet fully characterized.
 | `forwarder_requeue_buffer_size`                                  | In-memory re-queue buffer size                  | [#1755] |
 | `forwarder_retry_queue_capacity_time_interval_sec`               | Retry queue time-based capacity                 | [#1365] |
 | `forwarder_stop_timeout`                                         | Timeout (s) for forwarder graceful stop         | [#1680] |
-| `heroku_dyno`                                                    | Override agent name for Heroku telemetry        | [#1685] |
 | `telemetry.dogstatsd.aggregator_channel_latency_buckets`         | Histogram buckets: DSD aggregator channel lag   | [#1679] |
 | `telemetry.dogstatsd.listeners_channel_latency_buckets`          | Histogram buckets: listener channel latency     | [#1679] |
 | `telemetry.dogstatsd.listeners_latency_buckets`                  | Histogram buckets: listener processing          | [#1679] |

@@ -427,7 +427,8 @@ crate::declare_annotations! {
     /// `heroku_dyno` - Heroku dyno name override for agent telemetry.
     HEROKU_DYNO = SalukiAnnotation {
         schema: &schema::HEROKU_DYNO,
-        // Not implemented. #1753
+        // Not planned: this changes core Agent heartbeat telemetry in the Heroku Agent package
+        // path, where ADP is not launched. #1753
         support_level: SupportLevel::Incompatible(Severity::High),
         additional_yaml_paths: &[],
         env_var_override: None,
