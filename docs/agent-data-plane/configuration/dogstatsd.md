@@ -295,7 +295,7 @@ ways that are not yet fully characterized.
 | `forwarder_flush_to_disk_mem_ratio`                              | Mem-to-disk flush threshold                     | [#1364] |
 | `forwarder_high_prio_buffer_size`                                | High-priority request queue size                | [#1362] |
 | `forwarder_low_prio_buffer_size`                                 | Low-priority request queue size                 | [#1362] |
-| `forwarder_max_concurrent_requests`                              | Max concurrent HTTP requests                    | [#1363] |
+| `forwarder_num_workers`                                          | Forwarder worker count                          | [#1363] |
 | `forwarder_requeue_buffer_size`                                  | In-memory re-queue buffer size                  | [#1755] |
 | `forwarder_retry_queue_capacity_time_interval_sec`               | Retry queue time-based capacity                 | [#1365] |
 | `forwarder_stop_timeout`                                         | Timeout (s) for forwarder graceful stop         | [#1680] |
@@ -433,7 +433,7 @@ when the receiving syslog daemon expects the Agent's RFC-style header.
 | `forwarder_backoff_factor`                                  | Retry backoff jitter factor               |
 | `forwarder_backoff_max`                                     | Retry backoff ceiling (secs)              |
 | `forwarder_connection_reset_interval`                       | HTTP conn reset interval (secs)           |
-| `forwarder_num_workers`                                     | Concurrent forwarder workers              |
+| `forwarder_max_concurrent_requests`                         | Max concurrent HTTP requests              |
 | `forwarder_recovery_interval`                               | Backoff recovery decrease factor          |
 | `forwarder_recovery_reset`                                  | Reset errors on success                   |
 | `forwarder_retry_queue_max_size`                            | Retry queue max size (deprecated)         |

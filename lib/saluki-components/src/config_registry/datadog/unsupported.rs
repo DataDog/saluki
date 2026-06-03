@@ -135,11 +135,11 @@ crate::declare_annotations! {
         pipeline_affinity: PipelineAffinity::CrossCutting,
     };
 
-    /// `forwarder_max_concurrent_requests` - max concurrent HTTP requests.
-    FORWARDER_MAX_CONCURRENT_REQUESTS = SalukiAnnotation {
-        schema: &schema::FORWARDER_MAX_CONCURRENT_REQUESTS,
-        // ADP concurrency model differs. #1363
-        support_level: SupportLevel::Incompatible(Severity::Medium),
+    /// `forwarder_num_workers` - forwarder worker count.
+    FORWARDER_NUM_WORKERS = SalukiAnnotation {
+        schema: &schema::FORWARDER_NUM_WORKERS,
+        // ADP does not use this setting. #1363
+        support_level: SupportLevel::Incompatible(Severity::Low),
         additional_yaml_paths: &[],
         env_var_override: None,
         used_by: &[],

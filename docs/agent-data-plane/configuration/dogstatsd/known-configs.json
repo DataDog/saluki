@@ -1207,20 +1207,20 @@
   },
   {
     "key": "forwarder_max_concurrent_requests",
-    "feature_state": "MISSING",
-    "action": "INVESTIGATE",
+    "feature_state": "PARITY",
+    "action": "NONE",
     "description": "Max concurrent outbound HTTP requests",
-    "reason": "ADP uses concurrency to emulate workers. Possible mapping: forwarder_num_workers -> hyper pool size, forwarder_max_concurrent_requests -> max connections. Needs research.",
-    "issue": "#1363",
+    "reason": "Implemented in ADP as the Tower request concurrency limit.",
+    "issue": null,
     "adp_key": null
   },
   {
     "key": "forwarder_num_workers",
-    "feature_state": "PARITY",
-    "action": "NONE",
-    "description": "Concurrent forwarder workers",
-    "reason": "Implemented in ADP. No action needed.",
-    "issue": null,
+    "feature_state": "MISSING",
+    "action": "INVESTIGATE",
+    "description": "Forwarder worker count",
+    "reason": "ADP does not use this key. Endpoint concurrency is controlled by forwarder_max_concurrent_requests.",
+    "issue": "#1363",
     "adp_key": null
   },
   {

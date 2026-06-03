@@ -362,7 +362,7 @@ async fn run_endpoint_io_loop<B>(
     let endpoint_domain = endpoint.endpoint().origin().ascii_serialization();
     debug!(
         endpoint_url,
-        num_workers = config.endpoint_concurrency(),
+        endpoint_concurrency = config.endpoint_concurrency(),
         "Starting endpoint I/O task."
     );
 
@@ -1299,7 +1299,7 @@ app.datadoghq.com: [key-a, key-b]
             "api_key": "test-api-key",
             "dd_url": forwarder_url,
             "forwarder_timeout": 1u64,
-            "forwarder_num_workers": 1usize,
+            "forwarder_max_concurrent_requests": 1usize,
             "forwarder_high_prio_buffer_size": 4usize,
             "forwarder_backoff_base": 0.001,
             "forwarder_backoff_max": 0.01,

@@ -14,7 +14,7 @@ use super::{
 };
 
 const fn default_endpoint_concurrency() -> usize {
-    1
+    10
 }
 
 const fn default_request_timeout_secs() -> u64 {
@@ -156,8 +156,11 @@ impl OpwMetricsConfiguration {
 pub struct ForwarderConfiguration {
     /// Maximum number of concurrent requests for an individual endpoint.
     ///
-    /// Defaults to 1.
-    #[serde(default = "default_endpoint_concurrency", rename = "forwarder_num_workers")]
+    /// Defaults to 10. If set to 0, request concurrency is clamped to 1.
+    #[serde(
+        default = "default_endpoint_concurrency",
+        rename = "forwarder_max_concurrent_requests"
+    )]
     endpoint_concurrency: usize,
 
     /// Request timeout, in seconds.
@@ -245,7 +248,11 @@ impl ForwarderConfiguration {
 
     /// Returns the maximum number of concurrent requests for an individual endpoint.
     pub const fn endpoint_concurrency(&self) -> usize {
-        self.endpoint_concurrency
+        if self.endpoint_concurrency == 0 {
+            1
+        } else {
+            self.endpoint_concurrency
+        }
     }
 
     /// Returns the request timeout.

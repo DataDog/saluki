@@ -104,9 +104,9 @@ crate::declare_annotations! {
 
     // ── ForwarderConfiguration direct fields ──────────────────────────────────
 
-    /// `forwarder_num_workers`—max concurrent requests per endpoint. Schema Float; field usize.
-    FORWARDER_NUM_WORKERS = SalukiAnnotation {
-        schema: &schema::FORWARDER_NUM_WORKERS,
+    /// `forwarder_max_concurrent_requests`—max concurrent HTTP requests per endpoint. Schema Float; field usize.
+    FORWARDER_MAX_CONCURRENT_REQUESTS = SalukiAnnotation {
+        schema: &schema::FORWARDER_MAX_CONCURRENT_REQUESTS,
         support_level: SupportLevel::Full,
         additional_yaml_paths: &[],
         env_var_override: None,
