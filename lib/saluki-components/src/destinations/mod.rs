@@ -4,7 +4,7 @@ mod blackhole;
 pub use self::blackhole::BlackholeConfiguration;
 
 mod dsd_stats;
-pub use self::dsd_stats::DogStatsDStatisticsConfiguration;
+pub use self::dsd_stats::{DogStatsDAPIHandler, DogStatsDStatisticsConfiguration};
 
 mod dsd_debug_log;
 pub use self::dsd_debug_log::DogStatsDDebugLogConfiguration;

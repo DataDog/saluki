@@ -700,6 +700,7 @@ async fn add_dsd_pipeline_to_blueprint(
     //    └─────────────────────┘    └ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┘
 
     let dsd_stats_config = DogStatsDStatisticsConfiguration::new();
+    let stats_api_handler = dsd_stats_config.api_handler();
     let dsd_config = DogStatsDConfiguration::from_configuration(config)
         .error_context("Failed to configure DogStatsD source.")?
         .with_workload_provider(env_provider.workload().clone())
@@ -740,7 +741,7 @@ async fn add_dsd_pipeline_to_blueprint(
         .add_transform("dsd_post_agg_filter", dsd_post_agg_filter_config)?
         .add_transform("events_enrich", events_enrich_config)?
         .add_transform("service_checks_enrich", service_checks_enrich_config)?
-        .add_destination("dsd_stats_out", dsd_stats_config.clone())?
+        .add_destination("dsd_stats_out", dsd_stats_config)?
         // Metrics.
         .connect_components_in_order([
             "dsd_in.metrics",
@@ -769,7 +770,7 @@ async fn add_dsd_pipeline_to_blueprint(
             .connect_components("dsd_in.metrics", "dsd_debug_log_out")?;
     }
     Ok(DogStatsDControlSurface {
-        stats_config: dsd_stats_config,
+        stats_api_handler,
         capture_api_handler: dsd_capture_api_handler,
         replay_api_handler: dsd_replay_api_handler,
     })

@@ -6,7 +6,7 @@ use saluki_app::{
     logging::LoggingOverrideController,
 };
 use saluki_components::{
-    destinations::DogStatsDStatisticsConfiguration,
+    destinations::DogStatsDAPIHandler,
     sources::{DogStatsDCaptureAPIHandler, DogStatsDReplayAPIHandler},
 };
 use saluki_config::GenericConfiguration;
@@ -28,8 +28,8 @@ use crate::{
 /// Contains all API handlers for the DogStatsD pipeline. This is present only when DogStatsD is
 /// enabled; when it is `None`, none of the DogStatsD control-plane endpoints are registered.
 pub struct DogStatsDControlSurface {
-    /// Configuration for the `/dogstatsd/stats` endpoint and statistics collection destination.
-    pub(crate) stats_config: DogStatsDStatisticsConfiguration,
+    /// API handler for the `/dogstatsd/stats` endpoint.
+    pub(crate) stats_api_handler: DogStatsDAPIHandler,
     /// API handler for the `/dogstatsd/capture/trigger` endpoint.
     pub(crate) capture_api_handler: DogStatsDCaptureAPIHandler,
     /// API handler for the `/dogstatsd/replay/session` endpoints.
@@ -39,7 +39,7 @@ pub struct DogStatsDControlSurface {
 impl DogStatsDControlSurface {
     pub(crate) fn register_handlers(self, builder: DynamicAPIBuilder) -> DynamicAPIBuilder {
         builder
-            .with_handler(self.stats_config.api_handler())
+            .with_handler(self.stats_api_handler)
             .with_handler(self.capture_api_handler)
             .with_handler(self.replay_api_handler)
     }
