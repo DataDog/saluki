@@ -82,19 +82,19 @@
 <a href=#82 id=82 data-nosnippet>82</a><span class="doccomment">/// Configuration for DogStatsD statistics destination and API handler.
 <a href=#83 id=83 data-nosnippet>83</a></span><span class="attr">#[derive(Clone)]
 <a href=#84 id=84 data-nosnippet>84</a></span><span class="kw">pub struct </span>DogStatsDStatisticsConfiguration {
-<a href=#85 id=85 data-nosnippet>85</a>    api_handler: DogStatsDAPIHandler,
+<a href=#85 id=85 data-nosnippet>85</a>    api_handler: DogStatsDStatsAPIHandler,
 <a href=#86 id=86 data-nosnippet>86</a>    rx: Arc&lt;Mutex&lt;StatsRequestReceiver&gt;&gt;,
 <a href=#87 id=87 data-nosnippet>87</a>}
 <a href=#88 id=88 data-nosnippet>88</a><span class="doccomment">/// State for the DogStatsD API handler.
 <a href=#89 id=89 data-nosnippet>89</a></span><span class="attr">#[derive(Clone)]
-<a href=#90 id=90 data-nosnippet>90</a></span><span class="kw">pub struct </span>DogStatsDAPIHandlerState {
+<a href=#90 id=90 data-nosnippet>90</a></span><span class="kw">pub struct </span>DogStatsDStatsAPIHandlerState {
 <a href=#91 id=91 data-nosnippet>91</a>    tx: Arc&lt;mpsc::Sender&lt;(oneshot::Sender&lt;StatsResponse&gt;, u64)&gt;&gt;,
 <a href=#92 id=92 data-nosnippet>92</a>}
 <a href=#93 id=93 data-nosnippet>93</a>
 <a href=#94 id=94 data-nosnippet>94</a><span class="doccomment">/// API handler for DogStatsD statistics endpoint.
 <a href=#95 id=95 data-nosnippet>95</a></span><span class="attr">#[derive(Clone)]
-<a href=#96 id=96 data-nosnippet>96</a></span><span class="kw">pub struct </span>DogStatsDAPIHandler {
-<a href=#97 id=97 data-nosnippet>97</a>    state: DogStatsDAPIHandlerState,
+<a href=#96 id=96 data-nosnippet>96</a></span><span class="kw">pub struct </span>DogStatsDStatsAPIHandler {
+<a href=#97 id=97 data-nosnippet>97</a>    state: DogStatsDStatsAPIHandlerState,
 <a href=#98 id=98 data-nosnippet>98</a>}
 <a href=#99 id=99 data-nosnippet>99</a>
 <a href=#100 id=100 data-nosnippet>100</a><span class="doccomment">/// DogStatsD destination that collects metrics and processes statistics.
@@ -202,9 +202,9 @@
 <a href=#202 id=202 data-nosnippet>202</a>    collection_duration_secs: u64,
 <a href=#203 id=203 data-nosnippet>203</a>}
 <a href=#204 id=204 data-nosnippet>204</a>
-<a href=#205 id=205 data-nosnippet>205</a><span class="kw">impl </span>DogStatsDAPIHandler {
+<a href=#205 id=205 data-nosnippet>205</a><span class="kw">impl </span>DogStatsDStatsAPIHandler {
 <a href=#206 id=206 data-nosnippet>206</a>    <span class="kw">async fn </span>stats_handler(
-<a href=#207 id=207 data-nosnippet>207</a>        State(state): State&lt;DogStatsDAPIHandlerState&gt;, Query(query): Query&lt;StatsQueryParams&gt;,
+<a href=#207 id=207 data-nosnippet>207</a>        State(state): State&lt;DogStatsDStatsAPIHandlerState&gt;, Query(query): Query&lt;StatsQueryParams&gt;,
 <a href=#208 id=208 data-nosnippet>208</a>    ) -&gt; (StatusCode, String) {
 <a href=#209 id=209 data-nosnippet>209</a>        <span class="kw">const </span>MAXIMUM_COLLECTION_DURATION_SECS: u64 = <span class="number">600</span>;
 <a href=#210 id=210 data-nosnippet>210</a>        <span class="kw">if </span>query.collection_duration_secs &gt; MAXIMUM_COLLECTION_DURATION_SECS {
@@ -250,8 +250,8 @@
 <a href=#250 id=250 data-nosnippet>250</a>    }
 <a href=#251 id=251 data-nosnippet>251</a>}
 <a href=#252 id=252 data-nosnippet>252</a>
-<a href=#253 id=253 data-nosnippet>253</a><span class="kw">impl </span>APIHandler <span class="kw">for </span>DogStatsDAPIHandler {
-<a href=#254 id=254 data-nosnippet>254</a>    <span class="kw">type </span>State = DogStatsDAPIHandlerState;
+<a href=#253 id=253 data-nosnippet>253</a><span class="kw">impl </span>APIHandler <span class="kw">for </span>DogStatsDStatsAPIHandler {
+<a href=#254 id=254 data-nosnippet>254</a>    <span class="kw">type </span>State = DogStatsDStatsAPIHandlerState;
 <a href=#255 id=255 data-nosnippet>255</a>
 <a href=#256 id=256 data-nosnippet>256</a>    <span class="kw">fn </span>generate_initial_state(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="self">Self</span>::State {
 <a href=#257 id=257 data-nosnippet>257</a>        <span class="self">self</span>.state.clone()
@@ -266,8 +266,8 @@
 <a href=#266 id=266 data-nosnippet>266</a>    <span class="doccomment">/// Creates a new `DogStatsDStatisticsConfiguration`.
 <a href=#267 id=267 data-nosnippet>267</a>    </span><span class="kw">pub fn </span>new() -&gt; <span class="self">Self </span>{
 <a href=#268 id=268 data-nosnippet>268</a>        <span class="kw">let </span>(tx, rx) = mpsc::channel(<span class="number">4</span>);
-<a href=#269 id=269 data-nosnippet>269</a>        <span class="kw">let </span>state = DogStatsDAPIHandlerState { tx: Arc::new(tx) };
-<a href=#270 id=270 data-nosnippet>270</a>        <span class="kw">let </span>handler = DogStatsDAPIHandler { state };
+<a href=#269 id=269 data-nosnippet>269</a>        <span class="kw">let </span>state = DogStatsDStatsAPIHandlerState { tx: Arc::new(tx) };
+<a href=#270 id=270 data-nosnippet>270</a>        <span class="kw">let </span>handler = DogStatsDStatsAPIHandler { state };
 <a href=#271 id=271 data-nosnippet>271</a>
 <a href=#272 id=272 data-nosnippet>272</a>        <span class="self">Self </span>{
 <a href=#273 id=273 data-nosnippet>273</a>            api_handler: handler,
@@ -276,7 +276,7 @@
 <a href=#276 id=276 data-nosnippet>276</a>    }
 <a href=#277 id=277 data-nosnippet>277</a>
 <a href=#278 id=278 data-nosnippet>278</a>    <span class="doccomment">/// Returns an API handler for DogStatsD API.
-<a href=#279 id=279 data-nosnippet>279</a>    </span><span class="kw">pub fn </span>api_handler(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; DogStatsDAPIHandler {
+<a href=#279 id=279 data-nosnippet>279</a>    </span><span class="kw">pub fn </span>api_handler(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; DogStatsDStatsAPIHandler {
 <a href=#280 id=280 data-nosnippet>280</a>        <span class="self">self</span>.api_handler.clone()
 <a href=#281 id=281 data-nosnippet>281</a>    }
 <a href=#282 id=282 data-nosnippet>282</a>}
