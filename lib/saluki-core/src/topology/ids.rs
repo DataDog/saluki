@@ -293,10 +293,10 @@ impl TypedComponentOutputId {
     }
 }
 
-/// Disambiguation marker for [`IntoComponentIds`] when a single component ID is given.
+/// Disambiguation marker for [`AsComponentIds`] when a single component ID is given.
 pub struct Single;
 
-/// Disambiguation marker for [`IntoComponentIds`] when multiple component IDs are given.
+/// Disambiguation marker for [`AsComponentIds`] when multiple component IDs are given.
 pub struct Multiple;
 
 /// Conversion into an iterator of component IDs.
