@@ -113,6 +113,21 @@ When writing or updating documentation, follow these guidelines. For full detail
 - **Links**: Descriptive text (not "click here"); relative paths for internal docs
 - **Code blocks**: Always specify language; keep examples minimal and focused
 
+#### Audience and scope
+
+Generic saluki crates (`lib/saluki-*`, `lib/saluki-io`) are general-purpose infrastructure.
+Their documentation and code comments **SHOULD NOT** reference:
+
+- The Datadog Agent by name (use "the server process", "the remote endpoint", or the specific
+  protocol instead)
+- Internal Datadog codenames or project names ("Nitro Enclaves" is fine as a well-known AWS
+  product, but internal Datadog project names are not)
+- Datadog-specific deployment topologies (use generic terms like "guest VM", "host process", etc.)
+
+This rule does NOT apply to `bin/agent-data-plane`, `lib/datadog-agent-commons`, configuration
+registry annotations, or known-configs documentation — all of which are explicitly
+Datadog Agent-specific.
+
 #### Rustdoc (code documentation)
 
 - **First line**: Complete sentence summarizing what the item is or does
