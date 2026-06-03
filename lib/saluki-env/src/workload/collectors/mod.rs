@@ -19,7 +19,9 @@ mod cgroups;
 #[cfg(target_os = "linux")]
 pub use self::cgroups::CgroupsMetadataCollector;
 
+#[cfg(unix)]
 mod containerd;
+#[cfg(unix)]
 pub use self::containerd::ContainerdMetadataCollector;
 
 /// A metadata collector.

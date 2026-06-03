@@ -4,6 +4,8 @@ codec
 protobuf
 tokio
 grpc
+vsock
+nameservers
 fsync
 healthcheck
 chmod

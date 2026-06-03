@@ -55,6 +55,9 @@ architecture is fundamentally different or the feature is platform-specific.
 | `dogstatsd_queue_size`                         | Packet channel buffer size         | ADP uses async tasks                                         |
 | `dogstatsd_telemetry_enabled_listener_id`      | Per-listener telemetry tagging     | Not feasible to thread through                               |
 | `dogstatsd_workers_count`                      | Number of DSD processing workers   | ADP uses async tasks                                         |
+| `enable_json_stream_shared_compressor_buffers` | Shared compressor buffer pool      | Rust request builders own fixed-capacity buffers             |
+| `entity_id`                                    | Agent pod entity ID                | ADP internal DogStatsD telemetry uses OpenMetrics            |
+| `heroku_dyno`                                  | Heroku dyno telemetry mode         | Core Agent-owned Heroku Agent heartbeat behavior             |
 | `use_dogstatsd`                                | Master DogStatsD enable toggle     | Core Agent evaluates and sets `data_plane.dogstatsd.enabled` |
 
 ### Memory-based rate limiter (`dogstatsd_mem_based_rate_limiter.*`)
@@ -110,6 +113,30 @@ configured destination before parsing, filtering, mapping, or aggregation. Forwa
 preserve the core Agent's packet-buffer grouping, so forwarded UDP datagrams may be split
 differently while carrying the same DogStatsD messages. ADP logs setup failures and tracks send
 failures through telemetry.
+
+### Multi-region failover metrics
+
+ADP supports multi-region failover for metrics. When `multi_region_failover.enabled` and
+`multi_region_failover.failover_metrics` are both `true`, ADP forwards metrics to the primary
+Datadog endpoint and to a second MRF endpoint.
+
+To enable the MRF metrics branch at startup, configure `multi_region_failover.api_key` and one of
+`multi_region_failover.site` or `multi_region_failover.dd_url`. If the MRF endpoint configuration is
+incomplete, ADP skips the MRF branch and continues forwarding to the primary endpoint.
+
+ADP does not fall back to the primary `api_key`, `site`, or `dd_url` for MRF traffic.
+`multi_region_failover.enabled` and endpoint selection are resolved at startup.
+`multi_region_failover.failover_metrics`, `multi_region_failover.metric_allowlist`, and
+`multi_region_failover.api_key` can refresh from live configuration after the MRF branch is enabled.
+
+| Config Key                               | Behavior                                                                   | Default |
+| ---------------------------------------- | -------------------------------------------------------------------------- | ------- |
+| `multi_region_failover.enabled`          | Enables multi-region failover mode.                                        | `false` |
+| `multi_region_failover.failover_metrics` | Enables metrics forwarding to the failover region when MRF is enabled.     | `false` |
+| `multi_region_failover.metric_allowlist` | Exact metric names to forward to MRF. Empty or unset forwards all metrics. | `[]`    |
+| `multi_region_failover.api_key`          | API key for the failover-region endpoint.                                  | unset   |
+| `multi_region_failover.site`             | Datadog site for the failover region, used as `https://app.mrf.<site>`.    | unset   |
+| `multi_region_failover.dd_url`           | Explicit failover intake URL. Takes precedence over `site` when set.       | unset   |
 
 ### Datadog intake TLS validation (`skip_ssl_validation`)
 
@@ -244,6 +271,20 @@ only; mapping profiles still run, so each metric pays the regex evaluation cost 
 If you previously set `dogstatsd_mapper_cache_size: 0` in the core agent to turn off the mapper,
 clear `dogstatsd_mapper_profiles` instead when running ADP. See [#1687].
 
+## Heroku dyno telemetry (`heroku_dyno`)
+
+The `heroku_dyno` setting affects the core Agent's self-telemetry heartbeat. It changes the Agent
+flavor used by the core Agent aggregator so the running heartbeat is emitted as
+`datadog.heroku_agent.running`.
+
+ADP does not run in the supported Heroku Agent package path: the Heroku Agent package excludes the
+`agent-data-plane` dependency, and the Heroku Datadog launch script starts the core Agent, trace Agent, and
+optionally process Agent without launching an `agent-data-plane` process. ADP also does not emit the
+core Agent's `datadog.<agentName>.running` series.
+
+Because the affected heartbeat is core-Agent-owned and ADP is not part of the supported Heroku
+deployment path, ADP does not implement `heroku_dyno`. See [#1753].
+
 ## Compatibility Unknown
 
 <!-- section:compatibility-unknown -->
@@ -265,8 +306,6 @@ ways that are not yet fully characterized.
 | `dogstatsd_disable_verbose_logs`                                 | Suppress noisy parse error logs                 | [#1350] |
 | `dogstatsd_experimental_http.enabled`                            | Enable experimental HTTP/H2C DSD listener       | [#1682] |
 | `dogstatsd_experimental_http.listen_address`                     | Bind address for experimental HTTP DSD listener | [#1682] |
-| `enable_json_stream_shared_compressor_buffers`                   | Pre-allocate shared compressor buffers          | [#1749] |
-| `entity_id`                                                      | Agent's own pod entity ID (DCA webhook)         | [#1752] |
 | `forwarder_apikey_validation_interval`                           | API key check interval (minutes)                | [#1357] |
 | `forwarder_flush_to_disk_mem_ratio`                              | Mem-to-disk flush threshold                     | [#1364] |
 | `forwarder_high_prio_buffer_size`                                | High-priority request queue size                | [#1362] |
@@ -275,10 +314,6 @@ ways that are not yet fully characterized.
 | `forwarder_requeue_buffer_size`                                  | In-memory re-queue buffer size                  | [#1755] |
 | `forwarder_retry_queue_capacity_time_interval_sec`               | Retry queue time-based capacity                 | [#1365] |
 | `forwarder_stop_timeout`                                         | Timeout (s) for forwarder graceful stop         | [#1680] |
-| `heroku_dyno`                                                    | Override agent name for Heroku telemetry        | [#1685] |
-| `multi_region_failover.enabled`                                  | Enable multi-region failover mode               | [#1678] |
-| `multi_region_failover.failover_metrics`                         | Enable metrics forwarding to failover region    | [#1678] |
-| `multi_region_failover.metric_allowlist`                         | Metric name allowlist for MRF forwarding        | [#1678] |
 | `telemetry.dogstatsd.aggregator_channel_latency_buckets`         | Histogram buckets: DSD aggregator channel lag   | [#1679] |
 | `telemetry.dogstatsd.listeners_channel_latency_buckets`          | Histogram buckets: listener channel latency     | [#1679] |
 | `telemetry.dogstatsd.listeners_latency_buckets`                  | Histogram buckets: listener processing          | [#1679] |
@@ -290,41 +325,42 @@ ways that are not yet fully characterized.
 
 The following settings are specific to ADP and have no equivalent in the core agent.
 
-| Config Key                                  | Description                                | Default |
-| ------------------------------------------- | ------------------------------------------ | ------- |
-| `agent_ipc_endpoint`                        | Remote agent IPC URI                       |         |
-| `aggregate_flush_interval`                  | Aggregator flush period                    |         |
-| `aggregate_flush_open_windows`              | Flush open windows on stop                 |         |
-| `aggregate_passthrough_idle_flush_timeout`  | Passthrough buffer flush delay             |         |
-| `aggregate_window_duration_seconds`            | Aggregation window size                    |         |
-| `connect_retry_attempts`                    | IPC client connect retries                 |         |
-| `connect_retry_backoff`                     | IPC client retry delay                     |         |
-| `counter_expiry_seconds`                    | Idle counter keep-alive duration           | 300     |
-| `data_plane.api_listen_address`             | ADP unprivileged API address               |         |
-| `data_plane.remote_agent_enabled`           | Register as remote agent                   |         |
-| `data_plane.secure_api_listen_address`      | ADP privileged API address                 |         |
-| `data_plane.standalone_mode`                | ADP standalone mode toggle                 |         |
-| `data_plane.use_new_config_stream_endpoint` | Use new config stream endpoint             |         |
-| `dogstatsd_allow_context_heap_allocs`       | Allow heap allocations for contexts        |         |
-| `dogstatsd_autoscale_udp_listeners`         | Bind multiple UDP sockets via SO_REUSEPORT |         |
-| `dogstatsd_buffer_count`                    | Number of receive buffers                  |         |
-| `dogstatsd_cached_contexts_limit`           | Max cached metric contexts                 |         |
-| `dogstatsd_cached_tagsets_limit`            | Max cached tagsets                         |         |
-| `dogstatsd_mapper_string_interner_size`     | Mapper string interner capacity            |         |
-| `dogstatsd_minimum_sample_rate`             | Floor for metric sample rates              |         |
-| `dogstatsd_permissive_decoding`             | Relaxes decoder strictness                 | true    |
-| `dogstatsd_string_interner_size_bytes`      | Explicit byte budget for context interner  |         |
-| `dogstatsd_tcp_port`                        | TCP listen port for DSD                    |         |
-| `enable_global_limiter`                     | Toggle global memory limiter               |         |
-| `flush_timeout_secs`                        | Encoder flush timeout (secs)               |         |
-| `memory_limit`                              | Process memory limit (bytes)               |         |
-| `memory_mode`                               | ADP global memory limiter mode             |         |
-| `memory_slop_factor`                        | Memory headroom fraction                   |         |
-| `metrics_level`                             | ADP internal metrics emission level        |         |
-| `otlp_string_interner_size`                 | OTLP context interner capacity             |         |
-| `remote_agent_string_interner_size_bytes`   | Tag string interner capacity               | 512 KB  |
-| `serializer_max_metrics_per_payload`        | Max metrics per payload                    |         |
-| `statsd_metric_namespace_blocklist`         | Renamed alias for blacklist key            |         |
+| Config Key                                                  | Description                                | Default |
+| ----------------------------------------------------------- | ------------------------------------------ | ------- |
+| `agent_ipc_endpoint`                                        | Remote agent IPC URI                       |         |
+| `aggregate_flush_interval`                                  | Aggregator flush period                    |         |
+| `aggregate_flush_open_windows`                              | Flush open windows on stop                 |         |
+| `aggregate_passthrough_idle_flush_timeout`                  | Passthrough buffer flush delay             |         |
+| `aggregate_window_duration_seconds`                         | Aggregation window size                    |         |
+| `connect_retry_attempts`                                    | IPC client connect retries                 |         |
+| `connect_retry_backoff`                                     | IPC client retry delay                     |         |
+| `counter_expiry_seconds`                                    | Idle counter keep-alive duration           | 300     |
+| `data_plane.api_listen_address`                             | ADP unprivileged API address               |         |
+| `data_plane.dogstatsd.aggregator_tag_filter_cache_capacity` | Tag-filter deduplication cache size        | 100000  |
+| `data_plane.remote_agent_enabled`                           | Register as remote agent                   |         |
+| `data_plane.secure_api_listen_address`                      | ADP privileged API address                 |         |
+| `data_plane.standalone_mode`                                | ADP standalone mode toggle                 |         |
+| `data_plane.use_new_config_stream_endpoint`                 | Use new config stream endpoint             |         |
+| `dogstatsd_allow_context_heap_allocs`                       | Allow heap allocations for contexts        |         |
+| `dogstatsd_autoscale_udp_listeners`                         | Bind multiple UDP sockets via SO_REUSEPORT |         |
+| `dogstatsd_buffer_count`                                    | Number of receive buffers                  |         |
+| `dogstatsd_cached_contexts_limit`                           | Max cached metric contexts                 |         |
+| `dogstatsd_cached_tagsets_limit`                            | Max cached tagsets                         |         |
+| `dogstatsd_mapper_string_interner_size`                     | Mapper string interner capacity            |         |
+| `dogstatsd_minimum_sample_rate`                             | Floor for metric sample rates              |         |
+| `dogstatsd_permissive_decoding`                             | Relaxes decoder strictness                 | true    |
+| `dogstatsd_string_interner_size_bytes`                      | Explicit byte budget for context interner  |         |
+| `dogstatsd_tcp_port`                                        | TCP listen port for DSD                    |         |
+| `enable_global_limiter`                                     | Toggle global memory limiter               |         |
+| `flush_timeout_secs`                                        | Encoder flush timeout (secs)               |         |
+| `memory_limit`                                              | Process memory limit (bytes)               |         |
+| `memory_mode`                                               | ADP global memory limiter mode             |         |
+| `memory_slop_factor`                                        | Memory headroom fraction                   |         |
+| `metrics_level`                                             | ADP internal metrics emission level        |         |
+| `otlp_string_interner_size`                                 | OTLP context interner capacity             |         |
+| `remote_agent_string_interner_size_bytes`                   | Tag string interner capacity               | 512 KB  |
+| `serializer_max_metrics_per_payload`                        | Max metrics per payload                    |         |
+| `statsd_metric_namespace_blocklist`                         | Renamed alias for blacklist key            |         |
 
 ### `memory_limit` / `memory_slop_factor`
 
@@ -363,102 +399,102 @@ while syslog logging is enabled, ADP uses the platform default local syslog sock
 `unixgram:///dev/log` on Linux and `unixgram:///var/run/syslog` on macOS. Set `syslog_rfc: true`
 when the receiving syslog daemon expects the Agent's RFC-style header.
 
-| Config Key                                       | Description                            |
-| ------------------------------------------------ | -------------------------------------- |
-| `additional_endpoints`                           | Dual-ship to extra endpoints           |
-| `aggregate_context_limit`                        | Max contexts per aggregation window    |
-| `api_key`                                        | API key for endpoint auth              |
-| `auth_token_file_path`                           | IPC auth token file path               |
-| `bind_host`                                      | Global listen host fallback            |
-| `cmd_port`                                       | Agent IPC/CMD API port                 |
-| `container_cgroup_root`                          | Cgroup filesystem root path            |
-| `container_proc_root`                            | Procfs root path for containers        |
-| `cri_socket_path`                                | CRI/containerd socket path             |
-| `data_plane.dogstatsd.enabled`                   | Enable DSD in data plane               |
-| `data_plane.enabled`                             | Enable ADP globally                    |
-| `dd_url`                                         | Override intake endpoint URL           |
-| `dogstatsd_buffer_size`                          | Receive buffer size (bytes)            |
-| `dogstatsd_context_expiry_seconds`               | Context cache TTL (seconds)            |
-| `dogstatsd_entity_id_precedence`                 | Entity ID over auto-detection          |
-| `dogstatsd_eol_required`                         | Require newline-terminated messages    |
-| `dogstatsd_expiry_seconds`                       | Counter zero-value TTL (secs)          |
-| `dogstatsd_flush_incomplete_buckets`             | Flush open buckets on shutdown         |
-| `dogstatsd_log_file`                             | DSD metric debug log path              |
-| `dogstatsd_log_file_max_rolls`                   | Max rotated DSD debug log files        |
-| `dogstatsd_log_file_max_size`                    | Max DSD debug log file size            |
-| `dogstatsd_logging_enabled`                      | Enable DSD metric debug logging        |
-| `dogstatsd_mapper_profiles`                      | Metric mapping profile definitions     |
-| `dogstatsd_no_aggregation_pipeline`              | Enable no-aggregation timestamped path |
-| `dogstatsd_non_local_traffic`                    | Accept non-localhost UDP/TCP           |
-| `dogstatsd_origin_detection`                     | Enable UDS origin detection            |
-| `dogstatsd_origin_detection_client`              | Honor client origin proto fields       |
-| `dogstatsd_origin_optout_enabled`                | Allow clients to opt out origin        |
-| `dogstatsd_port`                                 | UDP listen port                        |
-| `dogstatsd_so_rcvbuf`                            | Socket receive buffer size             |
-| `dogstatsd_socket`                               | UDS datagram socket path               |
-| `dogstatsd_stream_log_too_big`                   | Log oversized UDS stream frames        |
-| `dogstatsd_stream_socket`                        | UDS stream socket path                 |
-| `dogstatsd_string_interner_size`                 | String interner capacity               |
-| `dogstatsd_tag_cardinality`                      | Default tag cardinality level          |
-| `dogstatsd_tags`                                 | Extra tags added to all DSD data       |
-| `enable_payloads.events`                         | Allow sending event payloads           |
-| `enable_payloads.series`                         | Allow sending series payloads          |
-| `enable_payloads.service_checks`                 | Allow sending service check payloads   |
-| `enable_payloads.sketches`                       | Allow sending sketch payloads          |
-| `expected_tags_duration`                         | Host tag enrichment duration           |
-| `extra_tags`                                     | Additional static tags                 |
-| `forwarder_backoff_base`                         | Retry backoff base (secs)              |
-| `forwarder_backoff_factor`                       | Retry backoff jitter factor            |
-| `forwarder_backoff_max`                          | Retry backoff ceiling (secs)           |
-| `forwarder_connection_reset_interval`            | HTTP conn reset interval (secs)        |
-| `forwarder_num_workers`                          | Concurrent forwarder workers           |
-| `forwarder_recovery_interval`                    | Backoff recovery decrease factor       |
-| `forwarder_recovery_reset`                       | Reset errors on success                |
-| `forwarder_retry_queue_max_size`                 | Retry queue max size (deprecated)      |
-| `forwarder_retry_queue_payloads_max_size`        | Retry queue max size (bytes)           |
-| `forwarder_storage_max_disk_ratio`               | Max disk usage ratio for retry         |
-| `forwarder_storage_max_size_in_bytes`            | Max on-disk retry storage size         |
-| `forwarder_storage_path`                         | On-disk retry storage directory        |
-| `forwarder_timeout`                              | Forwarder HTTP request timeout         |
-| `histogram_aggregates`                           | Histogram aggregate statistics         |
-| `histogram_copy_to_distribution`                 | Copy histograms to distributions       |
-| `histogram_copy_to_distribution_prefix`          | Prefix for hist-to-dist copies         |
-| `histogram_percentiles`                          | Histogram percentile quantiles         |
-| `hostname`                                       | Configured hostname override           |
-| `ipc_cert_file_path`                             | IPC TLS certificate path               |
-| `log_file`                                       | Log output file path                   |
-| `log_file_max_rolls`                             | Max rotated log files kept             |
-| `log_file_max_size`                              | Max log file size before rotate        |
-| `log_format_json`                                | Use JSON log format                    |
-| `log_payloads`                                   | Debug-log decoded payload contents     |
-| `log_to_console`                                 | Log to stdout/stderr                   |
-| `log_to_syslog`                                  | Log to syslog daemon                   |
-| `metric_filterlist`                              | Metric name blocklist                  |
-| `metric_filterlist_match_prefix`                 | Blocklist uses prefix matching         |
-| `metric_tag_filterlist`                          | Per-metric tag include/exclude         |
-| `no_proxy_nonexact_match`                        | Domain/CIDR `no_proxy` matching        |
-| `observability_pipelines_worker.metrics.enabled` | Route metrics to OPW instance          |
-| `observability_pipelines_worker.metrics.url`     | OPW metrics intake URL                 |
-| `origin_detection_unified`                       | Unified origin detection mode          |
-| `provider_kind`                                  | Provider kind static tag               |
-| `proxy`                                          | HTTP/HTTPS proxy configuration         |
-| `run_path`                                       | Runtime data directory path            |
-| `secret_backend_command`                         | Secret resolver executable path        |
-| `secret_backend_timeout`                         | Secret backend timeout (seconds)       |
-| `serializer_compressor_kind`                     | Payload compression algorithm          |
-| `serializer_max_series_points_per_payload`       | Max data points per series payload     |
-| `site`                                           | Datadog site domain                    |
-| `statsd_metric_blocklist`                        | Metric name blocklist                  |
-| `statsd_metric_blocklist_match_prefix`           | Blocklist uses prefix matching         |
-| `statsd_metric_namespace`                        | Prefix prepended to all metrics        |
-| `statsd_metric_namespace_blacklist`              | Namespace prefixes exempt (alias)      |
-| `syslog_rfc`                                     | Use RFC-style syslog header            |
-| `syslog_uri`                                     | Syslog destination URI                 |
-| `tags`                                           | Global tags (DD_TAGS)                  |
-| `use_proxy_for_cloud_metadata`                   | Proxy cloud metadata endpoints         |
-| `use_v2_api.series`                              | Send series via V2 protobuf endpoint   |
-| `vector.metrics.enabled`                         | Route metrics to OPW (legacy alias)    |
-| `vector.metrics.url`                             | OPW metrics intake URL (legacy alias)  |
+| Config Key                                                  | Description                               |
+| ----------------------------------------------------------- | ----------------------------------------- |
+| `additional_endpoints`                                      | Dual-ship to extra endpoints              |
+| `aggregate_context_limit`                                   | Max contexts per aggregation window       |
+| `api_key`                                                   | API key for endpoint auth                 |
+| `auth_token_file_path`                                      | IPC auth token file path                  |
+| `bind_host`                                                 | Global listen host fallback               |
+| `cmd_port`                                                  | Agent IPC/CMD API port                    |
+| `container_cgroup_root`                                     | Cgroup filesystem root path               |
+| `container_proc_root`                                       | Procfs root path for containers           |
+| `cri_socket_path`                                           | CRI/containerd socket path                |
+| `data_plane.dogstatsd.enabled`                              | Enable DSD in data plane                  |
+| `data_plane.enabled`                                        | Enable ADP globally                       |
+| `dd_url`                                                    | Override intake endpoint URL              |
+| `dogstatsd_buffer_size`                                     | Receive buffer size (bytes)               |
+| `dogstatsd_context_expiry_seconds`                          | Context cache TTL (seconds)               |
+| `dogstatsd_entity_id_precedence`                            | Entity ID over auto-detection             |
+| `dogstatsd_eol_required`                                    | Require newline-terminated messages       |
+| `dogstatsd_expiry_seconds`                                  | Counter zero-value TTL (secs)             |
+| `dogstatsd_flush_incomplete_buckets`                        | Flush open buckets on shutdown            |
+| `dogstatsd_log_file`                                        | DSD metric debug log path                 |
+| `dogstatsd_log_file_max_rolls`                              | Max rotated DSD debug log files           |
+| `dogstatsd_log_file_max_size`                               | Max DSD debug log file size               |
+| `dogstatsd_logging_enabled`                                 | Enable DSD metric debug logging           |
+| `dogstatsd_mapper_profiles`                                 | Metric mapping profile definitions        |
+| `dogstatsd_no_aggregation_pipeline`                         | Enable no-aggregation timestamped path    |
+| `dogstatsd_non_local_traffic`                               | Accept non-localhost UDP/TCP              |
+| `dogstatsd_origin_detection`                                | Enable UDS origin detection               |
+| `dogstatsd_origin_detection_client`                         | Honor client origin proto fields          |
+| `dogstatsd_origin_optout_enabled`                           | Allow clients to opt out origin           |
+| `dogstatsd_port`                                            | UDP listen port                           |
+| `dogstatsd_so_rcvbuf`                                       | Socket receive buffer size                |
+| `dogstatsd_socket`                                          | UDS datagram socket path                  |
+| `dogstatsd_stream_log_too_big`                              | Log oversized UDS stream frames           |
+| `dogstatsd_stream_socket`                                   | UDS stream socket path                    |
+| `dogstatsd_string_interner_size`                            | String interner capacity                  |
+| `dogstatsd_tag_cardinality`                                 | Default tag cardinality level             |
+| `dogstatsd_tags`                                            | Extra tags added to all DSD data          |
+| `enable_payloads.events`                                    | Allow sending event payloads              |
+| `enable_payloads.series`                                    | Allow sending series payloads             |
+| `enable_payloads.service_checks`                            | Allow sending service check payloads      |
+| `enable_payloads.sketches`                                  | Allow sending sketch payloads             |
+| `expected_tags_duration`                                    | Host tag enrichment duration              |
+| `extra_tags`                                                | Additional static tags                    |
+| `forwarder_backoff_base`                                    | Retry backoff base (secs)                 |
+| `forwarder_backoff_factor`                                  | Retry backoff jitter factor               |
+| `forwarder_backoff_max`                                     | Retry backoff ceiling (secs)              |
+| `forwarder_connection_reset_interval`                       | HTTP conn reset interval (secs)           |
+| `forwarder_num_workers`                                     | Concurrent forwarder workers              |
+| `forwarder_recovery_interval`                               | Backoff recovery decrease factor          |
+| `forwarder_recovery_reset`                                  | Reset errors on success                   |
+| `forwarder_retry_queue_max_size`                            | Retry queue max size (deprecated)         |
+| `forwarder_retry_queue_payloads_max_size`                   | Retry queue max size (bytes)              |
+| `forwarder_storage_max_disk_ratio`                          | Max disk usage ratio for retry            |
+| `forwarder_storage_max_size_in_bytes`                       | Max on-disk retry storage size            |
+| `forwarder_storage_path`                                    | On-disk retry storage directory           |
+| `forwarder_timeout`                                         | Forwarder HTTP request timeout            |
+| `histogram_aggregates`                                      | Histogram aggregate statistics            |
+| `histogram_copy_to_distribution`                            | Copy histograms to distributions          |
+| `histogram_copy_to_distribution_prefix`                     | Prefix for hist-to-dist copies            |
+| `histogram_percentiles`                                     | Histogram percentile quantiles            |
+| `hostname`                                                  | Configured hostname override              |
+| `ipc_cert_file_path`                                        | IPC TLS certificate path                  |
+| `log_file`                                                  | Log output file path                      |
+| `log_file_max_rolls`                                        | Max rotated log files kept                |
+| `log_file_max_size`                                         | Max log file size before rotate           |
+| `log_format_json`                                           | Use JSON log format                       |
+| `log_payloads`                                              | Debug-log decoded payload contents        |
+| `log_to_console`                                            | Log to stdout/stderr                      |
+| `log_to_syslog`                                             | Log to syslog daemon                      |
+| `metric_filterlist`                                         | Metric name blocklist                     |
+| `metric_filterlist_match_prefix`                            | Blocklist uses prefix matching            |
+| `metric_tag_filterlist`                                     | Per-metric tag include/exclude            |
+| `no_proxy_nonexact_match`                                   | Domain/CIDR `no_proxy` matching           |
+| `observability_pipelines_worker.metrics.enabled`            | Route metrics to OPW instance             |
+| `observability_pipelines_worker.metrics.url`                | OPW metrics intake URL                    |
+| `origin_detection_unified`                                  | Unified origin detection mode             |
+| `provider_kind`                                             | Provider kind static tag                  |
+| `proxy`                                                     | HTTP/HTTPS proxy configuration            |
+| `run_path`                                                  | Runtime data directory path               |
+| `secret_backend_command`                                    | Secret resolver executable path           |
+| `secret_backend_timeout`                                    | Secret backend timeout (seconds)          |
+| `serializer_compressor_kind`                                | Payload compression algorithm             |
+| `serializer_max_series_points_per_payload`                  | Max data points per series payload        |
+| `site`                                                      | Datadog site domain                       |
+| `statsd_metric_blocklist`                                   | Metric name blocklist                     |
+| `statsd_metric_blocklist_match_prefix`                      | Blocklist uses prefix matching            |
+| `statsd_metric_namespace`                                   | Prefix prepended to all metrics           |
+| `statsd_metric_namespace_blacklist`                         | Namespace prefixes exempt (alias)         |
+| `syslog_rfc`                                                | Use RFC-style syslog header               |
+| `syslog_uri`                                                | Syslog destination URI                    |
+| `tags`                                                      | Global tags (DD_TAGS)                     |
+| `use_proxy_for_cloud_metadata`                              | Proxy cloud metadata endpoints            |
+| `use_v2_api.series`                                         | Send series via V2 protobuf endpoint      |
+| `vector.metrics.enabled`                                    | Route metrics to OPW (legacy alias)       |
+| `vector.metrics.url`                                        | OPW metrics intake URL (legacy alias)     |
 
 [#178]: https://github.com/DataDog/saluki/issues/178
 [#1330]: https://github.com/DataDog/saluki/issues/1330

@@ -107,6 +107,7 @@ impl AdditionalEndpoints {
                     endpoint: endpoint.clone(),
                     api_key: trimmed_api_key.to_string(),
                     config: configuration.clone(),
+                    api_key_refresh_config_path: None,
                     api_key_index: Some(index),
                     raw_additional_url: Some(raw_endpoint.to_string()),
                     logs_authority: logs_authority.clone(),
@@ -125,6 +126,10 @@ impl AdditionalEndpoints {
 pub struct EndpointConfiguration {
     /// The API key to use.
     api_key: String,
+
+    /// Config path used to refresh the API key for primary-like endpoints.
+    #[serde(skip)]
+    api_key_refresh_config_path: Option<&'static str>,
 
     /// The site to send metrics to.
     ///
@@ -163,6 +168,11 @@ impl EndpointConfiguration {
         self.api_key = api_key;
     }
 
+    /// Sets the config path used to refresh the API key.
+    pub fn set_api_key_refresh_config_path(&mut self, path: &'static str) {
+        self.api_key_refresh_config_path = Some(path);
+    }
+
     /// Clears all additional endpoints.
     pub fn clear_additional_endpoints(&mut self) {
         self.additional_endpoints = AdditionalEndpoints::default();
@@ -180,6 +190,7 @@ impl EndpointConfiguration {
         calculate_resolved_endpoint(self.dd_url.as_deref(), &self.site, &self.api_key)
             .error_context("Failed parsing/resolving the primary destination endpoint.")
             .map(|endpoint| endpoint.with_configuration(configuration))
+            .map(|endpoint| endpoint.with_api_key_refresh_config_path(self.api_key_refresh_config_path))
     }
 
     /// Builds the resolved primary endpoint from a URL override.
@@ -188,6 +199,7 @@ impl EndpointConfiguration {
     ) -> Result<ResolvedEndpoint, EndpointError> {
         calculate_resolved_endpoint(Some(url), &self.site, &self.api_key)
             .map(|endpoint| endpoint.with_configuration(configuration))
+            .map(|endpoint| endpoint.with_api_key_refresh_config_path(self.api_key_refresh_config_path))
     }
 
     /// Builds the resolved additional endpoints.
@@ -217,6 +229,8 @@ pub struct ResolvedEndpoint {
     endpoint: Url,
     api_key: String,
     config: Option<GenericConfiguration>,
+    /// Config path used to refresh the API key for primary-like endpoints. `None` uses `api_key`.
+    api_key_refresh_config_path: Option<&'static str>,
     /// Position of this key in the `additional_endpoints` config key list for its URL (raw
     /// `enumerate()` index, not a post-dedup counter). `None` for primary and OPW endpoints.
     api_key_index: Option<usize>,
@@ -288,6 +302,7 @@ impl ResolvedEndpoint {
             endpoint,
             api_key: api_key.to_string(),
             config: None,
+            api_key_refresh_config_path: None,
             api_key_index: None,
             raw_additional_url: None,
             logs_authority,
@@ -296,16 +311,17 @@ impl ResolvedEndpoint {
     }
 
     /// Creates a new  `ResolvedEndpoint` instance from an existing `ResolvedEndpoint`, adding an optional `GenericConfiguration` which can be used to fetch the up-to-date API key.
-    pub fn with_configuration(self, config: Option<GenericConfiguration>) -> Self {
-        Self {
-            endpoint: self.endpoint,
-            api_key: self.api_key,
-            config,
-            api_key_index: self.api_key_index,
-            raw_additional_url: self.raw_additional_url,
-            logs_authority: self.logs_authority,
-            traces_authority: self.traces_authority,
-        }
+    pub fn with_configuration(mut self, config: Option<GenericConfiguration>) -> Self {
+        self.config = config;
+        self
+    }
+
+    /// Sets the config path used to refresh the API key for primary-like endpoints.
+    pub(crate) fn with_api_key_refresh_config_path(
+        mut self, api_key_refresh_config_path: Option<&'static str>,
+    ) -> Self {
+        self.api_key_refresh_config_path = api_key_refresh_config_path;
+        self
     }
 
     /// Returns the endpoint of the resolver.
@@ -341,16 +357,21 @@ impl ResolvedEndpoint {
                     _ => {}
                 }
             } else {
-                // Primary / OPW endpoint: refresh from the top-level `api_key` config key.
-                match config.try_get_typed::<String>("api_key") {
+                // Primary / OPW endpoint: refresh from the configured API key source.
+                let api_key_refresh_config_path = self.api_key_refresh_config_path.unwrap_or("api_key");
+                match config.try_get_typed::<String>(api_key_refresh_config_path) {
                     Ok(Some(api_key)) => {
                         if !api_key.is_empty() && self.api_key != api_key {
-                            debug!(endpoint = %self.endpoint, "Refreshed API key.");
+                            debug!(endpoint = %self.endpoint, key = api_key_refresh_config_path, "Refreshed API key.");
                             self.api_key = api_key;
                         }
                     }
                     Ok(None) | Err(_) => {
-                        debug!("Failed to retrieve API key from remote source (missing or wrong type). Continuing with last known valid API key.");
+                        debug!(
+                            key = api_key_refresh_config_path,
+                            "Failed to retrieve API key from remote source (missing or wrong type). Continuing with \
+                             last known valid API key."
+                        );
                     }
                 }
             }

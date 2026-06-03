@@ -256,6 +256,8 @@
   reason: initial bulk
 - name: allowed_additional_checks
   reason: initial bulk
+- name: aggregator_tag_filter_cache_capacity
+  reason: ADP uses data_plane.dogstatsd.aggregator_tag_filter_cache_capacity instead; this core-agent key is expected to be set alongside the ADP key and should not trigger any warning
 - name: apm_config.additional_endpoints
   reason: initial bulk
 - name: apm_config.additional_profile_tags
@@ -1336,6 +1338,8 @@
   reason: initial bulk
 - name: enable_gohai
   reason: initial bulk
+- name: enable_json_stream_shared_compressor_buffers
+  reason: ADP does not use a shared compressor buffer pool; Rust request builders own fixed-capacity scratch and compression buffers.
 - name: enable_metadata_collection
   reason: initial bulk
 - name: enable_payloads.json_to_v1_intake
@@ -1346,6 +1350,8 @@
   reason: initial bulk
 - name: enhanced_metrics
   reason: initial bulk
+- name: entity_id
+  reason: ADP does not emit internal DogStatsD metrics; its own DogStatsD telemetry is exposed via OpenMetrics.
 - name: event_management.forwarder.additional_endpoints
   reason: initial bulk
 - name: event_management.forwarder.batch_max_concurrent_send
@@ -3312,8 +3318,6 @@
   reason: OPW traces routing out of scope for ADP
 - name: vector.traces.url
   reason: OPW traces routing out of scope for ADP
-- name: vsock_addr
-  reason: initial bulk
 - name: win_skip_com_init
   reason: initial bulk
 - name: windows_counter_init_failure_limit

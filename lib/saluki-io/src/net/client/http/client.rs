@@ -1,6 +1,7 @@
+#[cfg(unix)]
+use std::path::PathBuf;
 use std::{
     future::Future,
-    path::PathBuf,
     pin::Pin,
     task::{Context, Poll},
     time::Duration,

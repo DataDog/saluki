@@ -1,12 +1,12 @@
 use std::{
     future::Future,
     io,
-    path::PathBuf,
     pin::Pin,
-    sync::Arc,
     task::{Context, Poll},
     time::{Duration, Instant},
 };
+#[cfg(unix)]
+use std::{path::PathBuf, sync::Arc};
 
 use hickory_resolver::net::NetError;
 use http::{Extensions, Uri};
@@ -20,6 +20,8 @@ use pin_project_lite::pin_project;
 use rustls::ClientConfig;
 use saluki_error::{ErrorContext as _, GenericError};
 use tokio::net::TcpStream;
+#[cfg(target_os = "linux")]
+use tokio_vsock::{VsockAddr, VsockStream};
 use tower::{BoxError, Service};
 use tracing::debug;
 
@@ -54,7 +56,7 @@ impl ConnectionAgeLimit {
     }
 }
 
-/// An inner transport that abstracts over TCP and Unix domain socket connections.
+/// An inner transport that abstracts over TCP, Unix domain socket, and vsock connections.
 ///
 /// This allows using a single monomorphization of the HTTP/2 and TLS stacks regardless of the
 /// underlying transport, avoiding duplicate code generation for each transport type.
@@ -62,6 +64,8 @@ enum Transport {
     Tcp(TokioIo<TcpStream>),
     #[cfg(unix)]
     Unix(TokioIo<tokio::net::UnixStream>),
+    #[cfg(target_os = "linux")]
+    Vsock(TokioIo<VsockStream>),
 }
 
 impl Connection for Transport {
@@ -70,6 +74,8 @@ impl Connection for Transport {
             Self::Tcp(s) => s.connected(),
             #[cfg(unix)]
             Self::Unix(_) => Connected::new(),
+            #[cfg(target_os = "linux")]
+            Self::Vsock(_) => Connected::new(),
         }
     }
 }
@@ -82,6 +88,8 @@ impl hyper::rt::Read for Transport {
             Self::Tcp(s) => Pin::new(s).poll_read(cx, buf),
             #[cfg(unix)]
             Self::Unix(s) => Pin::new(s).poll_read(cx, buf),
+            #[cfg(target_os = "linux")]
+            Self::Vsock(s) => Pin::new(s).poll_read(cx, buf),
         }
     }
 }
@@ -92,6 +100,8 @@ impl hyper::rt::Write for Transport {
             Self::Tcp(s) => Pin::new(s).poll_write(cx, buf),
             #[cfg(unix)]
             Self::Unix(s) => Pin::new(s).poll_write(cx, buf),
+            #[cfg(target_os = "linux")]
+            Self::Vsock(s) => Pin::new(s).poll_write(cx, buf),
         }
     }
 
@@ -100,6 +110,8 @@ impl hyper::rt::Write for Transport {
             Self::Tcp(s) => Pin::new(s).poll_flush(cx),
             #[cfg(unix)]
             Self::Unix(s) => Pin::new(s).poll_flush(cx),
+            #[cfg(target_os = "linux")]
+            Self::Vsock(s) => Pin::new(s).poll_flush(cx),
         }
     }
 
@@ -108,6 +120,8 @@ impl hyper::rt::Write for Transport {
             Self::Tcp(s) => Pin::new(s).poll_shutdown(cx),
             #[cfg(unix)]
             Self::Unix(s) => Pin::new(s).poll_shutdown(cx),
+            #[cfg(target_os = "linux")]
+            Self::Vsock(s) => Pin::new(s).poll_shutdown(cx),
         }
     }
 
@@ -116,6 +130,8 @@ impl hyper::rt::Write for Transport {
             Self::Tcp(s) => s.is_write_vectored(),
             #[cfg(unix)]
             Self::Unix(s) => s.is_write_vectored(),
+            #[cfg(target_os = "linux")]
+            Self::Vsock(s) => s.is_write_vectored(),
         }
     }
 
@@ -126,6 +142,8 @@ impl hyper::rt::Write for Transport {
             Self::Tcp(s) => Pin::new(s).poll_write_vectored(cx, bufs),
             #[cfg(unix)]
             Self::Unix(s) => Pin::new(s).poll_write_vectored(cx, bufs),
+            #[cfg(target_os = "linux")]
+            Self::Vsock(s) => Pin::new(s).poll_write_vectored(cx, bufs),
         }
     }
 }
@@ -227,17 +245,22 @@ impl hyper::rt::Write for HttpsCapableConnection {
     }
 }
 
-/// An inner connector that routes to either TCP (via DNS) or a Unix domain socket.
+/// An inner connector that routes to TCP (via DNS), a Unix domain socket, or a vsock socket.
 ///
 /// When a Unix socket path is configured, all connections are routed through that socket regardless
-/// of the URI host. Otherwise, connections are routed via the standard DNS + TCP path.
+/// of the URI host. When a vsock CID is configured, all connections are routed through that vsock
+/// socket using the port from the destination URI. Otherwise, connections use the standard DNS +
+/// TCP path.
 #[derive(Clone)]
 struct InnerConnector {
     http: HickoryHttpConnector,
+    #[cfg(unix)]
     connect_timeout: Duration,
     error_telemetry: Option<HttpTransactionErrorTelemetry>,
     #[cfg(unix)]
     unix_socket_path: Option<Arc<std::path::Path>>,
+    #[cfg(target_os = "linux")]
+    vsock_addr: Option<VsockAddr>,
 }
 
 impl Service<Uri> for InnerConnector {
@@ -246,8 +269,14 @@ impl Service<Uri> for InnerConnector {
     type Future = Pin<Box<dyn Future<Output = Result<Transport, BoxError>> + Send>>;
 
     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        // When routing via a Unix domain socket, the TCP/DNS connector is not used, so we consider
-        // the service immediately ready.
+        // When routing via vsock or a Unix domain socket, the TCP/DNS connector is not used, so we
+        // consider the service immediately ready. vsock takes priority over Unix (matching Agent
+        // behavior) when both are configured.
+        #[cfg(target_os = "linux")]
+        if self.vsock_addr.is_some() {
+            return Poll::Ready(Ok(()));
+        }
+
         #[cfg(unix)]
         if self.unix_socket_path.is_some() {
             return Poll::Ready(Ok(()));
@@ -257,6 +286,29 @@ impl Service<Uri> for InnerConnector {
     }
 
     fn call(&mut self, dst: Uri) -> Self::Future {
+        #[cfg(target_os = "linux")]
+        if let Some(addr) = self.vsock_addr {
+            let connect_timeout = self.connect_timeout;
+            let error_telemetry = self.error_telemetry.clone();
+            return Box::pin(async move {
+                let stream = tokio::time::timeout(connect_timeout, VsockStream::connect(addr))
+                    .await
+                    .map_err(|_| -> BoxError {
+                        if let Some(error_telemetry) = &error_telemetry {
+                            error_telemetry.increment_connection_error();
+                        }
+                        Box::new(io::Error::new(io::ErrorKind::TimedOut, "vsock connect timed out"))
+                    })?
+                    .map_err(|e| -> BoxError {
+                        if let Some(error_telemetry) = &error_telemetry {
+                            error_telemetry.increment_connection_error();
+                        }
+                        Box::new(e)
+                    })?;
+                Ok(Transport::Vsock(TokioIo::new(stream)))
+            });
+        }
+
         #[cfg(unix)]
         if let Some(path) = self.unix_socket_path.clone() {
             let connect_timeout = self.connect_timeout;
@@ -351,6 +403,17 @@ impl Service<Uri> for HttpsCapableConnector {
     }
 }
 
+fn build_dns_resolver(
+    error_telemetry: &Option<HttpTransactionErrorTelemetry>,
+) -> Result<HickoryResolver, GenericError> {
+    let mut r = HickoryResolver::from_system_conf()
+        .error_context("Failed to load system DNS configuration when creating DNS resolver for HTTP client.")?;
+    if let Some(et) = error_telemetry {
+        r = r.with_lookup_errors_counter(et.dns_errors());
+    }
+    Ok(r)
+}
+
 /// A builder for `HttpsCapableConnector`.
 #[derive(Default)]
 pub struct HttpsCapableConnectorBuilder {
@@ -361,6 +424,8 @@ pub struct HttpsCapableConnectorBuilder {
     http_protocol: HttpProtocol,
     #[cfg(unix)]
     unix_socket_path: Option<PathBuf>,
+    #[cfg(target_os = "linux")]
+    vsock_addr: Option<VsockAddr>,
 }
 
 impl HttpsCapableConnectorBuilder {
@@ -424,15 +489,36 @@ impl HttpsCapableConnectorBuilder {
         self
     }
 
+    /// Sets a vsock address to route all connections through.
+    ///
+    /// When set, the connector will connect via AF_VSOCK using the given address, bypassing
+    /// DNS and TCP. This allows connecting to a server process running in a host or hypervisor
+    /// context from within a guest VM (for example, Nitro Enclaves).
+    ///
+    /// Defaults to unset (TCP connections via DNS).
+    #[cfg(target_os = "linux")]
+    pub fn with_vsock_addr(mut self, addr: VsockAddr) -> Self {
+        self.vsock_addr = Some(addr);
+        self
+    }
+
     /// Builds the `HttpsCapableConnector` from the given TLS configuration.
     pub fn build(self, tls_config: ClientConfig) -> Result<HttpsCapableConnector, GenericError> {
         let connect_timeout = self.connect_timeout.unwrap_or(Duration::from_secs(30));
 
-        let mut hickory_resolver = HickoryResolver::from_system_conf()
-            .error_context("Failed to load system DNS configuration when creating DNS resolver for HTTP client.")?;
-        if let Some(error_telemetry) = &self.error_telemetry {
-            hickory_resolver = hickory_resolver.with_lookup_errors_counter(error_telemetry.dns_errors());
-        }
+        // On Linux with vsock configured, the DNS resolver is never called — vsock connections
+        // bypass the TCP/DNS stack entirely. Use a noop resolver to avoid failures in environments
+        // without system DNS configuration (for example, Nitro Enclaves).
+        #[cfg(target_os = "linux")]
+        let vsock_only = self.vsock_addr.is_some();
+        #[cfg(not(target_os = "linux"))]
+        let vsock_only = false;
+
+        let hickory_resolver = if vsock_only {
+            HickoryResolver::noop()
+        } else {
+            build_dns_resolver(&self.error_telemetry)?
+        };
 
         // Create the HTTP connector, and ensure that we don't enforce _only_ HTTP, since that will break being able to
         // wrap this in an HTTPS connector.
@@ -442,10 +528,13 @@ impl HttpsCapableConnectorBuilder {
 
         let inner_connector = InnerConnector {
             http: http_connector,
+            #[cfg(unix)]
             connect_timeout,
             error_telemetry: self.error_telemetry.clone(),
             #[cfg(unix)]
             unix_socket_path: self.unix_socket_path.map(PathBuf::into_boxed_path).map(Arc::from),
+            #[cfg(target_os = "linux")]
+            vsock_addr: self.vsock_addr,
         };
 
         // Create the HTTPS connector.
@@ -544,5 +633,36 @@ mod tests {
         let tls_config = configure_tls_alpn_for_http_protocol(empty_tls_config(), HttpProtocol::Http1);
 
         assert!(tls_config.alpn_protocols.is_empty());
+    }
+
+    // vsock takes priority over unix when both are configured, matching Agent behavior.
+    // We verify by checking the error does not mention "unix" — if unix had priority it would
+    // fail with a socket-path error; vsock produces a connection or device error instead.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn vsock_takes_priority_over_unix_when_both_set() {
+        use std::sync::Arc;
+
+        use tower::Service as _;
+
+        use super::{InnerConnector, VsockAddr};
+        use crate::net::dns::HickoryResolver;
+
+        let mut connector = InnerConnector {
+            http: HickoryResolver::noop().into_http_connector(),
+            connect_timeout: std::time::Duration::from_secs(1),
+            error_telemetry: None,
+            unix_socket_path: Some(Arc::from(std::path::Path::new("/tmp/test.sock"))),
+            vsock_addr: Some(VsockAddr::new(2, 5001)),
+        };
+
+        // Verify vsock path was taken: if unix had priority the error would mention the socket
+        // path or "unix"; a vsock attempt produces a connection or device error instead.
+        let uri: http::Uri = "https://127.0.0.1:5001/".parse().unwrap();
+        let err = connector.call(uri).await.err().expect("expected a connection error");
+        assert!(
+            !err.to_string().contains("unix"),
+            "expected vsock error (not unix socket error), got: {err}"
+        );
     }
 }

@@ -72,6 +72,9 @@ tracing = { workspace = true }
 triomphe = { workspace = true }
 url = { workspace = true, features = ["std"] }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+tokio-vsock = { workspace = true }
+
 [dev-dependencies]
 http-body-util = { workspace = true }
 proptest = { workspace = true }

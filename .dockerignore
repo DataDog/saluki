@@ -8,6 +8,7 @@ node_modules/
 target/
 **/fuzz/target
 test/
+!test/antithesis/
 .gitignore
 .gitlab-ci.yml
 CONTRIBUTING.md

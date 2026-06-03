@@ -14,7 +14,7 @@ test = []
 
 [dependencies]
 metrics = { workspace = true }
-paste = { workspace = true }
+pastey = { workspace = true }
 
 [dev-dependencies]
 trybuild = { workspace = true }

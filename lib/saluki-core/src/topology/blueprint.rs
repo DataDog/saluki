@@ -1,7 +1,7 @@
 use std::{collections::HashMap, num::NonZeroUsize};
 
 use resource_accounting::{ComponentRegistry, Track as _, UsageExpr};
-use saluki_error::{ErrorContext as _, GenericError};
+use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use snafu::Snafu;
 
 use super::{
@@ -16,7 +16,7 @@ use crate::{
         ComponentContext,
     },
     data_model::event::Event,
-    topology::{EventsBuffer, DEFAULT_EVENTS_BUFFER_CAPACITY},
+    topology::{ids::AsComponentIds, EventsBuffer, DEFAULT_EVENTS_BUFFER_CAPACITY},
 };
 
 /// A topology blueprint error.
@@ -356,24 +356,85 @@ impl TopologyBlueprint {
         Ok(self)
     }
 
-    /// Connects one or more source component outputs to a destination component.
+    /// Connects one or more upstream component outputs to one or more downstream components.
+    ///
+    /// This method allows for ergonomically defining many-to-one, one-to-many, and many-to-many connections to
+    /// facilitate common patterns like fanning in many upstream components to a single downstream component, or fanning
+    /// out a single upstream component to many downstream components.
+    ///
+    /// When both there are both multiple upstream _and_ downstream component IDs, connections resemble a mesh: every
+    /// upstream component will be connected to every downstream component. This should be rare, but is technically
+    /// supported.
     ///
     /// # Errors
     ///
-    /// If the destination component ID, or any of the source component IDs, are invalid or don't exist, or if the data
-    /// types between one of the source/destination component pairs is incompatible, an error is returned.
-    pub fn connect_component<DI, SI, I>(
-        &mut self, destination_component_id: DI, source_output_component_ids: SI,
+    /// If any of the upstream or downstream component IDs are invalid or don't exist, or if the data types between one
+    /// of the upstream/downstream component pairs is incompatible, an error is returned.
+    pub fn connect_components<MS, SI, MD, DI>(
+        &mut self, upstream_output_component_ids: SI, downstream_component_ids: DI,
     ) -> Result<&mut Self, GenericError>
     where
-        DI: AsRef<str>,
-        SI: IntoIterator<Item = I>,
+        SI: AsComponentIds<MS>,
+        DI: AsComponentIds<MD>,
+    {
+        for upstream_output_component_id in upstream_output_component_ids.as_component_ids() {
+            for downstream_component_id in downstream_component_ids.as_component_ids() {
+                self.graph
+                    .add_edge(upstream_output_component_id.as_ref(), downstream_component_id.as_ref())
+                    .error_context("Failed to add component connection to topology graph.")?;
+            }
+        }
+
+        Ok(self)
+    }
+
+    /// Connects a set of component IDs to one another in a pairwise fashion.
+    ///
+    /// This can be used to connect multiple components -- each sharing only a single edge between one another -- in a
+    /// single call instead of multiple calls.
+    ///
+    /// For example, passing `["first", "second", "third"]` would connect `first`'s output to `second`'s input, and
+    /// `second`'s output to `third`'s input.
+    ///
+    /// One caveat is that only the default output of a component can be used for connections past the first pair, as
+    /// the identifier given must be able to describe both the component ID to _send_ to as well as the component output
+    /// ID to connect to the subsequent component. This limitation does not exist on the first component ID, since it is
+    /// only used in the context of being a component output ID.
+    ///
+    /// # Errors
+    ///
+    /// If any of the component IDs are invalid or don't exist, or if the data types between one of the
+    /// upstream/downstream component pairs is incompatible, or if less than two component IDs are provided, an error is
+    /// returned.
+    ///
+    /// Care should be taken on failure as this method will not rollback any previously successful connections, which
+    /// could leave the blueprint in an indeterminate state if some connections are made prior to hitting an error.
+    pub fn connect_components_in_order<IT, I>(&mut self, ordered_component_ids: IT) -> Result<&mut Self, GenericError>
+    where
+        IT: IntoIterator<Item = I>,
         I: AsRef<str>,
     {
-        for source_output_component_id in source_output_component_ids.into_iter() {
-            self.graph
-                .add_edge(source_output_component_id, destination_component_id.as_ref())
-                .error_context("Failed to add component connection to topology graph.")?;
+        let mut pending_output_component_id: Option<I> = None;
+        let mut connected_any = false;
+
+        for component_id in ordered_component_ids.into_iter() {
+            if let Some(output_component_id) = pending_output_component_id.take() {
+                self.graph
+                    .add_edge(output_component_id.as_ref(), component_id.as_ref())
+                    .error_context("Failed to add component connection to topology graph.")?;
+
+                connected_any = true;
+            }
+
+            // Store the _current_ component ID so we can chain its connection to the next component, and so on.
+            pending_output_component_id = Some(component_id);
+        }
+
+        // Make sure we connected at least one pair of components together, otherwise this is an invalid connection attempt.
+        if !connected_any {
+            return Err(generic_error!(
+                "Two or more components must be provided for connection."
+            ));
         }
 
         Ok(self)
@@ -526,5 +587,176 @@ impl TopologyBlueprint {
             self.component_registry.token(),
             self.interconnect_capacity,
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use resource_accounting::ComponentRegistry;
+
+    use super::TopologyBlueprint;
+    use crate::{
+        data_model::event::EventType,
+        topology::test_util::{TestDestinationBuilder, TestSourceBuilder, TestTransformBuilder},
+    };
+
+    /// Builds a blueprint pre-populated with a source, transform, and destination, all dealing in event-D events.
+    ///
+    /// No connections are made between the components.
+    fn blueprint_with_components() -> TopologyBlueprint {
+        let component_registry = ComponentRegistry::default();
+        let mut blueprint = TopologyBlueprint::new("test", &component_registry);
+
+        blueprint
+            .add_source("source", TestSourceBuilder::default_output(EventType::EventD))
+            .expect("should not fail to add source")
+            .add_transform(
+                "transform",
+                TestTransformBuilder::default_output(EventType::EventD, EventType::EventD),
+            )
+            .expect("should not fail to add transform")
+            .add_destination(
+                "destination",
+                TestDestinationBuilder::with_input_type(EventType::EventD),
+            )
+            .expect("should not fail to add destination");
+
+        blueprint
+    }
+
+    /// Builds a blueprint pre-populated with the given source and destination component IDs, all dealing in event-D
+    /// events.
+    ///
+    /// No connections are made between the components.
+    fn blueprint_with_sources_and_destinations(source_ids: &[&str], destination_ids: &[&str]) -> TopologyBlueprint {
+        let component_registry = ComponentRegistry::default();
+        let mut blueprint = TopologyBlueprint::new("test", &component_registry);
+
+        for source_id in source_ids {
+            blueprint
+                .add_source(*source_id, TestSourceBuilder::default_output(EventType::EventD))
+                .expect("should not fail to add source");
+        }
+
+        for destination_id in destination_ids {
+            blueprint
+                .add_destination(
+                    *destination_id,
+                    TestDestinationBuilder::with_input_type(EventType::EventD),
+                )
+                .expect("should not fail to add destination");
+        }
+
+        blueprint
+    }
+
+    /// Collects the blueprint's directed connections as a sorted list of `(from, to)` component ID pairs.
+    fn connected_pairs(blueprint: &TopologyBlueprint) -> Vec<(String, String)> {
+        let outbound_edges = blueprint.graph.get_outbound_directed_edges();
+
+        let mut pairs = Vec::new();
+        for (from, outputs) in &outbound_edges {
+            for targets in outputs.values() {
+                for to in targets {
+                    pairs.push((from.component_id().to_string(), to.component_id().to_string()));
+                }
+            }
+        }
+        pairs.sort();
+        pairs
+    }
+
+    #[test]
+    fn connect_components_in_order_errors_with_fewer_than_two_ids() {
+        let mut blueprint = blueprint_with_components();
+
+        // No component IDs at all.
+        let result = blueprint.connect_components_in_order(Vec::<&str>::new()).map(|_| ());
+        assert!(result.is_err());
+
+        // A single component ID is still not enough to form a connection.
+        let result = blueprint.connect_components_in_order(["source"]).map(|_| ());
+        assert!(result.is_err());
+
+        // Neither attempt should have added any connections to the graph.
+        assert!(connected_pairs(&blueprint).is_empty());
+    }
+
+    #[test]
+    fn connect_components_in_order_connects_pairwise_left_to_right() {
+        let mut blueprint = blueprint_with_components();
+
+        blueprint
+            .connect_components_in_order(["source", "transform", "destination"])
+            .expect("should not fail to connect components in order");
+
+        // Adjacent components should be connected from left to right (`source` -> `transform` -> `destination`), with
+        // a single edge shared between each pair.
+        assert_eq!(
+            connected_pairs(&blueprint),
+            vec![
+                ("source".to_string(), "transform".to_string()),
+                ("transform".to_string(), "destination".to_string()),
+            ],
+        );
+    }
+
+    #[test]
+    fn connect_component_one_to_many_fans_out() {
+        // A single upstream component is fanned out to multiple downstream components. The upstream ID is given as a
+        // bare string (`Single`), while the downstream IDs are given as a slice (`Multiple`).
+        let mut blueprint = blueprint_with_sources_and_destinations(&["source"], &["dest_a", "dest_b"]);
+
+        blueprint
+            .connect_components("source", ["dest_a", "dest_b"])
+            .expect("should not fail to connect component");
+
+        assert_eq!(
+            connected_pairs(&blueprint),
+            vec![
+                ("source".to_string(), "dest_a".to_string()),
+                ("source".to_string(), "dest_b".to_string()),
+            ],
+        );
+    }
+
+    #[test]
+    fn connect_component_many_to_one_fans_in() {
+        // Multiple upstream components are fanned in to a single downstream component. The upstream IDs are given as a
+        // slice (`Multiple`), while the downstream ID is given as a bare string (`Single`).
+        let mut blueprint = blueprint_with_sources_and_destinations(&["source_a", "source_b"], &["dest"]);
+
+        blueprint
+            .connect_components(["source_a", "source_b"], "dest")
+            .expect("should not fail to connect component");
+
+        assert_eq!(
+            connected_pairs(&blueprint),
+            vec![
+                ("source_a".to_string(), "dest".to_string()),
+                ("source_b".to_string(), "dest".to_string()),
+            ],
+        );
+    }
+
+    #[test]
+    fn connect_component_many_to_many_creates_mesh() {
+        // Multiple upstream components are meshed with multiple downstream components: every upstream component is
+        // connected to every downstream component. Both sides are given as slices (`Multiple`).
+        let mut blueprint = blueprint_with_sources_and_destinations(&["source_a", "source_b"], &["dest_a", "dest_b"]);
+
+        blueprint
+            .connect_components(["source_a", "source_b"], ["dest_a", "dest_b"])
+            .expect("should not fail to connect component");
+
+        assert_eq!(
+            connected_pairs(&blueprint),
+            vec![
+                ("source_a".to_string(), "dest_a".to_string()),
+                ("source_a".to_string(), "dest_b".to_string()),
+                ("source_b".to_string(), "dest_a".to_string()),
+                ("source_b".to_string(), "dest_b".to_string()),
+            ],
+        );
     }
 }
