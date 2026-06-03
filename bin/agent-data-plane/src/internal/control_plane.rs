@@ -6,7 +6,7 @@ use saluki_app::{
     logging::LoggingOverrideController,
 };
 use saluki_components::{
-    destinations::DogStatsDStatisticsConfiguration,
+    destinations::DogStatsDStatsAPIHandler,
     sources::{DogStatsDCaptureAPIHandler, DogStatsDReplayAPIHandler},
 };
 use saluki_config::GenericConfiguration;
@@ -23,25 +23,25 @@ use crate::{
     },
 };
 
-/// DogStatsD-specific control plane integrations.
-#[derive(Clone)]
-pub struct DogStatsDControlPlaneConfiguration {
-    stats_config: DogStatsDStatisticsConfiguration,
-    capture_api_handler: Option<DogStatsDCaptureAPIHandler>,
-    replay_api_handler: Option<DogStatsDReplayAPIHandler>,
+/// Unified DogStatsD control-plane surface.
+///
+/// Contains all API handlers for the DogStatsD pipeline. This is present only when DogStatsD is
+/// enabled; when it is `None`, none of the DogStatsD control-plane endpoints are registered.
+pub struct DogStatsDControlSurface {
+    /// API handler for the `/dogstatsd/stats` endpoint.
+    pub(crate) stats_api_handler: DogStatsDStatsAPIHandler,
+    /// API handler for the `/dogstatsd/capture/trigger` endpoint.
+    pub(crate) capture_api_handler: DogStatsDCaptureAPIHandler,
+    /// API handler for the `/dogstatsd/replay/session` endpoints.
+    pub(crate) replay_api_handler: DogStatsDReplayAPIHandler,
 }
 
-impl DogStatsDControlPlaneConfiguration {
-    /// Creates a new `DogStatsDControlPlaneConfiguration`.
-    pub fn new(
-        stats_config: DogStatsDStatisticsConfiguration, capture_api_handler: Option<DogStatsDCaptureAPIHandler>,
-        replay_api_handler: Option<DogStatsDReplayAPIHandler>,
-    ) -> Self {
-        Self {
-            stats_config,
-            capture_api_handler,
-            replay_api_handler,
-        }
+impl DogStatsDControlSurface {
+    pub(crate) fn register_handlers(self, builder: DynamicAPIBuilder) -> DynamicAPIBuilder {
+        builder
+            .with_handler(self.stats_api_handler)
+            .with_handler(self.capture_api_handler)
+            .with_handler(self.replay_api_handler)
     }
 }
 
@@ -57,7 +57,7 @@ impl DogStatsDControlPlaneConfiguration {
 /// If the supervisor can't be created, an error is returned.
 pub async fn create_control_plane_supervisor(
     config: &GenericConfiguration, dp_config: &DataPlaneConfiguration, component_registry: &ComponentRegistry,
-    health_registry: HealthRegistry, dsd_config: DogStatsDControlPlaneConfiguration,
+    health_registry: HealthRegistry, dsd_control_surface: Option<DogStatsDControlSurface>,
     ra_bootstrap: Option<RemoteAgentBootstrap>, logging_controller: LoggingOverrideController,
 ) -> Result<Supervisor, GenericError> {
     let mut supervisor = Supervisor::new("ctrl-pln")?
@@ -76,18 +76,14 @@ pub async fn create_control_plane_supervisor(
     ));
     let ipc_config = IpcAuthConfiguration::from_configuration(config)?;
     let tls_config = build_ipc_server_tls_config(ipc_config.ipc_cert_file_path()).await?;
-    let DogStatsDControlPlaneConfiguration {
-        stats_config,
-        capture_api_handler,
-        replay_api_handler,
-    } = dsd_config;
 
     let mut privileged_api =
         DynamicAPIBuilder::new(EndpointType::Privileged, dp_config.secure_api_listen_address().clone())
-            .with_tls_config(tls_config)
-            .with_handler(stats_config.api_handler())
-            .with_optional_handler(capture_api_handler)
-            .with_optional_handler(replay_api_handler);
+            .with_tls_config(tls_config);
+
+    if let Some(surface) = dsd_control_surface {
+        privileged_api = surface.register_handlers(privileged_api);
+    }
 
     // If we bootstrapped ourselves as a remote agent, add the necessary gRPC services to the API.
     if let Some(ra_bootstrap) = &ra_bootstrap {
