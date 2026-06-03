@@ -130,14 +130,19 @@ function Build-WindowsAdpImage {
     Remove-Item -Recurse -Force $ContextDir -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Force $ContextDir | Out-Null
     Copy-Item -Force $AdpBinary (Join-Path $ContextDir "agent-data-plane.exe")
+    Copy-Item -Force (Join-Path $RepoRoot "test\smp\regression\adp\shared\cert.pem") (Join-Path $ContextDir "ipc_cert.pem")
     New-Item -ItemType File -Force (Join-Path $ContextDir "datadog.yaml") | Out-Null
+    Set-Content -Path (Join-Path $ContextDir "auth_token") -Value "windows-integration-test-token" -Encoding ASCII
 
     $Dockerfile = @"
 # escape=``
 FROM ${BaseImage}
 WORKDIR C:\adp
+RUN powershell.exe -NoProfile -NonInteractive -Command New-Item -ItemType Directory -Force C:\ProgramData\Datadog ^| Out-Null
 COPY agent-data-plane.exe C:\adp\agent-data-plane.exe
 COPY datadog.yaml C:\adp\datadog.yaml
+COPY auth_token C:\ProgramData\Datadog\auth_token
+COPY ipc_cert.pem C:\ProgramData\Datadog\ipc_cert.pem
 ENTRYPOINT ["C:\\adp\\agent-data-plane.exe"]
 CMD ["-c", "C:\\adp\\datadog.yaml", "run"]
 "@

@@ -87,6 +87,11 @@ fn normalize_env_for_runtime(mut env: HashMap<String, String>, runtime: &str) ->
             "DD_DATA_PLANE__OTLP__PROXY__LOGS__ENABLED",
         );
         add_env_alias(&mut env, "DD_DATA_PLANE_LOG_FILE", "DD_DATA_PLANE__LOG_FILE");
+
+        env.entry("DD_DATA_PLANE__REMOTE_AGENT_ENABLED".to_string())
+            .or_insert_with(|| "false".to_string());
+        env.entry("DD_DATA_PLANE__USE_NEW_CONFIG_STREAM_ENDPOINT".to_string())
+            .or_insert_with(|| "false".to_string());
     }
 
     env
@@ -1095,6 +1100,14 @@ mod tests {
         );
         assert_eq!(
             normalized.get("DD_DATA_PLANE__OTLP__PROXY__TRACES__ENABLED"),
+            Some(&"false".to_string())
+        );
+        assert_eq!(
+            normalized.get("DD_DATA_PLANE__REMOTE_AGENT_ENABLED"),
+            Some(&"false".to_string())
+        );
+        assert_eq!(
+            normalized.get("DD_DATA_PLANE__USE_NEW_CONFIG_STREAM_ENDPOINT"),
             Some(&"false".to_string())
         );
     }
