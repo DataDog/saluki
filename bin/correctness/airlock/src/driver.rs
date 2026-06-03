@@ -358,6 +358,7 @@ impl DriverConfig {
 #[derive(Debug, Default)]
 pub struct DriverDetails {
     container_name: String,
+    container_ip: Option<String>,
     port_mappings: Option<HashMap<String, u16>>,
 }
 
@@ -374,6 +375,11 @@ impl DriverDetails {
     /// Returns the name of the container.
     pub fn container_name(&self) -> &str {
         &self.container_name
+    }
+
+    /// Returns the container IP address on its primary Docker network, if known.
+    pub fn container_ip(&self) -> Option<&str> {
+        self.container_ip.as_deref()
     }
 
     /// Attempts to look up a mapped ephemeral port for the given exposed port.
@@ -790,6 +796,18 @@ impl Driver {
 
         let response = self.docker.inspect_container(container_name, None).await?;
         if let Some(network_settings) = response.network_settings {
+            if let Some(networks) = network_settings.networks.as_ref() {
+                details.container_ip = networks
+                    .get(&self.isolation_group_name)
+                    .and_then(|settings| settings.ip_address.clone())
+                    .filter(|address| !address.is_empty())
+                    .or_else(|| {
+                        networks
+                            .values()
+                            .find_map(|settings| settings.ip_address.clone().filter(|address| !address.is_empty()))
+                    });
+            }
+
             if let Some(ports) = network_settings.ports {
                 let port_mappings = details.port_mappings.get_or_insert_with(HashMap::new);
                 for (internal_port, bindings) in ports {

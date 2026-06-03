@@ -102,6 +102,8 @@ pub struct AssertionContext {
     pub cancel_token: CancellationToken,
     /// Port mappings from internal port to host port.
     pub port_mappings: std::collections::HashMap<String, u16>,
+    /// Container IP address on its primary Docker network, if known.
+    pub container_ip: Option<String>,
     /// Name of the container being tested.
     pub container_name: String,
     /// Whether the test is running natively (no container). When `true`, assertions that would
@@ -112,6 +114,8 @@ pub struct AssertionContext {
     /// path or while the process is still running; `Some(None)` if the process was killed by
     /// signal; `Some(Some(code))` if it exited normally.
     pub host_process_exit_code: Option<airlock::unix::ExitCodeCell>,
+    /// Exit code of a top-level Docker target process, populated once the container exits.
+    pub docker_container_exit_code: Option<std::sync::Arc<std::sync::RwLock<Option<i64>>>>,
 }
 
 /// Trait for assertion implementations.

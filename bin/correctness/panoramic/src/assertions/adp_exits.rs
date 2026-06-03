@@ -135,6 +135,32 @@ impl AdpExitsWithAssertion {
                     duration: started.elapsed(),
                 };
             }
+            if ctx.container_exit_token.is_cancelled() {
+                if let Some(cell) = ctx.docker_container_exit_code.as_ref() {
+                    if let Ok(stored) = cell.read() {
+                        if let Some(code) = *stored {
+                            if code == self.expected_code {
+                                return AssertionResult {
+                                    name: self.name().to_string(),
+                                    passed: true,
+                                    message: format!("Container exited with expected ADP code {}.", code),
+                                    duration: started.elapsed(),
+                                };
+                            }
+
+                            return AssertionResult {
+                                name: self.name().to_string(),
+                                passed: false,
+                                message: format!(
+                                    "Container exited with code {}, expected {}.",
+                                    code, self.expected_code
+                                ),
+                                duration: started.elapsed(),
+                            };
+                        }
+                    }
+                }
+            }
             let matched = {
                 let buf = ctx.log_buffer.read().unwrap();
                 buf.contains_match(&pattern, false, &LogStream::Both)

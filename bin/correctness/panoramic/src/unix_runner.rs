@@ -342,9 +342,11 @@ impl UnixIntegrationRunner {
             container_exit_token: exit_token,
             cancel_token: self.tctx.test_cancel_token(),
             port_mappings: self.build_port_mappings(),
+            container_ip: None,
             container_name: process_display_name,
             is_host_process: true,
             host_process_exit_code: Some(exit_code_cell),
+            docker_container_exit_code: None,
         };
         crate::assertions::run_assertion_steps(&self.test_case, &ctx).await
     }

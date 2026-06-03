@@ -30,21 +30,19 @@ impl HttpCheckAssertion {
         }
     }
 
-    /// Resolve the endpoint URL, replacing container ports with mapped host ports.
-    fn resolve_endpoint(&self, port_mappings: &std::collections::HashMap<String, u16>) -> String {
+    /// Resolve the endpoint URL, replacing container ports with the address reachable from the test runner.
+    fn resolve_endpoint(&self, ctx: &AssertionContext) -> String {
         let mut endpoint = self.endpoint.clone();
 
-        for (internal_spec, host_port) in port_mappings {
+        for (internal_spec, host_port) in &ctx.port_mappings {
             if let Some(internal_port) = internal_spec.split('/').next() {
+                let replacement = match ctx.container_ip.as_deref() {
+                    Some(container_ip) => format!("{}:{}", container_ip, internal_port),
+                    None => format!("127.0.0.1:{}", host_port),
+                };
                 endpoint = endpoint
-                    .replace(
-                        &format!("localhost:{}", internal_port),
-                        &format!("127.0.0.1:{}", host_port),
-                    )
-                    .replace(
-                        &format!("127.0.0.1:{}", internal_port),
-                        &format!("127.0.0.1:{}", host_port),
-                    );
+                    .replace(&format!("localhost:{}", internal_port), &replacement)
+                    .replace(&format!("127.0.0.1:{}", internal_port), &replacement);
             }
         }
 
@@ -83,7 +81,7 @@ impl Assertion for HttpCheckAssertion {
         let started = Instant::now();
         let deadline = started + self.timeout;
 
-        let endpoint = self.resolve_endpoint(&ctx.port_mappings);
+        let endpoint = self.resolve_endpoint(ctx);
 
         let client = match ClientBuilder::new()
             .danger_accept_invalid_certs(self.insecure_skip_verify)

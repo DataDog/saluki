@@ -14,7 +14,7 @@ use std::{
 };
 
 use airlock::driver::{ContainerOs, Driver, DriverConfig, DriverDetails};
-use bollard::container::LogOutput;
+use bollard::{container::LogOutput, errors::Error as DockerError};
 use futures::stream::{self, StreamExt as _};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use tokio::sync::{mpsc, Semaphore};
@@ -567,6 +567,8 @@ impl IntegrationRunner {
         // container exit does not trigger the external cancel path.
         let exit_token = CancellationToken::new();
         let exit_signal = exit_token.clone();
+        let docker_exit_code = Arc::new(RwLock::new(None));
+        let docker_exit_code_for_exit = docker_exit_code.clone();
         let container_name = details.container_name().to_string();
         let container_name_for_exit = container_name.clone();
         let exit_handle = tokio::spawn(async move {
@@ -579,7 +581,17 @@ impl IntegrationRunner {
                 &container_name_for_exit,
                 None::<bollard::query_parameters::WaitContainerOptions>,
             );
-            if wait_stream.next().await.is_some() {
+            if let Some(result) = wait_stream.next().await {
+                let exit_code = match result {
+                    Ok(response) => Some(response.status_code),
+                    Err(DockerError::DockerContainerWaitError { code, .. }) => Some(code),
+                    Err(_) => None,
+                };
+                if let Some(code) = exit_code {
+                    if let Ok(mut stored) = docker_exit_code_for_exit.write() {
+                        *stored = Some(code);
+                    }
+                }
                 exit_signal.cancel();
             }
         });
@@ -688,7 +700,7 @@ impl IntegrationRunner {
 
         // If we are canceled while running our assertions, we return early to respect cancellation.
         let assertion_results = tokio::select! {
-            results = self.run_assertions(&port_mappings, &container_name, &exit_token) => results,
+            results = self.run_assertions(&port_mappings, details.container_ip(), &container_name, &exit_token, docker_exit_code) => results,
             _ = test_cancel.cancelled() => vec![AssertionResult {
                 name: "cancelled".to_string(),
                 passed: false,
@@ -895,16 +907,19 @@ impl IntegrationRunner {
     }
 
     async fn run_assertions(
-        &self, port_mappings: &HashMap<String, u16>, container_name: &str, exit_token: &CancellationToken,
+        &self, port_mappings: &HashMap<String, u16>, container_ip: Option<&str>, container_name: &str,
+        exit_token: &CancellationToken, docker_exit_code: Arc<RwLock<Option<i64>>>,
     ) -> Vec<AssertionResult> {
         let ctx = AssertionContext {
             log_buffer: self.log_buffer.clone(),
             container_exit_token: exit_token.clone(),
             cancel_token: self.tctx.test_cancel_token(),
             port_mappings: port_mappings.clone(),
+            container_ip: container_ip.map(str::to_string),
             container_name: container_name.to_string(),
             is_host_process: false,
             host_process_exit_code: None,
+            docker_container_exit_code: Some(docker_exit_code),
         };
         crate::assertions::run_assertion_steps(&self.test_case, &ctx).await
     }
