@@ -1082,7 +1082,6 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
- "tokio-vsock",
  "tonic",
  "tracing",
  "windows-registry",
