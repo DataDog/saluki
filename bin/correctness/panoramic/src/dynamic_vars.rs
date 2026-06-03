@@ -75,6 +75,53 @@ pub fn has_dynamic_vars(test_case: &IntegrationConfig) -> bool {
     test_case.env.keys().any(|k| k.starts_with(ENV_PREFIX))
 }
 
+/// Resolves dynamic variables for Windows containers.
+///
+/// Windows test images do not run the Linux `cont-init.d` dynamic-variable script. Instead, Panoramic resolves the
+/// small set of currently supported Windows dynamic variables directly after the container starts.
+pub async fn resolve_windows_vars(
+    driver: &Driver, test_case: &IntegrationConfig, container_ip: Option<&str>,
+) -> Result<HashMap<String, String>, GenericError> {
+    let mut vars = HashMap::new();
+
+    for env_key in test_case.env.keys().filter(|key| key.starts_with(ENV_PREFIX)) {
+        let key = env_key.trim_start_matches(ENV_PREFIX);
+        match key {
+            "CONTAINER_IP" => {
+                let container_ip = container_ip.ok_or_else(|| generic_error!("Container IP unavailable."))?;
+                vars.insert(key.to_string(), container_ip.to_string());
+            }
+            "CUSTOM_HOSTNAME" => {
+                let container_ip = container_ip.ok_or_else(|| generic_error!("Container IP unavailable."))?;
+                let hostname = "foo.local";
+                let hosts_entry = format!("{} {}", container_ip, hostname);
+                driver
+                    .exec_in_container(vec![
+                        "powershell.exe".to_string(),
+                        "-NoProfile".to_string(),
+                        "-NonInteractive".to_string(),
+                        "-Command".to_string(),
+                        format!(
+                            "Add-Content -Path C:\\Windows\\System32\\drivers\\etc\\hosts -Value '{}'",
+                            hosts_entry
+                        ),
+                    ])
+                    .await
+                    .error_context("Failed to add Windows hosts entry for dynamic hostname.")?;
+                vars.insert(key.to_string(), hostname.to_string());
+            }
+            other => {
+                return Err(generic_error!(
+                    "Unsupported Windows dynamic variable PANORAMIC_DYNAMIC_{}.",
+                    other
+                ));
+            }
+        }
+    }
+
+    Ok(vars)
+}
+
 /// Reads resolved dynamic variable values from `/airlock/dynamic/` inside the container.
 ///
 /// Polls for the `/airlock/dynamic/.ready` sentinel (up to 30 seconds), then reads each key file.

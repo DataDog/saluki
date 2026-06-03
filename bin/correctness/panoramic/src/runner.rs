@@ -604,7 +604,13 @@ impl IntegrationRunner {
             let phase_start = Instant::now();
             debug!(test = %test_name, "Resolving dynamic variables...");
 
-            match crate::dynamic_vars::read_resolved_vars(&driver).await {
+            let resolved_vars = if self.test_case.active_runtime == crate::config::WINDOWS_RUNTIME {
+                crate::dynamic_vars::resolve_windows_vars(&driver, &self.test_case, details.container_ip()).await
+            } else {
+                crate::dynamic_vars::read_resolved_vars(&driver).await
+            };
+
+            match resolved_vars {
                 Ok(vars) => {
                     // Fail on empty values — indicates the init script command failed.
                     for (key, value) in &vars {
