@@ -138,12 +138,14 @@ function Build-WindowsAdpImage {
     $Dockerfile = @"
 # escape=``
 FROM ${BuildImage} AS winbuild
+RUN New-Item -ItemType Directory -Force C:\adp-runtime; `
+    Get-ChildItem -Path C:\ -Recurse -Include vcruntime140.dll,vcruntime140_1.dll,msvcp140.dll -ErrorAction SilentlyContinue | `
+    Select-Object -First 20 | `
+    ForEach-Object { Copy-Item -Force `$_.FullName C:\adp-runtime\ }
 FROM ${BaseImage}
 WORKDIR C:\adp
 RUN New-Item -ItemType Directory -Force C:\ProgramData\Datadog
-COPY --from=winbuild C:\Windows\System32\vcruntime140.dll C:\adp\vcruntime140.dll
-COPY --from=winbuild C:\Windows\System32\vcruntime140_1.dll C:\adp\vcruntime140_1.dll
-COPY --from=winbuild C:\Windows\System32\msvcp140.dll C:\adp\msvcp140.dll
+COPY --from=winbuild C:\adp-runtime\ C:\adp\
 COPY agent-data-plane.exe C:\adp\agent-data-plane.exe
 COPY entrypoint.ps1 C:\adp\entrypoint.ps1
 COPY auth_token C:\ProgramData\Datadog\auth_token
