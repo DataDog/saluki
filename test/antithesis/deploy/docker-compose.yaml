@@ -33,7 +33,6 @@ services:
     command: ["run"]
     environment:
       NO_COLOR: "1"
-      RUST_BACKTRACE: "1"
       DD_API_KEY: "antithesis-test-api-key"
       DD_DATA_PLANE_ENABLED: "true"
       DD_DATA_PLANE_STANDALONE_MODE: "true"

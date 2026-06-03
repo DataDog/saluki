@@ -1081,10 +1081,10 @@
   },
   {
     "key": "entity_id",
-    "feature_state": "MISSING",
-    "action": "INVESTIGATE",
+    "feature_state": "NOT_APPLICABLE",
+    "action": "NONE",
     "description": "Agent's own pod entity ID (set by DCA webhook)",
-    "reason": "Marked for investigation; previously dismissed as not-applicable.",
+    "reason": "ADP does not emit internal DogStatsD metrics; its own DogStatsD telemetry is exposed via OpenMetrics.",
     "issue": "#1752",
     "adp_key": null
   },
@@ -2094,6 +2094,15 @@
     "description": "OPW metrics intake URL (legacy alias)",
     "reason": "Implemented in ADP as the legacy fallback URL when observability_pipelines_worker.metrics.enabled is false.",
     "issue": null,
+    "adp_key": null
+  },
+  {
+    "key": "vsock_addr",
+    "feature_state": "PARITY",
+    "action": "NONE",
+    "description": "vsock address for connecting to the Agent IPC endpoint",
+    "reason": "Read by RemoteAgentClientConfiguration on Linux to connect to the Agent IPC endpoint via AF_VSOCK. Accepted values: host (CID 2), hypervisor (CID 0), local (CID 3). On non-Linux platforms the setting is accepted but a warning is emitted and a TCP connection is used instead.",
+    "issue": "#1797",
     "adp_key": null
   }
 ]

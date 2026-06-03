@@ -2304,7 +2304,6 @@
   "vector.logs.url",
   "vector_metrics_enabled",
   "vector_metrics_url",
-  "vsock_addr",
   "win_skip_com_init",
   "windows_counter_init_failure_limit",
   "windows_counter_refresh_interval",
