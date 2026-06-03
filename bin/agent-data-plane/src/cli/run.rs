@@ -589,9 +589,12 @@ fn add_mrf_metrics_pipeline_to_blueprint(
         .add_transform("mrf_metrics_gateway", mrf_gateway_config)?
         .add_encoder("mrf_metrics_encode", mrf_metrics_config)?
         .add_forwarder("mrf_dd_out", mrf_forwarder_config)?
-        .connect_components("mrf_metrics_gateway", ["metrics_enrich"])?
-        .connect_components("mrf_metrics_encode", ["mrf_metrics_gateway"])?
-        .connect_components("mrf_dd_out", ["mrf_metrics_encode"])?;
+        .connect_components_in_order([
+            "metrics_enrich",
+            "mrf_metrics_gateway",
+            "mrf_metrics_encode",
+            "mrf_dd_out",
+        ])?;
 
     Ok(())
 }
@@ -675,8 +678,7 @@ async fn add_baseline_traces_pipeline_to_blueprint(
         .add_transform("dd_apm_stats", apm_stats_transform_config)?
         .add_encoder("dd_stats_encode", dd_apm_stats_encoder)?
         .add_encoder("dd_traces_encode", dd_traces_config)?
-        .connect_components("traces_enrich", "dd_apm_stats")?
-        .connect_components("traces_enrich", "dd_traces_encode")?
+        .connect_components("traces_enrich", ["dd_apm_stats", "dd_traces_encode"])?
         .connect_components("dd_apm_stats", "dd_stats_encode")?
         .connect_components(["dd_traces_encode", "dd_stats_encode"], "dd_out")?;
 
