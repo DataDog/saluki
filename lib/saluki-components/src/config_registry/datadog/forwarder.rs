@@ -136,7 +136,7 @@ crate::declare_annotations! {
         env_var_override: None,
         used_by: &[structs::FORWARDER_CONFIGURATION],
         value_type_override: Some(ValueType::String),
-        test_json: Some("\"10s\""),
+        test_json: Some("\"30s\""),
         pipeline_affinity: PipelineAffinity::CrossCutting,
     };
 
