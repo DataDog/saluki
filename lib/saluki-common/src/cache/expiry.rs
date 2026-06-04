@@ -260,11 +260,9 @@ where
     fn begin_request(&self) -> Self::RequestState {}
 
     #[inline]
-    fn on_evict_hot(&self, _state: &mut Self::RequestState, key: K, _value: V) {
+    fn on_evict_hot(&self, state: &mut Self::RequestState, key: K, value: V) {
         self.items_evicted.increment(1);
-        if let Some(state) = self.state.as_ref() {
-            state.mark_entry_removed(key);
-        }
+        self.on_evict_cold(state, key, value);
     }
 
     #[inline]
