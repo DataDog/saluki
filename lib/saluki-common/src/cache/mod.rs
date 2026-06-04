@@ -1,4 +1,9 @@
-use std::{marker::PhantomData, num::NonZeroUsize, sync::Arc, time::Duration};
+use std::{
+    marker::PhantomData,
+    num::NonZeroUsize,
+    sync::{atomic::AtomicU64, Arc},
+    time::Duration,
+};
 
 use saluki_error::GenericError;
 use saluki_metrics::static_metrics;
@@ -46,6 +51,7 @@ pub struct CacheBuilder<K, V, W = ItemCountWeighter, H = FastBuildHasher> {
     idle_period: Option<Duration>,
     expiration_interval: Option<Duration>,
     telemetry_enabled: bool,
+    eviction_counter: Option<Arc<AtomicU64>>,
     _key: PhantomData<K>,
     _value: PhantomData<V>,
     _hasher: PhantomData<H>,
@@ -74,6 +80,7 @@ impl<K, V> CacheBuilder<K, V> {
             idle_period: None,
             expiration_interval: None,
             telemetry_enabled: true,
+            eviction_counter: None,
             _key: PhantomData,
             _value: PhantomData,
             _hasher: PhantomData,
@@ -168,6 +175,7 @@ impl<K, V, W, H> CacheBuilder<K, V, W, H> {
             idle_period: self.idle_period,
             expiration_interval: self.expiration_interval,
             telemetry_enabled: self.telemetry_enabled,
+            eviction_counter: self.eviction_counter,
             _key: PhantomData,
             _value: PhantomData,
             _hasher: PhantomData,
@@ -189,6 +197,7 @@ impl<K, V, W, H> CacheBuilder<K, V, W, H> {
             idle_period: self.idle_period,
             expiration_interval: self.expiration_interval,
             telemetry_enabled: self.telemetry_enabled,
+            eviction_counter: self.eviction_counter,
             _key: PhantomData,
             _value: PhantomData,
             _hasher: PhantomData,
@@ -205,6 +214,14 @@ impl<K, V, W, H> CacheBuilder<K, V, W, H> {
     /// Defaults to telemetry enabled.
     pub fn with_telemetry(mut self, enabled: bool) -> Self {
         self.telemetry_enabled = enabled;
+        self
+    }
+
+    /// Sets an external eviction counter incremented on each capacity-driven eviction.
+    ///
+    /// TTI-based expirations are not counted — only capacity pressure evictions.
+    pub fn with_eviction_counter(mut self, counter: Arc<AtomicU64>) -> Self {
+        self.eviction_counter = Some(counter);
         self
     }
 }
@@ -229,6 +246,10 @@ where
             expiration_builder = expiration_builder.with_time_to_idle(time_to_idle);
         }
         let (expiration, expiry_lifecycle) = expiration_builder.build();
+        let expiry_lifecycle = match self.eviction_counter {
+            Some(counter) => expiry_lifecycle.with_eviction_counter(counter),
+            None => expiry_lifecycle,
+        };
 
         // Create the underlying cache and shutdown signal.
         let shutdown_token = CancellationToken::new();
@@ -513,6 +534,35 @@ mod tests {
         assert_eq!(cache.get(&2), None);
         assert_eq!(cache.get(&3), None);
         assert_eq!(cache.get(&4), Some(CAPACITY - 1));
+    }
+
+    #[test]
+    fn eviction_counter_increments_on_capacity_eviction() {
+        use std::sync::{
+            atomic::{AtomicU64, Ordering},
+            Arc,
+        };
+
+        const CAPACITY: usize = 3;
+        let eviction_counter = Arc::new(AtomicU64::new(0));
+
+        let cache = CacheBuilder::for_tests()
+            .with_capacity(NonZeroUsize::new(CAPACITY).unwrap())
+            .with_eviction_counter(Arc::clone(&eviction_counter))
+            .build();
+
+        // Fill to capacity.
+        for i in 0..CAPACITY {
+            cache.insert(i, "v");
+        }
+        assert_eq!(eviction_counter.load(Ordering::Relaxed), 0);
+
+        // One more insert triggers a capacity eviction.
+        cache.insert(CAPACITY, "v");
+        assert!(
+            eviction_counter.load(Ordering::Relaxed) >= 1,
+            "expected at least one eviction"
+        );
     }
 
     #[tokio::test]

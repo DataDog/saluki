@@ -1,6 +1,9 @@
 use std::{
     marker::PhantomData,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex,
+    },
     time::Duration,
 };
 
@@ -228,15 +231,27 @@ where
 #[derive(Clone)]
 pub(super) struct ExpiryCapableLifecycle<K> {
     state: Option<Arc<State<K>>>,
+    eviction_counter: Option<Arc<AtomicU64>>,
 }
 
 impl<K> ExpiryCapableLifecycle<K> {
     fn disabled() -> Self {
-        Self { state: None }
+        Self {
+            state: None,
+            eviction_counter: None,
+        }
     }
 
     fn from_state(state: Arc<State<K>>) -> Self {
-        Self { state: Some(state) }
+        Self {
+            state: Some(state),
+            eviction_counter: None,
+        }
+    }
+
+    pub(super) fn with_eviction_counter(mut self, counter: Arc<AtomicU64>) -> Self {
+        self.eviction_counter = Some(counter);
+        self
     }
 }
 
@@ -253,6 +268,9 @@ where
     fn on_evict(&self, _state: &mut Self::RequestState, key: K, _value: V) {
         if let Some(state) = self.state.as_ref() {
             state.mark_entry_removed(key);
+        }
+        if let Some(counter) = self.eviction_counter.as_ref() {
+            counter.fetch_add(1, Ordering::Relaxed);
         }
     }
 }
