@@ -112,6 +112,9 @@ mod tests {
     }
 
     #[test]
+    // To whoever implements this config in the future: sorry! We just wanted to make sure this is
+    // working correctly by giving it a currently unsupported key. You can delete the unsupported
+    // tests or choose a different key.
     fn incompatible_non_default() {
         let c = classifier();
         let key = unsupported::AGGREGATOR_BUFFER_SIZE.yaml_path();
