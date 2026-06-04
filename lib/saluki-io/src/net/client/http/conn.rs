@@ -399,8 +399,9 @@ impl Service<Uri> for HttpsCapableConnector {
                 if let Some(trimmed) = hostname.strip_prefix('[').and_then(|h| h.strip_suffix(']')) {
                     hostname = trimmed;
                 }
-                let server_name =
-                    ServerName::try_from(hostname.to_string()).map_err(|e| BoxError::from(io::Error::other(e)))?;
+                let server_name = ServerName::try_from(hostname)
+                    .map_err(|e| BoxError::from(io::Error::other(e)))?
+                    .to_owned();
 
                 let tls_connector = TlsConnector::from(tls_config);
                 let tls_stream = tokio::time::timeout(
@@ -408,7 +409,12 @@ impl Service<Uri> for HttpsCapableConnector {
                     tls_connector.connect(server_name, TokioIo::new(transport)),
                 )
                 .await
-                .map_err(|_| BoxError::from(io::Error::new(io::ErrorKind::TimedOut, "TLS handshake timed out")))?
+                .map_err(|_| {
+                    if let Some(error_telemetry) = &error_telemetry {
+                        error_telemetry.increment_tls_error();
+                    }
+                    BoxError::from(io::Error::new(io::ErrorKind::TimedOut, "TLS handshake timed out"))
+                })?
                 .map_err(|e| {
                     if let Some(error_telemetry) = &error_telemetry {
                         error_telemetry.increment_tls_error();
@@ -577,7 +583,7 @@ impl HttpsCapableConnectorBuilder {
 
         tls_config.alpn_protocols = match self.http_protocol {
             HttpProtocol::Auto => vec![b"h2".to_vec(), b"http/1.1".to_vec()],
-            HttpProtocol::Http1 => vec![],
+            HttpProtocol::Http1 => vec![b"http/1.1".to_vec()],
         };
 
         Ok(HttpsCapableConnector {
@@ -624,9 +630,11 @@ pub(super) fn check_connection_state(captured_conn: CaptureConnection) {
 mod tests {
     use std::time::Duration;
 
+    use saluki_metrics::{test::TestRecorder, MetricsBuilder};
     use tower::Service as _;
 
-    use super::HttpsCapableConnectorBuilder;
+    use super::{HttpProtocol, HttpsCapableConnectorBuilder};
+    use crate::net::client::http::telemetry::HttpTransactionErrorTelemetry;
 
     fn test_tls_config() -> rustls::ClientConfig {
         rustls::ClientConfig::builder_with_provider(rustls::crypto::aws_lc_rs::default_provider().into())
@@ -660,6 +668,64 @@ mod tests {
             err.to_string().contains("timed out"),
             "expected TLS handshake timeout error, got: {err}"
         );
+    }
+
+    #[tokio::test]
+    async fn tls_handshake_timeout_increments_tls_error_telemetry() {
+        use tokio::net::TcpListener;
+
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let metrics_builder = MetricsBuilder::default();
+        let error_telemetry = HttpTransactionErrorTelemetry::from_builder(&metrics_builder);
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        tokio::spawn(async move {
+            let (_stream, _) = listener.accept().await.unwrap();
+            tokio::time::sleep(Duration::from_secs(60)).await;
+        });
+
+        let mut connector = HttpsCapableConnectorBuilder::default()
+            .with_tls_handshake_timeout(Duration::from_millis(100))
+            .with_error_telemetry(error_telemetry)
+            .build(test_tls_config())
+            .unwrap();
+
+        let uri: http::Uri = format!("https://127.0.0.1:{}/", addr.port()).parse().unwrap();
+        let _ = connector.call(uri).await.err().expect("expected a timeout error");
+
+        assert_eq!(
+            recorder.counter((
+                "network_http_requests_errors_total",
+                &[("error_type", "tls_error"), ("error_scope", "phase")],
+            )),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn auto_http_protocol_advertises_h2_and_http1_alpn() {
+        let connector = HttpsCapableConnectorBuilder::default()
+            .with_http_protocol(HttpProtocol::Auto)
+            .build(test_tls_config())
+            .unwrap();
+
+        assert_eq!(
+            connector.tls_config.alpn_protocols,
+            vec![b"h2".to_vec(), b"http/1.1".to_vec()]
+        );
+    }
+
+    #[test]
+    fn http1_protocol_advertises_http1_alpn() {
+        let connector = HttpsCapableConnectorBuilder::default()
+            .with_http_protocol(HttpProtocol::Http1)
+            .build(test_tls_config())
+            .unwrap();
+
+        assert_eq!(connector.tls_config.alpn_protocols, vec![b"http/1.1".to_vec()]);
     }
 
     // vsock takes priority over unix when both are configured, matching Agent behavior.
