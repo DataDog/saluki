@@ -103,6 +103,7 @@ impl Assertion for HttpCheckAssertion {
         let probe = if ctx.target_is_windows() {
             HttpProbe::InContainerCurl {
                 container_name: ctx.container_name.clone(),
+                insecure_skip_verify: self.insecure_skip_verify,
             }
         } else {
             match ClientBuilder::new()
@@ -183,8 +184,13 @@ impl Assertion for HttpCheckAssertion {
 /// container; this is the path for Windows containers, where the listener is reachable only
 /// from inside the container itself.
 enum HttpProbe {
-    HostClient { client: reqwest::Client },
-    InContainerCurl { container_name: String },
+    HostClient {
+        client: reqwest::Client,
+    },
+    InContainerCurl {
+        container_name: String,
+        insecure_skip_verify: bool,
+    },
 }
 
 impl HttpProbe {
@@ -199,28 +205,36 @@ impl HttpProbe {
                 Ok(resp) => Ok(Some(resp.status().as_u16())),
                 Err(e) => Err(e.to_string()),
             },
-            Self::InContainerCurl { container_name } => get_status_in_container(container_name, endpoint).await,
+            Self::InContainerCurl {
+                container_name,
+                insecure_skip_verify,
+            } => get_status_in_container(container_name, endpoint, *insecure_skip_verify).await,
         }
     }
 }
 
-async fn get_status_in_container(container_name: &str, endpoint: &str) -> Result<Option<u16>, String> {
+async fn get_status_in_container(
+    container_name: &str, endpoint: &str, insecure_skip_verify: bool,
+) -> Result<Option<u16>, String> {
     let docker = docker::connect().map_err(|e| format!("Failed to connect to Docker: {}", e))?;
     let endpoint = endpoint.replace("localhost", "127.0.0.1");
+    let mut cmd = vec!["curl.exe".to_string()];
+    if insecure_skip_verify {
+        cmd.push("-k".to_string());
+    }
+    cmd.extend([
+        "-s".to_string(),
+        "-o".to_string(),
+        "NUL".to_string(),
+        "-w".to_string(),
+        "%{http_code}".to_string(),
+        endpoint,
+    ]);
     let exec = docker
         .create_exec(
             container_name,
             CreateExecOptions::<String> {
-                cmd: Some(vec![
-                    "curl.exe".to_string(),
-                    "-k".to_string(),
-                    "-s".to_string(),
-                    "-o".to_string(),
-                    "NUL".to_string(),
-                    "-w".to_string(),
-                    "%{http_code}".to_string(),
-                    endpoint,
-                ]),
+                cmd: Some(cmd),
                 attach_stdout: Some(true),
                 attach_stderr: Some(false),
                 ..Default::default()
