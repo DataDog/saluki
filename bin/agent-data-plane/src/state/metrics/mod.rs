@@ -369,7 +369,7 @@ fn get_help_text(metric_name: &str) -> Option<&'static str> {
         "aggregator.dogstatsd_filtered_metrics" => {
             Some("How many metrics were filtered in the time samplers")
         }
-        "datadog.agent.tag_filterlist.size" => {
+        "tag_filterlist.size" => {
             Some("Tag filter list size")
         },
         "dogstatsd.processed" => Some("Count of service checks/events/metrics processed by dogstatsd"),
@@ -838,7 +838,7 @@ mod tests {
         assert!(output.contains("filterlist__updates 3"));
         assert!(output.contains("dogstatsd__listener_filtered_points 5"));
         assert!(output.contains("aggregator__dogstatsd_filtered_metrics 7"));
-        assert!(output.contains("datadog__agent__tag_filterlist__size 9"));
+        assert!(output.contains("tag_filterlist__size 9"));
         assert!(!output.contains("datadog__agent__filterlist__size"));
         assert!(!output.contains("datadog__agent__filterlist__updates"));
         assert!(!output.contains("datadog__agent__dogstatsd__listener_filtered_points"));
@@ -893,6 +893,6 @@ mod tests {
             get_help_text("aggregator.dogstatsd_filtered_metrics"),
             Some("How many metrics were filtered in the time samplers")
         );
-        assert_eq!(get_help_text("datadog.agent.tag_filterlist.size"), Some("Tag filter list size"));
+        assert_eq!(get_help_text("tag_filterlist.size"), Some("Tag filter list size"));
     }
 }
