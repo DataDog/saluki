@@ -52,12 +52,12 @@ where
         match self.time_to_idle {
             None => (
                 Expiration::disabled(),
-                ExpiryCapableLifecycle::disabled(self.items_evicted),
+                ExpiryCapableLifecycle::new(self.items_evicted),
             ),
             Some(time_to_idle) => {
                 let state = Arc::new(State::new(time_to_idle));
                 let expiration = Expiration::from_state(Arc::clone(&state));
-                let lifecycle = ExpiryCapableLifecycle::from_state(state, self.items_evicted);
+                let lifecycle = ExpiryCapableLifecycle::with_state(state, self.items_evicted);
 
                 (expiration, lifecycle)
             }
@@ -238,18 +238,12 @@ pub(super) struct ExpiryCapableLifecycle<K> {
 }
 
 impl<K> ExpiryCapableLifecycle<K> {
-    fn disabled(items_evicted: Counter) -> Self {
-        Self {
-            state: None,
-            items_evicted,
-        }
+    fn new(items_evicted: Counter) -> Self {
+        Self { state: None, items_evicted }
     }
 
-    fn from_state(state: Arc<State<K>>, items_evicted: Counter) -> Self {
-        Self {
-            state: Some(state),
-            items_evicted,
-        }
+    fn with_state(state: Arc<State<K>>, items_evicted: Counter) -> Self {
+        Self { state: Some(state), items_evicted }
     }
 }
 
