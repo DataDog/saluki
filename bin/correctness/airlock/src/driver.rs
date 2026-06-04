@@ -387,7 +387,12 @@ pub struct DriverDetails {
     port_mappings: Option<HashMap<String, u16>>,
 }
 
-fn record_port_mapping(
+/// Inserts an `internal_port` -> host port mapping when `host_port` parses as a valid `u16`.
+///
+/// Docker reports each binding's host port as a string, and we treat values that don't parse as
+/// "no mapping available" rather than failing the whole inspect call. `internal_port` is the
+/// existing key (already including the protocol suffix, for example `"58125/udp"`).
+fn insert_port_mapping_if_parseable(
     port_mappings: &mut HashMap<String, u16>, internal_port: impl Into<String>, host_port: Option<&str>,
 ) {
     if let Some(host_port) = host_port.and_then(|value| value.parse::<u16>().ok()) {
@@ -839,7 +844,11 @@ impl Driver {
                 for (internal_port, bindings) in ports {
                     if let Some(bindings) = bindings {
                         for binding in bindings {
-                            record_port_mapping(port_mappings, internal_port.clone(), binding.host_port.as_deref());
+                            insert_port_mapping_if_parseable(
+                                port_mappings,
+                                internal_port.clone(),
+                                binding.host_port.as_deref(),
+                            );
                             if port_mappings.contains_key(&internal_port) {
                                 break;
                             }
@@ -1311,10 +1320,10 @@ mod tests {
     }
 
     #[test]
-    fn port_mapping_records_parseable_host_port() {
+    fn port_mapping_inserts_parseable_host_port() {
         let mut mappings = HashMap::new();
 
-        record_port_mapping(&mut mappings, "55100/tcp", Some("49152"));
+        insert_port_mapping_if_parseable(&mut mappings, "55100/tcp", Some("49152"));
 
         assert_eq!(mappings.get("55100/tcp"), Some(&49152));
     }
@@ -1323,7 +1332,7 @@ mod tests {
     fn port_mapping_ignores_invalid_host_port() {
         let mut mappings = HashMap::new();
 
-        record_port_mapping(&mut mappings, "55100/tcp", Some("not-a-port"));
+        insert_port_mapping_if_parseable(&mut mappings, "55100/tcp", Some("not-a-port"));
 
         assert!(!mappings.contains_key("55100/tcp"));
     }
