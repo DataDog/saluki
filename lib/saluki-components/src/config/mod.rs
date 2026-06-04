@@ -1,9 +1,13 @@
 //! Datadog-specific configuration providers and remappers.
+
+pub mod mrf;
 use figment::{
     providers::Serialized,
     value::{Dict, Map},
     Error, Metadata, Profile, Provider,
 };
+
+pub use self::mrf::MrfConfiguration;
 
 /// Key aliases to pass to [`ConfigurationLoader::with_key_aliases`][saluki_config::ConfigurationLoader::with_key_aliases].
 ///

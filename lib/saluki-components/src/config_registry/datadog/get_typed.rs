@@ -3,6 +3,19 @@
 use crate::config_registry::{generated::schema, structs, PipelineAffinity, SalukiAnnotation, SupportLevel};
 
 crate::declare_annotations! {
+    /// `vsock_addr`—vsock address for connecting to the Agent IPC endpoint.
+    VSOCK_ADDR = SalukiAnnotation {
+        schema: &schema::VSOCK_ADDR,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::REMOTE_AGENT_CLIENT_CONFIGURATION],
+        value_type_override: None,
+        test_json: Some("\"host\""),
+        // Affects how ADP connects to the Agent IPC endpoint.
+        pipeline_affinity: PipelineAffinity::CrossCutting,
+    };
+
     /// `cmd_port`—port for the Datadog Agent IPC/CMD API server.
     CMD_PORT = SalukiAnnotation {
         schema: &schema::CMD_PORT,

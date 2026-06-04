@@ -1,7 +1,7 @@
 ---
 sut_path: /home/ssm-user/src/saluki
-commit: fc4bb29728814ddf9321572b954ec28f58faeb53
-updated: 2026-05-30
+commit: 21b2072b4743ddbf4c84891d93abac7299dc4ce8
+updated: 2026-06-01
 external_references:
   - path: https://datadoghq.atlassian.net/wiki/spaces/DADP/
     why: ADP Confluence space — headline guarantees that frame these defects as bugs.
@@ -31,6 +31,18 @@ bug happens.
 Run all five (expect five FAILURES — the failing tests are the demonstrations):
 `cargo nextest run --no-fail-fast -E 'test(/bug_nan_sample_poisons_sum_and_avg|bug_corrupt_length_prefix_silently_drops_following_records|bug_forward_clock_jump_floods_zero_value_points|bug_default_heap_fallback_makes_context_resolution_unbounded|bug_config_ready_hangs_forever_without_snapshot/)'`
 
+> **Workload reach (2026-06-01):** the live `parallel_driver_send_dogstatsd` feral DSD-line generator
+> exercises only **one** of these five repros under a run — #4, the high-cardinality interner
+> heap-fallback (`rss-bounded-under-cardinality`) — and even that needs a memory-capped `adp` container
+> or a SUT-side RSS assertion to be *caught* (neither yet wired). The other four are off the DSD-socket
+> input path:
+> - **#1 `ddsketch-no-nan-poison`** — DSD drops non-finite at the codec; needs a `checks_ipc` gRPC
+>   Histogram feeder.
+> - **#2 `replay-corruption-not-silent-eof`** — needs the `agent-data-plane dogstatsd replay` CLI plus
+>   crafted capture files.
+> - **#3 `aggregate-clock-skew-stable` (forward-jump)** — needs a clock-skip fault.
+> - **#5 `config-stall-no-deadlock`** — needs a config-stream stub that withholds the snapshot.
+
 ## Resolved upstream on main (repro now stale)
 
 - **`aggregate-no-panic-any-window` — sub-second window `% 0` panic (was bug #1).** Fixed on main:
@@ -46,7 +58,7 @@ Run all five (expect five FAILURES — the failing tests are the demonstrations)
 
 ## Burned into an Antithesis triage shot (submitted run)
 
-- **`rss-bounded-under-cardinality` (behavioral)** and **`forwarder-eventual-delivery` (baseline liveness)** — run id (redacted; tracked internally) (test-name `saluki-adp-bug-hunt`, 30 min, submitted 2026-05-29). The `parallel_driver_send_dogstatsd` high-cardinality regime drives memory growth; `finally_verify_delivery` checks delivery. Triage with the `antithesis-triage` skill once it completes.
+- **`rss-bounded-under-cardinality` (behavioral)** and **`forwarder-eventual-delivery` (baseline liveness)** — run id (redacted; tracked internally) (test-name `saluki-adp-bug-hunt`, 30 min, submitted 2026-05-29). The `parallel_driver_send_dogstatsd` driver (a sampled batch of feral DSD lines whose names/tags/values are built combinatorially from finite segment pools) floods distinct contexts and drives memory growth; `finally_verify_delivery` checks delivery. Triage with the `antithesis-triage` skill once it completes. **Caveat:** `rss-bounded-under-cardinality` only becomes a *caught* failure with a memory-capped `adp` container (OOM ⇒ `eventually_adp_alive`) or a SUT-side RSS assertion — neither yet wired.
 
 ## Antithesis-shot-only — blocked on harness infrastructure (not locally reproducible)
 

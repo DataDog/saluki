@@ -5,7 +5,7 @@
 # Build context is the repository root. Three named targets:
 #   - adp      : agent-data-plane built WITH Antithesis coverage instrumentation + SDK (the SUT)
 #   - intake   : datadog-intake mock Datadog intake (dependency)
-#   - workload : millstone load generator + test templates + setup-complete (the client)
+#   - workload : DogStatsD driver + test templates + setup-complete (the client)
 #
 # ADP is built native x86_64-unknown-linux-gnu (glibc), so no musl cross-compile headers are needed.
 
@@ -32,11 +32,14 @@ RUN --mount=type=bind,source=rust-toolchain.toml,target=/tmp/rust-toolchain.toml
 # ---------------------------------------------------------------------------
 # Build the instrumented Agent Data Plane.
 #
-# Coverage instrumentation uses the modern Antithesis Rust flow (post-2026-05-22): the
-# `antithesis-instrumentation` crate (referenced once in main.rs behind the `antithesis` feature)
-# provides the runtime shim, and these RUSTFLAGS enable LLVM sancov coverage. `--build-id` is
-# required for symbolization; the release profile sets `debug = true`, so the binary keeps DWARF
-# for /symbols. LTO is disabled to keep sancov instrumentation predictable.
+# Coverage instrumentation uses the modern Antithesis Rust flow
+# (post-2026-05-22): the `antithesis-instrumentation` crate (referenced once in
+# main.rs behind the `antithesis` feature) provides the runtime shim, and these
+# RUSTFLAGS enable LLVM sancov coverage. `--build-id` is required for
+# symbolization; the release profile sets `debug = true`, so the binary keeps
+# DWARF for /symbols. LTO is disabled to keep sancov instrumentation
+# predictable. `panic = "abort"` (antithesis build only) turns any ADP panic
+# into SIGABRT, caught as a hard crash.
 # ---------------------------------------------------------------------------
 FROM build-base AS adp-builder
 ENV APP_FULL_NAME="Agent Data Plane" \
@@ -55,6 +58,7 @@ RUN --mount=type=cache,target=/adp/target,id=antithesis-adp-target \
     --mount=type=cache,target=/root/.cargo/git,id=cargo-git \
     cargo build --release --package agent-data-plane --features antithesis \
         --target x86_64-unknown-linux-gnu \
+        --config 'profile.release.panic="abort"' \
         --config 'target.x86_64-unknown-linux-gnu.rustflags=["--cfg","tokio_unstable","-Ccodegen-units=1","-Cpasses=sancov-module","-Cllvm-args=-sanitizer-coverage-level=3","-Cllvm-args=-sanitizer-coverage-trace-pc-guard","-Clink-args=-Wl,--build-id"]' && \
     cp /adp/target/x86_64-unknown-linux-gnu/release/agent-data-plane /usr/local/bin/agent-data-plane && \
     echo "Validating Antithesis instrumentation symbols..." && \
@@ -63,7 +67,7 @@ RUN --mount=type=cache,target=/adp/target,id=antithesis-adp-target \
     echo "Instrumentation symbols present."
 
 # ---------------------------------------------------------------------------
-# Build the correctness tools (datadog-intake + millstone), uninstrumented.
+# Build the correctness tools (datadog-intake) and the test-command binaries, uninstrumented.
 # These are supporting harness components, not the SUT, so they need no coverage instrumentation.
 # ---------------------------------------------------------------------------
 FROM build-base AS tools-builder
@@ -73,27 +77,32 @@ RUN --mount=type=cache,target=/tools/target,id=antithesis-tools-target \
     --mount=type=cache,target=/root/.cargo/registry,id=cargo-registry \
     --mount=type=cache,target=/root/.cargo/git,id=cargo-git \
     cargo build --release \
-        --bin datadog-intake --bin millstone \
-        --bin parallel_driver_send_dogstatsd --bin finally_verify_delivery && \
+        --bin datadog-intake \
+        --bin parallel_driver_send_dogstatsd --bin finally_verify_delivery --bin eventually_adp_alive \
+        --bin first_sample_config && \
     cp /tools/target/release/datadog-intake /usr/local/bin/datadog-intake && \
-    cp /tools/target/release/millstone /usr/local/bin/millstone && \
     cp /tools/target/release/parallel_driver_send_dogstatsd /usr/local/bin/parallel_driver_send_dogstatsd && \
-    cp /tools/target/release/finally_verify_delivery /usr/local/bin/finally_verify_delivery
+    cp /tools/target/release/finally_verify_delivery /usr/local/bin/finally_verify_delivery && \
+    cp /tools/target/release/eventually_adp_alive /usr/local/bin/eventually_adp_alive && \
+    cp /tools/target/release/first_sample_config /usr/local/bin/first_sample_config
 
 # ---------------------------------------------------------------------------
 # Runtime: Agent Data Plane (SUT).
 # ---------------------------------------------------------------------------
 FROM ${APP_IMAGE} AS adp
-ENV NO_COLOR=1 \
-    RUST_BACKTRACE=1
+ENV NO_COLOR=1
 RUN apt-get update && \
     apt-get install --no-install-recommends -y ca-certificates openssl && \
     rm -rf /var/lib/apt/lists/*
 COPY --from=adp-builder /usr/local/bin/agent-data-plane /usr/local/bin/agent-data-plane
 # Expose DWARF/build-id symbols to Antithesis for symbolization (one-hop symlink to the unstripped binary).
 RUN mkdir -p /symbols && ln -s /usr/local/bin/agent-data-plane /symbols/agent-data-plane
-# main.rs requires the bootstrap config file to exist at the default path; ship a minimal standalone config.
+# main.rs requires a config file at the default path. Ship a minimal standalone config as a
+# fallback. The boot wrapper overwrites it with the per-timeline config that first_sample_config
+# samples onto the shared `agent-config` volume.
 COPY test/antithesis/deploy/adp/datadog.yaml /etc/datadog-agent/datadog.yaml
+# Boot wrapper waits for the config sentinel, copies the config into place, then execs ADP.
+COPY --chmod=755 test/antithesis/deploy/adp/entrypoint.sh /entrypoint.sh
 # ADP's control-plane secure API requires an IPC TLS cert (a single PEM holding both certificate and
 # private key) that the Core Agent normally generates. In standalone mode there is no Core Agent, so
 # generate a self-signed cert+key. An empty auth_token satisfies the IPC auth config at startup.
@@ -103,7 +112,7 @@ RUN openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
     cat /tmp/ipc_cert.pem /tmp/ipc_key.pem > /etc/datadog-agent/ipc_cert.pem && \
     rm -f /tmp/ipc_cert.pem /tmp/ipc_key.pem && \
     touch /etc/datadog-agent/auth_token
-ENTRYPOINT ["/usr/local/bin/agent-data-plane"]
+ENTRYPOINT ["/entrypoint.sh"]
 CMD ["run"]
 
 # ---------------------------------------------------------------------------
@@ -115,7 +124,7 @@ COPY --from=tools-builder /usr/local/bin/datadog-intake /usr/local/bin/datadog-i
 ENTRYPOINT ["/usr/local/bin/datadog-intake"]
 
 # ---------------------------------------------------------------------------
-# Runtime: workload client (millstone load generator + test templates).
+# Runtime: workload client (DogStatsD driver + test templates).
 # ---------------------------------------------------------------------------
 FROM ${APP_IMAGE} AS workload
 ENV NO_COLOR=1
@@ -123,12 +132,13 @@ RUN test -d /usr/share/ca-certificates || ( \
     apt-get update && \
     apt-get install --no-install-recommends -y ca-certificates && \
     rm -rf /var/lib/apt/lists/* )
-COPY --from=tools-builder /usr/local/bin/millstone /usr/local/bin/millstone
 # Antithesis setup-complete helper and test templates (helper files + the "main" template dir).
 COPY --chmod=755 test/antithesis/deploy/workload/setup-complete.sh /opt/antithesis/setup-complete.sh
 COPY test/antithesis/deploy/workload/test/ /opt/antithesis/test/
 # Inject the compiled test-command binaries into the "main" test template.
+COPY --from=tools-builder --chmod=755 /usr/local/bin/first_sample_config /opt/antithesis/test/v1/main/first_sample_config
 COPY --from=tools-builder --chmod=755 /usr/local/bin/parallel_driver_send_dogstatsd /opt/antithesis/test/v1/main/parallel_driver_send_dogstatsd
 COPY --from=tools-builder --chmod=755 /usr/local/bin/finally_verify_delivery /opt/antithesis/test/v1/main/finally_verify_delivery
+COPY --from=tools-builder --chmod=755 /usr/local/bin/eventually_adp_alive /opt/antithesis/test/v1/main/eventually_adp_alive
 COPY --chmod=755 test/antithesis/deploy/workload/entrypoint.sh /entrypoint.sh
 ENTRYPOINT ["/entrypoint.sh"]

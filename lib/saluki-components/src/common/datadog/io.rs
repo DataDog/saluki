@@ -546,6 +546,19 @@ async fn process_http_response(
     if status.is_success() {
         debug!(endpoint_url, %status, "Request completed.");
 
+        // Reaching a successful intake response means the whole pipeline
+        // ran. This is a useful signal for process health but also
+        // acts as a checkpoint anchor for Antithesis replay: at this point
+        // there is a nominally functional system.
+        //
+        // No-op outside the `antithesis` feature build.
+        #[cfg(feature = "antithesis")]
+        antithesis_sdk::assert_sometimes!(
+            true,
+            "ADP forwarded a payload to the intake",
+            &serde_json::json!({ "domain": domain })
+        );
+
         telemetry.track_successful_transaction(&metadata, domain);
     } else {
         telemetry.track_permanently_failed_transaction(&metadata, Some(status), domain);

@@ -1,7 +1,7 @@
 ---
 sut_path: /home/ssm-user/src/saluki
-commit: fc4bb29728814ddf9321572b954ec28f58faeb53
-updated: 2026-05-30
+commit: 21b2072b4743ddbf4c84891d93abac7299dc4ce8
+updated: 2026-06-01
 external_references:
   - path: https://datadoghq.atlassian.net/wiki/spaces/DADP/
     why: ADP Confluence space — headline guarantees and gap analyses that seed properties.
@@ -15,7 +15,7 @@ external_references:
 
 # Property Catalog: Agent Data Plane (ADP)
 
-35 properties across 7 categories. The system makes one headline guarantee — **"ADP will not
+37 properties across 8 categories. The system makes one headline guarantee — **"ADP will not
 crash under load, losing customer data"** — which decomposes into the *Memory & Resource Bounds*
 and *Data Integrity & No Silent Loss* families. The remaining categories cover aggregation
 correctness, lifecycle/config, untrusted-input parsing, concurrency, and **transform & enrichment
@@ -25,12 +25,23 @@ correctness** (Category G, added after evaluation — ADP as a *transformer*, no
 > service-checks; G2 transform-chain + runtime filter config-reload), applied 9 refinements, and
 > escalated one scope bias (traces/APM/logs/OTLP coverage). See `evaluation/synthesis.md`.
 
-**Only bootstrap/workload SDK probes exist so far** (`existing-assertions.md`: 6 call sites — an
-ADP `antithesis_init()` + bootstrap `assert_reachable!` behind the `antithesis` feature, and two
-workload-side `assert_reachable!`/`assert_sometimes!` pairs in the harness). Every `Invariant`
-below is still **net-new** SUT-side instrumentation. Several properties are **expected to fail by
-design** under default config (memory limiter disabled, interner heap-fallback enabled, disk
+**Instrumentation is mostly net-new, with the first pieces landed** (`existing-assertions.md`: 8 call
+sites). Beyond the ADP bootstrap probe and workload-side anchors, two liveness pieces landed
+2026-05-31: the external `eventually_adp_alive` command (Category H) and the **first in-SUT property
+assertion** — an `assert_sometimes!` at the forwarder 2xx site in `saluki-components`. Every other
+`Invariant` below is still **net-new** SUT-side instrumentation. Several properties are **expected to
+fail by design** under default config (memory limiter disabled, interner heap-fallback enabled, disk
 persistence off) — these are flagged; they are the highest-value findings, not catalog errors.
+
+> **Workload-reach note (2026-06-01):** the live `parallel_driver_send_dogstatsd` feral DSD-line
+> generator exercises only **one** of the five still-unfixed reproduced bugs (branch
+> `blt/antithesis-bug-tests`): the high-cardinality interner heap-fallback
+> (`rss-bounded-under-cardinality`). The other four are off the DSD-socket input path entirely:
+> `ddsketch-no-nan-poison` needs a `checks_ipc` gRPC Histogram feeder (DSD drops non-finite at the
+> codec); `replay-corruption-not-silent-eof` needs the `agent-data-plane dogstatsd replay` CLI plus
+> crafted capture files; `aggregate-clock-skew-stable` (forward-jump) needs a clock-skip fault;
+> `config-stall-no-deadlock` needs a config-stream stub that withholds the snapshot. The sub-second
+> window `%0` panic is fixed upstream. See `bug-ledger.md`.
 
 Provenance tags `[Fn]` after each slug name the discovery focus that surfaced it:
 `[RB]` resource boundaries, `[DL]` data-loss/recovery, `[AG]` aggregation/sketch,
@@ -46,12 +57,16 @@ limiter is advisory (≤25ms backoff, 250ms sampling, cooperative), disabled by 
 interner spills to the heap by default. This category probes whether RSS is *actually* bounded.
 
 ### rss-bounded-under-cardinality — RSS bounded under high cardinality
-> **Status (2026-05-29): WORKLOAD WIRED + ROOT CAUSE REPRO'D** — `parallel_driver_send_dogstatsd`
-> (high-cardinality regime) floods distinct contexts in the Antithesis harness to drive this
-> behavioral bug under a run; and the root cause is reproduced as a unit test in
-> `lib/saluki-context/src/resolver.rs`
+> **Status (2026-06-01): WORKLOAD WIRED + ROOT CAUSE REPRO'D** — `parallel_driver_send_dogstatsd`
+> sends a sampled batch of feral DSD lines whose names/tags/values are built combinatorially from
+> finite segment pools, flooding distinct contexts in ADP to drive this behavioral bug under a run; and
+> the root cause is reproduced as a unit test in `lib/saluki-context/src/resolver.rs`
 > `tests::bug_default_heap_fallback_makes_context_resolution_unbounded` (default heap fallback ⇒
-> resolution never refuses ⇒ unbounded memory). Not fixed.
+> resolution never refuses ⇒ unbounded memory). Not fixed. **This is the only one of the five
+> still-unfixed reproduced bugs that the live DSD-line generator exercises**, and even here it becomes a
+> *caught* failure only with a memory-capped `adp` container (OOM ⇒ `eventually_adp_alive`) or a
+> SUT-side RSS assertion — neither yet wired. The other four bugs are off the DSD-socket input path
+> (see the note below the catalog header / bug-ledger).
 | | |
 |---|---|
 | **Type** | Safety (expected to FAIL by design under default config) |
@@ -648,6 +663,60 @@ partner's documented focus (the "Tag Filter RC Relay Stress Test"). These proper
 - Is the prefix-filter-after-mapper ordering load-bearing for equivalence, with any guard besides this property?
 - A reload updating one filter but lagging the other could filter at one stage but not the other for the same rule — confirm reachability.
 
+## Category H — Liveness & Availability
+
+Properties that demonstrate ADP **boots and stays alive**. They exist because the
+generated per-replay `datadog.yaml` configs and adversarial load *should* sometimes crash ADP
+(`interner-full-bounded`, `rss-bounded-under-cardinality`, `config-incompatible-refuses-start`), yet
+the bootstrap `assert_reachable!` only fires on success and cannot report a branch where ADP died.
+The death-liveness catch watches from *outside* the SUT and is **fault-gated**: it evaluates in a
+quiet period (faults paused — the `eventually_`/`finally_` prefixes do this, or
+`ANTITHESIS_STOP_FAULTS`), so a node-fault-induced outage recovers and passes while a self-inflicted
+crash (panic on startup, crash from load) persists and fails. That gating is exactly the requirement:
+*trigger on self-inflicted death, not on injected node faults.* A complementary **in-SUT
+good-function** `Sometimes` (the forwarder shipped a payload) shows a booted ADP actually works.
+
+> **Detection provenance (clarification, 2026-05-31).** Before this category landed, the *only* place
+> a config-driven boot panic was ever observed was local **`snouty validate`** — a single-config
+> smoke run done at launch time, outside any Antithesis timeline (e.g. an oversized
+> `dogstatsd_string_interner_size` → `capacity would overflow isize::MAX`). No **in-run** mechanism
+> caught it: a panicking ADP cannot self-assert, and the bootstrap `assert_reachable!` is silent on
+> the dead branch. `eventually_adp_alive` (below) is what makes such boot/load crashes
+> **in-run-detectable** — `snouty validate` catching one static config is *not* the same as an
+> Antithesis shot finding it across the drawn-config space.
+
+### adp-stays-alive — ADP boots and stays serving (self-inflicted-crash liveness)
+> **Status (2026-05-31): LANDED** as the `eventually_adp_alive` test command
+> (`test/antithesis/harness/src/bin/eventually_adp_alive.rs`). Valid in *this* harness because the adp
+> image is a bare binary + boot wrapper (no s6 supervisor) — unlike the production image, where API
+> liveness is vacuously green (note R1; use restart-count there).
+| | |
+|---|---|
+| **Type** | Liveness (ADP eventually serves), evaluated in a faults-paused window |
+| **Property** | After the per-replay config is applied and the workload runs, ADP's unprivileged API (`:5100`) is reachable **and** the DogStatsD listener socket exists; if neither comes up in a quiet period, ADP died of its own config/load, not an injected fault. |
+| **Invariant** | The `eventually_` command (faults already paused) polls `:5100` and the DSD socket for ~60×1s, then `assert_always!(api_reachable && socket_present, …)`. Fault-induced down recovers in the quiet period → passes; a deterministic config/load crash crash-loops or stays dead → never binds → fails. |
+| **Antithesis Angle** | The crash is config-driven (drawn `dogstatsd_*` boundary values); a deterministic boot panic stays down across the whole quiet period regardless of restart policy, so the quiet period cleanly separates a real bug from a transient node fault. |
+
+### adp-keeps-delivering — ADP still processes and delivers after load (functional liveness)
+> **Status (2026-05-31): PARTIAL.** The in-SUT good-function half **landed**: an `assert_sometimes!`
+> at the forwarder's 2xx site (`lib/saluki-components/src/common/datadog/io.rs`, behind the new
+> `saluki-components/antithesis` feature) fires when ADP ships a payload — proving a booted ADP runs
+> the whole pipeline, and giving Antithesis a replay checkpoint anchored on a healthy state. The
+> stronger **per-branch wedge detector** (an `assert_always!(delivered_recently && reachable)` in a
+> faults-paused `finally_`) is **still net-new** — the landed `Sometimes` does not fail a branch where
+> ADP accepted load then wedged.
+| | |
+|---|---|
+| **Type** | Liveness (accepted load is eventually delivered), faults-paused window |
+| **Property** | After the load drivers, in a quiet period the mock intake has received metrics *and* ADP still serves `:5100` — ADP is not merely up but not wedged. |
+| **Invariant** | _Landed:_ in-SUT `Sometimes(forwarder shipped a payload)`. _Pending:_ `finally_` command that, in the faults-paused window, polls the mock intake's dump endpoint and `:5100` and asserts `Always(delivered_recently && reachable)` — catches "alive but stuck" that a bare reachability check (and a run-wide `Sometimes`) both miss. |
+
+**Open Questions (Category H)**
+- Does Antithesis's built-in container-exit detection already see ADP boot-panics here? Runs show it
+  not firing — confirm via log search before assuming Category H is the only catch. `(needs human input)`
+- Terminal `finally_`/`eventually_` only checks end-of-branch; a mid-run crash the workload papers
+  over needs a `ANTITHESIS_STOP_FAULTS` liveness loop (deferred).
+
 ## Catalog-wide notes
 
 - **Default config is hostile to the bounded-memory family:** memory limiter disabled
@@ -677,12 +746,14 @@ partner's documented focus (the "Tag Filter RC Relay Stress Test"). These proper
   (`malformed-dsd-no-crash`, `malformed-event-sc-no-crash`, `replay-no-panic-on-malformed-capture`,
   the aggregate-crash pair) must assert SUT-side `Unreachable` at panic sites — or assert on
   restart-count — **never** container liveness.
-- **(R2, updated 2026-05-30) The Antithesis Rust SDK is now wired into ADP** behind the `antithesis`
-  cargo feature (`antithesis_init()` + a bootstrap `assert_reachable!`), and the harness binaries
-  carry workload-side anchors — so the "fork ADP + add the SDK + build an instrumented image"
-  prerequisite is largely satisfied (the wiring is proven). ~17 properties still need their net-new
-  in-process SUT-side **invariant** assertions landed on top of that scaffold; the ~10 workload-only
-  properties (forwarder delivery, retry-queue bounds, shutdown, config-gate, RSS) can run first.
+- **(R2, updated 2026-05-31) The Antithesis Rust SDK is wired into ADP** behind the `antithesis`
+  cargo feature (`antithesis_init()` + a bootstrap `assert_reachable!`), and as of 2026-05-31 the
+  **first in-SUT property assertion** is landed: an `assert_sometimes!` at the forwarder 2xx site in
+  `saluki-components` (its own new `antithesis` feature, enabled transitively by
+  `agent-data-plane/antithesis`). So in-process instrumentation is no longer just the bootstrap probe
+  — the path from a catalog property to a real SUT-side assertion is proven end-to-end. ~16 properties
+  still need their net-new in-process SUT-side **invariant** assertions; the remaining workload-only
+  properties (retry-queue bounds, shutdown, config-gate, RSS) can run first.
 - **(R3) No-loss properties must use TCP or UDS ingress, not UDP** — UDP's inherent packet loss
   confounds any "accepted == delivered" reconciliation (`no-silent-interconnect-drop`,
   `forwarder-eventual-delivery`, `disk-persisted-retry-survives-restart`, `shutdown-drains-no-loss`,
@@ -696,6 +767,20 @@ partner's documented focus (the "Tag Filter RC Relay Stress Test"). These proper
   properties and `config-runtime-update-not-revalidated`) require the **config-stream add-on
   topology** (Core Agent or stub) — they pass vacuously in standalone mode because the config watcher
   never fires.
+- **(R5, updated 2026-05-31) Liveness observability is valid in this harness, and the catch is now
+  landed (cf. R1's production case).** The harness `adp` image is a bare binary + boot wrapper
+  (`deploy/Dockerfile` adp stage: `ENTRYPOINT ["/entrypoint.sh"]` → `agent-data-plane run`) with **no
+  s6 supervisor**, so external `:5100` / DSD-socket liveness is a real signal for Category H — a
+  deterministic config/load crash leaves them permanently unbound. As of 2026-05-31 the
+  `eventually_adp_alive` command realizes this, and the workload no longer gates on adp health
+  (`docker-compose.yaml`: `service_started`, not `service_healthy`) so the check runs even when ADP is
+  down. R1's "never use container liveness" applies to the production s6 image; if the harness ever
+  adopts an auto-restart image, switch Category H to a restart-count assertion.
+- **(R6) Observed fault availability contradicts the Scope note.** Despite faults being recorded as
+  tenant-enabled below, runs launched with the `basic_test` webhook have injected **zero** fault
+  events — the `node - kill/pause/stop/throttle` and `clock - skip` total-fault-event properties
+  report `0/0`. So Category H's fault-gating is currently moot (no faults to mistake for a crash) but
+  is the right design for when faults fire; the webhook's fault configuration needs confirming.
 
 ## Scope (confirmed with user, 2026-05-28)
 
