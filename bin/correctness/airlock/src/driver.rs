@@ -319,16 +319,33 @@ impl DriverConfig {
         self
     }
 
-    /// Sets the operating system defaults used when creating this container.
+    /// Sets the operating system this container will run as.
+    ///
+    /// The OS choice drives several non-portable defaults (network driver, default binds, host
+    /// resources to share, container path conventions) that the rest of the driver applies
+    /// automatically through the helpers below. Callers should set this before any binds or
+    /// health checks are added so OS-specific defaults are appended consistently.
     pub fn with_container_os(mut self, container_os: ContainerOs) -> Self {
         self.container_os = container_os;
         self
     }
 
+    /// Whether the shared `/airlock` volume needs a one-shot world-writable chmod fix-up.
+    ///
+    /// Linux Docker volumes default to root-owned with restrictive permissions, so containers
+    /// running as non-root users (the Datadog Agent image, in particular) cannot write to
+    /// `/airlock` without an out-of-band chmod. We do that fix-up by spawning a short-lived
+    /// Alpine container that owns the volume mount and runs `chmod -R 777 /airlock`. Windows
+    /// containers do not have the same UID/permission model and the fix-up is unnecessary
+    /// (and unsupported, since Alpine is a Linux image).
     fn needs_shared_volume_permission_fixup(&self) -> bool {
         self.container_os == ContainerOs::Linux
     }
 
+    /// Docker network driver to use for the isolation group network on this container's OS.
+    ///
+    /// Linux containers use the `bridge` driver; Windows containers use `nat` (the only
+    /// driver that supports container-to-container traffic on a single Windows host).
     fn network_driver(&self) -> &'static str {
         match self.container_os {
             ContainerOs::Linux => "bridge",
@@ -336,6 +353,14 @@ impl DriverConfig {
         }
     }
 
+    /// Returns the full set of bind mounts to apply to this container, including OS-specific
+    /// defaults and any additional named volume mounts.
+    ///
+    /// Linux containers receive the shared `/airlock` volume plus read-only mounts of host
+    /// paths needed for origin detection (`/proc`, `/sys/fs/cgroup`, the Docker socket).
+    /// Windows containers receive only the shared `C:\airlock` volume; the host-resource
+    /// mounts have no Windows-container equivalent and the `:z` shared-relabel mount option is
+    /// Linux-specific.
     fn container_binds_from(&self, isolation_group_name: &str, mut binds: Vec<String>) -> Vec<String> {
         match self.container_os {
             ContainerOs::Linux => {
@@ -720,6 +745,10 @@ impl Driver {
             (Some(true), Some(exposed_ports))
         };
 
+        // Linux test containers run with `pid_mode=host` so origin-detection logic in ADP and
+        // the Core Agent can see processes on the runner. Windows containers do not support
+        // host PID mode, so we leave it unset and accept that Windows-runtime tests don't
+        // exercise the host-pid origin-detection path.
         let pid_mode = match self.config.container_os {
             ContainerOs::Linux => Some("host".to_string()),
             ContainerOs::Windows => None,
