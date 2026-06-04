@@ -225,12 +225,11 @@ where
         telemetry.weight_limit().set(capacity as f64);
 
         // Configure expiration if enabled.
-        let mut expiration_builder = ExpirationBuilder::new();
+        let mut expiration_builder = ExpirationBuilder::new(telemetry.items_evicted_total().clone());
         if let Some(time_to_idle) = self.idle_period {
             expiration_builder = expiration_builder.with_time_to_idle(time_to_idle);
         }
         let (expiration, expiry_lifecycle) = expiration_builder.build();
-        let expiry_lifecycle = expiry_lifecycle.with_items_evicted_counter(telemetry.items_evicted_total().clone());
 
         // Create the underlying cache and shutdown signal.
         let shutdown_token = CancellationToken::new();
