@@ -11,7 +11,6 @@ mod blueprint;
 pub use self::blueprint::{BlueprintError, TopologyBlueprint};
 
 mod built;
-pub use self::built::BuiltTopology;
 
 mod context;
 pub use self::context::TopologyContext;
@@ -27,7 +26,6 @@ pub mod interconnect;
 use self::interconnect::{Consumer, Dispatcher};
 
 mod running;
-pub use self::running::RunningTopology;
 
 pub mod shutdown;
 

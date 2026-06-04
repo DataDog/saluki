@@ -50,18 +50,6 @@ impl RunningTopology {
         handle_task_result(&mut self.component_task_map, task_result, true);
     }
 
-    /// Triggers the topology to shutdown, waiting until all components have stopped.
-    ///
-    /// This will wait indefinitely for all components to stop. If graceful shutdown with an upper bound is desired, use
-    /// [`shutdown_with_timeout`][Self::shutdown_with_timeout] instead.
-    ///
-    /// # Errors
-    ///
-    /// If the topology fails to shutdown cleanly due to an error in a component, an error will be returned.
-    pub async fn shutdown(self) -> Result<(), GenericError> {
-        self.shutdown_with_timeout(Duration::MAX).await
-    }
-
     /// Triggers the topology to shutdown, waiting until all components have stopped or the timeout has elapsed.
     ///
     /// # Errors

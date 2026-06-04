@@ -5,10 +5,6 @@ use saluki_app::{
     accounting::ResourceTelemetryWorker, config::ConfigWorker, dynamic_api::DynamicAPIBuilder,
     logging::LoggingOverrideController,
 };
-use saluki_components::{
-    destinations::DogStatsDStatsAPIHandler,
-    sources::{DogStatsDCaptureAPIHandler, DogStatsDReplayAPIHandler},
-};
 use saluki_config::GenericConfiguration;
 use saluki_core::{
     health::HealthRegistry,
@@ -20,30 +16,9 @@ use crate::{
     config::DataPlaneConfiguration,
     internal::{
         logging::DynamicLogLevelWorker, remote_agent::RemoteAgentBootstrap, telemetry::InternalTelemetryAPIWorker,
+        TopologyControlSurfaces,
     },
 };
-
-/// Unified DogStatsD control-plane surface.
-///
-/// Contains all API handlers for the DogStatsD pipeline. This is present only when DogStatsD is
-/// enabled; when it is `None`, none of the DogStatsD control-plane endpoints are registered.
-pub struct DogStatsDControlSurface {
-    /// API handler for the `/dogstatsd/stats` endpoint.
-    pub(crate) stats_api_handler: DogStatsDStatsAPIHandler,
-    /// API handler for the `/dogstatsd/capture/trigger` endpoint.
-    pub(crate) capture_api_handler: DogStatsDCaptureAPIHandler,
-    /// API handler for the `/dogstatsd/replay/session` endpoints.
-    pub(crate) replay_api_handler: DogStatsDReplayAPIHandler,
-}
-
-impl DogStatsDControlSurface {
-    pub(crate) fn register_handlers(self, builder: DynamicAPIBuilder) -> DynamicAPIBuilder {
-        builder
-            .with_handler(self.stats_api_handler)
-            .with_handler(self.capture_api_handler)
-            .with_handler(self.replay_api_handler)
-    }
-}
 
 /// Creates the control plane supervisor.
 ///
@@ -57,7 +32,7 @@ impl DogStatsDControlSurface {
 /// If the supervisor can't be created, an error is returned.
 pub async fn create_control_plane_supervisor(
     config: &GenericConfiguration, dp_config: &DataPlaneConfiguration, component_registry: &ComponentRegistry,
-    health_registry: HealthRegistry, dsd_control_surface: Option<DogStatsDControlSurface>,
+    health_registry: HealthRegistry, control_surfaces: TopologyControlSurfaces,
     ra_bootstrap: Option<RemoteAgentBootstrap>, logging_controller: LoggingOverrideController,
 ) -> Result<Supervisor, GenericError> {
     let mut supervisor = Supervisor::new("ctrl-pln")?
@@ -81,9 +56,7 @@ pub async fn create_control_plane_supervisor(
         DynamicAPIBuilder::new(EndpointType::Privileged, dp_config.secure_api_listen_address().clone())
             .with_tls_config(tls_config);
 
-    if let Some(surface) = dsd_control_surface {
-        privileged_api = surface.register_handlers(privileged_api);
-    }
+    privileged_api = control_surfaces.register_control_surfaces(privileged_api);
 
     // If we bootstrapped ourselves as a remote agent, add the necessary gRPC services to the API.
     if let Some(ra_bootstrap) = &ra_bootstrap {

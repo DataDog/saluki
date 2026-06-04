@@ -33,11 +33,10 @@ use saluki_components::{
 };
 use saluki_config::{ConfigurationLoader, GenericConfiguration};
 use saluki_core::health::HealthRegistry;
-use saluki_core::runtime::{Supervisor, SupervisorError};
+use saluki_core::runtime::{RestartMode, RestartStrategy, Supervisor};
 use saluki_core::topology::TopologyBlueprint;
 use saluki_env::EnvironmentProvider as _;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
-use tokio::{select, sync::oneshot};
 use tracing::{debug, error, info, trace, warn};
 
 use crate::{
@@ -50,7 +49,7 @@ use crate::{
     },
     internal::{
         create_internal_supervisor, logging::LoggingConfigurationTranslator, remote_agent::RemoteAgentBootstrap,
-        DogStatsDControlSurface,
+        DogStatsDControlSurface, TopologyControlSurfaces,
     },
 };
 use crate::{config::DataPlaneConfiguration, internal::env::ADPEnvironmentProvider};
@@ -163,7 +162,7 @@ pub async fn handle_run_command(
         ADPEnvironmentProvider::from_configuration(&config, &dp_config, &component_registry, &health_registry).await?;
 
     // Create the blueprint for our primary topology.
-    let (blueprint, control_surfaces) =
+    let (mut blueprint, control_surfaces) =
         create_topology(&config, &dp_config, &env_provider, &component_registry).await?;
 
     // Create the internal supervisor which drives our control plane and internal observability.
@@ -172,7 +171,7 @@ pub async fn handle_run_command(
         &dp_config,
         &component_registry,
         health_registry.clone(),
-        control_surfaces.dogstatsd,
+        control_surfaces,
         ra_bootstrap,
         bootstrap_guard.logging().controller(),
     )
@@ -200,30 +199,22 @@ pub async fn handle_run_command(
         }
     }
 
-    // Spawn the internal supervisor and wait for it to become ready before spawning the topology.
-    let (internal_supervisor_shutdown_tx, internal_supervisor_shutdown_rx) = oneshot::channel();
-    let internal_supervisor_handle = tokio::spawn(async move {
-        internal_supervisor
-            .run_with_shutdown(internal_supervisor_shutdown_rx)
-            .await
-    });
-    tokio::pin!(internal_supervisor_handle);
+    // Assemble the full supervision tree and run it.
+    //
+    // We run our internal supervisor (control plane, environment provider, etc) and our topology supervisor
+    // side-by-side, which means everyone has access to the same dataspace. This is crucial for allowing processes
+    // in the topology supervisor to (eventually)
+    blueprint
+        .with_health_registry(health_registry.clone())
+        .with_memory_limiter(memory_limiter)
+        .with_environment_readiness(env_provider.wait_for_ready());
 
-    info!("Waiting for internal supervisor to become healthy...");
-    select! {
-        _ = health_registry.all_ready() => {
-            info!(sup_ready_ms = started.elapsed().as_millis(), "Internal supervisor healthy.");
-        },
-        early_result = &mut internal_supervisor_handle => {
-            return Err(generic_error!("Internal supervisor completed unexpectedly: {:?}", early_result))
-        }
-    }
+    let root_restart_strategy = RestartStrategy::new(RestartMode::OneForOne, 0, Duration::from_secs(5));
+    let mut root_supervisor = Supervisor::new("root")?.with_restart_strategy(root_restart_strategy);
+    root_supervisor.add_worker(internal_supervisor);
+    root_supervisor.add_worker(blueprint);
 
-    // Now that all of our dependencies are ready, we can build and spawn the topology.
-    let built_topology = blueprint.build().await?;
-    let mut running_topology = built_topology.spawn(&health_registry, memory_limiter).await?;
-
-    info!("Waiting for topology to become healthy...");
+    // Once everything is healthy, log readiness and emit our startup metrics.
     tokio::spawn(async move {
         health_registry.all_ready().await;
         info!(
@@ -231,72 +222,16 @@ pub async fn handle_run_command(
             "Topology healthy. Waiting for interrupt..."
         );
 
-        // Emit our startup metrics now that everything is running.
         emit_startup_metrics();
     });
 
-    let mut topology_failed = false;
-    let mut internal_supervisor_failed = false;
-    select! {
-        result = &mut internal_supervisor_handle => match result {
-            Ok(Err(e)) => match e {
-                SupervisorError::FailedToInitialize { child_name, source } => {
-                    error!(child_name, "Internal supervisor failed to initialize: {}. Shutting down...", source);
-                    internal_supervisor_failed = true;
-                },
-
-                // If we haven't hit an initialization error -- which implies an error we can't really recover from --
-                // then just log for now, until we fully migrate everything over to the supervisor-based approach and
-                // can dial in our supervisor configuration.
-                //
-                // For right now, this matches the previous behavior where the process would exit if we couldn't
-                // configure/spawn the control plane or internal observability pipeline, but the process is unaffected
-                // if either of those components fail at _runtime_.
-                e => warn!("Internal supervisor exited: {}", e),
-            },
-            Ok(Ok(())) => {
-                warn!("Internal supervisor exited unexpectedly.");
-            },
-            Err(join_err) => {
-                error!(error = %join_err, "Internal supervisor task panicked or was cancelled. Shutting down...");
-                internal_supervisor_failed = true;
-            },
-        },
-        _ = running_topology.wait_for_unexpected_finish() => {
-            error!("Topology component unexpectedly finished. Shutting down...");
-            topology_failed = true;
-        },
-        _ = tokio::signal::ctrl_c() => {
-            info!("Received SIGINT, shutting down...");
-        }
-    }
-
-    // Trigger shutdown on the primary topology and wait up to 30 seconds for it to complete.
-    let topology_result = running_topology.shutdown_with_timeout(Duration::from_secs(30)).await;
-
-    // Trigger the internal supervisor to shutdown and wait for it to complete.
-    let _ = internal_supervisor_shutdown_tx.send(());
-    let _ = internal_supervisor_handle.await;
-
-    // Figure out the final "result" of this run: did something fail? did we stop cleanly?
-    //
-    // We prefer to return errors from the topology failing over the internal supervisor failing, since that matters
-    // more in terms of understanding the state of the process when it exited.
-    match topology_result {
+    info!("Agent Data Plane running.");
+    match root_supervisor.run_with_shutdown(tokio::signal::ctrl_c()).await {
         Ok(()) => {
-            if topology_failed {
-                warn!("Topology shutdown complete despite error(s).");
-            } else {
-                info!("Topology shutdown successfully.");
-            }
-
-            if internal_supervisor_failed {
-                Err(generic_error!("Internal supervisor failed to initialize."))
-            } else {
-                Ok(())
-            }
+            info!("Agent Data Plane shut down successfully.");
+            Ok(())
         }
-        Err(e) => Err(e),
+        Err(e) => Err(e.into()),
     }
 }
 
@@ -411,11 +346,6 @@ fn is_a_pipeline_affected(active_pipelines: &HashSet<Pipeline>, pipeline_affinit
     }
 }
 
-#[derive(Default)]
-struct TopologyControlSurfaces {
-    dogstatsd: Option<DogStatsDControlSurface>,
-}
-
 async fn create_topology(
     config: &GenericConfiguration, dp_config: &DataPlaneConfiguration, env_provider: &ADPEnvironmentProvider,
     component_registry: &ComponentRegistry,
@@ -474,7 +404,8 @@ async fn create_topology(
     }
 
     if dp_config.dogstatsd().enabled() {
-        control_surfaces.dogstatsd = Some(add_dsd_pipeline_to_blueprint(&mut blueprint, config, env_provider).await?);
+        let dsd_control_surface = add_dsd_pipeline_to_blueprint(&mut blueprint, config, env_provider).await?;
+        control_surfaces.attach_dogstatsd(dsd_control_surface);
     }
 
     if dp_config.otlp().enabled() {
@@ -699,14 +630,10 @@ async fn add_dsd_pipeline_to_blueprint(
     //    │    (destination)    │    │                       (Datadog Platform)                        │
     //    └─────────────────────┘    └ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┘
 
-    let dsd_stats_config = DogStatsDStatisticsConfiguration::new();
-    let stats_api_handler = dsd_stats_config.api_handler();
     let dsd_config = DogStatsDConfiguration::from_configuration(config)
         .error_context("Failed to configure DogStatsD source.")?
         .with_workload_provider(env_provider.workload().clone())
         .with_capture_entity_resolver(env_provider.workload().clone());
-    let dsd_capture_api_handler = dsd_config.capture_api_handler();
-    let dsd_replay_api_handler = dsd_config.replay_api_handler();
     let dsd_prefix_filter_configuration = DogStatsDPrefixFilterConfiguration::from_configuration(config)?;
     let dsd_mapper_config = DogStatsDMapperConfiguration::from_configuration(config)?;
     let dsd_enrich_config =
@@ -730,6 +657,11 @@ async fn add_dsd_pipeline_to_blueprint(
         PlatformSettings::get_default_dogstatsd_log_file_path(),
     )
     .error_context("Failed to configure DogStatsD debug log destination.")?;
+    let dsd_stats_config = DogStatsDStatisticsConfiguration::new();
+
+    let stats_api_handler = dsd_stats_config.api_handler();
+    let capture_api_handler = dsd_config.capture_api_handler();
+    let replay_api_handler = dsd_config.replay_api_handler();
 
     blueprint
         // Components.
@@ -771,8 +703,8 @@ async fn add_dsd_pipeline_to_blueprint(
     }
     Ok(DogStatsDControlSurface {
         stats_api_handler,
-        capture_api_handler: dsd_capture_api_handler,
-        replay_api_handler: dsd_replay_api_handler,
+        capture_api_handler,
+        replay_api_handler,
     })
 }
 
