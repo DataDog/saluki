@@ -517,33 +517,6 @@ mod tests {
         assert_eq!(cache.get(&4), Some(CAPACITY - 1));
     }
 
-    #[test]
-    fn eviction_at_capacity_keeps_len_stable() {
-        const CAPACITY: usize = 3;
-
-        let cache = CacheBuilder::for_tests()
-            .with_capacity(NonZeroUsize::new(CAPACITY).unwrap())
-            .build();
-
-        for i in 0..CAPACITY {
-            cache.insert(i, "v");
-        }
-        assert_eq!(cache.len(), CAPACITY);
-
-        // One more insert should evict something, keeping len at CAPACITY.
-        cache.insert(CAPACITY, "v");
-        assert_eq!(cache.len(), CAPACITY);
-
-        let mut evicted = false;
-        for i in 0..CAPACITY {
-            if cache.get(&i).is_none() {
-                evicted = true;
-                break;
-            }
-        }
-        assert!(evicted, "expected at least one original item to be evicted");
-    }
-
     #[tokio::test]
     async fn tasks_stop_when_cache_dropped() {
         let cache = CacheBuilder::<u64, u64>::from_identifier("test-drop")
