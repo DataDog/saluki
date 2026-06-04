@@ -254,6 +254,18 @@ if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
 Invoke-Native docker version
 
 Write-Host "[*] Building Panoramic and Agent Data Plane for Windows..."
+# saluki-metadata reads these at build time. They must match the values that
+# the Linux Makefile passes through, otherwise ADP's log subagent prefix
+# renders as "UNKNOWN" instead of "DATAPLANE".
+$env:APP_FULL_NAME = "Agent Data Plane"
+$env:APP_SHORT_NAME = "data-plane"
+if (-not $env:APP_GIT_HASH) {
+    $env:APP_GIT_HASH = if ($env:CI_COMMIT_SHA) {
+        $env:CI_COMMIT_SHA.Substring(0, [Math]::Min(7, $env:CI_COMMIT_SHA.Length))
+    } else {
+        try { (git rev-parse --short HEAD) } catch { "not-in-git" }
+    }
+}
 Invoke-Native cargo build --release --package panoramic --package agent-data-plane
 
 $WindowsAdpImage = if ($env:WINDOWS_ADP_IMAGE_TAG) { $env:WINDOWS_ADP_IMAGE_TAG } else { "saluki-images/agent-data-plane:testing-windows" }
