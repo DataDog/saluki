@@ -14,7 +14,7 @@ type: integration
 name: "dogstatsd-non-local-overrides-bind-host"
 description: "Verifies dogstatsd_non_local_traffic takes precedence over bind_host"
 timeout: 120s
-runtimes: [docker, mac, windows]
+runtimes: [linux, mac, windows]
 
 env:
   DD_API_KEY: "test-api-key"

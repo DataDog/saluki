@@ -46,10 +46,10 @@ const GRACE_TIME: Duration = Duration::from_secs(30);
 /// loader uses single underscores throughout and exposes the same setting as
 /// `DD_DATA_PLANE_ENABLED`.
 ///
-/// On the Linux `docker` runtime the test target is the converged Datadog Agent image, where
+/// On the `linux` runtime the test target is the converged Datadog Agent image, where
 /// an s6 init script reads each `DD_DATA_PLANE_*` env var and re-exports it under the nested
 /// name before launching ADP. Tests therefore write the flat shape (`DD_DATA_PLANE_ENABLED`)
-/// in their YAML, which works on `docker` and `mac` (the Unix runner has its own translator).
+/// in their YAML, which works on `linux` and `mac` (the Unix runner has its own translator).
 ///
 /// On the Windows runtime the test target is an ADP-only image we build in this repository. There is
 /// no s6 entrypoint and ADP only reads the nested form, so we replay the same translation here
@@ -774,7 +774,7 @@ impl IntegrationRunner {
 
         // Merge framework-level port-isolation env vars with the test's own env. Framework
         // defaults are applied first so the test's `env` block takes precedence. Keeps the test
-        // surface consistent across the docker and `mac` runtimes — both see the same shifted
+        // surface consistent across the linux and `mac` runtimes — both see the same shifted
         // port table.
         let mut merged_env = crate::test_env::port_isolation_env();
         for (k, v) in &self.test_case.env {
@@ -1133,10 +1133,10 @@ mod tests {
     }
 
     #[test]
-    fn docker_runtime_does_not_add_adp_native_env_aliases() {
+    fn linux_runtime_does_not_add_adp_native_env_aliases() {
         let env = HashMap::from([("DD_DATA_PLANE_ENABLED".to_string(), "true".to_string())]);
 
-        let normalized = normalize_env_for_runtime(env, crate::config::DOCKER_RUNTIME);
+        let normalized = normalize_env_for_runtime(env, crate::config::LINUX_RUNTIME);
 
         assert!(!normalized.contains_key("DD_DATA_PLANE__ENABLED"));
     }

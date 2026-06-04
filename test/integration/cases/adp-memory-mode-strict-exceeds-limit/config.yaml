@@ -2,7 +2,7 @@ type: integration
 name: "adp-memory-mode-strict-exceeds-limit"
 description: "Verifies that strict mode causes ADP to exit with code 1 when the calculated bounds exceed the configured limit"
 timeout: 120s
-runtimes: [docker, mac, windows]
+runtimes: [linux, mac, windows]
 
 env:
   DD_API_KEY: "test-api-key"
@@ -17,7 +17,7 @@ env:
 
 
 assertions:
-  # Observe ADP's actual exit code, regardless of runtime. On docker (s6) this greps the
+  # Observe ADP's actual exit code, regardless of runtime. On linux (s6) this greps the
   # supervisor's exit log line; on mac this reads the exit code recorded by the
   # Unix runner.
   - type: adp_exits_with

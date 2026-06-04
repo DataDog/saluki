@@ -115,7 +115,7 @@ pub struct IntegrationConfig {
 
     /// Environment variables to set on the target process(es).
     ///
-    /// Top-level (not under `container`) because both the docker and `mac` runtimes apply
+    /// Top-level (not under `container`) because both the linux and `mac` runtimes apply
     /// these the same way: docker injects them as container env, the Unix runner passes them
     /// to the spawned ADP / Core Agent processes.
     #[serde(default)]
@@ -126,7 +126,7 @@ pub struct IntegrationConfig {
 
     /// Runtimes under which this test is eligible to run.
     ///
-    /// Each value must be `"docker"` (the default), `"mac"`, or `"windows"`. The active
+    /// Each value must be `"linux"` (the default), `"mac"`, or `"windows"`. The active
     /// runtime for any given panoramic invocation is chosen at the CLI level (`--runtime`,
     /// defaulting to the host's native runtime); a test discovers only when this list contains
     /// that active runtime. Tests with multiple entries are portable across runtimes, but still
@@ -154,17 +154,17 @@ fn default_integration_runtimes() -> Vec<String> {
 
 /// Runtime identifier for integration tests that run as host processes on macOS (no Docker, no
 /// virtualization). Validated on macOS only today; future host-process runtimes for other Unix
-/// platforms will get their own identifiers (for example, `linux`).
+/// platforms will get their own identifiers.
 pub const MAC_RUNTIME: &str = "mac";
 
-/// Runtime identifier for integration tests that run inside a Linux Docker container.
-pub const DOCKER_RUNTIME: &str = "docker";
+/// Runtime identifier for integration tests that run inside a Linux container.
+pub const LINUX_RUNTIME: &str = "linux";
 
-/// Runtime identifier for integration tests that run inside a Windows Docker container.
+/// Runtime identifier for integration tests that run inside a Windows container.
 pub const WINDOWS_RUNTIME: &str = "windows";
 
-/// Default container image used by `docker`-runtime integration tests.
-pub const DEFAULT_DOCKER_TARGET_IMAGE: &str = "saluki-images/datadog-agent:testing-devel";
+/// Default container image used by `linux`-runtime integration tests.
+pub const DEFAULT_LINUX_TARGET_IMAGE: &str = "saluki-images/datadog-agent:testing-devel";
 
 /// Default container image used by `windows`-runtime integration tests.
 pub const DEFAULT_WINDOWS_TARGET_IMAGE: &str = "saluki-images/agent-data-plane:testing-windows";
@@ -175,7 +175,7 @@ pub const DEFAULT_WINDOWS_TARGET_IMAGE: &str = "saluki-images/agent-data-plane:t
 /// fixed, harness-owned image; tests do not select images per case.
 pub fn target_image_for_runtime(runtime: &str) -> Option<&'static str> {
     match runtime {
-        DOCKER_RUNTIME => Some(DEFAULT_DOCKER_TARGET_IMAGE),
+        LINUX_RUNTIME => Some(DEFAULT_LINUX_TARGET_IMAGE),
         WINDOWS_RUNTIME => Some(DEFAULT_WINDOWS_TARGET_IMAGE),
         _ => None,
     }
@@ -183,7 +183,7 @@ pub fn target_image_for_runtime(runtime: &str) -> Option<&'static str> {
 
 /// Returns the integration-test runtime that is native to the host OS.
 ///
-/// `mac` on macOS hosts, `windows` on Windows hosts, and `docker` everywhere else. Used as the default when a panoramic
+/// `mac` on macOS hosts, `windows` on Windows hosts, and `linux` everywhere else. Used as the default when a panoramic
 /// subcommand is invoked without an explicit `--runtime` flag, so that callers on the most
 /// common host get the most common runtime without having to spell it out.
 pub fn default_host_runtime() -> &'static str {
@@ -192,7 +192,7 @@ pub fn default_host_runtime() -> &'static str {
     } else if cfg!(target_os = "windows") {
         WINDOWS_RUNTIME
     } else {
-        DOCKER_RUNTIME
+        LINUX_RUNTIME
     }
 }
 
@@ -245,7 +245,7 @@ pub enum AssertionConfig {
     /// Check that ADP itself exits with a specific exit code, abstracting over the runtime's
     /// observation mechanism.
     ///
-    /// On the `docker` runtime the converged image wraps ADP under s6, which keeps the
+    /// On the `linux` runtime the converged image wraps ADP under s6, which keeps the
     /// container alive across ADP restarts and logs `agent-data-plane exited with code N` from
     /// `docker/s6-services/agent-data-plane/finish`. This assertion greps the log buffer for
     /// that line. On the `mac` runtime ADP is spawned directly; the assertion reads
@@ -452,7 +452,7 @@ impl Test for IntegrationConfig {
 
     fn runtime(&self) -> String {
         if self.active_runtime.is_empty() {
-            DOCKER_RUNTIME.to_string()
+            LINUX_RUNTIME.to_string()
         } else {
             self.active_runtime.clone()
         }
@@ -464,7 +464,7 @@ impl Test for IntegrationConfig {
                 let mut runner = crate::unix_runner::UnixIntegrationRunner::new(self.clone(), tctx);
                 runner.run().await
             }
-            // Default to the existing Docker path for "docker" or unset.
+            // Default to the Linux container path for "linux" or unset.
             _ => {
                 let mut runner = crate::runner::IntegrationRunner::new(self.clone(), tctx);
                 runner.run().await
@@ -797,12 +797,12 @@ fn try_load_test(
             // Validate every declared runtime up front so a typo in any list surfaces at discovery
             // time, even on hosts that wouldn't actually run that runtime.
             for runtime in &config.runtimes {
-                if runtime != DOCKER_RUNTIME && runtime != MAC_RUNTIME && runtime != WINDOWS_RUNTIME {
+                if runtime != LINUX_RUNTIME && runtime != MAC_RUNTIME && runtime != WINDOWS_RUNTIME {
                     return Err(generic_error!(
                         "integration test '{}' declares unknown runtime '{}' (expected '{}', '{}', or '{}')",
                         config.name,
                         runtime,
-                        DOCKER_RUNTIME,
+                        LINUX_RUNTIME,
                         MAC_RUNTIME,
                         WINDOWS_RUNTIME
                     ));
@@ -973,22 +973,22 @@ assertions: []
     }
 
     #[test]
-    fn test_docker_runtime_reports_harness_owned_container_image() {
+    fn test_linux_runtime_reports_harness_owned_container_image() {
         let base_dir = create_test_case_dir(
-            "docker-smoke",
+            "linux-smoke",
             r#"
 type: integration
-name: docker-smoke
+name: linux-smoke
 timeout: 10s
-runtimes: [docker]
+runtimes: [linux]
 assertions: []
 "#,
         );
 
-        let tests = discover_tests(&[base_dir.path().to_path_buf()], "docker").unwrap();
+        let tests = discover_tests(&[base_dir.path().to_path_buf()], "linux").unwrap();
         let images = tests[0].images();
 
-        assert_eq!(images.get("container"), Some(&DEFAULT_DOCKER_TARGET_IMAGE.to_string()));
+        assert_eq!(images.get("container"), Some(&DEFAULT_LINUX_TARGET_IMAGE.to_string()));
     }
 
     struct TestCaseDir {

@@ -100,7 +100,7 @@ timeout: 60s
 # Optional: container configuration
 #
 # The container image is selected by the active runtime, not the test case:
-# the docker runtime uses saluki-images/datadog-agent:testing-devel and the
+# the linux runtime uses saluki-images/datadog-agent:testing-devel and the
 # windows runtime uses saluki-images/agent-data-plane:testing-windows. The
 # entire `container` block can be omitted when no overrides are needed.
 container:

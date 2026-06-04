@@ -3,7 +3,7 @@ name: "dogstatsd-forwarding"
 description: "Verifies DogStatsD message forwarding mirrors framed payloads and preserves ingestion"
 timeout: 90s
 # Not yet validated under mac; opt in by adding `mac` to this list once verified.
-runtimes: [docker]
+runtimes: [linux]
 
 env:
   DD_API_KEY: "test-api-key"

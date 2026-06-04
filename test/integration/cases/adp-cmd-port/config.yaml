@@ -15,7 +15,7 @@ type: integration
 name: "adp-cmd-port"
 description: "Verifies ADP connects to the correct port when cmd_port is set"
 timeout: 120s
-runtimes: [docker, mac, windows]
+runtimes: [linux, mac, windows]
 
 env:
   DD_API_KEY: "test-api-key"

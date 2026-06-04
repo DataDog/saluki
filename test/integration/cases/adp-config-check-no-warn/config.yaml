@@ -9,7 +9,7 @@ type: integration
 name: "adp-config-check-no-warn"
 description: "Verify config check suppresses warnings for incompatible keys whose pipeline is inactive"
 timeout: 120s
-runtimes: [docker, mac, windows]
+runtimes: [linux, mac, windows]
 
 env:
   DD_API_KEY: "test-api-key"

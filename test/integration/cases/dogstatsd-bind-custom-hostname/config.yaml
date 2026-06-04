@@ -26,7 +26,7 @@ description: "Verifies DogStatsD resolves a custom hostname in bind_host via DNS
 timeout: 120s
 # Not run on the mac runtime: dynamic-variable resolution there has no portable equivalent for
 # adding a hosts entry and discovering a non-loopback bind address.
-runtimes: [docker, windows]
+runtimes: [linux, windows]
 
 env:
   DD_API_KEY: "test-api-key"
