@@ -6,6 +6,26 @@
     # Use the Windows LTSC2022 build image pre-cached on the Windows runner image.
     WINBUILDIMAGE: registry.ddbuild.io/ci/datadog-agent-buildimages/windows_ltsc2022_x64:v114471858-795a98da
     OVERRIDE_GIT_STRATEGY: "clone"
+    # protoc release used by both Windows jobs. Pin both the version and the archive checksum so a
+    # tampered or upstream-deleted release fails fast instead of silently substituting binaries.
+    WINDOWS_PROTOC_VERSION: "29.3"
+    WINDOWS_PROTOC_SHA256: "57ea59e9f551ad8d71ffaa9b5cfbe0ca1f4e720972a1db7ec2d12ab44bff9383"
+
+# Pulls the cached Windows build image only when it isn't already present on the runner.
+.windows-build-image-pull-script: &windows-build-image-pull-script
+  - $ErrorActionPreference = "Stop"
+  - |
+    $previousErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    docker image inspect ${WINBUILDIMAGE} *> $null
+    $imageInspectExitCode = $LASTEXITCODE
+    $ErrorActionPreference = $previousErrorActionPreference
+    if ($imageInspectExitCode -eq 0) {
+      Write-Host "Using cached Windows build image: ${WINBUILDIMAGE}"
+    } else {
+      Write-Host "Cached Windows build image not found, pulling: ${WINBUILDIMAGE}"
+      docker pull ${WINBUILDIMAGE}
+    }
 
 unit-tests-windows-amd64:
   extends: .windows-amd64-test-job
@@ -17,19 +37,7 @@ unit-tests-windows-amd64:
       - .ci-cache/protoc/
       - .ci-cache/rustup/
   script:
-    - $ErrorActionPreference = "Stop"
-    - |
-      $previousErrorActionPreference = $ErrorActionPreference
-      $ErrorActionPreference = "Continue"
-      docker image inspect ${WINBUILDIMAGE} *> $null
-      $imageInspectExitCode = $LASTEXITCODE
-      $ErrorActionPreference = $previousErrorActionPreference
-      if ($imageInspectExitCode -eq 0) {
-        Write-Host "Using cached Windows build image: ${WINBUILDIMAGE}"
-      } else {
-        Write-Host "Cached Windows build image not found, pulling: ${WINBUILDIMAGE}"
-        docker pull ${WINBUILDIMAGE}
-      }
+    - *windows-build-image-pull-script
     - >
       docker run --rm
       -m 24576M
@@ -47,8 +55,8 @@ unit-tests-windows-amd64:
       -e RUSTUP_HOME="c:\mnt\.ci-cache\rustup"
       -e CARGO_TARGET_DIR="c:\mnt\target\windows-ci"
       -e CARGO_NEXTEST_VERSION="0.9.99"
-      -e PROTOC_VERSION="29.3"
-      -e PROTOC_SHA256="57ea59e9f551ad8d71ffaa9b5cfbe0ca1f4e720972a1db7ec2d12ab44bff9383"
+      -e PROTOC_VERSION="${WINDOWS_PROTOC_VERSION}"
+      -e PROTOC_SHA256="${WINDOWS_PROTOC_SHA256}"
       ${WINBUILDIMAGE}
       powershell.exe -NoProfile -NonInteractive -File c:\mnt\ci\tooling\windows-unit-tests.ps1
     - If ($lastExitCode -ne "0") { exit "$lastExitCode" }
@@ -71,19 +79,7 @@ test-integration-windows-amd64:
   variables:
     PANORAMIC_LOG_DIR: integration-logs
   script:
-    - $ErrorActionPreference = "Stop"
-    - |
-      $previousErrorActionPreference = $ErrorActionPreference
-      $ErrorActionPreference = "Continue"
-      docker image inspect ${WINBUILDIMAGE} *> $null
-      $imageInspectExitCode = $LASTEXITCODE
-      $ErrorActionPreference = $previousErrorActionPreference
-      if ($imageInspectExitCode -eq 0) {
-        Write-Host "Using cached Windows build image: ${WINBUILDIMAGE}"
-      } else {
-        Write-Host "Cached Windows build image not found, pulling: ${WINBUILDIMAGE}"
-        docker pull ${WINBUILDIMAGE}
-      }
+    - *windows-build-image-pull-script
     - >
       docker run --rm
       -m 24576M
@@ -102,8 +98,8 @@ test-integration-windows-amd64:
       -e RUSTUP_HOME="c:\mnt\.ci-cache\rustup"
       -e CARGO_TARGET_DIR="c:\mnt\target\windows-ci"
       -e WINDOWS_ADP_BASE_IMAGE="registry.datadoghq.com/agent:7.78.0-ltsc2022"
-      -e PROTOC_VERSION="29.3"
-      -e PROTOC_SHA256="57ea59e9f551ad8d71ffaa9b5cfbe0ca1f4e720972a1db7ec2d12ab44bff9383"
+      -e PROTOC_VERSION="${WINDOWS_PROTOC_VERSION}"
+      -e PROTOC_SHA256="${WINDOWS_PROTOC_SHA256}"
       -e PANORAMIC_LOG_DIR="c:\mnt\integration-logs"
       ${WINBUILDIMAGE}
       powershell.exe -NoProfile -NonInteractive -File c:\mnt\ci\tooling\windows-integration-tests.ps1
