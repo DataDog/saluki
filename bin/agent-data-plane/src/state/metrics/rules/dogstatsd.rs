@@ -29,6 +29,11 @@ pub fn get_dogstatsd_remappings() -> Vec<RemapperRule> {
             "tag_filterlist.size",
         ),
         RemapperRule::by_name_and_tags(
+            "adp.tag_filterlist_updates_total",
+            &["component_id:dsd_tag_filterlist"],
+            "tag_filterlist.updates",
+        ),
+        RemapperRule::by_name_and_tags(
             "adp.object_pool_acquired",
             &["pool_name:dsd_packet_bufs"],
             "dogstatsd.packet_pool_get",

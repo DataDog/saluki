@@ -362,16 +362,11 @@ fn get_help_text(metric_name: &str) -> Option<&'static str> {
         "aggregator.dogstatsd_contexts" => Some("Count the number of dogstatsd contexts in the aggregator"),
         "aggregator.processed" => Some("Amount of metrics/services_checks/events processed by the aggregator"),
         "filterlist.size" => Some("Metric filter list size"),
-        "filterlist.updates" => {
-            Some("Incremented when a reconfiguration of the metric filterlist happened")
-        }
+        "filterlist.updates" => Some("Incremented when a reconfiguration of the metric filterlist happened"),
         "dogstatsd.listener_filtered_points" => Some("How many points were filtered out"),
-        "aggregator.dogstatsd_filtered_metrics" => {
-            Some("How many metrics were filtered in the time samplers")
-        }
-        "tag_filterlist.size" => {
-            Some("Tag filter list size")
-        },
+        "aggregator.dogstatsd_filtered_metrics" => Some("How many metrics were filtered in the time samplers"),
+        "tag_filterlist.size" => Some("Tag filter list size"),
+        "tag_filterlist.updates" => Some("Incremented when a reconfiguration of the tag filterlist happened"),
         "dogstatsd.processed" => Some("Count of service checks/events/metrics processed by dogstatsd"),
         "dogstatsd.packet_pool_get" => Some("Count of get done in the packet pool"),
         "dogstatsd.packet_pool_put" => Some("Count of put done in the packet pool"),
@@ -824,6 +819,10 @@ mod tests {
                 Context::from_static_parts("adp.tag_filterlist_size", &["component_id:dsd_tag_filterlist"]),
                 9.0,
             )),
+            Event::Metric(Metric::counter(
+                Context::from_static_parts("adp.tag_filterlist_updates_total", &["component_id:dsd_tag_filterlist"]),
+                11.0,
+            )),
         ];
 
         for metric in metrics {
@@ -839,6 +838,7 @@ mod tests {
         assert!(output.contains("dogstatsd__listener_filtered_points 5"));
         assert!(output.contains("aggregator__dogstatsd_filtered_metrics 7"));
         assert!(output.contains("tag_filterlist__size 9"));
+        assert!(output.contains("tag_filterlist__updates 11"));
         assert!(!output.contains("datadog__agent__filterlist__size"));
         assert!(!output.contains("datadog__agent__filterlist__updates"));
         assert!(!output.contains("datadog__agent__dogstatsd__listener_filtered_points"));
@@ -877,10 +877,7 @@ mod tests {
             get_help_text("aggregator.processed"),
             Some("Amount of metrics/services_checks/events processed by the aggregator")
         );
-        assert_eq!(
-            get_help_text("filterlist.size"),
-            Some("Metric filter list size")
-        );
+        assert_eq!(get_help_text("filterlist.size"), Some("Metric filter list size"));
         assert_eq!(
             get_help_text("filterlist.updates"),
             Some("Incremented when a reconfiguration of the metric filterlist happened")
@@ -894,5 +891,9 @@ mod tests {
             Some("How many metrics were filtered in the time samplers")
         );
         assert_eq!(get_help_text("tag_filterlist.size"), Some("Tag filter list size"));
+        assert_eq!(
+            get_help_text("tag_filterlist.updates"),
+            Some("Incremented when a reconfiguration of the tag filterlist happened")
+        );
     }
 }
