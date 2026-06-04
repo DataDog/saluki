@@ -11,6 +11,7 @@ pub struct Telemetry {
     metrics_modified: Counter,
     tags_filtered: Counter,
     size: Gauge,
+    updates: Counter,
 }
 
 impl Telemetry {
@@ -22,6 +23,7 @@ impl Telemetry {
             metrics_modified: builder.register_debug_counter("tag_filterlist_metrics_modified_total"),
             tags_filtered: builder.register_debug_counter("tag_filterlist_tags_filtered_total"),
             size: builder.register_gauge("tag_filterlist_size"),
+            updates: builder.register_counter("tag_filterlist_updates_total"),
         }
     }
 
@@ -44,5 +46,9 @@ impl Telemetry {
 
     pub fn set_size(&self, count: usize) {
         self.size.set(count as f64);
+    }
+
+    pub fn increment_updates(&self) {
+        self.updates.increment(1);
     }
 }
