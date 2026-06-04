@@ -98,7 +98,11 @@ impl Assertion for FileContainsAssertion {
             let read_result = if ctx.is_host_process {
                 read_file_local(&self.path).await
             } else {
-                read_file_in_container(&ctx.container_name, &self.path).await
+                if ctx.use_container_exec_for_network_checks {
+                    read_file_in_windows_container(&ctx.container_name, &self.path).await
+                } else {
+                    read_file_in_container(&ctx.container_name, &self.path).await
+                }
             };
             match read_result {
                 Ok(Some(content)) => {
@@ -173,6 +177,65 @@ async fn read_file_in_container(container_name: &str, path: &str) -> Result<Opti
 
     let exec_id = exec.id.clone();
 
+    let result = docker
+        .start_exec(&exec_id, None)
+        .await
+        .map_err(|e| format!("Failed to start exec: {}", e))?;
+
+    let mut stdout = String::new();
+    if let StartExecResults::Attached { mut output, .. } = result {
+        while let Some(chunk) = output
+            .try_next()
+            .await
+            .map_err(|e| format!("Failed to read exec output: {}", e))?
+        {
+            if let LogOutput::StdOut { message } = chunk {
+                stdout.push_str(&String::from_utf8_lossy(&message));
+            }
+        }
+    }
+
+    let inspect = docker
+        .inspect_exec(&exec_id)
+        .await
+        .map_err(|e| format!("Failed to inspect exec: {}", e))?;
+
+    match inspect.exit_code {
+        Some(0) => Ok(Some(stdout)),
+        _ => Ok(None),
+    }
+}
+
+/// Reads a file from inside a Windows container via PowerShell `Get-Content`.
+async fn read_file_in_windows_container(container_name: &str, path: &str) -> Result<Option<String>, String> {
+    let docker = docker::connect().map_err(|e| format!("Failed to connect to Docker: {}", e))?;
+
+    let command = format!(
+        "if (Test-Path -LiteralPath '{}') {{ Get-Content -Raw -LiteralPath '{}' }} else {{ exit 1 }}",
+        path.replace('"', "`\""),
+        path.replace('"', "`\"")
+    );
+
+    let exec = docker
+        .create_exec(
+            container_name,
+            CreateExecOptions::<String> {
+                cmd: Some(vec![
+                    "pwsh".to_string(),
+                    "-NoProfile".to_string(),
+                    "-NonInteractive".to_string(),
+                    "-Command".to_string(),
+                    command,
+                ]),
+                attach_stdout: Some(true),
+                attach_stderr: Some(false),
+                ..Default::default()
+            },
+        )
+        .await
+        .map_err(|e| format!("Failed to create exec: {}", e))?;
+
+    let exec_id = exec.id.clone();
     let result = docker
         .start_exec(&exec_id, None)
         .await

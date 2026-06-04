@@ -134,10 +134,13 @@ async fn check_udp_port(host: &str, port: u16) -> bool {
 }
 
 async fn check_tcp_port_in_container(container_name: &str, host: &str, port: u16) -> bool {
-    let endpoint = format!("telnet://{}:{}", host, port);
+    let command = format!(
+        "if (Test-NetConnection -ComputerName '{}' -Port {} -InformationLevel Quiet) {{ exit 0 }} else {{ exit 1 }}",
+        host, port
+    );
     exec_status(
         container_name,
-        vec!["curl.exe", "-sS", "--connect-timeout", "1", &endpoint],
+        vec!["pwsh", "-NoProfile", "-NonInteractive", "-Command", &command],
     )
     .await
     .unwrap_or(false)
