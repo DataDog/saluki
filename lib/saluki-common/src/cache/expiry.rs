@@ -6,6 +6,7 @@ use std::{
 
 use crossbeam_queue::ArrayQueue;
 use quick_cache::Lifecycle;
+use saluki_metrics::reexport::metrics::Counter;
 
 use crate::{
     collections::FastHashMap,
@@ -228,15 +229,27 @@ where
 #[derive(Clone)]
 pub(super) struct ExpiryCapableLifecycle<K> {
     state: Option<Arc<State<K>>>,
+    items_evicted: Counter,
 }
 
 impl<K> ExpiryCapableLifecycle<K> {
     fn disabled() -> Self {
-        Self { state: None }
+        Self {
+            state: None,
+            items_evicted: Counter::noop(),
+        }
     }
 
     fn from_state(state: Arc<State<K>>) -> Self {
-        Self { state: Some(state) }
+        Self {
+            state: Some(state),
+            items_evicted: Counter::noop(),
+        }
+    }
+
+    pub(super) fn with_items_evicted_counter(mut self, counter: Counter) -> Self {
+        self.items_evicted = counter;
+        self
     }
 }
 
@@ -254,5 +267,6 @@ where
         if let Some(state) = self.state.as_ref() {
             state.mark_entry_removed(key);
         }
+        self.items_evicted.increment(1);
     }
 }

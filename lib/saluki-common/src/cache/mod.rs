@@ -26,6 +26,7 @@ static_metrics! {
         gauge(weight_limit),
         counter(hits_total),
         counter(misses_total),
+        counter(items_evicted_total),
         debug_counter(items_inserted_total),
         debug_counter(items_removed_total),
         debug_counter(items_expired_total),
@@ -54,7 +55,7 @@ pub struct CacheBuilder<K, V, W = ItemCountWeighter, H = FastBuildHasher> {
 impl<K, V> CacheBuilder<K, V> {
     /// Creates a new `CacheBuilder` with the given cache identifier.
     ///
-    /// The cache identifier _should_ be unique, but it isn't required to be. Metrics for the cache will be emitted
+    /// The cache identifier _should_ be unique, but it'sn't required to be. Metrics for the cache will be emitted
     /// using the given identifier, so in cases where the identifier isn't unique, those metrics will be aggregated
     /// together and it won't be possible to distinguish between the different caches.
     ///
@@ -229,6 +230,7 @@ where
             expiration_builder = expiration_builder.with_time_to_idle(time_to_idle);
         }
         let (expiration, expiry_lifecycle) = expiration_builder.build();
+        let expiry_lifecycle = expiry_lifecycle.with_items_evicted_counter(telemetry.items_evicted_total().clone());
 
         // Create the underlying cache and shutdown signal.
         let shutdown_token = CancellationToken::new();
@@ -513,6 +515,33 @@ mod tests {
         assert_eq!(cache.get(&2), None);
         assert_eq!(cache.get(&3), None);
         assert_eq!(cache.get(&4), Some(CAPACITY - 1));
+    }
+
+    #[test]
+    fn eviction_at_capacity_keeps_len_stable() {
+        const CAPACITY: usize = 3;
+
+        let cache = CacheBuilder::for_tests()
+            .with_capacity(NonZeroUsize::new(CAPACITY).unwrap())
+            .build();
+
+        for i in 0..CAPACITY {
+            cache.insert(i, "v");
+        }
+        assert_eq!(cache.len(), CAPACITY);
+
+        // One more insert should evict something, keeping len at CAPACITY.
+        cache.insert(CAPACITY, "v");
+        assert_eq!(cache.len(), CAPACITY);
+
+        let mut evicted = false;
+        for i in 0..CAPACITY {
+            if cache.get(&i).is_none() {
+                evicted = true;
+                break;
+            }
+        }
+        assert!(evicted, "expected at least one original item to be evicted");
     }
 
     #[tokio::test]
