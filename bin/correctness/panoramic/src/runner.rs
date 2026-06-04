@@ -40,10 +40,22 @@ const GRACE_TIME: Duration = Duration::from_secs(30);
 
 /// Maps shared `DD_DATA_PLANE_*` test env keys to their Windows-image-native nested form.
 ///
-/// The Linux converged image's s6 entrypoint normalizes flat `DD_DATA_PLANE_*` keys into the
-/// nested `DD_DATA_PLANE__X__Y` shape ADP reads natively. We don't have that entrypoint inside
-/// the Windows test image, so we apply the same translation here. Test YAML files continue to use
-/// the flat shape for portability across runtimes.
+/// ADP reads its own configuration as a nested object: a key like `data_plane.enabled` maps to
+/// the env var `DD_DATA_PLANE__ENABLED` (single underscore between path levels, double
+/// underscore separating the `data_plane` prefix from the inner path). The Core Agent's config
+/// loader uses single underscores throughout and exposes the same setting as
+/// `DD_DATA_PLANE_ENABLED`.
+///
+/// On the Linux `docker` runtime the test target is the converged Datadog Agent image, where
+/// an s6 init script reads each `DD_DATA_PLANE_*` env var and re-exports it under the nested
+/// name before launching ADP. Tests therefore write the flat shape (`DD_DATA_PLANE_ENABLED`)
+/// in their YAML, which works on `docker` and `mac` (the Unix runner has its own translator).
+///
+/// On the Windows runtime the test target is an ADP-only image we build in this repository. There is
+/// no s6 entrypoint and ADP only reads the nested form, so we replay the same translation here
+/// before the env vars cross into the container. Keeping the table in the harness lets test
+/// YAML files stay portable across all three runtimes; only entries that are actually used
+/// today are listed, and any new shared `DD_DATA_PLANE_*` key needs a one-line addition here.
 const WINDOWS_ENV_ALIASES: &[(&str, &str)] = &[
     ("DD_DATA_PLANE_ENABLED", "DD_DATA_PLANE__ENABLED"),
     ("DD_DATA_PLANE_STANDALONE_MODE", "DD_DATA_PLANE__STANDALONE_MODE"),
