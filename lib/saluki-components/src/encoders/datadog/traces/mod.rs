@@ -93,8 +93,13 @@ impl StringTable {
 
     /// Interns `s`, returning its index. If `s` was already interned, returns the existing index.
     fn intern(&mut self, s: &str) -> u32 {
-        let (idx, _) = self.indices.insert_full(MetaString::from(s));
-        idx as u32
+        // We use get_index_of to check if the string is already interned to avoid reconstructing a new meta string if it's already interned.
+        if let Some(idx) = self.indices.get_index_of(s) {
+            idx as u32
+        } else {
+            let (idx, _) = self.indices.insert_full(MetaString::from(s));
+            idx as u32
+        }
     }
 }
 
