@@ -320,6 +320,27 @@ mod tests {
                 Context::from_static_parts("adp.tag_filterlist_size", &["component_id:dsd_tag_filterlist"]),
                 9.0,
             )),
+            Event::Metric(Metric::counter(
+                Context::from_static_parts(
+                    "adp.tag_filterlist_cache_hit_total",
+                    &["component_id:dsd_tag_filterlist"],
+                ),
+                13.0,
+            )),
+            Event::Metric(Metric::counter(
+                Context::from_static_parts(
+                    "adp.tag_filterlist_cache_miss_total",
+                    &["component_id:dsd_tag_filterlist"],
+                ),
+                17.0,
+            )),
+            Event::Metric(Metric::counter(
+                Context::from_static_parts(
+                    "adp.tag_filterlist_cache_evict_total",
+                    &["component_id:dsd_tag_filterlist"],
+                ),
+                19.0,
+            )),
         ];
 
         let output = render_with(get_datadog_agent_remappings(), metrics);
@@ -329,6 +350,9 @@ mod tests {
         assert!(output.contains("datadog__agent__dogstatsd__listener_filtered_points 5"));
         assert!(output.contains("datadog__agent__aggregator__dogstatsd_filtered_metrics 7"));
         assert!(output.contains("datadog__agent__tag_filterlist__size 9"));
+        assert!(output.contains("datadog__agent__aggregator__filtered_tags_cache_hit 13"));
+        assert!(output.contains("datadog__agent__aggregator__filtered_tags_cache_miss 17"));
+        assert!(output.contains("datadog__agent__aggregator__filtered_tags_cache_evict 19"));
         assert!(!output.contains("component_id="));
     }
 
@@ -387,5 +411,17 @@ mod tests {
             Some("How many metrics were filtered in the time samplers")
         );
         assert_eq!(find("datadog.agent.tag_filterlist.size"), Some("Tag filter list size"));
+        assert_eq!(
+            find("datadog.agent.aggregator.filtered_tags_cache_hit"),
+            Some("How many times we hit the cache on filtering tags")
+        );
+        assert_eq!(
+            find("datadog.agent.aggregator.filtered_tags_cache_miss"),
+            Some("How many times we missed the cache on filtering tags")
+        );
+        assert_eq!(
+            find("datadog.agent.aggregator.filtered_tags_cache_evict"),
+            Some("How many times an entry was evicted from the tag filter cache")
+        );
     }
 }

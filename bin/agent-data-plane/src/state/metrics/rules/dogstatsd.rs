@@ -34,6 +34,24 @@ pub fn get_dogstatsd_remappings() -> Vec<RemapperRule> {
         )
         .with_help_text("Tag filter list size"),
         RemapperRule::by_name_and_tags(
+            "adp.tag_filterlist_cache_hit_total",
+            &["component_id:dsd_tag_filterlist"],
+            "datadog.agent.aggregator.filtered_tags_cache_hit",
+        )
+        .with_help_text("How many times we hit the cache on filtering tags"),
+        RemapperRule::by_name_and_tags(
+            "adp.tag_filterlist_cache_miss_total",
+            &["component_id:dsd_tag_filterlist"],
+            "datadog.agent.aggregator.filtered_tags_cache_miss",
+        )
+        .with_help_text("How many times we missed the cache on filtering tags"),
+        RemapperRule::by_name_and_tags(
+            "adp.tag_filterlist_cache_evict_total",
+            &["component_id:dsd_tag_filterlist"],
+            "datadog.agent.aggregator.filtered_tags_cache_evict",
+        )
+        .with_help_text("How many times an entry was evicted from the tag filter cache"),
+        RemapperRule::by_name_and_tags(
             "adp.object_pool_acquired",
             &["pool_name:dsd_packet_bufs"],
             "dogstatsd.packet_pool_get",
