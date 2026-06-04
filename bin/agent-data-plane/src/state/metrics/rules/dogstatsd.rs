@@ -34,6 +34,12 @@ pub fn get_dogstatsd_remappings() -> Vec<RemapperRule> {
         )
         .with_help_text("Tag filter list size"),
         RemapperRule::by_name_and_tags(
+            "adp.tag_filterlist_updates_total",
+            &["component_id:dsd_tag_filterlist"],
+            "tag_filterlist.updates",
+        )
+        .with_help_text("Incremented when a reconfiguration of the tag filterlist happened"),
+        RemapperRule::by_name_and_tags(
             "adp.cache_hits_total",
             &["cache_id:tag_filterlist/context_cache"],
             "aggregator.filtered_tags_cache_hit",

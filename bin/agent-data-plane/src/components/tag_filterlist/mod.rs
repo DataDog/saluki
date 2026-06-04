@@ -297,6 +297,7 @@ impl Transform for TagFilterlist {
                     self.filters = compile_filters(new_entries.as_deref().unwrap_or(&[]));
                     self.context_cache = build_context_cache(self.context_cache_capacity);
                     self.telemetry.set_size(self.filters.len());
+                    self.telemetry.increment_updates();
                     debug!(rules_loaded = self.filters.len(), "Updated metric tag filterlist.");
                 },
             }
@@ -847,6 +848,23 @@ mod tests {
 
         telemetry.set_size(0);
         assert_eq!(recorder.gauge("tag_filterlist_size"), Some(0.0));
+    }
+
+    #[test]
+    fn telemetry_records_updates() {
+        let recorder = TestRecorder::default();
+        let _local = metrics::set_default_local_recorder(&recorder);
+
+        let builder = MetricsBuilder::default();
+        let telemetry = Telemetry::new(&builder);
+
+        assert_eq!(recorder.counter("tag_filterlist_updates_total"), Some(0));
+
+        telemetry.increment_updates();
+        assert_eq!(recorder.counter("tag_filterlist_updates_total"), Some(1));
+
+        telemetry.increment_updates();
+        assert_eq!(recorder.counter("tag_filterlist_updates_total"), Some(2));
     }
 
     #[tokio::test]
