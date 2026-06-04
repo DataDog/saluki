@@ -19,7 +19,6 @@ env:
   DD_STATSD_FORWARD_PORT: "9125"
 
 container:
-  image: "saluki-images/datadog-agent:testing-devel"
   entrypoint:
     - "/opt/datadog-agent/embedded/bin/python3"
     - "/forwarding-test/run_forwarding_test.py"

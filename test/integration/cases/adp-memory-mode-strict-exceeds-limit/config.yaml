@@ -15,8 +15,6 @@ env:
   # transform far past the configured memory limit.
   DD_AGGREGATE_CONTEXT_LIMIT: "10000000"
 
-container:
-  image: "saluki-images/datadog-agent:testing-devel"
 
 assertions:
   # Observe ADP's actual exit code, regardless of runtime. On docker (s6) this greps the

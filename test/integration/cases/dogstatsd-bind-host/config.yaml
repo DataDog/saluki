@@ -29,8 +29,6 @@ env:
   PANORAMIC_DYNAMIC_CONTAINER_IP: "hostname -i | awk '{print $1}'"
   DD_BIND_HOST: "{{PANORAMIC_DYNAMIC_CONTAINER_IP}}"
 
-container:
-  image: "saluki-images/datadog-agent:testing-devel"
 
 assertions:
   - type: log_contains

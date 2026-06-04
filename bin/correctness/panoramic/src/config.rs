@@ -108,7 +108,9 @@ pub struct IntegrationConfig {
     /// Overall timeout for the test case.
     pub timeout: HumanDuration,
 
-    /// Container configuration.
+    /// Container configuration. Optional; defaults to an empty configuration. The container
+    /// image is selected by the active runtime, not the test case.
+    #[serde(default)]
     pub container: ContainerConfig,
 
     /// Environment variables to set on the target process(es).
@@ -161,8 +163,23 @@ pub const DOCKER_RUNTIME: &str = "docker";
 /// Runtime identifier for integration tests that run inside a Windows Docker container.
 pub const WINDOWS_RUNTIME: &str = "windows";
 
-/// Default Windows ADP image used by Windows-runtime integration tests.
-pub const DEFAULT_WINDOWS_ADP_IMAGE: &str = "saluki-images/agent-data-plane:testing-windows";
+/// Default container image used by `docker`-runtime integration tests.
+pub const DEFAULT_DOCKER_TARGET_IMAGE: &str = "saluki-images/datadog-agent:testing-devel";
+
+/// Default container image used by `windows`-runtime integration tests.
+pub const DEFAULT_WINDOWS_TARGET_IMAGE: &str = "saluki-images/agent-data-plane:testing-windows";
+
+/// Returns the integration-test target image for the given runtime, if the runtime uses one.
+///
+/// `mac` runs ADP as a host process and has no target image. All other runtimes resolve to a
+/// fixed, harness-owned image; tests do not select images per case.
+pub fn target_image_for_runtime(runtime: &str) -> Option<&'static str> {
+    match runtime {
+        DOCKER_RUNTIME => Some(DEFAULT_DOCKER_TARGET_IMAGE),
+        WINDOWS_RUNTIME => Some(DEFAULT_WINDOWS_TARGET_IMAGE),
+        _ => None,
+    }
+}
 
 /// Returns the integration-test runtime that is native to the host OS.
 ///
@@ -180,11 +197,8 @@ pub fn default_host_runtime() -> &'static str {
 }
 
 /// Container configuration for a test case.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize)]
 pub struct ContainerConfig {
-    /// Container image to use.
-    pub image: String,
-
     /// Optional entrypoint override.
     #[serde(default)]
     pub entrypoint: Vec<String>,
@@ -430,16 +444,8 @@ impl Test for IntegrationConfig {
 
     fn images(&self) -> BTreeMap<&str, String> {
         let mut m = BTreeMap::new();
-        // Host-process runtimes (such as `mac`) don't need a container image; the test's
-        // `container.image` field is informational for them.
-        match self.active_runtime.as_str() {
-            MAC_RUNTIME => {}
-            WINDOWS_RUNTIME => {
-                m.insert("container", DEFAULT_WINDOWS_ADP_IMAGE.to_string());
-            }
-            _ => {
-                m.insert("container", self.container.image.clone());
-            }
+        if let Some(image) = target_image_for_runtime(&self.active_runtime) {
+            m.insert("container", image.to_string());
         }
         m
     }
@@ -936,8 +942,6 @@ type: integration
 name: windows-smoke
 timeout: 10s
 runtimes: [windows]
-container:
-  image: saluki-images/agent-data-plane:testing-windows
 assertions: []
 "#,
         );
@@ -950,7 +954,7 @@ assertions: []
     }
 
     #[test]
-    fn test_windows_runtime_reports_container_image_dependency() {
+    fn test_windows_runtime_reports_harness_owned_container_image() {
         let base_dir = create_test_case_dir(
             "windows-smoke",
             r#"
@@ -958,8 +962,6 @@ type: integration
 name: windows-smoke
 timeout: 10s
 runtimes: [windows]
-container:
-  image: saluki-images/datadog-agent:testing-devel
 assertions: []
 "#,
         );
@@ -967,7 +969,26 @@ assertions: []
         let tests = discover_tests(&[base_dir.path().to_path_buf()], "windows").unwrap();
         let images = tests[0].images();
 
-        assert_eq!(images.get("container"), Some(&DEFAULT_WINDOWS_ADP_IMAGE.to_string()));
+        assert_eq!(images.get("container"), Some(&DEFAULT_WINDOWS_TARGET_IMAGE.to_string()));
+    }
+
+    #[test]
+    fn test_docker_runtime_reports_harness_owned_container_image() {
+        let base_dir = create_test_case_dir(
+            "docker-smoke",
+            r#"
+type: integration
+name: docker-smoke
+timeout: 10s
+runtimes: [docker]
+assertions: []
+"#,
+        );
+
+        let tests = discover_tests(&[base_dir.path().to_path_buf()], "docker").unwrap();
+        let images = tests[0].images();
+
+        assert_eq!(images.get("container"), Some(&DEFAULT_DOCKER_TARGET_IMAGE.to_string()));
     }
 
     struct TestCaseDir {

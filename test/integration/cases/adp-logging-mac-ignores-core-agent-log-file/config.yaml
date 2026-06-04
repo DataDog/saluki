@@ -14,7 +14,6 @@ env:
   DD_DATA_PLANE_LOG_FILE: "/tmp/adp-mac-ignores-core-agent-log-file.log"
 
 container:
-  image: "saluki-images/datadog-agent:testing-devel"
   exposed_ports:
     - "58125/udp"
 

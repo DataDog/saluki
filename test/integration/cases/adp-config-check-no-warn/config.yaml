@@ -21,8 +21,6 @@ env:
   DD_DATA_PLANE_OTLP_ENABLED: "true" # Keep ADP running with a non-DogStatsD pipeline.
   DD_DOGSTATSD_TELEMETRY_ENABLED_LISTENER_ID: "true" # Incompatible(Medium, DogStatsD)
 
-container:
-  image: "saluki-images/datadog-agent:testing-devel"
 
 assertions:
   - parallel:

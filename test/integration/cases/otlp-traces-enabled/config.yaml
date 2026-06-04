@@ -14,7 +14,6 @@ env:
   DD_DATA_PLANE_OTLP_PROXY_TRACES_ENABLED: "false"
 
 container:
-  image: "saluki-images/datadog-agent:testing-devel"
   exposed_ports:
     - "54317/tcp"
     - "54318/tcp"

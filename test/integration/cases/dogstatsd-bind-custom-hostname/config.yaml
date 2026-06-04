@@ -41,8 +41,6 @@ env:
   PANORAMIC_DYNAMIC_CUSTOM_HOSTNAME: "echo \"$(hostname -i | awk '{print $1}') foo.local\" >> /etc/hosts; echo foo.local"
   DD_BIND_HOST: "{{PANORAMIC_DYNAMIC_CUSTOM_HOSTNAME}}"
 
-container:
-  image: "saluki-images/datadog-agent:testing-devel"
 
 assertions:
   - type: log_contains

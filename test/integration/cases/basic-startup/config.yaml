@@ -10,8 +10,6 @@ env:
   DD_DATA_PLANE_ENABLED: "true"
   DD_DATA_PLANE_STANDALONE_MODE: "true"
 
-container:
-  image: "saluki-images/datadog-agent:testing-devel"
 
 assertions:
   # Make sure we always emit our initial startup log, which contains relevant information

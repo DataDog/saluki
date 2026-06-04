@@ -21,8 +21,6 @@ env:
   DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
   DD_HEROKU_DYNO: "true" # Incompatible(High) - triggers error and exit
 
-container:
-  image: "saluki-images/datadog-agent:testing-devel"
 
 assertions:
   - type: log_contains

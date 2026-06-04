@@ -101,15 +101,6 @@ fn normalize_env_for_runtime(mut env: HashMap<String, String>, runtime: &str) ->
     env
 }
 
-fn target_image_for_runtime(configured_image: &str, runtime: &str) -> String {
-    if runtime == crate::config::WINDOWS_RUNTIME {
-        std::env::var("PANORAMIC_WINDOWS_ADP_IMAGE")
-            .unwrap_or_else(|_| crate::config::DEFAULT_WINDOWS_ADP_IMAGE.to_string())
-    } else {
-        configured_image.to_string()
-    }
-}
-
 pub(crate) struct RunArgs {
     /// The number of tests to run in parallel.
     parallelism: usize,
@@ -802,8 +793,17 @@ impl IntegrationRunner {
             ContainerOs::Linux
         };
 
+        let image = crate::config::target_image_for_runtime(&self.test_case.active_runtime)
+            .ok_or_else(|| {
+                generic_error!(
+                    "Runtime '{}' has no associated container image; integration tests are unsupported.",
+                    self.test_case.active_runtime
+                )
+            })?
+            .to_string();
+
         let target_config = airlock::config::TargetConfig {
-            image: target_image_for_runtime(&container.image, &self.test_case.active_runtime),
+            image,
             entrypoint: container.entrypoint.clone(),
             command: container.command.clone(),
             additional_env_vars: env_vars,
@@ -1151,27 +1151,5 @@ mod tests {
         let normalized = normalize_env_for_runtime(env, crate::config::DOCKER_RUNTIME);
 
         assert!(!normalized.contains_key("DD_DATA_PLANE__ENABLED"));
-    }
-
-    #[test]
-    fn windows_runtime_uses_windows_adp_image() {
-        assert_eq!(
-            target_image_for_runtime(
-                "saluki-images/datadog-agent:testing-devel",
-                crate::config::WINDOWS_RUNTIME
-            ),
-            crate::config::DEFAULT_WINDOWS_ADP_IMAGE
-        );
-    }
-
-    #[test]
-    fn docker_runtime_uses_configured_image() {
-        assert_eq!(
-            target_image_for_runtime(
-                "saluki-images/datadog-agent:testing-devel",
-                crate::config::DOCKER_RUNTIME
-            ),
-            "saluki-images/datadog-agent:testing-devel"
-        );
     }
 }

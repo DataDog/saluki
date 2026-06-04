@@ -12,8 +12,6 @@ env:
   DD_DATA_PLANE_DOGSTATSD_ENABLED: "false"
   DD_DATA_PLANE_OTLP_ENABLED: "false"
 
-container:
-  image: "saluki-images/datadog-agent:testing-devel"
 
 assertions:
   # ADP should log that no pipelines are enabled and exit.

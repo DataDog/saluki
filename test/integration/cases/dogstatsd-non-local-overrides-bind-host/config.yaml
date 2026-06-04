@@ -28,8 +28,6 @@ env:
   # address makes the "the value doesn't matter" intent unmistakable.
   DD_BIND_HOST: "10.9.8.7"
 
-container:
-  image: "saluki-images/datadog-agent:testing-devel"
 
 assertions:
   - type: log_contains

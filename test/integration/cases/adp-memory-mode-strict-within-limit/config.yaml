@@ -13,8 +13,6 @@ env:
   # Generous enough to comfortably fit the default calculated bounds.
   DD_MEMORY_LIMIT: "2gb"
 
-container:
-  image: "saluki-images/datadog-agent:testing-devel"
 
 assertions:
   - type: log_contains

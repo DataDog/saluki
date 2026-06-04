@@ -13,7 +13,6 @@ env:
   DD_DOGSTATSD_NON_LOCAL_TRAFFIC: "true"
 
 container:
-  image: "saluki-images/datadog-agent:testing-devel"
   exposed_ports:
     - "58125/udp"
 

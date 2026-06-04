@@ -14,7 +14,6 @@ env:
   DD_DOGSTATSD_AUTOSCALE_UDP_LISTENERS: "true"
 
 container:
-  image: "saluki-images/datadog-agent:testing-devel"
   exposed_ports:
     - "58125/udp"
 
