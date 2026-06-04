@@ -248,20 +248,6 @@ crate::declare_annotations! {
         pipeline_affinity: PipelineAffinity::CrossCutting,
     };
 
-    /// `tls_handshake_timeout` - HTTP TLS handshake timeout.
-    TLS_HANDSHAKE_TIMEOUT = SalukiAnnotation {
-        schema: &schema::TLS_HANDSHAKE_TIMEOUT,
-        // Not implemented. Request timeout covers the gap. #178
-        support_level: SupportLevel::Incompatible(Severity::Medium),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-        // TLS is process-wide.
-        pipeline_affinity: PipelineAffinity::CrossCutting,
-    };
-
     /// `aggregator_buffer_size` - aggregator input channel depth.
     AGGREGATOR_BUFFER_SIZE = SalukiAnnotation {
         schema: &schema::AGGREGATOR_BUFFER_SIZE,

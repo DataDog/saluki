@@ -112,12 +112,9 @@ mod tests {
     }
 
     #[test]
-    // To whoever implements this config in the future: sorry! We just wanted to make sure this is
-    // working correctly by giving it a currently unsupported key. You can delete the unsupported
-    // tests or choose a different key.
     fn incompatible_non_default() {
         let c = classifier();
-        let key = unsupported::TLS_HANDSHAKE_TIMEOUT.yaml_path();
+        let key = unsupported::AGGREGATOR_BUFFER_SIZE.yaml_path();
         let result = c.classify(key, &Value::Number(999.into())).unwrap();
         assert!(matches!(result.support_level, SupportLevel::Incompatible(_)));
         assert!(!result.is_default);
@@ -126,8 +123,8 @@ mod tests {
     #[test]
     fn incompatible_default() {
         let c = classifier();
-        let ann = &unsupported::TLS_HANDSHAKE_TIMEOUT;
-        let result = c.classify(ann.yaml_path(), &Value::String("".into())).unwrap();
+        let ann = &unsupported::AGGREGATOR_BUFFER_SIZE;
+        let result = c.classify(ann.yaml_path(), &Value::Number(100.into())).unwrap();
         assert!(matches!(result.support_level, SupportLevel::Incompatible(_)));
         assert!(result.is_default);
     }

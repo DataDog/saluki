@@ -25,6 +25,10 @@ const fn default_endpoint_buffer_size() -> usize {
     16
 }
 
+const fn default_tls_handshake_timeout_secs() -> u64 {
+    10
+}
+
 const fn default_forwarder_connection_reset_interval() -> u64 {
     0
 }
@@ -166,6 +170,13 @@ pub struct ForwarderConfiguration {
     #[serde(default = "default_request_timeout_secs", rename = "forwarder_timeout")]
     request_timeout_secs: u64,
 
+    /// TLS handshake timeout, in seconds.
+    ///
+    /// Defaults to 10 seconds. If the TLS handshake does not complete within this duration after the
+    /// TCP connection is established, the connection attempt fails with a timeout error.
+    #[serde(default = "default_tls_handshake_timeout_secs", rename = "tls_handshake_timeout")]
+    tls_handshake_timeout_secs: u64,
+
     /// Maximum number of pending requests for an individual endpoint.
     ///
     /// Defaults to 16.
@@ -251,6 +262,11 @@ impl ForwarderConfiguration {
     /// Returns the request timeout.
     pub const fn request_timeout(&self) -> Duration {
         Duration::from_secs(self.request_timeout_secs)
+    }
+
+    /// Returns the TLS handshake timeout.
+    pub const fn tls_handshake_timeout(&self) -> Duration {
+        Duration::from_secs(self.tls_handshake_timeout_secs)
     }
 
     /// Returns the maximum number of pending requests for an individual endpoint.
