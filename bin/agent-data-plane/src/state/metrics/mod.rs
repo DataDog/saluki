@@ -320,6 +320,10 @@ mod tests {
                 Context::from_static_parts("adp.tag_filterlist_size", &["component_id:dsd_tag_filterlist"]),
                 9.0,
             )),
+            Event::Metric(Metric::counter(
+                Context::from_static_parts("adp.tag_filterlist_updates_total", &["component_id:dsd_tag_filterlist"]),
+                11.0,
+            )),
         ];
 
         let output = render_with(get_datadog_agent_remappings(), metrics);
@@ -329,6 +333,7 @@ mod tests {
         assert!(output.contains("dogstatsd__listener_filtered_points 5"));
         assert!(output.contains("aggregator__dogstatsd_filtered_metrics 7"));
         assert!(output.contains("datadog__agent__tag_filterlist__size 9"));
+        assert!(output.contains("tag_filterlist__updates 11"));
         assert!(!output.contains("datadog__agent__filterlist__size"));
         assert!(!output.contains("datadog__agent__filterlist__updates"));
         assert!(!output.contains("datadog__agent__dogstatsd__listener_filtered_points"));
@@ -391,5 +396,9 @@ mod tests {
             Some("How many metrics were filtered in the time samplers")
         );
         assert_eq!(find("datadog.agent.tag_filterlist.size"), Some("Tag filter list size"));
+        assert_eq!(
+            find("tag_filterlist.updates"),
+            Some("Incremented when a reconfiguration of the tag filterlist happened")
+        );
     }
 }
