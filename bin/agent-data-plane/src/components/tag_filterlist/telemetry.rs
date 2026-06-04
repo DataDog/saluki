@@ -1,4 +1,4 @@
-use metrics::Counter;
+use metrics::{Counter, Gauge};
 use saluki_metrics::MetricsBuilder;
 
 use super::FilterMetricTagsOutcome;
@@ -10,6 +10,7 @@ pub struct Telemetry {
     noop_hits: Counter,
     metrics_modified: Counter,
     tags_filtered: Counter,
+    size: Gauge,
 }
 
 impl Telemetry {
@@ -20,6 +21,7 @@ impl Telemetry {
             noop_hits: builder.register_debug_counter("tag_filterlist_noop_hits_total"),
             metrics_modified: builder.register_debug_counter("tag_filterlist_metrics_modified_total"),
             tags_filtered: builder.register_debug_counter("tag_filterlist_tags_filtered_total"),
+            size: builder.register_gauge("tag_filterlist_size"),
         }
     }
 
@@ -38,5 +40,9 @@ impl Telemetry {
                 self.tags_filtered.increment(removed_tags as u64);
             }
         }
+    }
+
+    pub fn set_size(&self, count: usize) {
+        self.size.set(count as f64);
     }
 }

@@ -827,6 +827,24 @@ mod tests {
         assert_eq!(recorder.counter("tag_filterlist_tags_filtered_total"), Some(3));
     }
 
+    #[test]
+    fn telemetry_records_size() {
+        let recorder = TestRecorder::default();
+        let _local = metrics::set_default_local_recorder(&recorder);
+
+        let builder = MetricsBuilder::default();
+        let telemetry = Telemetry::new(&builder);
+
+        telemetry.set_size(5);
+        assert_eq!(recorder.gauge("tag_filterlist_size"), Some(5.0));
+
+        telemetry.set_size(3);
+        assert_eq!(recorder.gauge("tag_filterlist_size"), Some(3.0));
+
+        telemetry.set_size(0);
+        assert_eq!(recorder.gauge("tag_filterlist_size"), Some(0.0));
+    }
+
     #[tokio::test]
     async fn dynamic_update_partial_replaces_filter() {
         let (cfg, sender) = ConfigurationLoader::for_tests(Some(serde_json::json!({})), None, true).await;
