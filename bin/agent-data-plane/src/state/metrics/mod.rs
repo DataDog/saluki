@@ -316,6 +316,10 @@ mod tests {
                 ),
                 7.0,
             )),
+            Event::Metric(Metric::gauge(
+                Context::from_static_parts("adp.tag_filterlist_size", &["component_id:dsd_tag_filterlist"]),
+                9.0,
+            )),
         ];
 
         let output = render_with(get_datadog_agent_remappings(), metrics);
@@ -324,6 +328,7 @@ mod tests {
         assert!(output.contains("datadog__agent__filterlist__updates 3"));
         assert!(output.contains("datadog__agent__dogstatsd__listener_filtered_points 5"));
         assert!(output.contains("datadog__agent__aggregator__dogstatsd_filtered_metrics 7"));
+        assert!(output.contains("datadog__agent__tag_filterlist__size 9"));
         assert!(!output.contains("component_id="));
     }
 
@@ -381,5 +386,6 @@ mod tests {
             find("datadog.agent.aggregator.dogstatsd_filtered_metrics"),
             Some("How many metrics were filtered in the time samplers")
         );
+        assert_eq!(find("datadog.agent.tag_filterlist.size"), Some("Tag filter list size"));
     }
 }
