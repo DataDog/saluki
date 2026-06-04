@@ -6,25 +6,25 @@ pub fn get_dogstatsd_remappings() -> Vec<RemapperRule> {
         RemapperRule::by_name_and_tags(
             "adp.metric_filterlist_size",
             &["component_id:dsd_prefix_filter"],
-            "datadog.agent.filterlist.size",
+            "filterlist.size",
         )
         .with_help_text("Metric filter list size"),
         RemapperRule::by_name_and_tags(
             "adp.metric_filterlist_updates_total",
             &["component_id:dsd_prefix_filter"],
-            "datadog.agent.filterlist.updates",
+            "filterlist.updates",
         )
         .with_help_text("Incremented when a reconfiguration of the metric filterlist happened"),
         RemapperRule::by_name_and_tags(
             "adp.dogstatsd_listener_filtered_points_total",
             &["component_id:dsd_prefix_filter"],
-            "datadog.agent.dogstatsd.listener_filtered_points",
+            "dogstatsd.listener_filtered_points",
         )
         .with_help_text("How many points were filtered out"),
         RemapperRule::by_name_and_tags(
             "adp.dogstatsd_post_aggregate_filtered_metrics_total",
             &["component_id:dsd_post_agg_filter"],
-            "datadog.agent.aggregator.dogstatsd_filtered_metrics",
+            "aggregator.dogstatsd_filtered_metrics",
         )
         .with_help_text("How many metrics were filtered in the time samplers"),
         RemapperRule::by_name_and_tags(
