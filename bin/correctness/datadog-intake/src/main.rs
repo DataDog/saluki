@@ -6,8 +6,6 @@
 use saluki_error::{ErrorContext as _, GenericError};
 use tokio::{
     net::{TcpListener, UdpSocket},
-    select,
-    signal::unix::{signal, SignalKind},
     sync::mpsc,
 };
 use tracing::{error, info, warn};
@@ -70,7 +68,13 @@ async fn run() -> Result<(), GenericError> {
         .map_err(Into::into)
 }
 
+#[cfg(unix)]
 fn spawn_signal_handlers(shutdown_tx: mpsc::Sender<()>) -> Result<(), GenericError> {
+    use tokio::{
+        select,
+        signal::unix::{signal, SignalKind},
+    };
+
     let mut sigint_handler = signal(SignalKind::interrupt()).error_context("Failed to set up SIGINT handler.")?;
     let mut sigterm_handler = signal(SignalKind::terminate()).error_context("Failed to set up SIGTERM handler.")?;
 
@@ -82,6 +86,22 @@ fn spawn_signal_handlers(shutdown_tx: mpsc::Sender<()>) -> Result<(), GenericErr
             _ = sigterm_handler.recv() => {
                 info!("Received SIGTERM, shutting down...");
             }
+        }
+
+        if let Err(e) = shutdown_tx.send(()).await {
+            error!("Failed to send shutdown signal: {:?}", e);
+        }
+    });
+
+    Ok(())
+}
+
+#[cfg(windows)]
+fn spawn_signal_handlers(shutdown_tx: mpsc::Sender<()>) -> Result<(), GenericError> {
+    tokio::spawn(async move {
+        match tokio::signal::ctrl_c().await {
+            Ok(()) => info!("Received Ctrl-C, shutting down..."),
+            Err(e) => error!(error = %e, "Failed to receive Ctrl-C signal."),
         }
 
         if let Err(e) = shutdown_tx.send(()).await {
