@@ -1,5 +1,12 @@
-use std::sync::RwLock;
-use std::{sync::Arc, time::Duration};
+use std::sync::{Arc, OnceLock, RwLock};
+use std::time::Duration;
+
+/// Shared one-shot cell holding the exit code of a top-level Docker target process.
+///
+/// The container-wait task populates the cell when the container exits; assertions read it
+/// to make decisions that depend on the exit code. Mirrors [`airlock::unix::ExitCodeCell`] for
+/// the host-process path.
+pub type DockerExitCodeCell = Arc<OnceLock<i64>>;
 
 use futures::future;
 use saluki_error::GenericError;
@@ -121,8 +128,10 @@ pub struct AssertionContext {
     /// path or while the process is still running; `Some(None)` if the process was killed by
     /// signal; `Some(Some(code))` if it exited normally.
     pub host_process_exit_code: Option<airlock::unix::ExitCodeCell>,
-    /// Exit code of a top-level Docker target process, populated once the container exits.
-    pub docker_container_exit_code: Option<std::sync::Arc<std::sync::RwLock<Option<i64>>>>,
+    /// Exit code of a top-level Docker target process, populated once when the container
+    /// exits. `None` on host-process runtimes; otherwise an empty cell that becomes populated
+    /// when the docker wait stream completes.
+    pub docker_container_exit_code: Option<DockerExitCodeCell>,
 }
 
 impl AssertionContext {

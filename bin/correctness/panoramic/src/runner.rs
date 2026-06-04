@@ -552,7 +552,7 @@ impl IntegrationRunner {
         // container exit does not trigger the external cancel path.
         let exit_token = CancellationToken::new();
         let exit_signal = exit_token.clone();
-        let docker_exit_code = Arc::new(RwLock::new(None));
+        let docker_exit_code: crate::assertions::DockerExitCodeCell = Arc::new(std::sync::OnceLock::new());
         let docker_exit_code_for_exit = docker_exit_code.clone();
         let container_name = details.container_name().to_string();
         let container_name_for_exit = container_name.clone();
@@ -573,9 +573,7 @@ impl IntegrationRunner {
                     Err(_) => None,
                 };
                 if let Some(code) = exit_code {
-                    if let Ok(mut stored) = docker_exit_code_for_exit.write() {
-                        *stored = Some(code);
-                    }
+                    let _ = docker_exit_code_for_exit.set(code);
                 }
                 exit_signal.cancel();
             }
@@ -910,7 +908,7 @@ impl IntegrationRunner {
 
     async fn run_assertions(
         &self, port_mappings: &HashMap<String, u16>, container_ip: Option<&str>, container_name: &str,
-        exit_token: &CancellationToken, docker_exit_code: Arc<RwLock<Option<i64>>>,
+        exit_token: &CancellationToken, docker_exit_code: crate::assertions::DockerExitCodeCell,
     ) -> Vec<AssertionResult> {
         let ctx = AssertionContext {
             log_buffer: self.log_buffer.clone(),
