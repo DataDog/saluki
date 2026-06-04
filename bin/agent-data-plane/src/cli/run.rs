@@ -226,13 +226,19 @@ pub async fn handle_run_command(
     });
 
     info!("Agent Data Plane running.");
-    match root_supervisor.run_with_shutdown(tokio::signal::ctrl_c()).await {
+    match root_supervisor.run_with_shutdown(wait_for_sigint()).await {
         Ok(()) => {
             info!("Agent Data Plane shut down successfully.");
             Ok(())
         }
         Err(e) => Err(e.into()),
     }
+}
+
+async fn wait_for_sigint() {
+    let _ = tokio::signal::ctrl_c().await;
+
+    info!("Received SIGINT, shutting down...");
 }
 
 /// Returns the set of [`Pipeline`] variants that are active based on our configuration.
