@@ -88,21 +88,12 @@ const WINDOWS_ENV_ALIASES: &[(&str, &str)] = &[
     ("DD_DATA_PLANE_LOG_FILE", "DD_DATA_PLANE__LOG_FILE"),
 ];
 
-/// Defaults applied to every Windows-runtime test, unless the test sets them explicitly.
-const WINDOWS_ENV_DEFAULTS: &[(&str, &str)] = &[
-    ("DD_DATA_PLANE__REMOTE_AGENT_ENABLED", "false"),
-    ("DD_DATA_PLANE__USE_NEW_CONFIG_STREAM_ENDPOINT", "false"),
-];
-
 fn normalize_env_for_runtime(mut env: HashMap<String, String>, runtime: &str) -> HashMap<String, String> {
     if runtime == crate::config::WINDOWS_RUNTIME {
         for (source, target) in WINDOWS_ENV_ALIASES {
             if let Some(value) = env.get(*source).cloned() {
                 env.entry((*target).to_string()).or_insert(value);
             }
-        }
-        for (key, value) in WINDOWS_ENV_DEFAULTS {
-            env.entry((*key).to_string()).or_insert_with(|| (*value).to_string());
         }
     }
 
@@ -1124,14 +1115,9 @@ mod tests {
             normalized.get("DD_DATA_PLANE__OTLP__PROXY__TRACES__ENABLED"),
             Some(&"false".to_string())
         );
-        assert_eq!(
-            normalized.get("DD_DATA_PLANE__REMOTE_AGENT_ENABLED"),
-            Some(&"false".to_string())
-        );
-        assert_eq!(
-            normalized.get("DD_DATA_PLANE__USE_NEW_CONFIG_STREAM_ENDPOINT"),
-            Some(&"false".to_string())
-        );
+        // Without an explicit DD_DATA_PLANE_REMOTE_AGENT_ENABLED in the input, the normalized
+        // env should not contain a synthesized nested key either.
+        assert!(!normalized.contains_key("DD_DATA_PLANE__REMOTE_AGENT_ENABLED"));
     }
 
     #[test]
