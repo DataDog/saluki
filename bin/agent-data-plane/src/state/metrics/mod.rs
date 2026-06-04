@@ -332,7 +332,7 @@ mod tests {
         assert!(output.contains("filterlist__updates 3"));
         assert!(output.contains("dogstatsd__listener_filtered_points 5"));
         assert!(output.contains("aggregator__dogstatsd_filtered_metrics 7"));
-        assert!(output.contains("datadog__agent__tag_filterlist__size 9"));
+        assert!(output.contains("tag_filterlist__size 9"));
         assert!(output.contains("tag_filterlist__updates 11"));
         assert!(!output.contains("datadog__agent__filterlist__size"));
         assert!(!output.contains("datadog__agent__filterlist__updates"));
@@ -395,7 +395,7 @@ mod tests {
             find("aggregator.dogstatsd_filtered_metrics"),
             Some("How many metrics were filtered in the time samplers")
         );
-        assert_eq!(find("datadog.agent.tag_filterlist.size"), Some("Tag filter list size"));
+        assert_eq!(find("tag_filterlist.size"), Some("Tag filter list size"));
         assert_eq!(
             find("tag_filterlist.updates"),
             Some("Incremented when a reconfiguration of the tag filterlist happened")
