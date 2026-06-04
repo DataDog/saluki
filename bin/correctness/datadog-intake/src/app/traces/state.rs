@@ -39,7 +39,7 @@ impl TracesState {
     ///
     /// Both the classic `tracerPayloads` (field 5) and the idx `idxTracerPayloads` (field 11)
     /// paths are decoded. `raw_body` must be the original protobuf-encoded bytes of the
-    /// `AgentPayload` and is used to decode field 11 directly, bypassing the incorrectly-typed
+    /// `AgentPayload` and is used to decode field 11 directly, bypassing the incorrectly typed
     /// generated field in the `AgentPayload` struct.
     pub fn merge_agent_payload(&self, payload: AgentPayload, raw_body: &[u8]) -> Result<(), GenericError> {
         let mut new_spans = Span::get_spans_from_agent_payload(&payload);
