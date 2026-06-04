@@ -44,13 +44,14 @@ impl Assertion for PortListeningAssertion {
         let probe = if ctx.target_is_windows_container {
             match self.protocol.as_str() {
                 "tcp" => Probe::InContainerTcp { port: self.port },
+                "udp" => Probe::InContainerUdp { port: self.port },
                 other => {
                     return AssertionResult {
                         name: self.name().to_string(),
                         passed: false,
                         message: format!(
-                            "Port {}/{}: in-container probing is only supported for tcp, not {}.",
-                            self.port, self.protocol, other
+                            "Port {}/{}: unsupported protocol for in-container probing.",
+                            self.port, other
                         ),
                         duration: started.elapsed(),
                     };
@@ -143,13 +144,16 @@ enum Probe {
     HostTcp { port: u16 },
     HostUdp { port: u16 },
     InContainerTcp { port: u16 },
+    InContainerUdp { port: u16 },
 }
 
 impl Probe {
     fn target_label(&self) -> String {
         match self {
             Self::HostTcp { port } | Self::HostUdp { port } => format!("host 127.0.0.1:{}", port),
-            Self::InContainerTcp { port } => format!("in-container 127.0.0.1:{}", port),
+            Self::InContainerTcp { port } | Self::InContainerUdp { port } => {
+                format!("in-container 127.0.0.1:{}", port)
+            }
         }
     }
 
@@ -158,6 +162,7 @@ impl Probe {
             Self::HostTcp { port } => check_tcp_port("127.0.0.1", port).await,
             Self::HostUdp { port } => check_udp_port("127.0.0.1", port).await,
             Self::InContainerTcp { port } => check_tcp_port_in_container(container_name, port).await,
+            Self::InContainerUdp { port } => check_udp_port_in_container(container_name, port).await,
         }
     }
 }
@@ -180,6 +185,22 @@ async fn check_tcp_port_in_container(container_name: &str, port: u16) -> bool {
     // probe with a .NET TcpClient against loopback inside the container.
     let command = format!(
         "$client = New-Object System.Net.Sockets.TcpClient; try {{ $task = $client.ConnectAsync('127.0.0.1', {}); if ($task.Wait(2000) -and $client.Connected) {{ exit 0 }} else {{ exit 1 }} }} catch {{ exit 1 }} finally {{ $client.Close() }}",
+        port
+    );
+    exec_status(
+        container_name,
+        vec!["pwsh", "-NoProfile", "-NonInteractive", "-Command", &command],
+    )
+    .await
+    .unwrap_or(false)
+}
+
+async fn check_udp_port_in_container(container_name: &str, port: u16) -> bool {
+    // UDP is connectionless, so just like the host-side probe we can only verify that we can
+    // bind a socket and "connect" to the target. This doesn't prove a listener exists, but it
+    // matches the semantics of [`check_udp_port`].
+    let command = format!(
+        "$client = New-Object System.Net.Sockets.UdpClient; try {{ $client.Connect('127.0.0.1', {}); exit 0 }} catch {{ exit 1 }} finally {{ $client.Close() }}",
         port
     );
     exec_status(
