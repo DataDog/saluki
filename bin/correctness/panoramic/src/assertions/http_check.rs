@@ -96,14 +96,20 @@ impl Assertion for HttpCheckAssertion {
 
         let endpoint = self.resolve_endpoint(ctx);
 
-        let client = if ctx.target_is_windows() {
-            None
+        // Pick a probe strategy. Linux/host targets are reachable directly from the test runner,
+        // so we use a real HTTP client. Windows targets are not (the container's listener is
+        // bound to its own loopback / internal port), so we shell out to `curl.exe` via
+        // `docker exec` inside the container.
+        let probe = if ctx.target_is_windows() {
+            HttpProbe::InContainerCurl {
+                container_name: ctx.container_name.clone(),
+            }
         } else {
             match ClientBuilder::new()
                 .danger_accept_invalid_certs(self.insecure_skip_verify)
                 .build()
             {
-                Ok(client) => Some(client),
+                Ok(client) => HttpProbe::HostClient { client },
                 Err(e) => {
                     return AssertionResult {
                         name: self.name().to_string(),
@@ -134,16 +140,7 @@ impl Assertion for HttpCheckAssertion {
                 };
             }
 
-            let response_status = if ctx.target_is_windows() {
-                get_status_in_container(&ctx.container_name, &endpoint).await
-            } else if let Some(client) = client.as_ref() {
-                match client.get(&endpoint).send().await {
-                    Ok(resp) => Ok(Some(resp.status().as_u16())),
-                    Err(e) => Err(e.to_string()),
-                }
-            } else {
-                Ok(None)
-            };
+            let response_status = probe.get_status(&endpoint).await;
 
             match response_status {
                 Ok(Some(actual)) => {
@@ -174,6 +171,35 @@ impl Assertion for HttpCheckAssertion {
             }
 
             tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+    }
+}
+
+/// HTTP probe site for `http_check` assertions.
+///
+/// `HostClient` uses a `reqwest` client running on the test runner; this is the standard path
+/// for Linux containers (which expose listeners on mapped ephemeral host ports) and host-process
+/// runtimes. `InContainerCurl` shells out to `curl.exe` via `docker exec` inside the target
+/// container; this is the path for Windows containers, where the listener is reachable only
+/// from inside the container itself.
+enum HttpProbe {
+    HostClient { client: reqwest::Client },
+    InContainerCurl { container_name: String },
+}
+
+impl HttpProbe {
+    /// Returns the HTTP status code observed for `endpoint`, if any.
+    ///
+    /// `Ok(Some(status))` is the only success path. `Ok(None)` means the request did not
+    /// produce a status (for example, `curl.exe` exited non-zero); `Err` is reserved for
+    /// transport-level failures the caller should log and retry.
+    async fn get_status(&self, endpoint: &str) -> Result<Option<u16>, String> {
+        match self {
+            Self::HostClient { client } => match client.get(endpoint).send().await {
+                Ok(resp) => Ok(Some(resp.status().as_u16())),
+                Err(e) => Err(e.to_string()),
+            },
+            Self::InContainerCurl { container_name } => get_status_in_container(container_name, endpoint).await,
         }
     }
 }
