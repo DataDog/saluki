@@ -31,7 +31,7 @@ use tokio::{
     task::JoinSet,
 };
 use tower::{Service, ServiceBuilder, ServiceExt as _};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, warn};
 
 use super::{
     config::ForwarderConfiguration,
@@ -443,13 +443,11 @@ async fn run_endpoint_io_loop<B>(
                         );
                         continue;
                     }
-                    let txn = route_metrics_validation_headers(
-                        txn,
-                        endpoint_v3_settings.should_receive_validation_headers(payload_info),
-                        endpoint_url.as_str(),
-                        endpoint_domain.as_str(),
-                        payload_info,
-                    );
+                    let txn = if endpoint_v3_settings.should_receive_validation_headers(payload_info) {
+                        txn
+                    } else {
+                        strip_metrics_validation_headers(txn)
+                    };
 
                     match pending_txns.push_high_priority(txn).await {
                         Ok(push_result) => track_queue_drops(&telemetry, &endpoint_domain, push_result),
@@ -547,41 +545,15 @@ async fn run_endpoint_io_loop<B>(
     task_barrier.wait().await;
 }
 
-fn route_metrics_validation_headers<B>(
-    txn: Transaction<B>, keep_headers: bool, endpoint_url: &str, endpoint_domain: &str,
-    payload_info: Option<super::protocol::MetricsPayloadInfo>,
-) -> Transaction<B>
+fn strip_metrics_validation_headers<B>(txn: Transaction<B>) -> Transaction<B>
 where
     B: Buf + Clone,
 {
     let (metadata, mut request) = txn.into_parts();
-    let headers = request.headers();
-    let request_id = headers.get("X-Metrics-Request-ID").and_then(|v| v.to_str().ok());
-    let request_seq = headers.get("X-Metrics-Request-Seq").and_then(|v| v.to_str().ok());
-    let request_len = headers.get("X-Metrics-Request-Len").and_then(|v| v.to_str().ok());
-
-    if let Some(request_id) = request_id {
-        info!(
-            endpoint_url,
-            endpoint_domain,
-            ?payload_info,
-            request_id,
-            ?request_seq,
-            ?request_len,
-            method = %request.method(),
-            path = %request.uri().path(),
-            validation_headers_action = if keep_headers { "kept" } else { "stripped" },
-            "ADP V3 shadow validation routing."
-        );
-    }
-
-    if !keep_headers {
-        let headers = request.headers_mut();
-        headers.remove("X-Metrics-Request-ID");
-        headers.remove("X-Metrics-Request-Seq");
-        headers.remove("X-Metrics-Request-Len");
-    }
-
+    let headers = request.headers_mut();
+    headers.remove("X-Metrics-Request-ID");
+    headers.remove("X-Metrics-Request-Seq");
+    headers.remove("X-Metrics-Request-Len");
     Transaction::reassemble(metadata, request)
 }
 
