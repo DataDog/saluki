@@ -261,9 +261,9 @@ where
 
     #[inline]
     fn on_evict(&self, _state: &mut Self::RequestState, key: K, _value: V) {
+        self.items_evicted.increment(1);
         if let Some(state) = self.state.as_ref() {
             state.mark_entry_removed(key);
         }
-        self.items_evicted.increment(1);
     }
 }
