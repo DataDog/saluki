@@ -80,7 +80,7 @@ pub fn has_dynamic_vars(test_case: &IntegrationConfig) -> bool {
 /// Windows test images do not run the Linux `cont-init.d` dynamic-variable script. Instead, Panoramic resolves the
 /// small set of currently supported Windows dynamic variables directly after the container starts.
 pub async fn resolve_windows_vars(
-    _driver: &Driver, test_case: &IntegrationConfig, container_ip: Option<&str>,
+    test_case: &IntegrationConfig, container_ip: Option<&str>,
 ) -> Result<HashMap<String, String>, GenericError> {
     let mut vars = HashMap::new();
 

@@ -36,15 +36,22 @@ impl HttpCheckAssertion {
         }
     }
 
-    /// Resolve the endpoint URL, replacing container ports with the address reachable from the test runner.
+    /// Resolve the endpoint URL, replacing container ports with the address reachable from the
+    /// probe site.
+    ///
+    /// Host-side probes substitute the mapped ephemeral port on `127.0.0.1`. In-container probes
+    /// (currently only the Windows runtime) substitute the container's primary network IP and
+    /// keep the original internal port.
     fn resolve_endpoint(&self, ctx: &AssertionContext) -> String {
         let mut endpoint = self.endpoint.clone();
 
         for (internal_spec, host_port) in &ctx.port_mappings {
             if let Some(internal_port) = internal_spec.split('/').next() {
-                let replacement = match ctx.container_ip.as_deref() {
-                    Some(container_ip) => format!("{}:{}", container_ip, internal_port),
-                    None => format!("127.0.0.1:{}", host_port),
+                let replacement = if ctx.use_container_exec_for_network_checks {
+                    let host = ctx.container_ip.as_deref().unwrap_or("127.0.0.1");
+                    format!("{}:{}", host, internal_port)
+                } else {
+                    format!("127.0.0.1:{}", host_port)
                 };
                 endpoint = endpoint
                     .replace(&format!("localhost:{}", internal_port), &replacement)

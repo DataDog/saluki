@@ -123,31 +123,12 @@ function Copy-WindowsRuntimeDlls {
         [string]$Destination
     )
 
-    $SearchRoots = @(
-        "C:\Windows\System32",
-        "C:\BuildTools",
-        "C:\Program Files",
-        "C:\Program Files (x86)"
-    )
-    $DllNames = @("vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll")
-
-    foreach ($DllName in $DllNames) {
-        $Found = $null
-        foreach ($Root in $SearchRoots) {
-            if (Test-Path $Root) {
-                $Found = Get-ChildItem -Path $Root -Recurse -Filter $DllName -ErrorAction SilentlyContinue |
-                    Select-Object -First 1
-                if ($Found) {
-                    break
-                }
-            }
-        }
-
-        if ($Found) {
-            Write-Host "[*] Found runtime DLL ${DllName} at $($Found.FullName)"
-            Copy-Item -Force $Found.FullName (Join-Path $Destination $DllName)
+    foreach ($DllName in @("vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll")) {
+        $Source = Join-Path "C:\Windows\System32" $DllName
+        if (Test-Path $Source) {
+            Copy-Item -Force $Source (Join-Path $Destination $DllName)
         } else {
-            Write-Host "[*] Runtime DLL ${DllName} not found in build container."
+            Write-Host "[*] Runtime DLL ${DllName} not found at ${Source}."
         }
     }
 }
@@ -189,60 +170,6 @@ CMD ["-c", "C:\\ProgramData\\Datadog\\datadog.yaml", "run"]
     Invoke-Native docker build --tag $ImageTag $ContextDir
 }
 
-function Remove-DockerContainerIfExists {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$ContainerName
-    )
-
-    $previousErrorActionPreference = $ErrorActionPreference
-    $ErrorActionPreference = "Continue"
-    docker rm -f $ContainerName *> $null
-    $ErrorActionPreference = $previousErrorActionPreference
-}
-
-function Test-WindowsAdpImage {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$ImageTag
-    )
-
-    $ContainerName = "saluki-windows-adp-preflight"
-    Remove-DockerContainerIfExists -ContainerName $ContainerName
-
-    Write-Host "[*] Preflight: starting ${ImageTag} directly..."
-    $DockerRunArgs = @(
-        "run",
-        "--detach",
-        "--name", $ContainerName,
-        "-e", "DD_API_KEY=test-api-key",
-        "-e", "DD_HOSTNAME=windows-integration-preflight",
-        "-e", "DD_DATA_PLANE__STANDALONE_MODE=true",
-        "-e", "DD_DATA_PLANE__DOGSTATSD__ENABLED=true",
-        "-e", "DD_LOG_TO_CONSOLE=true",
-        "-e", "DD_DISABLE_FILE_LOGGING=true",
-        $ImageTag
-    )
-    Invoke-Native -FilePath docker -Arguments $DockerRunArgs
-
-    Start-Sleep -Seconds 10
-
-    Write-Host "[*] Preflight: docker logs ${ContainerName}"
-    docker logs $ContainerName
-
-    $State = docker inspect $ContainerName --format '{{json .State}}'
-    Write-Host "[*] Preflight: container state: ${State}"
-
-    $Status = docker inspect $ContainerName --format '{{.State.Status}}'
-    if ($Status -ne "running") {
-        $ExitCode = docker inspect $ContainerName --format '{{.State.ExitCode}}'
-        Remove-DockerContainerIfExists -ContainerName $ContainerName
-        throw "Windows ADP preflight container exited early with status=${Status}, exit_code=${ExitCode}."
-    }
-
-    Remove-DockerContainerIfExists -ContainerName $ContainerName
-}
-
 $RepoRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..")
 Set-Location $RepoRoot
 
@@ -268,9 +195,7 @@ if (-not $env:APP_GIT_HASH) {
 }
 Invoke-Native cargo build --release --package panoramic --package agent-data-plane
 
-$WindowsAdpImage = if ($env:WINDOWS_ADP_IMAGE_TAG) { $env:WINDOWS_ADP_IMAGE_TAG } else { "saluki-images/agent-data-plane:testing-windows" }
 Build-WindowsAdpImage
-Test-WindowsAdpImage -ImageTag $WindowsAdpImage
 
 if (-not $env:PANORAMIC_LOG_DIR) {
     $env:PANORAMIC_LOG_DIR = "integration-logs"

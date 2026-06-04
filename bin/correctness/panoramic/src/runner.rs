@@ -42,65 +42,63 @@ fn should_apply_target_mounts(runtime: &str) -> bool {
     runtime != crate::config::WINDOWS_RUNTIME
 }
 
+/// Maps shared `DD_DATA_PLANE_*` test env keys to their Windows-image-native nested form.
+///
+/// The Linux converged image's s6 entrypoint normalizes flat `DD_DATA_PLANE_*` keys into the
+/// nested `DD_DATA_PLANE__X__Y` shape ADP reads natively. We don't have that entrypoint inside
+/// the Windows test image, so we apply the same translation here. Test YAML files continue to use
+/// the flat shape for portability across runtimes.
+const WINDOWS_ENV_ALIASES: &[(&str, &str)] = &[
+    ("DD_DATA_PLANE_ENABLED", "DD_DATA_PLANE__ENABLED"),
+    ("DD_DATA_PLANE_STANDALONE_MODE", "DD_DATA_PLANE__STANDALONE_MODE"),
+    (
+        "DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT",
+        "DD_DATA_PLANE__USE_NEW_CONFIG_STREAM_ENDPOINT",
+    ),
+    (
+        "DD_DATA_PLANE_REMOTE_AGENT_ENABLED",
+        "DD_DATA_PLANE__REMOTE_AGENT_ENABLED",
+    ),
+    ("DD_DATA_PLANE_DOGSTATSD_ENABLED", "DD_DATA_PLANE__DOGSTATSD__ENABLED"),
+    ("DD_DATA_PLANE_OTLP_ENABLED", "DD_DATA_PLANE__OTLP__ENABLED"),
+    (
+        "DD_DATA_PLANE_OTLP_PROXY_ENABLED",
+        "DD_DATA_PLANE__OTLP__PROXY__ENABLED",
+    ),
+    (
+        "DD_DATA_PLANE_OTLP_PROXY_TRACES_ENABLED",
+        "DD_DATA_PLANE__OTLP__PROXY__TRACES__ENABLED",
+    ),
+    (
+        "DD_DATA_PLANE_OTLP_PROXY_METRICS_ENABLED",
+        "DD_DATA_PLANE__OTLP__PROXY__METRICS__ENABLED",
+    ),
+    (
+        "DD_DATA_PLANE_OTLP_PROXY_LOGS_ENABLED",
+        "DD_DATA_PLANE__OTLP__PROXY__LOGS__ENABLED",
+    ),
+    ("DD_DATA_PLANE_LOG_FILE", "DD_DATA_PLANE__LOG_FILE"),
+];
+
+/// Defaults applied to every Windows-runtime test, unless the test sets them explicitly.
+const WINDOWS_ENV_DEFAULTS: &[(&str, &str)] = &[
+    ("DD_DATA_PLANE__REMOTE_AGENT_ENABLED", "false"),
+    ("DD_DATA_PLANE__USE_NEW_CONFIG_STREAM_ENDPOINT", "false"),
+];
+
 fn normalize_env_for_runtime(mut env: HashMap<String, String>, runtime: &str) -> HashMap<String, String> {
     if runtime == crate::config::WINDOWS_RUNTIME {
-        add_env_alias(&mut env, "DD_DATA_PLANE_ENABLED", "DD_DATA_PLANE__ENABLED");
-        add_env_alias(
-            &mut env,
-            "DD_DATA_PLANE_STANDALONE_MODE",
-            "DD_DATA_PLANE__STANDALONE_MODE",
-        );
-        add_env_alias(
-            &mut env,
-            "DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT",
-            "DD_DATA_PLANE__USE_NEW_CONFIG_STREAM_ENDPOINT",
-        );
-        add_env_alias(
-            &mut env,
-            "DD_DATA_PLANE_REMOTE_AGENT_ENABLED",
-            "DD_DATA_PLANE__REMOTE_AGENT_ENABLED",
-        );
-        add_env_alias(
-            &mut env,
-            "DD_DATA_PLANE_DOGSTATSD_ENABLED",
-            "DD_DATA_PLANE__DOGSTATSD__ENABLED",
-        );
-        add_env_alias(&mut env, "DD_DATA_PLANE_OTLP_ENABLED", "DD_DATA_PLANE__OTLP__ENABLED");
-        add_env_alias(
-            &mut env,
-            "DD_DATA_PLANE_OTLP_PROXY_ENABLED",
-            "DD_DATA_PLANE__OTLP__PROXY__ENABLED",
-        );
-        add_env_alias(
-            &mut env,
-            "DD_DATA_PLANE_OTLP_PROXY_TRACES_ENABLED",
-            "DD_DATA_PLANE__OTLP__PROXY__TRACES__ENABLED",
-        );
-        add_env_alias(
-            &mut env,
-            "DD_DATA_PLANE_OTLP_PROXY_METRICS_ENABLED",
-            "DD_DATA_PLANE__OTLP__PROXY__METRICS__ENABLED",
-        );
-        add_env_alias(
-            &mut env,
-            "DD_DATA_PLANE_OTLP_PROXY_LOGS_ENABLED",
-            "DD_DATA_PLANE__OTLP__PROXY__LOGS__ENABLED",
-        );
-        add_env_alias(&mut env, "DD_DATA_PLANE_LOG_FILE", "DD_DATA_PLANE__LOG_FILE");
-
-        env.entry("DD_DATA_PLANE__REMOTE_AGENT_ENABLED".to_string())
-            .or_insert_with(|| "false".to_string());
-        env.entry("DD_DATA_PLANE__USE_NEW_CONFIG_STREAM_ENDPOINT".to_string())
-            .or_insert_with(|| "false".to_string());
+        for (source, target) in WINDOWS_ENV_ALIASES {
+            if let Some(value) = env.get(*source).cloned() {
+                env.entry((*target).to_string()).or_insert(value);
+            }
+        }
+        for (key, value) in WINDOWS_ENV_DEFAULTS {
+            env.entry((*key).to_string()).or_insert_with(|| (*value).to_string());
+        }
     }
 
     env
-}
-
-fn add_env_alias(env: &mut HashMap<String, String>, source: &str, target: &str) {
-    if let Some(value) = env.get(source).cloned() {
-        env.entry(target.to_string()).or_insert(value);
-    }
 }
 
 fn target_image_for_runtime(configured_image: &str, runtime: &str) -> String {
@@ -605,7 +603,7 @@ impl IntegrationRunner {
             debug!(test = %test_name, "Resolving dynamic variables...");
 
             let resolved_vars = if self.test_case.active_runtime == crate::config::WINDOWS_RUNTIME {
-                crate::dynamic_vars::resolve_windows_vars(&driver, &self.test_case, details.container_ip()).await
+                crate::dynamic_vars::resolve_windows_vars(&self.test_case, details.container_ip()).await
             } else {
                 crate::dynamic_vars::read_resolved_vars(&driver).await
             };

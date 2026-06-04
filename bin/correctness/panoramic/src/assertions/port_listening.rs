@@ -38,16 +38,28 @@ impl Assertion for PortListeningAssertion {
     async fn check(&self, ctx: &AssertionContext) -> AssertionResult {
         let started = Instant::now();
 
-        // Look up the mapped host port unless checks run inside the target container.
-        let port_key = format!("{}/{}", self.port, self.protocol);
-        let target = if ctx.use_container_exec_for_network_checks {
-            // ADP binds on 0.0.0.0 inside the Windows container, so probe via
-            // loopback. Probing the container's external IPv4 from the same
-            // container is unreliable on the Windows nat network driver.
-            ("127.0.0.1".to_string(), self.port)
+        // Pick a probe strategy. In-container probes (currently only Windows) target the listener
+        // on `127.0.0.1` from inside the test container itself; host-side probes target the
+        // mapped ephemeral port on the runner's loopback.
+        let probe = if ctx.use_container_exec_for_network_checks {
+            match self.protocol.as_str() {
+                "tcp" => Probe::InContainerTcp { port: self.port },
+                other => {
+                    return AssertionResult {
+                        name: self.name().to_string(),
+                        passed: false,
+                        message: format!(
+                            "Port {}/{}: in-container probing is only supported for tcp, not {}.",
+                            self.port, self.protocol, other
+                        ),
+                        duration: started.elapsed(),
+                    };
+                }
+            }
         } else {
-            match ctx.port_mappings.get(&port_key) {
-                Some(port) => ("127.0.0.1".to_string(), *port),
+            let port_key = format!("{}/{}", self.port, self.protocol);
+            let host_port = match ctx.port_mappings.get(&port_key) {
+                Some(port) => *port,
                 None => {
                     return AssertionResult {
                         name: self.name().to_string(),
@@ -56,6 +68,18 @@ impl Assertion for PortListeningAssertion {
                             "Port {}/{} not exposed in container configuration.",
                             self.port, self.protocol
                         ),
+                        duration: started.elapsed(),
+                    };
+                }
+            };
+            match self.protocol.as_str() {
+                "tcp" => Probe::HostTcp { port: host_port },
+                "udp" => Probe::HostUdp { port: host_port },
+                other => {
+                    return AssertionResult {
+                        name: self.name().to_string(),
+                        passed: false,
+                        message: format!("Port {}/{}: unsupported protocol.", self.port, other),
                         duration: started.elapsed(),
                     };
                 }
@@ -70,8 +94,11 @@ impl Assertion for PortListeningAssertion {
                     name: self.name().to_string(),
                     passed: false,
                     message: format!(
-                        "Port {}/{} (target {}:{}) not listening after {:?}.",
-                        self.port, self.protocol, target.0, target.1, self.timeout
+                        "Port {}/{} ({}) not listening after {:?}.",
+                        self.port,
+                        self.protocol,
+                        probe.target_label(),
+                        self.timeout
                     ),
                     duration: started.elapsed(),
                 };
@@ -86,22 +113,15 @@ impl Assertion for PortListeningAssertion {
                 };
             }
 
-            let is_listening = match self.protocol.as_str() {
-                "tcp" if ctx.use_container_exec_for_network_checks => {
-                    check_tcp_port_in_container(&ctx.container_name, &target.0, target.1).await
-                }
-                "tcp" => check_tcp_port(&target.0, target.1).await,
-                "udp" => check_udp_port(&target.0, target.1).await,
-                _ => false,
-            };
-
-            if is_listening {
+            if probe.run(&ctx.container_name).await {
                 return AssertionResult {
                     name: self.name().to_string(),
                     passed: true,
                     message: format!(
-                        "Port {}/{} (target {}:{}) is listening.",
-                        self.port, self.protocol, target.0, target.1
+                        "Port {}/{} ({}) is listening.",
+                        self.port,
+                        self.protocol,
+                        probe.target_label()
                     ),
                     duration: started.elapsed(),
                 };
@@ -110,12 +130,34 @@ impl Assertion for PortListeningAssertion {
             trace!(
                 port = self.port,
                 protocol = %self.protocol,
-                target_host = %target.0,
-                target_port = target.1,
+                target = %probe.target_label(),
                 "Port not yet listening, retrying..."
             );
 
             tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+}
+
+enum Probe {
+    HostTcp { port: u16 },
+    HostUdp { port: u16 },
+    InContainerTcp { port: u16 },
+}
+
+impl Probe {
+    fn target_label(&self) -> String {
+        match self {
+            Self::HostTcp { port } | Self::HostUdp { port } => format!("host 127.0.0.1:{}", port),
+            Self::InContainerTcp { port } => format!("in-container 127.0.0.1:{}", port),
+        }
+    }
+
+    async fn run(&self, container_name: &str) -> bool {
+        match *self {
+            Self::HostTcp { port } => check_tcp_port("127.0.0.1", port).await,
+            Self::HostUdp { port } => check_udp_port("127.0.0.1", port).await,
+            Self::InContainerTcp { port } => check_tcp_port_in_container(container_name, port).await,
         }
     }
 }
@@ -133,12 +175,12 @@ async fn check_udp_port(host: &str, port: u16) -> bool {
     }
 }
 
-async fn check_tcp_port_in_container(container_name: &str, host: &str, port: u16) -> bool {
+async fn check_tcp_port_in_container(container_name: &str, port: u16) -> bool {
     // The Datadog Agent LTSC image does not ship the NetTCPIP module, so we
     // probe with a .NET TcpClient against loopback inside the container.
     let command = format!(
-        "$client = New-Object System.Net.Sockets.TcpClient; try {{ $task = $client.ConnectAsync('{}', {}); if ($task.Wait(2000) -and $client.Connected) {{ exit 0 }} else {{ exit 1 }} }} catch {{ exit 1 }} finally {{ $client.Close() }}",
-        host, port
+        "$client = New-Object System.Net.Sockets.TcpClient; try {{ $task = $client.ConnectAsync('127.0.0.1', {}); if ($task.Wait(2000) -and $client.Connected) {{ exit 0 }} else {{ exit 1 }} }} catch {{ exit 1 }} finally {{ $client.Close() }}",
+        port
     );
     exec_status(
         container_name,
