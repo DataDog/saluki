@@ -190,14 +190,17 @@ impl TransformBuilder for TagFilterlistConfiguration {
 
     async fn build(&self, context: ComponentContext) -> Result<Box<dyn Transform + Send>, GenericError> {
         let metrics_builder = MetricsBuilder::from_component_context(&context);
+        let telemetry = Telemetry::new(&metrics_builder);
+        let filters = compile_filters(&self.entries);
+        telemetry.set_size(filters.len());
 
         Ok(Box::new(TagFilterlist {
-            filters: compile_filters(&self.entries),
+            filters,
             configuration: self
                 .configuration
                 .clone()
                 .expect("configuration must be set via from_configuration"),
-            telemetry: Telemetry::new(&metrics_builder),
+            telemetry,
             context_cache: build_context_cache(self.context_cache_capacity),
             context_cache_capacity: self.context_cache_capacity,
         }))
@@ -293,7 +296,8 @@ impl Transform for TagFilterlist {
                 (_, new_entries) = watcher.changed::<Vec<MetricTagFilterEntry>>() => {
                     self.filters = compile_filters(new_entries.as_deref().unwrap_or(&[]));
                     self.context_cache = build_context_cache(self.context_cache_capacity);
-                    debug!("Updated metric tag filterlist.");
+                    self.telemetry.set_size(self.filters.len());
+                    debug!(rules_loaded = self.filters.len(), "Updated metric tag filterlist.");
                 },
             }
         }
@@ -825,6 +829,24 @@ mod tests {
         assert_eq!(recorder.counter("tag_filterlist_noop_hits_total"), Some(1));
         assert_eq!(recorder.counter("tag_filterlist_metrics_modified_total"), Some(1));
         assert_eq!(recorder.counter("tag_filterlist_tags_filtered_total"), Some(3));
+    }
+
+    #[test]
+    fn telemetry_records_size() {
+        let recorder = TestRecorder::default();
+        let _local = metrics::set_default_local_recorder(&recorder);
+
+        let builder = MetricsBuilder::default();
+        let telemetry = Telemetry::new(&builder);
+
+        telemetry.set_size(5);
+        assert_eq!(recorder.gauge("tag_filterlist_size"), Some(5.0));
+
+        telemetry.set_size(3);
+        assert_eq!(recorder.gauge("tag_filterlist_size"), Some(3.0));
+
+        telemetry.set_size(0);
+        assert_eq!(recorder.gauge("tag_filterlist_size"), Some(0.0));
     }
 
     #[tokio::test]
