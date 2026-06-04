@@ -324,11 +324,15 @@ mod tests {
 
         let output = render_with(get_datadog_agent_remappings(), metrics);
 
-        assert!(output.contains("datadog__agent__filterlist__size 2"));
-        assert!(output.contains("datadog__agent__filterlist__updates 3"));
-        assert!(output.contains("datadog__agent__dogstatsd__listener_filtered_points 5"));
-        assert!(output.contains("datadog__agent__aggregator__dogstatsd_filtered_metrics 7"));
+        assert!(output.contains("filterlist__size 2"));
+        assert!(output.contains("filterlist__updates 3"));
+        assert!(output.contains("dogstatsd__listener_filtered_points 5"));
+        assert!(output.contains("aggregator__dogstatsd_filtered_metrics 7"));
         assert!(output.contains("datadog__agent__tag_filterlist__size 9"));
+        assert!(!output.contains("datadog__agent__filterlist__size"));
+        assert!(!output.contains("datadog__agent__filterlist__updates"));
+        assert!(!output.contains("datadog__agent__dogstatsd__listener_filtered_points"));
+        assert!(!output.contains("datadog__agent__aggregator__dogstatsd_filtered_metrics"));
         assert!(!output.contains("component_id="));
     }
 
@@ -373,17 +377,17 @@ mod tests {
             find("aggregator.processed"),
             Some("Amount of metrics/services_checks/events processed by the aggregator")
         );
-        assert_eq!(find("datadog.agent.filterlist.size"), Some("Metric filter list size"));
+        assert_eq!(find("filterlist.size"), Some("Metric filter list size"));
         assert_eq!(
-            find("datadog.agent.filterlist.updates"),
+            find("filterlist.updates"),
             Some("Incremented when a reconfiguration of the metric filterlist happened")
         );
         assert_eq!(
-            find("datadog.agent.dogstatsd.listener_filtered_points"),
+            find("dogstatsd.listener_filtered_points"),
             Some("How many points were filtered out")
         );
         assert_eq!(
-            find("datadog.agent.aggregator.dogstatsd_filtered_metrics"),
+            find("aggregator.dogstatsd_filtered_metrics"),
             Some("How many metrics were filtered in the time samplers")
         );
         assert_eq!(find("datadog.agent.tag_filterlist.size"), Some("Tag filter list size"));
