@@ -41,10 +41,10 @@ impl Assertion for PortListeningAssertion {
         // Look up the mapped host port unless checks run inside the target container.
         let port_key = format!("{}/{}", self.port, self.protocol);
         let target = if ctx.use_container_exec_for_network_checks {
-            (
-                ctx.container_ip.clone().unwrap_or_else(|| "127.0.0.1".to_string()),
-                self.port,
-            )
+            // ADP binds on 0.0.0.0 inside the Windows container, so probe via
+            // loopback. Probing the container's external IPv4 from the same
+            // container is unreliable on the Windows nat network driver.
+            ("127.0.0.1".to_string(), self.port)
         } else {
             match ctx.port_mappings.get(&port_key) {
                 Some(port) => ("127.0.0.1".to_string(), *port),
@@ -134,8 +134,10 @@ async fn check_udp_port(host: &str, port: u16) -> bool {
 }
 
 async fn check_tcp_port_in_container(container_name: &str, host: &str, port: u16) -> bool {
+    // The Datadog Agent LTSC image does not ship the NetTCPIP module, so we
+    // probe with a .NET TcpClient against loopback inside the container.
     let command = format!(
-        "if (Test-NetConnection -ComputerName '{}' -Port {} -InformationLevel Quiet) {{ exit 0 }} else {{ exit 1 }}",
+        "$client = New-Object System.Net.Sockets.TcpClient; try {{ $task = $client.ConnectAsync('{}', {}); if ($task.Wait(2000) -and $client.Connected) {{ exit 0 }} else {{ exit 1 }} }} catch {{ exit 1 }} finally {{ $client.Close() }}",
         host, port
     );
     exec_status(

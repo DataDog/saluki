@@ -2,15 +2,36 @@ $ErrorActionPreference = "Stop"
 Set-StrictMode -Version 3.0
 
 function Get-ContainerIPv4Address {
-    $Address = Get-NetIPAddress -AddressFamily IPv4 |
-        Where-Object { $_.IPAddress -notlike "127.*" -and $_.IPAddress -ne "0.0.0.0" } |
-        Select-Object -First 1 -ExpandProperty IPAddress
-
-    if (-not $Address) {
-        throw "Unable to determine container IPv4 address."
+    # The Datadog Agent LTSC image does not ship the NetTCPIP module, so we
+    # fall back to .NET DNS resolution against the container hostname.
+    $Addresses = [System.Net.Dns]::GetHostAddresses([System.Net.Dns]::GetHostName())
+    foreach ($Addr in $Addresses) {
+        if ($Addr.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork) {
+            $Text = $Addr.IPAddressToString
+            if ($Text -ne "127.0.0.1" -and $Text -ne "0.0.0.0") {
+                return $Text
+            }
+        }
     }
 
-    return $Address
+    throw "Unable to determine container IPv4 address."
+}
+
+function Initialize-LogDirectories {
+    # The rolling-file appender will not create parent directories on its own,
+    # so make sure both the platform default and any explicit overrides exist.
+    $Paths = @("C:\ProgramData\Datadog\logs")
+    foreach ($Var in @("DD_DATA_PLANE_LOG_FILE", "DD_LOG_FILE")) {
+        $Value = [Environment]::GetEnvironmentVariable($Var)
+        if ($Value) {
+            $Paths += [System.IO.Path]::GetDirectoryName($Value)
+        }
+    }
+    foreach ($Path in $Paths) {
+        if ($Path) {
+            New-Item -ItemType Directory -Force -Path $Path | Out-Null
+        }
+    }
 }
 
 function Resolve-PanoramicDynamicEnvironment {
@@ -70,6 +91,7 @@ function Start-CoreAgent {
 }
 
 Resolve-PanoramicDynamicEnvironment
+Initialize-LogDirectories
 $Agent = Start-CoreAgent
 
 Write-Host "[*] ADP runtime directory:"
