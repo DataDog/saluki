@@ -918,7 +918,11 @@ impl IntegrationRunner {
             cancel_token: self.tctx.test_cancel_token(),
             port_mappings: port_mappings.clone(),
             container_ip: container_ip.map(str::to_string),
-            target_is_windows_container: self.test_case.active_runtime == crate::config::WINDOWS_RUNTIME,
+            target_os: Some(if self.test_case.active_runtime == crate::config::WINDOWS_RUNTIME {
+                ContainerOs::Windows
+            } else {
+                ContainerOs::Linux
+            }),
             container_name: container_name.to_string(),
             is_host_process: false,
             host_process_exit_code: None,

@@ -104,12 +104,13 @@ pub struct AssertionContext {
     pub port_mappings: std::collections::HashMap<String, u16>,
     /// Container IP address on its primary Docker network, if known.
     pub container_ip: Option<String>,
-    /// Whether the target container runs Windows. Switches assertion helpers to Windows-flavored
-    /// implementations: HTTP checks and TCP port checks run via `docker exec` inside the
-    /// container instead of from the host, file reads use PowerShell `Get-Content` instead of
-    /// `cat`, and HTTP/TCP probes target `<container_ip>:<internal_port>` instead of the
-    /// mapped ephemeral host port.
-    pub target_is_windows_container: bool,
+    /// Operating system of the target container, when one exists.
+    ///
+    /// `None` for host-process runtimes (such as `mac`). Otherwise the value identifies the
+    /// container OS so assertion helpers can pick a compatible probing strategy: Linux
+    /// containers are probed from the host using mapped ephemeral ports, Windows containers are
+    /// probed via `docker exec` inside the container against the listener's internal port.
+    pub target_os: Option<airlock::driver::ContainerOs>,
     /// Name of the container being tested.
     pub container_name: String,
     /// Whether the test is running natively (no container). When `true`, assertions that would
@@ -122,6 +123,13 @@ pub struct AssertionContext {
     pub host_process_exit_code: Option<airlock::unix::ExitCodeCell>,
     /// Exit code of a top-level Docker target process, populated once the container exits.
     pub docker_container_exit_code: Option<std::sync::Arc<std::sync::RwLock<Option<i64>>>>,
+}
+
+impl AssertionContext {
+    /// Returns `true` when the target is a Windows container.
+    pub fn target_is_windows(&self) -> bool {
+        matches!(self.target_os, Some(airlock::driver::ContainerOs::Windows))
+    }
 }
 
 /// Trait for assertion implementations.
