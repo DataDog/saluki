@@ -98,7 +98,7 @@ impl Assertion for FileContainsAssertion {
             let read_result = if ctx.is_host_process {
                 read_file_local(&self.path).await
             } else {
-                if ctx.use_container_exec_for_network_checks {
+                if ctx.target_is_windows_container {
                     read_file_in_windows_container(&ctx.container_name, &self.path).await
                 } else {
                     read_file_in_container(&ctx.container_name, &self.path).await

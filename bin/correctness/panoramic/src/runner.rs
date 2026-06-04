@@ -38,10 +38,6 @@ pub(crate) type EventSender = mpsc::UnboundedSender<TestEvent>;
 /// The amount of time a test has to clean up after cancellation or timing out.
 const GRACE_TIME: Duration = Duration::from_secs(30);
 
-fn should_apply_target_mounts(runtime: &str) -> bool {
-    runtime != crate::config::WINDOWS_RUNTIME
-}
-
 /// Maps shared `DD_DATA_PLANE_*` test env keys to their Windows-image-native nested form.
 ///
 /// The Linux converged image's s6 entrypoint normalizes flat `DD_DATA_PLANE_*` keys into the
@@ -812,8 +808,10 @@ impl IntegrationRunner {
 
         let mut config = DriverConfig::target("target", target_config).await?;
 
-        // Apply panoramic's read-only file overlays before any test-specific bind mounts.
-        if should_apply_target_mounts(&self.test_case.active_runtime) {
+        // Apply panoramic's read-only file overlays before any test-specific bind mounts. The
+        // overlays target Linux paths (such as /var/log/datadog) and don't apply to Windows
+        // containers, which use their own platform paths.
+        if self.test_case.active_runtime != crate::config::WINDOWS_RUNTIME {
             config = crate::mounts::apply_target_mounts(config, self.tctx.mounts_dir())?;
         }
 
@@ -920,7 +918,7 @@ impl IntegrationRunner {
             cancel_token: self.tctx.test_cancel_token(),
             port_mappings: port_mappings.clone(),
             container_ip: container_ip.map(str::to_string),
-            use_container_exec_for_network_checks: self.test_case.active_runtime == crate::config::WINDOWS_RUNTIME,
+            target_is_windows_container: self.test_case.active_runtime == crate::config::WINDOWS_RUNTIME,
             container_name: container_name.to_string(),
             is_host_process: false,
             host_process_exit_code: None,
@@ -1074,16 +1072,6 @@ impl TestResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn windows_runtime_skips_linux_target_mounts() {
-        assert!(!should_apply_target_mounts(crate::config::WINDOWS_RUNTIME));
-    }
-
-    #[test]
-    fn docker_runtime_applies_linux_target_mounts() {
-        assert!(should_apply_target_mounts(crate::config::DOCKER_RUNTIME));
-    }
 
     #[test]
     fn windows_runtime_adds_adp_native_env_aliases() {

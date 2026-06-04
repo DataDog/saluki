@@ -41,7 +41,7 @@ impl Assertion for PortListeningAssertion {
         // Pick a probe strategy. In-container probes (currently only Windows) target the listener
         // on `127.0.0.1` from inside the test container itself; host-side probes target the
         // mapped ephemeral port on the runner's loopback.
-        let probe = if ctx.use_container_exec_for_network_checks {
+        let probe = if ctx.target_is_windows_container {
             match self.protocol.as_str() {
                 "tcp" => Probe::InContainerTcp { port: self.port },
                 other => {

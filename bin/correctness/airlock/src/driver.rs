@@ -363,8 +363,7 @@ pub struct DriverDetails {
 }
 
 fn record_port_mapping(
-    port_mappings: &mut HashMap<String, u16>, internal_port: impl Into<String>, _host_ip: Option<&str>,
-    host_port: Option<&str>,
+    port_mappings: &mut HashMap<String, u16>, internal_port: impl Into<String>, host_port: Option<&str>,
 ) {
     if let Some(host_port) = host_port.and_then(|value| value.parse::<u16>().ok()) {
         port_mappings.insert(internal_port.into(), host_port);
@@ -796,16 +795,14 @@ impl Driver {
 
         let response = self.docker.inspect_container(container_name, None).await?;
         if let Some(network_settings) = response.network_settings {
+            // Look up the IP only on the primary isolation-group network. Falling back to
+            // "any other network's IP" would be non-deterministic and effectively wrong for
+            // assertion targeting.
             if let Some(networks) = network_settings.networks.as_ref() {
                 details.container_ip = networks
                     .get(&self.isolation_group_name)
                     .and_then(|settings| settings.ip_address.clone())
-                    .filter(|address| !address.is_empty())
-                    .or_else(|| {
-                        networks
-                            .values()
-                            .find_map(|settings| settings.ip_address.clone().filter(|address| !address.is_empty()))
-                    });
+                    .filter(|address| !address.is_empty());
             }
 
             if let Some(ports) = network_settings.ports {
@@ -813,12 +810,7 @@ impl Driver {
                 for (internal_port, bindings) in ports {
                     if let Some(bindings) = bindings {
                         for binding in bindings {
-                            record_port_mapping(
-                                port_mappings,
-                                internal_port.clone(),
-                                binding.host_ip.as_deref(),
-                                binding.host_port.as_deref(),
-                            );
+                            record_port_mapping(port_mappings, internal_port.clone(), binding.host_port.as_deref());
                             if port_mappings.contains_key(&internal_port) {
                                 break;
                             }
@@ -1290,10 +1282,10 @@ mod tests {
     }
 
     #[test]
-    fn port_mapping_accepts_non_wildcard_host_ip() {
+    fn port_mapping_records_parseable_host_port() {
         let mut mappings = HashMap::new();
 
-        record_port_mapping(&mut mappings, "55100/tcp", Some("127.0.0.1"), Some("49152"));
+        record_port_mapping(&mut mappings, "55100/tcp", Some("49152"));
 
         assert_eq!(mappings.get("55100/tcp"), Some(&49152));
     }
@@ -1302,7 +1294,7 @@ mod tests {
     fn port_mapping_ignores_invalid_host_port() {
         let mut mappings = HashMap::new();
 
-        record_port_mapping(&mut mappings, "55100/tcp", Some("127.0.0.1"), Some("not-a-port"));
+        record_port_mapping(&mut mappings, "55100/tcp", Some("not-a-port"));
 
         assert!(!mappings.contains_key("55100/tcp"));
     }

@@ -47,7 +47,7 @@ impl HttpCheckAssertion {
 
         for (internal_spec, host_port) in &ctx.port_mappings {
             if let Some(internal_port) = internal_spec.split('/').next() {
-                let replacement = if ctx.use_container_exec_for_network_checks {
+                let replacement = if ctx.target_is_windows_container {
                     let host = ctx.container_ip.as_deref().unwrap_or("127.0.0.1");
                     format!("{}:{}", host, internal_port)
                 } else {
@@ -96,7 +96,7 @@ impl Assertion for HttpCheckAssertion {
 
         let endpoint = self.resolve_endpoint(ctx);
 
-        let client = if ctx.use_container_exec_for_network_checks {
+        let client = if ctx.target_is_windows_container {
             None
         } else {
             match ClientBuilder::new()
@@ -134,7 +134,7 @@ impl Assertion for HttpCheckAssertion {
                 };
             }
 
-            let response_status = if ctx.use_container_exec_for_network_checks {
+            let response_status = if ctx.target_is_windows_container {
                 get_status_in_container(&ctx.container_name, &endpoint).await
             } else if let Some(client) = client.as_ref() {
                 match client.get(&endpoint).send().await {

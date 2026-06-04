@@ -90,6 +90,13 @@ function Start-CoreAgent {
     return $Agent
 }
 
+# Order matters here:
+#   1. Resolve PANORAMIC_DYNAMIC_* env values before anything else reads them, so DD_* env vars
+#      reach the Core Agent and ADP with their final, substituted values.
+#   2. Create log directories before any process opens a log file in them; the rolling-file
+#      appender used by ADP does not create parent directories on its own.
+#   3. Start the Core Agent before invoking ADP so ADP can connect to the Agent IPC channel
+#      during its bootstrap phase.
 Resolve-PanoramicDynamicEnvironment
 Initialize-LogDirectories
 $Agent = Start-CoreAgent

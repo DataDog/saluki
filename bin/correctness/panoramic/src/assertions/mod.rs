@@ -104,8 +104,12 @@ pub struct AssertionContext {
     pub port_mappings: std::collections::HashMap<String, u16>,
     /// Container IP address on its primary Docker network, if known.
     pub container_ip: Option<String>,
-    /// Whether network assertions should run from inside the target container.
-    pub use_container_exec_for_network_checks: bool,
+    /// Whether the target container runs Windows. Switches assertion helpers to Windows-flavored
+    /// implementations: HTTP checks and TCP port checks run via `docker exec` inside the
+    /// container instead of from the host, file reads use PowerShell `Get-Content` instead of
+    /// `cat`, and HTTP/TCP probes target `<container_ip>:<internal_port>` instead of the
+    /// mapped ephemeral host port.
+    pub target_is_windows_container: bool,
     /// Name of the container being tested.
     pub container_name: String,
     /// Whether the test is running natively (no container). When `true`, assertions that would
