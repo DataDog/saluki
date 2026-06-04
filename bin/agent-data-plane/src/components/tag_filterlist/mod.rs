@@ -8,7 +8,14 @@
 
 mod telemetry;
 
-use std::{num::NonZeroUsize, time::Duration};
+use std::{
+    num::NonZeroUsize,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
+    time::Duration,
+};
 
 use async_trait::async_trait;
 use foldhash::fast::RandomState as FoldHashState;
@@ -193,6 +200,7 @@ impl TransformBuilder for TagFilterlistConfiguration {
         let telemetry = Telemetry::new(&metrics_builder);
         let filters = compile_filters(&self.entries);
         telemetry.set_size(filters.len());
+        let eviction_counter = Arc::new(AtomicU64::new(0));
 
         Ok(Box::new(TagFilterlist {
             filters,
@@ -201,8 +209,9 @@ impl TransformBuilder for TagFilterlistConfiguration {
                 .clone()
                 .expect("configuration must be set via from_configuration"),
             telemetry,
-            context_cache: build_context_cache(self.context_cache_capacity),
+            context_cache: build_context_cache(self.context_cache_capacity, Arc::clone(&eviction_counter)),
             context_cache_capacity: self.context_cache_capacity,
+            eviction_counter,
         }))
     }
 }
@@ -223,15 +232,17 @@ struct TagFilterlist {
     telemetry: Telemetry,
     context_cache: Cache<Context, Option<(Context, usize)>>,
     context_cache_capacity: usize,
+    eviction_counter: Arc<AtomicU64>,
 }
 
-fn build_context_cache(capacity: usize) -> Cache<Context, Option<(Context, usize)>> {
+fn build_context_cache(capacity: usize, eviction_counter: Arc<AtomicU64>) -> Cache<Context, Option<(Context, usize)>> {
     let capacity = NonZeroUsize::new(capacity).unwrap_or(NonZeroUsize::MIN);
     CacheBuilder::from_identifier("tag_filterlist/context_cache")
         .expect("identifier cannot be empty")
         .with_capacity(capacity)
         .with_time_to_idle(Some(CONTEXT_CACHE_TTI))
         .with_expiration_interval(CONTEXT_CACHE_EXPIRATION_INTERVAL)
+        .with_eviction_counter(eviction_counter)
         .build()
 }
 
@@ -260,6 +271,7 @@ impl Transform for TagFilterlist {
                                     let original_context = metric.context().clone();
 
                                     if let Some(cached) = self.context_cache.get(&original_context) {
+                                        self.telemetry.increment_cache_hit();
                                         match cached {
                                             None => self.telemetry.record(FilterMetricTagsOutcome::NoChange),
                                             Some((filtered_ctx, removed_tags)) => {
@@ -268,9 +280,11 @@ impl Transform for TagFilterlist {
                                             }
                                         }
                                     } else {
+                                        self.telemetry.increment_cache_miss();
                                         let outcome = filter_metric_tags(metric, &mut view_state, &self.filters);
                                         self.telemetry.record(outcome);
 
+                                        let evict_before = self.eviction_counter.load(Ordering::Relaxed);
                                         match outcome {
                                             FilterMetricTagsOutcome::RuleMiss => {}
                                             FilterMetricTagsOutcome::NoChange => {
@@ -282,6 +296,10 @@ impl Transform for TagFilterlist {
                                                     Some((metric.context().clone(), removed_tags)),
                                                 );
                                             }
+                                        }
+                                        let evict_after = self.eviction_counter.load(Ordering::Relaxed);
+                                        if evict_after > evict_before {
+                                            self.telemetry.increment_cache_evict(evict_after - evict_before);
                                         }
                                     }
                                 }
@@ -295,8 +313,9 @@ impl Transform for TagFilterlist {
                 },
                 (_, new_entries) = watcher.changed::<Vec<MetricTagFilterEntry>>() => {
                     self.filters = compile_filters(new_entries.as_deref().unwrap_or(&[]));
-                    self.context_cache = build_context_cache(self.context_cache_capacity);
+                    self.context_cache = build_context_cache(self.context_cache_capacity, Arc::clone(&self.eviction_counter));
                     self.telemetry.set_size(self.filters.len());
+                    self.telemetry.increment_updates();
                     debug!(rules_loaded = self.filters.len(), "Updated metric tag filterlist.");
                 },
             }
@@ -991,6 +1010,39 @@ mod tests {
         assert_eq!(outcome, FilterMetricTagsOutcome::Modified { removed_tags: 1 });
         assert_eq!(tag_names(&metric), vec!["env:prod"]);
         assert!(metric.context().tags().is_modified());
+    }
+
+    #[test]
+    fn telemetry_records_cache_hits_and_misses() {
+        let recorder = TestRecorder::default();
+        let _local = metrics::set_default_local_recorder(&recorder);
+
+        let builder = MetricsBuilder::default();
+        let telemetry = Telemetry::new(&builder);
+
+        assert_eq!(recorder.counter("tag_filterlist_cache_hit_total"), Some(0));
+        assert_eq!(recorder.counter("tag_filterlist_cache_miss_total"), Some(0));
+
+        telemetry.increment_cache_hit();
+        telemetry.increment_cache_hit();
+        telemetry.increment_cache_miss();
+
+        assert_eq!(recorder.counter("tag_filterlist_cache_hit_total"), Some(2));
+        assert_eq!(recorder.counter("tag_filterlist_cache_miss_total"), Some(1));
+    }
+
+    #[test]
+    fn telemetry_records_cache_evictions() {
+        let recorder = TestRecorder::default();
+        let _local = metrics::set_default_local_recorder(&recorder);
+
+        let builder = MetricsBuilder::default();
+        let telemetry = Telemetry::new(&builder);
+
+        assert_eq!(recorder.counter("tag_filterlist_cache_evict_total"), Some(0));
+
+        telemetry.increment_cache_evict(3);
+        assert_eq!(recorder.counter("tag_filterlist_cache_evict_total"), Some(3));
     }
 
     #[test]

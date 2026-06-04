@@ -11,6 +11,10 @@ pub struct Telemetry {
     metrics_modified: Counter,
     tags_filtered: Counter,
     size: Gauge,
+    updates: Counter,
+    cache_hit: Counter,
+    cache_miss: Counter,
+    cache_evict: Counter,
 }
 
 impl Telemetry {
@@ -22,6 +26,10 @@ impl Telemetry {
             metrics_modified: builder.register_debug_counter("tag_filterlist_metrics_modified_total"),
             tags_filtered: builder.register_debug_counter("tag_filterlist_tags_filtered_total"),
             size: builder.register_gauge("tag_filterlist_size"),
+            updates: builder.register_counter("tag_filterlist_updates_total"),
+            cache_hit: builder.register_counter("tag_filterlist_cache_hit_total"),
+            cache_miss: builder.register_counter("tag_filterlist_cache_miss_total"),
+            cache_evict: builder.register_counter("tag_filterlist_cache_evict_total"),
         }
     }
 
@@ -44,5 +52,21 @@ impl Telemetry {
 
     pub fn set_size(&self, count: usize) {
         self.size.set(count as f64);
+    }
+
+    pub fn increment_updates(&self) {
+        self.updates.increment(1);
+    }
+
+    pub fn increment_cache_hit(&self) {
+        self.cache_hit.increment(1);
+    }
+
+    pub fn increment_cache_miss(&self) {
+        self.cache_miss.increment(1);
+    }
+
+    pub fn increment_cache_evict(&self, count: u64) {
+        self.cache_evict.increment(count);
     }
 }
