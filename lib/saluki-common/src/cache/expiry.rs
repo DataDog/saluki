@@ -50,7 +50,10 @@ where
     /// Builds the expiration configuration.
     pub fn build(self) -> (Expiration<K>, ExpiryCapableLifecycle<K>) {
         match self.time_to_idle {
-            None => (Expiration::disabled(), ExpiryCapableLifecycle::disabled(self.items_evicted)),
+            None => (
+                Expiration::disabled(),
+                ExpiryCapableLifecycle::disabled(self.items_evicted),
+            ),
             Some(time_to_idle) => {
                 let state = Arc::new(State::new(time_to_idle));
                 let expiration = Expiration::from_state(Arc::clone(&state));
