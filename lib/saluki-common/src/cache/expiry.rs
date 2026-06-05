@@ -263,13 +263,11 @@ where
     fn begin_request(&self) -> Self::RequestState {}
 
     #[inline]
-    fn on_evict_hot(&self, state: &mut Self::RequestState, key: K, value: V) {
+    fn on_evict(&self, _state: &mut Self::RequestState, key: K, _value: V) {
+        // Note: this fires for all capacity-driven evictions including rejected overweight
+        // inserts (items whose weight exceeds the cache capacity). Callers using custom
+        // weighters may see slight inflation from rejected inserts.
         self.items_evicted.increment(1);
-        self.on_evict_cold(state, key, value);
-    }
-
-    #[inline]
-    fn on_evict_cold(&self, _state: &mut Self::RequestState, key: K, _value: V) {
         if let Some(state) = self.state.as_ref() {
             state.mark_entry_removed(key);
         }
