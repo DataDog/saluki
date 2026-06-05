@@ -30,6 +30,7 @@ members = [
   "lib/saluki-tls",
   "lib/stringtheory",
   "test/antithesis/harness",
+  "test/antithesis/intake",
 ]
 resolver = "2"
 
