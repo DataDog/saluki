@@ -24,10 +24,7 @@ use saluki_components::{
     },
     forwarders::{DatadogConfiguration, OtlpForwarderConfiguration},
     relays::otlp::OtlpRelayConfiguration,
-    sources::{
-        ChecksIPCConfiguration, DogStatsDCaptureAPIHandler, DogStatsDConfiguration, DogStatsDReplayAPIHandler,
-        OtlpConfiguration,
-    },
+    sources::{ChecksIPCConfiguration, DogStatsDConfiguration, OtlpConfiguration},
     transforms::{
         AggregateConfiguration, ApmStatsTransformConfiguration, ChainedConfiguration, DogStatsDMapperConfiguration,
         HostEnrichmentConfiguration, MrfMetricsGatewayConfiguration, TraceObfuscationConfiguration,
@@ -53,7 +50,7 @@ use crate::{
     },
     internal::{
         create_internal_supervisor, logging::LoggingConfigurationTranslator, remote_agent::RemoteAgentBootstrap,
-        DogStatsDControlPlaneConfiguration,
+        DogStatsDControlSurface,
     },
 };
 use crate::{config::DataPlaneConfiguration, internal::env::ADPEnvironmentProvider};
@@ -165,24 +162,9 @@ pub async fn handle_run_command(
     let (env_provider, env_supervisor) =
         ADPEnvironmentProvider::from_configuration(&config, &dp_config, &component_registry, &health_registry).await?;
 
-    let dsd_stats_config = DogStatsDStatisticsConfiguration::new();
-
     // Create the blueprint for our primary topology.
-    let (blueprint, control_surfaces) = create_topology(
-        &config,
-        &dp_config,
-        &env_provider,
-        &component_registry,
-        dsd_stats_config.clone(),
-    )
-    .await?;
-    let (dsd_capture_api_handler, dsd_replay_api_handler) = match control_surfaces.dogstatsd {
-        Some(DogStatsDControlSurface {
-            capture_api_handler,
-            replay_api_handler,
-        }) => (Some(capture_api_handler), Some(replay_api_handler)),
-        None => (None, None),
-    };
+    let (blueprint, control_surfaces) =
+        create_topology(&config, &dp_config, &env_provider, &component_registry).await?;
 
     // Create the internal supervisor which drives our control plane and internal observability.
     let mut internal_supervisor = create_internal_supervisor(
@@ -190,7 +172,7 @@ pub async fn handle_run_command(
         &dp_config,
         &component_registry,
         health_registry.clone(),
-        DogStatsDControlPlaneConfiguration::new(dsd_stats_config, dsd_capture_api_handler, dsd_replay_api_handler),
+        control_surfaces.dogstatsd,
         ra_bootstrap,
         bootstrap_guard.logging().controller(),
     )
@@ -434,14 +416,9 @@ struct TopologyControlSurfaces {
     dogstatsd: Option<DogStatsDControlSurface>,
 }
 
-struct DogStatsDControlSurface {
-    capture_api_handler: DogStatsDCaptureAPIHandler,
-    replay_api_handler: DogStatsDReplayAPIHandler,
-}
-
 async fn create_topology(
     config: &GenericConfiguration, dp_config: &DataPlaneConfiguration, env_provider: &ADPEnvironmentProvider,
-    component_registry: &ComponentRegistry, dsd_stats_config: DogStatsDStatisticsConfiguration,
+    component_registry: &ComponentRegistry,
 ) -> Result<(TopologyBlueprint, TopologyControlSurfaces), GenericError> {
     let mut blueprint = TopologyBlueprint::new("primary", component_registry);
     let mut control_surfaces = TopologyControlSurfaces::default();
@@ -497,8 +474,7 @@ async fn create_topology(
     }
 
     if dp_config.dogstatsd().enabled() {
-        control_surfaces.dogstatsd =
-            Some(add_dsd_pipeline_to_blueprint(&mut blueprint, config, env_provider, dsd_stats_config).await?);
+        control_surfaces.dogstatsd = Some(add_dsd_pipeline_to_blueprint(&mut blueprint, config, env_provider).await?);
     }
 
     if dp_config.otlp().enabled() {
@@ -515,10 +491,10 @@ async fn add_checks_pipeline_to_blueprint(
 
     blueprint
         .add_source("checks_ipc_in", checks_config)?
-        .connect_component("metrics_enrich", ["checks_ipc_in.metrics"])?
-        .connect_component("dd_logs_encode", ["checks_ipc_in.logs"])?
-        .connect_component("dd_events_encode", ["checks_ipc_in.events"])?
-        .connect_component("dd_service_checks_encode", ["checks_ipc_in.service_checks"])?;
+        .connect_components("checks_ipc_in.metrics", "metrics_enrich")?
+        .connect_components("checks_ipc_in.logs", "dd_logs_encode")?
+        .connect_components("checks_ipc_in.events", "dd_events_encode")?
+        .connect_components("checks_ipc_in.service_checks", "dd_service_checks_encode")?;
 
     Ok(())
 }
@@ -589,9 +565,12 @@ fn add_mrf_metrics_pipeline_to_blueprint(
         .add_transform("mrf_metrics_gateway", mrf_gateway_config)?
         .add_encoder("mrf_metrics_encode", mrf_metrics_config)?
         .add_forwarder("mrf_dd_out", mrf_forwarder_config)?
-        .connect_component("mrf_metrics_gateway", ["metrics_enrich"])?
-        .connect_component("mrf_metrics_encode", ["mrf_metrics_gateway"])?
-        .connect_component("mrf_dd_out", ["mrf_metrics_encode"])?;
+        .connect_components_in_order([
+            "metrics_enrich",
+            "mrf_metrics_gateway",
+            "mrf_metrics_encode",
+            "mrf_dd_out",
+        ])?;
 
     Ok(())
 }
@@ -608,7 +587,7 @@ async fn add_baseline_logs_pipeline_to_blueprint(
         // Components.
         .add_encoder("dd_logs_encode", dd_logs_config)?
         // Logs.
-        .connect_component("dd_out", ["dd_logs_encode"])?;
+        .connect_components("dd_logs_encode", "dd_out")?;
 
     Ok(())
 }
@@ -622,7 +601,7 @@ async fn add_baseline_events_pipeline_to_blueprint(
 
     blueprint
         .add_encoder("dd_events_encode", dd_events_config)?
-        .connect_component("dd_out", ["dd_events_encode"])?;
+        .connect_components("dd_events_encode", "dd_out")?;
 
     Ok(())
 }
@@ -636,7 +615,7 @@ async fn add_baseline_service_checks_pipeline_to_blueprint(
 
     blueprint
         .add_encoder("dd_service_checks_encode", dd_service_checks_config)?
-        .connect_component("dd_out", ["dd_service_checks_encode"])?;
+        .connect_components("dd_service_checks_encode", "dd_out")?;
 
     Ok(())
 }
@@ -675,17 +654,15 @@ async fn add_baseline_traces_pipeline_to_blueprint(
         .add_transform("dd_apm_stats", apm_stats_transform_config)?
         .add_encoder("dd_stats_encode", dd_apm_stats_encoder)?
         .add_encoder("dd_traces_encode", dd_traces_config)?
-        .connect_component("dd_apm_stats", ["traces_enrich"])?
-        .connect_component("dd_traces_encode", ["traces_enrich"])?
-        .connect_component("dd_stats_encode", ["dd_apm_stats"])?
-        .connect_component("dd_out", ["dd_traces_encode", "dd_stats_encode"])?;
+        .connect_components("traces_enrich", ["dd_apm_stats", "dd_traces_encode"])?
+        .connect_components("dd_apm_stats", "dd_stats_encode")?
+        .connect_components(["dd_traces_encode", "dd_stats_encode"], "dd_out")?;
 
     Ok(())
 }
 
 async fn add_dsd_pipeline_to_blueprint(
     blueprint: &mut TopologyBlueprint, config: &GenericConfiguration, env_provider: &ADPEnvironmentProvider,
-    dsd_stats_config: DogStatsDStatisticsConfiguration,
 ) -> Result<DogStatsDControlSurface, GenericError> {
     // We're creating the "front half" of the DogStatsD pipeline, which deals solely with accepting DogStatsD payloads,
     // and enriching/processing them in DSD-specific ways, relevant to how the Datadog Agent is expected to behave.
@@ -722,6 +699,8 @@ async fn add_dsd_pipeline_to_blueprint(
     //    │    (destination)    │    │                       (Datadog Platform)                        │
     //    └─────────────────────┘    └ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┘
 
+    let dsd_stats_config = DogStatsDStatisticsConfiguration::new();
+    let stats_api_handler = dsd_stats_config.api_handler();
     let dsd_config = DogStatsDConfiguration::from_configuration(config)
         .error_context("Failed to configure DogStatsD source.")?
         .with_workload_provider(env_provider.workload().clone())
@@ -782,15 +761,16 @@ async fn add_dsd_pipeline_to_blueprint(
             "dd_service_checks_encode",
         ])?
         // DogStatsD Stats.
-        .connect_component("dsd_stats_out", ["dsd_in.metrics"])?;
+        .connect_components("dsd_in.metrics", "dsd_stats_out")?;
 
     if dsd_debug_log_config.enabled() {
         blueprint
             // DogStatsD debug log.
             .add_destination("dsd_debug_log_out", dsd_debug_log_config)?
-            .connect_component("dsd_debug_log_out", ["dsd_in.metrics"])?;
+            .connect_components("dsd_in.metrics", "dsd_debug_log_out")?;
     }
     Ok(DogStatsDControlSurface {
+        stats_api_handler,
         capture_api_handler: dsd_capture_api_handler,
         replay_api_handler: dsd_replay_api_handler,
     })
@@ -825,10 +805,10 @@ fn add_otlp_pipeline_to_blueprint(
             .add_relay("otlp_relay_in", otlp_relay_config)?
             .add_forwarder("local_agent_otlp_out", local_agent_otlp_forwarder_config)?
             // Metrics and logs directly to the forwarders.
-            .connect_component("local_agent_otlp_out", ["otlp_relay_in.metrics", "otlp_relay_in.logs"])?;
+            .connect_components(["otlp_relay_in.metrics", "otlp_relay_in.logs"], "local_agent_otlp_out")?;
 
         if dp_config.otlp().proxy().proxy_traces() {
-            blueprint.connect_component("local_agent_otlp_out", ["otlp_relay_in.traces"])?;
+            blueprint.connect_components("otlp_relay_in.traces", "local_agent_otlp_out")?;
         } else {
             blueprint
                 .add_decoder("otlp_traces_decode", otlp_decoder_config)?
@@ -848,9 +828,9 @@ fn add_otlp_pipeline_to_blueprint(
             //
             // We send OTLP metrics directly to the enrichment stage of the metrics pipeline, skipping aggregation,
             // to avoid transforming counters into rates.
-            .connect_component("metrics_enrich", ["otlp_in.metrics"])?
-            .connect_component("dd_logs_encode", ["otlp_in.logs"])?
-            .connect_component("traces_enrich", ["otlp_in.traces"])?;
+            .connect_components("otlp_in.metrics", "metrics_enrich")?
+            .connect_components("otlp_in.logs", "dd_logs_encode")?
+            .connect_components("otlp_in.traces", "traces_enrich")?;
     }
     Ok(())
 }

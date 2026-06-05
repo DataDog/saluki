@@ -6,6 +6,7 @@ use std::{
 
 use crossbeam_queue::ArrayQueue;
 use quick_cache::Lifecycle;
+use saluki_metrics::reexport::metrics::Counter;
 
 use crate::{
     collections::FastHashMap,
@@ -15,6 +16,7 @@ use crate::{
 /// Builder for creating an expiration configuration.
 pub struct ExpirationBuilder<K> {
     time_to_idle: Option<Duration>,
+    items_evicted: Counter,
     _key: PhantomData<K>,
 }
 
@@ -23,9 +25,10 @@ where
     K: Eq + std::hash::Hash,
 {
     /// Creates a new `ExpirationBuilder`.
-    pub fn new() -> Self {
+    pub fn new(items_evicted: Counter) -> Self {
         Self {
             time_to_idle: None,
+            items_evicted,
             _key: PhantomData,
         }
     }
@@ -47,11 +50,14 @@ where
     /// Builds the expiration configuration.
     pub fn build(self) -> (Expiration<K>, ExpiryCapableLifecycle<K>) {
         match self.time_to_idle {
-            None => (Expiration::disabled(), ExpiryCapableLifecycle::disabled()),
+            None => (
+                Expiration::disabled(),
+                ExpiryCapableLifecycle::disabled(self.items_evicted),
+            ),
             Some(time_to_idle) => {
                 let state = Arc::new(State::new(time_to_idle));
                 let expiration = Expiration::from_state(Arc::clone(&state));
-                let lifecycle = ExpiryCapableLifecycle::from_state(state);
+                let lifecycle = ExpiryCapableLifecycle::with_state(state, self.items_evicted);
 
                 (expiration, lifecycle)
             }
@@ -228,15 +234,22 @@ where
 #[derive(Clone)]
 pub(super) struct ExpiryCapableLifecycle<K> {
     state: Option<Arc<State<K>>>,
+    items_evicted: Counter,
 }
 
 impl<K> ExpiryCapableLifecycle<K> {
-    fn disabled() -> Self {
-        Self { state: None }
+    fn disabled(items_evicted: Counter) -> Self {
+        Self {
+            state: None,
+            items_evicted,
+        }
     }
 
-    fn from_state(state: Arc<State<K>>) -> Self {
-        Self { state: Some(state) }
+    fn with_state(state: Arc<State<K>>, items_evicted: Counter) -> Self {
+        Self {
+            state: Some(state),
+            items_evicted,
+        }
     }
 }
 
@@ -251,6 +264,10 @@ where
 
     #[inline]
     fn on_evict(&self, _state: &mut Self::RequestState, key: K, _value: V) {
+        // Note: this fires for all capacity-driven evictions including rejected overweight
+        // inserts (items whose weight exceeds the cache capacity). Callers using custom
+        // weighters may see slight inflation from rejected inserts.
+        self.items_evicted.increment(1);
         if let Some(state) = self.state.as_ref() {
             state.mark_entry_removed(key);
         }

@@ -316,15 +316,56 @@ mod tests {
                 ),
                 7.0,
             )),
+            Event::Metric(Metric::gauge(
+                Context::from_static_parts("adp.tag_filterlist_size", &["component_id:dsd_tag_filterlist"]),
+                9.0,
+            )),
+            Event::Metric(Metric::counter(
+                Context::from_static_parts("adp.tag_filterlist_updates_total", &["component_id:dsd_tag_filterlist"]),
+                11.0,
+            )),
+            Event::Metric(Metric::counter(
+                Context::from_static_parts(
+                    "adp.tag_filterlist_tags_filtered_total",
+                    &["component_id:dsd_tag_filterlist"],
+                ),
+                23.0,
+            )),
+            Event::Metric(Metric::counter(
+                Context::from_static_parts("adp.cache_hits_total", &["cache_id:tag_filterlist/context_cache"]),
+                13.0,
+            )),
+            Event::Metric(Metric::counter(
+                Context::from_static_parts("adp.cache_misses_total", &["cache_id:tag_filterlist/context_cache"]),
+                17.0,
+            )),
+            Event::Metric(Metric::counter(
+                Context::from_static_parts(
+                    "adp.cache_items_evicted_total",
+                    &["cache_id:tag_filterlist/context_cache"],
+                ),
+                19.0,
+            )),
         ];
 
         let output = render_with(get_datadog_agent_remappings(), metrics);
 
-        assert!(output.contains("datadog__agent__filterlist__size 2"));
-        assert!(output.contains("datadog__agent__filterlist__updates 3"));
-        assert!(output.contains("datadog__agent__dogstatsd__listener_filtered_points 5"));
-        assert!(output.contains("datadog__agent__aggregator__dogstatsd_filtered_metrics 7"));
+        assert!(output.contains("filterlist__size 2"));
+        assert!(output.contains("filterlist__updates 3"));
+        assert!(output.contains("dogstatsd__listener_filtered_points 5"));
+        assert!(output.contains("aggregator__dogstatsd_filtered_metrics 7"));
+        assert!(output.contains("tag_filterlist__size 9"));
+        assert!(output.contains("tag_filterlist__updates 11"));
+        assert!(output.contains("aggregator__filtered_tags 23"));
+        assert!(output.contains("aggregator__filtered_tags_cache_hit 13"));
+        assert!(output.contains("aggregator__filtered_tags_cache_miss 17"));
+        assert!(output.contains("aggregator__filtered_tags_cache_evict 19"));
+        assert!(!output.contains("datadog__agent__filterlist__size"));
+        assert!(!output.contains("datadog__agent__filterlist__updates"));
+        assert!(!output.contains("datadog__agent__dogstatsd__listener_filtered_points"));
+        assert!(!output.contains("datadog__agent__aggregator__dogstatsd_filtered_metrics"));
         assert!(!output.contains("component_id="));
+        assert!(!output.contains("cache_id="));
     }
 
     #[test]
@@ -368,18 +409,39 @@ mod tests {
             find("aggregator.processed"),
             Some("Amount of metrics/services_checks/events processed by the aggregator")
         );
-        assert_eq!(find("datadog.agent.filterlist.size"), Some("Metric filter list size"));
+        assert_eq!(find("filterlist.size"), Some("Metric filter list size"));
         assert_eq!(
-            find("datadog.agent.filterlist.updates"),
+            find("filterlist.updates"),
             Some("Incremented when a reconfiguration of the metric filterlist happened")
         );
         assert_eq!(
-            find("datadog.agent.dogstatsd.listener_filtered_points"),
+            find("dogstatsd.listener_filtered_points"),
             Some("How many points were filtered out")
         );
         assert_eq!(
-            find("datadog.agent.aggregator.dogstatsd_filtered_metrics"),
+            find("aggregator.dogstatsd_filtered_metrics"),
             Some("How many metrics were filtered in the time samplers")
+        );
+        assert_eq!(find("tag_filterlist.size"), Some("Tag filter list size"));
+        assert_eq!(
+            find("tag_filterlist.updates"),
+            Some("Incremented when a reconfiguration of the tag filterlist happened")
+        );
+        assert_eq!(
+            find("aggregator.filtered_tags"),
+            Some("How many tags were filtered from a metric sample")
+        );
+        assert_eq!(
+            find("aggregator.filtered_tags_cache_hit"),
+            Some("How many times we hit the cache on filtering tags")
+        );
+        assert_eq!(
+            find("aggregator.filtered_tags_cache_miss"),
+            Some("How many times we missed the cache on filtering tags")
+        );
+        assert_eq!(
+            find("aggregator.filtered_tags_cache_evict"),
+            Some("How many times an entry was evicted from the tag filter cache")
         );
     }
 }

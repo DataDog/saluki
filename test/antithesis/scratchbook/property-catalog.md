@@ -1,7 +1,7 @@
 ---
 sut_path: /home/ssm-user/src/saluki
-commit: 2e4ae1b8be45143882f0dbeb5e74998021c5faf9
-updated: 2026-05-31
+commit: 21b2072b4743ddbf4c84891d93abac7299dc4ce8
+updated: 2026-06-01
 external_references:
   - path: https://datadoghq.atlassian.net/wiki/spaces/DADP/
     why: ADP Confluence space — headline guarantees and gap analyses that seed properties.
@@ -33,6 +33,16 @@ assertion** — an `assert_sometimes!` at the forwarder 2xx site in `saluki-comp
 fail by design** under default config (memory limiter disabled, interner heap-fallback enabled, disk
 persistence off) — these are flagged; they are the highest-value findings, not catalog errors.
 
+> **Workload-reach note (2026-06-01):** the live `parallel_driver_send_dogstatsd` feral DSD-line
+> generator exercises only **one** of the five still-unfixed reproduced bugs (branch
+> `blt/antithesis-bug-tests`): the high-cardinality interner heap-fallback
+> (`rss-bounded-under-cardinality`). The other four are off the DSD-socket input path entirely:
+> `ddsketch-no-nan-poison` needs a `checks_ipc` gRPC Histogram feeder (DSD drops non-finite at the
+> codec); `replay-corruption-not-silent-eof` needs the `agent-data-plane dogstatsd replay` CLI plus
+> crafted capture files; `aggregate-clock-skew-stable` (forward-jump) needs a clock-skip fault;
+> `config-stall-no-deadlock` needs a config-stream stub that withholds the snapshot. The sub-second
+> window `%0` panic is fixed upstream. See `bug-ledger.md`.
+
 Provenance tags `[Fn]` after each slug name the discovery focus that surfaced it:
 `[RB]` resource boundaries, `[DL]` data-loss/recovery, `[AG]` aggregation/sketch,
 `[LC]` lifecycle/config, `[RC]` replay/codec/concurrency, `[WC]` wildcard (from SUT analysis).
@@ -47,12 +57,16 @@ limiter is advisory (≤25ms backoff, 250ms sampling, cooperative), disabled by 
 interner spills to the heap by default. This category probes whether RSS is *actually* bounded.
 
 ### rss-bounded-under-cardinality — RSS bounded under high cardinality
-> **Status (2026-05-29): WORKLOAD WIRED + ROOT CAUSE REPRO'D** — `parallel_driver_send_dogstatsd`
-> (high-cardinality regime) floods distinct contexts in the Antithesis harness to drive this
-> behavioral bug under a run; and the root cause is reproduced as a unit test in
-> `lib/saluki-context/src/resolver.rs`
+> **Status (2026-06-01): WORKLOAD WIRED + ROOT CAUSE REPRO'D** — `parallel_driver_send_dogstatsd`
+> sends a sampled batch of feral DSD lines whose names/tags/values are built combinatorially from
+> finite segment pools, flooding distinct contexts in ADP to drive this behavioral bug under a run; and
+> the root cause is reproduced as a unit test in `lib/saluki-context/src/resolver.rs`
 > `tests::bug_default_heap_fallback_makes_context_resolution_unbounded` (default heap fallback ⇒
-> resolution never refuses ⇒ unbounded memory). Not fixed.
+> resolution never refuses ⇒ unbounded memory). Not fixed. **This is the only one of the five
+> still-unfixed reproduced bugs that the live DSD-line generator exercises**, and even here it becomes a
+> *caught* failure only with a memory-capped `adp` container (OOM ⇒ `eventually_adp_alive`) or a
+> SUT-side RSS assertion — neither yet wired. The other four bugs are off the DSD-socket input path
+> (see the note below the catalog header / bug-ledger).
 | | |
 |---|---|
 | **Type** | Safety (expected to FAIL by design under default config) |

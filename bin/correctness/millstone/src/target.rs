@@ -1,8 +1,9 @@
+#[cfg(unix)]
+use std::os::unix::net::{UnixDatagram, UnixStream};
 use std::{
     fs::File,
     io::Write as _,
     net::{Ipv4Addr, TcpStream, UdpSocket},
-    os::unix::net::{UnixDatagram, UnixStream},
     path::Path,
 };
 
@@ -15,7 +16,9 @@ use crate::config::{Config, TargetAddress};
 enum TargetBackend {
     Tcp(TcpStream),
     Udp(UdpSocket),
+    #[cfg(unix)]
     UnixDatagram(UnixDatagram),
+    #[cfg(unix)]
     Unix(UnixStream),
     Grpc(GrpcBackend),
     File(File),
@@ -69,19 +72,8 @@ impl TargetSender {
 
                 (TargetBackend::Udp(socket), None)
             }
-            TargetAddress::UnixDatagram(path) => {
-                let datagram = UnixDatagram::unbound().error_context("Failed to bind Unix datagram socket.")?;
-                datagram.connect(path).with_error_context(|| {
-                    format!("Failed to connect to Unix datagram target '{}'.", path.display())
-                })?;
-
-                (TargetBackend::UnixDatagram(datagram), None)
-            }
-            TargetAddress::Unix(path) => {
-                let stream = UnixStream::connect(path)
-                    .with_error_context(|| format!("Failed to connect to Unix stream target '{}'.", path.display()))?;
-                (TargetBackend::Unix(stream), None)
-            }
+            TargetAddress::UnixDatagram(path) => create_unix_datagram_backend(path)?,
+            TargetAddress::Unix(path) => create_unix_stream_backend(path)?,
             TargetAddress::Grpc(url) => create_grpc_client(url)?,
         };
 
@@ -102,7 +94,9 @@ impl TargetSender {
         let n = match &mut self.backend {
             TargetBackend::Tcp(stream) => stream.write_all(payload).map(|_| payload.len())?,
             TargetBackend::Udp(socket) => socket.send(payload)?,
+            #[cfg(unix)]
             TargetBackend::UnixDatagram(datagram) => datagram.send(payload)?,
+            #[cfg(unix)]
             TargetBackend::Unix(stream) => stream.write_all(payload).map(|_| payload.len())?,
             TargetBackend::Grpc(backend) => {
                 let channel = backend.channel.clone();
@@ -120,6 +114,39 @@ impl TargetSender {
 
         Ok(n)
     }
+}
+
+#[cfg(unix)]
+fn create_unix_datagram_backend(path: &Path) -> Result<(TargetBackend, Option<tokio::runtime::Runtime>), GenericError> {
+    let datagram = UnixDatagram::unbound().error_context("Failed to bind Unix datagram socket.")?;
+    datagram
+        .connect(path)
+        .with_error_context(|| format!("Failed to connect to Unix datagram target '{}'.", path.display()))?;
+
+    Ok((TargetBackend::UnixDatagram(datagram), None))
+}
+
+#[cfg(not(unix))]
+fn create_unix_datagram_backend(path: &Path) -> Result<(TargetBackend, Option<tokio::runtime::Runtime>), GenericError> {
+    Err(saluki_error::generic_error!(
+        "Unix datagram targets are not supported on this platform: '{}'.",
+        path.display()
+    ))
+}
+
+#[cfg(unix)]
+fn create_unix_stream_backend(path: &Path) -> Result<(TargetBackend, Option<tokio::runtime::Runtime>), GenericError> {
+    let stream = UnixStream::connect(path)
+        .with_error_context(|| format!("Failed to connect to Unix stream target '{}'.", path.display()))?;
+    Ok((TargetBackend::Unix(stream), None))
+}
+
+#[cfg(not(unix))]
+fn create_unix_stream_backend(path: &Path) -> Result<(TargetBackend, Option<tokio::runtime::Runtime>), GenericError> {
+    Err(saluki_error::generic_error!(
+        "Unix stream targets are not supported on this platform: '{}'.",
+        path.display()
+    ))
 }
 
 /// Sends a payload via gRPC using the provided runtime and channel.

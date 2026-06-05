@@ -82,19 +82,19 @@ impl Serialize for FlattenedStats {
 /// Configuration for DogStatsD statistics destination and API handler.
 #[derive(Clone)]
 pub struct DogStatsDStatisticsConfiguration {
-    api_handler: DogStatsDAPIHandler,
+    api_handler: DogStatsDStatsAPIHandler,
     rx: Arc<Mutex<StatsRequestReceiver>>,
 }
 /// State for the DogStatsD API handler.
 #[derive(Clone)]
-pub struct DogStatsDAPIHandlerState {
+pub struct DogStatsDStatsAPIHandlerState {
     tx: Arc<mpsc::Sender<(oneshot::Sender<StatsResponse>, u64)>>,
 }
 
 /// API handler for DogStatsD statistics endpoint.
 #[derive(Clone)]
-pub struct DogStatsDAPIHandler {
-    state: DogStatsDAPIHandlerState,
+pub struct DogStatsDStatsAPIHandler {
+    state: DogStatsDStatsAPIHandlerState,
 }
 
 /// DogStatsD destination that collects metrics and processes statistics.
@@ -202,9 +202,9 @@ struct StatsQueryParams {
     collection_duration_secs: u64,
 }
 
-impl DogStatsDAPIHandler {
+impl DogStatsDStatsAPIHandler {
     async fn stats_handler(
-        State(state): State<DogStatsDAPIHandlerState>, Query(query): Query<StatsQueryParams>,
+        State(state): State<DogStatsDStatsAPIHandlerState>, Query(query): Query<StatsQueryParams>,
     ) -> (StatusCode, String) {
         const MAXIMUM_COLLECTION_DURATION_SECS: u64 = 600;
         if query.collection_duration_secs > MAXIMUM_COLLECTION_DURATION_SECS {
@@ -250,8 +250,8 @@ impl DogStatsDAPIHandler {
     }
 }
 
-impl APIHandler for DogStatsDAPIHandler {
-    type State = DogStatsDAPIHandlerState;
+impl APIHandler for DogStatsDStatsAPIHandler {
+    type State = DogStatsDStatsAPIHandlerState;
 
     fn generate_initial_state(&self) -> Self::State {
         self.state.clone()
@@ -266,8 +266,8 @@ impl DogStatsDStatisticsConfiguration {
     /// Creates a new `DogStatsDStatisticsConfiguration`.
     pub fn new() -> Self {
         let (tx, rx) = mpsc::channel(4);
-        let state = DogStatsDAPIHandlerState { tx: Arc::new(tx) };
-        let handler = DogStatsDAPIHandler { state };
+        let state = DogStatsDStatsAPIHandlerState { tx: Arc::new(tx) };
+        let handler = DogStatsDStatsAPIHandler { state };
 
         Self {
             api_handler: handler,
@@ -276,7 +276,7 @@ impl DogStatsDStatisticsConfiguration {
     }
 
     /// Returns an API handler for DogStatsD API.
-    pub fn api_handler(&self) -> DogStatsDAPIHandler {
+    pub fn api_handler(&self) -> DogStatsDStatsAPIHandler {
         self.api_handler.clone()
     }
 }

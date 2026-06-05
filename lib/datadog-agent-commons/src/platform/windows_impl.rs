@@ -3,9 +3,7 @@ use std::{
     sync::OnceLock,
 };
 
-use windows_registry::LOCAL_MACHINE;
-
-// TODO: Add Windows-specific tests for registry-backed path resolution once we have Windows CI coverage.
+use windows_registry::{Key, LOCAL_MACHINE};
 
 /// Default configuration directory for the Datadog Agent.
 ///
@@ -44,10 +42,84 @@ pub fn get_log_dir_path() -> &'static Path {
 }
 
 fn read_config_root_from_registry() -> Option<PathBuf> {
-    LOCAL_MACHINE
-        .open(DATADOG_AGENT_REGISTRY_SUBKEY)
-        .and_then(|key| key.get_string(DATADOG_AGENT_CONFIG_ROOT_VALUE))
+    read_config_root_from_registry_key(
+        LOCAL_MACHINE,
+        DATADOG_AGENT_REGISTRY_SUBKEY,
+        DATADOG_AGENT_CONFIG_ROOT_VALUE,
+    )
+}
+
+fn read_config_root_from_registry_key(root: &Key, subkey: &str, value_name: &str) -> Option<PathBuf> {
+    root.open(subkey)
+        .and_then(|key| key.get_string(value_name))
         .ok()
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use windows_registry::CURRENT_USER;
+
+    use super::read_config_root_from_registry_key;
+
+    const TEST_VALUE_NAME: &str = "ConfigRoot";
+
+    struct TestRegistryKey {
+        subkey: String,
+    }
+
+    impl TestRegistryKey {
+        fn create() -> Self {
+            let subkey = format!(
+                r"SOFTWARE\Datadog\SalukiPlatformTests\{}-{:?}",
+                std::process::id(),
+                std::thread::current().id()
+            );
+            CURRENT_USER
+                .create(&subkey)
+                .expect("temporary registry key should be created");
+
+            Self { subkey }
+        }
+
+        fn set_string_value(&self, name: &str, value: &str) {
+            let key = CURRENT_USER
+                .create(&self.subkey)
+                .expect("temporary registry key should open for writes");
+            key.set_string(name, value)
+                .expect("registry string value should be written");
+        }
+    }
+
+    impl Drop for TestRegistryKey {
+        fn drop(&mut self) {
+            let _ = CURRENT_USER.remove_tree(&self.subkey);
+        }
+    }
+
+    #[test]
+    fn read_config_root_from_registry_key_reads_config_root_path() {
+        let key = TestRegistryKey::create();
+        let expected = r"C:\ProgramData\Datadog Test 🐕";
+        key.set_string_value(TEST_VALUE_NAME, expected);
+
+        let actual =
+            read_config_root_from_registry_key(CURRENT_USER, &key.subkey, TEST_VALUE_NAME).expect("value should exist");
+
+        assert_eq!(actual, PathBuf::from(expected));
+    }
+
+    #[test]
+    fn read_config_root_from_registry_key_returns_none_for_missing_and_empty_values() {
+        let key = TestRegistryKey::create();
+
+        assert!(read_config_root_from_registry_key(CURRENT_USER, &key.subkey, TEST_VALUE_NAME).is_none());
+
+        key.set_string_value(TEST_VALUE_NAME, "");
+
+        assert!(read_config_root_from_registry_key(CURRENT_USER, &key.subkey, TEST_VALUE_NAME).is_none());
+    }
 }

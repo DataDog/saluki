@@ -233,19 +233,6 @@ crate::declare_annotations! {
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD, Pipeline::Checks, Pipeline::Traces]),
     };
 
-    /// `serializer_max_series_points_per_payload` - max series points per payload.
-    SERIALIZER_MAX_SERIES_POINTS_PER_PAYLOAD = SalukiAnnotation {
-        schema: &schema::SERIALIZER_MAX_SERIES_POINTS_PER_PAYLOAD,
-        // Not configurable in ADP. #1354
-        support_level: SupportLevel::Incompatible(Severity::Low),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-        // Metrics encoder (dd_metrics_encode) is used by DogStatsD, Checks, and OTLP native (Traces active); APM traces use a separate encoder.
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD, Pipeline::Checks, Pipeline::Traces]),
-    };
 
     /// `sslkeylogfile` - TLS key log file path.
     SSLKEYLOGFILE = SalukiAnnotation {
@@ -385,32 +372,6 @@ crate::declare_annotations! {
         test_json: None,
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
-    /// `enable_json_stream_shared_compressor_buffers` - shared JSON stream compressor buffer allocation.
-    ENABLE_JSON_STREAM_SHARED_COMPRESSOR_BUFFERS = SalukiAnnotation {
-        schema: &schema::ENABLE_JSON_STREAM_SHARED_COMPRESSOR_BUFFERS,
-        // Not implemented. #1749
-        support_level: SupportLevel::Incompatible(Severity::Low),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-        // Metrics encoder (dd_metrics_encode) is used by DogStatsD, Checks, and OTLP native (Traces active); APM traces use a separate encoder.
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD, Pipeline::Checks, Pipeline::Traces]),
-    };
-    /// `entity_id` - agent pod entity ID injected by DCA webhook.
-    ENTITY_ID = SalukiAnnotation {
-        schema: &schema::ENTITY_ID,
-        // Not implemented. #1752
-        support_level: SupportLevel::Incompatible(Severity::Low),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-        // Agent/host metadata applied to all payloads.
-        pipeline_affinity: PipelineAffinity::CrossCutting,
-    };
     /// `forwarder_requeue_buffer_size` - forwarder in-memory requeue buffer size.
     FORWARDER_REQUEUE_BUFFER_SIZE = SalukiAnnotation {
         schema: &schema::FORWARDER_REQUEUE_BUFFER_SIZE,
@@ -440,7 +401,8 @@ crate::declare_annotations! {
     /// `heroku_dyno` - Heroku dyno name override for agent telemetry.
     HEROKU_DYNO = SalukiAnnotation {
         schema: &schema::HEROKU_DYNO,
-        // Not implemented. #1753
+        // Not planned: this changes core Agent heartbeat telemetry in the Heroku Agent package
+        // path, where ADP is not launched. #1753
         support_level: SupportLevel::Incompatible(Severity::High),
         additional_yaml_paths: &[],
         env_var_override: None,

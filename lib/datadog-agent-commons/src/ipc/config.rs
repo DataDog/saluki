@@ -7,6 +7,8 @@ use saluki_config::GenericConfiguration;
 use saluki_error::{ErrorContext as _, GenericError};
 use serde::Deserialize;
 use tonic::transport::Uri;
+#[cfg(not(target_os = "linux"))]
+use tracing::warn;
 
 use crate::platform::PlatformSettings;
 
@@ -149,6 +151,46 @@ pub struct RemoteAgentClientConfiguration {
         default = "default_grpc_max_message_size"
     )]
     grpc_max_message_size: usize,
+
+    /// vsock address for connecting to the Agent IPC endpoint via AF_VSOCK.
+    ///
+    /// When set, the IPC client connects over a vsock socket using the resolved CID with the port
+    /// taken from the configured endpoint. This mirrors the Datadog Agent's `vsock_addr`
+    /// configuration, enabling communication from within a guest VM (for example, Nitro Enclaves)
+    /// to an Agent process running on the host or hypervisor.
+    ///
+    /// Accepted values:
+    /// - `host`: connect to the host (CID 2, `VMADDR_CID_HOST`)
+    /// - `hypervisor`: connect to the hypervisor (CID 0, `VMADDR_CID_HYPERVISOR`)
+    /// - `local`: connect to the local VM (CID 3, `VMADDR_CID_LOCAL`)
+    ///
+    /// Defaults to unset (TCP connection).
+    #[cfg(target_os = "linux")]
+    #[serde(default, deserialize_with = "deserialize_vsock_addr")]
+    vsock_addr: Option<u32>,
+
+    // Non-Linux: capture raw value solely to emit a warning when misconfigured.
+    #[cfg(not(target_os = "linux"))]
+    #[serde(default)]
+    vsock_addr: Option<String>,
+}
+
+#[cfg(target_os = "linux")]
+fn deserialize_vsock_addr<'de, D>(deserializer: D) -> Result<Option<u32>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error as _;
+    match Option::<String>::deserialize(deserializer)?.as_deref() {
+        None | Some("") => Ok(None),
+        Some("host") => Ok(Some(2)),       // VMADDR_CID_HOST
+        Some("hypervisor") => Ok(Some(0)), // VMADDR_CID_HYPERVISOR
+        Some("local") => Ok(Some(3)),      // VMADDR_CID_LOCAL
+        Some(other) => Err(D::Error::custom(format!(
+            "invalid vsock address '{}'; expected one of: host, hypervisor, local",
+            other
+        ))),
+    }
 }
 
 impl RemoteAgentClientConfiguration {
@@ -158,9 +200,16 @@ impl RemoteAgentClientConfiguration {
     ///
     /// If the configuration is invalid, an error is returned.
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        config
+        let this = config
             .as_typed::<Self>()
-            .error_context("Failed to parse Datadog Agent IPC client configuration.")
+            .error_context("Failed to parse Datadog Agent IPC client configuration.")?;
+
+        #[cfg(not(target_os = "linux"))]
+        if this.vsock_addr.is_some() {
+            warn!("`vsock_addr` is configured but vsock is only supported on Linux. Setting will be ignored.");
+        }
+
+        Ok(this)
     }
 
     /// Returns a reference to the authentication configuration for the Remote Agent client.
@@ -184,6 +233,27 @@ impl RemoteAgentClientConfiguration {
     /// Returns the maximum message size for gRPC.
     pub fn grpc_max_message_size(&self) -> usize {
         self.grpc_max_message_size
+    }
+
+    /// Returns the vsock address to use for connecting to the IPC endpoint, if configured.
+    ///
+    /// Combines the CID from `vsock_addr` with the port resolved from `endpoint()`. Returns
+    /// an error if `vsock_addr` is set but the endpoint has no explicit port.
+    ///
+    /// # Errors
+    ///
+    /// If the configured endpoint has no explicit port.
+    #[cfg(target_os = "linux")]
+    pub fn vsock_addr(&self) -> Result<Option<tokio_vsock::VsockAddr>, GenericError> {
+        let Some(cid) = self.vsock_addr else {
+            return Ok(None);
+        };
+        let port = self
+            .endpoint()?
+            .port_u16()
+            .map(u32::from)
+            .ok_or_else(|| saluki_error::generic_error!("vsock requires an explicit port in the IPC endpoint"))?;
+        Ok(Some(tokio_vsock::VsockAddr::new(cid, port)))
     }
 }
 
@@ -343,5 +413,45 @@ mod tests {
         values.insert("agent_ipc_endpoint".to_string(), "https://10.0.0.1:3333".into());
         let config = config_from_values(values).await;
         assert_eq!(config.endpoint().unwrap().to_string(), "https://10.0.0.1:3333/");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn vsock_addr_valid_values() {
+        // (vsock_addr input, expected CID — port always comes from cmd_port=5001)
+        let cases: &[(&str, Option<u32>)] = &[
+            ("", None),
+            ("host", Some(2)),
+            ("hypervisor", Some(0)),
+            ("local", Some(3)),
+        ];
+
+        for (input, expected_cid) in cases {
+            let mut values = serde_json::Map::new();
+            values.insert("vsock_addr".to_string(), (*input).into());
+            values.insert("cmd_port".to_string(), 5001u16.into());
+            let config = config_from_values(values).await;
+            let result = config
+                .vsock_addr()
+                .expect("vsock_addr() should not error with cmd_port set");
+            assert_eq!(result.map(|a| a.cid()), *expected_cid, "input: {input:?}");
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn vsock_addr_invalid_values() {
+        let cases = &["invalid", "2", "HOST", "host ", "vm0"];
+
+        for input in cases {
+            let mut values = serde_json::Map::new();
+            values.insert("vsock_addr".to_string(), (*input).into());
+            let (base_config, _) =
+                ConfigurationLoader::for_tests(Some(serde_json::Value::Object(values)), None, false).await;
+            assert!(
+                RemoteAgentClientConfiguration::from_configuration(&base_config).is_err(),
+                "expected error for input: {input:?}",
+            );
+        }
     }
 }
