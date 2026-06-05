@@ -39,6 +39,21 @@ pub fn get_dogstatsd_remappings() -> Vec<RemapperRule> {
             "aggregator.filtered_tags",
         ),
         RemapperRule::by_name_and_tags(
+            "adp.cache_hits_total",
+            &["cache_id:tag_filterlist/context_cache"],
+            "aggregator.filtered_tags_cache_hit",
+        ),
+        RemapperRule::by_name_and_tags(
+            "adp.cache_misses_total",
+            &["cache_id:tag_filterlist/context_cache"],
+            "aggregator.filtered_tags_cache_miss",
+        ),
+        RemapperRule::by_name_and_tags(
+            "adp.cache_items_evicted_total",
+            &["cache_id:tag_filterlist/context_cache"],
+            "aggregator.filtered_tags_cache_evict",
+        ),
+        RemapperRule::by_name_and_tags(
             "adp.object_pool_acquired",
             &["pool_name:dsd_packet_bufs"],
             "dogstatsd.packet_pool_get",
