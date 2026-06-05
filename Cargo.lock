@@ -136,6 +136,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "antithesis-intake"
+version = "0.1.0"
+dependencies = [
+ "antithesis_sdk",
+ "axum",
+ "datadog-protos",
+ "protobuf",
+ "saluki-error",
+ "serde",
+ "serde_json",
+ "stele",
+ "tokio",
+ "tower",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "antithesis_sdk"
 version = "0.2.8"
 source = "git+https://github.com/antithesishq/antithesis-sdk-rust?rev=6829a946e7e970cc743ffe17c3cee7d2bc25425a#6829a946e7e970cc743ffe17c3cee7d2bc25425a"
