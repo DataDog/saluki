@@ -1,0 +1,23 @@
+[package]
+name = "datadog-agent-config-testsupport"
+version = "0.1.0"
+edition = { workspace = true }
+license = { workspace = true }
+repository = { workspace = true }
+
+[dependencies]
+datadog-agent-config = { workspace = true }
+figment = { workspace = true }
+saluki-config = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[build-dependencies]
+datadog-agent-config-overlay-model = { workspace = true }
+indexmap = { workspace = true }
+serde = { workspace = true }
+serde_yaml = { workspace = true }
+tinytemplate = { workspace = true }
+
+[lints]
+workspace = true

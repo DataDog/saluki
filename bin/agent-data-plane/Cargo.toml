@@ -23,6 +23,7 @@ chrono = { workspace = true }
 colored = { workspace = true }
 comfy-table = { workspace = true }
 datadog-agent-commons = { workspace = true }
+datadog-agent-config = { workspace = true }
 datadog-protos = { workspace = true }
 foldhash = { workspace = true }
 futures = { workspace = true }
@@ -75,6 +76,7 @@ tikv-jemallocator = { workspace = true, features = [
 chrono = { workspace = true }
 
 [dev-dependencies]
+datadog-agent-config-testsupport = { workspace = true }
 derive-where = { workspace = true }
-saluki-components = { workspace = true, features = ["config-test-support"] }
+saluki-components = { workspace = true }
 saluki-metrics = { workspace = true, features = ["test"] }

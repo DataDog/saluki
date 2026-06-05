@@ -302,18 +302,26 @@ fn ip_in_cidr(network: IpAddr, prefix_len: u8, addr: IpAddr) -> bool {
 
 #[cfg(test)]
 mod config_smoke {
+    use datadog_agent_config_testsupport::config_registry::structs;
+    use datadog_agent_config_testsupport::run_config_smoke_tests;
     use serde_json::json;
 
     use super::ProxyConfiguration;
-    use crate::config_registry::structs;
-    use crate::config_registry::test_support::run_config_smoke_tests;
+    use crate::config::{DatadogRemapper, KEY_ALIASES};
 
     #[tokio::test]
     async fn proxy_configuration_smoke_test() {
-        run_config_smoke_tests(structs::PROXY_CONFIGURATION, &[], json!({}), |cfg| {
-            cfg.as_typed::<ProxyConfiguration>()
-                .expect("ProxyConfiguration should deserialize")
-        })
+        run_config_smoke_tests(
+            structs::PROXY_CONFIGURATION,
+            &[],
+            json!({}),
+            |cfg| {
+                cfg.as_typed::<ProxyConfiguration>()
+                    .expect("ProxyConfiguration should deserialize")
+            },
+            KEY_ALIASES,
+            DatadogRemapper::new,
+        )
         .await
     }
 }

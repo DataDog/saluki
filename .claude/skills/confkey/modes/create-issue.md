@@ -8,9 +8,10 @@ and label conventions from `../resources/issue-style.md`.
 Extract key names from `<details>`. Two cases:
 
 - **Keys provided**: proceed with those keys.
-- **No keys provided**: scan `{{config_docs}}/known-configs.json` for keys that need issues —
-  entries where `action` is `IMPLEMENT`, `INVESTIGATE`, or `DOCUMENT` and the `issue` field is null
-  or empty. Present the list to the user and ask which keys they want to work on.
+- **No keys provided**: read `schema_overlay.yaml` (locate with `find lib -name schema_overlay.yaml`)
+  and scan for keys that need issues — entries in `unsupported` with `planned: true` and no `issue`
+  field, or entries in `investigate` with no linked issue. Present the list to the user and ask
+  which keys they want to work on.
 
 ## Step 2: Duplicate Search
 
@@ -20,9 +21,9 @@ For each key, search for pre-existing open issues to avoid duplicates:
 gh issue list --repo DataDog/saluki --state open --search "<key_name>"
 ```
 
-Also search by likely title keywords derived from the key name and ledger description. Report any
+Also search by likely title keywords derived from the key name and overlay description. Report any
 potential duplicates to the user before proceeding. If a clear duplicate exists, ask whether to link
-the existing issue to the ledger instead of drafting a new one (skip to Step 6).
+the existing issue in the overlay instead of drafting a new one (skip to Step 6).
 
 ## Step 3: Propose Grouping
 
@@ -41,8 +42,8 @@ For each draft include:
 - **Body**: problem statement, what needs to happen, relevant code permalinks
 - **Labels**: selected from the label reference in `../resources/issue-style.md`
 
-Draw on the ledger entry (`description`, `reason`, `feature_state`, `action`) and any code locations
-found during prior analysis. If the ledger entry lacks enough detail to write a good issue body,
+Draw on the overlay entry (section, fields, description, documentation prose) and any code locations
+found during prior analysis. If the overlay entry lacks enough detail to write a good issue body,
 flag it and ask the user to fill in the gaps.
 
 When working with multiple issues, draft all of them before moving to review.
@@ -58,13 +59,13 @@ For each approved draft, show the final `gh` command using the template from
 `../resources/issue-style.md`. Offer to run it. If the user approves, run the command and capture
 the returned issue URL.
 
-## Step 7: Update Ledger
+## Step 7: Update Overlay
 
-After each issue is filed, extract the issue number from the URL and update the `issue` field in the
-corresponding `known-configs.json` entries. Keep the array sorted alphabetically by `key`.
+After each issue is filed, extract the issue number from the URL and add an `issue` field to the
+corresponding entry in `schema_overlay.yaml`.
 
 ```bash
 ISSUE_NUM=$(echo "$ISSUE_URL" | grep -o '[0-9]*$')
 ```
 
-Record the issue as `#NNN` in the `issue` field.
+Build to verify: `cargo build -p datadog-agent-config-testsupport`.

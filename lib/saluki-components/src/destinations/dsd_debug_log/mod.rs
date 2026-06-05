@@ -342,14 +342,15 @@ mod tests {
     };
 
     use bytesize::ByteSize;
+    use datadog_agent_config_testsupport::config_registry::structs;
+    use datadog_agent_config_testsupport::run_config_smoke_tests;
     use saluki_context::Context;
     use saluki_core::data_model::event::metric::Metric;
     use serde_json::json;
     use tempfile::tempdir;
 
     use super::{DogStatsDDebugLog, DogStatsDDebugLogConfiguration};
-    use crate::config_registry::structs;
-    use crate::config_registry::test_support::run_config_smoke_tests;
+    use crate::config::{DatadogRemapper, KEY_ALIASES};
 
     fn test_default_log_file_path() -> PathBuf {
         PathBuf::from("/tmp/default-dogstatsd-stats.log")
@@ -430,10 +431,17 @@ mod tests {
 
     #[tokio::test]
     async fn smoke_test() {
-        run_config_smoke_tests(structs::DOGSTATSD_DEBUG_LOG_CONFIGURATION, &[], json!({}), |cfg| {
-            DogStatsDDebugLogConfiguration::from_configuration(&cfg, test_default_log_file_path())
-                .expect("DogStatsDDebugLogConfiguration should deserialize")
-        })
+        run_config_smoke_tests(
+            structs::DOGSTATSD_DEBUG_LOG_CONFIGURATION,
+            &[],
+            json!({}),
+            |cfg| {
+                DogStatsDDebugLogConfiguration::from_configuration(&cfg, test_default_log_file_path())
+                    .expect("DogStatsDDebugLogConfiguration should deserialize")
+            },
+            KEY_ALIASES,
+            DatadogRemapper::new,
+        )
         .await
     }
 

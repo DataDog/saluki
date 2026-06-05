@@ -30,6 +30,8 @@ dependencies = [
  "colored",
  "comfy-table",
  "datadog-agent-commons",
+ "datadog-agent-config",
+ "datadog-agent-config-testsupport",
  "datadog-protos",
  "derive-where",
  "foldhash 0.2.0",
@@ -1097,6 +1099,40 @@ dependencies = [
  "tonic",
  "tracing",
  "windows-registry",
+]
+
+[[package]]
+name = "datadog-agent-config"
+version = "0.1.0"
+dependencies = [
+ "datadog-agent-config-overlay-model",
+ "indexmap",
+ "serde_json",
+]
+
+[[package]]
+name = "datadog-agent-config-overlay-model"
+version = "0.1.0"
+dependencies = [
+ "indexmap",
+ "serde",
+ "serde_yaml",
+ "tempfile",
+]
+
+[[package]]
+name = "datadog-agent-config-testsupport"
+version = "0.1.0"
+dependencies = [
+ "datadog-agent-config",
+ "datadog-agent-config-overlay-model",
+ "figment",
+ "indexmap",
+ "saluki-config",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tinytemplate",
 ]
 
 [[package]]
@@ -4215,6 +4251,7 @@ dependencies = [
  "bytes",
  "bytesize",
  "chrono",
+ "datadog-agent-config-testsupport",
  "datadog-protos",
  "ddsketch",
  "derive-where",

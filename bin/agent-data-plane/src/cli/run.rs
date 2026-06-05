@@ -6,13 +6,13 @@ use std::{
 
 use argh::FromArgs;
 use datadog_agent_commons::platform::PlatformSettings;
+use datadog_agent_config::classifier::{ConfigClassifier, Pipeline, PipelineAffinity, Severity, SupportLevel};
 use resource_accounting::{ComponentBounds, ComponentRegistry};
 use saluki_app::{
     accounting::{initialize_memory_bounds, MemoryBoundsConfiguration},
     bootstrap::BootstrapGuard,
     metrics::emit_startup_metrics,
 };
-use saluki_components::config_registry::{ConfigClassifier, Pipeline, PipelineAffinity, Severity, SupportLevel};
 use saluki_components::{
     config::{DatadogRemapper, MrfConfiguration, KEY_ALIASES},
     decoders::otlp::OtlpDecoderConfiguration,
@@ -310,9 +310,6 @@ fn check_and_warn_config(
         }
 
         match classification.support_level {
-            SupportLevel::Full => {
-                trace!(key = %key, "Fully supported key with non-default value detected. Proceeding.")
-            }
             SupportLevel::Incompatible(Severity::Low) => debug!("Low-severity incompatible key detected. Proceeding."),
             SupportLevel::Partial => {
                 warn!(key = %key, "Partially supported configuration key. See documentation for details. Proceeding.")

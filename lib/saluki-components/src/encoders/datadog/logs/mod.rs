@@ -263,18 +263,26 @@ impl EndpointEncoder for LogsEndpointEncoder {
 
 #[cfg(test)]
 mod config_smoke {
+    use datadog_agent_config_testsupport::config_registry::structs;
+    use datadog_agent_config_testsupport::run_config_smoke_tests;
     use serde_json::json;
 
     use super::DatadogLogsConfiguration;
-    use crate::config_registry::structs;
-    use crate::config_registry::test_support::run_config_smoke_tests;
+    use crate::config::{DatadogRemapper, KEY_ALIASES};
 
     #[tokio::test]
     async fn smoke_test() {
-        run_config_smoke_tests(structs::DATADOG_LOGS_CONFIGURATION, &[], json!({}), |cfg| {
-            cfg.as_typed::<DatadogLogsConfiguration>()
-                .expect("DatadogLogsConfiguration should deserialize")
-        })
+        run_config_smoke_tests(
+            structs::DATADOG_LOGS_CONFIGURATION,
+            &[],
+            json!({}),
+            |cfg| {
+                cfg.as_typed::<DatadogLogsConfiguration>()
+                    .expect("DatadogLogsConfiguration should deserialize")
+            },
+            KEY_ALIASES,
+            DatadogRemapper::new,
+        )
         .await
     }
 }

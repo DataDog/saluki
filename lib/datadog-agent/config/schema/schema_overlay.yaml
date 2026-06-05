@@ -1,0 +1,3470 @@
+# Schema Overlay: the single source of truth file for managing Saluki's Datadog config inventory.
+#
+# This file lives side-by-side with the vendored Datadog Agent configuration schema. Every
+# config key that exists in the schema must be represented here in the overlay. Validation happens
+# during and after deserialization during build and tooling processes.
+#
+# There are four sections that must appear in the correct order:
+# - supported: fully and partially supported keys
+# - unsupported: keys that are either permanently or temporarily unsupported
+# - investigate: keys that require investigation before we can say whether they should be supported
+# - ignored: keys that ADP/Saluki intentionally and silently ignores
+#
+# Rust code and Markdown documentation are generated from the contents of this file. Your edits here
+# have consequences downstream as follows (see the generator code to be certain):
+#
+# supported + support_level: full    -> runtime classifier: Full; docs: "Transparent Settings" table
+#
+# supported + support_level: partial -> runtime classifier: Partial; docs: "Behavioral Differences"
+#                                       table; multi-line documentation renders as a detail block
+#                                       below the table
+#
+# unsupported + planned: true        -> runtime classifier: Incompatible(severity); docs: "Being
+#                                       Worked On" table; issue required
+#
+# unsupported + planned: false       -> runtime classifier: Incompatible(severity); docs: "Not
+#                                       Planned" table; single-line documentation fills the "Reason"
+#                                       column; multi-line renders as a detail block below the table
+#
+# investigate + severity set         -> runtime classifier: Incompatible(severity, cross_cutting);
+#                                       docs: "Compatibility Unknown" table
+#
+# investigate + no severity          -> no classifier entry (docs-only); "Compatibility Unknown"
+#                                       table
+#
+# ignored                            -> no classifier entry; no docs table entry
+#
+# Validation rules are somewhat complex. For complete rules, see the code in `config-overlay-model`,
+# but here are some of the basics:
+#
+# - unsupported + planned: true requires issue; the build rejects entries that omit it
+# - pipelines: [cross_cutting] must appear alone; cross_cutting mixed with other tokens is rejected
+# - investigate entries without severity produce no runtime classifier entry and are docs-only
+supported:
+  additional_endpoints:
+    support_level: full
+    used_by: [ ForwarderConfiguration ]
+    pipelines: [ cross_cutting ]
+    description: "Dual-ship to extra endpoints"
+    test_json: '{"smoke-host-1.example.com": ["smoke-api-key"]}'
+    additional_attributes:
+      config_registry_filename: forwarder.rs
+
+  allow_arbitrary_tags:
+    support_level: full
+    used_by: [ ForwarderConfiguration ]
+    pipelines: [ cross_cutting ]
+    description: "Relax backend tag validation via HTTP header"
+    env_var_override: [ DD_ALLOW_ARBITRARY_TAGS ]
+    additional_attributes:
+      config_registry_filename: forwarder.rs
+
+  api_key:
+    support_level: full
+    used_by: [ ForwarderConfiguration ]
+    pipelines: [ cross_cutting ]
+    description: "API key for endpoint auth"
+    additional_attributes:
+      config_registry_filename: forwarder.rs
+
+  apm_config.obfuscation.credit_cards.enabled:
+    support_level: full
+    used_by: [ TraceObfuscationConfiguration ]
+    pipelines: [ traces ]
+    description: "apm_config.obfuscation.credit_cards.enabled"
+    test_json: 'true'
+    additional_attributes:
+      config_registry_filename: trace_obfuscation.rs
+
+  apm_config.obfuscation.credit_cards.keep_values:
+    support_level: full
+    used_by: [ TraceObfuscationConfiguration ]
+    pipelines: [ traces ]
+    description: "apm_config.obfuscation.credit_cards.keep_values"
+    additional_attributes:
+      config_registry_filename: trace_obfuscation.rs
+
+  apm_config.obfuscation.credit_cards.luhn:
+    support_level: full
+    used_by: [ TraceObfuscationConfiguration ]
+    pipelines: [ traces ]
+    description: "apm_config.obfuscation.credit_cards.luhn"
+    additional_attributes:
+      config_registry_filename: trace_obfuscation.rs
+
+  apm_config.obfuscation.elasticsearch.enabled:
+    support_level: full
+    used_by: [ TraceObfuscationConfiguration ]
+    pipelines: [ traces ]
+    description: "apm_config.obfuscation.elasticsearch.enabled"
+    test_json: 'true'
+    additional_attributes:
+      config_registry_filename: trace_obfuscation.rs
+
+  apm_config.obfuscation.elasticsearch.keep_values:
+    support_level: full
+    used_by: [ TraceObfuscationConfiguration ]
+    pipelines: [ traces ]
+    description: "apm_config.obfuscation.elasticsearch.keep_values"
+    additional_attributes:
+      config_registry_filename: trace_obfuscation.rs
+
+  apm_config.obfuscation.elasticsearch.obfuscate_sql_values:
+    support_level: full
+    used_by: [ TraceObfuscationConfiguration ]
+    pipelines: [ traces ]
+    description: "Obfuscate SQL values in ES queries"
+    additional_attributes:
+      config_registry_filename: trace_obfuscation.rs
+
+  apm_config.obfuscation.http.remove_paths_with_digits:
+    support_level: full
+    used_by: [ TraceObfuscationConfiguration ]
+    pipelines: [ traces ]
+    description: "Strip numeric segments from HTTP paths"
+    additional_attributes:
+      config_registry_filename: trace_obfuscation.rs
+
+  apm_config.obfuscation.http.remove_query_string:
+    support_level: full
+    used_by: [ TraceObfuscationConfiguration ]
+    pipelines: [ traces ]
+    description: "apm_config.obfuscation.http.remove_query_string"
+    additional_attributes:
+      config_registry_filename: trace_obfuscation.rs
+
+  apm_config.obfuscation.memcached.enabled:
+    support_level: full
+    used_by: [ TraceObfuscationConfiguration ]
+    pipelines: [ traces ]
+    description: "apm_config.obfuscation.memcached.enabled"
+    test_json: 'true'
+    additional_attributes:
+      config_registry_filename: trace_obfuscation.rs
+
+  apm_config.obfuscation.memcached.keep_command:
+    support_level: full
+    used_by: [ TraceObfuscationConfiguration ]
+    pipelines: [ traces ]
+    description: "apm_config.obfuscation.memcached.keep_command"
+    additional_attributes:
+      config_registry_filename: trace_obfuscation.rs
+
+  apm_config.obfuscation.mongodb.enabled:
+    support_level: full
+    used_by: [ TraceObfuscationConfiguration ]
+    pipelines: [ traces ]
+    description: "apm_config.obfuscation.mongodb.enabled"
+    test_json: 'true'
+    additional_attributes:
+      config_registry_filename: trace_obfuscation.rs
+
+  apm_config.obfuscation.mongodb.keep_values:
+    support_level: full
+    used_by: [ TraceObfuscationConfiguration ]
+    pipelines: [ traces ]
+    description: "apm_config.obfuscation.mongodb.keep_values"
+    additional_attributes:
+      config_registry_filename: trace_obfuscation.rs
+
+  apm_config.obfuscation.mongodb.obfuscate_sql_values:
+    support_level: full
+    used_by: [ TraceObfuscationConfiguration ]
+    pipelines: [ traces ]
+    description: "Obfuscate SQL values in MongoDB queries"
+    additional_attributes:
+      config_registry_filename: trace_obfuscation.rs
+
+  apm_config.obfuscation.opensearch.enabled:
+    support_level: full
+    used_by: [ TraceObfuscationConfiguration ]
+    pipelines: [ traces ]
+    description: "apm_config.obfuscation.opensearch.enabled"
+    test_json: 'true'
+    additional_attributes:
+      config_registry_filename: trace_obfuscation.rs
+
+  apm_config.obfuscation.opensearch.keep_values:
+    support_level: full
+    used_by: [ TraceObfuscationConfiguration ]
+    pipelines: [ traces ]
+    description: "apm_config.obfuscation.opensearch.keep_values"
+    additional_attributes:
+      config_registry_filename: trace_obfuscation.rs
+
+  apm_config.obfuscation.opensearch.obfuscate_sql_values:
+    support_level: full
+    used_by: [ TraceObfuscationConfiguration ]
+    pipelines: [ traces ]
+    description: "Obfuscate SQL values in OpenSearch queries"
+    additional_attributes:
+      config_registry_filename: trace_obfuscation.rs
+
+  apm_config.obfuscation.redis.enabled:
+    support_level: full
+    used_by: [ TraceObfuscationConfiguration ]
+    pipelines: [ traces ]
+    description: "apm_config.obfuscation.redis.enabled"
+    test_json: 'true'
+    additional_attributes:
+      config_registry_filename: trace_obfuscation.rs
+
+  apm_config.obfuscation.redis.remove_all_args:
+    support_level: full
+    used_by: [ TraceObfuscationConfiguration ]
+    pipelines: [ traces ]
+    description: "apm_config.obfuscation.redis.remove_all_args"
+    additional_attributes:
+      config_registry_filename: trace_obfuscation.rs
+
+  apm_config.obfuscation.valkey.enabled:
+    support_level: full
+    used_by: [ TraceObfuscationConfiguration ]
+    pipelines: [ traces ]
+    description: "apm_config.obfuscation.valkey.enabled"
+    test_json: 'true'
+    additional_attributes:
+      config_registry_filename: trace_obfuscation.rs
+
+  apm_config.obfuscation.valkey.remove_all_args:
+    support_level: full
+    used_by: [ TraceObfuscationConfiguration ]
+    pipelines: [ traces ]
+    description: "apm_config.obfuscation.valkey.remove_all_args"
+    additional_attributes:
+      config_registry_filename: trace_obfuscation.rs
+
+  bind_host:
+    support_level: full
+    used_by: [ DogStatsDConfiguration ]
+    pipelines: [ dogstatsd ]
+    description: "Global listen host fallback"
+    additional_attributes:
+      config_registry_filename: dogstatsd.rs
+
+  cmd_port:
+    support_level: full
+    used_by: [ RemoteAgentClientConfiguration ]
+    pipelines: [ cross_cutting ]
+    description: "Datadog Agent IPC/CMD API port"
+    test_json: '5101'
+    additional_attributes:
+      config_registry_filename: get_typed.rs
+
+  cri_connection_timeout:
+    support_level: full
+    used_by: [ ContainerdConfiguration ]
+    pipelines: [ cross_cutting ]
+    description: "CRI container runtime connection timeout (s)"
+    additional_attributes:
+      config_registry_filename: containerd.rs
+
+  cri_query_timeout:
+    support_level: full
+    used_by: [ ContainerdConfiguration ]
+    pipelines: [ cross_cutting ]
+    description: "CRI container runtime query timeout (s)"
+    additional_attributes:
+      config_registry_filename: containerd.rs
+
+  data_plane.dogstatsd.aggregator_tag_filter_cache_capacity:
+    support_level: full
+    used_by: [ TagFilterlistConfiguration ]
+    pipelines: [ dogstatsd ]
+    description: "Tag-filter deduplication cache size"
+    value_type_override: integer
+    additional_attributes:
+      config_registry_filename: tag_filterlist.rs
+
+  dd_url:
+    support_level: full
+    used_by: [ ForwarderConfiguration ]
+    pipelines: [ cross_cutting ]
+    description: "Override intake endpoint URL"
+    additional_attributes:
+      config_registry_filename: forwarder.rs
+
+  dogstatsd_buffer_size:
+    support_level: full
+    used_by: [ DogStatsDConfiguration ]
+    pipelines: [ dogstatsd ]
+    description: "Receive buffer size (bytes)"
+    value_type_override: integer
+    additional_attributes:
+      config_registry_filename: dogstatsd.rs
+
+  dogstatsd_capture_depth:
+    support_level: full
+    used_by: [ DogStatsDConfiguration ]
+    pipelines: [ dogstatsd ]
+    description: "Traffic capture channel depth"
+    issue: "#1381"
+    value_type_override: integer
+    additional_attributes:
+      config_registry_filename: dogstatsd.rs
+
+  dogstatsd_capture_path:
+    support_level: full
+    used_by: [ DogStatsDConfiguration ]
+    pipelines: [ dogstatsd ]
+    description: "Traffic capture file location"
+    issue: "#1381"
+    additional_attributes:
+      config_registry_filename: dogstatsd.rs
+
+  dogstatsd_context_expiry_seconds:
+    support_level: full
+    used_by: [ DogStatsDConfiguration ]
+    pipelines: [ dogstatsd ]
+    description: "Context cache TTL (seconds)"
+    value_type_override: integer
+    additional_attributes:
+      config_registry_filename: dogstatsd.rs
+
+  dogstatsd_entity_id_precedence:
+    support_level: full
+    used_by: [ DogStatsDConfiguration ]
+    pipelines: [ dogstatsd ]
+    description: "Entity ID over auto-detection"
+    env_var_override: [ DD_DOGSTATSD_ENTITY_ID_PRECEDENCE ]
+    additional_attributes:
+      config_registry_filename: dogstatsd.rs
+
+  dogstatsd_eol_required:
+    support_level: full
+    used_by: [ DogStatsDConfiguration ]
+    pipelines: [ dogstatsd ]
+    description: "Require newline-terminated messages"
+    test_json: '["udp"]'
+    additional_attributes:
+      config_registry_filename: dogstatsd.rs
+
+  dogstatsd_flush_incomplete_buckets:
+    support_level: full
+    used_by: [ AggregateConfiguration ]
+    pipelines: [ dogstatsd, checks ]
+    description: "Flush open buckets on shutdown"
+    additional_yaml_paths: [ aggregate_flush_open_windows ]
+    additional_attributes:
+      config_registry_filename: aggregate.rs
+
+  dogstatsd_log_file:
+    support_level: full
+    used_by: [ DogStatsDDebugLogConfiguration ]
+    pipelines: [ dogstatsd ]
+    description: "DSD dedicated log file path"
+    additional_attributes:
+      config_registry_filename: dogstatsd.rs
+
+  dogstatsd_log_file_max_rolls:
+    support_level: full
+    used_by: [ DogStatsDDebugLogConfiguration ]
+    pipelines: [ dogstatsd ]
+    description: "DSD log file max roll count"
+    value_type_override: integer
+    additional_attributes:
+      config_registry_filename: dogstatsd.rs
+
+  dogstatsd_log_file_max_size:
+    support_level: full
+    used_by: [ DogStatsDDebugLogConfiguration ]
+    pipelines: [ dogstatsd ]
+    description: "DSD log file max size"
+    test_json: '"42MB"'
+    additional_attributes:
+      config_registry_filename: dogstatsd.rs
+
+  dogstatsd_logging_enabled:
+    support_level: full
+    used_by: [ DogStatsDDebugLogConfiguration ]
+    pipelines: [ dogstatsd ]
+    description: "Enables DSD metric logging"
+    documentation: |-
+      ADP supports the core agent's DogStatsD metric debug log. To write this file, set
+      `dogstatsd_metrics_stats_enable: true`. `dogstatsd_logging_enabled` also must be `true`;
+      it defaults to `true`, so most configurations only need to enable
+      `dogstatsd_metrics_stats_enable`.
+
+      When `dogstatsd_logging_enabled` is `true`, ADP connects an extra DogStatsD destination
+      to the decoded metric stream. The destination writes one line per metric sample with the
+      metric name, tags, count, and last-seen time while `dogstatsd_metrics_stats_enable` is
+      `true`. When `dogstatsd_metrics_stats_enable` is `false`, the destination drains decoded
+      metrics and drops them. This lets runtime configuration changes start and stop the debug
+      log without rebuilding the topology.
+
+      The default `dogstatsd_log_file` path is
+      `/var/log/datadog/dogstatsd_info/dogstatsd-stats.log` on Linux and other Unix platforms,
+      `/opt/datadog-agent/logs/dogstatsd_info/dogstatsd-stats.log` on macOS, and
+      `%ProgramData%\datadog\logs\dogstatsd_info\dogstatsd-stats.log` on Windows.
+
+      This debug log differs from the `dogstatsd_capture_*` settings. The debug log records
+      decoded metric summaries after DogStatsD parsing. The capture settings record raw
+      DogStatsD traffic for packet-level investigation.
+    additional_attributes:
+      config_registry_filename: dogstatsd.rs
+
+  dogstatsd_mapper_cache_size:
+    support_level: partial
+    used_by: [ DogStatsDMapperConfiguration ]
+    pipelines: [ dogstatsd ]
+    description: "Mapper result LRU cache size"
+    documentation: |-
+      ADP and the core agent both cache mapper results to skip regex evaluation on repeat
+      metric names. With the default value of `1000`, and with any positive integer, behavior
+      matches the core agent: results are cached in an LRU keyed by the original metric name,
+      including a negative-cache entry for names that match no profile.
+
+      The two implementations diverge when this setting is `0`. In the core agent, `0` is
+      rejected by the underlying LRU library, which causes the entire mapper to be silently
+      disabled: mapping profiles configured by `dogstatsd_mapper_profiles` are not applied. In
+      ADP, `0` disables the result cache only; mapping profiles still run, so each metric pays
+      the regex evaluation cost without amortization.
+
+      If you previously set `dogstatsd_mapper_cache_size: 0` in the core agent to turn off the
+      mapper, clear `dogstatsd_mapper_profiles` instead when running ADP.
+    issue: "#1687"
+    value_type_override: integer
+    additional_attributes:
+      config_registry_filename: dogstatsd_mapper.rs
+
+  dogstatsd_mapper_profiles:
+    support_level: full
+    used_by: [ DogStatsDMapperConfiguration ]
+    pipelines: [ dogstatsd ]
+    description: "Metric mapping profile definitions"
+    test_json: '[{"name":"test","prefix":"test.","mappings":[]}]'
+    additional_attributes:
+      config_registry_filename: dogstatsd_mapper.rs
+
+  dogstatsd_metrics_stats_enable:
+    support_level: partial
+    used_by: [ DogStatsDDebugLogConfiguration ]
+    pipelines: [ dogstatsd ]
+    description: "Enable per-metric debug stats"
+    documentation: "See `dogstatsd_stats_enable`"
+    issue: "#1352"
+    additional_attributes:
+      config_registry_filename: dogstatsd.rs
+
+  dogstatsd_no_aggregation_pipeline:
+    support_level: full
+    used_by: [ AggregateConfiguration, DogStatsDConfiguration ]
+    pipelines: [ dogstatsd, checks ]
+    description: "Enable no-agg timestamped path"
+    additional_attributes:
+      config_registry_filename: aggregate.rs
+
+  dogstatsd_non_local_traffic:
+    support_level: full
+    used_by: [ DogStatsDConfiguration ]
+    pipelines: [ dogstatsd ]
+    description: "Accept non-localhost UDP/TCP"
+    additional_attributes:
+      config_registry_filename: dogstatsd.rs
+
+  dogstatsd_origin_detection:
+    support_level: full
+    used_by: [ DogStatsDConfiguration ]
+    pipelines: [ dogstatsd ]
+    description: "Enable UDS origin detection"
+    env_var_override: [ DD_DOGSTATSD_ORIGIN_DETECTION ]
+    additional_attributes:
+      config_registry_filename: dogstatsd.rs
+
+  dogstatsd_origin_detection_client:
+    support_level: full
+    used_by: [ DogStatsDConfiguration ]
+    pipelines: [ dogstatsd ]
+    description: "Honor client origin proto fields"
+    env_var_override: [ DD_DOGSTATSD_ORIGIN_DETECTION_CLIENT ]
+    additional_attributes:
+      config_registry_filename: dogstatsd.rs
+
+  dogstatsd_origin_optout_enabled:
+    support_level: full
+    used_by: [ DogStatsDConfiguration ]
+    pipelines: [ dogstatsd ]
+    description: "Allow clients to opt out origin"
+    env_var_override: [ DD_DOGSTATSD_ORIGIN_OPTOUT_ENABLED ]
+    additional_attributes:
+      config_registry_filename: dogstatsd.rs
+
+  dogstatsd_port:
+    support_level: full
+    used_by: [ DogStatsDConfiguration ]
+    pipelines: [ dogstatsd ]
+    description: "UDP listen port"
+    value_type_override: integer
+    additional_attributes:
+      config_registry_filename: dogstatsd.rs
+
+  dogstatsd_so_rcvbuf:
+    support_level: full
+    used_by: [ DogStatsDConfiguration ]
+    pipelines: [ dogstatsd ]
+    description: "Socket receive buffer size"
+    value_type_override: integer
+    additional_attributes:
+      config_registry_filename: dogstatsd.rs
+
+  dogstatsd_socket:
+    support_level: full
+    used_by: [ DogStatsDConfiguration ]
+    pipelines: [ dogstatsd ]
+    description: "UDS datagram socket path"
+    additional_attributes:
+      config_registry_filename: dogstatsd.rs
+
+
+
+  dogstatsd_stream_log_too_big:
+    support_level: full
+    used_by: [ DogStatsDConfiguration ]
+    pipelines: [ dogstatsd ]
+    description: "Log oversized UDS stream frames"
+    additional_attributes:
+      config_registry_filename: dogstatsd.rs
+
+  dogstatsd_stream_socket:
+    support_level: full
+    used_by: [ DogStatsDConfiguration ]
+    pipelines: [ dogstatsd ]
+    description: "UDS stream socket path"
+    additional_attributes:
+      config_registry_filename: dogstatsd.rs
+
+  dogstatsd_string_interner_size:
+    support_level: full
+    used_by: [ DogStatsDConfiguration ]
+    pipelines: [ dogstatsd ]
+    description: "String interner capacity"
+    value_type_override: integer
+    additional_attributes:
+      config_registry_filename: dogstatsd.rs
+
+  dogstatsd_tag_cardinality:
+    support_level: full
+    used_by: [ DogStatsDConfiguration ]
+    pipelines: [ dogstatsd ]
+    description: "Default tag cardinality level"
+    env_var_override: [ DD_DOGSTATSD_TAG_CARDINALITY ]
+    test_json: '"high"'
+    additional_attributes:
+      config_registry_filename: dogstatsd.rs
+
+  dogstatsd_tags:
+    support_level: full
+    used_by: [ DogStatsDConfiguration ]
+    pipelines: [ dogstatsd ]
+    description: "Extra tags added to all DSD data"
+    additional_attributes:
+      config_registry_filename: dogstatsd.rs
+
+  enable_payloads.events:
+    support_level: full
+    used_by: [ DogStatsDConfiguration ]
+    pipelines: [ dogstatsd ]
+    description: "Allow sending event payloads"
+    additional_attributes:
+      config_registry_filename: dogstatsd.rs
+
+  enable_payloads.series:
+    support_level: full
+    used_by: [ DogStatsDConfiguration ]
+    pipelines: [ dogstatsd ]
+    description: "Allow sending series payloads"
+    additional_attributes:
+      config_registry_filename: dogstatsd.rs
+
+  enable_payloads.service_checks:
+    support_level: full
+    used_by: [ DogStatsDConfiguration ]
+    pipelines: [ dogstatsd ]
+    description: "Allow sending service check payloads"
+    additional_attributes:
+      config_registry_filename: dogstatsd.rs
+
+  enable_payloads.sketches:
+    support_level: full
+    used_by: [ DogStatsDConfiguration ]
+    pipelines: [ dogstatsd ]
+    description: "Allow sending sketch payloads"
+    additional_attributes:
+      config_registry_filename: dogstatsd.rs
+
+  env:
+    support_level: full
+    used_by: [ DatadogApmStatsEncoderConfiguration, DatadogTraceConfiguration ]
+    pipelines: [ traces ]
+    description: "Agent environment name"
+    documentation: >-
+      ADP reads env but defaults to 'none' instead of the core agent's ''. Scope
+      is narrower in ADP (only traces/stats encoders). Neither implementation uses
+      env directly on the DogStatsD metrics path.
+    additional_attributes:
+      config_registry_filename: encoders.rs
+
+  forwarder_backoff_base:
+    support_level: full
+    used_by: [ ForwarderConfiguration ]
+    pipelines: [ cross_cutting ]
+    description: "Retry backoff base (secs)"
+    additional_attributes:
+      config_registry_filename: forwarder.rs
+
+  forwarder_backoff_factor:
+    support_level: full
+    used_by: [ ForwarderConfiguration ]
+    pipelines: [ cross_cutting ]
+    description: "Retry backoff jitter factor"
+    additional_attributes:
+      config_registry_filename: forwarder.rs
+
+  forwarder_backoff_max:
+    support_level: full
+    used_by: [ ForwarderConfiguration ]
+    pipelines: [ cross_cutting ]
+    description: "Retry backoff ceiling (secs)"
+    additional_attributes:
+      config_registry_filename: forwarder.rs
+
+  forwarder_connection_reset_interval:
+    support_level: full
+    used_by: [ ForwarderConfiguration ]
+    pipelines: [ cross_cutting ]
+    description: "HTTP conn reset interval (secs)"
+    value_type_override: integer
+    additional_attributes:
+      config_registry_filename: forwarder.rs
+
+  forwarder_high_prio_buffer_size:
+    support_level: full
+    used_by: [ ForwarderConfiguration ]
+    pipelines: [ cross_cutting ]
+    description: "High-priority request queue size"
+    issue: "#1362"
+    value_type_override: integer
+    additional_attributes:
+      config_registry_filename: forwarder.rs
+
+  forwarder_http_protocol:
+    support_level: full
+    used_by: [ ForwarderConfiguration ]
+    pipelines: [ cross_cutting ]
+    description: "HTTP version selection (auto/http1/http2)"
+    issue: "#1361"
+    test_json: '"http1"'
+    additional_attributes:
+      config_registry_filename: forwarder.rs
+
+  forwarder_num_workers:
+    support_level: full
+    used_by: [ ForwarderConfiguration ]
+    pipelines: [ cross_cutting ]
+    description: "Concurrent forwarder workers"
+    value_type_override: integer
+    additional_attributes:
+      config_registry_filename: forwarder.rs
+
+  forwarder_outdated_file_in_days:
+    support_level: full
+    used_by: [ ForwarderConfiguration ]
+    pipelines: [ cross_cutting ]
+    description: "Days before retry files are deleted"
+    issue: "#1360"
+    value_type_override: integer
+    additional_attributes:
+      config_registry_filename: forwarder.rs
+
+  forwarder_recovery_interval:
+    support_level: full
+    used_by: [ ForwarderConfiguration ]
+    pipelines: [ cross_cutting ]
+    description: "Backoff recovery decrease factor"
+    value_type_override: integer
+    additional_attributes:
+      config_registry_filename: forwarder.rs
+
+  forwarder_recovery_reset:
+    support_level: full
+    used_by: [ ForwarderConfiguration ]
+    pipelines: [ cross_cutting ]
+    description: "Reset errors on success"
+    additional_attributes:
+      config_registry_filename: forwarder.rs
+
+  forwarder_retry_queue_max_size:
+    support_level: full
+    used_by: [ ForwarderConfiguration ]
+    pipelines: [ cross_cutting ]
+    description: "Retry queue max size (deprecated)"
+    value_type_override: integer
+    additional_attributes:
+      config_registry_filename: forwarder.rs
+
+  forwarder_retry_queue_payloads_max_size:
+    support_level: full
+    used_by: [ ForwarderConfiguration ]
+    pipelines: [ cross_cutting ]
+    description: "Retry queue max size (bytes)"
+    value_type_override: integer
+    additional_attributes:
+      config_registry_filename: forwarder.rs
+
+  forwarder_storage_max_disk_ratio:
+    support_level: full
+    used_by: [ ForwarderConfiguration ]
+    pipelines: [ cross_cutting ]
+    description: "Max disk usage ratio for retry"
+    additional_attributes:
+      config_registry_filename: forwarder.rs
+
+  forwarder_storage_max_size_in_bytes:
+    support_level: full
+    used_by: [ ForwarderConfiguration ]
+    pipelines: [ cross_cutting ]
+    description: "Max on-disk retry storage size"
+    value_type_override: integer
+    additional_attributes:
+      config_registry_filename: forwarder.rs
+
+  forwarder_storage_path:
+    support_level: full
+    used_by: [ ForwarderConfiguration ]
+    pipelines: [ cross_cutting ]
+    description: "On-disk retry storage directory"
+    additional_attributes:
+      config_registry_filename: forwarder.rs
+
+  forwarder_timeout:
+    support_level: full
+    used_by: [ ForwarderConfiguration ]
+    pipelines: [ cross_cutting ]
+    description: "Forwarder HTTP request timeout"
+    value_type_override: integer
+    additional_attributes:
+      config_registry_filename: forwarder.rs
+
+  histogram_aggregates:
+    support_level: full
+    used_by: [ AggregateConfiguration ]
+    pipelines: [ dogstatsd, checks ]
+    description: "Histogram aggregate statistics"
+    test_json: '["count"]'
+    additional_attributes:
+      config_registry_filename: aggregate.rs
+
+  histogram_copy_to_distribution:
+    support_level: full
+    used_by: [ AggregateConfiguration ]
+    pipelines: [ dogstatsd, checks ]
+    description: "Copy histograms to distributions"
+    additional_attributes:
+      config_registry_filename: aggregate.rs
+
+  histogram_copy_to_distribution_prefix:
+    support_level: full
+    used_by: [ AggregateConfiguration ]
+    pipelines: [ dogstatsd, checks ]
+    description: "Prefix for hist-to-dist copies"
+    additional_attributes:
+      config_registry_filename: aggregate.rs
+
+  log_format_rfc3339:
+    support_level: full
+    used_by: [ get_typed ]
+    pipelines: [ cross_cutting ]
+    description: "Use RFC 3339 timestamps in log output"
+    additional_attributes:
+      config_registry_filename: get_typed.rs
+
+  log_level:
+    support_level: partial
+    used_by: [ get_typed ]
+    pipelines: [ cross_cutting ]
+    description: "Log verbosity directives"
+    documentation: |-
+      ADP accepts `log_level` as the startup logging control. A plain level applies to
+      ADP-owned and Saluki-owned targets only, including `agent_data_plane`, `saluki_*`, and
+      runtime crates under `lib/`.
+
+      ```yaml
+      log_level: debug
+      ```
+
+      This keeps third-party dependencies such as `hyper`, `tokio`, and `tonic` at their
+      default filtering unless you opt them in.
+
+      To control dependency logs or set a global fallback, use advanced `EnvFilter` directives
+      in `log_level`. ADP applies those directive strings as configured:
+
+      ```yaml
+      log_level: warn,agent_data_plane=debug,hyper=warn
+      ```
+    additional_attributes:
+      config_registry_filename: get_typed.rs
+
+  log_payloads:
+    support_level: full
+    used_by: [ DatadogEventsConfiguration, DatadogMetricsConfiguration, DatadogServiceChecksConfiguration ]
+    pipelines: [ checks, dogstatsd, traces ]
+    description: "Debug-log decoded payload contents before encoding"
+    documentation: |-
+      Set `log_payloads: true` and run with debug-level logging to see decoded payload objects
+      (scalar series metrics, sketches/distributions, events, and service checks) before they
+      enter Datadog encoders. These logs can contain high-volume customer data including metric
+      names, tags, host and container metadata, event text, and service check messages. Use this
+      setting only while diagnosing payload content.
+
+      ADP does not dump the exact encoded JSON or protobuf HTTP request body, and it does not
+      log compressed wire payload bytes.
+    additional_attributes:
+      config_registry_filename: encoders.rs
+
+  metric_filterlist:
+    support_level: full
+    used_by: [ DogStatsDPrefixFilterConfiguration ]
+    pipelines: [ dogstatsd ]
+    description: "Metric name blocklist"
+    additional_attributes:
+      config_registry_filename: dogstatsd_prefix_filter.rs
+
+  metric_filterlist_match_prefix:
+    support_level: full
+    used_by: [ DogStatsDPrefixFilterConfiguration ]
+    pipelines: [ dogstatsd ]
+    description: "Blocklist uses prefix matching"
+    additional_attributes:
+      config_registry_filename: dogstatsd_prefix_filter.rs
+
+  min_tls_version:
+    support_level: partial
+    used_by: [ ForwarderConfiguration ]
+    pipelines: [ cross_cutting ]
+    description: "Minimum TLS version for HTTPS connections"
+    documentation: |-
+      ADP supports `min_tls_version` for Datadog intake forwarding through the shared Datadog
+      forwarder. The default is `tlsv1.2`, which allows TLS 1.2 and TLS 1.3. To require TLS
+      1.3 only, set `min_tls_version: tlsv1.3` or `DD_MIN_TLS_VERSION=tlsv1.3`.
+
+      The core agent also accepts `tlsv1.0` and `tlsv1.1`. ADP accepts those values for
+      configuration compatibility, but clamps them to TLS 1.2 because ADP uses `rustls`, which
+      does not support TLS 1.0 or TLS 1.1.
+
+      This setting does not affect ADP IPC, local privileged APIs, ADP control-plane clients,
+      OTLP proxying to the core agent, or unrelated HTTP clients.
+    env_var_override: [ DD_MIN_TLS_VERSION ]
+    additional_attributes:
+      config_registry_filename: forwarder.rs
+
+  multi_region_failover.api_key:
+    support_level: full
+    used_by: [ MrfConfiguration ]
+    pipelines: [ cross_cutting ]
+    description: "API key for the failover-region endpoint"
+    env_var_override: [ DD_MULTI_REGION_FAILOVER_API_KEY ]
+    value_type_override: string
+    additional_attributes:
+      config_registry_filename: mrf.rs
+
+  multi_region_failover.dd_url:
+    support_level: full
+    used_by: [ MrfConfiguration ]
+    pipelines: [ cross_cutting ]
+    description: "Failover intake URL"
+    env_var_override: [ DD_MULTI_REGION_FAILOVER_DD_URL ]
+    value_type_override: string
+    additional_attributes:
+      config_registry_filename: mrf.rs
+
+  multi_region_failover.enabled:
+    support_level: partial
+    used_by: [ MrfConfiguration ]
+    pipelines: [ cross_cutting ]
+    description: "Enable multi-region failover mode"
+    documentation: |-
+      ADP supports multi-region failover for metrics. When `multi_region_failover.enabled` and
+      `multi_region_failover.failover_metrics` are both `true`, ADP forwards metrics to the
+      primary Datadog endpoint and to a second MRF endpoint.
+
+      To enable the MRF metrics branch at startup, configure `multi_region_failover.api_key`
+      and one of `multi_region_failover.site` or `multi_region_failover.dd_url`. If the MRF
+      endpoint configuration is incomplete, ADP skips the MRF branch and continues forwarding
+      to the primary endpoint.
+
+      ADP does not fall back to the primary `api_key`, `site`, or `dd_url` for MRF traffic.
+      `multi_region_failover.enabled` and endpoint selection are resolved at startup.
+      `multi_region_failover.failover_metrics`, `multi_region_failover.metric_allowlist`, and
+      `multi_region_failover.api_key` can refresh from live configuration after the MRF branch
+      is enabled.
+
+      | Config Key                               | Behavior                                                                   | Default |
+      | ---------------------------------------- | -------------------------------------------------------------------------- | ------- |
+      | `multi_region_failover.enabled`          | Enables multi-region failover mode.                                        | `false` |
+      | `multi_region_failover.failover_metrics` | Enables metrics forwarding to the failover region when MRF is enabled.     | `false` |
+      | `multi_region_failover.metric_allowlist` | Exact metric names to forward to MRF. Empty or unset forwards all metrics. | `[]`    |
+      | `multi_region_failover.api_key`          | API key for the failover-region endpoint.                                  | unset   |
+      | `multi_region_failover.site`             | Datadog site for the failover region, used as `https://app.mrf.<site>`.    | unset   |
+      | `multi_region_failover.dd_url`           | Explicit failover intake URL. Takes precedence over `site` when set.       | unset   |
+    env_var_override: [ DD_MULTI_REGION_FAILOVER_ENABLED ]
+    additional_attributes:
+      config_registry_filename: mrf.rs
+
+  multi_region_failover.failover_metrics:
+    support_level: full
+    used_by: [ MrfConfiguration ]
+    pipelines: [ cross_cutting ]
+    description: "Enable metrics forwarding to failover region"
+    env_var_override: [ DD_MULTI_REGION_FAILOVER_FAILOVER_METRICS ]
+    additional_attributes:
+      config_registry_filename: mrf.rs
+
+  multi_region_failover.metric_allowlist:
+    support_level: full
+    used_by: [ MrfConfiguration ]
+    pipelines: [ cross_cutting ]
+    description: "Metric name allowlist for MRF forwarding"
+    env_var_override: [ DD_MULTI_REGION_FAILOVER_METRIC_ALLOWLIST ]
+    value_type_override: string_list
+    additional_attributes:
+      config_registry_filename: mrf.rs
+
+  multi_region_failover.site:
+    support_level: full
+    used_by: [ MrfConfiguration ]
+    pipelines: [ cross_cutting ]
+    description: "Datadog site for the failover region"
+    env_var_override: [ DD_MULTI_REGION_FAILOVER_SITE ]
+    value_type_override: string
+    additional_attributes:
+      config_registry_filename: mrf.rs
+
+  no_proxy_nonexact_match:
+    support_level: full
+    used_by: [ ForwarderConfiguration, ProxyConfiguration ]
+    pipelines: [ cross_cutting ]
+    description: "Domain/CIDR `no_proxy` matching"
+    env_var_override: [ DD_NO_PROXY_NONEXACT_MATCH ]
+    additional_attributes:
+      config_registry_filename: proxy.rs
+
+  observability_pipelines_worker.metrics.enabled:
+    support_level: full
+    used_by: [ ForwarderConfiguration ]
+    pipelines: [ cross_cutting ]
+    description: "Route metrics to OPW instance"
+    env_var_override: [ DD_OBSERVABILITY_PIPELINES_WORKER_METRICS_ENABLED ]
+    additional_attributes:
+      config_registry_filename: forwarder.rs
+
+  observability_pipelines_worker.metrics.url:
+    support_level: full
+    used_by: [ ForwarderConfiguration ]
+    pipelines: [ cross_cutting ]
+    description: "OPW metrics intake URL"
+    env_var_override: [ DD_OBSERVABILITY_PIPELINES_WORKER_METRICS_URL ]
+    additional_attributes:
+      config_registry_filename: forwarder.rs
+
+  origin_detection_unified:
+    support_level: full
+    used_by: [ DogStatsDConfiguration ]
+    pipelines: [ dogstatsd ]
+    description: "Unified origin detection mode"
+    env_var_override: [ DD_ORIGIN_DETECTION_UNIFIED ]
+    additional_attributes:
+      config_registry_filename: dogstatsd.rs
+
+  otlp_config.logs.enabled:
+    support_level: full
+    used_by: [ OtlpConfiguration ]
+    pipelines: [ otlp ]
+    description: "otlp_config.logs.enabled"
+    test_json: 'false'
+    additional_attributes:
+      config_registry_filename: otlp.rs
+
+  otlp_config.metrics.enabled:
+    support_level: full
+    used_by: [ OtlpConfiguration ]
+    pipelines: [ otlp ]
+    description: "otlp_config.metrics.enabled"
+    additional_attributes:
+      config_registry_filename: otlp.rs
+
+  otlp_config.receiver.protocols.grpc.endpoint:
+    support_level: full
+    used_by: [ OtlpRelayConfiguration, OtlpConfiguration ]
+    pipelines: [ otlp ]
+    description: "otlp_config.receiver.protocols.grpc.endpoint"
+    additional_attributes:
+      config_registry_filename: otlp.rs
+
+  otlp_config.receiver.protocols.grpc.max_recv_msg_size_mib:
+    support_level: full
+    used_by: [ OtlpRelayConfiguration, OtlpConfiguration ]
+    pipelines: [ otlp ]
+    description: "Max OTLP inbound gRPC message size (MiB)"
+    value_type_override: integer
+    additional_attributes:
+      config_registry_filename: otlp.rs
+
+  otlp_config.receiver.protocols.grpc.transport:
+    support_level: full
+    used_by: [ OtlpRelayConfiguration, OtlpConfiguration ]
+    pipelines: [ otlp ]
+    description: "otlp_config.receiver.protocols.grpc.transport"
+    additional_attributes:
+      config_registry_filename: otlp.rs
+
+  otlp_config.receiver.protocols.http.endpoint:
+    support_level: full
+    used_by: [ OtlpRelayConfiguration, OtlpConfiguration ]
+    pipelines: [ otlp ]
+    description: "otlp_config.receiver.protocols.http.endpoint"
+    additional_attributes:
+      config_registry_filename: otlp.rs
+
+  otlp_config.traces.enabled:
+    support_level: full
+    used_by: [ OtlpDecoderConfiguration, OtlpConfiguration ]
+    pipelines: [ traces ]
+    description: "otlp_config.traces.enabled"
+    additional_attributes:
+      config_registry_filename: otlp.rs
+
+  otlp_config.traces.internal_port:
+    support_level: full
+    used_by: [ OtlpDecoderConfiguration, OtlpConfiguration ]
+    pipelines: [ traces ]
+    description: "otlp_config.traces.internal_port"
+    value_type_override: integer
+    additional_attributes:
+      config_registry_filename: otlp.rs
+
+  otlp_config.traces.probabilistic_sampler.sampling_percentage:
+    support_level: full
+    used_by: [ OtlpDecoderConfiguration, OtlpConfiguration ]
+    pipelines: [ traces ]
+    description: "OTLP trace sampling percentage"
+    additional_attributes:
+      config_registry_filename: otlp.rs
+
+  provider_kind:
+    support_level: full
+    used_by: [ DogStatsDConfiguration ]
+    pipelines: [ dogstatsd ]
+    description: "Provider kind static tag"
+    env_var_override: [ DD_PROVIDER_KIND ]
+    additional_attributes:
+      config_registry_filename: dogstatsd.rs
+
+  proxy.http:
+    support_level: full
+    used_by: [ ForwarderConfiguration, ProxyConfiguration ]
+    pipelines: [ cross_cutting ]
+    description: "HTTP proxy URL"
+    env_var_override: [ DD_PROXY_HTTP, HTTP_PROXY ]
+    additional_attributes:
+      config_registry_filename: proxy.rs
+
+  proxy.https:
+    support_level: full
+    used_by: [ ForwarderConfiguration, ProxyConfiguration ]
+    pipelines: [ cross_cutting ]
+    description: "HTTPS proxy URL"
+    env_var_override: [ DD_PROXY_HTTPS, HTTPS_PROXY ]
+    additional_attributes:
+      config_registry_filename: proxy.rs
+
+  proxy.no_proxy:
+    support_level: full
+    used_by: [ ForwarderConfiguration, ProxyConfiguration ]
+    pipelines: [ cross_cutting ]
+    description: "Hosts bypassing proxy"
+    env_var_override: [ DD_PROXY_NO_PROXY ]
+    additional_attributes:
+      config_registry_filename: proxy.rs
+
+  serializer_compressor_kind:
+    support_level: full
+    used_by: [ DatadogEventsConfiguration, DatadogLogsConfiguration, DatadogMetricsConfiguration, DatadogServiceChecksConfiguration, DatadogTraceConfiguration ]
+    pipelines: [ cross_cutting ]
+    description: "Payload compression algorithm"
+    additional_attributes:
+      config_registry_filename: encoders.rs
+
+  serializer_max_payload_size:
+    support_level: full
+    used_by: [ DatadogEventsConfiguration, DatadogMetricsConfiguration, DatadogServiceChecksConfiguration ]
+    pipelines: [ checks, dogstatsd ]
+    description: "Max compressed payload size (generic)"
+    value_type_override: integer
+    additional_attributes:
+      config_registry_filename: encoders.rs
+
+  serializer_max_series_payload_size:
+    support_level: full
+    used_by: [ DatadogMetricsConfiguration ]
+    pipelines: [ checks, dogstatsd ]
+    description: "Max compressed V2 series payload size"
+    value_type_override: integer
+    additional_attributes:
+      config_registry_filename: encoders.rs
+
+  serializer_max_series_points_per_payload:
+    support_level: full
+    used_by: [ DatadogMetricsConfiguration ]
+    pipelines: [ checks, dogstatsd ]
+    description: "Max data points per series payload"
+    value_type_override: integer
+    additional_attributes:
+      config_registry_filename: encoders.rs
+
+  serializer_max_series_uncompressed_payload_size:
+    support_level: full
+    used_by: [ DatadogMetricsConfiguration ]
+    pipelines: [ checks, dogstatsd ]
+    description: "Max uncompressed V2 series payload size"
+    value_type_override: integer
+    additional_attributes:
+      config_registry_filename: encoders.rs
+
+  serializer_max_uncompressed_payload_size:
+    support_level: full
+    used_by: [ DatadogEventsConfiguration, DatadogMetricsConfiguration, DatadogServiceChecksConfiguration ]
+    pipelines: [ checks, dogstatsd ]
+    description: "Max uncompressed payload size (generic)"
+    value_type_override: integer
+    additional_attributes:
+      config_registry_filename: encoders.rs
+
+  serializer_zstd_compressor_level:
+    support_level: partial
+    used_by: [ DatadogEventsConfiguration, DatadogLogsConfiguration, DatadogMetricsConfiguration, DatadogServiceChecksConfiguration, DatadogTraceConfiguration ]
+    pipelines: [ cross_cutting ]
+    description: "Zstd compression level"
+    documentation: >-
+      ADP defaults to level 3 vs Agent level 1. ADP intentionally compresses
+      better. Key is recognized by both; default divergence is intentional.
+    value_type_override: integer
+    additional_attributes:
+      config_registry_filename: encoders.rs
+
+  site:
+    support_level: full
+    used_by: [ ForwarderConfiguration ]
+    pipelines: [ cross_cutting ]
+    description: "Datadog site domain"
+    additional_attributes:
+      config_registry_filename: forwarder.rs
+
+  skip_ssl_validation:
+    support_level: partial
+    used_by: [ ForwarderConfiguration ]
+    pipelines: [ cross_cutting ]
+    description: "Skip TLS cert validation"
+    documentation: |-
+      ADP supports `skip_ssl_validation` for Datadog intake forwarding through the shared
+      Datadog forwarder. The default is `false`, which preserves normal server certificate
+      validation. When enabled, this setting affects the Datadog intake clients used by metrics,
+      logs, traces, events, and service checks that flow through the shared forwarder.
+
+      This setting does not affect ADP IPC, local privileged APIs, ADP control-plane clients,
+      OTLP proxying to the core agent, or unrelated HTTP clients. In FIPS builds, ADP rejects
+      `skip_ssl_validation: true` because disabling TLS certificate validation is not
+      FIPS-compliant.
+    env_var_override: [ DD_SKIP_SSL_VALIDATION ]
+    additional_attributes:
+      config_registry_filename: forwarder.rs
+
+  statsd_forward_host:
+    support_level: partial
+    used_by: [ DogStatsDConfiguration ]
+    pipelines: [ dogstatsd ]
+    description: "UDP packet forwarding destination host"
+    documentation: |-
+      ADP supports DogStatsD forwarding when both `statsd_forward_host` and
+      `statsd_forward_port` are set. ADP forwards each framed DogStatsD message over UDP to the
+      configured destination before parsing, filtering, mapping, or aggregation. Forwarding
+      does not preserve the core Agent's packet-buffer grouping, so forwarded UDP datagrams may
+      be split differently while carrying the same DogStatsD messages. ADP logs setup failures
+      and tracks send failures through telemetry.
+    test_json: '"127.0.0.1"'
+    additional_attributes:
+      config_registry_filename: dogstatsd.rs
+
+  statsd_forward_port:
+    support_level: full
+    used_by: [ DogStatsDConfiguration ]
+    pipelines: [ dogstatsd ]
+    description: "UDP packet forwarding destination port"
+    value_type_override: integer
+    test_json: '9125'
+    additional_attributes:
+      config_registry_filename: dogstatsd.rs
+
+  statsd_metric_blocklist:
+    support_level: full
+    used_by: [ DogStatsDPrefixFilterConfiguration ]
+    pipelines: [ dogstatsd ]
+    description: "List of metric names to block/drop"
+    additional_attributes:
+      config_registry_filename: dogstatsd_prefix_filter.rs
+
+  statsd_metric_blocklist_match_prefix:
+    support_level: full
+    used_by: [ DogStatsDPrefixFilterConfiguration ]
+    pipelines: [ dogstatsd ]
+    description: "Treat blocklist entries as prefixes"
+    additional_attributes:
+      config_registry_filename: dogstatsd_prefix_filter.rs
+
+  statsd_metric_namespace:
+    support_level: full
+    used_by: [ DogStatsDPrefixFilterConfiguration ]
+    pipelines: [ dogstatsd ]
+    description: "Prefix prepended to all metric names"
+    additional_attributes:
+      config_registry_filename: dogstatsd_prefix_filter.rs
+
+  statsd_metric_namespace_blacklist:
+    support_level: full
+    used_by: [ DogStatsDPrefixFilterConfiguration ]
+    pipelines: [ dogstatsd ]
+    description: "Prefixes exempt from namespace"
+    additional_yaml_paths: [ statsd_metric_namespace_blocklist ]
+    additional_attributes:
+      config_registry_filename: dogstatsd_prefix_filter.rs
+
+  syslog_rfc:
+    support_level: full
+    used_by: [ get_typed ]
+    pipelines: [ cross_cutting ]
+    description: "Use RFC-style syslog header"
+    additional_attributes:
+      config_registry_filename: get_typed.rs
+
+  syslog_uri:
+    support_level: full
+    used_by: [ get_typed ]
+    pipelines: [ cross_cutting ]
+    description: "Syslog destination URI"
+    additional_attributes:
+      config_registry_filename: get_typed.rs
+
+  use_proxy_for_cloud_metadata:
+    support_level: full
+    used_by: [ ForwarderConfiguration, ProxyConfiguration ]
+    pipelines: [ cross_cutting ]
+    description: "Proxy cloud metadata endpoints"
+    env_var_override: [ DD_USE_PROXY_FOR_CLOUD_METADATA ]
+    additional_attributes:
+      config_registry_filename: proxy.rs
+
+  use_v2_api.series:
+    support_level: full
+    used_by: [ DatadogMetricsConfiguration ]
+    pipelines: [ checks, dogstatsd ]
+    description: "Send series via V2 protobuf endpoint"
+    additional_attributes:
+      config_registry_filename: encoders.rs
+
+  vector.metrics.enabled:
+    support_level: full
+    used_by: [ ForwarderConfiguration ]
+    pipelines: [ cross_cutting ]
+    description: "Route metrics to OPW (legacy alias)"
+    env_var_override: [ DD_VECTOR_METRICS_ENABLED ]
+    additional_attributes:
+      config_registry_filename: forwarder.rs
+
+  vector.metrics.url:
+    support_level: full
+    used_by: [ ForwarderConfiguration ]
+    pipelines: [ cross_cutting ]
+    description: "OPW metrics intake URL (legacy alias)"
+    env_var_override: [ DD_VECTOR_METRICS_URL ]
+    additional_attributes:
+      config_registry_filename: forwarder.rs
+
+  vsock_addr:
+    support_level: full
+    used_by: [ RemoteAgentClientConfiguration ]
+    pipelines: [ cross_cutting ]
+    description: "vsock address for Agent IPC endpoint"
+    test_json: '"host"'
+    additional_attributes:
+      config_registry_filename: get_typed.rs
+
+####################################################################################################
+# UNSUPPORTED
+####################################################################################################
+unsupported:
+  aggregator_buffer_size:
+    severity: low
+    planned: false
+    pipelines: [ dogstatsd ]
+    description: "Channel buffer depth for aggregator queues"
+    documentation: >-
+      Saluki topology uses fixed interconnect sizes and construction-time wiring;
+      no per-component config knobs.
+    issue: "#1681"
+
+  aggregator_flush_metrics_and_serialize_in_parallel_buffer_size:
+    severity: low
+    planned: false
+    pipelines: [ dogstatsd ]
+    description: "Parallel flush: series/sketch buffer size"
+    documentation: >-
+      Saluki topology uses fixed interconnect sizes; no per-component config knobs.
+    issue: "#1681"
+
+  aggregator_flush_metrics_and_serialize_in_parallel_chan_size:
+    severity: low
+    planned: false
+    pipelines: [ dogstatsd ]
+    description: "Parallel flush: channel size"
+    documentation: >-
+      Saluki topology uses fixed interconnect sizes; no per-component config knobs.
+    issue: "#1681"
+
+  aggregator_stop_timeout:
+    severity: low
+    planned: false
+    pipelines: [ dogstatsd ]
+    description: "Timeout (s) for aggregator flush on stop"
+    documentation: >-
+      Saluki topology uses fixed interconnect sizes and construction-time wiring;
+      no per-component config knobs.
+    issue: "#1681"
+
+  aggregator_use_tags_store:
+    severity: low
+    planned: false
+    pipelines: [ dogstatsd ]
+    description: "Enable shared tag deduplication store"
+    documentation: >-
+      Core agent concept with no ADP analog.
+    issue: "#1681"
+
+  config_id:
+    severity: low
+    planned: false
+    pipelines: [ cross_cutting ]
+    description: "Fleet Automation config ID tag"
+    documentation: >-
+      Core Agent uses this only on Agent HA telemetry metrics.
+
+  dogstatsd_disable_verbose_logs:
+    severity: medium
+    planned: false
+    pipelines: [ dogstatsd ]
+    description: "Suppress noisy parse error logs"
+    documentation: >-
+      ADP does not emit the verbose parse-error logs that this key filters in
+      the core Agent, so there is nothing to suppress.
+    issue: "#1350"
+
+  dogstatsd_experimental_http.enabled:
+    severity: high
+    planned: true
+    pipelines: [ dogstatsd ]
+    description: "Enable experimental HTTP/H2C DSD listener"
+    documentation: >-
+      Experimental HTTP/H2C DogStatsD ingestion endpoint; not needed for ADP.
+    issue: "#1682"
+
+  dogstatsd_experimental_http.listen_address:
+    severity: high
+    planned: true
+    pipelines: [ dogstatsd ]
+    description: "Bind address for experimental HTTP DSD listener"
+    documentation: >-
+      Experimental HTTP/H2C DogStatsD ingestion endpoint; not needed for ADP.
+    issue: "#1682"
+
+  dogstatsd_host_socket_path:
+    severity: low
+    planned: false
+    pipelines: [ dogstatsd ]
+    description: "Host UDS socket dir for DSD"
+    documentation: >-
+      Not read by DSD server; admission controller only.
+
+  dogstatsd_mem_based_rate_limiter.enabled:
+    severity: low
+    planned: false
+    pipelines: [ dogstatsd ]
+    description: "Memory-based rate limiter toggle"
+    documentation: |-
+      The Core Agent exposes 11 keys under this prefix to apply backpressure when the Go
+      process approaches its memory limit. They work by manipulating Go's garbage collector
+      (`debug.SetGCPercent`, `debug.FreeOSMemory`), allocating a large heap ballast to adjust
+      GC heuristics, and blocking goroutines to slow packet ingestion. None of these mechanisms
+      have an equivalent in Rust, and ADP does not use a Go runtime.
+
+      ADP takes a different approach to the same problem using explicit static memory accounting
+      and a process-level RSS limit. All 11 `dogstatsd_mem_based_rate_limiter.*` keys are not
+      planned. See [Memory Management](../memory.md) for details.
+
+  dogstatsd_mem_based_rate_limiter.go_gc:
+    severity: low
+    planned: false
+    pipelines: [ dogstatsd ]
+    description: "Memory rate limiter GC percent"
+    documentation: >-
+      Go GC-specific; ADP uses `memory_limit` instead.
+
+  dogstatsd_mem_based_rate_limiter.high_soft_limit:
+    severity: low
+    planned: false
+    pipelines: [ dogstatsd ]
+    description: "Memory rate limiter high soft limit"
+    documentation: >-
+      Go GC-specific; ADP uses `memory_limit` instead.
+
+  dogstatsd_mem_based_rate_limiter.low_soft_limit:
+    severity: low
+    planned: false
+    pipelines: [ dogstatsd ]
+    description: "Memory rate limiter low soft limit"
+    documentation: >-
+      Go GC-specific; ADP uses `memory_limit` instead.
+
+  dogstatsd_mem_based_rate_limiter.memory_ballast:
+    severity: low
+    planned: false
+    pipelines: [ dogstatsd ]
+    description: "Memory rate limiter heap ballast size"
+    documentation: >-
+      Go GC-specific; ADP uses `memory_limit` instead.
+
+  dogstatsd_mem_based_rate_limiter.rate_check.factor:
+    severity: low
+    planned: false
+    pipelines: [ dogstatsd ]
+    description: "Memory rate limiter check factor"
+    documentation: >-
+      Go GC-specific; ADP uses `memory_limit` instead.
+
+  dogstatsd_mem_based_rate_limiter.rate_check.max:
+    severity: low
+    planned: false
+    pipelines: [ dogstatsd ]
+    description: "Memory rate limiter check max interval"
+    documentation: >-
+      Go GC-specific; ADP uses `memory_limit` instead.
+
+  dogstatsd_mem_based_rate_limiter.rate_check.min:
+    severity: low
+    planned: false
+    pipelines: [ dogstatsd ]
+    description: "Memory rate limiter check min interval"
+    documentation: >-
+      Go GC-specific; ADP uses `memory_limit` instead.
+
+  dogstatsd_mem_based_rate_limiter.soft_limit_freeos_check.factor:
+    severity: low
+    planned: false
+    pipelines: [ dogstatsd ]
+    description: "Memory rate limiter FreeOS check factor"
+    documentation: >-
+      Go GC-specific; ADP uses `memory_limit` instead.
+
+  dogstatsd_mem_based_rate_limiter.soft_limit_freeos_check.max:
+    severity: low
+    planned: false
+    pipelines: [ dogstatsd ]
+    description: "Memory rate limiter FreeOS check max"
+    documentation: >-
+      Go GC-specific; ADP uses `memory_limit` instead.
+
+  dogstatsd_mem_based_rate_limiter.soft_limit_freeos_check.min:
+    severity: low
+    planned: false
+    pipelines: [ dogstatsd ]
+    description: "Memory rate limiter FreeOS check min"
+    documentation: >-
+      Go GC-specific; ADP uses `memory_limit` instead.
+
+  dogstatsd_no_aggregation_pipeline_batch_size:
+    severity: low
+    planned: false
+    pipelines: [ dogstatsd ]
+    description: "No-aggregation pipeline batch size"
+    documentation: >-
+      Fixed in ADP topology.
+
+  dogstatsd_packet_buffer_flush_timeout:
+    severity: low
+    planned: false
+    pipelines: [ dogstatsd ]
+    description: "Packet buffer flush timeout"
+    documentation: >-
+      ADP decodes inline.
+
+  dogstatsd_packet_buffer_size:
+    severity: low
+    planned: false
+    pipelines: [ dogstatsd ]
+    description: "Datagrams per packet buffer"
+    documentation: >-
+      ADP decodes inline.
+
+  dogstatsd_pipe_name:
+    severity: medium
+    planned: true
+    pipelines: [ dogstatsd ]
+    description: "Windows named pipe path"
+    documentation: >-
+      ADP targets Linux for initial GA; Windows support will follow.
+    issue: "#1466"
+
+  dogstatsd_pipeline_autoadjust:
+    severity: low
+    planned: false
+    pipelines: [ dogstatsd ]
+    description: "Auto-adjust pipeline workers"
+    documentation: >-
+      ADP uses async tasks.
+
+  dogstatsd_pipeline_count:
+    severity: low
+    planned: false
+    pipelines: [ dogstatsd ]
+    description: "Parallel processing pipelines"
+    documentation: >-
+      ADP uses async tasks.
+
+  dogstatsd_queue_size:
+    severity: low
+    planned: false
+    pipelines: [ dogstatsd ]
+    description: "Packet channel buffer size"
+    documentation: >-
+      ADP uses async tasks.
+
+  dogstatsd_stats_buffer:
+    severity: medium
+    planned: false
+    pipelines: [ dogstatsd ]
+    description: "Internal stats buffer size"
+    documentation: >-
+      ADP does not expose the core agent's packet-per-second expvar endpoint,
+      so there is no persistent stats endpoint buffer to configure.
+    issue: "#1352"
+
+  dogstatsd_stats_enable:
+    severity: medium
+    planned: false
+    pipelines: [ dogstatsd ]
+    description: "Enable internal stats endpoint"
+    documentation: |-
+      ### DogStatsD statistics (`dogstatsd_stats_enable` / `dogstatsd_metrics_stats_enable`)
+
+      The core agent has two DogStatsD statistics mechanisms with different scopes.
+      `dogstatsd_stats_enable` enables packet-level throughput statistics from a ring buffer, exposed as
+      Go expvar data on `dogstatsd_stats_port` (default `5000`). Operators must configure an OpenMetrics
+      check to scrape that endpoint before the data is submitted. `dogstatsd_metrics_stats_enable`
+      enables runtime-toggleable metric-level debug statistics that track count and last-seen time per
+      unique metric and tag combination. That data powers the core agent's `dogstatsd-stats` CLI command
+      and HTTP endpoint.
+
+      ADP does not mirror the packet-level statistics config path. Instead, ADP provides an on-demand
+      metric-level view through a DogStatsD statistics destination that is always wired into the
+      topology, but only collects data during a time-bounded request. To collect statistics, run
+      `agent-data-plane dogstatsd stats --duration-secs N` or call the privileged
+      `/dogstatsd/stats?collection_duration_secs=N` API. The handler waits for the requested collection
+      window, then returns count and last-seen time per metric context inline as JSON. The CLI uses the
+      same API and renders the result as either summary or cardinality analysis.
+
+      ADP also exposes aggregate DogStatsD counters through its internal telemetry scrape endpoint. This
+      endpoint is separate from `/dogstatsd/stats`: it does not return the per-metric count and last-seen
+      map, and it is not controlled by the core agent's `dogstatsd_stats_*` keys. See
+      [Scraping internal telemetry](../telemetry.md) for endpoint details and scrape examples.
+
+      ADP does not expose the core agent's packet-per-second expvar endpoint or a persistent per-metric
+      DogStatsD statistics endpoint to scrape. You do not need to set up scraper configuration for this
+      per-metric data. The config keys `dogstatsd_stats_enable`, `dogstatsd_stats_buffer`, and
+      `dogstatsd_stats_port` have no effect in ADP. See [#1352].
+    issue: "#1352"
+
+  dogstatsd_stats_port:
+    severity: medium
+    planned: false
+    pipelines: [ dogstatsd ]
+    description: "Internal stats endpoint port"
+    documentation: >-
+      ADP does not expose the core agent's packet-per-second expvar endpoint,
+      so `dogstatsd_stats_port` has no effect.
+    issue: "#1352"
+
+  dogstatsd_telemetry_enabled_listener_id:
+    severity: low
+    planned: false
+    pipelines: [ dogstatsd ]
+    description: "Per-listener telemetry tagging"
+    documentation: >-
+      Not feasible to thread listener identity through ADP's async decode pipeline.
+
+  dogstatsd_windows_pipe_security_descriptor:
+    severity: medium
+    planned: true
+    pipelines: [ dogstatsd ]
+    description: "Windows named pipe ACL descriptor"
+    documentation: >-
+      Windows support is deferred but planned.
+    issue: "#1466"
+
+  dogstatsd_workers_count:
+    severity: low
+    planned: false
+    pipelines: [ dogstatsd ]
+    description: "Number of DSD processing workers"
+    documentation: >-
+      ADP uses async tasks.
+
+  enable_json_stream_shared_compressor_buffers:
+    severity: low
+    planned: false
+    pipelines: [ dogstatsd, checks, traces ]
+    description: "Pre-allocate shared compressor buffers"
+    documentation: >-
+      ADP does not use a shared compressor buffer pool; Rust request builders own fixed-capacity
+      scratch and compression buffers.
+    issue: "#1749"
+
+  entity_id:
+    severity: low
+    planned: false
+    pipelines: [ dogstatsd ]
+    description: "Agent pod entity ID"
+    documentation: >-
+      ADP internal DogStatsD telemetry uses OpenMetrics.
+
+  forwarder_apikey_validation_interval:
+    severity: medium
+    planned: true
+    pipelines: [ cross_cutting ]
+    description: "API key check interval (minutes)"
+    documentation: >-
+      Core agent supports runtime API key refresh without restart. ADP has partial
+      infrastructure (config-side listeners) but the forwarder does not act on updates.
+    issue: "#1357"
+
+  heroku_dyno:
+    severity: low
+    planned: false
+    pipelines: [ cross_cutting ]
+    description: "Heroku dyno telemetry mode"
+    documentation: |-
+      The `heroku_dyno` setting affects the core Agent's self-telemetry heartbeat. It changes the Agent
+      flavor used by the core Agent aggregator so the running heartbeat is emitted as
+      `datadog.heroku_agent.running`.
+
+      ADP does not run in the supported Heroku Agent package path: the Heroku Agent package excludes the
+      `agent-data-plane` dependency, and the Heroku Datadog launch script starts the core Agent, trace Agent, and
+      optionally process Agent without launching an `agent-data-plane` process. ADP also does not emit the
+      core Agent's `datadog.<agentName>.running` series.
+
+      Because the affected heartbeat is core-Agent-owned and ADP is not part of the supported Heroku
+      deployment path, ADP does not implement `heroku_dyno`. See [#1753].
+    issue: "#1753"
+
+  logging_frequency:
+    severity: low
+    planned: false
+    pipelines: [ cross_cutting ]
+    description: "Transaction success log interval"
+    documentation: >-
+      The core agent uses `logging_frequency` to throttle repetitive successful transaction
+      logs. ADP logs successful forwarder operations below the default `info` level, so there
+      is no matching info-level success-log stream to throttle. This key is intentionally
+      unused.
+
+  serializer_experimental_use_v3_api.compression_level:
+    severity: low
+    planned: true
+    pipelines: [ dogstatsd, checks, traces ]
+    description: "V3 API zstd compression level"
+    documentation: >-
+      V2 to V3 migration PR in progress. Feature is missing but actively being addressed.
+    issue: "#1468"
+
+  serializer_experimental_use_v3_api.series.endpoints:
+    severity: low
+    planned: true
+    pipelines: [ dogstatsd, checks, traces ]
+    description: "Endpoints enabled for V3 series API"
+    documentation: >-
+      V2 to V3 migration PR in progress. Feature is missing but actively being addressed.
+    issue: "#1468"
+
+  serializer_experimental_use_v3_api.series.validate:
+    severity: low
+    planned: true
+    pipelines: [ dogstatsd, checks, traces ]
+    description: "Dual-send v2+v3 series for validation"
+    documentation: >-
+      V2 to V3 migration PR in progress. Feature is missing but actively being addressed.
+    issue: "#1468"
+
+  serializer_experimental_use_v3_api.sketches.endpoints:
+    severity: low
+    planned: true
+    pipelines: [ dogstatsd, checks, traces ]
+    description: "Endpoints enabling v3 sketches API"
+    documentation: >-
+      V2 to V3 migration PR in progress. Feature is missing but actively being addressed.
+    issue: "#1468"
+
+  serializer_experimental_use_v3_api.sketches.validate:
+    severity: low
+    planned: true
+    pipelines: [ dogstatsd, checks, traces ]
+    description: "Dual-send v2+v3 sketches for validation"
+    documentation: >-
+      V2 to V3 migration PR in progress. Feature is missing but actively being addressed.
+    issue: "#1468"
+
+  sslkeylogfile:
+    severity: medium
+    planned: true
+    pipelines: [ cross_cutting ]
+    description: "TLS key log file path"
+    documentation: >-
+      TLS key log file not implemented in ADP.
+    issue: "#1372"
+
+  tls_handshake_timeout:
+    severity: medium
+    planned: true
+    pipelines: [ cross_cutting ]
+    description: "HTTP TLS handshake timeout"
+    documentation: >-
+      Existing request timeout covers the gap.
+    issue: "#178"
+
+
+  use_dogstatsd:
+    severity: low
+    planned: false
+    pipelines: [ dogstatsd ]
+    description: "Master DogStatsD enable toggle"
+    documentation: >-
+      Core Agent evaluates and sets `data_plane.dogstatsd.enabled`.
+
+####################################################################################################
+# INVESTIGATE
+####################################################################################################
+investigate:
+  autoscaling.failover.enabled:
+    severity: medium
+    description: "Enable autoscaling failover metric routing"
+    documentation: >-
+      Marked for investigation; previously dismissed as not-applicable.
+    issue: "#1684"
+
+  autoscaling.failover.metrics:
+    severity: medium
+    description: "Metric names forwarded to DCA for failover"
+    documentation: >-
+      Marked for investigation; previously dismissed as not-applicable.
+    issue: "#1684"
+
+  cluster_agent.enabled:
+    severity: low
+    pipelines: [ dogstatsd, checks ]
+    description: "Enable Cluster Agent communication"
+    issue: "#1684"
+
+  forwarder_flush_to_disk_mem_ratio:
+    severity: medium
+    description: "Mem-to-disk flush threshold"
+    issue: "#1364"
+
+  forwarder_low_prio_buffer_size:
+    severity: medium
+    description: "Low-priority request queue size"
+    issue: "#1362"
+
+  forwarder_max_concurrent_requests:
+    severity: medium
+    description: "Max concurrent HTTP requests"
+    issue: "#1363"
+
+  forwarder_requeue_buffer_size:
+    severity: low
+    description: "In-memory re-queue buffer size"
+    issue: "#1755"
+
+  forwarder_retry_queue_capacity_time_interval_sec:
+    severity: medium
+    description: "Retry queue time-based capacity"
+    issue: "#1365"
+
+  forwarder_stop_timeout:
+    severity: low
+    description: "Timeout (s) for forwarder graceful stop"
+    issue: "#1754"
+
+  telemetry.dogstatsd.aggregator_channel_latency_buckets:
+    severity: low
+    description: "Histogram buckets: DSD aggregator channel lag"
+    issue: "#1679"
+
+  telemetry.dogstatsd.listeners_channel_latency_buckets:
+    severity: low
+    description: "Histogram buckets: listener channel latency"
+    issue: "#1679"
+
+  telemetry.dogstatsd.listeners_latency_buckets:
+    severity: low
+    description: "Histogram buckets: listener processing"
+    issue: "#1679"
+
+  telemetry.dogstatsd_origin:
+    severity: low
+    description: "Per-origin processed-metrics telemetry"
+    issue: "#1679"
+
+####################################################################################################
+# IGNORED
+####################################################################################################
+ignored:
+  GUI_host: "ignored in initial audit 2026-04-23"
+  GUI_port: "ignored in initial audit 2026-04-23"
+  GUI_session_expiration: "ignored in initial audit 2026-04-23"
+  ac_exclude: "ignored in initial audit 2026-04-23"
+  ac_include: "ignored in initial audit 2026-04-23"
+  ad_allowed_env_vars: "ignored in initial audit 2026-04-23"
+  ad_config_poll_interval: "ignored in initial audit 2026-04-23"
+  ad_disable_env_var_resolution: "ignored in initial audit 2026-04-23"
+  ad_tag_completeness_max_wait: "ignored in initial audit 2026-04-23"
+  additional_checksd: "ignored in initial audit 2026-04-23"
+  admission_controller.add_aks_selectors: "ignored in initial audit 2026-04-23"
+  admission_controller.agent_sidecar.cluster_agent.enabled: "ignored in initial audit 2026-04-23"
+  admission_controller.agent_sidecar.cluster_agent.tls_verification.copy_ca_configmap: "ignored in initial audit 2026-04-23"
+  admission_controller.agent_sidecar.cluster_agent.tls_verification.enabled: "ignored in initial audit 2026-04-23"
+  admission_controller.agent_sidecar.container_registry: "ignored in initial audit 2026-04-23"
+  admission_controller.agent_sidecar.enabled: "ignored in initial audit 2026-04-23"
+  admission_controller.agent_sidecar.endpoint: "ignored in initial audit 2026-04-23"
+  admission_controller.agent_sidecar.image_name: "ignored in initial audit 2026-04-23"
+  admission_controller.agent_sidecar.image_tag: "ignored in initial audit 2026-04-23"
+  admission_controller.agent_sidecar.kubelet_api_logging.enabled: "ignored in initial audit 2026-04-23"
+  admission_controller.agent_sidecar.profiles: "ignored in initial audit 2026-04-23"
+  admission_controller.agent_sidecar.provider: "ignored in initial audit 2026-04-23"
+  admission_controller.agent_sidecar.selectors: "ignored in initial audit 2026-04-23"
+  admission_controller.appsec.sidecar.body_parsing_size_limit: "ignored in initial audit 2026-04-23"
+  admission_controller.appsec.sidecar.health_port: "ignored in initial audit 2026-04-23"
+  admission_controller.appsec.sidecar.image: "ignored in initial audit 2026-04-23"
+  admission_controller.appsec.sidecar.image_tag: "ignored in initial audit 2026-04-23"
+  admission_controller.appsec.sidecar.port: "ignored in initial audit 2026-04-23"
+  admission_controller.appsec.sidecar.resources.limits.cpu: "ignored in initial audit 2026-04-23"
+  admission_controller.appsec.sidecar.resources.limits.memory: "ignored in initial audit 2026-04-23"
+  admission_controller.appsec.sidecar.resources.requests.cpu: "ignored in initial audit 2026-04-23"
+  admission_controller.appsec.sidecar.resources.requests.memory: "ignored in initial audit 2026-04-23"
+  admission_controller.auto_instrumentation.asm.enabled: "ignored in initial audit 2026-04-23"
+  admission_controller.auto_instrumentation.asm_sca.enabled: "ignored in initial audit 2026-04-23"
+  admission_controller.auto_instrumentation.container_registry: "ignored in initial audit 2026-04-23"
+  admission_controller.auto_instrumentation.default_dd_registries: "ignored in initial audit 2026-04-23"
+  admission_controller.auto_instrumentation.enabled: "ignored in initial audit 2026-04-23"
+  admission_controller.auto_instrumentation.endpoint: "ignored in initial audit 2026-04-23"
+  admission_controller.auto_instrumentation.gradual_rollout.cache_ttl: "ignored in initial audit 2026-04-23"
+  admission_controller.auto_instrumentation.gradual_rollout.enabled: "ignored in initial audit 2026-04-23"
+  admission_controller.auto_instrumentation.iast.enabled: "ignored in initial audit 2026-04-23"
+  admission_controller.auto_instrumentation.init_resources.cpu: "ignored in initial audit 2026-04-23"
+  admission_controller.auto_instrumentation.init_resources.memory: "ignored in initial audit 2026-04-23"
+  admission_controller.auto_instrumentation.init_security_context: "ignored in initial audit 2026-04-23"
+  admission_controller.auto_instrumentation.inject_auto_detected_libraries: "ignored in initial audit 2026-04-23"
+  admission_controller.auto_instrumentation.patcher.enabled: "ignored in initial audit 2026-04-23"
+  admission_controller.auto_instrumentation.patcher.fallback_to_file_provider: "ignored in initial audit 2026-04-23"
+  admission_controller.auto_instrumentation.patcher.file_provider_path: "ignored in initial audit 2026-04-23"
+  admission_controller.auto_instrumentation.profiling.enabled: "ignored in initial audit 2026-04-23"
+  admission_controller.certificate.expiration_threshold: "ignored in initial audit 2026-04-23"
+  admission_controller.certificate.secret_name: "ignored in initial audit 2026-04-23"
+  admission_controller.certificate.validity_bound: "ignored in initial audit 2026-04-23"
+  admission_controller.container_registry: "ignored in initial audit 2026-04-23"
+  admission_controller.cws_instrumentation.command_endpoint: "ignored in initial audit 2026-04-23"
+  admission_controller.cws_instrumentation.container_registry: "ignored in initial audit 2026-04-23"
+  admission_controller.cws_instrumentation.enabled: "ignored in initial audit 2026-04-23"
+  admission_controller.cws_instrumentation.exclude: "ignored in initial audit 2026-04-23"
+  admission_controller.cws_instrumentation.image_name: "ignored in initial audit 2026-04-23"
+  admission_controller.cws_instrumentation.image_tag: "ignored in initial audit 2026-04-23"
+  admission_controller.cws_instrumentation.include: "ignored in initial audit 2026-04-23"
+  admission_controller.cws_instrumentation.init_resources.cpu: "ignored in initial audit 2026-04-23"
+  admission_controller.cws_instrumentation.init_resources.memory: "ignored in initial audit 2026-04-23"
+  admission_controller.cws_instrumentation.mode: "ignored in initial audit 2026-04-23"
+  admission_controller.cws_instrumentation.mutate_unlabelled: "ignored in initial audit 2026-04-23"
+  admission_controller.cws_instrumentation.pod_endpoint: "ignored in initial audit 2026-04-23"
+  admission_controller.cws_instrumentation.remote_copy.directory: "ignored in initial audit 2026-04-23"
+  admission_controller.cws_instrumentation.remote_copy.mount_volume: "ignored in initial audit 2026-04-23"
+  admission_controller.cws_instrumentation.timeout: "ignored in initial audit 2026-04-23"
+  admission_controller.enabled: "ignored in initial audit 2026-04-23"
+  admission_controller.failure_policy: "ignored in initial audit 2026-04-23"
+  admission_controller.inject_config.enabled: "ignored in initial audit 2026-04-23"
+  admission_controller.inject_config.endpoint: "ignored in initial audit 2026-04-23"
+  admission_controller.inject_config.local_service_name: "ignored in initial audit 2026-04-23"
+  admission_controller.inject_config.mode: "ignored in initial audit 2026-04-23"
+  admission_controller.inject_config.socket_path: "ignored in initial audit 2026-04-23"
+  admission_controller.inject_config.type_socket_volumes: "ignored in initial audit 2026-04-23"
+  admission_controller.inject_tags.enabled: "ignored in initial audit 2026-04-23"
+  admission_controller.inject_tags.endpoint: "ignored in initial audit 2026-04-23"
+  admission_controller.inject_tags.pod_owners_cache_validity: "ignored in initial audit 2026-04-23"
+  admission_controller.kubernetes_admission_events.enabled: "ignored in initial audit 2026-04-23"
+  admission_controller.mutate_unlabelled: "ignored in initial audit 2026-04-23"
+  admission_controller.mutation.enabled: "ignored in initial audit 2026-04-23"
+  admission_controller.namespace_selector_fallback: "ignored in initial audit 2026-04-23"
+  admission_controller.pod_owners_cache_validity: "ignored in initial audit 2026-04-23"
+  admission_controller.port: "ignored in initial audit 2026-04-23"
+  admission_controller.probe.enabled: "ignored in initial audit 2026-04-23"
+  admission_controller.probe.grace_period: "ignored in initial audit 2026-04-23"
+  admission_controller.probe.interval: "ignored in initial audit 2026-04-23"
+  admission_controller.reinvocation_policy: "ignored in initial audit 2026-04-23"
+  admission_controller.service_name: "ignored in initial audit 2026-04-23"
+  admission_controller.timeout_seconds: "ignored in initial audit 2026-04-23"
+  admission_controller.validation.enabled: "ignored in initial audit 2026-04-23"
+  admission_controller.webhook_name: "ignored in initial audit 2026-04-23"
+  agent_ipc.config_refresh_interval: "ignored in initial audit 2026-04-23"
+  agent_ipc.host: "ignored in initial audit 2026-04-23"
+  agent_ipc.port: "ignored in initial audit 2026-04-23"
+  agent_ipc.socket_path: "ignored in initial audit 2026-04-23"
+  agent_ipc.use_socket: "ignored in initial audit 2026-04-23"
+  agent_telemetry.additional_endpoints: "ignored in initial audit 2026-04-23"
+  agent_telemetry.batch_max_concurrent_send: "ignored in initial audit 2026-04-23"
+  agent_telemetry.batch_max_content_size: "ignored in initial audit 2026-04-23"
+  agent_telemetry.batch_max_size: "ignored in initial audit 2026-04-23"
+  agent_telemetry.batch_wait: "ignored in initial audit 2026-04-23"
+  agent_telemetry.compression_kind: "ignored in initial audit 2026-04-23"
+  agent_telemetry.compression_level: "ignored in initial audit 2026-04-23"
+  agent_telemetry.connection_reset_interval: "ignored in initial audit 2026-04-23"
+  agent_telemetry.dd_url: "ignored in initial audit 2026-04-23"
+  agent_telemetry.dev_mode_no_ssl: "ignored in initial audit 2026-04-23"
+  agent_telemetry.enabled: "ignored in initial audit 2026-04-23"
+  agent_telemetry.input_chan_size: "ignored in initial audit 2026-04-23"
+  agent_telemetry.logs_dd_url: "ignored in initial audit 2026-04-23"
+  agent_telemetry.logs_no_ssl: "ignored in initial audit 2026-04-23"
+  agent_telemetry.sender_backoff_base: "ignored in initial audit 2026-04-23"
+  agent_telemetry.sender_backoff_factor: "ignored in initial audit 2026-04-23"
+  agent_telemetry.sender_backoff_max: "ignored in initial audit 2026-04-23"
+  agent_telemetry.sender_recovery_interval: "ignored in initial audit 2026-04-23"
+  agent_telemetry.sender_recovery_reset: "ignored in initial audit 2026-04-23"
+  agent_telemetry.startup_trace_sampling: "ignored in initial audit 2026-04-23"
+  agent_telemetry.use_compression: "ignored in initial audit 2026-04-23"
+  agent_telemetry.use_v2_api: "ignored in initial audit 2026-04-23"
+  agent_telemetry.zstd_compression_level: "ignored in initial audit 2026-04-23"
+  aggregator_tag_filter_cache_capacity: "ADP uses data_plane.dogstatsd.aggregator_tag_filter_cache_capacity instead; this core-agent key is expected to be set alongside the ADP key and should not trigger any warning"
+  allow_python_path_heuristics_failure: "ignored in initial audit 2026-04-23"
+  allowed_additional_checks: "ignored in initial audit 2026-04-23"
+  apm_config.additional_endpoints: "ignored in initial audit 2026-04-23"
+  apm_config.additional_profile_tags: "ignored in initial audit 2026-04-23"
+  apm_config.analyzed_rate_by_service: "ignored in initial audit 2026-04-23"
+  apm_config.analyzed_spans: "ignored in initial audit 2026-04-23"
+  apm_config.apm_dd_url: "ignored in initial audit 2026-04-23"
+  apm_config.apm_non_local_traffic: "ignored in initial audit 2026-04-23"
+  apm_config.bucket_size_seconds: "ignored in initial audit 2026-04-23"
+  apm_config.client_stats_flush_interval: "ignored in initial audit 2026-04-23"
+  apm_config.compute_stats_by_span_kind: "ignored in initial audit 2026-04-23"
+  apm_config.connection_limit: "ignored in initial audit 2026-04-23"
+  apm_config.connection_reset_interval: "ignored in initial audit 2026-04-23"
+  apm_config.dd_agent_bin: "ignored in initial audit 2026-04-23"
+  apm_config.debug.port: "ignored in initial audit 2026-04-23"
+  apm_config.debug_v1_payloads: "ignored in initial audit 2026-04-23"
+  apm_config.debugger_additional_endpoints: "ignored in initial audit 2026-04-23"
+  apm_config.debugger_api_key: "ignored in initial audit 2026-04-23"
+  apm_config.debugger_dd_url: "ignored in initial audit 2026-04-23"
+  apm_config.debugger_diagnostics_additional_endpoints: "ignored in initial audit 2026-04-23"
+  apm_config.debugger_diagnostics_api_key: "ignored in initial audit 2026-04-23"
+  apm_config.debugger_diagnostics_dd_url: "ignored in initial audit 2026-04-23"
+  apm_config.decoder_timeout: "ignored in initial audit 2026-04-23"
+  apm_config.decoders: "ignored in initial audit 2026-04-23"
+  apm_config.disable_rare_sampler: "ignored in initial audit 2026-04-23"
+  apm_config.enable_container_tags_buffer: "ignored in initial audit 2026-04-23"
+  apm_config.enable_rare_sampler: "ignored in initial audit 2026-04-23"
+  apm_config.enabled: "ignored in initial audit 2026-04-23"
+  apm_config.env: "ignored in initial audit 2026-04-23"
+  apm_config.error_tracking_standalone.enabled: "ignored in initial audit 2026-04-23"
+  apm_config.errors_per_second: "ignored in initial audit 2026-04-23"
+  apm_config.extra_sample_rate: "ignored in initial audit 2026-04-23"
+  apm_config.features: "ignored in initial audit 2026-04-23"
+  apm_config.filter_tags.reject: "ignored in initial audit 2026-04-23"
+  apm_config.filter_tags.require: "ignored in initial audit 2026-04-23"
+  apm_config.filter_tags_regex.reject: "ignored in initial audit 2026-04-23"
+  apm_config.filter_tags_regex.require: "ignored in initial audit 2026-04-23"
+  apm_config.ignore_resources: "ignored in initial audit 2026-04-23"
+  apm_config.install_id: "ignored in initial audit 2026-04-23"
+  apm_config.install_time: "ignored in initial audit 2026-04-23"
+  apm_config.install_type: "ignored in initial audit 2026-04-23"
+  apm_config.instrumentation.disabled_namespaces: "ignored in initial audit 2026-04-23"
+  apm_config.instrumentation.enabled: "ignored in initial audit 2026-04-23"
+  apm_config.instrumentation.enabled_namespaces: "ignored in initial audit 2026-04-23"
+  apm_config.instrumentation.injection_mode: "ignored in initial audit 2026-04-23"
+  apm_config.instrumentation.injector_image_tag: "ignored in initial audit 2026-04-23"
+  apm_config.instrumentation.lib_versions: "ignored in initial audit 2026-04-23"
+  apm_config.instrumentation.targets: "ignored in initial audit 2026-04-23"
+  apm_config.internal_profiling.enabled: "ignored in initial audit 2026-04-23"
+  apm_config.log_file: "ignored in initial audit 2026-04-23"
+  apm_config.max_catalog_entries: "ignored in initial audit 2026-04-23"
+  apm_config.max_catalog_services: "ignored in initial audit 2026-04-23"
+  apm_config.max_connections: "ignored in initial audit 2026-04-23"
+  apm_config.max_cpu_percent: "ignored in initial audit 2026-04-23"
+  apm_config.max_events_per_second: "ignored in initial audit 2026-04-23"
+  apm_config.max_memory: "ignored in initial audit 2026-04-23"
+  apm_config.max_payload_size: "ignored in initial audit 2026-04-23"
+  apm_config.max_remote_traces_per_second: "ignored in initial audit 2026-04-23"
+  apm_config.max_sender_retries: "ignored in initial audit 2026-04-23"
+  apm_config.max_traces_per_second: "ignored in initial audit 2026-04-23"
+  apm_config.mode: "ignored in initial audit 2026-04-23"
+  apm_config.obfuscation.cache.enabled: "ignored in initial audit 2026-04-23"
+  apm_config.obfuscation.cache.max_size: "ignored in initial audit 2026-04-23"
+  apm_config.obfuscation.remove_stack_traces: "ignored in initial audit 2026-04-23"
+  apm_config.obfuscation.sql_exec_plan.enabled: "ignored in initial audit 2026-04-23"
+  apm_config.obfuscation.sql_exec_plan.keep_values: "ignored in initial audit 2026-04-23"
+  apm_config.obfuscation.sql_exec_plan.obfuscate_sql_values: "ignored in initial audit 2026-04-23"
+  apm_config.obfuscation.sql_exec_plan_normalize.enabled: "ignored in initial audit 2026-04-23"
+  apm_config.obfuscation.sql_exec_plan_normalize.keep_values: "ignored in initial audit 2026-04-23"
+  apm_config.obfuscation.sql_exec_plan_normalize.obfuscate_sql_values: "ignored in initial audit 2026-04-23"
+  apm_config.peer_service_aggregation: "ignored in initial audit 2026-04-23"
+  apm_config.peer_tags: "ignored in initial audit 2026-04-23"
+  apm_config.peer_tags_aggregation: "ignored in initial audit 2026-04-23"
+  apm_config.probabilistic_sampler.enabled: "ignored in initial audit 2026-04-23"
+  apm_config.probabilistic_sampler.hash_seed: "ignored in initial audit 2026-04-23"
+  apm_config.probabilistic_sampler.sampling_percentage: "ignored in initial audit 2026-04-23"
+  apm_config.profiling_additional_endpoints: "ignored in initial audit 2026-04-23"
+  apm_config.profiling_dd_url: "ignored in initial audit 2026-04-23"
+  apm_config.profiling_receiver_timeout: "ignored in initial audit 2026-04-23"
+  apm_config.receiver_enabled: "ignored in initial audit 2026-04-23"
+  apm_config.receiver_port: "ignored in initial audit 2026-04-23"
+  apm_config.receiver_socket: "ignored in initial audit 2026-04-23"
+  apm_config.receiver_timeout: "ignored in initial audit 2026-04-23"
+  apm_config.replace_tags: "ignored in initial audit 2026-04-23"
+  apm_config.send_all_internal_stats: "ignored in initial audit 2026-04-23"
+  apm_config.socket_activation.enabled: "ignored in initial audit 2026-04-23"
+  apm_config.socket_activation.handle_tcp_probe: "ignored in initial audit 2026-04-23"
+  apm_config.span_derived_primary_tags: "ignored in initial audit 2026-04-23"
+  apm_config.sql_obfuscation_mode: "ignored in initial audit 2026-04-23"
+  apm_config.stats_writer.connection_limit: "ignored in initial audit 2026-04-23"
+  apm_config.stats_writer.queue_size: "ignored in initial audit 2026-04-23"
+  apm_config.symdb_additional_endpoints: "ignored in initial audit 2026-04-23"
+  apm_config.symdb_api_key: "ignored in initial audit 2026-04-23"
+  apm_config.symdb_dd_url: "ignored in initial audit 2026-04-23"
+  apm_config.sync_flushing: "ignored in initial audit 2026-04-23"
+  apm_config.target_traces_per_second: "ignored in initial audit 2026-04-23"
+  apm_config.telemetry.additional_endpoints: "ignored in initial audit 2026-04-23"
+  apm_config.telemetry.dd_url: "ignored in initial audit 2026-04-23"
+  apm_config.telemetry.enabled: "ignored in initial audit 2026-04-23"
+  apm_config.trace_buffer: "ignored in initial audit 2026-04-23"
+  apm_config.trace_writer.connection_limit: "ignored in initial audit 2026-04-23"
+  apm_config.trace_writer.queue_size: "ignored in initial audit 2026-04-23"
+  apm_config.watchdog_check_delay: "ignored in initial audit 2026-04-23"
+  apm_config.windows_pipe_buffer_size: "ignored in initial audit 2026-04-23"
+  apm_config.windows_pipe_name: "ignored in initial audit 2026-04-23"
+  apm_config.windows_pipe_security_descriptor: "ignored in initial audit 2026-04-23"
+  apm_config.workload_selection: "ignored in initial audit 2026-04-23"
+  app_key: "ignored in initial audit 2026-04-23"
+  appsec.proxy.auto_detect: "ignored in initial audit 2026-04-23"
+  appsec.proxy.enabled: "ignored in initial audit 2026-04-23"
+  appsec.proxy.processor.address: "ignored in initial audit 2026-04-23"
+  appsec.proxy.processor.port: "ignored in initial audit 2026-04-23"
+  appsec.proxy.proxies: "ignored in initial audit 2026-04-23"
+  auth_init_timeout: "ignored in initial audit 2026-04-23"
+  auth_token_file_path: "ignored in second bulk edit 2026-05-06"
+  auto_exit.noprocess.enabled: "ignored in initial audit 2026-04-23"
+  auto_exit.noprocess.excluded_processes: "ignored in initial audit 2026-04-23"
+  auto_exit.validation_period: "ignored in initial audit 2026-04-23"
+  auto_team_tag_collection: "ignored in initial audit 2026-04-23"
+  autoconf_config_files_poll: "ignored in initial audit 2026-04-23"
+  autoconf_config_files_poll_interval: "ignored in initial audit 2026-04-23"
+  autoconf_template_dir: "ignored in initial audit 2026-04-23"
+  autoconfig_exclude_features: "ignored in initial audit 2026-04-23"
+  autoconfig_from_environment: "ignored in initial audit 2026-04-23"
+  autoconfig_include_features: "ignored in initial audit 2026-04-23"
+  autoscaling.cluster.enabled: "ignored in initial audit 2026-04-23"
+  autoscaling.workload.enabled: "ignored in initial audit 2026-04-23"
+  autoscaling.workload.external_recommender.tls.ca_file: "ignored in initial audit 2026-04-23"
+  autoscaling.workload.external_recommender.tls.cert_file: "ignored in initial audit 2026-04-23"
+  autoscaling.workload.external_recommender.tls.key_file: "ignored in initial audit 2026-04-23"
+  autoscaling.workload.in_place_vertical_scaling.enabled: "ignored in initial audit 2026-04-23"
+  autoscaling.workload.limit: "ignored in initial audit 2026-04-23"
+  autoscaling.workload.num_workers: "ignored in initial audit 2026-04-23"
+  azure_hostname_style: "ignored in initial audit 2026-04-23"
+  azure_metadata_api_version: "ignored in initial audit 2026-04-23"
+  azure_metadata_timeout: "ignored in initial audit 2026-04-23"
+  basic_telemetry_add_container_tags: "ignored in initial audit 2026-04-23"
+  bosh_id: "ignored in initial audit 2026-04-23"
+  c_core_dump: "ignored in initial audit 2026-04-23"
+  c_stacktrace_collection: "ignored in initial audit 2026-04-23"
+  cel_workload_exclude: "ignored in initial audit 2026-04-23"
+  cf_os_hostname_aliasing: "ignored in initial audit 2026-04-23"
+  check_cancel_timeout: "ignored in initial audit 2026-04-23"
+  check_runner_utilization_monitor_interval: "ignored in initial audit 2026-04-23"
+  check_runner_utilization_threshold: "ignored in initial audit 2026-04-23"
+  check_runner_utilization_warning_cooldown: "ignored in initial audit 2026-04-23"
+  check_runners: "ignored in initial audit 2026-04-23"
+  check_sampler_allow_sketch_bucket_reset: "ignored in initial audit 2026-04-23"
+  check_sampler_bucket_commits_count_expiry: "ignored in initial audit 2026-04-23"
+  check_sampler_context_metrics: "ignored in initial audit 2026-04-23"
+  check_sampler_expire_metrics: "ignored in initial audit 2026-04-23"
+  check_sampler_stateful_metric_expiration_time: "ignored in initial audit 2026-04-23"
+  check_system_probe_startup_time: "ignored in initial audit 2026-04-23"
+  check_system_probe_timeout: "ignored in initial audit 2026-04-23"
+  check_watchdog_warning_timeout: "ignored in initial audit 2026-04-23"
+  checks_tag_cardinality: "ignored in initial audit 2026-04-23"
+  clc_runner_enabled: "ignored in initial audit 2026-04-23"
+  clc_runner_host: "ignored in initial audit 2026-04-23"
+  clc_runner_id: "ignored in initial audit 2026-04-23"
+  clc_runner_port: "ignored in initial audit 2026-04-23"
+  clc_runner_remote_tagger_enabled: "ignored in initial audit 2026-04-23"
+  clc_runner_server_readheader_timeout: "ignored in initial audit 2026-04-23"
+  clc_runner_server_write_timeout: "ignored in initial audit 2026-04-23"
+  cloud_foundry: "ignored in initial audit 2026-04-23"
+  cloud_foundry_bbs.ca_file: "ignored in initial audit 2026-04-23"
+  cloud_foundry_bbs.cert_file: "ignored in initial audit 2026-04-23"
+  cloud_foundry_bbs.env_exclude: "ignored in initial audit 2026-04-23"
+  cloud_foundry_bbs.env_include: "ignored in initial audit 2026-04-23"
+  cloud_foundry_bbs.key_file: "ignored in initial audit 2026-04-23"
+  cloud_foundry_bbs.poll_interval: "ignored in initial audit 2026-04-23"
+  cloud_foundry_bbs.url: "ignored in initial audit 2026-04-23"
+  cloud_foundry_buildpack: "ignored in initial audit 2026-04-23"
+  cloud_foundry_cc.apps_batch_size: "ignored in initial audit 2026-04-23"
+  cloud_foundry_cc.client_id: "ignored in initial audit 2026-04-23"
+  cloud_foundry_cc.client_secret: "ignored in initial audit 2026-04-23"
+  cloud_foundry_cc.poll_interval: "ignored in initial audit 2026-04-23"
+  cloud_foundry_cc.skip_ssl_validation: "ignored in initial audit 2026-04-23"
+  cloud_foundry_cc.url: "ignored in initial audit 2026-04-23"
+  cloud_foundry_container_tagger.retry_count: "ignored in initial audit 2026-04-23"
+  cloud_foundry_container_tagger.retry_interval: "ignored in initial audit 2026-04-23"
+  cloud_foundry_container_tagger.shell_path: "ignored in initial audit 2026-04-23"
+  cloud_foundry_garden.listen_address: "ignored in initial audit 2026-04-23"
+  cloud_foundry_garden.listen_network: "ignored in initial audit 2026-04-23"
+  cloud_provider_metadata: "ignored in initial audit 2026-04-23"
+  cluster_agent.allow_legacy_tls: "ignored in initial audit 2026-04-23"
+  cluster_agent.appsec.injector.annotations: "ignored in initial audit 2026-04-23"
+  cluster_agent.appsec.injector.base_backoff: "ignored in initial audit 2026-04-23"
+  cluster_agent.appsec.injector.enabled: "ignored in initial audit 2026-04-23"
+  cluster_agent.appsec.injector.istio.namespace: "ignored in initial audit 2026-04-23"
+  cluster_agent.appsec.injector.labels: "ignored in initial audit 2026-04-23"
+  cluster_agent.appsec.injector.max_backoff: "ignored in initial audit 2026-04-23"
+  cluster_agent.appsec.injector.mode: "ignored in initial audit 2026-04-23"
+  cluster_agent.appsec.injector.processor.service.name: "ignored in initial audit 2026-04-23"
+  cluster_agent.appsec.injector.processor.service.namespace: "ignored in initial audit 2026-04-23"
+  cluster_agent.auth_token: "ignored in initial audit 2026-04-23"
+  cluster_agent.client_reconnect_period_seconds: "ignored in initial audit 2026-04-23"
+  cluster_agent.cluster_tagger.grpc_max_message_size: "ignored in initial audit 2026-04-23"
+  cluster_agent.cmd_port: "ignored in initial audit 2026-04-23"
+  cluster_agent.collect_kubernetes_tags: "ignored in initial audit 2026-04-23"
+  cluster_agent.isolation_segments_tags: "ignored in initial audit 2026-04-23"
+  cluster_agent.kube_metadata_collection.enabled: "ignored in initial audit 2026-04-23"
+  cluster_agent.kube_metadata_collection.resource_annotations_exclude: "ignored in initial audit 2026-04-23"
+  cluster_agent.kube_metadata_collection.resources: "ignored in initial audit 2026-04-23"
+  cluster_agent.kubernetes_resources_collection.deployment_annotations_exclude: "ignored in initial audit 2026-04-23"
+  cluster_agent.kubernetes_resources_collection.pod_annotations_exclude: "ignored in initial audit 2026-04-23"
+  cluster_agent.kubernetes_service_name: "ignored in initial audit 2026-04-23"
+  cluster_agent.language_detection.cleanup.language_ttl: "ignored in initial audit 2026-04-23"
+  cluster_agent.language_detection.cleanup.period: "ignored in initial audit 2026-04-23"
+  cluster_agent.language_detection.patcher.base_backoff: "ignored in initial audit 2026-04-23"
+  cluster_agent.language_detection.patcher.enabled: "ignored in initial audit 2026-04-23"
+  cluster_agent.language_detection.patcher.max_backoff: "ignored in initial audit 2026-04-23"
+  cluster_agent.max_leader_connections: "ignored in initial audit 2026-04-23"
+  cluster_agent.mcp.enabled: "ignored in initial audit 2026-04-23"
+  cluster_agent.mcp.endpoint: "ignored in initial audit 2026-04-23"
+  cluster_agent.refresh_on_cache_miss: "ignored in initial audit 2026-04-23"
+  cluster_agent.serve_nozzle_data: "ignored in initial audit 2026-04-23"
+  cluster_agent.server.idle_timeout_seconds: "ignored in initial audit 2026-04-23"
+  cluster_agent.server.read_timeout_seconds: "ignored in initial audit 2026-04-23"
+  cluster_agent.server.write_timeout_seconds: "ignored in initial audit 2026-04-23"
+  cluster_agent.service_account_name: "ignored in initial audit 2026-04-23"
+  cluster_agent.sidecars_tags: "ignored in initial audit 2026-04-23"
+  cluster_agent.tagging_fallback: "ignored in initial audit 2026-04-23"
+  cluster_agent.token_name: "ignored in initial audit 2026-04-23"
+  cluster_agent.tracing.enabled: "ignored in initial audit 2026-04-23"
+  cluster_agent.tracing.env: "ignored in initial audit 2026-04-23"
+  cluster_agent.tracing.sample_rate: "ignored in initial audit 2026-04-23"
+  cluster_agent.url: "ignored in initial audit 2026-04-23"
+  cluster_checks.advanced_dispatching_enabled: "ignored in initial audit 2026-04-23"
+  cluster_checks.clc_runners_port: "ignored in initial audit 2026-04-23"
+  cluster_checks.cluster_tag_name: "ignored in initial audit 2026-04-23"
+  cluster_checks.crd_collection: "ignored in initial audit 2026-04-23"
+  cluster_checks.enabled: "ignored in initial audit 2026-04-23"
+  cluster_checks.exclude_checks: "ignored in initial audit 2026-04-23"
+  cluster_checks.exclude_checks_from_dispatching: "ignored in initial audit 2026-04-23"
+  cluster_checks.extra_tags: "ignored in initial audit 2026-04-23"
+  cluster_checks.ksm_sharding_enabled: "ignored in initial audit 2026-04-23"
+  cluster_checks.node_expiration_timeout: "ignored in initial audit 2026-04-23"
+  cluster_checks.rebalance_min_percentage_improvement: "ignored in initial audit 2026-04-23"
+  cluster_checks.rebalance_period: "ignored in initial audit 2026-04-23"
+  cluster_checks.rebalance_with_utilization: "ignored in initial audit 2026-04-23"
+  cluster_checks.support_hybrid_ignore_ad_tags: "ignored in initial audit 2026-04-23"
+  cluster_checks.unscheduled_check_threshold: "ignored in initial audit 2026-04-23"
+  cluster_checks.warmup_duration: "ignored in initial audit 2026-04-23"
+  cluster_name: "ignored in initial audit 2026-04-23"
+  cluster_trust_chain.ca_cert_file_path: "ignored in initial audit 2026-04-23"
+  cluster_trust_chain.ca_key_file_path: "ignored in initial audit 2026-04-23"
+  cluster_trust_chain.enable_tls_verification: "ignored in initial audit 2026-04-23"
+  cmd.check.fullsketches: "ignored in initial audit 2026-04-23"
+  cmd_host: "ignored in initial audit 2026-04-23"
+  collect_ccrid: "ignored in initial audit 2026-04-23"
+  collect_ec2_instance_info: "ignored in initial audit 2026-04-23"
+  collect_ec2_tags: "ignored in initial audit 2026-04-23"
+  collect_ec2_tags_use_imds: "ignored in initial audit 2026-04-23"
+  collect_gce_tags: "ignored in initial audit 2026-04-23"
+  collect_gpu_tags: "ignored in initial audit 2026-04-23"
+  collect_kubernetes_events: "ignored in initial audit 2026-04-23"
+  common_root: "ignored in initial audit 2026-04-23"
+  compliance_config.check_interval: "ignored in initial audit 2026-04-23"
+  compliance_config.check_max_events_per_run: "ignored in initial audit 2026-04-23"
+  compliance_config.container_exclude: "ignored in initial audit 2026-04-23"
+  compliance_config.container_include: "ignored in initial audit 2026-04-23"
+  compliance_config.database_benchmarks.enabled: "ignored in initial audit 2026-04-23"
+  compliance_config.dir: "ignored in initial audit 2026-04-23"
+  compliance_config.enabled: "ignored in initial audit 2026-04-23"
+  compliance_config.endpoints.additional_endpoints: "ignored in initial audit 2026-04-23"
+  compliance_config.endpoints.batch_max_concurrent_send: "ignored in initial audit 2026-04-23"
+  compliance_config.endpoints.batch_max_content_size: "ignored in initial audit 2026-04-23"
+  compliance_config.endpoints.batch_max_size: "ignored in initial audit 2026-04-23"
+  compliance_config.endpoints.batch_wait: "ignored in initial audit 2026-04-23"
+  compliance_config.endpoints.compression_kind: "ignored in initial audit 2026-04-23"
+  compliance_config.endpoints.compression_level: "ignored in initial audit 2026-04-23"
+  compliance_config.endpoints.connection_reset_interval: "ignored in initial audit 2026-04-23"
+  compliance_config.endpoints.dd_url: "ignored in initial audit 2026-04-23"
+  compliance_config.endpoints.dev_mode_no_ssl: "ignored in initial audit 2026-04-23"
+  compliance_config.endpoints.input_chan_size: "ignored in initial audit 2026-04-23"
+  compliance_config.endpoints.logs_dd_url: "ignored in initial audit 2026-04-23"
+  compliance_config.endpoints.logs_no_ssl: "ignored in initial audit 2026-04-23"
+  compliance_config.endpoints.sender_backoff_base: "ignored in initial audit 2026-04-23"
+  compliance_config.endpoints.sender_backoff_factor: "ignored in initial audit 2026-04-23"
+  compliance_config.endpoints.sender_backoff_max: "ignored in initial audit 2026-04-23"
+  compliance_config.endpoints.sender_recovery_interval: "ignored in initial audit 2026-04-23"
+  compliance_config.endpoints.sender_recovery_reset: "ignored in initial audit 2026-04-23"
+  compliance_config.endpoints.use_compression: "ignored in initial audit 2026-04-23"
+  compliance_config.endpoints.use_v2_api: "ignored in initial audit 2026-04-23"
+  compliance_config.endpoints.zstd_compression_level: "ignored in initial audit 2026-04-23"
+  compliance_config.exclude_pause_container: "ignored in initial audit 2026-04-23"
+  compliance_config.host_benchmarks.enabled: "ignored in initial audit 2026-04-23"
+  compliance_config.metrics.enabled: "ignored in initial audit 2026-04-23"
+  compliance_config.opa.metrics.enabled: "ignored in initial audit 2026-04-23"
+  compliance_config.run_commands_as: "ignored in initial audit 2026-04-23"
+  compliance_config.run_in_system_probe: "ignored in initial audit 2026-04-23"
+  compliance_config.xccdf.enabled: "ignored in initial audit 2026-04-23"
+  conf_path: "ignored in initial audit 2026-04-23"
+  confd_path: "ignored in initial audit 2026-04-23"
+  config_providers: "ignored in initial audit 2026-04-23"
+  container_cgroup_root: "ignored in second bulk edit 2026-05-06"
+  container_env_as_tags: "ignored in initial audit 2026-04-23"
+  container_exclude: "ignored in initial audit 2026-04-23"
+  container_exclude_logs: "ignored in initial audit 2026-04-23"
+  container_exclude_metrics: "ignored in initial audit 2026-04-23"
+  container_exclude_stopped_age: "ignored in initial audit 2026-04-23"
+  container_image.additional_endpoints: "ignored in initial audit 2026-04-23"
+  container_image.batch_max_concurrent_send: "ignored in initial audit 2026-04-23"
+  container_image.batch_max_content_size: "ignored in initial audit 2026-04-23"
+  container_image.batch_max_size: "ignored in initial audit 2026-04-23"
+  container_image.batch_wait: "ignored in initial audit 2026-04-23"
+  container_image.compression_kind: "ignored in initial audit 2026-04-23"
+  container_image.compression_level: "ignored in initial audit 2026-04-23"
+  container_image.connection_reset_interval: "ignored in initial audit 2026-04-23"
+  container_image.dd_url: "ignored in initial audit 2026-04-23"
+  container_image.dev_mode_no_ssl: "ignored in initial audit 2026-04-23"
+  container_image.enabled: "ignored in initial audit 2026-04-23"
+  container_image.input_chan_size: "ignored in initial audit 2026-04-23"
+  container_image.logs_dd_url: "ignored in initial audit 2026-04-23"
+  container_image.logs_no_ssl: "ignored in initial audit 2026-04-23"
+  container_image.sender_backoff_base: "ignored in initial audit 2026-04-23"
+  container_image.sender_backoff_factor: "ignored in initial audit 2026-04-23"
+  container_image.sender_backoff_max: "ignored in initial audit 2026-04-23"
+  container_image.sender_recovery_interval: "ignored in initial audit 2026-04-23"
+  container_image.sender_recovery_reset: "ignored in initial audit 2026-04-23"
+  container_image.use_compression: "ignored in initial audit 2026-04-23"
+  container_image.use_v2_api: "ignored in initial audit 2026-04-23"
+  container_image.zstd_compression_level: "ignored in initial audit 2026-04-23"
+  container_include: "ignored in initial audit 2026-04-23"
+  container_include_logs: "ignored in initial audit 2026-04-23"
+  container_include_metrics: "ignored in initial audit 2026-04-23"
+  container_labels_as_tags: "ignored in initial audit 2026-04-23"
+  container_lifecycle.additional_endpoints: "ignored in initial audit 2026-04-23"
+  container_lifecycle.batch_max_concurrent_send: "ignored in initial audit 2026-04-23"
+  container_lifecycle.batch_max_content_size: "ignored in initial audit 2026-04-23"
+  container_lifecycle.batch_max_size: "ignored in initial audit 2026-04-23"
+  container_lifecycle.batch_wait: "ignored in initial audit 2026-04-23"
+  container_lifecycle.compression_kind: "ignored in initial audit 2026-04-23"
+  container_lifecycle.compression_level: "ignored in initial audit 2026-04-23"
+  container_lifecycle.connection_reset_interval: "ignored in initial audit 2026-04-23"
+  container_lifecycle.dd_url: "ignored in initial audit 2026-04-23"
+  container_lifecycle.dev_mode_no_ssl: "ignored in initial audit 2026-04-23"
+  container_lifecycle.enabled: "ignored in initial audit 2026-04-23"
+  container_lifecycle.input_chan_size: "ignored in initial audit 2026-04-23"
+  container_lifecycle.logs_dd_url: "ignored in initial audit 2026-04-23"
+  container_lifecycle.logs_no_ssl: "ignored in initial audit 2026-04-23"
+  container_lifecycle.sender_backoff_base: "ignored in initial audit 2026-04-23"
+  container_lifecycle.sender_backoff_factor: "ignored in initial audit 2026-04-23"
+  container_lifecycle.sender_backoff_max: "ignored in initial audit 2026-04-23"
+  container_lifecycle.sender_recovery_interval: "ignored in initial audit 2026-04-23"
+  container_lifecycle.sender_recovery_reset: "ignored in initial audit 2026-04-23"
+  container_lifecycle.use_compression: "ignored in initial audit 2026-04-23"
+  container_lifecycle.use_v2_api: "ignored in initial audit 2026-04-23"
+  container_lifecycle.zstd_compression_level: "ignored in initial audit 2026-04-23"
+  container_pid_mapper: "ignored in initial audit 2026-04-23"
+  container_proc_root: "ignored in second bulk edit 2026-05-06"
+  containerd_exclude_namespaces: "ignored in initial audit 2026-04-23"
+  containerd_namespace: "ignored in initial audit 2026-04-23"
+  containerd_namespaces: "ignored in initial audit 2026-04-23"
+  convert_dd_site_fqdn.enabled: "ignored in initial audit 2026-04-23"
+  core_agent.enabled: "ignored in initial audit 2026-04-23"
+  cri_socket_path: "ignored in second bulk edit 2026-05-06"
+  csi.driver: "ignored in initial audit 2026-04-23"
+  csi.enabled: "ignored in initial audit 2026-04-23"
+  data_observability.forwarder.additional_endpoints: "ignored in initial audit 2026-04-23"
+  data_observability.forwarder.batch_max_concurrent_send: "ignored in initial audit 2026-04-23"
+  data_observability.forwarder.batch_max_content_size: "ignored in initial audit 2026-04-23"
+  data_observability.forwarder.batch_max_size: "ignored in initial audit 2026-04-23"
+  data_observability.forwarder.batch_wait: "ignored in initial audit 2026-04-23"
+  data_observability.forwarder.compression_kind: "ignored in initial audit 2026-04-23"
+  data_observability.forwarder.compression_level: "ignored in initial audit 2026-04-23"
+  data_observability.forwarder.connection_reset_interval: "ignored in initial audit 2026-04-23"
+  data_observability.forwarder.dd_url: "ignored in initial audit 2026-04-23"
+  data_observability.forwarder.dev_mode_no_ssl: "ignored in initial audit 2026-04-23"
+  data_observability.forwarder.input_chan_size: "ignored in initial audit 2026-04-23"
+  data_observability.forwarder.logs_dd_url: "ignored in initial audit 2026-04-23"
+  data_observability.forwarder.logs_no_ssl: "ignored in initial audit 2026-04-23"
+  data_observability.forwarder.sender_backoff_base: "ignored in initial audit 2026-04-23"
+  data_observability.forwarder.sender_backoff_factor: "ignored in initial audit 2026-04-23"
+  data_observability.forwarder.sender_backoff_max: "ignored in initial audit 2026-04-23"
+  data_observability.forwarder.sender_recovery_interval: "ignored in initial audit 2026-04-23"
+  data_observability.forwarder.sender_recovery_reset: "ignored in initial audit 2026-04-23"
+  data_observability.forwarder.use_compression: "ignored in initial audit 2026-04-23"
+  data_observability.forwarder.use_v2_api: "ignored in initial audit 2026-04-23"
+  data_observability.forwarder.zstd_compression_level: "ignored in initial audit 2026-04-23"
+  data_observability.query_actions.enabled: "ignored in initial audit 2026-04-23"
+  data_plane.dogstatsd.enabled: "ignored in second bulk edit 2026-05-06"
+  data_plane.enabled: "ignored in second bulk edit 2026-05-06"
+  data_plane.otlp.enabled: "ignored in initial audit 2026-04-23"
+  data_plane.otlp.proxy.enabled: "ignored in initial audit 2026-04-23"
+  data_plane.otlp.proxy.receiver.protocols.grpc.endpoint: "ignored in initial audit 2026-04-23"
+  data_streams.forwarder.additional_endpoints: "ignored in initial audit 2026-04-23"
+  data_streams.forwarder.batch_max_concurrent_send: "ignored in initial audit 2026-04-23"
+  data_streams.forwarder.batch_max_content_size: "ignored in initial audit 2026-04-23"
+  data_streams.forwarder.batch_max_size: "ignored in initial audit 2026-04-23"
+  data_streams.forwarder.batch_wait: "ignored in initial audit 2026-04-23"
+  data_streams.forwarder.compression_kind: "ignored in initial audit 2026-04-23"
+  data_streams.forwarder.compression_level: "ignored in initial audit 2026-04-23"
+  data_streams.forwarder.connection_reset_interval: "ignored in initial audit 2026-04-23"
+  data_streams.forwarder.dd_url: "ignored in initial audit 2026-04-23"
+  data_streams.forwarder.dev_mode_no_ssl: "ignored in initial audit 2026-04-23"
+  data_streams.forwarder.input_chan_size: "ignored in initial audit 2026-04-23"
+  data_streams.forwarder.logs_dd_url: "ignored in initial audit 2026-04-23"
+  data_streams.forwarder.logs_no_ssl: "ignored in initial audit 2026-04-23"
+  data_streams.forwarder.sender_backoff_base: "ignored in initial audit 2026-04-23"
+  data_streams.forwarder.sender_backoff_factor: "ignored in initial audit 2026-04-23"
+  data_streams.forwarder.sender_backoff_max: "ignored in initial audit 2026-04-23"
+  data_streams.forwarder.sender_recovery_interval: "ignored in initial audit 2026-04-23"
+  data_streams.forwarder.sender_recovery_reset: "ignored in initial audit 2026-04-23"
+  data_streams.forwarder.use_compression: "ignored in initial audit 2026-04-23"
+  data_streams.forwarder.use_v2_api: "ignored in initial audit 2026-04-23"
+  data_streams.forwarder.zstd_compression_level: "ignored in initial audit 2026-04-23"
+  database_monitoring.activity.additional_endpoints: "ignored in initial audit 2026-04-23"
+  database_monitoring.activity.batch_max_concurrent_send: "ignored in initial audit 2026-04-23"
+  database_monitoring.activity.batch_max_content_size: "ignored in initial audit 2026-04-23"
+  database_monitoring.activity.batch_max_size: "ignored in initial audit 2026-04-23"
+  database_monitoring.activity.batch_wait: "ignored in initial audit 2026-04-23"
+  database_monitoring.activity.compression_kind: "ignored in initial audit 2026-04-23"
+  database_monitoring.activity.compression_level: "ignored in initial audit 2026-04-23"
+  database_monitoring.activity.connection_reset_interval: "ignored in initial audit 2026-04-23"
+  database_monitoring.activity.dd_url: "ignored in initial audit 2026-04-23"
+  database_monitoring.activity.dev_mode_no_ssl: "ignored in initial audit 2026-04-23"
+  database_monitoring.activity.input_chan_size: "ignored in initial audit 2026-04-23"
+  database_monitoring.activity.logs_dd_url: "ignored in initial audit 2026-04-23"
+  database_monitoring.activity.logs_no_ssl: "ignored in initial audit 2026-04-23"
+  database_monitoring.activity.sender_backoff_base: "ignored in initial audit 2026-04-23"
+  database_monitoring.activity.sender_backoff_factor: "ignored in initial audit 2026-04-23"
+  database_monitoring.activity.sender_backoff_max: "ignored in initial audit 2026-04-23"
+  database_monitoring.activity.sender_recovery_interval: "ignored in initial audit 2026-04-23"
+  database_monitoring.activity.sender_recovery_reset: "ignored in initial audit 2026-04-23"
+  database_monitoring.activity.use_compression: "ignored in initial audit 2026-04-23"
+  database_monitoring.activity.use_v2_api: "ignored in initial audit 2026-04-23"
+  database_monitoring.activity.zstd_compression_level: "ignored in initial audit 2026-04-23"
+  database_monitoring.autodiscovery.aurora.dbm_tag: "ignored in initial audit 2026-04-23"
+  database_monitoring.autodiscovery.aurora.discovery_interval: "ignored in initial audit 2026-04-23"
+  database_monitoring.autodiscovery.aurora.enabled: "ignored in initial audit 2026-04-23"
+  database_monitoring.autodiscovery.aurora.global_view_db_tag: "ignored in initial audit 2026-04-23"
+  database_monitoring.autodiscovery.aurora.query_timeout: "ignored in initial audit 2026-04-23"
+  database_monitoring.autodiscovery.aurora.region: "ignored in initial audit 2026-04-23"
+  database_monitoring.autodiscovery.aurora.tags: "ignored in initial audit 2026-04-23"
+  database_monitoring.autodiscovery.rds.dbm_tag: "ignored in initial audit 2026-04-23"
+  database_monitoring.autodiscovery.rds.discovery_interval: "ignored in initial audit 2026-04-23"
+  database_monitoring.autodiscovery.rds.enabled: "ignored in initial audit 2026-04-23"
+  database_monitoring.autodiscovery.rds.global_view_db_tag: "ignored in initial audit 2026-04-23"
+  database_monitoring.autodiscovery.rds.query_timeout: "ignored in initial audit 2026-04-23"
+  database_monitoring.autodiscovery.rds.region: "ignored in initial audit 2026-04-23"
+  database_monitoring.autodiscovery.rds.tags: "ignored in initial audit 2026-04-23"
+  database_monitoring.metrics.additional_endpoints: "ignored in initial audit 2026-04-23"
+  database_monitoring.metrics.batch_max_concurrent_send: "ignored in initial audit 2026-04-23"
+  database_monitoring.metrics.batch_max_content_size: "ignored in initial audit 2026-04-23"
+  database_monitoring.metrics.batch_max_size: "ignored in initial audit 2026-04-23"
+  database_monitoring.metrics.batch_wait: "ignored in initial audit 2026-04-23"
+  database_monitoring.metrics.compression_kind: "ignored in initial audit 2026-04-23"
+  database_monitoring.metrics.compression_level: "ignored in initial audit 2026-04-23"
+  database_monitoring.metrics.connection_reset_interval: "ignored in initial audit 2026-04-23"
+  database_monitoring.metrics.dd_url: "ignored in initial audit 2026-04-23"
+  database_monitoring.metrics.dev_mode_no_ssl: "ignored in initial audit 2026-04-23"
+  database_monitoring.metrics.input_chan_size: "ignored in initial audit 2026-04-23"
+  database_monitoring.metrics.logs_dd_url: "ignored in initial audit 2026-04-23"
+  database_monitoring.metrics.logs_no_ssl: "ignored in initial audit 2026-04-23"
+  database_monitoring.metrics.sender_backoff_base: "ignored in initial audit 2026-04-23"
+  database_monitoring.metrics.sender_backoff_factor: "ignored in initial audit 2026-04-23"
+  database_monitoring.metrics.sender_backoff_max: "ignored in initial audit 2026-04-23"
+  database_monitoring.metrics.sender_recovery_interval: "ignored in initial audit 2026-04-23"
+  database_monitoring.metrics.sender_recovery_reset: "ignored in initial audit 2026-04-23"
+  database_monitoring.metrics.use_compression: "ignored in initial audit 2026-04-23"
+  database_monitoring.metrics.use_v2_api: "ignored in initial audit 2026-04-23"
+  database_monitoring.metrics.zstd_compression_level: "ignored in initial audit 2026-04-23"
+  database_monitoring.samples.additional_endpoints: "ignored in initial audit 2026-04-23"
+  database_monitoring.samples.batch_max_concurrent_send: "ignored in initial audit 2026-04-23"
+  database_monitoring.samples.batch_max_content_size: "ignored in initial audit 2026-04-23"
+  database_monitoring.samples.batch_max_size: "ignored in initial audit 2026-04-23"
+  database_monitoring.samples.batch_wait: "ignored in initial audit 2026-04-23"
+  database_monitoring.samples.compression_kind: "ignored in initial audit 2026-04-23"
+  database_monitoring.samples.compression_level: "ignored in initial audit 2026-04-23"
+  database_monitoring.samples.connection_reset_interval: "ignored in initial audit 2026-04-23"
+  database_monitoring.samples.dd_url: "ignored in initial audit 2026-04-23"
+  database_monitoring.samples.dev_mode_no_ssl: "ignored in initial audit 2026-04-23"
+  database_monitoring.samples.input_chan_size: "ignored in initial audit 2026-04-23"
+  database_monitoring.samples.logs_dd_url: "ignored in initial audit 2026-04-23"
+  database_monitoring.samples.logs_no_ssl: "ignored in initial audit 2026-04-23"
+  database_monitoring.samples.sender_backoff_base: "ignored in initial audit 2026-04-23"
+  database_monitoring.samples.sender_backoff_factor: "ignored in initial audit 2026-04-23"
+  database_monitoring.samples.sender_backoff_max: "ignored in initial audit 2026-04-23"
+  database_monitoring.samples.sender_recovery_interval: "ignored in initial audit 2026-04-23"
+  database_monitoring.samples.sender_recovery_reset: "ignored in initial audit 2026-04-23"
+  database_monitoring.samples.use_compression: "ignored in initial audit 2026-04-23"
+  database_monitoring.samples.use_v2_api: "ignored in initial audit 2026-04-23"
+  database_monitoring.samples.zstd_compression_level: "ignored in initial audit 2026-04-23"
+  default_integration_http_timeout: "ignored in initial audit 2026-04-23"
+  delegated_auth.aws.region: "ignored in initial audit 2026-04-23"
+  delegated_auth.org_uuid: "ignored in initial audit 2026-04-23"
+  delegated_auth.provider: "ignored in initial audit 2026-04-23"
+  delegated_auth.refresh_interval_mins: "ignored in initial audit 2026-04-23"
+  disable_cluster_name_tag_key: "ignored in initial audit 2026-04-23"
+  disable_file_logging: "ignored in initial audit 2026-04-23"
+  disable_py3_validation: "ignored in initial audit 2026-04-23"
+  disable_unsafe_yaml: "ignored in initial audit 2026-04-23"
+  disk_check.use_core_loader: "ignored in initial audit 2026-04-23"
+  djm_config.enabled: "ignored in initial audit 2026-04-23"
+  docker_env_as_tags: "ignored in initial audit 2026-04-23"
+  docker_labels_as_tags: "ignored in initial audit 2026-04-23"
+  docker_query_timeout: "ignored in initial audit 2026-04-23"
+  dogstatsd_expiry_seconds: "ignored in second bulk edit 2026-05-06"
+  ec2_imdsv2_transition_payload_enabled: "ignored in initial audit 2026-04-23"
+  ec2_metadata_timeout: "ignored in initial audit 2026-04-23"
+  ec2_metadata_token_lifetime: "ignored in initial audit 2026-04-23"
+  ec2_prefer_imdsv2: "ignored in initial audit 2026-04-23"
+  ec2_prioritize_instance_id_as_hostname: "ignored in initial audit 2026-04-23"
+  ec2_use_dmi: "ignored in initial audit 2026-04-23"
+  ec2_use_windows_prefix_detection: "ignored in initial audit 2026-04-23"
+  ecs_agent_container_name: "ignored in initial audit 2026-04-23"
+  ecs_agent_url: "ignored in initial audit 2026-04-23"
+  ecs_collect_resource_tags_ec2: "ignored in initial audit 2026-04-23"
+  ecs_deployment_mode: "ignored in initial audit 2026-04-23"
+  ecs_metadata_retry_initial_interval: "ignored in initial audit 2026-04-23"
+  ecs_metadata_retry_max_elapsed_time: "ignored in initial audit 2026-04-23"
+  ecs_metadata_retry_timeout_factor: "ignored in initial audit 2026-04-23"
+  ecs_metadata_timeout: "ignored in initial audit 2026-04-23"
+  ecs_resource_tags_replace_colon: "ignored in initial audit 2026-04-23"
+  ecs_task_cache_ttl: "ignored in initial audit 2026-04-23"
+  ecs_task_collection_burst: "ignored in initial audit 2026-04-23"
+  ecs_task_collection_enabled: "ignored in initial audit 2026-04-23"
+  ecs_task_collection_rate: "ignored in initial audit 2026-04-23"
+  eks_fargate: "ignored in initial audit 2026-04-23"
+  enable_cluster_agent_metadata_collection: "ignored in initial audit 2026-04-23"
+  enable_gohai: "ignored in initial audit 2026-04-23"
+  enable_metadata_collection: "ignored in initial audit 2026-04-23"
+  enable_payloads.json_to_v1_intake: "Legacy v1/intake endpoint; not implemented in ADP"
+  enable_signing_metadata_collection: "ignored in initial audit 2026-04-23"
+  enabled_rfc1123_compliant_cluster_name_tag: "ignored in initial audit 2026-04-23"
+  enhanced_metrics: "ignored in initial audit 2026-04-23"
+  event_management.forwarder.additional_endpoints: "ignored in initial audit 2026-04-23"
+  event_management.forwarder.batch_max_concurrent_send: "ignored in initial audit 2026-04-23"
+  event_management.forwarder.batch_max_content_size: "ignored in initial audit 2026-04-23"
+  event_management.forwarder.batch_max_size: "ignored in initial audit 2026-04-23"
+  event_management.forwarder.batch_wait: "ignored in initial audit 2026-04-23"
+  event_management.forwarder.compression_kind: "ignored in initial audit 2026-04-23"
+  event_management.forwarder.compression_level: "ignored in initial audit 2026-04-23"
+  event_management.forwarder.connection_reset_interval: "ignored in initial audit 2026-04-23"
+  event_management.forwarder.dd_url: "ignored in initial audit 2026-04-23"
+  event_management.forwarder.dev_mode_no_ssl: "ignored in initial audit 2026-04-23"
+  event_management.forwarder.input_chan_size: "ignored in initial audit 2026-04-23"
+  event_management.forwarder.logs_dd_url: "ignored in initial audit 2026-04-23"
+  event_management.forwarder.logs_no_ssl: "ignored in initial audit 2026-04-23"
+  event_management.forwarder.sender_backoff_base: "ignored in initial audit 2026-04-23"
+  event_management.forwarder.sender_backoff_factor: "ignored in initial audit 2026-04-23"
+  event_management.forwarder.sender_backoff_max: "ignored in initial audit 2026-04-23"
+  event_management.forwarder.sender_recovery_interval: "ignored in initial audit 2026-04-23"
+  event_management.forwarder.sender_recovery_reset: "ignored in initial audit 2026-04-23"
+  event_management.forwarder.use_compression: "ignored in initial audit 2026-04-23"
+  event_management.forwarder.use_v2_api: "ignored in initial audit 2026-04-23"
+  event_management.forwarder.zstd_compression_level: "ignored in initial audit 2026-04-23"
+  evp_proxy_config.additional_endpoints: "ignored in initial audit 2026-04-23"
+  evp_proxy_config.api_key: "ignored in initial audit 2026-04-23"
+  evp_proxy_config.dd_url: "ignored in initial audit 2026-04-23"
+  evp_proxy_config.delegated_auth.aws.region: "ignored in initial audit 2026-04-23"
+  evp_proxy_config.delegated_auth.org_uuid: "ignored in initial audit 2026-04-23"
+  evp_proxy_config.delegated_auth.provider: "ignored in initial audit 2026-04-23"
+  evp_proxy_config.delegated_auth.refresh_interval_mins: "ignored in initial audit 2026-04-23"
+  evp_proxy_config.enabled: "ignored in initial audit 2026-04-23"
+  evp_proxy_config.max_payload_size: "ignored in initial audit 2026-04-23"
+  evp_proxy_config.receiver_timeout: "ignored in initial audit 2026-04-23"
+  exclude_ec2_tags: "ignored in initial audit 2026-04-23"
+  exclude_gce_tags: "ignored in initial audit 2026-04-23"
+  exclude_pause_container: "ignored in initial audit 2026-04-23"
+  expected_tags_duration: "ignored in second bulk edit 2026-05-06"
+  expvar_port: "ignored in initial audit 2026-04-23"
+  external_metrics.aggregator: "ignored in initial audit 2026-04-23"
+  external_metrics_provider.api_key: "ignored in initial audit 2026-04-23"
+  external_metrics_provider.app_key: "ignored in initial audit 2026-04-23"
+  external_metrics_provider.batch_window: "ignored in initial audit 2026-04-23"
+  external_metrics_provider.bucket_size: "ignored in initial audit 2026-04-23"
+  external_metrics_provider.chunk_size: "ignored in initial audit 2026-04-23"
+  external_metrics_provider.config: "ignored in initial audit 2026-04-23"
+  external_metrics_provider.enable_datadogmetric_autogen: "ignored in initial audit 2026-04-23"
+  external_metrics_provider.enabled: "ignored in initial audit 2026-04-23"
+  external_metrics_provider.endpoint: "ignored in initial audit 2026-04-23"
+  external_metrics_provider.endpoints: "ignored in initial audit 2026-04-23"
+  external_metrics_provider.local_copy_refresh_rate: "ignored in initial audit 2026-04-23"
+  external_metrics_provider.max_age: "ignored in initial audit 2026-04-23"
+  external_metrics_provider.max_parallel_queries: "ignored in initial audit 2026-04-23"
+  external_metrics_provider.max_time_window: "ignored in initial audit 2026-04-23"
+  external_metrics_provider.num_workers: "ignored in initial audit 2026-04-23"
+  external_metrics_provider.port: "ignored in initial audit 2026-04-23"
+  external_metrics_provider.query_validity_period: "ignored in initial audit 2026-04-23"
+  external_metrics_provider.refresh_period: "ignored in initial audit 2026-04-23"
+  external_metrics_provider.rollup: "ignored in initial audit 2026-04-23"
+  external_metrics_provider.split_batches_with_backoff: "ignored in initial audit 2026-04-23"
+  external_metrics_provider.use_datadogmetric_crd: "ignored in initial audit 2026-04-23"
+  external_metrics_provider.wpa_controller: "ignored in initial audit 2026-04-23"
+  extra_config_providers: "ignored in initial audit 2026-04-23"
+  extra_listeners: "ignored in initial audit 2026-04-23"
+  extra_tags: "ignored in second bulk edit 2026-05-06"
+  fips.enabled: "ignored in initial audit 2026-04-23"
+  fips.https: "ignored in initial audit 2026-04-23"
+  fips.local_address: "ignored in initial audit 2026-04-23"
+  fips.port_range_start: "ignored in initial audit 2026-04-23"
+  fips.tls_verify: "ignored in initial audit 2026-04-23"
+  flare.profile_overhead_runtime: "ignored in initial audit 2026-04-23"
+  flare.rc_profiling.blocking_rate: "ignored in initial audit 2026-04-23"
+  flare.rc_profiling.mutex_fraction: "ignored in initial audit 2026-04-23"
+  flare.rc_profiling.profile_duration: "ignored in initial audit 2026-04-23"
+  flare.rc_streamlogs.duration: "ignored in initial audit 2026-04-23"
+  flare_provider_timeout: "ignored in initial audit 2026-04-23"
+  flare_stripped_keys: "ignored in initial audit 2026-04-23"
+  fleet_layers: "ignored in initial audit 2026-04-23"
+  fleet_policies_dir: "ignored in initial audit 2026-04-23"
+  gce_metadata_timeout: "ignored in initial audit 2026-04-23"
+  gce_send_project_id_tag: "ignored in initial audit 2026-04-23"
+  go_core_dump: "ignored in initial audit 2026-04-23"
+  gpu.disabled_collectors: "ignored in initial audit 2026-04-23"
+  gpu.enabled: "ignored in initial audit 2026-04-23"
+  gpu.integrate_with_workloadmeta_processes: "ignored in initial audit 2026-04-23"
+  gpu.nvml_lib_path: "ignored in initial audit 2026-04-23"
+  gpu.sp_process_metrics_request_timeout: "ignored in initial audit 2026-04-23"
+  gpu.use_sp_process_metrics: "ignored in initial audit 2026-04-23"
+  gpu.workload_tag_cache_size: "ignored in initial audit 2026-04-23"
+  ha_agent.enabled: "ignored in initial audit 2026-04-23"
+  ha_agent.group: "ignored in initial audit 2026-04-23"
+  health_platform.enabled: "ignored in initial audit 2026-04-23"
+  health_platform.forwarder.interval: "ignored in initial audit 2026-04-23"
+  health_platform.persist_on_kubernetes: "ignored in initial audit 2026-04-23"
+  health_port: "ignored in initial audit 2026-04-23"
+  histogram_percentiles: "ignored in second bulk edit 2026-05-06"
+  host_aliases: "ignored in initial audit 2026-04-23"
+  hostname: "ignored in second bulk edit 2026-05-06"
+  hostname_drift_initial_delay: "ignored in initial audit 2026-04-23"
+  hostname_drift_recurring_interval: "ignored in initial audit 2026-04-23"
+  hostname_file: "ignored in initial audit 2026-04-23"
+  hostname_force_config_as_canonical: "ignored in initial audit 2026-04-23"
+  hostname_fqdn: "ignored in initial audit 2026-04-23"
+  hostname_trust_uts_namespace: "ignored in initial audit 2026-04-23"
+  hostprofiler.additional_http_headers: "ignored in initial audit 2026-04-23"
+  hostprofiler.ddprofiling.enabled: "ignored in initial audit 2026-04-23"
+  hostprofiler.ddprofiling.period: "ignored in initial audit 2026-04-23"
+  hostprofiler.debug.verbosity: "ignored in initial audit 2026-04-23"
+  hpa_configmap_name: "ignored in initial audit 2026-04-23"
+  hpa_watcher_gc_period: "ignored in initial audit 2026-04-23"
+  hpa_watcher_polling_freq: "ignored in initial audit 2026-04-23"
+  http_dial_fallback_delay: "ignored in initial audit 2026-04-23"
+  ibm_metadata_timeout: "ignored in initial audit 2026-04-23"
+  ignore_autoconf: "ignored in initial audit 2026-04-23"
+  ignore_host_etc: "ignored in initial audit 2026-04-23"
+  include_ephemeral_containers: "ignored in initial audit 2026-04-23"
+  infrastructure_mode: "ignored in initial audit 2026-04-23"
+  installer.gc_interval: "ignored in initial audit 2026-04-23"
+  installer.mirror: "ignored in initial audit 2026-04-23"
+  installer.refresh_interval: "ignored in initial audit 2026-04-23"
+  installer.registry.auth: "ignored in initial audit 2026-04-23"
+  installer.registry.password: "ignored in initial audit 2026-04-23"
+  installer.registry.url: "ignored in initial audit 2026-04-23"
+  installer.registry.username: "ignored in initial audit 2026-04-23"
+  integration.additional: "ignored in initial audit 2026-04-23"
+  integration.basic.allowed: "ignored in initial audit 2026-04-23"
+  integration.enabled: "ignored in initial audit 2026-04-23"
+  integration.end_user_device.allowed: "ignored in initial audit 2026-04-23"
+  integration.excluded: "ignored in initial audit 2026-04-23"
+  integration.full.allowed: "ignored in initial audit 2026-04-23"
+  integration_check_status_enabled: "ignored in initial audit 2026-04-23"
+  integration_file_paths_allowlist: "ignored in initial audit 2026-04-23"
+  integration_ignore_untrusted_file_params: "ignored in initial audit 2026-04-23"
+  integration_profiling: "ignored in initial audit 2026-04-23"
+  integration_security_excluded_checks: "ignored in initial audit 2026-04-23"
+  integration_tracing: "ignored in initial audit 2026-04-23"
+  integration_tracing_exhaustive: "ignored in initial audit 2026-04-23"
+  integration_trusted_providers: "ignored in initial audit 2026-04-23"
+  internal_profiling.block_profile_rate: "ignored in initial audit 2026-04-23"
+  internal_profiling.capture_all_allocations: "ignored in initial audit 2026-04-23"
+  internal_profiling.cpu_duration: "ignored in initial audit 2026-04-23"
+  internal_profiling.custom_attributes: "ignored in initial audit 2026-04-23"
+  internal_profiling.delta_profiles: "ignored in initial audit 2026-04-23"
+  internal_profiling.enable_block_profiling: "ignored in initial audit 2026-04-23"
+  internal_profiling.enable_goroutine_stacktraces: "ignored in initial audit 2026-04-23"
+  internal_profiling.enable_mutex_profiling: "ignored in initial audit 2026-04-23"
+  internal_profiling.enabled: "ignored in initial audit 2026-04-23"
+  internal_profiling.extra_tags: "ignored in initial audit 2026-04-23"
+  internal_profiling.mutex_profile_fraction: "ignored in initial audit 2026-04-23"
+  internal_profiling.period: "ignored in initial audit 2026-04-23"
+  internal_profiling.profile_dd_url: "ignored in initial audit 2026-04-23"
+  internal_profiling.unix_socket: "ignored in initial audit 2026-04-23"
+  inventories_checks_configuration_enabled: "ignored in initial audit 2026-04-23"
+  inventories_collect_cloud_provider_account_id: "ignored in initial audit 2026-04-23"
+  inventories_configuration_enabled: "ignored in initial audit 2026-04-23"
+  inventories_diagnostics_enabled: "ignored in initial audit 2026-04-23"
+  inventories_enabled: "ignored in initial audit 2026-04-23"
+  inventories_first_run_delay: "ignored in initial audit 2026-04-23"
+  inventories_max_interval: "ignored in initial audit 2026-04-23"
+  inventories_min_interval: "ignored in initial audit 2026-04-23"
+  iot_host: "ignored in initial audit 2026-04-23"
+  ipc_address: "ignored in initial audit 2026-04-23"
+  ipc_cert_file_path: "ignored in second bulk edit 2026-05-06"
+  jmx_check_period: "ignored in initial audit 2026-04-23"
+  jmx_collection_timeout: "ignored in initial audit 2026-04-23"
+  jmx_custom_jars: "ignored in initial audit 2026-04-23"
+  jmx_java_tool_options: "ignored in initial audit 2026-04-23"
+  jmx_log_file: "ignored in initial audit 2026-04-23"
+  jmx_max_ram_percentage: "ignored in initial audit 2026-04-23"
+  jmx_max_restarts: "ignored in initial audit 2026-04-23"
+  jmx_reconnection_thread_pool_size: "ignored in initial audit 2026-04-23"
+  jmx_reconnection_timeout: "ignored in initial audit 2026-04-23"
+  jmx_restart_interval: "ignored in initial audit 2026-04-23"
+  jmx_statsd_client_buffer_size: "ignored in initial audit 2026-04-23"
+  jmx_statsd_client_queue_size: "ignored in initial audit 2026-04-23"
+  jmx_statsd_client_socket_timeout: "ignored in initial audit 2026-04-23"
+  jmx_statsd_client_use_non_blocking: "ignored in initial audit 2026-04-23"
+  jmx_statsd_telemetry_enabled: "ignored in initial audit 2026-04-23"
+  jmx_telemetry_enabled: "ignored in initial audit 2026-04-23"
+  jmx_thread_pool_size: "ignored in initial audit 2026-04-23"
+  jmx_use_cgroup_memory_limit: "ignored in initial audit 2026-04-23"
+  jmx_use_container_support: "ignored in initial audit 2026-04-23"
+  kube_cache_sync_timeout_seconds: "ignored in initial audit 2026-04-23"
+  kube_resources_namespace: "ignored in initial audit 2026-04-23"
+  kubeactions.enabled: "ignored in initial audit 2026-04-23"
+  kubelet_auth_token_path: "ignored in initial audit 2026-04-23"
+  kubelet_cache_pods_duration: "ignored in initial audit 2026-04-23"
+  kubelet_client_ca: "ignored in initial audit 2026-04-23"
+  kubelet_client_crt: "ignored in initial audit 2026-04-23"
+  kubelet_client_key: "ignored in initial audit 2026-04-23"
+  kubelet_collector_pull_interval: "ignored in initial audit 2026-04-23"
+  kubelet_core_check_enabled: "ignored in initial audit 2026-04-23"
+  kubelet_tls_verify: "ignored in initial audit 2026-04-23"
+  kubelet_use_api_server: "ignored in initial audit 2026-04-23"
+  kubernetes_ad_tags_disabled: "ignored in initial audit 2026-04-23"
+  kubernetes_apiserver_ca_path: "ignored in initial audit 2026-04-23"
+  kubernetes_apiserver_client_timeout: "ignored in initial audit 2026-04-23"
+  kubernetes_apiserver_informer_client_timeout: "ignored in initial audit 2026-04-23"
+  kubernetes_apiserver_tls_verify: "ignored in initial audit 2026-04-23"
+  kubernetes_apiserver_use_protobuf: "ignored in initial audit 2026-04-23"
+  kubernetes_collect_metadata_tags: "ignored in initial audit 2026-04-23"
+  kubernetes_event_collection_timeout: "ignored in initial audit 2026-04-23"
+  kubernetes_events_source_detection.enabled: "ignored in initial audit 2026-04-23"
+  kubernetes_http_kubelet_port: "ignored in initial audit 2026-04-23"
+  kubernetes_https_kubelet_port: "ignored in initial audit 2026-04-23"
+  kubernetes_informers_resync_period: "ignored in initial audit 2026-04-23"
+  kubernetes_kube_service_ignore_readiness: "ignored in initial audit 2026-04-23"
+  kubernetes_kubeconfig_path: "ignored in initial audit 2026-04-23"
+  kubernetes_kubelet_deviceplugins_cache_duration: "ignored in initial audit 2026-04-23"
+  kubernetes_kubelet_deviceplugins_socketdir: "ignored in initial audit 2026-04-23"
+  kubernetes_kubelet_host: "ignored in initial audit 2026-04-23"
+  kubernetes_kubelet_nodename: "ignored in initial audit 2026-04-23"
+  kubernetes_kubelet_podresources_socket: "ignored in initial audit 2026-04-23"
+  kubernetes_map_services_on_ip: "ignored in initial audit 2026-04-23"
+  kubernetes_metadata_streaming: "ignored in initial audit 2026-04-23"
+  kubernetes_metadata_tag_update_freq: "ignored in initial audit 2026-04-23"
+  kubernetes_namespace_annotations_as_tags: "ignored in initial audit 2026-04-23"
+  kubernetes_namespace_labels_as_tags: "ignored in initial audit 2026-04-23"
+  kubernetes_node_annotations_as_host_aliases: "ignored in initial audit 2026-04-23"
+  kubernetes_node_annotations_as_tags: "ignored in initial audit 2026-04-23"
+  kubernetes_node_label_as_cluster_name: "ignored in initial audit 2026-04-23"
+  kubernetes_node_labels_as_tags: "ignored in initial audit 2026-04-23"
+  kubernetes_persistent_volume_claims_as_tags: "ignored in initial audit 2026-04-23"
+  kubernetes_pod_annotations_as_tags: "ignored in initial audit 2026-04-23"
+  kubernetes_pod_expiration_duration: "ignored in initial audit 2026-04-23"
+  kubernetes_pod_labels_as_tags: "ignored in initial audit 2026-04-23"
+  kubernetes_resources_annotations_as_tags: "ignored in initial audit 2026-04-23"
+  kubernetes_resources_labels_as_tags: "ignored in initial audit 2026-04-23"
+  kubernetes_use_endpoint_slices: "ignored in initial audit 2026-04-23"
+  language_detection.enabled: "ignored in initial audit 2026-04-23"
+  language_detection.reporting.buffer_period: "ignored in initial audit 2026-04-23"
+  language_detection.reporting.enabled: "ignored in initial audit 2026-04-23"
+  language_detection.reporting.refresh_period: "ignored in initial audit 2026-04-23"
+  leader_election: "ignored in initial audit 2026-04-23"
+  leader_election_default_resource: "ignored in initial audit 2026-04-23"
+  leader_election_release_on_shutdown: "ignored in initial audit 2026-04-23"
+  leader_lease_duration: "ignored in initial audit 2026-04-23"
+  leader_lease_name: "ignored in initial audit 2026-04-23"
+  listeners: "ignored in initial audit 2026-04-23"
+  log_all_goroutines_when_unhealthy: "ignored in initial audit 2026-04-23"
+  log_enabled: "ignored in initial audit 2026-04-23"
+  log_file: "ignored in second bulk edit 2026-05-06"
+  log_file_max_rolls: "ignored in second bulk edit 2026-05-06"
+  log_file_max_size: "ignored in second bulk edit 2026-05-06"
+  log_format_json: "ignored in second bulk edit 2026-05-06"
+  log_to_console: "ignored in second bulk edit 2026-05-06"
+  log_to_syslog: "ignored in second bulk edit 2026-05-06"
+  logon_duration.enabled: "ignored in initial audit 2026-04-23"
+  logs_config.add_logsource_tag: "ignored in initial audit 2026-04-23"
+  logs_config.additional_endpoints: "ignored in initial audit 2026-04-23"
+  logs_config.aggregation_timeout: "ignored in initial audit 2026-04-23"
+  logs_config.api_key: "ignored in initial audit 2026-04-23"
+  logs_config.atomic_registry_write: "ignored in initial audit 2026-04-23"
+  logs_config.auditor_ttl: "ignored in initial audit 2026-04-23"
+  logs_config.auto_multi_line.enable_datetime_detection: "ignored in initial audit 2026-04-23"
+  logs_config.auto_multi_line.enable_json_aggregation: "ignored in initial audit 2026-04-23"
+  logs_config.auto_multi_line.enable_json_detection: "ignored in initial audit 2026-04-23"
+  logs_config.auto_multi_line.pattern_table_match_threshold: "ignored in initial audit 2026-04-23"
+  logs_config.auto_multi_line.pattern_table_max_size: "ignored in initial audit 2026-04-23"
+  logs_config.auto_multi_line.tag_aggregated_json: "ignored in initial audit 2026-04-23"
+  logs_config.auto_multi_line.timestamp_detector_match_threshold: "ignored in initial audit 2026-04-23"
+  logs_config.auto_multi_line.tokenizer_max_input_bytes: "ignored in initial audit 2026-04-23"
+  logs_config.auto_multi_line_default_match_threshold: "ignored in initial audit 2026-04-23"
+  logs_config.auto_multi_line_default_match_timeout: "ignored in initial audit 2026-04-23"
+  logs_config.auto_multi_line_default_sample_size: "ignored in initial audit 2026-04-23"
+  logs_config.auto_multi_line_detection: "ignored in initial audit 2026-04-23"
+  logs_config.auto_multi_line_detection_custom_samples: "ignored in initial audit 2026-04-23"
+  logs_config.auto_multi_line_detection_tagging: "ignored in initial audit 2026-04-23"
+  logs_config.auto_multi_line_extra_patterns: "ignored in initial audit 2026-04-23"
+  logs_config.batch_max_concurrent_send: "ignored in initial audit 2026-04-23"
+  logs_config.batch_max_content_size: "ignored in initial audit 2026-04-23"
+  logs_config.batch_max_size: "ignored in initial audit 2026-04-23"
+  logs_config.batch_wait: "ignored in initial audit 2026-04-23"
+  logs_config.close_timeout: "ignored in initial audit 2026-04-23"
+  logs_config.compression_kind: "ignored in initial audit 2026-04-23"
+  logs_config.compression_level: "ignored in initial audit 2026-04-23"
+  logs_config.connection_reset_interval: "ignored in initial audit 2026-04-23"
+  logs_config.container_collect_all: "ignored in initial audit 2026-04-23"
+  logs_config.container_runtime_waiting_timeout: "ignored in initial audit 2026-04-23"
+  logs_config.dd_port: "ignored in initial audit 2026-04-23"
+  logs_config.dd_url: "ignored in initial audit 2026-04-23"
+  logs_config.dd_url_443: "ignored in initial audit 2026-04-23"
+  logs_config.delegated_auth.aws.region: "ignored in initial audit 2026-04-23"
+  logs_config.delegated_auth.org_uuid: "ignored in initial audit 2026-04-23"
+  logs_config.delegated_auth.provider: "ignored in initial audit 2026-04-23"
+  logs_config.delegated_auth.refresh_interval_mins: "ignored in initial audit 2026-04-23"
+  logs_config.dev_mode_no_ssl: "ignored in initial audit 2026-04-23"
+  logs_config.dev_mode_use_proto: "ignored in initial audit 2026-04-23"
+  logs_config.disable_distributed_senders: "ignored in initial audit 2026-04-23"
+  logs_config.docker_client_read_timeout: "ignored in initial audit 2026-04-23"
+  logs_config.docker_container_force_use_file: "ignored in initial audit 2026-04-23"
+  logs_config.docker_container_use_file: "ignored in initial audit 2026-04-23"
+  logs_config.docker_path_override: "ignored in initial audit 2026-04-23"
+  logs_config.enable_recursive_glob: "ignored in initial audit 2026-04-23"
+  logs_config.expected_tags_duration: "ignored in initial audit 2026-04-23"
+  logs_config.experimental_adaptive_sampling.burst_size: "ignored in initial audit 2026-04-23"
+  logs_config.experimental_adaptive_sampling.enabled: "ignored in initial audit 2026-04-23"
+  logs_config.experimental_adaptive_sampling.match_threshold: "ignored in initial audit 2026-04-23"
+  logs_config.experimental_adaptive_sampling.max_patterns: "ignored in initial audit 2026-04-23"
+  logs_config.experimental_adaptive_sampling.rate_limit: "ignored in initial audit 2026-04-23"
+  logs_config.experimental_adaptive_sampling.tokenizer_max_input_bytes: "ignored in initial audit 2026-04-23"
+  logs_config.file_scan_period: "ignored in initial audit 2026-04-23"
+  logs_config.file_wildcard_selection_mode: "ignored in initial audit 2026-04-23"
+  logs_config.fingerprint_config.count: "ignored in initial audit 2026-04-23"
+  logs_config.fingerprint_config.count_to_skip: "ignored in initial audit 2026-04-23"
+  logs_config.fingerprint_config.fingerprint_strategy: "ignored in initial audit 2026-04-23"
+  logs_config.fingerprint_config.max_bytes: "ignored in initial audit 2026-04-23"
+  logs_config.force_auto_multi_line_detection_v1: "ignored in initial audit 2026-04-23"
+  logs_config.force_use_http: "ignored in initial audit 2026-04-23"
+  logs_config.force_use_tcp: "ignored in initial audit 2026-04-23"
+  logs_config.frame_size: "ignored in initial audit 2026-04-23"
+  logs_config.http_connectivity_retry_interval_max: "ignored in initial audit 2026-04-23"
+  logs_config.http_protocol: "ignored in initial audit 2026-04-23"
+  logs_config.http_timeout: "ignored in initial audit 2026-04-23"
+  logs_config.input_chan_size: "ignored in initial audit 2026-04-23"
+  logs_config.integrations_logs_disk_ratio: "ignored in initial audit 2026-04-23"
+  logs_config.integrations_logs_files_max_size: "ignored in initial audit 2026-04-23"
+  logs_config.integrations_logs_total_usage: "ignored in initial audit 2026-04-23"
+  logs_config.k8s_container_use_file: "ignored in initial audit 2026-04-23"
+  logs_config.k8s_container_use_kubelet_api: "ignored in initial audit 2026-04-23"
+  logs_config.kubelet_api_client_read_timeout: "ignored in initial audit 2026-04-23"
+  logs_config.logs_dd_url: "ignored in initial audit 2026-04-23"
+  logs_config.logs_no_ssl: "ignored in initial audit 2026-04-23"
+  logs_config.max_message_size_bytes: "ignored in initial audit 2026-04-23"
+  logs_config.message_channel_size: "ignored in initial audit 2026-04-23"
+  logs_config.open_files_limit: "ignored in initial audit 2026-04-23"
+  logs_config.payload_channel_size: "ignored in initial audit 2026-04-23"
+  logs_config.pipeline_failover.enabled: "ignored in initial audit 2026-04-23"
+  logs_config.pipeline_failover.router_channel_size: "ignored in initial audit 2026-04-23"
+  logs_config.pipelines: "ignored in initial audit 2026-04-23"
+  logs_config.process_exclude_agent: "ignored in initial audit 2026-04-23"
+  logs_config.processing_rules: "ignored in initial audit 2026-04-23"
+  logs_config.run_path: "ignored in initial audit 2026-04-23"
+  logs_config.sender_backoff_base: "ignored in initial audit 2026-04-23"
+  logs_config.sender_backoff_factor: "ignored in initial audit 2026-04-23"
+  logs_config.sender_backoff_max: "ignored in initial audit 2026-04-23"
+  logs_config.sender_recovery_interval: "ignored in initial audit 2026-04-23"
+  logs_config.sender_recovery_reset: "ignored in initial audit 2026-04-23"
+  logs_config.socks5_proxy_address: "ignored in initial audit 2026-04-23"
+  logs_config.stop_grace_period: "ignored in initial audit 2026-04-23"
+  logs_config.streaming.streamlogs_log_file: "ignored in initial audit 2026-04-23"
+  logs_config.tag_multi_line_logs: "ignored in initial audit 2026-04-23"
+  logs_config.tag_truncated_logs: "ignored in initial audit 2026-04-23"
+  logs_config.tagger_warmup_duration: "ignored in initial audit 2026-04-23"
+  logs_config.use_compression: "ignored in initial audit 2026-04-23"
+  logs_config.use_http: "ignored in initial audit 2026-04-23"
+  logs_config.use_podman_logs: "ignored in initial audit 2026-04-23"
+  logs_config.use_port_443: "ignored in initial audit 2026-04-23"
+  logs_config.use_sourcehost_tag: "ignored in initial audit 2026-04-23"
+  logs_config.use_tcp: "ignored in initial audit 2026-04-23"
+  logs_config.use_v2_api: "ignored in initial audit 2026-04-23"
+  logs_config.validate_pod_container_id: "ignored in initial audit 2026-04-23"
+  logs_config.windows_open_file_timeout: "ignored in initial audit 2026-04-23"
+  logs_config.zstd_compression_level: "ignored in initial audit 2026-04-23"
+  logs_enabled: "ignored in initial audit 2026-04-23"
+  memtrack_enabled: "ignored in initial audit 2026-04-23"
+  metadata_endpoints_max_hostname_size: "ignored in initial audit 2026-04-23"
+  metadata_ip_resolution_from_hostname: "ignored in initial audit 2026-04-23"
+  metadata_provider_stop_timeout: "ignored in initial audit 2026-04-23"
+  metadata_providers: "ignored in initial audit 2026-04-23"
+  metric_tag_filterlist: "ignored in second bulk edit 2026-05-06"
+  metrics_port: "ignored in initial audit 2026-04-23"
+  multi_region_failover.failover_apm: "ignored in initial audit 2026-04-23"
+  multi_region_failover.failover_logs: "ignored in initial audit 2026-04-23"
+  multi_region_failover.logs_service_allowlist: "ignored in initial audit 2026-04-23"
+  multi_region_failover.remote_configuration.clients.cache_bypass_limit: "ignored in initial audit 2026-04-23"
+  multi_region_failover.remote_configuration.clients.ttl_seconds: "ignored in initial audit 2026-04-23"
+  multi_region_failover.remote_configuration.config_root: "ignored in initial audit 2026-04-23"
+  multi_region_failover.remote_configuration.director_root: "ignored in initial audit 2026-04-23"
+  multi_region_failover.remote_configuration.key: "ignored in initial audit 2026-04-23"
+  multi_region_failover.remote_configuration.max_backoff_interval: "ignored in initial audit 2026-04-23"
+  multi_region_failover.remote_configuration.max_backoff_time: "ignored in initial audit 2026-04-23"
+  multi_region_failover.remote_configuration.org_status_refresh_interval: "ignored in initial audit 2026-04-23"
+  multi_region_failover.remote_configuration.refresh_interval: "ignored in initial audit 2026-04-23"
+  network.id: "ignored in initial audit 2026-04-23"
+  network_check.use_core_loader: "ignored in initial audit 2026-04-23"
+  network_config_management.forwarder.additional_endpoints: "ignored in initial audit 2026-04-23"
+  network_config_management.forwarder.batch_max_concurrent_send: "ignored in initial audit 2026-04-23"
+  network_config_management.forwarder.batch_max_content_size: "ignored in initial audit 2026-04-23"
+  network_config_management.forwarder.batch_max_size: "ignored in initial audit 2026-04-23"
+  network_config_management.forwarder.batch_wait: "ignored in initial audit 2026-04-23"
+  network_config_management.forwarder.compression_kind: "ignored in initial audit 2026-04-23"
+  network_config_management.forwarder.compression_level: "ignored in initial audit 2026-04-23"
+  network_config_management.forwarder.connection_reset_interval: "ignored in initial audit 2026-04-23"
+  network_config_management.forwarder.dd_url: "ignored in initial audit 2026-04-23"
+  network_config_management.forwarder.dev_mode_no_ssl: "ignored in initial audit 2026-04-23"
+  network_config_management.forwarder.input_chan_size: "ignored in initial audit 2026-04-23"
+  network_config_management.forwarder.logs_dd_url: "ignored in initial audit 2026-04-23"
+  network_config_management.forwarder.logs_no_ssl: "ignored in initial audit 2026-04-23"
+  network_config_management.forwarder.sender_backoff_base: "ignored in initial audit 2026-04-23"
+  network_config_management.forwarder.sender_backoff_factor: "ignored in initial audit 2026-04-23"
+  network_config_management.forwarder.sender_backoff_max: "ignored in initial audit 2026-04-23"
+  network_config_management.forwarder.sender_recovery_interval: "ignored in initial audit 2026-04-23"
+  network_config_management.forwarder.sender_recovery_reset: "ignored in initial audit 2026-04-23"
+  network_config_management.forwarder.use_compression: "ignored in initial audit 2026-04-23"
+  network_config_management.forwarder.use_v2_api: "ignored in initial audit 2026-04-23"
+  network_config_management.forwarder.zstd_compression_level: "ignored in initial audit 2026-04-23"
+  network_devices.autodiscovery.allowed_failures: "ignored in initial audit 2026-04-23"
+  network_devices.autodiscovery.collect_device_metadata: "ignored in initial audit 2026-04-23"
+  network_devices.autodiscovery.collect_topology: "ignored in initial audit 2026-04-23"
+  network_devices.autodiscovery.collect_vpn: "ignored in initial audit 2026-04-23"
+  network_devices.autodiscovery.configs: "ignored in initial audit 2026-04-23"
+  network_devices.autodiscovery.discovery_allowed_failures: "ignored in initial audit 2026-04-23"
+  network_devices.autodiscovery.discovery_interval: "ignored in initial audit 2026-04-23"
+  network_devices.autodiscovery.loader: "ignored in initial audit 2026-04-23"
+  network_devices.autodiscovery.min_collection_interval: "ignored in initial audit 2026-04-23"
+  network_devices.autodiscovery.namespace: "ignored in initial audit 2026-04-23"
+  network_devices.autodiscovery.oid_batch_size: "ignored in initial audit 2026-04-23"
+  network_devices.autodiscovery.ping.count: "ignored in initial audit 2026-04-23"
+  network_devices.autodiscovery.ping.enabled: "ignored in initial audit 2026-04-23"
+  network_devices.autodiscovery.ping.interval: "ignored in initial audit 2026-04-23"
+  network_devices.autodiscovery.ping.linux.use_raw_socket: "ignored in initial audit 2026-04-23"
+  network_devices.autodiscovery.ping.timeout: "ignored in initial audit 2026-04-23"
+  network_devices.autodiscovery.retries: "ignored in initial audit 2026-04-23"
+  network_devices.autodiscovery.timeout: "ignored in initial audit 2026-04-23"
+  network_devices.autodiscovery.use_deduplication: "ignored in initial audit 2026-04-23"
+  network_devices.autodiscovery.use_device_id_as_hostname: "ignored in initial audit 2026-04-23"
+  network_devices.autodiscovery.workers: "ignored in initial audit 2026-04-23"
+  network_devices.default_scan.enabled: "ignored in initial audit 2026-04-23"
+  network_devices.default_scan.excluded_ips: "ignored in initial audit 2026-04-23"
+  network_devices.metadata.additional_endpoints: "ignored in initial audit 2026-04-23"
+  network_devices.metadata.batch_max_concurrent_send: "ignored in initial audit 2026-04-23"
+  network_devices.metadata.batch_max_content_size: "ignored in initial audit 2026-04-23"
+  network_devices.metadata.batch_max_size: "ignored in initial audit 2026-04-23"
+  network_devices.metadata.batch_wait: "ignored in initial audit 2026-04-23"
+  network_devices.metadata.compression_kind: "ignored in initial audit 2026-04-23"
+  network_devices.metadata.compression_level: "ignored in initial audit 2026-04-23"
+  network_devices.metadata.connection_reset_interval: "ignored in initial audit 2026-04-23"
+  network_devices.metadata.dd_url: "ignored in initial audit 2026-04-23"
+  network_devices.metadata.dev_mode_no_ssl: "ignored in initial audit 2026-04-23"
+  network_devices.metadata.input_chan_size: "ignored in initial audit 2026-04-23"
+  network_devices.metadata.logs_dd_url: "ignored in initial audit 2026-04-23"
+  network_devices.metadata.logs_no_ssl: "ignored in initial audit 2026-04-23"
+  network_devices.metadata.sender_backoff_base: "ignored in initial audit 2026-04-23"
+  network_devices.metadata.sender_backoff_factor: "ignored in initial audit 2026-04-23"
+  network_devices.metadata.sender_backoff_max: "ignored in initial audit 2026-04-23"
+  network_devices.metadata.sender_recovery_interval: "ignored in initial audit 2026-04-23"
+  network_devices.metadata.sender_recovery_reset: "ignored in initial audit 2026-04-23"
+  network_devices.metadata.use_compression: "ignored in initial audit 2026-04-23"
+  network_devices.metadata.use_v2_api: "ignored in initial audit 2026-04-23"
+  network_devices.metadata.zstd_compression_level: "ignored in initial audit 2026-04-23"
+  network_devices.namespace: "ignored in initial audit 2026-04-23"
+  network_devices.netflow.aggregator_buffer_size: "ignored in initial audit 2026-04-23"
+  network_devices.netflow.aggregator_flow_context_ttl: "ignored in initial audit 2026-04-23"
+  network_devices.netflow.aggregator_flush_interval: "ignored in initial audit 2026-04-23"
+  network_devices.netflow.aggregator_port_rollup_threshold: "ignored in initial audit 2026-04-23"
+  network_devices.netflow.aggregator_rollup_tracker_refresh_interval: "ignored in initial audit 2026-04-23"
+  network_devices.netflow.enabled: "ignored in initial audit 2026-04-23"
+  network_devices.netflow.forwarder.additional_endpoints: "ignored in initial audit 2026-04-23"
+  network_devices.netflow.forwarder.batch_max_concurrent_send: "ignored in initial audit 2026-04-23"
+  network_devices.netflow.forwarder.batch_max_content_size: "ignored in initial audit 2026-04-23"
+  network_devices.netflow.forwarder.batch_max_size: "ignored in initial audit 2026-04-23"
+  network_devices.netflow.forwarder.batch_wait: "ignored in initial audit 2026-04-23"
+  network_devices.netflow.forwarder.compression_kind: "ignored in initial audit 2026-04-23"
+  network_devices.netflow.forwarder.compression_level: "ignored in initial audit 2026-04-23"
+  network_devices.netflow.forwarder.connection_reset_interval: "ignored in initial audit 2026-04-23"
+  network_devices.netflow.forwarder.dd_url: "ignored in initial audit 2026-04-23"
+  network_devices.netflow.forwarder.dev_mode_no_ssl: "ignored in initial audit 2026-04-23"
+  network_devices.netflow.forwarder.input_chan_size: "ignored in initial audit 2026-04-23"
+  network_devices.netflow.forwarder.logs_dd_url: "ignored in initial audit 2026-04-23"
+  network_devices.netflow.forwarder.logs_no_ssl: "ignored in initial audit 2026-04-23"
+  network_devices.netflow.forwarder.sender_backoff_base: "ignored in initial audit 2026-04-23"
+  network_devices.netflow.forwarder.sender_backoff_factor: "ignored in initial audit 2026-04-23"
+  network_devices.netflow.forwarder.sender_backoff_max: "ignored in initial audit 2026-04-23"
+  network_devices.netflow.forwarder.sender_recovery_interval: "ignored in initial audit 2026-04-23"
+  network_devices.netflow.forwarder.sender_recovery_reset: "ignored in initial audit 2026-04-23"
+  network_devices.netflow.forwarder.use_compression: "ignored in initial audit 2026-04-23"
+  network_devices.netflow.forwarder.use_v2_api: "ignored in initial audit 2026-04-23"
+  network_devices.netflow.forwarder.zstd_compression_level: "ignored in initial audit 2026-04-23"
+  network_devices.netflow.listeners: "ignored in initial audit 2026-04-23"
+  network_devices.netflow.reverse_dns_enrichment_enabled: "ignored in initial audit 2026-04-23"
+  network_devices.netflow.stop_timeout: "ignored in initial audit 2026-04-23"
+  network_devices.snmp_traps.bind_host: "ignored in initial audit 2026-04-23"
+  network_devices.snmp_traps.community_strings: "ignored in initial audit 2026-04-23"
+  network_devices.snmp_traps.enabled: "ignored in initial audit 2026-04-23"
+  network_devices.snmp_traps.forwarder.additional_endpoints: "ignored in initial audit 2026-04-23"
+  network_devices.snmp_traps.forwarder.batch_max_concurrent_send: "ignored in initial audit 2026-04-23"
+  network_devices.snmp_traps.forwarder.batch_max_content_size: "ignored in initial audit 2026-04-23"
+  network_devices.snmp_traps.forwarder.batch_max_size: "ignored in initial audit 2026-04-23"
+  network_devices.snmp_traps.forwarder.batch_wait: "ignored in initial audit 2026-04-23"
+  network_devices.snmp_traps.forwarder.compression_kind: "ignored in initial audit 2026-04-23"
+  network_devices.snmp_traps.forwarder.compression_level: "ignored in initial audit 2026-04-23"
+  network_devices.snmp_traps.forwarder.connection_reset_interval: "ignored in initial audit 2026-04-23"
+  network_devices.snmp_traps.forwarder.dd_url: "ignored in initial audit 2026-04-23"
+  network_devices.snmp_traps.forwarder.dev_mode_no_ssl: "ignored in initial audit 2026-04-23"
+  network_devices.snmp_traps.forwarder.input_chan_size: "ignored in initial audit 2026-04-23"
+  network_devices.snmp_traps.forwarder.logs_dd_url: "ignored in initial audit 2026-04-23"
+  network_devices.snmp_traps.forwarder.logs_no_ssl: "ignored in initial audit 2026-04-23"
+  network_devices.snmp_traps.forwarder.sender_backoff_base: "ignored in initial audit 2026-04-23"
+  network_devices.snmp_traps.forwarder.sender_backoff_factor: "ignored in initial audit 2026-04-23"
+  network_devices.snmp_traps.forwarder.sender_backoff_max: "ignored in initial audit 2026-04-23"
+  network_devices.snmp_traps.forwarder.sender_recovery_interval: "ignored in initial audit 2026-04-23"
+  network_devices.snmp_traps.forwarder.sender_recovery_reset: "ignored in initial audit 2026-04-23"
+  network_devices.snmp_traps.forwarder.use_compression: "ignored in initial audit 2026-04-23"
+  network_devices.snmp_traps.forwarder.use_v2_api: "ignored in initial audit 2026-04-23"
+  network_devices.snmp_traps.forwarder.zstd_compression_level: "ignored in initial audit 2026-04-23"
+  network_devices.snmp_traps.port: "ignored in initial audit 2026-04-23"
+  network_devices.snmp_traps.stop_timeout: "ignored in initial audit 2026-04-23"
+  network_devices.snmp_traps.users: "ignored in initial audit 2026-04-23"
+  network_path.collector.dest_excludes: "ignored in initial audit 2026-04-23"
+  network_path.collector.disable_intra_vpc_collection: "ignored in initial audit 2026-04-23"
+  network_path.collector.disable_windows_driver: "ignored in initial audit 2026-04-23"
+  network_path.collector.e2e_queries: "ignored in initial audit 2026-04-23"
+  network_path.collector.filters: "ignored in initial audit 2026-04-23"
+  network_path.collector.flush_interval: "ignored in initial audit 2026-04-23"
+  network_path.collector.icmp_mode: "ignored in initial audit 2026-04-23"
+  network_path.collector.input_chan_size: "ignored in initial audit 2026-04-23"
+  network_path.collector.max_ttl: "ignored in initial audit 2026-04-23"
+  network_path.collector.monitor_ip_without_domain: "ignored in initial audit 2026-04-23"
+  network_path.collector.pathtest_contexts_limit: "ignored in initial audit 2026-04-23"
+  network_path.collector.pathtest_interval: "ignored in initial audit 2026-04-23"
+  network_path.collector.pathtest_max_burst_duration: "ignored in initial audit 2026-04-23"
+  network_path.collector.pathtest_max_per_minute: "ignored in initial audit 2026-04-23"
+  network_path.collector.pathtest_ttl: "ignored in initial audit 2026-04-23"
+  network_path.collector.processing_chan_size: "ignored in initial audit 2026-04-23"
+  network_path.collector.reverse_dns_enrichment.enabled: "ignored in initial audit 2026-04-23"
+  network_path.collector.reverse_dns_enrichment.timeout: "ignored in initial audit 2026-04-23"
+  network_path.collector.source_excludes: "ignored in initial audit 2026-04-23"
+  network_path.collector.tcp_method: "ignored in initial audit 2026-04-23"
+  network_path.collector.tcp_syn_paris_traceroute_mode: "ignored in initial audit 2026-04-23"
+  network_path.collector.timeout: "ignored in initial audit 2026-04-23"
+  network_path.collector.traceroute_queries: "ignored in initial audit 2026-04-23"
+  network_path.collector.workers: "ignored in initial audit 2026-04-23"
+  network_path.connections_monitoring.enabled: "ignored in initial audit 2026-04-23"
+  network_path.forwarder.additional_endpoints: "ignored in initial audit 2026-04-23"
+  network_path.forwarder.batch_max_concurrent_send: "ignored in initial audit 2026-04-23"
+  network_path.forwarder.batch_max_content_size: "ignored in initial audit 2026-04-23"
+  network_path.forwarder.batch_max_size: "ignored in initial audit 2026-04-23"
+  network_path.forwarder.batch_wait: "ignored in initial audit 2026-04-23"
+  network_path.forwarder.compression_kind: "ignored in initial audit 2026-04-23"
+  network_path.forwarder.compression_level: "ignored in initial audit 2026-04-23"
+  network_path.forwarder.connection_reset_interval: "ignored in initial audit 2026-04-23"
+  network_path.forwarder.dd_url: "ignored in initial audit 2026-04-23"
+  network_path.forwarder.dev_mode_no_ssl: "ignored in initial audit 2026-04-23"
+  network_path.forwarder.input_chan_size: "ignored in initial audit 2026-04-23"
+  network_path.forwarder.logs_dd_url: "ignored in initial audit 2026-04-23"
+  network_path.forwarder.logs_no_ssl: "ignored in initial audit 2026-04-23"
+  network_path.forwarder.sender_backoff_base: "ignored in initial audit 2026-04-23"
+  network_path.forwarder.sender_backoff_factor: "ignored in initial audit 2026-04-23"
+  network_path.forwarder.sender_backoff_max: "ignored in initial audit 2026-04-23"
+  network_path.forwarder.sender_recovery_interval: "ignored in initial audit 2026-04-23"
+  network_path.forwarder.sender_recovery_reset: "ignored in initial audit 2026-04-23"
+  network_path.forwarder.use_compression: "ignored in initial audit 2026-04-23"
+  network_path.forwarder.use_v2_api: "ignored in initial audit 2026-04-23"
+  network_path.forwarder.zstd_compression_level: "ignored in initial audit 2026-04-23"
+  notable_events.enabled: "ignored in initial audit 2026-04-23"
+  observability_pipelines_worker.logs.enabled: "OPW logs routing out of scope for ADP"
+  observability_pipelines_worker.logs.url: "OPW logs routing out of scope for ADP"
+  observability_pipelines_worker.traces.enabled: "OPW traces routing out of scope for ADP"
+  observability_pipelines_worker.traces.url: "OPW traces routing out of scope for ADP"
+  ol_proxy_config.additional_endpoints: "ignored in initial audit 2026-04-23"
+  ol_proxy_config.api_key: "ignored in initial audit 2026-04-23"
+  ol_proxy_config.api_version: "ignored in initial audit 2026-04-23"
+  ol_proxy_config.dd_url: "ignored in initial audit 2026-04-23"
+  ol_proxy_config.delegated_auth.aws.region: "ignored in initial audit 2026-04-23"
+  ol_proxy_config.delegated_auth.org_uuid: "ignored in initial audit 2026-04-23"
+  ol_proxy_config.delegated_auth.provider: "ignored in initial audit 2026-04-23"
+  ol_proxy_config.delegated_auth.refresh_interval_mins: "ignored in initial audit 2026-04-23"
+  ol_proxy_config.enabled: "ignored in initial audit 2026-04-23"
+  orchestrator_explorer.collector_discovery.enabled: "ignored in initial audit 2026-04-23"
+  orchestrator_explorer.container_scrubbing.enabled: "ignored in initial audit 2026-04-23"
+  orchestrator_explorer.custom_resources.max_count: "ignored in initial audit 2026-04-23"
+  orchestrator_explorer.custom_resources.ootb.enabled: "ignored in initial audit 2026-04-23"
+  orchestrator_explorer.custom_resources.ootb.gateway_api: "ignored in initial audit 2026-04-23"
+  orchestrator_explorer.custom_resources.ootb.ingress_controllers: "ignored in initial audit 2026-04-23"
+  orchestrator_explorer.custom_resources.ootb.service_mesh: "ignored in initial audit 2026-04-23"
+  orchestrator_explorer.custom_sensitive_annotations_labels: "ignored in initial audit 2026-04-23"
+  orchestrator_explorer.custom_sensitive_words: "ignored in initial audit 2026-04-23"
+  orchestrator_explorer.enabled: "ignored in initial audit 2026-04-23"
+  orchestrator_explorer.extra_tags: "ignored in initial audit 2026-04-23"
+  orchestrator_explorer.kubelet_config_check.enabled: "ignored in initial audit 2026-04-23"
+  orchestrator_explorer.manifest_collection.buffer_flush_interval: "ignored in initial audit 2026-04-23"
+  orchestrator_explorer.manifest_collection.buffer_manifest: "ignored in initial audit 2026-04-23"
+  orchestrator_explorer.manifest_collection.enabled: "ignored in initial audit 2026-04-23"
+  orchestrator_explorer.max_message_bytes: "ignored in initial audit 2026-04-23"
+  orchestrator_explorer.max_per_message: "ignored in initial audit 2026-04-23"
+  orchestrator_explorer.orchestrator_additional_endpoints: "ignored in initial audit 2026-04-23"
+  orchestrator_explorer.orchestrator_dd_url: "ignored in initial audit 2026-04-23"
+  orchestrator_explorer.terminated_pods.enabled: "ignored in initial audit 2026-04-23"
+  orchestrator_explorer.terminated_pods_improved.enabled: "ignored in initial audit 2026-04-23"
+  orchestrator_explorer.terminated_resources.enabled: "ignored in initial audit 2026-04-23"
+  orchestrator_explorer.use_legacy_endpoint: "ignored in initial audit 2026-04-23"
+  otel_standalone: "ignored in initial audit 2026-04-23"
+  otelcollector.converter.enabled: "ignored in initial audit 2026-04-23"
+  otelcollector.converter.features: "ignored in initial audit 2026-04-23"
+  otelcollector.enabled: "ignored in initial audit 2026-04-23"
+  otelcollector.extension_timeout: "ignored in initial audit 2026-04-23"
+  otelcollector.extension_url: "ignored in initial audit 2026-04-23"
+  otelcollector.flare.timeout: "ignored in initial audit 2026-04-23"
+  otelcollector.gateway.mode: "ignored in initial audit 2026-04-23"
+  otelcollector.installation_method: "ignored in initial audit 2026-04-23"
+  otelcollector.submit_dummy_metadata: "ignored in initial audit 2026-04-23"
+  otlp_config.debug.verbosity: "ignored in initial audit 2026-04-23"
+  otlp_config.grpc_port: "ignored in initial audit 2026-04-23"
+  otlp_config.http_port: "ignored in initial audit 2026-04-23"
+  otlp_config.logs.batch.flush_timeout: "ignored in initial audit 2026-04-23"
+  otlp_config.logs.batch.max_size: "ignored in initial audit 2026-04-23"
+  otlp_config.logs.batch.min_size: "ignored in initial audit 2026-04-23"
+  otlp_config.metrics.batch.flush_timeout: "ignored in initial audit 2026-04-23"
+  otlp_config.metrics.batch.max_size: "ignored in initial audit 2026-04-23"
+  otlp_config.metrics.batch.min_size: "ignored in initial audit 2026-04-23"
+  otlp_config.metrics.delta_ttl: "ignored in initial audit 2026-04-23"
+  otlp_config.metrics.histograms.mode: "ignored in initial audit 2026-04-23"
+  otlp_config.metrics.histograms.send_aggregation_metrics: "ignored in initial audit 2026-04-23"
+  otlp_config.metrics.histograms.send_count_sum_metrics: "ignored in initial audit 2026-04-23"
+  otlp_config.metrics.instrumentation_scope_metadata_as_tags: "ignored in initial audit 2026-04-23"
+  otlp_config.metrics.resource_attributes_as_tags: "ignored in initial audit 2026-04-23"
+  otlp_config.metrics.summaries.mode: "ignored in initial audit 2026-04-23"
+  otlp_config.metrics.sums.cumulative_monotonic_mode: "ignored in initial audit 2026-04-23"
+  otlp_config.metrics.sums.initial_cumulative_monotonic_value: "ignored in initial audit 2026-04-23"
+  otlp_config.metrics.tag_cardinality: "ignored in initial audit 2026-04-23"
+  otlp_config.metrics.tags: "ignored in initial audit 2026-04-23"
+  otlp_config.receiver.protocols.grpc.include_metadata: "ignored in initial audit 2026-04-23"
+  otlp_config.receiver.protocols.grpc.keepalive.enforcement_policy.min_time: "ignored in initial audit 2026-04-23"
+  otlp_config.receiver.protocols.grpc.max_concurrent_streams: "ignored in initial audit 2026-04-23"
+  otlp_config.receiver.protocols.grpc.read_buffer_size: "ignored in initial audit 2026-04-23"
+  otlp_config.receiver.protocols.grpc.write_buffer_size: "ignored in initial audit 2026-04-23"
+  otlp_config.receiver.protocols.http.cors.allowed_headers: "ignored in initial audit 2026-04-23"
+  otlp_config.receiver.protocols.http.cors.allowed_origins: "ignored in initial audit 2026-04-23"
+  otlp_config.receiver.protocols.http.include_metadata: "ignored in initial audit 2026-04-23"
+  otlp_config.receiver.protocols.http.max_request_body_size: "ignored in initial audit 2026-04-23"
+  otlp_config.traces.infra_attributes.enabled: "ignored in initial audit 2026-04-23"
+  otlp_config.traces.span_name_as_resource_name: "ignored in initial audit 2026-04-23"
+  otlp_config.traces.span_name_remappings: "ignored in initial audit 2026-04-23"
+  podman_db_path: "ignored in initial audit 2026-04-23"
+  prioritize_go_check_loader: "ignored in initial audit 2026-04-23"
+  private_action_runner.actions_allowlist: "ignored in initial audit 2026-04-23"
+  private_action_runner.enabled: "ignored in initial audit 2026-04-23"
+  private_action_runner.http_allow_imds_endpoint: "ignored in initial audit 2026-04-23"
+  private_action_runner.http_allowlist: "ignored in initial audit 2026-04-23"
+  private_action_runner.http_timeout_seconds: "ignored in initial audit 2026-04-23"
+  private_action_runner.identity_file_path: "ignored in second bulk edit 2026-05-06"
+  private_action_runner.identity_secret_name: "ignored in second bulk edit 2026-05-06"
+  private_action_runner.identity_use_k8s_secret: "ignored in second bulk edit 2026-05-06"
+  private_action_runner.log_file: "ignored in second bulk edit 2026-05-06"
+  private_action_runner.private_key: "ignored in second bulk edit 2026-05-06"
+  private_action_runner.restricted_shell_allowed_paths: "ignored in second bulk edit 2026-05-06"
+  private_action_runner.self_enroll: "ignored in initial audit 2026-04-23"
+  private_action_runner.task_concurrency: "ignored in initial audit 2026-04-23"
+  private_action_runner.task_timeout_seconds: "ignored in initial audit 2026-04-23"
+  private_action_runner.urn: "ignored in second bulk edit 2026-05-06"
+  proc_root: "ignored in initial audit 2026-04-23"
+  process_config.additional_endpoints: "ignored in initial audit 2026-04-23"
+  process_config.blacklist_patterns: "ignored in initial audit 2026-04-23"
+  process_config.cache_lookupid: "ignored in initial audit 2026-04-23"
+  process_config.cmd_port: "ignored in initial audit 2026-04-23"
+  process_config.container_collection.enabled: "ignored in initial audit 2026-04-23"
+  process_config.custom_sensitive_words: "ignored in initial audit 2026-04-23"
+  process_config.dd_agent_bin: "ignored in initial audit 2026-04-23"
+  process_config.dd_agent_env: "ignored in initial audit 2026-04-23"
+  process_config.disable_realtime_checks: "ignored in initial audit 2026-04-23"
+  process_config.drop_check_payloads: "ignored in initial audit 2026-04-23"
+  process_config.enabled: "ignored in initial audit 2026-04-23"
+  process_config.expvar_port: "ignored in initial audit 2026-04-23"
+  process_config.grpc_connection_timeout_secs: "ignored in initial audit 2026-04-23"
+  process_config.ignore_zombie_processes: "ignored in initial audit 2026-04-23"
+  process_config.internal_profiling.enabled: "ignored in initial audit 2026-04-23"
+  process_config.intervals.connections: "ignored in initial audit 2026-04-23"
+  process_config.intervals.container: "ignored in initial audit 2026-04-23"
+  process_config.intervals.container_realtime: "ignored in initial audit 2026-04-23"
+  process_config.intervals.process: "ignored in initial audit 2026-04-23"
+  process_config.intervals.process_realtime: "ignored in initial audit 2026-04-23"
+  process_config.language_detection.grpc_port: "ignored in initial audit 2026-04-23"
+  process_config.log_file: "ignored in initial audit 2026-04-23"
+  process_config.max_message_bytes: "ignored in initial audit 2026-04-23"
+  process_config.max_per_message: "ignored in initial audit 2026-04-23"
+  process_config.orchestrator_additional_endpoints: "ignored in initial audit 2026-04-23"
+  process_config.orchestrator_dd_url: "ignored in initial audit 2026-04-23"
+  process_config.process_collection.enabled: "ignored in initial audit 2026-04-23"
+  process_config.process_dd_url: "ignored in initial audit 2026-04-23"
+  process_config.process_discovery.enabled: "ignored in initial audit 2026-04-23"
+  process_config.process_discovery.hint_frequency: "ignored in initial audit 2026-04-23"
+  process_config.process_discovery.interval: "ignored in initial audit 2026-04-23"
+  process_config.process_queue_bytes: "ignored in initial audit 2026-04-23"
+  process_config.queue_size: "ignored in initial audit 2026-04-23"
+  process_config.rt_queue_size: "ignored in initial audit 2026-04-23"
+  process_config.scrub_args: "ignored in initial audit 2026-04-23"
+  process_config.strip_proc_arguments: "ignored in initial audit 2026-04-23"
+  process_config.windows.use_perf_counters: "ignored in initial audit 2026-04-23"
+  procfs_path: "ignored in initial audit 2026-04-23"
+  prometheus_scrape.checks: "ignored in initial audit 2026-04-23"
+  prometheus_scrape.enabled: "ignored in initial audit 2026-04-23"
+  prometheus_scrape.service_endpoints: "ignored in initial audit 2026-04-23"
+  prometheus_scrape.version: "ignored in initial audit 2026-04-23"
+  python3_linter_timeout: "ignored in initial audit 2026-04-23"
+  python_lazy_loading: "ignored in initial audit 2026-04-23"
+  remote_agent.configstream.enabled: "ignored in initial audit 2026-04-23"
+  remote_agent.configstream.sleep_interval: "ignored in initial audit 2026-04-23"
+  remote_agent.registry.enabled: "ignored in initial audit 2026-04-23"
+  remote_agent.registry.idle_timeout: "ignored in initial audit 2026-04-23"
+  remote_agent.registry.query_timeout: "ignored in initial audit 2026-04-23"
+  remote_agent.registry.recommended_refresh_interval: "ignored in initial audit 2026-04-23"
+  remote_configuration.agent_integrations.allow_list: "ignored in initial audit 2026-04-23"
+  remote_configuration.agent_integrations.allow_log_config_scheduling: "ignored in initial audit 2026-04-23"
+  remote_configuration.agent_integrations.block_list: "ignored in initial audit 2026-04-23"
+  remote_configuration.agent_integrations.enabled: "ignored in initial audit 2026-04-23"
+  remote_configuration.api_key: "ignored in initial audit 2026-04-23"
+  remote_configuration.apm_sampling.enabled: "ignored in initial audit 2026-04-23"
+  remote_configuration.clients.cache_bypass_limit: "ignored in initial audit 2026-04-23"
+  remote_configuration.clients.ttl_seconds: "ignored in initial audit 2026-04-23"
+  remote_configuration.config_root: "ignored in initial audit 2026-04-23"
+  remote_configuration.delegated_auth.aws.region: "ignored in initial audit 2026-04-23"
+  remote_configuration.delegated_auth.org_uuid: "ignored in initial audit 2026-04-23"
+  remote_configuration.delegated_auth.provider: "ignored in initial audit 2026-04-23"
+  remote_configuration.delegated_auth.refresh_interval_mins: "ignored in initial audit 2026-04-23"
+  remote_configuration.director_root: "ignored in initial audit 2026-04-23"
+  remote_configuration.enabled: "ignored in initial audit 2026-04-23"
+  remote_configuration.key: "ignored in initial audit 2026-04-23"
+  remote_configuration.max_backoff_interval: "ignored in initial audit 2026-04-23"
+  remote_configuration.no_tls: "ignored in initial audit 2026-04-23"
+  remote_configuration.no_tls_validation: "ignored in initial audit 2026-04-23"
+  remote_configuration.no_websocket_echo: "ignored in initial audit 2026-04-23"
+  remote_configuration.org_status_refresh_interval: "ignored in initial audit 2026-04-23"
+  remote_configuration.rc_dd_url: "ignored in initial audit 2026-04-23"
+  remote_configuration.refresh_interval: "ignored in initial audit 2026-04-23"
+  remote_policies: "ignored in initial audit 2026-04-23"
+  remote_tagger.max_concurrent_sync: "ignored in initial audit 2026-04-23"
+  remote_updates: "ignored in initial audit 2026-04-23"
+  reverse_dns_enrichment.cache.clean_interval: "ignored in initial audit 2026-04-23"
+  reverse_dns_enrichment.cache.enabled: "ignored in initial audit 2026-04-23"
+  reverse_dns_enrichment.cache.entry_ttl: "ignored in initial audit 2026-04-23"
+  reverse_dns_enrichment.cache.max_retries: "ignored in initial audit 2026-04-23"
+  reverse_dns_enrichment.cache.max_size: "ignored in initial audit 2026-04-23"
+  reverse_dns_enrichment.cache.persist_interval: "ignored in initial audit 2026-04-23"
+  reverse_dns_enrichment.chan_size: "ignored in initial audit 2026-04-23"
+  reverse_dns_enrichment.rate_limiter.enabled: "ignored in initial audit 2026-04-23"
+  reverse_dns_enrichment.rate_limiter.limit_per_sec: "ignored in initial audit 2026-04-23"
+  reverse_dns_enrichment.rate_limiter.limit_throttled_per_sec: "ignored in initial audit 2026-04-23"
+  reverse_dns_enrichment.rate_limiter.recovery_interval: "ignored in initial audit 2026-04-23"
+  reverse_dns_enrichment.rate_limiter.recovery_intervals: "ignored in initial audit 2026-04-23"
+  reverse_dns_enrichment.rate_limiter.throttle_error_threshold: "ignored in initial audit 2026-04-23"
+  reverse_dns_enrichment.workers: "ignored in initial audit 2026-04-23"
+  run_path: "ignored in second bulk edit 2026-05-06"
+  runtime_security_config.activity_dump.remote_storage.endpoints.additional_endpoints: "ignored in initial audit 2026-04-23"
+  runtime_security_config.activity_dump.remote_storage.endpoints.batch_max_concurrent_send: "ignored in initial audit 2026-04-23"
+  runtime_security_config.activity_dump.remote_storage.endpoints.batch_max_content_size: "ignored in initial audit 2026-04-23"
+  runtime_security_config.activity_dump.remote_storage.endpoints.batch_max_size: "ignored in initial audit 2026-04-23"
+  runtime_security_config.activity_dump.remote_storage.endpoints.batch_wait: "ignored in initial audit 2026-04-23"
+  runtime_security_config.activity_dump.remote_storage.endpoints.compression_kind: "ignored in initial audit 2026-04-23"
+  runtime_security_config.activity_dump.remote_storage.endpoints.compression_level: "ignored in initial audit 2026-04-23"
+  runtime_security_config.activity_dump.remote_storage.endpoints.connection_reset_interval: "ignored in initial audit 2026-04-23"
+  runtime_security_config.activity_dump.remote_storage.endpoints.dd_url: "ignored in initial audit 2026-04-23"
+  runtime_security_config.activity_dump.remote_storage.endpoints.dev_mode_no_ssl: "ignored in initial audit 2026-04-23"
+  runtime_security_config.activity_dump.remote_storage.endpoints.input_chan_size: "ignored in initial audit 2026-04-23"
+  runtime_security_config.activity_dump.remote_storage.endpoints.logs_dd_url: "ignored in initial audit 2026-04-23"
+  runtime_security_config.activity_dump.remote_storage.endpoints.logs_no_ssl: "ignored in initial audit 2026-04-23"
+  runtime_security_config.activity_dump.remote_storage.endpoints.sender_backoff_base: "ignored in initial audit 2026-04-23"
+  runtime_security_config.activity_dump.remote_storage.endpoints.sender_backoff_factor: "ignored in initial audit 2026-04-23"
+  runtime_security_config.activity_dump.remote_storage.endpoints.sender_backoff_max: "ignored in initial audit 2026-04-23"
+  runtime_security_config.activity_dump.remote_storage.endpoints.sender_recovery_interval: "ignored in initial audit 2026-04-23"
+  runtime_security_config.activity_dump.remote_storage.endpoints.sender_recovery_reset: "ignored in initial audit 2026-04-23"
+  runtime_security_config.activity_dump.remote_storage.endpoints.use_compression: "ignored in initial audit 2026-04-23"
+  runtime_security_config.activity_dump.remote_storage.endpoints.use_v2_api: "ignored in initial audit 2026-04-23"
+  runtime_security_config.activity_dump.remote_storage.endpoints.zstd_compression_level: "ignored in initial audit 2026-04-23"
+  runtime_security_config.cmd_socket: "ignored in initial audit 2026-04-23"
+  runtime_security_config.direct_send_from_system_probe: "ignored in initial audit 2026-04-23"
+  runtime_security_config.enabled: "ignored in initial audit 2026-04-23"
+  runtime_security_config.endpoints.additional_endpoints: "ignored in initial audit 2026-04-23"
+  runtime_security_config.endpoints.batch_max_concurrent_send: "ignored in initial audit 2026-04-23"
+  runtime_security_config.endpoints.batch_max_content_size: "ignored in initial audit 2026-04-23"
+  runtime_security_config.endpoints.batch_max_size: "ignored in initial audit 2026-04-23"
+  runtime_security_config.endpoints.batch_wait: "ignored in initial audit 2026-04-23"
+  runtime_security_config.endpoints.compression_kind: "ignored in initial audit 2026-04-23"
+  runtime_security_config.endpoints.compression_level: "ignored in initial audit 2026-04-23"
+  runtime_security_config.endpoints.connection_reset_interval: "ignored in initial audit 2026-04-23"
+  runtime_security_config.endpoints.dd_url: "ignored in initial audit 2026-04-23"
+  runtime_security_config.endpoints.dev_mode_no_ssl: "ignored in initial audit 2026-04-23"
+  runtime_security_config.endpoints.input_chan_size: "ignored in initial audit 2026-04-23"
+  runtime_security_config.endpoints.logs_dd_url: "ignored in initial audit 2026-04-23"
+  runtime_security_config.endpoints.logs_no_ssl: "ignored in initial audit 2026-04-23"
+  runtime_security_config.endpoints.sender_backoff_base: "ignored in initial audit 2026-04-23"
+  runtime_security_config.endpoints.sender_backoff_factor: "ignored in initial audit 2026-04-23"
+  runtime_security_config.endpoints.sender_backoff_max: "ignored in initial audit 2026-04-23"
+  runtime_security_config.endpoints.sender_recovery_interval: "ignored in initial audit 2026-04-23"
+  runtime_security_config.endpoints.sender_recovery_reset: "ignored in initial audit 2026-04-23"
+  runtime_security_config.endpoints.use_compression: "ignored in initial audit 2026-04-23"
+  runtime_security_config.endpoints.use_v2_api: "ignored in initial audit 2026-04-23"
+  runtime_security_config.endpoints.zstd_compression_level: "ignored in initial audit 2026-04-23"
+  runtime_security_config.event_grpc_server: "ignored in initial audit 2026-04-23"
+  runtime_security_config.socket: "ignored in initial audit 2026-04-23"
+  runtime_security_config.use_secruntime_track: "ignored in initial audit 2026-04-23"
+  sbom.additional_endpoints: "ignored in initial audit 2026-04-23"
+  sbom.batch_max_concurrent_send: "ignored in initial audit 2026-04-23"
+  sbom.batch_max_content_size: "ignored in initial audit 2026-04-23"
+  sbom.batch_max_size: "ignored in initial audit 2026-04-23"
+  sbom.batch_wait: "ignored in initial audit 2026-04-23"
+  sbom.cache.clean_interval: "ignored in initial audit 2026-04-23"
+  sbom.cache.max_disk_size: "ignored in initial audit 2026-04-23"
+  sbom.cache_directory: "ignored in initial audit 2026-04-23"
+  sbom.clear_cache_on_exit: "ignored in initial audit 2026-04-23"
+  sbom.compression_kind: "ignored in initial audit 2026-04-23"
+  sbom.compression_level: "ignored in initial audit 2026-04-23"
+  sbom.compute_dependencies: "ignored in initial audit 2026-04-23"
+  sbom.connection_reset_interval: "ignored in initial audit 2026-04-23"
+  sbom.container.enabled: "ignored in initial audit 2026-04-23"
+  sbom.container_image.additional_directories: "ignored in initial audit 2026-04-23"
+  sbom.container_image.allow_missing_repodigest: "ignored in initial audit 2026-04-23"
+  sbom.container_image.analyzers: "ignored in initial audit 2026-04-23"
+  sbom.container_image.check_disk_usage: "ignored in initial audit 2026-04-23"
+  sbom.container_image.container_exclude: "ignored in initial audit 2026-04-23"
+  sbom.container_image.container_include: "ignored in initial audit 2026-04-23"
+  sbom.container_image.enabled: "ignored in initial audit 2026-04-23"
+  sbom.container_image.exclude_pause_container: "ignored in initial audit 2026-04-23"
+  sbom.container_image.min_available_disk: "ignored in initial audit 2026-04-23"
+  sbom.container_image.overlayfs_direct_scan: "ignored in initial audit 2026-04-23"
+  sbom.container_image.overlayfs_disable_cache: "ignored in initial audit 2026-04-23"
+  sbom.container_image.scan_interval: "ignored in initial audit 2026-04-23"
+  sbom.container_image.scan_timeout: "ignored in initial audit 2026-04-23"
+  sbom.container_image.use_mount: "ignored in initial audit 2026-04-23"
+  sbom.container_image.use_spread_refresher: "ignored in initial audit 2026-04-23"
+  sbom.dd_url: "ignored in initial audit 2026-04-23"
+  sbom.dev_mode_no_ssl: "ignored in initial audit 2026-04-23"
+  sbom.enabled: "ignored in initial audit 2026-04-23"
+  sbom.host.additional_directories: "ignored in initial audit 2026-04-23"
+  sbom.host.analyzers: "ignored in initial audit 2026-04-23"
+  sbom.host.enabled: "ignored in initial audit 2026-04-23"
+  sbom.input_chan_size: "ignored in initial audit 2026-04-23"
+  sbom.logs_dd_url: "ignored in initial audit 2026-04-23"
+  sbom.logs_no_ssl: "ignored in initial audit 2026-04-23"
+  sbom.scan_queue.base_backoff: "ignored in initial audit 2026-04-23"
+  sbom.scan_queue.max_backoff: "ignored in initial audit 2026-04-23"
+  sbom.sender_backoff_base: "ignored in initial audit 2026-04-23"
+  sbom.sender_backoff_factor: "ignored in initial audit 2026-04-23"
+  sbom.sender_backoff_max: "ignored in initial audit 2026-04-23"
+  sbom.sender_recovery_interval: "ignored in initial audit 2026-04-23"
+  sbom.sender_recovery_reset: "ignored in initial audit 2026-04-23"
+  sbom.simplify_bom_refs: "ignored in initial audit 2026-04-23"
+  sbom.use_compression: "ignored in initial audit 2026-04-23"
+  sbom.use_v2_api: "ignored in initial audit 2026-04-23"
+  sbom.zstd_compression_level: "ignored in initial audit 2026-04-23"
+  scrubber.additional_keys: "ignored in initial audit 2026-04-23"
+  secret_allowed_k8s_namespace: "ignored in initial audit 2026-04-23"
+  secret_audit_file_max_size: "ignored in initial audit 2026-04-23"
+  secret_backend_arguments: "ignored in initial audit 2026-04-23"
+  secret_backend_command: "ignored in second bulk edit 2026-05-06"
+  secret_backend_command_allow_group_exec_perm: "ignored in initial audit 2026-04-23"
+  secret_backend_config: "ignored in initial audit 2026-04-23"
+  secret_backend_output_max_size: "ignored in initial audit 2026-04-23"
+  secret_backend_remove_trailing_line_break: "ignored in initial audit 2026-04-23"
+  secret_backend_skip_checks: "ignored in initial audit 2026-04-23"
+  secret_backend_timeout: "ignored in second bulk edit 2026-05-06"
+  secret_backend_type: "ignored in initial audit 2026-04-23"
+  secret_image_to_handle: "ignored in initial audit 2026-04-23"
+  secret_refresh_interval: "ignored in initial audit 2026-04-23"
+  secret_refresh_on_api_key_failure_interval: "ignored in initial audit 2026-04-23"
+  secret_refresh_scatter: "ignored in initial audit 2026-04-23"
+  secret_scope_integration_to_their_k8s_namespace: "ignored in initial audit 2026-04-23"
+  security_agent.cmd_port: "ignored in initial audit 2026-04-23"
+  security_agent.disable_thp: "ignored in initial audit 2026-04-23"
+  security_agent.expvar_port: "ignored in initial audit 2026-04-23"
+  security_agent.internal_profiling.api_key: "ignored in initial audit 2026-04-23"
+  security_agent.internal_profiling.block_profile_rate: "ignored in initial audit 2026-04-23"
+  security_agent.internal_profiling.cpu_duration: "ignored in initial audit 2026-04-23"
+  security_agent.internal_profiling.delta_profiles: "ignored in initial audit 2026-04-23"
+  security_agent.internal_profiling.enable_block_profiling: "ignored in initial audit 2026-04-23"
+  security_agent.internal_profiling.enable_goroutine_stacktraces: "ignored in initial audit 2026-04-23"
+  security_agent.internal_profiling.enable_mutex_profiling: "ignored in initial audit 2026-04-23"
+  security_agent.internal_profiling.enabled: "ignored in initial audit 2026-04-23"
+  security_agent.internal_profiling.env: "ignored in initial audit 2026-04-23"
+  security_agent.internal_profiling.extra_tags: "ignored in initial audit 2026-04-23"
+  security_agent.internal_profiling.mutex_profile_fraction: "ignored in initial audit 2026-04-23"
+  security_agent.internal_profiling.period: "ignored in initial audit 2026-04-23"
+  security_agent.internal_profiling.profile_dd_url: "ignored in initial audit 2026-04-23"
+  security_agent.internal_profiling.site: "ignored in initial audit 2026-04-23"
+  security_agent.internal_profiling.unix_socket: "ignored in initial audit 2026-04-23"
+  security_agent.log_file: "ignored in initial audit 2026-04-23"
+  serializer_experimental_use_v3_api.series.beta_route: "ignored in second bulk edit 2026-05-06"
+  serializer_experimental_use_v3_api.series.use_beta: "ignored in second bulk edit 2026-05-06"
+  server_timeout: "ignored in initial audit 2026-04-23"
+  serverless.enabled: "ignored in initial audit 2026-04-23"
+  serverless.logs_enabled: "ignored in initial audit 2026-04-23"
+  serverless.service_mapping: "ignored in initial audit 2026-04-23"
+  serverless.trace_enabled: "ignored in initial audit 2026-04-23"
+  serverless.trace_managed_services: "ignored in initial audit 2026-04-23"
+  service_discovery.forwarder.additional_endpoints: "ignored in initial audit 2026-04-23"
+  service_discovery.forwarder.batch_max_concurrent_send: "ignored in initial audit 2026-04-23"
+  service_discovery.forwarder.batch_max_content_size: "ignored in initial audit 2026-04-23"
+  service_discovery.forwarder.batch_max_size: "ignored in initial audit 2026-04-23"
+  service_discovery.forwarder.batch_wait: "ignored in initial audit 2026-04-23"
+  service_discovery.forwarder.compression_kind: "ignored in initial audit 2026-04-23"
+  service_discovery.forwarder.compression_level: "ignored in initial audit 2026-04-23"
+  service_discovery.forwarder.connection_reset_interval: "ignored in initial audit 2026-04-23"
+  service_discovery.forwarder.dd_url: "ignored in initial audit 2026-04-23"
+  service_discovery.forwarder.dev_mode_no_ssl: "ignored in initial audit 2026-04-23"
+  service_discovery.forwarder.input_chan_size: "ignored in initial audit 2026-04-23"
+  service_discovery.forwarder.logs_dd_url: "ignored in initial audit 2026-04-23"
+  service_discovery.forwarder.logs_no_ssl: "ignored in initial audit 2026-04-23"
+  service_discovery.forwarder.sender_backoff_base: "ignored in initial audit 2026-04-23"
+  service_discovery.forwarder.sender_backoff_factor: "ignored in initial audit 2026-04-23"
+  service_discovery.forwarder.sender_backoff_max: "ignored in initial audit 2026-04-23"
+  service_discovery.forwarder.sender_recovery_interval: "ignored in initial audit 2026-04-23"
+  service_discovery.forwarder.sender_recovery_reset: "ignored in initial audit 2026-04-23"
+  service_discovery.forwarder.use_compression: "ignored in initial audit 2026-04-23"
+  service_discovery.forwarder.use_v2_api: "ignored in initial audit 2026-04-23"
+  service_discovery.forwarder.zstd_compression_level: "ignored in initial audit 2026-04-23"
+  shared_library_check.enabled: "ignored in initial audit 2026-04-23"
+  shared_library_check.library_folder_path: "ignored in initial audit 2026-04-23"
+  snmp_listener.allowed_failures: "ignored in initial audit 2026-04-23"
+  snmp_listener.collect_device_metadata: "ignored in initial audit 2026-04-23"
+  snmp_listener.collect_topology: "ignored in initial audit 2026-04-23"
+  snmp_listener.configs: "ignored in initial audit 2026-04-23"
+  snmp_listener.discovery_allowed_failures: "ignored in initial audit 2026-04-23"
+  snmp_listener.discovery_interval: "ignored in initial audit 2026-04-23"
+  snmp_listener.loader: "ignored in initial audit 2026-04-23"
+  snmp_listener.min_collection_interval: "ignored in initial audit 2026-04-23"
+  snmp_listener.namespace: "ignored in initial audit 2026-04-23"
+  snmp_listener.oid_batch_size: "ignored in initial audit 2026-04-23"
+  snmp_listener.ping.count: "ignored in initial audit 2026-04-23"
+  snmp_listener.ping.enabled: "ignored in initial audit 2026-04-23"
+  snmp_listener.ping.interval: "ignored in initial audit 2026-04-23"
+  snmp_listener.ping.linux.use_raw_socket: "ignored in initial audit 2026-04-23"
+  snmp_listener.ping.timeout: "ignored in initial audit 2026-04-23"
+  snmp_listener.retries: "ignored in initial audit 2026-04-23"
+  snmp_listener.timeout: "ignored in initial audit 2026-04-23"
+  snmp_listener.use_device_id_as_hostname: "ignored in initial audit 2026-04-23"
+  snmp_listener.workers: "ignored in initial audit 2026-04-23"
+  software_inventory.enabled: "ignored in initial audit 2026-04-23"
+  software_inventory.forwarder.additional_endpoints: "ignored in initial audit 2026-04-23"
+  software_inventory.forwarder.batch_max_concurrent_send: "ignored in initial audit 2026-04-23"
+  software_inventory.forwarder.batch_max_content_size: "ignored in initial audit 2026-04-23"
+  software_inventory.forwarder.batch_max_size: "ignored in initial audit 2026-04-23"
+  software_inventory.forwarder.batch_wait: "ignored in initial audit 2026-04-23"
+  software_inventory.forwarder.compression_kind: "ignored in initial audit 2026-04-23"
+  software_inventory.forwarder.compression_level: "ignored in initial audit 2026-04-23"
+  software_inventory.forwarder.connection_reset_interval: "ignored in initial audit 2026-04-23"
+  software_inventory.forwarder.dd_url: "ignored in initial audit 2026-04-23"
+  software_inventory.forwarder.dev_mode_no_ssl: "ignored in initial audit 2026-04-23"
+  software_inventory.forwarder.input_chan_size: "ignored in initial audit 2026-04-23"
+  software_inventory.forwarder.logs_dd_url: "ignored in initial audit 2026-04-23"
+  software_inventory.forwarder.logs_no_ssl: "ignored in initial audit 2026-04-23"
+  software_inventory.forwarder.sender_backoff_base: "ignored in initial audit 2026-04-23"
+  software_inventory.forwarder.sender_backoff_factor: "ignored in initial audit 2026-04-23"
+  software_inventory.forwarder.sender_backoff_max: "ignored in initial audit 2026-04-23"
+  software_inventory.forwarder.sender_recovery_interval: "ignored in initial audit 2026-04-23"
+  software_inventory.forwarder.sender_recovery_reset: "ignored in initial audit 2026-04-23"
+  software_inventory.forwarder.use_compression: "ignored in initial audit 2026-04-23"
+  software_inventory.forwarder.use_v2_api: "ignored in initial audit 2026-04-23"
+  software_inventory.forwarder.zstd_compression_level: "ignored in initial audit 2026-04-23"
+  software_inventory.interval: "ignored in initial audit 2026-04-23"
+  software_inventory.jitter: "ignored in initial audit 2026-04-23"
+  synthetics.collector.enabled: "ignored in initial audit 2026-04-23"
+  synthetics.collector.flush_interval: "ignored in initial audit 2026-04-23"
+  synthetics.collector.workers: "ignored in initial audit 2026-04-23"
+  synthetics.forwarder.additional_endpoints: "ignored in initial audit 2026-04-23"
+  synthetics.forwarder.batch_max_concurrent_send: "ignored in initial audit 2026-04-23"
+  synthetics.forwarder.batch_max_content_size: "ignored in initial audit 2026-04-23"
+  synthetics.forwarder.batch_max_size: "ignored in initial audit 2026-04-23"
+  synthetics.forwarder.batch_wait: "ignored in initial audit 2026-04-23"
+  synthetics.forwarder.compression_kind: "ignored in initial audit 2026-04-23"
+  synthetics.forwarder.compression_level: "ignored in initial audit 2026-04-23"
+  synthetics.forwarder.connection_reset_interval: "ignored in initial audit 2026-04-23"
+  synthetics.forwarder.dd_url: "ignored in initial audit 2026-04-23"
+  synthetics.forwarder.dev_mode_no_ssl: "ignored in initial audit 2026-04-23"
+  synthetics.forwarder.input_chan_size: "ignored in initial audit 2026-04-23"
+  synthetics.forwarder.logs_dd_url: "ignored in initial audit 2026-04-23"
+  synthetics.forwarder.logs_no_ssl: "ignored in initial audit 2026-04-23"
+  synthetics.forwarder.sender_backoff_base: "ignored in initial audit 2026-04-23"
+  synthetics.forwarder.sender_backoff_factor: "ignored in initial audit 2026-04-23"
+  synthetics.forwarder.sender_backoff_max: "ignored in initial audit 2026-04-23"
+  synthetics.forwarder.sender_recovery_interval: "ignored in initial audit 2026-04-23"
+  synthetics.forwarder.sender_recovery_reset: "ignored in initial audit 2026-04-23"
+  synthetics.forwarder.use_compression: "ignored in initial audit 2026-04-23"
+  synthetics.forwarder.use_v2_api: "ignored in initial audit 2026-04-23"
+  synthetics.forwarder.zstd_compression_level: "ignored in initial audit 2026-04-23"
+  system_tray.log_file: "ignored in initial audit 2026-04-23"
+  tag_value_split_separator: "ignored in initial audit 2026-04-23"
+  tags: "ignored in second bulk edit 2026-05-06"
+  telemetry.checks: "ignored in initial audit 2026-04-23"
+  telemetry.enabled: "ignored in second bulk edit 2026-05-06"
+  telemetry.python_memory: "ignored in initial audit 2026-04-23"
+  trace_agent_host_socket_path: "ignored in initial audit 2026-04-23"
+  tracemalloc_blacklist: "ignored in initial audit 2026-04-23"
+  tracemalloc_debug: "ignored in initial audit 2026-04-23"
+  tracemalloc_exclude: "ignored in initial audit 2026-04-23"
+  tracemalloc_include: "ignored in initial audit 2026-04-23"
+  tracemalloc_whitelist: "ignored in initial audit 2026-04-23"
+  use_diskv2_check: "ignored in initial audit 2026-04-23"
+  use_improved_cgroup_parser: "ignored in initial audit 2026-04-23"
+  use_networkv2_check: "ignored in initial audit 2026-04-23"
+  vector.logs.enabled: "OPW logs routing out of scope for ADP"
+  vector.logs.url: "OPW logs routing out of scope for ADP"
+  vector.traces.enabled: "OPW traces routing out of scope for ADP"
+  vector.traces.url: "OPW traces routing out of scope for ADP"
+  win_skip_com_init: "ignored in initial audit 2026-04-23"
+  windows_counter_init_failure_limit: "ignored in initial audit 2026-04-23"
+  windows_counter_refresh_interval: "ignored in initial audit 2026-04-23"
+  windows_use_pythonpath: "ignored in initial audit 2026-04-23"
+  workloadmeta.local_process_collector.collection_interval: "ignored in initial audit 2026-04-23"
+  workloadmeta.remote.recv_without_timeout: "ignored in initial audit 2026-04-23"

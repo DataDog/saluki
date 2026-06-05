@@ -6,7 +6,10 @@ members = [
   "bin/correctness/millstone",
   "bin/correctness/panoramic",
   "bin/correctness/stele",
-  "lib/datadog-agent-commons",
+  "lib/datadog-agent/commons",
+  "lib/datadog-agent/config",
+  "lib/datadog-agent/config-overlay-model",
+  "lib/datadog-agent/config-testsupport",
   "lib/ddsketch",
   "lib/ottl",
   "lib/process-memory",
@@ -39,7 +42,10 @@ license = "Apache-2.0"
 repository = "https://github.com/DataDog/saluki"
 
 [workspace.dependencies]
-datadog-agent-commons = { path = "lib/datadog-agent-commons" }
+datadog-agent-commons = { path = "lib/datadog-agent/commons" }
+datadog-agent-config = { path = "lib/datadog-agent/config" }
+datadog-agent-config-overlay-model = { path = "lib/datadog-agent/config-overlay-model" }
+datadog-agent-config-testsupport = { path = "lib/datadog-agent/config-testsupport" }
 datadog-protos = { path = "lib/protos/datadog" }
 containerd-protos = { path = "lib/protos/containerd" }
 ddsketch = { path = "lib/ddsketch" }
@@ -79,6 +85,7 @@ serde = { version = "1", default-features = false, features = [
   "std",
 ] }
 snafu = { version = "0.9", default-features = false, features = ["std"] }
+tinytemplate = { version = "1", default-features = false }
 tokio = { version = "1.52.2", default-features = false }
 tracing = { version = "0.1", default-features = false, features = ["std"] }
 async-compression = { version = "0.4.42", default-features = false, features = [

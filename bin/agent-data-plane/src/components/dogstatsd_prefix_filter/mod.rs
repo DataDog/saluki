@@ -703,17 +703,26 @@ mod tests {
 
 #[cfg(test)]
 mod config_smoke {
-    use saluki_components::config_registry::{structs, test_support::run_config_smoke_tests};
+    use datadog_agent_config_testsupport::config_registry::structs;
+    use datadog_agent_config_testsupport::run_config_smoke_tests;
+    use saluki_components::config::{DatadogRemapper, KEY_ALIASES};
     use serde_json::json;
 
     use super::DogStatsDPrefixFilterConfiguration;
 
     #[tokio::test]
     async fn smoke_test() {
-        run_config_smoke_tests(structs::DOGSTATSD_PREFIX_FILTER_CONFIGURATION, &[], json!({}), |cfg| {
-            cfg.as_typed::<DogStatsDPrefixFilterConfiguration>()
-                .expect("DogStatsDPrefixFilterConfiguration should deserialize")
-        })
+        run_config_smoke_tests(
+            structs::DOGSTATSD_PREFIX_FILTER_CONFIGURATION,
+            &[],
+            json!({}),
+            |cfg| {
+                cfg.as_typed::<DogStatsDPrefixFilterConfiguration>()
+                    .expect("DogStatsDPrefixFilterConfiguration should deserialize")
+            },
+            KEY_ALIASES,
+            DatadogRemapper::new,
+        )
         .await
     }
 }

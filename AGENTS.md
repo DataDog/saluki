@@ -21,6 +21,7 @@ of software projects, in addition to making them harder to maintain and debug ov
 
 - `bin/agent-data-plane`: the primary artifact of this project. A binary that runs alongside the
   DataDog Agent.
+- `lib/datadog-agent/`: Core Agent configuration and IPC communication protocols.
 - `bin/correctness`: the framework for integration tests.
 - `lib/`: the production frameworks and common code supporting `agent-data-plane`
 - `docs/`: Human-oriented documentation.
@@ -32,6 +33,8 @@ of software projects, in addition to making them harder to maintain and debug ov
   not for production use and supporting it need not be a blocker during feature development.
 - We have customized our use of `cargo fmt` and `clippy`. The `Makefile` is authoritative.
 - Our Rust code wraps at 120 characters.
+- Datadog configuration inventory is managed by `lib/datadog-agent/config/schema/*.yaml` and code is
+  generated from there. See `.claude/skills/config-management/SKILL.md` for details.
 
 ## Building and Testing
 

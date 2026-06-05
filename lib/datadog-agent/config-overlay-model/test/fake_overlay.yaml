@@ -1,0 +1,157 @@
+# PLACEHOLDER: for model testing, do not use!
+supported:
+  additional_endpoints:
+    support_level: full
+    used_by: [ ForwarderConfiguration ]
+    pipelines: [ cross_cutting ]
+    description: "Dual-ship to extra endpoints"
+    test_json: '{"smoke-host-1.example.com": ["smoke-api-key"]}'
+    additional_attributes:
+      config_registry_filename: forwarder.rs
+
+  api_key:
+    support_level: full
+    used_by: [ ForwarderConfiguration ]
+    pipelines: [ cross_cutting ]
+    description: "Datadog API key"
+    additional_attributes:
+      config_registry_filename: forwarder.rs
+
+  apm_enabled:
+    support_level: full
+    used_by: [ DatadogTraceConfiguration ]
+    pipelines: [ dogstatsd, traces ]
+    description: "Enable APM trace pipeline"
+    additional_attributes:
+      config_registry_filename: aggregate.rs
+
+  check_runners:
+    support_level: full
+    used_by: [ AggregateConfiguration ]
+    pipelines: [ checks ]
+    description: "Number of check runner workers"
+    additional_attributes:
+      config_registry_filename: aggregate.rs
+
+  context_expiry_seconds:
+    support_level: full
+    used_by: [ AggregateConfiguration ]
+    pipelines: [ dogstatsd ]
+    description: "Idle context keep-alive duration"
+    additional_yaml_paths: [ dogstatsd_expiry_seconds ]
+    additional_attributes:
+      config_registry_filename: aggregate.rs
+
+  dd_url:
+    support_level: full
+    used_by: [ ForwarderConfiguration ]
+    pipelines: [ cross_cutting ]
+    description: "Override intake endpoint URL"
+    additional_attributes:
+      config_registry_filename: forwarder.rs
+
+  dogstatsd_entity_id_precedence:
+    support_level: full
+    env_var_override: [ DD_DOGSTATSD_ENTITY_ID_PRECEDENCE ]
+    used_by: [ DogStatsDConfiguration ]
+    pipelines: [ dogstatsd ]
+    description: "Entity ID over auto-detection"
+    additional_attributes:
+      config_registry_filename: dogstatsd.rs
+
+  dogstatsd_port:
+    support_level: full
+    value_type_override: integer
+    used_by: [ DogStatsDConfiguration ]
+    pipelines: [ dogstatsd ]
+    description: "UDP listen port"
+    additional_attributes:
+      config_registry_filename: dogstatsd.rs
+
+  log_level:
+    support_level: full
+    used_by: [ ForwarderConfiguration ]
+    pipelines: [ cross_cutting ]
+    description: "Agent log verbosity"
+    additional_attributes:
+      config_registry_filename: forwarder.rs
+
+  log_to_console:
+    support_level: full
+    used_by: [ ForwarderConfiguration ]
+    pipelines: [ cross_cutting ]
+    description: "Log to stdout instead of file"
+    additional_attributes:
+      config_registry_filename: forwarder.rs
+
+  min_tls_version:
+    support_level: partial
+    used_by: [ ForwarderConfiguration ]
+    pipelines: [ cross_cutting ]
+    description: "Minimum outbound TLS version"
+    documentation: |
+      ADP supports TLS 1.2 and TLS 1.3. Values "tlsv1.0" and "tlsv1.1" are accepted for
+      configuration compatibility but clamped to TLS 1.2 because rustls does not support
+      those protocol versions.
+    additional_attributes:
+      config_registry_filename: forwarder.rs
+
+  no_proxy:
+    support_level: full
+    used_by: [ ForwarderConfiguration ]
+    pipelines: [ cross_cutting ]
+    description: "Hosts to exclude from proxy routing"
+    additional_attributes:
+      config_registry_filename: forwarder.rs
+
+  otlp_flare:
+    support_level: partial
+    used_by: [ OtlpConfiguration ]
+    pipelines: [ otlp ]
+    description: "Include OTLP data in flare archives"
+    documentation: |
+      ADP flare output is limited to gRPC receiver statistics. Full trace/metric
+      payload capture is not yet available.
+    issue: "#9999"
+    additional_attributes:
+      config_registry_filename: otlp.rs
+
+  site:
+    support_level: full
+    used_by: [ ForwarderConfiguration ]
+    pipelines: [ cross_cutting ]
+    description: "Datadog intake site"
+    additional_attributes:
+      config_registry_filename: forwarder.rs
+
+unsupported:
+  runtime_security_enabled:
+    severity: low
+    planned: true
+    pipelines: [ cross_cutting ]
+    description: "Enable runtime security agent"
+    documentation: "CSM is managed by the core agent, not ADP."
+    issue: "#0001"
+
+  tls_handshake_timeout:
+    severity: medium
+    planned: true
+    pipelines: [ cross_cutting ]
+    description: "HTTP TLS handshake timeout duration"
+    documentation: "Existing forwarder request timeout covers the gap."
+    issue: "#178"
+
+  tls_skip_verify:
+    severity: high
+    planned: false
+    pipelines: [ cross_cutting ]
+    description: "Disable TLS certificate verification"
+
+investigate:
+  log_format_json:
+    description: "JSON-format log output"
+    issue: "#5555"
+
+ignored:
+  api_key_validation_period: "Key validation handled upstream"
+  cluster_agent.url: "DCA discovery handled by core agent"

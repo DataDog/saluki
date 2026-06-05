@@ -3,6 +3,7 @@ unit-tests-linux-amd64:
   stage: test
   script:
     - make test
+    - git diff --exit-code && test -z "$(git status --porcelain)" || (echo "Working tree is dirty after build+test. Generated files may be stale — rebuild locally and commit."; git status --short; exit 1)
 
 property-tests-linux-amd64:
   extends: .linux-amd64-test-job-heavy

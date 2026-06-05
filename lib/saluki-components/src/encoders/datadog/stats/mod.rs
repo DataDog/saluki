@@ -469,11 +469,12 @@ impl EndpointEncoder for StatsEndpointEncoder {
 
 #[cfg(test)]
 mod config_smoke {
+    use datadog_agent_config_testsupport::config_registry::structs;
+    use datadog_agent_config_testsupport::run_config_smoke_tests;
     use serde_json::json;
 
     use super::DatadogApmStatsEncoderConfiguration;
-    use crate::config_registry::structs;
-    use crate::config_registry::test_support::run_config_smoke_tests;
+    use crate::config::{DatadogRemapper, KEY_ALIASES};
 
     #[tokio::test]
     async fn smoke_test() {
@@ -485,6 +486,8 @@ mod config_smoke {
                 cfg.as_typed::<DatadogApmStatsEncoderConfiguration>()
                     .expect("DatadogApmStatsEncoderConfiguration should deserialize")
             },
+            KEY_ALIASES,
+            DatadogRemapper::new,
         )
         .await
     }
