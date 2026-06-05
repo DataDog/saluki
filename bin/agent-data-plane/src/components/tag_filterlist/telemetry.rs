@@ -17,11 +17,11 @@ pub struct Telemetry {
 impl Telemetry {
     pub fn new(builder: &MetricsBuilder) -> Self {
         Self {
-            rule_hits: builder.register_debug_counter("tag_filterlist_rule_hits_total"),
-            rule_misses: builder.register_debug_counter("tag_filterlist_rule_misses_total"),
+            rule_hits: builder.register_counter("tag_filterlist_rule_hits_total"),
+            rule_misses: builder.register_counter("tag_filterlist_rule_misses_total"),
             noop_hits: builder.register_debug_counter("tag_filterlist_noop_hits_total"),
             metrics_modified: builder.register_debug_counter("tag_filterlist_metrics_modified_total"),
-            tags_filtered: builder.register_debug_counter("tag_filterlist_tags_filtered_total"),
+            tags_filtered: builder.register_counter("tag_filterlist_tags_filtered_total"),
             size: builder.register_gauge("tag_filterlist_size"),
             updates: builder.register_counter("tag_filterlist_updates_total"),
         }
