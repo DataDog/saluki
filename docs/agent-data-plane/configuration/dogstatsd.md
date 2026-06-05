@@ -198,12 +198,10 @@ topology, but only collects data during a time-bounded request. To collect stati
 window, then returns count and last-seen time per metric context inline as JSON. The CLI uses the
 same API and renders the result as either summary or cardinality analysis.
 
-ADP also exposes internal DogStatsD telemetry through its OpenMetrics endpoint, always-on at
-`http://<api_listen_address>/metrics` (the unprivileged API endpoint; default port `5100`). Scrape
-that endpoint to collect aggregate DogStatsD counters such as processed message counts, packet and
-byte counts, packet pool usage, and channel latency. This endpoint is separate from
-`/dogstatsd/stats`: it does not return the per-metric count and last-seen map, and it is not
-controlled by the core agent's `dogstatsd_stats_*` keys.
+ADP also exposes aggregate DogStatsD counters through its internal telemetry scrape endpoint. This
+endpoint is separate from `/dogstatsd/stats`: it does not return the per-metric count and last-seen
+map, and it is not controlled by the core agent's `dogstatsd_stats_*` keys. See
+[Scraping internal telemetry](../telemetry.md) for endpoint details and scrape examples.
 
 ADP does not expose the core agent's packet-per-second expvar endpoint or a persistent per-metric
 DogStatsD statistics endpoint to scrape. You do not need to set up scraper configuration for this

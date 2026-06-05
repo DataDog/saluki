@@ -54,6 +54,9 @@ export default defineConfig({
             {
                 text: "Agent Data Plane",
                 items: [
+                    { text: "Overview", link: "/agent-data-plane" },
+                    { text: "Internal Telemetry", link: "/agent-data-plane/telemetry" },
+                    { text: "Memory Management", link: "/agent-data-plane/memory" },
                     { text: "Releasing", link: "/agent-data-plane/releasing" },
                     {
                         text: "Configuration",
