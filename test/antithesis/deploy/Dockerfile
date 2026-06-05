@@ -4,7 +4,7 @@
 #
 # Build context is the repository root. Three named targets:
 #   - adp      : agent-data-plane built WITH Antithesis coverage instrumentation + SDK (the SUT)
-#   - intake   : datadog-intake mock Datadog intake (dependency)
+#   - intake   : antithesis-intake mock Datadog intake + W-property assertions (dependency)
 #   - workload : DogStatsD driver + test templates + setup-complete (the client)
 #
 # ADP is built native x86_64-unknown-linux-gnu (glibc), so no musl cross-compile headers are needed.
@@ -67,7 +67,7 @@ RUN --mount=type=cache,target=/adp/target,id=antithesis-adp-target \
     echo "Instrumentation symbols present."
 
 # ---------------------------------------------------------------------------
-# Build the correctness tools (datadog-intake) and the test-command binaries, uninstrumented.
+# Build the antithesis-intake mock and the test-command binaries, uninstrumented.
 # These are supporting harness components, not the SUT, so they need no coverage instrumentation.
 # ---------------------------------------------------------------------------
 FROM build-base AS tools-builder
@@ -77,14 +77,13 @@ RUN --mount=type=cache,target=/tools/target,id=antithesis-tools-target \
     --mount=type=cache,target=/root/.cargo/registry,id=cargo-registry \
     --mount=type=cache,target=/root/.cargo/git,id=cargo-git \
     cargo build --release \
-        --bin datadog-intake \
+        --bin antithesis-intake \
         --bin parallel_driver_send_dogstatsd --bin parallel_driver_sketchburst \
-        --bin finally_verify_delivery --bin eventually_adp_alive \
+        --bin eventually_adp_alive \
         --bin first_sample_config && \
-    cp /tools/target/release/datadog-intake /usr/local/bin/datadog-intake && \
+    cp /tools/target/release/antithesis-intake /usr/local/bin/antithesis-intake && \
     cp /tools/target/release/parallel_driver_send_dogstatsd /usr/local/bin/parallel_driver_send_dogstatsd && \
     cp /tools/target/release/parallel_driver_sketchburst /usr/local/bin/parallel_driver_sketchburst && \
-    cp /tools/target/release/finally_verify_delivery /usr/local/bin/finally_verify_delivery && \
     cp /tools/target/release/eventually_adp_alive /usr/local/bin/eventually_adp_alive && \
     cp /tools/target/release/first_sample_config /usr/local/bin/first_sample_config
 
@@ -118,12 +117,15 @@ ENTRYPOINT ["/entrypoint.sh"]
 CMD ["run"]
 
 # ---------------------------------------------------------------------------
-# Runtime: datadog-intake (mock Datadog intake dependency).
+# Runtime: antithesis-intake (mock Datadog intake + W-property assertions).
 # ---------------------------------------------------------------------------
 FROM ${APP_IMAGE} AS intake
 ENV NO_COLOR=1
-COPY --from=tools-builder /usr/local/bin/datadog-intake /usr/local/bin/datadog-intake
-ENTRYPOINT ["/usr/local/bin/datadog-intake"]
+# W17 resolves each series' host resource against this hostname. Keep it in sync
+# with `hostname:` in adp/datadog.yaml and the DD_HOSTNAME default in the harness.
+ENV DD_HOSTNAME=antithesis-adp
+COPY --from=tools-builder /usr/local/bin/antithesis-intake /usr/local/bin/antithesis-intake
+ENTRYPOINT ["/usr/local/bin/antithesis-intake"]
 
 # ---------------------------------------------------------------------------
 # Runtime: workload client (DogStatsD driver + test templates).
@@ -141,7 +143,6 @@ COPY test/antithesis/deploy/workload/test/ /opt/antithesis/test/
 COPY --from=tools-builder --chmod=755 /usr/local/bin/first_sample_config /opt/antithesis/test/v1/main/first_sample_config
 COPY --from=tools-builder --chmod=755 /usr/local/bin/parallel_driver_send_dogstatsd /opt/antithesis/test/v1/main/parallel_driver_send_dogstatsd
 COPY --from=tools-builder --chmod=755 /usr/local/bin/parallel_driver_sketchburst /opt/antithesis/test/v1/main/parallel_driver_sketchburst
-COPY --from=tools-builder --chmod=755 /usr/local/bin/finally_verify_delivery /opt/antithesis/test/v1/main/finally_verify_delivery
 COPY --from=tools-builder --chmod=755 /usr/local/bin/eventually_adp_alive /opt/antithesis/test/v1/main/eventually_adp_alive
 COPY --chmod=755 test/antithesis/deploy/workload/entrypoint.sh /entrypoint.sh
 ENTRYPOINT ["/entrypoint.sh"]
