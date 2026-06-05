@@ -86,6 +86,7 @@ default values.
 | `dogstatsd_stats_enable`           | Enable internal stats endpoint   | Config toggle                                  | On-demand via API ([#1352])                                    |
 | `dogstatsd_stats_buffer`           | Internal stats buffer size       | Configurable                                   | On-demand via API ([#1352])                                    |
 | `dogstatsd_stats_port`             | Internal stats endpoint port     | Configurable port                              | On-demand via API ([#1352])                                    |
+| `forwarder_num_workers`            | Forwarder worker count           | Creates forwarder workers and caps connections | Sizes ADP's HTTP idle connection pool; no worker tasks          |
 | `log_level`                        | Log verbosity directives         | Controls Agent logs                            | Plain levels control ADP/Saluki-owned targets only             |
 | `logging_frequency`                | Transaction success log interval | Throttles success logs                         | Intentionally unused                                           |
 | `min_tls_version`                  | Minimum outbound TLS version     | Supports TLS 1.0, 1.1, 1.2, and 1.3            | Supports TLS 1.2+ and TLS 1.3-only; clamps TLS 1.0/1.1 to 1.2  |
@@ -308,7 +309,6 @@ ways that are not yet fully characterized.
 | `forwarder_flush_to_disk_mem_ratio`                              | Mem-to-disk flush threshold                     | [#1364] |
 | `forwarder_high_prio_buffer_size`                                | High-priority request queue size                | [#1362] |
 | `forwarder_low_prio_buffer_size`                                 | Low-priority request queue size                 | [#1362] |
-| `forwarder_num_workers`                                          | Forwarder worker count                          | [#1363] |
 | `forwarder_requeue_buffer_size`                                  | In-memory re-queue buffer size                  | [#1755] |
 | `forwarder_retry_queue_capacity_time_interval_sec`               | Retry queue time-based capacity                 | [#1365] |
 | `forwarder_stop_timeout`                                         | Timeout (s) for forwarder graceful stop         | [#1680] |

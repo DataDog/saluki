@@ -17,6 +17,10 @@ const fn default_endpoint_concurrency() -> usize {
     10
 }
 
+const fn default_max_idle_connections_per_host() -> usize {
+    1
+}
+
 const fn default_request_timeout_secs() -> u64 {
     20
 }
@@ -163,6 +167,13 @@ pub struct ForwarderConfiguration {
     )]
     endpoint_concurrency: usize,
 
+    /// Maximum number of idle HTTP connections per host.
+    ///
+    /// Defaults to 1. Set to 0 to avoid retaining idle connections. This setting sizes the forwarder HTTP connection
+    /// pool; ADP does not create worker tasks from it.
+    #[serde(default = "default_max_idle_connections_per_host", rename = "forwarder_num_workers")]
+    max_idle_connections_per_host: usize,
+
     /// Request timeout, in seconds.
     ///
     /// Defaults to 20 seconds.
@@ -253,6 +264,11 @@ impl ForwarderConfiguration {
         } else {
             self.endpoint_concurrency
         }
+    }
+
+    /// Returns the maximum number of idle HTTP connections per host.
+    pub const fn max_idle_connections_per_host(&self) -> usize {
+        self.max_idle_connections_per_host
     }
 
     /// Returns the request timeout.

@@ -116,6 +116,18 @@ crate::declare_annotations! {
         pipeline_affinity: PipelineAffinity::CrossCutting,
     };
 
+    /// `forwarder_num_workers`—sizes the forwarder HTTP idle connection pool. Schema Float; field usize.
+    FORWARDER_NUM_WORKERS = SalukiAnnotation {
+        schema: &schema::FORWARDER_NUM_WORKERS,
+        support_level: SupportLevel::Partial,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::FORWARDER_CONFIGURATION],
+        value_type_override: Some(ValueType::Integer),
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::CrossCutting,
+    };
+
     /// `forwarder_timeout`—request timeout in seconds. Schema Float; field u64.
     FORWARDER_TIMEOUT = SalukiAnnotation {
         schema: &schema::FORWARDER_TIMEOUT,

@@ -1216,10 +1216,10 @@
   },
   {
     "key": "forwarder_num_workers",
-    "feature_state": "MISSING",
-    "action": "INVESTIGATE",
+    "feature_state": "DIVERGENT",
+    "action": "DOCUMENTED",
     "description": "Forwarder worker count",
-    "reason": "ADP does not use this key. Endpoint concurrency is controlled by forwarder_max_concurrent_requests.",
+    "reason": "ADP reads this key to size the forwarder HTTP idle connection pool. ADP does not create forwarder worker tasks from this setting.",
     "issue": "#1363",
     "adp_key": null
   },
