@@ -12,8 +12,8 @@ ADP registers two internal telemetry routes:
 | `/metrics`        | Full ADP internal telemetry, rendered as Prometheus/OpenMetrics text exposition.             |
 | `/compat/metrics` | Compatibility view with metric names remapped to match equivalent Datadog Agent telemetry.  |
 
-The routes are served from `data_plane.api_listen_address`, also called the unprivileged API
-address. The default address uses port `5100`, so a default local scrape target is:
+The routes are served from `data_plane.api_listen_address`, also called the "unprivileged API
+address." The default address uses port `5100`, so a default local scrape target is:
 
 ```text
 http://127.0.0.1:5100/metrics
@@ -28,8 +28,33 @@ need dashboards, monitors, or comparisons that expect Datadog Agent-compatible m
 
 ## Configure a scrape
 
-Configure your scraper to target the unprivileged API address. For Prometheus-style scrape
-configuration, use a static target when the address is fixed:
+Configure your scraper to target the unprivileged API address.
+
+### Datadog Agent OpenMetrics check
+
+To scrape ADP telemetry with the Datadog Agent, configure the
+[OpenMetrics check](https://docs.datadoghq.com/integrations/openmetrics/) with ADP's telemetry
+endpoint. The OpenMetrics check is usually the best fit when the Datadog Agent runs on the same host
+as ADP or can reach ADP's unprivileged API address.
+
+```yaml
+instances:
+  - openmetrics_endpoint: http://127.0.0.1:5100/metrics
+    namespace: agent_data_plane
+    metrics:
+      - ".*"
+```
+
+To scrape the compatibility view, change `openmetrics_endpoint` to
+`http://127.0.0.1:5100/compat/metrics`.
+
+> [!NOTE]
+> The OpenMetrics check submits collected series as custom metrics. Use explicit metric names or
+> narrower patterns when you do not need the full ADP telemetry surface.
+
+### Prometheus
+
+For Prometheus-style scrape configuration, use a static target when the address is fixed:
 
 ```yaml
 scrape_configs:
