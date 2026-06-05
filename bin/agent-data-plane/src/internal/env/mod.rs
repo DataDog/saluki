@@ -109,7 +109,7 @@ impl ADPEnvironmentProvider {
         async move {
             if has_workload_provider {
                 health_registry
-                    .wait_ready_matching(|name| name.starts_with(workload::WORKLOAD_HEALTH_PREFIX))
+                    .all_ready_matching(|name| name.starts_with(workload::WORKLOAD_HEALTH_PREFIX))
                     .await;
             }
         }

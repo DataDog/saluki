@@ -158,7 +158,7 @@ pub async fn handle_run_command(
     // Set up all of the building blocks for building our topologies and launching internal processes.
     let component_registry = ComponentRegistry::default();
     let health_registry = HealthRegistry::new();
-    let (env_provider, env_supervisor) =
+    let (env_provider, maybe_env_supervisor) =
         ADPEnvironmentProvider::from_configuration(&config, &dp_config, &component_registry, &health_registry).await?;
 
     // Create the blueprint for our primary topology.
@@ -177,13 +177,6 @@ pub async fn handle_run_command(
     )
     .await
     .error_context("Failed to create internal supervisor.")?;
-
-    // Assemble our supervision tree.
-    internal_supervisor.add_worker(bootstrap_supervisor);
-
-    if let Some(env_supervisor) = env_supervisor {
-        internal_supervisor.add_worker(env_supervisor);
-    }
 
     // Run memory bounds validation to ensure that we can launch the topology with our configured memory limit, if any.
     let bounds_config = MemoryBoundsConfiguration::try_from_config(&config)?;
@@ -211,6 +204,11 @@ pub async fn handle_run_command(
 
     let root_restart_strategy = RestartStrategy::new(RestartMode::OneForOne, 0, Duration::from_secs(5));
     let mut root_supervisor = Supervisor::new("root")?.with_restart_strategy(root_restart_strategy);
+
+    root_supervisor.add_worker(bootstrap_supervisor);
+    if let Some(env_supervisor) = maybe_env_supervisor {
+        internal_supervisor.add_worker(env_supervisor);
+    }
     root_supervisor.add_worker(internal_supervisor);
     root_supervisor.add_worker(blueprint);
 

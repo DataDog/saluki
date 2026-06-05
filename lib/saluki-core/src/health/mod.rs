@@ -383,7 +383,7 @@ impl HealthRegistry {
     /// If no registered component matches the predicate, the method returns immediately. As with
     /// [`all_ready`][Self::all_ready], components can be registered while this method is waiting, so callers should
     /// ensure all components they care about have been registered before calling this method.
-    pub async fn wait_ready_matching<F>(&self, predicate: F)
+    pub async fn all_ready_matching<F>(&self, predicate: F)
     where
         F: Fn(&str) -> bool,
     {
