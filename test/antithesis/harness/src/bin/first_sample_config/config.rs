@@ -163,13 +163,26 @@ pub(crate) struct DogStatsdConfig {
     dogstatsd_stats_enable: bool,
 }
 
+/// Receive-buffer size in bytes. Usually realistic so lines actually arrive,
+/// rarely tiny or wild to probe the truncation edge. A sampled `0` leaves ADP
+/// no room past the 4-byte length prefix, so it drops every packet before
+/// decode and `finally_verify_delivery` sees nothing delivered end-to-end.
+/// Keep `0` and sub-128 values rare.
+fn sample_buffer_size<R: Rng + ?Sized>(rng: &mut R) -> u64 {
+    if rng.random_ratio(1, 16) {
+        Probe.sample(rng)
+    } else {
+        rng.random_range(128..=65_536)
+    }
+}
+
 impl DogStatsdConfig {
     /// Sample the `DogStatsD` options from `rng`, taking the socket from the
     /// environment.
     fn sample<R: Rng + ?Sized>(rng: &mut R, dogstatsd_socket: &Path) -> Self {
         Self {
             dogstatsd_socket: dogstatsd_socket.to_path_buf(),
-            dogstatsd_buffer_size: Probe.sample(rng),
+            dogstatsd_buffer_size: sample_buffer_size(rng),
             dogstatsd_so_rcvbuf: Probe.sample(rng),
             dogstatsd_packet_buffer_size: Probe.sample(rng),
             dogstatsd_packet_buffer_flush_timeout: Probe.sample(rng),

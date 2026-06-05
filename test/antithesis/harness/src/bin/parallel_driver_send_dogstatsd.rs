@@ -60,6 +60,7 @@ mod unix_driver {
 
         let producer = thread::spawn(move || {
             let mut rng = UnwrapErr(AntithesisRng);
+            let mut multi_value = false;
             for _ in 0..count {
                 let vibe = match batch {
                     Batch::Clean => dogstatsd::Vibe::Clean,
@@ -67,11 +68,14 @@ mod unix_driver {
                     Batch::Mixed => dogstatsd::sample_vibe(),
                 };
                 let mut line = Vec::new();
-                dogstatsd::send(&mut rng, &mut line, vibe);
+                if dogstatsd::send(&mut rng, &mut line, vibe) {
+                    multi_value = true;
+                }
                 if tx.send(line).is_err() {
                     break;
                 }
             }
+            multi_value
         });
 
         let consumer = thread::spawn(move || {
@@ -84,7 +88,7 @@ mod unix_driver {
             attempted
         });
 
-        producer.join().expect("producer thread panicked");
+        let multi_value = producer.join().expect("producer thread panicked");
         let attempted = consumer.join().expect("consumer thread panicked");
 
         assert_reachable!(
@@ -93,8 +97,13 @@ mod unix_driver {
         );
         assert_sometimes!(
             attempted > 0,
-            "workload delivered a dogstatsd line",
+            "workload sent a dogstatsd line",
             &json!({ "attempted": attempted })
+        );
+        assert_sometimes!(
+            attempted > 0 && multi_value,
+            "workload emitted a multi-value metric",
+            &json!({ "attempted": attempted, "multi_value": multi_value })
         );
         assert_sometimes!(
             attempted > 0 && matches!(batch, Batch::Clean),

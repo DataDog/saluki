@@ -2,7 +2,7 @@
 
 use antithesis_sdk::random::random_choice;
 use rand::distr::Distribution;
-use rand::Rng;
+use rand::{Rng, RngExt};
 
 use super::common::{self, Vibe};
 use crate::rand::{Boundary, Wide};
@@ -49,11 +49,12 @@ enum Ext {
     Cardinality,
 }
 
-/// Append one metric line `<NAME>:<VALUE>|<TYPE>[|ext...]` to `buf`.
-pub(crate) fn write<R: Rng + ?Sized>(rng: &mut R, buf: &mut Vec<u8>, vibe: Vibe) {
+/// Append one metric line `<NAME>:<VALUE>|<TYPE>[|ext...]` to `buf`. Returns
+/// true when the value was multi-value packed.
+pub(crate) fn write<R: Rng + ?Sized>(rng: &mut R, buf: &mut Vec<u8>, vibe: Vibe) -> bool {
     common::write_words(rng, buf, vibe);
     buf.push(b':');
-    write_value(rng, buf, vibe);
+    let packed = write_value(rng, buf, vibe);
     buf.push(b'|');
     if let Some(&t) = random_choice(METRIC_TYPES) {
         buf.extend_from_slice(t);
@@ -61,12 +62,30 @@ pub(crate) fn write<R: Rng + ?Sized>(rng: &mut R, buf: &mut Vec<u8>, vibe: Vibe)
     common::write_tags(rng, buf, vibe);
     write_extensions(rng, buf, vibe);
     buf.push(b'\n');
+    packed
 }
 
 /// Clean: a wide log-uniform value. Feral: an aberrant literal, a wide integer,
 /// or a wide float in a compact or cursed-but-equivalent expanded encoding.
-fn write_value<R: Rng + ?Sized>(rng: &mut R, buf: &mut Vec<u8>, vibe: Vibe) {
+/// ~5% of the time emits a multi-value `:`-packed run, which returns true.
+fn write_value<R: Rng + ?Sized>(rng: &mut R, buf: &mut Vec<u8>, vibe: Vibe) -> bool {
     let mut ryu = ryu::Buffer::new();
+
+    // Multi-value packed metric `v1:v2:...`, the form ADP splits on the colon. Type-agnostic by
+    // design — the type is chosen after the value, so a packed run can pair with any type, and a Set
+    // keeps the run as a single member.
+    if rng.random_range(0..20u8) == 0 {
+        let extra = rng.random_range(1..=4u8);
+        for i in 0..=extra {
+            if i > 0 {
+                buf.push(b':');
+            }
+            let v: f64 = Wide.sample(rng);
+            buf.extend_from_slice(ryu.format(v).as_bytes());
+        }
+        return true;
+    }
+
     match vibe {
         Vibe::Clean => {
             let v: f64 = Wide.sample(rng);
@@ -89,6 +108,7 @@ fn write_value<R: Rng + ?Sized>(rng: &mut R, buf: &mut Vec<u8>, vibe: Vibe) {
             }
         },
     }
+    false
 }
 
 /// A boundary-sampled count of extension fields, each a random kind. Repeats and
