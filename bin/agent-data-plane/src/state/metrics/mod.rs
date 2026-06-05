@@ -325,6 +325,13 @@ mod tests {
                 11.0,
             )),
             Event::Metric(Metric::counter(
+                Context::from_static_parts(
+                    "adp.tag_filterlist_tags_filtered_total",
+                    &["component_id:dsd_tag_filterlist"],
+                ),
+                23.0,
+            )),
+            Event::Metric(Metric::counter(
                 Context::from_static_parts("adp.cache_hits_total", &["cache_id:tag_filterlist/context_cache"]),
                 13.0,
             )),
@@ -349,6 +356,7 @@ mod tests {
         assert!(output.contains("aggregator__dogstatsd_filtered_metrics 7"));
         assert!(output.contains("tag_filterlist__size 9"));
         assert!(output.contains("tag_filterlist__updates 11"));
+        assert!(output.contains("aggregator__filtered_tags 23"));
         assert!(output.contains("aggregator__filtered_tags_cache_hit 13"));
         assert!(output.contains("aggregator__filtered_tags_cache_miss 17"));
         assert!(output.contains("aggregator__filtered_tags_cache_evict 19"));
@@ -418,6 +426,10 @@ mod tests {
         assert_eq!(
             find("tag_filterlist.updates"),
             Some("Incremented when a reconfiguration of the tag filterlist happened")
+        );
+        assert_eq!(
+            find("aggregator.filtered_tags"),
+            Some("How many tags were filtered from a metric sample")
         );
         assert_eq!(
             find("aggregator.filtered_tags_cache_hit"),
