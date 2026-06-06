@@ -1601,7 +1601,7 @@ unsupported:
     issue: "#1352"
 
   dogstatsd_telemetry_enabled_listener_id:
-    severity: low
+    severity: medium
     planned: false
     pipelines: [ dogstatsd ]
     description: "Per-listener telemetry tagging"
@@ -1654,7 +1654,7 @@ unsupported:
     issue: "#1357"
 
   heroku_dyno:
-    severity: low
+    severity: high
     planned: false
     pipelines: [ cross_cutting ]
     description: "Heroku dyno telemetry mode"

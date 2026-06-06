@@ -280,7 +280,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
     ClassifierEntry {
         yaml_path: "dogstatsd_telemetry_enabled_listener_id",
         aliases: &[],
-        support_level: SupportLevel::Incompatible(Severity::Low),
+        support_level: SupportLevel::Incompatible(Severity::Medium),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: Some("false"),
     },
@@ -322,7 +322,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
     ClassifierEntry {
         yaml_path: "heroku_dyno",
         aliases: &[],
-        support_level: SupportLevel::Incompatible(Severity::Low),
+        support_level: SupportLevel::Incompatible(Severity::High),
         pipeline_affinity: PipelineAffinity::CrossCutting,
         default: Some("false"),
     },

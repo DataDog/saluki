@@ -63,7 +63,7 @@ crate::declare_annotations! {
     /// `dogstatsd_telemetry_enabled_listener_id`-Per-listener telemetry tagging
     DOGSTATSD_TELEMETRY_ENABLED_LISTENER_ID = SalukiAnnotation {
         schema: &schema::DOGSTATSD_TELEMETRY_ENABLED_LISTENER_ID,
-        support_level: SupportLevel::Incompatible(Severity::Low),
+        support_level: SupportLevel::Incompatible(Severity::Medium),
         additional_yaml_paths: &[],
         env_var_override: None,
         used_by: &[],
@@ -338,7 +338,7 @@ crate::declare_annotations! {
     /// `heroku_dyno`-Heroku dyno telemetry mode
     HEROKU_DYNO = SalukiAnnotation {
         schema: &schema::HEROKU_DYNO,
-        support_level: SupportLevel::Incompatible(Severity::Low),
+        support_level: SupportLevel::Incompatible(Severity::High),
         additional_yaml_paths: &[],
         env_var_override: None,
         used_by: &[],
