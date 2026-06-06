@@ -131,7 +131,7 @@ rustls = { version = "0.23", default-features = false, features = [
   "std",
   "tls12",
 ] }
-similar-asserts = { version = "1.7", default-features = false }
+similar-asserts = { version = "2.0", default-features = false }
 slab = { version = "0.4.12", default-features = false }
 tokio-util = { version = "0.7.18", default-features = false }
 tower = { version = "0.5", default-features = false }
