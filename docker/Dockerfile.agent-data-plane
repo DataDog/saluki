@@ -11,12 +11,12 @@
 # to an image that was built outside of this Dockerfile.
 
 ARG BUILDCACHE_IMAGE=scratch
-ARG BUILD_IMAGE=ubuntu:24.04
+ARG BUILD_IMAGE=ubuntu:26.04
 ARG BUILD_BASE=build-clean
-ARG LICENSE_IMAGE=ubuntu:24.04
+ARG LICENSE_IMAGE=ubuntu:26.04
 ARG LICENSE_BASE=license-clean
-ARG PROFILING_IMAGE=ubuntu:24.04
-ARG APP_IMAGE=ubuntu:24.04
+ARG PROFILING_IMAGE=ubuntu:26.04
+ARG APP_IMAGE=ubuntu:26.04
 
 # When `BUILDCACHE_IMAGE` is provided and points to an image that contains `/buildcache`, we copy it out into our actual
 # build layer, which then signals the build step to actually configure Cargo to use it as a rustc wrapper (`RUSTC_WRAPPER`),
