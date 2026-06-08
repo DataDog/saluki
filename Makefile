@@ -604,16 +604,17 @@ list-integration-tests: ## Lists available ADP integration tests
 	@target/release/panoramic list -d $(shell pwd)/test/integration/cases
 
 .PHONY: build-adp-host
+build-adp-host: BUILD_PROFILE ?= release
 build-adp-host: check-rust-build-tools
-build-adp-host: ## Builds the agent-data-plane binary for the current host (release profile)
-	@echo "[*] Building agent-data-plane (release, host target)..."
+build-adp-host: ## Builds the agent-data-plane binary for the current host (Cargo profile from $$BUILD_PROFILE, default: release)
+	@echo "[*] Building agent-data-plane ($(BUILD_PROFILE), host target)..."
 	@APP_FULL_NAME="$(ADP_APP_FULL_NAME)" \
 		APP_SHORT_NAME="$(ADP_APP_SHORT_NAME)" \
 		APP_IDENTIFIER="$(ADP_APP_IDENTIFIER)" \
 		APP_GIT_HASH="$(ADP_APP_GIT_HASH)" \
 		APP_VERSION="$(ADP_APP_VERSION)" \
 		APP_BUILD_DATE="$(ADP_APP_BUILD_DATE)" \
-		cargo build --release --bin agent-data-plane
+		cargo build --profile $(BUILD_PROFILE) --bin agent-data-plane
 
 .PHONY: test-integration-macos-run
 test-integration-macos-run: ## Runs the macOS host-process integration tests using already-built binaries (assumes target/release/{panoramic,agent-data-plane} exist). Defaults to all `mac`-runtime-eligible tests; narrow with CASE=<name>.

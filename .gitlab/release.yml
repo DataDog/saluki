@@ -106,3 +106,79 @@ push-release-tarball-linux-arm64-fips:
     TARGET_ARCH: "arm64"
     SOURCE_IMAGE: ${ADP_FULL_IMAGE_TAG_FIPS}
     SOURCE_IMAGE_VERSION: ${ADP_IMAGE_VERSION_FIPS}
+
+# Mirrors `.push-release-tarball-definition` but builds `agent-data-plane` natively on a macOS
+# runner instead of extracting it from a Linux container image. The output tarball layout
+# (opt/datadog-agent/embedded/bin/agent-data-plane plus opt/datadog/agent-data-plane/{LICENSES,*})
+# matches the Linux artifact bit-for-bit so downstream consumers (the Datadog Agent omnibus build,
+# see omnibus/config/software/datadog-agent-data-plane.rb in DataDog/datadog-agent) can use the
+# same software definition for both platforms.
+#
+# Differences from the Linux template:
+#   - No `image:` — macOS jobs run natively on the runner host (Tart VM on arm64,
+#     bare-metal on amd64), not inside a container.
+#   - `awscli` is not preinstalled on macOS runners, so we install it via Homebrew on demand.
+#   - The binary is built from source via `make build-adp-host` (host-arch cargo build) instead
+#     of `crane export`-ing it from a prebuilt Linux image. BUILD_PROFILE flows through to cargo
+#     so tagged releases get `optimized-release` and dev pipelines get `release`, matching the
+#     Linux Docker build's profile selection driven by the workflow rules in .gitlab-ci.yml.
+#   - The per-license THIRD-PARTY-* files are produced inline (replicating the `license-builder`
+#     stage from docker/Dockerfile.agent-data-plane) since we have no Docker stage to copy from.
+#   - FIPS is not in scope for darwin in v1 (no FIPS-on-darwin variant exists upstream).
+.push-release-tarball-darwin-definition:
+  stage: release
+  rules:
+    - if: !reference [.on_official_release, rules, if]
+      when: manual
+  variables:
+    TARGET_BUCKET_PATH: "s3://binaries-ddbuild-io-prod/saluki/"
+    TARGET_OS: "darwin"
+    # Aliased so the script body parallels `.push-release-tarball-definition`. The Linux job
+    # picks this up from each concrete job's variables (sourced from the image tag); on darwin
+    # there is no image, so the canonical pipeline version variable is used directly.
+    SOURCE_IMAGE_VERSION: ${ADP_IMAGE_VERSION}
+    # Pinned to match docker/Dockerfile.agent-data-plane so the tarball ships the same set of
+    # THIRD-PARTY-* license texts as the Linux artifact. Bump in lockstep with the Dockerfile.
+    SPDX_LICENSES_VERSION: "3.28.0"
+  script:
+    - command -v aws >/dev/null 2>&1 || brew install awscli
+    - mkdir -p /tmp/tarball/opt/datadog-agent/embedded/bin /tmp/tarball/opt/datadog/agent-data-plane/LICENSES
+    # Build natively for the host (uname-derived target). BUILD_PROFILE comes from the workflow
+    # rules in .gitlab-ci.yml: `release` for dev pipelines, `optimized-release` for tagged
+    # releases. The output path matches the profile name (cargo target/${BUILD_PROFILE}/...).
+    - make build-adp-host
+    - cp target/${BUILD_PROFILE}/agent-data-plane /tmp/tarball/opt/datadog-agent/embedded/bin/
+    # Replicate the `license-builder` stage from docker/Dockerfile.agent-data-plane on the host
+    # so the tarball ships the same per-license THIRD-PARTY-* files as the Linux artifact.
+    - curl -sSfL -o /tmp/spdx.tar.gz https://github.com/spdx/license-list-data/archive/refs/tags/v${SPDX_LICENSES_VERSION}.tar.gz
+    - tar -C /tmp -xzf /tmp/spdx.tar.gz
+    # Pipeline below mirrors the `license-builder` stage in docker/Dockerfile.agent-data-plane verbatim
+    # (single-occurrence sed paren strip and all) so the resulting THIRD-PARTY-* set is identical.
+    - tail -n +2 LICENSE-3rdparty.csv | awk -F ',' '{print $3}' | awk -F' ' '{for(i=1;i<=NF;i++) print $i}' | grep -v -E "(OR|AND|WITH|Custom|LLVM-exception)" | sed s/[\(\)]// | sort | uniq | xargs -I {} cp /tmp/license-list-data-${SPDX_LICENSES_VERSION}/text/{}.txt /tmp/tarball/opt/datadog/agent-data-plane/LICENSES/THIRD-PARTY-{}
+    - cp NOTICE LICENSE LICENSE-3rdparty.csv /tmp/tarball/opt/datadog/agent-data-plane/
+    - tar -C /tmp/tarball -czf /tmp/agent-data-plane-${SOURCE_IMAGE_VERSION}-${TARGET_OS}-${TARGET_ARCH}.tar.gz .
+    - aws s3 cp /tmp/agent-data-plane-${SOURCE_IMAGE_VERSION}-${TARGET_OS}-${TARGET_ARCH}.tar.gz ${TARGET_BUCKET_PATH}
+    # `sha256sum` is GNU coreutils (Linux); macOS uses BSD `shasum -a 256` to print the same digest format.
+    - shasum -a 256 /tmp/agent-data-plane-${SOURCE_IMAGE_VERSION}-${TARGET_OS}-${TARGET_ARCH}.tar.gz
+
+push-release-tarball-darwin-amd64:
+  extends: [.macos-amd64-test-job, .push-release-tarball-darwin-definition]
+  needs:
+    - unit-tests-macos-amd64
+    - unit-tests-miri-macos-amd64
+    - test-integration-macos-amd64
+    - check-deny
+    - check-licenses
+  variables:
+    TARGET_ARCH: "amd64"
+
+push-release-tarball-darwin-arm64:
+  extends: [.macos-arm64-test-job, .push-release-tarball-darwin-definition]
+  needs:
+    - unit-tests-macos-arm64
+    - unit-tests-miri-macos-arm64
+    - test-integration-macos-arm64
+    - check-deny
+    - check-licenses
+  variables:
+    TARGET_ARCH: "arm64"
