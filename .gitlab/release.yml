@@ -132,14 +132,19 @@ push-release-tarball-linux-arm64-fips:
     - aws s3 cp ${TARBALL_NAME} ${TARGET_BUCKET_PATH}
     - sha256sum ${TARBALL_NAME}
 
+# Test gating mirrors `.push-release-tarball-definition` (linux): unit + miri + check-deny +
+# check-licenses + integration tests, all attached to the publish job rather than the build job
+# so the build can run in parallel with the test stage. Plus the build-stage tarball artifact
+# itself, pulled in via `artifacts: true`.
 push-release-tarball-darwin-amd64:
   extends: [.build-common-variables, .push-release-tarball-darwin-definition]
-  # Integration tests live in the e2e stage and can't gate the build-stage `build-release-
-  # tarball-darwin-amd64`, so they gate the publish step here instead. This mirrors how the linux
-  # push job gates on the e2e-stage `test-correctness-dsd-*` jobs.
   needs:
     - job: build-release-tarball-darwin-amd64
       artifacts: true
+    - unit-tests-macos-amd64
+    - unit-tests-miri-macos-amd64
+    - check-deny
+    - check-licenses
     - test-integration-macos-amd64
   variables:
     TARGET_ARCH: "amd64"
@@ -149,6 +154,10 @@ push-release-tarball-darwin-arm64:
   needs:
     - job: build-release-tarball-darwin-arm64
       artifacts: true
+    - unit-tests-macos-arm64
+    - unit-tests-miri-macos-arm64
+    - check-deny
+    - check-licenses
     - test-integration-macos-arm64
   variables:
     TARGET_ARCH: "arm64"
