@@ -9,6 +9,7 @@ pub mod request_builder;
 mod retry;
 pub mod telemetry;
 pub mod transaction;
+pub mod validation;
 
 use saluki_core::data_model::event::trace::{AttributeValue, Trace};
 use stringtheory::MetaString;

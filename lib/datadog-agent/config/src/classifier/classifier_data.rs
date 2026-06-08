@@ -292,13 +292,6 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         default: Some("\"\""),
     },
     ClassifierEntry {
-        yaml_path: "forwarder_apikey_validation_interval",
-        aliases: &[],
-        support_level: SupportLevel::Incompatible(Severity::Medium),
-        pipeline_affinity: PipelineAffinity::CrossCutting,
-        default: Some("60"),
-    },
-    ClassifierEntry {
         yaml_path: "heroku_dyno",
         aliases: &[],
         support_level: SupportLevel::Incompatible(Severity::High),

@@ -33,6 +33,14 @@ const fn default_forwarder_connection_reset_interval() -> u64 {
     0
 }
 
+const fn default_api_key_validation_interval_mins() -> u64 {
+    60
+}
+
+const fn default_api_key_validation_interval_config_mins() -> i64 {
+    default_api_key_validation_interval_mins() as i64
+}
+
 const MIN_TLS_VERSION_TLS10: &str = "tlsv1.0";
 const MIN_TLS_VERSION_TLS11: &str = "tlsv1.1";
 const MIN_TLS_VERSION_TLS12: &str = "tlsv1.2";
@@ -259,6 +267,15 @@ pub struct ForwarderConfiguration {
     /// outbound intake request. The data plane does not perform local tag validation based on this setting.
     #[serde(default)]
     allow_arbitrary_tags: bool,
+
+    /// API key validation interval, in minutes.
+    ///
+    /// Defaults to 60 minutes. Invalid `0` values fall back to 60 minutes.
+    #[serde(
+        default = "default_api_key_validation_interval_config_mins",
+        rename = "forwarder_apikey_validation_interval"
+    )]
+    api_key_validation_interval_mins: i64,
 }
 
 impl ForwarderConfiguration {
@@ -266,6 +283,15 @@ impl ForwarderConfiguration {
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
         let mut forwarder_config = config.as_typed::<Self>()?;
         forwarder_config.parsed_min_tls_version = min_tls_version_from_config_value(&forwarder_config.min_tls_version);
+
+        if forwarder_config.api_key_validation_interval_mins <= 0 {
+            warn!(
+                config_key = "forwarder_apikey_validation_interval",
+                fallback_minutes = default_api_key_validation_interval_mins(),
+                "Configured API key validation interval is invalid; using default."
+            );
+            forwarder_config.api_key_validation_interval_mins = default_api_key_validation_interval_mins() as i64;
+        }
 
         // Handle fixing up the forwarder storage path if it's empty.
         forwarder_config.retry.fix_empty_storage_path(config);
@@ -406,6 +432,11 @@ impl ForwarderConfiguration {
     /// Returns whether outbound intake requests should allow arbitrary tag values.
     pub const fn allow_arbitrary_tags(&self) -> bool {
         self.allow_arbitrary_tags
+    }
+
+    /// Returns the API key validation interval.
+    pub const fn api_key_validation_interval(&self) -> Duration {
+        Duration::from_secs(self.api_key_validation_interval_mins as u64 * 60)
     }
 }
 
@@ -581,6 +612,33 @@ mod tests {
         .await;
 
         assert_eq!(config.endpoint_concurrency(), 12);
+    }
+
+    #[tokio::test]
+    async fn api_key_validation_interval_parsing() {
+        let cases = [
+            ("missing", serde_json::json!({}), Duration::from_secs(60 * 60)),
+            (
+                "positive",
+                serde_json::json!({ "forwarder_apikey_validation_interval": 5i64 }),
+                Duration::from_secs(5 * 60),
+            ),
+            (
+                "zero",
+                serde_json::json!({ "forwarder_apikey_validation_interval": 0i64 }),
+                Duration::from_secs(60 * 60),
+            ),
+            (
+                "negative",
+                serde_json::json!({ "forwarder_apikey_validation_interval": -1i64 }),
+                Duration::from_secs(60 * 60),
+            ),
+        ];
+
+        for (case_name, extra_config, expected_interval) in cases {
+            let config = forwarder_config_from(config_with(extra_config), None).await;
+            assert_eq!(config.api_key_validation_interval(), expected_interval, "{case_name}");
+        }
     }
 
     #[tokio::test]

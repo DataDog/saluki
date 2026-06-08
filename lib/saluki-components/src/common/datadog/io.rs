@@ -234,6 +234,23 @@ where
             io_shutdown_rx,
         }
     }
+
+    /// Returns the pieces needed to validate API keys for the startup endpoint set.
+    pub(crate) fn validation_parts(
+        &self,
+    ) -> (
+        Vec<RoutableEndpoint>,
+        HttpClient,
+        Option<GenericConfiguration>,
+        Duration,
+    ) {
+        (
+            self.endpoints.clone(),
+            self.client.clone(),
+            self.live_config.clone(),
+            self.config.api_key_validation_interval(),
+        )
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
