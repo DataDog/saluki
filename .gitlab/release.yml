@@ -134,9 +134,13 @@ push-release-tarball-linux-arm64-fips:
 
 push-release-tarball-darwin-amd64:
   extends: [.build-common-variables, .push-release-tarball-darwin-definition]
+  # Integration tests live in the e2e stage and can't gate the build-stage `build-release-
+  # tarball-darwin-amd64`, so they gate the publish step here instead. This mirrors how the linux
+  # push job gates on the e2e-stage `test-correctness-dsd-*` jobs.
   needs:
     - job: build-release-tarball-darwin-amd64
       artifacts: true
+    - test-integration-macos-amd64
   variables:
     TARGET_ARCH: "amd64"
 
@@ -145,5 +149,6 @@ push-release-tarball-darwin-arm64:
   needs:
     - job: build-release-tarball-darwin-arm64
       artifacts: true
+    - test-integration-macos-arm64
   variables:
     TARGET_ARCH: "arm64"

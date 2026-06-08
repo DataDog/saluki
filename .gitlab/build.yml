@@ -335,13 +335,18 @@ display-image-tags:
       - ${TARBALL_NAME}
     expire_in: 1 week
 
+# `needs:` here only references `test`-stage jobs (and the build-stage `calculate-build-metadata`).
+# Integration tests live in the `e2e` stage, which comes *after* `build`, so GitLab rejects
+# `needs:` referencing them from a build-stage job ("need <x> is not defined in current or prior
+# stages"). The integration-test gating is attached to the release-stage `push-release-tarball-
+# darwin-*` jobs in .gitlab/release.yml, which mirrors how the linux push job gates on the
+# e2e-stage `test-correctness-dsd-*` jobs.
 build-release-tarball-darwin-amd64:
   extends: [.macos-amd64-test-job, .build-release-tarball-darwin-definition]
   needs:
     - calculate-build-metadata
     - unit-tests-macos-amd64
     - unit-tests-miri-macos-amd64
-    - test-integration-macos-amd64
     - check-deny
     - check-licenses
   variables:
@@ -353,7 +358,6 @@ build-release-tarball-darwin-arm64:
     - calculate-build-metadata
     - unit-tests-macos-arm64
     - unit-tests-miri-macos-arm64
-    - test-integration-macos-arm64
     - check-deny
     - check-licenses
   variables:
