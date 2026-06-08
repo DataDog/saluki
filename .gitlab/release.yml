@@ -108,22 +108,39 @@ push-release-tarball-linux-arm64-fips:
     SOURCE_IMAGE_VERSION: ${ADP_IMAGE_VERSION_FIPS}
 
 # Pushes the prebuilt darwin tarball (produced by `build-release-tarball-darwin-*` in
-# .gitlab/build.yml) to the canonical s3 bucket. Splitting build/push lets us validate the
-# darwin build on PR pipelines (manual click on `build-release-tarball-darwin-*`) without
-# touching s3, and keeps macOS runner usage limited to the build itself — the upload runs in the
-# same Linux build image as `.push-release-tarball-definition`, with the same IAM-role-driven
-# `aws s3 cp` credential flow that's already known to work for the linux push jobs.
+# .gitlab/build.yml) to s3. Two rule branches, mirroring the linux `_internal` pattern in
+# .gitlab/build.yml (`build-adp-image-internal-*` / `publish-adp-image-internal*`):
 #
-# The `needs:` chain pulls the tarball artifact from the build job, so this job is purely an
-# upload step. FIPS-on-darwin is intentionally out of scope (no FIPS-on-darwin build upstream).
+#   - On tagged release pipelines: manual, uploads to the canonical bucket path. Same as the
+#     linux release tarball flow.
+#   - On dev pipelines (PRs, main, etc.): manual + allow_failure, uploads to an `internal/`
+#     subkey of the same bucket so dev artifacts are visually distinct in s3 and easy to set
+#     a separate lifecycle policy on later. This is the dev-pipeline equivalent of
+#     `publish-adp-image-internal` for tarballs — it gives us a real CI path that exercises
+#     credentials, the bucket policy, and the artifact handoff end-to-end on every PR without
+#     polluting the canonical release path.
+#   - On mq-working branches: never (mirrors the same guard the linux `_internal` jobs use).
+#
+# Splitting build/push lets us validate the darwin build on PR pipelines (manual click on
+# `build-release-tarball-darwin-*`) and now optionally exercise the s3 push step too. The upload
+# itself runs in the same Linux build image as `.push-release-tarball-definition`, with the same
+# IAM-role-driven `aws s3 cp` credential flow that's already known to work for the linux push
+# jobs. FIPS-on-darwin is intentionally out of scope (no FIPS-on-darwin build upstream).
 .push-release-tarball-darwin-definition:
   stage: release
   rules:
+    - if: !reference [.on_mq_branch, rules, if]
+      when: never
     - if: !reference [.on_official_release, rules, if]
       when: manual
+      variables:
+        TARGET_BUCKET_PATH: "s3://binaries-ddbuild-io-prod/saluki/"
+    - when: manual
+      allow_failure: true
+      variables:
+        TARGET_BUCKET_PATH: "s3://binaries-ddbuild-io-prod/saluki/internal/"
   image: ${DOCKER_BUILD_IMAGE}
   variables:
-    TARGET_BUCKET_PATH: "s3://binaries-ddbuild-io-prod/saluki/"
     TARGET_OS: "darwin"
     SOURCE_IMAGE_VERSION: ${ADP_IMAGE_VERSION}
     TARBALL_NAME: "agent-data-plane-${SOURCE_IMAGE_VERSION}-${TARGET_OS}-${TARGET_ARCH}.tar.gz"
