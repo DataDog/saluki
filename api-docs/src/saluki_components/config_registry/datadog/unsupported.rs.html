@@ -124,7 +124,7 @@
 <a href=#124 id=124 data-nosnippet>124</a>    <span class="doccomment">/// `forwarder_low_prio_buffer_size` - low-priority request queue size.
 <a href=#125 id=125 data-nosnippet>125</a>    </span>FORWARDER_LOW_PRIO_BUFFER_SIZE = SalukiAnnotation {
 <a href=#126 id=126 data-nosnippet>126</a>        schema: <span class="kw-2">&amp;</span>schema::FORWARDER_LOW_PRIO_BUFFER_SIZE,
-<a href=#127 id=127 data-nosnippet>127</a>        <span class="comment">// ADP has no separate low-priority queue. #1362
+<a href=#127 id=127 data-nosnippet>127</a>        <span class="comment">// ADP low-priority pending transactions use the byte-bounded retry queue. #1362
 <a href=#128 id=128 data-nosnippet>128</a>        </span>support_level: SupportLevel::Incompatible(Severity::Medium),
 <a href=#129 id=129 data-nosnippet>129</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
 <a href=#130 id=130 data-nosnippet>130</a>        env_var_override: <span class="prelude-val">None</span>,
