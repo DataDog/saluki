@@ -128,6 +128,18 @@ crate::declare_annotations! {
         pipeline_affinity: PipelineAffinity::CrossCutting,
     };
 
+    /// `tls_handshake_timeout`—TLS handshake timeout as a duration string.
+    TLS_HANDSHAKE_TIMEOUT = SalukiAnnotation {
+        schema: &schema::TLS_HANDSHAKE_TIMEOUT,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::FORWARDER_CONFIGURATION],
+        value_type_override: Some(ValueType::String),
+        test_json: Some("\"30s\""),
+        pipeline_affinity: PipelineAffinity::CrossCutting,
+    };
+
     /// `forwarder_high_prio_buffer_size`—max pending requests per endpoint. Schema Float; field usize.
     FORWARDER_HIGH_PRIO_BUFFER_SIZE = SalukiAnnotation {
         schema: &schema::FORWARDER_HIGH_PRIO_BUFFER_SIZE,

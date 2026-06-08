@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use facet::Facet;
-use saluki_config::GenericConfiguration;
+use saluki_config::{DurationString, GenericConfiguration};
 use saluki_error::GenericError;
 use saluki_io::net::client::http::{HttpProtocol, TlsMinimumVersion};
 use serde::Deserialize;
@@ -23,6 +23,10 @@ const fn default_request_timeout_secs() -> u64 {
 
 const fn default_endpoint_buffer_size() -> usize {
     16
+}
+
+const fn default_tls_handshake_timeout() -> DurationString {
+    DurationString::new(Duration::from_secs(10))
 }
 
 const fn default_forwarder_connection_reset_interval() -> u64 {
@@ -166,6 +170,14 @@ pub struct ForwarderConfiguration {
     #[serde(default = "default_request_timeout_secs", rename = "forwarder_timeout")]
     request_timeout_secs: u64,
 
+    /// TLS handshake timeout.
+    ///
+    /// Defaults to 10 seconds. If the TLS handshake does not complete within this duration after the
+    /// TCP connection is established, the connection attempt fails with a timeout error.
+    #[serde(default = "default_tls_handshake_timeout", rename = "tls_handshake_timeout")]
+    #[facet(opaque)]
+    tls_handshake_timeout: DurationString,
+
     /// Maximum number of pending requests for an individual endpoint.
     ///
     /// Defaults to 16.
@@ -251,6 +263,11 @@ impl ForwarderConfiguration {
     /// Returns the request timeout.
     pub const fn request_timeout(&self) -> Duration {
         Duration::from_secs(self.request_timeout_secs)
+    }
+
+    /// Returns the TLS handshake timeout.
+    pub const fn tls_handshake_timeout(&self) -> Duration {
+        self.tls_handshake_timeout.as_duration()
     }
 
     /// Returns the maximum number of pending requests for an individual endpoint.
@@ -472,6 +489,21 @@ mod tests {
 
         let proxies = config.proxy().as_ref().unwrap().build().unwrap();
         assert_eq!(proxies[0].uri().to_string(), PROXY_B_URI);
+    }
+
+    #[tokio::test]
+    async fn tls_handshake_timeout_accepts_duration_string() {
+        let config =
+            forwarder_config_from(config_with(serde_json::json!({ "tls_handshake_timeout": "10s" })), None).await;
+
+        assert_eq!(config.tls_handshake_timeout(), Duration::from_secs(10));
+    }
+
+    #[tokio::test]
+    async fn tls_handshake_timeout_defaults_to_10_seconds() {
+        let config = forwarder_config_from(base_config(), None).await;
+
+        assert_eq!(config.tls_handshake_timeout(), Duration::from_secs(10));
     }
 
     #[tokio::test]

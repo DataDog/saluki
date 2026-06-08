@@ -171,6 +171,19 @@ impl HttpClientBuilder {
         self
     }
 
+    /// Sets the timeout for completing the TLS handshake after a connection is established.
+    ///
+    /// Defaults to 10 seconds.
+    ///
+    /// This timeout is independent of the per-request timeout set by [`Self::with_request_timeout`].
+    /// When a new connection is needed, both timers run concurrently and whichever fires first
+    /// determines the outcome. Setting a short request timeout does not bound the TLS handshake
+    /// if the connection pool decides to open a new connection before the request timer starts.
+    pub fn with_tls_handshake_timeout(mut self, timeout: Duration) -> Self {
+        self.connector_builder = self.connector_builder.with_tls_handshake_timeout(timeout);
+        self
+    }
+
     /// Sets the HTTP protocol selection for client connections.
     ///
     /// Defaults to [`HttpProtocol::Auto`], which automatically negotiates HTTP/2 with HTTP/1.1 fallback.

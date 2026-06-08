@@ -161,6 +161,7 @@ where
         let endpoints = config.build_routable_endpoints(live_config.clone())?;
         let mut client_builder = HttpClient::builder()
             .with_request_timeout(config.request_timeout())
+            .with_tls_handshake_timeout(config.tls_handshake_timeout())
             .with_min_tls_version(config.min_tls_version())
             .with_http_protocol(config.http_protocol())
             .with_bytes_sent_counter(telemetry.bytes_sent().clone())
