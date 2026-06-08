@@ -86,7 +86,7 @@ default values.
 | `dogstatsd_stats_enable`           | Enable internal stats endpoint   | Config toggle                                  | On-demand via API ([#1352])                                    |
 | `dogstatsd_stats_buffer`           | Internal stats buffer size       | Configurable                                   | On-demand via API ([#1352])                                    |
 | `dogstatsd_stats_port`             | Internal stats endpoint port     | Configurable port                              | On-demand via API ([#1352])                                    |
-| `forwarder_num_workers`            | Forwarder worker count           | Creates forwarder workers and caps connections | Sizes ADP's HTTP idle connection pool; no worker tasks          |
+| `forwarder_num_workers`            | Forwarder worker count           | Creates forwarder workers and caps connections | Multiplies request concurrency and sizes idle pool; no workers  |
 | `log_level`                        | Log verbosity directives         | Controls Agent logs                            | Plain levels control ADP/Saluki-owned targets only             |
 | `logging_frequency`                | Transaction success log interval | Throttles success logs                         | Intentionally unused                                           |
 | `min_tls_version`                  | Minimum outbound TLS version     | Supports TLS 1.0, 1.1, 1.2, and 1.3            | Supports TLS 1.2+ and TLS 1.3-only; clamps TLS 1.0/1.1 to 1.2  |

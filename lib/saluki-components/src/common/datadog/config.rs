@@ -17,7 +17,7 @@ const fn default_endpoint_concurrency() -> usize {
     10
 }
 
-const fn default_max_idle_connections_per_host() -> usize {
+const fn default_endpoint_concurrency_multiplier() -> usize {
     1
 }
 
@@ -167,12 +167,15 @@ pub struct ForwarderConfiguration {
     )]
     endpoint_concurrency: usize,
 
-    /// Maximum number of idle HTTP connections per host.
+    /// Multiplier for endpoint request concurrency.
     ///
-    /// Defaults to 1. Set to 0 to avoid retaining idle connections. This setting sizes the forwarder HTTP connection
-    /// pool; ADP does not create worker tasks from it.
-    #[serde(default = "default_max_idle_connections_per_host", rename = "forwarder_num_workers")]
-    max_idle_connections_per_host: usize,
+    /// Defaults to 1. This value also sizes the HTTP idle connection pool. If set to 0, idle connection retention is
+    /// disabled and the concurrency multiplier is treated as 1. This setting does not create worker tasks.
+    #[serde(
+        default = "default_endpoint_concurrency_multiplier",
+        rename = "forwarder_num_workers"
+    )]
+    endpoint_concurrency_multiplier: usize,
 
     /// Request timeout, in seconds.
     ///
@@ -259,16 +262,23 @@ impl ForwarderConfiguration {
 
     /// Returns the maximum number of concurrent requests for an individual endpoint.
     pub const fn endpoint_concurrency(&self) -> usize {
-        if self.endpoint_concurrency == 0 {
+        let endpoint_concurrency = if self.endpoint_concurrency == 0 {
             1
         } else {
             self.endpoint_concurrency
-        }
+        };
+        let endpoint_concurrency_multiplier = if self.endpoint_concurrency_multiplier == 0 {
+            1
+        } else {
+            self.endpoint_concurrency_multiplier
+        };
+
+        endpoint_concurrency.saturating_mul(endpoint_concurrency_multiplier)
     }
 
     /// Returns the maximum number of idle HTTP connections per host.
     pub const fn max_idle_connections_per_host(&self) -> usize {
-        self.max_idle_connections_per_host
+        self.endpoint_concurrency_multiplier
     }
 
     /// Returns the request timeout.
@@ -537,6 +547,20 @@ mod tests {
             None,
         )
         .await;
+    }
+
+    #[tokio::test]
+    async fn endpoint_concurrency_uses_configured_multiplier() {
+        let config = forwarder_config_from(
+            config_with(serde_json::json!({
+                "forwarder_max_concurrent_requests": 3usize,
+                "forwarder_num_workers": 4usize,
+            })),
+            None,
+        )
+        .await;
+
+        assert_eq!(config.endpoint_concurrency(), 12);
     }
 
     #[tokio::test]

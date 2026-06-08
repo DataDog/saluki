@@ -1210,7 +1210,7 @@
     "feature_state": "PARITY",
     "action": "NONE",
     "description": "Max concurrent outbound HTTP requests",
-    "reason": "Implemented in ADP as the Tower request concurrency limit.",
+    "reason": "Implemented in ADP as part of the Tower request concurrency limit with forwarder_num_workers as the multiplier.",
     "issue": null,
     "adp_key": null
   },
@@ -1219,7 +1219,7 @@
     "feature_state": "DIVERGENT",
     "action": "DOCUMENTED",
     "description": "Forwarder worker count",
-    "reason": "ADP reads this key to size the forwarder HTTP idle connection pool. ADP does not create forwarder worker tasks from this setting.",
+    "reason": "ADP reads this key as the request concurrency multiplier and HTTP idle connection pool size. ADP does not create forwarder worker tasks from this setting.",
     "issue": "#1363",
     "adp_key": null
   },

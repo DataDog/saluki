@@ -116,7 +116,7 @@ crate::declare_annotations! {
         pipeline_affinity: PipelineAffinity::CrossCutting,
     };
 
-    /// `forwarder_num_workers`—sizes the forwarder HTTP idle connection pool. Schema Float; field usize.
+    /// `forwarder_num_workers`—request concurrency multiplier and HTTP idle pool size. Schema Float; field usize.
     FORWARDER_NUM_WORKERS = SalukiAnnotation {
         schema: &schema::FORWARDER_NUM_WORKERS,
         support_level: SupportLevel::Partial,
