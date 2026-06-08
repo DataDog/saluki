@@ -281,55 +281,31 @@ display-image-tags:
       FIPS:     ${IMAGE_REGISTRY}/${ADP_IMAGE_TAG_FIPS}-nydus
       EOF
 
-# Builds the darwin release tarball (binary + LICENSES + LICENSE-3rdparty.csv + NOTICE) natively
-# on a macOS runner and exposes it as a GitLab job artifact. The release-stage `push-release-
-# tarball-darwin-*` jobs in `.gitlab/release.yml` consume this artifact and `aws s3 cp` it to
-# the canonical bucket; splitting the work this way:
-#
-#   - lets us validate the darwin build end-to-end on PR pipelines (manual click on dev pipelines,
-#     no S3 upload) without waiting for a tagged release to discover packaging breakage,
-#   - keeps macOS runner usage limited to the build itself (the S3 upload runs in the Linux build
-#     image just like the linux push jobs, with the same IAM-role credential model that's already
-#     known to work),
-#   - parallels the linux flow at a high level: `build-adp-image-*` always produces an artifact
-#     (a docker image in registry.ddbuild.io) which the tagged release job consumes; here
-#     `build-release-tarball-darwin-*` always produces a tarball artifact which the tagged
-#     release job consumes.
-#
-# The output tarball layout (opt/datadog-agent/embedded/bin/agent-data-plane plus
-# opt/datadog/agent-data-plane/{LICENSES,*}) matches the Linux artifact bit-for-bit so downstream
-# consumers (the Datadog Agent omnibus build, see
-# omnibus/config/software/datadog-agent-data-plane.rb in DataDog/datadog-agent) can use the same
-# software definition for both platforms. FIPS-on-darwin is intentionally out of scope.
+# Builds the darwin release tarball natively on a macOS runner and exposes it as a GitLab job
+# artifact for the release-stage `push-release-tarball-darwin-*` jobs in .gitlab/release.yml to
+# `aws s3 cp` to s3. All the real work lives in `make package-adp-host` (see
+# ci/tooling/package-adp-tarball.sh) so it's locally reproducible. The output tarball matches
+# the linux artifact bit-for-bit so the Datadog Agent omnibus build can consume both platforms
+# with the same software definition. FIPS-on-darwin is intentionally out of scope.
 .build-release-tarball-darwin-definition:
   stage: build
   needs:
     - calculate-build-metadata
   rules:
-    # On tagged release pipelines, run automatically so the artifact is ready when a maintainer
-    # clicks the manual `push-release-tarball-darwin-*` job in the release stage.
     - if: !reference [.on_official_release, rules, if]
       when: on_success
-    # On every other pipeline, gate behind a manual click so we don't burn macOS runner capacity
-    # by default but still let anyone validate a PR's darwin tarball with one click.
     - when: manual
       allow_failure: true
   variables:
-    # Filename produced by `make package-adp-host` (see ci/tooling/package-adp-tarball.sh). Kept
-    # here so the artifacts: path below can reference it without re-deriving. BUILD_PROFILE
-    # itself is inherited from the workflow `variables:` in .gitlab-ci.yml (`release` for dev
-    # pipelines, `optimized-release` for tagged releases) just like the linux build jobs above
-    # do; redeclaring it here as `BUILD_PROFILE: ${BUILD_PROFILE}` would self-reference and
-    # blow up make with "Recursive variable BUILD_PROFILE references itself".
+    # NB: do NOT redeclare `BUILD_PROFILE: ${BUILD_PROFILE}` here — self-reference, make blows up
+    # with "Recursive variable BUILD_PROFILE references itself". It's already inherited from the
+    # workflow `variables:` in .gitlab-ci.yml (`release` for dev pipelines, `optimized-release`
+    # for tagged releases) just like the linux build jobs above pick it up.
     TARBALL_NAME: "agent-data-plane-${ADP_IMAGE_VERSION}-darwin-${TARGET_ARCH}.tar.gz"
   script:
-    # All the real work — cargo build, SPDX license harvest, tarball assembly, sha256 — lives in
-    # `make package-adp-host` -> ci/tooling/package-adp-tarball.sh so it stays locally
-    # reproducible (`make package-adp-host` on a Mac dev machine produces the same artifact this
-    # job uploads). TARGET_OS, TARGET_ARCH, etc. are derived inside the Makefile; we override
-    # ADP_PACKAGE_VERSION here so the tarball filename uses the same `${ADP_IMAGE_VERSION}`
-    # naming as the linux release tarball (`v${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}` on dev,
-    # the tag on tagged releases) instead of defaulting to the Cargo.toml version.
+    # Override ADP_PACKAGE_VERSION so the tarball filename uses ${ADP_IMAGE_VERSION} naming
+    # (`v${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}` on dev, the tag on tagged releases) instead
+    # of the Makefile default (Cargo.toml version, which only matches on tag).
     - ADP_PACKAGE_VERSION=${ADP_IMAGE_VERSION} make package-adp-host
     - cp target/release-tarball/${TARBALL_NAME} ${CI_PROJECT_DIR}/${TARBALL_NAME}
   artifacts:
@@ -337,11 +313,6 @@ display-image-tags:
       - ${TARBALL_NAME}
     expire_in: 1 week
 
-# Mirrors the linux `.build-adp-definition` `needs:` exactly: only `calculate-build-metadata`,
-# so the build can run in parallel with the test stage. Test correctness is gated at
-# release-time by `push-release-tarball-darwin-*` (in .gitlab/release.yml), which is the same
-# place the linux push gates on tests. Cargo's own compile failure already surfaces as a
-# failed build job — there's no value in additionally requiring unit-tests to pass first.
 build-release-tarball-darwin-amd64:
   extends: [.macos-amd64-test-job, .build-release-tarball-darwin-definition]
   variables:

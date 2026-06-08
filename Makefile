@@ -616,29 +616,19 @@ build-adp-host: ## Builds the agent-data-plane binary for the current host (Carg
 		APP_BUILD_DATE="$(ADP_APP_BUILD_DATE)" \
 		cargo build --profile $(BUILD_PROFILE) --bin agent-data-plane
 
-# SPDX license-list-data tag (without the leading "v") used by package-adp-host to harvest
-# THIRD-PARTY-* license texts. Must match the version pinned in docker/Dockerfile.agent-data-plane
-# so the host-built tarball ships the same set of license texts as the linux Docker artifact.
-ADP_SPDX_LICENSES_VERSION ?= 3.28.0
-
-# Default OS slug for `package-adp-host`. Override on Linux hosts that want a linux-shaped
-# tarball name; the script doesn't care, only the filename does.
-ADP_PACKAGE_TARGET_OS ?= $(shell uname -s | tr '[:upper:]' '[:lower:]')
-
-# Version stamped into the output tarball filename. Defaults to the Cargo.toml version (handy
-# for local builds: `make package-adp-host` produces `agent-data-plane-1.2.0-darwin-arm64.tar.gz`)
-# but is overridable by env so CI can match the linux release-tarball naming convention, which
-# uses ${ADP_IMAGE_VERSION}: `v${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}` on dev pipelines and the
-# tag on tagged releases. See `.build-release-tarball-darwin-definition` in .gitlab/build.yml.
-ADP_PACKAGE_VERSION ?= $(ADP_APP_VERSION)
+# SPDX license-list-data tag pinned to match docker/Dockerfile.agent-data-plane so the
+# host-built tarball's THIRD-PARTY-* texts match the linux Docker artifact.
+ADP_SPDX_LICENSES_VERSION := 3.28.0
 
 .PHONY: package-adp-host
 package-adp-host: BUILD_PROFILE ?= release
+# Tarball-filename version. Defaults to Cargo.toml; CI overrides with $$ADP_IMAGE_VERSION.
+package-adp-host: ADP_PACKAGE_VERSION ?= $(ADP_APP_VERSION)
 package-adp-host: build-adp-host
-package-adp-host: ## Builds and packages agent-data-plane into a release tarball under target/release-tarball/ (Cargo profile from $$BUILD_PROFILE; OS/arch from host; version from $$ADP_PACKAGE_VERSION, default Cargo.toml). Used by the darwin release pipeline and locally to reproduce the CI artifact.
+package-adp-host: ## Packages agent-data-plane into a release tarball under target/release-tarball/
 	@OUTPUT_DIR="$(CURDIR)/target/release-tarball" \
 		BUILD_PROFILE="$(BUILD_PROFILE)" \
-		TARGET_OS="$(ADP_PACKAGE_TARGET_OS)" \
+		TARGET_OS="$(shell uname -s | tr '[:upper:]' '[:lower:]')" \
 		TARGET_ARCH="$(TARGET_ARCH)" \
 		ADP_VERSION="$(ADP_PACKAGE_VERSION)" \
 		SPDX_LICENSES_VERSION="$(ADP_SPDX_LICENSES_VERSION)" \

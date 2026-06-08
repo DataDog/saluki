@@ -107,25 +107,14 @@ push-release-tarball-linux-arm64-fips:
     SOURCE_IMAGE: ${ADP_FULL_IMAGE_TAG_FIPS}
     SOURCE_IMAGE_VERSION: ${ADP_IMAGE_VERSION_FIPS}
 
-# Pushes the prebuilt darwin tarball (produced by `build-release-tarball-darwin-*` in
-# .gitlab/build.yml) to s3. Two rule branches, mirroring the linux `_internal` pattern in
-# .gitlab/build.yml (`build-adp-image-internal-*` / `publish-adp-image-internal*`):
-#
-#   - On tagged release pipelines: manual, uploads to the canonical bucket path. Same as the
-#     linux release tarball flow.
-#   - On dev pipelines (PRs, main, etc.): manual + allow_failure, uploads to an `internal/`
-#     subkey of the same bucket so dev artifacts are visually distinct in s3 and easy to set
-#     a separate lifecycle policy on later. This is the dev-pipeline equivalent of
-#     `publish-adp-image-internal` for tarballs — it gives us a real CI path that exercises
-#     credentials, the bucket policy, and the artifact handoff end-to-end on every PR without
-#     polluting the canonical release path.
-#   - On mq-working branches: never (mirrors the same guard the linux `_internal` jobs use).
-#
-# Splitting build/push lets us validate the darwin build on PR pipelines (manual click on
-# `build-release-tarball-darwin-*`) and now optionally exercise the s3 push step too. The upload
-# itself runs in the same Linux build image as `.push-release-tarball-definition`, with the same
-# IAM-role-driven `aws s3 cp` credential flow that's already known to work for the linux push
-# jobs. FIPS-on-darwin is intentionally out of scope (no FIPS-on-darwin build upstream).
+# Pushes the prebuilt darwin tarball (from `build-release-tarball-darwin-*` in .gitlab/build.yml)
+# to s3. Mirrors the linux `_internal` pattern (build-adp-image-internal-* /
+# publish-adp-image-internal*): manual, with the bucket prefix selected by rule — canonical path
+# on tagged releases, an `internal/` subkey on dev pipelines so we exercise credentials and the
+# artifact handoff end-to-end on every PR without polluting the release path. The mq-working
+# branch guard mirrors the same one the linux `_internal` jobs use. Test gating matches the
+# linux push (.push-release-tarball-definition); attaching it here rather than to the build job
+# keeps the build runnable in parallel with the test stage.
 .push-release-tarball-darwin-definition:
   stage: release
   rules:
@@ -141,18 +130,12 @@ push-release-tarball-linux-arm64-fips:
         TARGET_BUCKET_PATH: "s3://binaries-ddbuild-io-prod/saluki/internal/"
   image: ${DOCKER_BUILD_IMAGE}
   variables:
-    TARGET_OS: "darwin"
-    SOURCE_IMAGE_VERSION: ${ADP_IMAGE_VERSION}
-    TARBALL_NAME: "agent-data-plane-${SOURCE_IMAGE_VERSION}-${TARGET_OS}-${TARGET_ARCH}.tar.gz"
+    TARBALL_NAME: "agent-data-plane-${ADP_IMAGE_VERSION}-darwin-${TARGET_ARCH}.tar.gz"
   script:
     - apt-get update && DEBIAN_FRONTEND=noninteractive apt install -yy --no-install-recommends awscli >/dev/null
     - aws s3 cp ${TARBALL_NAME} ${TARGET_BUCKET_PATH}
     - sha256sum ${TARBALL_NAME}
 
-# Test gating mirrors `.push-release-tarball-definition` (linux): unit + miri + check-deny +
-# check-licenses + integration tests, all attached to the publish job rather than the build job
-# so the build can run in parallel with the test stage. Plus the build-stage tarball artifact
-# itself, pulled in via `artifacts: true`.
 push-release-tarball-darwin-amd64:
   extends: [.build-common-variables, .push-release-tarball-darwin-definition]
   needs:
