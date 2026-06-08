@@ -2,7 +2,7 @@ type: integration
 name: "privileged-api-endpoints"
 description: "Verifies the logging and metrics override routes are exposed on the privileged API after the workers assert them dynamically."
 timeout: 120s
-runtimes: [docker, mac]
+runtimes: [linux, mac, windows]
 
 env:
   DD_API_KEY: "test-api-key"
@@ -12,7 +12,6 @@ env:
   DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
 
 container:
-  image: "saluki-images/datadog-agent:testing-devel"
   exposed_ports:
     - "55101/tcp"
 

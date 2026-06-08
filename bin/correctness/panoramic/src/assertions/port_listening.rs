@@ -1,5 +1,8 @@
 use std::time::{Duration, Instant};
 
+use airlock::docker;
+use bollard::exec::{CreateExecOptions, StartExecResults};
+use futures::TryStreamExt as _;
 use tokio::net::TcpStream;
 use tracing::trace;
 
@@ -35,20 +38,52 @@ impl Assertion for PortListeningAssertion {
     async fn check(&self, ctx: &AssertionContext) -> AssertionResult {
         let started = Instant::now();
 
-        // Look up the mapped host port.
-        let port_key = format!("{}/{}", self.port, self.protocol);
-        let host_port = match ctx.port_mappings.get(&port_key) {
-            Some(port) => *port,
-            None => {
-                return AssertionResult {
-                    name: self.name().to_string(),
-                    passed: false,
-                    message: format!(
-                        "Port {}/{} not exposed in container configuration.",
-                        self.port, self.protocol
-                    ),
-                    duration: started.elapsed(),
-                };
+        // Pick a probe strategy. In-container probes (currently only Windows) target the listener
+        // on `127.0.0.1` from inside the test container itself; host-side probes target the
+        // mapped ephemeral port on the runner's loopback.
+        let probe = if ctx.target_is_windows() {
+            match self.protocol.as_str() {
+                "tcp" => Probe::InContainerTcp { port: self.port },
+                "udp" => Probe::InContainerUdp { port: self.port },
+                other => {
+                    return AssertionResult {
+                        name: self.name().to_string(),
+                        passed: false,
+                        message: format!(
+                            "Port {}/{}: unsupported protocol for in-container probing.",
+                            self.port, other
+                        ),
+                        duration: started.elapsed(),
+                    };
+                }
+            }
+        } else {
+            let port_key = format!("{}/{}", self.port, self.protocol);
+            let host_port = match ctx.port_mappings.get(&port_key) {
+                Some(port) => *port,
+                None => {
+                    return AssertionResult {
+                        name: self.name().to_string(),
+                        passed: false,
+                        message: format!(
+                            "Port {}/{} not exposed in container configuration.",
+                            self.port, self.protocol
+                        ),
+                        duration: started.elapsed(),
+                    };
+                }
+            };
+            match self.protocol.as_str() {
+                "tcp" => Probe::HostTcp { port: host_port },
+                "udp" => Probe::HostUdp { port: host_port },
+                other => {
+                    return AssertionResult {
+                        name: self.name().to_string(),
+                        passed: false,
+                        message: format!("Port {}/{}: unsupported protocol.", self.port, other),
+                        duration: started.elapsed(),
+                    };
+                }
             }
         };
 
@@ -60,8 +95,11 @@ impl Assertion for PortListeningAssertion {
                     name: self.name().to_string(),
                     passed: false,
                     message: format!(
-                        "Port {}/{} (mapped to host port {}) not listening after {:?}.",
-                        self.port, self.protocol, host_port, self.timeout
+                        "Port {}/{} ({}) not listening after {:?}.",
+                        self.port,
+                        self.protocol,
+                        probe.target_label(),
+                        self.timeout
                     ),
                     duration: started.elapsed(),
                 };
@@ -76,19 +114,15 @@ impl Assertion for PortListeningAssertion {
                 };
             }
 
-            let is_listening = match self.protocol.as_str() {
-                "tcp" => check_tcp_port(host_port).await,
-                "udp" => check_udp_port(host_port).await,
-                _ => false,
-            };
-
-            if is_listening {
+            if probe.run(&ctx.container_name).await {
                 return AssertionResult {
                     name: self.name().to_string(),
                     passed: true,
                     message: format!(
-                        "Port {}/{} (mapped to host port {}) is listening.",
-                        self.port, self.protocol, host_port
+                        "Port {}/{} ({}) is listening.",
+                        self.port,
+                        self.protocol,
+                        probe.target_label()
                     ),
                     duration: started.elapsed(),
                 };
@@ -97,7 +131,7 @@ impl Assertion for PortListeningAssertion {
             trace!(
                 port = self.port,
                 protocol = %self.protocol,
-                host_port = host_port,
+                target = %probe.target_label(),
                 "Port not yet listening, retrying..."
             );
 
@@ -106,15 +140,107 @@ impl Assertion for PortListeningAssertion {
     }
 }
 
-async fn check_tcp_port(port: u16) -> bool {
-    TcpStream::connect(("127.0.0.1", port)).await.is_ok()
+enum Probe {
+    HostTcp { port: u16 },
+    HostUdp { port: u16 },
+    InContainerTcp { port: u16 },
+    InContainerUdp { port: u16 },
 }
 
-async fn check_udp_port(port: u16) -> bool {
+impl Probe {
+    fn target_label(&self) -> String {
+        match self {
+            Self::HostTcp { port } | Self::HostUdp { port } => format!("host 127.0.0.1:{}", port),
+            Self::InContainerTcp { port } | Self::InContainerUdp { port } => {
+                format!("in-container 127.0.0.1:{}", port)
+            }
+        }
+    }
+
+    async fn run(&self, container_name: &str) -> bool {
+        match *self {
+            Self::HostTcp { port } => check_tcp_port("127.0.0.1", port).await,
+            Self::HostUdp { port } => check_udp_port("127.0.0.1", port).await,
+            Self::InContainerTcp { port } => check_tcp_port_in_container(container_name, port).await,
+            Self::InContainerUdp { port } => check_udp_port_in_container(container_name, port).await,
+        }
+    }
+}
+
+async fn check_tcp_port(host: &str, port: u16) -> bool {
+    TcpStream::connect((host, port)).await.is_ok()
+}
+
+async fn check_udp_port(host: &str, port: u16) -> bool {
     // For UDP, we can only check if we can bind a socket and "connect" to the target.
     // This doesn't guarantee something is listening, but it's the best we can do.
     match tokio::net::UdpSocket::bind("0.0.0.0:0").await {
-        Ok(socket) => socket.connect(("127.0.0.1", port)).await.is_ok(),
+        Ok(socket) => socket.connect((host, port)).await.is_ok(),
         Err(_) => false,
     }
+}
+
+async fn check_tcp_port_in_container(container_name: &str, port: u16) -> bool {
+    // The Datadog Agent LTSC image does not ship the NetTCPIP module, so we
+    // probe with a .NET TcpClient against loopback inside the container.
+    let command = format!(
+        "$client = New-Object System.Net.Sockets.TcpClient; try {{ $task = $client.ConnectAsync('127.0.0.1', {}); if ($task.Wait(2000) -and $client.Connected) {{ exit 0 }} else {{ exit 1 }} }} catch {{ exit 1 }} finally {{ $client.Close() }}",
+        port
+    );
+    exec_status(
+        container_name,
+        vec!["pwsh", "-NoProfile", "-NonInteractive", "-Command", &command],
+    )
+    .await
+    .unwrap_or(false)
+}
+
+async fn check_udp_port_in_container(container_name: &str, port: u16) -> bool {
+    // UDP is connectionless, so just like the host-side probe we can only verify that we can
+    // bind a socket and "connect" to the target. This doesn't prove a listener exists, but it
+    // matches the semantics of [`check_udp_port`].
+    let command = format!(
+        "$client = New-Object System.Net.Sockets.UdpClient; try {{ $client.Connect('127.0.0.1', {}); exit 0 }} catch {{ exit 1 }} finally {{ $client.Close() }}",
+        port
+    );
+    exec_status(
+        container_name,
+        vec!["pwsh", "-NoProfile", "-NonInteractive", "-Command", &command],
+    )
+    .await
+    .unwrap_or(false)
+}
+
+async fn exec_status(container_name: &str, cmd: Vec<&str>) -> Result<bool, String> {
+    let docker = docker::connect().map_err(|e| format!("Failed to connect to Docker: {}", e))?;
+    let exec = docker
+        .create_exec(
+            container_name,
+            CreateExecOptions::<String> {
+                cmd: Some(cmd.into_iter().map(String::from).collect()),
+                attach_stdout: Some(true),
+                attach_stderr: Some(true),
+                ..Default::default()
+            },
+        )
+        .await
+        .map_err(|e| format!("Failed to create exec: {}", e))?;
+    let exec_id = exec.id.clone();
+    let result = docker
+        .start_exec(&exec_id, None)
+        .await
+        .map_err(|e| format!("Failed to start exec: {}", e))?;
+    if let StartExecResults::Attached { mut output, .. } = result {
+        while output
+            .try_next()
+            .await
+            .map_err(|e| format!("Failed to read exec output: {}", e))?
+            .is_some()
+        {}
+    }
+    let inspect = docker
+        .inspect_exec(&exec_id)
+        .await
+        .map_err(|e| format!("Failed to inspect exec: {}", e))?;
+    Ok(inspect.exit_code == Some(0))
 }

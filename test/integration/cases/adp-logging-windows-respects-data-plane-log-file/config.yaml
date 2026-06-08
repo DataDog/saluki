@@ -1,0 +1,26 @@
+type: integration
+name: "adp-logging-windows-respects-data-plane-log-file"
+description: "Verifies ADP honors the Windows per-subagent data_plane.log_file setting when explicitly configured"
+timeout: 120s
+runtimes: [windows]
+
+env:
+  DD_API_KEY: "test-api-key"
+  DD_HOSTNAME: "integration-test-windows-custom-log"
+  DD_DATA_PLANE_ENABLED: "true"
+  DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT: "true"
+  DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+  DD_DATA_PLANE_LOG_FILE: "C:\\adp\\adp-custom.log"
+
+container:
+  exposed_ports:
+    - "58125/udp"
+
+assertions:
+  - type: log_contains
+    pattern: "Initial configuration received."
+    timeout: 30s
+  - type: file_contains
+    path: "C:\\adp\\adp-custom.log"
+    pattern: "DATAPLANE"
+    timeout: 30s

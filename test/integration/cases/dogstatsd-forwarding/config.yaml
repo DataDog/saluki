@@ -3,7 +3,7 @@ name: "dogstatsd-forwarding"
 description: "Verifies DogStatsD message forwarding mirrors framed payloads and preserves ingestion"
 timeout: 90s
 # Not yet validated under mac; opt in by adding `mac` to this list once verified.
-runtimes: [docker]
+runtimes: [linux]
 
 env:
   DD_API_KEY: "test-api-key"
@@ -19,7 +19,6 @@ env:
   DD_STATSD_FORWARD_PORT: "9125"
 
 container:
-  image: "saluki-images/datadog-agent:testing-devel"
   entrypoint:
     - "/opt/datadog-agent/embedded/bin/python3"
     - "/forwarding-test/run_forwarding_test.py"

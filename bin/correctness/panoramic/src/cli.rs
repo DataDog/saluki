@@ -30,7 +30,7 @@ pub struct RunCommand {
     #[argh(option, short = 't')]
     pub tests: Option<String>,
 
-    /// integration-test runtime to scope discovery to (for example, `docker` or `mac`).
+    /// integration-test runtime to scope discovery to (for example, `linux`, `mac`, or `windows`).
     /// Only integration tests whose `runtimes:` list contains this value are eligible to run.
     /// Defaults to `mac` on macOS hosts and `docker` everywhere else. Correctness tests
     /// are unaffected by this flag.

@@ -12,7 +12,7 @@ type: integration
 name: "dogstatsd-default-bind"
 description: "Verifies DogStatsD binds to 127.0.0.1 by default when bind_host is not configured"
 timeout: 120s
-runtimes: [docker, mac]
+runtimes: [linux, mac, windows]
 
 env:
   DD_API_KEY: "test-api-key"
@@ -21,8 +21,6 @@ env:
   DD_DATA_PLANE_STANDALONE_MODE: "true"
   DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
 
-container:
-  image: "saluki-images/datadog-agent:testing-devel"
 
 assertions:
   - type: log_contains

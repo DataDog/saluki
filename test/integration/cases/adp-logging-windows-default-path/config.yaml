@@ -1,0 +1,25 @@
+type: integration
+name: "adp-logging-windows-default-path"
+description: "Verifies ADP writes to the platform-default Windows log file path when no override is provided"
+timeout: 120s
+runtimes: [windows]
+
+env:
+  DD_API_KEY: "test-api-key"
+  DD_HOSTNAME: "integration-test-windows-default-log"
+  DD_DATA_PLANE_ENABLED: "true"
+  DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT: "true"
+  DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+
+container:
+  exposed_ports:
+    - "58125/udp"
+
+assertions:
+  - type: log_contains
+    pattern: "Initial configuration received."
+    timeout: 30s
+  - type: file_contains
+    path: "C:\\ProgramData\\Datadog\\logs\\agent-data-plane.log"
+    pattern: "DATAPLANE"
+    timeout: 30s

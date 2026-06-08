@@ -2,7 +2,7 @@ type: integration
 name: "otlp-traces-enabled"
 description: "Verifies OTLP pipeline starts with native trace handling and proxying for metrics/logs"
 timeout: 120s
-runtimes: [docker, mac]
+runtimes: [linux, mac, windows]
 
 env:
   DD_API_KEY: "test-api-key"
@@ -14,7 +14,6 @@ env:
   DD_DATA_PLANE_OTLP_PROXY_TRACES_ENABLED: "false"
 
 container:
-  image: "saluki-images/datadog-agent:testing-devel"
   exposed_ports:
     - "54317/tcp"
     - "54318/tcp"

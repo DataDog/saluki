@@ -2,7 +2,7 @@ type: integration
 name: "unprivileged-api-endpoints"
 description: "Verifies the /ready, /live, and /memory/status endpoints are accessible on the unprivileged API"
 timeout: 120s
-runtimes: [docker, mac]
+runtimes: [linux, mac, windows]
 
 env:
   DD_API_KEY: "test-api-key"
@@ -12,7 +12,6 @@ env:
   DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
 
 container:
-  image: "saluki-images/datadog-agent:testing-devel"
   exposed_ports:
     - "55100/tcp"
 

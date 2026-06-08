@@ -2,7 +2,7 @@ type: integration
 name: "basic-startup"
 description: "Verifies ADP starts successfully and remains stable"
 timeout: 120s
-runtimes: [docker, mac]
+runtimes: [linux, mac, windows]
 
 env:
   DD_API_KEY: "test-api-key"
@@ -10,8 +10,6 @@ env:
   DD_DATA_PLANE_ENABLED: "true"
   DD_DATA_PLANE_STANDALONE_MODE: "true"
 
-container:
-  image: "saluki-images/datadog-agent:testing-devel"
 
 assertions:
   # Make sure we always emit our initial startup log, which contains relevant information

@@ -97,11 +97,13 @@ description: "Verifies that feature X works correctly"
 # Required: overall timeout for the test
 timeout: 60s
 
-# Required: container configuration
+# Optional: container configuration
+#
+# The container image is selected by the active runtime, not the test case:
+# the linux runtime uses saluki-images/datadog-agent:testing-devel and the
+# windows runtime uses saluki-images/agent-data-plane:testing-windows. The
+# entire `container` block can be omitted when no overrides are needed.
 container:
-  # Docker image to use
-  image: "saluki-images/datadog-agent:testing-devel"
-
   # Optional: override entrypoint
   entrypoint: []
 

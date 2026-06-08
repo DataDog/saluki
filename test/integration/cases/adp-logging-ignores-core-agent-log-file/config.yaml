@@ -2,7 +2,7 @@ type: integration
 name: "adp-logging-ignores-core-agent-log-file"
 description: "Verifies ADP ignores the Core Agent's `log_file` setting and continues to use its own per-subagent log file path"
 timeout: 120s
-runtimes: [docker]
+runtimes: [linux]
 
 env:
   DD_API_KEY: "test-api-key"
@@ -13,7 +13,6 @@ env:
   DD_LOG_FILE: "/tmp/coreagent-only.log"
 
 container:
-  image: "saluki-images/datadog-agent:testing-devel"
   exposed_ports:
     - "58125/udp"
 

@@ -1,5 +1,7 @@
 use std::path::PathBuf;
 
+use crate::driver::ContainerOs;
+
 /// Millstone configuration.
 #[derive(Clone)]
 pub struct MillstoneConfig {
@@ -56,4 +58,7 @@ pub struct TargetConfig {
     ///
     /// These should be in the form of `KEY=VALUE`.
     pub additional_env_vars: Vec<String>,
+
+    /// Operating system defaults to use when creating the target container.
+    pub container_os: ContainerOs,
 }

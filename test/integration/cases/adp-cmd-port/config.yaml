@@ -15,7 +15,7 @@ type: integration
 name: "adp-cmd-port"
 description: "Verifies ADP connects to the correct port when cmd_port is set"
 timeout: 120s
-runtimes: [docker, mac]
+runtimes: [linux, mac, windows]
 
 env:
   DD_API_KEY: "test-api-key"
@@ -26,8 +26,6 @@ env:
   DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT: "true"
   DD_CMD_PORT: "7777"
 
-container:
-  image: "saluki-images/datadog-agent:testing-devel"
 
 assertions:
   # ADP should reach out for config from the core agent on the correct port.

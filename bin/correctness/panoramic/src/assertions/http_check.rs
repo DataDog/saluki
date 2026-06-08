@@ -1,5 +1,11 @@
 use std::time::{Duration, Instant};
 
+use airlock::docker;
+use bollard::{
+    container::LogOutput,
+    exec::{CreateExecOptions, StartExecResults},
+};
+use futures::TryStreamExt as _;
 use reqwest::ClientBuilder;
 use tracing::trace;
 
@@ -30,21 +36,26 @@ impl HttpCheckAssertion {
         }
     }
 
-    /// Resolve the endpoint URL, replacing container ports with mapped host ports.
-    fn resolve_endpoint(&self, port_mappings: &std::collections::HashMap<String, u16>) -> String {
+    /// Resolve the endpoint URL, replacing container ports with the address reachable from the
+    /// probe site.
+    ///
+    /// Host-side probes substitute the mapped ephemeral port on `127.0.0.1`. In-container probes
+    /// (currently only the Windows runtime) substitute the container's primary network IP and
+    /// keep the original internal port.
+    fn resolve_endpoint(&self, ctx: &AssertionContext) -> String {
         let mut endpoint = self.endpoint.clone();
 
-        for (internal_spec, host_port) in port_mappings {
+        for (internal_spec, host_port) in &ctx.port_mappings {
             if let Some(internal_port) = internal_spec.split('/').next() {
+                let replacement = if ctx.target_is_windows() {
+                    let host = ctx.container_ip.as_deref().unwrap_or("127.0.0.1");
+                    format!("{}:{}", host, internal_port)
+                } else {
+                    format!("127.0.0.1:{}", host_port)
+                };
                 endpoint = endpoint
-                    .replace(
-                        &format!("localhost:{}", internal_port),
-                        &format!("127.0.0.1:{}", host_port),
-                    )
-                    .replace(
-                        &format!("127.0.0.1:{}", internal_port),
-                        &format!("127.0.0.1:{}", host_port),
-                    );
+                    .replace(&format!("localhost:{}", internal_port), &replacement)
+                    .replace(&format!("127.0.0.1:{}", internal_port), &replacement);
             }
         }
 
@@ -83,20 +94,31 @@ impl Assertion for HttpCheckAssertion {
         let started = Instant::now();
         let deadline = started + self.timeout;
 
-        let endpoint = self.resolve_endpoint(&ctx.port_mappings);
+        let endpoint = self.resolve_endpoint(ctx);
 
-        let client = match ClientBuilder::new()
-            .danger_accept_invalid_certs(self.insecure_skip_verify)
-            .build()
-        {
-            Ok(client) => client,
-            Err(e) => {
-                return AssertionResult {
-                    name: self.name().to_string(),
-                    passed: false,
-                    message: format!("Failed to build HTTP client: {}.", e),
-                    duration: started.elapsed(),
-                };
+        // Pick a probe strategy. Linux/host targets are reachable directly from the test runner,
+        // so we use a real HTTP client. Windows targets are not (the container's listener is
+        // bound to its own loopback / internal port), so we shell out to `curl.exe` via
+        // `docker exec` inside the container.
+        let probe = if ctx.target_is_windows() {
+            HttpProbe::InContainerCurl {
+                container_name: ctx.container_name.clone(),
+                insecure_skip_verify: self.insecure_skip_verify,
+            }
+        } else {
+            match ClientBuilder::new()
+                .danger_accept_invalid_certs(self.insecure_skip_verify)
+                .build()
+            {
+                Ok(client) => HttpProbe::HostClient { client },
+                Err(e) => {
+                    return AssertionResult {
+                        name: self.name().to_string(),
+                        passed: false,
+                        message: format!("Failed to build HTTP client: {}.", e),
+                        duration: started.elapsed(),
+                    };
+                }
             }
         };
 
@@ -119,9 +141,10 @@ impl Assertion for HttpCheckAssertion {
                 };
             }
 
-            match client.get(&endpoint).send().await {
-                Ok(resp) => {
-                    let actual = resp.status().as_u16();
+            let response_status = probe.get_status(&endpoint).await;
+
+            match response_status {
+                Ok(Some(actual)) => {
                     if self.status_matches(actual) {
                         return AssertionResult {
                             name: self.name().to_string(),
@@ -136,6 +159,9 @@ impl Assertion for HttpCheckAssertion {
                         "HTTP check returned non-matching status, retrying..."
                     );
                 }
+                Ok(None) => {
+                    trace!(endpoint = %endpoint, "HTTP check produced no status, retrying...");
+                }
                 Err(e) => {
                     trace!(
                         endpoint = %endpoint,
@@ -148,4 +174,100 @@ impl Assertion for HttpCheckAssertion {
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
     }
+}
+
+/// HTTP probe site for `http_check` assertions.
+///
+/// `HostClient` uses a `reqwest` client running on the test runner; this is the standard path
+/// for Linux containers (which expose listeners on mapped ephemeral host ports) and host-process
+/// runtimes. `InContainerCurl` shells out to `curl.exe` via `docker exec` inside the target
+/// container; this is the path for Windows containers, where the listener is reachable only
+/// from inside the container itself.
+enum HttpProbe {
+    HostClient {
+        client: reqwest::Client,
+    },
+    InContainerCurl {
+        container_name: String,
+        insecure_skip_verify: bool,
+    },
+}
+
+impl HttpProbe {
+    /// Returns the HTTP status code observed for `endpoint`, if any.
+    ///
+    /// `Ok(Some(status))` is the only success path. `Ok(None)` means the request did not
+    /// produce a status (for example, `curl.exe` exited non-zero); `Err` is reserved for
+    /// transport-level failures the caller should log and retry.
+    async fn get_status(&self, endpoint: &str) -> Result<Option<u16>, String> {
+        match self {
+            Self::HostClient { client } => match client.get(endpoint).send().await {
+                Ok(resp) => Ok(Some(resp.status().as_u16())),
+                Err(e) => Err(e.to_string()),
+            },
+            Self::InContainerCurl {
+                container_name,
+                insecure_skip_verify,
+            } => get_status_in_container(container_name, endpoint, *insecure_skip_verify).await,
+        }
+    }
+}
+
+async fn get_status_in_container(
+    container_name: &str, endpoint: &str, insecure_skip_verify: bool,
+) -> Result<Option<u16>, String> {
+    let docker = docker::connect().map_err(|e| format!("Failed to connect to Docker: {}", e))?;
+    let endpoint = endpoint.replace("localhost", "127.0.0.1");
+    let mut cmd = vec!["curl.exe".to_string()];
+    if insecure_skip_verify {
+        cmd.push("-k".to_string());
+    }
+    cmd.extend([
+        "-s".to_string(),
+        "-o".to_string(),
+        "NUL".to_string(),
+        "-w".to_string(),
+        "%{http_code}".to_string(),
+        endpoint,
+    ]);
+    let exec = docker
+        .create_exec(
+            container_name,
+            CreateExecOptions::<String> {
+                cmd: Some(cmd),
+                attach_stdout: Some(true),
+                attach_stderr: Some(false),
+                ..Default::default()
+            },
+        )
+        .await
+        .map_err(|e| format!("Failed to create exec: {}", e))?;
+    let exec_id = exec.id.clone();
+    let result = docker
+        .start_exec(&exec_id, None)
+        .await
+        .map_err(|e| format!("Failed to start exec: {}", e))?;
+
+    let mut stdout = String::new();
+    if let StartExecResults::Attached { mut output, .. } = result {
+        while let Some(chunk) = output
+            .try_next()
+            .await
+            .map_err(|e| format!("Failed to read exec output: {}", e))?
+        {
+            if let LogOutput::StdOut { message } = chunk {
+                stdout.push_str(&String::from_utf8_lossy(&message));
+            }
+        }
+    }
+
+    let inspect = docker
+        .inspect_exec(&exec_id)
+        .await
+        .map_err(|e| format!("Failed to inspect exec: {}", e))?;
+    if inspect.exit_code != Some(0) {
+        return Ok(None);
+    }
+
+    Ok(stdout.trim().parse::<u16>().ok().filter(|status| *status != 0))
 }

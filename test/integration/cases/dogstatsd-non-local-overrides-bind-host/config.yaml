@@ -14,7 +14,7 @@ type: integration
 name: "dogstatsd-non-local-overrides-bind-host"
 description: "Verifies dogstatsd_non_local_traffic takes precedence over bind_host"
 timeout: 120s
-runtimes: [docker, mac]
+runtimes: [linux, mac, windows]
 
 env:
   DD_API_KEY: "test-api-key"
@@ -28,8 +28,6 @@ env:
   # address makes the "the value doesn't matter" intent unmistakable.
   DD_BIND_HOST: "10.9.8.7"
 
-container:
-  image: "saluki-images/datadog-agent:testing-devel"
 
 assertions:
   - type: log_contains

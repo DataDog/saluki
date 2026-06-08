@@ -1,5 +1,12 @@
-use std::sync::RwLock;
-use std::{sync::Arc, time::Duration};
+use std::sync::{Arc, OnceLock, RwLock};
+use std::time::Duration;
+
+/// Shared one-shot cell holding the exit code of a top-level Docker target process.
+///
+/// The container-wait task populates the cell when the container exits; assertions read it
+/// to make decisions that depend on the exit code. Mirrors [`airlock::unix::ExitCodeCell`] for
+/// the host-process path.
+pub type DockerExitCodeCell = Arc<OnceLock<i64>>;
 
 use futures::future;
 use saluki_error::GenericError;
@@ -102,6 +109,15 @@ pub struct AssertionContext {
     pub cancel_token: CancellationToken,
     /// Port mappings from internal port to host port.
     pub port_mappings: std::collections::HashMap<String, u16>,
+    /// Container IP address on its primary Docker network, if known.
+    pub container_ip: Option<String>,
+    /// Operating system of the target container, when one exists.
+    ///
+    /// `None` for host-process runtimes (such as `mac`). Otherwise the value identifies the
+    /// container OS so assertion helpers can pick a compatible probing strategy: Linux
+    /// containers are probed from the host using mapped ephemeral ports, Windows containers are
+    /// probed via `docker exec` inside the container against the listener's internal port.
+    pub target_os: Option<airlock::driver::ContainerOs>,
     /// Name of the container being tested.
     pub container_name: String,
     /// Whether the test is running natively (no container). When `true`, assertions that would
@@ -112,6 +128,17 @@ pub struct AssertionContext {
     /// path or while the process is still running; `Some(None)` if the process was killed by
     /// signal; `Some(Some(code))` if it exited normally.
     pub host_process_exit_code: Option<airlock::unix::ExitCodeCell>,
+    /// Exit code of a top-level Docker target process, populated once when the container
+    /// exits. `None` on host-process runtimes; otherwise an empty cell that becomes populated
+    /// when the docker wait stream completes.
+    pub docker_container_exit_code: Option<DockerExitCodeCell>,
+}
+
+impl AssertionContext {
+    /// Returns `true` when the target is a Windows container.
+    pub fn target_is_windows(&self) -> bool {
+        matches!(self.target_os, Some(airlock::driver::ContainerOs::Windows))
+    }
 }
 
 /// Trait for assertion implementations.
