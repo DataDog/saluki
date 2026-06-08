@@ -104,9 +104,9 @@
 <a href=#104 id=104 data-nosnippet>104</a>
 <a href=#105 id=105 data-nosnippet>105</a>    <span class="comment">// ── ForwarderConfiguration direct fields ──────────────────────────────────
 <a href=#106 id=106 data-nosnippet>106</a>
-<a href=#107 id=107 data-nosnippet>107</a>    </span><span class="doccomment">/// `forwarder_num_workers`—max concurrent requests per endpoint. Schema Float; field usize.
-<a href=#108 id=108 data-nosnippet>108</a>    </span>FORWARDER_NUM_WORKERS = SalukiAnnotation {
-<a href=#109 id=109 data-nosnippet>109</a>        schema: <span class="kw-2">&amp;</span>schema::FORWARDER_NUM_WORKERS,
+<a href=#107 id=107 data-nosnippet>107</a>    </span><span class="doccomment">/// `forwarder_max_concurrent_requests`—max concurrent HTTP requests per endpoint. Schema Float; field usize.
+<a href=#108 id=108 data-nosnippet>108</a>    </span>FORWARDER_MAX_CONCURRENT_REQUESTS = SalukiAnnotation {
+<a href=#109 id=109 data-nosnippet>109</a>        schema: <span class="kw-2">&amp;</span>schema::FORWARDER_MAX_CONCURRENT_REQUESTS,
 <a href=#110 id=110 data-nosnippet>110</a>        support_level: SupportLevel::Full,
 <a href=#111 id=111 data-nosnippet>111</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
 <a href=#112 id=112 data-nosnippet>112</a>        env_var_override: <span class="prelude-val">None</span>,
@@ -116,10 +116,10 @@
 <a href=#116 id=116 data-nosnippet>116</a>        pipeline_affinity: PipelineAffinity::CrossCutting,
 <a href=#117 id=117 data-nosnippet>117</a>    };
 <a href=#118 id=118 data-nosnippet>118</a>
-<a href=#119 id=119 data-nosnippet>119</a>    <span class="doccomment">/// `forwarder_timeout`—request timeout in seconds. Schema Float; field u64.
-<a href=#120 id=120 data-nosnippet>120</a>    </span>FORWARDER_TIMEOUT = SalukiAnnotation {
-<a href=#121 id=121 data-nosnippet>121</a>        schema: <span class="kw-2">&amp;</span>schema::FORWARDER_TIMEOUT,
-<a href=#122 id=122 data-nosnippet>122</a>        support_level: SupportLevel::Full,
+<a href=#119 id=119 data-nosnippet>119</a>    <span class="doccomment">/// `forwarder_num_workers`—request concurrency multiplier and HTTP idle pool size. Schema Float; field usize.
+<a href=#120 id=120 data-nosnippet>120</a>    </span>FORWARDER_NUM_WORKERS = SalukiAnnotation {
+<a href=#121 id=121 data-nosnippet>121</a>        schema: <span class="kw-2">&amp;</span>schema::FORWARDER_NUM_WORKERS,
+<a href=#122 id=122 data-nosnippet>122</a>        support_level: SupportLevel::Partial,
 <a href=#123 id=123 data-nosnippet>123</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
 <a href=#124 id=124 data-nosnippet>124</a>        env_var_override: <span class="prelude-val">None</span>,
 <a href=#125 id=125 data-nosnippet>125</a>        used_by: <span class="kw-2">&amp;</span>[structs::FORWARDER_CONFIGURATION],
@@ -128,9 +128,9 @@
 <a href=#128 id=128 data-nosnippet>128</a>        pipeline_affinity: PipelineAffinity::CrossCutting,
 <a href=#129 id=129 data-nosnippet>129</a>    };
 <a href=#130 id=130 data-nosnippet>130</a>
-<a href=#131 id=131 data-nosnippet>131</a>    <span class="doccomment">/// `forwarder_high_prio_buffer_size`—max pending requests per endpoint. Schema Float; field usize.
-<a href=#132 id=132 data-nosnippet>132</a>    </span>FORWARDER_HIGH_PRIO_BUFFER_SIZE = SalukiAnnotation {
-<a href=#133 id=133 data-nosnippet>133</a>        schema: <span class="kw-2">&amp;</span>schema::FORWARDER_HIGH_PRIO_BUFFER_SIZE,
+<a href=#131 id=131 data-nosnippet>131</a>    <span class="doccomment">/// `forwarder_timeout`—request timeout in seconds. Schema Float; field u64.
+<a href=#132 id=132 data-nosnippet>132</a>    </span>FORWARDER_TIMEOUT = SalukiAnnotation {
+<a href=#133 id=133 data-nosnippet>133</a>        schema: <span class="kw-2">&amp;</span>schema::FORWARDER_TIMEOUT,
 <a href=#134 id=134 data-nosnippet>134</a>        support_level: SupportLevel::Full,
 <a href=#135 id=135 data-nosnippet>135</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
 <a href=#136 id=136 data-nosnippet>136</a>        env_var_override: <span class="prelude-val">None</span>,
@@ -140,9 +140,9 @@
 <a href=#140 id=140 data-nosnippet>140</a>        pipeline_affinity: PipelineAffinity::CrossCutting,
 <a href=#141 id=141 data-nosnippet>141</a>    };
 <a href=#142 id=142 data-nosnippet>142</a>
-<a href=#143 id=143 data-nosnippet>143</a>    <span class="doccomment">/// `forwarder_connection_reset_interval`—seconds between connection resets. Schema Float; field u64.
-<a href=#144 id=144 data-nosnippet>144</a>    </span>FORWARDER_CONNECTION_RESET_INTERVAL = SalukiAnnotation {
-<a href=#145 id=145 data-nosnippet>145</a>        schema: <span class="kw-2">&amp;</span>schema::FORWARDER_CONNECTION_RESET_INTERVAL,
+<a href=#143 id=143 data-nosnippet>143</a>    <span class="doccomment">/// `forwarder_high_prio_buffer_size`—max pending requests per endpoint. Schema Float; field usize.
+<a href=#144 id=144 data-nosnippet>144</a>    </span>FORWARDER_HIGH_PRIO_BUFFER_SIZE = SalukiAnnotation {
+<a href=#145 id=145 data-nosnippet>145</a>        schema: <span class="kw-2">&amp;</span>schema::FORWARDER_HIGH_PRIO_BUFFER_SIZE,
 <a href=#146 id=146 data-nosnippet>146</a>        support_level: SupportLevel::Full,
 <a href=#147 id=147 data-nosnippet>147</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
 <a href=#148 id=148 data-nosnippet>148</a>        env_var_override: <span class="prelude-val">None</span>,
@@ -152,71 +152,71 @@
 <a href=#152 id=152 data-nosnippet>152</a>        pipeline_affinity: PipelineAffinity::CrossCutting,
 <a href=#153 id=153 data-nosnippet>153</a>    };
 <a href=#154 id=154 data-nosnippet>154</a>
-<a href=#155 id=155 data-nosnippet>155</a>    <span class="doccomment">/// `forwarder_http_protocol`—HTTP version selection for outgoing forwarder requests.
-<a href=#156 id=156 data-nosnippet>156</a>    </span>FORWARDER_HTTP_PROTOCOL = SalukiAnnotation {
-<a href=#157 id=157 data-nosnippet>157</a>        schema: <span class="kw-2">&amp;</span>schema::FORWARDER_HTTP_PROTOCOL,
+<a href=#155 id=155 data-nosnippet>155</a>    <span class="doccomment">/// `forwarder_connection_reset_interval`—seconds between connection resets. Schema Float; field u64.
+<a href=#156 id=156 data-nosnippet>156</a>    </span>FORWARDER_CONNECTION_RESET_INTERVAL = SalukiAnnotation {
+<a href=#157 id=157 data-nosnippet>157</a>        schema: <span class="kw-2">&amp;</span>schema::FORWARDER_CONNECTION_RESET_INTERVAL,
 <a href=#158 id=158 data-nosnippet>158</a>        support_level: SupportLevel::Full,
 <a href=#159 id=159 data-nosnippet>159</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
 <a href=#160 id=160 data-nosnippet>160</a>        env_var_override: <span class="prelude-val">None</span>,
 <a href=#161 id=161 data-nosnippet>161</a>        used_by: <span class="kw-2">&amp;</span>[structs::FORWARDER_CONFIGURATION],
-<a href=#162 id=162 data-nosnippet>162</a>        value_type_override: <span class="prelude-val">None</span>,
-<a href=#163 id=163 data-nosnippet>163</a>        test_json: <span class="prelude-val">Some</span>(<span class="string">"\"http1\""</span>),
+<a href=#162 id=162 data-nosnippet>162</a>        value_type_override: <span class="prelude-val">Some</span>(ValueType::Integer),
+<a href=#163 id=163 data-nosnippet>163</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#164 id=164 data-nosnippet>164</a>        pipeline_affinity: PipelineAffinity::CrossCutting,
 <a href=#165 id=165 data-nosnippet>165</a>    };
 <a href=#166 id=166 data-nosnippet>166</a>
-<a href=#167 id=167 data-nosnippet>167</a>    <span class="doccomment">/// `skip_ssl_validation`—disables TLS certificate validation for Datadog intake forwarding.
-<a href=#168 id=168 data-nosnippet>168</a>    </span>SKIP_SSL_VALIDATION = SalukiAnnotation {
-<a href=#169 id=169 data-nosnippet>169</a>        schema: <span class="kw-2">&amp;</span>schema::SKIP_SSL_VALIDATION,
+<a href=#167 id=167 data-nosnippet>167</a>    <span class="doccomment">/// `forwarder_http_protocol`—HTTP version selection for outgoing forwarder requests.
+<a href=#168 id=168 data-nosnippet>168</a>    </span>FORWARDER_HTTP_PROTOCOL = SalukiAnnotation {
+<a href=#169 id=169 data-nosnippet>169</a>        schema: <span class="kw-2">&amp;</span>schema::FORWARDER_HTTP_PROTOCOL,
 <a href=#170 id=170 data-nosnippet>170</a>        support_level: SupportLevel::Full,
 <a href=#171 id=171 data-nosnippet>171</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
-<a href=#172 id=172 data-nosnippet>172</a>        env_var_override: <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span>[<span class="string">"DD_SKIP_SSL_VALIDATION"</span>]),
+<a href=#172 id=172 data-nosnippet>172</a>        env_var_override: <span class="prelude-val">None</span>,
 <a href=#173 id=173 data-nosnippet>173</a>        used_by: <span class="kw-2">&amp;</span>[structs::FORWARDER_CONFIGURATION],
 <a href=#174 id=174 data-nosnippet>174</a>        value_type_override: <span class="prelude-val">None</span>,
-<a href=#175 id=175 data-nosnippet>175</a>        test_json: <span class="prelude-val">None</span>,
+<a href=#175 id=175 data-nosnippet>175</a>        test_json: <span class="prelude-val">Some</span>(<span class="string">"\"http1\""</span>),
 <a href=#176 id=176 data-nosnippet>176</a>        pipeline_affinity: PipelineAffinity::CrossCutting,
 <a href=#177 id=177 data-nosnippet>177</a>    };
 <a href=#178 id=178 data-nosnippet>178</a>
-<a href=#179 id=179 data-nosnippet>179</a>    <span class="doccomment">/// `min_tls_version`—minimum TLS version for Datadog intake forwarding.
-<a href=#180 id=180 data-nosnippet>180</a>    </span>MIN_TLS_VERSION = SalukiAnnotation {
-<a href=#181 id=181 data-nosnippet>181</a>        schema: <span class="kw-2">&amp;</span>schema::MIN_TLS_VERSION,
-<a href=#182 id=182 data-nosnippet>182</a>        support_level: SupportLevel::Partial,
+<a href=#179 id=179 data-nosnippet>179</a>    <span class="doccomment">/// `skip_ssl_validation`—disables TLS certificate validation for Datadog intake forwarding.
+<a href=#180 id=180 data-nosnippet>180</a>    </span>SKIP_SSL_VALIDATION = SalukiAnnotation {
+<a href=#181 id=181 data-nosnippet>181</a>        schema: <span class="kw-2">&amp;</span>schema::SKIP_SSL_VALIDATION,
+<a href=#182 id=182 data-nosnippet>182</a>        support_level: SupportLevel::Full,
 <a href=#183 id=183 data-nosnippet>183</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
-<a href=#184 id=184 data-nosnippet>184</a>        env_var_override: <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span>[<span class="string">"DD_MIN_TLS_VERSION"</span>]),
+<a href=#184 id=184 data-nosnippet>184</a>        env_var_override: <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span>[<span class="string">"DD_SKIP_SSL_VALIDATION"</span>]),
 <a href=#185 id=185 data-nosnippet>185</a>        used_by: <span class="kw-2">&amp;</span>[structs::FORWARDER_CONFIGURATION],
 <a href=#186 id=186 data-nosnippet>186</a>        value_type_override: <span class="prelude-val">None</span>,
 <a href=#187 id=187 data-nosnippet>187</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#188 id=188 data-nosnippet>188</a>        pipeline_affinity: PipelineAffinity::CrossCutting,
 <a href=#189 id=189 data-nosnippet>189</a>    };
 <a href=#190 id=190 data-nosnippet>190</a>
-<a href=#191 id=191 data-nosnippet>191</a>    <span class="doccomment">/// `allow_arbitrary_tags`—signals backend tag validation relaxation.
-<a href=#192 id=192 data-nosnippet>192</a>    </span>ALLOW_ARBITRARY_TAGS = SalukiAnnotation {
-<a href=#193 id=193 data-nosnippet>193</a>        schema: <span class="kw-2">&amp;</span>schema::ALLOW_ARBITRARY_TAGS,
-<a href=#194 id=194 data-nosnippet>194</a>        support_level: SupportLevel::Full,
+<a href=#191 id=191 data-nosnippet>191</a>    <span class="doccomment">/// `min_tls_version`—minimum TLS version for Datadog intake forwarding.
+<a href=#192 id=192 data-nosnippet>192</a>    </span>MIN_TLS_VERSION = SalukiAnnotation {
+<a href=#193 id=193 data-nosnippet>193</a>        schema: <span class="kw-2">&amp;</span>schema::MIN_TLS_VERSION,
+<a href=#194 id=194 data-nosnippet>194</a>        support_level: SupportLevel::Partial,
 <a href=#195 id=195 data-nosnippet>195</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
-<a href=#196 id=196 data-nosnippet>196</a>        env_var_override: <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span>[<span class="string">"DD_ALLOW_ARBITRARY_TAGS"</span>]),
+<a href=#196 id=196 data-nosnippet>196</a>        env_var_override: <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span>[<span class="string">"DD_MIN_TLS_VERSION"</span>]),
 <a href=#197 id=197 data-nosnippet>197</a>        used_by: <span class="kw-2">&amp;</span>[structs::FORWARDER_CONFIGURATION],
 <a href=#198 id=198 data-nosnippet>198</a>        value_type_override: <span class="prelude-val">None</span>,
 <a href=#199 id=199 data-nosnippet>199</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#200 id=200 data-nosnippet>200</a>        pipeline_affinity: PipelineAffinity::CrossCutting,
 <a href=#201 id=201 data-nosnippet>201</a>    };
 <a href=#202 id=202 data-nosnippet>202</a>
-<a href=#203 id=203 data-nosnippet>203</a>    <span class="comment">// ── RetryConfiguration fields ─────────────────────────────────────────────
-<a href=#204 id=204 data-nosnippet>204</a>
-<a href=#205 id=205 data-nosnippet>205</a>    </span><span class="doccomment">/// `forwarder_backoff_base`—base growth rate for retry backoff in seconds.
-<a href=#206 id=206 data-nosnippet>206</a>    </span>FORWARDER_BACKOFF_BASE = SalukiAnnotation {
-<a href=#207 id=207 data-nosnippet>207</a>        schema: <span class="kw-2">&amp;</span>schema::FORWARDER_BACKOFF_BASE,
-<a href=#208 id=208 data-nosnippet>208</a>        support_level: SupportLevel::Full,
-<a href=#209 id=209 data-nosnippet>209</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
-<a href=#210 id=210 data-nosnippet>210</a>        env_var_override: <span class="prelude-val">None</span>,
-<a href=#211 id=211 data-nosnippet>211</a>        used_by: <span class="kw-2">&amp;</span>[structs::FORWARDER_CONFIGURATION],
-<a href=#212 id=212 data-nosnippet>212</a>        value_type_override: <span class="prelude-val">None</span>,
-<a href=#213 id=213 data-nosnippet>213</a>        test_json: <span class="prelude-val">None</span>,
-<a href=#214 id=214 data-nosnippet>214</a>        pipeline_affinity: PipelineAffinity::CrossCutting,
-<a href=#215 id=215 data-nosnippet>215</a>    };
+<a href=#203 id=203 data-nosnippet>203</a>    <span class="doccomment">/// `allow_arbitrary_tags`—signals backend tag validation relaxation.
+<a href=#204 id=204 data-nosnippet>204</a>    </span>ALLOW_ARBITRARY_TAGS = SalukiAnnotation {
+<a href=#205 id=205 data-nosnippet>205</a>        schema: <span class="kw-2">&amp;</span>schema::ALLOW_ARBITRARY_TAGS,
+<a href=#206 id=206 data-nosnippet>206</a>        support_level: SupportLevel::Full,
+<a href=#207 id=207 data-nosnippet>207</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
+<a href=#208 id=208 data-nosnippet>208</a>        env_var_override: <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span>[<span class="string">"DD_ALLOW_ARBITRARY_TAGS"</span>]),
+<a href=#209 id=209 data-nosnippet>209</a>        used_by: <span class="kw-2">&amp;</span>[structs::FORWARDER_CONFIGURATION],
+<a href=#210 id=210 data-nosnippet>210</a>        value_type_override: <span class="prelude-val">None</span>,
+<a href=#211 id=211 data-nosnippet>211</a>        test_json: <span class="prelude-val">None</span>,
+<a href=#212 id=212 data-nosnippet>212</a>        pipeline_affinity: PipelineAffinity::CrossCutting,
+<a href=#213 id=213 data-nosnippet>213</a>    };
+<a href=#214 id=214 data-nosnippet>214</a>
+<a href=#215 id=215 data-nosnippet>215</a>    <span class="comment">// ── RetryConfiguration fields ─────────────────────────────────────────────
 <a href=#216 id=216 data-nosnippet>216</a>
-<a href=#217 id=217 data-nosnippet>217</a>    <span class="doccomment">/// `forwarder_backoff_factor`—jitter factor for retry backoff.
-<a href=#218 id=218 data-nosnippet>218</a>    </span>FORWARDER_BACKOFF_FACTOR = SalukiAnnotation {
-<a href=#219 id=219 data-nosnippet>219</a>        schema: <span class="kw-2">&amp;</span>schema::FORWARDER_BACKOFF_FACTOR,
+<a href=#217 id=217 data-nosnippet>217</a>    </span><span class="doccomment">/// `forwarder_backoff_base`—base growth rate for retry backoff in seconds.
+<a href=#218 id=218 data-nosnippet>218</a>    </span>FORWARDER_BACKOFF_BASE = SalukiAnnotation {
+<a href=#219 id=219 data-nosnippet>219</a>        schema: <span class="kw-2">&amp;</span>schema::FORWARDER_BACKOFF_BASE,
 <a href=#220 id=220 data-nosnippet>220</a>        support_level: SupportLevel::Full,
 <a href=#221 id=221 data-nosnippet>221</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
 <a href=#222 id=222 data-nosnippet>222</a>        env_var_override: <span class="prelude-val">None</span>,
@@ -226,9 +226,9 @@
 <a href=#226 id=226 data-nosnippet>226</a>        pipeline_affinity: PipelineAffinity::CrossCutting,
 <a href=#227 id=227 data-nosnippet>227</a>    };
 <a href=#228 id=228 data-nosnippet>228</a>
-<a href=#229 id=229 data-nosnippet>229</a>    <span class="doccomment">/// `forwarder_backoff_max`—maximum retry backoff duration in seconds.
-<a href=#230 id=230 data-nosnippet>230</a>    </span>FORWARDER_BACKOFF_MAX = SalukiAnnotation {
-<a href=#231 id=231 data-nosnippet>231</a>        schema: <span class="kw-2">&amp;</span>schema::FORWARDER_BACKOFF_MAX,
+<a href=#229 id=229 data-nosnippet>229</a>    <span class="doccomment">/// `forwarder_backoff_factor`—jitter factor for retry backoff.
+<a href=#230 id=230 data-nosnippet>230</a>    </span>FORWARDER_BACKOFF_FACTOR = SalukiAnnotation {
+<a href=#231 id=231 data-nosnippet>231</a>        schema: <span class="kw-2">&amp;</span>schema::FORWARDER_BACKOFF_FACTOR,
 <a href=#232 id=232 data-nosnippet>232</a>        support_level: SupportLevel::Full,
 <a href=#233 id=233 data-nosnippet>233</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
 <a href=#234 id=234 data-nosnippet>234</a>        env_var_override: <span class="prelude-val">None</span>,
@@ -238,45 +238,45 @@
 <a href=#238 id=238 data-nosnippet>238</a>        pipeline_affinity: PipelineAffinity::CrossCutting,
 <a href=#239 id=239 data-nosnippet>239</a>    };
 <a href=#240 id=240 data-nosnippet>240</a>
-<a href=#241 id=241 data-nosnippet>241</a>    <span class="doccomment">/// `forwarder_recovery_interval`—error count decrease on success. Schema Float; field u32.
-<a href=#242 id=242 data-nosnippet>242</a>    </span>FORWARDER_RECOVERY_INTERVAL = SalukiAnnotation {
-<a href=#243 id=243 data-nosnippet>243</a>        schema: <span class="kw-2">&amp;</span>schema::FORWARDER_RECOVERY_INTERVAL,
+<a href=#241 id=241 data-nosnippet>241</a>    <span class="doccomment">/// `forwarder_backoff_max`—maximum retry backoff duration in seconds.
+<a href=#242 id=242 data-nosnippet>242</a>    </span>FORWARDER_BACKOFF_MAX = SalukiAnnotation {
+<a href=#243 id=243 data-nosnippet>243</a>        schema: <span class="kw-2">&amp;</span>schema::FORWARDER_BACKOFF_MAX,
 <a href=#244 id=244 data-nosnippet>244</a>        support_level: SupportLevel::Full,
 <a href=#245 id=245 data-nosnippet>245</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
 <a href=#246 id=246 data-nosnippet>246</a>        env_var_override: <span class="prelude-val">None</span>,
 <a href=#247 id=247 data-nosnippet>247</a>        used_by: <span class="kw-2">&amp;</span>[structs::FORWARDER_CONFIGURATION],
-<a href=#248 id=248 data-nosnippet>248</a>        value_type_override: <span class="prelude-val">Some</span>(ValueType::Integer),
+<a href=#248 id=248 data-nosnippet>248</a>        value_type_override: <span class="prelude-val">None</span>,
 <a href=#249 id=249 data-nosnippet>249</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#250 id=250 data-nosnippet>250</a>        pipeline_affinity: PipelineAffinity::CrossCutting,
 <a href=#251 id=251 data-nosnippet>251</a>    };
 <a href=#252 id=252 data-nosnippet>252</a>
-<a href=#253 id=253 data-nosnippet>253</a>    <span class="doccomment">/// `forwarder_recovery_reset`—reset error count on successful request.
-<a href=#254 id=254 data-nosnippet>254</a>    </span>FORWARDER_RECOVERY_RESET = SalukiAnnotation {
-<a href=#255 id=255 data-nosnippet>255</a>        schema: <span class="kw-2">&amp;</span>schema::FORWARDER_RECOVERY_RESET,
+<a href=#253 id=253 data-nosnippet>253</a>    <span class="doccomment">/// `forwarder_recovery_interval`—error count decrease on success. Schema Float; field u32.
+<a href=#254 id=254 data-nosnippet>254</a>    </span>FORWARDER_RECOVERY_INTERVAL = SalukiAnnotation {
+<a href=#255 id=255 data-nosnippet>255</a>        schema: <span class="kw-2">&amp;</span>schema::FORWARDER_RECOVERY_INTERVAL,
 <a href=#256 id=256 data-nosnippet>256</a>        support_level: SupportLevel::Full,
 <a href=#257 id=257 data-nosnippet>257</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
 <a href=#258 id=258 data-nosnippet>258</a>        env_var_override: <span class="prelude-val">None</span>,
 <a href=#259 id=259 data-nosnippet>259</a>        used_by: <span class="kw-2">&amp;</span>[structs::FORWARDER_CONFIGURATION],
-<a href=#260 id=260 data-nosnippet>260</a>        value_type_override: <span class="prelude-val">None</span>,
+<a href=#260 id=260 data-nosnippet>260</a>        value_type_override: <span class="prelude-val">Some</span>(ValueType::Integer),
 <a href=#261 id=261 data-nosnippet>261</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#262 id=262 data-nosnippet>262</a>        pipeline_affinity: PipelineAffinity::CrossCutting,
 <a href=#263 id=263 data-nosnippet>263</a>    };
 <a href=#264 id=264 data-nosnippet>264</a>
-<a href=#265 id=265 data-nosnippet>265</a>    <span class="doccomment">/// `forwarder_retry_queue_max_size`—(deprecated) max in-memory retry queue size in bytes. Schema Float; field `Option&lt;u64&gt;`.
-<a href=#266 id=266 data-nosnippet>266</a>    </span>FORWARDER_RETRY_QUEUE_MAX_SIZE = SalukiAnnotation {
-<a href=#267 id=267 data-nosnippet>267</a>        schema: <span class="kw-2">&amp;</span>schema::FORWARDER_RETRY_QUEUE_MAX_SIZE,
+<a href=#265 id=265 data-nosnippet>265</a>    <span class="doccomment">/// `forwarder_recovery_reset`—reset error count on successful request.
+<a href=#266 id=266 data-nosnippet>266</a>    </span>FORWARDER_RECOVERY_RESET = SalukiAnnotation {
+<a href=#267 id=267 data-nosnippet>267</a>        schema: <span class="kw-2">&amp;</span>schema::FORWARDER_RECOVERY_RESET,
 <a href=#268 id=268 data-nosnippet>268</a>        support_level: SupportLevel::Full,
 <a href=#269 id=269 data-nosnippet>269</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
 <a href=#270 id=270 data-nosnippet>270</a>        env_var_override: <span class="prelude-val">None</span>,
 <a href=#271 id=271 data-nosnippet>271</a>        used_by: <span class="kw-2">&amp;</span>[structs::FORWARDER_CONFIGURATION],
-<a href=#272 id=272 data-nosnippet>272</a>        value_type_override: <span class="prelude-val">Some</span>(ValueType::Integer),
+<a href=#272 id=272 data-nosnippet>272</a>        value_type_override: <span class="prelude-val">None</span>,
 <a href=#273 id=273 data-nosnippet>273</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#274 id=274 data-nosnippet>274</a>        pipeline_affinity: PipelineAffinity::CrossCutting,
 <a href=#275 id=275 data-nosnippet>275</a>    };
 <a href=#276 id=276 data-nosnippet>276</a>
-<a href=#277 id=277 data-nosnippet>277</a>    <span class="doccomment">/// `forwarder_retry_queue_payloads_max_size`—max in-memory retry queue size in bytes. Schema Float; field `Option&lt;u64&gt;`.
-<a href=#278 id=278 data-nosnippet>278</a>    </span>FORWARDER_RETRY_QUEUE_PAYLOADS_MAX_SIZE = SalukiAnnotation {
-<a href=#279 id=279 data-nosnippet>279</a>        schema: <span class="kw-2">&amp;</span>schema::FORWARDER_RETRY_QUEUE_PAYLOADS_MAX_SIZE,
+<a href=#277 id=277 data-nosnippet>277</a>    <span class="doccomment">/// `forwarder_retry_queue_max_size`—(deprecated) max in-memory retry queue size in bytes. Schema Float; field `Option&lt;u64&gt;`.
+<a href=#278 id=278 data-nosnippet>278</a>    </span>FORWARDER_RETRY_QUEUE_MAX_SIZE = SalukiAnnotation {
+<a href=#279 id=279 data-nosnippet>279</a>        schema: <span class="kw-2">&amp;</span>schema::FORWARDER_RETRY_QUEUE_MAX_SIZE,
 <a href=#280 id=280 data-nosnippet>280</a>        support_level: SupportLevel::Full,
 <a href=#281 id=281 data-nosnippet>281</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
 <a href=#282 id=282 data-nosnippet>282</a>        env_var_override: <span class="prelude-val">None</span>,
@@ -286,52 +286,64 @@
 <a href=#286 id=286 data-nosnippet>286</a>        pipeline_affinity: PipelineAffinity::CrossCutting,
 <a href=#287 id=287 data-nosnippet>287</a>    };
 <a href=#288 id=288 data-nosnippet>288</a>
-<a href=#289 id=289 data-nosnippet>289</a>    <span class="doccomment">/// `forwarder_storage_max_disk_ratio`—max disk usage fraction before stopping on-disk queue.
-<a href=#290 id=290 data-nosnippet>290</a>    </span>FORWARDER_STORAGE_MAX_DISK_RATIO = SalukiAnnotation {
-<a href=#291 id=291 data-nosnippet>291</a>        schema: <span class="kw-2">&amp;</span>schema::FORWARDER_STORAGE_MAX_DISK_RATIO,
+<a href=#289 id=289 data-nosnippet>289</a>    <span class="doccomment">/// `forwarder_retry_queue_payloads_max_size`—max in-memory retry queue size in bytes. Schema Float; field `Option&lt;u64&gt;`.
+<a href=#290 id=290 data-nosnippet>290</a>    </span>FORWARDER_RETRY_QUEUE_PAYLOADS_MAX_SIZE = SalukiAnnotation {
+<a href=#291 id=291 data-nosnippet>291</a>        schema: <span class="kw-2">&amp;</span>schema::FORWARDER_RETRY_QUEUE_PAYLOADS_MAX_SIZE,
 <a href=#292 id=292 data-nosnippet>292</a>        support_level: SupportLevel::Full,
 <a href=#293 id=293 data-nosnippet>293</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
 <a href=#294 id=294 data-nosnippet>294</a>        env_var_override: <span class="prelude-val">None</span>,
 <a href=#295 id=295 data-nosnippet>295</a>        used_by: <span class="kw-2">&amp;</span>[structs::FORWARDER_CONFIGURATION],
-<a href=#296 id=296 data-nosnippet>296</a>        value_type_override: <span class="prelude-val">None</span>,
+<a href=#296 id=296 data-nosnippet>296</a>        value_type_override: <span class="prelude-val">Some</span>(ValueType::Integer),
 <a href=#297 id=297 data-nosnippet>297</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#298 id=298 data-nosnippet>298</a>        pipeline_affinity: PipelineAffinity::CrossCutting,
 <a href=#299 id=299 data-nosnippet>299</a>    };
 <a href=#300 id=300 data-nosnippet>300</a>
-<a href=#301 id=301 data-nosnippet>301</a>    <span class="doccomment">/// `forwarder_storage_max_size_in_bytes`—max on-disk retry queue size. Schema Float; field u64.
-<a href=#302 id=302 data-nosnippet>302</a>    </span>FORWARDER_STORAGE_MAX_SIZE_IN_BYTES = SalukiAnnotation {
-<a href=#303 id=303 data-nosnippet>303</a>        schema: <span class="kw-2">&amp;</span>schema::FORWARDER_STORAGE_MAX_SIZE_IN_BYTES,
+<a href=#301 id=301 data-nosnippet>301</a>    <span class="doccomment">/// `forwarder_storage_max_disk_ratio`—max disk usage fraction before stopping on-disk queue.
+<a href=#302 id=302 data-nosnippet>302</a>    </span>FORWARDER_STORAGE_MAX_DISK_RATIO = SalukiAnnotation {
+<a href=#303 id=303 data-nosnippet>303</a>        schema: <span class="kw-2">&amp;</span>schema::FORWARDER_STORAGE_MAX_DISK_RATIO,
 <a href=#304 id=304 data-nosnippet>304</a>        support_level: SupportLevel::Full,
 <a href=#305 id=305 data-nosnippet>305</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
 <a href=#306 id=306 data-nosnippet>306</a>        env_var_override: <span class="prelude-val">None</span>,
 <a href=#307 id=307 data-nosnippet>307</a>        used_by: <span class="kw-2">&amp;</span>[structs::FORWARDER_CONFIGURATION],
-<a href=#308 id=308 data-nosnippet>308</a>        value_type_override: <span class="prelude-val">Some</span>(ValueType::Integer),
+<a href=#308 id=308 data-nosnippet>308</a>        value_type_override: <span class="prelude-val">None</span>,
 <a href=#309 id=309 data-nosnippet>309</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#310 id=310 data-nosnippet>310</a>        pipeline_affinity: PipelineAffinity::CrossCutting,
 <a href=#311 id=311 data-nosnippet>311</a>    };
 <a href=#312 id=312 data-nosnippet>312</a>
-<a href=#313 id=313 data-nosnippet>313</a>    <span class="doccomment">/// `forwarder_storage_path`—directory for on-disk retry queue.
-<a href=#314 id=314 data-nosnippet>314</a>    </span>FORWARDER_STORAGE_PATH = SalukiAnnotation {
-<a href=#315 id=315 data-nosnippet>315</a>        schema: <span class="kw-2">&amp;</span>schema::FORWARDER_STORAGE_PATH,
+<a href=#313 id=313 data-nosnippet>313</a>    <span class="doccomment">/// `forwarder_storage_max_size_in_bytes`—max on-disk retry queue size. Schema Float; field u64.
+<a href=#314 id=314 data-nosnippet>314</a>    </span>FORWARDER_STORAGE_MAX_SIZE_IN_BYTES = SalukiAnnotation {
+<a href=#315 id=315 data-nosnippet>315</a>        schema: <span class="kw-2">&amp;</span>schema::FORWARDER_STORAGE_MAX_SIZE_IN_BYTES,
 <a href=#316 id=316 data-nosnippet>316</a>        support_level: SupportLevel::Full,
 <a href=#317 id=317 data-nosnippet>317</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
 <a href=#318 id=318 data-nosnippet>318</a>        env_var_override: <span class="prelude-val">None</span>,
 <a href=#319 id=319 data-nosnippet>319</a>        used_by: <span class="kw-2">&amp;</span>[structs::FORWARDER_CONFIGURATION],
-<a href=#320 id=320 data-nosnippet>320</a>        value_type_override: <span class="prelude-val">None</span>,
+<a href=#320 id=320 data-nosnippet>320</a>        value_type_override: <span class="prelude-val">Some</span>(ValueType::Integer),
 <a href=#321 id=321 data-nosnippet>321</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#322 id=322 data-nosnippet>322</a>        pipeline_affinity: PipelineAffinity::CrossCutting,
 <a href=#323 id=323 data-nosnippet>323</a>    };
 <a href=#324 id=324 data-nosnippet>324</a>
-<a href=#325 id=325 data-nosnippet>325</a>    <span class="doccomment">/// `forwarder_outdated_file_in_days`—maximum age in days for retry files before deletion at startup.
-<a href=#326 id=326 data-nosnippet>326</a>    </span>FORWARDER_OUTDATED_FILE_IN_DAYS = SalukiAnnotation {
-<a href=#327 id=327 data-nosnippet>327</a>        schema: <span class="kw-2">&amp;</span>schema::FORWARDER_OUTDATED_FILE_IN_DAYS,
+<a href=#325 id=325 data-nosnippet>325</a>    <span class="doccomment">/// `forwarder_storage_path`—directory for on-disk retry queue.
+<a href=#326 id=326 data-nosnippet>326</a>    </span>FORWARDER_STORAGE_PATH = SalukiAnnotation {
+<a href=#327 id=327 data-nosnippet>327</a>        schema: <span class="kw-2">&amp;</span>schema::FORWARDER_STORAGE_PATH,
 <a href=#328 id=328 data-nosnippet>328</a>        support_level: SupportLevel::Full,
 <a href=#329 id=329 data-nosnippet>329</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
 <a href=#330 id=330 data-nosnippet>330</a>        env_var_override: <span class="prelude-val">None</span>,
 <a href=#331 id=331 data-nosnippet>331</a>        used_by: <span class="kw-2">&amp;</span>[structs::FORWARDER_CONFIGURATION],
-<a href=#332 id=332 data-nosnippet>332</a>        value_type_override: <span class="prelude-val">Some</span>(ValueType::Integer),
+<a href=#332 id=332 data-nosnippet>332</a>        value_type_override: <span class="prelude-val">None</span>,
 <a href=#333 id=333 data-nosnippet>333</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#334 id=334 data-nosnippet>334</a>        pipeline_affinity: PipelineAffinity::CrossCutting,
 <a href=#335 id=335 data-nosnippet>335</a>    };
-<a href=#336 id=336 data-nosnippet>336</a>}
+<a href=#336 id=336 data-nosnippet>336</a>
+<a href=#337 id=337 data-nosnippet>337</a>    <span class="doccomment">/// `forwarder_outdated_file_in_days`—maximum age in days for retry files before deletion at startup.
+<a href=#338 id=338 data-nosnippet>338</a>    </span>FORWARDER_OUTDATED_FILE_IN_DAYS = SalukiAnnotation {
+<a href=#339 id=339 data-nosnippet>339</a>        schema: <span class="kw-2">&amp;</span>schema::FORWARDER_OUTDATED_FILE_IN_DAYS,
+<a href=#340 id=340 data-nosnippet>340</a>        support_level: SupportLevel::Full,
+<a href=#341 id=341 data-nosnippet>341</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
+<a href=#342 id=342 data-nosnippet>342</a>        env_var_override: <span class="prelude-val">None</span>,
+<a href=#343 id=343 data-nosnippet>343</a>        used_by: <span class="kw-2">&amp;</span>[structs::FORWARDER_CONFIGURATION],
+<a href=#344 id=344 data-nosnippet>344</a>        value_type_override: <span class="prelude-val">Some</span>(ValueType::Integer),
+<a href=#345 id=345 data-nosnippet>345</a>        test_json: <span class="prelude-val">None</span>,
+<a href=#346 id=346 data-nosnippet>346</a>        pipeline_affinity: PipelineAffinity::CrossCutting,
+<a href=#347 id=347 data-nosnippet>347</a>    };
+<a href=#348 id=348 data-nosnippet>348</a>}
 </code></pre></div></section></main></body></html>
