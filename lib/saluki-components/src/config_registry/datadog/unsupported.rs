@@ -124,7 +124,7 @@ crate::declare_annotations! {
     /// `forwarder_low_prio_buffer_size` - low-priority request queue size.
     FORWARDER_LOW_PRIO_BUFFER_SIZE = SalukiAnnotation {
         schema: &schema::FORWARDER_LOW_PRIO_BUFFER_SIZE,
-        // ADP has no separate low-priority queue. #1362
+        // ADP low-priority pending transactions use the byte-bounded retry queue. #1362
         support_level: SupportLevel::Incompatible(Severity::Medium),
         additional_yaml_paths: &[],
         env_var_override: None,

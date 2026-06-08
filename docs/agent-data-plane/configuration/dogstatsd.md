@@ -1,6 +1,6 @@
 # Configuring DogStatsD on Agent Data Plane
 
-<!-- Last updated: 2026-06-03 -->
+<!-- Last updated: 2026-06-05 -->
 
 The DogStatsD implementation on ADP has been redesigned in Rust for better resource guarantees and
 efficiency. Because the architecture is different from the original implementation, certain
@@ -57,6 +57,7 @@ architecture is fundamentally different or the feature is platform-specific.
 | `dogstatsd_workers_count`                      | Number of DSD processing workers   | ADP uses async tasks                                         |
 | `enable_json_stream_shared_compressor_buffers` | Shared compressor buffer pool      | Rust request builders own fixed-capacity buffers             |
 | `entity_id`                                    | Agent pod entity ID                | ADP internal DogStatsD telemetry uses OpenMetrics            |
+| `forwarder_low_prio_buffer_size`               | Low-priority request queue size    | Low priority uses the byte-bounded retry queue ([#1362])     |
 | `heroku_dyno`                                  | Heroku dyno telemetry mode         | Core Agent-owned Heroku Agent heartbeat behavior             |
 | `use_dogstatsd`                                | Master DogStatsD enable toggle     | Core Agent evaluates and sets `data_plane.dogstatsd.enabled` |
 
@@ -86,6 +87,7 @@ default values.
 | `dogstatsd_stats_enable`           | Enable internal stats endpoint   | Config toggle                                  | On-demand via API ([#1352])                                    |
 | `dogstatsd_stats_buffer`           | Internal stats buffer size       | Configurable                                   | On-demand via API ([#1352])                                    |
 | `dogstatsd_stats_port`             | Internal stats endpoint port     | Configurable port                              | On-demand via API ([#1352])                                    |
+| `forwarder_high_prio_buffer_size`  | High-priority request queue size | Default `100`                                  | Default `16`; sizes the per-endpoint high-priority queue        |
 | `forwarder_num_workers`            | Forwarder worker count           | Creates forwarder workers and caps connections | Multiplies request concurrency and sizes idle pool; no workers  |
 | `log_level`                        | Log verbosity directives         | Controls Agent logs                            | Plain levels control ADP/Saluki-owned targets only             |
 | `logging_frequency`                | Transaction success log interval | Throttles success logs                         | Intentionally unused                                           |
@@ -105,6 +107,19 @@ doesn't support TLS 1.0 or TLS 1.1.
 
 This setting doesn't affect ADP IPC, local privileged APIs, ADP control-plane clients, OTLP
 proxying to the core agent, or unrelated HTTP clients.
+
+### Forwarder priority queue sizing
+
+ADP supports `forwarder_high_prio_buffer_size` for the shared Datadog forwarder, but uses a
+different default from the core agent. The core agent defaults both its high-priority and
+low-priority forwarder worker channels to `100`. ADP defaults its high-priority per-endpoint
+pending queue to `16`.
+
+ADP does not implement `forwarder_low_prio_buffer_size`. Low-priority pending transactions use the
+forwarder's retry queue, which is bounded by payload bytes and optional disk persistence settings
+rather than by a transaction count. ADP still preserves the same broad priority behavior: new
+transactions are processed through the high-priority queue first, retries use the low-priority retry
+queue, and high-priority overflow is moved to the low-priority retry queue.
 
 ### DogStatsD forwarding (`statsd_forward_host` / `statsd_forward_port`)
 
@@ -307,8 +322,6 @@ ways that are not yet fully characterized.
 | `dogstatsd_experimental_http.listen_address`                     | Bind address for experimental HTTP DSD listener | [#1682] |
 | `forwarder_apikey_validation_interval`                           | API key check interval (minutes)                | [#1357] |
 | `forwarder_flush_to_disk_mem_ratio`                              | Mem-to-disk flush threshold                     | [#1364] |
-| `forwarder_high_prio_buffer_size`                                | High-priority request queue size                | [#1362] |
-| `forwarder_low_prio_buffer_size`                                 | Low-priority request queue size                 | [#1362] |
 | `forwarder_requeue_buffer_size`                                  | In-memory re-queue buffer size                  | [#1755] |
 | `forwarder_retry_queue_capacity_time_interval_sec`               | Retry queue time-based capacity                 | [#1365] |
 | `forwarder_stop_timeout`                                         | Timeout (s) for forwarder graceful stop         | [#1680] |
