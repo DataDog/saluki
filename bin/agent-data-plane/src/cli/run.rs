@@ -196,7 +196,7 @@ pub async fn handle_run_command(
     //
     // We run our internal supervisor (control plane, environment provider, etc) and our topology supervisor
     // side-by-side, which means everyone has access to the same dataspace. This is crucial for allowing processes
-    // in the topology supervisor to (eventually)
+    // in the topology supervisor to (eventually) interact with components in the control plane, and vise versa.
     blueprint
         .with_health_registry(health_registry.clone())
         .with_memory_limiter(memory_limiter)
