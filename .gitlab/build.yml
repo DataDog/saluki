@@ -326,9 +326,11 @@ display-image-tags:
     # All the real work — cargo build, SPDX license harvest, tarball assembly, sha256 — lives in
     # `make package-adp-host` -> ci/tooling/package-adp-tarball.sh so it stays locally
     # reproducible (`make package-adp-host` on a Mac dev machine produces the same artifact this
-    # job uploads). The Makefile target derives ADP_VERSION, TARGET_OS, TARGET_ARCH, etc. from
-    # project state and pinned defaults.
-    - make package-adp-host
+    # job uploads). TARGET_OS, TARGET_ARCH, etc. are derived inside the Makefile; we override
+    # ADP_PACKAGE_VERSION here so the tarball filename uses the same `${ADP_IMAGE_VERSION}`
+    # naming as the linux release tarball (`v${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}` on dev,
+    # the tag on tagged releases) instead of defaulting to the Cargo.toml version.
+    - ADP_PACKAGE_VERSION=${ADP_IMAGE_VERSION} make package-adp-host
     - cp target/release-tarball/${TARBALL_NAME} ${CI_PROJECT_DIR}/${TARBALL_NAME}
   artifacts:
     paths:

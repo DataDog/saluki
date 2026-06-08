@@ -625,15 +625,22 @@ ADP_SPDX_LICENSES_VERSION ?= 3.28.0
 # tarball name; the script doesn't care, only the filename does.
 ADP_PACKAGE_TARGET_OS ?= $(shell uname -s | tr '[:upper:]' '[:lower:]')
 
+# Version stamped into the output tarball filename. Defaults to the Cargo.toml version (handy
+# for local builds: `make package-adp-host` produces `agent-data-plane-1.2.0-darwin-arm64.tar.gz`)
+# but is overridable by env so CI can match the linux release-tarball naming convention, which
+# uses ${ADP_IMAGE_VERSION}: `v${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}` on dev pipelines and the
+# tag on tagged releases. See `.build-release-tarball-darwin-definition` in .gitlab/build.yml.
+ADP_PACKAGE_VERSION ?= $(ADP_APP_VERSION)
+
 .PHONY: package-adp-host
 package-adp-host: BUILD_PROFILE ?= release
 package-adp-host: build-adp-host
-package-adp-host: ## Builds and packages agent-data-plane into a release tarball under target/release-tarball/ (Cargo profile from $$BUILD_PROFILE; OS/arch from host). Used by the darwin release pipeline and locally to reproduce the CI artifact.
+package-adp-host: ## Builds and packages agent-data-plane into a release tarball under target/release-tarball/ (Cargo profile from $$BUILD_PROFILE; OS/arch from host; version from $$ADP_PACKAGE_VERSION, default Cargo.toml). Used by the darwin release pipeline and locally to reproduce the CI artifact.
 	@OUTPUT_DIR="$(CURDIR)/target/release-tarball" \
 		BUILD_PROFILE="$(BUILD_PROFILE)" \
 		TARGET_OS="$(ADP_PACKAGE_TARGET_OS)" \
 		TARGET_ARCH="$(TARGET_ARCH)" \
-		ADP_VERSION="$(ADP_APP_VERSION)" \
+		ADP_VERSION="$(ADP_PACKAGE_VERSION)" \
 		SPDX_LICENSES_VERSION="$(ADP_SPDX_LICENSES_VERSION)" \
 		$(CURDIR)/ci/tooling/package-adp-tarball.sh
 
