@@ -3,7 +3,6 @@
 //! # Missing
 //!
 //! - Avoid initializing the process-wide crypto provider from tests.
-//! - Avoid unpacking `TransactionForwarder` to work around long argument lists.
 
 use std::{collections::VecDeque, error::Error as _, path::PathBuf, sync::Arc, time::Duration};
 
@@ -52,6 +51,7 @@ pub const RB_BUFFER_CHUNK_SIZE: usize = 32 * 1024; // 32 KB
 const RETRY_QUEUE_CAPACITY_HISTORY_DURATION_SECS: u64 = 15 * 60;
 const RETRY_QUEUE_CAPACITY_BUCKET_DURATION_SECS: u64 = 10;
 const RETRY_QUEUE_DRAIN_INTERVAL_SECS: u64 = 5;
+const MIN_LOW_PRIORITY_BUFFER_SIZE: usize = 1;
 
 /// A handle to the transaction forwarder.
 pub struct Handle<B>
@@ -201,6 +201,7 @@ where
         let (transactions_tx, transactions_rx) = mpsc::channel(8);
         let (io_shutdown_tx, io_shutdown_rx) = oneshot::channel();
 
+        // TODO: do not destructure self as a way to fix the #[allow(clippy::too_many_arguments)] annotations
         let Self {
             context,
             config,
@@ -413,7 +414,7 @@ async fn run_endpoint_io_loop<B>(
     }
     let mut pending_txns = PendingTransactions::new(
         config.endpoint_buffer_size(),
-        config.low_priority_buffer_size(),
+        config.low_priority_buffer_size.max(1),
         retry_queue,
         txnq_telemetry,
     );
@@ -694,7 +695,7 @@ impl<T: Retryable> PendingTransactions<T> {
     ) -> Self {
         Self {
             high_priority: VecDeque::with_capacity(max_enqueued),
-            low_priority: VecDeque::with_capacity(max_low_priority_enqueued),
+            low_priority: VecDeque::with_capacity(max_low_priority_enqueued.max(MIN_LOW_PRIORITY_BUFFER_SIZE)),
             retry_queue,
             telemetry,
             incoming_bytes_per_sec: IncomingBytesPerSec::new(
@@ -1157,6 +1158,18 @@ app.datadoghq.com: [key-a, key-b]
         assert!(pending_txns.pop().await.is_none());
 
         assert!(!pending_txns.drain_retry_queue().await.unwrap().had_drops());
+        assert_eq!(pending_txns.pop().await.as_deref(), Some("retry"));
+    }
+
+    #[tokio::test]
+    async fn retry_drain_clamps_zero_low_priority_buffer_to_one() {
+        let (_shared, telemetry) = transaction_queue_telemetry();
+        let retry_queue = RetryQueue::new("test".to_string(), 1024);
+        let mut pending_txns = PendingTransactions::new(1, 0, retry_queue, telemetry);
+
+        assert!(!pending_txns.push_retry("retry".to_string()).await.unwrap().had_drops());
+        assert!(!pending_txns.drain_retry_queue().await.unwrap().had_drops());
+
         assert_eq!(pending_txns.pop().await.as_deref(), Some("retry"));
     }
 

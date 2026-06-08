@@ -1,10 +1,3 @@
-//! Datadog forwarder component.
-//!
-//! # Missing
-//!
-//! - Account for connected encoder firm bounds in the encoder components once they can calculate request memory.
-//! - Replace the fixed maximum compressed payload size if future sources or encoders use a larger default.
-
 use async_trait::async_trait;
 use http::Uri;
 use resource_accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
@@ -133,7 +126,7 @@ impl MemoryBounds for DatadogConfiguration {
                         "low priority queue",
                         UsageExpr::config(
                             "forwarder_low_prio_buffer_size",
-                            self.forwarder_config.low_priority_buffer_size(),
+                            self.forwarder_config.low_priority_buffer_size.max(1),
                         ),
                         UsageExpr::constant("maximum compressed payload size", DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT),
                     ),

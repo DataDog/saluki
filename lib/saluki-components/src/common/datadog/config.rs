@@ -195,12 +195,12 @@ pub struct ForwarderConfiguration {
 
     /// Maximum number of retry-drained low-priority pending requests for an individual endpoint.
     ///
-    /// Defaults to 100.
+    /// Defaults to 100. If set to 0, the low-priority buffer size is clamped to 1.
     #[serde(
         default = "default_low_priority_buffer_size",
         rename = "forwarder_low_prio_buffer_size"
     )]
-    low_priority_buffer_size: usize,
+    pub(crate) low_priority_buffer_size: usize,
 
     /// Endpoint configuration.
     #[serde(flatten)]
@@ -302,11 +302,6 @@ impl ForwarderConfiguration {
     /// Returns the maximum number of pending requests for an individual endpoint.
     pub const fn endpoint_buffer_size(&self) -> usize {
         self.endpoint_buffer_size
-    }
-
-    /// Returns the maximum number of retry-drained low-priority pending requests for an individual endpoint.
-    pub const fn low_priority_buffer_size(&self) -> usize {
-        self.low_priority_buffer_size
     }
 
     /// Returns the HTTP protocol selection for outgoing forwarder requests.
