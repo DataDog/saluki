@@ -42,10 +42,10 @@ Doc generation lives in `config-testsupport/build.rs`, not `config/build.rs`, be
 dev/CI concern — not a prod build artifact. The generated `dogstatsd.md` is written in-tree by
 the testsupport build and checked for staleness in CI.
 
-The overlay partitions every key in `core_schema.yaml` into exactly one section: `supported`,
-`unsupported`, `investigate`, or `ignored`. The model for those sections lives in the
-`config-overlay-model` crate; read its `lib.rs` when you need the exact field shape — the doc
-comments on the structs are authoritative.
+The overlay partitions every key in `core_schema.yaml` into exactly one of two sections: `inventory`
+or `excluded`. Within `inventory`, each entry is tagged with a `support` field (`full`, `partial`,
+`none`, `unknown`). The model lives in the `config-overlay-model` crate; read its `lib.rs` when you
+need the exact field shape — the doc comments on the structs are authoritative.
 
 ## The cardinal rule
 
@@ -74,16 +74,17 @@ extension of the overlay for those keys — same review rules apply.
 
 ## Common task: add or change a key
 
-1. Find the key in `schema_overlay.yaml`. Section order is enforced (`supported`, `unsupported`,
-   optional `investigate`, `ignored`) and keys within a section are alphabetical. The build will
-   tell you if you violate this.
-2. Make the edit. Required fields differ per section; the overlay-model `lib.rs` is the
+1. Find the key in `schema_overlay.yaml`. Section order is enforced (`inventory`, `excluded`) and
+   keys within each section are alphabetical. The build will tell you if you violate this.
+2. Make the edit. Required fields differ per `support` tag; the overlay-model `lib.rs` is the
    authoritative reference. Common gotchas:
-    - `supported` requires non-empty `used_by` and `pipelines`; `description` ≤ 50 chars.
-    - `unsupported` with `planned: true` requires an `issue`.
+    - `support: full` and `support: partial` require non-empty `used_by` and `pipelines`;
+      `description` ≤ 50 chars. Test-support fields (`used_by`, `env_var_override`,
+      `additional_yaml_paths`, `value_type_override`, `test_json`, `additional_attributes`) live
+      under a `test_support:` sub-object.
+    - `support: none` with `planned: true` requires an `issue`.
     - Multi-line `documentation` strings render as prose blocks below tables; single-line ones
-      render
-      inside tables.
+      render inside tables.
 3. Build: `cargo build -p datadog-agent-config-testsupport` exercises both `build.rs` files and
    performs all overlay validation up front. Read the panic message — it names the rule and the
    offending key.
@@ -104,9 +105,9 @@ extension of the overlay for those keys — same review rules apply.
 ## Common task: bumping the vendored schema
 
 Replace `core_schema.yaml`. The build will fail listing schema keys out of alignment with the
-overlay. Add each new key to the appropriate overlay section (`investigate` is the correct holding
-pen when uncertain — never silently classify a key as `ignored` or `supported` without human
-review).
+overlay. Add each new key to the appropriate place (`support: unknown` in `inventory` is the correct
+holding pen when uncertain — never silently classify a key as `excluded` or `support: full` without
+human review).
 
 ## Finding things
 

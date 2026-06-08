@@ -84,12 +84,13 @@ mod tests {
     }
 
     #[test]
-    fn partial_non_default() {
+    fn partial_without_warn_not_in_classifier() {
+        // min_tls_version is partial but does not have warn: true in the overlay,
+        // so the generator omits it from the classifier.
         let c = classifier();
-        let result = c
+        assert!(c
             .classify("min_tls_version", &Value::String("non_default_value".into()))
-            .unwrap();
-        assert_eq!(result.support_level, SupportLevel::Partial);
+            .is_none());
     }
 
     #[test]

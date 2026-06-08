@@ -4,382 +4,530 @@
 # config key that exists in the schema must be represented here in the overlay. Validation happens
 # during and after deserialization during build and tooling processes.
 #
-# There are four sections that must appear in the correct order:
-# - supported: fully and partially supported keys
-# - unsupported: keys that are either permanently or temporarily unsupported
-# - investigate: keys that require investigation before we can say whether they should be supported
-# - ignored: keys that ADP/Saluki intentionally and silently ignores
+# There are two sections that must appear in the correct order:
+# - inventory: every key the team has reviewed and classified
+# - excluded: keys that ADP/Saluki intentionally and silently ignores
+#
+# Each inventory entry is tagged with a `support` field:
+# - full:    ADP reads and fully supports this key; behavior matches the core Agent
+# - partial: ADP reads this key but behavior diverges in some cases
+# - none:    ADP does not support this key
+# - unknown: ADP's compatibility with this key has not yet been determined
 #
 # Rust code and Markdown documentation are generated from the contents of this file. Your edits here
 # have consequences downstream as follows (see the generator code to be certain):
 #
-# supported + support_level: full    -> runtime classifier: Full; docs: "Transparent Settings" table
+# support: full              -> runtime classifier: Full; docs: "Transparent Settings" table
 #
-# supported + support_level: partial -> runtime classifier: Partial; docs: "Behavioral Differences"
-#                                       table; multi-line documentation renders as a detail block
-#                                       below the table
+# support: partial           -> runtime classifier: Partial; docs: "Behavioral Differences"
+#                               table; multi-line documentation renders as a detail block
+#                               below the table
 #
-# unsupported + planned: true        -> runtime classifier: Incompatible(severity); docs: "Being
-#                                       Worked On" table; issue required
+# support: none + planned    -> runtime classifier: Incompatible(severity); docs: "Being
+#                               Worked On" table; issue required
 #
-# unsupported + planned: false       -> runtime classifier: Incompatible(severity); docs: "Not
-#                                       Planned" table; single-line documentation fills the "Reason"
-#                                       column; multi-line renders as a detail block below the table
+# support: none + !planned   -> runtime classifier: Incompatible(severity); docs: "Not
+#                               Planned" table; single-line documentation fills the "Reason"
+#                               column; multi-line renders as a detail block below the table
 #
-# investigate + severity set         -> runtime classifier: Incompatible(severity, cross_cutting);
-#                                       docs: "Compatibility Unknown" table
+# support: unknown + severity -> runtime classifier: Incompatible(severity, cross_cutting);
+#                                docs: "Compatibility Unknown" table
 #
-# investigate + no severity          -> no classifier entry (docs-only); "Compatibility Unknown"
-#                                       table
+# support: unknown (no sev)  -> no classifier entry (docs-only); "Compatibility Unknown"
+#                               table
 #
-# ignored                            -> no classifier entry; no docs table entry
+# excluded                   -> no classifier entry; no docs table entry
 #
 # Validation rules are somewhat complex. For complete rules, see the code in `config-overlay-model`,
 # but here are some of the basics:
 #
-# - unsupported + planned: true requires issue; the build rejects entries that omit it
+# - support: none + planned: true requires issue; the build rejects entries that omit it
 # - pipelines: [cross_cutting] must appear alone; cross_cutting mixed with other tokens is rejected
-# - investigate entries without severity produce no runtime classifier entry and are docs-only
-supported:
+# - support: unknown entries without severity produce no runtime classifier entry and are docs-only
+inventory:
   additional_endpoints:
-    support_level: full
-    used_by: [ ForwarderConfiguration ]
-    pipelines: [ cross_cutting ]
+    support: full
+    pipelines: [cross_cutting]
     description: "Dual-ship to extra endpoints"
-    test_json: '{"smoke-host-1.example.com": ["smoke-api-key"]}'
-    additional_attributes:
-      config_registry_filename: forwarder.rs
+    test_support:
+      used_by: [ForwarderConfiguration]
+      test_json: '{"smoke-host-1.example.com": ["smoke-api-key"]}'
+      additional_attributes:
+        config_registry_filename: forwarder.rs
+
+  aggregator_buffer_size:
+    support: none
+    severity: low
+    planned: false
+    pipelines: [dogstatsd]
+    description: "Channel buffer depth for aggregator queues"
+    documentation: "Saluki topology uses fixed interconnect sizes and construction-time wiring; no per-component config knobs."
+    issue: "#1681"
+
+  aggregator_flush_metrics_and_serialize_in_parallel_buffer_size:
+    support: none
+    severity: low
+    planned: false
+    pipelines: [dogstatsd]
+    description: "Parallel flush: series/sketch buffer size"
+    documentation: "Saluki topology uses fixed interconnect sizes; no per-component config knobs."
+    issue: "#1681"
+
+  aggregator_flush_metrics_and_serialize_in_parallel_chan_size:
+    support: none
+    severity: low
+    planned: false
+    pipelines: [dogstatsd]
+    description: "Parallel flush: channel size"
+    documentation: "Saluki topology uses fixed interconnect sizes; no per-component config knobs."
+    issue: "#1681"
+
+  aggregator_stop_timeout:
+    support: none
+    severity: low
+    planned: false
+    pipelines: [dogstatsd]
+    description: "Timeout (s) for aggregator flush on stop"
+    documentation: "Saluki topology uses fixed interconnect sizes and construction-time wiring; no per-component config knobs."
+    issue: "#1681"
+
+  aggregator_use_tags_store:
+    support: none
+    severity: low
+    planned: false
+    pipelines: [dogstatsd]
+    description: "Enable shared tag deduplication store"
+    documentation: "Core agent concept with no ADP analog."
+    issue: "#1681"
 
   allow_arbitrary_tags:
-    support_level: full
-    used_by: [ ForwarderConfiguration ]
-    pipelines: [ cross_cutting ]
+    support: full
+    pipelines: [cross_cutting]
     description: "Relax backend tag validation via HTTP header"
-    env_var_override: [ DD_ALLOW_ARBITRARY_TAGS ]
-    additional_attributes:
-      config_registry_filename: forwarder.rs
+    test_support:
+      used_by: [ForwarderConfiguration]
+      env_var_override: [DD_ALLOW_ARBITRARY_TAGS]
+      additional_attributes:
+        config_registry_filename: forwarder.rs
 
   api_key:
-    support_level: full
-    used_by: [ ForwarderConfiguration ]
-    pipelines: [ cross_cutting ]
+    support: full
+    pipelines: [cross_cutting]
     description: "API key for endpoint auth"
-    additional_attributes:
-      config_registry_filename: forwarder.rs
+    test_support:
+      used_by: [ForwarderConfiguration]
+      additional_attributes:
+        config_registry_filename: forwarder.rs
 
   apm_config.obfuscation.credit_cards.enabled:
-    support_level: full
-    used_by: [ TraceObfuscationConfiguration ]
-    pipelines: [ traces ]
+    support: full
+    pipelines: [traces]
     description: "apm_config.obfuscation.credit_cards.enabled"
-    test_json: 'true'
-    additional_attributes:
-      config_registry_filename: trace_obfuscation.rs
+    test_support:
+      used_by: [TraceObfuscationConfiguration]
+      test_json: 'true'
+      additional_attributes:
+        config_registry_filename: trace_obfuscation.rs
 
   apm_config.obfuscation.credit_cards.keep_values:
-    support_level: full
-    used_by: [ TraceObfuscationConfiguration ]
-    pipelines: [ traces ]
+    support: full
+    pipelines: [traces]
     description: "apm_config.obfuscation.credit_cards.keep_values"
-    additional_attributes:
-      config_registry_filename: trace_obfuscation.rs
+    test_support:
+      used_by: [TraceObfuscationConfiguration]
+      additional_attributes:
+        config_registry_filename: trace_obfuscation.rs
 
   apm_config.obfuscation.credit_cards.luhn:
-    support_level: full
-    used_by: [ TraceObfuscationConfiguration ]
-    pipelines: [ traces ]
+    support: full
+    pipelines: [traces]
     description: "apm_config.obfuscation.credit_cards.luhn"
-    additional_attributes:
-      config_registry_filename: trace_obfuscation.rs
+    test_support:
+      used_by: [TraceObfuscationConfiguration]
+      additional_attributes:
+        config_registry_filename: trace_obfuscation.rs
 
   apm_config.obfuscation.elasticsearch.enabled:
-    support_level: full
-    used_by: [ TraceObfuscationConfiguration ]
-    pipelines: [ traces ]
+    support: full
+    pipelines: [traces]
     description: "apm_config.obfuscation.elasticsearch.enabled"
-    test_json: 'true'
-    additional_attributes:
-      config_registry_filename: trace_obfuscation.rs
+    test_support:
+      used_by: [TraceObfuscationConfiguration]
+      test_json: 'true'
+      additional_attributes:
+        config_registry_filename: trace_obfuscation.rs
 
   apm_config.obfuscation.elasticsearch.keep_values:
-    support_level: full
-    used_by: [ TraceObfuscationConfiguration ]
-    pipelines: [ traces ]
+    support: full
+    pipelines: [traces]
     description: "apm_config.obfuscation.elasticsearch.keep_values"
-    additional_attributes:
-      config_registry_filename: trace_obfuscation.rs
+    test_support:
+      used_by: [TraceObfuscationConfiguration]
+      additional_attributes:
+        config_registry_filename: trace_obfuscation.rs
 
   apm_config.obfuscation.elasticsearch.obfuscate_sql_values:
-    support_level: full
-    used_by: [ TraceObfuscationConfiguration ]
-    pipelines: [ traces ]
+    support: full
+    pipelines: [traces]
     description: "Obfuscate SQL values in ES queries"
-    additional_attributes:
-      config_registry_filename: trace_obfuscation.rs
+    test_support:
+      used_by: [TraceObfuscationConfiguration]
+      additional_attributes:
+        config_registry_filename: trace_obfuscation.rs
 
   apm_config.obfuscation.http.remove_paths_with_digits:
-    support_level: full
-    used_by: [ TraceObfuscationConfiguration ]
-    pipelines: [ traces ]
+    support: full
+    pipelines: [traces]
     description: "Strip numeric segments from HTTP paths"
-    additional_attributes:
-      config_registry_filename: trace_obfuscation.rs
+    test_support:
+      used_by: [TraceObfuscationConfiguration]
+      additional_attributes:
+        config_registry_filename: trace_obfuscation.rs
 
   apm_config.obfuscation.http.remove_query_string:
-    support_level: full
-    used_by: [ TraceObfuscationConfiguration ]
-    pipelines: [ traces ]
+    support: full
+    pipelines: [traces]
     description: "apm_config.obfuscation.http.remove_query_string"
-    additional_attributes:
-      config_registry_filename: trace_obfuscation.rs
+    test_support:
+      used_by: [TraceObfuscationConfiguration]
+      additional_attributes:
+        config_registry_filename: trace_obfuscation.rs
 
   apm_config.obfuscation.memcached.enabled:
-    support_level: full
-    used_by: [ TraceObfuscationConfiguration ]
-    pipelines: [ traces ]
+    support: full
+    pipelines: [traces]
     description: "apm_config.obfuscation.memcached.enabled"
-    test_json: 'true'
-    additional_attributes:
-      config_registry_filename: trace_obfuscation.rs
+    test_support:
+      used_by: [TraceObfuscationConfiguration]
+      test_json: 'true'
+      additional_attributes:
+        config_registry_filename: trace_obfuscation.rs
 
   apm_config.obfuscation.memcached.keep_command:
-    support_level: full
-    used_by: [ TraceObfuscationConfiguration ]
-    pipelines: [ traces ]
+    support: full
+    pipelines: [traces]
     description: "apm_config.obfuscation.memcached.keep_command"
-    additional_attributes:
-      config_registry_filename: trace_obfuscation.rs
+    test_support:
+      used_by: [TraceObfuscationConfiguration]
+      additional_attributes:
+        config_registry_filename: trace_obfuscation.rs
 
   apm_config.obfuscation.mongodb.enabled:
-    support_level: full
-    used_by: [ TraceObfuscationConfiguration ]
-    pipelines: [ traces ]
+    support: full
+    pipelines: [traces]
     description: "apm_config.obfuscation.mongodb.enabled"
-    test_json: 'true'
-    additional_attributes:
-      config_registry_filename: trace_obfuscation.rs
+    test_support:
+      used_by: [TraceObfuscationConfiguration]
+      test_json: 'true'
+      additional_attributes:
+        config_registry_filename: trace_obfuscation.rs
 
   apm_config.obfuscation.mongodb.keep_values:
-    support_level: full
-    used_by: [ TraceObfuscationConfiguration ]
-    pipelines: [ traces ]
+    support: full
+    pipelines: [traces]
     description: "apm_config.obfuscation.mongodb.keep_values"
-    additional_attributes:
-      config_registry_filename: trace_obfuscation.rs
+    test_support:
+      used_by: [TraceObfuscationConfiguration]
+      additional_attributes:
+        config_registry_filename: trace_obfuscation.rs
 
   apm_config.obfuscation.mongodb.obfuscate_sql_values:
-    support_level: full
-    used_by: [ TraceObfuscationConfiguration ]
-    pipelines: [ traces ]
+    support: full
+    pipelines: [traces]
     description: "Obfuscate SQL values in MongoDB queries"
-    additional_attributes:
-      config_registry_filename: trace_obfuscation.rs
+    test_support:
+      used_by: [TraceObfuscationConfiguration]
+      additional_attributes:
+        config_registry_filename: trace_obfuscation.rs
 
   apm_config.obfuscation.opensearch.enabled:
-    support_level: full
-    used_by: [ TraceObfuscationConfiguration ]
-    pipelines: [ traces ]
+    support: full
+    pipelines: [traces]
     description: "apm_config.obfuscation.opensearch.enabled"
-    test_json: 'true'
-    additional_attributes:
-      config_registry_filename: trace_obfuscation.rs
+    test_support:
+      used_by: [TraceObfuscationConfiguration]
+      test_json: 'true'
+      additional_attributes:
+        config_registry_filename: trace_obfuscation.rs
 
   apm_config.obfuscation.opensearch.keep_values:
-    support_level: full
-    used_by: [ TraceObfuscationConfiguration ]
-    pipelines: [ traces ]
+    support: full
+    pipelines: [traces]
     description: "apm_config.obfuscation.opensearch.keep_values"
-    additional_attributes:
-      config_registry_filename: trace_obfuscation.rs
+    test_support:
+      used_by: [TraceObfuscationConfiguration]
+      additional_attributes:
+        config_registry_filename: trace_obfuscation.rs
 
   apm_config.obfuscation.opensearch.obfuscate_sql_values:
-    support_level: full
-    used_by: [ TraceObfuscationConfiguration ]
-    pipelines: [ traces ]
+    support: full
+    pipelines: [traces]
     description: "Obfuscate SQL values in OpenSearch queries"
-    additional_attributes:
-      config_registry_filename: trace_obfuscation.rs
+    test_support:
+      used_by: [TraceObfuscationConfiguration]
+      additional_attributes:
+        config_registry_filename: trace_obfuscation.rs
 
   apm_config.obfuscation.redis.enabled:
-    support_level: full
-    used_by: [ TraceObfuscationConfiguration ]
-    pipelines: [ traces ]
+    support: full
+    pipelines: [traces]
     description: "apm_config.obfuscation.redis.enabled"
-    test_json: 'true'
-    additional_attributes:
-      config_registry_filename: trace_obfuscation.rs
+    test_support:
+      used_by: [TraceObfuscationConfiguration]
+      test_json: 'true'
+      additional_attributes:
+        config_registry_filename: trace_obfuscation.rs
 
   apm_config.obfuscation.redis.remove_all_args:
-    support_level: full
-    used_by: [ TraceObfuscationConfiguration ]
-    pipelines: [ traces ]
+    support: full
+    pipelines: [traces]
     description: "apm_config.obfuscation.redis.remove_all_args"
-    additional_attributes:
-      config_registry_filename: trace_obfuscation.rs
+    test_support:
+      used_by: [TraceObfuscationConfiguration]
+      additional_attributes:
+        config_registry_filename: trace_obfuscation.rs
 
   apm_config.obfuscation.valkey.enabled:
-    support_level: full
-    used_by: [ TraceObfuscationConfiguration ]
-    pipelines: [ traces ]
+    support: full
+    pipelines: [traces]
     description: "apm_config.obfuscation.valkey.enabled"
-    test_json: 'true'
-    additional_attributes:
-      config_registry_filename: trace_obfuscation.rs
+    test_support:
+      used_by: [TraceObfuscationConfiguration]
+      test_json: 'true'
+      additional_attributes:
+        config_registry_filename: trace_obfuscation.rs
 
   apm_config.obfuscation.valkey.remove_all_args:
-    support_level: full
-    used_by: [ TraceObfuscationConfiguration ]
-    pipelines: [ traces ]
+    support: full
+    pipelines: [traces]
     description: "apm_config.obfuscation.valkey.remove_all_args"
-    additional_attributes:
-      config_registry_filename: trace_obfuscation.rs
+    test_support:
+      used_by: [TraceObfuscationConfiguration]
+      additional_attributes:
+        config_registry_filename: trace_obfuscation.rs
+
+  autoscaling.failover.enabled:
+    support: unknown
+    description: "Enable autoscaling failover metric routing"
+    severity: medium
+    issue: "#1684"
+
+  autoscaling.failover.metrics:
+    support: unknown
+    description: "Metric names forwarded to DCA for failover"
+    severity: medium
+    issue: "#1684"
 
   bind_host:
-    support_level: full
-    used_by: [ DogStatsDConfiguration ]
-    pipelines: [ dogstatsd ]
+    support: full
+    pipelines: [dogstatsd]
     description: "Global listen host fallback"
-    additional_attributes:
-      config_registry_filename: dogstatsd.rs
+    test_support:
+      used_by: [DogStatsDConfiguration]
+      additional_attributes:
+        config_registry_filename: dogstatsd.rs
+
+  cluster_agent.enabled:
+    support: unknown
+    description: "Enable Cluster Agent communication"
+    severity: low
+    issue: "#1684"
 
   cmd_port:
-    support_level: full
-    used_by: [ RemoteAgentClientConfiguration ]
-    pipelines: [ cross_cutting ]
+    support: full
+    pipelines: [cross_cutting]
     description: "Datadog Agent IPC/CMD API port"
-    test_json: '5101'
-    additional_attributes:
-      config_registry_filename: get_typed.rs
+    test_support:
+      used_by: [RemoteAgentClientConfiguration]
+      test_json: '5101'
+      additional_attributes:
+        config_registry_filename: get_typed.rs
+
+  config_id:
+    support: none
+    severity: low
+    planned: false
+    pipelines: [cross_cutting]
+    description: "Fleet Automation config ID tag"
+    documentation: "Core Agent uses this only on Agent HA telemetry metrics."
 
   cri_connection_timeout:
-    support_level: full
-    used_by: [ ContainerdConfiguration ]
-    pipelines: [ cross_cutting ]
+    support: full
+    pipelines: [cross_cutting]
     description: "CRI container runtime connection timeout (s)"
-    additional_attributes:
-      config_registry_filename: containerd.rs
+    test_support:
+      used_by: [ContainerdConfiguration]
+      additional_attributes:
+        config_registry_filename: containerd.rs
 
   cri_query_timeout:
-    support_level: full
-    used_by: [ ContainerdConfiguration ]
-    pipelines: [ cross_cutting ]
+    support: full
+    pipelines: [cross_cutting]
     description: "CRI container runtime query timeout (s)"
-    additional_attributes:
-      config_registry_filename: containerd.rs
+    test_support:
+      used_by: [ContainerdConfiguration]
+      additional_attributes:
+        config_registry_filename: containerd.rs
 
   data_plane.dogstatsd.aggregator_tag_filter_cache_capacity:
-    support_level: full
-    used_by: [ TagFilterlistConfiguration ]
-    pipelines: [ dogstatsd ]
+    support: full
+    pipelines: [dogstatsd]
     description: "Tag-filter deduplication cache size"
-    value_type_override: integer
-    additional_attributes:
-      config_registry_filename: tag_filterlist.rs
+    test_support:
+      used_by: [TagFilterlistConfiguration]
+      value_type_override: integer
+      additional_attributes:
+        config_registry_filename: tag_filterlist.rs
 
   dd_url:
-    support_level: full
-    used_by: [ ForwarderConfiguration ]
-    pipelines: [ cross_cutting ]
+    support: full
+    pipelines: [cross_cutting]
     description: "Override intake endpoint URL"
-    additional_attributes:
-      config_registry_filename: forwarder.rs
+    test_support:
+      used_by: [ForwarderConfiguration]
+      additional_attributes:
+        config_registry_filename: forwarder.rs
 
   dogstatsd_buffer_size:
-    support_level: full
-    used_by: [ DogStatsDConfiguration ]
-    pipelines: [ dogstatsd ]
+    support: full
+    pipelines: [dogstatsd]
     description: "Receive buffer size (bytes)"
-    value_type_override: integer
-    additional_attributes:
-      config_registry_filename: dogstatsd.rs
+    test_support:
+      used_by: [DogStatsDConfiguration]
+      value_type_override: integer
+      additional_attributes:
+        config_registry_filename: dogstatsd.rs
 
   dogstatsd_capture_depth:
-    support_level: full
-    used_by: [ DogStatsDConfiguration ]
-    pipelines: [ dogstatsd ]
+    support: full
+    pipelines: [dogstatsd]
     description: "Traffic capture channel depth"
     issue: "#1381"
-    value_type_override: integer
-    additional_attributes:
-      config_registry_filename: dogstatsd.rs
+    test_support:
+      used_by: [DogStatsDConfiguration]
+      value_type_override: integer
+      additional_attributes:
+        config_registry_filename: dogstatsd.rs
 
   dogstatsd_capture_path:
-    support_level: full
-    used_by: [ DogStatsDConfiguration ]
-    pipelines: [ dogstatsd ]
+    support: full
+    pipelines: [dogstatsd]
     description: "Traffic capture file location"
     issue: "#1381"
-    additional_attributes:
-      config_registry_filename: dogstatsd.rs
+    test_support:
+      used_by: [DogStatsDConfiguration]
+      additional_attributes:
+        config_registry_filename: dogstatsd.rs
 
   dogstatsd_context_expiry_seconds:
-    support_level: full
-    used_by: [ DogStatsDConfiguration ]
-    pipelines: [ dogstatsd ]
+    support: full
+    pipelines: [dogstatsd]
     description: "Context cache TTL (seconds)"
-    value_type_override: integer
-    additional_attributes:
-      config_registry_filename: dogstatsd.rs
+    test_support:
+      used_by: [DogStatsDConfiguration]
+      value_type_override: integer
+      additional_attributes:
+        config_registry_filename: dogstatsd.rs
+
+  dogstatsd_disable_verbose_logs:
+    support: none
+    severity: medium
+    planned: false
+    pipelines: [dogstatsd]
+    description: "Suppress noisy parse error logs"
+    documentation: "ADP does not emit the verbose parse-error logs that this key filters in the core Agent, so there is nothing to suppress."
+    issue: "#1350"
 
   dogstatsd_entity_id_precedence:
-    support_level: full
-    used_by: [ DogStatsDConfiguration ]
-    pipelines: [ dogstatsd ]
+    support: full
+    pipelines: [dogstatsd]
     description: "Entity ID over auto-detection"
-    env_var_override: [ DD_DOGSTATSD_ENTITY_ID_PRECEDENCE ]
-    additional_attributes:
-      config_registry_filename: dogstatsd.rs
+    test_support:
+      used_by: [DogStatsDConfiguration]
+      env_var_override: [DD_DOGSTATSD_ENTITY_ID_PRECEDENCE]
+      additional_attributes:
+        config_registry_filename: dogstatsd.rs
 
   dogstatsd_eol_required:
-    support_level: full
-    used_by: [ DogStatsDConfiguration ]
-    pipelines: [ dogstatsd ]
+    support: full
+    pipelines: [dogstatsd]
     description: "Require newline-terminated messages"
-    test_json: '["udp"]'
-    additional_attributes:
-      config_registry_filename: dogstatsd.rs
+    test_support:
+      used_by: [DogStatsDConfiguration]
+      test_json: '["udp"]'
+      additional_attributes:
+        config_registry_filename: dogstatsd.rs
+
+  dogstatsd_experimental_http.enabled:
+    support: none
+    severity: high
+    planned: true
+    pipelines: [dogstatsd]
+    description: "Enable experimental HTTP/H2C DSD listener"
+    documentation: "Experimental HTTP/H2C DogStatsD ingestion endpoint; not needed for ADP."
+    issue: "#1682"
+
+  dogstatsd_experimental_http.listen_address:
+    support: none
+    severity: high
+    planned: true
+    pipelines: [dogstatsd]
+    description: "Bind address for experimental HTTP DSD listener"
+    documentation: "Experimental HTTP/H2C DogStatsD ingestion endpoint; not needed for ADP."
+    issue: "#1682"
 
   dogstatsd_flush_incomplete_buckets:
-    support_level: full
-    used_by: [ AggregateConfiguration ]
-    pipelines: [ dogstatsd, checks ]
+    support: full
+    pipelines: [dogstatsd, checks]
     description: "Flush open buckets on shutdown"
-    additional_yaml_paths: [ aggregate_flush_open_windows ]
-    additional_attributes:
-      config_registry_filename: aggregate.rs
+    test_support:
+      used_by: [AggregateConfiguration]
+      additional_yaml_paths: [aggregate_flush_open_windows]
+      additional_attributes:
+        config_registry_filename: aggregate.rs
+
+  dogstatsd_host_socket_path:
+    support: none
+    severity: low
+    planned: false
+    pipelines: [dogstatsd]
+    description: "Host UDS socket dir for DSD"
+    documentation: "Not read by DSD server; admission controller only."
 
   dogstatsd_log_file:
-    support_level: full
-    used_by: [ DogStatsDDebugLogConfiguration ]
-    pipelines: [ dogstatsd ]
+    support: full
+    pipelines: [dogstatsd]
     description: "DSD dedicated log file path"
-    additional_attributes:
-      config_registry_filename: dogstatsd.rs
+    test_support:
+      used_by: [DogStatsDDebugLogConfiguration]
+      additional_attributes:
+        config_registry_filename: dogstatsd.rs
 
   dogstatsd_log_file_max_rolls:
-    support_level: full
-    used_by: [ DogStatsDDebugLogConfiguration ]
-    pipelines: [ dogstatsd ]
+    support: full
+    pipelines: [dogstatsd]
     description: "DSD log file max roll count"
-    value_type_override: integer
-    additional_attributes:
-      config_registry_filename: dogstatsd.rs
+    test_support:
+      used_by: [DogStatsDDebugLogConfiguration]
+      value_type_override: integer
+      additional_attributes:
+        config_registry_filename: dogstatsd.rs
 
   dogstatsd_log_file_max_size:
-    support_level: full
-    used_by: [ DogStatsDDebugLogConfiguration ]
-    pipelines: [ dogstatsd ]
+    support: full
+    pipelines: [dogstatsd]
     description: "DSD log file max size"
-    test_json: '"42MB"'
-    additional_attributes:
-      config_registry_filename: dogstatsd.rs
+    test_support:
+      used_by: [DogStatsDDebugLogConfiguration]
+      test_json: '"42MB"'
+      additional_attributes:
+        config_registry_filename: dogstatsd.rs
 
   dogstatsd_logging_enabled:
-    support_level: full
-    used_by: [ DogStatsDDebugLogConfiguration ]
-    pipelines: [ dogstatsd ]
+    support: full
+    pipelines: [dogstatsd]
     description: "Enables DSD metric logging"
-    documentation: |-
+    documentation: |
       ADP supports the core agent's DogStatsD metric debug log. To write this file, set
       `dogstatsd_metrics_stats_enable: true`. `dogstatsd_logging_enabled` also must be `true`;
       it defaults to `true`, so most configurations only need to enable
@@ -400,15 +548,16 @@ supported:
       This debug log differs from the `dogstatsd_capture_*` settings. The debug log records
       decoded metric summaries after DogStatsD parsing. The capture settings record raw
       DogStatsD traffic for packet-level investigation.
-    additional_attributes:
-      config_registry_filename: dogstatsd.rs
+    test_support:
+      used_by: [DogStatsDDebugLogConfiguration]
+      additional_attributes:
+        config_registry_filename: dogstatsd.rs
 
   dogstatsd_mapper_cache_size:
-    support_level: partial
-    used_by: [ DogStatsDMapperConfiguration ]
-    pipelines: [ dogstatsd ]
+    support: partial
+    pipelines: [dogstatsd]
     description: "Mapper result LRU cache size"
-    documentation: |-
+    documentation: |
       ADP and the core agent both cache mapper results to skip regex evaluation on repeat
       metric names. With the default value of `1000`, and with any positive integer, behavior
       matches the core agent: results are cached in an LRU keyed by the original metric name,
@@ -423,981 +572,29 @@ supported:
       If you previously set `dogstatsd_mapper_cache_size: 0` in the core agent to turn off the
       mapper, clear `dogstatsd_mapper_profiles` instead when running ADP.
     issue: "#1687"
-    value_type_override: integer
-    additional_attributes:
-      config_registry_filename: dogstatsd_mapper.rs
+    test_support:
+      used_by: [DogStatsDMapperConfiguration]
+      value_type_override: integer
+      additional_attributes:
+        config_registry_filename: dogstatsd_mapper.rs
 
   dogstatsd_mapper_profiles:
-    support_level: full
-    used_by: [ DogStatsDMapperConfiguration ]
-    pipelines: [ dogstatsd ]
+    support: full
+    pipelines: [dogstatsd]
     description: "Metric mapping profile definitions"
-    test_json: '[{"name":"test","prefix":"test.","mappings":[]}]'
-    additional_attributes:
-      config_registry_filename: dogstatsd_mapper.rs
-
-  dogstatsd_metrics_stats_enable:
-    support_level: partial
-    used_by: [ DogStatsDDebugLogConfiguration ]
-    pipelines: [ dogstatsd ]
-    description: "Enable per-metric debug stats"
-    documentation: "See `dogstatsd_stats_enable`"
-    issue: "#1352"
-    additional_attributes:
-      config_registry_filename: dogstatsd.rs
-
-  dogstatsd_no_aggregation_pipeline:
-    support_level: full
-    used_by: [ AggregateConfiguration, DogStatsDConfiguration ]
-    pipelines: [ dogstatsd, checks ]
-    description: "Enable no-agg timestamped path"
-    additional_attributes:
-      config_registry_filename: aggregate.rs
-
-  dogstatsd_non_local_traffic:
-    support_level: full
-    used_by: [ DogStatsDConfiguration ]
-    pipelines: [ dogstatsd ]
-    description: "Accept non-localhost UDP/TCP"
-    additional_attributes:
-      config_registry_filename: dogstatsd.rs
-
-  dogstatsd_origin_detection:
-    support_level: full
-    used_by: [ DogStatsDConfiguration ]
-    pipelines: [ dogstatsd ]
-    description: "Enable UDS origin detection"
-    env_var_override: [ DD_DOGSTATSD_ORIGIN_DETECTION ]
-    additional_attributes:
-      config_registry_filename: dogstatsd.rs
-
-  dogstatsd_origin_detection_client:
-    support_level: full
-    used_by: [ DogStatsDConfiguration ]
-    pipelines: [ dogstatsd ]
-    description: "Honor client origin proto fields"
-    env_var_override: [ DD_DOGSTATSD_ORIGIN_DETECTION_CLIENT ]
-    additional_attributes:
-      config_registry_filename: dogstatsd.rs
-
-  dogstatsd_origin_optout_enabled:
-    support_level: full
-    used_by: [ DogStatsDConfiguration ]
-    pipelines: [ dogstatsd ]
-    description: "Allow clients to opt out origin"
-    env_var_override: [ DD_DOGSTATSD_ORIGIN_OPTOUT_ENABLED ]
-    additional_attributes:
-      config_registry_filename: dogstatsd.rs
-
-  dogstatsd_port:
-    support_level: full
-    used_by: [ DogStatsDConfiguration ]
-    pipelines: [ dogstatsd ]
-    description: "UDP listen port"
-    value_type_override: integer
-    additional_attributes:
-      config_registry_filename: dogstatsd.rs
-
-  dogstatsd_so_rcvbuf:
-    support_level: full
-    used_by: [ DogStatsDConfiguration ]
-    pipelines: [ dogstatsd ]
-    description: "Socket receive buffer size"
-    value_type_override: integer
-    additional_attributes:
-      config_registry_filename: dogstatsd.rs
-
-  dogstatsd_socket:
-    support_level: full
-    used_by: [ DogStatsDConfiguration ]
-    pipelines: [ dogstatsd ]
-    description: "UDS datagram socket path"
-    additional_attributes:
-      config_registry_filename: dogstatsd.rs
-
-
-
-  dogstatsd_stream_log_too_big:
-    support_level: full
-    used_by: [ DogStatsDConfiguration ]
-    pipelines: [ dogstatsd ]
-    description: "Log oversized UDS stream frames"
-    additional_attributes:
-      config_registry_filename: dogstatsd.rs
-
-  dogstatsd_stream_socket:
-    support_level: full
-    used_by: [ DogStatsDConfiguration ]
-    pipelines: [ dogstatsd ]
-    description: "UDS stream socket path"
-    additional_attributes:
-      config_registry_filename: dogstatsd.rs
-
-  dogstatsd_string_interner_size:
-    support_level: full
-    used_by: [ DogStatsDConfiguration ]
-    pipelines: [ dogstatsd ]
-    description: "String interner capacity"
-    value_type_override: integer
-    additional_attributes:
-      config_registry_filename: dogstatsd.rs
-
-  dogstatsd_tag_cardinality:
-    support_level: full
-    used_by: [ DogStatsDConfiguration ]
-    pipelines: [ dogstatsd ]
-    description: "Default tag cardinality level"
-    env_var_override: [ DD_DOGSTATSD_TAG_CARDINALITY ]
-    test_json: '"high"'
-    additional_attributes:
-      config_registry_filename: dogstatsd.rs
-
-  dogstatsd_tags:
-    support_level: full
-    used_by: [ DogStatsDConfiguration ]
-    pipelines: [ dogstatsd ]
-    description: "Extra tags added to all DSD data"
-    additional_attributes:
-      config_registry_filename: dogstatsd.rs
-
-  enable_payloads.events:
-    support_level: full
-    used_by: [ DogStatsDConfiguration ]
-    pipelines: [ dogstatsd ]
-    description: "Allow sending event payloads"
-    additional_attributes:
-      config_registry_filename: dogstatsd.rs
-
-  enable_payloads.series:
-    support_level: full
-    used_by: [ DogStatsDConfiguration ]
-    pipelines: [ dogstatsd ]
-    description: "Allow sending series payloads"
-    additional_attributes:
-      config_registry_filename: dogstatsd.rs
-
-  enable_payloads.service_checks:
-    support_level: full
-    used_by: [ DogStatsDConfiguration ]
-    pipelines: [ dogstatsd ]
-    description: "Allow sending service check payloads"
-    additional_attributes:
-      config_registry_filename: dogstatsd.rs
-
-  enable_payloads.sketches:
-    support_level: full
-    used_by: [ DogStatsDConfiguration ]
-    pipelines: [ dogstatsd ]
-    description: "Allow sending sketch payloads"
-    additional_attributes:
-      config_registry_filename: dogstatsd.rs
-
-  env:
-    support_level: full
-    used_by: [ DatadogApmStatsEncoderConfiguration, DatadogTraceConfiguration ]
-    pipelines: [ traces ]
-    description: "Agent environment name"
-    documentation: >-
-      ADP reads env but defaults to 'none' instead of the core agent's ''. Scope
-      is narrower in ADP (only traces/stats encoders). Neither implementation uses
-      env directly on the DogStatsD metrics path.
-    additional_attributes:
-      config_registry_filename: encoders.rs
-
-  forwarder_backoff_base:
-    support_level: full
-    used_by: [ ForwarderConfiguration ]
-    pipelines: [ cross_cutting ]
-    description: "Retry backoff base (secs)"
-    additional_attributes:
-      config_registry_filename: forwarder.rs
-
-  forwarder_backoff_factor:
-    support_level: full
-    used_by: [ ForwarderConfiguration ]
-    pipelines: [ cross_cutting ]
-    description: "Retry backoff jitter factor"
-    additional_attributes:
-      config_registry_filename: forwarder.rs
-
-  forwarder_backoff_max:
-    support_level: full
-    used_by: [ ForwarderConfiguration ]
-    pipelines: [ cross_cutting ]
-    description: "Retry backoff ceiling (secs)"
-    additional_attributes:
-      config_registry_filename: forwarder.rs
-
-  forwarder_connection_reset_interval:
-    support_level: full
-    used_by: [ ForwarderConfiguration ]
-    pipelines: [ cross_cutting ]
-    description: "HTTP conn reset interval (secs)"
-    value_type_override: integer
-    additional_attributes:
-      config_registry_filename: forwarder.rs
-
-  forwarder_high_prio_buffer_size:
-    support_level: full
-    used_by: [ ForwarderConfiguration ]
-    pipelines: [ cross_cutting ]
-    description: "High-priority request queue size"
-    issue: "#1362"
-    value_type_override: integer
-    additional_attributes:
-      config_registry_filename: forwarder.rs
-
-  forwarder_http_protocol:
-    support_level: full
-    used_by: [ ForwarderConfiguration ]
-    pipelines: [ cross_cutting ]
-    description: "HTTP version selection (auto/http1/http2)"
-    issue: "#1361"
-    test_json: '"http1"'
-    additional_attributes:
-      config_registry_filename: forwarder.rs
-
-  forwarder_num_workers:
-    support_level: full
-    used_by: [ ForwarderConfiguration ]
-    pipelines: [ cross_cutting ]
-    description: "Concurrent forwarder workers"
-    value_type_override: integer
-    additional_attributes:
-      config_registry_filename: forwarder.rs
-
-  forwarder_outdated_file_in_days:
-    support_level: full
-    used_by: [ ForwarderConfiguration ]
-    pipelines: [ cross_cutting ]
-    description: "Days before retry files are deleted"
-    issue: "#1360"
-    value_type_override: integer
-    additional_attributes:
-      config_registry_filename: forwarder.rs
-
-  forwarder_recovery_interval:
-    support_level: full
-    used_by: [ ForwarderConfiguration ]
-    pipelines: [ cross_cutting ]
-    description: "Backoff recovery decrease factor"
-    value_type_override: integer
-    additional_attributes:
-      config_registry_filename: forwarder.rs
-
-  forwarder_recovery_reset:
-    support_level: full
-    used_by: [ ForwarderConfiguration ]
-    pipelines: [ cross_cutting ]
-    description: "Reset errors on success"
-    additional_attributes:
-      config_registry_filename: forwarder.rs
-
-  forwarder_retry_queue_max_size:
-    support_level: full
-    used_by: [ ForwarderConfiguration ]
-    pipelines: [ cross_cutting ]
-    description: "Retry queue max size (deprecated)"
-    value_type_override: integer
-    additional_attributes:
-      config_registry_filename: forwarder.rs
-
-  forwarder_retry_queue_payloads_max_size:
-    support_level: full
-    used_by: [ ForwarderConfiguration ]
-    pipelines: [ cross_cutting ]
-    description: "Retry queue max size (bytes)"
-    value_type_override: integer
-    additional_attributes:
-      config_registry_filename: forwarder.rs
-
-  forwarder_storage_max_disk_ratio:
-    support_level: full
-    used_by: [ ForwarderConfiguration ]
-    pipelines: [ cross_cutting ]
-    description: "Max disk usage ratio for retry"
-    additional_attributes:
-      config_registry_filename: forwarder.rs
-
-  forwarder_storage_max_size_in_bytes:
-    support_level: full
-    used_by: [ ForwarderConfiguration ]
-    pipelines: [ cross_cutting ]
-    description: "Max on-disk retry storage size"
-    value_type_override: integer
-    additional_attributes:
-      config_registry_filename: forwarder.rs
-
-  forwarder_storage_path:
-    support_level: full
-    used_by: [ ForwarderConfiguration ]
-    pipelines: [ cross_cutting ]
-    description: "On-disk retry storage directory"
-    additional_attributes:
-      config_registry_filename: forwarder.rs
-
-  forwarder_timeout:
-    support_level: full
-    used_by: [ ForwarderConfiguration ]
-    pipelines: [ cross_cutting ]
-    description: "Forwarder HTTP request timeout"
-    value_type_override: integer
-    additional_attributes:
-      config_registry_filename: forwarder.rs
-
-  histogram_aggregates:
-    support_level: full
-    used_by: [ AggregateConfiguration ]
-    pipelines: [ dogstatsd, checks ]
-    description: "Histogram aggregate statistics"
-    test_json: '["count"]'
-    additional_attributes:
-      config_registry_filename: aggregate.rs
-
-  histogram_copy_to_distribution:
-    support_level: full
-    used_by: [ AggregateConfiguration ]
-    pipelines: [ dogstatsd, checks ]
-    description: "Copy histograms to distributions"
-    additional_attributes:
-      config_registry_filename: aggregate.rs
-
-  histogram_copy_to_distribution_prefix:
-    support_level: full
-    used_by: [ AggregateConfiguration ]
-    pipelines: [ dogstatsd, checks ]
-    description: "Prefix for hist-to-dist copies"
-    additional_attributes:
-      config_registry_filename: aggregate.rs
-
-  log_format_rfc3339:
-    support_level: full
-    used_by: [ get_typed ]
-    pipelines: [ cross_cutting ]
-    description: "Use RFC 3339 timestamps in log output"
-    additional_attributes:
-      config_registry_filename: get_typed.rs
-
-  log_level:
-    support_level: partial
-    used_by: [ get_typed ]
-    pipelines: [ cross_cutting ]
-    description: "Log verbosity directives"
-    documentation: |-
-      ADP accepts `log_level` as the startup logging control. A plain level applies to
-      ADP-owned and Saluki-owned targets only, including `agent_data_plane`, `saluki_*`, and
-      runtime crates under `lib/`.
-
-      ```yaml
-      log_level: debug
-      ```
-
-      This keeps third-party dependencies such as `hyper`, `tokio`, and `tonic` at their
-      default filtering unless you opt them in.
-
-      To control dependency logs or set a global fallback, use advanced `EnvFilter` directives
-      in `log_level`. ADP applies those directive strings as configured:
-
-      ```yaml
-      log_level: warn,agent_data_plane=debug,hyper=warn
-      ```
-    additional_attributes:
-      config_registry_filename: get_typed.rs
-
-  log_payloads:
-    support_level: full
-    used_by: [ DatadogEventsConfiguration, DatadogMetricsConfiguration, DatadogServiceChecksConfiguration ]
-    pipelines: [ checks, dogstatsd, traces ]
-    description: "Debug-log decoded payload contents before encoding"
-    documentation: |-
-      Set `log_payloads: true` and run with debug-level logging to see decoded payload objects
-      (scalar series metrics, sketches/distributions, events, and service checks) before they
-      enter Datadog encoders. These logs can contain high-volume customer data including metric
-      names, tags, host and container metadata, event text, and service check messages. Use this
-      setting only while diagnosing payload content.
-
-      ADP does not dump the exact encoded JSON or protobuf HTTP request body, and it does not
-      log compressed wire payload bytes.
-    additional_attributes:
-      config_registry_filename: encoders.rs
-
-  metric_filterlist:
-    support_level: full
-    used_by: [ DogStatsDPrefixFilterConfiguration ]
-    pipelines: [ dogstatsd ]
-    description: "Metric name blocklist"
-    additional_attributes:
-      config_registry_filename: dogstatsd_prefix_filter.rs
-
-  metric_filterlist_match_prefix:
-    support_level: full
-    used_by: [ DogStatsDPrefixFilterConfiguration ]
-    pipelines: [ dogstatsd ]
-    description: "Blocklist uses prefix matching"
-    additional_attributes:
-      config_registry_filename: dogstatsd_prefix_filter.rs
-
-  min_tls_version:
-    support_level: partial
-    used_by: [ ForwarderConfiguration ]
-    pipelines: [ cross_cutting ]
-    description: "Minimum TLS version for HTTPS connections"
-    documentation: |-
-      ADP supports `min_tls_version` for Datadog intake forwarding through the shared Datadog
-      forwarder. The default is `tlsv1.2`, which allows TLS 1.2 and TLS 1.3. To require TLS
-      1.3 only, set `min_tls_version: tlsv1.3` or `DD_MIN_TLS_VERSION=tlsv1.3`.
-
-      The core agent also accepts `tlsv1.0` and `tlsv1.1`. ADP accepts those values for
-      configuration compatibility, but clamps them to TLS 1.2 because ADP uses `rustls`, which
-      does not support TLS 1.0 or TLS 1.1.
-
-      This setting does not affect ADP IPC, local privileged APIs, ADP control-plane clients,
-      OTLP proxying to the core agent, or unrelated HTTP clients.
-    env_var_override: [ DD_MIN_TLS_VERSION ]
-    additional_attributes:
-      config_registry_filename: forwarder.rs
-
-  multi_region_failover.api_key:
-    support_level: full
-    used_by: [ MrfConfiguration ]
-    pipelines: [ cross_cutting ]
-    description: "API key for the failover-region endpoint"
-    env_var_override: [ DD_MULTI_REGION_FAILOVER_API_KEY ]
-    value_type_override: string
-    additional_attributes:
-      config_registry_filename: mrf.rs
-
-  multi_region_failover.dd_url:
-    support_level: full
-    used_by: [ MrfConfiguration ]
-    pipelines: [ cross_cutting ]
-    description: "Failover intake URL"
-    env_var_override: [ DD_MULTI_REGION_FAILOVER_DD_URL ]
-    value_type_override: string
-    additional_attributes:
-      config_registry_filename: mrf.rs
-
-  multi_region_failover.enabled:
-    support_level: partial
-    used_by: [ MrfConfiguration ]
-    pipelines: [ cross_cutting ]
-    description: "Enable multi-region failover mode"
-    documentation: |-
-      ADP supports multi-region failover for metrics. When `multi_region_failover.enabled` and
-      `multi_region_failover.failover_metrics` are both `true`, ADP forwards metrics to the
-      primary Datadog endpoint and to a second MRF endpoint.
-
-      To enable the MRF metrics branch at startup, configure `multi_region_failover.api_key`
-      and one of `multi_region_failover.site` or `multi_region_failover.dd_url`. If the MRF
-      endpoint configuration is incomplete, ADP skips the MRF branch and continues forwarding
-      to the primary endpoint.
-
-      ADP does not fall back to the primary `api_key`, `site`, or `dd_url` for MRF traffic.
-      `multi_region_failover.enabled` and endpoint selection are resolved at startup.
-      `multi_region_failover.failover_metrics`, `multi_region_failover.metric_allowlist`, and
-      `multi_region_failover.api_key` can refresh from live configuration after the MRF branch
-      is enabled.
-
-      | Config Key                               | Behavior                                                                   | Default |
-      | ---------------------------------------- | -------------------------------------------------------------------------- | ------- |
-      | `multi_region_failover.enabled`          | Enables multi-region failover mode.                                        | `false` |
-      | `multi_region_failover.failover_metrics` | Enables metrics forwarding to the failover region when MRF is enabled.     | `false` |
-      | `multi_region_failover.metric_allowlist` | Exact metric names to forward to MRF. Empty or unset forwards all metrics. | `[]`    |
-      | `multi_region_failover.api_key`          | API key for the failover-region endpoint.                                  | unset   |
-      | `multi_region_failover.site`             | Datadog site for the failover region, used as `https://app.mrf.<site>`.    | unset   |
-      | `multi_region_failover.dd_url`           | Explicit failover intake URL. Takes precedence over `site` when set.       | unset   |
-    env_var_override: [ DD_MULTI_REGION_FAILOVER_ENABLED ]
-    additional_attributes:
-      config_registry_filename: mrf.rs
-
-  multi_region_failover.failover_metrics:
-    support_level: full
-    used_by: [ MrfConfiguration ]
-    pipelines: [ cross_cutting ]
-    description: "Enable metrics forwarding to failover region"
-    env_var_override: [ DD_MULTI_REGION_FAILOVER_FAILOVER_METRICS ]
-    additional_attributes:
-      config_registry_filename: mrf.rs
-
-  multi_region_failover.metric_allowlist:
-    support_level: full
-    used_by: [ MrfConfiguration ]
-    pipelines: [ cross_cutting ]
-    description: "Metric name allowlist for MRF forwarding"
-    env_var_override: [ DD_MULTI_REGION_FAILOVER_METRIC_ALLOWLIST ]
-    value_type_override: string_list
-    additional_attributes:
-      config_registry_filename: mrf.rs
-
-  multi_region_failover.site:
-    support_level: full
-    used_by: [ MrfConfiguration ]
-    pipelines: [ cross_cutting ]
-    description: "Datadog site for the failover region"
-    env_var_override: [ DD_MULTI_REGION_FAILOVER_SITE ]
-    value_type_override: string
-    additional_attributes:
-      config_registry_filename: mrf.rs
-
-  no_proxy_nonexact_match:
-    support_level: full
-    used_by: [ ForwarderConfiguration, ProxyConfiguration ]
-    pipelines: [ cross_cutting ]
-    description: "Domain/CIDR `no_proxy` matching"
-    env_var_override: [ DD_NO_PROXY_NONEXACT_MATCH ]
-    additional_attributes:
-      config_registry_filename: proxy.rs
-
-  observability_pipelines_worker.metrics.enabled:
-    support_level: full
-    used_by: [ ForwarderConfiguration ]
-    pipelines: [ cross_cutting ]
-    description: "Route metrics to OPW instance"
-    env_var_override: [ DD_OBSERVABILITY_PIPELINES_WORKER_METRICS_ENABLED ]
-    additional_attributes:
-      config_registry_filename: forwarder.rs
-
-  observability_pipelines_worker.metrics.url:
-    support_level: full
-    used_by: [ ForwarderConfiguration ]
-    pipelines: [ cross_cutting ]
-    description: "OPW metrics intake URL"
-    env_var_override: [ DD_OBSERVABILITY_PIPELINES_WORKER_METRICS_URL ]
-    additional_attributes:
-      config_registry_filename: forwarder.rs
-
-  origin_detection_unified:
-    support_level: full
-    used_by: [ DogStatsDConfiguration ]
-    pipelines: [ dogstatsd ]
-    description: "Unified origin detection mode"
-    env_var_override: [ DD_ORIGIN_DETECTION_UNIFIED ]
-    additional_attributes:
-      config_registry_filename: dogstatsd.rs
-
-  otlp_config.logs.enabled:
-    support_level: full
-    used_by: [ OtlpConfiguration ]
-    pipelines: [ otlp ]
-    description: "otlp_config.logs.enabled"
-    test_json: 'false'
-    additional_attributes:
-      config_registry_filename: otlp.rs
-
-  otlp_config.metrics.enabled:
-    support_level: full
-    used_by: [ OtlpConfiguration ]
-    pipelines: [ otlp ]
-    description: "otlp_config.metrics.enabled"
-    additional_attributes:
-      config_registry_filename: otlp.rs
-
-  otlp_config.receiver.protocols.grpc.endpoint:
-    support_level: full
-    used_by: [ OtlpRelayConfiguration, OtlpConfiguration ]
-    pipelines: [ otlp ]
-    description: "otlp_config.receiver.protocols.grpc.endpoint"
-    additional_attributes:
-      config_registry_filename: otlp.rs
-
-  otlp_config.receiver.protocols.grpc.max_recv_msg_size_mib:
-    support_level: full
-    used_by: [ OtlpRelayConfiguration, OtlpConfiguration ]
-    pipelines: [ otlp ]
-    description: "Max OTLP inbound gRPC message size (MiB)"
-    value_type_override: integer
-    additional_attributes:
-      config_registry_filename: otlp.rs
-
-  otlp_config.receiver.protocols.grpc.transport:
-    support_level: full
-    used_by: [ OtlpRelayConfiguration, OtlpConfiguration ]
-    pipelines: [ otlp ]
-    description: "otlp_config.receiver.protocols.grpc.transport"
-    additional_attributes:
-      config_registry_filename: otlp.rs
-
-  otlp_config.receiver.protocols.http.endpoint:
-    support_level: full
-    used_by: [ OtlpRelayConfiguration, OtlpConfiguration ]
-    pipelines: [ otlp ]
-    description: "otlp_config.receiver.protocols.http.endpoint"
-    additional_attributes:
-      config_registry_filename: otlp.rs
-
-  otlp_config.traces.enabled:
-    support_level: full
-    used_by: [ OtlpDecoderConfiguration, OtlpConfiguration ]
-    pipelines: [ traces ]
-    description: "otlp_config.traces.enabled"
-    additional_attributes:
-      config_registry_filename: otlp.rs
-
-  otlp_config.traces.internal_port:
-    support_level: full
-    used_by: [ OtlpDecoderConfiguration, OtlpConfiguration ]
-    pipelines: [ traces ]
-    description: "otlp_config.traces.internal_port"
-    value_type_override: integer
-    additional_attributes:
-      config_registry_filename: otlp.rs
-
-  otlp_config.traces.probabilistic_sampler.sampling_percentage:
-    support_level: full
-    used_by: [ OtlpDecoderConfiguration, OtlpConfiguration ]
-    pipelines: [ traces ]
-    description: "OTLP trace sampling percentage"
-    additional_attributes:
-      config_registry_filename: otlp.rs
-
-  provider_kind:
-    support_level: full
-    used_by: [ DogStatsDConfiguration ]
-    pipelines: [ dogstatsd ]
-    description: "Provider kind static tag"
-    env_var_override: [ DD_PROVIDER_KIND ]
-    additional_attributes:
-      config_registry_filename: dogstatsd.rs
-
-  proxy.http:
-    support_level: full
-    used_by: [ ForwarderConfiguration, ProxyConfiguration ]
-    pipelines: [ cross_cutting ]
-    description: "HTTP proxy URL"
-    env_var_override: [ DD_PROXY_HTTP, HTTP_PROXY ]
-    additional_attributes:
-      config_registry_filename: proxy.rs
-
-  proxy.https:
-    support_level: full
-    used_by: [ ForwarderConfiguration, ProxyConfiguration ]
-    pipelines: [ cross_cutting ]
-    description: "HTTPS proxy URL"
-    env_var_override: [ DD_PROXY_HTTPS, HTTPS_PROXY ]
-    additional_attributes:
-      config_registry_filename: proxy.rs
-
-  proxy.no_proxy:
-    support_level: full
-    used_by: [ ForwarderConfiguration, ProxyConfiguration ]
-    pipelines: [ cross_cutting ]
-    description: "Hosts bypassing proxy"
-    env_var_override: [ DD_PROXY_NO_PROXY ]
-    additional_attributes:
-      config_registry_filename: proxy.rs
-
-  serializer_compressor_kind:
-    support_level: full
-    used_by: [ DatadogEventsConfiguration, DatadogLogsConfiguration, DatadogMetricsConfiguration, DatadogServiceChecksConfiguration, DatadogTraceConfiguration ]
-    pipelines: [ cross_cutting ]
-    description: "Payload compression algorithm"
-    additional_attributes:
-      config_registry_filename: encoders.rs
-
-  serializer_max_payload_size:
-    support_level: full
-    used_by: [ DatadogEventsConfiguration, DatadogMetricsConfiguration, DatadogServiceChecksConfiguration ]
-    pipelines: [ checks, dogstatsd ]
-    description: "Max compressed payload size (generic)"
-    value_type_override: integer
-    additional_attributes:
-      config_registry_filename: encoders.rs
-
-  serializer_max_series_payload_size:
-    support_level: full
-    used_by: [ DatadogMetricsConfiguration ]
-    pipelines: [ checks, dogstatsd ]
-    description: "Max compressed V2 series payload size"
-    value_type_override: integer
-    additional_attributes:
-      config_registry_filename: encoders.rs
-
-  serializer_max_series_points_per_payload:
-    support_level: full
-    used_by: [ DatadogMetricsConfiguration ]
-    pipelines: [ checks, dogstatsd ]
-    description: "Max data points per series payload"
-    value_type_override: integer
-    additional_attributes:
-      config_registry_filename: encoders.rs
-
-  serializer_max_series_uncompressed_payload_size:
-    support_level: full
-    used_by: [ DatadogMetricsConfiguration ]
-    pipelines: [ checks, dogstatsd ]
-    description: "Max uncompressed V2 series payload size"
-    value_type_override: integer
-    additional_attributes:
-      config_registry_filename: encoders.rs
-
-  serializer_max_uncompressed_payload_size:
-    support_level: full
-    used_by: [ DatadogEventsConfiguration, DatadogMetricsConfiguration, DatadogServiceChecksConfiguration ]
-    pipelines: [ checks, dogstatsd ]
-    description: "Max uncompressed payload size (generic)"
-    value_type_override: integer
-    additional_attributes:
-      config_registry_filename: encoders.rs
-
-  serializer_zstd_compressor_level:
-    support_level: partial
-    used_by: [ DatadogEventsConfiguration, DatadogLogsConfiguration, DatadogMetricsConfiguration, DatadogServiceChecksConfiguration, DatadogTraceConfiguration ]
-    pipelines: [ cross_cutting ]
-    description: "Zstd compression level"
-    documentation: >-
-      ADP defaults to level 3 vs Agent level 1. ADP intentionally compresses
-      better. Key is recognized by both; default divergence is intentional.
-    value_type_override: integer
-    additional_attributes:
-      config_registry_filename: encoders.rs
-
-  site:
-    support_level: full
-    used_by: [ ForwarderConfiguration ]
-    pipelines: [ cross_cutting ]
-    description: "Datadog site domain"
-    additional_attributes:
-      config_registry_filename: forwarder.rs
-
-  skip_ssl_validation:
-    support_level: partial
-    used_by: [ ForwarderConfiguration ]
-    pipelines: [ cross_cutting ]
-    description: "Skip TLS cert validation"
-    documentation: |-
-      ADP supports `skip_ssl_validation` for Datadog intake forwarding through the shared
-      Datadog forwarder. The default is `false`, which preserves normal server certificate
-      validation. When enabled, this setting affects the Datadog intake clients used by metrics,
-      logs, traces, events, and service checks that flow through the shared forwarder.
-
-      This setting does not affect ADP IPC, local privileged APIs, ADP control-plane clients,
-      OTLP proxying to the core agent, or unrelated HTTP clients. In FIPS builds, ADP rejects
-      `skip_ssl_validation: true` because disabling TLS certificate validation is not
-      FIPS-compliant.
-    env_var_override: [ DD_SKIP_SSL_VALIDATION ]
-    additional_attributes:
-      config_registry_filename: forwarder.rs
-
-  statsd_forward_host:
-    support_level: partial
-    used_by: [ DogStatsDConfiguration ]
-    pipelines: [ dogstatsd ]
-    description: "UDP packet forwarding destination host"
-    documentation: |-
-      ADP supports DogStatsD forwarding when both `statsd_forward_host` and
-      `statsd_forward_port` are set. ADP forwards each framed DogStatsD message over UDP to the
-      configured destination before parsing, filtering, mapping, or aggregation. Forwarding
-      does not preserve the core Agent's packet-buffer grouping, so forwarded UDP datagrams may
-      be split differently while carrying the same DogStatsD messages. ADP logs setup failures
-      and tracks send failures through telemetry.
-    test_json: '"127.0.0.1"'
-    additional_attributes:
-      config_registry_filename: dogstatsd.rs
-
-  statsd_forward_port:
-    support_level: full
-    used_by: [ DogStatsDConfiguration ]
-    pipelines: [ dogstatsd ]
-    description: "UDP packet forwarding destination port"
-    value_type_override: integer
-    test_json: '9125'
-    additional_attributes:
-      config_registry_filename: dogstatsd.rs
-
-  statsd_metric_blocklist:
-    support_level: full
-    used_by: [ DogStatsDPrefixFilterConfiguration ]
-    pipelines: [ dogstatsd ]
-    description: "List of metric names to block/drop"
-    additional_attributes:
-      config_registry_filename: dogstatsd_prefix_filter.rs
-
-  statsd_metric_blocklist_match_prefix:
-    support_level: full
-    used_by: [ DogStatsDPrefixFilterConfiguration ]
-    pipelines: [ dogstatsd ]
-    description: "Treat blocklist entries as prefixes"
-    additional_attributes:
-      config_registry_filename: dogstatsd_prefix_filter.rs
-
-  statsd_metric_namespace:
-    support_level: full
-    used_by: [ DogStatsDPrefixFilterConfiguration ]
-    pipelines: [ dogstatsd ]
-    description: "Prefix prepended to all metric names"
-    additional_attributes:
-      config_registry_filename: dogstatsd_prefix_filter.rs
-
-  statsd_metric_namespace_blacklist:
-    support_level: full
-    used_by: [ DogStatsDPrefixFilterConfiguration ]
-    pipelines: [ dogstatsd ]
-    description: "Prefixes exempt from namespace"
-    additional_yaml_paths: [ statsd_metric_namespace_blocklist ]
-    additional_attributes:
-      config_registry_filename: dogstatsd_prefix_filter.rs
-
-  syslog_rfc:
-    support_level: full
-    used_by: [ get_typed ]
-    pipelines: [ cross_cutting ]
-    description: "Use RFC-style syslog header"
-    additional_attributes:
-      config_registry_filename: get_typed.rs
-
-  syslog_uri:
-    support_level: full
-    used_by: [ get_typed ]
-    pipelines: [ cross_cutting ]
-    description: "Syslog destination URI"
-    additional_attributes:
-      config_registry_filename: get_typed.rs
-
-  use_proxy_for_cloud_metadata:
-    support_level: full
-    used_by: [ ForwarderConfiguration, ProxyConfiguration ]
-    pipelines: [ cross_cutting ]
-    description: "Proxy cloud metadata endpoints"
-    env_var_override: [ DD_USE_PROXY_FOR_CLOUD_METADATA ]
-    additional_attributes:
-      config_registry_filename: proxy.rs
-
-  use_v2_api.series:
-    support_level: full
-    used_by: [ DatadogMetricsConfiguration ]
-    pipelines: [ checks, dogstatsd ]
-    description: "Send series via V2 protobuf endpoint"
-    additional_attributes:
-      config_registry_filename: encoders.rs
-
-  vector.metrics.enabled:
-    support_level: full
-    used_by: [ ForwarderConfiguration ]
-    pipelines: [ cross_cutting ]
-    description: "Route metrics to OPW (legacy alias)"
-    env_var_override: [ DD_VECTOR_METRICS_ENABLED ]
-    additional_attributes:
-      config_registry_filename: forwarder.rs
-
-  vector.metrics.url:
-    support_level: full
-    used_by: [ ForwarderConfiguration ]
-    pipelines: [ cross_cutting ]
-    description: "OPW metrics intake URL (legacy alias)"
-    env_var_override: [ DD_VECTOR_METRICS_URL ]
-    additional_attributes:
-      config_registry_filename: forwarder.rs
-
-  vsock_addr:
-    support_level: full
-    used_by: [ RemoteAgentClientConfiguration ]
-    pipelines: [ cross_cutting ]
-    description: "vsock address for Agent IPC endpoint"
-    test_json: '"host"'
-    additional_attributes:
-      config_registry_filename: get_typed.rs
-
-####################################################################################################
-# UNSUPPORTED
-####################################################################################################
-unsupported:
-  aggregator_buffer_size:
-    severity: low
-    planned: false
-    pipelines: [ dogstatsd ]
-    description: "Channel buffer depth for aggregator queues"
-    documentation: >-
-      Saluki topology uses fixed interconnect sizes and construction-time wiring;
-      no per-component config knobs.
-    issue: "#1681"
-
-  aggregator_flush_metrics_and_serialize_in_parallel_buffer_size:
-    severity: low
-    planned: false
-    pipelines: [ dogstatsd ]
-    description: "Parallel flush: series/sketch buffer size"
-    documentation: >-
-      Saluki topology uses fixed interconnect sizes; no per-component config knobs.
-    issue: "#1681"
-
-  aggregator_flush_metrics_and_serialize_in_parallel_chan_size:
-    severity: low
-    planned: false
-    pipelines: [ dogstatsd ]
-    description: "Parallel flush: channel size"
-    documentation: >-
-      Saluki topology uses fixed interconnect sizes; no per-component config knobs.
-    issue: "#1681"
-
-  aggregator_stop_timeout:
-    severity: low
-    planned: false
-    pipelines: [ dogstatsd ]
-    description: "Timeout (s) for aggregator flush on stop"
-    documentation: >-
-      Saluki topology uses fixed interconnect sizes and construction-time wiring;
-      no per-component config knobs.
-    issue: "#1681"
-
-  aggregator_use_tags_store:
-    severity: low
-    planned: false
-    pipelines: [ dogstatsd ]
-    description: "Enable shared tag deduplication store"
-    documentation: >-
-      Core agent concept with no ADP analog.
-    issue: "#1681"
-
-  config_id:
-    severity: low
-    planned: false
-    pipelines: [ cross_cutting ]
-    description: "Fleet Automation config ID tag"
-    documentation: >-
-      Core Agent uses this only on Agent HA telemetry metrics.
-
-  dogstatsd_disable_verbose_logs:
-    severity: medium
-    planned: false
-    pipelines: [ dogstatsd ]
-    description: "Suppress noisy parse error logs"
-    documentation: >-
-      ADP does not emit the verbose parse-error logs that this key filters in
-      the core Agent, so there is nothing to suppress.
-    issue: "#1350"
-
-  dogstatsd_experimental_http.enabled:
-    severity: high
-    planned: true
-    pipelines: [ dogstatsd ]
-    description: "Enable experimental HTTP/H2C DSD listener"
-    documentation: >-
-      Experimental HTTP/H2C DogStatsD ingestion endpoint; not needed for ADP.
-    issue: "#1682"
-
-  dogstatsd_experimental_http.listen_address:
-    severity: high
-    planned: true
-    pipelines: [ dogstatsd ]
-    description: "Bind address for experimental HTTP DSD listener"
-    documentation: >-
-      Experimental HTTP/H2C DogStatsD ingestion endpoint; not needed for ADP.
-    issue: "#1682"
-
-  dogstatsd_host_socket_path:
-    severity: low
-    planned: false
-    pipelines: [ dogstatsd ]
-    description: "Host UDS socket dir for DSD"
-    documentation: >-
-      Not read by DSD server; admission controller only.
+    test_support:
+      used_by: [DogStatsDMapperConfiguration]
+      test_json: '[{"name":"test","prefix":"test.","mappings":[]}]'
+      additional_attributes:
+        config_registry_filename: dogstatsd_mapper.rs
 
   dogstatsd_mem_based_rate_limiter.enabled:
+    support: none
     severity: low
     planned: false
-    pipelines: [ dogstatsd ]
+    pipelines: [dogstatsd]
     description: "Memory-based rate limiter toggle"
-    documentation: |-
+    documentation: |
       The Core Agent exposes 11 keys under this prefix to apply backpressure when the Go
       process approaches its memory limit. They work by manipulating Go's garbage collector
       (`debug.SetGCPercent`, `debug.FreeOSMemory`), allocating a large heap ballast to adjust
@@ -1409,158 +606,246 @@ unsupported:
       planned. See [Memory Management](../memory.md) for details.
 
   dogstatsd_mem_based_rate_limiter.go_gc:
+    support: none
     severity: low
     planned: false
-    pipelines: [ dogstatsd ]
+    pipelines: [dogstatsd]
     description: "Memory rate limiter GC percent"
-    documentation: >-
-      Go GC-specific; ADP uses `memory_limit` instead.
+    documentation: "Go GC-specific; ADP uses `memory_limit` instead."
 
   dogstatsd_mem_based_rate_limiter.high_soft_limit:
+    support: none
     severity: low
     planned: false
-    pipelines: [ dogstatsd ]
+    pipelines: [dogstatsd]
     description: "Memory rate limiter high soft limit"
-    documentation: >-
-      Go GC-specific; ADP uses `memory_limit` instead.
+    documentation: "Go GC-specific; ADP uses `memory_limit` instead."
 
   dogstatsd_mem_based_rate_limiter.low_soft_limit:
+    support: none
     severity: low
     planned: false
-    pipelines: [ dogstatsd ]
+    pipelines: [dogstatsd]
     description: "Memory rate limiter low soft limit"
-    documentation: >-
-      Go GC-specific; ADP uses `memory_limit` instead.
+    documentation: "Go GC-specific; ADP uses `memory_limit` instead."
 
   dogstatsd_mem_based_rate_limiter.memory_ballast:
+    support: none
     severity: low
     planned: false
-    pipelines: [ dogstatsd ]
+    pipelines: [dogstatsd]
     description: "Memory rate limiter heap ballast size"
-    documentation: >-
-      Go GC-specific; ADP uses `memory_limit` instead.
+    documentation: "Go GC-specific; ADP uses `memory_limit` instead."
 
   dogstatsd_mem_based_rate_limiter.rate_check.factor:
+    support: none
     severity: low
     planned: false
-    pipelines: [ dogstatsd ]
+    pipelines: [dogstatsd]
     description: "Memory rate limiter check factor"
-    documentation: >-
-      Go GC-specific; ADP uses `memory_limit` instead.
+    documentation: "Go GC-specific; ADP uses `memory_limit` instead."
 
   dogstatsd_mem_based_rate_limiter.rate_check.max:
+    support: none
     severity: low
     planned: false
-    pipelines: [ dogstatsd ]
+    pipelines: [dogstatsd]
     description: "Memory rate limiter check max interval"
-    documentation: >-
-      Go GC-specific; ADP uses `memory_limit` instead.
+    documentation: "Go GC-specific; ADP uses `memory_limit` instead."
 
   dogstatsd_mem_based_rate_limiter.rate_check.min:
+    support: none
     severity: low
     planned: false
-    pipelines: [ dogstatsd ]
+    pipelines: [dogstatsd]
     description: "Memory rate limiter check min interval"
-    documentation: >-
-      Go GC-specific; ADP uses `memory_limit` instead.
+    documentation: "Go GC-specific; ADP uses `memory_limit` instead."
 
   dogstatsd_mem_based_rate_limiter.soft_limit_freeos_check.factor:
+    support: none
     severity: low
     planned: false
-    pipelines: [ dogstatsd ]
+    pipelines: [dogstatsd]
     description: "Memory rate limiter FreeOS check factor"
-    documentation: >-
-      Go GC-specific; ADP uses `memory_limit` instead.
+    documentation: "Go GC-specific; ADP uses `memory_limit` instead."
 
   dogstatsd_mem_based_rate_limiter.soft_limit_freeos_check.max:
+    support: none
     severity: low
     planned: false
-    pipelines: [ dogstatsd ]
+    pipelines: [dogstatsd]
     description: "Memory rate limiter FreeOS check max"
-    documentation: >-
-      Go GC-specific; ADP uses `memory_limit` instead.
+    documentation: "Go GC-specific; ADP uses `memory_limit` instead."
 
   dogstatsd_mem_based_rate_limiter.soft_limit_freeos_check.min:
+    support: none
     severity: low
     planned: false
-    pipelines: [ dogstatsd ]
+    pipelines: [dogstatsd]
     description: "Memory rate limiter FreeOS check min"
-    documentation: >-
-      Go GC-specific; ADP uses `memory_limit` instead.
+    documentation: "Go GC-specific; ADP uses `memory_limit` instead."
+
+  dogstatsd_metrics_stats_enable:
+    support: partial
+    pipelines: [dogstatsd]
+    description: "Enable per-metric debug stats"
+    documentation: "See `dogstatsd_stats_enable`"
+    issue: "#1352"
+    test_support:
+      used_by: [DogStatsDDebugLogConfiguration]
+      additional_attributes:
+        config_registry_filename: dogstatsd.rs
+
+  dogstatsd_no_aggregation_pipeline:
+    support: full
+    pipelines: [dogstatsd, checks]
+    description: "Enable no-agg timestamped path"
+    test_support:
+      used_by: [AggregateConfiguration, DogStatsDConfiguration]
+      additional_attributes:
+        config_registry_filename: aggregate.rs
 
   dogstatsd_no_aggregation_pipeline_batch_size:
+    support: none
     severity: low
     planned: false
-    pipelines: [ dogstatsd ]
+    pipelines: [dogstatsd]
     description: "No-aggregation pipeline batch size"
-    documentation: >-
-      Fixed in ADP topology.
+    documentation: "Fixed in ADP topology."
+
+  dogstatsd_non_local_traffic:
+    support: full
+    pipelines: [dogstatsd]
+    description: "Accept non-localhost UDP/TCP"
+    test_support:
+      used_by: [DogStatsDConfiguration]
+      additional_attributes:
+        config_registry_filename: dogstatsd.rs
+
+  dogstatsd_origin_detection:
+    support: full
+    pipelines: [dogstatsd]
+    description: "Enable UDS origin detection"
+    test_support:
+      used_by: [DogStatsDConfiguration]
+      env_var_override: [DD_DOGSTATSD_ORIGIN_DETECTION]
+      additional_attributes:
+        config_registry_filename: dogstatsd.rs
+
+  dogstatsd_origin_detection_client:
+    support: full
+    pipelines: [dogstatsd]
+    description: "Honor client origin proto fields"
+    test_support:
+      used_by: [DogStatsDConfiguration]
+      env_var_override: [DD_DOGSTATSD_ORIGIN_DETECTION_CLIENT]
+      additional_attributes:
+        config_registry_filename: dogstatsd.rs
+
+  dogstatsd_origin_optout_enabled:
+    support: full
+    pipelines: [dogstatsd]
+    description: "Allow clients to opt out origin"
+    test_support:
+      used_by: [DogStatsDConfiguration]
+      env_var_override: [DD_DOGSTATSD_ORIGIN_OPTOUT_ENABLED]
+      additional_attributes:
+        config_registry_filename: dogstatsd.rs
 
   dogstatsd_packet_buffer_flush_timeout:
+    support: none
     severity: low
     planned: false
-    pipelines: [ dogstatsd ]
+    pipelines: [dogstatsd]
     description: "Packet buffer flush timeout"
-    documentation: >-
-      ADP decodes inline.
+    documentation: "ADP decodes inline."
 
   dogstatsd_packet_buffer_size:
+    support: none
     severity: low
     planned: false
-    pipelines: [ dogstatsd ]
+    pipelines: [dogstatsd]
     description: "Datagrams per packet buffer"
-    documentation: >-
-      ADP decodes inline.
+    documentation: "ADP decodes inline."
 
   dogstatsd_pipe_name:
+    support: none
     severity: medium
     planned: true
-    pipelines: [ dogstatsd ]
+    pipelines: [dogstatsd]
     description: "Windows named pipe path"
-    documentation: >-
-      ADP targets Linux for initial GA; Windows support will follow.
+    documentation: "ADP targets Linux for initial GA; Windows support will follow."
     issue: "#1466"
 
   dogstatsd_pipeline_autoadjust:
+    support: none
     severity: low
     planned: false
-    pipelines: [ dogstatsd ]
+    pipelines: [dogstatsd]
     description: "Auto-adjust pipeline workers"
-    documentation: >-
-      ADP uses async tasks.
+    documentation: "ADP uses async tasks."
 
   dogstatsd_pipeline_count:
+    support: none
     severity: low
     planned: false
-    pipelines: [ dogstatsd ]
+    pipelines: [dogstatsd]
     description: "Parallel processing pipelines"
-    documentation: >-
-      ADP uses async tasks.
+    documentation: "ADP uses async tasks."
+
+  dogstatsd_port:
+    support: full
+    pipelines: [dogstatsd]
+    description: "UDP listen port"
+    test_support:
+      used_by: [DogStatsDConfiguration]
+      value_type_override: integer
+      additional_attributes:
+        config_registry_filename: dogstatsd.rs
 
   dogstatsd_queue_size:
+    support: none
     severity: low
     planned: false
-    pipelines: [ dogstatsd ]
+    pipelines: [dogstatsd]
     description: "Packet channel buffer size"
-    documentation: >-
-      ADP uses async tasks.
+    documentation: "ADP uses async tasks."
+
+  dogstatsd_so_rcvbuf:
+    support: full
+    pipelines: [dogstatsd]
+    description: "Socket receive buffer size"
+    test_support:
+      used_by: [DogStatsDConfiguration]
+      value_type_override: integer
+      additional_attributes:
+        config_registry_filename: dogstatsd.rs
+
+  dogstatsd_socket:
+    support: full
+    pipelines: [dogstatsd]
+    description: "UDS datagram socket path"
+    test_support:
+      used_by: [DogStatsDConfiguration]
+      additional_attributes:
+        config_registry_filename: dogstatsd.rs
 
   dogstatsd_stats_buffer:
+    support: none
     severity: medium
     planned: false
-    pipelines: [ dogstatsd ]
+    pipelines: [dogstatsd]
     description: "Internal stats buffer size"
-    documentation: >-
-      ADP does not expose the core agent's packet-per-second expvar endpoint,
-      so there is no persistent stats endpoint buffer to configure.
+    documentation: "ADP does not expose the core agent's packet-per-second expvar endpoint, so there is no persistent stats endpoint buffer to configure."
     issue: "#1352"
 
   dogstatsd_stats_enable:
+    support: none
     severity: medium
     planned: false
-    pipelines: [ dogstatsd ]
+    pipelines: [dogstatsd]
     description: "Enable internal stats endpoint"
-    documentation: |-
+    documentation: |
       ### DogStatsD statistics (`dogstatsd_stats_enable` / `dogstatsd_metrics_stats_enable`)
 
       The core agent has two DogStatsD statistics mechanisms with different scopes.
@@ -1591,74 +876,359 @@ unsupported:
     issue: "#1352"
 
   dogstatsd_stats_port:
+    support: none
     severity: medium
     planned: false
-    pipelines: [ dogstatsd ]
+    pipelines: [dogstatsd]
     description: "Internal stats endpoint port"
-    documentation: >-
-      ADP does not expose the core agent's packet-per-second expvar endpoint,
-      so `dogstatsd_stats_port` has no effect.
+    documentation: "ADP does not expose the core agent's packet-per-second expvar endpoint, so `dogstatsd_stats_port` has no effect."
     issue: "#1352"
 
+  dogstatsd_stream_log_too_big:
+    support: full
+    pipelines: [dogstatsd]
+    description: "Log oversized UDS stream frames"
+    test_support:
+      used_by: [DogStatsDConfiguration]
+      additional_attributes:
+        config_registry_filename: dogstatsd.rs
+
+  dogstatsd_stream_socket:
+    support: full
+    pipelines: [dogstatsd]
+    description: "UDS stream socket path"
+    test_support:
+      used_by: [DogStatsDConfiguration]
+      additional_attributes:
+        config_registry_filename: dogstatsd.rs
+
+  dogstatsd_string_interner_size:
+    support: full
+    pipelines: [dogstatsd]
+    description: "String interner capacity"
+    test_support:
+      used_by: [DogStatsDConfiguration]
+      value_type_override: integer
+      additional_attributes:
+        config_registry_filename: dogstatsd.rs
+
+  dogstatsd_tag_cardinality:
+    support: full
+    pipelines: [dogstatsd]
+    description: "Default tag cardinality level"
+    test_support:
+      used_by: [DogStatsDConfiguration]
+      env_var_override: [DD_DOGSTATSD_TAG_CARDINALITY]
+      test_json: '"high"'
+      additional_attributes:
+        config_registry_filename: dogstatsd.rs
+
+  dogstatsd_tags:
+    support: full
+    pipelines: [dogstatsd]
+    description: "Extra tags added to all DSD data"
+    test_support:
+      used_by: [DogStatsDConfiguration]
+      additional_attributes:
+        config_registry_filename: dogstatsd.rs
+
   dogstatsd_telemetry_enabled_listener_id:
+    support: none
     severity: medium
     planned: false
-    pipelines: [ dogstatsd ]
+    pipelines: [dogstatsd]
     description: "Per-listener telemetry tagging"
-    documentation: >-
-      Not feasible to thread listener identity through ADP's async decode pipeline.
+    documentation: "Not feasible to thread listener identity through ADP's async decode pipeline."
 
   dogstatsd_windows_pipe_security_descriptor:
+    support: none
     severity: medium
     planned: true
-    pipelines: [ dogstatsd ]
+    pipelines: [dogstatsd]
     description: "Windows named pipe ACL descriptor"
-    documentation: >-
-      Windows support is deferred but planned.
+    documentation: "Windows support is deferred but planned."
     issue: "#1466"
 
   dogstatsd_workers_count:
+    support: none
     severity: low
     planned: false
-    pipelines: [ dogstatsd ]
+    pipelines: [dogstatsd]
     description: "Number of DSD processing workers"
-    documentation: >-
-      ADP uses async tasks.
+    documentation: "ADP uses async tasks."
 
   enable_json_stream_shared_compressor_buffers:
+    support: none
     severity: low
     planned: false
-    pipelines: [ dogstatsd, checks, traces ]
+    pipelines: [dogstatsd, checks, traces]
     description: "Pre-allocate shared compressor buffers"
-    documentation: >-
-      ADP does not use a shared compressor buffer pool; Rust request builders own fixed-capacity
-      scratch and compression buffers.
+    documentation: "ADP does not use a shared compressor buffer pool; Rust request builders own fixed-capacity scratch and compression buffers."
     issue: "#1749"
 
+  enable_payloads.events:
+    support: full
+    pipelines: [dogstatsd]
+    description: "Allow sending event payloads"
+    test_support:
+      used_by: [DogStatsDConfiguration]
+      additional_attributes:
+        config_registry_filename: dogstatsd.rs
+
+  enable_payloads.series:
+    support: full
+    pipelines: [dogstatsd]
+    description: "Allow sending series payloads"
+    test_support:
+      used_by: [DogStatsDConfiguration]
+      additional_attributes:
+        config_registry_filename: dogstatsd.rs
+
+  enable_payloads.service_checks:
+    support: full
+    pipelines: [dogstatsd]
+    description: "Allow sending service check payloads"
+    test_support:
+      used_by: [DogStatsDConfiguration]
+      additional_attributes:
+        config_registry_filename: dogstatsd.rs
+
+  enable_payloads.sketches:
+    support: full
+    pipelines: [dogstatsd]
+    description: "Allow sending sketch payloads"
+    test_support:
+      used_by: [DogStatsDConfiguration]
+      additional_attributes:
+        config_registry_filename: dogstatsd.rs
+
   entity_id:
+    support: none
     severity: low
     planned: false
-    pipelines: [ dogstatsd ]
+    pipelines: [dogstatsd]
     description: "Agent pod entity ID"
-    documentation: >-
-      ADP internal DogStatsD telemetry uses OpenMetrics.
+    documentation: "ADP internal DogStatsD telemetry uses OpenMetrics."
+
+  env:
+    support: full
+    pipelines: [traces]
+    description: "Agent environment name"
+    documentation: "ADP reads env but defaults to 'none' instead of the core agent's ''. Scope is narrower in ADP (only traces/stats encoders). Neither implementation uses env directly on the DogStatsD metrics path."
+    test_support:
+      used_by: [DatadogApmStatsEncoderConfiguration, DatadogTraceConfiguration]
+      additional_attributes:
+        config_registry_filename: encoders.rs
 
   forwarder_apikey_validation_interval:
+    support: none
     severity: medium
     planned: true
-    pipelines: [ cross_cutting ]
+    pipelines: [cross_cutting]
     description: "API key check interval (minutes)"
-    documentation: >-
-      Core agent supports runtime API key refresh without restart. ADP has partial
-      infrastructure (config-side listeners) but the forwarder does not act on updates.
+    documentation: "Core agent supports runtime API key refresh without restart. ADP has partial infrastructure (config-side listeners) but the forwarder does not act on updates."
     issue: "#1357"
 
+  forwarder_backoff_base:
+    support: full
+    pipelines: [cross_cutting]
+    description: "Retry backoff base (secs)"
+    test_support:
+      used_by: [ForwarderConfiguration]
+      additional_attributes:
+        config_registry_filename: forwarder.rs
+
+  forwarder_backoff_factor:
+    support: full
+    pipelines: [cross_cutting]
+    description: "Retry backoff jitter factor"
+    test_support:
+      used_by: [ForwarderConfiguration]
+      additional_attributes:
+        config_registry_filename: forwarder.rs
+
+  forwarder_backoff_max:
+    support: full
+    pipelines: [cross_cutting]
+    description: "Retry backoff ceiling (secs)"
+    test_support:
+      used_by: [ForwarderConfiguration]
+      additional_attributes:
+        config_registry_filename: forwarder.rs
+
+  forwarder_connection_reset_interval:
+    support: full
+    pipelines: [cross_cutting]
+    description: "HTTP conn reset interval (secs)"
+    test_support:
+      used_by: [ForwarderConfiguration]
+      value_type_override: integer
+      additional_attributes:
+        config_registry_filename: forwarder.rs
+
+  forwarder_flush_to_disk_mem_ratio:
+    support: unknown
+    description: "Mem-to-disk flush threshold"
+    severity: medium
+    issue: "#1364"
+
+  forwarder_high_prio_buffer_size:
+    support: full
+    pipelines: [cross_cutting]
+    description: "High-priority request queue size"
+    issue: "#1362"
+    test_support:
+      used_by: [ForwarderConfiguration]
+      value_type_override: integer
+      additional_attributes:
+        config_registry_filename: forwarder.rs
+
+  forwarder_http_protocol:
+    support: full
+    pipelines: [cross_cutting]
+    description: "HTTP version selection (auto/http1/http2)"
+    issue: "#1361"
+    test_support:
+      used_by: [ForwarderConfiguration]
+      test_json: '"http1"'
+      additional_attributes:
+        config_registry_filename: forwarder.rs
+
+  forwarder_low_prio_buffer_size:
+    support: unknown
+    description: "Low-priority request queue size"
+    severity: medium
+    issue: "#1362"
+
+  forwarder_max_concurrent_requests:
+    support: unknown
+    description: "Max concurrent HTTP requests"
+    severity: medium
+    issue: "#1363"
+
+  forwarder_num_workers:
+    support: full
+    pipelines: [cross_cutting]
+    description: "Concurrent forwarder workers"
+    test_support:
+      used_by: [ForwarderConfiguration]
+      value_type_override: integer
+      additional_attributes:
+        config_registry_filename: forwarder.rs
+
+  forwarder_outdated_file_in_days:
+    support: full
+    pipelines: [cross_cutting]
+    description: "Days before retry files are deleted"
+    issue: "#1360"
+    test_support:
+      used_by: [ForwarderConfiguration]
+      value_type_override: integer
+      additional_attributes:
+        config_registry_filename: forwarder.rs
+
+  forwarder_recovery_interval:
+    support: full
+    pipelines: [cross_cutting]
+    description: "Backoff recovery decrease factor"
+    test_support:
+      used_by: [ForwarderConfiguration]
+      value_type_override: integer
+      additional_attributes:
+        config_registry_filename: forwarder.rs
+
+  forwarder_recovery_reset:
+    support: full
+    pipelines: [cross_cutting]
+    description: "Reset errors on success"
+    test_support:
+      used_by: [ForwarderConfiguration]
+      additional_attributes:
+        config_registry_filename: forwarder.rs
+
+  forwarder_requeue_buffer_size:
+    support: unknown
+    description: "In-memory re-queue buffer size"
+    severity: low
+    issue: "#1755"
+
+  forwarder_retry_queue_capacity_time_interval_sec:
+    support: unknown
+    description: "Retry queue time-based capacity"
+    severity: medium
+    issue: "#1365"
+
+  forwarder_retry_queue_max_size:
+    support: full
+    pipelines: [cross_cutting]
+    description: "Retry queue max size (deprecated)"
+    test_support:
+      used_by: [ForwarderConfiguration]
+      value_type_override: integer
+      additional_attributes:
+        config_registry_filename: forwarder.rs
+
+  forwarder_retry_queue_payloads_max_size:
+    support: full
+    pipelines: [cross_cutting]
+    description: "Retry queue max size (bytes)"
+    test_support:
+      used_by: [ForwarderConfiguration]
+      value_type_override: integer
+      additional_attributes:
+        config_registry_filename: forwarder.rs
+
+  forwarder_stop_timeout:
+    support: unknown
+    description: "Timeout (s) for forwarder graceful stop"
+    severity: low
+    issue: "#1754"
+
+  forwarder_storage_max_disk_ratio:
+    support: full
+    pipelines: [cross_cutting]
+    description: "Max disk usage ratio for retry"
+    test_support:
+      used_by: [ForwarderConfiguration]
+      additional_attributes:
+        config_registry_filename: forwarder.rs
+
+  forwarder_storage_max_size_in_bytes:
+    support: full
+    pipelines: [cross_cutting]
+    description: "Max on-disk retry storage size"
+    test_support:
+      used_by: [ForwarderConfiguration]
+      value_type_override: integer
+      additional_attributes:
+        config_registry_filename: forwarder.rs
+
+  forwarder_storage_path:
+    support: full
+    pipelines: [cross_cutting]
+    description: "On-disk retry storage directory"
+    test_support:
+      used_by: [ForwarderConfiguration]
+      additional_attributes:
+        config_registry_filename: forwarder.rs
+
+  forwarder_timeout:
+    support: full
+    pipelines: [cross_cutting]
+    description: "Forwarder HTTP request timeout"
+    test_support:
+      used_by: [ForwarderConfiguration]
+      value_type_override: integer
+      additional_attributes:
+        config_registry_filename: forwarder.rs
+
   heroku_dyno:
+    support: none
     severity: high
     planned: false
-    pipelines: [ cross_cutting ]
+    pipelines: [cross_cutting]
     description: "Heroku dyno telemetry mode"
-    documentation: |-
+    documentation: |
       The `heroku_dyno` setting affects the core Agent's self-telemetry heartbeat. It changes the Agent
       flavor used by the core Agent aggregator so the running heartbeat is emitted as
       `datadog.heroku_agent.running`.
@@ -1672,167 +1242,714 @@ unsupported:
       deployment path, ADP does not implement `heroku_dyno`. See [#1753].
     issue: "#1753"
 
+  histogram_aggregates:
+    support: full
+    pipelines: [dogstatsd, checks]
+    description: "Histogram aggregate statistics"
+    test_support:
+      used_by: [AggregateConfiguration]
+      test_json: '["count"]'
+      additional_attributes:
+        config_registry_filename: aggregate.rs
+
+  histogram_copy_to_distribution:
+    support: full
+    pipelines: [dogstatsd, checks]
+    description: "Copy histograms to distributions"
+    test_support:
+      used_by: [AggregateConfiguration]
+      additional_attributes:
+        config_registry_filename: aggregate.rs
+
+  histogram_copy_to_distribution_prefix:
+    support: full
+    pipelines: [dogstatsd, checks]
+    description: "Prefix for hist-to-dist copies"
+    test_support:
+      used_by: [AggregateConfiguration]
+      additional_attributes:
+        config_registry_filename: aggregate.rs
+
+  log_format_rfc3339:
+    support: full
+    pipelines: [cross_cutting]
+    description: "Use RFC 3339 timestamps in log output"
+    test_support:
+      used_by: [get_typed]
+      additional_attributes:
+        config_registry_filename: get_typed.rs
+
+  log_level:
+    support: partial
+    pipelines: [cross_cutting]
+    description: "Log verbosity directives"
+    documentation: |
+      ADP accepts `log_level` as the startup logging control. A plain level applies to
+      ADP-owned and Saluki-owned targets only, including `agent_data_plane`, `saluki_*`, and
+      runtime crates under `lib/`.
+
+      ```yaml
+      log_level: debug
+      ```
+
+      This keeps third-party dependencies such as `hyper`, `tokio`, and `tonic` at their
+      default filtering unless you opt them in.
+
+      To control dependency logs or set a global fallback, use advanced `EnvFilter` directives
+      in `log_level`. ADP applies those directive strings as configured:
+
+      ```yaml
+      log_level: warn,agent_data_plane=debug,hyper=warn
+      ```
+    test_support:
+      used_by: [get_typed]
+      additional_attributes:
+        config_registry_filename: get_typed.rs
+
+  log_payloads:
+    support: full
+    pipelines: [checks, dogstatsd, traces]
+    description: "Debug-log decoded payload contents before encoding"
+    documentation: |
+      Set `log_payloads: true` and run with debug-level logging to see decoded payload objects
+      (scalar series metrics, sketches/distributions, events, and service checks) before they
+      enter Datadog encoders. These logs can contain high-volume customer data including metric
+      names, tags, host and container metadata, event text, and service check messages. Use this
+      setting only while diagnosing payload content.
+
+      ADP does not dump the exact encoded JSON or protobuf HTTP request body, and it does not
+      log compressed wire payload bytes.
+    test_support:
+      used_by: [DatadogEventsConfiguration, DatadogMetricsConfiguration, DatadogServiceChecksConfiguration]
+      additional_attributes:
+        config_registry_filename: encoders.rs
+
   logging_frequency:
+    support: none
     severity: low
     planned: false
-    pipelines: [ cross_cutting ]
+    pipelines: [cross_cutting]
     description: "Transaction success log interval"
-    documentation: >-
-      The core agent uses `logging_frequency` to throttle repetitive successful transaction
-      logs. ADP logs successful forwarder operations below the default `info` level, so there
-      is no matching info-level success-log stream to throttle. This key is intentionally
-      unused.
+    documentation: "The core agent uses `logging_frequency` to throttle repetitive successful transaction logs. ADP logs successful forwarder operations below the default `info` level, so there is no matching info-level success-log stream to throttle. This key is intentionally unused."
+
+  metric_filterlist:
+    support: full
+    pipelines: [dogstatsd]
+    description: "Metric name blocklist"
+    test_support:
+      used_by: [DogStatsDPrefixFilterConfiguration]
+      additional_attributes:
+        config_registry_filename: dogstatsd_prefix_filter.rs
+
+  metric_filterlist_match_prefix:
+    support: full
+    pipelines: [dogstatsd]
+    description: "Blocklist uses prefix matching"
+    test_support:
+      used_by: [DogStatsDPrefixFilterConfiguration]
+      additional_attributes:
+        config_registry_filename: dogstatsd_prefix_filter.rs
+
+  min_tls_version:
+    support: partial
+    pipelines: [cross_cutting]
+    description: "Minimum TLS version for HTTPS connections"
+    documentation: |
+      ADP supports `min_tls_version` for Datadog intake forwarding through the shared Datadog
+      forwarder. The default is `tlsv1.2`, which allows TLS 1.2 and TLS 1.3. To require TLS
+      1.3 only, set `min_tls_version: tlsv1.3` or `DD_MIN_TLS_VERSION=tlsv1.3`.
+
+      The core agent also accepts `tlsv1.0` and `tlsv1.1`. ADP accepts those values for
+      configuration compatibility, but clamps them to TLS 1.2 because ADP uses `rustls`, which
+      does not support TLS 1.0 or TLS 1.1.
+
+      This setting does not affect ADP IPC, local privileged APIs, ADP control-plane clients,
+      OTLP proxying to the core agent, or unrelated HTTP clients.
+    test_support:
+      used_by: [ForwarderConfiguration]
+      env_var_override: [DD_MIN_TLS_VERSION]
+      additional_attributes:
+        config_registry_filename: forwarder.rs
+
+  multi_region_failover.api_key:
+    support: full
+    pipelines: [cross_cutting]
+    description: "API key for the failover-region endpoint"
+    test_support:
+      used_by: [MrfConfiguration]
+      env_var_override: [DD_MULTI_REGION_FAILOVER_API_KEY]
+      value_type_override: string
+      additional_attributes:
+        config_registry_filename: mrf.rs
+
+  multi_region_failover.dd_url:
+    support: full
+    pipelines: [cross_cutting]
+    description: "Failover intake URL"
+    test_support:
+      used_by: [MrfConfiguration]
+      env_var_override: [DD_MULTI_REGION_FAILOVER_DD_URL]
+      value_type_override: string
+      additional_attributes:
+        config_registry_filename: mrf.rs
+
+  multi_region_failover.enabled:
+    support: partial
+    pipelines: [cross_cutting]
+    description: "Enable multi-region failover mode"
+    documentation: |
+      ADP supports multi-region failover for metrics. When `multi_region_failover.enabled` and
+      `multi_region_failover.failover_metrics` are both `true`, ADP forwards metrics to the
+      primary Datadog endpoint and to a second MRF endpoint.
+
+      To enable the MRF metrics branch at startup, configure `multi_region_failover.api_key`
+      and one of `multi_region_failover.site` or `multi_region_failover.dd_url`. If the MRF
+      endpoint configuration is incomplete, ADP skips the MRF branch and continues forwarding
+      to the primary endpoint.
+
+      ADP does not fall back to the primary `api_key`, `site`, or `dd_url` for MRF traffic.
+      `multi_region_failover.enabled` and endpoint selection are resolved at startup.
+      `multi_region_failover.failover_metrics`, `multi_region_failover.metric_allowlist`, and
+      `multi_region_failover.api_key` can refresh from live configuration after the MRF branch
+      is enabled.
+
+      | Config Key                               | Behavior                                                                   | Default |
+      | ---------------------------------------- | -------------------------------------------------------------------------- | ------- |
+      | `multi_region_failover.enabled`          | Enables multi-region failover mode.                                        | `false` |
+      | `multi_region_failover.failover_metrics` | Enables metrics forwarding to the failover region when MRF is enabled.     | `false` |
+      | `multi_region_failover.metric_allowlist` | Exact metric names to forward to MRF. Empty or unset forwards all metrics. | `[]`    |
+      | `multi_region_failover.api_key`          | API key for the failover-region endpoint.                                  | unset   |
+      | `multi_region_failover.site`             | Datadog site for the failover region, used as `https://app.mrf.<site>`.    | unset   |
+      | `multi_region_failover.dd_url`           | Explicit failover intake URL. Takes precedence over `site` when set.       | unset   |
+    test_support:
+      used_by: [MrfConfiguration]
+      env_var_override: [DD_MULTI_REGION_FAILOVER_ENABLED]
+      additional_attributes:
+        config_registry_filename: mrf.rs
+
+  multi_region_failover.failover_metrics:
+    support: full
+    pipelines: [cross_cutting]
+    description: "Enable metrics forwarding to failover region"
+    test_support:
+      used_by: [MrfConfiguration]
+      env_var_override: [DD_MULTI_REGION_FAILOVER_FAILOVER_METRICS]
+      additional_attributes:
+        config_registry_filename: mrf.rs
+
+  multi_region_failover.metric_allowlist:
+    support: full
+    pipelines: [cross_cutting]
+    description: "Metric name allowlist for MRF forwarding"
+    test_support:
+      used_by: [MrfConfiguration]
+      env_var_override: [DD_MULTI_REGION_FAILOVER_METRIC_ALLOWLIST]
+      value_type_override: string_list
+      additional_attributes:
+        config_registry_filename: mrf.rs
+
+  multi_region_failover.site:
+    support: full
+    pipelines: [cross_cutting]
+    description: "Datadog site for the failover region"
+    test_support:
+      used_by: [MrfConfiguration]
+      env_var_override: [DD_MULTI_REGION_FAILOVER_SITE]
+      value_type_override: string
+      additional_attributes:
+        config_registry_filename: mrf.rs
+
+  no_proxy_nonexact_match:
+    support: full
+    pipelines: [cross_cutting]
+    description: "Domain/CIDR `no_proxy` matching"
+    test_support:
+      used_by: [ForwarderConfiguration, ProxyConfiguration]
+      env_var_override: [DD_NO_PROXY_NONEXACT_MATCH]
+      additional_attributes:
+        config_registry_filename: proxy.rs
+
+  observability_pipelines_worker.metrics.enabled:
+    support: full
+    pipelines: [cross_cutting]
+    description: "Route metrics to OPW instance"
+    test_support:
+      used_by: [ForwarderConfiguration]
+      env_var_override: [DD_OBSERVABILITY_PIPELINES_WORKER_METRICS_ENABLED]
+      additional_attributes:
+        config_registry_filename: forwarder.rs
+
+  observability_pipelines_worker.metrics.url:
+    support: full
+    pipelines: [cross_cutting]
+    description: "OPW metrics intake URL"
+    test_support:
+      used_by: [ForwarderConfiguration]
+      env_var_override: [DD_OBSERVABILITY_PIPELINES_WORKER_METRICS_URL]
+      additional_attributes:
+        config_registry_filename: forwarder.rs
+
+  origin_detection_unified:
+    support: full
+    pipelines: [dogstatsd]
+    description: "Unified origin detection mode"
+    test_support:
+      used_by: [DogStatsDConfiguration]
+      env_var_override: [DD_ORIGIN_DETECTION_UNIFIED]
+      additional_attributes:
+        config_registry_filename: dogstatsd.rs
+
+  otlp_config.logs.enabled:
+    support: full
+    pipelines: [otlp]
+    description: "otlp_config.logs.enabled"
+    test_support:
+      used_by: [OtlpConfiguration]
+      test_json: 'false'
+      additional_attributes:
+        config_registry_filename: otlp.rs
+
+  otlp_config.metrics.enabled:
+    support: full
+    pipelines: [otlp]
+    description: "otlp_config.metrics.enabled"
+    test_support:
+      used_by: [OtlpConfiguration]
+      additional_attributes:
+        config_registry_filename: otlp.rs
+
+  otlp_config.receiver.protocols.grpc.endpoint:
+    support: full
+    pipelines: [otlp]
+    description: "otlp_config.receiver.protocols.grpc.endpoint"
+    test_support:
+      used_by: [OtlpRelayConfiguration, OtlpConfiguration]
+      additional_attributes:
+        config_registry_filename: otlp.rs
+
+  otlp_config.receiver.protocols.grpc.max_recv_msg_size_mib:
+    support: full
+    pipelines: [otlp]
+    description: "Max OTLP inbound gRPC message size (MiB)"
+    test_support:
+      used_by: [OtlpRelayConfiguration, OtlpConfiguration]
+      value_type_override: integer
+      additional_attributes:
+        config_registry_filename: otlp.rs
+
+  otlp_config.receiver.protocols.grpc.transport:
+    support: full
+    pipelines: [otlp]
+    description: "otlp_config.receiver.protocols.grpc.transport"
+    test_support:
+      used_by: [OtlpRelayConfiguration, OtlpConfiguration]
+      additional_attributes:
+        config_registry_filename: otlp.rs
+
+  otlp_config.receiver.protocols.http.endpoint:
+    support: full
+    pipelines: [otlp]
+    description: "otlp_config.receiver.protocols.http.endpoint"
+    test_support:
+      used_by: [OtlpRelayConfiguration, OtlpConfiguration]
+      additional_attributes:
+        config_registry_filename: otlp.rs
+
+  otlp_config.traces.enabled:
+    support: full
+    pipelines: [traces]
+    description: "otlp_config.traces.enabled"
+    test_support:
+      used_by: [OtlpDecoderConfiguration, OtlpConfiguration]
+      additional_attributes:
+        config_registry_filename: otlp.rs
+
+  otlp_config.traces.internal_port:
+    support: full
+    pipelines: [traces]
+    description: "otlp_config.traces.internal_port"
+    test_support:
+      used_by: [OtlpDecoderConfiguration, OtlpConfiguration]
+      value_type_override: integer
+      additional_attributes:
+        config_registry_filename: otlp.rs
+
+  otlp_config.traces.probabilistic_sampler.sampling_percentage:
+    support: full
+    pipelines: [traces]
+    description: "OTLP trace sampling percentage"
+    test_support:
+      used_by: [OtlpDecoderConfiguration, OtlpConfiguration]
+      additional_attributes:
+        config_registry_filename: otlp.rs
+
+  provider_kind:
+    support: full
+    pipelines: [dogstatsd]
+    description: "Provider kind static tag"
+    test_support:
+      used_by: [DogStatsDConfiguration]
+      env_var_override: [DD_PROVIDER_KIND]
+      additional_attributes:
+        config_registry_filename: dogstatsd.rs
+
+  proxy.http:
+    support: full
+    pipelines: [cross_cutting]
+    description: "HTTP proxy URL"
+    test_support:
+      used_by: [ForwarderConfiguration, ProxyConfiguration]
+      env_var_override: [DD_PROXY_HTTP, HTTP_PROXY]
+      additional_attributes:
+        config_registry_filename: proxy.rs
+
+  proxy.https:
+    support: full
+    pipelines: [cross_cutting]
+    description: "HTTPS proxy URL"
+    test_support:
+      used_by: [ForwarderConfiguration, ProxyConfiguration]
+      env_var_override: [DD_PROXY_HTTPS, HTTPS_PROXY]
+      additional_attributes:
+        config_registry_filename: proxy.rs
+
+  proxy.no_proxy:
+    support: full
+    pipelines: [cross_cutting]
+    description: "Hosts bypassing proxy"
+    test_support:
+      used_by: [ForwarderConfiguration, ProxyConfiguration]
+      env_var_override: [DD_PROXY_NO_PROXY]
+      additional_attributes:
+        config_registry_filename: proxy.rs
+
+  serializer_compressor_kind:
+    support: full
+    pipelines: [cross_cutting]
+    description: "Payload compression algorithm"
+    test_support:
+      used_by: [DatadogEventsConfiguration, DatadogLogsConfiguration, DatadogMetricsConfiguration, DatadogServiceChecksConfiguration, DatadogTraceConfiguration]
+      additional_attributes:
+        config_registry_filename: encoders.rs
 
   serializer_experimental_use_v3_api.compression_level:
+    support: none
     severity: low
     planned: true
-    pipelines: [ dogstatsd, checks, traces ]
+    pipelines: [dogstatsd, checks, traces]
     description: "V3 API zstd compression level"
-    documentation: >-
-      V2 to V3 migration PR in progress. Feature is missing but actively being addressed.
+    documentation: "V2 to V3 migration PR in progress. Feature is missing but actively being addressed."
     issue: "#1468"
 
   serializer_experimental_use_v3_api.series.endpoints:
+    support: none
     severity: low
     planned: true
-    pipelines: [ dogstatsd, checks, traces ]
+    pipelines: [dogstatsd, checks, traces]
     description: "Endpoints enabled for V3 series API"
-    documentation: >-
-      V2 to V3 migration PR in progress. Feature is missing but actively being addressed.
+    documentation: "V2 to V3 migration PR in progress. Feature is missing but actively being addressed."
     issue: "#1468"
 
   serializer_experimental_use_v3_api.series.validate:
+    support: none
     severity: low
     planned: true
-    pipelines: [ dogstatsd, checks, traces ]
+    pipelines: [dogstatsd, checks, traces]
     description: "Dual-send v2+v3 series for validation"
-    documentation: >-
-      V2 to V3 migration PR in progress. Feature is missing but actively being addressed.
+    documentation: "V2 to V3 migration PR in progress. Feature is missing but actively being addressed."
     issue: "#1468"
 
   serializer_experimental_use_v3_api.sketches.endpoints:
+    support: none
     severity: low
     planned: true
-    pipelines: [ dogstatsd, checks, traces ]
+    pipelines: [dogstatsd, checks, traces]
     description: "Endpoints enabling v3 sketches API"
-    documentation: >-
-      V2 to V3 migration PR in progress. Feature is missing but actively being addressed.
+    documentation: "V2 to V3 migration PR in progress. Feature is missing but actively being addressed."
     issue: "#1468"
 
   serializer_experimental_use_v3_api.sketches.validate:
+    support: none
     severity: low
     planned: true
-    pipelines: [ dogstatsd, checks, traces ]
+    pipelines: [dogstatsd, checks, traces]
     description: "Dual-send v2+v3 sketches for validation"
-    documentation: >-
-      V2 to V3 migration PR in progress. Feature is missing but actively being addressed.
+    documentation: "V2 to V3 migration PR in progress. Feature is missing but actively being addressed."
     issue: "#1468"
 
+  serializer_max_payload_size:
+    support: full
+    pipelines: [checks, dogstatsd]
+    description: "Max compressed payload size (generic)"
+    test_support:
+      used_by: [DatadogEventsConfiguration, DatadogMetricsConfiguration, DatadogServiceChecksConfiguration]
+      value_type_override: integer
+      additional_attributes:
+        config_registry_filename: encoders.rs
+
+  serializer_max_series_payload_size:
+    support: full
+    pipelines: [checks, dogstatsd]
+    description: "Max compressed V2 series payload size"
+    test_support:
+      used_by: [DatadogMetricsConfiguration]
+      value_type_override: integer
+      additional_attributes:
+        config_registry_filename: encoders.rs
+
+  serializer_max_series_points_per_payload:
+    support: full
+    pipelines: [checks, dogstatsd]
+    description: "Max data points per series payload"
+    test_support:
+      used_by: [DatadogMetricsConfiguration]
+      value_type_override: integer
+      additional_attributes:
+        config_registry_filename: encoders.rs
+
+  serializer_max_series_uncompressed_payload_size:
+    support: full
+    pipelines: [checks, dogstatsd]
+    description: "Max uncompressed V2 series payload size"
+    test_support:
+      used_by: [DatadogMetricsConfiguration]
+      value_type_override: integer
+      additional_attributes:
+        config_registry_filename: encoders.rs
+
+  serializer_max_uncompressed_payload_size:
+    support: full
+    pipelines: [checks, dogstatsd]
+    description: "Max uncompressed payload size (generic)"
+    test_support:
+      used_by: [DatadogEventsConfiguration, DatadogMetricsConfiguration, DatadogServiceChecksConfiguration]
+      value_type_override: integer
+      additional_attributes:
+        config_registry_filename: encoders.rs
+
+  serializer_zstd_compressor_level:
+    support: partial
+    pipelines: [cross_cutting]
+    description: "Zstd compression level"
+    documentation: "ADP defaults to level 3 vs Agent level 1. ADP intentionally compresses better. Key is recognized by both; default divergence is intentional."
+    test_support:
+      used_by: [DatadogEventsConfiguration, DatadogLogsConfiguration, DatadogMetricsConfiguration, DatadogServiceChecksConfiguration, DatadogTraceConfiguration]
+      value_type_override: integer
+      additional_attributes:
+        config_registry_filename: encoders.rs
+
+  site:
+    support: full
+    pipelines: [cross_cutting]
+    description: "Datadog site domain"
+    test_support:
+      used_by: [ForwarderConfiguration]
+      additional_attributes:
+        config_registry_filename: forwarder.rs
+
+  skip_ssl_validation:
+    support: partial
+    pipelines: [cross_cutting]
+    description: "Skip TLS cert validation"
+    documentation: |
+      ADP supports `skip_ssl_validation` for Datadog intake forwarding through the shared
+      Datadog forwarder. The default is `false`, which preserves normal server certificate
+      validation. When enabled, this setting affects the Datadog intake clients used by metrics,
+      logs, traces, events, and service checks that flow through the shared forwarder.
+
+      This setting does not affect ADP IPC, local privileged APIs, ADP control-plane clients,
+      OTLP proxying to the core agent, or unrelated HTTP clients. In FIPS builds, ADP rejects
+      `skip_ssl_validation: true` because disabling TLS certificate validation is not
+      FIPS-compliant.
+    test_support:
+      used_by: [ForwarderConfiguration]
+      env_var_override: [DD_SKIP_SSL_VALIDATION]
+      additional_attributes:
+        config_registry_filename: forwarder.rs
+
   sslkeylogfile:
+    support: none
     severity: medium
     planned: true
-    pipelines: [ cross_cutting ]
+    pipelines: [cross_cutting]
     description: "TLS key log file path"
-    documentation: >-
-      TLS key log file not implemented in ADP.
+    documentation: "TLS key log file not implemented in ADP."
     issue: "#1372"
 
-  tls_handshake_timeout:
-    severity: medium
-    planned: true
-    pipelines: [ cross_cutting ]
-    description: "HTTP TLS handshake timeout"
-    documentation: >-
-      Existing request timeout covers the gap.
-    issue: "#178"
+  statsd_forward_host:
+    support: partial
+    pipelines: [dogstatsd]
+    description: "UDP packet forwarding destination host"
+    documentation: |
+      ADP supports DogStatsD forwarding when both `statsd_forward_host` and
+      `statsd_forward_port` are set. ADP forwards each framed DogStatsD message over UDP to the
+      configured destination before parsing, filtering, mapping, or aggregation. Forwarding
+      does not preserve the core Agent's packet-buffer grouping, so forwarded UDP datagrams may
+      be split differently while carrying the same DogStatsD messages. ADP logs setup failures
+      and tracks send failures through telemetry.
+    test_support:
+      used_by: [DogStatsDConfiguration]
+      test_json: '"127.0.0.1"'
+      additional_attributes:
+        config_registry_filename: dogstatsd.rs
 
+  statsd_forward_port:
+    support: full
+    pipelines: [dogstatsd]
+    description: "UDP packet forwarding destination port"
+    test_support:
+      used_by: [DogStatsDConfiguration]
+      value_type_override: integer
+      test_json: '9125'
+      additional_attributes:
+        config_registry_filename: dogstatsd.rs
 
-  use_dogstatsd:
-    severity: low
-    planned: false
-    pipelines: [ dogstatsd ]
-    description: "Master DogStatsD enable toggle"
-    documentation: >-
-      Core Agent evaluates and sets `data_plane.dogstatsd.enabled`.
+  statsd_metric_blocklist:
+    support: full
+    pipelines: [dogstatsd]
+    description: "List of metric names to block/drop"
+    test_support:
+      used_by: [DogStatsDPrefixFilterConfiguration]
+      additional_attributes:
+        config_registry_filename: dogstatsd_prefix_filter.rs
 
-####################################################################################################
-# INVESTIGATE
-####################################################################################################
-investigate:
-  autoscaling.failover.enabled:
-    severity: medium
-    description: "Enable autoscaling failover metric routing"
-    documentation: >-
-      Marked for investigation; previously dismissed as not-applicable.
-    issue: "#1684"
+  statsd_metric_blocklist_match_prefix:
+    support: full
+    pipelines: [dogstatsd]
+    description: "Treat blocklist entries as prefixes"
+    test_support:
+      used_by: [DogStatsDPrefixFilterConfiguration]
+      additional_attributes:
+        config_registry_filename: dogstatsd_prefix_filter.rs
 
-  autoscaling.failover.metrics:
-    severity: medium
-    description: "Metric names forwarded to DCA for failover"
-    documentation: >-
-      Marked for investigation; previously dismissed as not-applicable.
-    issue: "#1684"
+  statsd_metric_namespace:
+    support: full
+    pipelines: [dogstatsd]
+    description: "Prefix prepended to all metric names"
+    test_support:
+      used_by: [DogStatsDPrefixFilterConfiguration]
+      additional_attributes:
+        config_registry_filename: dogstatsd_prefix_filter.rs
 
-  cluster_agent.enabled:
-    severity: low
-    pipelines: [ dogstatsd, checks ]
-    description: "Enable Cluster Agent communication"
-    issue: "#1684"
+  statsd_metric_namespace_blacklist:
+    support: full
+    pipelines: [dogstatsd]
+    description: "Prefixes exempt from namespace"
+    test_support:
+      used_by: [DogStatsDPrefixFilterConfiguration]
+      additional_yaml_paths: [statsd_metric_namespace_blocklist]
+      additional_attributes:
+        config_registry_filename: dogstatsd_prefix_filter.rs
 
-  forwarder_flush_to_disk_mem_ratio:
-    severity: medium
-    description: "Mem-to-disk flush threshold"
-    issue: "#1364"
+  syslog_rfc:
+    support: full
+    pipelines: [cross_cutting]
+    description: "Use RFC-style syslog header"
+    test_support:
+      used_by: [get_typed]
+      additional_attributes:
+        config_registry_filename: get_typed.rs
 
-  forwarder_low_prio_buffer_size:
-    severity: medium
-    description: "Low-priority request queue size"
-    issue: "#1362"
-
-  forwarder_max_concurrent_requests:
-    severity: medium
-    description: "Max concurrent HTTP requests"
-    issue: "#1363"
-
-  forwarder_requeue_buffer_size:
-    severity: low
-    description: "In-memory re-queue buffer size"
-    issue: "#1755"
-
-  forwarder_retry_queue_capacity_time_interval_sec:
-    severity: medium
-    description: "Retry queue time-based capacity"
-    issue: "#1365"
-
-  forwarder_stop_timeout:
-    severity: low
-    description: "Timeout (s) for forwarder graceful stop"
-    issue: "#1754"
+  syslog_uri:
+    support: full
+    pipelines: [cross_cutting]
+    description: "Syslog destination URI"
+    test_support:
+      used_by: [get_typed]
+      additional_attributes:
+        config_registry_filename: get_typed.rs
 
   telemetry.dogstatsd.aggregator_channel_latency_buckets:
-    severity: low
+    support: unknown
     description: "Histogram buckets: DSD aggregator channel lag"
+    severity: low
     issue: "#1679"
 
   telemetry.dogstatsd.listeners_channel_latency_buckets:
-    severity: low
+    support: unknown
     description: "Histogram buckets: listener channel latency"
+    severity: low
     issue: "#1679"
 
   telemetry.dogstatsd.listeners_latency_buckets:
-    severity: low
+    support: unknown
     description: "Histogram buckets: listener processing"
+    severity: low
     issue: "#1679"
 
   telemetry.dogstatsd_origin:
-    severity: low
+    support: unknown
     description: "Per-origin processed-metrics telemetry"
+    severity: low
     issue: "#1679"
 
-####################################################################################################
-# IGNORED
-####################################################################################################
-ignored:
+  tls_handshake_timeout:
+    support: none
+    severity: medium
+    planned: true
+    pipelines: [cross_cutting]
+    description: "HTTP TLS handshake timeout"
+    documentation: "Existing request timeout covers the gap."
+    issue: "#178"
+
+  use_dogstatsd:
+    support: none
+    severity: low
+    planned: false
+    pipelines: [dogstatsd]
+    description: "Master DogStatsD enable toggle"
+    documentation: "Core Agent evaluates and sets `data_plane.dogstatsd.enabled`."
+
+  use_proxy_for_cloud_metadata:
+    support: full
+    pipelines: [cross_cutting]
+    description: "Proxy cloud metadata endpoints"
+    test_support:
+      used_by: [ForwarderConfiguration, ProxyConfiguration]
+      env_var_override: [DD_USE_PROXY_FOR_CLOUD_METADATA]
+      additional_attributes:
+        config_registry_filename: proxy.rs
+
+  use_v2_api.series:
+    support: full
+    pipelines: [checks, dogstatsd]
+    description: "Send series via V2 protobuf endpoint"
+    test_support:
+      used_by: [DatadogMetricsConfiguration]
+      additional_attributes:
+        config_registry_filename: encoders.rs
+
+  vector.metrics.enabled:
+    support: full
+    pipelines: [cross_cutting]
+    description: "Route metrics to OPW (legacy alias)"
+    test_support:
+      used_by: [ForwarderConfiguration]
+      env_var_override: [DD_VECTOR_METRICS_ENABLED]
+      additional_attributes:
+        config_registry_filename: forwarder.rs
+
+  vector.metrics.url:
+    support: full
+    pipelines: [cross_cutting]
+    description: "OPW metrics intake URL (legacy alias)"
+    test_support:
+      used_by: [ForwarderConfiguration]
+      env_var_override: [DD_VECTOR_METRICS_URL]
+      additional_attributes:
+        config_registry_filename: forwarder.rs
+
+  vsock_addr:
+    support: full
+    pipelines: [cross_cutting]
+    description: "vsock address for Agent IPC endpoint"
+    test_support:
+      used_by: [RemoteAgentClientConfiguration]
+      test_json: '"host"'
+      additional_attributes:
+        config_registry_filename: get_typed.rs
+
+excluded:
   GUI_host: "ignored in initial audit 2026-04-23"
   GUI_port: "ignored in initial audit 2026-04-23"
   GUI_session_expiration: "ignored in initial audit 2026-04-23"

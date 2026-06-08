@@ -7,7 +7,9 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::Path;
 
-use datadog_agent_config_overlay_model::{Investigate, SchemaOverlay, SupportLevel, Supported, Unsupported};
+use datadog_agent_config_overlay_model::{
+    FullSupport, KnownEntry, PartialSupport, SchemaOverlay, UnknownSupport, Unsupported,
+};
 use tinytemplate::TinyTemplate;
 
 const ISSUE_BASE_URL: &str = "https://github.com/DataDog/saluki/issues/";
@@ -120,10 +122,12 @@ pub fn generate(overlay: &SchemaOverlay, template_path: &Path, out_dir: &Path) {
 
     // ── Being Worked On (unsupported, planned: true) ────────────────────
     let working_on: Vec<(&str, &Unsupported)> = overlay
-        .unsupported
+        .inventory
         .iter()
-        .filter(|(_, u)| u.planned)
-        .map(|(k, v)| (k.as_str(), v))
+        .filter_map(|(k, v)| match v {
+            KnownEntry::Unsupported(u) if u.planned => Some((k.as_str(), u)),
+            _ => None,
+        })
         .collect();
 
     let working_on_rows: Vec<ThreeColRow> = working_on
@@ -138,10 +142,12 @@ pub fn generate(overlay: &SchemaOverlay, template_path: &Path, out_dir: &Path) {
 
     // ── Not Planned (unsupported, planned: false) ───────────────────────
     let not_planned: Vec<(&str, &Unsupported)> = overlay
-        .unsupported
+        .inventory
         .iter()
-        .filter(|(_, u)| !u.planned)
-        .map(|(k, v)| (k.as_str(), v))
+        .filter_map(|(k, v)| match v {
+            KnownEntry::Unsupported(u) if !u.planned => Some((k.as_str(), u)),
+            _ => None,
+        })
         .collect();
 
     let not_planned_rows: Vec<ThreeColRow> = not_planned
@@ -177,25 +183,27 @@ pub fn generate(overlay: &SchemaOverlay, template_path: &Path, out_dir: &Path) {
         .collect();
     let not_planned_docs = render_docs_block(&not_planned_doc_entries);
 
-    // ── Behavioral Differences (supported, partial) ─────────────────────
-    let behavioral: Vec<(&str, &Supported)> = overlay
-        .supported
+    // ── Behavioral Differences (partial) ────────────────────────────────
+    let behavioral: Vec<(&str, &PartialSupport)> = overlay
+        .inventory
         .iter()
-        .filter(|(_, s)| s.support_level == SupportLevel::Partial)
-        .map(|(k, v)| (k.as_str(), v))
+        .filter_map(|(k, v)| match v {
+            KnownEntry::Partial(p) => Some((k.as_str(), p)),
+            _ => None,
+        })
         .collect();
 
     let behavioral_rows: Vec<TwoColRow> = behavioral
         .iter()
-        .map(|(key, s)| {
-            if let Some(i) = &s.issue {
+        .map(|(key, p)| {
+            if let Some(i) = &p.issue {
                 if let Some(n) = parse_issue_number(i) {
                     issues.entry(n).or_insert_with(|| i.clone());
                 }
             }
             TwoColRow {
                 key: format!("`{}`", key),
-                description: s.description.clone(),
+                description: p.description.clone(),
             }
         })
         .collect();
@@ -203,19 +211,26 @@ pub fn generate(overlay: &SchemaOverlay, template_path: &Path, out_dir: &Path) {
 
     let behavioral_doc_entries: Vec<(&str, &str)> = behavioral
         .iter()
-        .filter_map(|(key, s)| s.documentation.as_deref().map(|d| (*key, d)))
+        .map(|(key, p)| (*key, p.documentation.as_str()))
         .collect();
     let behavioral_docs = render_docs_block(&behavioral_doc_entries);
 
-    // ── Compatibility Unknown (investigate) ─────────────────────────────
-    let inv_entries: Vec<(&str, &Investigate)> = overlay.investigate.iter().map(|(k, v)| (k.as_str(), v)).collect();
+    // ── Compatibility Unknown (unknown) ─────────────────────────────────
+    let inv_entries: Vec<(&str, &UnknownSupport)> = overlay
+        .inventory
+        .iter()
+        .filter_map(|(k, v)| match v {
+            KnownEntry::Unknown(u) => Some((k.as_str(), u)),
+            _ => None,
+        })
+        .collect();
 
     let inv_rows: Vec<ThreeColRow> = inv_entries
         .iter()
-        .map(|(key, inv)| ThreeColRow {
+        .map(|(key, u)| ThreeColRow {
             key: format!("`{}`", key),
-            description: inv.description.clone(),
-            extra: collect_issue(&inv.issue, &mut issues),
+            description: u.description.clone().unwrap_or_default(),
+            extra: collect_issue(&u.issue, &mut issues),
         })
         .collect();
     let investigate_table = render_three_col_table(["Config Key", "Description", "Issue"], &inv_rows);
@@ -242,25 +257,27 @@ pub fn generate(overlay: &SchemaOverlay, template_path: &Path, out_dir: &Path) {
         .collect();
     let adp_only_docs = render_docs_block(&adp_doc_entries);
 
-    // ── Transparent Settings (supported, full) ──────────────────────────
-    let transparent: Vec<(&str, &Supported)> = overlay
-        .supported
+    // ── Transparent Settings (full) ─────────────────────────────────────
+    let transparent: Vec<(&str, &FullSupport)> = overlay
+        .inventory
         .iter()
-        .filter(|(_, s)| s.support_level == SupportLevel::Full)
-        .map(|(k, v)| (k.as_str(), v))
+        .filter_map(|(k, v)| match v {
+            KnownEntry::Full(f) => Some((k.as_str(), f)),
+            _ => None,
+        })
         .collect();
 
     let transparent_rows: Vec<TwoColRow> = transparent
         .iter()
-        .map(|(key, s)| {
-            if let Some(i) = &s.issue {
+        .map(|(key, f)| {
+            if let Some(i) = &f.issue {
                 if let Some(n) = parse_issue_number(i) {
                     issues.entry(n).or_insert_with(|| i.clone());
                 }
             }
             TwoColRow {
                 key: format!("`{}`", key),
-                description: s.description.clone(),
+                description: f.description.clone(),
             }
         })
         .collect();

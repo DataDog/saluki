@@ -8,10 +8,10 @@ and label conventions from `../resources/issue-style.md`.
 Extract key names from `<details>`. Two cases:
 
 - **Keys provided**: proceed with those keys.
-- **No keys provided**: read `schema_overlay.yaml` (locate with `find lib -name schema_overlay.yaml`)
-  and scan for keys that need issues — entries in `unsupported` with `planned: true` and no `issue`
-  field, or entries in `investigate` with no linked issue. Present the list to the user and ask
-  which keys they want to work on.
+- **No keys provided**: read `schema_overlay.yaml` (locate with
+  `find lib -name schema_overlay.yaml`) and scan for keys that need issues — entries in `inventory`
+  with `support: none` and `planned: true` but no `issue` field, or entries with `support: unknown`
+  and no linked issue. Present the list to the user and ask which keys they want to work on.
 
 ## Step 2: Duplicate Search
 

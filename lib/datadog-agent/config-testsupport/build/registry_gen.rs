@@ -4,12 +4,12 @@
 //!
 //! Each run produces:
 //!
-//! - **Per-subsystem files** (`dogstatsd.rs`, `forwarder.rs`, etc.)—one `declare_annotations!`
+//! - **Per-subsystem files** (`dogstatsd.rs`, `forwarder.rs`, etc.)---one `declare_annotations!`
 //!   block per file, covering supported keys grouped by `config_registry_filename`.
-//! - **`unsupported.rs`**—all unsupported overlay keys plus any `investigate` entries that carry
+//! - **`unsupported.rs`**---all unsupported overlay keys plus any unknown entries that carry
 //!   a severity, each mapped to `SupportLevel::Incompatible`.
-//! - **`schema.rs`**—flat `SchemaEntry` constants for every key (delegated to [`schema_gen`]).
-//! - **An aggregation layer**—lazy statics `SUPPORTED_ANNOTATIONS`, `UNSUPPORTED_ANNOTATIONS`,
+//! - **`schema.rs`**---flat `SchemaEntry` constants for every key (delegated to [`schema_gen`]).
+//! - **An aggregation layer**---lazy statics `SUPPORTED_ANNOTATIONS`, `UNSUPPORTED_ANNOTATIONS`,
 //!   and `ALL_ANNOTATIONS` tying all subsystem slices together.
 //!
 //! ## Two entry points
@@ -32,7 +32,8 @@ use std::path::Path;
 use datadog_agent_config_overlay_model::saluki_keys::{SalukiKey, SALUKI_KEYS};
 use datadog_agent_config_overlay_model::schema_gen::{self, FieldInfo};
 use datadog_agent_config_overlay_model::{
-    Pipeline, PipelineAffinity, SchemaOverlay, Severity, SupportLevel, ValueType,
+    FullSupport, KnownEntry, PartialSupport, Pipeline, PipelineAffinity, SchemaOverlay, Severity, TestSupport,
+    ValueType,
 };
 use indexmap::IndexMap;
 
@@ -313,6 +314,45 @@ fn golden_sort_key(filename: &str, yaml_path: &str) -> (usize, String) {
     (usize::MAX, yaml_path.to_string())
 }
 
+// ── Abstraction over Full/Partial entries ───────────────────────────────────
+
+enum SupportedRef<'a> {
+    Full(&'a FullSupport),
+    Partial(&'a PartialSupport),
+}
+
+impl<'a> SupportedRef<'a> {
+    fn test_support(&self) -> &TestSupport {
+        match self {
+            Self::Full(f) => &f.test_support,
+            Self::Partial(p) => &p.test_support,
+        }
+    }
+
+    fn pipelines(&self) -> &PipelineAffinity {
+        match self {
+            Self::Full(f) => &f.pipelines,
+            Self::Partial(p) => &p.pipelines,
+        }
+    }
+
+    fn description(&self) -> &str {
+        match self {
+            Self::Full(f) => &f.description,
+            Self::Partial(p) => &p.description,
+        }
+    }
+
+    fn support_level_str(&self) -> &'static str {
+        match self {
+            Self::Full(_) => "SupportLevel::Full",
+            Self::Partial(_) => "SupportLevel::Partial",
+        }
+    }
+}
+
+// ── Public entry points ─────────────────────────────────────────────────────
+
 #[allow(dead_code)]
 pub fn generate(overlay: &SchemaOverlay, schema_map: &IndexMap<String, FieldInfo>, out_dir: &Path) {
     let registry_dir = out_dir.join("config_registry");
@@ -326,10 +366,6 @@ pub fn generate(overlay: &SchemaOverlay, schema_map: &IndexMap<String, FieldInfo
 }
 
 /// Write generated registry files directly into the source tree for PR diff visibility.
-///
-/// Each subsystem file gets `use super::*;` and `use super::schema;` prepended so
-/// it compiles as a file-based Rust module. The `annotations_index.rs` is designed to be
-/// `include!()`'d from the hand-written `mod.rs` which already has types in scope.
 pub fn generate_in_tree(overlay: &SchemaOverlay, schema_map: &IndexMap<String, FieldInfo>, src_dir: &Path) {
     std::fs::create_dir_all(src_dir).unwrap();
 
@@ -343,10 +379,7 @@ pub fn generate_in_tree(overlay: &SchemaOverlay, schema_map: &IndexMap<String, F
 
 fn validate_saluki_entries(overlay: &SchemaOverlay) {
     for entry in SALUKI_ENTRIES {
-        if overlay.supported.contains_key(entry.yaml_path)
-            || overlay.unsupported.contains_key(entry.yaml_path)
-            || overlay.ignored.contains_key(entry.yaml_path)
-        {
+        if overlay.inventory.contains_key(entry.yaml_path) || overlay.excluded.contains_key(entry.yaml_path) {
             panic!(
                 "Saluki entry '{}' collides with a vendored schema key in the overlay — \
                  it should use the schema entry instead of a hard-coded SchemaEntry",
@@ -356,20 +389,47 @@ fn validate_saluki_entries(overlay: &SchemaOverlay) {
     }
 }
 
+// ── Subsystem file generation ───────────────────────────────────────────────
+
+fn collect_supported_filenames(overlay: &SchemaOverlay) -> Vec<String> {
+    let mut files: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for entry in overlay.inventory.values() {
+        let ts = match entry {
+            KnownEntry::Full(f) => &f.test_support,
+            KnownEntry::Partial(p) => &p.test_support,
+            _ => continue,
+        };
+        if let Some(filename) = ts.additional_attributes.get("config_registry_filename") {
+            files.insert(filename.clone());
+        }
+    }
+    for se in SALUKI_ENTRIES {
+        files.insert(se.filename.to_string());
+    }
+    let mut files: Vec<String> = files.into_iter().collect();
+    files.sort_unstable();
+    files
+}
+
 fn generate_subsystem_files(
     overlay: &SchemaOverlay, schema_map: &IndexMap<String, FieldInfo>, dir: &Path, preamble: &str,
 ) {
-    let mut datadog_by_file: IndexMap<String, Vec<(&str, &datadog_agent_config_overlay_model::Supported)>> =
-        IndexMap::new();
-    for (yaml_path, entry) in &overlay.supported {
-        let filename = entry
+    let mut datadog_by_file: IndexMap<String, Vec<(&str, SupportedRef)>> = IndexMap::new();
+    for (yaml_path, entry) in &overlay.inventory {
+        let supported_ref = match entry {
+            KnownEntry::Full(f) => SupportedRef::Full(f),
+            KnownEntry::Partial(p) => SupportedRef::Partial(p),
+            _ => continue,
+        };
+        let filename = supported_ref
+            .test_support()
             .additional_attributes
             .get("config_registry_filename")
             .unwrap_or_else(|| panic!("supported key '{}' missing config_registry_filename", yaml_path));
         datadog_by_file
             .entry(filename.clone())
             .or_default()
-            .push((yaml_path.as_str(), entry));
+            .push((yaml_path.as_str(), supported_ref));
     }
 
     let mut saluki_by_file: IndexMap<&str, Vec<&SalukiKey>> = IndexMap::new();
@@ -399,7 +459,7 @@ fn generate_subsystem_files(
 }
 
 enum AnnotationEntry<'a> {
-    Datadog(&'a str, &'a datadog_agent_config_overlay_model::Supported),
+    Datadog(&'a str, &'a SupportedRef<'a>),
     Saluki(&'a SalukiKey),
 }
 
@@ -413,11 +473,11 @@ impl<'a> AnnotationEntry<'a> {
 }
 
 fn generate_one_file(
-    filename: &str, datadog_entries: &[(&str, &datadog_agent_config_overlay_model::Supported)],
-    saluki_entries: &[&SalukiKey], schema_map: &IndexMap<String, FieldInfo>, dir: &Path, preamble: &str,
+    filename: &str, datadog_entries: &[(&str, SupportedRef)], saluki_entries: &[&SalukiKey],
+    schema_map: &IndexMap<String, FieldInfo>, dir: &Path, preamble: &str,
 ) {
     let mut entries: Vec<AnnotationEntry> = Vec::new();
-    for &(yaml_path, entry) in datadog_entries {
+    for (yaml_path, entry) in datadog_entries {
         entries.push(AnnotationEntry::Datadog(yaml_path, entry));
     }
     for &se in saluki_entries {
@@ -473,22 +533,21 @@ fn generate_one_file(
 }
 
 fn emit_datadog_annotation(
-    out: &mut String, yaml_path: &str, entry: &datadog_agent_config_overlay_model::Supported,
-    _schema_map: &IndexMap<String, FieldInfo>,
+    out: &mut String, yaml_path: &str, entry: &SupportedRef, _schema_map: &IndexMap<String, FieldInfo>,
 ) {
     let const_name = schema_gen::yaml_path_to_const(yaml_path);
-    let support_level = overlay_support_level(&entry.support_level);
-    let pipeline_affinity = overlay_pipeline_affinity_expr(&entry.pipelines);
+    let support_level = entry.support_level_str();
+    let pipeline_affinity = overlay_pipeline_affinity_expr(entry.pipelines());
+    let ts = entry.test_support();
 
-    let alias_paths = &entry.additional_yaml_paths;
-    let alias_lit = if alias_paths.is_empty() {
+    let alias_lit = if ts.additional_yaml_paths.is_empty() {
         "&[]".to_string()
     } else {
-        let items: Vec<String> = alias_paths.iter().map(|p| format!("\"{}\"", p)).collect();
+        let items: Vec<String> = ts.additional_yaml_paths.iter().map(|p| format!("\"{}\"", p)).collect();
         format!("&[{}]", items.join(", "))
     };
 
-    let env_override = match &entry.env_var_override {
+    let env_override = match &ts.env_var_override {
         None => "None".to_string(),
         Some(vars) => {
             let items: Vec<String> = vars
@@ -500,7 +559,7 @@ fn emit_datadog_annotation(
     };
 
     let used_by_lit = {
-        let items: Vec<String> = entry
+        let items: Vec<String> = ts
             .used_by
             .iter()
             .map(|u| format!("structs::{}", u.as_smoke_test_const()))
@@ -508,17 +567,17 @@ fn emit_datadog_annotation(
         format!("&[{}]", items.join(", "))
     };
 
-    let vt_override = match &entry.value_type_override {
+    let vt_override = match &ts.value_type_override {
         None => "None".to_string(),
         Some(vt) => format!("Some({})", overlay_value_type(vt)),
     };
 
-    let test_json_lit = match &entry.test_json {
+    let test_json_lit = match &ts.test_json {
         None => "None".to_string(),
         Some(s) => format_test_json(s),
     };
 
-    let description = &entry.description;
+    let description = entry.description();
 
     writeln!(out, "    /// `{}`-{}", yaml_path, description).unwrap();
     writeln!(out, "    {} = SalukiAnnotation {{", const_name).unwrap();
@@ -575,27 +634,32 @@ fn emit_saluki_annotation(out: &mut String, se: &SalukiKey) {
     writeln!(out, "    }};").unwrap();
 }
 
+// ── Unsupported file generation ─────────────────────────────────────────────
+
 fn generate_unsupported_rs(overlay: &SchemaOverlay, dir: &Path, preamble: &str) {
     enum UnsupportedEntry<'a> {
         Unsupported(&'a str, &'a datadog_agent_config_overlay_model::Unsupported),
-        Investigate(&'a str, &'a datadog_agent_config_overlay_model::Investigate),
+        Unknown(&'a str, &'a datadog_agent_config_overlay_model::UnknownSupport),
     }
     impl<'a> UnsupportedEntry<'a> {
         fn yaml_path(&self) -> &str {
             match self {
                 Self::Unsupported(p, _) => p,
-                Self::Investigate(p, _) => p,
+                Self::Unknown(p, _) => p,
             }
         }
     }
 
     let mut entries: Vec<UnsupportedEntry> = Vec::new();
-    for (yaml_path, entry) in &overlay.unsupported {
-        entries.push(UnsupportedEntry::Unsupported(yaml_path, entry));
-    }
-    for (yaml_path, entry) in &overlay.investigate {
-        if entry.severity.is_some() {
-            entries.push(UnsupportedEntry::Investigate(yaml_path, entry));
+    for (yaml_path, entry) in &overlay.inventory {
+        match entry {
+            KnownEntry::Unsupported(u) => {
+                entries.push(UnsupportedEntry::Unsupported(yaml_path, u));
+            }
+            KnownEntry::Unknown(u) if u.severity.is_some() => {
+                entries.push(UnsupportedEntry::Unknown(yaml_path, u));
+            }
+            _ => {}
         }
     }
     entries.sort_by(|a, b| {
@@ -630,7 +694,7 @@ fn generate_unsupported_rs(overlay: &SchemaOverlay, dir: &Path, preamble: &str) 
                 writeln!(out, "        pipeline_affinity: {},", pipeline_affinity).unwrap();
                 writeln!(out, "    }};").unwrap();
             }
-            UnsupportedEntry::Investigate(yaml_path, e) => {
+            UnsupportedEntry::Unknown(yaml_path, e) => {
                 let severity = match e.severity {
                     Some(Severity::Low) => "Severity::Low",
                     Some(Severity::Medium) => "Severity::Medium",
@@ -638,8 +702,9 @@ fn generate_unsupported_rs(overlay: &SchemaOverlay, dir: &Path, preamble: &str) 
                     None => unreachable!(),
                 };
                 let const_name = schema_gen::yaml_path_to_const(yaml_path);
+                let desc = e.description.as_deref().unwrap_or("");
 
-                writeln!(out, "    /// `{}`-{}", yaml_path, e.description).unwrap();
+                writeln!(out, "    /// `{}`-{}", yaml_path, desc).unwrap();
                 writeln!(out, "    {} = SalukiAnnotation {{", const_name).unwrap();
                 writeln!(out, "        schema: &schema::{},", const_name).unwrap();
                 writeln!(out, "        support_level: SupportLevel::Incompatible({}),", severity).unwrap();
@@ -660,21 +725,11 @@ fn generate_unsupported_rs(overlay: &SchemaOverlay, dir: &Path, preamble: &str) 
     std::fs::write(&path, out).unwrap_or_else(|e| panic!("cannot write {}: {}", path.display(), e));
 }
 
+// ── Index/mod generation ────────────────────────────────────────────────────
+
 #[allow(dead_code)]
 fn generate_mod_rs(overlay: &SchemaOverlay, dir: &Path) {
-    let supported_files: Vec<String> = {
-        let mut files: std::collections::HashSet<String> = overlay
-            .supported
-            .values()
-            .filter_map(|e| e.additional_attributes.get("config_registry_filename").cloned())
-            .collect();
-        for se in SALUKI_ENTRIES {
-            files.insert(se.filename.to_string());
-        }
-        let mut files: Vec<String> = files.into_iter().collect();
-        files.sort_unstable();
-        files
-    };
+    let supported_files = collect_supported_filenames(overlay);
 
     let mut out = String::new();
     writeln!(out, "// @generated by build.rs from schema_overlay.yaml — DO NOT EDIT").unwrap();
@@ -767,23 +822,8 @@ fn generate_mod_rs(overlay: &SchemaOverlay, dir: &Path) {
 }
 
 /// Generate `annotations_index.rs`, designed to be `include!()`'d from the hand-written `mod.rs`.
-///
-/// Contains: `mod schema` (include!'ing OUT_DIR/schema.rs), plain `mod` declarations for each
-/// subsystem file, and the LazyLock aggregation statics.
 fn generate_annotations_index(overlay: &SchemaOverlay, dir: &Path) {
-    let supported_files: Vec<String> = {
-        let mut files: std::collections::HashSet<String> = overlay
-            .supported
-            .values()
-            .filter_map(|e| e.additional_attributes.get("config_registry_filename").cloned())
-            .collect();
-        for se in SALUKI_ENTRIES {
-            files.insert(se.filename.to_string());
-        }
-        let mut files: Vec<String> = files.into_iter().collect();
-        files.sort_unstable();
-        files
-    };
+    let supported_files = collect_supported_filenames(overlay);
 
     let mut out = String::new();
     writeln!(out, "// @generated by build.rs from schema_overlay.yaml — DO NOT EDIT").unwrap();
@@ -857,12 +897,7 @@ fn generate_annotations_index(overlay: &SchemaOverlay, dir: &Path) {
     std::fs::write(&path, out).unwrap_or_else(|e| panic!("cannot write {}: {}", path.display(), e));
 }
 
-fn overlay_support_level(sl: &SupportLevel) -> &'static str {
-    match sl {
-        SupportLevel::Full => "SupportLevel::Full",
-        SupportLevel::Partial => "SupportLevel::Partial",
-    }
-}
+// ── Helpers ─────────────────────────────────────────────────────────────────
 
 fn overlay_pipeline_affinity_expr(pa: &PipelineAffinity) -> String {
     match pa {
@@ -892,8 +927,6 @@ fn overlay_value_type(vt: &ValueType) -> &'static str {
     }
 }
 
-/// Format a `test_json` value using raw string literals when the value contains quotes,
-/// matching the style used in the hand-written `config_registry` files on main.
 fn format_test_json(s: &str) -> String {
     if s.contains('"') {
         format!("Some(r#\"{}\"#)", s)

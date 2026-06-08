@@ -17,7 +17,7 @@ Glossary:
 
 Analyzes one or more ConfKeys via a clean-room sub-agent — static code analysis of how each key is
 registered and used in both codebases. Shows you the result and proposes overlay updates (e.g.
-moving a key from `ignored` to `investigate`, opening an issue).
+moving a key from `excluded` to `inventory` with `support: unknown`, opening an issue).
 
 ```
 /confkey audit dogstatsd_port
@@ -32,8 +32,8 @@ the existing classification.
 ### `create-issue [key ...]`
 
 Drafts and files GitHub issues for keys that need attention. With no arguments, scans the overlay
-for keys in `unsupported` with `planned: true` and no issue yet, or keys in `investigate` with no
-linked issue.
+for keys with `support: none` and `planned: true` but no issue yet, or keys with `support: unknown`
+and no linked issue.
 
 ```
 /confkey create-issue
@@ -44,5 +44,3 @@ Checks for duplicates, proposes groupings for related keys, iterates on drafts w
 file with `gh`, and updates the `issue` field in the overlay.
 
 * * *
-
-

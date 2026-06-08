@@ -5,62 +5,6 @@ use super::*;
 
 pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
     ClassifierEntry {
-        yaml_path: "dogstatsd_mapper_cache_size",
-        aliases: &[],
-        support_level: SupportLevel::Partial,
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
-        default: Some("1000"),
-    },
-    ClassifierEntry {
-        yaml_path: "dogstatsd_metrics_stats_enable",
-        aliases: &[],
-        support_level: SupportLevel::Partial,
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
-        default: Some("false"),
-    },
-    ClassifierEntry {
-        yaml_path: "log_level",
-        aliases: &[],
-        support_level: SupportLevel::Partial,
-        pipeline_affinity: PipelineAffinity::CrossCutting,
-        default: Some("\"info\""),
-    },
-    ClassifierEntry {
-        yaml_path: "min_tls_version",
-        aliases: &[],
-        support_level: SupportLevel::Partial,
-        pipeline_affinity: PipelineAffinity::CrossCutting,
-        default: Some("\"tlsv1.2\""),
-    },
-    ClassifierEntry {
-        yaml_path: "multi_region_failover.enabled",
-        aliases: &[],
-        support_level: SupportLevel::Partial,
-        pipeline_affinity: PipelineAffinity::CrossCutting,
-        default: Some("false"),
-    },
-    ClassifierEntry {
-        yaml_path: "serializer_zstd_compressor_level",
-        aliases: &[],
-        support_level: SupportLevel::Partial,
-        pipeline_affinity: PipelineAffinity::CrossCutting,
-        default: Some("1"),
-    },
-    ClassifierEntry {
-        yaml_path: "skip_ssl_validation",
-        aliases: &[],
-        support_level: SupportLevel::Partial,
-        pipeline_affinity: PipelineAffinity::CrossCutting,
-        default: Some("false"),
-    },
-    ClassifierEntry {
-        yaml_path: "statsd_forward_host",
-        aliases: &[],
-        support_level: SupportLevel::Partial,
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
-        default: Some("\"\""),
-    },
-    ClassifierEntry {
         yaml_path: "aggregator_buffer_size",
         aliases: &[],
         support_level: SupportLevel::Incompatible(Severity::Low),

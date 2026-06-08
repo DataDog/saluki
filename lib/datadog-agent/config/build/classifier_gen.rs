@@ -2,7 +2,7 @@ use std::fmt::Write as _;
 use std::path::Path;
 
 use datadog_agent_config_overlay_model::schema_gen::FieldInfo;
-use datadog_agent_config_overlay_model::{PipelineAffinity, SchemaOverlay, Severity, SupportLevel};
+use datadog_agent_config_overlay_model::{KnownEntry, PipelineAffinity, SchemaOverlay, Severity};
 use indexmap::IndexMap;
 
 pub fn generate(overlay: &SchemaOverlay, schema_map: &IndexMap<String, FieldInfo>, manifest_dir: &Path) {
@@ -18,14 +18,13 @@ pub fn generate(overlay: &SchemaOverlay, schema_map: &IndexMap<String, FieldInfo
     writeln!(out).unwrap();
     writeln!(out, "pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[").unwrap();
 
-    // Only Partial entries from `supported` are actionable (they emit a warning at the call site).
-    // Full entries are silently skipped regardless, so they add no value to the classifier.
-    for (yaml_path, entry) in &overlay.supported {
-        if entry.support_level != SupportLevel::Partial {
+    for (yaml_path, entry) in &overlay.inventory {
+        let KnownEntry::Partial(p) = entry else { continue };
+        if !p.warn {
             continue;
         }
-        let alias_lit = alias_literal(&entry.additional_yaml_paths);
-        let pipeline_affinity = overlay_pipeline_affinity_expr(&entry.pipelines);
+        let alias_lit = alias_literal(&p.test_support.additional_yaml_paths);
+        let pipeline_affinity = overlay_pipeline_affinity_expr(&p.pipelines);
         let default_lit = schema_default_literal(yaml_path, schema_map);
 
         writeln!(out, "    ClassifierEntry {{").unwrap();
@@ -37,13 +36,14 @@ pub fn generate(overlay: &SchemaOverlay, schema_map: &IndexMap<String, FieldInfo
         writeln!(out, "    }},").unwrap();
     }
 
-    for (yaml_path, entry) in &overlay.unsupported {
-        let severity = match entry.severity {
+    for (yaml_path, entry) in &overlay.inventory {
+        let KnownEntry::Unsupported(u) = entry else { continue };
+        let severity = match u.severity {
             Severity::Low => "Severity::Low",
             Severity::Medium => "Severity::Medium",
             Severity::High => "Severity::High",
         };
-        let pipeline_affinity = overlay_pipeline_affinity_expr(&entry.pipelines);
+        let pipeline_affinity = overlay_pipeline_affinity_expr(&u.pipelines);
         let default_lit = schema_default_literal(yaml_path, schema_map);
 
         writeln!(out, "    ClassifierEntry {{").unwrap();
@@ -55,8 +55,9 @@ pub fn generate(overlay: &SchemaOverlay, schema_map: &IndexMap<String, FieldInfo
         writeln!(out, "    }},").unwrap();
     }
 
-    for (yaml_path, entry) in &overlay.investigate {
-        let severity = match entry.severity {
+    for (yaml_path, entry) in &overlay.inventory {
+        let KnownEntry::Unknown(u) = entry else { continue };
+        let severity = match u.severity {
             Some(Severity::Low) => "Severity::Low",
             Some(Severity::Medium) => "Severity::Medium",
             Some(Severity::High) => "Severity::High",

@@ -11,6 +11,7 @@
 pub mod saluki_keys;
 pub mod schema_gen;
 pub mod smoke_test_support;
+
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
@@ -19,142 +20,132 @@ use serde::Deserialize;
 
 use crate::smoke_test_support::ConfigurationStruct;
 
-/// Top-level overlay structure keyed by YAML path.
+/// Top-level overlay structure.
 ///
-/// Sections partition every `core_schema.yaml` key into exactly one of: supported, unsupported,
-/// investigate, or ignored.
+/// `known` covers every key the team has reviewed and classified. `ignored` covers keys irrelevant
+/// to ADP's domain. Together they must account for every key in `core_schema.yaml`.
 #[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "snake_case")]
 pub struct SchemaOverlay {
-    /// Keys that ADP actively reads and uses.
-    pub supported: IndexMap<String, Supported>,
-
-    /// Keys that are relevant to ADP's domain, but which are not supported.
-    pub unsupported: IndexMap<String, Unsupported>,
-
-    /// Keys that should not be in the ignored list but whose classification is not yet determined.
-    /// Investigation may lead to supported, unsupported, or back to ignored.
-    #[serde(default)]
-    pub investigate: IndexMap<String, Investigate>,
-
-    /// Keys that are irrelevant to ADP's domain. Value is a short reason string. These must not be
-    /// mechanically added. A human should at least review the key and reason string when it is
-    /// added to the list of ignored keys.
-    pub ignored: IndexMap<String, String>,
+    pub inventory: IndexMap<String, KnownEntry>,
+    pub excluded: IndexMap<String, String>,
 }
 
-/// Metadata for a supported configuration key.
+/// Classification of a known (non-ignored) config key.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "support", rename_all = "snake_case")]
+pub enum KnownEntry {
+    /// ADP reads and fully supports this key; behavior matches the core Agent.
+    Full(FullSupport),
+    /// ADP reads this key but behavior diverges from the core Agent in some cases.
+    Partial(PartialSupport),
+    /// ADP does not support this key.
+    #[serde(rename = "none")]
+    Unsupported(Unsupported),
+    /// ADP's compatibility with this key has not yet been determined.
+    Unknown(UnknownSupport),
+}
+
+/// Metadata for a fully supported configuration key.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub struct Supported {
-    /// Whether the key is fully or partially supported.
-    pub support_level: SupportLevel,
-
+pub struct FullSupport {
     /// Which pipelines depend on this key (non-empty).
     pub pipelines: PipelineAffinity,
-
-    /// Override the type inferred from the schema.
-    #[serde(default)]
-    pub value_type_override: Option<ValueType>,
-
-    // Documentation support
     /// Short description for documentation tables (<= 50 chars).
     pub description: String,
-
     /// Extended documentation (appears in generated docs).
     #[serde(default)]
     pub documentation: Option<String>,
-
     /// GitHub issue tracking number.
     #[serde(default)]
     pub issue: Option<String>,
+    /// Fields to support the `config_registry` and configuration smoke tests.
+    pub test_support: TestSupport,
+}
 
-    // Direct deserialization support
-    //
-    // These fields support ADP's implementation of the Agent's overlay and deserialization
-    // mechanism. It is hoped that these may be removed once ADP is fully abstracted from Agent
-    // configuration logic.
-    /// Environment variable overrides for this key. Checked by configuration smoke tests.
+/// Metadata for a partially supported configuration key.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct PartialSupport {
+    /// Which pipelines depend on this key (non-empty).
+    pub pipelines: PipelineAffinity,
+    /// Short description for documentation tables (<= 50 chars).
+    pub description: String,
+    /// Extended documentation explaining the behavioral divergence. Required for partial keys.
+    pub documentation: String,
+    /// When true, the runtime classifier emits a warning for non-default values of this key.
     #[serde(default)]
-    pub env_var_override: Option<Vec<String>>,
-
-    /// Alias YAML paths that map to the same config key. Checked by configuration smoke tests.
+    pub warn: bool,
+    /// GitHub issue tracking number.
     #[serde(default)]
-    pub additional_yaml_paths: Vec<String>,
-
-    // Test support
-    //
-    // These fields support logic in the configuration smoke tests. It is hoped that these may be
-    // removed once ADP is fully abstracted from Agent configuration deserialization which would
-    // render the smoke tests inert.
-    /// Config structs that consume this key (non-empty) for configuration smoke tests.
-    pub used_by: IndexSet<ConfigurationStruct>,
-
-    /// Literal JSON value for smoke test injection.
-    #[serde(default)]
-    pub test_json: Option<String>,
-
-    /// TRANSITIONAL BANDAID. Carries metadata needed only to reproduce the hand-written
-    /// registry (filename partitioning, Saluki-only schema source/default). Delete with it.
-    #[serde(default)]
-    pub additional_attributes: IndexMap<String, String>,
+    pub issue: Option<String>,
+    /// Fields to support the `config_registry` and configuration smoke tests.
+    pub test_support: TestSupport,
 }
 
 /// Metadata for an unsupported configuration key.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct Unsupported {
-    /// How severe the lack of support is.
-    pub severity: Severity,
-
-    /// Whether support is planned. When true, `issue` must be present.
-    pub planned: bool,
-
     /// Pipelines affected by the lack of support.
     pub pipelines: PipelineAffinity,
-
-    /// Short description for documentation tables.
+    /// Short description for documentation tables (<= 50 chars).
     pub description: String,
-
     /// Longer explanation of why it is unsupported and future plans.
     #[serde(default)]
     pub documentation: Option<String>,
-
+    /// How severe the lack of support is.
+    pub severity: Severity,
+    /// Whether support is planned. When true, `issue` must be present.
+    pub planned: bool,
     /// GitHub issue tracking number.
     #[serde(default)]
     pub issue: Option<String>,
 }
 
-/// A configuration key whose classification has not yet been determined.
-///
-/// Keys in this section are known to need investigation but have not been assessed for support
-/// level or severity. They are excluded from the runtime classifier and appear only in generated
-/// documentation. Once investigated, a key moves to supported, unsupported, or ignored.
+/// Metadata for a key whose support level has not yet been determined.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub struct Investigate {
-    /// Provisional severity carried over from prior classification. When present and the key
-    /// ultimately lands in unsupported, this value is a starting point. Has no runtime effect.
+pub struct UnknownSupport {
+    /// Short description for documentation tables (<= 50 chars), if known.
+    #[serde(default)]
+    pub description: Option<String>,
+    /// Severity estimate, if there is intuition about the impact.
     #[serde(default)]
     pub severity: Option<Severity>,
-
-    /// Short description for documentation tables (<= 50 chars).
-    pub description: String,
-
     /// GitHub issue tracking the investigation.
     #[serde(default)]
     pub issue: Option<String>,
 }
 
-/// Whether a key is fully or partially supported.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+/// Metadata to support config smoke tests.
+///
+/// These fields support logic in the configuration smoke tests and are tightly bound to the
+/// behavior of the test logic. They may change if the test methodology changes.
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum SupportLevel {
-    Full,
-    Partial,
+pub struct TestSupport {
+    /// Environment variable overrides for this key. Checked by configuration smoke tests.
+    #[serde(default)]
+    pub env_var_override: Option<Vec<String>>,
+    /// Alias YAML paths that map to the same config key. Checked by configuration smoke tests.
+    #[serde(default)]
+    pub additional_yaml_paths: Vec<String>,
+    /// Override the type inferred from the schema.
+    #[serde(default)]
+    pub value_type_override: Option<ValueType>,
+    /// Config structs that consume this key (non-empty) for configuration smoke tests.
+    pub used_by: IndexSet<ConfigurationStruct>,
+    /// Literal JSON value for smoke test injection.
+    #[serde(default)]
+    pub test_json: Option<String>,
+    /// TRANSITIONAL BANDAID. Carries metadata needed only to reproduce the hand-written
+    /// registry (filename partitioning, Saluki-only schema source/default). Delete with it.
+    #[serde(default)]
+    pub additional_attributes: IndexMap<String, String>,
 }
 
-/// Impact severity of an unsupported key.
+/// Impact severity of an unsupported or unknown key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Severity {
@@ -271,31 +262,25 @@ impl SchemaOverlay {
         Ok(loaded)
     }
 
-    /// Deserialize a [`SchemaOverlay`] from a YAML string.
     fn from_yaml(s: &str) -> Result<Self, Error> {
         let yaml: serde_yaml::Value = serde_yaml::from_str(s).map_err(Error::Yaml)?;
         Self::lint_yaml(&yaml)?;
         serde_yaml::from_value(yaml).map_err(Error::Yaml)
     }
 
-    /// Load and deserialize a `SchemaOverlay` from a file path.
     fn from_file(path: &Path) -> Result<Self, Error> {
         let contents = std::fs::read_to_string(path).map_err(|e| Error::Io((path.into(), e)))?;
         Self::from_yaml(&contents)
     }
 
-    /// Check that the loaded schema overlay is consistent with our required invariants.
     fn validate(&self, core_schema: &Path) -> Result<(), Error> {
         self.validate_keys_match(core_schema)?;
-        self.validate_used_by()?;
+        self.validate_entries()?;
         Ok(())
     }
 
-    /// Ensure our diffs are manageable by requiring a stable ordering of the overlay file.
-    ///
-    /// Checks that sections appear in the required order (supported, unsupported, investigate,
-    /// ignored) and that keys within each section are in alphabetical order. The investigate
-    /// section is optional.
+    /// Ensure that sections appear in the required order and that keys within each section are
+    /// sorted alphabetically.
     fn lint_yaml(yaml: &serde_yaml::Value) -> Result<(), Error> {
         let mapping = yaml
             .as_mapping()
@@ -303,40 +288,25 @@ impl SchemaOverlay {
 
         let section_names: Vec<&str> = mapping.keys().filter_map(|k| k.as_str()).collect();
 
-        let required = ["supported", "unsupported", "ignored"];
-        let positions: Vec<Option<usize>> = required
-            .iter()
-            .map(|&s| section_names.iter().position(|&k| k == s))
-            .collect();
-        for (i, pos) in positions.iter().enumerate() {
-            if pos.is_none() {
+        for required in ["inventory", "excluded"] {
+            if !section_names.contains(&required) {
                 return Err(Error::Validation(format!(
                     "overlay missing required section '{}'",
-                    required[i]
+                    required
                 )));
             }
         }
-        let (pos_sup, pos_uns, pos_ign) = (positions[0].unwrap(), positions[1].unwrap(), positions[2].unwrap());
 
-        let pos_inv = section_names.iter().position(|&k| k == "investigate");
+        let pos_known = section_names.iter().position(|&k| k == "inventory").unwrap();
+        let pos_ignored = section_names.iter().position(|&k| k == "excluded").unwrap();
 
-        if let Some(pos_inv) = pos_inv {
-            if !(pos_sup < pos_uns && pos_uns < pos_inv && pos_inv < pos_ign) {
-                return Err(Error::Validation(
-                    "sections must appear in order: supported, unsupported, investigate, ignored".to_string(),
-                ));
-            }
-        } else if !(pos_sup < pos_uns && pos_uns < pos_ign) {
+        if pos_known >= pos_ignored {
             return Err(Error::Validation(
-                "sections must appear in order: supported, unsupported, [investigate,] ignored".to_string(),
+                "sections must appear in order: known, ignored".to_string(),
             ));
         }
 
-        let mut lint_sections: Vec<&str> = required.to_vec();
-        if pos_inv.is_some() {
-            lint_sections.push("investigate");
-        }
-        for section_name in &lint_sections {
+        for section_name in ["inventory", "excluded"] {
             if let Some(section) = yaml.get(section_name).and_then(|v| v.as_mapping()) {
                 let mut prev = "";
                 for key in section.keys().filter_map(|k| k.as_str()) {
@@ -354,45 +324,20 @@ impl SchemaOverlay {
         Ok(())
     }
 
-    /// Ensure that each core schema key appears exactly once in the schema overlay file.
+    /// Ensure that each core schema key appears exactly once across the overlay sections.
     fn validate_keys_match(&self, core_schema: &Path) -> Result<(), Error> {
         let schema_keys = Self::schema_keys(core_schema)?;
 
-        type SectionCheck<'a> = (&'a str, &'a dyn Fn(&str) -> bool);
-        // No key may appear in more than one section.
-        let sections: &[SectionCheck<'_>] = &[
-            ("supported", &|k: &str| self.supported.contains_key(k)),
-            ("unsupported", &|k: &str| self.unsupported.contains_key(k)),
-            ("investigate", &|k: &str| self.investigate.contains_key(k)),
-            ("ignored", &|k: &str| self.ignored.contains_key(k)),
-        ];
-        let all_keys: Vec<(&str, &str)> = self
-            .supported
-            .keys()
-            .map(|k| ("supported", k.as_str()))
-            .chain(self.unsupported.keys().map(|k| ("unsupported", k.as_str())))
-            .chain(self.investigate.keys().map(|k| ("investigate", k.as_str())))
-            .chain(self.ignored.keys().map(|k| ("ignored", k.as_str())))
-            .collect();
-        for &(from_section, key) in &all_keys {
-            for &(section_name, check_fn) in sections {
-                if section_name != from_section && check_fn(key) {
-                    return Err(Error::Validation(format!(
-                        "key '{}' appears in more than one overlay section",
-                        key
-                    )));
-                }
+        for key in self.excluded.keys() {
+            if self.inventory.contains_key(key.as_str()) {
+                return Err(Error::Validation(format!(
+                    "key '{}' appears in more than one overlay section",
+                    key
+                )));
             }
         }
 
-        // Every overlay key must exist in the schema.
-        for key in self
-            .supported
-            .keys()
-            .chain(self.unsupported.keys())
-            .chain(self.investigate.keys())
-            .chain(self.ignored.keys())
-        {
+        for key in self.inventory.keys().chain(self.excluded.keys()) {
             if !schema_keys.contains(key.as_str()) {
                 return Err(Error::Validation(format!(
                     "overlay key '{}' is not present in the schema",
@@ -401,13 +346,10 @@ impl SchemaOverlay {
             }
         }
 
-        // Every schema key must be covered by the overlay.
         let overlay_keys: HashSet<&str> = self
-            .supported
+            .inventory
             .keys()
-            .chain(self.unsupported.keys())
-            .chain(self.investigate.keys())
-            .chain(self.ignored.keys())
+            .chain(self.excluded.keys())
             .map(|s| s.as_str())
             .collect();
         for key in &schema_keys {
@@ -451,76 +393,104 @@ impl SchemaOverlay {
         }
     }
 
-    /// Ensure that every supported field declares at least one `used_by` struct, that descriptions
-    /// fit within the 50-character table limit, and that `additional_yaml_paths` contains no
-    /// duplicates. Pipeline non-emptiness is enforced by `PipelineAffinity`'s custom Deserialize.
-    fn validate_used_by(&self) -> Result<(), Error> {
-        for (key, entry) in &self.supported {
-            if entry.used_by.is_empty() {
-                return Err(Error::Validation(format!(
-                    "supported key '{}': used_by must be non-empty",
-                    key
-                )));
-            }
-            if entry.description.len() > 50 {
-                return Err(Error::Validation(format!(
-                    "supported key '{}': description exceeds 50 chars ({} chars)",
-                    key,
-                    entry.description.len()
-                )));
-            }
-            let mut seen: HashSet<&str> = HashSet::new();
-            for path in &entry.additional_yaml_paths {
-                if !seen.insert(path.as_str()) {
-                    return Err(Error::Validation(format!(
-                        "supported key '{}': duplicate additional_yaml_path '{}'",
-                        key, path
-                    )));
+    /// Validate per-entry constraints: description length, `used_by` non-empty, no duplicate
+    /// `additional_yaml_paths`, and planned+issue consistency for unsupported entries.
+    fn validate_entries(&self) -> Result<(), Error> {
+        for (key, entry) in &self.inventory {
+            match entry {
+                KnownEntry::Full(f) => {
+                    if f.test_support.used_by.is_empty() {
+                        return Err(Error::Validation(format!(
+                            "full key '{}': used_by must be non-empty",
+                            key
+                        )));
+                    }
+                    if f.description.len() > 50 {
+                        return Err(Error::Validation(format!(
+                            "full key '{}': description exceeds 50 chars ({} chars)",
+                            key,
+                            f.description.len()
+                        )));
+                    }
+                    let mut seen: HashSet<&str> = HashSet::new();
+                    for path in &f.test_support.additional_yaml_paths {
+                        if !seen.insert(path.as_str()) {
+                            return Err(Error::Validation(format!(
+                                "full key '{}': duplicate additional_yaml_path '{}'",
+                                key, path
+                            )));
+                        }
+                    }
                 }
-            }
-        }
-        for (key, entry) in &self.unsupported {
-            if entry.description.len() > 50 {
-                return Err(Error::Validation(format!(
-                    "unsupported key '{}': description exceeds 50 chars ({} chars)",
-                    key,
-                    entry.description.len()
-                )));
-            }
-            if entry.planned && entry.issue.is_none() {
-                return Err(Error::Validation(format!(
-                    "unsupported key '{}': planned requires an issue",
-                    key
-                )));
-            }
-        }
-        for (key, entry) in &self.investigate {
-            if entry.description.len() > 50 {
-                return Err(Error::Validation(format!(
-                    "investigate key '{}': description exceeds 50 chars ({} chars)",
-                    key,
-                    entry.description.len()
-                )));
+                KnownEntry::Partial(p) => {
+                    if p.test_support.used_by.is_empty() {
+                        return Err(Error::Validation(format!(
+                            "partial key '{}': used_by must be non-empty",
+                            key
+                        )));
+                    }
+                    if p.description.len() > 50 {
+                        return Err(Error::Validation(format!(
+                            "partial key '{}': description exceeds 50 chars ({} chars)",
+                            key,
+                            p.description.len()
+                        )));
+                    }
+                    let mut seen: HashSet<&str> = HashSet::new();
+                    for path in &p.test_support.additional_yaml_paths {
+                        if !seen.insert(path.as_str()) {
+                            return Err(Error::Validation(format!(
+                                "partial key '{}': duplicate additional_yaml_path '{}'",
+                                key, path
+                            )));
+                        }
+                    }
+                }
+                KnownEntry::Unsupported(u) => {
+                    if u.description.len() > 50 {
+                        return Err(Error::Validation(format!(
+                            "unsupported key '{}': description exceeds 50 chars ({} chars)",
+                            key,
+                            u.description.len()
+                        )));
+                    }
+                    if u.planned && u.issue.is_none() {
+                        return Err(Error::Validation(format!(
+                            "unsupported key '{}': planned requires an issue",
+                            key
+                        )));
+                    }
+                }
+                KnownEntry::Unknown(u) => {
+                    if let Some(desc) = &u.description {
+                        if desc.len() > 50 {
+                            return Err(Error::Validation(format!(
+                                "unknown key '{}': description exceeds 50 chars ({} chars)",
+                                key,
+                                desc.len()
+                            )));
+                        }
+                    }
+                }
             }
         }
         Ok(())
     }
 }
 
-/// Appended to every `Error::Validation` message so the reader knows what rules apply and where
-/// to make the fix.
 const VALIDATION_RULES: &str = "\n\
     \n\
     Rules that must hold in schema_overlay.yaml:\n\
-    - Every core_schema.yaml key appears in exactly one section (supported / unsupported / investigate / ignored).\n\
+    - Every core_schema.yaml key appears in exactly one section (known / ignored).\n\
     - No key appears in more than one section.\n\
-    - Sections appear in order: supported, unsupported, investigate (optional), ignored.\n\
+    - Sections appear in order: known, ignored.\n\
     - Keys within each section are sorted alphabetically.\n\
-    - supported entries: pipelines non-empty, used_by non-empty, description <= 50 chars.\n\
+    - full entries: pipelines non-empty, used_by non-empty, description <= 50 chars.\n\
+    - partial entries: pipelines non-empty, used_by non-empty, description <= 50 chars, documentation required.\n\
     - unsupported entries: pipelines non-empty, description <= 50 chars, planned+issue consistent.\n\
-    - investigate entries: description <= 50 chars.\n\
+    - unknown entries: description <= 50 chars (when present).\n\
     - additional_yaml_paths: no duplicates within a single entry.\n\
-    Fix: edit lib/datadog-agent-config/schema/schema_overlay.yaml.";
+    Fix: edit lib/datadog-agent/config/schema/schema_overlay.yaml.";
 
 /// Errors that can occur when loading a schema overlay.
 #[derive(Debug)]
@@ -565,7 +535,7 @@ mod tests {
                 .join("fake_overlay.yaml"),
         };
         let validated = SchemaOverlay::load(test_files).unwrap();
-        assert_eq!(validated.supported.len(), 14);
+        assert_eq!(validated.inventory.len(), 18);
     }
 
     #[test]
@@ -629,14 +599,14 @@ properties:
     type: string
 ";
         let overlay = "\
-supported:
+inventory:
   key_a:
-    support_level: full
-    used_by: [ForwarderConfiguration]
+    support: full
     pipelines: [cross_cutting]
     description: \"Key A\"
-unsupported: {}
-ignored: {}
+    test_support:
+      used_by: [ForwarderConfiguration]
+excluded: {}
 ";
         let err = load_from_strs(schema, overlay).unwrap_err();
         assert!(
@@ -653,14 +623,14 @@ properties:
     type: string
 ";
         let overlay = "\
-supported:
+inventory:
   key_a:
-    support_level: full
-    used_by: [ForwarderConfiguration]
+    support: full
     pipelines: [cross_cutting]
     description: \"Key A\"
-unsupported: {}
-ignored:
+    test_support:
+      used_by: [ForwarderConfiguration]
+excluded:
   key_b: \"not in schema\"
 ";
         let err = load_from_strs(schema, overlay).unwrap_err();
@@ -680,14 +650,14 @@ properties:
     type: string
 ";
         let overlay = "\
-supported:
+inventory:
   key_a:
-    support_level: full
-    used_by: [ForwarderConfiguration]
+    support: full
     pipelines: [cross_cutting]
     description: \"Key A\"
-unsupported: {}
-ignored:
+    test_support:
+      used_by: [ForwarderConfiguration]
+excluded:
   key_a: \"duplicate\"
   key_b: \"ok\"
 ";
@@ -695,6 +665,38 @@ ignored:
         assert!(
             err.to_string()
                 .contains("key 'key_a' appears in more than one overlay section"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn validation_rejects_unsorted_inventory_keys() {
+        let schema = "\
+properties:
+  key_a:
+    type: string
+  key_b:
+    type: string
+";
+        let overlay = "\
+inventory:
+  key_b:
+    support: full
+    pipelines: [cross_cutting]
+    description: \"Key B\"
+    test_support:
+      used_by: [ForwarderConfiguration]
+  key_a:
+    support: full
+    pipelines: [cross_cutting]
+    description: \"Key A\"
+    test_support:
+      used_by: [ForwarderConfiguration]
+excluded: {}
+";
+        let err = load_from_strs(schema, overlay).unwrap_err();
+        assert!(
+            err.to_string().contains("out of alphabetical order"),
             "unexpected error: {err}"
         );
     }
