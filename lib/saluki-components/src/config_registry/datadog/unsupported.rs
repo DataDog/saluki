@@ -135,20 +135,6 @@ crate::declare_annotations! {
         pipeline_affinity: PipelineAffinity::CrossCutting,
     };
 
-    /// `forwarder_max_concurrent_requests` - max concurrent HTTP requests.
-    FORWARDER_MAX_CONCURRENT_REQUESTS = SalukiAnnotation {
-        schema: &schema::FORWARDER_MAX_CONCURRENT_REQUESTS,
-        // ADP concurrency model differs. #1363
-        support_level: SupportLevel::Incompatible(Severity::Medium),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-        // The forwarder is potentially used by any pipeline.
-        pipeline_affinity: PipelineAffinity::CrossCutting,
-    };
-
     /// `forwarder_retry_queue_capacity_time_interval_sec` - retry queue time-based capacity.
     FORWARDER_RETRY_QUEUE_CAPACITY_TIME_INTERVAL_SEC = SalukiAnnotation {
         schema: &schema::FORWARDER_RETRY_QUEUE_CAPACITY_TIME_INTERVAL_SEC,

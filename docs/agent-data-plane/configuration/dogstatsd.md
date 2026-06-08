@@ -88,6 +88,7 @@ default values.
 | `dogstatsd_stats_buffer`           | Internal stats buffer size       | Configurable                                   | On-demand via API ([#1352])                                    |
 | `dogstatsd_stats_port`             | Internal stats endpoint port     | Configurable port                              | On-demand via API ([#1352])                                    |
 | `forwarder_high_prio_buffer_size`  | High-priority request queue size | Default `100`                                  | Default `16`; sizes the per-endpoint high-priority queue        |
+| `forwarder_num_workers`            | Forwarder worker count           | Creates forwarder workers and caps connections | Multiplies request concurrency and sizes idle pool; no workers  |
 | `log_level`                        | Log verbosity directives         | Controls Agent logs                            | Plain levels control ADP/Saluki-owned targets only             |
 | `logging_frequency`                | Transaction success log interval | Throttles success logs                         | Intentionally unused                                           |
 | `min_tls_version`                  | Minimum outbound TLS version     | Supports TLS 1.0, 1.1, 1.2, and 1.3            | Supports TLS 1.2+ and TLS 1.3-only; clamps TLS 1.0/1.1 to 1.2  |
@@ -321,7 +322,6 @@ ways that are not yet fully characterized.
 | `dogstatsd_experimental_http.listen_address`                     | Bind address for experimental HTTP DSD listener | [#1682] |
 | `forwarder_apikey_validation_interval`                           | API key check interval (minutes)                | [#1357] |
 | `forwarder_flush_to_disk_mem_ratio`                              | Mem-to-disk flush threshold                     | [#1364] |
-| `forwarder_max_concurrent_requests`                              | Max concurrent HTTP requests                    | [#1363] |
 | `forwarder_requeue_buffer_size`                                  | In-memory re-queue buffer size                  | [#1755] |
 | `forwarder_retry_queue_capacity_time_interval_sec`               | Retry queue time-based capacity                 | [#1365] |
 | `forwarder_stop_timeout`                                         | Timeout (s) for forwarder graceful stop         | [#1680] |
@@ -461,7 +461,7 @@ when the receiving syslog daemon expects the Agent's RFC-style header.
 | `forwarder_backoff_factor`                        | Retry backoff jitter factor                  |
 | `forwarder_backoff_max`                           | Retry backoff ceiling (secs)                 |
 | `forwarder_connection_reset_interval`             | HTTP conn reset interval (secs)              |
-| `forwarder_num_workers`                           | Concurrent forwarder workers                 |
+| `forwarder_max_concurrent_requests`               | Max concurrent HTTP requests                 |
 | `forwarder_recovery_interval`                     | Backoff recovery decrease factor             |
 | `forwarder_recovery_reset`                        | Reset errors on success                      |
 | `forwarder_retry_queue_max_size`                  | Retry queue max size (deprecated)            |
@@ -513,7 +513,6 @@ when the receiving syslog daemon expects the Agent's RFC-style header.
 | `use_v2_api.series`                               | Send series via V2 protobuf endpoint         |
 | `vector.metrics.enabled`                          | Route metrics to OPW (legacy alias)          |
 | `vector.metrics.url`                              | OPW metrics intake URL (legacy alias)        |
-
 
 [#178]: https://github.com/DataDog/saluki/issues/178
 [#1330]: https://github.com/DataDog/saluki/issues/1330
