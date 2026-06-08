@@ -687,6 +687,7 @@ inventory:
 
   dogstatsd_metrics_stats_enable:
     support: partial
+    warn: true
     pipelines: [dogstatsd]
     description: "Enable per-metric debug stats"
     documentation: "See `dogstatsd_stats_enable`"
@@ -1352,6 +1353,7 @@ inventory:
 
   min_tls_version:
     support: partial
+    warn: true
     pipelines: [cross_cutting]
     description: "Minimum TLS version for HTTPS connections"
     documentation: |
