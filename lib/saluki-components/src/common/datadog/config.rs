@@ -436,7 +436,7 @@ impl ForwarderConfiguration {
 
     /// Returns the API key validation interval.
     pub const fn api_key_validation_interval(&self) -> Duration {
-        Duration::from_secs(self.api_key_validation_interval_mins as u64 * 60)
+        Duration::from_mins(self.api_key_validation_interval_mins as u64)
     }
 }
 
@@ -617,21 +617,21 @@ mod tests {
     #[tokio::test]
     async fn api_key_validation_interval_parsing() {
         let cases = [
-            ("missing", serde_json::json!({}), Duration::from_secs(60 * 60)),
+            ("missing", serde_json::json!({}), Duration::from_mins(60)),
             (
                 "positive",
                 serde_json::json!({ "forwarder_apikey_validation_interval": 5i64 }),
-                Duration::from_secs(5 * 60),
+                Duration::from_mins(5),
             ),
             (
                 "zero",
                 serde_json::json!({ "forwarder_apikey_validation_interval": 0i64 }),
-                Duration::from_secs(60 * 60),
+                Duration::from_mins(60),
             ),
             (
                 "negative",
                 serde_json::json!({ "forwarder_apikey_validation_interval": -1i64 }),
-                Duration::from_secs(60 * 60),
+                Duration::from_mins(60),
             ),
         ];
 

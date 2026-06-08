@@ -1,4 +1,4 @@
-use std::{collections::HashSet, sync::LazyLock, time::Duration};
+use std::{collections::HashSet, future, sync::LazyLock, time::Duration};
 
 use bytes::Bytes;
 use http::{Request, StatusCode, Uri};
@@ -11,6 +11,7 @@ use saluki_io::net::client::http::HttpClient;
 use tokio::{
     select,
     sync::{broadcast, mpsc},
+    task::JoinHandle,
     time::{self, MissedTickBehavior},
 };
 use tracing::{debug, warn};
@@ -33,6 +34,75 @@ pub(crate) enum ValidationReadiness {
     NotReady,
 }
 
+/// API key validator for the startup endpoint set.
+pub(crate) struct ApiKeyValidator {
+    endpoints: Vec<RoutableEndpoint>,
+    client: HttpClient,
+    live_config: Option<GenericConfiguration>,
+    interval: Duration,
+}
+
+impl ApiKeyValidator {
+    /// Creates a validator for the given startup endpoint set.
+    pub(crate) fn new(
+        endpoints: Vec<RoutableEndpoint>, client: HttpClient, live_config: Option<GenericConfiguration>,
+        interval: Duration,
+    ) -> Self {
+        Self {
+            endpoints,
+            client,
+            live_config,
+            interval,
+        }
+    }
+
+    /// Spawns the validator task and returns a readiness handle.
+    pub(crate) fn spawn(self) -> ApiKeyValidationHandle {
+        let (readiness_tx, readiness_rx) = mpsc::channel(1);
+        let task = spawn_validation_task(
+            self.endpoints,
+            self.client,
+            self.live_config,
+            self.interval,
+            readiness_tx,
+        );
+
+        ApiKeyValidationHandle {
+            task,
+            readiness_rx: Some(readiness_rx),
+        }
+    }
+}
+
+/// Handle for API key validation readiness updates.
+pub(crate) struct ApiKeyValidationHandle {
+    task: JoinHandle<()>,
+    readiness_rx: Option<mpsc::Receiver<ValidationReadiness>>,
+}
+
+impl ApiKeyValidationHandle {
+    /// Waits until API key validation produces a readiness update.
+    pub(crate) async fn wait_for_change(&mut self) -> ValidationReadiness {
+        let Some(rx) = &mut self.readiness_rx else {
+            return future::pending().await;
+        };
+
+        match rx.recv().await {
+            Some(readiness) => readiness,
+            None => {
+                self.readiness_rx = None;
+                debug!("Datadog API key validation task stopped.");
+                future::pending().await
+            }
+        }
+    }
+
+    /// Stops the validation task.
+    pub(crate) fn abort(&self) {
+        self.task.abort();
+    }
+}
+
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 struct ValidationTargetKey {
     validation_base_url: String,
@@ -53,11 +123,10 @@ enum KeyValidationResult {
     Error,
 }
 
-/// Spawns API key validation for the startup endpoint set.
-pub(crate) fn spawn_validation_task(
+fn spawn_validation_task(
     endpoints: Vec<RoutableEndpoint>, client: HttpClient, live_config: Option<GenericConfiguration>,
     interval: Duration, readiness_tx: mpsc::Sender<ValidationReadiness>,
-) -> tokio::task::JoinHandle<()> {
+) -> JoinHandle<()> {
     spawn_traced_named(
         "dd-api-key-validation",
         run_validation_loop(endpoints, client, live_config, interval, readiness_tx),

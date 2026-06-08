@@ -12,7 +12,6 @@ use saluki_error::GenericError;
 use saluki_metrics::MetricsBuilder;
 use stringtheory::MetaString;
 use tokio::select;
-use tokio::sync::mpsc;
 use tracing::debug;
 
 use crate::common::datadog::{
@@ -20,7 +19,7 @@ use crate::common::datadog::{
     io::TransactionForwarder,
     telemetry::ComponentTelemetry,
     transaction::{Metadata, Transaction},
-    validation::{spawn_validation_task, ValidationReadiness},
+    validation::ValidationReadiness,
     DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT,
 };
 
@@ -141,17 +140,7 @@ impl Forwarder for Datadog {
 
         let mut health = context.take_health_handle();
 
-        let (validation_endpoints, validation_client, validation_config, validation_interval) =
-            forwarder.validation_parts();
-        let (validation_readiness_tx, validation_readiness_rx) = mpsc::channel(1);
-        let mut validation_readiness_rx = Some(validation_readiness_rx);
-        let validation_task = spawn_validation_task(
-            validation_endpoints,
-            validation_client,
-            validation_config,
-            validation_interval,
-            validation_readiness_tx,
-        );
+        let mut validation = forwarder.api_key_validator().spawn();
 
         // Spawn our forwarder task to handle sending requests.
         let forwarder = forwarder.spawn().await;
@@ -161,18 +150,9 @@ impl Forwarder for Datadog {
         loop {
             select! {
                 _ = health.live() => continue,
-                maybe_readiness = async {
-                    match &mut validation_readiness_rx {
-                        Some(rx) => rx.recv().await,
-                        None => std::future::pending().await,
-                    }
-                } => match maybe_readiness {
-                    Some(ValidationReadiness::Ready) => health.mark_ready(),
-                    Some(ValidationReadiness::NotReady) => health.mark_not_ready(),
-                    None => {
-                        validation_readiness_rx = None;
-                        debug!("Datadog API key validation task stopped.");
-                    },
+                readiness = validation.wait_for_change() => match readiness {
+                    ValidationReadiness::Ready => health.mark_ready(),
+                    ValidationReadiness::NotReady => health.mark_not_ready(),
                 },
                 maybe_payload = context.payloads().next() => match maybe_payload {
                     Some(payload) => if let Some(http_payload) = payload.try_into_http_payload() {
@@ -191,7 +171,7 @@ impl Forwarder for Datadog {
         }
 
         // Shutdown the forwarder gracefully.
-        validation_task.abort();
+        validation.abort();
         forwarder.shutdown().await;
 
         debug!("Datadog forwarder stopped.");
