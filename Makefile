@@ -616,6 +616,27 @@ build-adp-host: ## Builds the agent-data-plane binary for the current host (Carg
 		APP_BUILD_DATE="$(ADP_APP_BUILD_DATE)" \
 		cargo build --profile $(BUILD_PROFILE) --bin agent-data-plane
 
+# SPDX license-list-data tag (without the leading "v") used by package-adp-host to harvest
+# THIRD-PARTY-* license texts. Must match the version pinned in docker/Dockerfile.agent-data-plane
+# so the host-built tarball ships the same set of license texts as the linux Docker artifact.
+ADP_SPDX_LICENSES_VERSION ?= 3.28.0
+
+# Default OS slug for `package-adp-host`. Override on Linux hosts that want a linux-shaped
+# tarball name; the script doesn't care, only the filename does.
+ADP_PACKAGE_TARGET_OS ?= $(shell uname -s | tr '[:upper:]' '[:lower:]')
+
+.PHONY: package-adp-host
+package-adp-host: BUILD_PROFILE ?= release
+package-adp-host: build-adp-host
+package-adp-host: ## Builds and packages agent-data-plane into a release tarball under target/release-tarball/ (Cargo profile from $$BUILD_PROFILE; OS/arch from host). Used by the darwin release pipeline and locally to reproduce the CI artifact.
+	@OUTPUT_DIR="$(CURDIR)/target/release-tarball" \
+		BUILD_PROFILE="$(BUILD_PROFILE)" \
+		TARGET_OS="$(ADP_PACKAGE_TARGET_OS)" \
+		TARGET_ARCH="$(TARGET_ARCH)" \
+		ADP_VERSION="$(ADP_APP_VERSION)" \
+		SPDX_LICENSES_VERSION="$(ADP_SPDX_LICENSES_VERSION)" \
+		$(CURDIR)/ci/tooling/package-adp-tarball.sh
+
 .PHONY: test-integration-macos-run
 test-integration-macos-run: ## Runs the macOS host-process integration tests using already-built binaries (assumes target/release/{panoramic,agent-data-plane} exist). Defaults to all `mac`-runtime-eligible tests; narrow with CASE=<name>.
 	@echo "[*] Running macOS host-process integration tests..."

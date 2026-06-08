@@ -315,30 +315,21 @@ display-image-tags:
     - when: manual
       allow_failure: true
   variables:
-    TARGET_OS: "darwin"
-    SOURCE_IMAGE_VERSION: ${ADP_IMAGE_VERSION}
-    # Pinned to match docker/Dockerfile.agent-data-plane so the tarball ships the same set of
-    # THIRD-PARTY-* license texts as the Linux artifact. Bump in lockstep with the Dockerfile.
-    SPDX_LICENSES_VERSION: "3.28.0"
-    TARBALL_NAME: "agent-data-plane-${SOURCE_IMAGE_VERSION}-${TARGET_OS}-${TARGET_ARCH}.tar.gz"
+    # Cargo profile flows through to `make build-adp-host` (and therefore to the tarball binary),
+    # picked up from the workflow rules in .gitlab-ci.yml: `release` for dev pipelines,
+    # `optimized-release` for tagged releases. This matches the linux Docker build's behavior.
+    BUILD_PROFILE: ${BUILD_PROFILE}
+    # Filename produced by `make package-adp-host` (see ci/tooling/package-adp-tarball.sh).
+    # Kept here so the artifacts: path below can reference it without re-deriving.
+    TARBALL_NAME: "agent-data-plane-${ADP_IMAGE_VERSION}-darwin-${TARGET_ARCH}.tar.gz"
   script:
-    - mkdir -p /tmp/tarball/opt/datadog-agent/embedded/bin /tmp/tarball/opt/datadog/agent-data-plane/LICENSES
-    # Build natively for the host (uname-derived target). BUILD_PROFILE comes from the workflow
-    # rules in .gitlab-ci.yml: `release` for dev pipelines, `optimized-release` for tagged
-    # releases. Output path matches the profile name (cargo target/${BUILD_PROFILE}/...).
-    - make build-adp-host
-    - cp target/${BUILD_PROFILE}/agent-data-plane /tmp/tarball/opt/datadog-agent/embedded/bin/
-    # Replicate the `license-builder` stage from docker/Dockerfile.agent-data-plane on the host
-    # so the tarball ships the same per-license THIRD-PARTY-* files as the Linux artifact.
-    - curl -sSfL -o /tmp/spdx.tar.gz https://github.com/spdx/license-list-data/archive/refs/tags/v${SPDX_LICENSES_VERSION}.tar.gz
-    - tar -C /tmp -xzf /tmp/spdx.tar.gz
-    # Pipeline below mirrors the `license-builder` stage in docker/Dockerfile.agent-data-plane verbatim
-    # (single-occurrence sed paren strip and all) so the resulting THIRD-PARTY-* set is identical.
-    - tail -n +2 LICENSE-3rdparty.csv | awk -F ',' '{print $3}' | awk -F' ' '{for(i=1;i<=NF;i++) print $i}' | grep -v -E "(OR|AND|WITH|Custom|LLVM-exception)" | sed s/[\(\)]// | sort | uniq | xargs -I {} cp /tmp/license-list-data-${SPDX_LICENSES_VERSION}/text/{}.txt /tmp/tarball/opt/datadog/agent-data-plane/LICENSES/THIRD-PARTY-{}
-    - cp NOTICE LICENSE LICENSE-3rdparty.csv /tmp/tarball/opt/datadog/agent-data-plane/
-    - tar -C /tmp/tarball -czf ${CI_PROJECT_DIR}/${TARBALL_NAME} .
-    # `sha256sum` is GNU coreutils (Linux); macOS uses BSD `shasum -a 256` to print the same digest format.
-    - shasum -a 256 ${CI_PROJECT_DIR}/${TARBALL_NAME}
+    # All the real work — cargo build, SPDX license harvest, tarball assembly, sha256 — lives in
+    # `make package-adp-host` -> ci/tooling/package-adp-tarball.sh so it stays locally
+    # reproducible (`make package-adp-host` on a Mac dev machine produces the same artifact this
+    # job uploads). The Makefile target derives ADP_VERSION, TARGET_OS, TARGET_ARCH, etc. from
+    # project state and pinned defaults.
+    - make package-adp-host
+    - cp target/release-tarball/${TARBALL_NAME} ${CI_PROJECT_DIR}/${TARBALL_NAME}
   artifacts:
     paths:
       - ${TARBALL_NAME}
