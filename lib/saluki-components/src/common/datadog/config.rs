@@ -640,7 +640,6 @@ mod tests {
             assert_eq!(config.api_key_validation_interval(), expected_interval, "{case_name}");
         }
     }
-
     #[tokio::test]
     async fn skip_ssl_validation_defaults_to_false() {
         let config = forwarder_config_from(base_config(), None).await;

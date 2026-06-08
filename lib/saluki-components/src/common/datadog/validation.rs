@@ -145,18 +145,17 @@ async fn validate_targets(client: &mut HttpClient, targets: &[ValidationTarget])
         return ValidationReadiness::Ready;
     }
 
-    let mut saw_valid = false;
     let mut saw_error = false;
 
     for target in targets {
         match validate_target(client, target).await {
-            KeyValidationResult::Valid => saw_valid = true,
+            KeyValidationResult::Valid => return ValidationReadiness::Ready,
             KeyValidationResult::Invalid => {}
             KeyValidationResult::Error => saw_error = true,
         }
     }
 
-    if saw_valid || saw_error {
+    if saw_error {
         ValidationReadiness::Ready
     } else {
         ValidationReadiness::NotReady
@@ -276,6 +275,11 @@ fn validation_base_url(endpoint: &Url) -> Url {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+
     use axum::{routing::get, Router};
     use saluki_config::{dynamic::ConfigUpdate, ConfigurationLoader};
     use saluki_tls::initialize_default_crypto_provider;
@@ -486,6 +490,20 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn readiness_short_circuits_after_valid_target() {
+        let valid_url = start_validation_server(StatusCode::OK).await;
+        let later_requests = Arc::new(AtomicUsize::new(0));
+        let later_url = start_counting_validation_server(StatusCode::FORBIDDEN, Arc::clone(&later_requests)).await;
+        let mut client = test_client(Duration::from_secs(1));
+
+        assert_eq!(
+            validate_targets(&mut client, &[target_for(&valid_url), target_for(&later_url)]).await,
+            ValidationReadiness::Ready
+        );
+        assert_eq!(later_requests.load(Ordering::SeqCst), 0);
+    }
+
     fn target_for(base_url: &str) -> ValidationTarget {
         ValidationTarget {
             endpoint: Url::parse(base_url).unwrap(),
@@ -495,6 +513,8 @@ mod tests {
     }
 
     fn test_client(timeout: Duration) -> HttpClient {
+        let _ = initialize_default_crypto_provider();
+
         HttpClient::builder()
             .with_request_timeout(timeout)
             .with_tls_config(|builder| builder.danger_accept_invalid_certs())
@@ -506,6 +526,27 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let router = Router::new().route(VALIDATE_PATH, get(move || async move { status }));
+
+        tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+
+        format!("http://127.0.0.1:{port}/")
+    }
+
+    async fn start_counting_validation_server(status: StatusCode, requests: Arc<AtomicUsize>) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let router = Router::new().route(
+            VALIDATE_PATH,
+            get(move || {
+                let requests = Arc::clone(&requests);
+                async move {
+                    requests.fetch_add(1, Ordering::SeqCst);
+                    status
+                }
+            }),
+        );
 
         tokio::spawn(async move {
             axum::serve(listener, router).await.unwrap();

@@ -12,7 +12,7 @@ timeout: 120s
 runtimes: [linux, mac, windows]
 
 env:
-  DD_API_KEY: "test-api-key"
+  DD_API_KEY: "00000000000000000000000000000000"
   DD_HOSTNAME: "integration-test-config-no-warn"
   DD_DATA_PLANE_ENABLED: "true"
   DD_DATA_PLANE_STANDALONE_MODE: "false"
