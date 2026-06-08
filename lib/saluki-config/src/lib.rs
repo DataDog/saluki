@@ -297,6 +297,12 @@ impl ConfigurationLoader {
                 .push(ProviderSource::Static(ArcProvider(Arc::new(Serialized::defaults(
                     default_dict.clone(),
                 )))));
+            if let Some(string_values) = string_preserved_environment_values(&prefix) {
+                self.provider_sources
+                    .push(ProviderSource::Static(ArcProvider(Arc::new(Serialized::defaults(
+                        string_values,
+                    )))));
+            }
             self.lookup_sources.insert(LookupSource::Environment { prefix });
         }
         Ok(self)
@@ -495,6 +501,32 @@ fn build_figment_from_sources(sources: &[ProviderSource]) -> Figment {
         // No-op. The merging is handled by the updater task.
         ProviderSource::Dynamic(_) => figment,
     })
+}
+
+fn string_preserved_environment_values(prefix: &str) -> Option<serde_json::Value> {
+    let normalized_prefix = prefix.to_ascii_uppercase();
+    let mut root = serde_json::json!({});
+
+    for (key, value) in std::env::vars() {
+        let normalized_key = key.to_ascii_uppercase();
+        let Some(key_without_prefix) = normalized_key.strip_prefix(&normalized_prefix) else {
+            continue;
+        };
+
+        let config_key = key_without_prefix.to_ascii_lowercase().replace("__", ".");
+        if is_string_preserved_environment_key(&config_key) {
+            upsert(&mut root, &config_key, serde_json::Value::String(value));
+        }
+    }
+
+    match root.as_object() {
+        Some(values) if !values.is_empty() => Some(root),
+        _ => None,
+    }
+}
+
+fn is_string_preserved_environment_key(key: &str) -> bool {
+    key == "api_key" || key.ends_with(".api_key") || key.ends_with("_api_key")
 }
 
 /// Inserts or updates a value for a key.
@@ -1099,6 +1131,24 @@ mod tests {
         cfg.ready().await;
 
         assert_eq!(cfg.get_typed::<String>("random.key").unwrap(), "from_env_only");
+    }
+
+    #[tokio::test]
+    async fn test_environment_preserves_numeric_api_key_as_string() {
+        let fake_api_key = "00000000000000000000000000000000";
+        let (cfg, _) = ConfigurationLoader::for_tests(
+            Some(serde_json::json!({})),
+            Some(&[
+                ("API_KEY".to_string(), fake_api_key.to_string()),
+                ("FORWARDER_TIMEOUT".to_string(), "15".to_string()),
+            ]),
+            false,
+        )
+        .await;
+        cfg.ready().await;
+
+        assert_eq!(cfg.get_typed::<String>("api_key").unwrap(), fake_api_key);
+        assert_eq!(cfg.get_typed::<u64>("forwarder_timeout").unwrap(), 15);
     }
 
     #[tokio::test]
