@@ -71,6 +71,12 @@ pub struct RemoteAgentWorkloadProvider {
     on_demand_pid_resolver: OnDemandPIDResolver,
 }
 
+/// Common prefix for all health component names registered by the workload provider.
+///
+/// This is used both when registering the workload provider's components and when waiting for those components to
+/// become ready (see `ADPEnvironmentProvider::wait_for_ready`), so the two stay in sync.
+pub(crate) const WORKLOAD_HEALTH_PREFIX: &str = "env_provider.workload.";
+
 impl RemoteAgentWorkloadProvider {
     /// Create a new `RemoteAgentWorkloadProvider` based on the given configuration, along with a [`Supervisor`] that
     /// drives the aggregator and all collector workers.
@@ -99,10 +105,10 @@ impl RemoteAgentWorkloadProvider {
         // Construct our metadata aggregator and any relevant metadata collectors based on the detected features we've
         // been given.
         let aggregator_health = health_registry
-            .register_component("env_provider.workload.remote_agent.aggregator")
+            .register_component(format!("{WORKLOAD_HEALTH_PREFIX}remote_agent.aggregator"))
             .ok_or_else(|| {
                 generic_error!(
-                    "Component 'env_provider.workload.remote_agent.aggregator' already registered in health registry."
+                    "Component '{WORKLOAD_HEALTH_PREFIX}remote_agent.aggregator' already registered in health registry."
                 )
             })?;
         let (mut aggregator, operations_tx) = MetadataAggregator::new(aggregator_health);
@@ -235,13 +241,12 @@ where
 {
     let health = health_registry
         .register_component(format!(
-            "env_provider.workload.remote_agent.collector.{}",
-            collector_name
+            "{WORKLOAD_HEALTH_PREFIX}remote_agent.collector.{collector_name}"
         ))
         .ok_or_else(|| {
             generic_error!(
-                "Component 'env_provider.workload.remote_agent.collector.{}' already registered in health registry.",
-                collector_name
+                "Component '{WORKLOAD_HEALTH_PREFIX}remote_agent.collector.{collector_name}' already registered in \
+                 health registry."
             )
         })?;
     let collector = build(health).await?;

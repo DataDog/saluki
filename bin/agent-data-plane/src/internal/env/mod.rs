@@ -1,3 +1,5 @@
+use std::future::Future;
+
 use resource_accounting::ComponentRegistry;
 use saluki_config::GenericConfiguration;
 use saluki_core::health::HealthRegistry;
@@ -39,6 +41,7 @@ pub struct ADPEnvironmentProvider {
     host_provider: BoxedHostProvider,
     workload_provider: Option<RemoteAgentWorkloadProvider>,
     autodiscovery_provider: Option<BoxedAutodiscoveryProvider>,
+    health_registry: HealthRegistry,
 }
 
 impl ADPEnvironmentProvider {
@@ -59,6 +62,7 @@ impl ADPEnvironmentProvider {
                 host_provider: BoxedHostProvider::from_provider(FixedHostProvider::from_configuration(config)?),
                 workload_provider: None,
                 autodiscovery_provider: None,
+                health_registry: health_registry.clone(),
             };
             return Ok((env, None));
         }
@@ -88,9 +92,27 @@ impl ADPEnvironmentProvider {
             host_provider: BoxedHostProvider::from_provider(host_provider),
             workload_provider: Some(workload_provider),
             autodiscovery_provider: Some(BoxedAutodiscoveryProvider::from_provider(autodiscovery_provider)),
+            health_registry: health_registry.clone(),
         };
 
         Ok((env, Some(env_supervisor)))
+    }
+
+    /// Returns a future that resolves once the environment provider's background subsystems are ready.
+    ///
+    /// Specifically, this waits for the workload provider's metadata aggregator and collectors to become ready, which
+    /// ensures that origin detection and entity tagging are operational before the caller begins processing data. In
+    /// standalone mode -- where there is no workload provider -- the returned future resolves immediately.
+    pub fn wait_for_ready(&self) -> impl Future<Output = ()> + Send + 'static {
+        let health_registry = self.health_registry.clone();
+        let has_workload_provider = self.workload_provider.is_some();
+        async move {
+            if has_workload_provider {
+                health_registry
+                    .all_ready_matching(|name| name.starts_with(workload::WORKLOAD_HEALTH_PREFIX))
+                    .await;
+            }
+        }
     }
 }
 

@@ -25,10 +25,12 @@ container:
     - "58125/udp"
 
 assertions:
-  # ADP should report registration failure (Core Agent returns error when RAR disabled).
+  # ADP should report registration failure (Core Agent returns error when RAR disabled). Allow 15s
+  # (matching adp-cmd-port): the failure is only reported once the Core Agent's CMD/IPC API server is
+  # reachable, which can take ~10s to come up on slower hosts.
   - type: log_contains
     pattern: "Failed to register with the Datadog Agent. Registration will be retried periodically in the background."
-    timeout: 10s
+    timeout: 15s
   # Make sure the process becomes healthy, and stays up without errors, for ~10 seconds after.
   - parallel:
       - type: process_stable_for

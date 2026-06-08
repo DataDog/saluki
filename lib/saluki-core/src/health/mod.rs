@@ -352,6 +352,22 @@ impl HealthRegistry {
     /// Note that components can be registered while this method is waiting, which will influence how long this method
     /// takes to return. Callers should ensure that all components have been registered before calling this method.
     pub async fn all_ready(&self) {
+        self.all_ready_matching(|_| true).await
+    }
+
+    /// Waits until all currently registered components whose name matches `predicate` are ready.
+    ///
+    /// This is a scoped variant of [`all_ready`][Self::all_ready] that only considers components whose name satisfies
+    /// the given predicate, which is useful for waiting on a specific subsystem's components to become ready without
+    /// waiting on every other component in the registry.
+    ///
+    /// If no registered component matches the predicate, the method returns immediately. As with
+    /// [`all_ready`][Self::all_ready], components can be registered while this method is waiting, so callers should
+    /// ensure all components they care about have been registered before calling this method.
+    pub async fn all_ready_matching<F>(&self, predicate: F)
+    where
+        F: Fn(&str) -> bool,
+    {
         let readiness_notify = {
             let inner = self.inner.lock().unwrap();
             Arc::clone(&inner.readiness_notify)
@@ -361,7 +377,7 @@ impl HealthRegistry {
             // Register as a waiter _before_ checking to avoid missing notifications during the check.
             let notified = readiness_notify.notified();
 
-            if self.check_all_ready() {
+            if self.check_ready_matching(&predicate) {
                 return;
             }
 
@@ -369,9 +385,16 @@ impl HealthRegistry {
         }
     }
 
-    fn check_all_ready(&self) -> bool {
+    fn check_ready_matching<F>(&self, predicate: &F) -> bool
+    where
+        F: Fn(&str) -> bool,
+    {
         let inner = self.inner.lock().unwrap();
-        inner.component_state.iter().all(|component| component.is_ready())
+        inner
+            .component_state
+            .iter()
+            .filter(|component| predicate(&component.name))
+            .all(|component| component.is_ready())
     }
 
     /// Creates a [`HealthRegistryWorker`] that can be added to a supervisor to run the health registry.

@@ -39,6 +39,7 @@ use super::{
     EventsConsumer, OutputName, PayloadsConsumer, RegisteredComponent, TypedComponentId,
 };
 use crate::health::HealthRegistry;
+use crate::runtime::state::DataspaceRegistry;
 use crate::{
     components::{
         decoders::{Decoder, DecoderContext},
@@ -58,8 +59,9 @@ use crate::{
 /// Built topologies represent a topology blueprint where each configured component, along with their associated
 /// connections to other components, was validated and built successfully.
 ///
-/// A built topology must be spawned via [`spawn`][Self::spawn].
-pub struct BuiltTopology {
+/// A built topology is spawned internally via [`spawn_inner`][Self::spawn_inner] when the owning
+/// [`TopologyBlueprint`][super::TopologyBlueprint] is initialized by a supervisor.
+pub(crate) struct BuiltTopology {
     name: String,
     graph: Graph,
     sources: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Source + Send>>>>,
@@ -86,6 +88,7 @@ impl BuiltTopology {
         encoders: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Encoder + Send>>>>,
         forwarders: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Forwarder + Send>>>>,
         component_token: ResourceGroupToken, interconnect_capacity: NonZeroUsize,
+        worker_pool_config: WorkerPoolConfiguration,
     ) -> Self {
         Self {
             name,
@@ -99,26 +102,8 @@ impl BuiltTopology {
             forwarders,
             component_token,
             interconnect_capacity,
-            worker_pool_config: WorkerPoolConfiguration::Dedicated,
+            worker_pool_config,
         }
-    }
-
-    /// Configures the topology to use the ambient Tokio runtime.
-    ///
-    /// Component subtasks will be spawned on whatever runtime is currently active
-    /// when `spawn` is called. This avoids creating a dedicated thread pool,
-    /// which is useful for resource-constrained environments like Lambda.
-    pub fn with_ambient_worker_pool(mut self) -> Self {
-        self.worker_pool_config = WorkerPoolConfiguration::Ambient;
-        self
-    }
-
-    /// Configures the topology to use an externally provided Tokio runtime.
-    ///
-    /// Component subtasks will be spawned on the runtime associated with the given handle.
-    pub fn with_explicit_worker_pool(mut self, handle: Handle) -> Self {
-        self.worker_pool_config = WorkerPoolConfiguration::Explicit(handle);
-        self
     }
 
     fn resolve_worker_pool_handle(&self) -> Result<Handle, GenericError> {
@@ -144,26 +129,25 @@ impl BuiltTopology {
 
     /// Spawns the topology.
     ///
-    /// By default, a dedicated, multi-threaded Tokio runtime (8 threads) is created for
-    /// components to spawn compute-heavy subtasks on. Use
-    /// [`with_ambient_worker_pool`][Self::with_ambient_worker_pool] or
-    /// [`with_explicit_worker_pool`][Self::with_explicit_worker_pool] to change this
-    /// before calling `spawn`.
+    /// The worker pool used by components to spawn compute-heavy subtasks is determined by the
+    /// [`WorkerPoolConfiguration`] carried over from the blueprint (defaulting to a dedicated,
+    /// multi-threaded Tokio runtime with 8 threads).
     ///
-    /// A handle is returned that can be used to trigger the topology to shutdown.
+    /// A [`RunningTopology`] is returned that can be used to monitor and trigger shutdown of the topology.
     ///
     /// ## Errors
     ///
     /// If an error occurs while spawning the topology, an error is returned.
-    pub async fn spawn(
-        self, health_registry: &HealthRegistry, memory_limiter: MemoryLimiter,
+    pub(crate) async fn spawn_inner(
+        self, health_registry: &HealthRegistry, memory_limiter: MemoryLimiter, dataspace: DataspaceRegistry,
     ) -> Result<RunningTopology, GenericError> {
-        let root_component_name = format!("topology.{}", self.name);
+        let root_component_name = super::health_component_root(&self.name);
 
         let _guard = self.component_token.enter();
 
         let thread_pool_handle = self.resolve_worker_pool_handle()?;
-        let topology_context = TopologyContext::new(memory_limiter, health_registry.clone(), thread_pool_handle);
+        let topology_context =
+            TopologyContext::new(memory_limiter, health_registry.clone(), thread_pool_handle, dataspace);
 
         let mut component_tasks = JoinSet::new();
         let mut component_task_map = HashMap::new();
