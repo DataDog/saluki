@@ -31,7 +31,7 @@ use tokio::{
     task::JoinSet,
 };
 use tower::{Service, ServiceBuilder, ServiceExt as _};
-use tracing::{debug, error, warn};
+use tracing::{debug, error, info, warn};
 
 use super::{
     config::ForwarderConfiguration,
@@ -575,7 +575,7 @@ where
     if let (Some(payload_info), Some(validation_request_id)) =
         (metadata.payload_info, metadata.validation_request_id.as_deref())
     {
-        debug!(
+        info!(
             endpoint_url,
             uri = %txn.request_uri(),
             validation_request_id,
@@ -593,7 +593,7 @@ fn log_metrics_validation_transaction_sent(metadata: &Metadata, endpoint_url: &s
     if let (Some(payload_info), Some(validation_request_id)) =
         (metadata.payload_info, metadata.validation_request_id.as_deref())
     {
-        debug!(
+        info!(
             endpoint_url,
             uri = request_uri,
             validation_request_id,
@@ -662,7 +662,7 @@ async fn process_http_response(
         if let (Some(payload_info), Some(validation_request_id)) =
             (metadata.payload_info, metadata.validation_request_id.as_deref())
         {
-            debug!(
+            info!(
                 endpoint_url,
                 %status,
                 validation_request_id,
