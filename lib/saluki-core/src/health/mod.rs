@@ -352,26 +352,7 @@ impl HealthRegistry {
     /// Note that components can be registered while this method is waiting, which will influence how long this method
     /// takes to return. Callers should ensure that all components have been registered before calling this method.
     pub async fn all_ready(&self) {
-        let readiness_notify = {
-            let inner = self.inner.lock().unwrap();
-            Arc::clone(&inner.readiness_notify)
-        };
-
-        loop {
-            // Register as a waiter _before_ checking to avoid missing notifications during the check.
-            let notified = readiness_notify.notified();
-
-            if self.check_all_ready() {
-                return;
-            }
-
-            notified.await;
-        }
-    }
-
-    fn check_all_ready(&self) -> bool {
-        let inner = self.inner.lock().unwrap();
-        inner.component_state.iter().all(|component| component.is_ready())
+        self.all_ready_matching(|_| true).await
     }
 
     /// Waits until all currently registered components whose name matches `predicate` are ready.
