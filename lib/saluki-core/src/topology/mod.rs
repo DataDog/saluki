@@ -8,7 +8,7 @@ use crate::data_model::payload::Payload;
 use crate::topology::interconnect::FixedSizeEventBuffer;
 
 mod blueprint;
-pub use self::blueprint::{BlueprintError, TopologyBlueprint};
+pub use self::blueprint::{BlueprintError, TopologyBlueprint, TopologyReady};
 
 mod built;
 
@@ -55,6 +55,15 @@ pub type PayloadsDispatcher = Dispatcher<PayloadsBuffer>;
 
 /// Default consumer for payload-based components.
 pub type PayloadsConsumer = Consumer<PayloadsBuffer>;
+
+/// Returns the health registry component-name root for a topology with the given name.
+///
+/// Every component in a topology registers in the health registry under this dotted root (for example,
+/// `topology.primary.sources.dsd_in`). Centralizing it here keeps component registration (when a topology is spawned)
+/// and topology readiness waiting (`TopologyReady`) in sync.
+fn health_component_root(name: &str) -> String {
+    format!("topology.{}", name)
+}
 
 pub(super) struct RegisteredComponent<T> {
     component: T,

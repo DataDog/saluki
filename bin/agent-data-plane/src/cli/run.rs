@@ -202,6 +202,11 @@ pub async fn handle_run_command(
         .with_memory_limiter(memory_limiter)
         .with_environment_readiness(env_provider.wait_for_ready());
 
+    // Acquire a readiness handle before handing the blueprint off to the supervisor. This waits until the topology has
+    // registered its components in the health registry and they've all reported ready, rather than racing the supervisor
+    // and potentially observing an empty/already-ready registry before the topology's components even exist.
+    let topology_ready = blueprint.topology_ready();
+
     let root_restart_strategy = RestartStrategy::new(RestartMode::OneForOne, 0, Duration::from_secs(5));
     let mut root_supervisor = Supervisor::new("root")?.with_restart_strategy(root_restart_strategy);
 
@@ -212,15 +217,18 @@ pub async fn handle_run_command(
     root_supervisor.add_worker(internal_supervisor);
     root_supervisor.add_worker(blueprint);
 
-    // Once everything is healthy, log readiness and emit our startup metrics.
+    // Once the topology is healthy, log readiness and emit our startup metrics.
     tokio::spawn(async move {
-        health_registry.all_ready().await;
-        info!(
-            topology_ready_ms = started.elapsed().as_millis(),
-            "Topology healthy. Waiting for interrupt..."
-        );
+        // If the topology is torn down before it ever becomes ready (for example, shutdown during startup), `wait`
+        // returns `false` and we skip reporting readiness.
+        if topology_ready.wait().await {
+            info!(
+                topology_ready_ms = started.elapsed().as_millis(),
+                "Topology healthy. Waiting for interrupt..."
+            );
 
-        emit_startup_metrics();
+            emit_startup_metrics();
+        }
     });
 
     info!("Agent Data Plane running.");

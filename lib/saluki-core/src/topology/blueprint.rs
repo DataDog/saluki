@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use resource_accounting::{ComponentRegistry, MemoryLimiter, Track as _, UsageExpr};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use snafu::Snafu;
-use tokio::{runtime::Handle, select};
+use tokio::{runtime::Handle, select, sync::oneshot};
 use tracing::{error, info};
 
 use super::{
@@ -77,6 +77,7 @@ struct TopologyBuildState {
     interconnect_capacity: NonZeroUsize,
     worker_pool_config: WorkerPoolConfiguration,
     environment_ready: Option<Pin<Box<dyn Future<Output = ()> + Send>>>,
+    ready_signal: Option<oneshot::Sender<()>>,
 }
 
 impl TopologyBlueprint {
@@ -98,6 +99,7 @@ impl TopologyBlueprint {
             interconnect_capacity: super::DEFAULT_INTERCONNECT_CAPACITY,
             worker_pool_config: WorkerPoolConfiguration::Dedicated,
             environment_ready: None,
+            ready_signal: None,
         };
 
         Self {
@@ -160,6 +162,31 @@ impl TopologyBlueprint {
     {
         self.state_mut().environment_ready = Some(Box::pin(ready));
         self
+    }
+
+    /// Returns a handle for awaiting the readiness of the topology once it's running.
+    ///
+    /// This handle depends on observing the readiness of the individual topology components, and so must be called after
+    /// [`with_health_registry`][Self::with_health_registry].
+    ///
+    /// # Panics
+    ///
+    /// Panics if the health registry has not been set, or if the blueprint has already been initialized.
+    pub fn topology_ready(&mut self) -> TopologyReady {
+        let health_registry = self
+            .health_registry
+            .clone()
+            .expect("health registry must be set before acquiring a topology readiness handle");
+        let component_prefix = format!("{}.", super::health_component_root(&self.name));
+
+        let (registered_tx, registered_rx) = oneshot::channel();
+        self.state_mut().ready_signal = Some(registered_tx);
+
+        TopologyReady {
+            registered_rx,
+            health_registry,
+            component_prefix,
+        }
     }
 
     /// Configures the topology to use the ambient Tokio runtime for component subtasks.
@@ -331,6 +358,37 @@ impl TopologyBlueprint {
     {
         self.state_mut().connect_components_in_order(ordered_component_ids)?;
         Ok(self)
+    }
+}
+
+/// A handle for awaiting the readiness of a running topology.
+pub struct TopologyReady {
+    registered_rx: oneshot::Receiver<()>,
+    health_registry: HealthRegistry,
+    component_prefix: String,
+}
+
+impl TopologyReady {
+    /// Waits until the topology has registered its components and all of them have reported ready.
+    ///
+    /// Returns `true` once the topology is fully ready, or `false` if the topology was torn down before it finished
+    /// registering its components. The topology might be torn down before readiness is achieved if shutdown is
+    /// requested while still waiting on an upstream dependency such as the environment provider.
+    pub async fn wait(self) -> bool {
+        // First, wait for the topology to actually register its components in the health registry.
+        //
+        // If we didn't do this, we could observe `all_ready_matching` return immediately (due to no matching components)
+        // which would not correctly represent the topology being ready.
+        if self.registered_rx.await.is_err() {
+            return false;
+        }
+
+        // Now wait for all registered topology components to actually become ready.
+        self.health_registry
+            .all_ready_matching(|name| name.starts_with(&self.component_prefix))
+            .await;
+
+        true
     }
 }
 
@@ -814,6 +872,7 @@ impl Supervisable for TopologyBlueprint {
         // a non-restartable error that ultimately leads to the process exiting. This is the desired behavior at present
         // time, but maybe change in the future.
         let environment_ready = build_state.environment_ready.take();
+        let ready_signal = build_state.ready_signal.take();
         let built = build_state.build(self.name.clone()).await?;
 
         Ok(Box::pin(async move {
@@ -827,6 +886,13 @@ impl Supervisable for TopologyBlueprint {
             }
 
             let mut running = built.spawn_inner(&health_registry, memory_limiter, dataspace).await?;
+
+            // Signal that the topology has registered all of its components in the health registry, so any readiness
+            // handle can begin waiting on those components. We send this only after `spawn_inner` so readiness can't be
+            // observed before the topology's components exist.
+            if let Some(ready_signal) = ready_signal {
+                let _ = ready_signal.send(());
+            }
 
             let mut topology_failed = false;
             select! {
@@ -864,7 +930,7 @@ mod tests {
     use resource_accounting::{ComponentRegistry, MemoryLimiter};
     use tokio::sync::oneshot;
 
-    use super::TopologyBlueprint;
+    use super::{TopologyBlueprint, TopologyReady};
     use crate::{
         data_model::event::EventType,
         health::HealthRegistry,
@@ -1119,5 +1185,64 @@ mod tests {
             .expect("supervisor task should not panic");
 
         assert!(result.is_ok(), "supervisor should shut down cleanly, got: {:?}", result);
+    }
+
+    #[test]
+    fn topology_ready_waits_for_registration_before_checking_readiness() {
+        use tokio_test::{assert_pending, assert_ready, task::spawn};
+
+        let health_registry = HealthRegistry::new();
+
+        // Simulate an unrelated subsystem that has already registered and become ready. A naive readiness check against
+        // the shared registry could resolve immediately here, even though the topology hasn't registered anything yet.
+        let mut other = health_registry
+            .register_component("env_provider.workload.foo")
+            .expect("should register component");
+        other.mark_ready();
+
+        let (registered_tx, registered_rx) = oneshot::channel();
+        let topology_ready = TopologyReady {
+            registered_rx,
+            health_registry: health_registry.clone(),
+            component_prefix: "topology.primary.".to_string(),
+        };
+
+        let mut wait = spawn(topology_ready.wait());
+
+        // Despite no topology components being registered yet, `wait` must not resolve: it's gated on the registration
+        // signal, which is precisely what prevents a false-ready observation.
+        assert_pending!(wait.poll());
+
+        // Now register a topology component (as the topology does when it spawns), but leave it not-ready.
+        let mut source = health_registry
+            .register_component("topology.primary.sources.in")
+            .expect("should register component");
+
+        // Fire the registration signal. `wait` advances to the scoped readiness check, which is still pending because
+        // the topology component hasn't reported ready.
+        registered_tx.send(()).expect("receiver should be alive");
+        assert_pending!(wait.poll());
+
+        // Once the topology component reports ready, `wait` resolves to `true`.
+        source.mark_ready();
+        assert!(assert_ready!(wait.poll()));
+    }
+
+    #[tokio::test]
+    async fn topology_ready_returns_false_when_torn_down_before_registration() {
+        let health_registry = HealthRegistry::new();
+
+        let (registered_tx, registered_rx) = oneshot::channel::<()>();
+        let topology_ready = TopologyReady {
+            registered_rx,
+            health_registry,
+            component_prefix: "topology.primary.".to_string(),
+        };
+
+        // Drop the sender without ever signaling, as happens when the topology is torn down before it registers its
+        // components. `wait` should report that readiness will never be reached.
+        drop(registered_tx);
+
+        assert!(!topology_ready.wait().await);
     }
 }

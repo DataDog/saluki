@@ -141,7 +141,7 @@ impl BuiltTopology {
     pub(crate) async fn spawn_inner(
         self, health_registry: &HealthRegistry, memory_limiter: MemoryLimiter, dataspace: DataspaceRegistry,
     ) -> Result<RunningTopology, GenericError> {
-        let root_component_name = format!("topology.{}", self.name);
+        let root_component_name = super::health_component_root(&self.name);
 
         let _guard = self.component_token.enter();
 
