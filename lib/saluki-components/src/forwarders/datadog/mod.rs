@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use http::Uri;
+use http::{HeaderMap, Uri};
 use resource_accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
 use saluki_common::buf::FrozenChunkedBytesBuffer;
 use saluki_config::GenericConfiguration;
@@ -152,7 +152,8 @@ impl Forwarder for Datadog {
                 maybe_payload = context.payloads().next() => match maybe_payload {
                     Some(payload) => if let Some(http_payload) = payload.try_into_http_payload() {
                         let (payload_meta, request) = http_payload.into_parts();
-                        let transaction_meta = transaction_metadata_from_payload_metadata(&payload_meta);
+                        let transaction_meta =
+                            transaction_metadata_from_payload_metadata(&payload_meta, request.headers());
                         let transaction = Transaction::from_original(transaction_meta, request);
 
                         forwarder.send_transaction(transaction).await?;
@@ -171,11 +172,24 @@ impl Forwarder for Datadog {
     }
 }
 
-fn transaction_metadata_from_payload_metadata(payload_meta: &PayloadMetadata) -> Metadata {
+fn transaction_metadata_from_payload_metadata(payload_meta: &PayloadMetadata, headers: &HeaderMap) -> Metadata {
     let mut transaction_meta =
         Metadata::from_event_and_data_point_count(payload_meta.event_count(), payload_meta.data_point_count());
     transaction_meta.payload_info = payload_meta.get::<MetricsPayloadInfo>().copied();
+    transaction_meta.validation_request_id = headers
+        .get("X-Metrics-Request-ID")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
+    transaction_meta.validation_request_seq = header_usize(headers, "X-Metrics-Request-Seq");
+    transaction_meta.validation_request_len = header_usize(headers, "X-Metrics-Request-Len");
     transaction_meta
+}
+
+fn header_usize(headers: &HeaderMap, name: &str) -> Option<usize> {
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse().ok())
 }
 
 fn get_dd_endpoint_name(uri: &Uri) -> Option<MetaString> {

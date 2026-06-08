@@ -439,6 +439,9 @@ async fn run_endpoint_io_loop<B>(
                         debug!(
                             endpoint_url,
                             ?payload_info,
+                            validation_request_id = ?txn.metadata().validation_request_id.as_deref(),
+                            validation_request_seq = ?txn.metadata().validation_request_seq,
+                            validation_request_len = ?txn.metadata().validation_request_len,
                             "Filtering out transaction based on endpoint V3 settings."
                         );
                         continue;
@@ -448,6 +451,7 @@ async fn run_endpoint_io_loop<B>(
                     } else {
                         strip_metrics_validation_headers(txn)
                     };
+                    log_metrics_validation_transaction_queued(&txn, &endpoint_url);
 
                     match pending_txns.push_high_priority(txn).await {
                         Ok(push_result) => track_queue_drops(&telemetry, &endpoint_domain, push_result),
@@ -466,7 +470,9 @@ async fn run_endpoint_io_loop<B>(
             // next the next available pending transaction.
             svc = service.ready(), if !done && !pending_txns.is_empty() => match svc {
                 Ok(svc) => if let Some(txn) = pending_txns.pop().await {
+                    let request_uri = txn.request_uri().to_string();
                     let (metadata, request) = txn.into_parts();
+                    log_metrics_validation_transaction_sent(&metadata, &endpoint_url, &request_uri);
                     in_flight.spawn(svc.call(request).map(move |result| (metadata, result)));
 
                     debug!(endpoint_url, "Request sent.");
@@ -493,6 +499,7 @@ async fn run_endpoint_io_loop<B>(
                         // connection reset by peer, I/O error, etc.
                         Err(RetryCircuitBreakerError::Service(e)) => {
                             telemetry.track_permanently_failed_transaction(&metadata, None, &endpoint_domain);
+                            log_metrics_validation_transaction_failed(&metadata, &endpoint_url, None);
                             error!(endpoint_url, error = %e, error_source = ?e.source(), "Failed to send request.");
                         },
 
@@ -549,12 +556,75 @@ fn strip_metrics_validation_headers<B>(txn: Transaction<B>) -> Transaction<B>
 where
     B: Buf + Clone,
 {
-    let (metadata, mut request) = txn.into_parts();
+    let (mut metadata, mut request) = txn.into_parts();
     let headers = request.headers_mut();
     headers.remove("X-Metrics-Request-ID");
     headers.remove("X-Metrics-Request-Seq");
     headers.remove("X-Metrics-Request-Len");
+    metadata.validation_request_id = None;
+    metadata.validation_request_seq = None;
+    metadata.validation_request_len = None;
     Transaction::reassemble(metadata, request)
+}
+
+fn log_metrics_validation_transaction_queued<B>(txn: &Transaction<B>, endpoint_url: &str)
+where
+    B: Buf + Clone,
+{
+    let metadata = txn.metadata();
+    if let (Some(payload_info), Some(validation_request_id)) =
+        (metadata.payload_info, metadata.validation_request_id.as_deref())
+    {
+        debug!(
+            endpoint_url,
+            uri = %txn.request_uri(),
+            validation_request_id,
+            validation_request_seq = ?metadata.validation_request_seq,
+            validation_request_len = ?metadata.validation_request_len,
+            ?payload_info,
+            event_count = metadata.event_count,
+            data_point_count = metadata.data_point_count,
+            "Queued metrics validation transaction for endpoint."
+        );
+    }
+}
+
+fn log_metrics_validation_transaction_sent(metadata: &Metadata, endpoint_url: &str, request_uri: &str) {
+    if let (Some(payload_info), Some(validation_request_id)) =
+        (metadata.payload_info, metadata.validation_request_id.as_deref())
+    {
+        debug!(
+            endpoint_url,
+            uri = request_uri,
+            validation_request_id,
+            validation_request_seq = ?metadata.validation_request_seq,
+            validation_request_len = ?metadata.validation_request_len,
+            ?payload_info,
+            event_count = metadata.event_count,
+            data_point_count = metadata.data_point_count,
+            "Sent metrics validation transaction."
+        );
+    }
+}
+
+fn log_metrics_validation_transaction_failed(
+    metadata: &Metadata, endpoint_url: &str, status: Option<http::StatusCode>,
+) {
+    if let (Some(payload_info), Some(validation_request_id)) =
+        (metadata.payload_info, metadata.validation_request_id.as_deref())
+    {
+        warn!(
+            endpoint_url,
+            ?status,
+            validation_request_id,
+            validation_request_seq = ?metadata.validation_request_seq,
+            validation_request_len = ?metadata.validation_request_len,
+            ?payload_info,
+            event_count = metadata.event_count,
+            data_point_count = metadata.data_point_count,
+            "Metrics validation transaction failed."
+        );
+    }
 }
 
 fn generate_retry_queue_id(context: ComponentContext, endpoint: &ResolvedEndpoint) -> String {
@@ -589,11 +659,27 @@ async fn process_http_response(
 ) {
     let status = response.status();
     if status.is_success() {
+        if let (Some(payload_info), Some(validation_request_id)) =
+            (metadata.payload_info, metadata.validation_request_id.as_deref())
+        {
+            debug!(
+                endpoint_url,
+                %status,
+                validation_request_id,
+                validation_request_seq = ?metadata.validation_request_seq,
+                validation_request_len = ?metadata.validation_request_len,
+                ?payload_info,
+                event_count = metadata.event_count,
+                data_point_count = metadata.data_point_count,
+                "Metrics validation transaction completed."
+            );
+        }
         debug!(endpoint_url, %status, "Request completed.");
 
         telemetry.track_successful_transaction(&metadata, domain);
     } else {
         telemetry.track_permanently_failed_transaction(&metadata, Some(status), domain);
+        log_metrics_validation_transaction_failed(&metadata, endpoint_url, Some(status));
 
         match response.into_body().collect().await {
             Ok(body) => {

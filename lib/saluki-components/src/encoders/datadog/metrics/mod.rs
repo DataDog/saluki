@@ -1233,6 +1233,16 @@ async fn flush_payload(
         headers.insert("X-Metrics-Request-ID", uuid_to_header_value(batch_id));
         headers.insert("X-Metrics-Request-Seq", usize_to_header_value(batch_seq));
         headers.insert("X-Metrics-Request-Len", usize_to_header_value(batch_len));
+        debug!(
+            validation_request_id = %batch_id,
+            validation_request_seq = batch_seq,
+            validation_request_len = batch_len,
+            uri = %request.uri(),
+            event_count,
+            data_point_count,
+            ?payload_info,
+            "Enqueuing metrics validation payload."
+        );
     }
 
     let mut payload_meta = PayloadMetadata::from_event_and_data_point_count(event_count, data_point_count);

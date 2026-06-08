@@ -186,6 +186,18 @@ pub struct Metadata {
     /// This is `Some` for metrics payloads and `None` for non-metrics payloads.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub payload_info: Option<MetricsPayloadInfo>,
+
+    /// Metrics validation request ID, if this transaction carries validation headers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub validation_request_id: Option<String>,
+
+    /// Metrics validation request sequence number, if this transaction carries validation headers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub validation_request_seq: Option<usize>,
+
+    /// Total metrics validation request count for this request ID, if this transaction carries validation headers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub validation_request_len: Option<usize>,
 }
 
 impl Metadata {
@@ -195,6 +207,9 @@ impl Metadata {
             event_count,
             data_point_count,
             payload_info: None,
+            validation_request_id: None,
+            validation_request_seq: None,
+            validation_request_len: None,
         }
     }
 }
