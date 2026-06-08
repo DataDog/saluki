@@ -280,3 +280,90 @@ display-image-tags:
       Non-FIPS: ${IMAGE_REGISTRY}/${ADP_IMAGE_TAG}-nydus
       FIPS:     ${IMAGE_REGISTRY}/${ADP_IMAGE_TAG_FIPS}-nydus
       EOF
+
+# Builds the darwin release tarball (binary + LICENSES + LICENSE-3rdparty.csv + NOTICE) natively
+# on a macOS runner and exposes it as a GitLab job artifact. The release-stage `push-release-
+# tarball-darwin-*` jobs in `.gitlab/release.yml` consume this artifact and `aws s3 cp` it to
+# the canonical bucket; splitting the work this way:
+#
+#   - lets us validate the darwin build end-to-end on PR pipelines (manual click on dev pipelines,
+#     no S3 upload) without waiting for a tagged release to discover packaging breakage,
+#   - keeps macOS runner usage limited to the build itself (the S3 upload runs in the Linux build
+#     image just like the linux push jobs, with the same IAM-role credential model that's already
+#     known to work),
+#   - parallels the linux flow at a high level: `build-adp-image-*` always produces an artifact
+#     (a docker image in registry.ddbuild.io) which the tagged release job consumes; here
+#     `build-release-tarball-darwin-*` always produces a tarball artifact which the tagged
+#     release job consumes.
+#
+# The output tarball layout (opt/datadog-agent/embedded/bin/agent-data-plane plus
+# opt/datadog/agent-data-plane/{LICENSES,*}) matches the Linux artifact bit-for-bit so downstream
+# consumers (the Datadog Agent omnibus build, see
+# omnibus/config/software/datadog-agent-data-plane.rb in DataDog/datadog-agent) can use the same
+# software definition for both platforms. FIPS-on-darwin is intentionally out of scope.
+.build-release-tarball-darwin-definition:
+  stage: build
+  needs:
+    - calculate-build-metadata
+  rules:
+    # On tagged release pipelines, run automatically so the artifact is ready when a maintainer
+    # clicks the manual `push-release-tarball-darwin-*` job in the release stage.
+    - if: !reference [.on_official_release, rules, if]
+      when: on_success
+    # On every other pipeline, gate behind a manual click so we don't burn macOS runner capacity
+    # by default but still let anyone validate a PR's darwin tarball with one click.
+    - when: manual
+      allow_failure: true
+  variables:
+    TARGET_OS: "darwin"
+    SOURCE_IMAGE_VERSION: ${ADP_IMAGE_VERSION}
+    # Pinned to match docker/Dockerfile.agent-data-plane so the tarball ships the same set of
+    # THIRD-PARTY-* license texts as the Linux artifact. Bump in lockstep with the Dockerfile.
+    SPDX_LICENSES_VERSION: "3.28.0"
+    TARBALL_NAME: "agent-data-plane-${SOURCE_IMAGE_VERSION}-${TARGET_OS}-${TARGET_ARCH}.tar.gz"
+  script:
+    - mkdir -p /tmp/tarball/opt/datadog-agent/embedded/bin /tmp/tarball/opt/datadog/agent-data-plane/LICENSES
+    # Build natively for the host (uname-derived target). BUILD_PROFILE comes from the workflow
+    # rules in .gitlab-ci.yml: `release` for dev pipelines, `optimized-release` for tagged
+    # releases. Output path matches the profile name (cargo target/${BUILD_PROFILE}/...).
+    - make build-adp-host
+    - cp target/${BUILD_PROFILE}/agent-data-plane /tmp/tarball/opt/datadog-agent/embedded/bin/
+    # Replicate the `license-builder` stage from docker/Dockerfile.agent-data-plane on the host
+    # so the tarball ships the same per-license THIRD-PARTY-* files as the Linux artifact.
+    - curl -sSfL -o /tmp/spdx.tar.gz https://github.com/spdx/license-list-data/archive/refs/tags/v${SPDX_LICENSES_VERSION}.tar.gz
+    - tar -C /tmp -xzf /tmp/spdx.tar.gz
+    # Pipeline below mirrors the `license-builder` stage in docker/Dockerfile.agent-data-plane verbatim
+    # (single-occurrence sed paren strip and all) so the resulting THIRD-PARTY-* set is identical.
+    - tail -n +2 LICENSE-3rdparty.csv | awk -F ',' '{print $3}' | awk -F' ' '{for(i=1;i<=NF;i++) print $i}' | grep -v -E "(OR|AND|WITH|Custom|LLVM-exception)" | sed s/[\(\)]// | sort | uniq | xargs -I {} cp /tmp/license-list-data-${SPDX_LICENSES_VERSION}/text/{}.txt /tmp/tarball/opt/datadog/agent-data-plane/LICENSES/THIRD-PARTY-{}
+    - cp NOTICE LICENSE LICENSE-3rdparty.csv /tmp/tarball/opt/datadog/agent-data-plane/
+    - tar -C /tmp/tarball -czf ${CI_PROJECT_DIR}/${TARBALL_NAME} .
+    # `sha256sum` is GNU coreutils (Linux); macOS uses BSD `shasum -a 256` to print the same digest format.
+    - shasum -a 256 ${CI_PROJECT_DIR}/${TARBALL_NAME}
+  artifacts:
+    paths:
+      - ${TARBALL_NAME}
+    expire_in: 1 week
+
+build-release-tarball-darwin-amd64:
+  extends: [.macos-amd64-test-job, .build-release-tarball-darwin-definition]
+  needs:
+    - calculate-build-metadata
+    - unit-tests-macos-amd64
+    - unit-tests-miri-macos-amd64
+    - test-integration-macos-amd64
+    - check-deny
+    - check-licenses
+  variables:
+    TARGET_ARCH: "amd64"
+
+build-release-tarball-darwin-arm64:
+  extends: [.macos-arm64-test-job, .build-release-tarball-darwin-definition]
+  needs:
+    - calculate-build-metadata
+    - unit-tests-macos-arm64
+    - unit-tests-miri-macos-arm64
+    - test-integration-macos-arm64
+    - check-deny
+    - check-licenses
+  variables:
+    TARGET_ARCH: "arm64"
