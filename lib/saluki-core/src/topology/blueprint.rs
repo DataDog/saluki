@@ -778,15 +778,15 @@ impl Supervisable for TopologyBlueprint {
     }
 
     fn shutdown_strategy(&self) -> ShutdownStrategy {
-        // The supervisor forcefully aborts a worker once its shutdown strategy timeout elapses. We report an
-        // effectively unbounded timeout here because the topology enforces its own graceful shutdown deadline
-        // internally (see `initialize`); otherwise the supervisor would abort components mid-drain.
+        // Set an infinitely long (effectively) graceful shutdown timeout because we enforce our _own_ realistic graceful
+        // shutdown as part of the supervisor future we generate.
         ShutdownStrategy::Graceful(Duration::MAX)
     }
 
     async fn initialize(&self, mut process_shutdown: ProcessShutdown) -> Result<SupervisorFuture, InitializationError> {
-        // Take the build state. This can only succeed once: a blueprint is consumed when it's first initialized, so
-        // any attempt to restart/re-initialize it fails. Topologies are explicitly not restartable.
+        // Consume the build state.
+        //
+        // Topologies currently can't be initialized more than once.
         let mut build_state = self
             .build_state
             .lock()
@@ -803,19 +803,16 @@ impl Supervisable for TopologyBlueprint {
             .clone()
             .ok_or_else(|| generic_error!("Topology blueprint is missing its memory limiter."))?;
 
-        // The dataspace registry is available here because `initialize` runs within the worker's process scope. We
-        // thread it into the component contexts so components can access it directly, rather than relying on a
-        // task-local that isn't propagated into the spawned component tasks.
         let dataspace = DataspaceRegistry::try_current()
             .ok_or_else(|| generic_error!("Topology must be initialized within a supervised process context."))?;
 
-        // Build the topology up front. Building only constructs components; it doesn't start them or bind any
-        // resources. Build failures are surfaced as initialization errors, which the supervisor treats as
-        // non-restartable -- matching the previous behavior where a build failure exited the process before the
-        // topology started running.
+        // Build our topology components.
         //
-        // Spawning -- which actually starts the components -- is deferred into the returned future so that it can be
-        // gated on the optional readiness signal.
+        // This creates the topology components but does not actually spawn them or run them in any way.
+        //
+        // We do this outside of the supervisor future to ensure that we fail during initialization, which bubbles up as
+        // a non-restartable error that ultimately leads to the process exiting. This is the desired behavior at present
+        // time, but maybe change in the future.
         let environment_ready = build_state.environment_ready.take();
         let built = build_state.build(self.name.clone()).await?;
 
@@ -846,6 +843,8 @@ impl Supervisable for TopologyBlueprint {
             }
 
             // Trigger graceful shutdown and wait up to 30 seconds for all components to stop.
+            //
+            // TODO: Make the graceful shutdown duration configurable.
             let shutdown_result = running.shutdown_with_timeout(Duration::from_secs(30)).await;
             match (shutdown_result, topology_failed) {
                 (Ok(()), false) => Ok(()),
