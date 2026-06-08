@@ -29,7 +29,6 @@ use tokio::{
     select,
     sync::{mpsc, oneshot, Barrier},
     task::JoinSet,
-    time::{interval_at, Instant, MissedTickBehavior},
 };
 use tower::{Service, ServiceBuilder, ServiceExt as _};
 use tracing::{debug, error, warn};
@@ -50,8 +49,6 @@ pub const RB_BUFFER_CHUNK_SIZE: usize = 32 * 1024; // 32 KB
 
 const RETRY_QUEUE_CAPACITY_HISTORY_DURATION_SECS: u64 = 15 * 60;
 const RETRY_QUEUE_CAPACITY_BUCKET_DURATION_SECS: u64 = 10;
-const RETRY_QUEUE_DRAIN_INTERVAL_SECS: u64 = 5;
-const MIN_LOW_PRIORITY_BUFFER_SIZE: usize = 1;
 
 /// A handle to the transaction forwarder.
 pub struct Handle<B>
@@ -412,20 +409,10 @@ async fn run_endpoint_io_loop<B>(
                 RetryQueue::new(queue_id, config.retry().queue_max_size_bytes())
             });
     }
-    let mut pending_txns = PendingTransactions::new(
-        config.endpoint_buffer_size(),
-        config.low_priority_buffer_size.max(1),
-        retry_queue,
-        txnq_telemetry,
-    );
+    let mut pending_txns = PendingTransactions::new(config.endpoint_buffer_size(), retry_queue, txnq_telemetry);
 
     let mut in_flight = JoinSet::new();
     let mut done = false;
-    let mut retry_drain_interval = interval_at(
-        Instant::now() + Duration::from_secs(RETRY_QUEUE_DRAIN_INTERVAL_SECS),
-        Duration::from_secs(RETRY_QUEUE_DRAIN_INTERVAL_SECS),
-    );
-    retry_drain_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
     loop {
         select! {
@@ -443,9 +430,9 @@ async fn run_endpoint_io_loop<B>(
                 }
             },
 
-            // While we're not done and there are worker-ready transactions, wait for the service to become ready and
-            // then get the next available pending transaction.
-            svc = service.ready(), if !done && pending_txns.has_worker_ready_transactions() => match svc {
+            // While we're not done and there are pending transactions, wait for the service to become ready and then
+            // next the next available pending transaction.
+            svc = service.ready(), if !done && !pending_txns.is_empty() => match svc {
                 Ok(svc) => if let Some(txn) = pending_txns.pop().await {
                     let (metadata, request) = txn.into_parts();
                     in_flight.spawn(svc.call(request).map(move |result| (metadata, result)));
@@ -478,10 +465,11 @@ async fn run_endpoint_io_loop<B>(
                         },
 
                         // Our endpoint circuit breaker is open, which means this request either didn't go through at
-                        // all or needs to be retried later.
+                        // all or needs to be retried... so we'll re-enqueue it to the low-priority queue to be retried
+                        // later.
                         Err(RetryCircuitBreakerError::Open(req)) => {
                             let reassembled_txn = Transaction::reassemble(metadata, req);
-                            match pending_txns.push_retry(reassembled_txn).await {
+                            match pending_txns.push_low_priority(reassembled_txn).await {
                                 Ok(push_result) => track_queue_drops(&telemetry, &endpoint_domain, push_result),
                                 Err(e) => error!(endpoint_url, error = %e, "Failed to re-enqueue failed transaction. Events may be permanently lost."),
                             }
@@ -492,13 +480,6 @@ async fn run_endpoint_io_loop<B>(
                     Err(e) => {
                         error!(endpoint_url, error = %e, error_source = ?e.source(), "Request task failed to run to completion.");
                     }
-                }
-            },
-
-            _ = retry_drain_interval.tick(), if !done && pending_txns.has_retry_transactions() => {
-                match pending_txns.drain_retry_queue().await {
-                    Ok(push_result) => track_queue_drops(&telemetry, &endpoint_domain, push_result),
-                    Err(e) => error!(endpoint_url, error = %e, "Failed to drain retry queue. Events may be permanently lost."),
                 }
             },
 
@@ -598,18 +579,17 @@ async fn process_http_response(
 
 /// A queue of pending transactions waiting to be sent.
 ///
-/// This queue is split into a high-priority queue, a low-priority queue, and a retry queue. The high-priority queue is
-/// used for brand-new transactions that are waiting to be processed for the first time. The retry queue holds
-/// high-priority overflow and failed transactions, with optional disk persistence. The low-priority queue is a bounded
-/// worker-facing staging area for transactions drained from the retry queue.
+/// This queue is split into two parts: a high-priority queue and a low-priority queue. The high-priority queue is used
+/// for brand-new transactions that are waiting to be processed for the first time. The low-priority queue contains
+/// transactions that have either been requeued to be retried again at a later time, or that couldn't fit in the
+/// high-priority queue due to it being full.
 ///
 /// Ultimately, we use this construction to provide a fast path for new transactions, while limiting the overall number
 /// of outstanding transactions that are waiting to be processed, with a bias towards preserving the most recent
 /// transactions so that fresh data can be sent as soon as any temporary networking issues are resolved.
 struct PendingTransactions<T> {
     high_priority: VecDeque<T>,
-    low_priority: VecDeque<T>,
-    retry_queue: RetryQueue<T>,
+    low_priority: RetryQueue<T>,
     telemetry: TransactionQueueTelemetry,
     incoming_bytes_per_sec: IncomingBytesPerSec,
 }
@@ -687,16 +667,12 @@ impl IncomingBytesPerSec {
 impl<T: Retryable> PendingTransactions<T> {
     /// Creates a new `PendingTransactions` instance.
     ///
-    /// The high-priority queue will have a maximum capacity of `max_enqueued`, and the low-priority queue will have a
-    /// maximum capacity of `max_low_priority_enqueued`.
-    pub fn new(
-        max_enqueued: usize, max_low_priority_enqueued: usize, retry_queue: RetryQueue<T>,
-        telemetry: TransactionQueueTelemetry,
-    ) -> Self {
+    /// The high-priority queue will have a maximum capacity of `max_enqueued`, and the retry queue will be used as the
+    /// low-priority queue.
+    pub fn new(max_enqueued: usize, retry_queue: RetryQueue<T>, telemetry: TransactionQueueTelemetry) -> Self {
         Self {
             high_priority: VecDeque::with_capacity(max_enqueued),
-            low_priority: VecDeque::with_capacity(max_low_priority_enqueued.max(MIN_LOW_PRIORITY_BUFFER_SIZE)),
-            retry_queue,
+            low_priority: retry_queue,
             telemetry,
             incoming_bytes_per_sec: IncomingBytesPerSec::new(
                 RETRY_QUEUE_CAPACITY_HISTORY_DURATION_SECS,
@@ -705,19 +681,16 @@ impl<T: Retryable> PendingTransactions<T> {
         }
     }
 
-    /// Returns `true` if there are transactions ready for workers to process.
-    pub fn has_worker_ready_transactions(&self) -> bool {
-        !self.high_priority.is_empty() || !self.low_priority.is_empty()
-    }
-
-    /// Returns `true` if there are retry transactions waiting to be drained.
-    pub fn has_retry_transactions(&self) -> bool {
-        !self.retry_queue.is_empty()
+    /// Returns `true` if there are no pending transactions.
+    ///
+    /// This includes both the high-priority and low-priority queues.
+    pub fn is_empty(&self) -> bool {
+        self.high_priority.is_empty() && self.low_priority.is_empty()
     }
 
     /// Pushes a high-priority transaction into the queue.
     ///
-    /// If the high-priority queue is full, the transaction will be pushed into the retry queue.
+    /// If the high-priority queue is full, the transaction will be pushed into the low-priority queue.
     pub async fn push_high_priority(&mut self, transaction: T) -> Result<PushResult, GenericError> {
         self.record_incoming_transaction_size(transaction.size_bytes());
 
@@ -732,134 +705,117 @@ impl<T: Retryable> PendingTransactions<T> {
 
             Ok(PushResult::default())
         } else {
-            self.push_retry(transaction).await
-        }
-    }
-
-    /// Pushes a retry transaction into the retry queue.
-    pub async fn push_retry(&mut self, transaction: T) -> Result<PushResult, GenericError> {
-        let push_result = self.retry_queue.push(transaction).await?;
-        self.record_retry_queue_size();
-
-        debug!(
-            retry_queue_len = self.retry_queue.len(),
-            "Enqueued pending transaction to retry queue."
-        );
-
-        Ok(push_result)
-    }
-
-    /// Drains retry transactions into the low-priority queue until the low-priority queue is full.
-    pub async fn drain_retry_queue(&mut self) -> Result<PushResult, GenericError> {
-        let push_result = PushResult::default();
-
-        while self.low_priority.len() < self.low_priority.capacity() {
-            let Some(transaction) = self.retry_queue.pop().await? else {
-                break;
-            };
-
-            let entries_dropped = self.retry_queue.take_persisted_entries_dropped();
-            if entries_dropped > 0 {
-                self.telemetry
-                    .low_prio_queue_entries_dropped()
-                    .increment(entries_dropped);
-            }
-
-            self.low_priority.push_back(transaction);
+            let push_result = self.low_priority.push(transaction).await?;
             self.telemetry.low_prio_queue_insertions().increment(1);
             self.record_retry_queue_size();
 
             debug!(
                 low_prio_queue_len = self.low_priority.len(),
-                retry_queue_len = self.retry_queue.len(),
-                "Drained retry transaction to low-priority queue."
+                "Enqueued pending transaction to low-priority queue."
             );
-        }
 
-        let entries_dropped = self.retry_queue.take_persisted_entries_dropped();
-        if entries_dropped > 0 {
-            self.telemetry
-                .low_prio_queue_entries_dropped()
-                .increment(entries_dropped);
+            Ok(push_result)
         }
+    }
+
+    /// Pushes a low-priority transaction into the queue.
+    pub async fn push_low_priority(&mut self, transaction: T) -> Result<PushResult, GenericError> {
+        let push_result = self.low_priority.push(transaction).await?;
+        self.telemetry.low_prio_queue_insertions().increment(1);
         self.record_retry_queue_size();
+
+        debug!(
+            low_prio_queue_len = self.low_priority.len(),
+            "Enqueued pending transaction to low-priority queue."
+        );
 
         Ok(push_result)
     }
 
     /// Pops the next transaction from the queue.
     ///
-    /// The high-priority queue is drained first, followed by the low-priority queue.
+    /// The high-priority queue is drained first before attempting to pop from the low-priority queue.
     pub async fn pop(&mut self) -> Option<T> {
         // We bias towards handling enqueued transactions first, since those are our "high priority" transactions, and we
         // want to keep them flowing as fast as possible.
-        if let Some(transaction) = self.high_priority.pop_front() {
-            self.telemetry.high_prio_queue_removals().increment(1);
+        loop {
+            if let Some(transaction) = self.high_priority.pop_front() {
+                self.telemetry.high_prio_queue_removals().increment(1);
 
-            debug!(
-                high_prio_queue_len = self.high_priority.len(),
-                "Dequeued pending transaction from high-priority queue."
-            );
-            return Some(transaction);
+                debug!(
+                    high_prio_queue_len = self.high_priority.len(),
+                    "Dequeued pending transaction from high-priority queue."
+                );
+                return Some(transaction);
+            }
+
+            let pop_result = self.low_priority.pop().await;
+
+            let entries_dropped = self.low_priority.take_persisted_entries_dropped();
+            if entries_dropped > 0 {
+                self.telemetry
+                    .low_prio_queue_entries_dropped()
+                    .increment(entries_dropped);
+            }
+
+            match pop_result {
+                Ok(Some(transaction)) => {
+                    self.telemetry.low_prio_queue_removals().increment(1);
+                    self.record_retry_queue_size();
+
+                    debug!(
+                        low_prio_queue_len = self.low_priority.len(),
+                        "Dequeued pending transaction from low-priority queue."
+                    );
+                    return Some(transaction);
+                }
+                Ok(None) => {
+                    self.record_retry_queue_size();
+                    return None;
+                }
+                Err(e) => {
+                    error!(error = %e, "Failed to pop transaction from low-priority queue.");
+                    continue;
+                }
+            }
         }
-
-        if let Some(transaction) = self.low_priority.pop_front() {
-            self.telemetry.low_prio_queue_removals().increment(1);
-            self.record_retry_queue_size();
-
-            debug!(
-                low_prio_queue_len = self.low_priority.len(),
-                "Dequeued pending transaction from low-priority queue."
-            );
-            return Some(transaction);
-        }
-
-        self.record_retry_queue_size();
-        None
     }
 
     /// Flushes all transactions and finalizes the queue.
     ///
-    /// This will flush any pending high-priority and low-priority transactions to the retry queue, which will persist
-    /// any transactions that are still in the queue to disk if disk persistence is enabled.
+    /// This will flush any pending high-priority transactions to the low-priority queue, and then flush the
+    /// low-priority queue, which will persist any transactions that are still in the queue to disk if the retry queue
+    /// has disk persistence enabled.
     ///
     /// If disk persistence isn't enabled, all pending transactions will be dropped.
     ///
     /// # Errors
     ///
-    /// If an error occurs flushing transactions to the retry queue, an error will be returned.
+    /// If an error occurs flushing transactions to the low-priority queue, or occurs while flushing the low-priority
+    /// queue itself, an error will be returned.
     pub async fn flush(mut self) -> Result<PushResult, GenericError> {
         let mut push_result = PushResult::default();
 
-        // Push all high-priority transactions into the retry queue.
+        // Push all high-priority transactions into the low-priority queue.
         while let Some(transaction) = self.high_priority.pop_front() {
             self.telemetry.high_prio_queue_removals().increment(1);
 
-            let subpush_result = self.retry_queue.push(transaction).await?;
+            let subpush_result = self.low_priority.push(transaction).await?;
+            self.telemetry.low_prio_queue_insertions().increment(1);
             self.record_retry_queue_size();
 
             push_result.merge(subpush_result);
         }
 
-        while let Some(transaction) = self.low_priority.pop_front() {
-            self.telemetry.low_prio_queue_removals().increment(1);
-
-            let subpush_result = self.retry_queue.push(transaction).await?;
-            self.record_retry_queue_size();
-
-            push_result.merge(subpush_result);
-        }
-
-        // Flush the retry queue.
-        let flush_result = self.retry_queue.flush().await?;
+        // Flush the low-priority queue.
+        let flush_result = self.low_priority.flush().await?;
         push_result.merge(flush_result);
 
         Ok(push_result)
     }
 
     fn record_retry_queue_size(&self) {
-        self.telemetry
-            .record_retry_queue_size(self.low_priority.len() + self.retry_queue.len());
+        self.telemetry.record_retry_queue_size(self.low_priority.len());
     }
 
     fn record_incoming_transaction_size(&mut self, bytes: u64) {
@@ -996,6 +952,8 @@ app.datadoghq.com: [key-a, key-b]
     }
 
     fn init_tls_crypto_provider() {
+        // TODO: Figure out a better pattern for testing that doesn't involve initializing
+        // the process-wide crypto provider.
         static INIT: OnceLock<()> = OnceLock::new();
         INIT.get_or_init(|| {
             let _ = saluki_tls::initialize_default_crypto_provider();
@@ -1111,7 +1069,7 @@ app.datadoghq.com: [key-a, key-b]
     async fn retry_queue_bytes_per_sec_tracks_incoming_transaction_payloads() {
         let (shared, telemetry) = transaction_queue_telemetry();
         let retry_queue = RetryQueue::new("test".to_string(), 1024);
-        let mut pending_txns = PendingTransactions::new(4, 4, retry_queue, telemetry);
+        let mut pending_txns = PendingTransactions::new(4, retry_queue, telemetry);
 
         let push_result = pending_txns.push_high_priority("payload".to_string()).await.unwrap();
 
@@ -1123,87 +1081,18 @@ app.datadoghq.com: [key-a, key-b]
     async fn retry_queue_bytes_per_sec_does_not_track_retry_drains_or_empty_queue() {
         let (shared, telemetry) = transaction_queue_telemetry();
         let retry_queue = RetryQueue::new("test".to_string(), 1024);
-        let mut pending_txns = PendingTransactions::new(4, 4, retry_queue, telemetry);
+        let mut pending_txns = PendingTransactions::new(4, retry_queue, telemetry);
 
         pending_txns.record_incoming_transaction_size_at(20, 1);
-        let push_result = pending_txns.push_retry("retry".to_string()).await.unwrap();
+        let push_result = pending_txns.push_low_priority("retry".to_string()).await.unwrap();
 
         assert!(!push_result.had_drops());
         assert_eq!(shared.aggregate_snapshot(), (1, 20.0));
-        assert!(!pending_txns.drain_retry_queue().await.unwrap().had_drops());
         assert_eq!(pending_txns.pop().await.as_deref(), Some("retry"));
         assert_eq!(shared.aggregate_snapshot(), (0, 20.0));
 
         assert!(pending_txns.pop().await.is_none());
         assert_eq!(shared.aggregate_snapshot(), (0, 20.0));
-    }
-
-    #[tokio::test]
-    async fn retry_drain_stages_low_priority_before_remaining_retry_queue() {
-        let (_shared, telemetry) = transaction_queue_telemetry();
-        let retry_queue = RetryQueue::new("test".to_string(), 1024);
-        let mut pending_txns = PendingTransactions::new(1, 1, retry_queue, telemetry);
-
-        assert!(!pending_txns
-            .push_high_priority("high".to_string())
-            .await
-            .unwrap()
-            .had_drops());
-        assert!(!pending_txns.push_retry("low".to_string()).await.unwrap().had_drops());
-        assert!(!pending_txns.push_retry("retry".to_string()).await.unwrap().had_drops());
-        assert!(!pending_txns.drain_retry_queue().await.unwrap().had_drops());
-
-        assert_eq!(pending_txns.pop().await.as_deref(), Some("high"));
-        assert_eq!(pending_txns.pop().await.as_deref(), Some("low"));
-        assert!(pending_txns.pop().await.is_none());
-
-        assert!(!pending_txns.drain_retry_queue().await.unwrap().had_drops());
-        assert_eq!(pending_txns.pop().await.as_deref(), Some("retry"));
-    }
-
-    #[tokio::test]
-    async fn retry_drain_clamps_zero_low_priority_buffer_to_one() {
-        let (_shared, telemetry) = transaction_queue_telemetry();
-        let retry_queue = RetryQueue::new("test".to_string(), 1024);
-        let mut pending_txns = PendingTransactions::new(1, 0, retry_queue, telemetry);
-
-        assert!(!pending_txns.push_retry("retry".to_string()).await.unwrap().had_drops());
-        assert!(!pending_txns.drain_retry_queue().await.unwrap().had_drops());
-
-        assert_eq!(pending_txns.pop().await.as_deref(), Some("retry"));
-    }
-
-    #[tokio::test]
-    async fn high_priority_overflow_uses_retry_queue_before_low_priority_buffer() {
-        let (_shared, telemetry) = transaction_queue_telemetry();
-        let retry_queue = RetryQueue::new("test".to_string(), 1024);
-        let mut pending_txns = PendingTransactions::new(1, 1, retry_queue, telemetry);
-
-        assert!(!pending_txns
-            .push_high_priority("high".to_string())
-            .await
-            .unwrap()
-            .had_drops());
-        assert!(!pending_txns
-            .push_high_priority("low-overflow".to_string())
-            .await
-            .unwrap()
-            .had_drops());
-        assert!(!pending_txns
-            .push_high_priority("retry-overflow".to_string())
-            .await
-            .unwrap()
-            .had_drops());
-
-        assert_eq!(pending_txns.pop().await.as_deref(), Some("high"));
-        assert!(pending_txns.pop().await.is_none());
-
-        assert!(!pending_txns.drain_retry_queue().await.unwrap().had_drops());
-        assert_eq!(pending_txns.pop().await.as_deref(), Some("low-overflow"));
-        assert!(pending_txns.pop().await.is_none());
-
-        assert!(!pending_txns.drain_retry_queue().await.unwrap().had_drops());
-        assert_eq!(pending_txns.pop().await.as_deref(), Some("retry-overflow"));
     }
 
     #[test]
@@ -1485,8 +1374,7 @@ app.datadoghq.com: [key-a, key-b]
             .await
             .expect("send should succeed");
 
-        let observed =
-            wait_for_count_at_least(&counter, 2, Duration::from_secs(RETRY_QUEUE_DRAIN_INTERVAL_SECS + 3)).await;
+        let observed = wait_for_count_at_least(&counter, 2, Duration::from_secs(3)).await;
         handle.shutdown().await;
 
         assert!(

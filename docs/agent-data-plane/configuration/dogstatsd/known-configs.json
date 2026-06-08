@@ -1198,10 +1198,10 @@
   },
   {
     "key": "forwarder_low_prio_buffer_size",
-    "feature_state": "PARITY",
+    "feature_state": "NOT_APPLICABLE",
     "action": "NONE",
     "description": "Max pending requests in low-prio buffer",
-    "reason": "Implemented in ADP. Default matches the core agent and the value sizes the per-endpoint low-priority queue used to stage retry-drain work.",
+    "reason": "The core agent uses this key to size its low-priority forwarder worker channel. ADP does not implement a count-sized low-priority worker channel; low-priority pending transactions use the byte-bounded retry queue configured by forwarder_retry_queue_payloads_max_size and optional disk persistence settings.",
     "issue": "#1362",
     "adp_key": null
   },

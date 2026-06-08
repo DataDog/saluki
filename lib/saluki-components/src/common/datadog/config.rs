@@ -29,10 +29,6 @@ const fn default_endpoint_buffer_size() -> usize {
     100
 }
 
-const fn default_low_priority_buffer_size() -> usize {
-    100
-}
-
 const fn default_forwarder_connection_reset_interval() -> u64 {
     0
 }
@@ -192,15 +188,6 @@ pub struct ForwarderConfiguration {
     /// Defaults to 100.
     #[serde(default = "default_endpoint_buffer_size", rename = "forwarder_high_prio_buffer_size")]
     endpoint_buffer_size: usize,
-
-    /// Maximum number of retry-drained low-priority pending requests for an individual endpoint.
-    ///
-    /// Defaults to 100. If set to 0, the low-priority buffer size is clamped to 1.
-    #[serde(
-        default = "default_low_priority_buffer_size",
-        rename = "forwarder_low_prio_buffer_size"
-    )]
-    pub(crate) low_priority_buffer_size: usize,
 
     /// Endpoint configuration.
     #[serde(flatten)]
