@@ -236,7 +236,7 @@ where
         }
     }
 
-    /// Returns an API key validator for the startup endpoint set.
+    /// Returns API key validation for the startup endpoint set.
     pub(crate) fn api_key_validator(&self) -> ApiKeyValidator {
         ApiKeyValidator::new(
             self.endpoints.clone(),

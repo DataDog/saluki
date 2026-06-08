@@ -34,7 +34,7 @@ pub(crate) enum ValidationReadiness {
     NotReady,
 }
 
-/// API key validator for the startup endpoint set.
+/// API key validation for the startup endpoint set.
 pub(crate) struct ApiKeyValidator {
     endpoints: Vec<RoutableEndpoint>,
     client: HttpClient,
@@ -43,7 +43,7 @@ pub(crate) struct ApiKeyValidator {
 }
 
 impl ApiKeyValidator {
-    /// Creates a validator for the given startup endpoint set.
+    /// Creates API key validation for the given startup endpoint set.
     pub(crate) fn new(
         endpoints: Vec<RoutableEndpoint>, client: HttpClient, live_config: Option<GenericConfiguration>,
         interval: Duration,
@@ -56,7 +56,7 @@ impl ApiKeyValidator {
         }
     }
 
-    /// Spawns the validator task and returns a readiness handle.
+    /// Spawns the API key validation task and returns a readiness handle.
     pub(crate) fn spawn(self) -> ApiKeyValidationHandle {
         let (readiness_tx, readiness_rx) = mpsc::channel(1);
         let task = spawn_validation_task(
