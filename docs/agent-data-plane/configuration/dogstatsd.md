@@ -180,9 +180,8 @@ See `dogstatsd_stats_enable`
 
 ### `forwarder_high_prio_buffer_size`
 
-ADP supports `forwarder_high_prio_buffer_size` but uses a different default from the
-core agent. The core agent defaults this to `100`; ADP defaults its high-priority
-per-endpoint pending queue to `16`.
+ADP implements `forwarder_high_prio_buffer_size` and matches the core agent's default of `100`. The
+value sizes ADP's per-endpoint high-priority pending queue.
 
 ### `forwarder_num_workers`
 

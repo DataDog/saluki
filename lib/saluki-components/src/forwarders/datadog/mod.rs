@@ -1,3 +1,10 @@
+//! Datadog forwarder component.
+//!
+//! # Missing
+//!
+//! - Account for connected encoder firm bounds in the encoder components once they can calculate request memory.
+//! - Replace the fixed maximum compressed payload size if future sources or encoders use a larger default.
+
 use async_trait::async_trait;
 use http::Uri;
 use resource_accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
@@ -102,27 +109,34 @@ impl MemoryBounds for DatadogConfiguration {
 
         builder
             .firm()
-            // TODO: This is a little wonky because we're accounting for the firm bound portion of connected encoders here, as this
-            // is the only place where we can calculate how many requests we'll hold on to in memory, which is what ultimately influences
-            // the firm usage.
+            // This accounts for connected encoder firm bounds here because request retention is calculated by the
+            // forwarder.
             //
-            // We're also cheating by knowing what the largest possible payload is that we'll potentially see, based on the limits on the
-            // Datadog encoders. This won't necessarily hold up for future sources/encoders, but is good enough for now.
+            // The maximum compressed payload size comes from the largest Datadog encoder default currently in use.
             .with_expr(UsageExpr::sum(
                 "in-flight requests",
                 UsageExpr::config(
                     "forwarder_retry_queue_payloads_max_size",
                     self.forwarder_config.retry().queue_max_size_bytes() as usize,
                 ),
-                UsageExpr::product(
-                    "high priority queue",
-                    UsageExpr::config(
-                        "forwarder_high_prio_buffer_size",
-                        self.forwarder_config.endpoint_buffer_size(),
+                UsageExpr::sum(
+                    "priority queues",
+                    UsageExpr::product(
+                        "high priority queue",
+                        UsageExpr::config(
+                            "forwarder_high_prio_buffer_size",
+                            self.forwarder_config.endpoint_buffer_size(),
+                        ),
+                        UsageExpr::constant("maximum compressed payload size", DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT),
                     ),
-                    // TODO: The default compressed size limit just so happens to be the biggest one we currently default with on our side,
-                    // but it's not clear that this will always be the case.
-                    UsageExpr::constant("maximum compressed payload size", DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT),
+                    UsageExpr::product(
+                        "low priority queue",
+                        UsageExpr::config(
+                            "forwarder_low_prio_buffer_size",
+                            self.forwarder_config.low_priority_buffer_size(),
+                        ),
+                        UsageExpr::constant("maximum compressed payload size", DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT),
+                    ),
                 ),
             ));
     }

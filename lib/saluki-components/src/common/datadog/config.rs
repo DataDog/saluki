@@ -26,7 +26,11 @@ const fn default_request_timeout_secs() -> u64 {
 }
 
 const fn default_endpoint_buffer_size() -> usize {
-    16
+    100
+}
+
+const fn default_low_priority_buffer_size() -> usize {
+    100
 }
 
 const fn default_forwarder_connection_reset_interval() -> u64 {
@@ -185,9 +189,18 @@ pub struct ForwarderConfiguration {
 
     /// Maximum number of pending requests for an individual endpoint.
     ///
-    /// Defaults to 16.
+    /// Defaults to 100.
     #[serde(default = "default_endpoint_buffer_size", rename = "forwarder_high_prio_buffer_size")]
     endpoint_buffer_size: usize,
+
+    /// Maximum number of retry-drained low-priority pending requests for an individual endpoint.
+    ///
+    /// Defaults to 100.
+    #[serde(
+        default = "default_low_priority_buffer_size",
+        rename = "forwarder_low_prio_buffer_size"
+    )]
+    low_priority_buffer_size: usize,
 
     /// Endpoint configuration.
     #[serde(flatten)]
@@ -289,6 +302,11 @@ impl ForwarderConfiguration {
     /// Returns the maximum number of pending requests for an individual endpoint.
     pub const fn endpoint_buffer_size(&self) -> usize {
         self.endpoint_buffer_size
+    }
+
+    /// Returns the maximum number of retry-drained low-priority pending requests for an individual endpoint.
+    pub const fn low_priority_buffer_size(&self) -> usize {
+        self.low_priority_buffer_size
     }
 
     /// Returns the HTTP protocol selection for outgoing forwarder requests.

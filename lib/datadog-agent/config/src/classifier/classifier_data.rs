@@ -385,7 +385,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
     ClassifierEntry {
         yaml_path: "forwarder_low_prio_buffer_size",
         aliases: &[],
-        support_level: SupportLevel::Incompatible(Severity::Medium),
+        support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::CrossCutting,
         default: Some("100"),
     },
