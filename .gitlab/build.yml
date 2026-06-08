@@ -315,12 +315,12 @@ display-image-tags:
     - when: manual
       allow_failure: true
   variables:
-    # Cargo profile flows through to `make build-adp-host` (and therefore to the tarball binary),
-    # picked up from the workflow rules in .gitlab-ci.yml: `release` for dev pipelines,
-    # `optimized-release` for tagged releases. This matches the linux Docker build's behavior.
-    BUILD_PROFILE: ${BUILD_PROFILE}
-    # Filename produced by `make package-adp-host` (see ci/tooling/package-adp-tarball.sh).
-    # Kept here so the artifacts: path below can reference it without re-deriving.
+    # Filename produced by `make package-adp-host` (see ci/tooling/package-adp-tarball.sh). Kept
+    # here so the artifacts: path below can reference it without re-deriving. BUILD_PROFILE
+    # itself is inherited from the workflow `variables:` in .gitlab-ci.yml (`release` for dev
+    # pipelines, `optimized-release` for tagged releases) just like the linux build jobs above
+    # do; redeclaring it here as `BUILD_PROFILE: ${BUILD_PROFILE}` would self-reference and
+    # blow up make with "Recursive variable BUILD_PROFILE references itself".
     TARBALL_NAME: "agent-data-plane-${ADP_IMAGE_VERSION}-darwin-${TARGET_ARCH}.tar.gz"
   script:
     # All the real work — cargo build, SPDX license harvest, tarball assembly, sha256 — lives in
