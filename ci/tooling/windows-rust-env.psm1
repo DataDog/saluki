@@ -215,6 +215,13 @@ function Initialize-FipsBuildTools {
     $GoSha256     = "3b533bbe63e73732bf19b8facc9160417e97d13eb174dfe58a213c6d0dee0010"
     $NinjaVersion = "1.12.1"
     $NinjaSha256  = "f550fec705b6d6ff58f2db3c374c2277a37691678d6aba463adcbb129108467a"
+    # libclang is needed by bindgen, which aws-lc-fips-sys runs at build time on
+    # x86_64-pc-windows-msvc (no pre-generated bindings ship for that target). Use the
+    # toolchain-only `clang+llvm-...-x86_64-pc-windows-msvc.tar.xz` archive (~845MB) rather
+    # than the full LLVM-Windows installer; smaller, no NSIS, and tar.exe (bsdtar) on
+    # LTSC2022 handles tar.xz natively.
+    $LlvmVersion  = "19.1.7"
+    $LlvmSha256   = "b4557b4f012161f56a2f5d9e877ab9635cafd7a08f7affe14829bd60c9d357f0"
 
     Install-CachedZipTool `
         -Name "nasm" `
@@ -240,6 +247,41 @@ function Initialize-FipsBuildTools {
         -ProbeRelativePath "ninja.exe" `
         -BinSubdir ""
 
+    # LLVM/libclang. Distributed only as tar.xz on Windows (no zip), so it doesn't fit the
+    # Install-CachedZipTool shape. Inline download/verify/extract follows the same pattern.
+    $LlvmExtractedDir = "clang+llvm-$LlvmVersion-x86_64-pc-windows-msvc"
+    $LlvmInstallRoot  = Join-Path $RepoRoot ".ci-cache\llvm\$LlvmVersion"
+    $LlvmBin          = Join-Path $LlvmInstallRoot "$LlvmExtractedDir\bin"
+    $LibClangProbe    = Join-Path $LlvmBin "libclang.dll"
+    if (-not (Test-Path $LibClangProbe)) {
+        Write-Host "[*] libclang not found at $LibClangProbe; downloading LLVM $LlvmVersion (~845MB)..."
+        $LlvmArchive = Join-Path $env:TEMP ("clang-llvm-" + [System.Guid]::NewGuid().ToString("N") + ".tar.xz")
+        Invoke-WebRequest -UseBasicParsing `
+            -Uri "https://github.com/llvm/llvm-project/releases/download/llvmorg-$LlvmVersion/$LlvmExtractedDir.tar.xz" `
+            -OutFile $LlvmArchive
+
+        $ActualSha256 = (Get-FileHash -Algorithm SHA256 -Path $LlvmArchive).Hash.ToLowerInvariant()
+        if ($ActualSha256 -ne $LlvmSha256.ToLowerInvariant()) {
+            throw "LLVM archive checksum mismatch: expected $LlvmSha256, got $ActualSha256"
+        }
+
+        New-Item -ItemType Directory -Force $LlvmInstallRoot | Out-Null
+        # Use the call operator `&` instead of Invoke-Native because tar's `-C` short flag
+        # collides with PowerShell's auto-injected `-Confirm` common parameter (see the
+        # Invoke-Native gotcha block above).
+        & tar -C $LlvmInstallRoot -xf $LlvmArchive
+        if ($LASTEXITCODE -ne 0) { throw "LLVM tar extract failed (exit $LASTEXITCODE)" }
+        Remove-Item -Force $LlvmArchive
+
+        if (-not (Test-Path $LibClangProbe)) {
+            throw "LLVM install layout unexpected: $LibClangProbe still missing after extract"
+        }
+    }
+    # bindgen finds libclang via the LIBCLANG_PATH env var; setting it (rather than relying
+    # on PATH) is the documented bindgen contract.
+    $env:LIBCLANG_PATH = $LlvmBin
+    Add-PathEntry $LlvmBin
+
     # Smoke-test each binary to confirm it actually executes (PATH wired up, runtime deps
     # present). Use the call operator `&` instead of Invoke-Native because nasm's `-v` flag
     # collides with PowerShell's auto-injected `-Verbose` common parameter on advanced
@@ -251,6 +293,8 @@ function Initialize-FipsBuildTools {
     if ($LASTEXITCODE -ne 0) { throw "go smoke test failed (exit $LASTEXITCODE)" }
     & ninja --version
     if ($LASTEXITCODE -ne 0) { throw "ninja smoke test failed (exit $LASTEXITCODE)" }
+    & clang --version
+    if ($LASTEXITCODE -ne 0) { throw "clang smoke test failed (exit $LASTEXITCODE)" }
 }
 
 Export-ModuleMember -Function Invoke-Native, Add-PathEntry, Ensure-Protoc, Initialize-RustEnvironment, Install-CachedZipTool, Initialize-FipsBuildTools
