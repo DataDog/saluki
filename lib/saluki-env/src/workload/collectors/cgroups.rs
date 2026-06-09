@@ -2,13 +2,15 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
-use saluki_common::collections::{FastHashMap, FastHashSet};
+use saluki_common::{
+    collections::{FastHashMap, FastHashSet},
+    sync::shutdown::{ShutdownHandle, ShutdownTrigger},
+};
 use saluki_config::GenericConfiguration;
 use saluki_core::health::Health;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use stringtheory::{interning::GenericMapInterner, MetaString};
 use tokio::{select, sync::mpsc};
-use tokio_util::task::AbortOnDropHandle;
 use tracing::{debug, warn};
 
 use super::MetadataCollector;
@@ -72,8 +74,11 @@ impl MetadataCollector for CgroupsMetadataCollector {
         let mut cgroups_manager = SynchronousCgroupsManager::from_reader(self.reader.clone());
         let operations_tx = operations_tx.clone();
 
-        let raw_poller_handle = tokio::task::spawn_blocking(move || cgroups_manager.poll(operations_tx));
-        let poller_handle = AbortOnDropHandle::new(raw_poller_handle);
+        // We don't bind our trigger because if the task can only "return" if it exits intentionally or panics... so we
+        // _do_ need it bound until the end of the method scope so that we don't prematurely trigger shutdown when it's
+        // dropped.
+        let (_shutdown_trigger, shutdown_handle) = ShutdownTrigger::new();
+        let poller_handle = tokio::task::spawn_blocking(move || cgroups_manager.poll(operations_tx, shutdown_handle));
         tokio::pin!(poller_handle);
 
         debug!("Spawned cgroups background poller task.");
@@ -126,13 +131,15 @@ impl SynchronousCgroupsManager {
         }
     }
 
-    fn poll(&mut self, operations_tx: mpsc::Sender<MetadataOperation>) -> Result<(), GenericError> {
+    fn poll(
+        &mut self, operations_tx: mpsc::Sender<MetadataOperation>, shutdown_handle: ShutdownHandle,
+    ) -> Result<(), GenericError> {
         let mut traversed_cgroups = FastHashSet::default();
         let mut cgroups_to_delete = Vec::new();
 
         loop {
             // Make sure we should still be running.
-            if operations_tx.is_closed() {
+            if operations_tx.is_closed() || shutdown_handle.is_triggered() {
                 return Ok(());
             }
 
