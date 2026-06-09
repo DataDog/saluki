@@ -310,4 +310,50 @@ function Initialize-FipsBuildTools {
     if ($LASTEXITCODE -ne 0) { throw "clang smoke test failed (exit $LASTEXITCODE)" }
 }
 
-Export-ModuleMember -Function Invoke-Native, Add-PathEntry, Ensure-Protoc, Initialize-RustEnvironment, Install-CachedZipTool, Initialize-FipsBuildTools
+function Initialize-MsvcEnvironment {
+    # aws-lc-fips-sys's CMake builder shells out to vcvarsall.bat to discover the MSVC
+    # toolchain environment (PATH, INCLUDE, LIB, etc.). Vanilla `docker run` against the
+    # LTSC2022 buildimage doesn't activate that environment, so any cmake-using crate fails
+    # with "vcvarsall.bat not found." even though VS BuildTools is installed.
+    #
+    # Run vcvarsall.bat in cmd, capture its post-execution environment via `set`, and apply
+    # the result to the current PowerShell session so subsequent cargo invocations inherit
+    # it. This is the standard Windows-CI pattern documented in MS's own dev-cmd-prompt
+    # tooling.
+    #
+    # Non-FIPS builds (aws-lc-rs) work without this because that crate ships pre-generated
+    # bindings + asm for x86_64-pc-windows-msvc and never invokes cmake; only FIPS builds
+    # need the MSVC environment activated.
+    param(
+        [string]$Arch = "x64"
+    )
+
+    # Known buildimage VS BuildTools install root (from install_vstudio.ps1 in
+    # DataDog/datadog-agent-buildimages). vswhere isn't reliable for non-default install
+    # paths, so we hard-pin the known location.
+    $VcvarsallPath = "C:\devtools\vstudio\VC\Auxiliary\Build\vcvarsall.bat"
+    if (-not (Test-Path $VcvarsallPath)) {
+        throw "vcvarsall.bat not found at expected buildimage path: $VcvarsallPath"
+    }
+
+    Write-Host "[*] Activating MSVC environment via $VcvarsallPath $Arch"
+    # `set` (no args) prints all env vars one per line as NAME=VALUE. Wrap vcvarsall in
+    # quotes to handle the space in `Program Files`-style paths even though our path doesn't
+    # need it; harmless either way.
+    $cmdline = "`"$VcvarsallPath`" $Arch >NUL && set"
+    $output = & cmd.exe /c $cmdline
+    if ($LASTEXITCODE -ne 0) {
+        throw "vcvarsall.bat $Arch failed (exit $LASTEXITCODE)"
+    }
+    foreach ($line in $output) {
+        if ($line -match '^([^=]+)=(.*)$') {
+            Set-Item -Path "env:$($Matches[1])" -Value $Matches[2]
+        }
+    }
+    if (-not $env:VCINSTALLDIR) {
+        throw "vcvarsall.bat ran but VCINSTALLDIR is still unset; environment import failed"
+    }
+    Write-Host "[*] MSVC environment activated: VCINSTALLDIR=$env:VCINSTALLDIR"
+}
+
+Export-ModuleMember -Function Invoke-Native, Add-PathEntry, Ensure-Protoc, Initialize-RustEnvironment, Install-CachedZipTool, Initialize-FipsBuildTools, Initialize-MsvcEnvironment

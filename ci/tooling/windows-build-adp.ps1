@@ -31,10 +31,13 @@ Set-Location $RepoRoot
 Initialize-RustEnvironment -RepoRoot $RepoRoot
 
 if ($env:BUILD_FEATURES -eq "fips") {
-    # aws-lc-fips-sys (pulled in by --features fips -> rustls/fips) needs NASM + Go + Ninja on
-    # Windows. The LTSC2022 buildimage doesn't ship them; install at job runtime, cached under
-    # .ci-cache\ between runs.
+    # aws-lc-fips-sys (pulled in by --features fips -> rustls/fips) needs NASM + Go + Ninja
+    # + LLVM/libclang on Windows. The LTSC2022 buildimage doesn't ship them; install at job
+    # runtime, cached under .ci-cache\ between runs.
     Initialize-FipsBuildTools -RepoRoot $RepoRoot
+    # aws-lc-fips-sys's CMake builder calls vcvarsall.bat to find the MSVC toolchain, which
+    # vanilla `docker run` doesn't activate. Non-FIPS builds don't need this.
+    Initialize-MsvcEnvironment
 }
 
 # saluki-metadata reads these at build time. Must match the values the Makefile passes through
