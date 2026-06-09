@@ -218,8 +218,10 @@ function Initialize-FipsBuildTools {
     # libclang is needed by bindgen, which aws-lc-fips-sys runs at build time on
     # x86_64-pc-windows-msvc (no pre-generated bindings ship for that target). Use the
     # toolchain-only `clang+llvm-...-x86_64-pc-windows-msvc.tar.xz` archive (~845MB) rather
-    # than the full LLVM-Windows installer; smaller, no NSIS, and tar.exe (bsdtar) on
-    # LTSC2022 handles tar.xz natively.
+    # than the full LLVM-Windows installer; smaller and no NSIS. tar.exe on LTSC2022 (bsdtar)
+    # CAN'T decompress xz internally -- it shells out to `xz -d` which isn't installed -- so
+    # use 7-Zip in two passes (.tar.xz -> .tar -> tree). 7-Zip is pre-installed by the
+    # Datadog buildimage's phase1 install_7zip.ps1 at c:\program files\7-zip\.
     $LlvmVersion  = "19.1.7"
     $LlvmSha256   = "b4557b4f012161f56a2f5d9e877ab9635cafd7a08f7affe14829bd60c9d357f0"
 
@@ -255,23 +257,34 @@ function Initialize-FipsBuildTools {
     $LibClangProbe    = Join-Path $LlvmBin "libclang.dll"
     if (-not (Test-Path $LibClangProbe)) {
         Write-Host "[*] libclang not found at $LibClangProbe; downloading LLVM $LlvmVersion (~845MB)..."
-        $LlvmArchive = Join-Path $env:TEMP ("clang-llvm-" + [System.Guid]::NewGuid().ToString("N") + ".tar.xz")
-        Invoke-WebRequest -UseBasicParsing `
-            -Uri "https://github.com/llvm/llvm-project/releases/download/llvmorg-$LlvmVersion/$LlvmExtractedDir.tar.xz" `
-            -OutFile $LlvmArchive
+        $XzWork = Join-Path $env:TEMP ("llvm-xz-" + [System.Guid]::NewGuid().ToString("N"))
+        New-Item -ItemType Directory -Force $XzWork | Out-Null
+        try {
+            $XzArchive = Join-Path $XzWork "src.tar.xz"
+            Invoke-WebRequest -UseBasicParsing `
+                -Uri "https://github.com/llvm/llvm-project/releases/download/llvmorg-$LlvmVersion/$LlvmExtractedDir.tar.xz" `
+                -OutFile $XzArchive
 
-        $ActualSha256 = (Get-FileHash -Algorithm SHA256 -Path $LlvmArchive).Hash.ToLowerInvariant()
-        if ($ActualSha256 -ne $LlvmSha256.ToLowerInvariant()) {
-            throw "LLVM archive checksum mismatch: expected $LlvmSha256, got $ActualSha256"
+            $ActualSha256 = (Get-FileHash -Algorithm SHA256 -Path $XzArchive).Hash.ToLowerInvariant()
+            if ($ActualSha256 -ne $LlvmSha256.ToLowerInvariant()) {
+                throw "LLVM archive checksum mismatch: expected $LlvmSha256, got $ActualSha256"
+            }
+
+            New-Item -ItemType Directory -Force $LlvmInstallRoot | Out-Null
+            # Two-pass 7-Zip: first decompress .tar.xz -> .tar in $XzWork, then extract the
+            # .tar tree into the install root. `&` instead of Invoke-Native because some 7z
+            # short flags (-y, -bd) would collide with PS common parameter prefixes.
+            & 7z x -bd -y "-o$XzWork" $XzArchive
+            if ($LASTEXITCODE -ne 0) { throw "7z xz decompress failed (exit $LASTEXITCODE)" }
+            $InnerTar = Join-Path $XzWork "src.tar"
+            if (-not (Test-Path $InnerTar)) {
+                throw "Expected $InnerTar after xz decompress, but it's missing"
+            }
+            & 7z x -bd -y "-o$LlvmInstallRoot" $InnerTar
+            if ($LASTEXITCODE -ne 0) { throw "7z tar extract failed (exit $LASTEXITCODE)" }
+        } finally {
+            Remove-Item -Recurse -Force $XzWork -ErrorAction SilentlyContinue
         }
-
-        New-Item -ItemType Directory -Force $LlvmInstallRoot | Out-Null
-        # Use the call operator `&` instead of Invoke-Native because tar's `-C` short flag
-        # collides with PowerShell's auto-injected `-Confirm` common parameter (see the
-        # Invoke-Native gotcha block above).
-        & tar -C $LlvmInstallRoot -xf $LlvmArchive
-        if ($LASTEXITCODE -ne 0) { throw "LLVM tar extract failed (exit $LASTEXITCODE)" }
-        Remove-Item -Force $LlvmArchive
 
         if (-not (Test-Path $LibClangProbe)) {
             throw "LLVM install layout unexpected: $LibClangProbe still missing after extract"
