@@ -70,13 +70,11 @@ impl MetadataCollector for CgroupsMetadataCollector {
         // Drive a blocking background task that polls the cgroups hierarchy on a regular interval, and sends metadata
         // updates when cgroups are created or deleted. We do this in a blocking task since all of the I/O operations
         // are synchronous.
-
         let mut cgroups_manager = SynchronousCgroupsManager::from_reader(self.reader.clone());
         let operations_tx = operations_tx.clone();
 
-        // We don't bind our trigger because if the task can only "return" if it exits intentionally or panics... so we
-        // _do_ need it bound until the end of the method scope so that we don't prematurely trigger shutdown when it's
-        // dropped.
+        // We hold on to the shutdown trigger here (even though we never call it) so that it only triggers on drop,
+        // ensuring we don't leak the blocking poller task if this collector is dropped before it completes.
         let (_shutdown_trigger, shutdown_handle) = ShutdownTrigger::new();
         let poller_handle = tokio::task::spawn_blocking(move || cgroups_manager.poll(operations_tx, shutdown_handle));
         tokio::pin!(poller_handle);
@@ -209,6 +207,11 @@ impl SynchronousCgroupsManager {
                 if operations_tx.blocking_send(operation).is_err() {
                     return Err(GenericError::msg("Operations channel unexpectedly closed."));
                 }
+            }
+
+            // Check again if we should shutdown before we go to sleep.
+            if operations_tx.is_closed() || shutdown_handle.is_triggered() {
+                return Ok(());
             }
 
             std::thread::sleep(Duration::from_secs(2));
