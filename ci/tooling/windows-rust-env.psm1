@@ -161,7 +161,11 @@ function Install-CachedZipTool {
         [Parameter(Mandatory = $true)]
         [string]$ProbeRelativePath,
 
+        # Empty string means "the binary is at the install root" (e.g. ninja-win.zip extracts
+        # ninja.exe flat). [AllowEmptyString()] is required because [Parameter(Mandatory)]
+        # combined with [string] rejects empty strings by default.
         [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
         [string]$BinSubdir
     )
 
