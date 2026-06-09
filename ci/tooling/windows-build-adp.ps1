@@ -38,7 +38,9 @@ $env:APP_FULL_NAME = "Agent Data Plane"
 $env:APP_SHORT_NAME = "data-plane"
 $env:APP_IDENTIFIER = "agent-data-plane"
 $env:APP_VERSION = $env:ADP_VERSION
-$env:APP_BUILD_DATE = (Get-Date -AsUTC -Format "yyyy-MM-ddTHH:mm:ssZ")
+# Windows PowerShell 5.1 (the default `powershell.exe` in the LTSC2022 build image) doesn't
+# have Get-Date's -AsUTC switch (added in PS 7.1). ToUniversalTime() works on both.
+$env:APP_BUILD_DATE = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
 if (-not $env:APP_GIT_HASH) {
     $env:APP_GIT_HASH = if ($env:CI_COMMIT_SHA) {
         $env:CI_COMMIT_SHA.Substring(0, [Math]::Min(7, $env:CI_COMMIT_SHA.Length))
