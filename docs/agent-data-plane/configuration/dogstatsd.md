@@ -149,6 +149,7 @@ default values.
 | ---------------------------------- | ----------------------------------------- |
 | `dogstatsd_mapper_cache_size`      | Mapper result LRU cache size              |
 | `dogstatsd_metrics_stats_enable`   | Enable per-metric debug stats             |
+| `forwarder_high_prio_buffer_size`  | High-priority request queue size          |
 | `forwarder_num_workers`            | Concurrent forwarder workers              |
 | `log_level`                        | Log verbosity directives                  |
 | `min_tls_version`                  | Minimum TLS version for HTTPS connections |
@@ -176,6 +177,12 @@ mapper, clear `dogstatsd_mapper_profiles` instead when running ADP.
 ### `dogstatsd_metrics_stats_enable`
 
 See `dogstatsd_stats_enable`
+
+### `forwarder_high_prio_buffer_size`
+
+ADP supports `forwarder_high_prio_buffer_size` but uses a different default from the
+core agent. The core agent defaults this to `100`; ADP defaults its high-priority
+per-endpoint pending queue to `16`.
 
 ### `forwarder_num_workers`
 
@@ -481,7 +488,6 @@ compressed wire payload bytes.
 | `forwarder_backoff_factor`                                     | Retry backoff jitter factor                        |
 | `forwarder_backoff_max`                                        | Retry backoff ceiling (secs)                       |
 | `forwarder_connection_reset_interval`                          | HTTP conn reset interval (secs)                    |
-| `forwarder_high_prio_buffer_size`                              | High-priority request queue size                   |
 | `forwarder_http_protocol`                                      | HTTP version selection (auto/http1/http2)          |
 | `forwarder_max_concurrent_requests`                            | Max concurrent HTTP requests                       |
 | `forwarder_outdated_file_in_days`                              | Days before retry files are deleted                |
@@ -541,6 +547,7 @@ compressed wire payload bytes.
 | `vector.metrics.enabled`                                       | Route metrics to OPW (legacy alias)                |
 | `vector.metrics.url`                                           | OPW metrics intake URL (legacy alias)              |
 | `vsock_addr`                                                   | vsock address for Agent IPC endpoint               |
+
 
 [#178]: https://github.com/DataDog/saluki/issues/178
 [#1350]: https://github.com/DataDog/saluki/issues/1350

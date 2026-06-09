@@ -118,7 +118,7 @@ crate::declare_annotations! {
     /// `forwarder_high_prio_buffer_size`-High-priority request queue size
     FORWARDER_HIGH_PRIO_BUFFER_SIZE = SalukiAnnotation {
         schema: &schema::FORWARDER_HIGH_PRIO_BUFFER_SIZE,
-        support_level: SupportLevel::Full,
+        support_level: SupportLevel::Partial,
         additional_yaml_paths: &[],
         env_var_override: None,
         used_by: &[structs::FORWARDER_CONFIGURATION],

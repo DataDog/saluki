@@ -1074,9 +1074,13 @@ inventory:
     issue: "#1364"
 
   forwarder_high_prio_buffer_size:
-    support: full
+    support: partial
     pipelines: [cross_cutting]
     description: "High-priority request queue size"
+    documentation: |
+      ADP supports `forwarder_high_prio_buffer_size` but uses a different default from the
+      core agent. The core agent defaults this to `100`; ADP defaults its high-priority
+      per-endpoint pending queue to `16`.
     issue: "#1362"
     test_support:
       used_by: [ForwarderConfiguration]
