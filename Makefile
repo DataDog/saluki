@@ -127,6 +127,12 @@ build-adp-system-alloc: ## Builds the ADP binary in debug mode with the system a
 build-adp-release-system-alloc: ## Builds the ADP binary in release mode with the system allocator (useful for memory profiling)
 	@$(MAKE) --no-print-directory build-adp-base BUILD_PROFILE=release RUSTFLAGS="--cfg tokio_unstable --cfg system_allocator"
 
+.PHONY: build-schema-overlay
+build-schema-overlay: check-rust-build-tools
+build-schema-overlay: ## Builds the config schema overlay packages
+	@echo "[*] Building config schema overlay packages..."
+	@cargo build --profile devel --package datadog-agent-config --package datadog-agent-config-testing
+
 .PHONY: build-adp-image-base
 build-adp-image-base:
 	@echo "[*] Building ADP image... (target: ${BUILD_TARGET}, profile: ${BUILD_PROFILE}, features: ${BUILD_FEATURES})"
