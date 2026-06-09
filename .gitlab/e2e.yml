@@ -144,9 +144,12 @@ test-integration:
     #   - our own Core Agent sandbox under /tmp/saluki-dda (trace-agent / process-agent
     #     children that survived a non-graceful job termination still hold our shifted ports)
     #   - any stranded agent-data-plane process from a prior pipeline (built into
-    #     $CI_PROJECT_DIR/target/release/, holds UDP 58125 / TCP 5100–5102 etc. across runs)
+    #     $CI_PROJECT_DIR/target/<profile>/, holds UDP 58125 / TCP 5100–5102 etc. across runs).
+    #     Both profiles are swept because BUILD_PROFILE flows from .gitlab-ci.yml workflow
+    #     rules: `release` on dev pipelines, `optimized-release` on tagged release pipelines.
     - sudo pkill -9 -f /tmp/saluki-dda/ || true
     - sudo pkill -9 -f /target/release/agent-data-plane || true
+    - sudo pkill -9 -f /target/optimized-release/agent-data-plane || true
   script:
     - make test-integration-macos-ci
   after_script:
