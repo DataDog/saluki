@@ -20,7 +20,7 @@ function Copy-WindowsRuntimeDlls {
 }
 
 function Build-WindowsAdpImage {
-    $AdpBinary = Join-Path $env:CARGO_TARGET_DIR "release\agent-data-plane.exe"
+    $AdpBinary = Join-Path $env:CARGO_TARGET_DIR "$env:BUILD_PROFILE\agent-data-plane.exe"
     if (-not (Test-Path $AdpBinary)) {
         throw "ADP binary not found at ${AdpBinary}"
     }
@@ -59,6 +59,13 @@ CMD ["-c", "C:\\ProgramData\\Datadog\\datadog.yaml", "run"]
 $RepoRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..")
 Set-Location $RepoRoot
 
+if (-not $env:BUILD_PROFILE) {
+    # Default to `release` so local invocations work without an explicit override; CI sets
+    # BUILD_PROFILE via the workflow `variables:` block (`release` on dev, `optimized-release`
+    # on tagged releases).
+    $env:BUILD_PROFILE = "release"
+}
+
 Initialize-RustEnvironment -RepoRoot $RepoRoot
 
 if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
@@ -79,7 +86,12 @@ if (-not $env:APP_GIT_HASH) {
         try { (git rev-parse --short HEAD) } catch { "not-in-git" }
     }
 }
-Invoke-Native cargo build --release --package panoramic --package agent-data-plane
+# panoramic is the test harness, not the system under test, so it stays on the release profile
+# regardless of $env:BUILD_PROFILE. ADP tracks $env:BUILD_PROFILE so a tagged release pipeline
+# (BUILD_PROFILE=optimized-release in .gitlab-ci.yml) tests the same binary it ships, mirroring
+# the linux/darwin flows.
+Invoke-Native cargo build --release --package panoramic
+Invoke-Native cargo build --profile $env:BUILD_PROFILE --package agent-data-plane
 
 Build-WindowsAdpImage
 

@@ -101,6 +101,7 @@ test-integration-windows-amd64:
       -e PROTOC_VERSION="${WINDOWS_PROTOC_VERSION}"
       -e PROTOC_SHA256="${WINDOWS_PROTOC_SHA256}"
       -e PANORAMIC_LOG_DIR="c:\mnt\integration-logs"
+      -e BUILD_PROFILE
       ${WINBUILDIMAGE}
       powershell.exe -NoProfile -NonInteractive -File c:\mnt\ci\tooling\windows-integration-tests.ps1
     - If ($lastExitCode -ne "0") { exit "$lastExitCode" }
