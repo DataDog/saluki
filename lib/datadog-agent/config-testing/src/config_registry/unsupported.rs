@@ -107,7 +107,7 @@ crate::declare_annotations! {
     /// `forwarder_low_prio_buffer_size`-Low-priority request queue size
     FORWARDER_LOW_PRIO_BUFFER_SIZE = SalukiAnnotation {
         schema: &schema::FORWARDER_LOW_PRIO_BUFFER_SIZE,
-        support_level: SupportLevel::Incompatible(Severity::Low),
+        support_level: SupportLevel::Incompatible(Severity::Medium),
         additional_yaml_paths: &[],
         env_var_override: None,
         used_by: &[],
