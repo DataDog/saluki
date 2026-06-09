@@ -2,13 +2,15 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
-use saluki_common::collections::{FastHashMap, FastHashSet};
+use saluki_common::{
+    collections::{FastHashMap, FastHashSet},
+    sync::shutdown::{ShutdownHandle, ShutdownTrigger},
+};
 use saluki_config::GenericConfiguration;
 use saluki_core::health::Health;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use stringtheory::{interning::GenericMapInterner, MetaString};
 use tokio::{select, sync::mpsc};
-use tokio_util::task::AbortOnDropHandle;
 use tracing::{debug, warn};
 
 use super::MetadataCollector;
@@ -68,12 +70,13 @@ impl MetadataCollector for CgroupsMetadataCollector {
         // Drive a blocking background task that polls the cgroups hierarchy on a regular interval, and sends metadata
         // updates when cgroups are created or deleted. We do this in a blocking task since all of the I/O operations
         // are synchronous.
-
         let mut cgroups_manager = SynchronousCgroupsManager::from_reader(self.reader.clone());
         let operations_tx = operations_tx.clone();
 
-        let raw_poller_handle = tokio::task::spawn_blocking(move || cgroups_manager.poll(operations_tx));
-        let poller_handle = AbortOnDropHandle::new(raw_poller_handle);
+        // We hold on to the shutdown trigger here (even though we never call it) so that it only triggers on drop,
+        // ensuring we don't leak the blocking poller task if this collector is dropped before it completes.
+        let (_shutdown_trigger, shutdown_handle) = ShutdownTrigger::new();
+        let poller_handle = tokio::task::spawn_blocking(move || cgroups_manager.poll(operations_tx, shutdown_handle));
         tokio::pin!(poller_handle);
 
         debug!("Spawned cgroups background poller task.");
@@ -126,13 +129,15 @@ impl SynchronousCgroupsManager {
         }
     }
 
-    fn poll(&mut self, operations_tx: mpsc::Sender<MetadataOperation>) -> Result<(), GenericError> {
+    fn poll(
+        &mut self, operations_tx: mpsc::Sender<MetadataOperation>, shutdown_handle: ShutdownHandle,
+    ) -> Result<(), GenericError> {
         let mut traversed_cgroups = FastHashSet::default();
         let mut cgroups_to_delete = Vec::new();
 
         loop {
             // Make sure we should still be running.
-            if operations_tx.is_closed() {
+            if operations_tx.is_closed() || shutdown_handle.is_triggered() {
                 return Ok(());
             }
 
@@ -202,6 +207,11 @@ impl SynchronousCgroupsManager {
                 if operations_tx.blocking_send(operation).is_err() {
                     return Err(GenericError::msg("Operations channel unexpectedly closed."));
                 }
+            }
+
+            // Check again if we should shutdown before we go to sleep.
+            if operations_tx.is_closed() || shutdown_handle.is_triggered() {
+                return Ok(());
             }
 
             std::thread::sleep(Duration::from_secs(2));
