@@ -14,7 +14,7 @@ disable-model-invocation: false
 ## Mental model
 
 There is one place where config metadata is hand-edited, and everything else flows from it via
-`build.rs` code:
+`build.rs` code via `make build-schema-overlay`:
 
 ```
                          ┌──────────────────────────┐

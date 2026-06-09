@@ -4,12 +4,12 @@ unit-tests-linux-amd64:
   script:
     - make test
 
-check-codegen:
+check-schema-overlay:
   extends: .linux-arm64-test-job-heavy
   stage: test
   script:
-    - cargo build --workspace --tests
-    - git diff --exit-code && test -z "$(git status --porcelain)" || (echo "Working tree is dirty after build. Generated files may be stale — rebuild locally and commit."; git status --short; exit 1)
+    - make build-schema-overlay
+    - git diff --exit-code && test -z "$(git status --porcelain)" || (echo "Schema overlay output not up-to-date. Run 'make build-schema-overlay' locally and commit."; exit 1)
 
 property-tests-linux-amd64:
   extends: .linux-amd64-test-job-heavy
@@ -112,7 +112,7 @@ check-protos:
   stage: test
   script:
     - make update-protos
-    - git diff --exit-code || (echo "Protocol Buffers definitions not up-to-date. Run `make update-protos` locally and commit."; exit 1)
+    - git diff --exit-code || (echo "Protocol Buffers definitions not up-to-date. Run 'make update-protos' locally and commit."; exit 1)
 
 check-unused-deps:
   extends: .linux-arm64-test-job
