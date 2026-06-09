@@ -4,7 +4,11 @@
   variables:
     ARCH: "x64"
     # Use the Windows LTSC2022 build image pre-cached on the Windows runner image.
-    WINBUILDIMAGE: registry.ddbuild.io/ci/datadog-agent-buildimages/windows_ltsc2022_x64:v114471858-795a98da
+    # Pin to the same Windows LTSC2022 build image tag the datadog-agent CI pipeline uses
+    # (CI_IMAGE_WIN_LTSC2022_X64 in DataDog/datadog-agent .gitlab-ci.yml). Bump in lockstep
+    # with that variable so the saluki Windows runners hit a tag that's pre-cached on the
+    # runner pool; an out-of-date tag forces a multi-GB cold pull that can time the job out.
+    WINBUILDIMAGE: registry.ddbuild.io/ci/datadog-agent-buildimages/windows_ltsc2022_x64:v116983866-e2293bec
     OVERRIDE_GIT_STRATEGY: "clone"
     # protoc release used by both Windows jobs. Pin both the version and the archive checksum so a
     # tampered or upstream-deleted release fails fast instead of silently substituting binaries.
