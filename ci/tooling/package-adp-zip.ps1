@@ -68,7 +68,12 @@ try {
         -Uri "https://github.com/spdx/license-list-data/archive/refs/tags/v$SpdxLicensesVersion.tar.gz" `
         -OutFile $SpdxArchive
     # `tar.exe` ships with Windows 10/Server 2019+ and is present in the LTSC2022 build image.
-    Invoke-Native tar -C $Stage -xzf $SpdxArchive
+    # Use the call operator `&` rather than Invoke-Native because tar's `-C` flag would be
+    # eaten by PowerShell's auto-injected common parameter binding (advanced functions accept
+    # `-Confirm` which can be shortened to `-C`); `&` doesn't apply PS param binding to
+    # executables.
+    & tar -C $Stage -xzf $SpdxArchive
+    if ($LASTEXITCODE -ne 0) { throw "tar extract of SPDX archive failed (exit $LASTEXITCODE)" }
     $SpdxTextDir = Join-Path $Stage "license-list-data-$SpdxLicensesVersion\text"
 
     Write-Host "[*] Harvesting THIRD-PARTY-* license texts"

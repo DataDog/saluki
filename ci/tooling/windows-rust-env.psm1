@@ -12,6 +12,15 @@
 Set-StrictMode -Version 3.0
 
 function Invoke-Native {
+    # Invokes a native executable and throws if the exit code is non-zero.
+    #
+    # GOTCHA: this is implicitly an advanced function (any function with [Parameter()]
+    # attributes is). PowerShell auto-injects common parameters including `-Verbose` and
+    # `-Confirm`, which can be shortened to `-v` and `-C` (or any unique prefix). Single-
+    # letter native flags that collide with those prefixes (e.g. `nasm -v`, `tar -C`) get
+    # eaten by PS parameter binding before reaching the executable. For those calls, use
+    # the call operator `&` directly (e.g. `& nasm -v`) instead of Invoke-Native; `&`
+    # doesn't apply PS parameter binding. Multi-character flags like `--version` are safe.
     param(
         [Parameter(Mandatory = $true)]
         [string]$FilePath,
@@ -210,7 +219,6 @@ function Initialize-FipsBuildTools {
         -InstallRoot (Join-Path $RepoRoot ".ci-cache\nasm\$NasmVersion") `
         -ProbeRelativePath "nasm-$NasmVersion\nasm.exe" `
         -BinSubdir "nasm-$NasmVersion"
-    Invoke-Native nasm -v
 
     Install-CachedZipTool `
         -Name "go" `
@@ -219,7 +227,6 @@ function Initialize-FipsBuildTools {
         -InstallRoot (Join-Path $RepoRoot ".ci-cache\go\$GoVersion") `
         -ProbeRelativePath "go\bin\go.exe" `
         -BinSubdir "go\bin"
-    Invoke-Native go version
 
     Install-CachedZipTool `
         -Name "ninja" `
@@ -228,7 +235,18 @@ function Initialize-FipsBuildTools {
         -InstallRoot (Join-Path $RepoRoot ".ci-cache\ninja\$NinjaVersion") `
         -ProbeRelativePath "ninja.exe" `
         -BinSubdir ""
-    Invoke-Native ninja --version
+
+    # Smoke-test each binary to confirm it actually executes (PATH wired up, runtime deps
+    # present). Use the call operator `&` instead of Invoke-Native because nasm's `-v` flag
+    # collides with PowerShell's auto-injected `-Verbose` common parameter on advanced
+    # functions (functions with [Parameter()] attributes); `&` doesn't apply PS param
+    # binding to executables.
+    & nasm -v
+    if ($LASTEXITCODE -ne 0) { throw "nasm smoke test failed (exit $LASTEXITCODE)" }
+    & go version
+    if ($LASTEXITCODE -ne 0) { throw "go smoke test failed (exit $LASTEXITCODE)" }
+    & ninja --version
+    if ($LASTEXITCODE -ne 0) { throw "ninja smoke test failed (exit $LASTEXITCODE)" }
 }
 
 Export-ModuleMember -Function Invoke-Native, Add-PathEntry, Ensure-Protoc, Initialize-RustEnvironment, Install-CachedZipTool, Initialize-FipsBuildTools
