@@ -1,4 +1,4 @@
-<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Source of the Rust file `lib/saluki-components/src/common/datadog/config.rs`."><title>config.rs - source</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../../../static.files/rustdoc-74eb0058.css"><meta name="rustdoc-vars" data-root-path="../../../../" data-static-root-path="../../../../static.files/" data-current-crate="saluki_components" data-themes="" data-resource-suffix="" data-rustdoc-version="1.98.0-nightly (f20a92ec0 2026-06-07)" data-channel="nightly" data-search-js="search-fd9372ac.js" data-stringdex-js="stringdex-2da4960a.js" data-settings-js="settings-170eb4bf.js" ><script src="../../../../static.files/storage-41dd4d93.js"></script><script defer src="../../../../static.files/src-script-813739b1.js"></script><script defer src="../../../../src-files.js"></script><script defer src="../../../../static.files/main-fcd733ba.js"></script><noscript><link rel="stylesheet" href="../../../../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../../../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../../../static.files/favicon-044be391.svg"></head><body class="rustdoc src"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><nav class="sidebar"><div class="src-sidebar-title"><h2>Files</h2></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><h1><div class="sub-heading">saluki_components/common/datadog/</div>config.rs</h1><rustdoc-toolbar></rustdoc-toolbar></div><div class="example-wrap digits-3"><pre class="rust"><code><a href=#1 id=1 data-nosnippet>1</a><span class="kw">use </span>std::time::Duration;
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Source of the Rust file `lib/saluki-components/src/common/datadog/config.rs`."><title>config.rs - source</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../../../static.files/rustdoc-74eb0058.css"><meta name="rustdoc-vars" data-root-path="../../../../" data-static-root-path="../../../../static.files/" data-current-crate="saluki_components" data-themes="" data-resource-suffix="" data-rustdoc-version="1.98.0-nightly (cb46fbb8c 2026-06-08)" data-channel="nightly" data-search-js="search-fd9372ac.js" data-stringdex-js="stringdex-2da4960a.js" data-settings-js="settings-170eb4bf.js" ><script src="../../../../static.files/storage-41dd4d93.js"></script><script defer src="../../../../static.files/src-script-813739b1.js"></script><script defer src="../../../../src-files.js"></script><script defer src="../../../../static.files/main-fcd733ba.js"></script><noscript><link rel="stylesheet" href="../../../../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../../../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../../../static.files/favicon-044be391.svg"></head><body class="rustdoc src"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><nav class="sidebar"><div class="src-sidebar-title"><h2>Files</h2></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><h1><div class="sub-heading">saluki_components/common/datadog/</div>config.rs</h1><rustdoc-toolbar></rustdoc-toolbar></div><div class="example-wrap digits-3"><pre class="rust"><code><a href=#1 id=1 data-nosnippet>1</a><span class="kw">use </span>std::time::Duration;
 <a href=#2 id=2 data-nosnippet>2</a>
 <a href=#3 id=3 data-nosnippet>3</a><span class="kw">use </span>facet::Facet;
 <a href=#4 id=4 data-nosnippet>4</a><span class="kw">use </span>saluki_config::GenericConfiguration;
@@ -909,24 +909,27 @@
 <a href=#909 id=909 data-nosnippet>909</a>
 <a href=#910 id=910 data-nosnippet>910</a><span class="attr">#[cfg(test)]
 <a href=#911 id=911 data-nosnippet>911</a></span><span class="kw">mod </span>config_smoke {
-<a href=#912 id=912 data-nosnippet>912</a>    <span class="kw">use </span>serde_json::json;
-<a href=#913 id=913 data-nosnippet>913</a>
-<a href=#914 id=914 data-nosnippet>914</a>    <span class="kw">use </span><span class="kw">super</span>::ForwarderConfiguration;
-<a href=#915 id=915 data-nosnippet>915</a>    <span class="kw">use </span><span class="kw">crate</span>::config_registry::structs;
-<a href=#916 id=916 data-nosnippet>916</a>    <span class="kw">use </span><span class="kw">crate</span>::config_registry::test_support::run_config_smoke_tests;
-<a href=#917 id=917 data-nosnippet>917</a>
-<a href=#918 id=918 data-nosnippet>918</a>    <span class="attr">#[tokio::test]
-<a href=#919 id=919 data-nosnippet>919</a>    </span><span class="kw">async fn </span>smoke_test() {
-<a href=#920 id=920 data-nosnippet>920</a>        <span class="comment">// `api_key` has no serde default (EndpointConfiguration::api_key: String), so
-<a href=#921 id=921 data-nosnippet>921</a>        // deserialization panics on an empty config. Supply it via base_config so every
-<a href=#922 id=922 data-nosnippet>922</a>        // config load in the smoke test has a valid starting point.
-<a href=#923 id=923 data-nosnippet>923</a>        </span>run_config_smoke_tests(
-<a href=#924 id=924 data-nosnippet>924</a>            structs::FORWARDER_CONFIGURATION,
-<a href=#925 id=925 data-nosnippet>925</a>            <span class="kw-2">&amp;</span>[],
-<a href=#926 id=926 data-nosnippet>926</a>            <span class="macro">json!</span>({ <span class="string">"api_key"</span>: <span class="string">"smoke-test-api-key" </span>}),
-<a href=#927 id=927 data-nosnippet>927</a>            |cfg| ForwarderConfiguration::from_configuration(<span class="kw-2">&amp;</span>cfg).expect(<span class="string">"ForwarderConfiguration should deserialize"</span>),
-<a href=#928 id=928 data-nosnippet>928</a>        )
-<a href=#929 id=929 data-nosnippet>929</a>        .<span class="kw">await
-<a href=#930 id=930 data-nosnippet>930</a>    </span>}
-<a href=#931 id=931 data-nosnippet>931</a>}
+<a href=#912 id=912 data-nosnippet>912</a>    <span class="kw">use </span>datadog_agent_config_testing::config_registry::structs;
+<a href=#913 id=913 data-nosnippet>913</a>    <span class="kw">use </span>datadog_agent_config_testing::run_config_smoke_tests;
+<a href=#914 id=914 data-nosnippet>914</a>    <span class="kw">use </span>serde_json::json;
+<a href=#915 id=915 data-nosnippet>915</a>
+<a href=#916 id=916 data-nosnippet>916</a>    <span class="kw">use </span><span class="kw">super</span>::ForwarderConfiguration;
+<a href=#917 id=917 data-nosnippet>917</a>    <span class="kw">use </span><span class="kw">crate</span>::config::{DatadogRemapper, KEY_ALIASES};
+<a href=#918 id=918 data-nosnippet>918</a>
+<a href=#919 id=919 data-nosnippet>919</a>    <span class="attr">#[tokio::test]
+<a href=#920 id=920 data-nosnippet>920</a>    </span><span class="kw">async fn </span>smoke_test() {
+<a href=#921 id=921 data-nosnippet>921</a>        <span class="comment">// `api_key` has no serde default (EndpointConfiguration::api_key: String), so
+<a href=#922 id=922 data-nosnippet>922</a>        // deserialization panics on an empty config. Supply it via base_config so every
+<a href=#923 id=923 data-nosnippet>923</a>        // config load in the smoke test has a valid starting point.
+<a href=#924 id=924 data-nosnippet>924</a>        </span>run_config_smoke_tests(
+<a href=#925 id=925 data-nosnippet>925</a>            structs::FORWARDER_CONFIGURATION,
+<a href=#926 id=926 data-nosnippet>926</a>            <span class="kw-2">&amp;</span>[],
+<a href=#927 id=927 data-nosnippet>927</a>            <span class="macro">json!</span>({ <span class="string">"api_key"</span>: <span class="string">"smoke-test-api-key" </span>}),
+<a href=#928 id=928 data-nosnippet>928</a>            |cfg| ForwarderConfiguration::from_configuration(<span class="kw-2">&amp;</span>cfg).expect(<span class="string">"ForwarderConfiguration should deserialize"</span>),
+<a href=#929 id=929 data-nosnippet>929</a>            KEY_ALIASES,
+<a href=#930 id=930 data-nosnippet>930</a>            DatadogRemapper::new,
+<a href=#931 id=931 data-nosnippet>931</a>        )
+<a href=#932 id=932 data-nosnippet>932</a>        .<span class="kw">await
+<a href=#933 id=933 data-nosnippet>933</a>    </span>}
+<a href=#934 id=934 data-nosnippet>934</a>}
 </code></pre></div></section></main></body></html>

@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["Pipeline","PipelineAffinity","Severity","SupportLevel"],"mod":["structs"],"struct":["Classification","ClassifierEntry","ConfigClassifier"]};

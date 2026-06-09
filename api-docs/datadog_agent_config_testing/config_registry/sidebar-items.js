@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["Pipeline","PipelineAffinity","Severity","SupportLevel","ValueType"],"mod":["structs"],"static":["ALL_ANNOTATIONS","SUPPORTED_ANNOTATIONS","UNSUPPORTED_ANNOTATIONS"],"struct":["ConfigKey","SalukiAnnotation","SchemaEntry"],"type":["SalukiAnnotationRef"]};
