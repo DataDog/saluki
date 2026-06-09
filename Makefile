@@ -636,9 +636,15 @@ package-adp-host: ## Packages agent-data-plane into a release tarball under targ
 		$(CURDIR)/ci/tooling/package-adp-tarball.sh
 
 .PHONY: test-integration-macos-run
-test-integration-macos-run: ## Runs the macOS host-process integration tests using already-built binaries (assumes target/release/{panoramic,agent-data-plane} exist). Defaults to all `mac`-runtime-eligible tests; narrow with CASE=<name>.
+# ADP path tracks $$BUILD_PROFILE so a tagged release pipeline (BUILD_PROFILE=optimized-release
+# in .gitlab-ci.yml workflow rules) tests the same binary it's about to ship — mirroring how the
+# linux flow builds and tests build-adp-image with whatever BUILD_PROFILE the pipeline sets.
+# panoramic stays at target/release/ unconditionally because it's the test harness, not the SUT;
+# build-panoramic always builds with --profile release, same as linux's build-panoramic-binary.
+test-integration-macos-run: BUILD_PROFILE ?= release
+test-integration-macos-run: ## Runs the macOS host-process integration tests using already-built binaries (assumes target/$$BUILD_PROFILE/agent-data-plane and target/release/panoramic exist). Defaults to all `mac`-runtime-eligible tests; narrow with CASE=<name>.
 	@echo "[*] Running macOS host-process integration tests..."
-	@ADP_BINARY_PATH="$(CURDIR)/target/release/agent-data-plane" \
+	@ADP_BINARY_PATH="$(CURDIR)/target/$(BUILD_PROFILE)/agent-data-plane" \
 		CORE_AGENT_BINARY_PATH="$(MACOS_TEST_AGENT_INSTALL_DIR)/bin/agent/agent" \
 		target/release/panoramic run -d "$(CURDIR)/test/integration/cases" \
 		$(if $(CASE),-t $(CASE)) --no-tui -p 1 \
@@ -711,11 +717,6 @@ provision-macos-test-env: ## Installs the pinned Datadog Agent ($(MACOS_TEST_AGE
 	@echo "[*] Agent binary: $(MACOS_TEST_AGENT_INSTALL_DIR)/bin/agent/agent"
 
 .PHONY: test-integration-macos-ci
-# Pin to the `release` profile regardless of any pipeline-level BUILD_PROFILE. test-integration-
-# macos-run hardcodes target/release/{panoramic,agent-data-plane} as its binary paths, so a
-# tagged-release pipeline (BUILD_PROFILE=optimized-release in .gitlab-ci.yml workflow rules)
-# would otherwise build into target/optimized-release/ and the test runner wouldn't find it.
-test-integration-macos-ci: override BUILD_PROFILE := release
 test-integration-macos-ci: build-panoramic build-adp-host provision-macos-test-env test-integration-macos-run ## CI entry point: builds binaries, ensures Agent + cert are provisioned, then runs the `mac`-runtime integration tests
 
 .PHONY: ensure-rust-miri
