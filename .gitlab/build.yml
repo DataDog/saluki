@@ -297,15 +297,10 @@ display-image-tags:
     - when: manual
       allow_failure: true
   variables:
-    # NB: do NOT redeclare `BUILD_PROFILE: ${BUILD_PROFILE}` here — self-reference, make blows up
-    # with "Recursive variable BUILD_PROFILE references itself". It's already inherited from the
-    # workflow `variables:` in .gitlab-ci.yml (`release` for dev pipelines, `optimized-release`
-    # for tagged releases) just like the linux build jobs above pick it up.
     TARBALL_NAME: "agent-data-plane-${ADP_IMAGE_VERSION}-darwin-${TARGET_ARCH}.tar.gz"
   script:
-    # Override ADP_PACKAGE_VERSION so the tarball filename uses ${ADP_IMAGE_VERSION} naming
-    # (`v${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}` on dev, the tag on tagged releases) instead
-    # of the Makefile default (Cargo.toml version, which only matches on tag).
+    # Override the Makefile's Cargo.toml-version default with ${ADP_IMAGE_VERSION} so the tarball
+    # filename matches the linux release tarball convention (pipeline-id+sha on dev, tag on tag).
     - ADP_PACKAGE_VERSION=${ADP_IMAGE_VERSION} make package-adp-host
     - cp target/release-tarball/${TARBALL_NAME} ${CI_PROJECT_DIR}/${TARBALL_NAME}
   artifacts:
