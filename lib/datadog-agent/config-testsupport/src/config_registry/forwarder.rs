@@ -302,4 +302,15 @@ crate::declare_annotations! {
         test_json: None,
         pipeline_affinity: PipelineAffinity::CrossCutting,
     };
+    /// `forwarder_max_concurrent_requests`-Max concurrent HTTP requests
+    FORWARDER_MAX_CONCURRENT_REQUESTS = SalukiAnnotation {
+        schema: &schema::FORWARDER_MAX_CONCURRENT_REQUESTS,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::FORWARDER_CONFIGURATION],
+        value_type_override: Some(ValueType::Integer),
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::CrossCutting,
+    };
 }

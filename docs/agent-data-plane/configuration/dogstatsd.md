@@ -149,6 +149,7 @@ default values.
 | ---------------------------------- | ----------------------------------------- |
 | `dogstatsd_mapper_cache_size`      | Mapper result LRU cache size              |
 | `dogstatsd_metrics_stats_enable`   | Enable per-metric debug stats             |
+| `forwarder_num_workers`            | Concurrent forwarder workers              |
 | `log_level`                        | Log verbosity directives                  |
 | `min_tls_version`                  | Minimum TLS version for HTTPS connections |
 | `multi_region_failover.enabled`    | Enable multi-region failover mode         |
@@ -175,6 +176,12 @@ mapper, clear `dogstatsd_mapper_profiles` instead when running ADP.
 ### `dogstatsd_metrics_stats_enable`
 
 See `dogstatsd_stats_enable`
+
+### `forwarder_num_workers`
+
+ADP uses `forwarder_max_concurrent_requests` to control endpoint concurrency.
+`forwarder_num_workers` is still read for HTTP connection pool sizing but no
+longer controls the maximum number of concurrent requests per endpoint.
 
 ### `log_level`
 
@@ -275,7 +282,6 @@ ways that are not yet fully characterized.
 | `cluster_agent.enabled`                                  | Enable Cluster Agent communication            | [#1684] |
 | `forwarder_flush_to_disk_mem_ratio`                      | Mem-to-disk flush threshold                   | [#1364] |
 | `forwarder_low_prio_buffer_size`                         | Low-priority request queue size               | [#1362] |
-| `forwarder_max_concurrent_requests`                      | Max concurrent HTTP requests                  | [#1363] |
 | `forwarder_requeue_buffer_size`                          | In-memory re-queue buffer size                | [#1755] |
 | `forwarder_retry_queue_capacity_time_interval_sec`       | Retry queue time-based capacity               | [#1365] |
 | `forwarder_stop_timeout`                                 | Timeout (s) for forwarder graceful stop       | [#1754] |
@@ -477,7 +483,7 @@ compressed wire payload bytes.
 | `forwarder_connection_reset_interval`                          | HTTP conn reset interval (secs)                    |
 | `forwarder_high_prio_buffer_size`                              | High-priority request queue size                   |
 | `forwarder_http_protocol`                                      | HTTP version selection (auto/http1/http2)          |
-| `forwarder_num_workers`                                        | Concurrent forwarder workers                       |
+| `forwarder_max_concurrent_requests`                            | Max concurrent HTTP requests                       |
 | `forwarder_outdated_file_in_days`                              | Days before retry files are deleted                |
 | `forwarder_recovery_interval`                                  | Backoff recovery decrease factor                   |
 | `forwarder_recovery_reset`                                     | Reset errors on success                            |

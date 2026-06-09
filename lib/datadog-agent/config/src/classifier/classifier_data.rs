@@ -12,6 +12,13 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         default: Some("false"),
     },
     ClassifierEntry {
+        yaml_path: "forwarder_num_workers",
+        aliases: &[],
+        support_level: SupportLevel::Partial,
+        pipeline_affinity: PipelineAffinity::CrossCutting,
+        default: Some("1"),
+    },
+    ClassifierEntry {
         yaml_path: "min_tls_version",
         aliases: &[],
         support_level: SupportLevel::Partial,
@@ -381,13 +388,6 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Medium),
         pipeline_affinity: PipelineAffinity::CrossCutting,
         default: Some("100"),
-    },
-    ClassifierEntry {
-        yaml_path: "forwarder_max_concurrent_requests",
-        aliases: &[],
-        support_level: SupportLevel::Incompatible(Severity::Medium),
-        pipeline_affinity: PipelineAffinity::CrossCutting,
-        default: Some("10"),
     },
     ClassifierEntry {
         yaml_path: "forwarder_requeue_buffer_size",

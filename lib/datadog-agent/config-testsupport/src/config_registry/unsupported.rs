@@ -115,17 +115,6 @@ crate::declare_annotations! {
         test_json: None,
         pipeline_affinity: PipelineAffinity::CrossCutting,
     };
-    /// `forwarder_max_concurrent_requests`-Max concurrent HTTP requests
-    FORWARDER_MAX_CONCURRENT_REQUESTS = SalukiAnnotation {
-        schema: &schema::FORWARDER_MAX_CONCURRENT_REQUESTS,
-        support_level: SupportLevel::Incompatible(Severity::Medium),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-        pipeline_affinity: PipelineAffinity::CrossCutting,
-    };
     /// `forwarder_retry_queue_capacity_time_interval_sec`-Retry queue time-based capacity
     FORWARDER_RETRY_QUEUE_CAPACITY_TIME_INTERVAL_SEC = SalukiAnnotation {
         schema: &schema::FORWARDER_RETRY_QUEUE_CAPACITY_TIME_INTERVAL_SEC,

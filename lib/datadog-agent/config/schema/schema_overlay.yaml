@@ -1102,15 +1102,26 @@ inventory:
     issue: "#1362"
 
   forwarder_max_concurrent_requests:
-    support: unknown
-    description: "Max concurrent HTTP requests"
-    severity: medium
-    issue: "#1363"
-
-  forwarder_num_workers:
     support: full
     pipelines: [cross_cutting]
+    description: "Max concurrent HTTP requests"
+    issue: "#1363"
+    test_support:
+      used_by: [ForwarderConfiguration]
+      value_type_override: integer
+      additional_attributes:
+        config_registry_filename: forwarder.rs
+
+  forwarder_num_workers:
+    support: partial
+    pipelines: [cross_cutting]
     description: "Concurrent forwarder workers"
+    documentation: |
+      ADP uses `forwarder_max_concurrent_requests` to control endpoint concurrency.
+      `forwarder_num_workers` is still read for HTTP connection pool sizing but no
+      longer controls the maximum number of concurrent requests per endpoint.
+    warn: true
+    issue: "#1363"
     test_support:
       used_by: [ForwarderConfiguration]
       value_type_override: integer
