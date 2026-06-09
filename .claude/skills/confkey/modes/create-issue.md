@@ -68,4 +68,4 @@ corresponding entry in `schema_overlay.yaml`.
 ISSUE_NUM=$(echo "$ISSUE_URL" | grep -o '[0-9]*$')
 ```
 
-Build to verify: `cargo build -p datadog-agent-config-testsupport`.
+Build to verify: `cargo build -p datadog-agent-config-testing`.

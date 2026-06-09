@@ -9,7 +9,7 @@ members = [
   "lib/datadog-agent/commons",
   "lib/datadog-agent/config",
   "lib/datadog-agent/config-overlay-model",
-  "lib/datadog-agent/config-testsupport",
+  "lib/datadog-agent/config-testing",
   "lib/ddsketch",
   "lib/ottl",
   "lib/process-memory",
@@ -45,7 +45,7 @@ repository = "https://github.com/DataDog/saluki"
 datadog-agent-commons = { path = "lib/datadog-agent/commons" }
 datadog-agent-config = { path = "lib/datadog-agent/config" }
 datadog-agent-config-overlay-model = { path = "lib/datadog-agent/config-overlay-model" }
-datadog-agent-config-testsupport = { path = "lib/datadog-agent/config-testsupport" }
+datadog-agent-config-testing = { path = "lib/datadog-agent/config-testing" }
 datadog-protos = { path = "lib/protos/datadog" }
 containerd-protos = { path = "lib/protos/containerd" }
 ddsketch = { path = "lib/ddsketch" }

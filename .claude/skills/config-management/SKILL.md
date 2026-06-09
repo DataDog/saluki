@@ -26,7 +26,7 @@ There is one place where config metadata is hand-edited, and everything else flo
                          └────────────┬──────────────┘
                                       │
                      ┌────────────────┼─────────────────┐
-     config/build.rs │                │                 │ config-testsupport/build.rs
+     config/build.rs │                │                 │ config-testing/build.rs
                      ▼                │                 ▼
                    PROD               │             TEST/DOC
               generated Rust:         │          generated Rust:    generated Markdown:
@@ -38,9 +38,9 @@ There is one place where config metadata is hand-edited, and everything else flo
                          (shared build-dep for both build.rs files)
 ```
 
-Doc generation lives in `config-testsupport/build.rs`, not `config/build.rs`, because it is a
+Doc generation lives in `config-testing/build.rs`, not `config/build.rs`, because it is a
 dev/CI concern — not a prod build artifact. The generated `dogstatsd.md` is written in-tree by
-the testsupport build and checked for staleness in CI.
+the testing build and checked for staleness in CI.
 
 The overlay partitions every key in `core_schema.yaml` into exactly one of two sections: `inventory`
 or `excluded`. Within `inventory`, each entry is tagged with a `support` field (`full`, `partial`,
@@ -65,7 +65,7 @@ The four upstream sources, in rough order of how often you'll touch them:
    shape of generated output needs to change, not the data.
     - `config-overlay-model/src/schema_gen.rs`, `saluki_keys.rs` — shared build utilities
     - `config/build/classifier_gen.rs` — prod classifier generation
-    - `config-testsupport/build/registry_gen.rs`, `doc_gen.rs` — test annotations + doc generation
+    - `config-testing/build/registry_gen.rs`, `doc_gen.rs` — test annotations + doc generation
 4. `core_schema.yaml` — only when vendoring an updated schema from upstream Datadog. The overlay
    validator rejects keys not in the schema, so new keys must be added here first.
 
@@ -85,10 +85,10 @@ extension of the overlay for those keys — same review rules apply.
     - `support: none` with `planned: true` requires an `issue`.
     - Multi-line `documentation` strings render as prose blocks below tables; single-line ones
       render inside tables.
-3. Build: `cargo build -p datadog-agent-config-testsupport` exercises both `build.rs` files and
+3. Build: `cargo build -p datadog-agent-config-testing` exercises both `build.rs` files and
    performs all overlay validation up front. Read the panic message — it names the rule and the
    offending key.
-4. Inspect the regenerated outputs (under `config-testsupport/.../config_registry/` and
+4. Inspect the regenerated outputs (under `config-testing/.../config_registry/` and
    `docs/agent-data-plane/configuration/`). Spot-check the diff; commit it alongside the overlay
    change.
 
@@ -99,7 +99,7 @@ extension of the overlay for those keys — same review rules apply.
     - Wrong description, wrong pipelines, missing entry, wrong support level → overlay.
     - Whitespace, table formatting, section ordering, comment headers, import lines, codegen
       macros →
-      generator code in `config/build/` or `config-testsupport/build/`.
+      generator code in `config/build/` or `config-testing/build/`.
     - Prose surrounding generated tables in a `.md` → the corresponding `.md.tmpl`.
 
 ## Common task: bumping the vendored schema
@@ -115,7 +115,7 @@ Prefer search over hard-coded paths because pieces of this system rename more th
 
 - Overlay file: `find lib -name schema_overlay.yaml`
 - Prod generator: `ls lib/datadog-agent/config/build/` (classifier only)
-- Test/doc generators: `ls lib/datadog-agent/config-testsupport/build/`
+- Test/doc generators: `ls lib/datadog-agent/config-testing/build/`
 - Doc template: `find docs -name '*.md.tmpl'`
 - Overlay model + shared build utilities: the `config-overlay-model` crate
   (`schema_gen.rs`, `saluki_keys.rs` live here as public modules)

@@ -342,8 +342,8 @@ mod tests {
     };
 
     use bytesize::ByteSize;
-    use datadog_agent_config_testsupport::config_registry::structs;
-    use datadog_agent_config_testsupport::run_config_smoke_tests;
+    use datadog_agent_config_testing::config_registry::structs;
+    use datadog_agent_config_testing::run_config_smoke_tests;
     use saluki_context::Context;
     use saluki_core::data_model::event::metric::Metric;
     use serde_json::json;

@@ -88,7 +88,7 @@ url = { workspace = true }
 zstd = { workspace = true }
 
 [dev-dependencies]
-datadog-agent-config-testsupport = { workspace = true }
+datadog-agent-config-testing = { workspace = true }
 derive-where = { workspace = true }
 proptest = { workspace = true }
 rcgen = { workspace = true, features = ["crypto", "aws_lc_rs", "pem"] }

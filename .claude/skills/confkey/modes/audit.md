@@ -75,13 +75,13 @@ Apply the confirmed changes to `schema_overlay.yaml`. Follow `/config-management
 - Keys within each section are alphabetical
 - Required fields differ per `support` tag; `config-overlay-model/src/lib.rs` is authoritative
 
-Build to verify: `cargo build -p datadog-agent-config-testsupport`. Read any panic message — it
+Build to verify: `cargo build -p datadog-agent-config-testing`. Read any panic message — it
 names the violated rule and the offending key.
 
 ## Step 6: Inspect Generated Output
 
 After a successful build, spot-check the regenerated outputs:
-- Config registry annotations (`config-testsupport/.../config_registry/`)
+- Config registry annotations (`config-testing/.../config_registry/`)
 - Documentation (`docs/agent-data-plane/configuration/`)
 
 Confirm the diff looks correct. Flag anything unexpected to the user.

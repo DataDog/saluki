@@ -31,7 +31,7 @@ dependencies = [
  "comfy-table",
  "datadog-agent-commons",
  "datadog-agent-config",
- "datadog-agent-config-testsupport",
+ "datadog-agent-config-testing",
  "datadog-protos",
  "derive-where",
  "foldhash 0.2.0",
@@ -1121,7 +1121,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "datadog-agent-config-testsupport"
+name = "datadog-agent-config-testing"
 version = "0.1.0"
 dependencies = [
  "datadog-agent-config",
@@ -4251,7 +4251,7 @@ dependencies = [
  "bytes",
  "bytesize",
  "chrono",
- "datadog-agent-config-testsupport",
+ "datadog-agent-config-testing",
  "datadog-protos",
  "ddsketch",
  "derive-where",

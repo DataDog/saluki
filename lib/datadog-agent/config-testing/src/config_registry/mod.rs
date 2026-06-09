@@ -4,7 +4,7 @@
 /// live in `annotations_index.rs` (generated in-tree by `build.rs`).
 pub use datadog_agent_config::classifier::{structs, Pipeline, PipelineAffinity, Severity};
 
-/// Support level for a configuration key, as recorded in the testsupport annotation layer.
+/// Support level for a configuration key, as recorded in the testing annotation layer.
 ///
 /// Unlike the prod [`datadog_agent_config::classifier::SupportLevel`], this enum includes
 /// [`Full`][SupportLevel::Full] so that generated annotation constants can express keys that work

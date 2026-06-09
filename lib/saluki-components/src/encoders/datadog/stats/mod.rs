@@ -469,8 +469,8 @@ impl EndpointEncoder for StatsEndpointEncoder {
 
 #[cfg(test)]
 mod config_smoke {
-    use datadog_agent_config_testsupport::config_registry::structs;
-    use datadog_agent_config_testsupport::run_config_smoke_tests;
+    use datadog_agent_config_testing::config_registry::structs;
+    use datadog_agent_config_testing::run_config_smoke_tests;
     use serde_json::json;
 
     use super::DatadogApmStatsEncoderConfiguration;
