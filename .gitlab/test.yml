@@ -5,7 +5,7 @@ unit-tests-linux-amd64:
     - make test
 
 check-codegen:
-  extends: .linux-arm64-test-job
+  extends: .linux-arm64-test-job-heavy
   stage: test
   script:
     - cargo build --workspace --tests
