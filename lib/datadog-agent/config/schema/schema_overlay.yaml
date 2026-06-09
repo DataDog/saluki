@@ -125,7 +125,7 @@ inventory:
     description: "apm_config.obfuscation.credit_cards.enabled"
     test_support:
       used_by: [TraceObfuscationConfiguration]
-      test_json: 'true'
+      test_json: "true"
       additional_attributes:
         config_registry_filename: trace_obfuscation.rs
 
@@ -153,7 +153,7 @@ inventory:
     description: "apm_config.obfuscation.elasticsearch.enabled"
     test_support:
       used_by: [TraceObfuscationConfiguration]
-      test_json: 'true'
+      test_json: "true"
       additional_attributes:
         config_registry_filename: trace_obfuscation.rs
 
@@ -199,7 +199,7 @@ inventory:
     description: "apm_config.obfuscation.memcached.enabled"
     test_support:
       used_by: [TraceObfuscationConfiguration]
-      test_json: 'true'
+      test_json: "true"
       additional_attributes:
         config_registry_filename: trace_obfuscation.rs
 
@@ -218,7 +218,7 @@ inventory:
     description: "apm_config.obfuscation.mongodb.enabled"
     test_support:
       used_by: [TraceObfuscationConfiguration]
-      test_json: 'true'
+      test_json: "true"
       additional_attributes:
         config_registry_filename: trace_obfuscation.rs
 
@@ -246,7 +246,7 @@ inventory:
     description: "apm_config.obfuscation.opensearch.enabled"
     test_support:
       used_by: [TraceObfuscationConfiguration]
-      test_json: 'true'
+      test_json: "true"
       additional_attributes:
         config_registry_filename: trace_obfuscation.rs
 
@@ -274,7 +274,7 @@ inventory:
     description: "apm_config.obfuscation.redis.enabled"
     test_support:
       used_by: [TraceObfuscationConfiguration]
-      test_json: 'true'
+      test_json: "true"
       additional_attributes:
         config_registry_filename: trace_obfuscation.rs
 
@@ -293,7 +293,7 @@ inventory:
     description: "apm_config.obfuscation.valkey.enabled"
     test_support:
       used_by: [TraceObfuscationConfiguration]
-      test_json: 'true'
+      test_json: "true"
       additional_attributes:
         config_registry_filename: trace_obfuscation.rs
 
@@ -339,7 +339,7 @@ inventory:
     description: "Datadog Agent IPC/CMD API port"
     test_support:
       used_by: [RemoteAgentClientConfiguration]
-      test_json: '5101'
+      test_json: "5101"
       additional_attributes:
         config_registry_filename: get_typed.rs
 
@@ -1078,9 +1078,8 @@ inventory:
     pipelines: [cross_cutting]
     description: "High-priority request queue size"
     documentation: |
-      ADP supports `forwarder_high_prio_buffer_size` but uses a different default from the
-      core agent. The core agent defaults this to `100`; ADP defaults its high-priority
-      per-endpoint pending queue to `16`.
+      ADP implements `forwarder_high_prio_buffer_size` and matches the core agent's default of `100`. The
+      value sizes ADP's per-endpoint high-priority pending queue.
     issue: "#1362"
     test_support:
       used_by: [ForwarderConfiguration]
@@ -1101,7 +1100,15 @@ inventory:
 
   forwarder_low_prio_buffer_size:
     support: unknown
+    pipelines: [cross_cutting]
     description: "Low-priority request queue size"
+    documentation: |
+      ADP does not implement `forwarder_low_prio_buffer_size`. The core agent uses it to size a separate count-bounded
+      low-priority worker channel; ADP routes low-priority pending transactions through the forwarder's retry queue
+      instead, which is bounded by payload bytes via `forwarder_retry_queue_payloads_max_size` and optional disk
+      persistence settings rather than by a transaction count. ADP still preserves the same broad priority behavior: new
+      transactions are processed through the high-priority queue first, retries use the low-priority retry queue, and
+      high-priority overflow is moved to the low-priority retry queue.
     severity: medium
     issue: "#1362"
 
@@ -1522,7 +1529,7 @@ inventory:
     description: "otlp_config.logs.enabled"
     test_support:
       used_by: [OtlpConfiguration]
-      test_json: 'false'
+      test_json: "false"
       additional_attributes:
         config_registry_filename: otlp.rs
 
@@ -1645,7 +1652,14 @@ inventory:
     pipelines: [cross_cutting]
     description: "Payload compression algorithm"
     test_support:
-      used_by: [DatadogEventsConfiguration, DatadogLogsConfiguration, DatadogMetricsConfiguration, DatadogServiceChecksConfiguration, DatadogTraceConfiguration]
+      used_by:
+        [
+          DatadogEventsConfiguration,
+          DatadogLogsConfiguration,
+          DatadogMetricsConfiguration,
+          DatadogServiceChecksConfiguration,
+          DatadogTraceConfiguration,
+        ]
       additional_attributes:
         config_registry_filename: encoders.rs
 
@@ -1750,7 +1764,14 @@ inventory:
     description: "Zstd compression level"
     documentation: "ADP defaults to level 3 vs Agent level 1. ADP intentionally compresses better. Key is recognized by both; default divergence is intentional."
     test_support:
-      used_by: [DatadogEventsConfiguration, DatadogLogsConfiguration, DatadogMetricsConfiguration, DatadogServiceChecksConfiguration, DatadogTraceConfiguration]
+      used_by:
+        [
+          DatadogEventsConfiguration,
+          DatadogLogsConfiguration,
+          DatadogMetricsConfiguration,
+          DatadogServiceChecksConfiguration,
+          DatadogTraceConfiguration,
+        ]
       value_type_override: integer
       additional_attributes:
         config_registry_filename: encoders.rs
@@ -1817,7 +1838,7 @@ inventory:
     test_support:
       used_by: [DogStatsDConfiguration]
       value_type_override: integer
-      test_json: '9125'
+      test_json: "9125"
       additional_attributes:
         config_registry_filename: dogstatsd.rs
 

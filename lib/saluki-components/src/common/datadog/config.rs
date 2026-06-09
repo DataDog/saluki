@@ -26,7 +26,7 @@ const fn default_request_timeout_secs() -> u64 {
 }
 
 const fn default_endpoint_buffer_size() -> usize {
-    16
+    100
 }
 
 const fn default_forwarder_connection_reset_interval() -> u64 {
@@ -185,7 +185,7 @@ pub struct ForwarderConfiguration {
 
     /// Maximum number of pending requests for an individual endpoint.
     ///
-    /// Defaults to 16.
+    /// Defaults to 100.
     #[serde(default = "default_endpoint_buffer_size", rename = "forwarder_high_prio_buffer_size")]
     endpoint_buffer_size: usize,
 
