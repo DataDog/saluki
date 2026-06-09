@@ -209,3 +209,16 @@ push-release-zip-windows-amd64:
     - test-integration-windows-amd64
     - check-deny
     - check-licenses
+
+push-release-zip-windows-amd64-fips:
+  extends: [.build-common-variables, .push-release-zip-windows-definition]
+  needs:
+    - job: build-release-zip-windows-amd64-fips
+      artifacts: true
+    - unit-tests-windows-amd64
+    - test-integration-windows-amd64
+    - check-deny
+    - check-licenses
+  variables:
+    BUILD_FEATURES: "fips"
+    FIPS_SUFFIX: "-fips"
