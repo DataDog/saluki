@@ -46,6 +46,11 @@ curl -sSfL -o "${stage}/spdx.tar.gz" \
 tar -C "${stage}" -xzf "${stage}/spdx.tar.gz"
 spdx_text_dir="${stage}/license-list-data-${SPDX_LICENSES_VERSION}/text"
 
+# Walk the third column of LICENSE-3rdparty.csv (the SPDX expression for each dependency); split
+# each row's expression on whitespace into individual SPDX identifiers; drop the join keywords
+# (OR/AND/WITH) and tokens we don't have texts for (Custom, LLVM-exception); strip parens used
+# for grouping multi-license expressions; dedupe; then copy each remaining identifier's
+# license text from the SPDX archive into the tarball as `THIRD-PARTY-<spdx-id>`.
 echo "[*] Harvesting THIRD-PARTY-* license texts"
 tail -n +2 LICENSE-3rdparty.csv \
   | awk -F ',' '{print $3}' \

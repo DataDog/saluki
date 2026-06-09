@@ -19,6 +19,11 @@ export ADP_APP_VERSION_AUTO := $(shell cat bin/agent-data-plane/Cargo.toml | gre
 export ADP_APP_VERSION := $(or $(ADP_APP_VERSION),$(ADP_APP_VERSION_AUTO))
 export ADP_APP_BUILD_TIME := $(APP_BUILD_TIME)
 
+# SPDX license-list-data tag used by package-adp-host to harvest THIRD-PARTY-* license texts.
+# Pinned to match docker/Dockerfile.agent-data-plane so the host-built tarball ships the same
+# set of license texts as the linux Docker artifact; bump in lockstep with the Dockerfile.
+export ADP_SPDX_LICENSES_VERSION := 3.28.0
+
 # ADP-specific settings used when running.
 export ADP_STANDALONE_IPC_CERT_FILE := /tmp/adp-ipc-cert.pem
 
@@ -616,10 +621,6 @@ build-adp-host: ## Builds the agent-data-plane binary for the current host (Carg
 		APP_BUILD_DATE="$(ADP_APP_BUILD_DATE)" \
 		cargo build --profile $(BUILD_PROFILE) --bin agent-data-plane
 
-# SPDX license-list-data tag pinned to match docker/Dockerfile.agent-data-plane so the
-# host-built tarball's THIRD-PARTY-* texts match the linux Docker artifact.
-ADP_SPDX_LICENSES_VERSION := 3.28.0
-
 .PHONY: package-adp-host
 package-adp-host: BUILD_PROFILE ?= release
 # Tarball-filename version. Defaults to Cargo.toml; CI overrides with $$ADP_IMAGE_VERSION.
@@ -710,6 +711,11 @@ provision-macos-test-env: ## Installs the pinned Datadog Agent ($(MACOS_TEST_AGE
 	@echo "[*] Agent binary: $(MACOS_TEST_AGENT_INSTALL_DIR)/bin/agent/agent"
 
 .PHONY: test-integration-macos-ci
+# Pin to the `release` profile regardless of any pipeline-level BUILD_PROFILE. test-integration-
+# macos-run hardcodes target/release/{panoramic,agent-data-plane} as its binary paths, so a
+# tagged-release pipeline (BUILD_PROFILE=optimized-release in .gitlab-ci.yml workflow rules)
+# would otherwise build into target/optimized-release/ and the test runner wouldn't find it.
+test-integration-macos-ci: override BUILD_PROFILE := release
 test-integration-macos-ci: build-panoramic build-adp-host provision-macos-test-env test-integration-macos-run ## CI entry point: builds binaries, ensures Agent + cert are provisioned, then runs the `mac`-runtime integration tests
 
 .PHONY: ensure-rust-miri

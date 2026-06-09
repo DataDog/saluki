@@ -133,8 +133,9 @@ push-release-tarball-linux-arm64-fips:
     TARBALL_NAME: "agent-data-plane-${ADP_IMAGE_VERSION}-darwin-${TARGET_ARCH}.tar.gz"
   script:
     - apt-get update && DEBIAN_FRONTEND=noninteractive apt install -yy --no-install-recommends awscli >/dev/null
-    - aws s3 cp ${TARBALL_NAME} ${TARGET_BUCKET_PATH}
+    # Log the digest before the upload so it lands in the job log even if `aws s3 cp` fails.
     - sha256sum ${TARBALL_NAME}
+    - aws s3 cp ${TARBALL_NAME} ${TARGET_BUCKET_PATH}
 
 push-release-tarball-darwin-amd64:
   extends: [.build-common-variables, .push-release-tarball-darwin-definition]
