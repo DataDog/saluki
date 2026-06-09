@@ -1109,7 +1109,7 @@ inventory:
       persistence settings rather than by a transaction count. ADP still preserves the same broad priority behavior: new
       transactions are processed through the high-priority queue first, retries use the low-priority retry queue, and
       high-priority overflow is moved to the low-priority retry queue.
-    severity: low
+    severity: medium
     issue: "#1362"
 
   forwarder_max_concurrent_requests:
