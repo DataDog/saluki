@@ -38,9 +38,9 @@ use datadog_agent_config_overlay_model::{
 use indexmap::IndexMap;
 
 static SALUKI_ENTRIES: &[SalukiKey] = SALUKI_KEYS;
-// Golden ordering: yaml_paths in the order they appeared in the hand-written config_registry
-// files on main. Used to sort generated output so the diff is readable.
-// Keys not listed here (new keys) sort to the end alphabetically.
+// Golden ordering: yaml_paths in the order they appeared in the hand-written config_registry files
+// on main prior to code generation. Used to sort generated output so the initial diff would be
+// readable. Keys not listed here (new keys) sort to the end alphabetically.
 static GOLDEN_ORDER: &[(&str, &[&str])] = &[
     (
         "aggregate.rs",
