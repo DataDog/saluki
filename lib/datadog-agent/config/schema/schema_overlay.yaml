@@ -1176,10 +1176,15 @@ inventory:
     issue: "#1755"
 
   forwarder_retry_queue_capacity_time_interval_sec:
-    support: unknown
+    support: full
+    pipelines: [cross_cutting]
     description: "Retry queue time-based capacity"
-    severity: medium
     issue: "#1365"
+    test_support:
+      used_by: [ForwarderConfiguration]
+      value_type_override: integer
+      additional_attributes:
+        config_registry_filename: forwarder.rs
 
   forwarder_retry_queue_max_size:
     support: full

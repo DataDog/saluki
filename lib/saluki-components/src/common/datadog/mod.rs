@@ -7,6 +7,7 @@ pub mod obfuscation;
 mod proxy;
 pub mod request_builder;
 mod retry;
+mod retry_capacity;
 pub mod telemetry;
 pub mod transaction;
 
