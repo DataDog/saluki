@@ -132,4 +132,103 @@ function Initialize-RustEnvironment {
     Ensure-Protoc -Version $env:PROTOC_VERSION -ExpectedSha256 $env:PROTOC_SHA256 -InstallRoot $env:WINDOWS_CI_PROTOC_HOME
 }
 
-Export-ModuleMember -Function Invoke-Native, Add-PathEntry, Ensure-Protoc, Initialize-RustEnvironment
+function Install-CachedZipTool {
+    # Generic helper used by the Ensure-* tool installers below: downloads $Url to a temp
+    # archive, verifies its SHA256 against $ExpectedSha256, extracts into $InstallRoot, and
+    # prepends $BinSubdir (relative to $InstallRoot) to PATH.
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Name,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Url,
+
+        [Parameter(Mandatory = $true)]
+        [string]$ExpectedSha256,
+
+        [Parameter(Mandatory = $true)]
+        [string]$InstallRoot,
+
+        [Parameter(Mandatory = $true)]
+        [string]$ProbeRelativePath,
+
+        [Parameter(Mandatory = $true)]
+        [string]$BinSubdir
+    )
+
+    $Probe = Join-Path $InstallRoot $ProbeRelativePath
+    if (-not (Test-Path $Probe)) {
+        Write-Host "[*] $Name not found at $Probe; downloading..."
+        $Archive = Join-Path $env:TEMP ("$Name-" + [System.Guid]::NewGuid().ToString("N") + ".zip")
+        Invoke-WebRequest -UseBasicParsing -Uri $Url -OutFile $Archive
+
+        $ActualSha256 = (Get-FileHash -Algorithm SHA256 -Path $Archive).Hash.ToLowerInvariant()
+        if ($ActualSha256 -ne $ExpectedSha256.ToLowerInvariant()) {
+            throw "$Name archive checksum mismatch: expected $ExpectedSha256, got $ActualSha256"
+        }
+
+        New-Item -ItemType Directory -Force $InstallRoot | Out-Null
+        Expand-Archive -Path $Archive -DestinationPath $InstallRoot -Force
+        Remove-Item -Force $Archive
+
+        if (-not (Test-Path $Probe)) {
+            throw "$Name install layout unexpected: $Probe still missing after extract"
+        }
+    }
+
+    Add-PathEntry (Join-Path $InstallRoot $BinSubdir)
+}
+
+function Initialize-FipsBuildTools {
+    # Installs the native build tools that aws-lc-fips-sys requires on Windows but that the
+    # LTSC2022 buildimage doesn't ship: NASM (assembler), Go (build tooling), Ninja (CMake
+    # generator). aws-lc-fips-sys explicitly does NOT support prebuilt-NASM shortcuts (unlike
+    # aws-lc-sys), so all three must be installed before `cargo build --features fips` runs.
+    # See https://aws.github.io/aws-lc-rs/requirements/windows.html.
+    #
+    # Installs are cached under $RepoRoot\.ci-cache\<tool>\<version>\ and the FIPS build job's
+    # `cache:` block in .gitlab/windows.yml persists those paths between runs, so the cold-
+    # download cost is paid once per runner.
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$RepoRoot
+    )
+
+    # Pinned versions and SHA256s. Bump together when refreshing; checksums are mandatory so a
+    # tampered or upstream-deleted release fails fast.
+    $NasmVersion  = "2.16.03"
+    $NasmSha256   = "3ee4782247bcb874378d02f7eab4e294a84d3d15f3f6ee2de2f47a46aa7226e6"
+    $GoVersion    = "1.23.10"
+    $GoSha256     = "3b533bbe63e73732bf19b8facc9160417e97d13eb174dfe58a213c6d0dee0010"
+    $NinjaVersion = "1.12.1"
+    $NinjaSha256  = "f550fec705b6d6ff58f2db3c374c2277a37691678d6aba463adcbb129108467a"
+
+    Install-CachedZipTool `
+        -Name "nasm" `
+        -Url "https://www.nasm.us/pub/nasm/releasebuilds/$NasmVersion/win64/nasm-$NasmVersion-win64.zip" `
+        -ExpectedSha256 $NasmSha256 `
+        -InstallRoot (Join-Path $RepoRoot ".ci-cache\nasm\$NasmVersion") `
+        -ProbeRelativePath "nasm-$NasmVersion\nasm.exe" `
+        -BinSubdir "nasm-$NasmVersion"
+    Invoke-Native nasm -v
+
+    Install-CachedZipTool `
+        -Name "go" `
+        -Url "https://go.dev/dl/go$GoVersion.windows-amd64.zip" `
+        -ExpectedSha256 $GoSha256 `
+        -InstallRoot (Join-Path $RepoRoot ".ci-cache\go\$GoVersion") `
+        -ProbeRelativePath "go\bin\go.exe" `
+        -BinSubdir "go\bin"
+    Invoke-Native go version
+
+    Install-CachedZipTool `
+        -Name "ninja" `
+        -Url "https://github.com/ninja-build/ninja/releases/download/v$NinjaVersion/ninja-win.zip" `
+        -ExpectedSha256 $NinjaSha256 `
+        -InstallRoot (Join-Path $RepoRoot ".ci-cache\ninja\$NinjaVersion") `
+        -ProbeRelativePath "ninja.exe" `
+        -BinSubdir ""
+    Invoke-Native ninja --version
+}
+
+Export-ModuleMember -Function Invoke-Native, Add-PathEntry, Ensure-Protoc, Initialize-RustEnvironment, Install-CachedZipTool, Initialize-FipsBuildTools

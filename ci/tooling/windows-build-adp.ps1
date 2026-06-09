@@ -30,6 +30,13 @@ Set-Location $RepoRoot
 
 Initialize-RustEnvironment -RepoRoot $RepoRoot
 
+if ($env:BUILD_FEATURES -eq "fips") {
+    # aws-lc-fips-sys (pulled in by --features fips -> rustls/fips) needs NASM + Go + Ninja on
+    # Windows. The LTSC2022 buildimage doesn't ship them; install at job runtime, cached under
+    # .ci-cache\ between runs.
+    Initialize-FipsBuildTools -RepoRoot $RepoRoot
+}
+
 # saluki-metadata reads these at build time. Must match the values the Makefile passes through
 # (ADP_APP_FULL_NAME / ADP_APP_SHORT_NAME / ADP_APP_IDENTIFIER / ADP_APP_GIT_HASH /
 # ADP_APP_VERSION / ADP_APP_BUILD_DATE in Makefile) so the Windows binary identifies itself

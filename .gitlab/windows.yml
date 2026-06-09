@@ -196,6 +196,12 @@ build-release-zip-windows-amd64-fips:
       - .ci-cache/cargo/
       - .ci-cache/protoc/
       - .ci-cache/rustup/
+      # NASM, Go, and Ninja are installed at job runtime by Initialize-FipsBuildTools in
+      # ci/tooling/windows-rust-env.psm1; cache the install roots so the cold-download cost
+      # is paid once per runner.
+      - .ci-cache/nasm/
+      - .ci-cache/go/
+      - .ci-cache/ninja/
   variables:
     BUILD_FEATURES: "fips"
     FIPS_SUFFIX: "-fips"
