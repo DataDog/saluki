@@ -16,6 +16,7 @@ fn workspace_dir() -> PathBuf {
         .output()
         .unwrap()
         .stdout;
+    #[allow(clippy::disallowed_methods)] // not production code
     let cargo_path = Path::new(std::str::from_utf8(&output).unwrap().trim());
     cargo_path.parent().unwrap().to_path_buf()
 }
