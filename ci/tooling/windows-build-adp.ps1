@@ -35,8 +35,12 @@ if ($env:BUILD_FEATURES -eq "fips") {
     # + LLVM/libclang on Windows. The LTSC2022 buildimage doesn't ship them; install at job
     # runtime, cached under .ci-cache\ between runs.
     Initialize-FipsBuildTools -RepoRoot $RepoRoot
-    # aws-lc-fips-sys's CMake builder calls vcvarsall.bat to find the MSVC toolchain, which
-    # vanilla `docker run` doesn't activate. Non-FIPS builds don't need this.
+    # aws-lc-fips-sys's CMake builder calls its own printenv.bat which hard-codes the VS
+    # search to %ProgramFiles(x86)%\Microsoft Visual Studio (and vswhere there), neither of
+    # which resolve to the buildimage's actual install at c:\devtools\vstudio. Create a
+    # directory junction so the script's default-path search succeeds, then activate the
+    # MSVC environment in our own session for any tooling that reads it from env.
+    New-VsBuildToolsJunction
     Initialize-MsvcEnvironment
 }
 

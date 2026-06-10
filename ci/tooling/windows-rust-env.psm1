@@ -310,6 +310,42 @@ function Initialize-FipsBuildTools {
     if ($LASTEXITCODE -ne 0) { throw "clang smoke test failed (exit $LASTEXITCODE)" }
 }
 
+function New-VsBuildToolsJunction {
+    # aws-lc-fips-sys's builder/printenv.bat (called from cmake_builder.rs) hard-codes its VS
+    # search to vswhere at "%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+    # and a recursive vcvarsall.bat search rooted at "%ProgramFiles(x86)%\Microsoft Visual
+    # Studio". Neither path resolves to the LTSC2022 buildimage's VS install, which lives at
+    # c:\devtools\vstudio (per the buildimage's install_vstudio.ps1). Create a directory
+    # junction so the recursive vcvarsall.bat search finds it.
+    #
+    # Junctions (mklink /J) work for non-admin too and don't require Developer Mode. The
+    # function is idempotent so re-runs (cache hits) don't fail.
+    $VsDefaultRoot   = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio"
+    $JunctionTarget  = Join-Path $VsDefaultRoot "BuildTools"
+    $BuildimageVsDir = "C:\devtools\vstudio"
+
+    if (-not (Test-Path $BuildimageVsDir)) {
+        throw "Buildimage VS BuildTools not found at $BuildimageVsDir; image layout changed?"
+    }
+    if (-not (Test-Path $VsDefaultRoot)) {
+        New-Item -ItemType Directory -Force $VsDefaultRoot | Out-Null
+    }
+    if (-not (Test-Path $JunctionTarget)) {
+        Write-Host "[*] Creating junction $JunctionTarget -> $BuildimageVsDir"
+        & cmd /c mklink /J "$JunctionTarget" "$BuildimageVsDir" | Out-Host
+        if ($LASTEXITCODE -ne 0) {
+            throw "mklink /J failed (exit $LASTEXITCODE)"
+        }
+    } else {
+        Write-Host "[*] VS BuildTools junction already present at $JunctionTarget"
+    }
+
+    $Probe = Join-Path $JunctionTarget "VC\Auxiliary\Build\vcvarsall.bat"
+    if (-not (Test-Path $Probe)) {
+        throw "vcvarsall.bat not visible through junction at $Probe"
+    }
+}
+
 function Initialize-MsvcEnvironment {
     # aws-lc-fips-sys's CMake builder shells out to vcvarsall.bat to discover the MSVC
     # toolchain environment (PATH, INCLUDE, LIB, etc.). Vanilla `docker run` against the
@@ -356,4 +392,4 @@ function Initialize-MsvcEnvironment {
     Write-Host "[*] MSVC environment activated: VCINSTALLDIR=$env:VCINSTALLDIR"
 }
 
-Export-ModuleMember -Function Invoke-Native, Add-PathEntry, Ensure-Protoc, Initialize-RustEnvironment, Install-CachedZipTool, Initialize-FipsBuildTools, Initialize-MsvcEnvironment
+Export-ModuleMember -Function Invoke-Native, Add-PathEntry, Ensure-Protoc, Initialize-RustEnvironment, Install-CachedZipTool, Initialize-FipsBuildTools, Initialize-MsvcEnvironment, New-VsBuildToolsJunction
