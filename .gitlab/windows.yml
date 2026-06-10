@@ -195,13 +195,12 @@ build-release-zip-windows-amd64-fips:
       - .ci-cache/cargo/
       - .ci-cache/protoc/
       - .ci-cache/rustup/
-      # NASM, Go, Ninja, and LLVM are installed at job runtime by Initialize-FipsBuildTools
-      # in ci/tooling/windows-rust-env.psm1; cache the install roots so the cold-download
-      # cost is paid once per runner. LLVM is the heaviest (~1.5 GB extracted) since
-      # bindgen needs libclang for aws-lc-fips-sys on x86_64-pc-windows-msvc.
+      # NASM and LLVM are installed at job runtime by Initialize-FipsBuildTools in
+      # ci/tooling/windows-rust-env.psm1; cache the install roots so the cold-download cost
+      # is paid once per runner. LLVM dominates (~1.5 GB extracted) since bindgen needs
+      # libclang for aws-lc-fips-sys on x86_64-pc-windows-msvc. Go and Ninja come from the
+      # buildimage itself, so they don't need a cache path.
       - .ci-cache/nasm/
-      - .ci-cache/go/
-      - .ci-cache/ninja/
       - .ci-cache/llvm/
   variables:
     BUILD_FEATURES: "fips"

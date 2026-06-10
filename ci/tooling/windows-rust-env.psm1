@@ -215,37 +215,42 @@ function Install-CachedZipTool {
 }
 
 function Initialize-FipsBuildTools {
-    # Installs the native build tools that aws-lc-fips-sys requires on Windows but that the
-    # LTSC2022 buildimage doesn't ship: NASM (assembler), Go (build tooling), Ninja (CMake
-    # generator). aws-lc-fips-sys explicitly does NOT support prebuilt-NASM shortcuts (unlike
-    # aws-lc-sys), so all three must be installed before `cargo build --features fips` runs.
-    # See https://aws.github.io/aws-lc-rs/requirements/windows.html.
+    # Wires up the native build environment that aws-lc-fips-sys requires on x86_64-windows.
+    # See https://aws.github.io/aws-lc-rs/requirements/windows.html for the upstream list.
     #
-    # Installs are cached under $RepoRoot\.ci-cache\<tool>\<version>\ and the FIPS build job's
-    # `cache:` block in .gitlab/windows.yml persists those paths between runs, so the cold-
-    # download cost is paid once per runner.
+    # The Datadog LTSC2022 buildimage already provides:
+    #   - Go on PATH (phase3 install_go.ps1, c:\go\<ver>\go\bin)
+    #   - Ninja on PATH (phase3 install_ninja.ps1, c:\ninja-build)
+    #   - perl in MSYS2 (phase2 install_msys.ps1, c:\tools\msys64\usr\bin\perl.exe but NOT
+    #     on PATH)
+    #   - 7-Zip on PATH (phase1 install_7zip.ps1, used here to decompress LLVM tar.xz)
+    #
+    # We need to install: NASM (no prebuilt-asm shortcut for FIPS) and LLVM/libclang (bindgen
+    # runs against aws-lc-fips-sys headers because no pre-generated bindings ship for
+    # x86_64-pc-windows-msvc). Both are cached under $RepoRoot\.ci-cache\<tool>\<ver>\ via
+    # the FIPS build job's `cache:paths` so the cold-download cost is paid once per runner.
+    #
+    # We also need to expose perl on PATH (the buildimage installs it but doesn't path it).
     param(
         [Parameter(Mandatory = $true)]
         [string]$RepoRoot
     )
 
-    # Pinned versions and SHA256s. Bump together when refreshing; checksums are mandatory so a
-    # tampered or upstream-deleted release fails fast.
-    $NasmVersion  = "2.16.03"
-    $NasmSha256   = "3ee4782247bcb874378d02f7eab4e294a84d3d15f3f6ee2de2f47a46aa7226e6"
-    $GoVersion    = "1.23.10"
-    $GoSha256     = "3b533bbe63e73732bf19b8facc9160417e97d13eb174dfe58a213c6d0dee0010"
-    $NinjaVersion = "1.12.1"
-    $NinjaSha256  = "f550fec705b6d6ff58f2db3c374c2277a37691678d6aba463adcbb129108467a"
-    # libclang is needed by bindgen, which aws-lc-fips-sys runs at build time on
-    # x86_64-pc-windows-msvc (no pre-generated bindings ship for that target). Use the
-    # toolchain-only `clang+llvm-...-x86_64-pc-windows-msvc.tar.xz` archive (~845MB) rather
-    # than the full LLVM-Windows installer; smaller and no NSIS. tar.exe on LTSC2022 (bsdtar)
-    # CAN'T decompress xz internally -- it shells out to `xz -d` which isn't installed -- so
-    # use 7-Zip in two passes (.tar.xz -> .tar -> tree). 7-Zip is pre-installed by the
-    # Datadog buildimage's phase1 install_7zip.ps1 at c:\program files\7-zip\.
-    $LlvmVersion  = "19.1.7"
-    $LlvmSha256   = "b4557b4f012161f56a2f5d9e877ab9635cafd7a08f7affe14829bd60c9d357f0"
+    # Sanity-check the buildimage-provided dependencies. If any of these go missing in a
+    # future buildimage version we want a clear error here rather than a confusing CMake
+    # failure deep into the build.
+    foreach ($cmd in @("go", "ninja", "7z")) {
+        if (-not (Get-Command $cmd -ErrorAction SilentlyContinue)) {
+            throw "Expected '$cmd' on PATH from the LTSC2022 buildimage but it's missing; image layout changed?"
+        }
+    }
+
+    # Pinned versions and SHA256s. Bump together when refreshing; checksums are mandatory so
+    # a tampered or upstream-deleted release fails fast.
+    $NasmVersion = "2.16.03"
+    $NasmSha256  = "3ee4782247bcb874378d02f7eab4e294a84d3d15f3f6ee2de2f47a46aa7226e6"
+    $LlvmVersion = "19.1.7"
+    $LlvmSha256  = "b4557b4f012161f56a2f5d9e877ab9635cafd7a08f7affe14829bd60c9d357f0"
 
     Install-CachedZipTool `
         -Url "https://www.nasm.us/pub/nasm/releasebuilds/$NasmVersion/win64/nasm-$NasmVersion-win64.zip" `
@@ -254,26 +259,12 @@ function Initialize-FipsBuildTools {
         -BinSubdir "nasm-$NasmVersion" `
         -BinaryName "nasm.exe"
 
-    # Go and Ninja are pre-installed by the Datadog LTSC2022 buildimage (phase3's
-    # install_go.ps1 puts go on PATH at c:\go\<version>\go\bin; install_ninja.ps1 puts
-    # ninja.exe at c:\ninja-build\ on PATH). Install-CachedZipTool's BinaryName-driven
-    # Get-Command check skips the download when those are already resolvable.
-    Install-CachedZipTool `
-        -Url "https://go.dev/dl/go$GoVersion.windows-amd64.zip" `
-        -ExpectedSha256 $GoSha256 `
-        -InstallRoot (Join-Path $RepoRoot ".ci-cache\go\$GoVersion") `
-        -BinSubdir "go\bin" `
-        -BinaryName "go.exe"
-
-    Install-CachedZipTool `
-        -Url "https://github.com/ninja-build/ninja/releases/download/v$NinjaVersion/ninja-win.zip" `
-        -ExpectedSha256 $NinjaSha256 `
-        -InstallRoot (Join-Path $RepoRoot ".ci-cache\ninja\$NinjaVersion") `
-        -BinSubdir "" `
-        -BinaryName "ninja.exe"
-
-    # LLVM/libclang. Distributed only as tar.xz on Windows (no zip), so it doesn't fit the
-    # Install-CachedZipTool shape. Inline download/verify/extract follows the same pattern.
+    # LLVM ships only as tar.xz on Windows (no zip). tar.exe (bsdtar) on LTSC2022 can't
+    # decompress xz internally -- it shells out to an `xz -d` binary that isn't installed --
+    # so use 7-Zip in two passes (.tar.xz -> .tar -> tree). The toolchain-only archive
+    # (~845 MB compressed) is the smallest official LLVM Windows distribution that ships
+    # libclang.dll; the alternative is a 1.3 GB NSIS installer that's awkward to extract
+    # non-interactively.
     $LlvmExtractedDir = "clang+llvm-$LlvmVersion-x86_64-pc-windows-msvc"
     $LlvmInstallRoot  = Join-Path $RepoRoot ".ci-cache\llvm\$LlvmVersion"
     $LlvmBin          = Join-Path $LlvmInstallRoot "$LlvmExtractedDir\bin"
@@ -294,9 +285,8 @@ function Initialize-FipsBuildTools {
             }
 
             New-Item -ItemType Directory -Force $LlvmInstallRoot | Out-Null
-            # Two-pass 7-Zip: first decompress .tar.xz -> .tar in $XzWork, then extract the
-            # .tar tree into the install root. `&` instead of Invoke-Native because some 7z
-            # short flags (-y, -bd) would collide with PS common parameter prefixes.
+            # `&` instead of Invoke-Native because some 7z short flags (-y, -bd) would
+            # collide with PS common parameter prefixes.
             & 7z x -bd -y "-o$XzWork" $XzArchive
             if ($LASTEXITCODE -ne 0) { throw "7z xz decompress failed (exit $LASTEXITCODE)" }
             $InnerTar = Join-Path $XzWork "src.tar"
@@ -313,39 +303,32 @@ function Initialize-FipsBuildTools {
             throw "LLVM install layout unexpected: $LibClangProbe still missing after extract"
         }
     }
-    # bindgen finds libclang via the LIBCLANG_PATH env var; setting it (rather than relying
-    # on PATH) is the documented bindgen contract.
+    # bindgen finds libclang via LIBCLANG_PATH; setting it (rather than adding LlvmBin to
+    # PATH) is the documented bindgen contract and avoids broadening PATH unnecessarily.
     $env:LIBCLANG_PATH = $LlvmBin
-    Add-PathEntry $LlvmBin
 
     # aws-lc-fips-sys's CMakeLists.txt does find_package(Perl) which fails on the buildimage
-    # by default because perl isn't on PATH. The buildimage's phase2 installs MSYS2 at
-    # c:\tools\msys64\, which ships perl at usr\bin\perl.exe; add that directory to PATH.
-    # MSYS2's perl is unix-style but works for aws-lc's CMake configure (it just runs
-    # generator scripts).
+    # by default because perl isn't on PATH. MSYS2 ships perl at c:\tools\msys64\usr\bin\;
+    # add that directory to PATH (appended, not prepended, because the same dir ships many
+    # unix-style binaries -- find, sort, cmd-with-no-extension -- that would otherwise
+    # shadow Windows tooling).
     $MsysPerlBin = "c:\tools\msys64\usr\bin"
     if (Test-Path (Join-Path $MsysPerlBin "perl.exe")) {
-        # APPEND, not prepend: that directory ships many unix-style binaries (find.exe-less
-        # `find`, `cmd` script with no extension, etc.) that would shadow Windows tooling.
-        # Putting it at the tail of PATH means Windows defaults still win for everything
-        # except perl, which Windows doesn't ship at all.
         Add-PathEntry -Path $MsysPerlBin -Append
     } else {
         throw "Expected MSYS2 perl at $MsysPerlBin\perl.exe but it's missing; image layout changed?"
     }
 
-    # Smoke-test each binary to confirm it actually executes (PATH wired up, runtime deps
-    # present). Use the call operator `&` instead of Invoke-Native because nasm's `-v` flag
-    # collides with PowerShell's auto-injected `-Verbose` common parameter on advanced
-    # functions (functions with [Parameter()] attributes); `&` doesn't apply PS param
-    # binding to executables.
+    # Smoke-test each tool we depend on (whether installed by us, by the buildimage, or just
+    # path-wired here). `&` instead of Invoke-Native because some short flags (`nasm -v`)
+    # collide with PS common parameter prefixes; see the Invoke-Native gotcha block.
     & nasm -v
     if ($LASTEXITCODE -ne 0) { throw "nasm smoke test failed (exit $LASTEXITCODE)" }
     & go version
     if ($LASTEXITCODE -ne 0) { throw "go smoke test failed (exit $LASTEXITCODE)" }
     & ninja --version
     if ($LASTEXITCODE -ne 0) { throw "ninja smoke test failed (exit $LASTEXITCODE)" }
-    & clang --version
+    & "$LlvmBin\clang.exe" --version
     if ($LASTEXITCODE -ne 0) { throw "clang smoke test failed (exit $LASTEXITCODE)" }
     & perl --version
     if ($LASTEXITCODE -ne 0) { throw "perl smoke test failed (exit $LASTEXITCODE)" }
@@ -390,52 +373,4 @@ function New-VsBuildToolsJunction {
     }
 }
 
-function Initialize-MsvcEnvironment {
-    # aws-lc-fips-sys's CMake builder shells out to vcvarsall.bat to discover the MSVC
-    # toolchain environment (PATH, INCLUDE, LIB, etc.). Vanilla `docker run` against the
-    # LTSC2022 buildimage doesn't activate that environment, so any cmake-using crate fails
-    # with "vcvarsall.bat not found." even though VS BuildTools is installed.
-    #
-    # Run vcvarsall.bat in cmd, capture its post-execution environment via `set`, and apply
-    # the result to the current PowerShell session so subsequent cargo invocations inherit
-    # it. This is the standard Windows-CI pattern documented in MS's own dev-cmd-prompt
-    # tooling.
-    #
-    # Non-FIPS builds (aws-lc-rs) work without this because that crate ships pre-generated
-    # bindings + asm for x86_64-pc-windows-msvc and never invokes cmake; only FIPS builds
-    # need the MSVC environment activated.
-    param(
-        [string]$Arch = "x64"
-    )
-
-    # Known buildimage VS BuildTools install root (from install_vstudio.ps1 in
-    # DataDog/datadog-agent-buildimages). vswhere isn't reliable for non-default install
-    # paths, so we hard-pin the known location.
-    $VcvarsallPath = "C:\devtools\vstudio\VC\Auxiliary\Build\vcvarsall.bat"
-    if (-not (Test-Path $VcvarsallPath)) {
-        throw "vcvarsall.bat not found at expected buildimage path: $VcvarsallPath"
-    }
-
-    Write-Host "[*] Activating MSVC environment via $VcvarsallPath $Arch"
-    # `set` (no args) prints all env vars one per line as NAME=VALUE. Wrap vcvarsall in
-    # quotes to handle the space in `Program Files`-style paths even though our path doesn't
-    # need it; harmless either way. Use the full path to cmd.exe rather than relying on PATH
-    # lookup -- MSYS2's bin (added to PATH for perl) ships a unix-style `cmd` script with no
-    # .exe that PowerShell would otherwise resolve first.
-    $cmdline = "`"$VcvarsallPath`" $Arch >NUL && set"
-    $output = & "$env:WINDIR\System32\cmd.exe" /c $cmdline
-    if ($LASTEXITCODE -ne 0) {
-        throw "vcvarsall.bat $Arch failed (exit $LASTEXITCODE)"
-    }
-    foreach ($line in $output) {
-        if ($line -match '^([^=]+)=(.*)$') {
-            Set-Item -Path "env:$($Matches[1])" -Value $Matches[2]
-        }
-    }
-    if (-not $env:VCINSTALLDIR) {
-        throw "vcvarsall.bat ran but VCINSTALLDIR is still unset; environment import failed"
-    }
-    Write-Host "[*] MSVC environment activated: VCINSTALLDIR=$env:VCINSTALLDIR"
-}
-
-Export-ModuleMember -Function Invoke-Native, Add-PathEntry, Ensure-Protoc, Initialize-RustEnvironment, Install-CachedZipTool, Initialize-FipsBuildTools, Initialize-MsvcEnvironment, New-VsBuildToolsJunction
+Export-ModuleMember -Function Invoke-Native, Add-PathEntry, Ensure-Protoc, Initialize-RustEnvironment, Install-CachedZipTool, Initialize-FipsBuildTools, New-VsBuildToolsJunction
