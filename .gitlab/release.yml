@@ -106,3 +106,59 @@ push-release-tarball-linux-arm64-fips:
     TARGET_ARCH: "arm64"
     SOURCE_IMAGE: ${ADP_FULL_IMAGE_TAG_FIPS}
     SOURCE_IMAGE_VERSION: ${ADP_IMAGE_VERSION_FIPS}
+
+# Pushes the prebuilt darwin tarball (from `build-release-tarball-darwin-*` in .gitlab/build.yml)
+# to s3. Mirrors the linux `_internal` pattern (build-adp-image-internal-* /
+# publish-adp-image-internal*): manual, with the bucket prefix selected by rule — canonical path
+# on tagged releases, an `internal/` subkey on dev pipelines so we exercise credentials and the
+# artifact handoff end-to-end on every PR without polluting the release path. The mq-working
+# branch guard mirrors the same one the linux `_internal` jobs use. Test gating matches the
+# linux push (.push-release-tarball-definition); attaching it here rather than to the build job
+# keeps the build runnable in parallel with the test stage.
+.push-release-tarball-darwin-definition:
+  stage: release
+  rules:
+    - if: !reference [.on_mq_branch, rules, if]
+      when: never
+    - if: !reference [.on_official_release, rules, if]
+      when: manual
+      variables:
+        TARGET_BUCKET_PATH: "s3://binaries-ddbuild-io-prod/saluki/"
+    - when: manual
+      allow_failure: true
+      variables:
+        TARGET_BUCKET_PATH: "s3://binaries-ddbuild-io-prod/saluki/internal/"
+  image: ${DOCKER_BUILD_IMAGE}
+  variables:
+    TARBALL_NAME: "agent-data-plane-${ADP_IMAGE_VERSION}-darwin-${TARGET_ARCH}.tar.gz"
+  script:
+    - apt-get update && DEBIAN_FRONTEND=noninteractive apt install -yy --no-install-recommends awscli >/dev/null
+    # Log the digest before the upload so it lands in the job log even if `aws s3 cp` fails.
+    - sha256sum ${TARBALL_NAME}
+    - aws s3 cp ${TARBALL_NAME} ${TARGET_BUCKET_PATH}
+
+push-release-tarball-darwin-amd64:
+  extends: [.build-common-variables, .push-release-tarball-darwin-definition]
+  needs:
+    - job: build-release-tarball-darwin-amd64
+      artifacts: true
+    - unit-tests-macos-amd64
+    - unit-tests-miri-macos-amd64
+    - check-deny
+    - check-licenses
+    - test-integration-macos-amd64
+  variables:
+    TARGET_ARCH: "amd64"
+
+push-release-tarball-darwin-arm64:
+  extends: [.build-common-variables, .push-release-tarball-darwin-definition]
+  needs:
+    - job: build-release-tarball-darwin-arm64
+      artifacts: true
+    - unit-tests-macos-arm64
+    - unit-tests-miri-macos-arm64
+    - check-deny
+    - check-licenses
+    - test-integration-macos-arm64
+  variables:
+    TARGET_ARCH: "arm64"

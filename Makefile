@@ -19,6 +19,11 @@ export ADP_APP_VERSION_AUTO := $(shell cat bin/agent-data-plane/Cargo.toml | gre
 export ADP_APP_VERSION := $(or $(ADP_APP_VERSION),$(ADP_APP_VERSION_AUTO))
 export ADP_APP_BUILD_TIME := $(APP_BUILD_TIME)
 
+# SPDX license-list-data tag used by package-adp-host to harvest THIRD-PARTY-* license texts.
+# Pinned to match docker/Dockerfile.agent-data-plane so the host-built tarball ships the same
+# set of license texts as the linux Docker artifact; bump in lockstep with the Dockerfile.
+export ADP_SPDX_LICENSES_VERSION := 3.28.0
+
 # ADP-specific settings used when running.
 export ADP_STANDALONE_IPC_CERT_FILE := /tmp/adp-ipc-cert.pem
 
@@ -610,21 +615,42 @@ list-integration-tests: ## Lists available ADP integration tests
 	@target/release/panoramic list -d $(shell pwd)/test/integration/cases
 
 .PHONY: build-adp-host
+build-adp-host: BUILD_PROFILE ?= release
 build-adp-host: check-rust-build-tools
-build-adp-host: ## Builds the agent-data-plane binary for the current host (release profile)
-	@echo "[*] Building agent-data-plane (release, host target)..."
+build-adp-host: ## Builds the agent-data-plane binary for the current host (Cargo profile from $$BUILD_PROFILE, default: release)
+	@echo "[*] Building agent-data-plane ($(BUILD_PROFILE), host target)..."
 	@APP_FULL_NAME="$(ADP_APP_FULL_NAME)" \
 		APP_SHORT_NAME="$(ADP_APP_SHORT_NAME)" \
 		APP_IDENTIFIER="$(ADP_APP_IDENTIFIER)" \
 		APP_GIT_HASH="$(ADP_APP_GIT_HASH)" \
 		APP_VERSION="$(ADP_APP_VERSION)" \
 		APP_BUILD_DATE="$(ADP_APP_BUILD_DATE)" \
-		cargo build --release --bin agent-data-plane
+		cargo build --profile $(BUILD_PROFILE) --bin agent-data-plane
+
+.PHONY: package-adp-host
+package-adp-host: BUILD_PROFILE ?= release
+# Tarball-filename version. Defaults to Cargo.toml; CI overrides with $$ADP_IMAGE_VERSION.
+package-adp-host: ADP_PACKAGE_VERSION ?= $(ADP_APP_VERSION)
+package-adp-host: build-adp-host
+package-adp-host: ## Packages agent-data-plane into a release tarball under target/release-tarball/
+	@OUTPUT_DIR="$(CURDIR)/target/release-tarball" \
+		BUILD_PROFILE="$(BUILD_PROFILE)" \
+		TARGET_OS="$(shell uname -s | tr '[:upper:]' '[:lower:]')" \
+		TARGET_ARCH="$(TARGET_ARCH)" \
+		ADP_VERSION="$(ADP_PACKAGE_VERSION)" \
+		SPDX_LICENSES_VERSION="$(ADP_SPDX_LICENSES_VERSION)" \
+		$(CURDIR)/ci/tooling/package-adp-tarball.sh
 
 .PHONY: test-integration-macos-run
-test-integration-macos-run: ## Runs the macOS host-process integration tests using already-built binaries (assumes target/release/{panoramic,agent-data-plane} exist). Defaults to all `mac`-runtime-eligible tests; narrow with CASE=<name>.
+# ADP path tracks $$BUILD_PROFILE so a tagged release pipeline (BUILD_PROFILE=optimized-release
+# in .gitlab-ci.yml workflow rules) tests the same binary it's about to ship — mirroring how the
+# linux flow builds and tests build-adp-image with whatever BUILD_PROFILE the pipeline sets.
+# panoramic stays at target/release/ unconditionally because it's the test harness, not the SUT;
+# build-panoramic always builds with --profile release, same as linux's build-panoramic-binary.
+test-integration-macos-run: BUILD_PROFILE ?= release
+test-integration-macos-run: ## Runs the macOS host-process integration tests using already-built binaries (assumes target/$$BUILD_PROFILE/agent-data-plane and target/release/panoramic exist). Defaults to all `mac`-runtime-eligible tests; narrow with CASE=<name>.
 	@echo "[*] Running macOS host-process integration tests..."
-	@ADP_BINARY_PATH="$(CURDIR)/target/release/agent-data-plane" \
+	@ADP_BINARY_PATH="$(CURDIR)/target/$(BUILD_PROFILE)/agent-data-plane" \
 		CORE_AGENT_BINARY_PATH="$(MACOS_TEST_AGENT_INSTALL_DIR)/bin/agent/agent" \
 		target/release/panoramic run -d "$(CURDIR)/test/integration/cases" \
 		$(if $(CASE),-t $(CASE)) --no-tui -p 1 \
