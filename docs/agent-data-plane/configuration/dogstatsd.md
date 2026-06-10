@@ -24,20 +24,22 @@ If you find an error on this page, please [open an issue].
 The following settings are not yet supported in ADP but are planned with GitHub issue links for
 tracking.
 
-| Config Key                                              | Description                                     | Issue   |
-| ------------------------------------------------------- | ----------------------------------------------- | ------- |
-| `dogstatsd_experimental_http.enabled`                   | Enable experimental HTTP/H2C DSD listener       | [#1682] |
-| `dogstatsd_experimental_http.listen_address`            | Bind address for experimental HTTP DSD listener | [#1682] |
-| `dogstatsd_pipe_name`                                   | Windows named pipe path                         | [#1466] |
-| `dogstatsd_windows_pipe_security_descriptor`            | Windows named pipe ACL descriptor               | [#1466] |
-| `forwarder_apikey_validation_interval`                  | API key check interval (minutes)                | [#1357] |
-| `serializer_experimental_use_v3_api.compression_level`  | V3 API zstd compression level                   | [#1468] |
-| `serializer_experimental_use_v3_api.series.endpoints`   | Endpoints enabled for V3 series API             | [#1468] |
-| `serializer_experimental_use_v3_api.series.validate`    | Dual-send v2+v3 series for validation           | [#1468] |
-| `serializer_experimental_use_v3_api.sketches.endpoints` | Endpoints enabling v3 sketches API              | [#1468] |
-| `serializer_experimental_use_v3_api.sketches.validate`  | Dual-send v2+v3 sketches for validation         | [#1468] |
-| `sslkeylogfile`                                         | TLS key log file path                           | [#1372] |
-| `tls_handshake_timeout`                                 | HTTP TLS handshake timeout                      | [#178]  |
+| Config Key                                                     | Description                                     | Issue   |
+| -------------------------------------------------------------- | ----------------------------------------------- | ------- |
+| `dogstatsd_experimental_http.enabled`                          | Enable experimental HTTP/H2C DSD listener       | [#1682] |
+| `dogstatsd_experimental_http.listen_address`                   | Bind address for experimental HTTP DSD listener | [#1682] |
+| `dogstatsd_pipe_name`                                          | Windows named pipe path                         | [#1466] |
+| `dogstatsd_windows_pipe_security_descriptor`                   | Windows named pipe ACL descriptor               | [#1466] |
+| `forwarder_apikey_validation_interval`                         | API key check interval (minutes)                | [#1357] |
+| `serializer_experimental_use_v3_api.compression_level`         | V3 API zstd compression level                   | [#1468] |
+| `serializer_experimental_use_v3_api.series.endpoints`          | Endpoints enabled for V3 series API             | [#1468] |
+| `serializer_experimental_use_v3_api.series.shadow_sample_rate` | V3 series shadow mode sample rate               | [#1468] |
+| `serializer_experimental_use_v3_api.series.shadow_sites`       | V3 series shadow mode enabled sites             | [#1468] |
+| `serializer_experimental_use_v3_api.series.validate`           | Dual-send v2+v3 series for validation           | [#1468] |
+| `serializer_experimental_use_v3_api.sketches.endpoints`        | Endpoints enabling v3 sketches API              | [#1468] |
+| `serializer_experimental_use_v3_api.sketches.validate`         | Dual-send v2+v3 sketches for validation         | [#1468] |
+| `sslkeylogfile`                                                | TLS key log file path                           | [#1372] |
+| `tls_handshake_timeout`                                        | HTTP TLS handshake timeout                      | [#178]  |
 
 <!-- section:unsupported-not-planned -->
 ### Not Planned
@@ -53,6 +55,8 @@ architecture is fundamentally different or the feature is platform-specific.
 | `aggregator_stop_timeout`                                         | Timeout (s) for aggregator flush on stop   | Saluki topology uses fixed interconnect sizes and construction-time wiring; no per-component config knobs.                                                                                                                                                                |
 | `aggregator_use_tags_store`                                       | Enable shared tag deduplication store      | Core agent concept with no ADP analog.                                                                                                                                                                                                                                    |
 | `config_id`                                                       | Fleet Automation config ID tag             | Core Agent uses this only on Agent HA telemetry metrics.                                                                                                                                                                                                                  |
+| `data_plane.telemetry_enabled`                                    | ADP telemetry toggle                       | See below                                                                                                                                                                                                                                                                 |
+| `data_plane.telemetry_listen_addr`                                | ADP telemetry listen address               | See below                                                                                                                                                                                                                                                                 |
 | `dogstatsd_disable_verbose_logs`                                  | Suppress noisy parse error logs            | ADP does not emit the verbose parse-error logs that this key filters in the core Agent, so there is nothing to suppress.                                                                                                                                                  |
 | `dogstatsd_host_socket_path`                                      | Host UDS socket dir for DSD                | Not read by DSD server; admission controller only.                                                                                                                                                                                                                        |
 | `dogstatsd_mem_based_rate_limiter.enabled`                        | Memory-based rate limiter toggle           | See below                                                                                                                                                                                                                                                                 |
@@ -82,6 +86,16 @@ architecture is fundamentally different or the feature is platform-specific.
 | `heroku_dyno`                                                     | Heroku dyno telemetry mode                 | See below                                                                                                                                                                                                                                                                 |
 | `logging_frequency`                                               | Transaction success log interval           | The core agent uses `logging_frequency` to throttle repetitive successful transaction logs. ADP logs successful forwarder operations below the default `info` level, so there is no matching info-level success-log stream to throttle. This key is intentionally unused. |
 | `use_dogstatsd`                                                   | Master DogStatsD enable toggle             | Core Agent evaluates and sets `data_plane.dogstatsd.enabled`.                                                                                                                                                                                                             |
+
+### `data_plane.telemetry_enabled`
+
+Deprecated. ADP previously read this key to enable its internal Prometheus telemetry
+endpoint, but no longer does so. The key is silently ignored.
+
+### `data_plane.telemetry_listen_addr`
+
+Deprecated. ADP previously read this key to configure the address of its internal
+Prometheus telemetry endpoint, but no longer does so. The key is silently ignored.
 
 ### `dogstatsd_mem_based_rate_limiter.enabled`
 
@@ -314,8 +328,6 @@ The following settings are specific to ADP and have no equivalent in the core ag
 | `apm_config.obfuscation.sql.replace_digits`                     | Replace digits in SQL obfuscation          |         |
 | `apm_config.obfuscation.sql.table_names`                        | Collect table names during obfuscation     |         |
 | `counter_expiry_seconds`                                        | Idle counter keep-alive duration           | 300     |
-| `data_plane.remote_agent_enabled`                               | Enable remote agent mode                   | true    |
-| `data_plane.use_new_config_stream_endpoint`                     | Use new config stream endpoint             |         |
 | `dogstatsd_allow_context_heap_allocs`                           | Allow heap allocations for contexts        |         |
 | `dogstatsd_autoscale_udp_listeners`                             | Bind multiple UDP sockets via SO_REUSEPORT |         |
 | `dogstatsd_buffer_count`                                        | Number of receive buffers                  |         |
@@ -354,14 +366,6 @@ ADP uses an explicit process memory limit (`memory_limit`) rather than relying o
 ### `memory_slop_factor`
 
 See `memory_limit` above.
-
-### `data_plane.remote_agent_enabled` / `data_plane.use_new_config_stream_endpoint`
-
-These two keys are transitional flags being phased out. Both will be implied by `data_plane.standalone_mode=false` in a future release. Do not rely on them for new deployments.
-
-### `data_plane.use_new_config_stream_endpoint`
-
-See `data_plane.remote_agent_enabled` above.
 
 
 ## Transparent Settings
@@ -425,6 +429,7 @@ compressed wire payload bytes.
 | Config Key                                                     | Description                                        |
 | -------------------------------------------------------------- | -------------------------------------------------- |
 | `additional_endpoints`                                         | Dual-ship to extra endpoints                       |
+| `agent_ipc.grpc_max_message_size`                              | Max inbound gRPC message size for IPC client       |
 | `allow_arbitrary_tags`                                         | Relax backend tag validation via HTTP header       |
 | `api_key`                                                      | API key for endpoint auth                          |
 | `apm_config.obfuscation.credit_cards.enabled`                  | apm_config.obfuscation.credit_cards.enabled        |
@@ -451,7 +456,15 @@ compressed wire payload bytes.
 | `cmd_port`                                                     | Datadog Agent IPC/CMD API port                     |
 | `cri_connection_timeout`                                       | CRI container runtime connection timeout (s)       |
 | `cri_query_timeout`                                            | CRI container runtime query timeout (s)            |
+| `data_plane.api_listen_address`                                | Unprivileged API listen address                    |
 | `data_plane.dogstatsd.aggregator_tag_filter_cache_capacity`    | Tag-filter deduplication cache size                |
+| `data_plane.log_file`                                          | ADP log file path                                  |
+| `data_plane.otlp.proxy.logs.enabled`                           | Proxy OTLP logs to Core Agent                      |
+| `data_plane.otlp.proxy.metrics.enabled`                        | Proxy OTLP metrics to Core Agent                   |
+| `data_plane.otlp.proxy.traces.enabled`                         | Proxy OTLP traces to Core Agent                    |
+| `data_plane.remote_agent_enabled`                              | Enable remote agent mode                           |
+| `data_plane.secure_api_listen_address`                         | Privileged API listen address                      |
+| `data_plane.use_new_config_stream_endpoint`                    | Use new config stream endpoint                     |
 | `dd_url`                                                       | Override intake endpoint URL                       |
 | `dogstatsd_buffer_size`                                        | Receive buffer size (bytes)                        |
 | `dogstatsd_capture_depth`                                      | Traffic capture channel depth                      |

@@ -68,6 +68,20 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         default: Some("\"\""),
     },
     ClassifierEntry {
+        yaml_path: "data_plane.telemetry_enabled",
+        aliases: &[],
+        support_level: SupportLevel::Incompatible(Severity::Low),
+        pipeline_affinity: PipelineAffinity::CrossCutting,
+        default: Some("false"),
+    },
+    ClassifierEntry {
+        yaml_path: "data_plane.telemetry_listen_addr",
+        aliases: &[],
+        support_level: SupportLevel::Incompatible(Severity::Low),
+        pipeline_affinity: PipelineAffinity::CrossCutting,
+        default: Some("\"tcp://0.0.0.0:5102\""),
+    },
+    ClassifierEntry {
         yaml_path: "dogstatsd_disable_verbose_logs",
         aliases: &[],
         support_level: SupportLevel::Incompatible(Severity::Medium),
@@ -313,6 +327,20 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         default: Some("[]"),
     },
     ClassifierEntry {
+        yaml_path: "serializer_experimental_use_v3_api.series.shadow_sample_rate",
+        aliases: &[],
+        support_level: SupportLevel::Incompatible(Severity::Low),
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD, Pipeline::Checks, Pipeline::Traces]),
+        default: Some("0.001"),
+    },
+    ClassifierEntry {
+        yaml_path: "serializer_experimental_use_v3_api.series.shadow_sites",
+        aliases: &[],
+        support_level: SupportLevel::Incompatible(Severity::Low),
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD, Pipeline::Checks, Pipeline::Traces]),
+        default: Some("[\"datadoghq.com\"]"),
+    },
+    ClassifierEntry {
         yaml_path: "serializer_experimental_use_v3_api.series.validate",
         aliases: &[],
         support_level: SupportLevel::Incompatible(Severity::Low),
@@ -345,7 +373,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         aliases: &[],
         support_level: SupportLevel::Incompatible(Severity::Medium),
         pipeline_affinity: PipelineAffinity::CrossCutting,
-        default: None,
+        default: Some("\"10s\""),
     },
     ClassifierEntry {
         yaml_path: "use_dogstatsd",
