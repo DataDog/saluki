@@ -20,6 +20,7 @@ use url::Url;
 use super::endpoints::RoutableEndpoint;
 
 const VALIDATE_PATH: &str = "/api/v1/validate";
+// TODO: Move the shared Datadog fake API key constant to `datadog-agent-commons`.
 const FAKE_API_KEY: &str = "00000000000000000000000000000000";
 
 static DATADOG_API_DOMAIN_RE: LazyLock<Regex> =
@@ -236,6 +237,7 @@ fn collect_validation_targets(endpoints: &mut [RoutableEndpoint]) -> Vec<Validat
     let mut targets = Vec::new();
 
     for routable in endpoints {
+        // `api_key()` lazily refreshes the cached key from live configuration before validation.
         let endpoint = routable.endpoint_mut();
         let api_key = endpoint.api_key().trim().to_string();
         if api_key.is_empty() {

@@ -270,7 +270,10 @@ pub struct ForwarderConfiguration {
 
     /// API key validation interval, in minutes.
     ///
-    /// Defaults to 60 minutes. Invalid `0` values fall back to 60 minutes.
+    /// All values that are less than or equal to zero will be ignored, and the default
+    /// value will be used.
+    ///
+    /// Defaults to 60 minutes.
     #[serde(
         default = "default_api_key_validation_interval_config_mins",
         rename = "forwarder_apikey_validation_interval"
