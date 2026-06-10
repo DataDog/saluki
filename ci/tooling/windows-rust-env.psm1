@@ -36,13 +36,24 @@ function Invoke-Native {
 }
 
 function Add-PathEntry {
+    # Adds $Path to $env:Path. Prepends by default (so a newly-installed tool wins over
+    # any system version); pass -Append to add at the tail instead, which is the right
+    # choice when the install dir contains many binaries that would shadow Windows tooling
+    # (e.g. MSYS2's c:\tools\msys64\usr\bin\ ships unix-style find/sort/cmd that conflict
+    # with the Windows defaults).
     param(
         [Parameter(Mandatory = $true)]
-        [string]$Path
+        [string]$Path,
+
+        [switch]$Append
     )
 
     if ((Test-Path $Path) -and (-not ($env:Path -split ';' | Where-Object { $_ -eq $Path }))) {
-        $env:Path = "${Path};${env:Path}"
+        if ($Append) {
+            $env:Path = "${env:Path};${Path}"
+        } else {
+            $env:Path = "${Path};${env:Path}"
+        }
     }
 }
 
@@ -321,7 +332,11 @@ function Initialize-FipsBuildTools {
     # generator scripts).
     $MsysPerlBin = "c:\tools\msys64\usr\bin"
     if (Test-Path (Join-Path $MsysPerlBin "perl.exe")) {
-        Add-PathEntry $MsysPerlBin
+        # APPEND, not prepend: that directory ships many unix-style binaries (find.exe-less
+        # `find`, `cmd` script with no extension, etc.) that would shadow Windows tooling.
+        # Putting it at the tail of PATH means Windows defaults still win for everything
+        # except perl, which Windows doesn't ship at all.
+        Add-PathEntry -Path $MsysPerlBin -Append
     } else {
         throw "Expected MSYS2 perl at $MsysPerlBin\perl.exe but it's missing; image layout changed?"
     }
@@ -365,7 +380,10 @@ function New-VsBuildToolsJunction {
     }
     if (-not (Test-Path $JunctionTarget)) {
         Write-Host "[*] Creating junction $JunctionTarget -> $BuildimageVsDir"
-        & cmd /c mklink /J "$JunctionTarget" "$BuildimageVsDir" | Out-Host
+        # Use the full path to cmd.exe rather than relying on PATH lookup. MSYS2's bin (which
+        # we add to PATH for perl) ships a unix-style `cmd` script (no .exe) that PowerShell
+        # would otherwise resolve before Windows cmd.exe.
+        & "$env:WINDIR\System32\cmd.exe" /c mklink /J "$JunctionTarget" "$BuildimageVsDir" | Out-Host
         if ($LASTEXITCODE -ne 0) {
             throw "mklink /J failed (exit $LASTEXITCODE)"
         }
@@ -408,9 +426,11 @@ function Initialize-MsvcEnvironment {
     Write-Host "[*] Activating MSVC environment via $VcvarsallPath $Arch"
     # `set` (no args) prints all env vars one per line as NAME=VALUE. Wrap vcvarsall in
     # quotes to handle the space in `Program Files`-style paths even though our path doesn't
-    # need it; harmless either way.
+    # need it; harmless either way. Use the full path to cmd.exe rather than relying on PATH
+    # lookup -- MSYS2's bin (added to PATH for perl) ships a unix-style `cmd` script with no
+    # .exe that PowerShell would otherwise resolve first.
     $cmdline = "`"$VcvarsallPath`" $Arch >NUL && set"
-    $output = & cmd.exe /c $cmdline
+    $output = & "$env:WINDIR\System32\cmd.exe" /c $cmdline
     if ($LASTEXITCODE -ne 0) {
         throw "vcvarsall.bat $Arch failed (exit $LASTEXITCODE)"
     }
