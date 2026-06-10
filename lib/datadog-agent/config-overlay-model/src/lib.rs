@@ -365,8 +365,7 @@ impl SchemaOverlay {
     }
 
     fn schema_keys(schema_path: &Path) -> Result<HashSet<String>, Error> {
-        let contents = std::fs::read_to_string(schema_path).map_err(|e| Error::Io((schema_path.into(), e)))?;
-        let schema: serde_yaml::Value = serde_yaml::from_str(&contents).map_err(Error::Yaml)?;
+        let schema = load_resolved_schema(schema_path)?;
         let props = schema
             .get("properties")
             .and_then(|v| v.as_mapping())
@@ -384,6 +383,8 @@ impl SchemaOverlay {
                 } else {
                     format!("{}.{}", prefix, name)
                 };
+                // `$ref`s have already been inlined by `load_resolved_schema`, so a node either
+                // carries `properties` (recurse) or is a leaf key.
                 if let Some(sub_props) = v.get("properties").and_then(|p| p.as_mapping()) {
                     Self::collect_schema_keys(sub_props, &full_key, keys);
                 } else {
@@ -476,6 +477,48 @@ impl SchemaOverlay {
         }
         Ok(())
     }
+}
+
+/// Read a YAML file into a [`serde_yaml::Value`], mapping failures onto [`Error`].
+fn read_yaml(path: &Path) -> Result<serde_yaml::Value, Error> {
+    let contents = std::fs::read_to_string(path).map_err(|e| Error::Io((path.into(), e)))?;
+    serde_yaml::from_str(&contents).map_err(Error::Yaml)
+}
+
+/// Load the core schema and recursively inline every `$ref: <file>` reference into a single
+/// resolved document with no remaining `$ref` nodes.
+///
+/// Referenced files are resolved relative to the directory containing `schema_path`. This is the
+/// one place that reads subsystem schema files; downstream consumers traverse the returned tree
+/// and never handle `$ref` themselves. Build-time only.
+///
+/// # Errors
+///
+/// Returns [`Error::Io`] if `schema_path` or any referenced file cannot be read, and
+/// [`Error::Yaml`] if any file fails to parse. The offending path is carried in the error.
+pub(crate) fn load_resolved_schema(schema_path: &Path) -> Result<serde_yaml::Value, Error> {
+    let schema_dir = schema_path.parent().unwrap_or_else(|| Path::new("."));
+    let mut doc = read_yaml(schema_path)?;
+    resolve_refs(&mut doc, schema_dir)?;
+    Ok(doc)
+}
+
+/// Recursively replace any mapping node containing a `$ref: <file>` entry with the (also resolved)
+/// contents of the referenced file, found relative to `schema_dir`.
+fn resolve_refs(value: &mut serde_yaml::Value, schema_dir: &Path) -> Result<(), Error> {
+    if let Some(map) = value.as_mapping_mut() {
+        if let Some(ref_path) = map.get("$ref").and_then(|v| v.as_str()) {
+            let ref_file = schema_dir.join(ref_path);
+            let mut ref_doc = read_yaml(&ref_file)?;
+            resolve_refs(&mut ref_doc, schema_dir)?;
+            *value = ref_doc;
+            return Ok(());
+        }
+        for (_k, v) in map.iter_mut() {
+            resolve_refs(v, schema_dir)?;
+        }
+    }
+    Ok(())
 }
 
 const VALIDATION_RULES: &str = "\n\
@@ -666,6 +709,42 @@ excluded:
             err.to_string()
                 .contains("key 'key_a' appears in more than one overlay section"),
             "unexpected error: {err}"
+        );
+    }
+
+    /// A `$ref` is inlined and its leaf keys are namespaced under the parent key.
+    #[test]
+    fn schema_ref_is_resolved_and_keys_namespaced() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("sub.yaml"),
+            "properties:\n  enabled:\n    type: boolean\n",
+        )
+        .unwrap();
+        let schema_path = dir.path().join("schema.yaml");
+        std::fs::write(&schema_path, "properties:\n  feature:\n    $ref: sub.yaml\n").unwrap();
+
+        let keys = SchemaOverlay::schema_keys(&schema_path).unwrap();
+        assert_eq!(
+            keys,
+            HashSet::from(["feature.enabled".to_string()]),
+            "unexpected keys: {keys:?}"
+        );
+    }
+
+    /// A missing `$ref` target surfaces a clear I/O error naming the file, not a misleading
+    /// "key not covered" validation error.
+    #[test]
+    fn missing_schema_ref_reports_io_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let schema_path = dir.path().join("schema.yaml");
+        std::fs::write(&schema_path, "properties:\n  feature:\n    $ref: does_not_exist.yaml\n").unwrap();
+
+        let err = SchemaOverlay::schema_keys(&schema_path).unwrap_err();
+        assert!(matches!(err, Error::Io(_)), "expected Io error, got: {err}");
+        assert!(
+            err.to_string().contains("does_not_exist.yaml"),
+            "error should name the missing file: {err}"
         );
     }
 
