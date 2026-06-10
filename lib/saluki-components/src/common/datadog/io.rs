@@ -389,7 +389,8 @@ async fn run_endpoint_io_loop<B>(
         .map_request(|req: Request<TransactionBody<B>>| req.map(into_client_body))
         .service(service);
 
-    let mut retry_queue = RetryQueue::new(queue_id.clone(), config.retry().queue_max_size_bytes());
+    let mut retry_queue = RetryQueue::new(queue_id.clone(), config.retry().queue_max_size_bytes())
+        .with_flush_to_disk_mem_ratio(config.retry().flush_to_disk_mem_ratio());
 
     // If the storage size is set, enable disk persistence for the retry queue.
     if config.retry().storage_max_size_bytes() > 0 {
@@ -407,6 +408,7 @@ async fn run_endpoint_io_loop<B>(
             .unwrap_or_else(|e| {
                 error!(endpoint_url, error = %e, "Failed to initialize disk persistence for retry queue. Transactions will not be persisted.");
                 RetryQueue::new(queue_id, config.retry().queue_max_size_bytes())
+                    .with_flush_to_disk_mem_ratio(config.retry().flush_to_disk_mem_ratio())
             });
     }
     let mut pending_txns = PendingTransactions::new(config.endpoint_buffer_size(), retry_queue, txnq_telemetry);

@@ -1068,10 +1068,13 @@ inventory:
         config_registry_filename: forwarder.rs
 
   forwarder_flush_to_disk_mem_ratio:
-    support: unknown
-    description: "Mem-to-disk flush threshold"
-    severity: medium
-    issue: "#1364"
+    support: full
+    pipelines: [cross_cutting]
+    description: "Mem-to-disk flush ratio"
+    test_support:
+      used_by: [ForwarderConfiguration]
+      additional_attributes:
+        config_registry_filename: forwarder.rs
 
   forwarder_high_prio_buffer_size:
     support: partial

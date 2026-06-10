@@ -93,17 +93,6 @@ crate::declare_annotations! {
         test_json: None,
         pipeline_affinity: PipelineAffinity::CrossCutting,
     };
-    /// `forwarder_flush_to_disk_mem_ratio`-Mem-to-disk flush threshold
-    FORWARDER_FLUSH_TO_DISK_MEM_RATIO = SalukiAnnotation {
-        schema: &schema::FORWARDER_FLUSH_TO_DISK_MEM_RATIO,
-        support_level: SupportLevel::Incompatible(Severity::Medium),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-        pipeline_affinity: PipelineAffinity::CrossCutting,
-    };
     /// `forwarder_low_prio_buffer_size`-Low-priority request queue size
     FORWARDER_LOW_PRIO_BUFFER_SIZE = SalukiAnnotation {
         schema: &schema::FORWARDER_LOW_PRIO_BUFFER_SIZE,

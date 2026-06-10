@@ -8,6 +8,8 @@ mod persisted;
 use self::persisted::PersistedQueue;
 pub use self::persisted::{DiskUsageRetriever, DiskUsageRetrieverImpl, PersistedQueueArgs};
 
+const DEFAULT_FLUSH_TO_DISK_MEM_RATIO: f64 = 0.5;
+
 /// A container that holds events.
 ///
 /// This trait is used as an incredibly generic way to expose the number of events within a "container," which we
@@ -86,6 +88,7 @@ pub struct RetryQueue<T> {
     persisted_pending: Option<PersistedQueue<T>>,
     total_in_memory_bytes: u64,
     max_in_memory_bytes: u64,
+    flush_to_disk_mem_ratio: f64,
 }
 
 impl<T> RetryQueue<T>
@@ -104,7 +107,19 @@ where
             persisted_pending: None,
             total_in_memory_bytes: 0,
             max_in_memory_bytes,
+            flush_to_disk_mem_ratio: DEFAULT_FLUSH_TO_DISK_MEM_RATIO,
         }
+    }
+
+    /// Configures the ratio of in-memory queue bytes to flush to disk when the queue is full.
+    ///
+    /// When disk persistence is enabled and the queue does not have enough room for a new entry, this ratio controls how
+    /// much in-memory data is moved to disk. For example, a value of `0.5` moves at least half of
+    /// `max_in_memory_bytes` to disk when the queue overflows. Values less than or equal to zero disable overflow
+    /// flushing to disk.
+    pub fn with_flush_to_disk_mem_ratio(mut self, flush_to_disk_mem_ratio: f64) -> Self {
+        self.flush_to_disk_mem_ratio = flush_to_disk_mem_ratio;
+        self
     }
 
     /// Configures the queue to persist pending entries to disk.
@@ -189,11 +204,32 @@ where
 
         // Make sure we have enough room for this incoming entry, either by persisting older entries to disk or by
         // simply dropping them.
-        while !self.pending.is_empty() && self.total_in_memory_bytes + current_entry_size > self.max_in_memory_bytes {
+        let required_bytes = self
+            .total_in_memory_bytes
+            .saturating_add(current_entry_size)
+            .saturating_sub(self.max_in_memory_bytes);
+        let using_disk = self.persisted_pending.is_some() && self.flush_to_disk_mem_ratio > 0.0;
+        let bytes_to_remove = if required_bytes == 0 {
+            0
+        } else if using_disk {
+            required_bytes.max(flush_to_disk_bytes(
+                self.max_in_memory_bytes,
+                self.flush_to_disk_mem_ratio,
+            ))
+        } else {
+            required_bytes
+        };
+        let mut bytes_removed = 0;
+
+        while !self.pending.is_empty()
+            && (bytes_removed < bytes_to_remove
+                || self.total_in_memory_bytes.saturating_add(current_entry_size) > self.max_in_memory_bytes)
+        {
             let oldest_entry = self.pending.pop_front().expect("queue is not empty");
             let oldest_entry_size = oldest_entry.size_bytes();
 
-            if let Some(persisted_pending) = &mut self.persisted_pending {
+            if using_disk {
+                let persisted_pending = self.persisted_pending.as_mut().expect("disk persistence is enabled");
                 let persist_result = persisted_pending.push(oldest_entry).await?;
                 push_result.merge(persist_result);
 
@@ -208,6 +244,7 @@ where
             }
 
             self.total_in_memory_bytes -= oldest_entry_size;
+            bytes_removed += oldest_entry_size;
         }
 
         self.pending.push_back(entry);
@@ -274,6 +311,16 @@ where
         }
 
         Ok(push_result)
+    }
+}
+
+fn flush_to_disk_bytes(max_in_memory_bytes: u64, flush_to_disk_mem_ratio: f64) -> u64 {
+    if flush_to_disk_mem_ratio <= 0.0 || flush_to_disk_mem_ratio.is_nan() {
+        0
+    } else if flush_to_disk_mem_ratio.is_infinite() {
+        u64::MAX
+    } else {
+        ((max_in_memory_bytes as f64) * flush_to_disk_mem_ratio).ceil() as u64
     }
 }
 
@@ -452,5 +499,117 @@ mod tests {
 
         // We should now have two files on disk after flushing.
         assert_eq!(2, file_count_recursive(&root_path));
+    }
+
+    #[tokio::test]
+    async fn disk_overflow_flushes_configured_memory_ratio() {
+        let data1 = FakeData::random();
+        let data2 = FakeData::random();
+        let data3 = FakeData::random();
+        let data4 = FakeData::random();
+
+        let temp_dir = tempfile::tempdir().expect("should not fail to create temporary directory");
+        let root_path = temp_dir.path().to_path_buf();
+
+        let mut retry_queue = RetryQueue::<FakeData>::new("test".to_string(), 120)
+            .with_flush_to_disk_mem_ratio(0.5)
+            .with_disk_persistence(PersistedQueueArgs {
+                root_path: root_path.clone(),
+                max_on_disk_bytes: u64::MAX,
+                storage_max_disk_ratio: 1.0,
+                disk_usage_retriever: Arc::new(DiskUsageRetrieverImpl::new(root_path.clone())),
+                max_age_days: 10,
+            })
+            .await
+            .expect("should not fail to create retry queue with disk persistence");
+
+        let push_result = retry_queue.push(data1).await.expect("should not fail to push data");
+        assert_eq!(0, push_result.items_dropped);
+        assert_eq!(0, push_result.events_dropped);
+        let push_result = retry_queue.push(data2).await.expect("should not fail to push data");
+        assert_eq!(0, push_result.items_dropped);
+        assert_eq!(0, push_result.events_dropped);
+        let push_result = retry_queue
+            .push(data3.clone())
+            .await
+            .expect("should not fail to push data");
+        assert_eq!(0, push_result.items_dropped);
+        assert_eq!(0, push_result.events_dropped);
+
+        let push_result = retry_queue
+            .push(data4.clone())
+            .await
+            .expect("should not fail to push data");
+        assert_eq!(0, push_result.items_dropped);
+        assert_eq!(0, push_result.events_dropped);
+        assert!(file_count_recursive(&root_path) >= 2);
+
+        let actual = retry_queue
+            .pop()
+            .await
+            .expect("should not fail to pop data")
+            .expect("should not be empty");
+        assert_eq!(data3, actual);
+
+        let actual = retry_queue
+            .pop()
+            .await
+            .expect("should not fail to pop data")
+            .expect("should not be empty");
+        assert_eq!(data4, actual);
+    }
+
+    #[tokio::test]
+    async fn zero_disk_flush_ratio_drops_required_entries() {
+        let data1 = FakeData::random();
+        let data2 = FakeData::random();
+        let data3 = FakeData::random();
+
+        let temp_dir = tempfile::tempdir().expect("should not fail to create temporary directory");
+        let root_path = temp_dir.path().to_path_buf();
+
+        let mut retry_queue = RetryQueue::<FakeData>::new("test".to_string(), 72)
+            .with_flush_to_disk_mem_ratio(0.0)
+            .with_disk_persistence(PersistedQueueArgs {
+                root_path: root_path.clone(),
+                max_on_disk_bytes: u64::MAX,
+                storage_max_disk_ratio: 1.0,
+                disk_usage_retriever: Arc::new(DiskUsageRetrieverImpl::new(root_path.clone())),
+                max_age_days: 10,
+            })
+            .await
+            .expect("should not fail to create retry queue with disk persistence");
+
+        let push_result = retry_queue.push(data1).await.expect("should not fail to push data");
+        assert_eq!(0, push_result.items_dropped);
+        assert_eq!(0, push_result.events_dropped);
+        let push_result = retry_queue
+            .push(data2.clone())
+            .await
+            .expect("should not fail to push data");
+        assert_eq!(0, push_result.items_dropped);
+        assert_eq!(0, push_result.events_dropped);
+
+        let push_result = retry_queue
+            .push(data3.clone())
+            .await
+            .expect("should not fail to push data");
+        assert_eq!(1, push_result.items_dropped);
+        assert_eq!(1, push_result.events_dropped);
+        assert_eq!(0, file_count_recursive(&root_path));
+
+        let actual = retry_queue
+            .pop()
+            .await
+            .expect("should not fail to pop data")
+            .expect("should not be empty");
+        assert_eq!(data2, actual);
+
+        let actual = retry_queue
+            .pop()
+            .await
+            .expect("should not fail to pop data")
+            .expect("should not be empty");
+        assert_eq!(data3, actual);
     }
 }
