@@ -145,6 +145,10 @@ function Install-CachedZipTool {
     # Generic helper used by the Ensure-* tool installers below: downloads $Url to a temp
     # archive, verifies its SHA256 against $ExpectedSha256, extracts into $InstallRoot, and
     # prepends $BinSubdir (relative to $InstallRoot) to PATH.
+    #
+    # If $CommandName is passed AND that command is already resolvable on PATH (e.g. the
+    # Datadog buildimage already installs go and ninja globally), skip the download/extract
+    # entirely and reuse the existing install.
     param(
         [Parameter(Mandatory = $true)]
         [string]$Name,
@@ -166,8 +170,17 @@ function Install-CachedZipTool {
         # combined with [string] rejects empty strings by default.
         [Parameter(Mandatory = $true)]
         [AllowEmptyString()]
-        [string]$BinSubdir
+        [string]$BinSubdir,
+
+        [Parameter(Mandatory = $false)]
+        [string]$CommandName = ""
     )
+
+    if ($CommandName -and (Get-Command $CommandName -ErrorAction SilentlyContinue)) {
+        $Existing = (Get-Command $CommandName).Source
+        Write-Host "[*] $Name already on PATH at $Existing; skipping install"
+        return
+    }
 
     $Probe = Join-Path $InstallRoot $ProbeRelativePath
     if (-not (Test-Path $Probe)) {
@@ -233,13 +246,18 @@ function Initialize-FipsBuildTools {
         -ProbeRelativePath "nasm-$NasmVersion\nasm.exe" `
         -BinSubdir "nasm-$NasmVersion"
 
+    # Go and Ninja are pre-installed by the Datadog LTSC2022 buildimage (phase3's
+    # install_go.ps1 puts go on PATH at c:\go\<version>\go\bin; install_ninja.ps1 puts
+    # ninja.exe at c:\ninja-build\ on PATH). Pass -CommandName so Install-CachedZipTool
+    # skips the download when those are already resolvable.
     Install-CachedZipTool `
         -Name "go" `
         -Url "https://go.dev/dl/go$GoVersion.windows-amd64.zip" `
         -ExpectedSha256 $GoSha256 `
         -InstallRoot (Join-Path $RepoRoot ".ci-cache\go\$GoVersion") `
         -ProbeRelativePath "go\bin\go.exe" `
-        -BinSubdir "go\bin"
+        -BinSubdir "go\bin" `
+        -CommandName "go"
 
     Install-CachedZipTool `
         -Name "ninja" `
@@ -247,7 +265,8 @@ function Initialize-FipsBuildTools {
         -ExpectedSha256 $NinjaSha256 `
         -InstallRoot (Join-Path $RepoRoot ".ci-cache\ninja\$NinjaVersion") `
         -ProbeRelativePath "ninja.exe" `
-        -BinSubdir ""
+        -BinSubdir "" `
+        -CommandName "ninja"
 
     # LLVM/libclang. Distributed only as tar.xz on Windows (no zip), so it doesn't fit the
     # Install-CachedZipTool shape. Inline download/verify/extract follows the same pattern.
@@ -295,6 +314,18 @@ function Initialize-FipsBuildTools {
     $env:LIBCLANG_PATH = $LlvmBin
     Add-PathEntry $LlvmBin
 
+    # aws-lc-fips-sys's CMakeLists.txt does find_package(Perl) which fails on the buildimage
+    # by default because perl isn't on PATH. The buildimage's phase2 installs MSYS2 at
+    # c:\tools\msys64\, which ships perl at usr\bin\perl.exe; add that directory to PATH.
+    # MSYS2's perl is unix-style but works for aws-lc's CMake configure (it just runs
+    # generator scripts).
+    $MsysPerlBin = "c:\tools\msys64\usr\bin"
+    if (Test-Path (Join-Path $MsysPerlBin "perl.exe")) {
+        Add-PathEntry $MsysPerlBin
+    } else {
+        throw "Expected MSYS2 perl at $MsysPerlBin\perl.exe but it's missing; image layout changed?"
+    }
+
     # Smoke-test each binary to confirm it actually executes (PATH wired up, runtime deps
     # present). Use the call operator `&` instead of Invoke-Native because nasm's `-v` flag
     # collides with PowerShell's auto-injected `-Verbose` common parameter on advanced
@@ -308,6 +339,8 @@ function Initialize-FipsBuildTools {
     if ($LASTEXITCODE -ne 0) { throw "ninja smoke test failed (exit $LASTEXITCODE)" }
     & clang --version
     if ($LASTEXITCODE -ne 0) { throw "clang smoke test failed (exit $LASTEXITCODE)" }
+    & perl --version
+    if ($LASTEXITCODE -ne 0) { throw "perl smoke test failed (exit $LASTEXITCODE)" }
 }
 
 function New-VsBuildToolsJunction {
