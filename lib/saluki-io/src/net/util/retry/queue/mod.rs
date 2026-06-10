@@ -161,6 +161,11 @@ where
         self.max_in_memory_bytes
     }
 
+    /// Returns the available in-memory capacity, in bytes.
+    pub const fn available_in_memory_capacity_bytes(&self) -> u64 {
+        self.max_in_memory_bytes.saturating_sub(self.total_in_memory_bytes)
+    }
+
     /// Returns the available on-disk capacity, in bytes.
     ///
     /// Returns `0` when disk persistence is not enabled.
@@ -387,6 +392,7 @@ mod tests {
             .expect("should not fail to create retry queue with disk persistence");
 
         assert_eq!(retry_queue.max_in_memory_bytes(), 36);
+        assert_eq!(retry_queue.available_in_memory_capacity_bytes(), 36);
         assert_eq!(
             retry_queue
                 .available_on_disk_capacity_bytes()
@@ -400,11 +406,13 @@ mod tests {
             .await
             .expect("first push should succeed");
         assert!(!push_result.had_drops());
+        assert_eq!(retry_queue.available_in_memory_capacity_bytes(), 0);
         let push_result = retry_queue
             .push(FakeData::random())
             .await
             .expect("second push should persist the oldest entry");
         assert!(!push_result.had_drops());
+        assert_eq!(retry_queue.available_in_memory_capacity_bytes(), 0);
 
         assert!(
             retry_queue
@@ -413,6 +421,9 @@ mod tests {
                 .expect("should not fail to calculate disk capacity")
                 < 1024
         );
+
+        let _ = retry_queue.pop().await.expect("pop should succeed");
+        assert_eq!(retry_queue.available_in_memory_capacity_bytes(), 36);
     }
 
     #[tokio::test]

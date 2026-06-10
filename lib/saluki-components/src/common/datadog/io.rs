@@ -777,7 +777,7 @@ impl<T: Retryable> PendingTransactions<T> {
         self.telemetry.record_retry_queue_capacity_stats(
             &self.domain,
             bytes_per_sec,
-            self.low_priority.max_in_memory_bytes(),
+            self.low_priority.available_in_memory_capacity_bytes(),
             disk_available_capacity_bytes,
         );
     }
@@ -1071,6 +1071,37 @@ app.datadoghq.com: [key-a, key-b]
         assert!(pending_txns.pop().await.is_none());
         assert_eq!(recorder.gauge("network_http_retry_queue_size"), Some(0.0));
         assert_eq!(recorder.gauge("network_http_retry_queue_bytes_per_sec"), Some(20.0));
+    }
+
+    #[tokio::test]
+    async fn retry_queue_capacity_uses_remaining_in_memory_capacity() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let (telemetry, domain) = transaction_queue_telemetry();
+        let retry_queue = RetryQueue::new("test".to_string(), 1024);
+        let mut pending_txns = PendingTransactions::new(4, retry_queue, telemetry, domain, 900);
+
+        let push_result = pending_txns
+            .push_low_priority("retry".to_string())
+            .await
+            .expect("push should succeed");
+        assert!(!push_result.had_drops());
+        pending_txns.record_incoming_transaction_size_at(20, 1).await;
+
+        assert_eq!(
+            recorder.gauge((
+                "network_http_retry_queue_capacity_bytes",
+                &[("domain", "https://example.com")],
+            )),
+            Some(1019.0)
+        );
+        assert_eq!(
+            recorder.gauge((
+                "network_http_retry_queue_capacity_secs",
+                &[("domain", "https://example.com")],
+            )),
+            Some(1019.0 / 20.0)
+        );
     }
 
     #[test]
