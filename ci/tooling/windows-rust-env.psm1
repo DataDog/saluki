@@ -153,17 +153,13 @@ function Initialize-RustEnvironment {
 }
 
 function Install-CachedZipTool {
-    # Generic helper used by the Ensure-* tool installers below: downloads $Url to a temp
-    # archive, verifies its SHA256 against $ExpectedSha256, extracts into $InstallRoot, and
-    # prepends $BinSubdir (relative to $InstallRoot) to PATH.
+    # Downloads $Url to a temp archive, verifies its SHA256, extracts into $InstallRoot, and
+    # prepends $BinSubdir to PATH. Skips the download/extract entirely if $BinaryName already
+    # resolves on PATH (e.g. the Datadog buildimage installs go and ninja globally).
     #
-    # If $CommandName is passed AND that command is already resolvable on PATH (e.g. the
-    # Datadog buildimage already installs go and ninja globally), skip the download/extract
-    # entirely and reuse the existing install.
+    # $BinaryName doubles as both the cache-hit probe (we look for it under $InstallRoot to
+    # decide whether to download) and the on-PATH skip check.
     param(
-        [Parameter(Mandatory = $true)]
-        [string]$Name,
-
         [Parameter(Mandatory = $true)]
         [string]$Url,
 
@@ -173,35 +169,37 @@ function Install-CachedZipTool {
         [Parameter(Mandatory = $true)]
         [string]$InstallRoot,
 
-        [Parameter(Mandatory = $true)]
-        [string]$ProbeRelativePath,
-
-        # Empty string means "the binary is at the install root" (e.g. ninja-win.zip extracts
-        # ninja.exe flat). [AllowEmptyString()] is required because [Parameter(Mandatory)]
-        # combined with [string] rejects empty strings by default.
+        # Subdirectory inside the extracted archive that holds the binary (e.g. "go\bin" for
+        # the Go zip, "nasm-2.16.03" for the NASM zip). Empty string means the binary is at
+        # the archive root (e.g. ninja-win.zip extracts ninja.exe flat). [AllowEmptyString()]
+        # is required because [Parameter(Mandatory)] + [string] rejects empty strings.
         [Parameter(Mandatory = $true)]
         [AllowEmptyString()]
         [string]$BinSubdir,
 
-        [Parameter(Mandatory = $false)]
-        [string]$CommandName = ""
+        # Filename including extension, e.g. "nasm.exe". Stripped of its extension for the
+        # Get-Command check (Get-Command resolves both `nasm` and `nasm.exe` on Windows but
+        # the trim keeps log messages tidy).
+        [Parameter(Mandatory = $true)]
+        [string]$BinaryName
     )
 
-    if ($CommandName -and (Get-Command $CommandName -ErrorAction SilentlyContinue)) {
+    $CommandName = $BinaryName -replace '\.exe$', ''
+    if (Get-Command $CommandName -ErrorAction SilentlyContinue) {
         $Existing = (Get-Command $CommandName).Source
-        Write-Host "[*] $Name already on PATH at $Existing; skipping install"
+        Write-Host "[*] $CommandName already on PATH at $Existing; skipping install"
         return
     }
 
-    $Probe = Join-Path $InstallRoot $ProbeRelativePath
+    $Probe = Join-Path (Join-Path $InstallRoot $BinSubdir) $BinaryName
     if (-not (Test-Path $Probe)) {
-        Write-Host "[*] $Name not found at $Probe; downloading..."
-        $Archive = Join-Path $env:TEMP ("$Name-" + [System.Guid]::NewGuid().ToString("N") + ".zip")
+        Write-Host "[*] $CommandName not found at $Probe; downloading..."
+        $Archive = Join-Path $env:TEMP ("$CommandName-" + [System.Guid]::NewGuid().ToString("N") + ".zip")
         Invoke-WebRequest -UseBasicParsing -Uri $Url -OutFile $Archive
 
         $ActualSha256 = (Get-FileHash -Algorithm SHA256 -Path $Archive).Hash.ToLowerInvariant()
         if ($ActualSha256 -ne $ExpectedSha256.ToLowerInvariant()) {
-            throw "$Name archive checksum mismatch: expected $ExpectedSha256, got $ActualSha256"
+            throw "$CommandName archive checksum mismatch: expected $ExpectedSha256, got $ActualSha256"
         }
 
         New-Item -ItemType Directory -Force $InstallRoot | Out-Null
@@ -209,7 +207,7 @@ function Install-CachedZipTool {
         Remove-Item -Force $Archive
 
         if (-not (Test-Path $Probe)) {
-            throw "$Name install layout unexpected: $Probe still missing after extract"
+            throw "$CommandName install layout unexpected: $Probe still missing after extract"
         }
     }
 
@@ -250,34 +248,29 @@ function Initialize-FipsBuildTools {
     $LlvmSha256   = "b4557b4f012161f56a2f5d9e877ab9635cafd7a08f7affe14829bd60c9d357f0"
 
     Install-CachedZipTool `
-        -Name "nasm" `
         -Url "https://www.nasm.us/pub/nasm/releasebuilds/$NasmVersion/win64/nasm-$NasmVersion-win64.zip" `
         -ExpectedSha256 $NasmSha256 `
         -InstallRoot (Join-Path $RepoRoot ".ci-cache\nasm\$NasmVersion") `
-        -ProbeRelativePath "nasm-$NasmVersion\nasm.exe" `
-        -BinSubdir "nasm-$NasmVersion"
+        -BinSubdir "nasm-$NasmVersion" `
+        -BinaryName "nasm.exe"
 
     # Go and Ninja are pre-installed by the Datadog LTSC2022 buildimage (phase3's
     # install_go.ps1 puts go on PATH at c:\go\<version>\go\bin; install_ninja.ps1 puts
-    # ninja.exe at c:\ninja-build\ on PATH). Pass -CommandName so Install-CachedZipTool
-    # skips the download when those are already resolvable.
+    # ninja.exe at c:\ninja-build\ on PATH). Install-CachedZipTool's BinaryName-driven
+    # Get-Command check skips the download when those are already resolvable.
     Install-CachedZipTool `
-        -Name "go" `
         -Url "https://go.dev/dl/go$GoVersion.windows-amd64.zip" `
         -ExpectedSha256 $GoSha256 `
         -InstallRoot (Join-Path $RepoRoot ".ci-cache\go\$GoVersion") `
-        -ProbeRelativePath "go\bin\go.exe" `
         -BinSubdir "go\bin" `
-        -CommandName "go"
+        -BinaryName "go.exe"
 
     Install-CachedZipTool `
-        -Name "ninja" `
         -Url "https://github.com/ninja-build/ninja/releases/download/v$NinjaVersion/ninja-win.zip" `
         -ExpectedSha256 $NinjaSha256 `
         -InstallRoot (Join-Path $RepoRoot ".ci-cache\ninja\$NinjaVersion") `
-        -ProbeRelativePath "ninja.exe" `
         -BinSubdir "" `
-        -CommandName "ninja"
+        -BinaryName "ninja.exe"
 
     # LLVM/libclang. Distributed only as tar.xz on Windows (no zip), so it doesn't fit the
     # Install-CachedZipTool shape. Inline download/verify/extract follows the same pattern.

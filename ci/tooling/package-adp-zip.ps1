@@ -99,9 +99,6 @@ try {
     New-Item -ItemType Directory -Force $env:OUTPUT_DIR | Out-Null
     $OutputPath = Join-Path $env:OUTPUT_DIR $ZipName
     if (Test-Path $OutputPath) { Remove-Item -Force $OutputPath }
-    # Compress-Archive can be slow with many small files but is sufficient here (~hundreds of
-    # license texts plus one binary). Switch to [IO.Compression.ZipFile]::CreateFromDirectory if
-    # this becomes a bottleneck.
     Compress-Archive -Path (Join-Path $StageRoot "*") -DestinationPath $OutputPath -CompressionLevel Optimal
 
     Write-Host "[*] Zip ready"

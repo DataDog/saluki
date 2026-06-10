@@ -220,5 +220,6 @@ push-release-zip-windows-amd64-fips:
     - check-deny
     - check-licenses
   variables:
-    BUILD_FEATURES: "fips"
+    # Only FIPS_SUFFIX is read by the push script (via ZIP_NAME); BUILD_FEATURES has no
+    # effect here since the push job doesn't recompile anything.
     FIPS_SUFFIX: "-fips"

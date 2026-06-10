@@ -181,13 +181,12 @@ test-integration-windows-amd64:
 build-release-zip-windows-amd64:
   extends: [.build-common-variables, .build-release-zip-windows-definition]
 
-# FIPS variant. Pulls in rustls/fips -> aws-lc-fips-sys, which has stricter native build deps
-# (NASM, Perl, CMake, MSVC) than the default aws-lc-rs. The LTSC2022 build image may not have
-# all of these out of the box; expect iteration on this job until those tools are installed
-# either at job runtime in windows-build-adp.ps1 or baked into the build image.
-#
-# Uses a separate cargo cache key so FIPS and non-FIPS dependency graphs don't churn each
-# other's incremental compilation state.
+# FIPS variant. Pulls in rustls/fips -> aws-lc-fips-sys, which builds AWS-LC from source on
+# every target and so needs the full native toolchain (NASM, LLVM/libclang, MSVC environment,
+# perl) at build time. windows-build-adp.ps1 wires those in via Initialize-FipsBuildTools and
+# friends in ci/tooling/windows-rust-env.psm1; the cache:paths below persist the heaviest
+# downloads (LLVM in particular) between runs. Uses a separate cargo cache key so FIPS and
+# non-FIPS dependency graphs don't churn each other's incremental compilation state.
 build-release-zip-windows-amd64-fips:
   extends: [.build-common-variables, .build-release-zip-windows-definition]
   cache:
