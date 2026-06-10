@@ -8,7 +8,6 @@ description: >
   build.rs panics with an overlay validation message.
 disable-model-invocation: false
 ---
-
 # /config-management
 
 ## Mental model
@@ -17,9 +16,11 @@ There is one place where config metadata is hand-edited, and everything else flo
 `build.rs` code via `make build-schema-overlay`:
 
 ```
-                         ┌──────────────────────────┐
-  vendored, untouched →  │ schema/core_schema.yaml  │
-                         └────────────┬─────────────┘
+                         ┌───────────────────────────────┐
+  vendored, untouched →  │ schema/core/core_schema.yaml  │
+                         │  + subsystem $ref files       │
+                         │  + _version.txt (upstream sha)│
+                         └────────────┬──────────────────┘
                                       │
                          ┌────────────┴──────────────┐
   hand-edited (SoT)  →   │ schema/schema_overlay.yaml│
@@ -38,14 +39,16 @@ There is one place where config metadata is hand-edited, and everything else flo
                          (shared build-dep for both build.rs files)
 ```
 
-Doc generation lives in `config-testing/build.rs`, not `config/build.rs`, because it is a
-dev/CI concern — not a prod build artifact. The generated `dogstatsd.md` is written in-tree by
-the testing build and checked for staleness in CI.
+Doc generation lives in `config-testing/build.rs`, not `config/build.rs`, because it is a dev/CI
+concern — not a prod build artifact. The generated `dogstatsd.md` is written in-tree by the testing
+build and checked for staleness in CI.
 
-The overlay partitions every key in `core_schema.yaml` into exactly one of two sections: `inventory`
-or `excluded`. Within `inventory`, each entry is tagged with a `support` field (`full`, `partial`,
-`none`, `unknown`). The model lives in the `config-overlay-model` crate; read its `lib.rs` when you
-need the exact field shape — the doc comments on the structs are authoritative.
+The overlay partitions every key in the core schema into exactly one of two sections: `inventory` or
+`excluded`. The core schema lives under `schema/core/` — `core_schema.yaml` is the root and
+references subsystem files (e.g. `apm_config.yaml`, `logs_config.yaml`) via `$ref` entries that are
+resolved during loading. Within `inventory`, each entry is tagged with a `support` field (`full`,
+`partial`, `none`, `unknown`). The model lives in the `config-overlay-model` crate; read its
+`lib.rs` when you need the exact field shape — the doc comments on the structs are authoritative.
 
 ## The cardinal rule
 
@@ -61,13 +64,15 @@ The four upstream sources, in rough order of how often you'll touch them:
    env-var overrides, aliases, smoke-test JSON, etc.
 2. The Markdown template (`*.md.tmpl` next to or above the generated `.md`) — prose layout, section
    headers, table columns, top-of-file matter.
-3. The generators — code that turns overlay+schema into Rust and Markdown. Edit these when the
-   shape of generated output needs to change, not the data.
-    - `config-overlay-model/src/schema_gen.rs`, `saluki_keys.rs` — shared build utilities
-    - `config/build/classifier_gen.rs` — prod classifier generation
-    - `config-testing/build/registry_gen.rs`, `doc_gen.rs` — test annotations + doc generation
-4. `core_schema.yaml` — only when vendoring an updated schema from upstream Datadog. The overlay
-   validator rejects keys not in the schema, so new keys must be added here first.
+3. The generators — code that turns overlay+schema into Rust and Markdown. Edit these when the shape
+   of generated output needs to change, not the data.
+   - `config-overlay-model/src/schema_gen.rs`, `saluki_keys.rs` — shared build utilities
+   - `config/build/classifier_gen.rs` — prod classifier generation
+   - `config-testing/build/registry_gen.rs`, `doc_gen.rs` — test annotations + doc generation
+4. `core/` schema files — only when vendoring an updated schema from upstream Datadog.
+   `core_schema.yaml` is the root; subsystem files are referenced via `$ref`. The overlay validator
+   rejects keys not in the schema, so new keys must be added here first. `core/_version.txt` records
+   the upstream datadog-agent commit sha.
 
 `saluki_keys.rs` lists ADP-only keys that don't exist in the vendored schema. Treat it as an
 extension of the overlay for those keys — same review rules apply.
@@ -78,16 +83,16 @@ extension of the overlay for those keys — same review rules apply.
    keys within each section are alphabetical. The build will tell you if you violate this.
 2. Make the edit. Required fields differ per `support` tag; the overlay-model `lib.rs` is the
    authoritative reference. Common gotchas:
-    - `support: full` and `support: partial` require non-empty `used_by` and `pipelines`;
-      `description` ≤ 50 chars. Test-support fields (`used_by`, `env_var_override`,
-      `additional_yaml_paths`, `value_type_override`, `test_json`, `additional_attributes`) live
-      under a `test_support:` sub-object.
-    - `support: none` with `planned: true` requires an `issue`.
-    - Multi-line `documentation` strings render as prose blocks below tables; single-line ones
-      render inside tables.
-3. Build: `cargo build -p datadog-agent-config-testing` exercises both `build.rs` files and
-   performs all overlay validation up front. Read the panic message — it names the rule and the
-   offending key.
+   - `support: full` and `support: partial` require non-empty `used_by` and `pipelines`;
+     `description` ≤ 50 chars. Test-support fields (`used_by`, `env_var_override`,
+     `additional_yaml_paths`, `value_type_override`, `test_json`, `additional_attributes`) live
+     under a `test_support:` sub-object.
+   - `support: none` with `planned: true` requires an `issue`.
+   - Multi-line `documentation` strings render as prose blocks below tables; single-line ones render
+     inside tables.
+3. Build: `cargo build -p datadog-agent-config-testing` exercises both `build.rs` files and performs
+   all overlay validation up front. Read the panic message — it names the rule and the offending
+   key.
 4. Inspect the regenerated outputs (under `config-testing/.../config_registry/` and
    `docs/agent-data-plane/configuration/`). Spot-check the diff; commit it alongside the overlay
    change.
@@ -96,18 +101,19 @@ extension of the overlay for those keys — same review rules apply.
 
 1. Confirm it's generated: look for the `@generated by build.rs` header.
 2. Decide whether the fix belongs in the data (overlay) or the shape (generator/template):
-    - Wrong description, wrong pipelines, missing entry, wrong support level → overlay.
-    - Whitespace, table formatting, section ordering, comment headers, import lines, codegen
-      macros →
-      generator code in `config/build/` or `config-testing/build/`.
-    - Prose surrounding generated tables in a `.md` → the corresponding `.md.tmpl`.
+   - Wrong description, wrong pipelines, missing entry, wrong support level → overlay.
+   - Whitespace, table formatting, section ordering, comment headers, import lines, codegen macros →
+     generator code in `config/build/` or `config-testing/build/`.
+   - Prose surrounding generated tables in a `.md` → the corresponding `.md.tmpl`.
 
 ## Common task: bumping the vendored schema
 
-Replace `core_schema.yaml`. The build will fail listing schema keys out of alignment with the
-overlay. Add each new key to the appropriate place (`support: unknown` in `inventory` is the correct
-holding pen when uncertain — never silently classify a key as `excluded` or `support: full` without
-human review).
+Replace the files under `schema/core/` with the updated schema from upstream. The root file is
+`core_schema.yaml`; subsystem files (e.g. `apm_config.yaml`) are referenced via `$ref` entries.
+Update `core/_version.txt` with the upstream datadog-agent commit sha. The build will fail listing
+schema keys out of alignment with the overlay. Add each new key to the appropriate place
+(`support: unknown` in `inventory` is the correct holding pen when uncertain — never silently
+classify a key as `excluded` or `support: full` without human review).
 
 ## Finding things
 
@@ -117,8 +123,8 @@ Prefer search over hard-coded paths because pieces of this system rename more th
 - Prod generator: `ls lib/datadog-agent/config/build/` (classifier only)
 - Test/doc generators: `ls lib/datadog-agent/config-testing/build/`
 - Doc template: `find docs -name '*.md.tmpl'`
-- Overlay model + shared build utilities: the `config-overlay-model` crate
-  (`schema_gen.rs`, `saluki_keys.rs` live here as public modules)
+- Overlay model + shared build utilities: the `config-overlay-model` crate (`schema_gen.rs`,
+  `saluki_keys.rs` live here as public modules)
 - Saluki-only keys: `config-overlay-model/src/saluki_keys.rs`
 
 ## Self-healing

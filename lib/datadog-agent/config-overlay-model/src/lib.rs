@@ -249,7 +249,7 @@ impl Default for Files {
             .join("..")
             .join("config")
             .join("schema");
-        let schema = dir.join("core_schema.yaml");
+        let schema = dir.join("core").join("core_schema.yaml");
         let overlay = dir.join("schema_overlay.yaml");
         Files { schema, overlay }
     }
