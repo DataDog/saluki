@@ -24,7 +24,8 @@ work here. Locate the overlay with:
 find lib -name schema_overlay.yaml
 ```
 
-The overlay partitions every key in `core_schema.yaml` into `inventory` or `excluded`. Within
+The overlay partitions every key in the core schema (rooted at `core/core_schema.yaml`, with
+subsystem files pulled in via `$ref`) into `inventory` or `excluded`. Within
 `inventory`, each entry is tagged with a `support` field (`full`, `partial`, `none`, `unknown`).
 Pipeline attribution, descriptions, and prose documentation all live there. The generated
 `dogstatsd.md` documentation is output, not source — edit the overlay, not the generated file.

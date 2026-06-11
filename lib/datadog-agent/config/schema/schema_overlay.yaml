@@ -55,6 +55,16 @@ inventory:
       additional_attributes:
         config_registry_filename: forwarder.rs
 
+  agent_ipc.grpc_max_message_size:
+    support: full
+    pipelines: [cross_cutting]
+    description: "Max inbound gRPC message size for IPC client"
+    test_support:
+      used_by: [RemoteAgentClientConfiguration]
+      test_json: "4194304"
+      additional_attributes:
+        config_registry_filename: get_typed.rs
+
   aggregator_buffer_size:
     support: none
     severity: low
@@ -369,6 +379,19 @@ inventory:
       additional_attributes:
         config_registry_filename: containerd.rs
 
+  data_plane.api_listen_address:
+    support: full
+    pipelines: [cross_cutting]
+    description: "Unprivileged API listen address"
+    documentation: |-
+      This is the unprivileged (internal) API endpoint. Addresses must include a URL scheme
+      (for example, `tcp://`). See `data_plane.secure_api_listen_address` for the privileged
+      endpoint.
+    test_support:
+      used_by: [get_typed]
+      additional_attributes:
+        config_registry_filename: data_plane.rs
+
   data_plane.dogstatsd.aggregator_tag_filter_cache_capacity:
     support: full
     pipelines: [dogstatsd]
@@ -378,6 +401,104 @@ inventory:
       value_type_override: integer
       additional_attributes:
         config_registry_filename: tag_filterlist.rs
+
+  data_plane.log_file:
+    support: full
+    pipelines: [cross_cutting]
+    description: "ADP log file path"
+    documentation: |-
+      ADP writes to its own log file, separate from the Core Agent. The Core Agent's `log_file`
+      key is deliberately not consulted. Set `disable_file_logging: true` to disable file logging
+      entirely, which causes this key to have no effect.
+    test_support:
+      used_by: [get_typed]
+      additional_attributes:
+        config_registry_filename: data_plane.rs
+
+  data_plane.otlp.proxy.logs.enabled:
+    support: full
+    pipelines: [otlp]
+    description: "Proxy OTLP logs to Core Agent"
+    test_support:
+      used_by: [get_typed]
+      additional_attributes:
+        config_registry_filename: data_plane.rs
+
+  data_plane.otlp.proxy.metrics.enabled:
+    support: full
+    pipelines: [otlp]
+    description: "Proxy OTLP metrics to Core Agent"
+    test_support:
+      used_by: [get_typed]
+      additional_attributes:
+        config_registry_filename: data_plane.rs
+
+  data_plane.otlp.proxy.traces.enabled:
+    support: full
+    pipelines: [otlp]
+    description: "Proxy OTLP traces to Core Agent"
+    test_support:
+      used_by: [get_typed]
+      additional_attributes:
+        config_registry_filename: data_plane.rs
+
+  data_plane.remote_agent_enabled:
+    support: full
+    pipelines: [cross_cutting]
+    description: "Enable remote agent mode"
+    documentation: |-
+      ### `data_plane.remote_agent_enabled` / `data_plane.use_new_config_stream_endpoint`
+
+      These two keys are transitional flags being phased out. Both will be implied by
+      `data_plane.standalone_mode=false` in a future release. Do not rely on them for
+      new deployments.
+    test_support:
+      used_by: [get_typed]
+      additional_attributes:
+        config_registry_filename: data_plane.rs
+
+  data_plane.secure_api_listen_address:
+    support: full
+    pipelines: [cross_cutting]
+    description: "Privileged API listen address"
+    documentation: |-
+      This is the privileged (secure) API endpoint. Addresses must include a URL scheme
+      (for example, `tcp://`). See `data_plane.api_listen_address` for the unprivileged
+      endpoint.
+    test_support:
+      used_by: [get_typed]
+      additional_attributes:
+        config_registry_filename: data_plane.rs
+
+  data_plane.telemetry_enabled:
+    support: none
+    pipelines: [cross_cutting]
+    description: "ADP telemetry toggle"
+    severity: low
+    planned: false
+    documentation: |-
+      Deprecated. ADP previously read this key to enable its internal Prometheus telemetry
+      endpoint, but no longer does so. The key is silently ignored.
+
+  data_plane.telemetry_listen_addr:
+    support: none
+    pipelines: [cross_cutting]
+    description: "ADP telemetry listen address"
+    severity: low
+    planned: false
+    documentation: |-
+      Deprecated. ADP previously read this key to configure the address of its internal
+      Prometheus telemetry endpoint, but no longer does so. The key is silently ignored.
+
+  data_plane.use_new_config_stream_endpoint:
+    support: full
+    pipelines: [cross_cutting]
+    description: "Use new config stream endpoint"
+    documentation: "See `data_plane.remote_agent_enabled` above."
+    test_support:
+      used_by: [get_typed]
+      additional_attributes:
+        config_registry_filename: data_plane.rs
 
   dd_url:
     support: full
@@ -1681,6 +1802,24 @@ inventory:
     documentation: "V2 to V3 migration PR in progress. Feature is missing but actively being addressed."
     issue: "#1468"
 
+  serializer_experimental_use_v3_api.series.shadow_sample_rate:
+    support: none
+    severity: low
+    planned: true
+    pipelines: [dogstatsd, checks, traces]
+    description: "V3 series shadow mode sample rate"
+    documentation: "V2 to V3 migration PR in progress. Feature is missing but actively being addressed."
+    issue: "#1468"
+
+  serializer_experimental_use_v3_api.series.shadow_sites:
+    support: none
+    severity: low
+    planned: true
+    pipelines: [dogstatsd, checks, traces]
+    description: "V3 series shadow mode enabled sites"
+    documentation: "V2 to V3 migration PR in progress. Feature is missing but actively being addressed."
+    issue: "#1468"
+
   serializer_experimental_use_v3_api.series.validate:
     support: none
     severity: low
@@ -2011,6 +2150,10 @@ excluded:
   admission_controller.agent_sidecar.profiles: "ignored in initial audit 2026-04-23"
   admission_controller.agent_sidecar.provider: "ignored in initial audit 2026-04-23"
   admission_controller.agent_sidecar.selectors: "ignored in initial audit 2026-04-23"
+  admission_controller.appsec.nginx.init_image: "2026-06-10 Admission Controller is a Cluster Agent Kubernetes webhook; ADP has no Kubernetes API access."
+  admission_controller.appsec.nginx.init_run_as_group: "2026-06-10 Admission Controller is a Cluster Agent Kubernetes webhook; ADP has no Kubernetes API access."
+  admission_controller.appsec.nginx.init_run_as_user: "2026-06-10 Admission Controller is a Cluster Agent Kubernetes webhook; ADP has no Kubernetes API access."
+  admission_controller.appsec.nginx.module_mount_path: "2026-06-10 Admission Controller is a Cluster Agent Kubernetes webhook; ADP has no Kubernetes API access."
   admission_controller.appsec.sidecar.body_parsing_size_limit: "ignored in initial audit 2026-04-23"
   admission_controller.appsec.sidecar.health_port: "ignored in initial audit 2026-04-23"
   admission_controller.appsec.sidecar.image: "ignored in initial audit 2026-04-23"
@@ -2023,6 +2166,7 @@ excluded:
   admission_controller.auto_instrumentation.asm.enabled: "ignored in initial audit 2026-04-23"
   admission_controller.auto_instrumentation.asm_sca.enabled: "ignored in initial audit 2026-04-23"
   admission_controller.auto_instrumentation.container_registry: "ignored in initial audit 2026-04-23"
+  admission_controller.auto_instrumentation.container_registry_allow_list: "2026-06-10 Admission Controller is a Cluster Agent Kubernetes webhook; ADP has no Kubernetes API access."
   admission_controller.auto_instrumentation.default_dd_registries: "ignored in initial audit 2026-04-23"
   admission_controller.auto_instrumentation.enabled: "ignored in initial audit 2026-04-23"
   admission_controller.auto_instrumentation.endpoint: "ignored in initial audit 2026-04-23"
@@ -2071,6 +2215,12 @@ excluded:
   admission_controller.mutate_unlabelled: "ignored in initial audit 2026-04-23"
   admission_controller.mutation.enabled: "ignored in initial audit 2026-04-23"
   admission_controller.namespace_selector_fallback: "ignored in initial audit 2026-04-23"
+  admission_controller.nccl_profiler.enabled: "2026-06-10 Admission Controller is a Cluster Agent Kubernetes webhook; ADP has no Kubernetes API access."
+  admission_controller.nccl_profiler.init_resources.cpu: "2026-06-10 Admission Controller is a Cluster Agent Kubernetes webhook; ADP has no Kubernetes API access."
+  admission_controller.nccl_profiler.init_resources.memory: "2026-06-10 Admission Controller is a Cluster Agent Kubernetes webhook; ADP has no Kubernetes API access."
+  admission_controller.nccl_profiler.injector_image: "2026-06-10 Admission Controller is a Cluster Agent Kubernetes webhook; ADP has no Kubernetes API access."
+  admission_controller.nccl_profiler.mutate_unlabelled: "2026-06-10 Admission Controller is a Cluster Agent Kubernetes webhook; ADP has no Kubernetes API access."
+  admission_controller.nccl_profiler.socket_dir: "2026-06-10 Admission Controller is a Cluster Agent Kubernetes webhook; ADP has no Kubernetes API access."
   admission_controller.pod_owners_cache_validity: "ignored in initial audit 2026-04-23"
   admission_controller.port: "ignored in initial audit 2026-04-23"
   admission_controller.probe.enabled: "ignored in initial audit 2026-04-23"
@@ -2082,6 +2232,7 @@ excluded:
   admission_controller.validation.enabled: "ignored in initial audit 2026-04-23"
   admission_controller.webhook_name: "ignored in initial audit 2026-04-23"
   agent_ipc.config_refresh_interval: "ignored in initial audit 2026-04-23"
+  agent_ipc.grpc_warning_message_size: "2026-06-10 Server-side gRPC interceptor only; ADP is a gRPC client, not a server."
   agent_ipc.host: "ignored in initial audit 2026-04-23"
   agent_ipc.port: "ignored in initial audit 2026-04-23"
   agent_ipc.socket_path: "ignored in initial audit 2026-04-23"
@@ -2112,6 +2263,40 @@ excluded:
   aggregator_tag_filter_cache_capacity: "ADP uses data_plane.dogstatsd.aggregator_tag_filter_cache_capacity instead; this core-agent key is expected to be set alongside the ADP key and should not trigger any warning"
   allow_python_path_heuristics_failure: "ignored in initial audit 2026-04-23"
   allowed_additional_checks: "ignored in initial audit 2026-04-23"
+  anomaly_detection.agent_logs.enabled: "2026-06-10 Standalone Agent anomaly-detection subsystem (comp/anomalydetection); ADP has no anomaly-detection role."
+  anomaly_detection.agent_logs.sample_rate_debug: "2026-06-10 Standalone Agent anomaly-detection subsystem (comp/anomalydetection); ADP has no anomaly-detection role."
+  anomaly_detection.agent_logs.sample_rate_info: "2026-06-10 Standalone Agent anomaly-detection subsystem (comp/anomalydetection); ADP has no anomaly-detection role."
+  anomaly_detection.agent_logs.sample_rate_trace: "2026-06-10 Standalone Agent anomaly-detection subsystem (comp/anomalydetection); ADP has no anomaly-detection role."
+  anomaly_detection.debug.dump_interval: "2026-06-10 Standalone Agent anomaly-detection subsystem (comp/anomalydetection); ADP has no anomaly-detection role."
+  anomaly_detection.debug.dump_path: "2026-06-10 Standalone Agent anomaly-detection subsystem (comp/anomalydetection); ADP has no anomaly-detection role."
+  anomaly_detection.debug.events_dump_path: "2026-06-10 Standalone Agent anomaly-detection subsystem (comp/anomalydetection); ADP has no anomaly-detection role."
+  anomaly_detection.detectors.bocpd.enabled: "2026-06-10 Standalone Agent anomaly-detection subsystem (comp/anomalydetection); ADP has no anomaly-detection role."
+  anomaly_detection.detectors.connection_error_extractor.enabled: "2026-06-10 Standalone Agent anomaly-detection subsystem (comp/anomalydetection); ADP has no anomaly-detection role."
+  anomaly_detection.detectors.cross_signal.enabled: "2026-06-10 Standalone Agent anomaly-detection subsystem (comp/anomalydetection); ADP has no anomaly-detection role."
+  anomaly_detection.detectors.cusum.enabled: "2026-06-10 Standalone Agent anomaly-detection subsystem (comp/anomalydetection); ADP has no anomaly-detection role."
+  anomaly_detection.detectors.holt_residual.enabled: "2026-06-10 Standalone Agent anomaly-detection subsystem (comp/anomalydetection); ADP has no anomaly-detection role."
+  anomaly_detection.detectors.log_metrics_extractor.enabled: "2026-06-10 Standalone Agent anomaly-detection subsystem (comp/anomalydetection); ADP has no anomaly-detection role."
+  anomaly_detection.detectors.log_pattern_extractor.enabled: "2026-06-10 Standalone Agent anomaly-detection subsystem (comp/anomalydetection); ADP has no anomaly-detection role."
+  anomaly_detection.detectors.passthrough.enabled: "2026-06-10 Standalone Agent anomaly-detection subsystem (comp/anomalydetection); ADP has no anomaly-detection role."
+  anomaly_detection.detectors.rrcf.enabled: "2026-06-10 Standalone Agent anomaly-detection subsystem (comp/anomalydetection); ADP has no anomaly-detection role."
+  anomaly_detection.detectors.scanmw.enabled: "2026-06-10 Standalone Agent anomaly-detection subsystem (comp/anomalydetection); ADP has no anomaly-detection role."
+  anomaly_detection.detectors.scanwelch.enabled: "2026-06-10 Standalone Agent anomaly-detection subsystem (comp/anomalydetection); ADP has no anomaly-detection role."
+  anomaly_detection.detectors.time_cluster.enabled: "2026-06-10 Standalone Agent anomaly-detection subsystem (comp/anomalydetection); ADP has no anomaly-detection role."
+  anomaly_detection.detectors.time_cluster.min_cluster_size: "2026-06-10 Standalone Agent anomaly-detection subsystem (comp/anomalydetection); ADP has no anomaly-detection role."
+  anomaly_detection.detectors.tukey_biweight.enabled: "2026-06-10 Standalone Agent anomaly-detection subsystem (comp/anomalydetection); ADP has no anomaly-detection role."
+  anomaly_detection.enabled: "2026-06-10 Standalone Agent anomaly-detection subsystem (comp/anomalydetection); ADP has no anomaly-detection role."
+  anomaly_detection.logs.containers.enabled: "2026-06-10 Standalone Agent anomaly-detection subsystem (comp/anomalydetection); ADP has no anomaly-detection role."
+  anomaly_detection.logs.enabled: "2026-06-10 Standalone Agent anomaly-detection subsystem (comp/anomalydetection); ADP has no anomaly-detection role."
+  anomaly_detection.logs.kubelet.enabled: "2026-06-10 Standalone Agent anomaly-detection subsystem (comp/anomalydetection); ADP has no anomaly-detection role."
+  anomaly_detection.metrics.enabled: "2026-06-10 Standalone Agent anomaly-detection subsystem (comp/anomalydetection); ADP has no anomaly-detection role."
+  anomaly_detection.recording.enabled: "2026-06-10 Standalone Agent anomaly-detection subsystem (comp/anomalydetection); ADP has no anomaly-detection role."
+  anomaly_detection.recording.flush_interval: "2026-06-10 Standalone Agent anomaly-detection subsystem (comp/anomalydetection); ADP has no anomaly-detection role."
+  anomaly_detection.recording.output_dir: "2026-06-10 Standalone Agent anomaly-detection subsystem (comp/anomalydetection); ADP has no anomaly-detection role."
+  anomaly_detection.recording.retention: "2026-06-10 Standalone Agent anomaly-detection subsystem (comp/anomalydetection); ADP has no anomaly-detection role."
+  anomaly_detection.reporting.enabled: "2026-06-10 Standalone Agent anomaly-detection subsystem (comp/anomalydetection); ADP has no anomaly-detection role."
+  anomaly_detection.storage.eviction_floor_ratio: "2026-06-10 Standalone Agent anomaly-detection subsystem (comp/anomalydetection); ADP has no anomaly-detection role."
+  anomaly_detection.storage.max_series: "2026-06-10 Standalone Agent anomaly-detection subsystem (comp/anomalydetection); ADP has no anomaly-detection role."
+  anomaly_detection.storage.point_retention_secs: "2026-06-10 Standalone Agent anomaly-detection subsystem (comp/anomalydetection); ADP has no anomaly-detection role."
   apm_config.additional_endpoints: "ignored in initial audit 2026-04-23"
   apm_config.additional_profile_tags: "ignored in initial audit 2026-04-23"
   apm_config.analyzed_rate_by_service: "ignored in initial audit 2026-04-23"
@@ -2132,6 +2317,7 @@ excluded:
   apm_config.debugger_diagnostics_additional_endpoints: "ignored in initial audit 2026-04-23"
   apm_config.debugger_diagnostics_api_key: "ignored in initial audit 2026-04-23"
   apm_config.debugger_diagnostics_dd_url: "ignored in initial audit 2026-04-23"
+  apm_config.debugger_logs_enabled_override: "2026-06-10 APM trace/profiling pipeline feature (comp/trace); ADP does not run the trace agent."
   apm_config.decoder_timeout: "ignored in initial audit 2026-04-23"
   apm_config.decoders: "ignored in initial audit 2026-04-23"
   apm_config.disable_rare_sampler: "ignored in initial audit 2026-04-23"
@@ -2151,6 +2337,7 @@ excluded:
   apm_config.install_id: "ignored in initial audit 2026-04-23"
   apm_config.install_time: "ignored in initial audit 2026-04-23"
   apm_config.install_type: "ignored in initial audit 2026-04-23"
+  apm_config.instrumentation.csi_driver_detection_enabled: "2026-06-10 APM trace/profiling pipeline feature (comp/trace); ADP does not run the trace agent."
   apm_config.instrumentation.disabled_namespaces: "ignored in initial audit 2026-04-23"
   apm_config.instrumentation.enabled: "ignored in initial audit 2026-04-23"
   apm_config.instrumentation.enabled_namespaces: "ignored in initial audit 2026-04-23"
@@ -2188,7 +2375,9 @@ excluded:
   apm_config.probabilistic_sampler.sampling_percentage: "ignored in initial audit 2026-04-23"
   apm_config.profiling_additional_endpoints: "ignored in initial audit 2026-04-23"
   apm_config.profiling_dd_url: "ignored in initial audit 2026-04-23"
+  apm_config.profiling_max_request_bytes: "2026-06-10 APM trace/profiling pipeline feature (comp/trace); ADP does not run the trace agent."
   apm_config.profiling_receiver_timeout: "ignored in initial audit 2026-04-23"
+  apm_config.profiling_send_to_main_endpoint: "2026-06-10 APM trace/profiling pipeline feature (comp/trace); ADP does not run the trace agent."
   apm_config.receiver_enabled: "ignored in initial audit 2026-04-23"
   apm_config.receiver_port: "ignored in initial audit 2026-04-23"
   apm_config.receiver_socket: "ignored in initial audit 2026-04-23"
@@ -2236,6 +2425,12 @@ excluded:
   autoconfig_from_environment: "ignored in initial audit 2026-04-23"
   autoconfig_include_features: "ignored in initial audit 2026-04-23"
   autoscaling.cluster.enabled: "ignored in initial audit 2026-04-23"
+  autoscaling.cluster.spot.defaults.min_on_demand_replicas: "2026-06-10 Cluster Agent spot-scheduling feature (clusteragent/autoscaling); ADP has no pod-scheduling role."
+  autoscaling.cluster.spot.defaults.percentage: "2026-06-10 Cluster Agent spot-scheduling feature (clusteragent/autoscaling); ADP has no pod-scheduling role."
+  autoscaling.cluster.spot.enabled: "2026-06-10 Cluster Agent spot-scheduling feature (clusteragent/autoscaling); ADP has no pod-scheduling role."
+  autoscaling.cluster.spot.fallback_duration: "2026-06-10 Cluster Agent spot-scheduling feature (clusteragent/autoscaling); ADP has no pod-scheduling role."
+  autoscaling.cluster.spot.rebalance_stabilization_period: "2026-06-10 Cluster Agent spot-scheduling feature (clusteragent/autoscaling); ADP has no pod-scheduling role."
+  autoscaling.cluster.spot.schedule_timeout: "2026-06-10 Cluster Agent spot-scheduling feature (clusteragent/autoscaling); ADP has no pod-scheduling role."
   autoscaling.workload.enabled: "ignored in initial audit 2026-04-23"
   autoscaling.workload.external_recommender.tls.ca_file: "ignored in initial audit 2026-04-23"
   autoscaling.workload.external_recommender.tls.cert_file: "ignored in initial audit 2026-04-23"
@@ -2490,7 +2685,6 @@ excluded:
   data_observability.forwarder.use_compression: "ignored in initial audit 2026-04-23"
   data_observability.forwarder.use_v2_api: "ignored in initial audit 2026-04-23"
   data_observability.forwarder.zstd_compression_level: "ignored in initial audit 2026-04-23"
-  data_observability.query_actions.enabled: "ignored in initial audit 2026-04-23"
   data_plane.dogstatsd.enabled: "ignored in second bulk edit 2026-05-06"
   data_plane.enabled: "ignored in second bulk edit 2026-05-06"
   data_plane.otlp.enabled: "ignored in initial audit 2026-04-23"
@@ -2676,6 +2870,7 @@ excluded:
   external_metrics.aggregator: "ignored in initial audit 2026-04-23"
   external_metrics_provider.api_key: "ignored in initial audit 2026-04-23"
   external_metrics_provider.app_key: "ignored in initial audit 2026-04-23"
+  external_metrics_provider.autoscaler_autogen_label_selector: "2026-06-10 K8s HPA autoscaling via Cluster Agent; no ADP relevance."
   external_metrics_provider.batch_window: "ignored in initial audit 2026-04-23"
   external_metrics_provider.bucket_size: "ignored in initial audit 2026-04-23"
   external_metrics_provider.chunk_size: "ignored in initial audit 2026-04-23"
@@ -2715,10 +2910,34 @@ excluded:
   fleet_policies_dir: "ignored in initial audit 2026-04-23"
   gce_metadata_timeout: "ignored in initial audit 2026-04-23"
   gce_send_project_id_tag: "ignored in initial audit 2026-04-23"
+  genresources.additional_endpoints: "2026-06-10 Generic Resources event-platform forwarder pipeline; Go Agent only, no ADP involvement."
+  genresources.batch_max_concurrent_send: "2026-06-10 Generic Resources event-platform forwarder pipeline; Go Agent only, no ADP involvement."
+  genresources.batch_max_content_size: "2026-06-10 Generic Resources event-platform forwarder pipeline; Go Agent only, no ADP involvement."
+  genresources.batch_max_size: "2026-06-10 Generic Resources event-platform forwarder pipeline; Go Agent only, no ADP involvement."
+  genresources.batch_wait: "2026-06-10 Generic Resources event-platform forwarder pipeline; Go Agent only, no ADP involvement."
+  genresources.compression_kind: "2026-06-10 Generic Resources event-platform forwarder pipeline; Go Agent only, no ADP involvement."
+  genresources.compression_level: "2026-06-10 Generic Resources event-platform forwarder pipeline; Go Agent only, no ADP involvement."
+  genresources.connection_reset_interval: "2026-06-10 Generic Resources event-platform forwarder pipeline; Go Agent only, no ADP involvement."
+  genresources.dd_url: "2026-06-10 Generic Resources event-platform forwarder pipeline; Go Agent only, no ADP involvement."
+  genresources.dev_mode_no_ssl: "2026-06-10 Generic Resources event-platform forwarder pipeline; Go Agent only, no ADP involvement."
+  genresources.input_chan_size: "2026-06-10 Generic Resources event-platform forwarder pipeline; Go Agent only, no ADP involvement."
+  genresources.logs_dd_url: "2026-06-10 Generic Resources event-platform forwarder pipeline; Go Agent only, no ADP involvement."
+  genresources.logs_no_ssl: "2026-06-10 Generic Resources event-platform forwarder pipeline; Go Agent only, no ADP involvement."
+  genresources.sender_backoff_base: "2026-06-10 Generic Resources event-platform forwarder pipeline; Go Agent only, no ADP involvement."
+  genresources.sender_backoff_factor: "2026-06-10 Generic Resources event-platform forwarder pipeline; Go Agent only, no ADP involvement."
+  genresources.sender_backoff_max: "2026-06-10 Generic Resources event-platform forwarder pipeline; Go Agent only, no ADP involvement."
+  genresources.sender_recovery_interval: "2026-06-10 Generic Resources event-platform forwarder pipeline; Go Agent only, no ADP involvement."
+  genresources.sender_recovery_reset: "2026-06-10 Generic Resources event-platform forwarder pipeline; Go Agent only, no ADP involvement."
+  genresources.use_compression: "2026-06-10 Generic Resources event-platform forwarder pipeline; Go Agent only, no ADP involvement."
+  genresources.use_v2_api: "2026-06-10 Generic Resources event-platform forwarder pipeline; Go Agent only, no ADP involvement."
+  genresources.zstd_compression_level: "2026-06-10 Generic Resources event-platform forwarder pipeline; Go Agent only, no ADP involvement."
   go_core_dump: "ignored in initial audit 2026-04-23"
   gpu.disabled_collectors: "ignored in initial audit 2026-04-23"
   gpu.enabled: "ignored in initial audit 2026-04-23"
   gpu.integrate_with_workloadmeta_processes: "ignored in initial audit 2026-04-23"
+  gpu.nccl.enabled: "2026-06-10 NCCL GPU core check; runs in Go Agent collector, ADP has no core checks."
+  gpu.nccl.host_socket_path: "2026-06-10 NCCL GPU core check; runs in Go Agent collector, ADP has no core checks."
+  gpu.nccl.socket_path: "2026-06-10 NCCL GPU core check; runs in Go Agent collector, ADP has no core checks."
   gpu.nvml_lib_path: "ignored in initial audit 2026-04-23"
   gpu.sp_process_metrics_request_timeout: "ignored in initial audit 2026-04-23"
   gpu.use_sp_process_metrics: "ignored in initial audit 2026-04-23"
@@ -2727,6 +2946,7 @@ excluded:
   ha_agent.group: "ignored in initial audit 2026-04-23"
   health_platform.enabled: "ignored in initial audit 2026-04-23"
   health_platform.forwarder.interval: "ignored in initial audit 2026-04-23"
+  health_platform.invalidconfig_check.enabled: "2026-06-10 Health platform subsystem; sibling keys excluded in Apr 2026 audit."
   health_platform.persist_on_kubernetes: "ignored in initial audit 2026-04-23"
   health_port: "ignored in initial audit 2026-04-23"
   histogram_percentiles: "ignored in second bulk edit 2026-05-06"
@@ -2742,6 +2962,9 @@ excluded:
   hostprofiler.ddprofiling.enabled: "ignored in initial audit 2026-04-23"
   hostprofiler.ddprofiling.period: "ignored in initial audit 2026-04-23"
   hostprofiler.debug.verbosity: "ignored in initial audit 2026-04-23"
+  hostprofiler.health_metrics.enabled: "2026-06-10 Host profiler subsystem; sibling keys excluded in Apr 2026 audit."
+  hostprofiler.health_metrics.target: "2026-06-10 Host profiler health metrics scrape target; same excluded subsystem."
+  hostprofiler.hpflare.port: "2026-06-10 Host profiler hpflare listener port; same excluded subsystem."
   hpa_configmap_name: "ignored in initial audit 2026-04-23"
   hpa_watcher_gc_period: "ignored in initial audit 2026-04-23"
   hpa_watcher_polling_freq: "ignored in initial audit 2026-04-23"
@@ -2758,6 +2981,7 @@ excluded:
   installer.registry.password: "ignored in initial audit 2026-04-23"
   installer.registry.url: "ignored in initial audit 2026-04-23"
   installer.registry.username: "ignored in initial audit 2026-04-23"
+  instrumentation_crd_controller.enabled: "2026-06-10 K8s CRD controller for APM auto-instrumentation; Cluster Agent concern."
   integration.additional: "ignored in initial audit 2026-04-23"
   integration.basic.allowed: "ignored in initial audit 2026-04-23"
   integration.enabled: "ignored in initial audit 2026-04-23"
@@ -2819,6 +3043,27 @@ excluded:
   kube_cache_sync_timeout_seconds: "ignored in initial audit 2026-04-23"
   kube_resources_namespace: "ignored in initial audit 2026-04-23"
   kubeactions.enabled: "ignored in initial audit 2026-04-23"
+  kubeactions.forwarder.additional_endpoints: "2026-06-10 Cluster Agent kubeactions event-platform forwarder; Cluster Agent only, no ADP involvement."
+  kubeactions.forwarder.batch_max_concurrent_send: "2026-06-10 Cluster Agent kubeactions event-platform forwarder; Cluster Agent only, no ADP involvement."
+  kubeactions.forwarder.batch_max_content_size: "2026-06-10 Cluster Agent kubeactions event-platform forwarder; Cluster Agent only, no ADP involvement."
+  kubeactions.forwarder.batch_max_size: "2026-06-10 Cluster Agent kubeactions event-platform forwarder; Cluster Agent only, no ADP involvement."
+  kubeactions.forwarder.batch_wait: "2026-06-10 Cluster Agent kubeactions event-platform forwarder; Cluster Agent only, no ADP involvement."
+  kubeactions.forwarder.compression_kind: "2026-06-10 Cluster Agent kubeactions event-platform forwarder; Cluster Agent only, no ADP involvement."
+  kubeactions.forwarder.compression_level: "2026-06-10 Cluster Agent kubeactions event-platform forwarder; Cluster Agent only, no ADP involvement."
+  kubeactions.forwarder.connection_reset_interval: "2026-06-10 Cluster Agent kubeactions event-platform forwarder; Cluster Agent only, no ADP involvement."
+  kubeactions.forwarder.dd_url: "2026-06-10 Cluster Agent kubeactions event-platform forwarder; Cluster Agent only, no ADP involvement."
+  kubeactions.forwarder.dev_mode_no_ssl: "2026-06-10 Cluster Agent kubeactions event-platform forwarder; Cluster Agent only, no ADP involvement."
+  kubeactions.forwarder.input_chan_size: "2026-06-10 Cluster Agent kubeactions event-platform forwarder; Cluster Agent only, no ADP involvement."
+  kubeactions.forwarder.logs_dd_url: "2026-06-10 Cluster Agent kubeactions event-platform forwarder; Cluster Agent only, no ADP involvement."
+  kubeactions.forwarder.logs_no_ssl: "2026-06-10 Cluster Agent kubeactions event-platform forwarder; Cluster Agent only, no ADP involvement."
+  kubeactions.forwarder.sender_backoff_base: "2026-06-10 Cluster Agent kubeactions event-platform forwarder; Cluster Agent only, no ADP involvement."
+  kubeactions.forwarder.sender_backoff_factor: "2026-06-10 Cluster Agent kubeactions event-platform forwarder; Cluster Agent only, no ADP involvement."
+  kubeactions.forwarder.sender_backoff_max: "2026-06-10 Cluster Agent kubeactions event-platform forwarder; Cluster Agent only, no ADP involvement."
+  kubeactions.forwarder.sender_recovery_interval: "2026-06-10 Cluster Agent kubeactions event-platform forwarder; Cluster Agent only, no ADP involvement."
+  kubeactions.forwarder.sender_recovery_reset: "2026-06-10 Cluster Agent kubeactions event-platform forwarder; Cluster Agent only, no ADP involvement."
+  kubeactions.forwarder.use_compression: "2026-06-10 Cluster Agent kubeactions event-platform forwarder; Cluster Agent only, no ADP involvement."
+  kubeactions.forwarder.use_v2_api: "2026-06-10 Cluster Agent kubeactions event-platform forwarder; Cluster Agent only, no ADP involvement."
+  kubeactions.forwarder.zstd_compression_level: "2026-06-10 Cluster Agent kubeactions event-platform forwarder; Cluster Agent only, no ADP involvement."
   kubelet_auth_token_path: "ignored in initial audit 2026-04-23"
   kubelet_cache_pods_duration: "ignored in initial audit 2026-04-23"
   kubelet_client_ca: "ignored in initial audit 2026-04-23"
@@ -2931,10 +3176,16 @@ excluded:
   logs_config.expected_tags_duration: "ignored in initial audit 2026-04-23"
   logs_config.experimental_adaptive_sampling.burst_size: "ignored in initial audit 2026-04-23"
   logs_config.experimental_adaptive_sampling.enabled: "ignored in initial audit 2026-04-23"
+  logs_config.experimental_adaptive_sampling.exclude: "2026-06-10 Experimental log adaptive sampling; Go Agent log decoder feature, ADP has no log decoder."
+  logs_config.experimental_adaptive_sampling.include: "2026-06-10 Experimental log adaptive sampling; Go Agent log decoder feature, ADP has no log decoder."
   logs_config.experimental_adaptive_sampling.match_threshold: "ignored in initial audit 2026-04-23"
   logs_config.experimental_adaptive_sampling.max_patterns: "ignored in initial audit 2026-04-23"
+  logs_config.experimental_adaptive_sampling.protect_important_logs: "2026-06-10 Experimental log adaptive sampling; Go Agent log decoder feature, ADP has no log decoder."
   logs_config.experimental_adaptive_sampling.rate_limit: "ignored in initial audit 2026-04-23"
+  logs_config.experimental_adaptive_sampling.tag_pattern_hash: "2026-06-10 Experimental log adaptive sampling; Go Agent log decoder feature, ADP has no log decoder."
   logs_config.experimental_adaptive_sampling.tokenizer_max_input_bytes: "ignored in initial audit 2026-04-23"
+  logs_config.experimental_auto_multi_line_detection: "2026-06-10 Experimental log multi-line detection; Go Agent log decoder feature, ADP has no log decoder."
+  logs_config.experimental_noisy_log_detection: "2026-06-10 Experimental noisy log tagging; Go Agent log decoder feature, ADP has no log decoder."
   logs_config.file_scan_period: "ignored in initial audit 2026-04-23"
   logs_config.file_wildcard_selection_mode: "ignored in initial audit 2026-04-23"
   logs_config.fingerprint_config.count: "ignored in initial audit 2026-04-23"
@@ -2979,6 +3230,7 @@ excluded:
   logs_config.tag_truncated_logs: "ignored in initial audit 2026-04-23"
   logs_config.tagger_warmup_duration: "ignored in initial audit 2026-04-23"
   logs_config.use_compression: "ignored in initial audit 2026-04-23"
+  logs_config.use_container_timestamp: "2026-06-10 Container file log timestamp mode; ADP has no container log file source."
   logs_config.use_http: "ignored in initial audit 2026-04-23"
   logs_config.use_podman_logs: "ignored in initial audit 2026-04-23"
   logs_config.use_port_443: "ignored in initial audit 2026-04-23"
@@ -2995,6 +3247,7 @@ excluded:
   metadata_provider_stop_timeout: "ignored in initial audit 2026-04-23"
   metadata_providers: "ignored in initial audit 2026-04-23"
   metric_tag_filterlist: "ignored in second bulk edit 2026-05-06"
+  metric_tag_filterlist_adp_only: "2026-06-10 Gate controlling whether tag filtering applies only when ADP is enabled; full-agent-only key, ADP always applies filtering unconditionally."
   metrics_port: "ignored in initial audit 2026-04-23"
   multi_region_failover.failover_apm: "ignored in initial audit 2026-04-23"
   multi_region_failover.failover_logs: "ignored in initial audit 2026-04-23"
@@ -3008,29 +3261,9 @@ excluded:
   multi_region_failover.remote_configuration.max_backoff_time: "ignored in initial audit 2026-04-23"
   multi_region_failover.remote_configuration.org_status_refresh_interval: "ignored in initial audit 2026-04-23"
   multi_region_failover.remote_configuration.refresh_interval: "ignored in initial audit 2026-04-23"
+  multi_secret_backends: "2026-06-10 Named secret backend routing (ENC[...]); secret resolution handled by core Agent, not ADP."
   network.id: "ignored in initial audit 2026-04-23"
   network_check.use_core_loader: "ignored in initial audit 2026-04-23"
-  network_config_management.forwarder.additional_endpoints: "ignored in initial audit 2026-04-23"
-  network_config_management.forwarder.batch_max_concurrent_send: "ignored in initial audit 2026-04-23"
-  network_config_management.forwarder.batch_max_content_size: "ignored in initial audit 2026-04-23"
-  network_config_management.forwarder.batch_max_size: "ignored in initial audit 2026-04-23"
-  network_config_management.forwarder.batch_wait: "ignored in initial audit 2026-04-23"
-  network_config_management.forwarder.compression_kind: "ignored in initial audit 2026-04-23"
-  network_config_management.forwarder.compression_level: "ignored in initial audit 2026-04-23"
-  network_config_management.forwarder.connection_reset_interval: "ignored in initial audit 2026-04-23"
-  network_config_management.forwarder.dd_url: "ignored in initial audit 2026-04-23"
-  network_config_management.forwarder.dev_mode_no_ssl: "ignored in initial audit 2026-04-23"
-  network_config_management.forwarder.input_chan_size: "ignored in initial audit 2026-04-23"
-  network_config_management.forwarder.logs_dd_url: "ignored in initial audit 2026-04-23"
-  network_config_management.forwarder.logs_no_ssl: "ignored in initial audit 2026-04-23"
-  network_config_management.forwarder.sender_backoff_base: "ignored in initial audit 2026-04-23"
-  network_config_management.forwarder.sender_backoff_factor: "ignored in initial audit 2026-04-23"
-  network_config_management.forwarder.sender_backoff_max: "ignored in initial audit 2026-04-23"
-  network_config_management.forwarder.sender_recovery_interval: "ignored in initial audit 2026-04-23"
-  network_config_management.forwarder.sender_recovery_reset: "ignored in initial audit 2026-04-23"
-  network_config_management.forwarder.use_compression: "ignored in initial audit 2026-04-23"
-  network_config_management.forwarder.use_v2_api: "ignored in initial audit 2026-04-23"
-  network_config_management.forwarder.zstd_compression_level: "ignored in initial audit 2026-04-23"
   network_devices.autodiscovery.allowed_failures: "ignored in initial audit 2026-04-23"
   network_devices.autodiscovery.collect_device_metadata: "ignored in initial audit 2026-04-23"
   network_devices.autodiscovery.collect_topology: "ignored in initial audit 2026-04-23"
@@ -3052,6 +3285,28 @@ excluded:
   network_devices.autodiscovery.use_deduplication: "ignored in initial audit 2026-04-23"
   network_devices.autodiscovery.use_device_id_as_hostname: "ignored in initial audit 2026-04-23"
   network_devices.autodiscovery.workers: "ignored in initial audit 2026-04-23"
+  network_devices.config_management.forwarder.additional_endpoints: "2026-06-10 NDM config-management event-platform forwarder; Go Agent NDM subsystem, no ADP involvement."
+  network_devices.config_management.forwarder.batch_max_concurrent_send: "2026-06-10 NDM config-management event-platform forwarder; Go Agent NDM subsystem, no ADP involvement."
+  network_devices.config_management.forwarder.batch_max_content_size: "2026-06-10 NDM config-management event-platform forwarder; Go Agent NDM subsystem, no ADP involvement."
+  network_devices.config_management.forwarder.batch_max_size: "2026-06-10 NDM config-management event-platform forwarder; Go Agent NDM subsystem, no ADP involvement."
+  network_devices.config_management.forwarder.batch_wait: "2026-06-10 NDM config-management event-platform forwarder; Go Agent NDM subsystem, no ADP involvement."
+  network_devices.config_management.forwarder.compression_kind: "2026-06-10 NDM config-management event-platform forwarder; Go Agent NDM subsystem, no ADP involvement."
+  network_devices.config_management.forwarder.compression_level: "2026-06-10 NDM config-management event-platform forwarder; Go Agent NDM subsystem, no ADP involvement."
+  network_devices.config_management.forwarder.connection_reset_interval: "2026-06-10 NDM config-management event-platform forwarder; Go Agent NDM subsystem, no ADP involvement."
+  network_devices.config_management.forwarder.dd_url: "2026-06-10 NDM config-management event-platform forwarder; Go Agent NDM subsystem, no ADP involvement."
+  network_devices.config_management.forwarder.dev_mode_no_ssl: "2026-06-10 NDM config-management event-platform forwarder; Go Agent NDM subsystem, no ADP involvement."
+  network_devices.config_management.forwarder.input_chan_size: "2026-06-10 NDM config-management event-platform forwarder; Go Agent NDM subsystem, no ADP involvement."
+  network_devices.config_management.forwarder.logs_dd_url: "2026-06-10 NDM config-management event-platform forwarder; Go Agent NDM subsystem, no ADP involvement."
+  network_devices.config_management.forwarder.logs_no_ssl: "2026-06-10 NDM config-management event-platform forwarder; Go Agent NDM subsystem, no ADP involvement."
+  network_devices.config_management.forwarder.sender_backoff_base: "2026-06-10 NDM config-management event-platform forwarder; Go Agent NDM subsystem, no ADP involvement."
+  network_devices.config_management.forwarder.sender_backoff_factor: "2026-06-10 NDM config-management event-platform forwarder; Go Agent NDM subsystem, no ADP involvement."
+  network_devices.config_management.forwarder.sender_backoff_max: "2026-06-10 NDM config-management event-platform forwarder; Go Agent NDM subsystem, no ADP involvement."
+  network_devices.config_management.forwarder.sender_recovery_interval: "2026-06-10 NDM config-management event-platform forwarder; Go Agent NDM subsystem, no ADP involvement."
+  network_devices.config_management.forwarder.sender_recovery_reset: "2026-06-10 NDM config-management event-platform forwarder; Go Agent NDM subsystem, no ADP involvement."
+  network_devices.config_management.forwarder.use_compression: "2026-06-10 NDM config-management event-platform forwarder; Go Agent NDM subsystem, no ADP involvement."
+  network_devices.config_management.forwarder.use_v2_api: "2026-06-10 NDM config-management event-platform forwarder; Go Agent NDM subsystem, no ADP involvement."
+  network_devices.config_management.forwarder.zstd_compression_level: "2026-06-10 NDM config-management event-platform forwarder; Go Agent NDM subsystem, no ADP involvement."
+  network_devices.config_management.rollback.enabled: "2026-06-10 NDM device config rollback; Go Agent NDM subsystem, no ADP involvement."
   network_devices.default_scan.enabled: "ignored in initial audit 2026-04-23"
   network_devices.default_scan.excluded_ips: "ignored in initial audit 2026-04-23"
   network_devices.metadata.additional_endpoints: "ignored in initial audit 2026-04-23"
@@ -3132,6 +3387,7 @@ excluded:
   network_devices.snmp_traps.forwarder.zstd_compression_level: "ignored in initial audit 2026-04-23"
   network_devices.snmp_traps.port: "ignored in initial audit 2026-04-23"
   network_devices.snmp_traps.stop_timeout: "ignored in initial audit 2026-04-23"
+  network_devices.snmp_traps.tags: "2026-06-10 SNMP traps default tags; Go Agent SNMP trap listener, no ADP involvement."
   network_devices.snmp_traps.users: "ignored in initial audit 2026-04-23"
   network_path.collector.dest_excludes: "ignored in initial audit 2026-04-23"
   network_path.collector.disable_intra_vpc_collection: "ignored in initial audit 2026-04-23"
@@ -3180,6 +3436,8 @@ excluded:
   network_path.forwarder.use_v2_api: "ignored in initial audit 2026-04-23"
   network_path.forwarder.zstd_compression_level: "ignored in initial audit 2026-04-23"
   notable_events.enabled: "ignored in initial audit 2026-04-23"
+  observability_pipelines_worker.logs.dual_ship: "2026-06-10 Logs-only OPW dual-ship; RefImpl comment confirms no metrics equivalent."
+  observability_pipelines_worker.logs.dual_ship_reliable: "2026-06-10 Logs-only OPW dual-ship backpressure; same exclusion rationale."
   observability_pipelines_worker.logs.enabled: "OPW logs routing out of scope for ADP"
   observability_pipelines_worker.logs.url: "OPW logs routing out of scope for ADP"
   observability_pipelines_worker.traces.enabled: "OPW traces routing out of scope for ADP"
@@ -3261,6 +3519,8 @@ excluded:
   podman_db_path: "ignored in initial audit 2026-04-23"
   prioritize_go_check_loader: "ignored in initial audit 2026-04-23"
   private_action_runner.actions_allowlist: "ignored in initial audit 2026-04-23"
+  private_action_runner.api_key_only_enrollment: "2026-06-10 Private Action Runner is a standalone Go Agent component; no ADP integration."
+  private_action_runner.default_actions_enabled: "2026-06-10 Private Action Runner is a standalone Go Agent component; no ADP integration."
   private_action_runner.enabled: "ignored in initial audit 2026-04-23"
   private_action_runner.http_allow_imds_endpoint: "ignored in initial audit 2026-04-23"
   private_action_runner.http_allowlist: "ignored in initial audit 2026-04-23"
@@ -3269,9 +3529,12 @@ excluded:
   private_action_runner.identity_secret_name: "ignored in second bulk edit 2026-05-06"
   private_action_runner.identity_use_k8s_secret: "ignored in second bulk edit 2026-05-06"
   private_action_runner.log_file: "ignored in second bulk edit 2026-05-06"
+  private_action_runner.opms_extra_headers: "2026-06-10 Private Action Runner is a standalone Go Agent component; no ADP integration."
   private_action_runner.private_key: "ignored in second bulk edit 2026-05-06"
-  private_action_runner.restricted_shell_allowed_paths: "ignored in second bulk edit 2026-05-06"
+  private_action_runner.restricted_shell.allowed_commands: "2026-06-10 Private Action Runner is a standalone Go Agent component; no ADP integration."
+  private_action_runner.restricted_shell.allowed_paths: "2026-06-10 Private Action Runner is a standalone Go Agent component; no ADP integration."
   private_action_runner.self_enroll: "ignored in initial audit 2026-04-23"
+  private_action_runner.skip_connection_creation: "2026-06-10 Private Action Runner is a standalone Go Agent component; no ADP integration."
   private_action_runner.task_concurrency: "ignored in initial audit 2026-04-23"
   private_action_runner.task_timeout_seconds: "ignored in initial audit 2026-04-23"
   private_action_runner.urn: "ignored in second bulk edit 2026-05-06"
@@ -3314,24 +3577,29 @@ excluded:
   process_config.strip_proc_arguments: "ignored in initial audit 2026-04-23"
   process_config.windows.use_perf_counters: "ignored in initial audit 2026-04-23"
   procfs_path: "ignored in initial audit 2026-04-23"
+  prometheus_http_sd.check_template: "2026-06-10 Prometheus HTTP SD for check autodiscovery; deprecated. ADP has no autodiscovery subsystem."
+  prometheus_http_sd.configs: "2026-06-10 Prometheus HTTP SD endpoint list; ADP has no autodiscovery subsystem."
+  prometheus_http_sd.url: "2026-06-10 Prometheus HTTP SD URL; deprecated. ADP has no autodiscovery subsystem."
   prometheus_scrape.checks: "ignored in initial audit 2026-04-23"
   prometheus_scrape.enabled: "ignored in initial audit 2026-04-23"
   prometheus_scrape.service_endpoints: "ignored in initial audit 2026-04-23"
   prometheus_scrape.version: "ignored in initial audit 2026-04-23"
   python3_linter_timeout: "ignored in initial audit 2026-04-23"
   python_lazy_loading: "ignored in initial audit 2026-04-23"
-  remote_agent.configstream.enabled: "ignored in initial audit 2026-04-23"
+  remote_agent.configstream.consumer.enabled: "2026-06-10 Go configstream consumer component; ADP uses its own Rust configstream path under data_plane.*."
   remote_agent.configstream.sleep_interval: "ignored in initial audit 2026-04-23"
   remote_agent.registry.enabled: "ignored in initial audit 2026-04-23"
   remote_agent.registry.idle_timeout: "ignored in initial audit 2026-04-23"
   remote_agent.registry.query_timeout: "ignored in initial audit 2026-04-23"
   remote_agent.registry.recommended_refresh_interval: "ignored in initial audit 2026-04-23"
+  remote_configuration.agent_config.enabled: "2026-06-10 Trace-agent AGENT_CONFIG RC subscription; APM/trace concern outside ADP scope."
   remote_configuration.agent_integrations.allow_list: "ignored in initial audit 2026-04-23"
   remote_configuration.agent_integrations.allow_log_config_scheduling: "ignored in initial audit 2026-04-23"
   remote_configuration.agent_integrations.block_list: "ignored in initial audit 2026-04-23"
   remote_configuration.agent_integrations.enabled: "ignored in initial audit 2026-04-23"
   remote_configuration.api_key: "ignored in initial audit 2026-04-23"
   remote_configuration.apm_sampling.enabled: "ignored in initial audit 2026-04-23"
+  remote_configuration.apm_semantics.enabled: "2026-06-10 Trace-agent APM_SEMANTIC_CORE_DD RC subscription; APM/trace concern outside ADP scope."
   remote_configuration.clients.cache_bypass_limit: "ignored in initial audit 2026-04-23"
   remote_configuration.clients.ttl_seconds: "ignored in initial audit 2026-04-23"
   remote_configuration.config_root: "ignored in initial audit 2026-04-23"
@@ -3349,6 +3617,7 @@ excluded:
   remote_configuration.org_status_refresh_interval: "ignored in initial audit 2026-04-23"
   remote_configuration.rc_dd_url: "ignored in initial audit 2026-04-23"
   remote_configuration.refresh_interval: "ignored in initial audit 2026-04-23"
+  remote_flags.enabled: "2026-06-10 RC feature-flag delivery component; ADP has no remote feature-flag infrastructure."
   remote_policies: "ignored in initial audit 2026-04-23"
   remote_tagger.max_concurrent_sync: "ignored in initial audit 2026-04-23"
   remote_updates: "ignored in initial audit 2026-04-23"
@@ -3447,6 +3716,7 @@ excluded:
   sbom.dd_url: "ignored in initial audit 2026-04-23"
   sbom.dev_mode_no_ssl: "ignored in initial audit 2026-04-23"
   sbom.enabled: "ignored in initial audit 2026-04-23"
+  sbom.enrichment.usage.enabled: "2026-06-10 SBOM enrichment for CWS/system-probe; security feature outside ADP scope."
   sbom.host.additional_directories: "ignored in initial audit 2026-04-23"
   sbom.host.analyzers: "ignored in initial audit 2026-04-23"
   sbom.host.enabled: "ignored in initial audit 2026-04-23"
@@ -3603,6 +3873,8 @@ excluded:
   tags: "ignored in second bulk edit 2026-05-06"
   telemetry.checks: "ignored in initial audit 2026-04-23"
   telemetry.enabled: "ignored in second bulk edit 2026-05-06"
+  telemetry.offlinereporter.enabled: "2026-06-10 Agent lifecycle heartbeat/gap reporter (comp/offlinereporter); no ADP equivalent."
+  telemetry.offlinereporter.heartbeat_interval: "2026-06-10 Heartbeat write interval for offline reporter; same excluded subsystem."
   telemetry.python_memory: "ignored in initial audit 2026-04-23"
   trace_agent_host_socket_path: "ignored in initial audit 2026-04-23"
   tracemalloc_blacklist: "ignored in initial audit 2026-04-23"
@@ -3613,6 +3885,8 @@ excluded:
   use_diskv2_check: "ignored in initial audit 2026-04-23"
   use_improved_cgroup_parser: "ignored in initial audit 2026-04-23"
   use_networkv2_check: "ignored in initial audit 2026-04-23"
+  vector.logs.dual_ship: "2026-06-10 Logs-only OPW dual-ship (legacy vector.* alias); same exclusion as observability_pipelines_worker.logs.dual_ship."
+  vector.logs.dual_ship_reliable: "2026-06-10 Logs-only OPW dual-ship backpressure (legacy vector.* alias); same exclusion rationale."
   vector.logs.enabled: "OPW logs routing out of scope for ADP"
   vector.logs.url: "OPW logs routing out of scope for ADP"
   vector.traces.enabled: "OPW traces routing out of scope for ADP"

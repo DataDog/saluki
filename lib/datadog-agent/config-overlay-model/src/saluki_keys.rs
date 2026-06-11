@@ -533,42 +533,4 @@ pub static SALUKI_KEYS: &[SalukiKey] = &[
         pipeline_affinity: "PipelineAffinity::CrossCutting",
         filename: "accounting.rs",
     },
-    // ── data_plane.rs ────────────────────────────────────────────────────────
-    SalukiKey {
-        yaml_path: "data_plane.remote_agent_enabled",
-        description: "Enable remote agent mode",
-        default: "true",
-        documentation: Some(
-            "### `data_plane.remote_agent_enabled` / `data_plane.use_new_config_stream_endpoint`
-
-\
-             These two keys are transitional flags being phased out. Both will be implied by \
-             `data_plane.standalone_mode=false` in a future release. Do not rely on them for \
-             new deployments.",
-        ),
-        value_type: "ValueType::Bool",
-        schema_default: Some("true"),
-        env_vars: &[],
-        env_var_override: None,
-        additional_yaml_paths: &[],
-        used_by: &[],
-        test_json: None,
-        pipeline_affinity: "PipelineAffinity::CrossCutting",
-        filename: "data_plane.rs",
-    },
-    SalukiKey {
-        yaml_path: "data_plane.use_new_config_stream_endpoint",
-        description: "Use new config stream endpoint",
-        default: "",
-        documentation: Some("See `data_plane.remote_agent_enabled` above."),
-        value_type: "ValueType::Bool",
-        schema_default: None,
-        env_vars: &[],
-        env_var_override: None,
-        additional_yaml_paths: &[],
-        used_by: &[],
-        test_json: None,
-        pipeline_affinity: "PipelineAffinity::CrossCutting",
-        filename: "data_plane.rs",
-    },
 ];

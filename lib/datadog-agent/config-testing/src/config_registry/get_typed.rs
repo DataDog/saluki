@@ -60,6 +60,17 @@ crate::declare_annotations! {
         test_json: None,
         pipeline_affinity: PipelineAffinity::CrossCutting,
     };
+    /// `agent_ipc.grpc_max_message_size`-Max inbound gRPC message size for IPC client
+    AGENT_IPC_GRPC_MAX_MESSAGE_SIZE = SalukiAnnotation {
+        schema: &schema::AGENT_IPC_GRPC_MAX_MESSAGE_SIZE,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::REMOTE_AGENT_CLIENT_CONFIGURATION],
+        value_type_override: None,
+        test_json: Some("4194304"),
+        pipeline_affinity: PipelineAffinity::CrossCutting,
+    };
     /// `log_level`-Log verbosity directives
     LOG_LEVEL = SalukiAnnotation {
         schema: &schema::LOG_LEVEL,
