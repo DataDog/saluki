@@ -38,7 +38,6 @@ tracking.
 | `serializer_experimental_use_v3_api.series.validate`           | Dual-send v2+v3 series for validation           | [#1468] |
 | `serializer_experimental_use_v3_api.sketches.endpoints`        | Endpoints enabling v3 sketches API              | [#1468] |
 | `serializer_experimental_use_v3_api.sketches.validate`         | Dual-send v2+v3 sketches for validation         | [#1468] |
-| `sslkeylogfile`                                                | TLS key log file path                           | [#1372] |
 | `tls_handshake_timeout`                                        | HTTP TLS handshake timeout                      | [#178]  |
 
 <!-- section:unsupported-not-planned -->
@@ -547,6 +546,7 @@ compressed wire payload bytes.
 | `serializer_max_series_uncompressed_payload_size`              | Max uncompressed V2 series payload size            |
 | `serializer_max_uncompressed_payload_size`                     | Max uncompressed payload size (generic)            |
 | `site`                                                         | Datadog site domain                                |
+| `sslkeylogfile`                                                | Write TLS session keys to file                     |
 | `statsd_forward_port`                                          | UDP packet forwarding destination port             |
 | `statsd_metric_blocklist`                                      | List of metric names to block/drop                 |
 | `statsd_metric_blocklist_match_prefix`                         | Treat blocklist entries as prefixes                |
@@ -571,7 +571,6 @@ compressed wire payload bytes.
 [#1363]: https://github.com/DataDog/saluki/issues/1363
 [#1364]: https://github.com/DataDog/saluki/issues/1364
 [#1365]: https://github.com/DataDog/saluki/issues/1365
-[#1372]: https://github.com/DataDog/saluki/issues/1372
 [#1381]: https://github.com/DataDog/saluki/issues/1381
 [#1466]: https://github.com/DataDog/saluki/issues/1466
 [#1468]: https://github.com/DataDog/saluki/issues/1468
@@ -584,4 +583,3 @@ compressed wire payload bytes.
 [#1753]: https://github.com/DataDog/saluki/issues/1753
 [#1754]: https://github.com/DataDog/saluki/issues/1754
 [#1755]: https://github.com/DataDog/saluki/issues/1755
-

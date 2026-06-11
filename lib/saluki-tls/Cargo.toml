@@ -15,6 +15,7 @@ fips = ["rustls/fips"]
 [dependencies]
 rustls = { workspace = true, features = ["std"] }
 rustls-native-certs = { workspace = true }
+saluki-common = { workspace = true }
 saluki-error = { workspace = true }
 tracing = { workspace = true }
 
