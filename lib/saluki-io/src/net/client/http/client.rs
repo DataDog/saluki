@@ -9,8 +9,8 @@ use std::{
 
 use bytes::{Buf, Bytes};
 use http::{Request, Response, Uri};
-use http_body::Body;
-use http_body_util::{combinators::BoxBody, BodyExt as _};
+use http_body::{Body, Frame, SizeHint};
+use http_body_util::combinators::BoxBody;
 use hyper::body::Incoming;
 use hyper_http_proxy::Proxy;
 use hyper_util::{
@@ -18,6 +18,7 @@ use hyper_util::{
     rt::{TokioExecutor, TokioTimer},
 };
 use metrics::Counter;
+use pin_project::pin_project;
 use saluki_error::GenericError;
 use saluki_metrics::MetricsBuilder;
 use saluki_tls::{ClientTLSConfigBuilder, TlsMinimumVersion};
@@ -35,6 +36,37 @@ use super::{
 /// All request bodies are converted to this type before being sent over the wire, which ensures a single
 /// monomorphization of the underlying HTTP/2 and TLS stacks regardless of the caller's body type.
 pub type ClientBody = BoxBody<Bytes, Box<dyn std::error::Error + Send + Sync>>;
+
+#[pin_project]
+struct ClientBodyAdapter<B> {
+    #[pin]
+    inner: B,
+    size_hint: SizeHint,
+}
+
+impl<B> Body for ClientBodyAdapter<B>
+where
+    B: Body,
+    B::Data: Buf,
+    B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+{
+    type Data = Bytes;
+    type Error = Box<dyn std::error::Error + Send + Sync>;
+
+    fn poll_frame(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        self.project().inner.poll_frame(cx).map(|maybe_frame| {
+            maybe_frame.map(|result| {
+                result
+                    .map(|frame| frame.map_data(|mut data| data.copy_to_bytes(data.remaining())))
+                    .map_err(Into::into)
+            })
+        })
+    }
+
+    fn size_hint(&self) -> SizeHint {
+        self.size_hint.clone()
+    }
+}
 
 /// An HTTP client.
 #[derive(Clone)]
@@ -111,10 +143,8 @@ where
     B::Data: Buf + Send,
     B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
 {
-    BoxBody::new(
-        body.map_frame(|frame| frame.map_data(|mut data| data.copy_to_bytes(data.remaining())))
-            .map_err(Into::into),
-    )
+    let size_hint = body.size_hint();
+    BoxBody::new(ClientBodyAdapter { inner: body, size_hint })
 }
 
 /// An HTTP client builder.
@@ -345,5 +375,21 @@ impl Default for HttpClientBuilder {
             endpoint_telemetry: None,
             proxies: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use http_body::Body as _;
+    use http_body_util::Full;
+
+    use super::*;
+
+    #[test]
+    fn into_client_body_preserves_exact_size_hint() {
+        let body = Full::new(Bytes::from_static(b"hello"));
+        let converted = into_client_body(body);
+
+        assert_eq!(Some(5), converted.size_hint().exact());
     }
 }

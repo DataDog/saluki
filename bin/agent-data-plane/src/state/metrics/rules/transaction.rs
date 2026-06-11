@@ -3,6 +3,15 @@ use super::RemapperRule;
 pub fn get_transaction_remappings() -> Vec<RemapperRule> {
     vec![
         // Transaction metrics.
+        RemapperRule::by_name(
+            "adp.network_http_requests_input_bytes_total",
+            "transactions.input_bytes",
+        )
+        .with_original_tags(["domain", "endpoint"])
+        .with_help_text("Incoming transaction sizes in bytes"),
+        RemapperRule::by_name("adp.network_http_requests_input_total", "transactions.input_count")
+            .with_original_tags(["domain", "endpoint"])
+            .with_help_text("Incoming transaction count"),
         RemapperRule::by_name("adp.network_http_requests_failed_total", "transactions.dropped")
             .with_original_tags(["domain", "endpoint"])
             .with_help_text("Transaction drop count"),
