@@ -418,6 +418,27 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         default: Some("false"),
     },
     ClassifierEntry {
+        yaml_path: "autoscaling.failover.enabled",
+        aliases: &[],
+        support_level: SupportLevel::Incompatible(Severity::Low),
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD, Pipeline::Checks, Pipeline::Traces]),
+        default: Some("\"true\""),
+    },
+    ClassifierEntry {
+        yaml_path: "use_v3_api.series.endpoints",
+        aliases: &[],
+        support_level: SupportLevel::Incompatible(Severity::Low),
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD, Pipeline::Checks, Pipeline::Traces]),
+        default: Some("{}"),
+    },
+    ClassifierEntry {
+        yaml_path: "vector.metrics.use_v3_api.series",
+        aliases: &[],
+        support_level: SupportLevel::Incompatible(Severity::Low),
+        pipeline_affinity: PipelineAffinity::CrossCutting,
+        default: Some("false"),
+    },
+    ClassifierEntry {
         yaml_path: "forwarder_low_prio_buffer_size",
         aliases: &[],
         support_level: SupportLevel::Incompatible(Severity::Medium),
