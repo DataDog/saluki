@@ -169,10 +169,10 @@
 <a href=#169 id=169 data-nosnippet>169</a>    #[serde(default, deserialize_with = <span class="string">"deserialize_vsock_addr"</span>)]
 <a href=#170 id=170 data-nosnippet>170</a>    </span>vsock_addr: <span class="prelude-ty">Option</span>&lt;u32&gt;,
 <a href=#171 id=171 data-nosnippet>171</a>
-<a href=#172 id=172 data-nosnippet>172</a>    <span class="comment">// Non-Linux: capture raw value solely to emit a warning when misconfigured.
+<a href=#172 id=172 data-nosnippet>172</a>    <span class="comment">// Non-Linux: capture raw value solely to emit a warning when configured.
 <a href=#173 id=173 data-nosnippet>173</a>    </span><span class="attr">#[cfg(not(target_os = <span class="string">"linux"</span>))]
 <a href=#174 id=174 data-nosnippet>174</a>    #[serde(default)]
-<a href=#175 id=175 data-nosnippet>175</a>    </span>vsock_addr: <span class="prelude-ty">Option</span>&lt;String&gt;,
+<a href=#175 id=175 data-nosnippet>175</a>    </span>vsock_addr: String,
 <a href=#176 id=176 data-nosnippet>176</a>}
 <a href=#177 id=177 data-nosnippet>177</a>
 <a href=#178 id=178 data-nosnippet>178</a><span class="attr">#[cfg(target_os = <span class="string">"linux"</span>)]
@@ -205,7 +205,7 @@
 <a href=#205 id=205 data-nosnippet>205</a>            .error_context(<span class="string">"Failed to parse Datadog Agent IPC client configuration."</span>)<span class="question-mark">?</span>;
 <a href=#206 id=206 data-nosnippet>206</a>
 <a href=#207 id=207 data-nosnippet>207</a>        <span class="attr">#[cfg(not(target_os = <span class="string">"linux"</span>))]
-<a href=#208 id=208 data-nosnippet>208</a>        </span><span class="kw">if </span>this.vsock_addr.is_some() {
+<a href=#208 id=208 data-nosnippet>208</a>        </span><span class="kw">if </span>!this.vsock_addr.is_empty() {
 <a href=#209 id=209 data-nosnippet>209</a>            <span class="macro">warn!</span>(<span class="string">"`vsock_addr` is configured but vsock is only supported on Linux. Setting will be ignored."</span>);
 <a href=#210 id=210 data-nosnippet>210</a>        }
 <a href=#211 id=211 data-nosnippet>211</a>
