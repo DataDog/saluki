@@ -4,9 +4,10 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use metrics::{gauge, Level};
+use saluki_common::sync::shutdown::ShutdownHandle;
 use saluki_core::{
     observability::metrics::MetricsFlusherWorker,
-    runtime::{InitializationError, ProcessShutdown, Supervisable, SupervisorFuture},
+    runtime::{InitializationError, Supervisable, SupervisorFuture},
 };
 use saluki_error::GenericError;
 use saluki_metrics::static_metrics;
@@ -123,14 +124,14 @@ impl Supervisable for RuntimeMetricsWorker {
         "tokio-runtime-metrics-collector"
     }
 
-    async fn initialize(&self, mut process_shutdown: ProcessShutdown) -> Result<SupervisorFuture, InitializationError> {
+    async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
         let runtime_id = self.runtime_id.clone();
         let handle = self.handle.clone();
 
         Ok(Box::pin(async move {
             select! {
                 _ = collect_runtime_metrics(&runtime_id, handle) => {},
-                _ = process_shutdown.wait_for_shutdown() => {},
+                _ = process_shutdown => {},
             }
             Ok(())
         }))

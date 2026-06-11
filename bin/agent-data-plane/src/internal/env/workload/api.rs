@@ -5,14 +5,15 @@ use saluki_api::{
     routing::{get, Router},
     APIHandler, DynamicRoute, EndpointType,
 };
-use saluki_common::collections::{FastHashMap, FastHashSet};
+use saluki_common::{
+    collections::{FastHashMap, FastHashSet},
+    sync::shutdown::ShutdownHandle,
+};
 use saluki_context::{
     origin::OriginTagCardinality,
     tags::{SharedTagSet, TagSet},
 };
-use saluki_core::runtime::{
-    state::DataspaceRegistry, InitializationError, ProcessShutdown, Supervisable, SupervisorFuture,
-};
+use saluki_core::runtime::{state::DataspaceRegistry, InitializationError, Supervisable, SupervisorFuture};
 use saluki_env::workload::{
     entity::HighestPrecedenceEntityIdRef,
     stores::{ExternalDataStoreResolver, TagStoreQuerier},
@@ -185,7 +186,7 @@ impl Supervisable for RemoteAgentWorkloadAPIWorker {
         "workload-api"
     }
 
-    async fn initialize(&self, process_shutdown: ProcessShutdown) -> Result<SupervisorFuture, InitializationError> {
+    async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
         let workload_route = DynamicRoute::http(EndpointType::Privileged, &self.handler);
 
         Ok(Box::pin(async move {

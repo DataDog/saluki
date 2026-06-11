@@ -4380,7 +4380,6 @@ dependencies = [
  "saluki-metrics",
  "serde",
  "serde_json",
- "slab",
  "smallvec",
  "snafu",
  "stringtheory",

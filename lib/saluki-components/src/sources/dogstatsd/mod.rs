@@ -18,7 +18,10 @@ use async_trait::async_trait;
 use bytes::{Buf, BufMut};
 use bytesize::ByteSize;
 use resource_accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
-use saluki_common::task::spawn_traced_named;
+use saluki_common::{
+    sync::shutdown::{ShutdownCoordinator, ShutdownHandle},
+    task::spawn_traced_named,
+};
 use saluki_config::{deserialize_space_separated_or_seq, GenericConfiguration};
 use saluki_context::{
     origin::RawOrigin,
@@ -34,11 +37,7 @@ use saluki_core::data_model::event::{
 use saluki_core::{
     components::{sources::*, ComponentContext},
     pooling::FixedSizeObjectPool,
-    topology::{
-        interconnect::EventBufferManager,
-        shutdown::{DynamicShutdownCoordinator, DynamicShutdownHandle},
-        EventsBuffer, OutputDefinition,
-    },
+    topology::{interconnect::EventBufferManager, EventsBuffer, OutputDefinition},
 };
 use saluki_env::{workload::CaptureEntityResolver, WorkloadProvider};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
@@ -58,7 +57,7 @@ use serde_with::{serde_as, NoneAsEmptyString};
 use snafu::{ResultExt as _, Snafu};
 use stringtheory::MetaString;
 use tokio::{
-    select,
+    pin, select,
     time::{interval, MissedTickBehavior},
 };
 use tracing::{debug, error, info, trace, warn};
@@ -954,7 +953,7 @@ pub struct DogStatsD {
 }
 
 struct ListenerContext {
-    shutdown_handle: DynamicShutdownHandle,
+    shutdown_handle: ShutdownHandle,
     listener: Listener,
     io_buffer_pool: FixedSizeObjectPool<BytesBuffer>,
     codec: DogStatsDCodec,
@@ -986,10 +985,12 @@ struct HandlerContext {
 #[async_trait]
 impl Source for DogStatsD {
     async fn run(mut self: Box<Self>, mut context: SourceContext) -> Result<(), GenericError> {
-        let mut global_shutdown = context.take_shutdown_handle();
+        let global_shutdown = context.take_shutdown_handle();
+        pin!(global_shutdown);
+
         let mut health = context.take_health_handle();
 
-        let mut listener_shutdown_coordinator = DynamicShutdownCoordinator::default();
+        let mut listener_shutdown_coordinator = ShutdownCoordinator::default();
 
         // For each listener, spawn a dedicated task to run it.
         for listener in self.listeners {
@@ -1041,7 +1042,7 @@ impl Source for DogStatsD {
 
         debug!("Stopping DogStatsD source...");
 
-        listener_shutdown_coordinator.shutdown().await;
+        listener_shutdown_coordinator.shutdown_and_wait().await;
 
         debug!("DogStatsD source stopped.");
 
@@ -1066,7 +1067,8 @@ async fn process_listener(
         traffic_capture,
         packet_forwarder_target,
     } = listener_context;
-    tokio::pin!(shutdown_handle);
+
+    pin!(shutdown_handle);
 
     let listen_addr = listener.listen_address().clone();
     let metrics = build_metrics(&listen_addr, source_context.component_context());
@@ -1077,7 +1079,7 @@ async fn process_listener(
         packet_forwarder.spawn_connect();
     }
 
-    let mut stream_shutdown_coordinator = DynamicShutdownCoordinator::default();
+    let mut stream_shutdown_coordinator = ShutdownCoordinator::default();
     let mut stream_idx: u32 = 0;
 
     info!(%listen_addr, "DogStatsD listener started.");
@@ -1123,19 +1125,17 @@ async fn process_listener(
         }
     }
 
-    stream_shutdown_coordinator.shutdown().await;
+    stream_shutdown_coordinator.shutdown_and_wait().await;
 
     info!(%listen_addr, "DogStatsD listener stopped.");
 }
 
 async fn process_stream(
-    stream: Stream, source_context: SourceContext, handler_context: HandlerContext,
-    shutdown_handle: DynamicShutdownHandle, enabled_filter: EnablePayloadsFilter,
+    stream: Stream, source_context: SourceContext, handler_context: HandlerContext, shutdown_handle: ShutdownHandle,
+    enabled_filter: EnablePayloadsFilter,
 ) {
-    tokio::pin!(shutdown_handle);
-
     select! {
-        _ = &mut shutdown_handle => {
+        _ = shutdown_handle => {
             debug!("Stream handler received shutdown signal.");
         },
         _ = drive_stream(stream, source_context, handler_context, enabled_filter) => {},

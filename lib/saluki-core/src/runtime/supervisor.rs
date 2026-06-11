@@ -2,6 +2,7 @@ use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use saluki_common::collections::FastIndexMap;
+use saluki_common::sync::shutdown::{ShutdownCoordinator, ShutdownHandle};
 use saluki_error::GenericError;
 use snafu::{OptionExt as _, Snafu};
 use tokio::{
@@ -13,7 +14,6 @@ use tracing::{debug, error, warn};
 use super::{
     dedicated::{spawn_dedicated_runtime, RuntimeConfiguration, RuntimeMode},
     restart::{RestartAction, RestartMode, RestartState, RestartStrategy},
-    shutdown::{ProcessShutdown, ShutdownHandle},
 };
 use crate::runtime::{
     process::{Process, ProcessExt as _},
@@ -129,17 +129,17 @@ pub trait Supervisable: Send + Sync {
     /// Initializes the process asynchronously.
     ///
     /// During initialization, any resources or configuration for the process can be created asynchronously, and the
-    /// same runtime that's used for running the process is used for initialization. The resulting future is expected
-    /// to complete as soon as reasonably possible after `process_shutdown` resolves.
+    /// same runtime that's used for running the process is used for initialization. The resulting future is expected to
+    /// complete as soon as reasonably possible after `shutdown` resolves.
     ///
-    /// **Important:** The `process_shutdown` signal must be moved into the returned [`SupervisorFuture`] so the
-    /// worker can respond to supervisor-initiated shutdown. If `process_shutdown` is dropped during initialization,
-    /// the worker will be unable to shut down gracefully and will be forcefully aborted after the shutdown timeout.
+    /// **Important:** The `process_shutdown` signal must be moved into the returned [`SupervisorFuture`] so the worker
+    /// can respond to supervisor-initiated shutdown. If `process_shutdown` is dropped during initialization, the worker
+    /// will be unable to shut down gracefully and will be forcefully aborted after the shutdown timeout.
     ///
     /// # Errors
     ///
     /// If the process can't be initialized, an error is returned.
-    async fn initialize(&self, process_shutdown: ProcessShutdown) -> Result<SupervisorFuture, InitializationError>;
+    async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError>;
 }
 
 /// Supervisor errors.
@@ -227,7 +227,7 @@ impl ChildSpecification {
     }
 
     fn create_worker_future(
-        &self, process: Process, process_shutdown: ProcessShutdown,
+        &self, process: Process, process_shutdown: ShutdownHandle,
     ) -> Result<WorkerFuture, SupervisorError> {
         match self {
             Self::Worker(worker) => {
@@ -415,7 +415,7 @@ impl Supervisor {
         Ok(())
     }
 
-    async fn run_inner(&self, process: Process, mut process_shutdown: ProcessShutdown) -> Result<(), SupervisorError> {
+    async fn run_inner(&self, process: Process, process_shutdown: ShutdownHandle) -> Result<(), SupervisorError> {
         if self.child_specs.is_empty() {
             return Err(SupervisorError::NoChildren);
         }
@@ -428,15 +428,14 @@ impl Supervisor {
         self.spawn_all_children(&mut worker_state)?;
 
         // Now we supervise.
-        let shutdown = process_shutdown.wait_for_shutdown();
-        pin!(shutdown);
+        pin!(process_shutdown);
 
         loop {
             select! {
                 // Shutdown has been triggered.
                 //
                 // Propagate shutdown to all child processes and wait for them to exit.
-                _ = &mut shutdown => {
+                _ = &mut process_shutdown => {
                     debug!(supervisor_id = %self.supervisor_id, "Shutdown triggered, shutting down all child processes.");
                     worker_state.shutdown_workers().await;
                     break;
@@ -501,7 +500,7 @@ impl Supervisor {
         Ok(())
     }
 
-    fn as_nested_process(&self, process: Process, process_shutdown: ProcessShutdown) -> WorkerFuture {
+    fn as_nested_process(&self, process: Process, process_shutdown: ShutdownHandle) -> WorkerFuture {
         // Simple wrapper around `run_inner` to satisfy the return type signature needed when running the supervisor as
         // a nested child process in another supervisor.
         debug!(supervisor_id = %self.supervisor_id, "Nested supervisor starting.");
@@ -522,9 +521,9 @@ impl Supervisor {
     ///
     /// If the supervisor exceeds its restart limits, or fails to initialize a child process, an error is returned.
     pub async fn run(&mut self) -> Result<(), SupervisorError> {
-        // Create a no-op `ProcessShutdown` to satisfy the `run_inner` function. This is never used since we want to run
+        // Create a no-op `ShutdownHandle` to satisfy the `run_inner` function. This is never used since we want to run
         // forever, but we need to satisfy the signature.
-        let process_shutdown = ProcessShutdown::noop();
+        let process_shutdown = ShutdownHandle::noop();
         let process = Process::supervisor(&self.supervisor_id, None).context(InvalidName {
             name: self.supervisor_id.to_string(),
         })?;
@@ -544,14 +543,28 @@ impl Supervisor {
     ///
     /// If the supervisor exceeds its restart limits, or fails to initialize a child process, an error is returned.
     pub async fn run_with_shutdown<F: Future + Send + 'static>(&mut self, shutdown: F) -> Result<(), SupervisorError> {
-        let process_shutdown = ProcessShutdown::wrapped(shutdown);
-        self.run_with_process_shutdown(process_shutdown, None).await
+        // Drive the caller-provided shutdown future into a trigger so the supervisor can begin shutting down its
+        // children once `shutdown` resolves. The trigger fires at most once (guarded), and otherwise fires on drop if
+        // the supervisor returns on its own first.
+        let (shutdown_coordinator, shutdown_handle) = ShutdownHandle::paired();
+        let run = self.run_with_shutdown_inner(shutdown_handle, None);
+        pin!(run, shutdown);
+
+        let mut shutdown_coordinator = Some(shutdown_coordinator);
+        loop {
+            select! {
+                result = &mut run => return result,
+                _ = &mut shutdown, if shutdown_coordinator.is_some() => {
+                    shutdown_coordinator.take().expect("coordinator present per select guard").shutdown();
+                }
+            }
+        }
     }
 
-    /// Runs the supervisor until the given `ProcessShutdown` signal is received.
+    /// Runs the supervisor until the given `ShutdownHandle` signal is received.
     ///
-    /// This is an internal variant of `run_with_shutdown` that takes a `ProcessShutdown` directly, used when spawning
-    /// supervisors in dedicated runtimes where the shutdown signal is already wrapped in a `ProcessShutdown`.
+    /// This is an internal variant of `run_with_shutdown` that takes a `ShutdownHandle` directly, used when spawning
+    /// supervisors in dedicated runtimes where the shutdown signal is already wrapped in a `ShutdownHandle`.
     ///
     /// If `dataspace` is provided, the supervisor will use it instead of creating a new one. This is used to propagate
     /// the parent's dataspace across OS thread boundaries for dedicated runtimes.
@@ -559,8 +572,8 @@ impl Supervisor {
     /// # Errors
     ///
     /// If the supervisor exceeds its restart limits, or fails to initialize a child process, an error is returned.
-    pub(crate) async fn run_with_process_shutdown(
-        &mut self, process_shutdown: ProcessShutdown, dataspace: Option<DataspaceRegistry>,
+    pub(crate) async fn run_with_shutdown_inner(
+        &mut self, process_shutdown: ShutdownHandle, dataspace: Option<DataspaceRegistry>,
     ) -> Result<(), SupervisorError> {
         let process =
             Process::supervisor_with_dataspace(&self.supervisor_id, None, dataspace).context(InvalidName {
@@ -589,7 +602,7 @@ impl Supervisor {
 struct ProcessState {
     worker_id: usize,
     shutdown_strategy: ShutdownStrategy,
-    shutdown_handle: ShutdownHandle,
+    shutdown_coordinator: ShutdownCoordinator,
     abort_handle: AbortHandle,
 }
 
@@ -609,9 +622,9 @@ impl WorkerState {
     }
 
     fn add_worker(&mut self, worker_id: usize, child_spec: &ChildSpecification) -> Result<(), SupervisorError> {
-        let (process_shutdown, shutdown_handle) = ProcessShutdown::paired();
+        let (shutdown_coordinator, shutdown_handle) = ShutdownHandle::paired();
         let process = child_spec.create_process(&self.process)?;
-        let worker_future = child_spec.create_worker_future(process.clone(), process_shutdown)?;
+        let worker_future = child_spec.create_worker_future(process.clone(), shutdown_handle)?;
         let shutdown_strategy = child_spec.shutdown_strategy();
         let abort_handle = self.worker_tasks.spawn(worker_future.into_process_future(process));
         self.worker_map.insert(
@@ -619,7 +632,7 @@ impl WorkerState {
             ProcessState {
                 worker_id,
                 shutdown_strategy,
-                shutdown_handle,
+                shutdown_coordinator,
                 abort_handle,
             },
         );
@@ -670,7 +683,7 @@ impl WorkerState {
             let ProcessState {
                 worker_id,
                 shutdown_strategy,
-                shutdown_handle,
+                shutdown_coordinator,
                 abort_handle,
             } = process_state;
 
@@ -678,7 +691,7 @@ impl WorkerState {
             let shutdown_deadline = match shutdown_strategy {
                 ShutdownStrategy::Graceful(timeout) => {
                     debug!(worker_id, shutdown_timeout = ?timeout, "Gracefully shutting down process.");
-                    shutdown_handle.trigger();
+                    shutdown_coordinator.shutdown();
 
                     tokio::time::sleep(timeout)
                 }
@@ -839,9 +852,7 @@ mod tests {
             ShutdownStrategy::Graceful(Duration::from_millis(500))
         }
 
-        async fn initialize(
-            &self, mut process_shutdown: ProcessShutdown,
-        ) -> Result<SupervisorFuture, InitializationError> {
+        async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
             match &self.init_behavior {
                 InitBehavior::Instant => {}
                 InitBehavior::Slow(delay) => {
@@ -862,7 +873,7 @@ mod tests {
 
                 match run_behavior {
                     RunBehavior::UntilShutdown => {
-                        process_shutdown.wait_for_shutdown().await;
+                        process_shutdown.await;
                         Ok(())
                     }
                     RunBehavior::FailAfter(delay, msg) => {
@@ -870,7 +881,7 @@ mod tests {
                             _ = sleep(delay) => {
                                 Err(GenericError::msg(msg))
                             }
-                            _ = process_shutdown.wait_for_shutdown() => {
+                            _ = process_shutdown => {
                                 Ok(())
                             }
                         }

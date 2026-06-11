@@ -14,8 +14,8 @@ use saluki_error::{ErrorContext as _, GenericError};
 use saluki_io::net::ListenAddress;
 use serde::Deserialize;
 use stringtheory::MetaString;
-use tokio::select;
 use tokio::sync::mpsc;
+use tokio::{pin, select};
 use tracing::{debug, error};
 
 use crate::common::otlp::config::Receiver;
@@ -112,7 +112,9 @@ impl Relay for OtlpRelay {
             metrics,
         } = *self;
 
-        let mut global_shutdown = context.take_shutdown_handle();
+        let global_shutdown = context.take_shutdown_handle();
+        pin!(global_shutdown);
+
         let mut health = context.take_health_handle();
         let global_thread_pool = context.topology_context().global_thread_pool().clone();
         let memory_limiter = context.topology_context().memory_limiter().clone();

@@ -2,7 +2,7 @@
 //!
 //! # Missing
 //!
-//! - Use `DynamicShutdownCoordinator` so shutdown can be triggered and all HTTP connections can drain.
+//! - Use `ShutdownCoordinator::shutdown_and_wait` so shutdown can be triggered and all HTTP connections can drain.
 
 use std::{
     convert::Infallible,
@@ -16,7 +16,7 @@ use http::{Request, Response, StatusCode};
 use hyper::{body::Incoming, service::service_fn};
 use prometheus_exposition::{MetricType, PrometheusRenderer};
 use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
-use saluki_common::{collections::FastIndexMap, iter::ReusableDeduplicator};
+use saluki_common::{collections::FastIndexMap, iter::ReusableDeduplicator, sync::shutdown::ShutdownCoordinator};
 use saluki_context::{tags::Tag, Context};
 use saluki_core::components::{destinations::*, ComponentContext};
 use saluki_core::data_model::event::{
@@ -26,7 +26,7 @@ use saluki_core::data_model::event::{
 use saluki_error::GenericError;
 use saluki_io::net::{
     listener::ConnectionOrientedListener,
-    server::http::{ErrorHandle, HttpServer, ShutdownHandle},
+    server::http::{ErrorHandle, HttpServer},
     ListenAddress,
 };
 use serde::Deserialize;
@@ -244,8 +244,8 @@ impl Destination for Prometheus {
             }
         }
 
-        // TODO: This should really be `DynamicShutdownCoordinator`-based so we can trigger shutdown _and_ wait until
-        // all HTTP connections and the listener have finished.
+        // TODO: This should really use `ShutdownCoordinator::shutdown_and_wait` so we can trigger shutdown _and_ wait
+        // until all HTTP connections and the listener have finished.
         http_shutdown.shutdown();
 
         debug!("Prometheus destination stopped.");
@@ -257,7 +257,7 @@ impl Destination for Prometheus {
 fn spawn_prom_scrape_service(
     listener: ConnectionOrientedListener, payload: Arc<RwLock<String>>,
     additional_routes: Vec<PrometheusAdditionalRoute>,
-) -> (ShutdownHandle, ErrorHandle) {
+) -> (ShutdownCoordinator, ErrorHandle) {
     let additional_routes = Arc::new(additional_routes);
     let service = service_fn(move |req: Request<Incoming>| {
         let payload = Arc::clone(&payload);

@@ -16,7 +16,7 @@ use futures::StreamExt as _;
 use saluki_error::{generic_error, GenericError};
 use saluki_metrics::static_metrics;
 use stringtheory::MetaString;
-use tokio::time::Instant;
+use tokio::{pin, time::Instant};
 use tokio::{
     select,
     sync::{
@@ -697,7 +697,7 @@ impl Runner {
         self.schedule_all_existing_components(&mut responses_rx);
 
         // Pin the shutdown future so we can poll it in the select loop.
-        let mut shutdown = std::pin::pin!(shutdown);
+        pin!(shutdown);
 
         loop {
             select! {

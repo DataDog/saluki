@@ -30,12 +30,13 @@ use otlp_protos::opentelemetry::proto::collector::trace::v1::trace_service_serve
 use otlp_protos::opentelemetry::proto::collector::trace::v1::{ExportTraceServiceRequest, ExportTraceServiceResponse};
 use prost::Message;
 use resource_accounting::MemoryLimiter;
+use saluki_common::sync::shutdown::ShutdownCoordinator;
 use saluki_common::task::HandleExt as _;
 use saluki_core::components::ComponentContext;
 use saluki_core::observability::ComponentMetricsExt;
 use saluki_error::{generic_error, GenericError};
 use saluki_io::net::listener::ConnectionOrientedListener;
-use saluki_io::net::server::http::{ErrorHandle, HttpServer, ShutdownHandle};
+use saluki_io::net::server::http::{ErrorHandle, HttpServer};
 use saluki_io::net::util::hyper::TowerToHyperService;
 use saluki_io::net::ListenAddress;
 use saluki_metrics::MetricsBuilder;
@@ -136,7 +137,7 @@ impl OtlpServerBuilder {
     /// Returns the HTTP server shutdown handle and error handle.
     pub async fn build<H: OtlpHandler>(
         self, handler: H, memory_limiter: MemoryLimiter, thread_pool_handle: Handle, metrics: Metrics,
-    ) -> Result<(ShutdownHandle, ErrorHandle), GenericError> {
+    ) -> Result<(ShutdownCoordinator, ErrorHandle), GenericError> {
         let otlp_handler = Arc::new(handler);
         let metrics = Arc::new(metrics);
 
@@ -191,11 +192,11 @@ impl OtlpServerBuilder {
             .await
             .map_err(|e| generic_error!("Failed to create OTLP HTTP listener: {}", e))?;
 
-        let (http_shutdown, http_error) = HttpServer::from_listener(http_listener, service)
+        let (http_shutdown_coordinator, http_error) = HttpServer::from_listener(http_listener, service)
             .with_executor(thread_pool_handle)
             .listen();
 
-        Ok((http_shutdown, http_error))
+        Ok((http_shutdown_coordinator, http_error))
     }
 }
 

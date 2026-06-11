@@ -1,11 +1,12 @@
 use std::sync::Arc;
 
 use resource_accounting::ComponentRegistry;
+use saluki_common::sync::shutdown::ShutdownHandle;
 
 use crate::health::Health;
 use crate::{
     components::ComponentContext,
-    topology::{shutdown::ComponentShutdownHandle, EventsDispatcher, TopologyContext},
+    topology::{EventsDispatcher, TopologyContext},
 };
 
 struct SourceContextInner {
@@ -17,7 +18,7 @@ struct SourceContextInner {
 
 /// Source context.
 pub struct SourceContext {
-    shutdown_handle: Option<ComponentShutdownHandle>,
+    shutdown_handle: Option<ShutdownHandle>,
     health_handle: Option<Health>,
     inner: Arc<SourceContextInner>,
 }
@@ -26,7 +27,7 @@ impl SourceContext {
     /// Creates a new `SourceContext`.
     pub fn new(
         topology_context: &TopologyContext, component_context: &ComponentContext,
-        component_registry: ComponentRegistry, shutdown_handle: ComponentShutdownHandle, health_handle: Health,
+        component_registry: ComponentRegistry, shutdown_handle: ShutdownHandle, health_handle: Health,
         dispatcher: EventsDispatcher,
     ) -> Self {
         Self {
@@ -46,7 +47,7 @@ impl SourceContext {
     /// # Panics
     ///
     /// Panics if the shutdown handle has already been taken.
-    pub fn take_shutdown_handle(&mut self) -> ComponentShutdownHandle {
+    pub fn take_shutdown_handle(&mut self) -> ShutdownHandle {
         self.shutdown_handle.take().expect("shutdown handle already taken")
     }
 

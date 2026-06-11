@@ -30,8 +30,8 @@ use saluki_error::{generic_error, GenericError};
 use saluki_io::net::ListenAddress;
 use serde::Deserialize;
 use stringtheory::MetaString;
-use tokio::select;
 use tokio::sync::mpsc;
+use tokio::{pin, select};
 use tonic::transport::Server;
 use tonic::{Response, Status};
 use tracing::{debug, trace, warn};
@@ -90,7 +90,9 @@ struct ChecksIPC {
 #[async_trait]
 impl Source for ChecksIPC {
     async fn run(mut self: Box<Self>, mut context: SourceContext) -> Result<(), GenericError> {
-        let mut global_shutdown = context.take_shutdown_handle();
+        let global_shutdown = context.take_shutdown_handle();
+        pin!(global_shutdown);
+
         let mut health = context.take_health_handle();
 
         let (events_tx, mut events_rx) = mpsc::channel(16);

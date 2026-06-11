@@ -13,11 +13,11 @@ use otlp_protos::opentelemetry::proto::metrics::v1::ResourceMetrics as OtlpResou
 use otlp_protos::opentelemetry::proto::trace::v1::ResourceSpans as OtlpResourceSpans;
 use prost::Message;
 use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
+use saluki_common::sync::shutdown::{ShutdownCoordinator, ShutdownHandle};
 use saluki_common::task::HandleExt as _;
 use saluki_config::GenericConfiguration;
 use saluki_context::ContextResolver;
 use saluki_core::topology::interconnect::BufferedDispatcher;
-use saluki_core::topology::shutdown::{DynamicShutdownCoordinator, DynamicShutdownHandle};
 use saluki_core::{
     components::{
         sources::{Source, SourceBuilder, SourceContext},
@@ -31,6 +31,7 @@ use saluki_error::ErrorContext as _;
 use saluki_error::{generic_error, GenericError};
 use saluki_io::net::ListenAddress;
 use serde::Deserialize;
+use tokio::pin;
 use tokio::select;
 use tokio::sync::mpsc;
 use tokio::time::{interval, MissedTickBehavior};
@@ -247,14 +248,16 @@ impl Source for Otlp {
             metrics,
         } = *self;
 
-        let mut global_shutdown = context.take_shutdown_handle();
+        let global_shutdown = context.take_shutdown_handle();
+        pin!(global_shutdown);
+
         let mut health = context.take_health_handle();
         let memory_limiter = context.topology_context().memory_limiter();
 
         // Create the internal channel for decoupling the servers from the converter.
         let (tx, rx) = mpsc::channel::<OtlpResource>(1024);
 
-        let mut converter_shutdown_coordinator = DynamicShutdownCoordinator::default();
+        let mut converter_shutdown_coordinator = ShutdownCoordinator::default();
 
         let metrics_translator = OtlpMetricsTranslator::new(metrics_translator_config, context_resolver)?;
 
@@ -304,7 +307,7 @@ impl Source for Otlp {
         debug!("Stopping OTLP source...");
 
         http_shutdown.shutdown();
-        converter_shutdown_coordinator.shutdown().await;
+        converter_shutdown_coordinator.shutdown_and_wait().await;
 
         debug!("OTLP source stopped.");
 
@@ -372,10 +375,11 @@ impl OtlpHandler for SourceHandler {
 
 async fn run_converter(
     mut receiver: mpsc::Receiver<OtlpResource>, source_context: SourceContext,
-    origin_tag_resolver: Option<OtlpOriginTagResolver>, shutdown_handle: DynamicShutdownHandle,
+    origin_tag_resolver: Option<OtlpOriginTagResolver>, shutdown_handle: ShutdownHandle,
     mut metrics_translator: OtlpMetricsTranslator, metrics: Metrics, mut traces_translator: OtlpTracesTranslator,
 ) {
-    tokio::pin!(shutdown_handle);
+    pin!(shutdown_handle);
+
     debug!("OTLP resource converter task started.");
 
     // Set a buffer flush interval of 100ms, which will ensure we always flush buffered events at least every 100ms if

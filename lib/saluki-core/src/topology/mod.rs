@@ -27,8 +27,6 @@ use self::interconnect::{Consumer, Dispatcher};
 
 mod running;
 
-pub mod shutdown;
-
 #[cfg(test)]
 pub(super) mod test_util;
 

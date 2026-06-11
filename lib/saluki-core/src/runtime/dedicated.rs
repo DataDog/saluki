@@ -12,11 +12,11 @@ use std::{
     thread::JoinHandle,
 };
 
+use saluki_common::sync::shutdown::ShutdownHandle;
 use saluki_error::{generic_error, GenericError};
 use tokio::sync::oneshot;
 
 use super::{
-    shutdown::ProcessShutdown,
     state::DataspaceRegistry,
     supervisor::{Supervisor, SupervisorError},
 };
@@ -152,7 +152,7 @@ impl Future for DedicatedRuntimeHandle {
 ///
 /// If the OS thread can't be spawned, an error is returned.
 pub(crate) fn spawn_dedicated_runtime(
-    mut supervisor: Supervisor, config: RuntimeConfiguration, process_shutdown: ProcessShutdown,
+    mut supervisor: Supervisor, config: RuntimeConfiguration, process_shutdown: ShutdownHandle,
     dataspace: DataspaceRegistry,
 ) -> Result<DedicatedRuntimeHandle, GenericError> {
     let (init_tx, init_rx) = oneshot::channel();
@@ -182,7 +182,7 @@ pub(crate) fn spawn_dedicated_runtime(
             //
             // We pass the parent's dataspace so the nested supervisor inherits it across the
             // thread boundary rather than creating a new one.
-            let result = runtime.block_on(supervisor.run_with_process_shutdown(process_shutdown, Some(dataspace)));
+            let result = runtime.block_on(supervisor.run_with_shutdown_inner(process_shutdown, Some(dataspace)));
             let _ = result_tx.send(result);
         })
         .map_err(|e| generic_error!("Failed to spawn dedicated runtime thread '{}': {}", thread_name, e))?;

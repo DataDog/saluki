@@ -1,7 +1,7 @@
 use std::{collections::HashMap, future::Future, num::NonZeroUsize};
 
 use resource_accounting::{MemoryLimiter, ResourceGroupToken, Tracked};
-use saluki_common::task::JoinSetExt as _;
+use saluki_common::{sync::shutdown::ShutdownCoordinator, task::JoinSetExt as _};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use tokio::{
     runtime::Handle,
@@ -35,8 +35,8 @@ pub enum WorkerPoolConfiguration {
 }
 
 use super::{
-    graph::Graph, running::RunningTopology, shutdown::ComponentShutdownCoordinator, ComponentId, EventsBuffer,
-    EventsConsumer, OutputName, PayloadsConsumer, RegisteredComponent, TypedComponentId,
+    graph::Graph, running::RunningTopology, ComponentId, EventsBuffer, EventsConsumer, OutputName, PayloadsConsumer,
+    RegisteredComponent, TypedComponentId,
 };
 use crate::health::HealthRegistry;
 use crate::runtime::state::DataspaceRegistry;
@@ -156,7 +156,7 @@ impl BuiltTopology {
         let mut interconnects = ComponentInterconnects::from_graph(self.interconnect_capacity, &self.graph)
             .error_context("Failed to build component interconnects.")?;
 
-        let mut shutdown_coordinator = ComponentShutdownCoordinator::default();
+        let mut shutdown_coordinator = ShutdownCoordinator::default();
 
         // Spawn our sources.
         for (component_id, source) in self.sources {

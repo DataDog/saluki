@@ -8,10 +8,9 @@ use saluki_api::{
     routing::{get, Router},
     APIHandler, DynamicRoute, EndpointType,
 };
+use saluki_common::sync::shutdown::ShutdownHandle;
 use saluki_config::GenericConfiguration;
-use saluki_core::runtime::{
-    state::DataspaceRegistry, InitializationError, ProcessShutdown, Supervisable, SupervisorFuture,
-};
+use saluki_core::runtime::{state::DataspaceRegistry, InitializationError, Supervisable, SupervisorFuture};
 use saluki_error::generic_error;
 use serde_json::Value;
 
@@ -85,7 +84,7 @@ impl Supervisable for ConfigWorker {
         "config-api"
     }
 
-    async fn initialize(&self, process_shutdown: ProcessShutdown) -> Result<SupervisorFuture, InitializationError> {
+    async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
         let config_route = DynamicRoute::http(EndpointType::Privileged, &self.handler);
 
         Ok(Box::pin(async move {
