@@ -31,7 +31,7 @@ use tokio::{
     task::JoinSet,
 };
 use tower::{Service, ServiceBuilder, ServiceExt as _};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, warn};
 
 use super::{
     config::ForwarderConfiguration,
@@ -451,7 +451,6 @@ async fn run_endpoint_io_loop<B>(
                     } else {
                         strip_metrics_validation_headers(txn)
                     };
-                    log_metrics_validation_transaction_queued(&txn, &endpoint_url);
 
                     match pending_txns.push_high_priority(txn).await {
                         Ok(push_result) => track_queue_drops(&telemetry, &endpoint_domain, push_result),
@@ -470,9 +469,7 @@ async fn run_endpoint_io_loop<B>(
             // next the next available pending transaction.
             svc = service.ready(), if !done && !pending_txns.is_empty() => match svc {
                 Ok(svc) => if let Some(txn) = pending_txns.pop().await {
-                    let request_uri = txn.request_uri().to_string();
                     let (metadata, request) = txn.into_parts();
-                    log_metrics_validation_transaction_sent(&metadata, &endpoint_url, &request_uri);
                     in_flight.spawn(svc.call(request).map(move |result| (metadata, result)));
 
                     debug!(endpoint_url, "Request sent.");
@@ -499,7 +496,6 @@ async fn run_endpoint_io_loop<B>(
                         // connection reset by peer, I/O error, etc.
                         Err(RetryCircuitBreakerError::Service(e)) => {
                             telemetry.track_permanently_failed_transaction(&metadata, None, &endpoint_domain);
-                            log_metrics_validation_transaction_failed(&metadata, &endpoint_url, None);
                             error!(endpoint_url, error = %e, error_source = ?e.source(), "Failed to send request.");
                         },
 
@@ -567,66 +563,6 @@ where
     Transaction::reassemble(metadata, request)
 }
 
-fn log_metrics_validation_transaction_queued<B>(txn: &Transaction<B>, endpoint_url: &str)
-where
-    B: Buf + Clone,
-{
-    let metadata = txn.metadata();
-    if let (Some(payload_info), Some(validation_request_id)) =
-        (metadata.payload_info, metadata.validation_request_id.as_deref())
-    {
-        info!(
-            endpoint_url,
-            uri = %txn.request_uri(),
-            validation_request_id,
-            validation_request_seq = ?metadata.validation_request_seq,
-            validation_request_len = ?metadata.validation_request_len,
-            ?payload_info,
-            event_count = metadata.event_count,
-            data_point_count = metadata.data_point_count,
-            "Queued metrics validation transaction for endpoint."
-        );
-    }
-}
-
-fn log_metrics_validation_transaction_sent(metadata: &Metadata, endpoint_url: &str, request_uri: &str) {
-    if let (Some(payload_info), Some(validation_request_id)) =
-        (metadata.payload_info, metadata.validation_request_id.as_deref())
-    {
-        info!(
-            endpoint_url,
-            uri = request_uri,
-            validation_request_id,
-            validation_request_seq = ?metadata.validation_request_seq,
-            validation_request_len = ?metadata.validation_request_len,
-            ?payload_info,
-            event_count = metadata.event_count,
-            data_point_count = metadata.data_point_count,
-            "Sent metrics validation transaction."
-        );
-    }
-}
-
-fn log_metrics_validation_transaction_failed(
-    metadata: &Metadata, endpoint_url: &str, status: Option<http::StatusCode>,
-) {
-    if let (Some(payload_info), Some(validation_request_id)) =
-        (metadata.payload_info, metadata.validation_request_id.as_deref())
-    {
-        warn!(
-            endpoint_url,
-            ?status,
-            validation_request_id,
-            validation_request_seq = ?metadata.validation_request_seq,
-            validation_request_len = ?metadata.validation_request_len,
-            ?payload_info,
-            event_count = metadata.event_count,
-            data_point_count = metadata.data_point_count,
-            "Metrics validation transaction failed."
-        );
-    }
-}
-
 fn generate_retry_queue_id(context: ComponentContext, endpoint: &ResolvedEndpoint) -> String {
     // For additional endpoints we hash over the api_key_index (the stable position of this key in
     // the additional_endpoints config list) rather than the raw API key value. This means the queue
@@ -659,27 +595,11 @@ async fn process_http_response(
 ) {
     let status = response.status();
     if status.is_success() {
-        if let (Some(payload_info), Some(validation_request_id)) =
-            (metadata.payload_info, metadata.validation_request_id.as_deref())
-        {
-            info!(
-                endpoint_url,
-                %status,
-                validation_request_id,
-                validation_request_seq = ?metadata.validation_request_seq,
-                validation_request_len = ?metadata.validation_request_len,
-                ?payload_info,
-                event_count = metadata.event_count,
-                data_point_count = metadata.data_point_count,
-                "Metrics validation transaction completed."
-            );
-        }
         debug!(endpoint_url, %status, "Request completed.");
 
         telemetry.track_successful_transaction(&metadata, domain);
     } else {
         telemetry.track_permanently_failed_transaction(&metadata, Some(status), domain);
-        log_metrics_validation_transaction_failed(&metadata, endpoint_url, Some(status));
 
         match response.into_body().collect().await {
             Ok(body) => {

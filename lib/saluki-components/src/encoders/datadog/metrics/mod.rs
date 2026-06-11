@@ -30,7 +30,7 @@ use saluki_io::compression::{CompressionScheme, Compressor};
 use saluki_metrics::MetricsBuilder;
 use serde::Deserialize;
 use tokio::{io::AsyncWriteExt as _, select, sync::mpsc, time::sleep};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, warn};
 use uuid::Uuid;
 
 #[cfg(test)]
@@ -1233,16 +1233,6 @@ async fn flush_payload(
         headers.insert("X-Metrics-Request-ID", uuid_to_header_value(batch_id));
         headers.insert("X-Metrics-Request-Seq", usize_to_header_value(batch_seq));
         headers.insert("X-Metrics-Request-Len", usize_to_header_value(batch_len));
-        info!(
-            validation_request_id = %batch_id,
-            validation_request_seq = batch_seq,
-            validation_request_len = batch_len,
-            uri = %request.uri(),
-            event_count,
-            data_point_count,
-            ?payload_info,
-            "Enqueuing metrics validation payload."
-        );
     }
 
     let mut payload_meta = PayloadMetadata::from_event_and_data_point_count(event_count, data_point_count);
