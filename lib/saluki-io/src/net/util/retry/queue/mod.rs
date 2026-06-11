@@ -183,12 +183,12 @@ where
     ///
     /// If the queue is full and the entry can't be enqueue in-memory, and disk persistence is enabled, in-memory
     /// entries will be moved to disk (oldest first) until enough capacity is available to enqueue the new entry
-    /// in-memory.
+    /// in-memory. If an in-memory entry can't be persisted due to a disk error, that entry is dropped and counted in
+    /// the returned `PushResult`; the new entry is still enqueued.
     ///
     /// # Errors
     ///
-    /// If the entry is too large to fit into the queue, or if there is an error when persisting entries to disk, an
-    /// error is returned.
+    /// If the entry is too large to fit into the queue, an error is returned.
     pub async fn push(&mut self, entry: T) -> Result<PushResult, GenericError> {
         let mut push_result = PushResult::default();
 
@@ -229,11 +229,30 @@ where
             let oldest_entry_size = oldest_entry.size_bytes();
 
             if using_disk {
+                // Capture the dropped-event counts before moving `oldest_entry` into the persist call, so we can still
+                // record drop telemetry if the disk write fails.
+                let oldest_entry_events = oldest_entry.event_count();
+                let oldest_entry_data_points = oldest_entry.data_point_count();
                 let persisted_pending = self.persisted_pending.as_mut().expect("disk persistence is enabled");
-                let persist_result = persisted_pending.push(oldest_entry).await?;
-                push_result.merge(persist_result);
-
-                debug!(entry.len = oldest_entry_size, "Moved in-memory entry to disk.");
+                match persisted_pending.push(oldest_entry).await {
+                    Ok(persist_result) => {
+                        push_result.merge(persist_result);
+                        debug!(entry.len = oldest_entry_size, "Moved in-memory entry to disk.");
+                    }
+                    Err(e) => {
+                        // Match the upstream Agent: on disk persistence failure, drop this entry and continue evicting
+                        // so the new entry can still be admitted to the queue. Propagating the error here would
+                        // permanently lose the incoming transaction at the caller, which the Agent does not do.
+                        warn!(
+                            error = %e,
+                            entry.len = oldest_entry_size,
+                            "Failed to persist in-memory entry to disk; dropping entry to make room."
+                        );
+                        push_result.items_dropped += 1;
+                        push_result.events_dropped += oldest_entry_events;
+                        push_result.data_points_dropped += oldest_entry_data_points;
+                    }
+                }
             } else {
                 debug!(
                     entry.len = oldest_entry_size,
@@ -320,7 +339,8 @@ fn flush_to_disk_bytes(max_in_memory_bytes: u64, flush_to_disk_mem_ratio: f64) -
     } else if flush_to_disk_mem_ratio.is_infinite() {
         u64::MAX
     } else {
-        ((max_in_memory_bytes as f64) * flush_to_disk_mem_ratio).ceil() as u64
+        // Truncate toward zero to match the upstream Agent's `int(maxMemSizeInBytes * flushToStorageRatio)` semantics.
+        ((max_in_memory_bytes as f64) * flush_to_disk_mem_ratio) as u64
     }
 }
 
@@ -523,10 +543,16 @@ mod tests {
             .await
             .expect("should not fail to create retry queue with disk persistence");
 
-        let push_result = retry_queue.push(data1).await.expect("should not fail to push data");
+        let push_result = retry_queue
+            .push(data1.clone())
+            .await
+            .expect("should not fail to push data");
         assert_eq!(0, push_result.items_dropped);
         assert_eq!(0, push_result.events_dropped);
-        let push_result = retry_queue.push(data2).await.expect("should not fail to push data");
+        let push_result = retry_queue
+            .push(data2.clone())
+            .await
+            .expect("should not fail to push data");
         assert_eq!(0, push_result.items_dropped);
         assert_eq!(0, push_result.events_dropped);
         let push_result = retry_queue
@@ -544,6 +570,8 @@ mod tests {
         assert_eq!(0, push_result.events_dropped);
         assert!(file_count_recursive(&root_path) >= 2);
 
+        // In-memory entries are popped first (data3, data4), followed by the entries that were flushed to disk
+        // (data1, data2 in FIFO order).
         let actual = retry_queue
             .pop()
             .await
@@ -557,6 +585,20 @@ mod tests {
             .expect("should not fail to pop data")
             .expect("should not be empty");
         assert_eq!(data4, actual);
+
+        let actual = retry_queue
+            .pop()
+            .await
+            .expect("should not fail to pop data")
+            .expect("should not be empty");
+        assert_eq!(data1, actual);
+
+        let actual = retry_queue
+            .pop()
+            .await
+            .expect("should not fail to pop data")
+            .expect("should not be empty");
+        assert_eq!(data2, actual);
     }
 
     #[tokio::test]
