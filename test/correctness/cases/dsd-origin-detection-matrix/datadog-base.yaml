@@ -35,3 +35,7 @@ cri_socket_path: /var/run/containerd/containerd.sock
 # multiple workers, so ADP always ends up with the correct (last seen) value, while DSD might
 # return the last seen value... or the value seen four updates ago, etc etc.
 dogstatsd_workers_count: 1
+
+# Keep a large context limit on both baseline and comparison targets so high-cardinality matrix
+# variants don't diverge due context eviction behavior under load.
+aggregate_context_limit: 500000

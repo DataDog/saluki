@@ -1143,13 +1143,27 @@ inventory:
         config_registry_filename: encoders.rs
 
   forwarder_apikey_validation_interval:
-    support: none
-    severity: medium
-    planned: true
+    support: partial
     pipelines: [cross_cutting]
     description: "API key check interval (minutes)"
-    documentation: "Core agent supports runtime API key refresh without restart. ADP has partial infrastructure (config-side listeners) but the forwarder does not act on updates."
+    documentation: |
+      ADP supports `forwarder_apikey_validation_interval` for Datadog intake forwarding. The value is in minutes,
+      defaults to `60`, and falls back to that default for non-positive values.
+
+      ADP validates configured API keys when the forwarder starts, periodically at the configured interval, and
+      after API-key-related runtime config updates. Validation controls readiness only: confirmed invalid keys can
+      make the forwarder not ready, but the forwarder keeps running and transient validation failures do not prove
+      that keys are invalid.
+
+      Support is partial because ADP only tracks `additional_endpoints` domains present at forwarder startup.
+      Runtime updates can rotate keys for those domains, but brand-new domains are not added or validated until
+      restart.
     issue: "#1357"
+    test_support:
+      used_by: [ForwarderConfiguration]
+      value_type_override: integer
+      additional_attributes:
+        config_registry_filename: forwarder.rs
 
   forwarder_backoff_base:
     support: full

@@ -112,7 +112,7 @@ container:
 
   # Environment variables
   env:
-    DD_API_KEY: "test-api-key"
+    DD_API_KEY: "00000000000000000000000000000000"
     DD_HOSTNAME: "integration-test"
     DD_DATA_PLANE_ENABLED: "true"
 

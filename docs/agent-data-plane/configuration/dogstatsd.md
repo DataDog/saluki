@@ -30,7 +30,6 @@ tracking.
 | `dogstatsd_experimental_http.listen_address`                   | Bind address for experimental HTTP DSD listener | [#1682] |
 | `dogstatsd_pipe_name`                                          | Windows named pipe path                         | [#1466] |
 | `dogstatsd_windows_pipe_security_descriptor`                   | Windows named pipe ACL descriptor               | [#1466] |
-| `forwarder_apikey_validation_interval`                         | API key check interval (minutes)                | [#1357] |
 | `observability_pipelines_worker.metrics.use_v3_api.series`     | OPW metrics v3 series API opt-in                | [#1468] |
 | `serializer_experimental_use_v3_api.compression_level`         | V3 API zstd compression level                   | [#1468] |
 | `serializer_experimental_use_v3_api.series.endpoints`          | Endpoints enabled for V3 series API             | [#1468] |
@@ -162,18 +161,19 @@ deployment path, ADP does not implement `heroku_dyno`. See [#1753].
 The following settings are recognized by both ADP and the core agent, but with different behavior or
 default values.
 
-| Config Key                         | Description                               |
-| ---------------------------------- | ----------------------------------------- |
-| `dogstatsd_mapper_cache_size`      | Mapper result LRU cache size              |
-| `dogstatsd_metrics_stats_enable`   | Enable per-metric debug stats             |
-| `forwarder_high_prio_buffer_size`  | High-priority request queue size          |
-| `forwarder_num_workers`            | Concurrent forwarder workers              |
-| `log_level`                        | Log verbosity directives                  |
-| `min_tls_version`                  | Minimum TLS version for HTTPS connections |
-| `multi_region_failover.enabled`    | Enable multi-region failover mode         |
-| `serializer_zstd_compressor_level` | Zstd compression level                    |
-| `skip_ssl_validation`              | Skip TLS cert validation                  |
-| `statsd_forward_host`              | UDP packet forwarding destination host    |
+| Config Key                             | Description                               |
+| -------------------------------------- | ----------------------------------------- |
+| `dogstatsd_mapper_cache_size`          | Mapper result LRU cache size              |
+| `dogstatsd_metrics_stats_enable`       | Enable per-metric debug stats             |
+| `forwarder_apikey_validation_interval` | API key check interval (minutes)          |
+| `forwarder_high_prio_buffer_size`      | High-priority request queue size          |
+| `forwarder_num_workers`                | Concurrent forwarder workers              |
+| `log_level`                            | Log verbosity directives                  |
+| `min_tls_version`                      | Minimum TLS version for HTTPS connections |
+| `multi_region_failover.enabled`        | Enable multi-region failover mode         |
+| `serializer_zstd_compressor_level`     | Zstd compression level                    |
+| `skip_ssl_validation`                  | Skip TLS cert validation                  |
+| `statsd_forward_host`                  | UDP packet forwarding destination host    |
 
 ### `dogstatsd_mapper_cache_size`
 
@@ -194,6 +194,20 @@ mapper, clear `dogstatsd_mapper_profiles` instead when running ADP.
 ### `dogstatsd_metrics_stats_enable`
 
 See `dogstatsd_stats_enable`
+
+### `forwarder_apikey_validation_interval`
+
+ADP supports `forwarder_apikey_validation_interval` for Datadog intake forwarding. The value is in minutes,
+defaults to `60`, and falls back to that default for non-positive values.
+
+ADP validates configured API keys when the forwarder starts, periodically at the configured interval, and
+after API-key-related runtime config updates. Validation controls readiness only: confirmed invalid keys can
+make the forwarder not ready, but the forwarder keeps running and transient validation failures do not prove
+that keys are invalid.
+
+Support is partial because ADP only tracks `additional_endpoints` domains present at forwarder startup.
+Runtime updates can rotate keys for those domains, but brand-new domains are not added or validated until
+restart.
 
 ### `forwarder_high_prio_buffer_size`
 

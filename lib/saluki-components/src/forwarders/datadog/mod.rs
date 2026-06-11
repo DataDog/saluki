@@ -19,6 +19,7 @@ use crate::common::datadog::{
     io::TransactionForwarder,
     telemetry::ComponentTelemetry,
     transaction::{Metadata, Transaction},
+    validation::ValidationReadiness,
     DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT,
 };
 
@@ -139,15 +140,20 @@ impl Forwarder for Datadog {
 
         let mut health = context.take_health_handle();
 
+        let mut validation = forwarder.api_key_validator().spawn();
+
         // Spawn our forwarder task to handle sending requests.
         let forwarder = forwarder.spawn().await;
 
-        health.mark_ready();
         debug!("Datadog forwarder started.");
 
         loop {
             select! {
                 _ = health.live() => continue,
+                readiness = validation.wait_for_change() => match readiness {
+                    ValidationReadiness::Ready => health.mark_ready(),
+                    ValidationReadiness::NotReady => health.mark_not_ready(),
+                },
                 maybe_payload = context.payloads().next() => match maybe_payload {
                     Some(payload) => if let Some(http_payload) = payload.try_into_http_payload() {
                         let (payload_meta, request) = http_payload.into_parts();
@@ -165,6 +171,7 @@ impl Forwarder for Datadog {
         }
 
         // Shutdown the forwarder gracefully.
+        validation.abort();
         forwarder.shutdown().await;
 
         debug!("Datadog forwarder stopped.");

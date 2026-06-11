@@ -6,10 +6,10 @@ timeout: 90s
 runtimes: [linux]
 
 env:
-  DD_API_KEY: "test-api-key"
+  DD_API_KEY: "00000000000000000000000000000000"
   DD_HOSTNAME: "integration-test-dsd-forwarding"
   DD_DATA_PLANE_ENABLED: "true"
-  DD_DATA_PLANE_STANDALONE_MODE: "true"
+  DD_DATA_PLANE_STANDALONE_MODE: "false"
   DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
   DD_DOGSTATSD_TCP_PORT: "9126"
   DD_DOGSTATSD_SOCKET: "/tmp/dsd-forwarding.sock"

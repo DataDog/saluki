@@ -40,6 +40,7 @@ use super::{
     middleware::{for_resolved_endpoint, with_allow_arbitrary_tags, with_version_info},
     telemetry::{ComponentTelemetry, SharedTransactionQueueTelemetry, TransactionQueueTelemetry},
     transaction::{Metadata, Transaction, TransactionBody},
+    validation::ApiKeyValidator,
     METRIC_INTAKE_PATHS,
 };
 
@@ -233,6 +234,16 @@ where
             transactions_tx,
             io_shutdown_rx,
         }
+    }
+
+    /// Returns API key validation for the startup endpoint set.
+    pub(crate) fn api_key_validator(&self) -> ApiKeyValidator {
+        ApiKeyValidator::new(
+            self.endpoints.clone(),
+            self.client.clone(),
+            self.live_config.clone(),
+            self.config.api_key_validation_interval(),
+        )
     }
 }
 
