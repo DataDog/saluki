@@ -17,6 +17,7 @@ use airlock::driver::{ContainerOs, Driver, DriverConfig, DriverDetails};
 use bollard::{container::LogOutput, errors::Error as DockerError};
 use futures::stream::{self, StreamExt as _};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
+use tokio::pin;
 use tokio::sync::{mpsc, Semaphore};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
@@ -375,7 +376,7 @@ impl Runner {
         }
 
         let run_fut = test.run(tctx);
-        tokio::pin!(run_fut);
+        pin!(run_fut);
 
         // Run the test for the duration of 'timeout', then send a cancel request if it times out and wait GRACE_TIME
         // for teardown.
