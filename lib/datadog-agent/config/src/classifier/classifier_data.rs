@@ -313,6 +313,13 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         default: Some("500"),
     },
     ClassifierEntry {
+        yaml_path: "observability_pipelines_worker.metrics.use_v3_api.series",
+        aliases: &[],
+        support_level: SupportLevel::Incompatible(Severity::Low),
+        pipeline_affinity: PipelineAffinity::CrossCutting,
+        default: Some("false"),
+    },
+    ClassifierEntry {
         yaml_path: "serializer_experimental_use_v3_api.compression_level",
         aliases: &[],
         support_level: SupportLevel::Incompatible(Severity::Low),
@@ -374,6 +381,27 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: Some("true"),
+    },
+    ClassifierEntry {
+        yaml_path: "use_v3_api.series.enabled",
+        aliases: &[],
+        support_level: SupportLevel::Incompatible(Severity::Low),
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD, Pipeline::Checks, Pipeline::Traces]),
+        default: Some("\"true\""),
+    },
+    ClassifierEntry {
+        yaml_path: "use_v3_api.series.endpoints",
+        aliases: &[],
+        support_level: SupportLevel::Incompatible(Severity::Low),
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD, Pipeline::Checks, Pipeline::Traces]),
+        default: Some("{}"),
+    },
+    ClassifierEntry {
+        yaml_path: "vector.metrics.use_v3_api.series",
+        aliases: &[],
+        support_level: SupportLevel::Incompatible(Severity::Low),
+        pipeline_affinity: PipelineAffinity::CrossCutting,
+        default: Some("false"),
     },
     ClassifierEntry {
         yaml_path: "autoscaling.failover.enabled",

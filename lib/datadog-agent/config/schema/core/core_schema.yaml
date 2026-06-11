@@ -1077,6 +1077,14 @@ properties:
             example: '"http://127.0.0.1:8080"'
             tags:
             - template_section:Common
+          use_v3_api:
+            node_type: section
+            type: object
+            properties:
+              series:
+                node_type: setting
+                type: boolean
+                default: false
       logs:
         node_type: section
         type: object
@@ -9966,6 +9974,22 @@ properties:
         node_type: setting
         type: boolean
         default: true
+  use_v3_api:
+    node_type: section
+    type: object
+    properties:
+      series:
+        node_type: section
+        type: object
+        properties:
+          enabled:
+            node_type: setting
+            type: string
+            default: 'true'
+          endpoints:
+            node_type: setting
+            type: object
+            default: {}
   vector:
     node_type: section
     type: object
@@ -10005,6 +10029,14 @@ properties:
             node_type: setting
             type: string
             default: ''
+          use_v3_api:
+            node_type: section
+            type: object
+            properties:
+              series:
+                node_type: setting
+                type: boolean
+                default: false
       traces:
         node_type: section
         type: object
