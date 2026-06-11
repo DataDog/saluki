@@ -26,6 +26,7 @@ if [ -z "$dynamic_vars" ]; then
 fi
 
 mkdir -p /run/adp/env
+mkdir -p /run/agent/env
 
 # Phase 1: Evaluate each PANORAMIC_DYNAMIC_* command and store the result.
 for var in $dynamic_vars; do
@@ -53,4 +54,5 @@ env | while IFS='=' read -r var value; do
     done
 
     printf "%s" "$resolved" > "/run/adp/env/$var"
+    printf "%s" "$resolved" > "/run/agent/env/$var"
 done
