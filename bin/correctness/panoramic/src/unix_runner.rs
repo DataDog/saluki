@@ -395,18 +395,10 @@ fn build_core_agent_forced_env(
         forced.push(("DD_USE_DOGSTATSD", "false".to_string()));
     }
 
-    if env_is_true(test_env, "DD_DATA_PLANE_OTLP_ENABLED") {
-        forced.extend([
-            (
-                "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_ENDPOINT",
-                "127.0.0.1:14317".to_string(),
-            ),
-            (
-                "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_ENDPOINT",
-                "127.0.0.1:14318".to_string(),
-            ),
-        ]);
-    }
+    // Do not force Core Agent OTLP receiver endpoints here.
+    //
+    // In converged tests where ADP handles OTLP natively, forcing both processes to the same
+    // receiver endpoint causes a bind collision on the shared test host.
 
     forced
 }
@@ -525,7 +517,7 @@ mod tests {
     }
 
     #[test]
-    fn core_agent_env_mirrors_docker_listener_collision_avoidance() {
+    fn core_agent_env_does_not_force_otlp_receiver_endpoints() {
         let state_dir = PathBuf::from("/tmp/panoramic-unix-test");
         let auth_token_path = state_dir.join("auth_token").to_string_lossy().into_owned();
         let test_env = HashMap::from([
@@ -541,14 +533,8 @@ mod tests {
         assert_eq!(env.get("DD_AUTH_TOKEN_FILE_PATH"), Some(&auth_token_path));
         assert_eq!(env.get("DD_RUN_PATH"), Some(&state_dir.to_string_lossy().into_owned()));
         assert_eq!(env.get("DD_USE_DOGSTATSD"), Some(&"false".to_string()));
-        assert_eq!(
-            env.get("DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_ENDPOINT"),
-            Some(&"127.0.0.1:14317".to_string())
-        );
-        assert_eq!(
-            env.get("DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_ENDPOINT"),
-            Some(&"127.0.0.1:14318".to_string())
-        );
+        assert!(!env.contains_key("DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_ENDPOINT"));
+        assert!(!env.contains_key("DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_ENDPOINT"));
     }
 
     #[test]
