@@ -93,7 +93,7 @@ deduplicates
 inlining
 cloneable
 callsite
-enqueue(s?)
+enqueue(s|d|ing)?
 hostname
 backpressure
 misconfiguration

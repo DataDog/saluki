@@ -181,10 +181,12 @@ where
 
     /// Enqueues an entry.
     ///
-    /// If the queue is full and the entry can't be enqueue in-memory, and disk persistence is enabled, in-memory
-    /// entries will be moved to disk (oldest first) until enough capacity is available to enqueue the new entry
-    /// in-memory. If an in-memory entry can't be persisted due to a disk error, that entry is dropped and counted in
-    /// the returned `PushResult`; the new entry is still enqueued.
+    /// If the queue is full and the entry can't be enqueued in-memory, in-memory entries (oldest first) are evicted
+    /// until there is room for the new entry. When disk persistence is enabled and the flush-to-disk ratio is greater
+    /// than zero, eviction moves at least `max_in_memory_bytes * flush_to_disk_mem_ratio` bytes of in-memory data to
+    /// disk before admitting the new entry; in all other cases (disk persistence disabled, or ratio is zero), evicted
+    /// entries are dropped instead. If an in-memory entry can't be persisted due to a disk error, that entry is dropped
+    /// and counted in the returned `PushResult`; the new entry is still enqueued.
     ///
     /// # Errors
     ///
