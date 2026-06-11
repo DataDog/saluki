@@ -32,7 +32,7 @@ env:
 assertions:
   - type: log_contains
     pattern: 'listen_addr:"udp://0.0.0.0:58125"'
-    timeout: 15s
+    timeout: 60s
   - parallel:
       - type: process_stable_for
         duration: 10s

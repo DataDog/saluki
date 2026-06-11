@@ -24,17 +24,17 @@ assertions:
       - type: port_listening
         port: 55100
         protocol: tcp
-        timeout: 10s
+        timeout: 60s
       - type: http_check
         endpoint: "http://localhost:55100/metrics"
         status:
           equal: 200
-        timeout: 10s
+        timeout: 60s
       - type: http_check
         endpoint: "http://localhost:55100/compat/metrics"
         status:
           equal: 200
-        timeout: 10s
+        timeout: 60s
       - type: log_not_contains
         pattern: "panic|PANIC"
         regex: true

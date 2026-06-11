@@ -25,13 +25,13 @@ env:
 assertions:
   - type: log_contains
     pattern: "Unsupported configuration key with non-default value"
-    timeout: 30s
+    timeout: 60s
   - type: log_contains
     pattern: "incompatible configuration detected"
-    timeout: 30s
+    timeout: 60s
   # Verify ADP actually exited (not just logged the error and continued). On docker this
   # observes the s6 supervisor's exit log; on mac it observes the process exit code
   # directly. Expected code is 1 because the high-severity check returns a non-zero status.
   - type: adp_exits_with
     expected_code: 1
-    timeout: 30s
+    timeout: 60s

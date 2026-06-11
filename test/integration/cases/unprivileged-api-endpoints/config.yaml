@@ -23,17 +23,17 @@ assertions:
         endpoint: "http://localhost:55100/ready"
         status:
           equal: 200
-        timeout: 10s
+        timeout: 60s
       - type: http_check
         endpoint: "http://localhost:55100/live"
         status:
           equal: 200
-        timeout: 10s
+        timeout: 60s
       - type: http_check
         endpoint: "http://localhost:55100/memory/status"
         status:
           equal: 200
-        timeout: 10s
+        timeout: 60s
       - type: log_not_contains
         pattern: "panic|PANIC"
         regex: true

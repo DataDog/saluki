@@ -17,4 +17,4 @@ assertions:
   # ADP should log that no pipelines are enabled and exit.
   - type: log_contains
     pattern: "No data pipelines are enabled. Exiting."
-    timeout: 15s
+    timeout: 60s

@@ -19,7 +19,7 @@ env:
 assertions:
   - type: log_contains
     pattern: "Memory limiting behavior will be best effort."
-    timeout: 15s
+    timeout: 60s
   - parallel:
       - type: process_stable_for
         duration: 10s

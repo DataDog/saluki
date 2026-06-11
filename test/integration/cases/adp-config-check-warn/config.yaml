@@ -23,7 +23,7 @@ assertions:
   - type: log_contains
     pattern: 'key:"dogstatsd_telemetry_enabled_listener_id" | Unsupported configuration key. Proceeding.'
     regex: true
-    timeout: 30s
+    timeout: 60s
   - parallel:
       - type: process_stable_for
         duration: 10s

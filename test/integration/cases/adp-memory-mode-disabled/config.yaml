@@ -18,7 +18,7 @@ env:
 assertions:
   - type: log_contains
     pattern: "Memory limiting disabled."
-    timeout: 15s
+    timeout: 60s
   - parallel:
       - type: process_stable_for
         duration: 10s

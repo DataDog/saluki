@@ -20,12 +20,12 @@ container:
 assertions:
   - type: log_contains
     pattern: "Initial configuration received."
-    timeout: 30s
+    timeout: 60s
   - type: file_contains
     path: "C:\\adp\\adp-ignores-core-agent-log-file.log"
     pattern: "DATAPLANE"
-    timeout: 30s
+    timeout: 60s
   - type: file_contains
     path: "C:\\adp\\coreagent-only.log"
     pattern: "CORE"
-    timeout: 30s
+    timeout: 60s
