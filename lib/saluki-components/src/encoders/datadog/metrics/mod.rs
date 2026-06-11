@@ -8,6 +8,7 @@ use protobuf::{rt::WireType, CodedOutputStream};
 use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_common::{
     buf::{ChunkedBytesBuffer, FrozenChunkedBytesBuffer},
+    iter::ReusableDeduplicator,
     task::HandleExt as _,
 };
 use saluki_config::GenericConfiguration;
@@ -1278,9 +1279,10 @@ async fn flush_payload(
 // Encodes a batch of metrics to V3 columnar format.
 fn encode_v3_metrics_batch(metrics: &[Metric], additional_tags: &SharedTagSet) -> Result<Vec<u8>, GenericError> {
     let mut writer = v3::V3Writer::new();
+    let mut tags_deduplicator = ReusableDeduplicator::new();
 
     for metric in metrics {
-        write_metric_to_v3(&mut writer, metric, additional_tags);
+        write_metric_to_v3(&mut writer, metric, additional_tags, &mut tags_deduplicator);
     }
 
     let mut output = Vec::new();
@@ -1292,7 +1294,10 @@ fn encode_v3_metrics_batch(metrics: &[Metric], additional_tags: &SharedTagSet) -
 }
 
 /// Writes a single metric to the V3 writer.
-fn write_metric_to_v3(writer: &mut v3::V3Writer, metric: &Metric, additional_tags: &SharedTagSet) {
+fn write_metric_to_v3(
+    writer: &mut v3::V3Writer, metric: &Metric, additional_tags: &SharedTagSet,
+    tags_deduplicator: &mut ReusableDeduplicator<Tag>,
+) {
     let metric_type = match metric.values() {
         MetricValues::Counter(..) => v3::V3MetricType::Count,
         MetricValues::Rate(..) => v3::V3MetricType::Rate,
@@ -1304,12 +1309,14 @@ fn write_metric_to_v3(writer: &mut v3::V3Writer, metric: &Metric, additional_tag
     let mut builder = writer.write(metric_type, metric.context().name());
 
     // Tags - chain instrumented + additional + origin tags
-    let all_tags = metric
+    let chained_tags = metric
         .context()
         .tags()
         .into_iter()
         .chain(additional_tags)
-        .chain(metric.context().origin_tags())
+        .chain(metric.context().origin_tags());
+    let all_tags = tags_deduplicator
+        .deduplicated(chained_tags)
         .filter(|t| is_sketch || !is_v3_series_resource_tag(t) && !is_v3_series_device_tag(t))
         .map(|t| t.as_str());
     builder.set_tags(all_tags);
@@ -1321,13 +1328,13 @@ fn write_metric_to_v3(writer: &mut v3::V3Writer, metric: &Metric, additional_tag
     }
     if !is_sketch {
         let mut device_resource = None;
-        for tag in metric
+        let chained_tags = metric
             .context()
             .origin_tags()
             .into_iter()
             .chain(metric.context().tags())
-            .chain(additional_tags)
-        {
+            .chain(additional_tags);
+        for tag in tags_deduplicator.deduplicated(chained_tags) {
             if is_v3_series_device_tag(tag) {
                 device_resource = tag.value().filter(|device| !device.is_empty());
             } else if is_v3_series_resource_tag(tag) {
