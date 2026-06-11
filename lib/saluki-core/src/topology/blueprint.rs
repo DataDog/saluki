@@ -893,8 +893,8 @@ impl Supervisable for TopologyBlueprint {
             // shutdown so we exit promptly if asked to stop before we've started.
             if let Some(environment_ready) = environment_ready {
                 select! {
-                    _ = environment_ready => {},
                     _ = &mut shutdown => return Ok(()),
+                    _ = environment_ready => {},
                 }
             }
 
@@ -909,15 +909,15 @@ impl Supervisable for TopologyBlueprint {
 
             let mut topology_failed = false;
             select! {
+                // The supervisor requested shutdown.
+                _ = &mut shutdown => {
+                    info!("Topology received shutdown signal. Shutting down...");
+                },
+
                 // A component finished before shutdown was requested, which we treat as a failure of the topology.
                 _ = running.wait_for_unexpected_finish() => {
                     error!("Topology component unexpectedly finished. Shutting down...");
                     topology_failed = true;
-                },
-
-                // The supervisor requested shutdown.
-                _ = &mut shutdown => {
-                    info!("Topology received shutdown signal. Shutting down...");
                 },
             }
 

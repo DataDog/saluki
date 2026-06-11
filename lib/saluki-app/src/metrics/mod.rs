@@ -130,9 +130,10 @@ impl Supervisable for RuntimeMetricsWorker {
 
         Ok(Box::pin(async move {
             select! {
-                _ = collect_runtime_metrics(&runtime_id, handle) => {},
                 _ = process_shutdown => {},
+                _ = collect_runtime_metrics(&runtime_id, handle) => {},
             }
+
             Ok(())
         }))
     }
