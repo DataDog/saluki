@@ -17,7 +17,6 @@ comparison:
     - DD_DATA_PLANE_DOGSTATSD_ENABLED=true
     - DD_DATA_PLANE_REMOTE_AGENT_ENABLED=true
     - DD_DATA_PLANE_STANDALONE_MODE=false
-    - DD_AGGREGATE_CONTEXT_LIMIT=500000
 
 # Each variant expands into an independent correctness test. All variants share the same base
 # agent config (datadog-base.yaml) and millstone corpus; only the origin detection settings differ.

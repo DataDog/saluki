@@ -162,3 +162,64 @@ push-release-tarball-darwin-arm64:
     - test-integration-macos-arm64
   variables:
     TARGET_ARCH: "arm64"
+
+# Pushes the prebuilt Windows zip (from `build-release-zip-windows-*` in .gitlab/windows.yml)
+# to s3. Mirrors the linux `_internal` pattern and the darwin push above: manual on every
+# pipeline, with the bucket prefix selected by rule — canonical path on tagged releases, an
+# `internal/` subkey on dev pipelines so credentials and artifact handoff are exercised on
+# every PR without polluting the release path. The mq-working-branch guard matches the linux
+# `_internal` jobs.
+#
+# The upload itself runs in the linux `${DOCKER_BUILD_IMAGE}`, not on a Windows runner, just
+# like the darwin push: keeps Windows runner usage limited to the build itself, with the same
+# IAM-role-driven `aws s3 cp` flow that's already known to work for the linux push jobs.
+.push-release-zip-windows-definition:
+  stage: release
+  rules:
+    - if: !reference [.on_mq_branch, rules, if]
+      when: never
+    - if: !reference [.on_official_release, rules, if]
+      when: manual
+      variables:
+        TARGET_BUCKET_PATH: "s3://binaries-ddbuild-io-prod/saluki/"
+    - when: manual
+      allow_failure: true
+      variables:
+        TARGET_BUCKET_PATH: "s3://binaries-ddbuild-io-prod/saluki/internal/"
+  image: ${DOCKER_BUILD_IMAGE}
+  variables:
+    TARGET_ARCH: "amd64"
+    FIPS_SUFFIX: ""
+    ZIP_NAME: "agent-data-plane-${ADP_IMAGE_VERSION}-windows-${TARGET_ARCH}${FIPS_SUFFIX}.zip"
+  script:
+    - apt-get update && DEBIAN_FRONTEND=noninteractive apt install -yy --no-install-recommends awscli >/dev/null
+    # Log the digest before the upload so it lands in the job log even if `aws s3 cp` fails.
+    - sha256sum ${ZIP_NAME}
+    - aws s3 cp ${ZIP_NAME} ${TARGET_BUCKET_PATH}
+
+# Test gating mirrors the linux/darwin push jobs: unit + check-deny + check-licenses, plus the
+# windows integration tests at the e2e stage. Attaching the gating to the push job rather than
+# the build job lets the build run in parallel with the test stage.
+push-release-zip-windows-amd64:
+  extends: [.build-common-variables, .push-release-zip-windows-definition]
+  needs:
+    - job: build-release-zip-windows-amd64
+      artifacts: true
+    - unit-tests-windows-amd64
+    - test-integration-windows-amd64
+    - check-deny
+    - check-licenses
+
+push-release-zip-windows-amd64-fips:
+  extends: [.build-common-variables, .push-release-zip-windows-definition]
+  needs:
+    - job: build-release-zip-windows-amd64-fips
+      artifacts: true
+    - unit-tests-windows-amd64
+    - test-integration-windows-amd64
+    - check-deny
+    - check-licenses
+  variables:
+    # Only FIPS_SUFFIX is read by the push script (via ZIP_NAME); BUILD_FEATURES has no
+    # effect here since the push job doesn't recompile anything.
+    FIPS_SUFFIX: "-fips"

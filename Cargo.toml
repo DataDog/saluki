@@ -246,11 +246,15 @@ inherits = "dev"
 
 [profile.release]
 debug = true
+debug-assertions = true
+overflow-checks = true
 lto = "thin"
 codegen-units = 8
 
 [profile.optimized-release]
 inherits = "release"
+debug-assertions = false
+overflow-checks = false
 lto = "fat"
 codegen-units = 1
 

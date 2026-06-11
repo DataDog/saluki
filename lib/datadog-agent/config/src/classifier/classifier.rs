@@ -103,7 +103,8 @@ mod tests {
     #[test]
     fn incompatible_default() {
         let c = classifier();
-        let result = c.classify("tls_handshake_timeout", &Value::String("".into())).unwrap();
+        // config_id has schema default "" (empty string)
+        let result = c.classify("config_id", &Value::String("".into())).unwrap();
         assert!(matches!(result.support_level, SupportLevel::Incompatible(_)));
         assert!(result.is_default);
     }
@@ -116,18 +117,19 @@ mod tests {
     }
 
     #[test]
-    fn none_default_null_is_default() {
+    fn duration_default_null_is_not_default() {
         let c = classifier();
-        // tls_handshake_timeout is unsupported with no schema default
+        // tls_handshake_timeout now has default "10s" (a duration string); null != "10s"
         let result = c.classify("tls_handshake_timeout", &Value::Null).unwrap();
-        assert!(result.is_default);
+        assert!(!result.is_default);
     }
 
     #[test]
-    fn none_default_empty_string_is_default() {
+    fn duration_default_empty_string_is_not_default() {
         let c = classifier();
+        // tls_handshake_timeout has default "10s"; empty string does not match
         let result = c.classify("tls_handshake_timeout", &Value::String("".into())).unwrap();
-        assert!(result.is_default);
+        assert!(!result.is_default);
     }
 
     #[test]

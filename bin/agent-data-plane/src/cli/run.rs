@@ -208,7 +208,7 @@ pub async fn handle_run_command(
     let topology_ready = blueprint.topology_ready();
 
     let root_restart_strategy = RestartStrategy::new(RestartMode::OneForOne, 0, Duration::from_secs(5));
-    let mut root_supervisor = Supervisor::new("root")?.with_restart_strategy(root_restart_strategy);
+    let mut root_supervisor = Supervisor::new("adp-root")?.with_restart_strategy(root_restart_strategy);
 
     root_supervisor.add_worker(bootstrap_supervisor);
     if let Some(env_supervisor) = maybe_env_supervisor {

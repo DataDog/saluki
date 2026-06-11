@@ -2,6 +2,7 @@
 //!
 //! # Missing
 //!
+//! - Avoid breaking apart `TransactionForwarder` only to work around `#[allow(clippy::too_many_arguments)]`.
 //! - Avoid initializing the process-wide crypto provider from tests.
 
 use std::{collections::VecDeque, error::Error as _, path::PathBuf, sync::Arc, time::Duration};
@@ -39,6 +40,7 @@ use super::{
     middleware::{for_resolved_endpoint, with_allow_arbitrary_tags, with_version_info},
     telemetry::{ComponentTelemetry, SharedTransactionQueueTelemetry, TransactionQueueTelemetry},
     transaction::{Metadata, Transaction, TransactionBody},
+    validation::ApiKeyValidator,
     METRIC_INTAKE_PATHS,
 };
 
@@ -166,6 +168,9 @@ where
             .with_http_protocol(config.http_protocol())
             .with_bytes_sent_counter(telemetry.bytes_sent().clone())
             .with_endpoint_telemetry(metrics_builder.clone(), Some(endpoint_name));
+        if let Some(path) = config.ssl_key_log_file_path() {
+            client_builder = client_builder.with_tls_config(|builder| builder.with_key_log_file(path));
+        }
         if let Some(proxy) = config.proxy() {
             client_builder = client_builder.with_proxies(proxy.build()?);
         }
@@ -229,6 +234,16 @@ where
             transactions_tx,
             io_shutdown_rx,
         }
+    }
+
+    /// Returns API key validation for the startup endpoint set.
+    pub(crate) fn api_key_validator(&self) -> ApiKeyValidator {
+        ApiKeyValidator::new(
+            self.endpoints.clone(),
+            self.client.clone(),
+            self.live_config.clone(),
+            self.config.api_key_validation_interval(),
+        )
     }
 }
 

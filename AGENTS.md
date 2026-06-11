@@ -33,8 +33,10 @@ of software projects, in addition to making them harder to maintain and debug ov
   not for production use and supporting it need not be a blocker during feature development.
 - We have customized our use of `cargo fmt` and `clippy`. The `Makefile` is authoritative.
 - Our Rust code wraps at 120 characters.
-- Datadog configuration inventory is managed by `lib/datadog-agent/config/schema/*.yaml` and code is
-  generated from there. See `.claude/skills/config-management/SKILL.md` for details.
+- Datadog configuration inventory is managed by YAML files in `lib/datadog-agent/config/schema/`
+  - `schema_overlay.yaml` is a hand-edited file for our inventory of supported Datadog config
+  - The Datadog config schema is vendored under `lib/datadog-agent/config/schema/core`
+  - See `.claude/skills/config-management/SKILL.md`
 
 ## Building and Testing
 

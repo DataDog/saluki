@@ -9,7 +9,8 @@ fn main() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let files = Files::default();
 
-    println!("cargo:rerun-if-changed={}", files.schema.display());
+    let schema_dir = files.schema.parent().expect("schema file must have a parent directory");
+    println!("cargo:rerun-if-changed={}", schema_dir.display());
     println!("cargo:rerun-if-changed={}", files.overlay.display());
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=build/classifier_gen.rs");

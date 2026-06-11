@@ -33,6 +33,14 @@ const fn default_forwarder_connection_reset_interval() -> u64 {
     0
 }
 
+const fn default_api_key_validation_interval_mins() -> u64 {
+    60
+}
+
+const fn default_api_key_validation_interval_config_mins() -> i64 {
+    default_api_key_validation_interval_mins() as i64
+}
+
 const MIN_TLS_VERSION_TLS10: &str = "tlsv1.0";
 const MIN_TLS_VERSION_TLS11: &str = "tlsv1.1";
 const MIN_TLS_VERSION_TLS12: &str = "tlsv1.2";
@@ -228,6 +236,19 @@ pub struct ForwarderConfiguration {
     #[serde(default)]
     skip_ssl_validation: bool,
 
+    /// File path to write TLS key material to for all HTTPS connections to the
+    /// Datadog backend.
+    ///
+    /// When non-empty, enables the logging of TLS key material to the given file path,
+    /// in the [NSS Key Log][nss_key_log] format, which can be used for debugging TLS
+    /// issues, as well as decrypting captured TLS traffic in tools such as Wireshark.
+    ///
+    /// Defaults to empty.
+    ///
+    /// [nss_key_log]: https://nss-crypto.org/reference/security/nss/legacy/key_log_format/index.html
+    #[serde(default)]
+    sslkeylogfile: String,
+
     /// Minimum TLS protocol version for Datadog intake forwarding.
     ///
     /// Defaults to TLS 1.2. TLS 1.0 and TLS 1.1 are accepted for compatibility with core Agent configuration, but
@@ -246,6 +267,18 @@ pub struct ForwarderConfiguration {
     /// outbound intake request. The data plane does not perform local tag validation based on this setting.
     #[serde(default)]
     allow_arbitrary_tags: bool,
+
+    /// API key validation interval, in minutes.
+    ///
+    /// All values that are less than or equal to zero will be ignored, and the default
+    /// value will be used.
+    ///
+    /// Defaults to 60 minutes.
+    #[serde(
+        default = "default_api_key_validation_interval_config_mins",
+        rename = "forwarder_apikey_validation_interval"
+    )]
+    api_key_validation_interval_mins: i64,
 }
 
 impl ForwarderConfiguration {
@@ -253,6 +286,15 @@ impl ForwarderConfiguration {
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
         let mut forwarder_config = config.as_typed::<Self>()?;
         forwarder_config.parsed_min_tls_version = min_tls_version_from_config_value(&forwarder_config.min_tls_version);
+
+        if forwarder_config.api_key_validation_interval_mins <= 0 {
+            warn!(
+                config_key = "forwarder_apikey_validation_interval",
+                fallback_minutes = default_api_key_validation_interval_mins(),
+                "Configured API key validation interval is invalid; using default."
+            );
+            forwarder_config.api_key_validation_interval_mins = default_api_key_validation_interval_mins() as i64;
+        }
 
         // Handle fixing up the forwarder storage path if it's empty.
         forwarder_config.retry.fix_empty_storage_path(config);
@@ -379,6 +421,12 @@ impl ForwarderConfiguration {
         self.skip_ssl_validation
     }
 
+    /// Returns the TLS key log file path, if configured.
+    pub fn ssl_key_log_file_path(&self) -> Option<&str> {
+        let trimmed = self.sslkeylogfile.trim();
+        (!trimmed.is_empty()).then_some(trimmed)
+    }
+
     /// Returns the minimum TLS protocol version for Datadog intake forwarding.
     pub const fn min_tls_version(&self) -> TlsMinimumVersion {
         self.parsed_min_tls_version
@@ -387,6 +435,11 @@ impl ForwarderConfiguration {
     /// Returns whether outbound intake requests should allow arbitrary tag values.
     pub const fn allow_arbitrary_tags(&self) -> bool {
         self.allow_arbitrary_tags
+    }
+
+    /// Returns the API key validation interval.
+    pub const fn api_key_validation_interval(&self) -> Duration {
+        Duration::from_mins(self.api_key_validation_interval_mins as u64)
     }
 }
 
@@ -409,6 +462,7 @@ mod tests {
     const VECTOR_URL: &str = "http://vector.example.com:8080";
     const VECTOR_URI: &str = "http://vector.example.com:8080/";
     const ADDITIONAL_URI: &str = "http://additional.example.com/";
+    const SSL_KEY_LOG_FILE_PATH: &str = "/tmp/saluki-sslkeylogfile";
 
     fn base_config() -> serde_json::Value {
         serde_json::json!({ "api_key": "test-api-key" })
@@ -564,6 +618,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn api_key_validation_interval_parsing() {
+        let cases = [
+            ("missing", serde_json::json!({}), Duration::from_mins(60)),
+            (
+                "positive",
+                serde_json::json!({ "forwarder_apikey_validation_interval": 5i64 }),
+                Duration::from_mins(5),
+            ),
+            (
+                "zero",
+                serde_json::json!({ "forwarder_apikey_validation_interval": 0i64 }),
+                Duration::from_mins(60),
+            ),
+            (
+                "negative",
+                serde_json::json!({ "forwarder_apikey_validation_interval": -1i64 }),
+                Duration::from_mins(60),
+            ),
+        ];
+
+        for (case_name, extra_config, expected_interval) in cases {
+            let config = forwarder_config_from(config_with(extra_config), None).await;
+            assert_eq!(config.api_key_validation_interval(), expected_interval, "{case_name}");
+        }
+    }
+    #[tokio::test]
     async fn skip_ssl_validation_defaults_to_false() {
         let config = forwarder_config_from(base_config(), None).await;
 
@@ -610,6 +690,27 @@ mod tests {
         let config = forwarder_config_from(base_config(), Some(&env_vars)).await;
 
         assert!(config.skip_ssl_validation());
+    }
+
+    #[tokio::test]
+    async fn sslkeylogfile_set_via_yaml() {
+        let config = forwarder_config_from(
+            config_with(serde_json::json!({ "sslkeylogfile": SSL_KEY_LOG_FILE_PATH })),
+            None,
+        )
+        .await;
+
+        assert_eq!(config.ssl_key_log_file_path(), Some(SSL_KEY_LOG_FILE_PATH));
+    }
+
+    #[tokio::test]
+    async fn sslkeylogfile_set_via_env_var() {
+        // SSLKEYLOGFILE simulates DD_SSLKEYLOGFILE: the test helper sets TEST_SSLKEYLOGFILE, which
+        // from_environment("TEST") reads as sslkeylogfile.
+        let env_vars = vec![("SSLKEYLOGFILE".to_string(), SSL_KEY_LOG_FILE_PATH.to_string())];
+        let config = forwarder_config_from(base_config(), Some(&env_vars)).await;
+
+        assert_eq!(config.ssl_key_log_file_path(), Some(SSL_KEY_LOG_FILE_PATH));
     }
 
     #[tokio::test]

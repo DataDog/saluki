@@ -104,7 +104,7 @@ Map your findings to the overlay section the key should land in:
 - **`excluded`** — Key is architecturally outside ADP's scope (Go-GC-specific, Windows-only, handled
   by the core Agent tagger, etc.). The supervising agent will confirm with the user before writing
   `excluded`.
-- **`saluki_keys.rs`** — ADP uses this key but it has no counterpart in `core_schema.yaml` (ADP-only
+- **`saluki_keys.rs`** — ADP uses this key but it has no counterpart in the core schema (ADP-only
   extension). Flag this in `Discussion`; the key does not go in the overlay.
 
 Commit to a classification. Only use `unknown` when you genuinely cannot determine scope or

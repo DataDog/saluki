@@ -231,4 +231,5 @@ mpmc
 dhat
 profiler
 launchd
+Wireshark
 testsupport

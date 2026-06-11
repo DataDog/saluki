@@ -307,9 +307,11 @@ pub fn generate(overlay: &SchemaOverlay, template_path: &Path, out_dir: &Path) {
     tt.add_template("doc", &template_src)
         .unwrap_or_else(|e| panic!("template parse error: {}", e));
 
-    let rendered = tt
+    let mut rendered = tt
         .render("doc", &ctx)
         .unwrap_or_else(|e| panic!("template render error: {}", e));
+    rendered.truncate(rendered.trim_end_matches('\n').len());
+    rendered.push('\n');
 
     let docs_dir = out_dir.join("docs");
     std::fs::create_dir_all(&docs_dir).unwrap();

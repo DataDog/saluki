@@ -169,10 +169,10 @@ pub struct RemoteAgentClientConfiguration {
     #[serde(default, deserialize_with = "deserialize_vsock_addr")]
     vsock_addr: Option<u32>,
 
-    // Non-Linux: capture raw value solely to emit a warning when misconfigured.
+    // Non-Linux: capture raw value solely to emit a warning when configured.
     #[cfg(not(target_os = "linux"))]
     #[serde(default)]
-    vsock_addr: Option<String>,
+    vsock_addr: String,
 }
 
 #[cfg(target_os = "linux")]
@@ -205,7 +205,7 @@ impl RemoteAgentClientConfiguration {
             .error_context("Failed to parse Datadog Agent IPC client configuration.")?;
 
         #[cfg(not(target_os = "linux"))]
-        if this.vsock_addr.is_some() {
+        if !this.vsock_addr.is_empty() {
             warn!("`vsock_addr` is configured but vsock is only supported on Linux. Setting will be ignored.");
         }
 

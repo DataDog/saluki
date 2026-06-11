@@ -4,7 +4,11 @@
   variables:
     ARCH: "x64"
     # Use the Windows LTSC2022 build image pre-cached on the Windows runner image.
-    WINBUILDIMAGE: registry.ddbuild.io/ci/datadog-agent-buildimages/windows_ltsc2022_x64:v114471858-795a98da
+    # Pin to the same Windows LTSC2022 build image tag the datadog-agent CI pipeline uses
+    # (CI_IMAGE_WIN_LTSC2022_X64 in DataDog/datadog-agent .gitlab-ci.yml). Bump in lockstep
+    # with that variable so the saluki Windows runners hit a tag that's pre-cached on the
+    # runner pool; an out-of-date tag forces a multi-GB cold pull that can time the job out.
+    WINBUILDIMAGE: registry.ddbuild.io/ci/datadog-agent-buildimages/windows_ltsc2022_x64:v116983866-e2293bec
     OVERRIDE_GIT_STRATEGY: "clone"
     # protoc release used by both Windows jobs. Pin both the version and the archive checksum so a
     # tampered or upstream-deleted release fails fast instead of silently substituting binaries.
@@ -101,6 +105,103 @@ test-integration-windows-amd64:
       -e PROTOC_VERSION="${WINDOWS_PROTOC_VERSION}"
       -e PROTOC_SHA256="${WINDOWS_PROTOC_SHA256}"
       -e PANORAMIC_LOG_DIR="c:\mnt\integration-logs"
+      -e BUILD_PROFILE
       ${WINBUILDIMAGE}
       powershell.exe -NoProfile -NonInteractive -File c:\mnt\ci\tooling\windows-integration-tests.ps1
     - If ($lastExitCode -ne "0") { exit "$lastExitCode" }
+
+# Builds the Windows release zip (agent-data-plane.exe + LICENSE/NOTICE/LICENSE-3rdparty.csv +
+# LICENSES/THIRD-PARTY-*) inside the cached LTSC2022 build image and exposes it as a job
+# artifact. The release-stage `push-release-zip-windows-amd64*` jobs in .gitlab/release.yml
+# consume the artifact and `aws s3 cp` it to s3.
+#
+# The split mirrors darwin (`build-release-tarball-darwin-*` -> `push-release-tarball-darwin-*`):
+#
+#   - dev pipelines run the build manually so PRs can validate the windows zip without burning
+#     runner capacity by default and without touching s3,
+#   - tagged release pipelines build automatically so the artifact is ready when a maintainer
+#     clicks the manual push job in the release stage.
+#
+# Unlike the linux artifact (extracted from a docker image at push time), the Windows zip
+# layout is windows-native: bin\agent-data-plane.exe and LICENSES\ at the zip root rather than
+# the linux opt/datadog-agent/embedded/bin path. Downstream omnibus consumes both shapes.
+.build-release-zip-windows-definition:
+  extends: .windows-amd64-test-job
+  stage: build
+  needs:
+    - calculate-build-metadata
+  rules:
+    - if: !reference [.on_official_release, rules, if]
+      when: on_success
+    - when: manual
+      allow_failure: true
+  cache:
+    key: windows-amd64-build-cargo
+    paths:
+      - .ci-cache/cargo/
+      - .ci-cache/protoc/
+      - .ci-cache/rustup/
+  variables:
+    TARGET_ARCH: "amd64"
+    FIPS_SUFFIX: ""
+    ZIP_NAME: "agent-data-plane-${ADP_IMAGE_VERSION}-windows-${TARGET_ARCH}${FIPS_SUFFIX}.zip"
+  script:
+    - *windows-build-image-pull-script
+    - >
+      docker run --rm
+      -m 24576M
+      --storage-opt "size=50GB"
+      -v "$(Get-Location):c:\mnt"
+      -w c:\mnt
+      -e CI=true
+      -e GITLAB_CI
+      -e CI_JOB_ID
+      -e CI_PIPELINE_ID
+      -e CI_COMMIT_SHA
+      -e CI_PROJECT_NAME
+      -e CI_COMMIT_REF_NAME
+      -e WINDOWS_CI_CARGO_HOME="c:\mnt\.ci-cache\cargo"
+      -e RUSTUP_HOME="c:\mnt\.ci-cache\rustup"
+      -e CARGO_TARGET_DIR="c:\mnt\target\windows-ci"
+      -e PROTOC_VERSION="${WINDOWS_PROTOC_VERSION}"
+      -e PROTOC_SHA256="${WINDOWS_PROTOC_SHA256}"
+      -e BUILD_PROFILE
+      -e BUILD_FEATURES
+      -e ADP_VERSION="${ADP_IMAGE_VERSION}"
+      -e TARGET_ARCH
+      -e OUTPUT_DIR="c:\mnt"
+      ${WINBUILDIMAGE}
+      powershell.exe -NoProfile -NonInteractive -File c:\mnt\ci\tooling\windows-build-adp.ps1
+    - If ($lastExitCode -ne "0") { exit "$lastExitCode" }
+  artifacts:
+    paths:
+      - ${ZIP_NAME}
+    expire_in: 1 week
+
+build-release-zip-windows-amd64:
+  extends: [.build-common-variables, .build-release-zip-windows-definition]
+
+# FIPS variant. Pulls in rustls/fips -> aws-lc-fips-sys, which builds AWS-LC from source on
+# every target and so needs the full native toolchain (NASM, LLVM/libclang, MSVC environment,
+# perl) at build time. windows-build-adp.ps1 wires those in via Initialize-FipsBuildTools and
+# friends in ci/tooling/windows-rust-env.psm1; the cache:paths below persist the heaviest
+# downloads (LLVM in particular) between runs. Uses a separate cargo cache key so FIPS and
+# non-FIPS dependency graphs don't churn each other's incremental compilation state.
+build-release-zip-windows-amd64-fips:
+  extends: [.build-common-variables, .build-release-zip-windows-definition]
+  cache:
+    key: windows-amd64-build-cargo-fips
+    paths:
+      - .ci-cache/cargo/
+      - .ci-cache/protoc/
+      - .ci-cache/rustup/
+      # NASM and LLVM are installed at job runtime by Initialize-FipsBuildTools in
+      # ci/tooling/windows-rust-env.psm1; cache the install roots so the cold-download cost
+      # is paid once per runner. LLVM dominates (~1.5 GB extracted) since bindgen needs
+      # libclang for aws-lc-fips-sys on x86_64-pc-windows-msvc. Go and Ninja come from the
+      # buildimage itself, so they don't need a cache path.
+      - .ci-cache/nasm/
+      - .ci-cache/llvm/
+  variables:
+    BUILD_FEATURES: "fips"
+    FIPS_SUFFIX: "-fips"

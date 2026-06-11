@@ -82,17 +82,6 @@ crate::declare_annotations! {
         test_json: None,
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
-    /// `forwarder_apikey_validation_interval`-API key check interval (minutes)
-    FORWARDER_APIKEY_VALIDATION_INTERVAL = SalukiAnnotation {
-        schema: &schema::FORWARDER_APIKEY_VALIDATION_INTERVAL,
-        support_level: SupportLevel::Incompatible(Severity::Medium),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-        pipeline_affinity: PipelineAffinity::CrossCutting,
-    };
     /// `forwarder_low_prio_buffer_size`-Low-priority request queue size
     FORWARDER_LOW_PRIO_BUFFER_SIZE = SalukiAnnotation {
         schema: &schema::FORWARDER_LOW_PRIO_BUFFER_SIZE,
@@ -169,17 +158,6 @@ crate::declare_annotations! {
         value_type_override: None,
         test_json: None,
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD, Pipeline::Checks, Pipeline::Traces]),
-    };
-    /// `sslkeylogfile`-TLS key log file path
-    SSLKEYLOGFILE = SalukiAnnotation {
-        schema: &schema::SSLKEYLOGFILE,
-        support_level: SupportLevel::Incompatible(Severity::Medium),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-        pipeline_affinity: PipelineAffinity::CrossCutting,
     };
     /// `tls_handshake_timeout`-HTTP TLS handshake timeout
     TLS_HANDSHAKE_TIMEOUT = SalukiAnnotation {
@@ -382,6 +360,28 @@ crate::declare_annotations! {
     /// `config_id`-Fleet Automation config ID tag
     CONFIG_ID = SalukiAnnotation {
         schema: &schema::CONFIG_ID,
+        support_level: SupportLevel::Incompatible(Severity::Low),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::CrossCutting,
+    };
+    /// `data_plane.telemetry_enabled`-ADP telemetry toggle
+    DATA_PLANE_TELEMETRY_ENABLED = SalukiAnnotation {
+        schema: &schema::DATA_PLANE_TELEMETRY_ENABLED,
+        support_level: SupportLevel::Incompatible(Severity::Low),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::CrossCutting,
+    };
+    /// `data_plane.telemetry_listen_addr`-ADP telemetry listen address
+    DATA_PLANE_TELEMETRY_LISTEN_ADDR = SalukiAnnotation {
+        schema: &schema::DATA_PLANE_TELEMETRY_LISTEN_ADDR,
         support_level: SupportLevel::Incompatible(Severity::Low),
         additional_yaml_paths: &[],
         env_var_override: None,
@@ -631,6 +631,28 @@ crate::declare_annotations! {
         value_type_override: None,
         test_json: None,
         pipeline_affinity: PipelineAffinity::CrossCutting,
+    };
+    /// `serializer_experimental_use_v3_api.series.shadow_sample_rate`-V3 series shadow mode sample rate
+    SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_SHADOW_SAMPLE_RATE = SalukiAnnotation {
+        schema: &schema::SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_SHADOW_SAMPLE_RATE,
+        support_level: SupportLevel::Incompatible(Severity::Low),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD, Pipeline::Checks, Pipeline::Traces]),
+    };
+    /// `serializer_experimental_use_v3_api.series.shadow_sites`-V3 series shadow mode enabled sites
+    SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_SHADOW_SITES = SalukiAnnotation {
+        schema: &schema::SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_SHADOW_SITES,
+        support_level: SupportLevel::Incompatible(Severity::Low),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD, Pipeline::Checks, Pipeline::Traces]),
     };
     /// `use_dogstatsd`-Master DogStatsD enable toggle
     USE_DOGSTATSD = SalukiAnnotation {

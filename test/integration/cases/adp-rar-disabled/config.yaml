@@ -10,7 +10,7 @@ runtimes: [linux]
 # supervisor or the test is rewritten to assert on retry behavior directly.
 
 env:
-  DD_API_KEY: "test-api-key"
+  DD_API_KEY: "00000000000000000000000000000000"
   DD_HOSTNAME: "integration-test-rar-disabled"
   # Core Agent setting to disable RAR
   DD_REMOTE_AGENT_REGISTRY_ENABLED: "false"
