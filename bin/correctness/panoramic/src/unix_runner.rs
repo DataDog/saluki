@@ -395,11 +395,6 @@ fn build_core_agent_forced_env(
         forced.push(("DD_USE_DOGSTATSD", "false".to_string()));
     }
 
-    // Do not force Core Agent OTLP receiver endpoints here.
-    //
-    // In converged tests where ADP handles OTLP natively, forcing both processes to the same
-    // receiver endpoint causes a bind collision on the shared test host.
-
     forced
 }
 
