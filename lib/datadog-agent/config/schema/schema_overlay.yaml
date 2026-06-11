@@ -1785,67 +1785,85 @@ inventory:
         config_registry_filename: encoders.rs
 
   serializer_experimental_use_v3_api.compression_level:
-    support: none
-    severity: low
-    planned: true
-    pipelines: [dogstatsd, checks, traces]
+    support: full
+    pipelines: [dogstatsd]
     description: "V3 API zstd compression level"
-    documentation: "V2 to V3 migration PR in progress. Feature is missing but actively being addressed."
-    issue: "#1468"
+    test_support:
+      used_by: [DatadogMetricsConfiguration, ForwarderConfiguration]
+      additional_attributes:
+        config_registry_filename: encoders.rs
+
+  serializer_experimental_use_v3_api.series.beta_route:
+    support: full
+    pipelines: [dogstatsd]
+    description: "Beta V3 series API route"
+    test_support:
+      used_by: [DatadogMetricsConfiguration, ForwarderConfiguration]
+      additional_attributes:
+        config_registry_filename: encoders.rs
 
   serializer_experimental_use_v3_api.series.endpoints:
-    support: none
-    severity: low
-    planned: true
-    pipelines: [dogstatsd, checks, traces]
+    support: full
+    pipelines: [dogstatsd]
     description: "Endpoints enabled for V3 series API"
-    documentation: "V2 to V3 migration PR in progress. Feature is missing but actively being addressed."
-    issue: "#1468"
+    test_support:
+      used_by: [DatadogMetricsConfiguration, ForwarderConfiguration]
+      additional_attributes:
+        config_registry_filename: encoders.rs
 
   serializer_experimental_use_v3_api.series.shadow_sample_rate:
-    support: none
-    severity: low
-    planned: true
-    pipelines: [dogstatsd, checks, traces]
+    support: full
+    pipelines: [dogstatsd]
     description: "V3 series shadow mode sample rate"
-    documentation: "V2 to V3 migration PR in progress. Feature is missing but actively being addressed."
-    issue: "#1468"
+    test_support:
+      used_by: [DatadogMetricsConfiguration, ForwarderConfiguration]
+      additional_attributes:
+        config_registry_filename: encoders.rs
 
   serializer_experimental_use_v3_api.series.shadow_sites:
-    support: none
-    severity: low
-    planned: true
-    pipelines: [dogstatsd, checks, traces]
+    support: full
+    pipelines: [dogstatsd]
     description: "V3 series shadow mode enabled sites"
-    documentation: "V2 to V3 migration PR in progress. Feature is missing but actively being addressed."
-    issue: "#1468"
+    test_support:
+      used_by: [DatadogMetricsConfiguration, ForwarderConfiguration]
+      additional_attributes:
+        config_registry_filename: encoders.rs
+
+  serializer_experimental_use_v3_api.series.use_beta:
+    support: full
+    pipelines: [dogstatsd]
+    description: "Use the beta V3 series API route"
+    test_support:
+      used_by: [DatadogMetricsConfiguration, ForwarderConfiguration]
+      additional_attributes:
+        config_registry_filename: encoders.rs
 
   serializer_experimental_use_v3_api.series.validate:
-    support: none
-    severity: low
-    planned: true
-    pipelines: [dogstatsd, checks, traces]
+    support: full
+    pipelines: [dogstatsd]
     description: "Dual-send v2+v3 series for validation"
-    documentation: "V2 to V3 migration PR in progress. Feature is missing but actively being addressed."
-    issue: "#1468"
+    test_support:
+      used_by: [DatadogMetricsConfiguration, ForwarderConfiguration]
+      additional_attributes:
+        config_registry_filename: encoders.rs
 
   serializer_experimental_use_v3_api.sketches.endpoints:
-    support: none
-    severity: low
-    planned: true
-    pipelines: [dogstatsd, checks, traces]
+    support: full
+    pipelines: [dogstatsd]
     description: "Endpoints enabling v3 sketches API"
-    documentation: "V2 to V3 migration PR in progress. Feature is missing but actively being addressed."
-    issue: "#1468"
+    test_support:
+      used_by: [DatadogMetricsConfiguration, ForwarderConfiguration]
+      additional_attributes:
+        config_registry_filename: encoders.rs
 
   serializer_experimental_use_v3_api.sketches.validate:
-    support: none
-    severity: low
-    planned: true
-    pipelines: [dogstatsd, checks, traces]
+    support: full
+    pipelines: [dogstatsd]
     description: "Dual-send v2+v3 sketches for validation"
-    documentation: "V2 to V3 migration PR in progress. Feature is missing but actively being addressed."
-    issue: "#1468"
+    test_support:
+      used_by: [DatadogMetricsConfiguration, ForwarderConfiguration]
+      additional_attributes:
+        config_registry_filename: encoders.rs
 
   serializer_max_payload_size:
     support: full
@@ -3777,8 +3795,6 @@ excluded:
   security_agent.internal_profiling.site: "ignored in initial audit 2026-04-23"
   security_agent.internal_profiling.unix_socket: "ignored in initial audit 2026-04-23"
   security_agent.log_file: "ignored in initial audit 2026-04-23"
-  serializer_experimental_use_v3_api.series.beta_route: "ignored in second bulk edit 2026-05-06"
-  serializer_experimental_use_v3_api.series.use_beta: "ignored in second bulk edit 2026-05-06"
   server_timeout: "ignored in initial audit 2026-04-23"
   serverless.enabled: "ignored in initial audit 2026-04-23"
   serverless.logs_enabled: "ignored in initial audit 2026-04-23"
