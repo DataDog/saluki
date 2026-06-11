@@ -24,21 +24,14 @@ If you find an error on this page, please [open an issue].
 The following settings are not yet supported in ADP but are planned with GitHub issue links for
 tracking.
 
-| Config Key                                                     | Description                                     | Issue   |
-| -------------------------------------------------------------- | ----------------------------------------------- | ------- |
-| `dogstatsd_experimental_http.enabled`                          | Enable experimental HTTP/H2C DSD listener       | [#1682] |
-| `dogstatsd_experimental_http.listen_address`                   | Bind address for experimental HTTP DSD listener | [#1682] |
-| `dogstatsd_pipe_name`                                          | Windows named pipe path                         | [#1466] |
-| `dogstatsd_windows_pipe_security_descriptor`                   | Windows named pipe ACL descriptor               | [#1466] |
-| `forwarder_apikey_validation_interval`                         | API key check interval (minutes)                | [#1357] |
-| `serializer_experimental_use_v3_api.compression_level`         | V3 API zstd compression level                   | [#1468] |
-| `serializer_experimental_use_v3_api.series.endpoints`          | Endpoints enabled for V3 series API             | [#1468] |
-| `serializer_experimental_use_v3_api.series.shadow_sample_rate` | V3 series shadow mode sample rate               | [#1468] |
-| `serializer_experimental_use_v3_api.series.shadow_sites`       | V3 series shadow mode enabled sites             | [#1468] |
-| `serializer_experimental_use_v3_api.series.validate`           | Dual-send v2+v3 series for validation           | [#1468] |
-| `serializer_experimental_use_v3_api.sketches.endpoints`        | Endpoints enabling v3 sketches API              | [#1468] |
-| `serializer_experimental_use_v3_api.sketches.validate`         | Dual-send v2+v3 sketches for validation         | [#1468] |
-| `tls_handshake_timeout`                                        | HTTP TLS handshake timeout                      | [#178]  |
+| Config Key                                   | Description                                     | Issue   |
+| -------------------------------------------- | ----------------------------------------------- | ------- |
+| `dogstatsd_experimental_http.enabled`        | Enable experimental HTTP/H2C DSD listener       | [#1682] |
+| `dogstatsd_experimental_http.listen_address` | Bind address for experimental HTTP DSD listener | [#1682] |
+| `dogstatsd_pipe_name`                        | Windows named pipe path                         | [#1466] |
+| `dogstatsd_windows_pipe_security_descriptor` | Windows named pipe ACL descriptor               | [#1466] |
+| `forwarder_apikey_validation_interval`       | API key check interval (minutes)                | [#1357] |
+| `tls_handshake_timeout`                      | HTTP TLS handshake timeout                      | [#178]  |
 
 <!-- section:unsupported-not-planned -->
 ### Not Planned
@@ -540,6 +533,15 @@ compressed wire payload bytes.
 | `proxy.https`                                                  | HTTPS proxy URL                                    |
 | `proxy.no_proxy`                                               | Hosts bypassing proxy                              |
 | `serializer_compressor_kind`                                   | Payload compression algorithm                      |
+| `serializer_experimental_use_v3_api.compression_level`         | V3 API zstd compression level                      |
+| `serializer_experimental_use_v3_api.series.beta_route`         | Beta V3 series API route                           |
+| `serializer_experimental_use_v3_api.series.endpoints`          | Endpoints enabled for V3 series API                |
+| `serializer_experimental_use_v3_api.series.shadow_sample_rate` | V3 series shadow mode sample rate                  |
+| `serializer_experimental_use_v3_api.series.shadow_sites`       | V3 series shadow mode enabled sites                |
+| `serializer_experimental_use_v3_api.series.use_beta`           | Use the beta V3 series API route                   |
+| `serializer_experimental_use_v3_api.series.validate`           | Dual-send v2+v3 series for validation              |
+| `serializer_experimental_use_v3_api.sketches.endpoints`        | Endpoints enabling v3 sketches API                 |
+| `serializer_experimental_use_v3_api.sketches.validate`         | Dual-send v2+v3 sketches for validation            |
 | `serializer_max_payload_size`                                  | Max compressed payload size (generic)              |
 | `serializer_max_series_payload_size`                           | Max compressed V2 series payload size              |
 | `serializer_max_series_points_per_payload`                     | Max data points per series payload                 |
@@ -573,7 +575,6 @@ compressed wire payload bytes.
 [#1365]: https://github.com/DataDog/saluki/issues/1365
 [#1381]: https://github.com/DataDog/saluki/issues/1381
 [#1466]: https://github.com/DataDog/saluki/issues/1466
-[#1468]: https://github.com/DataDog/saluki/issues/1468
 [#1679]: https://github.com/DataDog/saluki/issues/1679
 [#1681]: https://github.com/DataDog/saluki/issues/1681
 [#1682]: https://github.com/DataDog/saluki/issues/1682

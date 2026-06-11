@@ -36,7 +36,7 @@ use tracing::{debug, error, warn};
 
 use super::{
     config::ForwarderConfiguration,
-    endpoints::{EndpointRoute, ResolvedEndpoint, RoutableEndpoint},
+    endpoints::{EndpointRoute, EndpointV3Settings, ResolvedEndpoint, RoutableEndpoint},
     middleware::{for_resolved_endpoint, with_allow_arbitrary_tags, with_version_info},
     telemetry::{ComponentTelemetry, SharedTransactionQueueTelemetry, TransactionQueueTelemetry},
     transaction::{Metadata, Transaction, TransactionBody},
@@ -292,7 +292,8 @@ async fn run_io_loop<B>(
 
     // Listen for transactions to forward, and send a copy of each one to the matching endpoint I/O tasks.
     while let Some(transaction) = transactions_rx.recv().await {
-        let is_metrics_request = is_metrics_request_uri(transaction.request_uri());
+        let is_metrics_request =
+            is_metrics_request_uri(transaction.request_uri(), config.v3_api().series.beta_route.as_str());
         for endpoint_sender in &endpoint_txs {
             if !should_route_to_endpoint(is_metrics_request, has_metrics_primary, endpoint_sender.route) {
                 continue;
@@ -336,8 +337,8 @@ where
     tx: mpsc::Sender<Transaction<B>>,
 }
 
-fn is_metrics_request_uri(uri: &Uri) -> bool {
-    METRIC_INTAKE_PATHS.contains(&uri.path())
+fn is_metrics_request_uri(uri: &Uri, v3_beta_series_route: &str) -> bool {
+    METRIC_INTAKE_PATHS.contains(&uri.path()) || uri.path() == v3_beta_series_route
 }
 
 fn should_route_to_endpoint(is_metrics_request: bool, has_metrics_primary: bool, route: EndpointRoute) -> bool {
@@ -364,10 +365,25 @@ async fn run_endpoint_io_loop<B>(
 {
     let queue_id = generate_retry_queue_id(context, &endpoint);
     let endpoint_url = endpoint.endpoint().to_string();
+    let configured_endpoint = endpoint.configured_endpoint().to_string();
     let endpoint_domain = endpoint.endpoint().origin().ascii_serialization();
+
+    // Match against the endpoint string from configuration, not the version-prefixed URL used for requests.
+    let v3_api = config.v3_api();
+    let endpoint_v3_settings = EndpointV3Settings::from_endpoint_url(
+        &configured_endpoint,
+        endpoint.endpoint(),
+        &v3_api.series.endpoints,
+        &v3_api.sketches.endpoints,
+        v3_api.series.validate,
+        v3_api.sketches.validate,
+        &v3_api.series.shadow_sites,
+    );
     debug!(
         endpoint_url,
         endpoint_concurrency = config.endpoint_concurrency(),
+        configured_endpoint,
+        ?endpoint_v3_settings,
         "Starting endpoint I/O task."
     );
 
@@ -422,9 +438,27 @@ async fn run_endpoint_io_loop<B>(
         select! {
             // Try and drain the next transaction from our channel, and push it into the pending transactions queue.
             maybe_txn = txns_rx.recv(), if !done => match maybe_txn {
-                Some(txn) => match pending_txns.push_high_priority(txn).await {
-                    Ok(push_result) => track_queue_drops(&telemetry, &endpoint_domain, push_result),
-                    Err(e) => error!(endpoint_url, error = %e, "Failed to enqueue transaction. Events may be permanently lost."),
+                Some(txn) => {
+                    // Filter transactions based on endpoint's V3 settings and the transaction's payload info.
+                    let payload_info = txn.metadata().payload_info;
+                    if !endpoint_v3_settings.should_receive_payload(payload_info) {
+                        debug!(
+                            endpoint_url,
+                            ?payload_info,
+                            "Filtering out transaction based on endpoint V3 settings."
+                        );
+                        continue;
+                    }
+                    let txn = if endpoint_v3_settings.should_receive_validation_headers(payload_info) {
+                        txn
+                    } else {
+                        strip_metrics_validation_headers(txn)
+                    };
+
+                    match pending_txns.push_high_priority(txn).await {
+                        Ok(push_result) => track_queue_drops(&telemetry, &endpoint_domain, push_result),
+                        Err(e) => error!(endpoint_url, error = %e, "Failed to enqueue transaction. Events may be permanently lost."),
+                    }
                 },
                 None => {
                     // Our transactions channel has been closed, so mark ourselves as done which will stop any further
@@ -515,6 +549,18 @@ async fn run_endpoint_io_loop<B>(
 
     // Signal to the main I/O task that we've finished.
     task_barrier.wait().await;
+}
+
+fn strip_metrics_validation_headers<B>(txn: Transaction<B>) -> Transaction<B>
+where
+    B: Buf + Clone,
+{
+    let (metadata, mut request) = txn.into_parts();
+    let headers = request.headers_mut();
+    headers.remove("X-Metrics-Request-ID");
+    headers.remove("X-Metrics-Request-Seq");
+    headers.remove("X-Metrics-Request-Len");
+    Transaction::reassemble(metadata, request)
 }
 
 fn generate_retry_queue_id(context: ComponentContext, endpoint: &ResolvedEndpoint) -> String {
@@ -864,10 +910,17 @@ mod tests {
     use super::*;
     use crate::common::datadog::endpoints::AdditionalEndpoints;
     use crate::common::datadog::transaction::{Metadata as TxnMetadata, Transaction};
-    use crate::common::datadog::{METRICS_SERIES_V1_PATH, METRICS_SERIES_V2_PATH, METRICS_SKETCHES_PATH};
+    use crate::common::datadog::{
+        METRICS_SERIES_V1_PATH, METRICS_SERIES_V2_PATH, METRICS_SERIES_V3_BETA_PATH, METRICS_SERIES_V3_PATH,
+        METRICS_SKETCHES_PATH, METRICS_SKETCHES_V3_PATH,
+    };
 
     fn uri(path: &'static str) -> Uri {
         Uri::from_static(path)
+    }
+
+    fn is_metrics_request_path(path: &'static str) -> bool {
+        is_metrics_request_uri(&uri(path), METRICS_SERIES_V3_BETA_PATH)
     }
 
     fn forwarder_config_from_value(value: serde_json::Value) -> ForwarderConfiguration {
@@ -876,11 +929,26 @@ mod tests {
 
     #[test]
     fn identifies_metrics_request_paths() {
-        assert!(is_metrics_request_uri(&uri(METRICS_SERIES_V1_PATH)));
-        assert!(is_metrics_request_uri(&uri(METRICS_SERIES_V2_PATH)));
-        assert!(is_metrics_request_uri(&uri(METRICS_SKETCHES_PATH)));
-        assert!(!is_metrics_request_uri(&uri("/api/v2/logs")));
-        assert!(!is_metrics_request_uri(&uri("/api/v0.2/traces")));
+        assert!(is_metrics_request_path(METRICS_SERIES_V1_PATH));
+        assert!(is_metrics_request_path(METRICS_SERIES_V2_PATH));
+        assert!(is_metrics_request_path(METRICS_SERIES_V3_PATH));
+        assert!(is_metrics_request_path(METRICS_SERIES_V3_BETA_PATH));
+        assert!(is_metrics_request_path(METRICS_SKETCHES_PATH));
+        assert!(is_metrics_request_path(METRICS_SKETCHES_V3_PATH));
+        assert!(!is_metrics_request_path("/api/v2/logs"));
+        assert!(!is_metrics_request_path("/api/v0.2/traces"));
+    }
+
+    #[test]
+    fn identifies_configured_v3_beta_series_route_as_metrics_path() {
+        assert!(is_metrics_request_uri(
+            &uri("/custom/v3beta/series"),
+            "/custom/v3beta/series"
+        ));
+        assert!(!is_metrics_request_uri(
+            &uri("/custom/v3beta/series"),
+            METRICS_SERIES_V3_BETA_PATH
+        ));
     }
 
     #[test]

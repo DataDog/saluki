@@ -1,5 +1,5 @@
 use axum::{body::Bytes, extract::State, http::StatusCode, Json};
-use datadog_protos::metrics::{MetricPayload, SketchPayload};
+use datadog_protos::metrics::{v3::Payload as V3Payload, MetricPayload, SketchPayload};
 use protobuf::Message as _;
 use stele::Metric;
 use tracing::{error, info};
@@ -85,6 +85,29 @@ pub async fn handle_sketch_beta(State(state): State<MetricsState>, body: Bytes) 
         }
         Err(e) => {
             error!(error = %e, "Failed to merge sketch payload.");
+            StatusCode::BAD_REQUEST
+        }
+    }
+}
+
+pub async fn handle_metrics_v3(State(state): State<MetricsState>, body: Bytes) -> StatusCode {
+    info!("Received metrics v3 payload.");
+
+    let payload = match V3Payload::parse_from_bytes(&body[..]) {
+        Ok(payload) => payload,
+        Err(e) => {
+            error!(error = %e, "Failed to parse metrics v3 payload.");
+            return StatusCode::BAD_REQUEST;
+        }
+    };
+
+    match state.merge_v3_payload(payload) {
+        Ok(()) => {
+            info!("Processed metrics v3 payload.");
+            StatusCode::ACCEPTED
+        }
+        Err(e) => {
+            error!(error = %e, "Failed to merge metrics v3 payload.");
             StatusCode::BAD_REQUEST
         }
     }
