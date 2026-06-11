@@ -280,6 +280,11 @@ impl RoutableEndpoint {
         &self.endpoint
     }
 
+    /// Returns the resolved endpoint mutably.
+    pub(crate) const fn endpoint_mut(&mut self) -> &mut ResolvedEndpoint {
+        &mut self.endpoint
+    }
+
     /// Consumes the routable endpoint and returns its parts.
     pub(crate) fn into_parts(self) -> (EndpointRoute, ResolvedEndpoint) {
         (self.route, self.endpoint)
