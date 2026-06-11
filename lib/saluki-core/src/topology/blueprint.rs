@@ -5,7 +5,7 @@ use resource_accounting::{ComponentRegistry, MemoryLimiter, Track as _, UsageExp
 use saluki_common::sync::shutdown::ShutdownHandle;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use snafu::Snafu;
-use tokio::{runtime::Handle, select, sync::oneshot};
+use tokio::{pin, runtime::Handle, select, sync::oneshot};
 use tracing::{error, info};
 
 use super::{
@@ -874,7 +874,7 @@ impl Supervisable for TopologyBlueprint {
         let built = build_state.build(self.name.clone()).await?;
 
         Ok(Box::pin(async move {
-            tokio::pin!(shutdown);
+            pin!(shutdown);
 
             // If a readiness signal was provided, wait for it before spawning the components, but remain responsive to
             // shutdown so we exit promptly if asked to stop before we've started.

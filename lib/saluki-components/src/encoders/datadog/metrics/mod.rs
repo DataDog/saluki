@@ -27,7 +27,7 @@ use saluki_io::compression::CompressionScheme;
 use saluki_metrics::MetricsBuilder;
 use serde::Deserialize;
 use serde_json::{Map as JsonMap, Number as JsonNumber, Value as JsonValue};
-use tokio::{select, sync::mpsc, time::sleep};
+use tokio::{pin, select, sync::mpsc, time::sleep};
 use tracing::{debug, error, warn};
 
 use crate::common::datadog::{
@@ -487,7 +487,7 @@ async fn run_request_builder(
 ) -> Result<(), GenericError> {
     let mut pending_flush = false;
     let pending_flush_timeout = sleep(flush_timeout);
-    tokio::pin!(pending_flush_timeout);
+    pin!(pending_flush_timeout);
 
     loop {
         select! {

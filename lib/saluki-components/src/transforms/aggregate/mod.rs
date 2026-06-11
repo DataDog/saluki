@@ -23,7 +23,7 @@ use serde::Deserialize;
 use smallvec::SmallVec;
 use stringtheory::MetaString;
 use tokio::{
-    select,
+    pin, select,
     time::{interval, interval_at},
 };
 use tracing::{debug, error, info, trace, warn};
@@ -303,7 +303,7 @@ impl Transform for Aggregate {
         health.mark_ready();
         debug!("Aggregation transform started.");
 
-        tokio::pin!(passthrough_flush);
+        pin!(passthrough_flush);
 
         loop {
             select! {
