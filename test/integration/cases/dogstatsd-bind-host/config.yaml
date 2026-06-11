@@ -23,7 +23,7 @@ env:
   DD_API_KEY: "test-api-key"
   DD_HOSTNAME: "integration-test-dsd-bind-host"
   DD_DATA_PLANE_ENABLED: "true"
-  DD_DATA_PLANE_STANDALONE_MODE: "true"
+  DD_DATA_PLANE_STANDALONE_MODE: "false"
   DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
   # PANORAMIC_DYNAMIC_* values are interpreted by the test runtime, not by the test image:
   #  - On Linux, the value is executed as a shell command inside the container at startup.
