@@ -439,9 +439,6 @@ async fn run_endpoint_io_loop<B>(
                         debug!(
                             endpoint_url,
                             ?payload_info,
-                            validation_request_id = ?txn.metadata().validation_request_id.as_deref(),
-                            validation_request_seq = ?txn.metadata().validation_request_seq,
-                            validation_request_len = ?txn.metadata().validation_request_len,
                             "Filtering out transaction based on endpoint V3 settings."
                         );
                         continue;
@@ -552,14 +549,11 @@ fn strip_metrics_validation_headers<B>(txn: Transaction<B>) -> Transaction<B>
 where
     B: Buf + Clone,
 {
-    let (mut metadata, mut request) = txn.into_parts();
+    let (metadata, mut request) = txn.into_parts();
     let headers = request.headers_mut();
     headers.remove("X-Metrics-Request-ID");
     headers.remove("X-Metrics-Request-Seq");
     headers.remove("X-Metrics-Request-Len");
-    metadata.validation_request_id = None;
-    metadata.validation_request_seq = None;
-    metadata.validation_request_len = None;
     Transaction::reassemble(metadata, request)
 }
 
