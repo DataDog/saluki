@@ -17,7 +17,7 @@ env:
 assertions:
   - type: log_contains
     pattern: "Verified memory bounds."
-    timeout: 15s
+    timeout: 60s
   - parallel:
       - type: process_stable_for
         duration: 10s

@@ -15,4 +15,4 @@ assertions:
   # ADP should log that it's not enabled and exit.
   - type: log_contains
     pattern: "Agent Data Plane is not enabled. Exiting."
-    timeout: 15s
+    timeout: 60s

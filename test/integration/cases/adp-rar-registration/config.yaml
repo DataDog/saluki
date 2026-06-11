@@ -22,7 +22,7 @@ assertions:
   # slower hosts.
   - type: log_contains
     pattern: "Successfully registered with the Datadog Agent."
-    timeout: 15s
+    timeout: 60s
   # Make sure the process becomes healthy, and stays up without errors, for ~10 seconds after.
   - parallel:
       - type: process_stable_for

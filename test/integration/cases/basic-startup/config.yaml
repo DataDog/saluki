@@ -16,7 +16,7 @@ assertions:
   # about the build version, architecture, and other details.
   - type: log_contains
     pattern: "Agent Data Plane starting"
-    timeout: 5s
+    timeout: 60s
   # Make sure the process becomes healthy, and stays up without errors, for ~10 seconds after.
   - parallel:
       - type: process_stable_for

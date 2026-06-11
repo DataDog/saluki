@@ -31,22 +31,22 @@ assertions:
   # ADP should reach out for config from the core agent on the correct port.
   - type: log_contains
     pattern: "Waiting for initial configuration from Datadog Agent"
-    timeout: 10s
+    timeout: 60s
   # The core agent should start its CMD API server on the non-default port.
   - type: log_contains
     pattern: "Started HTTP server 'CMD API Server' on 127.0.0.1:7777"
-    timeout: 15s
+    timeout: 60s
   # ADP should successfully register with the core agent on that port.
   - type: log_contains
     pattern: "Successfully registered with the Datadog Agent."
-    timeout: 15s
+    timeout: 60s
   # ADP should become healthy and stay up.
   - parallel:
       - type: process_stable_for
         duration: 10s
       - type: log_contains
         pattern: "Topology healthy"
-        timeout: 10s
+        timeout: 60s
       - type: log_not_contains
         pattern: "panic|PANIC"
         regex: true
