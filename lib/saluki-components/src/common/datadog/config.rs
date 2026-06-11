@@ -228,6 +228,19 @@ pub struct ForwarderConfiguration {
     #[serde(default)]
     skip_ssl_validation: bool,
 
+    /// File path to write TLS key material to for all HTTPS connections to the
+    /// Datadog backend.
+    ///
+    /// When non-empty, enables the logging of TLS key material to the given file path,
+    /// in the [NSS Key Log][nss_key_log] format, which can be used for debugging TLS
+    /// issues, as well as decrypting captured TLS traffic in tools such as Wireshark.
+    ///
+    /// Defaults to empty.
+    ///
+    /// [nss_key_log]: https://nss-crypto.org/reference/security/nss/legacy/key_log_format/index.html
+    #[serde(default)]
+    sslkeylogfile: String,
+
     /// Minimum TLS protocol version for Datadog intake forwarding.
     ///
     /// Defaults to TLS 1.2. TLS 1.0 and TLS 1.1 are accepted for compatibility with core Agent configuration, but
@@ -379,6 +392,12 @@ impl ForwarderConfiguration {
         self.skip_ssl_validation
     }
 
+    /// Returns the TLS key log file path, if configured.
+    pub fn ssl_key_log_file_path(&self) -> Option<&str> {
+        let trimmed = self.sslkeylogfile.trim();
+        (!trimmed.is_empty()).then_some(trimmed)
+    }
+
     /// Returns the minimum TLS protocol version for Datadog intake forwarding.
     pub const fn min_tls_version(&self) -> TlsMinimumVersion {
         self.parsed_min_tls_version
@@ -409,6 +428,7 @@ mod tests {
     const VECTOR_URL: &str = "http://vector.example.com:8080";
     const VECTOR_URI: &str = "http://vector.example.com:8080/";
     const ADDITIONAL_URI: &str = "http://additional.example.com/";
+    const SSL_KEY_LOG_FILE_PATH: &str = "/tmp/saluki-sslkeylogfile";
 
     fn base_config() -> serde_json::Value {
         serde_json::json!({ "api_key": "test-api-key" })
@@ -610,6 +630,27 @@ mod tests {
         let config = forwarder_config_from(base_config(), Some(&env_vars)).await;
 
         assert!(config.skip_ssl_validation());
+    }
+
+    #[tokio::test]
+    async fn sslkeylogfile_set_via_yaml() {
+        let config = forwarder_config_from(
+            config_with(serde_json::json!({ "sslkeylogfile": SSL_KEY_LOG_FILE_PATH })),
+            None,
+        )
+        .await;
+
+        assert_eq!(config.ssl_key_log_file_path(), Some(SSL_KEY_LOG_FILE_PATH));
+    }
+
+    #[tokio::test]
+    async fn sslkeylogfile_set_via_env_var() {
+        // SSLKEYLOGFILE simulates DD_SSLKEYLOGFILE: the test helper sets TEST_SSLKEYLOGFILE, which
+        // from_environment("TEST") reads as sslkeylogfile.
+        let env_vars = vec![("SSLKEYLOGFILE".to_string(), SSL_KEY_LOG_FILE_PATH.to_string())];
+        let config = forwarder_config_from(base_config(), Some(&env_vars)).await;
+
+        assert_eq!(config.ssl_key_log_file_path(), Some(SSL_KEY_LOG_FILE_PATH));
     }
 
     #[tokio::test]

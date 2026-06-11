@@ -181,17 +181,6 @@ crate::declare_annotations! {
         test_json: None,
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD, Pipeline::Checks, Pipeline::Traces]),
     };
-    /// `sslkeylogfile`-TLS key log file path
-    SSLKEYLOGFILE = SalukiAnnotation {
-        schema: &schema::SSLKEYLOGFILE,
-        support_level: SupportLevel::Incompatible(Severity::Medium),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-        pipeline_affinity: PipelineAffinity::CrossCutting,
-    };
     /// `tls_handshake_timeout`-HTTP TLS handshake timeout
     TLS_HANDSHAKE_TIMEOUT = SalukiAnnotation {
         schema: &schema::TLS_HANDSHAKE_TIMEOUT,

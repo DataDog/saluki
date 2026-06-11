@@ -1806,13 +1806,20 @@ inventory:
         config_registry_filename: forwarder.rs
 
   sslkeylogfile:
-    support: none
-    severity: medium
-    planned: true
+    support: full
     pipelines: [cross_cutting]
-    description: "TLS key log file path"
-    documentation: "TLS key log file not implemented in ADP."
-    issue: "#1372"
+    description: "Write TLS session keys to file"
+    documentation: |
+      To write TLS session secrets in NSS key log format, set `sslkeylogfile` to a file path or
+      set `DD_SSLKEYLOGFILE`. The file is opened once per path with owner read/write permissions
+      on Unix. If the file cannot be opened, ADP logs a single warning and continues without TLS
+      key logging. Protect the generated file as sensitive data.
+    test_support:
+      used_by: [ForwarderConfiguration]
+      env_var_override: [DD_SSLKEYLOGFILE]
+      test_json: '"/tmp/saluki-sslkeylogfile"'
+      additional_attributes:
+        config_registry_filename: forwarder.rs
 
   statsd_forward_host:
     support: partial

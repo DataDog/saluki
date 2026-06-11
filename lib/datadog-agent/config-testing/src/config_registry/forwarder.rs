@@ -159,6 +159,17 @@ crate::declare_annotations! {
         test_json: None,
         pipeline_affinity: PipelineAffinity::CrossCutting,
     };
+    /// `sslkeylogfile`-Write TLS session keys to file
+    SSLKEYLOGFILE = SalukiAnnotation {
+        schema: &schema::SSLKEYLOGFILE,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: Some(&["DD_SSLKEYLOGFILE"]),
+        used_by: &[structs::FORWARDER_CONFIGURATION],
+        value_type_override: None,
+        test_json: Some(r#""/tmp/saluki-sslkeylogfile""#),
+        pipeline_affinity: PipelineAffinity::CrossCutting,
+    };
     /// `min_tls_version`-Minimum TLS version for HTTPS connections
     MIN_TLS_VERSION = SalukiAnnotation {
         schema: &schema::MIN_TLS_VERSION,

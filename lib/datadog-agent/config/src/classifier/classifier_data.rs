@@ -334,13 +334,6 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         default: Some("false"),
     },
     ClassifierEntry {
-        yaml_path: "sslkeylogfile",
-        aliases: &[],
-        support_level: SupportLevel::Incompatible(Severity::Medium),
-        pipeline_affinity: PipelineAffinity::CrossCutting,
-        default: Some("\"\""),
-    },
-    ClassifierEntry {
         yaml_path: "tls_handshake_timeout",
         aliases: &[],
         support_level: SupportLevel::Incompatible(Severity::Medium),
