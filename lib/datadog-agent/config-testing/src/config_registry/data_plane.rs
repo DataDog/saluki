@@ -4,41 +4,91 @@ use super::schema;
 #[allow(unused_imports)]
 use super::*;
 
-static DATA_PLANE_REMOTE_AGENT_ENABLED_SCHEMA: SchemaEntry = SchemaEntry {
-    schema: Schema::Saluki,
-    yaml_path: "data_plane.remote_agent_enabled",
-    env_vars: &[],
-    value_type: ValueType::Bool,
-    default: Some("true"),
-};
-
-static DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT_SCHEMA: SchemaEntry = SchemaEntry {
-    schema: Schema::Saluki,
-    yaml_path: "data_plane.use_new_config_stream_endpoint",
-    env_vars: &[],
-    value_type: ValueType::Bool,
-    default: None,
-};
-
 crate::declare_annotations! {
-    /// `data_plane.remote_agent_enabled`
-    DATA_PLANE_REMOTE_AGENT_ENABLED = SalukiAnnotation {
-        schema: &DATA_PLANE_REMOTE_AGENT_ENABLED_SCHEMA,
+    /// `data_plane.api_listen_address`-Unprivileged API listen address
+    DATA_PLANE_API_LISTEN_ADDRESS = SalukiAnnotation {
+        schema: &schema::DATA_PLANE_API_LISTEN_ADDRESS,
         support_level: SupportLevel::Full,
         additional_yaml_paths: &[],
         env_var_override: None,
-        used_by: &[],
+        used_by: &[structs::GET_TYPED],
         value_type_override: None,
         test_json: None,
         pipeline_affinity: PipelineAffinity::CrossCutting,
     };
-    /// `data_plane.use_new_config_stream_endpoint`
-    DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT = SalukiAnnotation {
-        schema: &DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT_SCHEMA,
+    /// `data_plane.log_file`-ADP log file path
+    DATA_PLANE_LOG_FILE = SalukiAnnotation {
+        schema: &schema::DATA_PLANE_LOG_FILE,
         support_level: SupportLevel::Full,
         additional_yaml_paths: &[],
         env_var_override: None,
-        used_by: &[],
+        used_by: &[structs::GET_TYPED],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::CrossCutting,
+    };
+    /// `data_plane.otlp.proxy.logs.enabled`-Proxy OTLP logs to Core Agent
+    DATA_PLANE_OTLP_PROXY_LOGS_ENABLED = SalukiAnnotation {
+        schema: &schema::DATA_PLANE_OTLP_PROXY_LOGS_ENABLED,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::GET_TYPED],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `data_plane.otlp.proxy.metrics.enabled`-Proxy OTLP metrics to Core Agent
+    DATA_PLANE_OTLP_PROXY_METRICS_ENABLED = SalukiAnnotation {
+        schema: &schema::DATA_PLANE_OTLP_PROXY_METRICS_ENABLED,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::GET_TYPED],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `data_plane.otlp.proxy.traces.enabled`-Proxy OTLP traces to Core Agent
+    DATA_PLANE_OTLP_PROXY_TRACES_ENABLED = SalukiAnnotation {
+        schema: &schema::DATA_PLANE_OTLP_PROXY_TRACES_ENABLED,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::GET_TYPED],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `data_plane.remote_agent_enabled`-Enable remote agent mode
+    DATA_PLANE_REMOTE_AGENT_ENABLED = SalukiAnnotation {
+        schema: &schema::DATA_PLANE_REMOTE_AGENT_ENABLED,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::GET_TYPED],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::CrossCutting,
+    };
+    /// `data_plane.secure_api_listen_address`-Privileged API listen address
+    DATA_PLANE_SECURE_API_LISTEN_ADDRESS = SalukiAnnotation {
+        schema: &schema::DATA_PLANE_SECURE_API_LISTEN_ADDRESS,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::GET_TYPED],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::CrossCutting,
+    };
+    /// `data_plane.use_new_config_stream_endpoint`-Use new config stream endpoint
+    DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT = SalukiAnnotation {
+        schema: &schema::DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::GET_TYPED],
         value_type_override: None,
         test_json: None,
         pipeline_affinity: PipelineAffinity::CrossCutting,

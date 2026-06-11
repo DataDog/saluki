@@ -390,6 +390,28 @@ crate::declare_annotations! {
         test_json: None,
         pipeline_affinity: PipelineAffinity::CrossCutting,
     };
+    /// `data_plane.telemetry_enabled`-ADP telemetry toggle
+    DATA_PLANE_TELEMETRY_ENABLED = SalukiAnnotation {
+        schema: &schema::DATA_PLANE_TELEMETRY_ENABLED,
+        support_level: SupportLevel::Incompatible(Severity::Low),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::CrossCutting,
+    };
+    /// `data_plane.telemetry_listen_addr`-ADP telemetry listen address
+    DATA_PLANE_TELEMETRY_LISTEN_ADDR = SalukiAnnotation {
+        schema: &schema::DATA_PLANE_TELEMETRY_LISTEN_ADDR,
+        support_level: SupportLevel::Incompatible(Severity::Low),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::CrossCutting,
+    };
     /// `dogstatsd_host_socket_path`-Host UDS socket dir for DSD
     DOGSTATSD_HOST_SOCKET_PATH = SalukiAnnotation {
         schema: &schema::DOGSTATSD_HOST_SOCKET_PATH,
@@ -631,6 +653,28 @@ crate::declare_annotations! {
         value_type_override: None,
         test_json: None,
         pipeline_affinity: PipelineAffinity::CrossCutting,
+    };
+    /// `serializer_experimental_use_v3_api.series.shadow_sample_rate`-V3 series shadow mode sample rate
+    SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_SHADOW_SAMPLE_RATE = SalukiAnnotation {
+        schema: &schema::SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_SHADOW_SAMPLE_RATE,
+        support_level: SupportLevel::Incompatible(Severity::Low),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD, Pipeline::Checks, Pipeline::Traces]),
+    };
+    /// `serializer_experimental_use_v3_api.series.shadow_sites`-V3 series shadow mode enabled sites
+    SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_SHADOW_SITES = SalukiAnnotation {
+        schema: &schema::SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_SHADOW_SITES,
+        support_level: SupportLevel::Incompatible(Severity::Low),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD, Pipeline::Checks, Pipeline::Traces]),
     };
     /// `use_dogstatsd`-Master DogStatsD enable toggle
     USE_DOGSTATSD = SalukiAnnotation {

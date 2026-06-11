@@ -33,7 +33,8 @@ fn main() {
 
     let files = Files::default();
 
-    println!("cargo:rerun-if-changed={}", files.schema.display());
+    let schema_dir = files.schema.parent().expect("schema file must have a parent directory");
+    println!("cargo:rerun-if-changed={}", schema_dir.display());
     println!("cargo:rerun-if-changed={}", files.overlay.display());
     println!("cargo:rerun-if-changed={}", template_path.display());
     println!("cargo:rerun-if-changed=build.rs");

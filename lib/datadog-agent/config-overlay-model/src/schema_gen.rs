@@ -3,6 +3,9 @@
 //! Parses `core_schema.yaml` (with any overlay applied upstream) into a flat map of
 //! `yaml_path → FieldInfo`, then emits `schema.rs` containing one `SchemaEntry` constant
 //! per config key. Used exclusively at build time.
+//!
+//! The schema may contain `$ref: <filename>` entries that reference subsystem schema files in
+//! the same directory. These are resolved and inlined during loading.
 use std::path::Path;
 
 use indexmap::IndexMap;
@@ -34,11 +37,10 @@ pub struct FieldInfo {
 
 /// Load and flatten the schema at `schema_path` into a `yaml_path → FieldInfo` map.
 ///
+/// Resolves `$ref: <filename>` entries by loading the referenced files from the same directory.
 /// The map is sorted by key. Panics if the file cannot be read or parsed.
 pub fn load_schema(schema_path: &Path) -> IndexMap<String, FieldInfo> {
-    let src = std::fs::read_to_string(schema_path)
-        .unwrap_or_else(|e| panic!("failed to read {}: {}", schema_path.display(), e));
-    let doc: Value = serde_yaml::from_str(&src).unwrap_or_else(|e| panic!("failed to parse schema YAML: {}", e));
+    let doc = crate::load_resolved_schema(schema_path).unwrap_or_else(|e| panic!("failed to load schema: {e}"));
     let properties = doc
         .get("properties")
         .and_then(|v| v.as_mapping())
@@ -65,6 +67,8 @@ fn collect_entries(mapping: &serde_yaml::Mapping, path_parts: &[&str], out: &mut
         let mut parts = path_parts.to_vec();
         parts.push(key_str);
 
+        // `$ref`s are inlined by `crate::load_resolved_schema` before we get here, so every node
+        // is either a `setting`, a `section`, or some other container with `properties`.
         let node_type = value.get("node_type").and_then(|v| v.as_str()).unwrap_or("");
 
         match node_type {
