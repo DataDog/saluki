@@ -71,6 +71,13 @@ ENV APP_BUILD_TIME=${APP_BUILD_TIME}
 ENV BUILDCACHE_REMOTE=${BUILDCACHE_REMOTE}
 ENV BUILDCACHE_DEBUG=${BUILDCACHE_DEBUG}
 
+RUN if [ "${BUILD_TARGET}" = "armv7-unknown-linux-gnueabihf" ] && ! command -v arm-linux-gnueabihf-gcc >/dev/null 2>&1; then \
+        apt-get update && \
+        apt-get install --no-install-recommends -y \
+            gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf libc6-dev-armhf-cross && \
+        apt-get clean && rm -rf /var/lib/apt/lists/*; \
+    fi
+
 # Copy over required build headers for AWS-LC.
 COPY ./ci/tooling/copy-build-headers.sh /copy-build-headers.sh
 RUN chmod +x /copy-build-headers.sh && /copy-build-headers.sh
@@ -108,6 +115,12 @@ RUN --mount=type=secret,id=aws-creds,target=/run/secrets/aws-creds.sh,required=f
         cp /adp/target/${BUILD_PROFILE}/agent-data-plane /out/agent-data-plane; \
     else \
         rustup target add ${BUILD_TARGET} && \
+        if [ "${BUILD_TARGET}" = "armv7-unknown-linux-gnueabihf" ]; then \
+            export CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER=arm-linux-gnueabihf-gcc; \
+            export CC_armv7_unknown_linux_gnueabihf=arm-linux-gnueabihf-gcc; \
+            export CXX_armv7_unknown_linux_gnueabihf=arm-linux-gnueabihf-g++; \
+            export AR_armv7_unknown_linux_gnueabihf=arm-linux-gnueabihf-ar; \
+        fi && \
         CFLAGS="${BUILD_CFLAGS}" \
         cargo build --profile ${BUILD_PROFILE} --package agent-data-plane --features ${BUILD_FEATURES} --target ${BUILD_TARGET} && \
         cp /adp/target/${BUILD_TARGET}/${BUILD_PROFILE}/agent-data-plane /out/agent-data-plane; \
