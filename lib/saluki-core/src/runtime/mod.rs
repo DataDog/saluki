@@ -63,7 +63,7 @@ mod dedicated;
 pub use self::dedicated::{RuntimeConfiguration, RuntimeMode};
 
 mod restart;
-pub use self::restart::{RestartMode, RestartStrategy};
+pub use self::restart::{RestartMode, RestartStrategy, RestartType};
 
 mod supervisor;
 pub use self::supervisor::{

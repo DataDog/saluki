@@ -13,7 +13,7 @@ use tracing::{debug, error, warn};
 
 use super::{
     dedicated::{spawn_dedicated_runtime, RuntimeConfiguration, RuntimeMode},
-    restart::{RestartAction, RestartMode, RestartState, RestartStrategy},
+    restart::{RestartAction, RestartMode, RestartState, RestartStrategy, RestartType},
 };
 use crate::runtime::{
     process::{Process, ProcessExt as _},
@@ -294,6 +294,13 @@ where
     }
 }
 
+/// A registered child: its specification together with the restart policy chosen at registration time.
+#[derive(Clone)]
+struct ChildEntry {
+    spec: ChildSpecification,
+    restart: RestartType,
+}
+
 /// Supervises a set of workers.
 ///
 /// # Workers
@@ -322,7 +329,7 @@ where
 /// strategies and configuration settings.
 pub struct Supervisor {
     supervisor_id: Arc<str>,
-    child_specs: Vec<ChildSpecification>,
+    child_specs: Vec<ChildEntry>,
     restart_strategy: RestartStrategy,
     runtime_mode: RuntimeMode,
 }
@@ -381,21 +388,41 @@ impl Supervisor {
     ///
     /// A worker can be anything that implements the [`Supervisable`] trait. A [`Supervisor`] can also be added as a
     /// worker and managed in a nested fashion, known as a supervision tree.
+    ///
+    /// The worker is registered with the [`RestartType::Permanent`] restart policy: it is always restarted when it
+    /// exits. Use [`add_worker_with_restart`][Self::add_worker_with_restart] to choose a different policy.
     pub fn add_worker<T: Into<ChildSpecification>>(&mut self, process: T) {
-        let child_spec = process.into();
+        self.add_worker_with_restart(process, RestartType::Permanent);
+    }
+
+    /// Adds a worker to the supervisor with an explicit restart policy.
+    ///
+    /// This behaves like [`add_worker`][Self::add_worker] but lets the caller choose the worker's [`RestartType`],
+    /// which controls whether the worker is restarted when it exits. See [`RestartType`] for the available policies and
+    /// their caveats (in particular, [`RestartType::Temporary`] is intended for one-for-one supervision).
+    pub fn add_worker_with_restart<T: Into<ChildSpecification>>(&mut self, process: T, restart: RestartType) {
+        let spec = process.into();
         debug!(
             supervisor_id = %self.supervisor_id,
-            "Adding new static child process #{}. ({}, {})",
+            "Adding new static child process #{}. ({}, {}, {:?})",
             self.child_specs.len(),
-            child_spec.process_type(),
-            child_spec.name(),
+            spec.process_type(),
+            spec.name(),
+            restart,
         );
-        self.child_specs.push(child_spec);
+        self.child_specs.push(ChildEntry { spec, restart });
     }
 
     fn get_child_spec(&self, child_spec_idx: usize) -> &ChildSpecification {
         match self.child_specs.get(child_spec_idx) {
-            Some(child_spec) => child_spec,
+            Some(entry) => &entry.spec,
+            None => unreachable!("child spec index should never be out of bounds"),
+        }
+    }
+
+    fn get_restart_type(&self, child_spec_idx: usize) -> RestartType {
+        match self.child_specs.get(child_spec_idx) {
+            Some(entry) => entry.restart,
             None => unreachable!("child spec index should never be out of bounds"),
         }
     }
@@ -440,39 +467,45 @@ impl Supervisor {
                     worker_state.shutdown_workers().await;
                     break;
                 },
-                worker_task_result = worker_state.wait_for_next_worker() => match worker_task_result {
-                    // TODO: Erlang/OTP defaults to always trying to restart a process, even if it doesn't terminate due
-                    // to a legitimate failure. It does allow configuring this behavior on a per-process basis, however.
-                    // We don't support dynamically adding child processes, which is the only real use case I can think
-                    // of for having non-long-lived child processes... so I think for now, we're OK just always try to
-                    // restart.
-                    Some((child_spec_idx, worker_result)) =>  {
-                        let child_spec = self.get_child_spec(child_spec_idx);
+                (child_spec_idx, worker_result) = worker_state.wait_for_next_worker() => {
+                    let child_spec = self.get_child_spec(child_spec_idx);
 
-                        // Initialization failures are not eligible for restart -- they propagate immediately.
-                        if let Err(WorkerError::Initialization { child_name, source }) = worker_result {
-                            // If the error came from a nested supervisor, include the original child name
-                            // to make the error chain more informative (e.g., "ctrl-pln/privileged-api").
-                            let full_name = match child_name {
-                                Some(inner) => format!("{}/{}", child_spec.name(), inner),
-                                None => child_spec.name().to_string(),
-                            };
+                    // Initialization failures are not eligible for restart -- they propagate immediately.
+                    if let Err(WorkerError::Initialization { child_name, source }) = worker_result {
+                        // If the error came from a nested supervisor, include the original child name
+                        // to make the error chain more informative (e.g., "ctrl-pln/privileged-api").
+                        let full_name = match child_name {
+                            Some(inner) => format!("{}/{}", child_spec.name(), inner),
+                            None => child_spec.name().to_string(),
+                        };
 
-                            error!(supervisor_id = %self.supervisor_id, worker_name = full_name, "Child process failed to initialize: {}", source);
-                            worker_state.shutdown_workers().await;
-                            return Err(SupervisorError::FailedToInitialize {
-                                child_name: full_name,
-                                source,
-                            });
-                        }
+                        error!(supervisor_id = %self.supervisor_id, worker_name = full_name, "Child process failed to initialize: {}", source);
+                        worker_state.shutdown_workers().await;
+                        return Err(SupervisorError::FailedToInitialize {
+                            child_name: full_name,
+                            source,
+                        });
+                    }
 
-                        // Convert the worker result to a process error for restart evaluation.
-                        let worker_result = worker_result
-                            .map_err(|e| match e {
-                                WorkerError::Runtime(e) => ProcessError::Terminated { source: e },
-                                WorkerError::Initialization { .. } => unreachable!("handled above"),
-                            });
+                    // A worker exited abnormally if it returned an error, panicked, or was aborted; a clean exit is
+                    // `Ok(())`. Together with the worker's restart policy, this determines whether we restart it.
+                    let abnormal = worker_result.is_err();
+                    let restart_type = self.get_restart_type(child_spec_idx);
 
+                    // Convert the worker result to a process error for restart evaluation / logging.
+                    let worker_result = worker_result.map_err(|e| match e {
+                        WorkerError::Runtime(e) => ProcessError::Terminated { source: e },
+                        WorkerError::Initialization { .. } => unreachable!("handled above"),
+                    });
+
+                    if !restart_type.should_restart(abnormal) {
+                        // The worker isn't eligible for restart given how it exited. It has already been removed from the
+                        // worker map by `wait_for_next_worker`, so we simply continue supervising the rest. Crucially, we
+                        // do NOT consult `evaluate_restart` here: non-restarts must not consume the restart-intensity
+                        // budget, otherwise a steady stream of terminating temporary/transient children would eventually
+                        // trip the supervisor's restart limit and tear it (and its siblings) down.
+                        debug!(supervisor_id = %self.supervisor_id, worker_name = child_spec.name(), ?restart_type, ?worker_result, "Child process exited and is not eligible for restart.");
+                    } else {
                         match restart_state.evaluate_restart() {
                             RestartAction::Restart(mode) => match mode {
                                 RestartMode::OneForOne => {
@@ -491,8 +524,7 @@ impl Supervisor {
                                 return Err(SupervisorError::Shutdown);
                             }
                         }
-                    },
-                    None => unreachable!("should not have empty worker joinset prior to shutdown"),
+                    }
                 }
             }
         }
@@ -639,8 +671,17 @@ impl WorkerState {
         Ok(())
     }
 
-    async fn wait_for_next_worker(&mut self) -> Option<(usize, Result<(), WorkerError>)> {
+    async fn wait_for_next_worker(&mut self) -> (usize, Result<(), WorkerError>) {
         debug!("Waiting for next process to complete.");
+
+        // If there are no workers to wait on, park indefinitely so the supervisor's select loop only proceeds via its
+        // other arms (shutdown, or -- for dynamic supervisors -- a newly-added worker). Without this guard,
+        // `join_next_with_id` would return `None` immediately on an empty set and the supervisor would busy-loop. The
+        // set legitimately empties when all children are non-restartable (e.g. `RestartType::Temporary`) and have
+        // exited.
+        if self.worker_tasks.is_empty() {
+            std::future::pending::<()>().await;
+        }
 
         match self.worker_tasks.join_next_with_id().await {
             Some(Ok((worker_task_id, worker_result))) => {
@@ -648,7 +689,7 @@ impl WorkerState {
                     .worker_map
                     .swap_remove(&worker_task_id)
                     .expect("worker task ID not found");
-                Some((process_state.worker_id, worker_result))
+                (process_state.worker_id, worker_result)
             }
             Some(Err(e)) => {
                 let worker_task_id = e.id();
@@ -661,9 +702,11 @@ impl WorkerState {
                 } else {
                     ProcessError::Panicked
                 };
-                Some((process_state.worker_id, Err(WorkerError::Runtime(e.into()))))
+                (process_state.worker_id, Err(WorkerError::Runtime(e.into())))
             }
-            None => None,
+            None => unreachable!(
+                "join set is non-empty here: we park above while empty, and only this method removes workers"
+            ),
         }
     }
 
@@ -785,6 +828,9 @@ mod tests {
 
         /// Fails with the given error message after the given delay.
         FailAfter(Duration, &'static str),
+
+        /// Completes successfully after the given delay.
+        CompleteAfter(Duration),
     }
 
     /// A configurable mock worker for testing supervisor behavior.
@@ -812,6 +858,16 @@ mod tests {
                 name,
                 init_behavior: InitBehavior::Instant,
                 run_behavior: RunBehavior::FailAfter(delay, "worker failed"),
+                start_count: Arc::new(AtomicUsize::new(0)),
+            }
+        }
+
+        /// Creates a worker that completes successfully after the given delay.
+        fn completing(name: &'static str, delay: Duration) -> Self {
+            Self {
+                name,
+                init_behavior: InitBehavior::Instant,
+                run_behavior: RunBehavior::CompleteAfter(delay),
                 start_count: Arc::new(AtomicUsize::new(0)),
             }
         }
@@ -884,6 +940,12 @@ mod tests {
                             _ = process_shutdown => {
                                 Ok(())
                             }
+                        }
+                    }
+                    RunBehavior::CompleteAfter(delay) => {
+                        select! {
+                            _ = sleep(delay) => Ok(()),
+                            _ = process_shutdown => Ok(()),
                         }
                     }
                 }
@@ -1032,6 +1094,156 @@ mod tests {
         drop(tx);
 
         assert!(matches!(result, Err(SupervisorError::Shutdown)));
+    }
+
+    // -- Restart type tests ----------------------------------------------------------------
+
+    #[tokio::test]
+    async fn temporary_child_is_not_restarted() {
+        // A temporary worker that fails quickly, alongside a long-running worker that keeps the supervisor alive.
+        let temp = MockWorker::failing("temp-worker", Duration::from_millis(50));
+        let temp_count = temp.start_count();
+
+        let stable = MockWorker::long_running("stable-worker");
+
+        let mut sup = Supervisor::new("test-sup").unwrap().with_restart_strategy(
+            RestartStrategy::one_to_one().with_intensity_and_period(20, Duration::from_secs(10)),
+        );
+        sup.add_worker(stable);
+        sup.add_worker_with_restart(temp, RestartType::Temporary);
+
+        let (tx, handle) = run_supervisor_with_trigger(sup).await;
+
+        // Give the temporary worker time to fail; it must not be restarted.
+        sleep(Duration::from_millis(300)).await;
+        let _ = tx.send(());
+
+        let result = timeout(Duration::from_secs(2), handle).await.unwrap().unwrap();
+        assert!(result.is_ok());
+        assert_eq!(
+            temp_count.load(Ordering::SeqCst),
+            1,
+            "temporary worker must not be restarted"
+        );
+    }
+
+    #[tokio::test]
+    async fn transient_child_is_not_restarted_on_clean_exit() {
+        let transient = MockWorker::completing("transient-worker", Duration::from_millis(50));
+        let transient_count = transient.start_count();
+
+        let stable = MockWorker::long_running("stable-worker");
+
+        let mut sup = Supervisor::new("test-sup").unwrap().with_restart_strategy(
+            RestartStrategy::one_to_one().with_intensity_and_period(20, Duration::from_secs(10)),
+        );
+        sup.add_worker(stable);
+        sup.add_worker_with_restart(transient, RestartType::Transient);
+
+        let (tx, handle) = run_supervisor_with_trigger(sup).await;
+
+        sleep(Duration::from_millis(300)).await;
+        let _ = tx.send(());
+
+        let result = timeout(Duration::from_secs(2), handle).await.unwrap().unwrap();
+        assert!(result.is_ok());
+        assert_eq!(
+            transient_count.load(Ordering::SeqCst),
+            1,
+            "transient worker must not be restarted after a clean exit"
+        );
+    }
+
+    #[tokio::test]
+    async fn transient_child_is_restarted_on_failure() {
+        let transient = MockWorker::failing("transient-worker", Duration::from_millis(50));
+        let transient_count = transient.start_count();
+
+        let mut sup = Supervisor::new("test-sup").unwrap().with_restart_strategy(
+            RestartStrategy::one_to_one().with_intensity_and_period(20, Duration::from_secs(10)),
+        );
+        sup.add_worker_with_restart(transient, RestartType::Transient);
+
+        let (tx, handle) = run_supervisor_with_trigger(sup).await;
+
+        sleep(Duration::from_millis(300)).await;
+        let _ = tx.send(());
+
+        let result = timeout(Duration::from_secs(2), handle).await.unwrap().unwrap();
+        assert!(result.is_ok());
+        assert!(
+            transient_count.load(Ordering::SeqCst) >= 2,
+            "transient worker must be restarted after an abnormal exit"
+        );
+    }
+
+    #[tokio::test]
+    async fn temporary_failures_do_not_consume_restart_intensity() {
+        // With intensity=1, two *restartable* failures within the period would shut the supervisor down. Here several
+        // temporary workers all fail quickly. Because temporary exits aren't eligible for restart, they must not consume
+        // the restart-intensity budget, and the supervisor must stay up.
+        let mut sup = Supervisor::new("test-sup")
+            .unwrap()
+            .with_restart_strategy(RestartStrategy::one_to_one().with_intensity_and_period(1, Duration::from_secs(10)));
+
+        let workers = [
+            MockWorker::failing("temp-0", Duration::from_millis(20)),
+            MockWorker::failing("temp-1", Duration::from_millis(20)),
+            MockWorker::failing("temp-2", Duration::from_millis(20)),
+            MockWorker::failing("temp-3", Duration::from_millis(20)),
+            MockWorker::failing("temp-4", Duration::from_millis(20)),
+        ];
+        let counts: Vec<_> = workers.iter().map(|w| w.start_count()).collect();
+        for worker in workers {
+            sup.add_worker_with_restart(worker, RestartType::Temporary);
+        }
+        // A long-running worker so the supervisor doesn't simply idle once the temporaries are gone.
+        sup.add_worker(MockWorker::long_running("stable-worker"));
+
+        let (tx, handle) = run_supervisor_with_trigger(sup).await;
+        sleep(Duration::from_millis(300)).await;
+        let _ = tx.send(());
+
+        let result = timeout(Duration::from_secs(2), handle).await.unwrap().unwrap();
+        assert!(
+            result.is_ok(),
+            "supervisor must not trip its restart limit on temporary exits"
+        );
+        for count in counts {
+            assert_eq!(
+                count.load(Ordering::SeqCst),
+                1,
+                "each temporary worker runs exactly once"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn supervisor_idles_when_all_temporary_children_exit() {
+        // When every child is temporary and they all exit, the worker set drains. The supervisor must not panic or exit
+        // on its own; it should keep waiting until shutdown is triggered.
+        let mut sup = Supervisor::new("test-sup").unwrap();
+        sup.add_worker_with_restart(
+            MockWorker::completing("temp-a", Duration::from_millis(30)),
+            RestartType::Temporary,
+        );
+        sup.add_worker_with_restart(
+            MockWorker::completing("temp-b", Duration::from_millis(30)),
+            RestartType::Temporary,
+        );
+
+        let (tx, handle) = run_supervisor_with_trigger(sup).await;
+
+        // Both children complete well within this window; the supervisor should still be running (idling).
+        sleep(Duration::from_millis(200)).await;
+        assert!(
+            !handle.is_finished(),
+            "supervisor must keep running after all children exit"
+        );
+
+        let _ = tx.send(());
+        let result = timeout(Duration::from_secs(2), handle).await.unwrap().unwrap();
+        assert!(result.is_ok());
     }
 
     // -- Initialization failure tests ------------------------------------------------------
