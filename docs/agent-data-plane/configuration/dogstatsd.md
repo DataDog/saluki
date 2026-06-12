@@ -317,7 +317,6 @@ ways that are not yet fully characterized.
 | `autoscaling.failover.enabled`                           | Enable autoscaling failover metric routing    | [#1684] |
 | `autoscaling.failover.metrics`                           | Metric names forwarded to DCA for failover    | [#1684] |
 | `cluster_agent.enabled`                                  | Enable Cluster Agent communication            | [#1684] |
-| `forwarder_flush_to_disk_mem_ratio`                      | Mem-to-disk flush threshold                   | [#1364] |
 | `forwarder_low_prio_buffer_size`                         | Low-priority request queue size               | [#1362] |
 | `forwarder_requeue_buffer_size`                          | In-memory re-queue buffer size                | [#1755] |
 | `forwarder_retry_queue_capacity_time_interval_sec`       | Retry queue time-based capacity               | [#1365] |
@@ -517,6 +516,7 @@ compressed wire payload bytes.
 | `forwarder_backoff_factor`                                     | Retry backoff jitter factor                        |
 | `forwarder_backoff_max`                                        | Retry backoff ceiling (secs)                       |
 | `forwarder_connection_reset_interval`                          | HTTP conn reset interval (secs)                    |
+| `forwarder_flush_to_disk_mem_ratio`                            | Mem-to-disk flush ratio                            |
 | `forwarder_http_protocol`                                      | HTTP version selection (auto/http1/http2)          |
 | `forwarder_max_concurrent_requests`                            | Max concurrent HTTP requests                       |
 | `forwarder_outdated_file_in_days`                              | Days before retry files are deleted                |
@@ -587,7 +587,6 @@ compressed wire payload bytes.
 [#1361]: https://github.com/DataDog/saluki/issues/1361
 [#1362]: https://github.com/DataDog/saluki/issues/1362
 [#1363]: https://github.com/DataDog/saluki/issues/1363
-[#1364]: https://github.com/DataDog/saluki/issues/1364
 [#1365]: https://github.com/DataDog/saluki/issues/1365
 [#1381]: https://github.com/DataDog/saluki/issues/1381
 [#1466]: https://github.com/DataDog/saluki/issues/1466
