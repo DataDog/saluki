@@ -1,15 +1,18 @@
 use ordered_float::NotNan;
 use snafu::Snafu;
 
-// We limit grants to a size of 2^53 (~9PB) because at numbers bigger than that, we end up with floating point loss when
-// we do scaling calculations. Since we are not going to support grants that large -- and if we ever have to, well,
-// then, I'll eat my synpatic implant or whatever makes sense to eat 40 years from now -- we just limit them like this
-// for now.
-const MAX_GRANT_BYTES: usize = 2usize.pow(f64::MANTISSA_DIGITS);
+// We limit grants to the largest byte count that fits precisely in both `f64` and `usize`. Floating point precision is
+// the limiting factor on 64-bit platforms, while pointer width is the limiting factor on 32-bit platforms.
+const MAX_PRECISE_F64_INTEGER_BYTES: u64 = 1u64 << f64::MANTISSA_DIGITS;
+const MAX_GRANT_BYTES: usize = if usize::BITS >= f64::MANTISSA_DIGITS {
+    MAX_PRECISE_F64_INTEGER_BYTES as usize
+} else {
+    usize::MAX
+};
 
 #[derive(Debug, Snafu)]
 pub enum GrantError {
-    #[snafu(display("Slop factor must be between 0.0 and 1.0 inclusive."))]
+    #[snafu(display("Slop factor must be at least 0.0 and less than 1.0."))]
     InvalidSlopFactor,
 
     #[snafu(display("Initial limit must be less than or equal to 9PiB (2^53 bytes)."))]
@@ -47,8 +50,9 @@ impl MemoryGrant {
     /// This grant will have a slop factor of 0.0 to indicate that the effective limit is already inclusive of any
     /// necessary slop factor.
     ///
-    /// If the effective limit is greater than 9007199254740992 bytes (2^53 bytes, or roughly 9 petabytes), then `None`
-    /// is returned. This is a hardcoded limit.
+    /// If the effective limit is greater than the maximum precise grant size, then an error is returned. This cap is
+    /// 9007199254740992 bytes (2^53 bytes, or roughly 9 petabytes) on 64-bit platforms and `usize::MAX` on 32-bit
+    /// platforms.
     pub fn effective(effective_limit_bytes: usize) -> Result<Self, GrantError> {
         Self::with_slop_factor(effective_limit_bytes, 0.0)
     }
@@ -59,9 +63,8 @@ impl MemoryGrant {
     /// slop factor of 0.1 would indicate that only 90% of the initial limit should be used, and a slop factor of 0.25
     /// would indicate that only 75% of the initial limit should be used, and so on.
     ///
-    /// If the slop factor isn't valid (must be 0.0 < `slop_factor` <= 1.0), then `None` is returned. If the effective
-    /// limit is greater than 9007199254740992 bytes (2^53 bytes, or roughly 9 petabytes), then `None` is returned. This
-    /// is a hardcoded limit.
+    /// If the slop factor isn't valid (must be 0.0 <= `slop_factor` < 1.0), then an error is returned. If the initial
+    /// limit is greater than the maximum precise grant size, then an error is returned.
     pub fn with_slop_factor(initial_limit_bytes: usize, slop_factor: f64) -> Result<Self, GrantError> {
         let slop_factor = if !(0.0..1.0).contains(&slop_factor) {
             return Err(GrantError::InvalidSlopFactor);
@@ -107,13 +110,15 @@ impl MemoryGrant {
 
 #[cfg(test)]
 mod tests {
-    use super::MemoryGrant;
+    use super::{MemoryGrant, MAX_GRANT_BYTES};
 
     #[test]
     fn effective() {
         assert!(MemoryGrant::effective(1).is_ok());
-        assert!(MemoryGrant::effective(2usize.pow(f64::MANTISSA_DIGITS)).is_ok());
-        assert!(MemoryGrant::effective(2usize.pow(f64::MANTISSA_DIGITS) + 1).is_err());
+        assert!(MemoryGrant::effective(MAX_GRANT_BYTES).is_ok());
+        if MAX_GRANT_BYTES < usize::MAX {
+            assert!(MemoryGrant::effective(MAX_GRANT_BYTES + 1).is_err());
+        }
     }
 
     #[test]
@@ -123,7 +128,9 @@ mod tests {
         assert!(MemoryGrant::with_slop_factor(1, f64::NAN).is_err());
         assert!(MemoryGrant::with_slop_factor(1, -0.1).is_err());
         assert!(MemoryGrant::with_slop_factor(1, 1.001).is_err());
-        assert!(MemoryGrant::with_slop_factor(2usize.pow(f64::MANTISSA_DIGITS), 0.25).is_ok());
-        assert!(MemoryGrant::with_slop_factor(2usize.pow(f64::MANTISSA_DIGITS) + 1, 0.25).is_err());
+        assert!(MemoryGrant::with_slop_factor(MAX_GRANT_BYTES, 0.25).is_ok());
+        if MAX_GRANT_BYTES < usize::MAX {
+            assert!(MemoryGrant::with_slop_factor(MAX_GRANT_BYTES + 1, 0.25).is_err());
+        }
     }
 }

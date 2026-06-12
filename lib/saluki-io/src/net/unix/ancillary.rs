@@ -138,9 +138,7 @@ impl<'a> ControlMessage<'a> {
 
 const fn get_ucred_struct_size() -> usize {
     let ucred_raw_size = mem::size_of::<libc::ucred>();
-    let ucred_raw_size = if ucred_raw_size.wrapping_shr(u32::BITS) != 0 {
-        // We do a const shift of the raw size to see if it has any additional bits past what we can fit in u32, and
-        // this way we know that it's safe to directly cast the value to u32 without having truncated any bits.
+    let ucred_raw_size = if ucred_raw_size > u32::MAX as usize {
         panic!("size of `ucred` struct greater than u32::MAX");
     } else {
         ucred_raw_size as u32
