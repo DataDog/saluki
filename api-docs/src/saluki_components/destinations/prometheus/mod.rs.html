@@ -2,7 +2,7 @@
 <a href=#2 id=2 data-nosnippet>2</a>//!
 <a href=#3 id=3 data-nosnippet>3</a>//! # Missing
 <a href=#4 id=4 data-nosnippet>4</a>//!
-<a href=#5 id=5 data-nosnippet>5</a>//! - Use `DynamicShutdownCoordinator` so shutdown can be triggered and all HTTP connections can drain.
+<a href=#5 id=5 data-nosnippet>5</a>//! - Use `ShutdownCoordinator::shutdown_and_wait` so shutdown can be triggered and all HTTP connections can drain.
 <a href=#6 id=6 data-nosnippet>6</a>
 <a href=#7 id=7 data-nosnippet>7</a></span><span class="kw">use </span>std::{
 <a href=#8 id=8 data-nosnippet>8</a>    convert::Infallible,
@@ -16,7 +16,7 @@
 <a href=#16 id=16 data-nosnippet>16</a><span class="kw">use </span>hyper::{body::Incoming, service::service_fn};
 <a href=#17 id=17 data-nosnippet>17</a><span class="kw">use </span>prometheus_exposition::{MetricType, PrometheusRenderer};
 <a href=#18 id=18 data-nosnippet>18</a><span class="kw">use </span>resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
-<a href=#19 id=19 data-nosnippet>19</a><span class="kw">use </span>saluki_common::{collections::FastIndexMap, iter::ReusableDeduplicator};
+<a href=#19 id=19 data-nosnippet>19</a><span class="kw">use </span>saluki_common::{collections::FastIndexMap, iter::ReusableDeduplicator, sync::shutdown::ShutdownCoordinator};
 <a href=#20 id=20 data-nosnippet>20</a><span class="kw">use </span>saluki_context::{tags::Tag, Context};
 <a href=#21 id=21 data-nosnippet>21</a><span class="kw">use </span>saluki_core::components::{destinations::<span class="kw-2">*</span>, ComponentContext};
 <a href=#22 id=22 data-nosnippet>22</a><span class="kw">use </span>saluki_core::data_model::event::{
@@ -26,7 +26,7 @@
 <a href=#26 id=26 data-nosnippet>26</a><span class="kw">use </span>saluki_error::GenericError;
 <a href=#27 id=27 data-nosnippet>27</a><span class="kw">use </span>saluki_io::net::{
 <a href=#28 id=28 data-nosnippet>28</a>    listener::ConnectionOrientedListener,
-<a href=#29 id=29 data-nosnippet>29</a>    server::http::{ErrorHandle, HttpServer, ShutdownHandle},
+<a href=#29 id=29 data-nosnippet>29</a>    server::http::{ErrorHandle, HttpServer},
 <a href=#30 id=30 data-nosnippet>30</a>    ListenAddress,
 <a href=#31 id=31 data-nosnippet>31</a>};
 <a href=#32 id=32 data-nosnippet>32</a><span class="kw">use </span>serde::Deserialize;
@@ -244,8 +244,8 @@
 <a href=#244 id=244 data-nosnippet>244</a>            }
 <a href=#245 id=245 data-nosnippet>245</a>        }
 <a href=#246 id=246 data-nosnippet>246</a>
-<a href=#247 id=247 data-nosnippet>247</a>        <span class="comment">// TODO: This should really be `DynamicShutdownCoordinator`-based so we can trigger shutdown _and_ wait until
-<a href=#248 id=248 data-nosnippet>248</a>        // all HTTP connections and the listener have finished.
+<a href=#247 id=247 data-nosnippet>247</a>        <span class="comment">// TODO: This should really use `ShutdownCoordinator::shutdown_and_wait` so we can trigger shutdown _and_ wait
+<a href=#248 id=248 data-nosnippet>248</a>        // until all HTTP connections and the listener have finished.
 <a href=#249 id=249 data-nosnippet>249</a>        </span>http_shutdown.shutdown();
 <a href=#250 id=250 data-nosnippet>250</a>
 <a href=#251 id=251 data-nosnippet>251</a>        <span class="macro">debug!</span>(<span class="string">"Prometheus destination stopped."</span>);
@@ -257,7 +257,7 @@
 <a href=#257 id=257 data-nosnippet>257</a><span class="kw">fn </span>spawn_prom_scrape_service(
 <a href=#258 id=258 data-nosnippet>258</a>    listener: ConnectionOrientedListener, payload: Arc&lt;RwLock&lt;String&gt;&gt;,
 <a href=#259 id=259 data-nosnippet>259</a>    additional_routes: Vec&lt;PrometheusAdditionalRoute&gt;,
-<a href=#260 id=260 data-nosnippet>260</a>) -&gt; (ShutdownHandle, ErrorHandle) {
+<a href=#260 id=260 data-nosnippet>260</a>) -&gt; (ShutdownCoordinator, ErrorHandle) {
 <a href=#261 id=261 data-nosnippet>261</a>    <span class="kw">let </span>additional_routes = Arc::new(additional_routes);
 <a href=#262 id=262 data-nosnippet>262</a>    <span class="kw">let </span>service = service_fn(<span class="kw">move </span>|req: Request&lt;Incoming&gt;| {
 <a href=#263 id=263 data-nosnippet>263</a>        <span class="kw">let </span>payload = Arc::clone(<span class="kw-2">&amp;</span>payload);

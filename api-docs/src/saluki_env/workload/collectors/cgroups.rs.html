@@ -4,7 +4,7 @@
 <a href=#4 id=4 data-nosnippet>4</a><span class="kw">use </span>resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
 <a href=#5 id=5 data-nosnippet>5</a><span class="kw">use </span>saluki_common::{
 <a href=#6 id=6 data-nosnippet>6</a>    collections::{FastHashMap, FastHashSet},
-<a href=#7 id=7 data-nosnippet>7</a>    sync::shutdown::{ShutdownHandle, ShutdownTrigger},
+<a href=#7 id=7 data-nosnippet>7</a>    sync::shutdown::ShutdownHandle,
 <a href=#8 id=8 data-nosnippet>8</a>};
 <a href=#9 id=9 data-nosnippet>9</a><span class="kw">use </span>saluki_config::GenericConfiguration;
 <a href=#10 id=10 data-nosnippet>10</a><span class="kw">use </span>saluki_core::health::Health;
@@ -73,9 +73,9 @@
 <a href=#73 id=73 data-nosnippet>73</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>cgroups_manager = SynchronousCgroupsManager::from_reader(<span class="self">self</span>.reader.clone());
 <a href=#74 id=74 data-nosnippet>74</a>        <span class="kw">let </span>operations_tx = operations_tx.clone();
 <a href=#75 id=75 data-nosnippet>75</a>
-<a href=#76 id=76 data-nosnippet>76</a>        <span class="comment">// We hold on to the shutdown trigger here (even though we never call it) so that it only triggers on drop,
+<a href=#76 id=76 data-nosnippet>76</a>        <span class="comment">// We hold on to the shutdown coordinator here (even though we never call it) so that it only triggers on drop,
 <a href=#77 id=77 data-nosnippet>77</a>        // ensuring we don't leak the blocking poller task if this collector is dropped before it completes.
-<a href=#78 id=78 data-nosnippet>78</a>        </span><span class="kw">let </span>(_shutdown_trigger, shutdown_handle) = ShutdownTrigger::new();
+<a href=#78 id=78 data-nosnippet>78</a>        </span><span class="kw">let </span>(_shutdown_coordinator, shutdown_handle) = ShutdownHandle::paired();
 <a href=#79 id=79 data-nosnippet>79</a>        <span class="kw">let </span>poller_handle = tokio::task::spawn_blocking(<span class="kw">move </span>|| cgroups_manager.poll(operations_tx, shutdown_handle));
 <a href=#80 id=80 data-nosnippet>80</a>        <span class="macro">tokio::pin!</span>(poller_handle);
 <a href=#81 id=81 data-nosnippet>81</a>

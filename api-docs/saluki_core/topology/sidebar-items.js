@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"enum":["BlueprintError"],"mod":["ids","interconnect","shutdown"],"struct":["TopologyBlueprint","TopologyContext","TopologyReady"],"type":["EventsBuffer","EventsConsumer","EventsDispatcher","PayloadsBuffer","PayloadsConsumer","PayloadsDispatcher"]};
+window.SIDEBAR_ITEMS = {"enum":["BlueprintError"],"mod":["ids","interconnect"],"struct":["TopologyBlueprint","TopologyContext","TopologyReady"],"type":["EventsBuffer","EventsConsumer","EventsDispatcher","PayloadsBuffer","PayloadsConsumer","PayloadsDispatcher"]};
