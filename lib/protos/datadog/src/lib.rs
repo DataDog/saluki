@@ -17,6 +17,10 @@ mod trace_include {
     include!(concat!(env!("OUT_DIR"), "/trace_protos/mod.rs"));
 }
 
+mod idx_trace_include {
+    include!(concat!(env!("OUT_DIR"), "/idx_trace_protos/mod.rs"));
+}
+
 mod agent_include {
     include!(concat!(env!("OUT_DIR"), "/api.mod.rs"));
 }
@@ -56,6 +60,12 @@ pub mod traces {
     /// Piecemeal-generated builder types for incremental trace encoding.
     pub mod builders {
         pub use super::super::trace_piecemeal_include::datadog::trace::*;
+    }
+
+    /// String-indexed (`idx`) trace payload types used by the v0.2 trace intake format.
+    pub mod idx {
+        pub use super::super::idx_trace_include::span::{any_value, *};
+        pub use super::super::idx_trace_include::tracer_payload::*;
     }
 }
 
