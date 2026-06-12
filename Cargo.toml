@@ -122,6 +122,7 @@ ordered-float = { version = "5", default-features = false }
 pastey = { version = "0.2", default-features = false }
 pin-project = { version = "1.1", default-features = false }
 pin-project-lite = { version = "0.2", default-features = false }
+prettyplease = { version = "0.2", default-features = false }
 derive-where = { version = "1.6", default-features = false }
 proptest = { version = "1.11", default-features = false, features = ["std"] }
 prost = { version = "0.14", default-features = false }
@@ -138,11 +139,14 @@ rustls = { version = "0.23", default-features = false, features = [
   "std",
   "tls12",
 ] }
+schemars = { version = "0.8", default-features = false }
 similar-asserts = { version = "2.0", default-features = false }
 slab = { version = "0.4.12", default-features = false }
+syn = { version = "2", default-features = false, features = ["full", "parsing", "visit-mut"] }
 tokio-util = { version = "0.7.18", default-features = false }
 tower = { version = "0.5", default-features = false }
 tracing-subscriber = { version = "0.3", default-features = false }
+typify = { version = "0.7", default-features = false }
 url = { version = "2", default-features = false }
 ndarray = { version = "0.17", default-features = false }
 ndarray-stats = { version = "0.7", default-features = false }
