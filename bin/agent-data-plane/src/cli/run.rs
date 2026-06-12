@@ -22,7 +22,7 @@ use saluki_components::{
         DatadogLogsConfiguration, DatadogMetricsConfiguration, DatadogServiceChecksConfiguration,
         DatadogTraceConfiguration,
     },
-    forwarders::{DatadogConfiguration, OtlpForwarderConfiguration},
+    forwarders::{DatadogForwarderConfiguration, OtlpForwarderConfiguration},
     relays::otlp::OtlpRelayConfiguration,
     sources::{ChecksIPCConfiguration, DogStatsDConfiguration, OtlpConfiguration},
     transforms::{
@@ -382,8 +382,8 @@ async fn create_topology(
         || dp_config.service_checks_pipeline_required()
         || dp_config.traces_pipeline_required()
     {
-        let dd_forwarder_config =
-            DatadogConfiguration::from_configuration(config).error_context("Failed to configure Datadog forwarder.")?;
+        let dd_forwarder_config = DatadogForwarderConfiguration::from_configuration(config)
+            .error_context("Failed to configure Datadog forwarder.")?;
         blueprint.add_forwarder("dd_out", dd_forwarder_config)?;
     }
 
@@ -491,7 +491,7 @@ fn add_mrf_metrics_pipeline_to_blueprint(
     let mrf_metrics_config = DatadogMetricsConfiguration::from_configuration(config)
         .error_context("Failed to configure Multi-Region Failover Datadog Metrics encoder.")?;
 
-    let mrf_forwarder_config = DatadogConfiguration::from_configuration(config)
+    let mrf_forwarder_config = DatadogForwarderConfiguration::from_configuration(config)
         .map(|config| {
             config.with_endpoint_override_and_api_key_refresh_config_path(
                 mrf_dd_url,
