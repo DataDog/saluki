@@ -317,16 +317,24 @@ inventory:
         config_registry_filename: trace_obfuscation.rs
 
   autoscaling.failover.enabled:
-    support: unknown
+    support: full
+    pipelines: [checks, dogstatsd, otlp]
     description: "Enable autoscaling failover metric routing"
-    severity: medium
-    issue: "#1684"
+    test_support:
+      used_by: [get_typed]
+      test_json: "true"
+      additional_attributes:
+        config_registry_filename: get_typed.rs
 
   autoscaling.failover.metrics:
-    support: unknown
+    support: full
+    pipelines: [checks, dogstatsd, otlp]
     description: "Metric names forwarded to DCA for failover"
-    severity: medium
-    issue: "#1684"
+    test_support:
+      used_by: [get_typed]
+      test_json: '["container.memory.usage"]'
+      additional_attributes:
+        config_registry_filename: get_typed.rs
 
   bind_host:
     support: full
@@ -337,11 +345,35 @@ inventory:
       additional_attributes:
         config_registry_filename: dogstatsd.rs
 
+  cluster_agent.auth_token:
+    support: full
+    pipelines: [checks, dogstatsd, otlp]
+    description: "Bearer token for Cluster Agent requests"
+    test_support:
+      used_by: [get_typed]
+      test_json: '"cluster-agent-token"'
+      additional_attributes:
+        config_registry_filename: get_typed.rs
+
   cluster_agent.enabled:
-    support: unknown
+    support: full
+    pipelines: [checks, dogstatsd, otlp]
     description: "Enable Cluster Agent communication"
-    severity: low
-    issue: "#1684"
+    test_support:
+      used_by: [get_typed]
+      test_json: "true"
+      additional_attributes:
+        config_registry_filename: get_typed.rs
+
+  cluster_agent.url:
+    support: full
+    pipelines: [checks, dogstatsd, otlp]
+    description: "Cluster Agent HTTPS endpoint"
+    test_support:
+      used_by: [get_typed]
+      test_json: '"https://cluster-agent.example.com"'
+      additional_attributes:
+        config_registry_filename: get_typed.rs
 
   cmd_port:
     support: full
@@ -2556,7 +2588,6 @@ excluded:
   cluster_agent.appsec.injector.mode: "ignored in initial audit 2026-04-23"
   cluster_agent.appsec.injector.processor.service.name: "ignored in initial audit 2026-04-23"
   cluster_agent.appsec.injector.processor.service.namespace: "ignored in initial audit 2026-04-23"
-  cluster_agent.auth_token: "ignored in initial audit 2026-04-23"
   cluster_agent.client_reconnect_period_seconds: "ignored in initial audit 2026-04-23"
   cluster_agent.cluster_tagger.grpc_max_message_size: "ignored in initial audit 2026-04-23"
   cluster_agent.cmd_port: "ignored in initial audit 2026-04-23"
@@ -2588,7 +2619,6 @@ excluded:
   cluster_agent.tracing.enabled: "ignored in initial audit 2026-04-23"
   cluster_agent.tracing.env: "ignored in initial audit 2026-04-23"
   cluster_agent.tracing.sample_rate: "ignored in initial audit 2026-04-23"
-  cluster_agent.url: "ignored in initial audit 2026-04-23"
   cluster_checks.advanced_dispatching_enabled: "ignored in initial audit 2026-04-23"
   cluster_checks.clc_runners_port: "ignored in initial audit 2026-04-23"
   cluster_checks.cluster_tag_name: "ignored in initial audit 2026-04-23"

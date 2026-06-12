@@ -236,28 +236,6 @@ crate::declare_annotations! {
         test_json: None,
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
-    /// `autoscaling.failover.enabled`-Enable autoscaling failover metric routing
-    AUTOSCALING_FAILOVER_ENABLED = SalukiAnnotation {
-        schema: &schema::AUTOSCALING_FAILOVER_ENABLED,
-        support_level: SupportLevel::Incompatible(Severity::Medium),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-        pipeline_affinity: PipelineAffinity::CrossCutting,
-    };
-    /// `autoscaling.failover.metrics`-Metric names forwarded to DCA for failover
-    AUTOSCALING_FAILOVER_METRICS = SalukiAnnotation {
-        schema: &schema::AUTOSCALING_FAILOVER_METRICS,
-        support_level: SupportLevel::Incompatible(Severity::Medium),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-        pipeline_affinity: PipelineAffinity::CrossCutting,
-    };
     /// `dogstatsd_experimental_http.enabled`-Enable experimental HTTP/H2C DSD listener
     DOGSTATSD_EXPERIMENTAL_HTTP_ENABLED = SalukiAnnotation {
         schema: &schema::DOGSTATSD_EXPERIMENTAL_HTTP_ENABLED,
@@ -349,17 +327,6 @@ crate::declare_annotations! {
     /// `telemetry.dogstatsd_origin`-Per-origin processed-metrics telemetry
     TELEMETRY_DOGSTATSD_ORIGIN = SalukiAnnotation {
         schema: &schema::TELEMETRY_DOGSTATSD_ORIGIN,
-        support_level: SupportLevel::Incompatible(Severity::Low),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-        pipeline_affinity: PipelineAffinity::CrossCutting,
-    };
-    /// `cluster_agent.enabled`-Enable Cluster Agent communication
-    CLUSTER_AGENT_ENABLED = SalukiAnnotation {
-        schema: &schema::CLUSTER_AGENT_ENABLED,
         support_level: SupportLevel::Incompatible(Severity::Low),
         additional_yaml_paths: &[],
         env_var_override: None,

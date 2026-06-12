@@ -397,27 +397,6 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         default: Some("false"),
     },
     ClassifierEntry {
-        yaml_path: "autoscaling.failover.enabled",
-        aliases: &[],
-        support_level: SupportLevel::Incompatible(Severity::Medium),
-        pipeline_affinity: PipelineAffinity::CrossCutting,
-        default: Some("false"),
-    },
-    ClassifierEntry {
-        yaml_path: "autoscaling.failover.metrics",
-        aliases: &[],
-        support_level: SupportLevel::Incompatible(Severity::Medium),
-        pipeline_affinity: PipelineAffinity::CrossCutting,
-        default: Some("[\"container.memory.usage\",\"container.cpu.usage\"]"),
-    },
-    ClassifierEntry {
-        yaml_path: "cluster_agent.enabled",
-        aliases: &[],
-        support_level: SupportLevel::Incompatible(Severity::Low),
-        pipeline_affinity: PipelineAffinity::CrossCutting,
-        default: Some("false"),
-    },
-    ClassifierEntry {
         yaml_path: "forwarder_flush_to_disk_mem_ratio",
         aliases: &[],
         support_level: SupportLevel::Incompatible(Severity::Medium),
