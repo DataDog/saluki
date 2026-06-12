@@ -439,13 +439,6 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         default: Some("100"),
     },
     ClassifierEntry {
-        yaml_path: "forwarder_retry_queue_capacity_time_interval_sec",
-        aliases: &[],
-        support_level: SupportLevel::Incompatible(Severity::Medium),
-        pipeline_affinity: PipelineAffinity::CrossCutting,
-        default: Some("900"),
-    },
-    ClassifierEntry {
         yaml_path: "forwarder_stop_timeout",
         aliases: &[],
         support_level: SupportLevel::Incompatible(Severity::Low),
