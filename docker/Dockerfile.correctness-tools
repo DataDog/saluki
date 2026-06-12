@@ -4,8 +4,8 @@
 # support the correctness testing framework for Agent Data Plane. The resulting image contains both binaries
 # at their default paths under `/usr/local/bin`.
 
-ARG BUILD_IMAGE=ubuntu:24.04
-ARG APP_IMAGE=ubuntu:24.04
+ARG BUILD_IMAGE=ubuntu:26.04
+ARG APP_IMAGE=ubuntu:26.04
 
 # Build stage: install Rust and other build dependencies, compile correctness tools.
 FROM ${BUILD_IMAGE} AS builder
