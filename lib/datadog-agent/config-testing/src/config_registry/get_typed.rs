@@ -115,6 +115,17 @@ crate::declare_annotations! {
         test_json: Some("true"),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Checks, Pipeline::DogStatsD, Pipeline::Otlp]),
     };
+    /// `cluster_agent.kubernetes_service_name`-Cluster Agent Kubernetes service name
+    CLUSTER_AGENT_KUBERNETES_SERVICE_NAME = SalukiAnnotation {
+        schema: &schema::CLUSTER_AGENT_KUBERNETES_SERVICE_NAME,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::GET_TYPED],
+        value_type_override: None,
+        test_json: Some(r#""datadog-cluster-agent""#),
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Checks, Pipeline::DogStatsD, Pipeline::Otlp]),
+    };
     /// `cluster_agent.url`-Cluster Agent HTTPS endpoint
     CLUSTER_AGENT_URL = SalukiAnnotation {
         schema: &schema::CLUSTER_AGENT_URL,

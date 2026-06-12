@@ -365,6 +365,16 @@ inventory:
       additional_attributes:
         config_registry_filename: get_typed.rs
 
+  cluster_agent.kubernetes_service_name:
+    support: full
+    pipelines: [checks, dogstatsd, otlp]
+    description: "Cluster Agent Kubernetes service name"
+    test_support:
+      used_by: [get_typed]
+      test_json: '"datadog-cluster-agent"'
+      additional_attributes:
+        config_registry_filename: get_typed.rs
+
   cluster_agent.url:
     support: full
     pipelines: [checks, dogstatsd, otlp]
@@ -2598,7 +2608,6 @@ excluded:
   cluster_agent.kube_metadata_collection.resources: "ignored in initial audit 2026-04-23"
   cluster_agent.kubernetes_resources_collection.deployment_annotations_exclude: "ignored in initial audit 2026-04-23"
   cluster_agent.kubernetes_resources_collection.pod_annotations_exclude: "ignored in initial audit 2026-04-23"
-  cluster_agent.kubernetes_service_name: "ignored in initial audit 2026-04-23"
   cluster_agent.language_detection.cleanup.language_ttl: "ignored in initial audit 2026-04-23"
   cluster_agent.language_detection.cleanup.period: "ignored in initial audit 2026-04-23"
   cluster_agent.language_detection.patcher.base_backoff: "ignored in initial audit 2026-04-23"

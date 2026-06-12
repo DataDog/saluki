@@ -471,6 +471,7 @@ compressed wire payload bytes.
 | `bind_host`                                                    | Global listen host fallback                        |
 | `cluster_agent.auth_token`                                     | Bearer token for Cluster Agent requests            |
 | `cluster_agent.enabled`                                        | Enable Cluster Agent communication                 |
+| `cluster_agent.kubernetes_service_name`                        | Cluster Agent Kubernetes service name              |
 | `cluster_agent.url`                                            | Cluster Agent HTTPS endpoint                       |
 | `cmd_port`                                                     | Datadog Agent IPC/CMD API port                     |
 | `cri_connection_timeout`                                       | CRI container runtime connection timeout (s)       |

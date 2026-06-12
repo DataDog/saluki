@@ -529,9 +529,10 @@ fn add_autoscaling_failover_metrics_pipeline_to_blueprint(
     let Some((ca_url, ca_token)) = ca_config.endpoint_and_token() else {
         if af_config.is_branch_requested() {
             warn!(
-                "autoscaling.failover is enabled, but cluster_agent.enabled, an HTTPS cluster_agent.url, and \
-                 cluster_agent.auth_token are required. The autoscaling failover metrics branch will not be wired, \
-                 and primary forwarding will continue."
+                "autoscaling.failover is enabled, but cluster_agent.enabled, cluster_agent.auth_token, and a resolvable \
+                 Cluster Agent endpoint are required. Set cluster_agent.url or provide Kubernetes service env vars for \
+                 cluster_agent.kubernetes_service_name. The autoscaling failover metrics branch will not be wired, and \
+                 primary forwarding will continue."
             );
         }
 
