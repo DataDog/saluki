@@ -13,10 +13,9 @@ use resource_accounting::{
     ResourceStats, ResourceStatsSnapshot,
 };
 use saluki_api::{DynamicRoute, EndpointType};
+use saluki_common::sync::shutdown::ShutdownHandle;
 use saluki_config::GenericConfiguration;
-use saluki_core::runtime::{
-    state::DataspaceRegistry, InitializationError, ProcessShutdown, Supervisable, SupervisorFuture,
-};
+use saluki_core::runtime::{state::DataspaceRegistry, InitializationError, Supervisable, SupervisorFuture};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use serde::Deserialize;
 use tokio::{pin, select, time::sleep};
@@ -321,7 +320,7 @@ impl Supervisable for ResourceTelemetryWorker {
         "resource-telemetry"
     }
 
-    async fn initialize(&self, mut process_shutdown: ProcessShutdown) -> Result<SupervisorFuture, InitializationError> {
+    async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
         // We can't enforce, at compile-time, that the tracking allocator must be installed if a caller is trying to
         // initialize the allocator's reporting infrastructure... but we can at least warn them if we detect it's not
         // installed here at runtime.
@@ -339,12 +338,11 @@ impl Supervisable for ResourceTelemetryWorker {
 
             let mut metrics = HashMap::new();
 
-            let shutdown = process_shutdown.wait_for_shutdown();
-            pin!(shutdown);
+            pin!(process_shutdown);
 
             loop {
                 select! {
-                    _ = &mut shutdown => break,
+                    _ = &mut process_shutdown => break,
                     _ = sleep(Duration::from_secs(1)) => {
                         ResourceGroupRegistry::global().visit_resource_groups(|group_name, stats| {
                             let group_metrics = match metrics.get_mut(group_name) {

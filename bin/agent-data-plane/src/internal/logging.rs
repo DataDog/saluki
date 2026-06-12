@@ -8,9 +8,9 @@ use async_trait::async_trait;
 use bytesize::ByteSize;
 use datadog_agent_commons::platform::PlatformSettings;
 use saluki_app::logging::{LogLevel, LoggingConfiguration, LoggingOverrideController};
-use saluki_common::deser::PermissiveBool;
+use saluki_common::{deser::PermissiveBool, sync::shutdown::ShutdownHandle};
 use saluki_config::GenericConfiguration;
-use saluki_core::runtime::{InitializationError, ProcessShutdown, Supervisable, SupervisorFuture};
+use saluki_core::runtime::{InitializationError, Supervisable, SupervisorFuture};
 use saluki_error::{ErrorContext as _, GenericError};
 use serde::Deserialize;
 use serde_with::serde_as;
@@ -212,7 +212,7 @@ impl Supervisable for DynamicLogLevelWorker {
         "dynamic-log-level"
     }
 
-    async fn initialize(&self, process_shutdown: ProcessShutdown) -> Result<SupervisorFuture, InitializationError> {
+    async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
         let mut watcher = self.config.watch_for_updates("log_level");
         let controller = self.controller.clone();
 

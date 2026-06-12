@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_common::{
     collections::{FastHashMap, FastHashSet},
-    sync::shutdown::{ShutdownHandle, ShutdownTrigger},
+    sync::shutdown::ShutdownHandle,
 };
 use saluki_config::GenericConfiguration;
 use saluki_core::health::Health;
@@ -73,9 +73,9 @@ impl MetadataCollector for CgroupsMetadataCollector {
         let mut cgroups_manager = SynchronousCgroupsManager::from_reader(self.reader.clone());
         let operations_tx = operations_tx.clone();
 
-        // We hold on to the shutdown trigger here (even though we never call it) so that it only triggers on drop,
+        // We hold on to the shutdown coordinator here (even though we never call it) so that it only triggers on drop,
         // ensuring we don't leak the blocking poller task if this collector is dropped before it completes.
-        let (_shutdown_trigger, shutdown_handle) = ShutdownTrigger::new();
+        let (_shutdown_coordinator, shutdown_handle) = ShutdownHandle::paired();
         let poller_handle = tokio::task::spawn_blocking(move || cgroups_manager.poll(operations_tx, shutdown_handle));
         tokio::pin!(poller_handle);
 

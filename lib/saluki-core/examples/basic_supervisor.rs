@@ -1,7 +1,8 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
-use saluki_core::runtime::{InitializationError, ProcessShutdown, Supervisable, Supervisor, SupervisorFuture};
+use saluki_common::sync::shutdown::ShutdownHandle;
+use saluki_core::runtime::{InitializationError, Supervisable, Supervisor, SupervisorFuture};
 use saluki_error::GenericError;
 use tokio::{pin, select};
 use tracing::{error, info};
@@ -136,7 +137,7 @@ impl Supervisable for MockWorker {
         self.worker_name
     }
 
-    async fn initialize(&self, mut process_shutdown: ProcessShutdown) -> Result<SupervisorFuture, InitializationError> {
+    async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
         let worker_name = self.worker_name;
         let delay = self.delay;
         let result = self.result;
@@ -155,7 +156,7 @@ impl Supervisable for MockWorker {
                 tokio::time::sleep(delay)
             };
 
-            pin!(work);
+            pin!(work, process_shutdown);
 
             select! {
                 _ = &mut work => {
@@ -164,7 +165,7 @@ impl Supervisable for MockWorker {
                         panic!("Worker hit unrecoverable error.");
                     }
                 }
-                _ = process_shutdown.wait_for_shutdown() => {
+                _ = &mut process_shutdown => {
                     info!(worker_name, "Worker received shutdown signal.");
                 }
             }

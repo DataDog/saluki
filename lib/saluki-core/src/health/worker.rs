@@ -1,9 +1,10 @@
 use async_trait::async_trait;
 use saluki_api::{DynamicRoute, EndpointType};
+use saluki_common::sync::shutdown::ShutdownHandle;
 use saluki_error::generic_error;
 
 use super::HealthRegistry;
-use crate::runtime::{state::DataspaceRegistry, InitializationError, ProcessShutdown, Supervisable, SupervisorFuture};
+use crate::runtime::{state::DataspaceRegistry, InitializationError, Supervisable, SupervisorFuture};
 
 /// A worker that runs the health registry.
 ///
@@ -26,7 +27,7 @@ impl Supervisable for HealthRegistryWorker {
         "health-registry"
     }
 
-    async fn initialize(&self, process_shutdown: ProcessShutdown) -> Result<SupervisorFuture, InitializationError> {
+    async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
         let runner = self.health_registry.clone().into_runner()?;
 
         let health_routes = DynamicRoute::http(EndpointType::Unprivileged, self.health_registry.api_handler());

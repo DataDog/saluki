@@ -7,9 +7,10 @@ use saluki_api::{
     routing::{get, Router},
     APIHandler, DynamicRoute, EndpointType,
 };
+use saluki_common::sync::shutdown::ShutdownHandle;
 use saluki_core::{
     observability::metrics::{get_shared_metrics_state, AggregatedMetricsProcessor, Reflector, TelemetryProcessor},
-    runtime::{state::DataspaceRegistry, InitializationError, ProcessShutdown, Supervisable, SupervisorFuture},
+    runtime::{state::DataspaceRegistry, InitializationError, Supervisable, SupervisorFuture},
 };
 use saluki_error::generic_error;
 use tokio::sync::Mutex;
@@ -90,7 +91,7 @@ impl Supervisable for InternalTelemetryAPIWorker {
         "internal-telemetry-api"
     }
 
-    async fn initialize(&self, process_shutdown: ProcessShutdown) -> Result<SupervisorFuture, InitializationError> {
+    async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
         let metrics = get_shared_metrics_state().await;
         let handler = InternalTelemetryAPIHandler::new(metrics);
         let route = DynamicRoute::http(EndpointType::Unprivileged, &handler);

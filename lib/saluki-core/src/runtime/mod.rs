@@ -69,6 +69,3 @@ mod supervisor;
 pub use self::supervisor::{
     InitializationError, ShutdownStrategy, Supervisable, Supervisor, SupervisorError, SupervisorFuture,
 };
-
-mod shutdown;
-pub use self::shutdown::{ProcessShutdown, ShutdownHandle};

@@ -4,8 +4,9 @@ use std::time::Duration;
 use async_trait::async_trait;
 use datadog_agent_commons::ipc::client::RemoteAgentClient;
 use futures::StreamExt;
+use saluki_common::sync::shutdown::ShutdownHandle;
 use saluki_config::GenericConfiguration;
-use saluki_core::runtime::{InitializationError, ProcessShutdown, Supervisable, Supervisor, SupervisorFuture};
+use saluki_core::runtime::{InitializationError, Supervisable, Supervisor, SupervisorFuture};
 use saluki_env::autodiscovery::AutodiscoveryEvent;
 use saluki_env::AutodiscoveryProvider;
 use saluki_error::GenericError;
@@ -70,7 +71,7 @@ impl Supervisable for AutodiscoveryEventBroadcaster {
         "ad-event-broadcaster"
     }
 
-    async fn initialize(&self, process_shutdown: ProcessShutdown) -> Result<SupervisorFuture, InitializationError> {
+    async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
         let client = self.client.clone();
         let subscribers = self.subscribers.clone();
 
