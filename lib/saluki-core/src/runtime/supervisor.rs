@@ -1,19 +1,17 @@
 use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
-use saluki_common::collections::FastIndexMap;
-use saluki_common::sync::shutdown::{ShutdownCoordinator, ShutdownHandle};
+use saluki_common::sync::shutdown::ShutdownHandle;
 use saluki_error::GenericError;
 use snafu::{OptionExt as _, Snafu};
-use tokio::{
-    pin, select,
-    task::{AbortHandle, Id, JoinSet},
-};
+use tokio::{pin, select};
 use tracing::{debug, error, warn};
 
 use super::{
     dedicated::{spawn_dedicated_runtime, RuntimeConfiguration, RuntimeMode},
+    dynamic::DynamicSupervisor,
     restart::{RestartAction, RestartMode, RestartState, RestartStrategy, RestartType},
+    worker_state::WorkerState,
 };
 use crate::runtime::{
     process::{Process, ProcessExt as _},
@@ -28,14 +26,14 @@ pub type SupervisorFuture = Pin<Box<dyn Future<Output = Result<(), GenericError>
 /// Unlike [`SupervisorFuture`], which only represents the runtime phase, this future first performs async
 /// initialization and then runs the worker. This allows initialization to happen concurrently when multiple workers are
 /// spawned, and keeps the supervisor loop responsive to shutdown signals during initialization.
-type WorkerFuture = Pin<Box<dyn Future<Output = Result<(), WorkerError>> + Send>>;
+pub(super) type WorkerFuture = Pin<Box<dyn Future<Output = Result<(), WorkerError>> + Send>>;
 
 /// Worker lifecycle errors.
 ///
 /// Distinguishes between initialization failures (which shouldn't trigger restart logic) and runtime failures (which
 /// are eligible for restart).
 #[derive(Debug)]
-enum WorkerError {
+pub(super) enum WorkerError {
     /// The worker failed during async initialization.
     ///
     /// The optional `child_name` carries the name of the original failing child when the error originates from a
@@ -205,6 +203,13 @@ pub struct SupervisorSpec {
     supervisor: Supervisor,
 }
 
+/// The [typestate] for a [`ChildSpecification`] that holds a nested [`DynamicSupervisor`].
+///
+/// [typestate]: https://cliffle.com/blog/rust-typestate/
+pub struct DynamicSupervisorSpec {
+    supervisor: DynamicSupervisor,
+}
+
 impl ChildSpecification<WorkerSpec> {
     /// Creates a specification for the given worker.
     pub fn worker<T: Supervisable + 'static>(worker: T) -> Self {
@@ -243,18 +248,28 @@ impl From<Supervisor> for ChildSpecification<SupervisorSpec> {
     }
 }
 
+impl From<DynamicSupervisor> for ChildSpecification<DynamicSupervisorSpec> {
+    fn from(supervisor: DynamicSupervisor) -> Self {
+        Self {
+            spec_inner: DynamicSupervisorSpec { supervisor },
+        }
+    }
+}
+
 mod sealed {
     pub trait Sealed {}
 }
 
 impl sealed::Sealed for WorkerSpec {}
 impl sealed::Sealed for SupervisorSpec {}
+impl sealed::Sealed for DynamicSupervisorSpec {}
 
 /// Child specification state.
 ///
-/// This trait is implemented only for [`WorkerSpec`] and [`SupervisorSpec`], and is sealed: it cannot be implemented
-/// outside of this crate. It exists so that [`Supervisor::add_worker`] can accept a [`ChildSpecification`] in either
-/// state (as well as bare workers and supervisors) while lowering each into the supervisor's internal representation.
+/// This trait is sealed -- it cannot be implemented outside of this crate -- and is implemented only for
+/// [`WorkerSpec`], [`SupervisorSpec`], and [`DynamicSupervisorSpec`]. It exists so that [`Supervisor::add_worker`] can
+/// accept a [`ChildSpecification`] in any state (as well as bare workers and supervisors) while lowering each into the
+/// supervisor's internal representation.
 pub trait ChildState: sealed::Sealed + Sized {
     #[doc(hidden)]
     fn register(spec: ChildSpecification<Self>, supervisor: &mut Supervisor);
@@ -278,14 +293,20 @@ impl ChildState for SupervisorSpec {
     }
 }
 
+impl ChildState for DynamicSupervisorSpec {
+    fn register(spec: ChildSpecification<Self>, supervisor: &mut Supervisor) {
+        supervisor.push_child(ChildEntry {
+            child: SupervisedChild::Dynamic(spec.spec_inner.supervisor),
+            restart: RestartType::Permanent,
+        });
+    }
+}
+
 /// The type-erased, runnable form of a child: either a worker or a nested supervisor.
-///
-/// This carries the behavior shared by both kinds of child -- creating the process and worker future, naming, and
-/// shutdown strategy. Public [`ChildSpecification`]s are lowered into this type when registered via
-/// [`ChildState::register`].
-enum SupervisedChild {
+pub(super) enum SupervisedChild {
     Worker(Arc<dyn Supervisable>),
     Supervisor(Supervisor),
+    Dynamic(DynamicSupervisor),
 }
 
 impl SupervisedChild {
@@ -293,6 +314,7 @@ impl SupervisedChild {
         match self {
             Self::Worker(_) => "worker",
             Self::Supervisor(_) => "supervisor",
+            Self::Dynamic(_) => "dynamic-supervisor",
         }
     }
 
@@ -300,20 +322,21 @@ impl SupervisedChild {
         match self {
             Self::Worker(worker) => worker.name(),
             Self::Supervisor(supervisor) => &supervisor.supervisor_id,
+            Self::Dynamic(dynamic) => dynamic.name(),
         }
     }
 
-    fn shutdown_strategy(&self) -> ShutdownStrategy {
+    pub(super) fn shutdown_strategy(&self) -> ShutdownStrategy {
         match self {
             Self::Worker(worker) => worker.shutdown_strategy(),
 
             // Supervisors should always be given as much time as necessary shutdown down gracefully to ensure that the
             // entire supervision subtree can be shutdown cleanly.
-            Self::Supervisor(_) => ShutdownStrategy::Graceful(Duration::MAX),
+            Self::Supervisor(_) | Self::Dynamic(_) => ShutdownStrategy::Graceful(Duration::MAX),
         }
     }
 
-    fn create_process(&self, parent_process: &Process) -> Result<Process, SupervisorError> {
+    pub(super) fn create_process(&self, parent_process: &Process) -> Result<Process, SupervisorError> {
         match self {
             Self::Worker(worker) => Process::worker(worker.name(), parent_process).context(InvalidName {
                 name: worker.name().to_string(),
@@ -323,10 +346,13 @@ impl SupervisedChild {
                     name: sup.supervisor_id.to_string(),
                 })
             }
+            Self::Dynamic(dynamic) => Process::supervisor(dynamic.name(), Some(parent_process)).context(InvalidName {
+                name: dynamic.name().to_string(),
+            }),
         }
     }
 
-    fn create_worker_future(
+    pub(super) fn create_worker_future(
         &self, process: Process, process_shutdown: ShutdownHandle,
     ) -> Result<WorkerFuture, SupervisorError> {
         match self {
@@ -366,6 +392,7 @@ impl SupervisedChild {
                     }
                 }
             }
+            Self::Dynamic(dynamic) => Ok(dynamic.as_nested_dynamic(process, process_shutdown)),
         }
     }
 }
@@ -375,6 +402,7 @@ impl Clone for SupervisedChild {
         match self {
             Self::Worker(worker) => Self::Worker(Arc::clone(worker)),
             Self::Supervisor(supervisor) => Self::Supervisor(supervisor.inner_clone()),
+            Self::Dynamic(dynamic) => Self::Dynamic(dynamic.clone()),
         }
     }
 }
@@ -513,7 +541,7 @@ impl Supervisor {
     fn spawn_child(&self, child_spec_idx: usize, worker_state: &mut WorkerState) -> Result<(), SupervisorError> {
         let child_spec = self.get_child_spec(child_spec_idx);
         debug!(supervisor_id = %self.supervisor_id, "Spawning static child process #{} ({}).", child_spec_idx, child_spec.name());
-        worker_state.add_worker(child_spec_idx, child_spec)
+        worker_state.add_worker(child_spec_idx as u64, child_spec)
     }
 
     fn spawn_all_children(&self, worker_state: &mut WorkerState) -> Result<(), SupervisorError> {
@@ -568,7 +596,8 @@ impl Supervisor {
                     worker_state.shutdown_workers().await;
                     break;
                 },
-                (child_spec_idx, worker_result) = worker_state.wait_for_next_worker() => {
+                (worker_id, worker_result) = worker_state.wait_for_next_worker() => {
+                    let child_spec_idx = worker_id as usize;
                     let child_spec = self.get_child_spec(child_spec_idx);
 
                     // Initialization failures are not eligible for restart -- they propagate immediately.
@@ -729,169 +758,6 @@ impl Supervisor {
             restart_strategy: self.restart_strategy,
             runtime_mode: self.runtime_mode.clone(),
         }
-    }
-}
-
-struct ProcessState {
-    worker_id: usize,
-    shutdown_strategy: ShutdownStrategy,
-    shutdown_coordinator: ShutdownCoordinator,
-    abort_handle: AbortHandle,
-}
-
-struct WorkerState {
-    process: Process,
-    worker_tasks: JoinSet<Result<(), WorkerError>>,
-    worker_map: FastIndexMap<Id, ProcessState>,
-}
-
-impl WorkerState {
-    fn new(process: Process) -> Self {
-        Self {
-            process,
-            worker_tasks: JoinSet::new(),
-            worker_map: FastIndexMap::default(),
-        }
-    }
-
-    fn add_worker(&mut self, worker_id: usize, child_spec: &SupervisedChild) -> Result<(), SupervisorError> {
-        let (shutdown_coordinator, shutdown_handle) = ShutdownHandle::paired();
-        let process = child_spec.create_process(&self.process)?;
-        let worker_future = child_spec.create_worker_future(process.clone(), shutdown_handle)?;
-        let shutdown_strategy = child_spec.shutdown_strategy();
-        let abort_handle = self.worker_tasks.spawn(worker_future.into_process_future(process));
-        self.worker_map.insert(
-            abort_handle.id(),
-            ProcessState {
-                worker_id,
-                shutdown_strategy,
-                shutdown_coordinator,
-                abort_handle,
-            },
-        );
-        Ok(())
-    }
-
-    async fn wait_for_next_worker(&mut self) -> (usize, Result<(), WorkerError>) {
-        debug!("Waiting for next process to complete.");
-
-        // If there are no workers to wait on, park indefinitely so the supervisor's select loop only proceeds via its
-        // other arms (shutdown, or -- for dynamic supervisors -- a newly-added worker). Without this guard,
-        // `join_next_with_id` would return `None` immediately on an empty set and the supervisor would busy-loop. The
-        // set legitimately empties when all children are non-restartable (e.g. `RestartType::Temporary`) and have
-        // exited.
-        if self.worker_tasks.is_empty() {
-            std::future::pending::<()>().await;
-        }
-
-        match self.worker_tasks.join_next_with_id().await {
-            Some(Ok((worker_task_id, worker_result))) => {
-                let process_state = self
-                    .worker_map
-                    .swap_remove(&worker_task_id)
-                    .expect("worker task ID not found");
-                (process_state.worker_id, worker_result)
-            }
-            Some(Err(e)) => {
-                let worker_task_id = e.id();
-                let process_state = self
-                    .worker_map
-                    .swap_remove(&worker_task_id)
-                    .expect("worker task ID not found");
-                let e = if e.is_cancelled() {
-                    ProcessError::Aborted
-                } else {
-                    ProcessError::Panicked
-                };
-                (process_state.worker_id, Err(WorkerError::Runtime(e.into())))
-            }
-            None => unreachable!(
-                "join set is non-empty here: we park above while empty, and only this method removes workers"
-            ),
-        }
-    }
-
-    async fn shutdown_workers(&mut self) {
-        debug!("Shutting down all processes.");
-
-        // Pop entries from the worker map, which grabs us workers in the reverse order they were added. This lets us
-        // ensure we're shutting down any _dependent_ processes (processes which depend on previously-started processes)
-        // first.
-        //
-        // For each entry, we trigger shutdown in whatever way necessary, and then wait for the process to exit by
-        // driving the `JoinSet`. If other workers complete while we're waiting, we'll simply remove them from the
-        // worker map and continue waiting for the current worker we're shutting down.
-        //
-        // We do this until the worker map is empty, at which point we can be sure that all processes have exited.
-        while let Some((current_worker_task_id, process_state)) = self.worker_map.pop() {
-            let ProcessState {
-                worker_id,
-                shutdown_strategy,
-                shutdown_coordinator,
-                abort_handle,
-            } = process_state;
-
-            // Trigger the process to shutdown based on the configured shutdown strategy.
-            let shutdown_deadline = match shutdown_strategy {
-                ShutdownStrategy::Graceful(timeout) => {
-                    debug!(worker_id, shutdown_timeout = ?timeout, "Gracefully shutting down process.");
-                    shutdown_coordinator.shutdown();
-
-                    tokio::time::sleep(timeout)
-                }
-                ShutdownStrategy::Brutal => {
-                    debug!(worker_id, "Forcefully aborting process.");
-                    abort_handle.abort();
-
-                    // We have to return a future that never resolves, since we're already aborting it. This is a little
-                    // hacky but it's also difficult to do an optional future, so this is what we're going with for now.
-                    tokio::time::sleep(Duration::MAX)
-                }
-            };
-            pin!(shutdown_deadline);
-
-            // Wait for the process to exit by driving the `JoinSet`. If other workers complete while we're waiting,
-            // we'll simply remove them from the worker map and continue waiting.
-            loop {
-                select! {
-                    worker_result = self.worker_tasks.join_next_with_id() => {
-                        match worker_result {
-                            Some(Ok((worker_task_id, _))) => {
-                                if worker_task_id == current_worker_task_id {
-                                    debug!(?worker_task_id, "Target process exited successfully.");
-                                    break;
-                                } else {
-                                    debug!(?worker_task_id, "Non-target process exited successfully. Continuing to wait.");
-                                    self.worker_map.swap_remove(&worker_task_id);
-                                }
-                            },
-                            Some(Err(e)) => {
-                                let worker_task_id = e.id();
-                                if worker_task_id == current_worker_task_id {
-                                    debug!(?worker_task_id, "Target process exited with error.");
-                                    break;
-                                } else {
-                                    debug!(?worker_task_id, "Non-target process exited with error. Continuing to wait.");
-                                    self.worker_map.swap_remove(&worker_task_id);
-                                }
-                            }
-                            None => unreachable!("worker task must exist in join set if we are waiting for it"),
-                        }
-                    },
-                    // We've exceeded the shutdown timeout, so we need to abort the process.
-                    _ = &mut shutdown_deadline => {
-                        debug!(worker_id, "Shutdown timeout expired, forcefully aborting process.");
-                        abort_handle.abort();
-                    }
-                }
-            }
-        }
-
-        debug_assert!(self.worker_map.is_empty(), "worker map should be empty after shutdown");
-        debug_assert!(
-            self.worker_tasks.is_empty(),
-            "worker tasks should be empty after shutdown"
-        );
     }
 }
 
