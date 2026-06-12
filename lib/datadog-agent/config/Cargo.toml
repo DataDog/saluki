@@ -6,11 +6,18 @@ license = { workspace = true }
 repository = { workspace = true }
 
 [dependencies]
+serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 
 [build-dependencies]
 datadog-agent-config-overlay-model = { workspace = true }
 indexmap = { workspace = true }
+prettyplease = { workspace = true }
+schemars = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+syn = { workspace = true }
+typify = { workspace = true }
 
 [lints]
 workspace = true
