@@ -1,0 +1,8 @@
+syntax = "proto3";
+
+package datadog.checks.v1.event_platform_event;
+
+message EventPlatformEvent {
+  string event_data = 1;
+  string event_type = 2;
+}

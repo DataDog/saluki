@@ -1,0 +1,46 @@
+syntax = "proto3";
+
+package datadog.checks.v1.sketch;
+
+// Sketch carries a pre-aggregated DDSketch produced by a check.
+//
+// The wire format is aligned with the Datadog Agent's sketch_payload
+// format (see DataDog/agent-payload v5 SketchPayload.Sketch.Dogsketch)
+// so receivers can convert directly to the agent's internal Sketch
+// type without a separate sketches-go round-trip.
+message Sketch {
+    // Metric name (e.g. "http.request.duration").
+    string name = 1;
+
+    // Tags in `key:value` form.
+    repeated string tags = 2;
+
+    // Hostname this sketch was produced on. Empty means "use the
+    // receiving agent's default hostname".
+    string hostname = 3;
+
+    // Unix-second timestamp at which the producer flushed the sketch.
+    int64 timestamp = 4;
+
+    // Flush interval the producer used; informational only — the
+    // receiving aggregator stamps its own flush boundary.
+    uint64 interval_secs = 5;
+
+    // The DDSketch body itself, in the agent's bin-encoded shape.
+    Dogsketch dogsketch = 6;
+}
+
+// Dogsketch is the bin-encoded DDSketch payload. Bin keys (k) and
+// counts (n) are parallel arrays — k[i] is the bin index and n[i] the
+// number of observations in that bin. This matches the Datadog Agent's
+// SketchPayload.Sketch.Dogsketch definition exactly.
+message Dogsketch {
+    int64 ts = 1;
+    int64 cnt = 2;
+    double min = 3;
+    double max = 4;
+    double avg = 5;
+    double sum = 6;
+    repeated sint32 k = 7;
+    repeated uint32 n = 8;
+}

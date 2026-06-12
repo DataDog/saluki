@@ -3,9 +3,12 @@ syntax = "proto3";
 package datadog.checks.v1;
 
 import "checks/v1/event.proto";
+import "checks/v1/event_platform_event.proto";
+import "checks/v1/histogram_bucket.proto";
 import "checks/v1/log.proto";
 import "checks/v1/metric.proto";
 import "checks/v1/service_check.proto";
+import "checks/v1/sketch.proto";
 
 message CheckData {
     oneof data {
@@ -13,15 +16,13 @@ message CheckData {
         datadog.checks.v1.log.Log log = 2;
         datadog.checks.v1.service_check.ServiceCheck service_check = 3;
         datadog.checks.v1.event.Event event = 4;
+        // Slot 5 was previously `histogram` (an unused stub). Repurposed
+        // to carry pre-aggregated DDSketches; the wire bytes from any
+        // legacy producer of the old Histogram message would be
+        // mis-parsed here, so don't rely on cross-version compatibility
+        // for slot 5 specifically.
+        datadog.checks.v1.sketch.Sketch sketch = 5;
+        datadog.checks.v1.event_platform_event.EventPlatformEvent event_platform_event = 6;
+        datadog.checks.v1.histogram_bucket.HistogramBucket histogram_bucket = 7;
     }
-}
-
-message SendCheckPayloadRequest {
-    repeated CheckData data = 1;
-}
-
-message SendCheckPayloadResponse {}
-
-service Checks {
-    rpc SendCheckPayload(SendCheckPayloadRequest) returns (SendCheckPayloadResponse);
 }
