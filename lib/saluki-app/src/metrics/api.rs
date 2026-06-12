@@ -150,6 +150,7 @@ impl Supervisable for MetricsOverrideWorker {
                 .assert(metrics_route, "metrics-api");
 
             process_override_requests(&mut state, process_shutdown).await;
+
             Ok(())
         }))
     }
