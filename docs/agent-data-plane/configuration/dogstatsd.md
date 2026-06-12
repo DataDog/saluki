@@ -314,9 +314,6 @@ ways that are not yet fully characterized.
 
 | Config Key                                               | Description                                   | Issue   |
 | -------------------------------------------------------- | --------------------------------------------- | ------- |
-| `autoscaling.failover.enabled`                           | Enable autoscaling failover metric routing    | [#1684] |
-| `autoscaling.failover.metrics`                           | Metric names forwarded to DCA for failover    | [#1684] |
-| `cluster_agent.enabled`                                  | Enable Cluster Agent communication            | [#1684] |
 | `forwarder_flush_to_disk_mem_ratio`                      | Mem-to-disk flush threshold                   | [#1364] |
 | `forwarder_low_prio_buffer_size`                         | Low-priority request queue size               | [#1362] |
 | `forwarder_requeue_buffer_size`                          | In-memory re-queue buffer size                | [#1755] |
@@ -468,7 +465,13 @@ compressed wire payload bytes.
 | `apm_config.obfuscation.redis.remove_all_args`                 | apm_config.obfuscation.redis.remove_all_args       |
 | `apm_config.obfuscation.valkey.enabled`                        | apm_config.obfuscation.valkey.enabled              |
 | `apm_config.obfuscation.valkey.remove_all_args`                | apm_config.obfuscation.valkey.remove_all_args      |
+| `autoscaling.failover.enabled`                                 | Enable autoscaling failover metric routing         |
+| `autoscaling.failover.metrics`                                 | Metric names forwarded to DCA for failover         |
 | `bind_host`                                                    | Global listen host fallback                        |
+| `cluster_agent.auth_token`                                     | Bearer token for Cluster Agent requests            |
+| `cluster_agent.enabled`                                        | Enable Cluster Agent communication                 |
+| `cluster_agent.kubernetes_service_name`                        | Cluster Agent Kubernetes service name              |
+| `cluster_agent.url`                                            | Cluster Agent HTTPS endpoint                       |
 | `cmd_port`                                                     | Datadog Agent IPC/CMD API port                     |
 | `cri_connection_timeout`                                       | CRI container runtime connection timeout (s)       |
 | `cri_query_timeout`                                            | CRI container runtime query timeout (s)            |
@@ -595,7 +598,6 @@ compressed wire payload bytes.
 [#1679]: https://github.com/DataDog/saluki/issues/1679
 [#1681]: https://github.com/DataDog/saluki/issues/1681
 [#1682]: https://github.com/DataDog/saluki/issues/1682
-[#1684]: https://github.com/DataDog/saluki/issues/1684
 [#1687]: https://github.com/DataDog/saluki/issues/1687
 [#1749]: https://github.com/DataDog/saluki/issues/1749
 [#1753]: https://github.com/DataDog/saluki/issues/1753

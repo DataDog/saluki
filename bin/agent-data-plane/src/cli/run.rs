@@ -14,7 +14,9 @@ use saluki_app::{
     metrics::emit_startup_metrics,
 };
 use saluki_components::{
-    config::{DatadogRemapper, MrfConfiguration, KEY_ALIASES},
+    config::{
+        AutoscalingFailoverConfiguration, ClusterAgentConfiguration, DatadogRemapper, MrfConfiguration, KEY_ALIASES,
+    },
     decoders::otlp::OtlpDecoderConfiguration,
     destinations::{DogStatsDDebugLogConfiguration, DogStatsDStatisticsConfiguration},
     encoders::{
@@ -22,13 +24,13 @@ use saluki_components::{
         DatadogLogsConfiguration, DatadogMetricsConfiguration, DatadogServiceChecksConfiguration,
         DatadogTraceConfiguration,
     },
-    forwarders::{DatadogConfiguration, OtlpForwarderConfiguration},
+    forwarders::{ClusterAgentForwarderConfiguration, DatadogConfiguration, OtlpForwarderConfiguration},
     relays::otlp::OtlpRelayConfiguration,
     sources::{ChecksIPCConfiguration, DogStatsDConfiguration, OtlpConfiguration},
     transforms::{
-        AggregateConfiguration, ApmStatsTransformConfiguration, ChainedConfiguration, DogStatsDMapperConfiguration,
-        HostEnrichmentConfiguration, MrfMetricsGatewayConfiguration, TraceObfuscationConfiguration,
-        TraceSamplerConfiguration,
+        AggregateConfiguration, ApmStatsTransformConfiguration, AutoscalingFailoverGatewayConfiguration,
+        ChainedConfiguration, DogStatsDMapperConfiguration, HostEnrichmentConfiguration,
+        MrfMetricsGatewayConfiguration, TraceObfuscationConfiguration, TraceSamplerConfiguration,
     },
 };
 use saluki_config::{ConfigurationLoader, GenericConfiguration};
@@ -464,6 +466,7 @@ async fn add_baseline_metrics_pipeline_to_blueprint(
         .connect_components_in_order(["metrics_enrich", "dd_metrics_encode", "dd_out"])?;
 
     add_mrf_metrics_pipeline_to_blueprint(blueprint, config)?;
+    add_autoscaling_failover_metrics_pipeline_to_blueprint(blueprint, config)?;
 
     Ok(())
 }
@@ -510,6 +513,52 @@ fn add_mrf_metrics_pipeline_to_blueprint(
             "mrf_metrics_gateway",
             "mrf_metrics_encode",
             "mrf_dd_out",
+        ])?;
+
+    Ok(())
+}
+
+fn add_autoscaling_failover_metrics_pipeline_to_blueprint(
+    blueprint: &mut TopologyBlueprint, config: &GenericConfiguration,
+) -> Result<(), GenericError> {
+    let af_config = AutoscalingFailoverConfiguration::from_configuration(config)
+        .error_context("Failed to configure autoscaling failover metrics pipeline.")?;
+    let ca_config = ClusterAgentConfiguration::from_configuration(config)
+        .error_context("Failed to configure Cluster Agent metrics forwarding.")?;
+
+    let Some((ca_url, ca_token)) = ca_config.endpoint_and_token() else {
+        if af_config.is_branch_requested() {
+            warn!(
+                "autoscaling.failover is enabled, but cluster_agent.enabled, cluster_agent.auth_token, and a resolvable \
+                 Cluster Agent endpoint are required. Set cluster_agent.url or provide Kubernetes service env vars for \
+                 cluster_agent.kubernetes_service_name. The autoscaling failover metrics branch will not be wired, and \
+                 primary forwarding will continue."
+            );
+        }
+
+        return Ok(());
+    };
+
+    if !af_config.is_branch_requested() {
+        return Ok(());
+    }
+
+    let af_gateway_config = AutoscalingFailoverGatewayConfiguration::new(af_config, config.clone());
+    let af_metrics_config = DatadogMetricsConfiguration::from_configuration(config)
+        .error_context("Failed to configure autoscaling failover metrics encoder.")?;
+    let cluster_agent_forwarder_config =
+        ClusterAgentForwarderConfiguration::from_configuration(config, ca_url, ca_token)
+            .error_context("Failed to configure Cluster Agent forwarder.")?;
+
+    blueprint
+        .add_transform("af_metrics_gateway", af_gateway_config)?
+        .add_encoder("af_metrics_encode", af_metrics_config)?
+        .add_forwarder("cluster_agent_out", cluster_agent_forwarder_config)?
+        .connect_components_in_order([
+            "metrics_enrich",
+            "af_metrics_gateway",
+            "af_metrics_encode",
+            "cluster_agent_out",
         ])?;
 
     Ok(())
