@@ -98,9 +98,16 @@ where
     B::Error: std::error::Error + Send + Sync,
 {
     /// Creates a new `TransactionForwarder` instance from the given configuration.
+    ///
+    /// When `in_process_handler` is `Some`, every outbound HTTP connection bypasses
+    /// DNS/TCP/Unix-socket transports and is served by the supplied handler over an in-memory
+    /// [`tokio::io::duplex`] pair — see
+    /// [`saluki_io::net::client::http::HttpsCapableConnectorBuilder::with_in_process_handler`].
+    /// In production this is always `None`.
     pub fn from_config<F>(
         context: ComponentContext, config: ForwarderConfiguration, configuration: Option<GenericConfiguration>,
         endpoint_name: F, telemetry: ComponentTelemetry, metrics_builder: MetricsBuilder,
+        in_process_handler: Option<saluki_io::net::client::http::InProcessHandler>,
     ) -> Result<Self, GenericError>
     where
         F: Fn(&Uri) -> Option<MetaString> + Send + Sync + 'static,
@@ -116,6 +123,10 @@ where
 
         if config.connection_reset_interval() > Duration::ZERO {
             client_builder = client_builder.with_connection_age_limit(config.connection_reset_interval());
+        }
+
+        if let Some(handler) = in_process_handler {
+            client_builder = client_builder.with_in_process_handler(handler);
         }
 
         let client = client_builder.build()?;

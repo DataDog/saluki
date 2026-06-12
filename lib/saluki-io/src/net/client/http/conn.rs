@@ -51,7 +51,17 @@ impl ConnectionAgeLimit {
     }
 }
 
-/// An inner transport that abstracts over TCP and Unix domain socket connections.
+/// User-supplied handler invoked once per outbound connection with the server-side half of an
+/// in-memory [`tokio::io::DuplexStream`]. Typically the handler spawns a hyper server task
+/// over the supplied IO (for example,
+/// `hyper::server::conn::http1::Builder::new().serve_connection(io, router)`).
+///
+/// Used by [`HttpsCapableConnectorBuilder::with_in_process_handler`] to bypass kernel I/O for
+/// deterministic in-process testing under `tokio::time::pause()`.
+pub type InProcessHandler = Arc<dyn Fn(tokio::io::DuplexStream) + Send + Sync + 'static>;
+
+/// An inner transport that abstracts over TCP, Unix domain socket, and in-process duplex
+/// connections.
 ///
 /// This allows using a single monomorphization of the HTTP/2 and TLS stacks regardless of the
 /// underlying transport, avoiding duplicate code generation for each transport type.
@@ -59,6 +69,7 @@ enum Transport {
     Tcp(TokioIo<TcpStream>),
     #[cfg(unix)]
     Unix(TokioIo<tokio::net::UnixStream>),
+    InProcess(TokioIo<tokio::io::DuplexStream>),
 }
 
 impl Connection for Transport {
@@ -67,6 +78,7 @@ impl Connection for Transport {
             Self::Tcp(s) => s.connected(),
             #[cfg(unix)]
             Self::Unix(_) => Connected::new(),
+            Self::InProcess(_) => Connected::new(),
         }
     }
 }
@@ -79,6 +91,7 @@ impl hyper::rt::Read for Transport {
             Self::Tcp(s) => Pin::new(s).poll_read(cx, buf),
             #[cfg(unix)]
             Self::Unix(s) => Pin::new(s).poll_read(cx, buf),
+            Self::InProcess(s) => Pin::new(s).poll_read(cx, buf),
         }
     }
 }
@@ -89,6 +102,7 @@ impl hyper::rt::Write for Transport {
             Self::Tcp(s) => Pin::new(s).poll_write(cx, buf),
             #[cfg(unix)]
             Self::Unix(s) => Pin::new(s).poll_write(cx, buf),
+            Self::InProcess(s) => Pin::new(s).poll_write(cx, buf),
         }
     }
 
@@ -97,6 +111,7 @@ impl hyper::rt::Write for Transport {
             Self::Tcp(s) => Pin::new(s).poll_flush(cx),
             #[cfg(unix)]
             Self::Unix(s) => Pin::new(s).poll_flush(cx),
+            Self::InProcess(s) => Pin::new(s).poll_flush(cx),
         }
     }
 
@@ -105,6 +120,7 @@ impl hyper::rt::Write for Transport {
             Self::Tcp(s) => Pin::new(s).poll_shutdown(cx),
             #[cfg(unix)]
             Self::Unix(s) => Pin::new(s).poll_shutdown(cx),
+            Self::InProcess(s) => Pin::new(s).poll_shutdown(cx),
         }
     }
 
@@ -113,6 +129,7 @@ impl hyper::rt::Write for Transport {
             Self::Tcp(s) => s.is_write_vectored(),
             #[cfg(unix)]
             Self::Unix(s) => s.is_write_vectored(),
+            Self::InProcess(s) => s.is_write_vectored(),
         }
     }
 
@@ -123,6 +140,7 @@ impl hyper::rt::Write for Transport {
             Self::Tcp(s) => Pin::new(s).poll_write_vectored(cx, bufs),
             #[cfg(unix)]
             Self::Unix(s) => Pin::new(s).poll_write_vectored(cx, bufs),
+            Self::InProcess(s) => Pin::new(s).poll_write_vectored(cx, bufs),
         }
     }
 }
@@ -213,6 +231,7 @@ struct InnerConnector {
     connect_timeout: Duration,
     #[cfg(unix)]
     unix_socket_path: Option<Arc<std::path::Path>>,
+    in_process_handler: Option<InProcessHandler>,
 }
 
 impl Service<Uri> for InnerConnector {
@@ -221,8 +240,12 @@ impl Service<Uri> for InnerConnector {
     type Future = Pin<Box<dyn Future<Output = Result<Transport, BoxError>> + Send>>;
 
     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        // When routing via a Unix domain socket, the TCP/DNS connector is not used, so we consider
-        // the service immediately ready.
+        // When routing via an in-process handler or a Unix domain socket, the TCP/DNS connector
+        // is not used, so we consider the service immediately ready.
+        if self.in_process_handler.is_some() {
+            return Poll::Ready(Ok(()));
+        }
+
         #[cfg(unix)]
         if self.unix_socket_path.is_some() {
             return Poll::Ready(Ok(()));
@@ -232,6 +255,18 @@ impl Service<Uri> for InnerConnector {
     }
 
     fn call(&mut self, dst: Uri) -> Self::Future {
+        // In-process transport: hand a fresh duplex pair to hyper (client half) and to the
+        // user-supplied handler (server half). No kernel I/O is involved — wakeups travel
+        // through tokio's in-memory wakers, which keeps the runtime aware of in-flight
+        // requests and prevents `start_paused` auto-advance from racing real loopback I/O.
+        if let Some(handler) = self.in_process_handler.clone() {
+            return Box::pin(async move {
+                let (client_io, server_io) = tokio::io::duplex(IN_PROCESS_BUFFER_SIZE);
+                handler(server_io);
+                Ok(Transport::InProcess(TokioIo::new(client_io)))
+            });
+        }
+
         #[cfg(unix)]
         if let Some(path) = self.unix_socket_path.clone() {
             let connect_timeout = self.connect_timeout;
@@ -285,6 +320,13 @@ impl Service<Uri> for HttpsCapableConnector {
     }
 }
 
+/// Per-direction buffer size for in-process [`tokio::io::duplex`] connections.
+///
+/// 64 KiB is well above any single chunk produced by the Datadog encoder pipeline (typical
+/// payloads are a few KiB compressed). If a future caller pushes payloads that hit this limit,
+/// the symptom would be the duplex stream applying backpressure rather than data loss.
+const IN_PROCESS_BUFFER_SIZE: usize = 64 * 1024;
+
 /// A builder for `HttpsCapableConnector`.
 #[derive(Default)]
 pub struct HttpsCapableConnectorBuilder {
@@ -293,6 +335,7 @@ pub struct HttpsCapableConnectorBuilder {
     conn_age_limit: Option<Duration>,
     #[cfg(unix)]
     unix_socket_path: Option<PathBuf>,
+    in_process_handler: Option<InProcessHandler>,
 }
 
 impl HttpsCapableConnectorBuilder {
@@ -342,6 +385,25 @@ impl HttpsCapableConnectorBuilder {
         self
     }
 
+    /// Routes every outbound connection through an in-memory [`tokio::io::duplex`] pair instead
+    /// of going through the kernel network stack.
+    ///
+    /// On each call to the connector, a fresh duplex pair is created. The client half is handed
+    /// back to hyper as the connection's IO; the supplied handler is invoked synchronously with
+    /// the server half and is expected to drive an HTTP server over it (for example, by spawning
+    /// `hyper::server::conn::http1::Builder::new().serve_connection(io, router)`).
+    ///
+    /// When set, DNS, TCP, and Unix-socket paths are bypassed and the URI host is ignored.
+    /// This is intended for deterministic in-process testing under `tokio::time::pause()`,
+    /// where real I/O wakeups would otherwise let the runtime auto-advance simulated time
+    /// while the kernel is delivering a loopback request/response.
+    ///
+    /// Defaults to unset.
+    pub fn with_in_process_handler(mut self, handler: InProcessHandler) -> Self {
+        self.in_process_handler = Some(handler);
+        self
+    }
+
     /// Builds the `HttpsCapableConnector` from the given TLS configuration.
     pub fn build(self, tls_config: ClientConfig) -> Result<HttpsCapableConnector, GenericError> {
         let connect_timeout = self.connect_timeout.unwrap_or(Duration::from_secs(30));
@@ -360,6 +422,7 @@ impl HttpsCapableConnectorBuilder {
             connect_timeout,
             #[cfg(unix)]
             unix_socket_path: self.unix_socket_path.map(PathBuf::into_boxed_path).map(Arc::from),
+            in_process_handler: self.in_process_handler,
         };
 
         // Create the HTTPS connector.

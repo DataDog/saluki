@@ -34,6 +34,14 @@ pub struct DatadogConfiguration {
     forwarder_config: ForwarderConfiguration,
 
     configuration: Option<GenericConfiguration>,
+
+    /// Optional in-process transport handler for the underlying HTTP client.
+    ///
+    /// When set, every outbound HTTP connection bypasses DNS/TCP/Unix-socket transports and is
+    /// served by the supplied handler over an in-memory [`tokio::io::duplex`] pair. Used for
+    /// deterministic in-process integration testing under `tokio::time::pause()`. In production
+    /// this is always `None`.
+    in_process_handler: Option<saluki_io::net::client::http::InProcessHandler>,
 }
 
 impl DatadogConfiguration {
@@ -43,7 +51,17 @@ impl DatadogConfiguration {
         Ok(Self {
             forwarder_config,
             configuration: Some(config.clone()),
+            in_process_handler: None,
         })
+    }
+
+    /// Routes every outbound HTTP connection through an in-memory [`tokio::io::duplex`] pair.
+    ///
+    /// See [`saluki_io::net::client::http::HttpsCapableConnectorBuilder::with_in_process_handler`].
+    /// Intended for in-process integration tests under `tokio::time::pause()`.
+    pub fn with_in_process_handler(mut self, handler: saluki_io::net::client::http::InProcessHandler) -> Self {
+        self.in_process_handler = Some(handler);
+        self
     }
 
     /// Overrides the default endpoint that payloads are sent to.
@@ -86,6 +104,7 @@ impl ForwarderBuilder for DatadogConfiguration {
             get_dd_endpoint_name,
             telemetry.clone(),
             metrics_builder,
+            self.in_process_handler.clone(),
         )?;
 
         Ok(Box::new(Datadog { forwarder }))

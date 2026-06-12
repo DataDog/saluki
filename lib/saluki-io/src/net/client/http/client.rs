@@ -240,6 +240,15 @@ impl HttpClientBuilder {
         self
     }
 
+    /// Routes every outbound connection through an in-memory [`tokio::io::duplex`] pair.
+    ///
+    /// See [`HttpsCapableConnectorBuilder::with_in_process_handler`] for details. When set,
+    /// DNS/TCP/Unix-socket paths are bypassed and the URI host is ignored.
+    pub fn with_in_process_handler(mut self, handler: super::InProcessHandler) -> Self {
+        self.connector_builder = self.connector_builder.with_in_process_handler(handler);
+        self
+    }
+
     /// Sets the TLS configuration.
     ///
     /// A TLS configuration builder is provided to allow for more advanced configuration of the TLS connection.

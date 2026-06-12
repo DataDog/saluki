@@ -1,5 +1,46 @@
+//! Fuzz integration test harness.
+//!
+//! This module drives the agent-data-plane (ADP) end-to-end against a synthetic DogStatsD corpus
+//! while staying entirely in-process and under simulated time, so the test completes in well
+//! under a second of wall clock.
+//!
+//! # Design
+//!
+//! Three coupled changes make `tokio::time::pause()` auto-advance behave correctly here. Each
+//! one is necessary; removing any of them stretches the test out to many real seconds.
+//!
+//! 1. **In-memory transport between forwarder and intake.** The intake's axum router is served
+//!    over a [`tokio::io::DuplexStream`] handed back by a custom hyper connector instead of
+//!    over loopback TCP. With kernel I/O on the path, paused-tokio sees every task parked on
+//!    real I/O during a request roundtrip and auto-advances simulated time, firing periodic
+//!    timers and burning real CPU. With duplex IO, writing on one half wakes the other half via
+//!    in-memory wakers — the runtime always has a runnable task and never auto-advances during
+//!    a request.
+//!
+//! 2. **Ambient worker pool for the topology.** [`saluki_core`]'s default
+//!    `WorkerPoolConfiguration::Dedicated` builds its own multi-thread runtime to run
+//!    components on. That runtime does not inherit `start_paused`, so the topology would run
+//!    against real wall clock even though the test runtime is paused. Calling
+//!    `with_ambient_worker_pool()` (in `fuzz_run.rs`) keeps every component on the paused
+//!    runtime.
+//!
+//! 3. **Tokio-anchored unix clock.** The aggregator decides which buckets to flush by reading
+//!    [`saluki_common::time::get_unix_timestamp`]. That function now derives the timestamp from
+//!    a [`tokio::time::Instant`] anchored on the wall clock at first use, so under paused tokio
+//!    the unix clock advances with simulated time and bucket expiration races simulated time
+//!    rather than real time.
+//!
+//! # Wait condition
+//!
+//! Under paused tokio with a finite injected corpus, the aggregator naturally produces one
+//! payload per metric type once the first flush window closes — then everything goes quiet (no
+//! more metrics arrive, the runtime no longer advances real wall clock). The test therefore
+//! waits for `>= 1` series payload as the end-to-end invariant: it proves the pipeline went all
+//! the way from UDS → source → aggregator → encoder → forwarder → in-process intake.
+
 #![allow(dead_code)]
 use std::path::Path;
+use std::sync::Arc;
 use std::{
     collections::BTreeMap,
     path::PathBuf,
@@ -7,10 +48,11 @@ use std::{
 };
 
 use bytes::Bytes;
+use hyper_util::{rt::TokioIo, service::TowerToHyperService};
 use saluki_error::{generic_error, GenericError};
 use tempfile::TempDir;
 use tokio::time::{self};
-use tracing::{info, warn};
+use tracing::info;
 
 use crate::fuzz_run::handle_run_command;
 
@@ -91,32 +133,41 @@ fn build_config_object(agent_unix_socket: &Path, intake_port: u16) -> serde_json
 // value lies in pair comparison "if you changed that config value, we do expect some/no change in the output when running the same corpus with/without that config entry. Do we actually observe that ?"
 
 pub async fn inner(corpus: DogStatsDInput) {
-    // unix domain sockets instead of UDP
+    // ADP listens for DogStatsD on a UDS we create in a tempdir; injection writes packets there.
     let dir = TempDir::with_prefix("saluki").expect("could not create temp dir");
     let unix_socket_path = dir.path().join("dsd_socket");
     info!(?unix_socket_path, "Created UDS");
 
-    // for output port (intake), we can bind to it, let it report back to our main loop, so we can configure the pipeline to use it
-    let intake_tcp_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("failed to bind mock intake TCP listener on 127.0.0.1:0");
-    let intake_port = intake_tcp_listener
-        .local_addr()
-        .expect("failed to read mock intake listener local address")
-        .port();
-
-    let config = build_config_object(&unix_socket_path, intake_port);
-
+    // Build the intake router and its signal receivers. The router itself drives request
+    // handling; signals are readable immediately, no separate listener task is needed.
     let (intake_router, intake_signals) = datadog_intake::build_intake();
-    let (st2_tx, st2_rx) = tokio::sync::oneshot::channel();
-    let intake_handle = tokio::spawn(datadog_intake::serve_intake(
-        intake_tcp_listener,
-        intake_router,
-        async move { let _ = st2_rx.await; },
-    ));
+
+    // The in-process connector ignores the URI host/port — it always returns a duplex pair —
+    // but ADP still parses `dd_url` into a real URI. Use a literal IP + arbitrary port so URL
+    // parsing succeeds without consulting DNS.
+    let config = build_config_object(&unix_socket_path, /* placeholder */ 1);
+
+    // Per-connection handler: hand the server-side IO half to a fresh `serve_connection` task
+    // that drives the axum router. `axum::Router` already implements `tower::Service`, so
+    // `TowerToHyperService` is the only adapter needed to feed it to hyper. Errors from
+    // `serve_connection` are dropped silently — they're typically just "connection closed" at
+    // shutdown and have no signal value in a test harness.
+    let intake_handler: crate::fuzz_run::InProcessIntakeHandler = Arc::new(move |io| {
+        let svc = TowerToHyperService::new(intake_router.clone());
+        tokio::spawn(async move {
+            let _ = hyper::server::conn::http1::Builder::new()
+                .serve_connection(TokioIo::new(io), svc)
+                .await;
+        });
+    });
 
     let (st1_tx, st1_rx) = tokio::sync::oneshot::channel();
-    let saluki_handle = tokio::spawn(handle_run_command(config, st1_rx, Instant::now()));
+    let saluki_handle = tokio::spawn(handle_run_command(
+        config,
+        Some(intake_handler),
+        st1_rx,
+        Instant::now(),
+    ));
 
     // Wait for ADP to create the socket file before trying to connect.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
@@ -146,28 +197,19 @@ pub async fn inner(corpus: DogStatsDInput) {
         .await
         .expect("failed to inject corpus into dogstatsd socket");
 
-    info!("Waiting for 2 series payloads at fake-intake");
+    // See the module-level docs for why we wait for a single series payload.
+    info!("Waiting for series payload at fake-intake");
     let mut series_rx = intake_signals.series_v2_count;
     series_rx
-        .wait_for(|&n| n >= 2)
+        .wait_for(|&n| n >= 1)
         .await
-        .expect("intake server dropped before receiving 2 series payloads");
-    info!(count = *series_rx.borrow(), "Received expected series payloads");
+        .expect("intake server dropped before receiving series payload");
+    info!(count = *series_rx.borrow(), "Received expected series payload");
 
-    // trigger shutdown
     info!("Trigger shutdown");
     let _ = st1_tx.send(());
     saluki_handle
         .await
         .expect("saluki task panicked or was cancelled before shutdown")
         .expect("saluki run command returned an error");
-
-    info!("stopping mock intake");
-    let _ = st2_tx.send(());
-    if let Err(e) = intake_handle
-        .await
-        .expect("mock intake task panicked or was cancelled before shutdown")
-    {
-        warn!("Mock intake error: {}", e);
-    }
 }

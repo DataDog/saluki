@@ -31,6 +31,14 @@ use crate::cli::run::{
 };
 use crate::{config::DataPlaneConfiguration, env_provider::ADPEnvironmentProvider};
 
+/// Per-connection handler used to wire the Datadog forwarder to an in-process intake.
+///
+/// See [`saluki_io::net::client::http::HttpsCapableConnectorBuilder::with_in_process_handler`].
+/// In production this is always `None`; in the integration test it routes every outbound HTTP
+/// connection through an in-memory [`tokio::io::duplex`] pair so simulated time stays in
+/// lockstep with request progress.
+pub type InProcessIntakeHandler = saluki_io::net::client::http::InProcessHandler;
+
 
 
 // extract stuff to get a function that gives us enough to build the topology
@@ -41,9 +49,16 @@ use crate::{config::DataPlaneConfiguration, env_provider::ADPEnvironmentProvider
 // tokio runtime
 // spawn topology
 // call the network calls to send packets to the topology
-/// Entrypoint for the `run` commands.
+/// Entrypoint for the fuzz `run` command.
+///
+/// When `intake` is `Some`, the Datadog forwarder is wired to an in-process intake (see
+/// [`InProcessIntakeHandler`]) so the integration test can observe payloads without standing up
+/// a real TCP listener. In production callers always pass `None`.
 pub async fn handle_run_command(
-    bootstrap_config: serde_json::Value, shutdown: tokio::sync::oneshot::Receiver<()>, started: Instant
+    bootstrap_config: serde_json::Value,
+    intake: Option<InProcessIntakeHandler>,
+    shutdown: tokio::sync::oneshot::Receiver<()>,
+    started: Instant,
 ) -> Result<(), GenericError> {
     info!("Agent Data Plane starting...");
 
@@ -88,6 +103,7 @@ pub async fn handle_run_command(
         &env_provider,
         &component_registry,
         dsd_stats_config.clone(),
+        intake,
     )
     .await?;
 
@@ -96,7 +112,13 @@ pub async fn handle_run_command(
     let memory_limiter = initialize_memory_bounds(bounds_config, component_registry.root())?;
 
     // Bounds validation succeeded, so now we'll build and spawn the topology.
-    let built_topology = blueprint.build().await?;
+    //
+    // Run components on the ambient (calling) runtime instead of the default dedicated
+    // multi-thread pool. The integration test builds the runtime with
+    // `tokio::runtime::Builder::start_paused(true)` to drive simulated time; a separate
+    // multi-thread pool would not inherit that and would run components against real wall
+    // clock, defeating auto-advance and stretching the test out for many real seconds.
+    let built_topology = blueprint.build().await?.with_ambient_worker_pool();
     let mut running_topology = built_topology.spawn(&health_registry, memory_limiter).await?;
 
     let startup_time = started.elapsed();
@@ -164,6 +186,7 @@ pub async fn handle_run_command(
 async fn create_topology(
     config: &GenericConfiguration, dp_config: &DataPlaneConfiguration, env_provider: &ADPEnvironmentProvider,
     component_registry: &ComponentRegistry, dsd_stats_config: DogStatsDStatisticsConfiguration,
+    intake: Option<InProcessIntakeHandler>,
 ) -> Result<TopologyBlueprint, GenericError> {
     let mut blueprint = TopologyBlueprint::new("primary", component_registry);
 
@@ -185,8 +208,13 @@ async fn create_topology(
         || dp_config.logs_pipeline_required()
         || dp_config.traces_pipeline_required()
     {
-        let dd_forwarder_config =
+        let mut dd_forwarder_config =
             DatadogConfiguration::from_configuration(config).error_context("Failed to configure Datadog forwarder.")?;
+
+        if let Some(handler) = intake {
+            dd_forwarder_config = dd_forwarder_config.with_in_process_handler(handler);
+        }
+
         blueprint.add_forwarder("dd_out", dd_forwarder_config)?;
     }
 

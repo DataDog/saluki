@@ -5,7 +5,7 @@ mod client;
 pub use self::client::{into_client_body, ClientBody, HttpClient};
 
 mod conn;
-pub use self::conn::{HttpsCapableConnector, HttpsCapableConnectorBuilder};
+pub use self::conn::{HttpsCapableConnector, HttpsCapableConnectorBuilder, InProcessHandler};
 
 mod telemetry;
 pub use self::telemetry::{EndpointTelemetry, EndpointTelemetryLayer};

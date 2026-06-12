@@ -11,6 +11,9 @@ workspace = true
 [features]
 default = []
 fips = ["saluki-app/tls-fips"]
+# `fuzzing` enables both the libfuzzer harness and the deterministic in-process integration
+# test (`integration_small_test`). The integration test pulls in axum + hyper's server features
+# to run the in-memory intake; production builds never see those dependencies.
 fuzzing = [
   "dep:libfuzzer-sys",
   "dep:arbitrary",
@@ -19,7 +22,11 @@ fuzzing = [
   "dep:rand",
   "dep:memchr",
   "dep:datadog-intake",
-  "dep:tempfile"
+  "dep:tempfile",
+  "dep:axum",
+  "dep:hyper-util",
+  "hyper/server",
+  "hyper/http1"
 ]
 
 [dependencies]
@@ -36,6 +43,9 @@ hashbrown = { workspace = true }
 http = { workspace = true }
 http-body-util = { workspace = true }
 hyper = { workspace = true }
+# Only used by the in-process integration test (see `fuzz.rs`).
+axum = { workspace = true, optional = true, features = ["http1", "json", "tokio"] }
+hyper-util = { workspace = true, optional = true, features = ["tokio", "service"] }
 memory-accounting = { workspace = true }
 metrics = { workspace = true }
 ottl = { workspace = true }
