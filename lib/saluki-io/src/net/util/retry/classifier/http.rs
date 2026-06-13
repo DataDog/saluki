@@ -18,7 +18,17 @@ fn default_should_retry<B>(response: &Response<B>) -> bool {
         http::StatusCode::BAD_REQUEST
         | http::StatusCode::UNAUTHORIZED
         | http::StatusCode::FORBIDDEN
-        | http::StatusCode::PAYLOAD_TOO_LARGE => false,
+        | http::StatusCode::PAYLOAD_TOO_LARGE => {
+            // These statuses are permanent failures — the transaction is dropped, not retried (a data-loss path).
+            // Anchor that the run reaches it.
+            #[cfg(feature = "antithesis")]
+            antithesis_sdk::assert_sometimes!(
+                true,
+                "transaction permanently dropped — non-retryable status",
+                &serde_json::json!({ "status": status.as_u16() })
+            );
+            false
+        }
 
         // For all other status codes, we'll only retry if they're in the client/server error range.
         _ => status.is_client_error() || status.is_server_error(),

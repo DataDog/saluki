@@ -1176,6 +1176,7 @@ dependencies = [
 name = "ddsketch"
 version = "0.1.0"
 dependencies = [
+ "antithesis_sdk",
  "criterion",
  "datadog-protos",
  "dhat",
@@ -4322,6 +4323,7 @@ dependencies = [
 name = "saluki-config"
 version = "0.1.0"
 dependencies = [
+ "antithesis_sdk",
  "anyhow",
  "figment",
  "saluki-error",
@@ -4338,6 +4340,7 @@ dependencies = [
 name = "saluki-context"
 version = "0.1.0"
 dependencies = [
+ "antithesis_sdk",
  "criterion",
  "indexmap",
  "memchr",
@@ -4358,6 +4361,7 @@ dependencies = [
 name = "saluki-core"
 version = "0.1.0"
 dependencies = [
+ "antithesis_sdk",
  "async-trait",
  "bitmask-enum",
  "ddsketch",
@@ -4437,6 +4441,7 @@ dependencies = [
 name = "saluki-io"
 version = "0.1.0"
 dependencies = [
+ "antithesis_sdk",
  "async-compression",
  "axum",
  "bytes",
@@ -4966,6 +4971,7 @@ dependencies = [
 name = "stringtheory"
 version = "0.1.0"
 dependencies = [
+ "antithesis_sdk",
  "foldhash 0.2.0",
  "loom",
  "proptest",
