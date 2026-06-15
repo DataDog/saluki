@@ -14,6 +14,7 @@ use serde::Deserialize;
 use tracing::debug;
 
 const FORWARDER_RETRY_QUEUE_PAYLOADS_MAX_SIZE_BYTES: u64 = 15 * 1024 * 1024;
+const FORWARDER_FLUSH_TO_DISK_MEM_RATIO: f64 = 0.5;
 const RETRY_TXN_DIR: &str = "transactions_to_retry";
 const RETRY_QUEUE_CAPACITY_DEFAULT_HISTORY_DURATION_SECS: u64 = 15 * 60;
 const RETRY_QUEUE_CAPACITY_MIN_HISTORY_DURATION_SECS: u64 = 10;
@@ -40,6 +41,10 @@ const fn default_request_recovery_reset() -> bool {
 
 const fn default_storage_max_size_bytes() -> u64 {
     0
+}
+
+const fn default_flush_to_disk_mem_ratio() -> f64 {
+    FORWARDER_FLUSH_TO_DISK_MEM_RATIO
 }
 
 const fn default_storage_max_disk_ratio() -> f64 {
@@ -122,6 +127,20 @@ pub struct RetryConfiguration {
     )]
     storage_max_size_bytes: u64,
 
+    /// The ratio of in-memory retry queue bytes to flush to disk when the queue is full.
+    ///
+    /// When disk persistence is enabled and the in-memory retry queue does not have enough room for a new transaction,
+    /// this controls how much in-memory data ADP moves to disk. For example, `0.5` moves at least half of the configured
+    /// in-memory retry queue size to disk during each overflow. If set to `0`, ADP moves only enough old transactions to
+    /// disk to make room for the new transaction.
+    ///
+    /// Defaults to 0.5.
+    #[serde(
+        default = "default_flush_to_disk_mem_ratio",
+        rename = "forwarder_flush_to_disk_mem_ratio"
+    )]
+    flush_to_disk_mem_ratio: f64,
+
     /// The path to the directory where the retry queue will be stored on disk.
     ///
     /// Defaults to `/opt/datadog-agent/run/transactions_to_retry`.
@@ -203,6 +222,11 @@ impl RetryConfiguration {
     /// Returns the maximum size of the retry queue on disk, in bytes.
     pub const fn storage_max_size_bytes(&self) -> u64 {
         self.storage_max_size_bytes
+    }
+
+    /// Returns the ratio of in-memory retry queue bytes to flush to disk when the queue is full.
+    pub const fn flush_to_disk_mem_ratio(&self) -> f64 {
+        self.flush_to_disk_mem_ratio
     }
 
     /// Returns the path to the directory where the retry queue will be stored on disk.
@@ -389,6 +413,16 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn flush_to_disk_mem_ratio_uses_agent_default() {
+        let (config, _) = ConfigurationLoader::for_tests(None, None, false).await;
+        let retry_config: RetryConfiguration = config.as_typed().expect("should deserialize");
+        assert_eq!(
+            retry_config.flush_to_disk_mem_ratio(),
+            FORWARDER_FLUSH_TO_DISK_MEM_RATIO
+        );
+    }
+
+    #[tokio::test]
     async fn capacity_time_interval_secs_uses_default_override_and_minimum() {
         let (config, _) = ConfigurationLoader::for_tests(None, None, false).await;
         let retry_config: RetryConfiguration = config.as_typed().expect("should deserialize");
@@ -409,6 +443,16 @@ mod tests {
             retry_config.capacity_time_interval_secs(),
             RETRY_QUEUE_CAPACITY_MIN_HISTORY_DURATION_SECS
         );
+    }
+
+    #[tokio::test]
+    async fn flush_to_disk_mem_ratio_can_be_overridden() {
+        const OVERRIDE_RATIO: f64 = 0.25;
+
+        let values = json!({ "forwarder_flush_to_disk_mem_ratio": OVERRIDE_RATIO });
+        let (config, _) = ConfigurationLoader::for_tests(Some(values), None, false).await;
+        let retry_config: RetryConfiguration = config.as_typed().expect("should deserialize");
+        assert_eq!(retry_config.flush_to_disk_mem_ratio(), OVERRIDE_RATIO);
     }
 
     #[tokio::test]
