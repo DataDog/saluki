@@ -210,8 +210,8 @@ where
             .total_in_memory_bytes
             .saturating_add(current_entry_size)
             .saturating_sub(self.max_in_memory_bytes);
-        let using_disk = self.persisted_pending.is_some() && self.flush_to_disk_mem_ratio > 0.0;
-        let bytes_to_remove = if using_disk {
+        let using_disk = self.persisted_pending.is_some();
+        let bytes_to_remove = if using_disk && required_bytes > 0 {
             required_bytes.max(flush_to_disk_bytes(
                 self.max_in_memory_bytes,
                 self.flush_to_disk_mem_ratio,
@@ -602,7 +602,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn zero_disk_flush_ratio_drops_required_entries() {
+    async fn zero_disk_flush_ratio_persists_required_entries() {
         let data1 = FakeData::random();
         let data2 = FakeData::random();
         let data3 = FakeData::random();
@@ -622,7 +622,10 @@ mod tests {
             .await
             .expect("should not fail to create retry queue with disk persistence");
 
-        let push_result = retry_queue.push(data1).await.expect("should not fail to push data");
+        let push_result = retry_queue
+            .push(data1.clone())
+            .await
+            .expect("should not fail to push data");
         assert_eq!(0, push_result.items_dropped);
         assert_eq!(0, push_result.events_dropped);
         let push_result = retry_queue
@@ -636,9 +639,9 @@ mod tests {
             .push(data3.clone())
             .await
             .expect("should not fail to push data");
-        assert_eq!(1, push_result.items_dropped);
-        assert_eq!(1, push_result.events_dropped);
-        assert_eq!(0, file_count_recursive(&root_path));
+        assert_eq!(0, push_result.items_dropped);
+        assert_eq!(0, push_result.events_dropped);
+        assert_eq!(1, file_count_recursive(&root_path));
 
         let actual = retry_queue
             .pop()
@@ -653,5 +656,12 @@ mod tests {
             .expect("should not fail to pop data")
             .expect("should not be empty");
         assert_eq!(data3, actual);
+
+        let actual = retry_queue
+            .pop()
+            .await
+            .expect("should not fail to pop data")
+            .expect("should not be empty");
+        assert_eq!(data1, actual);
     }
 }
