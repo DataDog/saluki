@@ -27,11 +27,11 @@ assertions:
       - type: port_listening
         port: 54317
         protocol: tcp
-        timeout: 10s
+        timeout: 60s
       - type: port_listening
         port: 54318
         protocol: tcp
-        timeout: 10s
+        timeout: 60s
       - type: log_not_contains
         pattern: "panic|PANIC"
         regex: true

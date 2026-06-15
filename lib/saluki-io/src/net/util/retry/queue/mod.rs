@@ -115,8 +115,8 @@ where
     ///
     /// When disk persistence is enabled and the queue does not have enough room for a new entry, this ratio controls how
     /// much in-memory data is moved to disk. For example, a value of `0.5` moves at least half of
-    /// `max_in_memory_bytes` to disk when the queue overflows. Values less than or equal to zero disable overflow
-    /// flushing to disk.
+    /// `max_in_memory_bytes` to disk when the queue overflows. Values less than or equal to zero disable extra batch
+    /// flushing, but entries evicted to make room are still persisted when disk persistence is enabled.
     pub fn with_flush_to_disk_mem_ratio(mut self, flush_to_disk_mem_ratio: f64) -> Self {
         self.flush_to_disk_mem_ratio = flush_to_disk_mem_ratio;
         self
@@ -171,6 +171,31 @@ where
         self.pending.len() + self.persisted_pending.as_ref().map_or(0, |p| p.len())
     }
 
+    /// Returns the maximum in-memory capacity, in bytes.
+    pub const fn max_in_memory_bytes(&self) -> u64 {
+        self.max_in_memory_bytes
+    }
+
+    /// Returns the available in-memory capacity, in bytes.
+    pub const fn available_in_memory_capacity_bytes(&self) -> u64 {
+        self.max_in_memory_bytes.saturating_sub(self.total_in_memory_bytes)
+    }
+
+    /// Returns the available on-disk capacity, in bytes.
+    ///
+    /// Returns `0` when disk persistence is not enabled.
+    ///
+    /// # Errors
+    ///
+    /// If disk persistence is enabled and there is an error while retrieving the underlying disk capacity, an error is
+    /// returned.
+    pub async fn available_on_disk_capacity_bytes(&self) -> Result<u64, GenericError> {
+        match &self.persisted_pending {
+            Some(persisted_pending) => persisted_pending.available_capacity_bytes().await,
+            None => Ok(0),
+        }
+    }
+
     /// Returns the number of persisted entries that have been permanently dropped due to errors since the last call
     /// to this method, resetting the counter.
     ///
@@ -182,11 +207,11 @@ where
     /// Enqueues an entry.
     ///
     /// If the queue is full and the entry can't be enqueued in-memory, in-memory entries (oldest first) are evicted
-    /// until there is room for the new entry. When disk persistence is enabled and the flush-to-disk ratio is greater
-    /// than zero, eviction moves at least `max_in_memory_bytes * flush_to_disk_mem_ratio` bytes of in-memory data to
-    /// disk before admitting the new entry; in all other cases (disk persistence disabled, or ratio is zero), evicted
-    /// entries are dropped instead. If an in-memory entry can't be persisted due to a disk error, that entry is dropped
-    /// and counted in the returned `PushResult`; the new entry is still enqueued.
+    /// until there is room for the new entry. When disk persistence is enabled, evicted entries are moved to disk. If the
+    /// flush-to-disk ratio is greater than zero, eviction moves at least
+    /// `max_in_memory_bytes * flush_to_disk_mem_ratio` bytes of in-memory data to disk before admitting the new entry. If
+    /// disk persistence is disabled, evicted entries are dropped instead. If an in-memory entry can't be persisted due to
+    /// a disk error, that entry is dropped and counted in the returned `PushResult`; the new entry is still enqueued.
     ///
     /// # Errors
     ///
@@ -416,6 +441,56 @@ mod tests {
             .expect("should not fail to pop data")
             .expect("should not be empty");
         assert_eq!(data, actual);
+    }
+
+    #[tokio::test]
+    async fn capacity_accessors_report_memory_and_disk_capacity() {
+        let temp_dir = tempfile::tempdir().expect("should not fail to create temporary directory");
+        let root_path = temp_dir.path().to_path_buf();
+        let mut retry_queue = RetryQueue::<FakeData>::new("test".to_string(), 36)
+            .with_disk_persistence(PersistedQueueArgs {
+                root_path: root_path.clone(),
+                max_on_disk_bytes: 1024,
+                storage_max_disk_ratio: 1.0,
+                disk_usage_retriever: Arc::new(DiskUsageRetrieverImpl::new(root_path)),
+                max_age_days: 10,
+            })
+            .await
+            .expect("should not fail to create retry queue with disk persistence");
+
+        assert_eq!(retry_queue.max_in_memory_bytes(), 36);
+        assert_eq!(retry_queue.available_in_memory_capacity_bytes(), 36);
+        assert_eq!(
+            retry_queue
+                .available_on_disk_capacity_bytes()
+                .await
+                .expect("should not fail to calculate disk capacity"),
+            1024
+        );
+
+        let push_result = retry_queue
+            .push(FakeData::random())
+            .await
+            .expect("first push should succeed");
+        assert!(!push_result.had_drops());
+        assert_eq!(retry_queue.available_in_memory_capacity_bytes(), 0);
+        let push_result = retry_queue
+            .push(FakeData::random())
+            .await
+            .expect("second push should persist the oldest entry");
+        assert!(!push_result.had_drops());
+        assert_eq!(retry_queue.available_in_memory_capacity_bytes(), 0);
+
+        assert!(
+            retry_queue
+                .available_on_disk_capacity_bytes()
+                .await
+                .expect("should not fail to calculate disk capacity")
+                < 1024
+        );
+
+        let _ = retry_queue.pop().await.expect("pop should succeed");
+        assert_eq!(retry_queue.available_in_memory_capacity_bytes(), 36);
     }
 
     #[tokio::test]

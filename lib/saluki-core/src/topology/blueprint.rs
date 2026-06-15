@@ -2,6 +2,7 @@ use std::{collections::HashMap, future::Future, num::NonZeroUsize, pin::Pin, syn
 
 use async_trait::async_trait;
 use resource_accounting::{ComponentRegistry, MemoryLimiter, Track as _, UsageExpr};
+use saluki_common::sync::shutdown::ShutdownHandle;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use snafu::Snafu;
 use tokio::{runtime::Handle, select, sync::oneshot};
@@ -20,10 +21,7 @@ use crate::{
     },
     data_model::event::Event,
     health::HealthRegistry,
-    runtime::{
-        state::DataspaceRegistry, InitializationError, ProcessShutdown, ShutdownStrategy, Supervisable,
-        SupervisorFuture,
-    },
+    runtime::{state::DataspaceRegistry, InitializationError, ShutdownStrategy, Supervisable, SupervisorFuture},
     topology::{ids::AsComponentIds, EventsBuffer, DEFAULT_EVENTS_BUFFER_CAPACITY},
 };
 
@@ -841,7 +839,7 @@ impl Supervisable for TopologyBlueprint {
         ShutdownStrategy::Graceful(Duration::MAX)
     }
 
-    async fn initialize(&self, mut process_shutdown: ProcessShutdown) -> Result<SupervisorFuture, InitializationError> {
+    async fn initialize(&self, shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
         // Consume the build state.
         //
         // Topologies currently can't be initialized more than once.
@@ -876,12 +874,14 @@ impl Supervisable for TopologyBlueprint {
         let built = build_state.build(self.name.clone()).await?;
 
         Ok(Box::pin(async move {
+            tokio::pin!(shutdown);
+
             // If a readiness signal was provided, wait for it before spawning the components, but remain responsive to
             // shutdown so we exit promptly if asked to stop before we've started.
             if let Some(environment_ready) = environment_ready {
                 select! {
                     _ = environment_ready => {},
-                    _ = &mut process_shutdown => return Ok(()),
+                    _ = &mut shutdown => return Ok(()),
                 }
             }
 
@@ -903,7 +903,7 @@ impl Supervisable for TopologyBlueprint {
                 },
 
                 // The supervisor requested shutdown.
-                _ = &mut process_shutdown => {
+                _ = &mut shutdown => {
                     info!("Topology received shutdown signal. Shutting down...");
                 },
             }

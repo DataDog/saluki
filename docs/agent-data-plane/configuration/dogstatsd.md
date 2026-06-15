@@ -30,6 +30,7 @@ tracking.
 | `dogstatsd_experimental_http.listen_address`                   | Bind address for experimental HTTP DSD listener | [#1682] |
 | `dogstatsd_pipe_name`                                          | Windows named pipe path                         | [#1466] |
 | `dogstatsd_windows_pipe_security_descriptor`                   | Windows named pipe ACL descriptor               | [#1466] |
+| `observability_pipelines_worker.metrics.use_v3_api.series`     | OPW metrics v3 series API opt-in                | [#1468] |
 | `serializer_experimental_use_v3_api.compression_level`         | V3 API zstd compression level                   | [#1468] |
 | `serializer_experimental_use_v3_api.series.endpoints`          | Endpoints enabled for V3 series API             | [#1468] |
 | `serializer_experimental_use_v3_api.series.shadow_sample_rate` | V3 series shadow mode sample rate               | [#1468] |
@@ -38,6 +39,9 @@ tracking.
 | `serializer_experimental_use_v3_api.sketches.endpoints`        | Endpoints enabling v3 sketches API              | [#1468] |
 | `serializer_experimental_use_v3_api.sketches.validate`         | Dual-send v2+v3 sketches for validation         | [#1468] |
 | `tls_handshake_timeout`                                        | HTTP TLS handshake timeout                      | [#178]  |
+| `use_v3_api.series.enabled`                                    | Global default for series intake API version    | [#1468] |
+| `use_v3_api.series.endpoints`                                  | Per-URL override map for series intake version  | [#1468] |
+| `vector.metrics.use_v3_api.series`                             | OPW metrics v3 series API opt-in (legacy alias) | [#1468] |
 
 <!-- section:unsupported-not-planned -->
 ### Not Planned
@@ -315,7 +319,6 @@ ways that are not yet fully characterized.
 | `cluster_agent.enabled`                                  | Enable Cluster Agent communication            | [#1684] |
 | `forwarder_low_prio_buffer_size`                         | Low-priority request queue size               | [#1362] |
 | `forwarder_requeue_buffer_size`                          | In-memory re-queue buffer size                | [#1755] |
-| `forwarder_retry_queue_capacity_time_interval_sec`       | Retry queue time-based capacity               | [#1365] |
 | `forwarder_stop_timeout`                                 | Timeout (s) for forwarder graceful stop       | [#1754] |
 | `telemetry.dogstatsd.aggregator_channel_latency_buckets` | Histogram buckets: DSD aggregator channel lag | [#1679] |
 | `telemetry.dogstatsd.listeners_channel_latency_buckets`  | Histogram buckets: listener channel latency   | [#1679] |
@@ -518,6 +521,7 @@ compressed wire payload bytes.
 | `forwarder_outdated_file_in_days`                              | Days before retry files are deleted                |
 | `forwarder_recovery_interval`                                  | Backoff recovery decrease factor                   |
 | `forwarder_recovery_reset`                                     | Reset errors on success                            |
+| `forwarder_retry_queue_capacity_time_interval_sec`             | Retry queue time-based capacity                    |
 | `forwarder_retry_queue_max_size`                               | Retry queue max size (deprecated)                  |
 | `forwarder_retry_queue_payloads_max_size`                      | Retry queue max size (bytes)                       |
 | `forwarder_storage_max_disk_ratio`                             | Max disk usage ratio for retry                     |

@@ -23,16 +23,19 @@ use rcgen::{generate_simple_self_signed, CertifiedKey};
 use rustls::{pki_types::PrivateKeyDer, ServerConfig};
 use rustls_pki_types::PrivatePkcs8KeyDer;
 use saluki_api::{APIHandler, DynamicRoute, EndpointProtocol, EndpointType};
-use saluki_common::collections::FastIndexMap;
+use saluki_common::{
+    collections::FastIndexMap,
+    sync::shutdown::{ShutdownCoordinator, ShutdownHandle},
+};
 use saluki_core::runtime::{
     state::{AssertionUpdate, DataspaceRegistry, Identifier, IdentifierFilter, Subscription},
-    InitializationError, ProcessShutdown, Supervisable, SupervisorFuture,
+    InitializationError, Supervisable, SupervisorFuture,
 };
 use saluki_error::{generic_error, GenericError};
 use saluki_io::net::{
     listener::ConnectionOrientedListener,
     server::{
-        http::{ErrorHandle, HttpServer, ShutdownHandle},
+        http::{ErrorHandle, HttpServer},
         multiplex_service::MultiplexService,
     },
     util::hyper::TowerToHyperService,
@@ -170,7 +173,7 @@ impl Supervisable for DynamicAPIBuilder {
         }
     }
 
-    async fn initialize(&self, process_shutdown: ProcessShutdown) -> Result<SupervisorFuture, InitializationError> {
+    async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
         // Build the static base routers.
         //
         // We reset the fallback route of the base gRPC router as Tonic's `unimplemented` fallback handle will collide
@@ -208,7 +211,7 @@ impl Supervisable for DynamicAPIBuilder {
         if let Some(tls_config) = self.tls_config.clone() {
             http_server = http_server.with_tls_config(tls_config);
         }
-        let (shutdown_handle, error_handle) = http_server.listen();
+        let (server_shutdown_coordinator, error_handle) = http_server.listen();
 
         let endpoint_type = self.endpoint_type;
         let listen_address = self.listen_address.clone();
@@ -216,6 +219,9 @@ impl Supervisable for DynamicAPIBuilder {
         Ok(Box::pin(async move {
             info!("Serving {} API on {}.", endpoint_type.name(), listen_address);
 
+            // TODO: Rework this to actually lift out the shutdown stuff into a `select!` here where we wait against
+            // both the event loop and the shutdown signal, and then do a blocking shutdown on the HTTP server when the
+            // process shutdown is triggered.
             run_event_loop(
                 inner_http,
                 inner_grpc,
@@ -224,7 +230,7 @@ impl Supervisable for DynamicAPIBuilder {
                 route_assertions,
                 endpoint_type,
                 process_shutdown,
-                shutdown_handle,
+                server_shutdown_coordinator,
                 error_handle,
             )
             .await
@@ -270,21 +276,19 @@ impl Service<http::Request<AxumBody>> for DynamicRouterService {
 #[allow(clippy::too_many_arguments)]
 async fn run_event_loop(
     inner_http: Arc<ArcSwap<Router>>, inner_grpc: Arc<ArcSwap<Router>>, base_http: Router, base_grpc: Router,
-    mut route_assertions: Subscription<DynamicRoute>, endpoint_type: EndpointType,
-    mut process_shutdown: ProcessShutdown, shutdown_handle: ShutdownHandle, error_handle: ErrorHandle,
+    mut route_assertions: Subscription<DynamicRoute>, endpoint_type: EndpointType, process_shutdown: ShutdownHandle,
+    server_shutdown_coordinator: ShutdownCoordinator, error_handle: ErrorHandle,
 ) -> Result<(), GenericError> {
     let mut http_handlers = FastIndexMap::default();
     let mut grpc_handlers = FastIndexMap::default();
 
-    let shutdown = process_shutdown.wait_for_shutdown();
-    pin!(shutdown);
-    pin!(error_handle);
+    pin!(process_shutdown, error_handle);
 
     loop {
         select! {
-            _ = &mut shutdown => {
+            _ = &mut process_shutdown => {
                 debug!("Dynamic API shutting down.");
-                shutdown_handle.shutdown();
+                server_shutdown_coordinator.shutdown();
                 break;
             }
 
@@ -446,9 +450,10 @@ mod tests {
     use saluki_api::{APIHandler, DynamicRoute, EndpointType};
     use saluki_core::runtime::{
         state::{AssertionUpdate, DataspaceRegistry, Identifier, IdentifierFilter},
-        InitializationError, ProcessShutdown, Supervisable, Supervisor, SupervisorFuture,
+        InitializationError, Supervisable, Supervisor, SupervisorFuture,
     };
     use tokio::{
+        pin, select,
         sync::{mpsc, oneshot},
         task::JoinHandle,
         time::{sleep, timeout, Instant},
@@ -489,9 +494,7 @@ mod tests {
             "route-asserter"
         }
 
-        async fn initialize(
-            &self, mut process_shutdown: ProcessShutdown,
-        ) -> Result<SupervisorFuture, InitializationError> {
+        async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
             let mut commands_rx =
                 self.commands_rx
                     .lock()
@@ -531,12 +534,11 @@ mod tests {
                 }
 
                 // Process route commands until shutdown.
-                let shutdown = process_shutdown.wait_for_shutdown();
-                tokio::pin!(shutdown);
+                pin!(process_shutdown);
 
                 loop {
-                    tokio::select! {
-                        _ = &mut shutdown => break,
+                    select! {
+                        _ = &mut process_shutdown => break,
                         cmd = commands_rx.recv() => {
                             let Some(cmd) = cmd else { break };
                             match cmd {

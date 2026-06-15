@@ -3,6 +3,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use saluki_common::sync::shutdown::ShutdownCoordinator;
 use saluki_error::{generic_error, GenericError};
 use tokio::{
     pin, select,
@@ -11,11 +12,11 @@ use tokio::{
 };
 use tracing::{debug, error, info, warn};
 
-use super::{shutdown::ComponentShutdownCoordinator, ComponentId};
+use super::ComponentId;
 
 /// A running topology.
 pub struct RunningTopology {
-    shutdown_coordinator: ComponentShutdownCoordinator,
+    shutdown_coordinator: ShutdownCoordinator,
     component_tasks: JoinSet<Result<(), GenericError>>,
     component_task_map: HashMap<Id, ComponentId>,
 }
@@ -23,7 +24,7 @@ pub struct RunningTopology {
 impl RunningTopology {
     /// Creates a new `RunningTopology`.
     pub(super) fn from_parts(
-        shutdown_coordinator: ComponentShutdownCoordinator, component_tasks: JoinSet<Result<(), GenericError>>,
+        shutdown_coordinator: ShutdownCoordinator, component_tasks: JoinSet<Result<(), GenericError>>,
         component_task_map: HashMap<Id, ComponentId>,
     ) -> Self {
         Self {

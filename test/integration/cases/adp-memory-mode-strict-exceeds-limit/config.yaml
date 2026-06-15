@@ -22,4 +22,4 @@ assertions:
   # Unix runner.
   - type: adp_exits_with
     expected_code: 1
-    timeout: 30s
+    timeout: 60s

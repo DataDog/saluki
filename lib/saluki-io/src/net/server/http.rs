@@ -15,9 +15,12 @@ use hyper_util::{
     server::conn::auto::Builder,
 };
 use rustls::ServerConfig;
-use saluki_common::task::{spawn_traced_named, HandleExt as _};
+use saluki_common::{
+    sync::shutdown::{ShutdownCoordinator, ShutdownHandle},
+    task::{spawn_traced_named, HandleExt as _},
+};
 use saluki_error::GenericError;
-use tokio::{runtime::Handle, select, sync::oneshot};
+use tokio::{pin, runtime::Handle, select, sync::oneshot};
 use tokio_rustls::TlsAcceptor;
 use tracing::{debug, error, info};
 
@@ -83,8 +86,8 @@ where
     ///
     /// Returns two handles: one for shutting down the server, and one for receiving any errors that occur while the
     /// server is running.
-    pub fn listen(self) -> (ShutdownHandle, ErrorHandle) {
-        let (shutdown_tx, mut shutdown_rx) = oneshot::channel();
+    pub fn listen(self) -> (ShutdownCoordinator, ErrorHandle) {
+        let (shutdown_coordinator, shutdown) = ShutdownHandle::paired();
         let (error_tx, error_rx) = oneshot::channel();
 
         let Self {
@@ -106,6 +109,8 @@ where
             });
 
             info!(listen_addr = %listener.listen_address(), tls_enabled, "HTTP server started.");
+
+            pin!(shutdown);
 
             loop {
                 select! {
@@ -145,7 +150,7 @@ where
                         }
                     },
 
-                    _ = &mut shutdown_rx => {
+                    _ = &mut shutdown => {
                         debug!(listen_addr = %listener.listen_address(), "Received shutdown signal.");
                         break;
                     }
@@ -155,19 +160,7 @@ where
             info!(listen_addr = %listener.listen_address(), "HTTP server stopped.");
         });
 
-        (ShutdownHandle(shutdown_tx), ErrorHandle(error_rx))
-    }
-}
-
-/// A handle for shutting down an [`HttpServer`].
-pub struct ShutdownHandle(oneshot::Sender<()>);
-
-impl ShutdownHandle {
-    /// Triggers the server to shutdown.
-    ///
-    /// This method doesn't wait for shutdown to occur.
-    pub fn shutdown(self) {
-        let _ = self.0.send(());
+        (shutdown_coordinator, ErrorHandle(error_rx))
     }
 }
 

@@ -159,6 +159,27 @@ mod tests {
                 2.0,
             )),
             Event::Metric(Metric::gauge("adp.network_http_retry_queue_size", 2.0)),
+            Event::Metric(Metric::gauge(
+                Context::from_static_parts(
+                    "adp.network_http_retry_queue_bytes_per_sec",
+                    &["domain:https://api.datadoghq.com"],
+                ),
+                10.0,
+            )),
+            Event::Metric(Metric::gauge(
+                Context::from_static_parts(
+                    "adp.network_http_retry_queue_capacity_secs",
+                    &["domain:https://api.datadoghq.com"],
+                ),
+                30.0,
+            )),
+            Event::Metric(Metric::gauge(
+                Context::from_static_parts(
+                    "adp.network_http_retry_queue_capacity_bytes",
+                    &["domain:https://api.datadoghq.com"],
+                ),
+                300.0,
+            )),
         ];
 
         let output = render_with(get_compat_remappings(), metrics);
@@ -177,6 +198,15 @@ mod tests {
         );
         assert!(output.contains("forwarder_transactions_errors{source=\"agent-data-plane\"} 3"));
         assert!(output.contains("forwarder_transactions_retry_queue_size{source=\"agent-data-plane\"} 2"));
+        assert!(output.contains(
+            "retry_queue_duration_bytes_per_sec{domain=\"https://api.datadoghq.com\",source=\"agent-data-plane\"} 10"
+        ));
+        assert!(output.contains(
+            "retry_queue_duration_capacity_secs{domain=\"https://api.datadoghq.com\",source=\"agent-data-plane\"} 30"
+        ));
+        assert!(output.contains(
+            "retry_queue_duration_capacity_bytes{domain=\"https://api.datadoghq.com\",source=\"agent-data-plane\"} 300"
+        ));
     }
 
     #[test]
@@ -207,6 +237,8 @@ mod tests {
             "forwarder_transactions_errors_by_type_sent_request_errors",
             "forwarder_transactions_retry_queue_size",
             "retry_queue_duration_bytes_per_sec",
+            "retry_queue_duration_capacity_secs",
+            "retry_queue_duration_capacity_bytes",
         ];
 
         for expected_name in expected_names {

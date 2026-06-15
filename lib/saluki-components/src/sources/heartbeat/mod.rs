@@ -7,6 +7,7 @@ use saluki_core::components::{sources::*, ComponentContext};
 use saluki_core::data_model::event::{metric::Metric, Event, EventType};
 use saluki_core::topology::OutputDefinition;
 use saluki_error::GenericError;
+use tokio::pin;
 use tokio::{select, time::interval};
 use tracing::{debug, error};
 
@@ -34,7 +35,9 @@ struct Heartbeat {
 #[async_trait]
 impl Source for Heartbeat {
     async fn run(self: Box<Self>, mut context: SourceContext) -> Result<(), GenericError> {
-        let mut global_shutdown = context.take_shutdown_handle();
+        let global_shutdown = context.take_shutdown_handle();
+        pin!(global_shutdown);
+
         let mut health = context.take_health_handle();
         let mut tick_interval = interval(Duration::from_secs(self.heartbeat_interval_secs));
 

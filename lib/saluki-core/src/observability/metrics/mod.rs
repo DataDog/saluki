@@ -18,7 +18,10 @@ use metrics::{
     Counter, Gauge, Histogram, Key, KeyName, Level, Metadata, Recorder, SetRecorderError, SharedString, Unit,
 };
 use metrics_util::registry::{AtomicStorage, Registry};
-use saluki_common::collections::{FastConcurrentHashMap, FastHashMap};
+use saluki_common::{
+    collections::{FastConcurrentHashMap, FastHashMap},
+    sync::shutdown::ShutdownHandle,
+};
 use saluki_context::{
     origin::RawOrigin,
     tags::{Tag, TagSet},
@@ -26,7 +29,7 @@ use saluki_context::{
 };
 use saluki_error::GenericError;
 use tokio::{
-    select,
+    pin, select,
     sync::broadcast::{self, error::RecvError, Receiver},
 };
 use tokio_util::sync::ReusableBoxFuture;
@@ -34,7 +37,7 @@ use tracing::debug;
 
 use crate::{
     data_model::event::{metric::*, Event},
-    runtime::{InitializationError, ProcessShutdown, Supervisable, SupervisorFuture},
+    runtime::{InitializationError, Supervisable, SupervisorFuture},
 };
 
 mod aggregated;
@@ -396,11 +399,13 @@ impl Supervisable for MetricsFlusherWorker {
         "internal-telemetry-metrics-flusher"
     }
 
-    async fn initialize(&self, mut process_shutdown: ProcessShutdown) -> Result<SupervisorFuture, InitializationError> {
+    async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
         Ok(Box::pin(async move {
+            pin!(process_shutdown);
+
             select! {
                 _ = flush_metrics(FLUSH_INTERVAL) => {},
-                _ = process_shutdown.wait_for_shutdown() => {},
+                _ = &mut process_shutdown => {},
             }
             Ok(())
         }))

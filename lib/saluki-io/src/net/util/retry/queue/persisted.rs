@@ -175,6 +175,28 @@ where
         self.entries.len()
     }
 
+    /// Returns the available on-disk capacity, in bytes.
+    ///
+    /// This reflects the lower of the configured queue limit and disk-usage-ratio limit, minus the bytes currently used
+    /// by persisted entries.
+    ///
+    /// # Errors
+    ///
+    /// If there is an error while retrieving the total or available space of the underlying volume, an error is returned.
+    pub async fn available_capacity_bytes(&self) -> Result<u64, GenericError> {
+        let disk_usage_retriever = self.disk_usage_retriever.clone();
+        let storage_max_disk_ratio = self.storage_max_disk_ratio;
+        let max_on_disk_bytes = self.max_on_disk_bytes;
+
+        let limit = tokio::task::spawn_blocking(move || {
+            on_disk_bytes_limit(disk_usage_retriever, storage_max_disk_ratio, max_on_disk_bytes)
+        })
+        .await
+        .error_context("Failed to run disk size limit check to completion.")??;
+
+        Ok(limit.saturating_sub(self.total_on_disk_bytes))
+    }
+
     /// Returns the number of entries that have been permanently dropped due to errors since the last call to this
     /// method, resetting the counter.
     pub fn take_entries_dropped(&mut self) -> u64 {

@@ -16,6 +16,8 @@ use tracing::debug;
 const FORWARDER_RETRY_QUEUE_PAYLOADS_MAX_SIZE_BYTES: u64 = 15 * 1024 * 1024;
 const FORWARDER_FLUSH_TO_DISK_MEM_RATIO: f64 = 0.5;
 const RETRY_TXN_DIR: &str = "transactions_to_retry";
+const RETRY_QUEUE_CAPACITY_DEFAULT_HISTORY_DURATION_SECS: u64 = 15 * 60;
+const RETRY_QUEUE_CAPACITY_MIN_HISTORY_DURATION_SECS: u64 = 10;
 
 const fn default_request_backoff_factor() -> f64 {
     2.0
@@ -51,6 +53,10 @@ const fn default_storage_max_disk_ratio() -> f64 {
 
 const fn default_outdated_file_in_days() -> u32 {
     10
+}
+
+const fn default_retry_queue_capacity_time_interval_secs() -> u64 {
+    RETRY_QUEUE_CAPACITY_DEFAULT_HISTORY_DURATION_SECS
 }
 
 /// Datadog Agent-specific forwarder retry configuration.
@@ -125,8 +131,8 @@ pub struct RetryConfiguration {
     ///
     /// When disk persistence is enabled and the in-memory retry queue does not have enough room for a new transaction,
     /// this controls how much in-memory data ADP moves to disk. For example, `0.5` moves at least half of the configured
-    /// in-memory retry queue size to disk during each overflow. If set to `0`, ADP drops only enough old transactions to
-    /// make room for the new transaction instead of flushing them to disk during overflow.
+    /// in-memory retry queue size to disk during each overflow. If set to `0`, ADP moves only enough old transactions to
+    /// disk to make room for the new transaction.
     ///
     /// Defaults to 0.5.
     #[serde(
@@ -167,6 +173,17 @@ pub struct RetryConfiguration {
         rename = "forwarder_outdated_file_in_days"
     )]
     outdated_file_in_days: u32,
+
+    /// The time window used to estimate retry queue capacity, in seconds.
+    ///
+    /// ADP records incoming transaction payload bytes over this window and uses that rate to estimate how many seconds
+    /// of data the retry queue can buffer. The default value is 900 seconds. Values below 10 seconds are clamped to 10
+    /// seconds, matching the fixed retry queue capacity bucket size.
+    #[serde(
+        default = "default_retry_queue_capacity_time_interval_secs",
+        rename = "forwarder_retry_queue_capacity_time_interval_sec"
+    )]
+    capacity_time_interval_secs: u64,
 }
 
 impl RetryConfiguration {
@@ -225,6 +242,15 @@ impl RetryConfiguration {
     /// Returns the maximum age in days for retry files on disk before they are deleted at startup.
     pub const fn outdated_file_in_days(&self) -> u32 {
         self.outdated_file_in_days
+    }
+
+    /// Returns the time window used to estimate retry queue capacity, in seconds.
+    pub const fn capacity_time_interval_secs(&self) -> u64 {
+        if self.capacity_time_interval_secs < RETRY_QUEUE_CAPACITY_MIN_HISTORY_DURATION_SECS {
+            RETRY_QUEUE_CAPACITY_MIN_HISTORY_DURATION_SECS
+        } else {
+            self.capacity_time_interval_secs
+        }
     }
 
     /// Creates a new [`DefaultHttpRetryPolicy`] based on the forwarder configuration.
@@ -393,6 +419,29 @@ mod tests {
         assert_eq!(
             retry_config.flush_to_disk_mem_ratio(),
             FORWARDER_FLUSH_TO_DISK_MEM_RATIO
+        );
+    }
+
+    #[tokio::test]
+    async fn capacity_time_interval_secs_uses_default_override_and_minimum() {
+        let (config, _) = ConfigurationLoader::for_tests(None, None, false).await;
+        let retry_config: RetryConfiguration = config.as_typed().expect("should deserialize");
+        assert_eq!(
+            retry_config.capacity_time_interval_secs(),
+            RETRY_QUEUE_CAPACITY_DEFAULT_HISTORY_DURATION_SECS
+        );
+
+        let values = json!({ "forwarder_retry_queue_capacity_time_interval_sec": 60 });
+        let (config, _) = ConfigurationLoader::for_tests(Some(values), None, false).await;
+        let retry_config: RetryConfiguration = config.as_typed().expect("should deserialize");
+        assert_eq!(retry_config.capacity_time_interval_secs(), 60);
+
+        let values = json!({ "forwarder_retry_queue_capacity_time_interval_sec": 1 });
+        let (config, _) = ConfigurationLoader::for_tests(Some(values), None, false).await;
+        let retry_config: RetryConfiguration = config.as_typed().expect("should deserialize");
+        assert_eq!(
+            retry_config.capacity_time_interval_secs(),
+            RETRY_QUEUE_CAPACITY_MIN_HISTORY_DURATION_SECS
         );
     }
 
