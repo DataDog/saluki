@@ -76,13 +76,11 @@ impl Default for RestartStrategy {
 
 /// Restart policy for an individual child process.
 ///
-/// Where [`RestartStrategy`] governs supervisor-wide behavior (which children are restarted together,
-/// and how often before the supervisor gives up), the restart policy governs whether an _individual_
-/// child is eligible for restart at all, based on how it exited. This mirrors the per-child restart
-/// configuration in Erlang/OTP.
+/// While [`RestartStrategy`] governs supervisor-wide behavior (which children are restarted together, and how often
+/// before the supervisor gives up), [`RestartType`] governs whether an _individual_ child is eligible for restart at
+/// all, based on how it exited.
 ///
-/// The default is [`Permanent`][Self::Permanent], which preserves the supervisor's historical behavior
-/// of always restarting a child that exits.
+/// Defaults to [`Permanent`][Self::Permanent], which marks a child process to always be restarted.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum RestartType {
     /// The child is always restarted, whether it exits normally or abnormally.
@@ -93,27 +91,26 @@ pub enum RestartType {
 
     /// The child is restarted only if it exits abnormally.
     ///
-    /// An abnormal exit is an error, panic, or forced abort. A normal exit (the child's future
-    /// resolves with `Ok(())`) is treated as intentional, and the child is not restarted.
+    /// An abnormal exit is an error, panic, or forced abort. A normal exit (the child's future resolves with `Ok(())`)
+    /// is treated as intentional, and the child is not restarted.
     Transient,
 
     /// The child is never restarted, regardless of how it exits.
     ///
-    /// This suits short-lived, on-demand children -- for example, one task per network connection --
-    /// whose termination is a normal part of operation.
+    /// This suits short-lived, on-demand children -- for example, one task per network connection -- whose termination
+    /// is a normal part of operation.
     ///
-    /// > **Note:** Mixing `Temporary` children into a non-dynamic supervisor that uses
-    /// > [`RestartMode::OneForAll`] is not yet fully supported: a one-for-all restart triggered by a
-    /// > sibling will currently restart temporary children as well. Temporary children are intended for
-    /// > one-for-one supervision (including the dynamic supervisor).
+    /// > **Note:** Mixing `Temporary` children into a non-dynamic supervisor that uses [`RestartMode::OneForAll`]
+    /// > is not yet fully supported: a one-for-all restart triggered by a sibling will currently restart temporary
+    /// > children as well. Temporary children are intended for one-for-one supervision (including the dynamic
+    /// > supervisor).
     Temporary,
 }
 
 impl RestartType {
-    /// Returns whether a child with this restart policy should be restarted, given how it exited.
+    /// Returns `true` if a child with this restart policy should be restarted, given how it exited.
     ///
-    /// `abnormal` indicates the child exited due to an error, panic, or forced abort, rather than
-    /// completing normally.
+    /// `abnormal` indicates the child exited due to an error, panic, or forced abort, rather than completing normally.
     pub(super) fn should_restart(self, abnormal: bool) -> bool {
         match self {
             Self::Permanent => true,

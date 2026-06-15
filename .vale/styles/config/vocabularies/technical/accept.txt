@@ -190,6 +190,7 @@ swappable
 syslog
 teardown
 tracestate
+typestate
 uid(s?)
 unary
 unescape

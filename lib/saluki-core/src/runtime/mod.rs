@@ -67,5 +67,6 @@ pub use self::restart::{RestartMode, RestartStrategy, RestartType};
 
 mod supervisor;
 pub use self::supervisor::{
-    InitializationError, ShutdownStrategy, Supervisable, Supervisor, SupervisorError, SupervisorFuture,
+    ChildSpecification, ChildState, InitializationError, ShutdownStrategy, Supervisable, Supervisor, SupervisorError,
+    SupervisorFuture, SupervisorSpec, WorkerSpec,
 };

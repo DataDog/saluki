@@ -175,20 +175,134 @@ pub enum SupervisorError {
     Shutdown,
 }
 
-/// A child process specification.
+/// A specification for a child process to be added to a [`Supervisor`].
 ///
-/// All workers added to a [`Supervisor`] must be specified as a `ChildSpecification`. This acts a template for how the
-/// supervisor should create the underlying future that represents the process, as well as information about the
-/// process, such as its name, shutdown strategy, and more.
+/// A child specification describes how the supervisor should create and manage a child: the underlying future that
+/// represents the process, along with metadata such as its name and shutdown strategy. It is the value accepted by
+/// [`Supervisor::add_worker`].
 ///
-/// A child process specification can be created implicitly from an existing [`Supervisor`], or any type that implements
-/// [`Supervisable`].
-pub enum ChildSpecification {
+/// The type parameter `S` is a [typestate] tracking what kind of child the specification holds:
+///
+/// - [`WorkerSpec`] -- a leaf worker (any type implementing [`Supervisable`]). Build one with
+///   [`ChildSpecification::worker`], then configure it via
+///   [`with_restart_type`][ChildSpecification::with_restart_type].
+/// - [`SupervisorSpec`] -- a nested [`Supervisor`], forming a supervision tree.
+///
+/// A specification can also be created implicitly: any [`Supervisable`] type converts into a
+/// `ChildSpecification<WorkerSpec>`, and a [`Supervisor`] converts into a `ChildSpecification<SupervisorSpec>`. Most
+/// callers therefore pass workers and supervisors to [`add_worker`][Supervisor::add_worker] directly, without naming
+/// this type, and only reach for [`ChildSpecification::worker`] when they need to configure a worker.
+///
+/// [typestate]: https://cliffle.com/blog/rust-typestate/
+pub struct ChildSpecification<S = WorkerSpec> {
+    spec_inner: S,
+}
+
+/// The [typestate] for a [`ChildSpecification`] that holds a leaf worker.
+///
+/// [typestate]: https://cliffle.com/blog/rust-typestate/
+pub struct WorkerSpec {
+    worker: Arc<dyn Supervisable>,
+    restart_type: RestartType,
+}
+
+/// The [typestate] for a [`ChildSpecification`] that holds a nested [`Supervisor`].
+///
+/// [typestate]: https://cliffle.com/blog/rust-typestate/
+pub struct SupervisorSpec {
+    supervisor: Supervisor,
+}
+
+impl ChildSpecification<WorkerSpec> {
+    /// Creates a specification for the given worker.
+    ///
+    /// The worker is registered with the [`RestartType::Permanent`] policy by default; use
+    /// [`with_restart_type`][Self::with_restart_type] to choose another.
+    pub fn worker<T: Supervisable + 'static>(worker: T) -> Self {
+        Self {
+            spec_inner: WorkerSpec {
+                worker: Arc::new(worker),
+                restart_type: RestartType::Permanent,
+            },
+        }
+    }
+
+    /// Sets the restart policy for this worker.
+    ///
+    /// See [`RestartType`] for the available policies and their caveats (in particular,
+    /// [`RestartType::Temporary`] is intended for one-for-one supervision).
+    #[must_use]
+    pub fn with_restart_type(mut self, restart_type: RestartType) -> Self {
+        self.spec_inner.restart_type = restart_type;
+        self
+    }
+}
+
+impl<T> From<T> for ChildSpecification<WorkerSpec>
+where
+    T: Supervisable + 'static,
+{
+    fn from(worker: T) -> Self {
+        Self::worker(worker)
+    }
+}
+
+impl From<Supervisor> for ChildSpecification<SupervisorSpec> {
+    fn from(supervisor: Supervisor) -> Self {
+        Self {
+            spec_inner: SupervisorSpec { supervisor },
+        }
+    }
+}
+
+mod sealed {
+    pub trait Sealed {}
+}
+
+impl sealed::Sealed for WorkerSpec {}
+impl sealed::Sealed for SupervisorSpec {}
+
+/// The state of a [`ChildSpecification`]'s [typestate] parameter.
+///
+/// This trait is implemented only for [`WorkerSpec`] and [`SupervisorSpec`], and is sealed: it cannot be implemented
+/// outside of this crate. It exists so that [`Supervisor::add_worker`] can accept a [`ChildSpecification`] in either
+/// state (as well as bare workers and supervisors) while lowering each into the supervisor's internal representation.
+///
+/// [typestate]: https://cliffle.com/blog/rust-typestate/
+pub trait ChildState: sealed::Sealed + Sized {
+    #[doc(hidden)]
+    fn register(spec: ChildSpecification<Self>, supervisor: &mut Supervisor);
+}
+
+impl ChildState for WorkerSpec {
+    fn register(spec: ChildSpecification<Self>, supervisor: &mut Supervisor) {
+        supervisor.push_child(ChildEntry {
+            child: SupervisedChild::Worker(spec.spec_inner.worker),
+            restart: spec.spec_inner.restart_type,
+        });
+    }
+}
+
+impl ChildState for SupervisorSpec {
+    fn register(spec: ChildSpecification<Self>, supervisor: &mut Supervisor) {
+        supervisor.push_child(ChildEntry {
+            child: SupervisedChild::Supervisor(spec.spec_inner.supervisor),
+            restart: RestartType::Permanent,
+        });
+    }
+}
+
+/// The type-erased, runnable form of a child: either a leaf worker or a nested supervisor.
+///
+/// This carries the behavior shared by both kinds of child -- creating the process and worker future, naming, and
+/// shutdown strategy. Public [`ChildSpecification`]s are lowered into this type when registered via
+/// [`ChildState::register`].
+enum SupervisedChild {
     Worker(Arc<dyn Supervisable>),
     Supervisor(Supervisor),
 }
 
-impl ChildSpecification {
+impl SupervisedChild {
     fn process_type(&self) -> &'static str {
         match self {
             Self::Worker(_) => "worker",
@@ -270,7 +384,7 @@ impl ChildSpecification {
     }
 }
 
-impl Clone for ChildSpecification {
+impl Clone for SupervisedChild {
     fn clone(&self) -> Self {
         match self {
             Self::Worker(worker) => Self::Worker(Arc::clone(worker)),
@@ -279,25 +393,10 @@ impl Clone for ChildSpecification {
     }
 }
 
-impl From<Supervisor> for ChildSpecification {
-    fn from(supervisor: Supervisor) -> Self {
-        Self::Supervisor(supervisor)
-    }
-}
-
-impl<T> From<T> for ChildSpecification
-where
-    T: Supervisable + 'static,
-{
-    fn from(worker: T) -> Self {
-        Self::Worker(Arc::new(worker))
-    }
-}
-
 /// A registered child: its specification together with the restart policy chosen at registration time.
 #[derive(Clone)]
 struct ChildEntry {
-    spec: ChildSpecification,
+    child: SupervisedChild,
     restart: RestartType,
 }
 
@@ -309,8 +408,8 @@ struct ChildEntry {
 /// creating the underlying worker future that's spawned, as well as other metadata, such as the worker's name, how the
 /// worker should be shutdown, and so on.
 ///
-/// Supervisors also (indirectly) implement the [`Supervisable`] trait, allowing them to be supervised by other
-/// supervisors in order to construct _supervision trees_.
+/// Supervisors can themselves be supervised by other supervisors, allowing _supervision trees_ to be constructed by
+/// adding one supervisor as a child of another.
 ///
 /// # Instrumentation
 ///
@@ -384,38 +483,38 @@ impl Supervisor {
         &self.runtime_mode
     }
 
-    /// Adds a worker to the supervisor.
+    /// Adds a worker (or nested supervisor) to the supervisor.
     ///
     /// A worker can be anything that implements the [`Supervisable`] trait. A [`Supervisor`] can also be added as a
     /// worker and managed in a nested fashion, known as a supervision tree.
     ///
-    /// The worker is registered with the [`RestartType::Permanent`] restart policy: it is always restarted when it
-    /// exits. Use [`add_worker_with_restart`][Self::add_worker_with_restart] to choose a different policy.
-    pub fn add_worker<T: Into<ChildSpecification>>(&mut self, process: T) {
-        self.add_worker_with_restart(process, RestartType::Permanent);
+    /// Bare workers and supervisors are registered with the [`RestartType::Permanent`] restart policy: they are always
+    /// restarted when they exit. To choose a different policy for a worker, build a [`ChildSpecification`] with
+    /// [`ChildSpecification::worker`] and configure it via
+    /// [`with_restart_type`][ChildSpecification::with_restart_type] before adding it.
+    pub fn add_worker<S, T>(&mut self, child: T)
+    where
+        S: ChildState,
+        T: Into<ChildSpecification<S>>,
+    {
+        S::register(child.into(), self);
     }
 
-    /// Adds a worker to the supervisor with an explicit restart policy.
-    ///
-    /// This behaves like [`add_worker`][Self::add_worker] but lets the caller choose the worker's [`RestartType`],
-    /// which controls whether the worker is restarted when it exits. See [`RestartType`] for the available policies and
-    /// their caveats (in particular, [`RestartType::Temporary`] is intended for one-for-one supervision).
-    pub fn add_worker_with_restart<T: Into<ChildSpecification>>(&mut self, process: T, restart: RestartType) {
-        let spec = process.into();
+    fn push_child(&mut self, entry: ChildEntry) {
         debug!(
             supervisor_id = %self.supervisor_id,
             "Adding new static child process #{}. ({}, {}, {:?})",
             self.child_specs.len(),
-            spec.process_type(),
-            spec.name(),
-            restart,
+            entry.child.process_type(),
+            entry.child.name(),
+            entry.restart,
         );
-        self.child_specs.push(ChildEntry { spec, restart });
+        self.child_specs.push(entry);
     }
 
-    fn get_child_spec(&self, child_spec_idx: usize) -> &ChildSpecification {
+    fn get_child_spec(&self, child_spec_idx: usize) -> &SupervisedChild {
         match self.child_specs.get(child_spec_idx) {
-            Some(entry) => &entry.spec,
+            Some(entry) => &entry.child,
             None => unreachable!("child spec index should never be out of bounds"),
         }
     }
@@ -653,7 +752,7 @@ impl WorkerState {
         }
     }
 
-    fn add_worker(&mut self, worker_id: usize, child_spec: &ChildSpecification) -> Result<(), SupervisorError> {
+    fn add_worker(&mut self, worker_id: usize, child_spec: &SupervisedChild) -> Result<(), SupervisorError> {
         let (shutdown_coordinator, shutdown_handle) = ShutdownHandle::paired();
         let process = child_spec.create_process(&self.process)?;
         let worker_future = child_spec.create_worker_future(process.clone(), shutdown_handle)?;
@@ -1110,7 +1209,7 @@ mod tests {
             RestartStrategy::one_to_one().with_intensity_and_period(20, Duration::from_secs(10)),
         );
         sup.add_worker(stable);
-        sup.add_worker_with_restart(temp, RestartType::Temporary);
+        sup.add_worker(ChildSpecification::worker(temp).with_restart_type(RestartType::Temporary));
 
         let (tx, handle) = run_supervisor_with_trigger(sup).await;
 
@@ -1138,7 +1237,7 @@ mod tests {
             RestartStrategy::one_to_one().with_intensity_and_period(20, Duration::from_secs(10)),
         );
         sup.add_worker(stable);
-        sup.add_worker_with_restart(transient, RestartType::Transient);
+        sup.add_worker(ChildSpecification::worker(transient).with_restart_type(RestartType::Transient));
 
         let (tx, handle) = run_supervisor_with_trigger(sup).await;
 
@@ -1162,7 +1261,7 @@ mod tests {
         let mut sup = Supervisor::new("test-sup").unwrap().with_restart_strategy(
             RestartStrategy::one_to_one().with_intensity_and_period(20, Duration::from_secs(10)),
         );
-        sup.add_worker_with_restart(transient, RestartType::Transient);
+        sup.add_worker(ChildSpecification::worker(transient).with_restart_type(RestartType::Transient));
 
         let (tx, handle) = run_supervisor_with_trigger(sup).await;
 
@@ -1195,7 +1294,7 @@ mod tests {
         ];
         let counts: Vec<_> = workers.iter().map(|w| w.start_count()).collect();
         for worker in workers {
-            sup.add_worker_with_restart(worker, RestartType::Temporary);
+            sup.add_worker(ChildSpecification::worker(worker).with_restart_type(RestartType::Temporary));
         }
         // A long-running worker so the supervisor doesn't simply idle once the temporaries are gone.
         sup.add_worker(MockWorker::long_running("stable-worker"));
@@ -1223,13 +1322,13 @@ mod tests {
         // When every child is temporary and they all exit, the worker set drains. The supervisor must not panic or exit
         // on its own; it should keep waiting until shutdown is triggered.
         let mut sup = Supervisor::new("test-sup").unwrap();
-        sup.add_worker_with_restart(
-            MockWorker::completing("temp-a", Duration::from_millis(30)),
-            RestartType::Temporary,
+        sup.add_worker(
+            ChildSpecification::worker(MockWorker::completing("temp-a", Duration::from_millis(30)))
+                .with_restart_type(RestartType::Temporary),
         );
-        sup.add_worker_with_restart(
-            MockWorker::completing("temp-b", Duration::from_millis(30)),
-            RestartType::Temporary,
+        sup.add_worker(
+            ChildSpecification::worker(MockWorker::completing("temp-b", Duration::from_millis(30)))
+                .with_restart_type(RestartType::Temporary),
         );
 
         let (tx, handle) = run_supervisor_with_trigger(sup).await;
