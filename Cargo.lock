@@ -139,8 +139,8 @@ dependencies = [
 
 [[package]]
 name = "antithesis_sdk"
-version = "0.2.8"
-source = "git+https://github.com/antithesishq/antithesis-sdk-rust?rev=6829a946e7e970cc743ffe17c3cee7d2bc25425a#6829a946e7e970cc743ffe17c3cee7d2bc25425a"
+version = "0.2.9"
+source = "git+https://github.com/antithesishq/antithesis-sdk-rust?rev=78c9db56771f0f6b01cb5404765c5a96852c159c#78c9db56771f0f6b01cb5404765c5a96852c159c"
 dependencies = [
  "libc",
  "libloading",
