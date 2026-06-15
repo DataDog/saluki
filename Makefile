@@ -26,6 +26,40 @@ export ADP_SPDX_LICENSES_VERSION := 3.28.0
 
 # ADP-specific settings used when running.
 export ADP_STANDALONE_IPC_CERT_FILE := /tmp/adp-ipc-cert.pem
+ADP_TOPOLOGY_DATA_DIR := docs/public/adp-topology
+ADP_TOPOLOGY_JSON_OUTPUT := $(ADP_TOPOLOGY_DATA_DIR)/current.json
+ADP_TOPOLOGY_MERMAID_OUTPUT := $(ADP_TOPOLOGY_DATA_DIR)/current.mmd
+ADP_TOPOLOGY_FORMAT := $(or $(FORMAT),json)
+ADP_TOPOLOGY_OUTPUT := $(if $(filter mermaid,$(ADP_TOPOLOGY_FORMAT)),$(or $(OUTPUT),$(ADP_TOPOLOGY_MERMAID_OUTPUT)),$(ADP_TOPOLOGY_JSON_OUTPUT))
+ADP_TOPOLOGY_VIEWER_URL := http://localhost:5173/saluki/agent-data-plane/topology
+
+ifneq ($(filter generate-adp-topology,$(MAKECMDGOALS)),)
+ifeq ($(strip $(CONFIG)),)
+$(error CONFIG is required. Usage: make generate-adp-topology CONFIG=./datadog.yaml [FORMAT=json|mermaid] [OUTPUT=./topology.mmd])
+endif
+ifneq ($(filter-out json mermaid,$(ADP_TOPOLOGY_FORMAT)),)
+$(error FORMAT must be 'json' or 'mermaid')
+endif
+ifneq ($(strip $(OUTPUT)),)
+ifneq ($(ADP_TOPOLOGY_FORMAT),mermaid)
+$(error OUTPUT is only valid when FORMAT=mermaid)
+endif
+endif
+endif
+
+ifneq ($(filter run-adp-topology-viewer,$(MAKECMDGOALS)),)
+ifeq ($(strip $(CONFIG)),)
+$(error CONFIG is required. Usage: make run-adp-topology-viewer CONFIG=./datadog.yaml)
+endif
+ifneq ($(strip $(FORMAT)),)
+ifneq ($(FORMAT),json)
+$(error FORMAT is not valid for run-adp-topology-viewer; the viewer always uses JSON)
+endif
+endif
+ifneq ($(strip $(OUTPUT)),)
+$(error OUTPUT is not valid for run-adp-topology-viewer; the viewer always uses $(ADP_TOPOLOGY_JSON_OUTPUT))
+endif
+endif
 
 # macOS integration-test settings.
 MACOS_TEST_AGENT_VERSION ?= 7.78.0
@@ -365,6 +399,22 @@ run-adp-standalone-release: ## Runs ADP locally in standalone mode (release)
 	DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
 	DD_IPC_CERT_FILE_PATH=$(ADP_STANDALONE_IPC_CERT_FILE) \
 	target/release/agent-data-plane --config /tmp/adp-empty-config.yaml run
+
+.PHONY: generate-adp-topology
+generate-adp-topology: build-adp
+generate-adp-topology: ## Generates ADP topology data for the docs viewer (FORMAT=json|mermaid, CONFIG=...)
+	@mkdir -p "$(dir $(ADP_TOPOLOGY_OUTPUT))"
+	@echo "[*] Generating ADP topology ($(ADP_TOPOLOGY_FORMAT)): $(ADP_TOPOLOGY_OUTPUT)"
+	@DD_API_KEY="$${DD_API_KEY:-api-key-adp-topology-viewer}" \
+	target/devel/agent-data-plane --config "$(CONFIG)" debug topology --format "$(ADP_TOPOLOGY_FORMAT)" > "$(ADP_TOPOLOGY_OUTPUT)"
+
+.PHONY: run-adp-topology-viewer
+run-adp-topology-viewer: check-js-build-tools
+run-adp-topology-viewer: ## Generates ADP topology data and runs the docs viewer (CONFIG=...)
+	@$(MAKE) --no-print-directory generate-adp-topology CONFIG="$(CONFIG)" FORMAT=json
+	@echo "[*] Topology viewer: $(ADP_TOPOLOGY_VIEWER_URL)"
+	@bun install
+	@bun run docs:dev
 
 ##@ Kubernetes
 
