@@ -7,8 +7,8 @@ pub use self::config::handle_config_command;
 use self::config::ConfigCommand;
 
 mod debug;
-pub use self::debug::handle_debug_command;
 use self::debug::DebugCommand;
+pub use self::debug::{handle_debug_command, handle_debug_topology_command_if_requested};
 
 mod dogstatsd;
 pub use self::dogstatsd::handle_dogstatsd_command;

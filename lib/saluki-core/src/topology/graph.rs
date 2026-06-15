@@ -7,7 +7,10 @@ use std::{
 use indexmap::IndexSet;
 use snafu::Snafu;
 
-use super::{ComponentId, ComponentOutputId, OutputDefinition, OutputName, TypedComponentId, TypedComponentOutputId};
+use super::{
+    ComponentId, ComponentOutputId, OutputDefinition, OutputName, TopologyComponentSnapshot, TopologyDataTypeSnapshot,
+    TopologyEdgeSnapshot, TopologyOutputSnapshot, TopologySnapshot, TypedComponentId, TypedComponentOutputId,
+};
 use crate::{
     components::{
         decoders::DecoderBuilder, destinations::DestinationBuilder, encoders::EncoderBuilder,
@@ -594,6 +597,91 @@ impl Graph {
         }
 
         mappings
+    }
+
+    pub(super) fn snapshot(&self) -> TopologySnapshot {
+        let mut components = self
+            .nodes
+            .iter()
+            .map(|(component_id, node)| self.snapshot_component(component_id, node))
+            .collect::<Vec<_>>();
+        components.sort_by(|left, right| left.id().cmp(right.id()));
+
+        let mut edges = self
+            .edges
+            .iter()
+            .map(|edge| {
+                TopologyEdgeSnapshot::new(
+                    edge.from.to_string(),
+                    edge.to.to_string(),
+                    data_type_snapshot(self.get_output_type(&edge.from)),
+                )
+            })
+            .collect::<Vec<_>>();
+        edges.sort_by(|left, right| left.from().cmp(right.from()).then_with(|| left.to().cmp(right.to())));
+
+        TopologySnapshot::new(components, edges)
+    }
+
+    fn snapshot_component(&self, component_id: &ComponentId, node: &Node) -> TopologyComponentSnapshot {
+        let component_type = self
+            .get_component_type(component_id)
+            .expect("component should exist in graph");
+        let input = match node {
+            Node::Source { .. } | Node::Relay { .. } => None,
+            Node::Decoder { input_ty, .. } => Some(data_type_snapshot((*input_ty).into())),
+            Node::Transform { input_ty, .. } => Some(data_type_snapshot((*input_ty).into())),
+            Node::Encoder { input_ty, .. } => Some(data_type_snapshot((*input_ty).into())),
+            Node::Forwarder { input_ty } => Some(data_type_snapshot((*input_ty).into())),
+            Node::Destination { input_ty } => Some(data_type_snapshot((*input_ty).into())),
+        };
+        let mut outputs = match node {
+            Node::Source { outputs } | Node::Relay { outputs } | Node::Transform { outputs, .. } => outputs
+                .iter()
+                .map(|output| {
+                    let component_output = output.component_output();
+                    output_snapshot(
+                        component_output.to_string(),
+                        component_output.output().to_string(),
+                        output.output_ty(),
+                    )
+                })
+                .collect::<Vec<_>>(),
+            Node::Decoder { output_ty, .. } => vec![output_snapshot(
+                component_id.to_string(),
+                OutputName::Default.to_string(),
+                (*output_ty).into(),
+            )],
+            Node::Encoder { output_ty, .. } => vec![output_snapshot(
+                component_id.to_string(),
+                OutputName::Default.to_string(),
+                (*output_ty).into(),
+            )],
+            Node::Forwarder { .. } | Node::Destination { .. } => Vec::new(),
+        };
+        outputs.sort_by(|left, right| left.id().cmp(right.id()));
+
+        TopologyComponentSnapshot::new(
+            component_id.to_string(),
+            component_type.as_str().to_string(),
+            input,
+            outputs,
+        )
+    }
+}
+
+fn output_snapshot(id: String, name: String, data_type: DataType) -> TopologyOutputSnapshot {
+    TopologyOutputSnapshot::new(id, name, data_type_snapshot(data_type))
+}
+
+fn data_type_snapshot(data_type: DataType) -> TopologyDataTypeSnapshot {
+    match data_type {
+        DataType::Event(event_type) => {
+            TopologyDataTypeSnapshot::new("event", event_type.signal_names(), event_type.to_string())
+        }
+        DataType::Payload(payload_type) => {
+            TopologyDataTypeSnapshot::new("payload", payload_type.kind_names(), payload_type.to_string())
+        }
     }
 }
 
@@ -1342,6 +1430,138 @@ mod test {
             decoder_connections.len(),
             1,
             "decoder default output should have 1 connection"
+        );
+    }
+
+    #[test]
+    fn snapshot_includes_components_outputs_data_types_and_edges() {
+        let mut graph = Graph::default();
+        graph
+            .with_relay_multiple_outputs(
+                "relay_in",
+                &[(None, PayloadType::Raw), (Some("grpc"), PayloadType::Grpc)],
+            )
+            .with_decoder("decoder", PayloadType::Raw, EventType::Metric)
+            .with_transform_multiple_outputs(
+                "fanout",
+                EventType::Metric,
+                &[(None, EventType::Metric), (Some("errors"), EventType::EventD)],
+            )
+            .with_encoder("encode", EventType::Metric, PayloadType::Http)
+            .with_forwarder("forward", PayloadType::Http)
+            .with_destination("error_out", EventType::EventD)
+            .with_edge("relay_in", "decoder")
+            .with_edge("decoder", "fanout")
+            .with_edge("fanout", "encode")
+            .with_edge("fanout.errors", "error_out")
+            .with_edge("encode", "forward");
+
+        let snapshot = serde_json::to_value(graph.snapshot()).expect("snapshot should serialize");
+
+        assert_eq!(
+            snapshot,
+            serde_json::json!({
+                "schema_version": 1,
+                "components": [
+                    {
+                        "id": "decoder",
+                        "kind": "decoder",
+                        "input": { "category": "payload", "signals": ["raw"], "label": "Raw" },
+                        "outputs": [
+                            {
+                                "id": "decoder",
+                                "name": "_default",
+                                "data_type": { "category": "event", "signals": ["metrics"], "label": "Metric" }
+                            }
+                        ]
+                    },
+                    {
+                        "id": "encode",
+                        "kind": "encoder",
+                        "input": { "category": "event", "signals": ["metrics"], "label": "Metric" },
+                        "outputs": [
+                            {
+                                "id": "encode",
+                                "name": "_default",
+                                "data_type": { "category": "payload", "signals": ["http"], "label": "HTTP" }
+                            }
+                        ]
+                    },
+                    {
+                        "id": "error_out",
+                        "kind": "destination",
+                        "input": { "category": "event", "signals": ["events"], "label": "DatadogEvent" },
+                        "outputs": []
+                    },
+                    {
+                        "id": "fanout",
+                        "kind": "transform",
+                        "input": { "category": "event", "signals": ["metrics"], "label": "Metric" },
+                        "outputs": [
+                            {
+                                "id": "fanout",
+                                "name": "_default",
+                                "data_type": { "category": "event", "signals": ["metrics"], "label": "Metric" }
+                            },
+                            {
+                                "id": "fanout.errors",
+                                "name": "errors",
+                                "data_type": { "category": "event", "signals": ["events"], "label": "DatadogEvent" }
+                            }
+                        ]
+                    },
+                    {
+                        "id": "forward",
+                        "kind": "forwarder",
+                        "input": { "category": "payload", "signals": ["http"], "label": "HTTP" },
+                        "outputs": []
+                    },
+                    {
+                        "id": "relay_in",
+                        "kind": "relay",
+                        "input": null,
+                        "outputs": [
+                            {
+                                "id": "relay_in",
+                                "name": "_default",
+                                "data_type": { "category": "payload", "signals": ["raw"], "label": "Raw" }
+                            },
+                            {
+                                "id": "relay_in.grpc",
+                                "name": "grpc",
+                                "data_type": { "category": "payload", "signals": ["grpc"], "label": "gRPC" }
+                            }
+                        ]
+                    }
+                ],
+                "edges": [
+                    {
+                        "from": "decoder",
+                        "to": "fanout",
+                        "data_type": { "category": "event", "signals": ["metrics"], "label": "Metric" }
+                    },
+                    {
+                        "from": "encode",
+                        "to": "forward",
+                        "data_type": { "category": "payload", "signals": ["http"], "label": "HTTP" }
+                    },
+                    {
+                        "from": "fanout",
+                        "to": "encode",
+                        "data_type": { "category": "event", "signals": ["metrics"], "label": "Metric" }
+                    },
+                    {
+                        "from": "fanout.errors",
+                        "to": "error_out",
+                        "data_type": { "category": "event", "signals": ["events"], "label": "DatadogEvent" }
+                    },
+                    {
+                        "from": "relay_in",
+                        "to": "decoder",
+                        "data_type": { "category": "payload", "signals": ["raw"], "label": "Raw" }
+                    }
+                ]
+            })
         );
     }
 }

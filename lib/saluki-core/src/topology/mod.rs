@@ -27,6 +27,12 @@ use self::interconnect::{Consumer, Dispatcher};
 
 mod running;
 
+mod snapshot;
+pub use self::snapshot::{
+    TopologyComponentSnapshot, TopologyDataTypeSnapshot, TopologyEdgeSnapshot, TopologyOutputSnapshot,
+    TopologySnapshot, TOPOLOGY_SNAPSHOT_SCHEMA_VERSION,
+};
+
 #[cfg(test)]
 pub(super) mod test_util;
 

@@ -40,6 +40,30 @@ impl Default for PayloadType {
     }
 }
 
+impl PayloadType {
+    /// Returns stable lowercase names for the payload kinds represented by this type.
+    ///
+    /// Names are returned in the same order used by the `Display` implementation. If the bitmask is empty, an empty
+    /// vector is returned.
+    pub fn kind_names(&self) -> Vec<&'static str> {
+        let mut kinds = Vec::new();
+
+        if self.contains(Self::Raw) {
+            kinds.push("raw");
+        }
+
+        if self.contains(Self::Http) {
+            kinds.push("http");
+        }
+
+        if self.contains(Self::Grpc) {
+            kinds.push("grpc");
+        }
+
+        kinds
+    }
+}
+
 impl fmt::Display for PayloadType {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let mut types = Vec::new();
@@ -124,5 +148,16 @@ impl Payload {
 impl Dispatchable for Payload {
     fn item_count(&self) -> usize {
         1
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn kind_names_returns_stable_names_for_bitmask() {
+        assert_eq!(PayloadType::Http.kind_names(), vec!["http"]);
+        assert_eq!((PayloadType::Raw | PayloadType::Grpc).kind_names(), vec!["raw", "grpc"]);
     }
 }

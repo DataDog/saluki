@@ -250,7 +250,7 @@ async fn wait_for_sigint() {
 }
 
 /// Returns the set of [`Pipeline`] variants that are active based on our configuration.
-fn active_pipelines(dp_config: &DataPlaneConfiguration) -> HashSet<Pipeline> {
+pub(in crate::cli) fn active_pipelines(dp_config: &DataPlaneConfiguration) -> HashSet<Pipeline> {
     let mut s = HashSet::new();
     if dp_config.dogstatsd().enabled() {
         s.insert(Pipeline::DogStatsD);
@@ -285,7 +285,7 @@ fn active_pipelines(dp_config: &DataPlaneConfiguration) -> HashSet<Pipeline> {
 /// keys, all keys are checked before returning. The error reports the count of incompatible keys;
 /// individual keys are logged at error level during iteration.
 ///
-fn check_and_warn_config(
+pub(in crate::cli) fn check_and_warn_config(
     config: &GenericConfiguration, active_pipelines: &HashSet<Pipeline>,
 ) -> Result<(), GenericError> {
     let classifier = ConfigClassifier::new();
@@ -357,7 +357,7 @@ fn is_a_pipeline_affected(active_pipelines: &HashSet<Pipeline>, pipeline_affinit
     }
 }
 
-async fn create_topology(
+pub(in crate::cli) async fn create_topology(
     config: &GenericConfiguration, dp_config: &DataPlaneConfiguration, env_provider: &ADPEnvironmentProvider,
     component_registry: &ComponentRegistry,
 ) -> Result<(TopologyBlueprint, TopologyControlSurfaces), GenericError> {
