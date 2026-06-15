@@ -67,11 +67,9 @@ pub use self::restart::{RestartMode, RestartStrategy, RestartType};
 
 mod supervisor;
 pub use self::supervisor::{
-    ChildSpecification, ChildState, DynamicSupervisorSpec, InitializationError, ShutdownStrategy, Supervisable,
-    Supervisor, SupervisorError, SupervisorFuture, SupervisorSpec, WorkerSpec,
+    AutoShutdown, ChildId, ChildSpecification, ChildState, InitializationError, ShutdownMode, ShutdownStrategy,
+    SpawnError, Supervisable, Supervisor, SupervisorError, SupervisorFuture, SupervisorHandle, SupervisorSpec,
+    WorkerSpec,
 };
 
 mod worker_state;
-
-mod dynamic;
-pub use self::dynamic::{DynChildId, DynamicSupervisor, DynamicSupervisorHandle, SpawnError};

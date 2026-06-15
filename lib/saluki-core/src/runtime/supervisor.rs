@@ -1,15 +1,29 @@
-use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
+use std::{
+    future::Future,
+    pin::Pin,
+    sync::{
+        atomic::{AtomicU64, AtomicUsize, Ordering},
+        Arc, Mutex,
+    },
+    time::Duration,
+};
 
 use async_trait::async_trait;
+use saluki_common::collections::FastHashMap;
 use saluki_common::sync::shutdown::ShutdownHandle;
 use saluki_error::GenericError;
 use snafu::{OptionExt as _, Snafu};
-use tokio::{pin, select};
+use tokio::{
+    pin, select,
+    sync::{
+        mpsc::{self, UnboundedSender},
+        oneshot, OwnedSemaphorePermit, Semaphore,
+    },
+};
 use tracing::{debug, error, warn};
 
 use super::{
     dedicated::{spawn_dedicated_runtime, RuntimeConfiguration, RuntimeMode},
-    dynamic::DynamicSupervisor,
     restart::{RestartAction, RestartMode, RestartState, RestartStrategy, RestartType},
     worker_state::WorkerState,
 };
@@ -113,6 +127,42 @@ pub enum ShutdownStrategy {
     Brutal,
 }
 
+/// Policy for automatically shutting a supervisor down based on the termination of its _significant_ children.
+///
+/// A significant child (see [`ChildSpecification::with_significant`]) is one whose termination -- when it isn't restarted -- can
+/// drive the supervisor to shut down. This mirrors Erlang/OTP's `auto_shutdown` supervisor flag, and is how an
+/// unexpected (or intentional) child exit cascades into the supervisor stopping, and thus propagating up the tree,
+/// without that child being restarted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum AutoShutdown {
+    /// Never shut down automatically; significant children have no special effect. This is the default.
+    #[default]
+    Never,
+
+    /// Shut down as soon as _any_ significant child terminates without being restarted.
+    AnySignificant,
+
+    /// Shut down once _all_ significant children have terminated without being restarted.
+    AllSignificant,
+}
+
+/// How a supervisor shuts its children down.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum ShutdownMode {
+    /// Shut children down one at a time, in reverse order of starting (last-started first).
+    ///
+    /// This is the default, and is appropriate when later children may depend on earlier ones: each child is fully
+    /// stopped before the next is signalled.
+    #[default]
+    Ordered,
+
+    /// Shut all children down at once and wait for them concurrently.
+    ///
+    /// Total shutdown time is bounded by the slowest child rather than the sum of all children, which suits large,
+    /// independent child sets -- for example, one task per network connection.
+    Concurrent,
+}
+
 /// A supervisable process.
 #[async_trait]
 pub trait Supervisable: Send + Sync {
@@ -151,10 +201,6 @@ pub enum SupervisorError {
         name: String,
     },
 
-    /// The supervisor has no child processes.
-    #[snafu(display("Supervisor has no child processes."))]
-    NoChildren,
-
     /// A child process failed to initialize.
     ///
     /// This error indicates that a child couldn't complete its async initialization. This is distinct from runtime
@@ -171,6 +217,13 @@ pub enum SupervisorError {
     /// The supervisor exceeded its restart limits and was forced to shutdown.
     #[snafu(display("Supervisor has exceeded restart limits and was forced to shutdown."))]
     Shutdown,
+
+    /// The supervisor shut down because a significant child terminated.
+    ///
+    /// See [`AutoShutdown`] and [`ChildSpecification::with_significant`]. The supervisor stopped, and drained its remaining
+    /// children, because a child marked significant terminated without being restarted.
+    #[snafu(display("Supervisor shut down after a significant child terminated."))]
+    SignificantChildExited,
 }
 
 /// A specification for a process to be added to a [`Supervisor`].
@@ -195,19 +248,12 @@ pub struct ChildSpecification<S = WorkerSpec> {
 /// Child specification state for a worker.
 pub struct WorkerSpec {
     worker: Arc<dyn Supervisable>,
-    restart_type: RestartType,
+    config: ChildConfig,
 }
 
 /// Child specification state for a supervisor.
 pub struct SupervisorSpec {
     supervisor: Supervisor,
-}
-
-/// The [typestate] for a [`ChildSpecification`] that holds a nested [`DynamicSupervisor`].
-///
-/// [typestate]: https://cliffle.com/blog/rust-typestate/
-pub struct DynamicSupervisorSpec {
-    supervisor: DynamicSupervisor,
 }
 
 impl ChildSpecification<WorkerSpec> {
@@ -216,7 +262,7 @@ impl ChildSpecification<WorkerSpec> {
         Self {
             spec_inner: WorkerSpec {
                 worker: Arc::new(worker),
-                restart_type: RestartType::Permanent,
+                config: ChildConfig::default(),
             },
         }
     }
@@ -226,8 +272,24 @@ impl ChildSpecification<WorkerSpec> {
     /// Defaults to [`RestartType::Permanent`].
     #[must_use]
     pub fn with_restart_type(mut self, restart_type: RestartType) -> Self {
-        self.spec_inner.restart_type = restart_type;
+        self.spec_inner.config.restart = restart_type;
         self
+    }
+
+    /// Sets whether this worker is _significant_.
+    ///
+    /// A significant worker's termination (when it isn't restarted) can drive the supervisor to shut down, per the
+    /// supervisor's [`AutoShutdown`] policy. Only meaningful for non-permanent workers, since a permanent worker is
+    /// always restarted and so never terminates without being restarted.
+    #[must_use]
+    pub fn with_significant(mut self, significant: bool) -> Self {
+        self.spec_inner.config.significant = significant;
+        self
+    }
+
+    /// Lowers this worker specification into its type-erased child and configuration.
+    fn into_worker_parts(self) -> (SupervisedChild, ChildConfig) {
+        (SupervisedChild::Worker(self.spec_inner.worker), self.spec_inner.config)
     }
 }
 
@@ -248,27 +310,18 @@ impl From<Supervisor> for ChildSpecification<SupervisorSpec> {
     }
 }
 
-impl From<DynamicSupervisor> for ChildSpecification<DynamicSupervisorSpec> {
-    fn from(supervisor: DynamicSupervisor) -> Self {
-        Self {
-            spec_inner: DynamicSupervisorSpec { supervisor },
-        }
-    }
-}
-
 mod sealed {
     pub trait Sealed {}
 }
 
 impl sealed::Sealed for WorkerSpec {}
 impl sealed::Sealed for SupervisorSpec {}
-impl sealed::Sealed for DynamicSupervisorSpec {}
 
 /// Child specification state.
 ///
 /// This trait is sealed -- it cannot be implemented outside of this crate -- and is implemented only for
-/// [`WorkerSpec`], [`SupervisorSpec`], and [`DynamicSupervisorSpec`]. It exists so that [`Supervisor::add_worker`] can
-/// accept a [`ChildSpecification`] in any state (as well as bare workers and supervisors) while lowering each into the
+/// [`WorkerSpec`] and [`SupervisorSpec`]. It exists so that [`Supervisor::add_worker`] can accept a
+/// [`ChildSpecification`] in either state (as well as bare workers and supervisors) while lowering each into the
 /// supervisor's internal representation.
 pub trait ChildState: sealed::Sealed + Sized {
     #[doc(hidden)]
@@ -277,9 +330,11 @@ pub trait ChildState: sealed::Sealed + Sized {
 
 impl ChildState for WorkerSpec {
     fn register(spec: ChildSpecification<Self>, supervisor: &mut Supervisor) {
+        let (child, config) = spec.into_worker_parts();
         supervisor.push_child(ChildEntry {
-            child: SupervisedChild::Worker(spec.spec_inner.worker),
-            restart: spec.spec_inner.restart_type,
+            spec: child,
+            config,
+            dynamic: false,
         });
     }
 }
@@ -287,17 +342,9 @@ impl ChildState for WorkerSpec {
 impl ChildState for SupervisorSpec {
     fn register(spec: ChildSpecification<Self>, supervisor: &mut Supervisor) {
         supervisor.push_child(ChildEntry {
-            child: SupervisedChild::Supervisor(spec.spec_inner.supervisor),
-            restart: RestartType::Permanent,
-        });
-    }
-}
-
-impl ChildState for DynamicSupervisorSpec {
-    fn register(spec: ChildSpecification<Self>, supervisor: &mut Supervisor) {
-        supervisor.push_child(ChildEntry {
-            child: SupervisedChild::Dynamic(spec.spec_inner.supervisor),
-            restart: RestartType::Permanent,
+            spec: SupervisedChild::Supervisor(spec.spec_inner.supervisor),
+            config: ChildConfig::default(),
+            dynamic: false,
         });
     }
 }
@@ -306,7 +353,6 @@ impl ChildState for DynamicSupervisorSpec {
 pub(super) enum SupervisedChild {
     Worker(Arc<dyn Supervisable>),
     Supervisor(Supervisor),
-    Dynamic(DynamicSupervisor),
 }
 
 impl SupervisedChild {
@@ -314,7 +360,6 @@ impl SupervisedChild {
         match self {
             Self::Worker(_) => "worker",
             Self::Supervisor(_) => "supervisor",
-            Self::Dynamic(_) => "dynamic-supervisor",
         }
     }
 
@@ -322,7 +367,6 @@ impl SupervisedChild {
         match self {
             Self::Worker(worker) => worker.name(),
             Self::Supervisor(supervisor) => &supervisor.supervisor_id,
-            Self::Dynamic(dynamic) => dynamic.name(),
         }
     }
 
@@ -332,7 +376,7 @@ impl SupervisedChild {
 
             // Supervisors should always be given as much time as necessary shutdown down gracefully to ensure that the
             // entire supervision subtree can be shutdown cleanly.
-            Self::Supervisor(_) | Self::Dynamic(_) => ShutdownStrategy::Graceful(Duration::MAX),
+            Self::Supervisor(_) => ShutdownStrategy::Graceful(Duration::MAX),
         }
     }
 
@@ -346,9 +390,6 @@ impl SupervisedChild {
                     name: sup.supervisor_id.to_string(),
                 })
             }
-            Self::Dynamic(dynamic) => Process::supervisor(dynamic.name(), Some(parent_process)).context(InvalidName {
-                name: dynamic.name().to_string(),
-            }),
         }
     }
 
@@ -392,7 +433,6 @@ impl SupervisedChild {
                     }
                 }
             }
-            Self::Dynamic(dynamic) => Ok(dynamic.as_nested_dynamic(process, process_shutdown)),
         }
     }
 }
@@ -402,16 +442,194 @@ impl Clone for SupervisedChild {
         match self {
             Self::Worker(worker) => Self::Worker(Arc::clone(worker)),
             Self::Supervisor(supervisor) => Self::Supervisor(supervisor.inner_clone()),
-            Self::Dynamic(dynamic) => Self::Dynamic(dynamic.clone()),
         }
     }
 }
 
-/// A registered child: its specification together with the restart policy chosen at registration time.
+/// Per-child configuration: its [`RestartType`] and whether it is _significant_ (see [`AutoShutdown`]).
+///
+/// Defaults to a permanent, non-significant child. On a worker, this is set through
+/// [`ChildSpecification::with_restart_type`] and [`ChildSpecification::with_significant`].
+#[derive(Clone, Copy, Debug)]
+struct ChildConfig {
+    restart: RestartType,
+    significant: bool,
+}
+
+impl Default for ChildConfig {
+    fn default() -> Self {
+        Self {
+            restart: RestartType::Permanent,
+            significant: false,
+        }
+    }
+}
+
+/// A registered child: its specification together with the configuration chosen at registration time.
 #[derive(Clone)]
 struct ChildEntry {
-    child: SupervisedChild,
-    restart: RestartType,
+    spec: SupervisedChild,
+    config: ChildConfig,
+    /// Whether this child was added dynamically (via [`SupervisorHandle`]) rather than statically before the run. Used
+    /// to maintain the dynamic-children gauge and to enforce `max_dynamic_children`.
+    dynamic: bool,
+}
+
+/// Identifier for a child managed by a [`Supervisor`].
+///
+/// Returned by [`SupervisorHandle::spawn`] for dynamically spawned children. Unique within a single process for the
+/// lifetime of a supervisor run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ChildId(u64);
+
+impl ChildId {
+    /// Returns the raw numeric value of this identifier.
+    pub fn as_u64(self) -> u64 {
+        self.0
+    }
+}
+
+/// Error returned when spawning a dynamic child on a [`Supervisor`] fails.
+#[derive(Debug, Snafu)]
+pub enum SpawnError {
+    /// The supervisor is already running its configured maximum number of dynamic children.
+    #[snafu(display("supervisor is at capacity ({} dynamic children)", max))]
+    AtCapacity {
+        /// The configured maximum-dynamic-children limit.
+        max: usize,
+    },
+
+    /// The supervisor isn't currently running: it either hasn't started yet, or has shut down.
+    #[snafu(display("supervisor is not running"))]
+    SupervisorGone,
+}
+
+/// A command sent from a [`SupervisorHandle`] to a running [`Supervisor`].
+enum DynCommand {
+    /// Spawn a new dynamic child.
+    Spawn {
+        id: u64,
+        spec: SupervisedChild,
+        config: ChildConfig,
+        permit: Option<OwnedSemaphorePermit>,
+        ack: Option<oneshot::Sender<()>>,
+    },
+}
+
+/// A handle for spawning dynamic children on a running [`Supervisor`].
+///
+/// Obtained from [`Supervisor::handle`] before the supervisor runs. Handles are cheap to clone and can be shared across
+/// tasks; spawning is non-blocking. A handle keeps working across supervisor restarts -- it always routes to the
+/// currently running supervisor -- and returns [`SpawnError::SupervisorGone`] when none is running.
+#[derive(Clone)]
+pub struct SupervisorHandle {
+    name: Arc<str>,
+    current_tx: Arc<Mutex<Option<UnboundedSender<DynCommand>>>>,
+    id_counter: Arc<AtomicU64>,
+    active: Arc<AtomicUsize>,
+    permits: Option<Arc<Semaphore>>,
+    max_dynamic_children: Option<usize>,
+}
+
+impl SupervisorHandle {
+    /// Returns the name of the supervisor this handle refers to.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Spawns a new dynamic worker, defaulting to a temporary, non-significant policy.
+    ///
+    /// The worker begins initializing in its own task; this returns as soon as the request is handed to the supervisor.
+    /// Use [`spawn_confirmed`](Self::spawn_confirmed) to wait until the child has been registered, or
+    /// [`spawn_with`](Self::spawn_with) to configure the child's restart policy or significance.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SpawnError::AtCapacity`] if a maximum-dynamic-children limit is configured and currently reached, or
+    /// [`SpawnError::SupervisorGone`] if the supervisor isn't running.
+    pub fn spawn<T: Supervisable + 'static>(&self, worker: T) -> Result<ChildId, SpawnError> {
+        self.spawn_with(ChildSpecification::worker(worker).with_restart_type(RestartType::Temporary))
+    }
+
+    /// Spawns a new dynamic child from a fully configured [`ChildSpecification`].
+    ///
+    /// Unlike [`spawn`](Self::spawn), the child's restart policy and significance are taken from `spec` as-is, so set
+    /// [`with_restart_type`][ChildSpecification::with_restart_type] explicitly (dynamic children are usually
+    /// [`RestartType::Temporary`]).
+    ///
+    /// # Errors
+    ///
+    /// As [`spawn`](Self::spawn).
+    pub fn spawn_with(&self, spec: ChildSpecification<WorkerSpec>) -> Result<ChildId, SpawnError> {
+        let permit = self.acquire_permit()?;
+        let id = self.id_counter.fetch_add(1, Ordering::Relaxed);
+        let (spec, config) = spec.into_worker_parts();
+        self.send(DynCommand::Spawn {
+            id,
+            spec,
+            config,
+            permit,
+            ack: None,
+        })?;
+        Ok(ChildId(id))
+    }
+
+    /// Spawns a new dynamic worker (temporary, non-significant) and waits until the supervisor has registered it.
+    ///
+    /// # Errors
+    ///
+    /// As [`spawn`](Self::spawn), plus [`SpawnError::SupervisorGone`] if the supervisor stops before confirming.
+    pub async fn spawn_confirmed<T: Supervisable + 'static>(&self, worker: T) -> Result<ChildId, SpawnError> {
+        let permit = self.acquire_permit()?;
+        let id = self.id_counter.fetch_add(1, Ordering::Relaxed);
+        let (spec, config) = ChildSpecification::worker(worker)
+            .with_restart_type(RestartType::Temporary)
+            .into_worker_parts();
+        let (ack_tx, ack_rx) = oneshot::channel();
+        self.send(DynCommand::Spawn {
+            id,
+            spec,
+            config,
+            permit,
+            ack: Some(ack_tx),
+        })?;
+        ack_rx.await.map_err(|_| SpawnError::SupervisorGone)?;
+        Ok(ChildId(id))
+    }
+
+    /// Returns whether the supervisor is currently running.
+    pub fn is_running(&self) -> bool {
+        self.current_tx.lock().unwrap().is_some()
+    }
+
+    /// Returns the number of dynamic children currently running under the supervisor.
+    pub fn active_children(&self) -> usize {
+        self.active.load(Ordering::Relaxed)
+    }
+
+    fn acquire_permit(&self) -> Result<Option<OwnedSemaphorePermit>, SpawnError> {
+        match &self.permits {
+            Some(semaphore) => {
+                Arc::clone(semaphore)
+                    .try_acquire_owned()
+                    .map(Some)
+                    .map_err(|_| SpawnError::AtCapacity {
+                        max: self.max_dynamic_children.unwrap_or(0),
+                    })
+            }
+            None => Ok(None),
+        }
+    }
+
+    fn send(&self, command: DynCommand) -> Result<(), SpawnError> {
+        // Holding the lock across the synchronous, non-blocking send is fine; if it fails, the command -- and any
+        // permit it carries -- is dropped, freeing the slot.
+        let guard = self.current_tx.lock().unwrap();
+        match guard.as_ref() {
+            Some(tx) => tx.send(command).map_err(|_| SpawnError::SupervisorGone),
+            None => Err(SpawnError::SupervisorGone),
+        }
+    }
 }
 
 /// Supervises a set of workers.
@@ -422,8 +640,8 @@ struct ChildEntry {
 /// creating the underlying worker future that's spawned, as well as other metadata, such as the worker's name, how the
 /// worker should be shutdown, and so on.
 ///
-/// Supervisors can themselves be supervised by other supervisors, allowing _supervision trees_ to be constructed by
-/// adding one supervisor as a child of another.
+/// Supervisors also (indirectly) implement the [`Supervisable`] trait, allowing them to be supervised by other
+/// supervisors in order to construct _supervision trees_.
 ///
 /// # Instrumentation
 ///
@@ -444,7 +662,18 @@ pub struct Supervisor {
     supervisor_id: Arc<str>,
     child_specs: Vec<ChildEntry>,
     restart_strategy: RestartStrategy,
+    auto_shutdown: AutoShutdown,
+    shutdown_mode: ShutdownMode,
     runtime_mode: RuntimeMode,
+    max_dynamic_children: Option<usize>,
+    // Shared across clones (a nested supervisor is cloned each time it runs) and across all handles. The currently
+    // running supervisor publishes its command sender here so handles reach the live run; it's cleared when no run is
+    // active.
+    current_tx: Arc<Mutex<Option<UnboundedSender<DynCommand>>>>,
+    id_counter: Arc<AtomicU64>,
+    // Number of dynamic children currently running, shared with handles so it can be surfaced as a gauge.
+    active: Arc<AtomicUsize>,
+    permits: Option<Arc<Semaphore>>,
 }
 
 impl Supervisor {
@@ -463,7 +692,14 @@ impl Supervisor {
             supervisor_id: supervisor_id.as_ref().into(),
             child_specs: Vec::new(),
             restart_strategy: RestartStrategy::default(),
+            auto_shutdown: AutoShutdown::default(),
+            shutdown_mode: ShutdownMode::default(),
             runtime_mode: RuntimeMode::default(),
+            max_dynamic_children: None,
+            current_tx: Arc::new(Mutex::new(None)),
+            id_counter: Arc::new(AtomicU64::new(0)),
+            active: Arc::new(AtomicUsize::new(0)),
+            permits: None,
         })
     }
 
@@ -476,6 +712,46 @@ impl Supervisor {
     pub fn with_restart_strategy(mut self, strategy: RestartStrategy) -> Self {
         self.restart_strategy = strategy;
         self
+    }
+
+    /// Sets the supervisor's automatic-shutdown policy.
+    ///
+    /// Controls whether the termination of _significant_ children (see [`ChildSpecification::with_significant`]) drives the
+    /// supervisor to shut down. Defaults to [`AutoShutdown::Never`].
+    pub fn with_auto_shutdown(mut self, auto_shutdown: AutoShutdown) -> Self {
+        self.auto_shutdown = auto_shutdown;
+        self
+    }
+
+    /// Sets the supervisor's shutdown mode. See [`ShutdownMode`]. Defaults to [`ShutdownMode::Ordered`].
+    pub fn with_shutdown_mode(mut self, mode: ShutdownMode) -> Self {
+        self.shutdown_mode = mode;
+        self
+    }
+
+    /// Sets the maximum number of dynamic children allowed to run at once.
+    ///
+    /// Once `max` dynamic children are running, [`SupervisorHandle::spawn`] returns [`SpawnError::AtCapacity`] until one
+    /// exits and frees a slot. By default there is no limit. Static children do not count against this limit.
+    pub fn with_max_dynamic_children(mut self, max: usize) -> Self {
+        self.max_dynamic_children = Some(max);
+        self.permits = Some(Arc::new(Semaphore::new(max)));
+        self
+    }
+
+    /// Returns a handle for spawning dynamic children on this supervisor while it runs.
+    ///
+    /// The handle can be created before the supervisor starts and cloned freely. Spawns made before it is running, or
+    /// after it stops, return [`SpawnError::SupervisorGone`].
+    pub fn handle(&self) -> SupervisorHandle {
+        SupervisorHandle {
+            name: Arc::clone(&self.supervisor_id),
+            current_tx: Arc::clone(&self.current_tx),
+            id_counter: Arc::clone(&self.id_counter),
+            active: Arc::clone(&self.active),
+            permits: self.permits.clone(),
+            max_dynamic_children: self.max_dynamic_children,
+        }
     }
 
     /// Configures this supervisor to run in a dedicated runtime.
@@ -517,37 +793,21 @@ impl Supervisor {
             supervisor_id = %self.supervisor_id,
             "Adding new static child process #{}. ({}, {}, {:?})",
             self.child_specs.len(),
-            entry.child.process_type(),
-            entry.child.name(),
-            entry.restart,
+            entry.spec.process_type(),
+            entry.spec.name(),
+            entry.config,
         );
         self.child_specs.push(entry);
     }
 
-    fn get_child_spec(&self, child_spec_idx: usize) -> &SupervisedChild {
-        match self.child_specs.get(child_spec_idx) {
-            Some(entry) => &entry.child,
-            None => unreachable!("child spec index should never be out of bounds"),
-        }
-    }
-
-    fn get_restart_type(&self, child_spec_idx: usize) -> RestartType {
-        match self.child_specs.get(child_spec_idx) {
-            Some(entry) => entry.restart,
-            None => unreachable!("child spec index should never be out of bounds"),
-        }
-    }
-
-    fn spawn_child(&self, child_spec_idx: usize, worker_state: &mut WorkerState) -> Result<(), SupervisorError> {
-        let child_spec = self.get_child_spec(child_spec_idx);
-        debug!(supervisor_id = %self.supervisor_id, "Spawning static child process #{} ({}).", child_spec_idx, child_spec.name());
-        worker_state.add_worker(child_spec_idx as u64, child_spec)
-    }
-
-    fn spawn_all_children(&self, worker_state: &mut WorkerState) -> Result<(), SupervisorError> {
+    fn spawn_static_children(
+        &self, children: &mut FastHashMap<u64, ChildEntry>, worker_state: &mut WorkerState,
+    ) -> Result<(), SupervisorError> {
         debug!(supervisor_id = %self.supervisor_id, "Spawning all static child processes.");
-        for child_spec_idx in 0..self.child_specs.len() {
-            self.spawn_child(child_spec_idx, worker_state)?;
+        for entry in &self.child_specs {
+            let id = self.id_counter.fetch_add(1, Ordering::Relaxed);
+            worker_state.add_worker(id, &entry.spec)?;
+            children.insert(id, entry.clone());
         }
 
         Ok(())
@@ -559,97 +819,183 @@ impl Supervisor {
     /// permanent and transient children -- regardless of how they last exited, including a transient child that had
     /// already exited cleanly -- but never temporary children, which are shut down with the group and not brought back.
     /// A transient child's "restart only on abnormal exit" rule governs its _own_ termination, not a group restart
-    /// driven by a sibling.
-    fn respawn_children_one_for_all(&self, worker_state: &mut WorkerState) -> Result<(), SupervisorError> {
+    /// driven by a sibling. Dynamic children are not restored (they are lost on a supervisor-level restart).
+    fn respawn_children_one_for_all(
+        &self, children: &mut FastHashMap<u64, ChildEntry>, worker_state: &mut WorkerState,
+    ) -> Result<(), SupervisorError> {
         debug!(supervisor_id = %self.supervisor_id, "Restarting all eligible static child processes.");
-        for child_spec_idx in 0..self.child_specs.len() {
-            if self.get_restart_type(child_spec_idx) != RestartType::Temporary {
-                self.spawn_child(child_spec_idx, worker_state)?;
+        for entry in &self.child_specs {
+            // Temporary children are never restarted by a group restart (matching OTP): they are shut down with the
+            // group but not brought back.
+            if entry.config.restart == RestartType::Temporary {
+                continue;
             }
+            let id = self.id_counter.fetch_add(1, Ordering::Relaxed);
+            worker_state.add_worker(id, &entry.spec)?;
+            children.insert(id, entry.clone());
         }
 
         Ok(())
     }
 
     async fn run_inner(&self, process: Process, process_shutdown: ShutdownHandle) -> Result<(), SupervisorError> {
-        if self.child_specs.is_empty() {
-            return Err(SupervisorError::NoChildren);
-        }
+        // Publish a fresh command channel so handles can spawn dynamic children into this run, and re-point any existing
+        // handles at it (important when a nested supervisor is restarted: the old channel is replaced wholesale).
+        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
+        *self.current_tx.lock().unwrap() = Some(cmd_tx);
 
+        let result = self.supervise(process, process_shutdown, cmd_rx).await;
+
+        // The run is over: stop routing handles to it, and reset the dynamic-children gauge.
+        *self.current_tx.lock().unwrap() = None;
+        self.active.store(0, Ordering::Relaxed);
+        result
+    }
+
+    async fn supervise(
+        &self, process: Process, process_shutdown: ShutdownHandle, mut cmd_rx: mpsc::UnboundedReceiver<DynCommand>,
+    ) -> Result<(), SupervisorError> {
         let mut restart_state = RestartState::new(self.restart_strategy);
-        let mut worker_state = WorkerState::new(process);
+        let mut worker_state = WorkerState::new(process, self.shutdown_mode);
 
-        // Spawn all child processes. Since initialization is folded into each worker's task, this returns immediately
-        // after spawning -- children initialize concurrently in the background.
-        self.spawn_all_children(&mut worker_state)?;
+        // The live roster of children -- both static (seeded below) and dynamic (added via the handle) -- keyed by a
+        // stable id. A restart re-runs a child by id; a child that isn't restarted is removed from the roster.
+        let mut children: FastHashMap<u64, ChildEntry> = FastHashMap::default();
+        // Permits held for dynamic children to enforce `max_dynamic_children`; released when the child is removed.
+        let mut permits: FastHashMap<u64, OwnedSemaphorePermit> = FastHashMap::default();
+
+        // Spawn the static children. Initialization is folded into each worker's task, so this returns immediately --
+        // children initialize concurrently in the background.
+        self.spawn_static_children(&mut children, &mut worker_state)?;
+
+        // Track how many significant children are still running, for `AutoShutdown` evaluation.
+        let mut significant_remaining = children.values().filter(|entry| entry.config.significant).count();
 
         // Now we supervise.
         pin!(process_shutdown);
 
         loop {
             select! {
-                // Shutdown has been triggered.
-                //
-                // Propagate shutdown to all child processes and wait for them to exit.
+                // Shutdown takes priority so a flood of dynamic spawns can't starve it.
+                biased;
+
+                // Shutdown has been triggered. Propagate it to all child processes and wait for them to exit.
                 _ = &mut process_shutdown => {
                     debug!(supervisor_id = %self.supervisor_id, "Shutdown triggered, shutting down all child processes.");
                     worker_state.shutdown_workers().await;
                     break;
+                }
+
+                // A handle asked us to spawn a dynamic child. The run loop holds a command sender for its whole
+                // lifetime, so `recv` never returns `None` here.
+                command = cmd_rx.recv() => match command {
+                    Some(DynCommand::Spawn { id, spec, config, permit, ack }) => {
+                        let entry = ChildEntry { spec, config, dynamic: true };
+                        match worker_state.add_worker(id, &entry.spec) {
+                            Ok(()) => {
+                                if config.significant {
+                                    significant_remaining += 1;
+                                }
+                                if let Some(permit) = permit {
+                                    permits.insert(id, permit);
+                                }
+                                self.active.fetch_add(1, Ordering::Relaxed);
+                                children.insert(id, entry);
+                                if let Some(ack) = ack {
+                                    let _ = ack.send(());
+                                }
+                            }
+                            Err(e) => {
+                                // Registration failed (e.g. an invalid name). Dropping the permit and ack frees the slot
+                                // and lets a `spawn_confirmed` caller observe the failure.
+                                error!(supervisor_id = %self.supervisor_id, error = %e, "Failed to spawn dynamic child.");
+                            }
+                        }
+                    }
+                    None => unreachable!("the run loop holds a command sender, so the channel cannot close"),
                 },
-                (worker_id, worker_result) = worker_state.wait_for_next_worker() => {
-                    let child_spec_idx = worker_id as usize;
-                    let child_spec = self.get_child_spec(child_spec_idx);
+
+                (child_id, worker_result) = worker_state.wait_for_next_worker() => {
+                    // Pull out what we need from the roster before we mutate it.
+                    let (child_name, config, dynamic) = {
+                        let entry = children.get(&child_id).expect("completed worker must be present in the roster");
+                        (entry.spec.name().to_string(), entry.config, entry.dynamic)
+                    };
 
                     // Initialization failures are not eligible for restart -- they propagate immediately.
-                    if let Err(WorkerError::Initialization { child_name, source }) = worker_result {
-                        // If the error came from a nested supervisor, include the original child name
-                        // to make the error chain more informative (e.g., "ctrl-pln/privileged-api").
-                        let full_name = match child_name {
-                            Some(inner) => format!("{}/{}", child_spec.name(), inner),
-                            None => child_spec.name().to_string(),
+                    if let Err(WorkerError::Initialization { child_name: inner, source }) = worker_result {
+                        // If the error came from a nested supervisor, include the original child name to make the error
+                        // chain more informative (e.g., "ctrl-pln/privileged-api").
+                        let full_name = match inner {
+                            Some(inner) => format!("{}/{}", child_name, inner),
+                            None => child_name.clone(),
                         };
 
                         error!(supervisor_id = %self.supervisor_id, worker_name = full_name, "Child process failed to initialize: {}", source);
                         worker_state.shutdown_workers().await;
-                        return Err(SupervisorError::FailedToInitialize {
-                            child_name: full_name,
-                            source,
-                        });
+                        return Err(SupervisorError::FailedToInitialize { child_name: full_name, source });
                     }
 
                     // A worker exited abnormally if it returned an error, panicked, or was aborted; a clean exit is
                     // `Ok(())`. Together with the worker's restart policy, this determines whether we restart it.
                     let abnormal = worker_result.is_err();
-                    let restart_type = self.get_restart_type(child_spec_idx);
-
-                    // Convert the worker result to a process error for restart evaluation / logging.
                     let worker_result = worker_result.map_err(|e| match e {
                         WorkerError::Runtime(e) => ProcessError::Terminated { source: e },
                         WorkerError::Initialization { .. } => unreachable!("handled above"),
                     });
 
-                    if !restart_type.should_restart(abnormal) {
-                        // The worker isn't eligible for restart given how it exited. It has already been removed from the
-                        // worker map by `wait_for_next_worker`, so we simply continue supervising the rest. Crucially, we
-                        // do NOT consult `evaluate_restart` here: non-restarts must not consume the restart-intensity
-                        // budget, otherwise a steady stream of terminating temporary/transient children would eventually
-                        // trip the supervisor's restart limit and tear it (and its siblings) down.
-                        debug!(supervisor_id = %self.supervisor_id, worker_name = child_spec.name(), ?restart_type, ?worker_result, "Child process exited and is not eligible for restart.");
+                    if !config.restart.should_restart(abnormal) {
+                        // Not eligible for restart given how it exited. Drop it from the roster, and free its slot/gauge
+                        // if it was dynamic. Crucially, we do NOT consult `evaluate_restart` here: non-restarts must not
+                        // consume the restart-intensity budget, otherwise a steady stream of terminating temporary
+                        // children would eventually trip the limit and tear the supervisor (and its siblings) down.
+                        debug!(supervisor_id = %self.supervisor_id, worker_name = %child_name, restart = ?config.restart, ?worker_result, "Child process exited and is not eligible for restart.");
+                        children.remove(&child_id);
+                        permits.remove(&child_id);
+                        if dynamic {
+                            self.active.fetch_sub(1, Ordering::Relaxed);
+                        }
+
+                        // A significant child terminating without restart can drive the supervisor to shut down, per its
+                        // `AutoShutdown` policy -- cascading an unexpected (or intentional) child exit into the
+                        // supervisor stopping and propagating up the tree.
+                        if config.significant {
+                            significant_remaining = significant_remaining.saturating_sub(1);
+                            let auto_shutdown = match self.auto_shutdown {
+                                AutoShutdown::Never => false,
+                                AutoShutdown::AnySignificant => true,
+                                AutoShutdown::AllSignificant => significant_remaining == 0,
+                            };
+                            if auto_shutdown {
+                                warn!(supervisor_id = %self.supervisor_id, worker_name = %child_name, ?worker_result, "Significant child terminated; shutting down supervisor.");
+                                worker_state.shutdown_workers().await;
+                                return Err(SupervisorError::SignificantChildExited);
+                            }
+                        }
                     } else {
                         match restart_state.evaluate_restart() {
                             RestartAction::Restart(mode) => match mode {
                                 RestartMode::OneForOne => {
-                                    warn!(supervisor_id = %self.supervisor_id, worker_name = child_spec.name(), ?worker_result, "Child process terminated, restarting.");
-                                    self.spawn_child(child_spec_idx, &mut worker_state)?;
+                                    warn!(supervisor_id = %self.supervisor_id, worker_name = %child_name, ?worker_result, "Child process terminated, restarting.");
+                                    let spec = children.get(&child_id).expect("present for restart").spec.clone();
+                                    worker_state.add_worker(child_id, &spec)?;
                                 }
                                 RestartMode::OneForAll => {
-                                    warn!(supervisor_id = %self.supervisor_id, worker_name = child_spec.name(), ?worker_result, "Child process terminated, restarting all processes.");
+                                    warn!(supervisor_id = %self.supervisor_id, worker_name = %child_name, ?worker_result, "Child process terminated, restarting all processes.");
                                     worker_state.shutdown_workers().await;
-                                    self.respawn_children_one_for_all(&mut worker_state)?;
+                                    // A one-for-all restart resets to the static roster; dynamic children are not
+                                    // restored (they're lost on a supervisor-level restart, matching Erlang/OTP), and
+                                    // temporary children are not restarted.
+                                    children.clear();
+                                    permits.clear();
+                                    self.active.store(0, Ordering::Relaxed);
+                                    self.respawn_children_one_for_all(&mut children, &mut worker_state)?;
+                                    significant_remaining =
+                                        children.values().filter(|entry| entry.config.significant).count();
                                 }
                             },
                             RestartAction::Shutdown => {
-                                error!(supervisor_id = %self.supervisor_id, worker_name = child_spec.name(), ?worker_result, "Supervisor shutting down due to restart limits.");
+                                error!(supervisor_id = %self.supervisor_id, worker_name = %child_name, ?worker_result, "Supervisor shutting down due to restart limits.");
                                 worker_state.shutdown_workers().await;
                                 return Err(SupervisorError::Shutdown);
                             }
@@ -756,7 +1102,14 @@ impl Supervisor {
             supervisor_id: Arc::clone(&self.supervisor_id),
             child_specs: self.child_specs.clone(),
             restart_strategy: self.restart_strategy,
+            auto_shutdown: self.auto_shutdown,
+            shutdown_mode: self.shutdown_mode,
             runtime_mode: self.runtime_mode.clone(),
+            max_dynamic_children: self.max_dynamic_children,
+            current_tx: Arc::clone(&self.current_tx),
+            id_counter: Arc::clone(&self.id_counter),
+            active: Arc::clone(&self.active),
+            permits: self.permits.clone(),
         }
     }
 }
@@ -798,6 +1151,15 @@ mod tests {
 
         /// Completes successfully after the given delay.
         CompleteAfter(Duration),
+
+        /// On shutdown, sleeps for the given duration before exiting (to exercise concurrent draining).
+        SlowShutdown(Duration),
+
+        /// Ignores shutdown entirely and runs forever (to exercise abort-at-deadline).
+        IgnoreShutdown,
+
+        /// Panics after the given delay, unless shutdown arrives first.
+        PanicAfter(Duration),
     }
 
     /// A configurable mock worker for testing supervisor behavior.
@@ -835,6 +1197,36 @@ mod tests {
                 name,
                 init_behavior: InitBehavior::Instant,
                 run_behavior: RunBehavior::CompleteAfter(delay),
+                start_count: Arc::new(AtomicUsize::new(0)),
+            }
+        }
+
+        /// Creates a worker that sleeps for `delay` after observing shutdown before exiting.
+        fn slow_shutdown(name: &'static str, delay: Duration) -> Self {
+            Self {
+                name,
+                init_behavior: InitBehavior::Instant,
+                run_behavior: RunBehavior::SlowShutdown(delay),
+                start_count: Arc::new(AtomicUsize::new(0)),
+            }
+        }
+
+        /// Creates a worker that never reacts to shutdown.
+        fn ignore_shutdown(name: &'static str) -> Self {
+            Self {
+                name,
+                init_behavior: InitBehavior::Instant,
+                run_behavior: RunBehavior::IgnoreShutdown,
+                start_count: Arc::new(AtomicUsize::new(0)),
+            }
+        }
+
+        /// Creates a worker that panics after the given delay.
+        fn panicking(name: &'static str, delay: Duration) -> Self {
+            Self {
+                name,
+                init_behavior: InitBehavior::Instant,
+                run_behavior: RunBehavior::PanicAfter(delay),
                 start_count: Arc::new(AtomicUsize::new(0)),
             }
         }
@@ -915,6 +1307,22 @@ mod tests {
                             _ = process_shutdown => Ok(()),
                         }
                     }
+                    RunBehavior::SlowShutdown(delay) => {
+                        process_shutdown.await;
+                        sleep(delay).await;
+                        Ok(())
+                    }
+                    RunBehavior::IgnoreShutdown => {
+                        // Hold the handle (so the supervisor counts us as outstanding) but never react to it.
+                        let _hold = process_shutdown;
+                        std::future::pending::<Result<(), GenericError>>().await
+                    }
+                    RunBehavior::PanicAfter(delay) => {
+                        select! {
+                            _ = sleep(delay) => panic!("worker panicked"),
+                            _ = process_shutdown => Ok(()),
+                        }
+                    }
                 }
             }))
         }
@@ -964,14 +1372,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn supervisor_with_no_children_returns_error() {
-        let mut sup = Supervisor::new("empty-sup").unwrap();
+    async fn empty_supervisor_idles_until_shutdown() {
+        // A supervisor with no static children is valid: it idles, waiting for dynamic children, and shuts down
+        // cleanly when signalled. (Before dynamic children were folded in, this returned a `NoChildren` error.)
+        let sup = Supervisor::new("empty-sup").unwrap();
 
-        let (tx, rx) = oneshot::channel::<()>();
-        let result = sup.run_with_shutdown(rx).await;
-        drop(tx);
+        let (tx, handle) = run_supervisor_with_trigger(sup).await;
+        assert!(!handle.is_finished(), "an empty supervisor must idle rather than exit");
 
-        assert!(matches!(result, Err(SupervisorError::NoChildren)));
+        tx.send(()).unwrap();
+        let result = timeout(Duration::from_secs(2), handle).await.unwrap().unwrap();
+        assert!(result.is_ok());
     }
 
     // -- Child restart behavior tests ------------------------------------------------------
@@ -1303,6 +1714,86 @@ mod tests {
         assert!(result.is_ok());
     }
 
+    // -- Significant child / auto-shutdown tests -------------------------------------------
+
+    #[tokio::test]
+    async fn significant_child_drives_auto_shutdown() {
+        // With `AnySignificant`, a significant child terminating (even cleanly, and without being restarted) must
+        // shut the supervisor down, surfacing the significant-exit error.
+        let mut sup = Supervisor::new("test-sup")
+            .unwrap()
+            .with_auto_shutdown(AutoShutdown::AnySignificant);
+        sup.add_worker(MockWorker::long_running("stable"));
+        sup.add_worker(
+            ChildSpecification::worker(MockWorker::completing("significant", Duration::from_millis(50)))
+                .with_restart_type(RestartType::Temporary)
+                .with_significant(true),
+        );
+
+        // Hold the shutdown sender so the only thing that can stop the supervisor is the significant child.
+        let (_tx, rx) = oneshot::channel::<()>();
+        let result = timeout(Duration::from_secs(2), sup.run_with_shutdown(rx))
+            .await
+            .unwrap();
+        assert!(matches!(result, Err(SupervisorError::SignificantChildExited)));
+    }
+
+    #[tokio::test]
+    async fn non_significant_exit_does_not_auto_shutdown() {
+        // Even with `AnySignificant` set, a non-significant child exiting must not shut the supervisor down.
+        let mut sup = Supervisor::new("test-sup")
+            .unwrap()
+            .with_auto_shutdown(AutoShutdown::AnySignificant);
+        sup.add_worker(MockWorker::long_running("stable"));
+        sup.add_worker(
+            ChildSpecification::worker(MockWorker::completing("plain", Duration::from_millis(50)))
+                .with_restart_type(RestartType::Temporary),
+        );
+
+        let (tx, handle) = run_supervisor_with_trigger(sup).await;
+        sleep(Duration::from_millis(200)).await;
+        assert!(
+            !handle.is_finished(),
+            "a non-significant child exiting must not trigger auto-shutdown"
+        );
+
+        tx.send(()).unwrap();
+        let result = timeout(Duration::from_secs(2), handle).await.unwrap().unwrap();
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn all_significant_waits_for_last() {
+        // With `AllSignificant`, the supervisor shuts down only once *all* significant children have terminated.
+        let mut sup = Supervisor::new("test-sup")
+            .unwrap()
+            .with_auto_shutdown(AutoShutdown::AllSignificant);
+        sup.add_worker(
+            ChildSpecification::worker(MockWorker::completing("sig-a", Duration::from_millis(50)))
+                .with_restart_type(RestartType::Temporary)
+                .with_significant(true),
+        );
+        sup.add_worker(
+            ChildSpecification::worker(MockWorker::completing("sig-b", Duration::from_millis(250)))
+                .with_restart_type(RestartType::Temporary)
+                .with_significant(true),
+        );
+
+        let (_tx, rx) = oneshot::channel::<()>();
+        let start = std::time::Instant::now();
+        let result = timeout(Duration::from_secs(2), sup.run_with_shutdown(rx))
+            .await
+            .unwrap();
+        let elapsed = start.elapsed();
+
+        assert!(matches!(result, Err(SupervisorError::SignificantChildExited)));
+        // The first significant child exits at ~50ms but must NOT trigger shutdown; only the second (~250ms) does.
+        assert!(
+            elapsed >= Duration::from_millis(200),
+            "auto-shutdown must wait for all significant children (took {elapsed:?})"
+        );
+    }
+
     // -- Initialization failure tests ------------------------------------------------------
 
     #[tokio::test]
@@ -1377,5 +1868,282 @@ mod tests {
         // The supervisor loop sees the shutdown signal and aborts the still-initializing task.
         let result = timeout(Duration::from_secs(2), handle).await;
         assert!(result.is_ok(), "shutdown during slow init should complete promptly");
+    }
+
+    // -- Dynamic children tests ------------------------------------------------------------
+
+    async fn wait_running(handle: &SupervisorHandle) {
+        for _ in 0..200 {
+            if handle.is_running() {
+                return;
+            }
+            sleep(Duration::from_millis(5)).await;
+        }
+        panic!("supervisor did not start in time");
+    }
+
+    async fn wait_until(condition: impl Fn() -> bool) {
+        for _ in 0..200 {
+            if condition() {
+                return;
+            }
+            sleep(Duration::from_millis(5)).await;
+        }
+        panic!("condition not met in time");
+    }
+
+    #[tokio::test]
+    async fn dynamic_children_spawn_after_start() {
+        let sup = Supervisor::new("dyn-sup").unwrap();
+        let handle = sup.handle();
+        let (tx, run) = run_supervisor_with_trigger(sup).await;
+        wait_running(&handle).await;
+
+        let c1 = MockWorker::long_running("c1");
+        let c2 = MockWorker::long_running("c2");
+        let c1_count = c1.start_count();
+        let c2_count = c2.start_count();
+        handle.spawn(c1).unwrap();
+        handle.spawn(c2).unwrap();
+
+        wait_until(|| c1_count.load(Ordering::SeqCst) == 1 && c2_count.load(Ordering::SeqCst) == 1).await;
+        assert_eq!(handle.active_children(), 2);
+
+        tx.send(()).unwrap();
+        let result = timeout(Duration::from_secs(2), run).await.unwrap().unwrap();
+        assert!(result.is_ok());
+        assert_eq!(
+            handle.active_children(),
+            0,
+            "all dynamic children must be drained on shutdown"
+        );
+    }
+
+    #[tokio::test]
+    async fn dynamic_children_respect_max_capacity() {
+        let sup = Supervisor::new("dyn-sup").unwrap().with_max_dynamic_children(2);
+        let handle = sup.handle();
+        let (tx, run) = run_supervisor_with_trigger(sup).await;
+        wait_running(&handle).await;
+
+        handle.spawn(MockWorker::long_running("c1")).unwrap();
+        handle.spawn(MockWorker::long_running("c2")).unwrap();
+        let err = handle.spawn(MockWorker::long_running("c3")).unwrap_err();
+        assert!(matches!(err, SpawnError::AtCapacity { max: 2 }));
+
+        tx.send(()).unwrap();
+        let result = timeout(Duration::from_secs(2), run).await.unwrap().unwrap();
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn dynamic_capacity_frees_when_child_completes() {
+        let sup = Supervisor::new("dyn-sup").unwrap().with_max_dynamic_children(1);
+        let handle = sup.handle();
+        let (tx, run) = run_supervisor_with_trigger(sup).await;
+        wait_running(&handle).await;
+
+        // A temporary child completes quickly; its slot frees once it's reaped and removed from the roster.
+        handle
+            .spawn(MockWorker::completing("c1", Duration::from_millis(20)))
+            .unwrap();
+        wait_until(|| handle.active_children() == 0).await;
+
+        // The slot frees when the completed child is reaped, shortly after it exits. Retry until it does.
+        let mut spawned = false;
+        for _ in 0..200 {
+            match handle.spawn(MockWorker::long_running("c2")) {
+                Ok(_) => {
+                    spawned = true;
+                    break;
+                }
+                Err(SpawnError::AtCapacity { .. }) => sleep(Duration::from_millis(5)).await,
+                Err(other) => panic!("unexpected spawn error: {other}"),
+            }
+        }
+        assert!(spawned, "capacity must free up after the first child completes");
+
+        tx.send(()).unwrap();
+        let result = timeout(Duration::from_secs(2), run).await.unwrap().unwrap();
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn temporary_dynamic_child_failure_is_isolated() {
+        // A dynamic child added with the default config (temporary, not significant) is fault-isolated: its failure is
+        // reaped and removed without restarting it or disturbing the supervisor or its siblings.
+        let sup = Supervisor::new("dyn-sup").unwrap();
+        let handle = sup.handle();
+        let (tx, run) = run_supervisor_with_trigger(sup).await;
+        wait_running(&handle).await;
+
+        let failing = MockWorker::failing("boom", Duration::from_millis(20));
+        let failing_count = failing.start_count();
+        handle.spawn(failing).unwrap();
+        wait_until(|| failing_count.load(Ordering::SeqCst) == 1).await;
+        wait_until(|| handle.active_children() == 0).await;
+
+        sleep(Duration::from_millis(50)).await;
+        assert!(
+            handle.is_running(),
+            "supervisor stays up after an isolated child failure"
+        );
+        assert_eq!(
+            failing_count.load(Ordering::SeqCst),
+            1,
+            "a temporary child is never restarted"
+        );
+
+        // It still accepts new children.
+        handle.spawn(MockWorker::long_running("c2")).unwrap();
+        wait_until(|| handle.active_children() == 1).await;
+
+        tx.send(()).unwrap();
+        let result = timeout(Duration::from_secs(2), run).await.unwrap().unwrap();
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn temporary_dynamic_child_panic_is_isolated() {
+        // A panicking temporary, non-significant child is isolated exactly like an error exit.
+        let sup = Supervisor::new("dyn-sup").unwrap();
+        let handle = sup.handle();
+        let (tx, run) = run_supervisor_with_trigger(sup).await;
+        wait_running(&handle).await;
+
+        handle
+            .spawn(MockWorker::panicking("boom", Duration::from_millis(20)))
+            .unwrap();
+        wait_until(|| handle.active_children() == 0).await;
+
+        sleep(Duration::from_millis(50)).await;
+        assert!(handle.is_running(), "supervisor stays up after an isolated child panic");
+
+        tx.send(()).unwrap();
+        let result = timeout(Duration::from_secs(2), run).await.unwrap().unwrap();
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn significant_dynamic_child_failure_shuts_down_supervisor() {
+        // A dynamic child added as significant, under `AutoShutdown::AnySignificant`, drives the supervisor to shut
+        // down when it terminates -- the opt-in mechanism that replaces the old escalate-on-error behavior.
+        let sup = Supervisor::new("dyn-sup")
+            .unwrap()
+            .with_auto_shutdown(AutoShutdown::AnySignificant);
+        let handle = sup.handle();
+        let (_tx, run) = run_supervisor_with_trigger(sup).await;
+        wait_running(&handle).await;
+
+        handle
+            .spawn_with(
+                ChildSpecification::worker(MockWorker::failing("boom", Duration::from_millis(20)))
+                    .with_restart_type(RestartType::Temporary)
+                    .with_significant(true),
+            )
+            .unwrap();
+
+        let result = timeout(Duration::from_secs(2), run).await.unwrap().unwrap();
+        assert!(matches!(result, Err(SupervisorError::SignificantChildExited)));
+    }
+
+    #[tokio::test]
+    async fn dynamic_spawn_fails_before_start_and_after_shutdown() {
+        let sup = Supervisor::new("dyn-sup").unwrap();
+        let handle = sup.handle();
+
+        // Before the supervisor is running.
+        assert!(!handle.is_running());
+        let err = handle.spawn(MockWorker::long_running("c")).unwrap_err();
+        assert!(matches!(err, SpawnError::SupervisorGone));
+
+        let (tx, run) = run_supervisor_with_trigger(sup).await;
+        wait_running(&handle).await;
+        tx.send(()).unwrap();
+        let result = timeout(Duration::from_secs(2), run).await.unwrap().unwrap();
+        assert!(result.is_ok());
+
+        // After shutdown, the handle is invalidated.
+        wait_until(|| !handle.is_running()).await;
+        let err = handle.spawn(MockWorker::long_running("c")).unwrap_err();
+        assert!(matches!(err, SpawnError::SupervisorGone));
+    }
+
+    #[tokio::test]
+    async fn dynamic_spawn_confirmed_waits_for_registration() {
+        let sup = Supervisor::new("dyn-sup").unwrap();
+        let handle = sup.handle();
+        let (tx, run) = run_supervisor_with_trigger(sup).await;
+        wait_running(&handle).await;
+
+        let worker = MockWorker::long_running("c");
+        let started = worker.start_count();
+        let id = handle.spawn_confirmed(worker).await.unwrap();
+        // No static children, so the first dynamic child takes id 0.
+        assert_eq!(id.as_u64(), 0);
+        wait_until(|| started.load(Ordering::SeqCst) == 1).await;
+
+        tx.send(()).unwrap();
+        let result = timeout(Duration::from_secs(2), run).await.unwrap().unwrap();
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn concurrent_shutdown_drains_many_children_quickly() {
+        const CHILDREN: usize = 500;
+        const SHUTDOWN_DELAY: Duration = Duration::from_millis(50);
+
+        let sup = Supervisor::new("dyn-sup")
+            .unwrap()
+            .with_shutdown_mode(ShutdownMode::Concurrent);
+        let handle = sup.handle();
+        let (tx, run) = run_supervisor_with_trigger(sup).await;
+        wait_running(&handle).await;
+
+        for _ in 0..CHILDREN {
+            handle.spawn(MockWorker::slow_shutdown("conn", SHUTDOWN_DELAY)).unwrap();
+        }
+        wait_until(|| handle.active_children() == CHILDREN).await;
+
+        // Each child sleeps after observing shutdown. Concurrent shutdown drains them all in roughly one delay; an
+        // ordered shutdown would take CHILDREN * delay (25s here). Assert it finishes well under that.
+        let start = std::time::Instant::now();
+        tx.send(()).unwrap();
+        let result = timeout(Duration::from_secs(5), run).await.unwrap().unwrap();
+        let elapsed = start.elapsed();
+
+        assert!(result.is_ok());
+        assert_eq!(handle.active_children(), 0, "active count must return to zero");
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "shutdown must be concurrent (took {elapsed:?})"
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_shutdown_aborts_unresponsive_children() {
+        let sup = Supervisor::new("dyn-sup")
+            .unwrap()
+            .with_shutdown_mode(ShutdownMode::Concurrent);
+        let handle = sup.handle();
+        let (tx, run) = run_supervisor_with_trigger(sup).await;
+        wait_running(&handle).await;
+
+        handle.spawn(MockWorker::ignore_shutdown("stuck")).unwrap();
+        wait_until(|| handle.active_children() == 1).await;
+
+        // The child never reacts to shutdown, so it must be aborted once its graceful deadline (500ms) elapses rather
+        // than hanging the supervisor.
+        let start = std::time::Instant::now();
+        tx.send(()).unwrap();
+        let result = timeout(Duration::from_secs(2), run).await.unwrap().unwrap();
+        let elapsed = start.elapsed();
+
+        assert!(result.is_ok());
+        assert_eq!(handle.active_children(), 0);
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "stuck child must be aborted at the deadline (took {elapsed:?})"
+        );
     }
 }
