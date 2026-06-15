@@ -246,10 +246,7 @@ where
         };
         let mut bytes_removed = 0;
 
-        while !self.pending.is_empty()
-            && (bytes_removed < bytes_to_remove
-                || self.total_in_memory_bytes.saturating_add(current_entry_size) > self.max_in_memory_bytes)
-        {
+        while !self.pending.is_empty() && bytes_removed < bytes_to_remove {
             let oldest_entry = self.pending.pop_front().expect("queue is not empty");
             let oldest_entry_size = oldest_entry.size_bytes();
 
