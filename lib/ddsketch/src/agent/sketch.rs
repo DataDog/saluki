@@ -186,7 +186,8 @@ impl DDSketch {
     }
 
     fn adjust_basic_stats(&mut self, v: f64, n: u64) {
-        // Every insert path funnels through here, so this is the single finiteness boundary.
+        // Every insert path funnels through here, so this is where we guard that the incoming sample is finite. If
+        // this is not true something has gone wrong with the DogStatsD codec.
         #[cfg(feature = "antithesis")]
         antithesis_sdk::assert_always!(v.is_finite(), "DDSketch sample is finite at insert");
 
@@ -199,10 +200,10 @@ impl DDSketch {
         }
 
         self.count += n;
+        // It's possible that self.sum will be INF after this multiplication, even though we've demonstrated that `v`
+        // is finite. The Datadog Agent sketch sum behaves the same way, so we do not assert that self.sum is itself
+        // finite.
         self.sum += v * n as f64;
-
-        #[cfg(feature = "antithesis")]
-        antithesis_sdk::assert_always!(self.sum.is_finite(), "sketch sum stays finite after insert");
 
         if n == 1 {
             self.avg += (v - self.avg) / self.count as f64;
