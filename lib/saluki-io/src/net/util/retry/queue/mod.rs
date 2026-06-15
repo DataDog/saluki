@@ -211,9 +211,7 @@ where
             .saturating_add(current_entry_size)
             .saturating_sub(self.max_in_memory_bytes);
         let using_disk = self.persisted_pending.is_some() && self.flush_to_disk_mem_ratio > 0.0;
-        let bytes_to_remove = if required_bytes == 0 {
-            0
-        } else if using_disk {
+        let bytes_to_remove = if using_disk {
             required_bytes.max(flush_to_disk_bytes(
                 self.max_in_memory_bytes,
                 self.flush_to_disk_mem_ratio,
