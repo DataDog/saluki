@@ -1,5 +1,7 @@
+use std::time::Duration;
+
 use saluki_config::GenericConfiguration;
-use saluki_error::GenericError;
+use saluki_error::{generic_error, GenericError};
 use saluki_io::net::ListenAddress;
 
 /// General data plane configuration.
@@ -9,6 +11,7 @@ pub struct DataPlaneConfiguration {
     standalone_mode: bool,
     use_new_config_stream_endpoint: bool,
     remote_agent_enabled: bool,
+    stop_timeout: Duration,
     api_listen_address: ListenAddress,
     secure_api_listen_address: ListenAddress,
     checks: DataPlaneChecksConfiguration,
@@ -37,6 +40,7 @@ impl DataPlaneConfiguration {
                 .try_get_typed("data_plane.use_new_config_stream_endpoint")?
                 .unwrap_or(true),
             remote_agent_enabled: config.try_get_typed("data_plane.remote_agent_enabled")?.unwrap_or(true),
+            stop_timeout: topology_stop_timeout_from_configuration(config)?,
             api_listen_address: config
                 .try_get_typed("data_plane.api_listen_address")?
                 .unwrap_or_else(|| ListenAddress::any_tcp(5100)),
@@ -67,6 +71,11 @@ impl DataPlaneConfiguration {
     /// Returns `true` if the data plane should register as a remote agent.
     pub const fn remote_agent_enabled(&self) -> bool {
         self.remote_agent_enabled
+    }
+
+    /// Returns the topology shutdown timeout.
+    pub const fn stop_timeout(&self) -> Duration {
+        self.stop_timeout
     }
 
     /// Returns a reference to the API listen address
@@ -153,6 +162,19 @@ impl DataPlaneConfiguration {
         // - OTLP is enabled and not in proxy mode or proxy mode is enabled and proxy traces are disabled
         self.otlp().enabled() && (!self.otlp().proxy().enabled() || !self.otlp().proxy().proxy_traces())
     }
+}
+
+fn topology_stop_timeout_from_configuration(config: &GenericConfiguration) -> Result<Duration, GenericError> {
+    if let Some(stop_timeout_secs) = config.try_get_typed::<u64>("data_plane.stop_timeout")? {
+        return Ok(Duration::from_secs(stop_timeout_secs));
+    }
+
+    let aggregator_stop_timeout_secs = config.try_get_typed::<u64>("aggregator_stop_timeout")?.unwrap_or(2);
+    let forwarder_stop_timeout_secs = config.try_get_typed::<u64>("forwarder_stop_timeout")?.unwrap_or(2);
+
+    Duration::from_secs(aggregator_stop_timeout_secs)
+        .checked_add(Duration::from_secs(forwarder_stop_timeout_secs))
+        .ok_or_else(|| generic_error!("Topology stop timeout overflowed."))
 }
 
 /// Checks-specific data plane configuration.
@@ -339,6 +361,23 @@ mod tests {
         let dp = DataPlaneConfiguration::from_configuration(&config).expect("parse config");
         assert!(dp.enabled());
         assert!(dp.dogstatsd().enabled());
+    }
+
+    #[tokio::test]
+    async fn data_plane_stop_timeout_overrides_core_agent_shutdown_timeout_sum() {
+        let (config, _) = ConfigurationLoader::for_tests(
+            Some(json!({
+                "aggregator_stop_timeout": 3,
+                "forwarder_stop_timeout": 7,
+                "data_plane": { "stop_timeout": 11 },
+            })),
+            None,
+            false,
+        )
+        .await;
+
+        let dp = DataPlaneConfiguration::from_configuration(&config).expect("parse config");
+        assert_eq!(dp.stop_timeout(), Duration::from_secs(11));
     }
 
     #[tokio::test]

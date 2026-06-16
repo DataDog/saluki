@@ -71,7 +71,16 @@ inventory:
     planned: false
     pipelines: [dogstatsd]
     description: "Channel buffer depth for aggregator queues"
-    documentation: "Saluki topology uses fixed interconnect sizes and construction-time wiring; no per-component config knobs."
+    documentation: |-
+      The core Agent uses `aggregator_buffer_size` to size bounded Go channels feeding the aggregator and
+      DogStatsD time sampler workers.
+
+      ADP has no equivalent operator-facing setting. Its aggregate transform receives data through the
+      Saluki topology interconnects, which are configured at topology construction time rather than by
+      per-component Agent config keys. The default event interconnect capacity is 128 buffers, and each
+      event buffer can hold up to 1024 events.
+
+      Setting `aggregator_buffer_size` has no effect in ADP.
     issue: "#1681"
 
   aggregator_flush_metrics_and_serialize_in_parallel_buffer_size:
@@ -80,7 +89,20 @@ inventory:
     planned: false
     pipelines: [dogstatsd]
     description: "Parallel flush: series/sketch buffer size"
-    documentation: "Saluki topology uses fixed interconnect sizes; no per-component config knobs."
+    documentation: |-
+      The core Agent uses `aggregator_flush_metrics_and_serialize_in_parallel_buffer_size` during
+      aggregator flushes, not for the aggregator's input queues. It controls how many flushed
+      series or sketch objects are grouped into each internal buffered-channel slice while one
+      goroutine produces flushed metrics and another goroutine serializes them.
+
+      ADP has no equivalent flush-and-serialize iterable pipeline. The aggregate transform emits
+      aggregated `Metric` events into the Saluki topology through `EventsBuffer` batches, and
+      downstream encoder components serialize those events independently of the aggregate transform.
+
+      The closest internal ADP buffering is topology-wide: `EventsBuffer` can hold up to 1024 events,
+      and event interconnects default to 128 buffers. These are not configured through
+      `aggregator_flush_metrics_and_serialize_in_parallel_buffer_size`, and setting this key has no
+      effect in ADP.
     issue: "#1681"
 
   aggregator_flush_metrics_and_serialize_in_parallel_chan_size:
@@ -89,17 +111,50 @@ inventory:
     planned: false
     pipelines: [dogstatsd]
     description: "Parallel flush: channel size"
-    documentation: "Saluki topology uses fixed interconnect sizes; no per-component config knobs."
+    documentation: |-
+      The core Agent uses `aggregator_flush_metrics_and_serialize_in_parallel_chan_size` during
+      aggregator flushes, together with
+      `aggregator_flush_metrics_and_serialize_in_parallel_buffer_size`. The buffer size controls how
+      many flushed series or sketch objects are grouped into each internal slice, while the channel
+      size controls how many of those slices can queue between the flush producer goroutine and the
+      consumer goroutine that serializes them.
+
+      ADP has no equivalent flush-and-serialize iterable pipeline. The aggregate transform emits
+      aggregated `Metric` events into the Saluki topology through `EventsBuffer` batches, and
+      downstream encoder components serialize those events independently of the aggregate transform.
+
+      The closest internal ADP buffering is topology-wide: `EventsBuffer` can hold up to 1024 events,
+      and event interconnects default to 128 buffers. These are not configured through
+      `aggregator_flush_metrics_and_serialize_in_parallel_chan_size`, and setting this key has no
+      effect in ADP.
     issue: "#1681"
 
   aggregator_stop_timeout:
-    support: none
-    severity: low
-    planned: false
-    pipelines: [dogstatsd]
+    support: partial
+    pipelines: [cross_cutting]
     description: "Timeout (s) for aggregator flush on stop"
-    documentation: "Saluki topology uses fixed interconnect sizes and construction-time wiring; no per-component config knobs."
+    documentation: |-
+      The core Agent uses `aggregator_stop_timeout` as the shutdown grace period for the aggregator's
+      final flush. During shutdown, the core Agent tries to flush aggregated metrics, events, service
+      checks, and related data to the forwarder before stopping. If `dogstatsd_flush_incomplete_buckets`
+      is enabled, the same timeout also bounds draining in-flight DogStatsD time sampler batches before
+      that final flush.
+
+      ADP uses `aggregator_stop_timeout` together with `forwarder_stop_timeout` to configure its
+      topology-wide graceful shutdown timeout. The default is `2 + 2 = 4` seconds. Set
+      `data_plane.stop_timeout` to override the combined timeout directly.
+
+      Support is partial because ADP does not apply this timeout only to an aggregator component.
+      Shutdown is coordinated by the Saluki topology: sources stop first, downstream inputs close,
+      and the aggregate transform performs its final flush when its input stream ends. Whether open
+      aggregation windows are included is controlled by `aggregate_flush_open_windows`, also aliased
+      as `dogstatsd_flush_incomplete_buckets`.
     issue: "#1681"
+    test_support:
+      used_by: [get_typed]
+      value_type_override: integer
+      additional_attributes:
+        config_registry_filename: get_typed.rs
 
   aggregator_use_tags_store:
     support: none
@@ -107,7 +162,20 @@ inventory:
     planned: false
     pipelines: [dogstatsd]
     description: "Enable shared tag deduplication store"
-    documentation: "Core agent concept with no ADP analog."
+    documentation: |-
+      The core Agent uses `aggregator_use_tags_store` to enable an aggregator-local, ref-counted
+      tag store. The store deduplicates repeated tag slices across aggregator contexts: contexts
+      retain shared tag entries while active, release them when they expire, and periodic shrinking
+      removes entries that are no longer referenced.
+
+      ADP does not have an aggregator-local tag store and does not need this toggle. Metrics reach
+      the aggregate transform with Saluki `Context` values that already carry ADP-native tag
+      structures. Tag reuse is handled before aggregation by the context resolver, the tags resolver,
+      and `SharedTagSet` structural sharing.
+
+      Related ADP-specific tuning is exposed through context/tag-set resolver settings such as
+      `dogstatsd_cached_tagsets_limit`, not through `aggregator_use_tags_store`. Setting
+      `aggregator_use_tags_store` has no effect in ADP.
     issue: "#1681"
 
   allow_arbitrary_tags:
@@ -1345,10 +1413,24 @@ inventory:
         config_registry_filename: forwarder.rs
 
   forwarder_stop_timeout:
-    support: unknown
+    support: partial
+    pipelines: [cross_cutting]
     description: "Timeout (s) for forwarder graceful stop"
-    severity: low
+    documentation: |-
+      The core Agent uses `forwarder_stop_timeout` as the shutdown grace period for the forwarder.
+
+      ADP uses `forwarder_stop_timeout` together with `aggregator_stop_timeout` to configure its
+      topology-wide graceful shutdown timeout. The default is `2 + 2 = 4` seconds. Set
+      `data_plane.stop_timeout` to override the combined timeout directly.
+
+      Support is partial because ADP does not apply this timeout only to a forwarder component. It
+      bounds graceful shutdown for the full Saluki topology.
     issue: "#1754"
+    test_support:
+      used_by: [get_typed]
+      value_type_override: integer
+      additional_attributes:
+        config_registry_filename: get_typed.rs
 
   forwarder_storage_max_disk_ratio:
     support: full
