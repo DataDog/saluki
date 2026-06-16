@@ -18,6 +18,14 @@ spdx_text_dir="${1:?usage: collect-third-party-licenses.sh <spdx-text-dir> <lice
 license_csv="${2:?usage: collect-third-party-licenses.sh <spdx-text-dir> <license-csv> <output-dir>}"
 output_dir="${3:?usage: collect-third-party-licenses.sh <spdx-text-dir> <license-csv> <output-dir>}"
 
+# Fail loudly if the CSV is missing or empty. Without this, the pipeline below silently produces no
+# output (a non-existent file just yields an empty stream through `tail`), which can let a build ship
+# an empty LICENSES directory.
+if [ ! -s "${license_csv}" ]; then
+    echo "ERROR: license CSV not found or empty: ${license_csv}" >&2
+    exit 1
+fi
+
 mkdir -p "${output_dir}"
 
 # Walk the third column of LICENSE-3rdparty.csv (the SPDX expression for each dependency); split each
@@ -33,3 +41,11 @@ tail -n +2 "${license_csv}" \
     | sort \
     | uniq \
     | xargs -I {} cp "${spdx_text_dir}/{}.txt" "${output_dir}/THIRD-PARTY-{}"
+
+# Defense in depth: the pipeline above can swallow upstream errors (a bad SPDX dir, an unexpected CSV
+# format), so confirm we actually harvested at least one license text rather than silently shipping
+# an empty directory.
+if [ -z "$(find "${output_dir}" -name 'THIRD-PARTY-*' | head -n 1)" ]; then
+    echo "ERROR: no third-party license texts were harvested into ${output_dir}" >&2
+    exit 1
+fi

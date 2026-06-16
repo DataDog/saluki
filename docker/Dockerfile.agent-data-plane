@@ -24,7 +24,6 @@ ENV PATH="/root/.cargo/bin:${PATH}"
 
 RUN --mount=type=bind,source=docker/scripts,target=/scripts \
     --mount=type=bind,source=rust-toolchain.toml,target=/tmp/rust-toolchain.toml \
-    --mount=type=bind,from=buildcache-src,source=/,target=/mnt/bcsrc \
     sh /scripts/run-stage.sh agent-data-plane build-prep
 
 FROM ${BUILD_IMAGE} AS build-prepped
@@ -75,6 +74,7 @@ COPY . /adp
 # When the source (COPY . /adp) layer changes, this will invalidate this layer but it won't invalidate the caches
 # themselves, which should still allow for reusing previously cached build artifacts, if they exist.
 RUN --mount=type=bind,source=docker/scripts,target=/scripts \
+    --mount=type=bind,from=buildcache-src,source=/,target=/mnt/bcsrc \
     --mount=type=secret,id=aws-creds,target=/run/secrets/aws-creds.sh,required=false \
     --mount=type=cache,target=/adp/target,id=adp-target-${BUILD_TARGET}-${BUILD_PROFILE} \
     --mount=type=cache,target=/root/.cargo/registry,id=cargo-registry \
@@ -98,6 +98,7 @@ ENV SPDX_LICENSES_VERSION=${SPDX_LICENSES_VERSION}
 
 RUN --mount=type=bind,source=docker/scripts,target=/scripts \
     --mount=type=bind,source=ci/tooling,target=/tooling \
+    --mount=type=bind,source=LICENSE-3rdparty.csv,target=/tmp/LICENSE-3rdparty.csv \
     sh /scripts/run-stage.sh agent-data-plane final-prep
 
 # Copy over a number of static outputs from either the build context or the build stage. We do these last as they're the

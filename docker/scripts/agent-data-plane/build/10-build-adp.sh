@@ -52,7 +52,7 @@ if [ -f /run/secrets/aws-creds.sh ]; then
     . /run/secrets/aws-creds.sh
 fi
 
-# Enable the build cache as a rustc wrapper if 10-install-buildcache.sh installed it.
+# Enable the build cache as a rustc wrapper if 00-install-buildcache.sh installed it.
 if command -v buildcache >/dev/null 2>&1; then
     export RUSTC_WRAPPER=buildcache
     buildcache --zero-stats

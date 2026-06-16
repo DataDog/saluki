@@ -17,8 +17,10 @@ apt-get update
 apt-get install --no-install-recommends -y ca-certificates curl
 
 # Fetch the SPDX license texts, then harvest the identifiers our dependencies use into the mirror.
+# The CSV is bind-mounted at /tmp/LICENSE-3rdparty.csv for this step (the Dockerfile COPYs it into
+# the image separately, afterwards, so the running image still carries it under /opt).
 sh /tooling/fetch-spdx-licenses.sh /tmp/spdx
 sh /tooling/collect-third-party-licenses.sh \
     /tmp/spdx/text \
-    "${licenses_root}/LICENSE-3rdparty.csv" \
+    /tmp/LICENSE-3rdparty.csv \
     "${licenses_root}/LICENSES"
