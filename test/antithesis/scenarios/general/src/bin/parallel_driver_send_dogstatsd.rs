@@ -16,7 +16,7 @@ mod unix_driver {
     struct Config {
         #[arg(
             long = "dogstatsd-socket",
-            env = "DSD_SOCKET",
+            env = "ADP_DOGSTATSD_SOCKET",
             default_value = "/var/run/datadog/dsd.socket"
         )]
         dogstatsd_socket: PathBuf,

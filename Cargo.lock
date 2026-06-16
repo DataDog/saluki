@@ -158,6 +158,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "antithesis-scenario-general"
+version = "0.1.0"
+dependencies = [
+ "antithesis_sdk",
+ "anyhow",
+ "clap",
+ "harness",
+ "ryu",
+ "serde_json",
+]
+
+[[package]]
 name = "antithesis_sdk"
 version = "0.2.9"
 source = "git+https://github.com/antithesishq/antithesis-sdk-rust?rev=78c9db56771f0f6b01cb5404765c5a96852c159c#78c9db56771f0f6b01cb5404765c5a96852c159c"

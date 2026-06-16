@@ -76,11 +76,11 @@ COPY . /tools
 RUN --mount=type=cache,target=/tools/target,id=antithesis-tools-target \
     --mount=type=cache,target=/root/.cargo/registry,id=cargo-registry \
     --mount=type=cache,target=/root/.cargo/git,id=cargo-git \
-    cargo build --release \
-        --bin antithesis-intake \
-        --bin parallel_driver_send_dogstatsd --bin parallel_driver_sketchburst \
-        --bin eventually_adp_alive \
-        --bin first_sample_config && \
+    cargo build --release --package antithesis-intake --bin antithesis-intake && \
+    cargo build --release --package harness \
+        --bin first_sample_config \
+        --bin eventually_adp_alive && \
+    cargo build --release --package antithesis-scenario-general --bins && \
     cp /tools/target/release/antithesis-intake /usr/local/bin/antithesis-intake && \
     cp /tools/target/release/parallel_driver_send_dogstatsd /usr/local/bin/parallel_driver_send_dogstatsd && \
     cp /tools/target/release/parallel_driver_sketchburst /usr/local/bin/parallel_driver_sketchburst && \
@@ -101,9 +101,9 @@ RUN mkdir -p /symbols && ln -s /usr/local/bin/agent-data-plane /symbols/agent-da
 # main.rs requires a config file at the default path. Ship a minimal standalone config as a
 # fallback. The boot wrapper overwrites it with the per-timeline config that first_sample_config
 # samples onto the shared `agent-config` volume.
-COPY test/antithesis/deploy/adp/datadog.yaml /etc/datadog-agent/datadog.yaml
+COPY test/antithesis/scenarios/general/adp/datadog.yaml /etc/datadog-agent/datadog.yaml
 # Boot wrapper waits for the config sentinel, copies the config into place, then execs ADP.
-COPY --chmod=755 test/antithesis/deploy/adp/entrypoint.sh /entrypoint.sh
+COPY --chmod=755 test/antithesis/scenarios/general/adp/entrypoint.sh /entrypoint.sh
 # ADP's control-plane secure API requires an IPC TLS cert (a single PEM holding both certificate and
 # private key) that the Core Agent normally generates. In standalone mode there is no Core Agent, so
 # generate a self-signed cert+key. An empty auth_token satisfies the IPC auth config at startup.
@@ -137,12 +137,12 @@ RUN test -d /usr/share/ca-certificates || ( \
     apt-get install --no-install-recommends -y ca-certificates && \
     rm -rf /var/lib/apt/lists/* )
 # Antithesis setup-complete helper and test templates (helper files + the "main" template dir).
-COPY --chmod=755 test/antithesis/deploy/workload/setup-complete.sh /opt/antithesis/setup-complete.sh
-COPY test/antithesis/deploy/workload/test/ /opt/antithesis/test/
+COPY --chmod=755 test/antithesis/scenarios/general/workload/setup-complete.sh /opt/antithesis/setup-complete.sh
+COPY test/antithesis/scenarios/general/workload/test/ /opt/antithesis/test/
 # Inject the compiled test-command binaries into the "main" test template.
 COPY --from=tools-builder --chmod=755 /usr/local/bin/first_sample_config /opt/antithesis/test/v1/main/first_sample_config
 COPY --from=tools-builder --chmod=755 /usr/local/bin/parallel_driver_send_dogstatsd /opt/antithesis/test/v1/main/parallel_driver_send_dogstatsd
 COPY --from=tools-builder --chmod=755 /usr/local/bin/parallel_driver_sketchburst /opt/antithesis/test/v1/main/parallel_driver_sketchburst
 COPY --from=tools-builder --chmod=755 /usr/local/bin/eventually_adp_alive /opt/antithesis/test/v1/main/eventually_adp_alive
-COPY --chmod=755 test/antithesis/deploy/workload/entrypoint.sh /entrypoint.sh
+COPY --chmod=755 test/antithesis/scenarios/general/workload/entrypoint.sh /entrypoint.sh
 ENTRYPOINT ["/entrypoint.sh"]

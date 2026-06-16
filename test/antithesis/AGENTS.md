@@ -10,7 +10,7 @@ Antithesis runs — do not run `snouty launch` directly.
 
 **snouty launch**
 
-Use `snouty launch --json --webhook basic_test --config test/antithesis/deploy`
+Use `snouty launch --json --webhook basic_test --config test/antithesis/scenarios/general`
 to start an Antithesis run. Always run `compose build` first to ensure images
 are up to date.
 
@@ -27,16 +27,18 @@ testing. Antithesis will not run any test commands until it receives this event.
 
 **Directory layout**
 
-- `harness/` — the harness Rust crate (`harness`), a member of the
-  repository-root workspace. `src/lib.rs` holds shared helpers; each
-  `src/bin/*.rs` is an Antithesis test command named after its file. Run cargo
-  from this directory; it is built, fmt'd, Clippy'd, and tested from the repo
-  root via the usual `make check-all` / `make test`.
-- `deploy/` — all Antithesis/Docker infrastructure: the `Dockerfile`,
+- `harness/` — the shared harness Rust crate (`harness`), a member of the
+  repository-root workspace. `src/lib.rs` holds shared helpers and `src/bin/`
+  holds test commands reused across scenarios. Run cargo from this directory;
+  it is built, fmt'd, Clippy'd, and tested from the repo root via the usual
+  `make check-all` / `make test`.
+- `scenarios/general/` — all Antithesis/Docker infrastructure: the `Dockerfile`,
   `docker-compose.yaml`, and per-container build inputs grouped by service
-  (`deploy/adp/`, `deploy/workload/`). This is the directory snouty consumes as
-  `--config`; it contains `docker-compose.yaml` at its top. Snouty will push
-  tagged images, consume this directory, and launch the run.
+  (`scenarios/general/adp/`, `scenarios/general/workload/`). This is the directory snouty consumes as
+  `--config`; it contains `docker-compose.yaml` at its top. Its Cargo package
+  (`antithesis-scenario-general`) owns general-only test commands under
+  `src/bin/`. Snouty will push tagged images, consume this directory, and
+  launch the run.
 
 **scratchbook**
 
@@ -46,7 +48,7 @@ per-property evidence files (in `scratchbook/properties/`), property
 relationship maps, and other persistent integration notes. Keep it up to date as
 Antithesis-related decisions change.
 
-**test templates** (`deploy/workload/test/`)
+**test templates** (`scenarios/general/workload/test/`)
 
 This directory contains test templates. A test template is a directory
 containing test command executable files. Each test command must have a valid

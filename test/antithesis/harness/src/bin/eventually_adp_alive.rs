@@ -33,7 +33,7 @@ mod unix_check {
         adp_api_addr: String,
         #[arg(
             long = "dsd-socket",
-            env = "DSD_SOCKET",
+            env = "ADP_DOGSTATSD_SOCKET",
             default_value = "/var/run/datadog/dsd.socket"
         )]
         dsd_socket: PathBuf,
