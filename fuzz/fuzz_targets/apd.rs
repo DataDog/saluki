@@ -46,8 +46,11 @@ impl<'a> Arbitrary<'a> for FuzzDogStatsDInput {
 
 fuzz_target!(|input: FuzzDogStatsDInput| {
     tokio::runtime::Builder::new_current_thread()
+        .start_paused(true)
         .enable_all()
         .build()
-        .unwrap()
-        .block_on(inner(input.metrics));
+        .expect("failed to build tokio runtime")
+        .block_on(async {
+            inner(input.metrics).await;
+        });
 });
