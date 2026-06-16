@@ -126,8 +126,8 @@ container:
     - "8125/udp"
     - "5100/tcp"
 
-# Required: list of assertion steps to run (executed sequentially)
-# Each step is either a single assertion or a parallel block.
+# Required: list of steps to run sequentially.
+# Each step is either a single assertion, a single action, or a parallel assertion block.
 assertions:
   - type: process_stable_for
     duration: 10s
@@ -136,6 +136,10 @@ assertions:
     port: 8125
     protocol: udp
     timeout: 30s
+
+  - action: core_agent_config_set
+    key: log_level
+    value: debug
 
   - type: log_contains
     pattern: "Topology healthy"
@@ -163,7 +167,19 @@ assertions:
       during: 5s
 ```
 
-Steps (individual assertions and parallel blocks) execute sequentially. If any assertion in a parallel block fails, subsequent steps are skipped. Within a parallel block, all assertions run to completion regardless of individual failures.
+Steps execute sequentially. If any assertion or action fails, subsequent steps are skipped. Within a parallel block, all assertions run to completion regardless of individual failures.
+
+### Available actions
+
+#### `core_agent_config_set`
+
+Sets a runtime configuration key through the Core Agent command API.
+
+```yaml
+- action: core_agent_config_set
+  key: log_level
+  value: debug
+```
 
 ### Available Assertions
 
@@ -230,6 +246,17 @@ Probes an HTTP or HTTPS endpoint and asserts on the response status code. HTTPS 
   status:
     not_equal: 404
   insecure_skip_verify: true     # Optional: skip TLS certificate verification (default: false)
+  timeout: 30s
+```
+
+#### `adp_config_key_equals`
+
+Polls ADP's privileged `/config` endpoint until one key equals the expected value.
+
+```yaml
+- type: adp_config_key_equals
+  key: log_level
+  value: debug
   timeout: 30s
 ```
 

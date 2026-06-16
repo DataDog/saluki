@@ -929,6 +929,7 @@ impl IntegrationRunner {
             is_host_process: false,
             host_process_exit_code: None,
             docker_container_exit_code: Some(docker_exit_code),
+            core_agent_auth_token_path: None,
         };
         crate::assertions::run_assertion_steps(&self.test_case, &ctx).await
     }

@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::{Arc, OnceLock, RwLock};
 use std::time::Duration;
 
@@ -15,6 +16,7 @@ use tracing::{debug, error};
 
 use crate::config::{AssertionConfig, AssertionStep, IntegrationConfig, LogStream};
 
+mod adp_config_key_equals;
 mod adp_exits;
 mod file_contains;
 mod http_check;
@@ -22,6 +24,7 @@ mod log_contains;
 mod port_listening;
 mod process_stable;
 
+pub use adp_config_key_equals::{default_adp_config_endpoint, AdpConfigKeyEqualsAssertion};
 pub use adp_exits::AdpExitsWithAssertion;
 pub use file_contains::FileContainsAssertion;
 pub use http_check::HttpCheckAssertion;
@@ -132,6 +135,8 @@ pub struct AssertionContext {
     /// exits. `None` on host-process runtimes; otherwise an empty cell that becomes populated
     /// when the docker wait stream completes.
     pub docker_container_exit_code: Option<DockerExitCodeCell>,
+    /// Core Agent auth token path for host-process runtimes.
+    pub core_agent_auth_token_path: Option<PathBuf>,
 }
 
 impl AssertionContext {
@@ -214,6 +219,17 @@ pub fn create_assertion(config: &AssertionConfig) -> Result<Box<dyn Assertion>, 
             *regex,
             timeout.0,
         ))),
+        AssertionConfig::AdpConfigKeyEquals {
+            key,
+            value,
+            endpoint,
+            timeout,
+        } => Ok(Box::new(AdpConfigKeyEqualsAssertion::new(
+            key.clone(),
+            value.clone(),
+            endpoint.clone(),
+            timeout.0,
+        ))),
     }
 }
 
@@ -232,6 +248,50 @@ pub(crate) async fn run_assertion_steps(test_case: &IntegrationConfig, ctx: &Ass
 
     for (step_index, step) in test_case.assertions.iter().enumerate() {
         match step {
+            AssertionStep::Action(action_config) => {
+                let action = match crate::actions::create_action(action_config) {
+                    Ok(a) => a,
+                    Err(e) => {
+                        error!(error = %e, "Failed to create action from configuration.");
+                        results.push(AssertionResult {
+                            name: "config_error".to_string(),
+                            passed: false,
+                            message: format!("Failed to create action: {}.", e),
+                            duration: Duration::ZERO,
+                        });
+                        break;
+                    }
+                };
+
+                debug!(
+                    step = step_index + 1,
+                    step_total = total_steps,
+                    action_type = action.name(),
+                    description = %action.description(),
+                    "Running action..."
+                );
+
+                let result = action.execute(ctx).await;
+                if result.passed {
+                    debug!(action_type = action.name(), duration = ?result.duration, "Action passed.");
+                } else {
+                    debug!(
+                        action_type = action.name(),
+                        duration = ?result.duration,
+                        message = %result.message,
+                        "Action failed."
+                    );
+                }
+
+                let failed = !result.passed;
+                results.push(result);
+
+                if failed {
+                    debug!("Stopping assertion execution due to action failure (fail-fast).");
+                    break;
+                }
+            }
+
             AssertionStep::Single(assertion_config) => {
                 let assertion = match create_assertion(assertion_config) {
                     Ok(a) => a,
