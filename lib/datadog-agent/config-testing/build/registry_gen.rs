@@ -176,11 +176,13 @@ static GOLDEN_ORDER: &[(&str, &[&str])] = &[
     (
         "get_typed.rs",
         &[
+            "aggregator_stop_timeout",
             "vsock_addr",
             "cmd_port",
             "log_format_rfc3339",
             "syslog_rfc",
             "syslog_uri",
+            "forwarder_stop_timeout",
         ],
     ),
     (
@@ -284,14 +286,12 @@ static GOLDEN_ORDER: &[(&str, &[&str])] = &[
             "aggregator_buffer_size",
             "aggregator_flush_metrics_and_serialize_in_parallel_buffer_size",
             "aggregator_flush_metrics_and_serialize_in_parallel_chan_size",
-            "aggregator_stop_timeout",
             "aggregator_use_tags_store",
             "autoscaling.failover.enabled",
             "autoscaling.failover.metrics",
             "dogstatsd_experimental_http.enabled",
             "dogstatsd_experimental_http.listen_address",
             "forwarder_requeue_buffer_size",
-            "forwarder_stop_timeout",
             "heroku_dyno",
             "telemetry.dogstatsd.aggregator_channel_latency_buckets",
             "telemetry.dogstatsd.listeners_channel_latency_buckets",

@@ -360,6 +360,8 @@ async fn create_topology(
     component_registry: &ComponentRegistry,
 ) -> Result<(TopologyBlueprint, TopologyControlSurfaces), GenericError> {
     let mut blueprint = TopologyBlueprint::new("primary", component_registry);
+    blueprint.with_shutdown_timeout(dp_config.stop_timeout());
+
     let mut control_surfaces = TopologyControlSurfaces::default();
 
     // If no data pipelines are enabled, then there's nothing for us to do.

@@ -192,17 +192,6 @@ crate::declare_annotations! {
         test_json: None,
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
-    /// `aggregator_stop_timeout`-Timeout (s) for aggregator flush on stop
-    AGGREGATOR_STOP_TIMEOUT = SalukiAnnotation {
-        schema: &schema::AGGREGATOR_STOP_TIMEOUT,
-        support_level: SupportLevel::Incompatible(Severity::Low),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
-    };
     /// `aggregator_use_tags_store`-Enable shared tag deduplication store
     AGGREGATOR_USE_TAGS_STORE = SalukiAnnotation {
         schema: &schema::AGGREGATOR_USE_TAGS_STORE,
@@ -261,17 +250,6 @@ crate::declare_annotations! {
     /// `forwarder_requeue_buffer_size`-In-memory re-queue buffer size
     FORWARDER_REQUEUE_BUFFER_SIZE = SalukiAnnotation {
         schema: &schema::FORWARDER_REQUEUE_BUFFER_SIZE,
-        support_level: SupportLevel::Incompatible(Severity::Low),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-        pipeline_affinity: PipelineAffinity::CrossCutting,
-    };
-    /// `forwarder_stop_timeout`-Timeout (s) for forwarder graceful stop
-    FORWARDER_STOP_TIMEOUT = SalukiAnnotation {
-        schema: &schema::FORWARDER_STOP_TIMEOUT,
         support_level: SupportLevel::Incompatible(Severity::Low),
         additional_yaml_paths: &[],
         env_var_override: None,

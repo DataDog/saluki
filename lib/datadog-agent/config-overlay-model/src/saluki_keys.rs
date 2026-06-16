@@ -22,6 +22,28 @@ pub struct SalukiKey {
 }
 
 pub static SALUKI_KEYS: &[SalukiKey] = &[
+    // ── data_plane.rs ────────────────────────────────────────────────────────
+    SalukiKey {
+        yaml_path: "data_plane.stop_timeout",
+        description: "ADP graceful shutdown timeout (s)",
+        default: "derived",
+        documentation: Some(
+            "### `data_plane.stop_timeout`
+
+\
+             ADP uses `data_plane.stop_timeout` as the topology-wide graceful shutdown timeout. \
+             If this key is unset, ADP defaults to `aggregator_stop_timeout + forwarder_stop_timeout`.",
+        ),
+        value_type: "ValueType::Integer",
+        schema_default: None,
+        env_vars: &[],
+        env_var_override: None,
+        additional_yaml_paths: &[],
+        used_by: &["GET_TYPED"],
+        test_json: None,
+        pipeline_affinity: "PipelineAffinity::CrossCutting",
+        filename: "data_plane.rs",
+    },
     // ── dogstatsd.rs ─────────────────────────────────────────────────────────
     SalukiKey {
         yaml_path: "dogstatsd_allow_context_heap_allocs",
