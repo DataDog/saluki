@@ -445,4 +445,42 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         pipeline_affinity: PipelineAffinity::CrossCutting,
         default: Some("100"),
     },
+<<<<<<< HEAD
+=======
+    ClassifierEntry {
+        yaml_path: "forwarder_requeue_buffer_size",
+        aliases: &[],
+        support_level: SupportLevel::Incompatible(Severity::Low),
+        pipeline_affinity: PipelineAffinity::CrossCutting,
+        default: Some("100"),
+    },
+    ClassifierEntry {
+        yaml_path: "telemetry.dogstatsd.aggregator_channel_latency_buckets",
+        aliases: &[],
+        support_level: SupportLevel::Incompatible(Severity::Low),
+        pipeline_affinity: PipelineAffinity::CrossCutting,
+        default: Some("[]"),
+    },
+    ClassifierEntry {
+        yaml_path: "telemetry.dogstatsd.listeners_channel_latency_buckets",
+        aliases: &[],
+        support_level: SupportLevel::Incompatible(Severity::Low),
+        pipeline_affinity: PipelineAffinity::CrossCutting,
+        default: Some("[]"),
+    },
+    ClassifierEntry {
+        yaml_path: "telemetry.dogstatsd.listeners_latency_buckets",
+        aliases: &[],
+        support_level: SupportLevel::Incompatible(Severity::Low),
+        pipeline_affinity: PipelineAffinity::CrossCutting,
+        default: Some("[]"),
+    },
+    ClassifierEntry {
+        yaml_path: "telemetry.dogstatsd_origin",
+        aliases: &[],
+        support_level: SupportLevel::Incompatible(Severity::Low),
+        pipeline_affinity: PipelineAffinity::CrossCutting,
+        default: Some("false"),
+    },
+>>>>>>> 6796877f3c (feat(config): support configurable ADP stop timeout (#1876))
 ];

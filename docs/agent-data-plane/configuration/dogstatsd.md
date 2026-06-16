@@ -154,6 +154,68 @@ Related ADP-specific tuning is exposed through context/tag-set resolver settings
 `dogstatsd_cached_tagsets_limit`, not through `aggregator_use_tags_store`. Setting
 `aggregator_use_tags_store` has no effect in ADP.
 
+### `aggregator_buffer_size`
+
+The core Agent uses `aggregator_buffer_size` to size bounded Go channels feeding the aggregator and
+DogStatsD time sampler workers.
+
+ADP has no equivalent operator-facing setting. Its aggregate transform receives data through the
+Saluki topology interconnects, which are configured at topology construction time rather than by
+per-component Agent config keys. The default event interconnect capacity is 128 buffers, and each
+event buffer can hold up to 1024 events.
+
+Setting `aggregator_buffer_size` has no effect in ADP.
+
+### `aggregator_flush_metrics_and_serialize_in_parallel_buffer_size`
+
+The core Agent uses `aggregator_flush_metrics_and_serialize_in_parallel_buffer_size` during
+aggregator flushes, not for the aggregator's input queues. It controls how many flushed
+series or sketch objects are grouped into each internal buffered-channel slice while one
+goroutine produces flushed metrics and another goroutine serializes them.
+
+ADP has no equivalent flush-and-serialize iterable pipeline. The aggregate transform emits
+aggregated `Metric` events into the Saluki topology through `EventsBuffer` batches, and
+downstream encoder components serialize those events independently of the aggregate transform.
+
+The closest internal ADP buffering is topology-wide: `EventsBuffer` can hold up to 1024 events,
+and event interconnects default to 128 buffers. These are not configured through
+`aggregator_flush_metrics_and_serialize_in_parallel_buffer_size`, and setting this key has no
+effect in ADP.
+
+### `aggregator_flush_metrics_and_serialize_in_parallel_chan_size`
+
+The core Agent uses `aggregator_flush_metrics_and_serialize_in_parallel_chan_size` during
+aggregator flushes, together with
+`aggregator_flush_metrics_and_serialize_in_parallel_buffer_size`. The buffer size controls how
+many flushed series or sketch objects are grouped into each internal slice, while the channel
+size controls how many of those slices can queue between the flush producer goroutine and the
+consumer goroutine that serializes them.
+
+ADP has no equivalent flush-and-serialize iterable pipeline. The aggregate transform emits
+aggregated `Metric` events into the Saluki topology through `EventsBuffer` batches, and
+downstream encoder components serialize those events independently of the aggregate transform.
+
+The closest internal ADP buffering is topology-wide: `EventsBuffer` can hold up to 1024 events,
+and event interconnects default to 128 buffers. These are not configured through
+`aggregator_flush_metrics_and_serialize_in_parallel_chan_size`, and setting this key has no
+effect in ADP.
+
+### `aggregator_use_tags_store`
+
+The core Agent uses `aggregator_use_tags_store` to enable an aggregator-local, ref-counted
+tag store. The store deduplicates repeated tag slices across aggregator contexts: contexts
+retain shared tag entries while active, release them when they expire, and periodic shrinking
+removes entries that are no longer referenced.
+
+ADP does not have an aggregator-local tag store and does not need this toggle. Metrics reach
+the aggregate transform with Saluki `Context` values that already carry ADP-native tag
+structures. Tag reuse is handled before aggregation by the context resolver, the tags resolver,
+and `SharedTagSet` structural sharing.
+
+Related ADP-specific tuning is exposed through context/tag-set resolver settings such as
+`dogstatsd_cached_tagsets_limit`, not through `aggregator_use_tags_store`. Setting
+`aggregator_use_tags_store` has no effect in ADP.
+
 ### `data_plane.telemetry_enabled`
 
 Deprecated. ADP previously read this key to enable its internal Prometheus telemetry
