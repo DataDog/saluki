@@ -175,49 +175,38 @@ pub enum SupervisorError {
     Shutdown,
 }
 
-/// A specification for a child process to be added to a [`Supervisor`].
+/// A specification for a process to be added to a [`Supervisor`].
 ///
 /// A child specification describes how the supervisor should create and manage a child: the underlying future that
-/// represents the process, along with metadata such as its name and shutdown strategy. It is the value accepted by
-/// [`Supervisor::add_worker`].
+/// represents the process, along with metadata such as its name and shutdown strategy. All processes in a supervisor,
+/// whether a worker or a (nested) supervisor, are represented by a [`ChildSpecification`].
 ///
-/// The type parameter `S` is a [typestate] tracking what kind of child the specification holds:
+/// Generally, callers should prefer to use [`add_worker`][Supervisor::add_worker] directly, which can accept either
+/// [`Supervisor`] or any value that implements [`Supervisable`], without needing to explicitly create a
+/// [`ChildSpecification`]. This is preferred as it is more concise but also will ensure that relevant settings are
+/// configured properly for the given worker type, such as using the proper shutdown strategy for supervisors to allow
+/// for complete, graceful shutdown.
 ///
-/// - [`WorkerSpec`] -- a leaf worker (any type implementing [`Supervisable`]). Build one with
-///   [`ChildSpecification::worker`], then configure it via
-///   [`with_restart_type`][ChildSpecification::with_restart_type].
-/// - [`SupervisorSpec`] -- a nested [`Supervisor`], forming a supervision tree.
-///
-/// A specification can also be created implicitly: any [`Supervisable`] type converts into a
-/// `ChildSpecification<WorkerSpec>`, and a [`Supervisor`] converts into a `ChildSpecification<SupervisorSpec>`. Most
-/// callers therefore pass workers and supervisors to [`add_worker`][Supervisor::add_worker] directly, without naming
-/// this type, and only reach for [`ChildSpecification::worker`] when they need to configure a worker.
-///
-/// [typestate]: https://cliffle.com/blog/rust-typestate/
+/// If more control is needed, [`ChildSpecification::worker`] can be used to create a specification directly, allowing
+/// access to configuring those more advanced settings. This is currently only valid for worker processes, as
+/// supervisors have no additional user-configurable settings.
 pub struct ChildSpecification<S = WorkerSpec> {
     spec_inner: S,
 }
 
-/// The [typestate] for a [`ChildSpecification`] that holds a leaf worker.
-///
-/// [typestate]: https://cliffle.com/blog/rust-typestate/
+/// Child specification state for a worker.
 pub struct WorkerSpec {
     worker: Arc<dyn Supervisable>,
     restart_type: RestartType,
 }
 
-/// The [typestate] for a [`ChildSpecification`] that holds a nested [`Supervisor`].
-///
-/// [typestate]: https://cliffle.com/blog/rust-typestate/
+/// Child specification state for a supervisor.
 pub struct SupervisorSpec {
     supervisor: Supervisor,
 }
 
 impl ChildSpecification<WorkerSpec> {
     /// Creates a specification for the given worker.
-    ///
-    /// The worker is registered with the [`RestartType::Permanent`] policy by default; use
-    /// [`with_restart_type`][Self::with_restart_type] to choose another.
     pub fn worker<T: Supervisable + 'static>(worker: T) -> Self {
         Self {
             spec_inner: WorkerSpec {
@@ -229,8 +218,7 @@ impl ChildSpecification<WorkerSpec> {
 
     /// Sets the restart policy for this worker.
     ///
-    /// See [`RestartType`] for the available policies and their caveats (in particular,
-    /// [`RestartType::Temporary`] is intended for one-for-one supervision).
+    /// Defaults to [`RestartType::Permanent`].
     #[must_use]
     pub fn with_restart_type(mut self, restart_type: RestartType) -> Self {
         self.spec_inner.restart_type = restart_type;
@@ -262,13 +250,11 @@ mod sealed {
 impl sealed::Sealed for WorkerSpec {}
 impl sealed::Sealed for SupervisorSpec {}
 
-/// The state of a [`ChildSpecification`]'s [typestate] parameter.
+/// Child specification state.
 ///
 /// This trait is implemented only for [`WorkerSpec`] and [`SupervisorSpec`], and is sealed: it cannot be implemented
 /// outside of this crate. It exists so that [`Supervisor::add_worker`] can accept a [`ChildSpecification`] in either
 /// state (as well as bare workers and supervisors) while lowering each into the supervisor's internal representation.
-///
-/// [typestate]: https://cliffle.com/blog/rust-typestate/
 pub trait ChildState: sealed::Sealed + Sized {
     #[doc(hidden)]
     fn register(spec: ChildSpecification<Self>, supervisor: &mut Supervisor);
@@ -292,7 +278,7 @@ impl ChildState for SupervisorSpec {
     }
 }
 
-/// The type-erased, runnable form of a child: either a leaf worker or a nested supervisor.
+/// The type-erased, runnable form of a child: either a worker or a nested supervisor.
 ///
 /// This carries the behavior shared by both kinds of child -- creating the process and worker future, naming, and
 /// shutdown strategy. Public [`ChildSpecification`]s are lowered into this type when registered via
@@ -488,10 +474,8 @@ impl Supervisor {
     /// A worker can be anything that implements the [`Supervisable`] trait. A [`Supervisor`] can also be added as a
     /// worker and managed in a nested fashion, known as a supervision tree.
     ///
-    /// Bare workers and supervisors are registered with the [`RestartType::Permanent`] restart policy: they are always
-    /// restarted when they exit. To choose a different policy for a worker, build a [`ChildSpecification`] with
-    /// [`ChildSpecification::worker`] and configure it via
-    /// [`with_restart_type`][ChildSpecification::with_restart_type] before adding it.
+    /// See [`ChildSpecification`] for more details on how workers are represented internally and what options are
+    /// available to configure.
     pub fn add_worker<S, T>(&mut self, child: T)
     where
         S: ChildState,
