@@ -27,6 +27,11 @@ dogstatsd_origin_detection: true
 # difference from this parity test.
 dogstatsd_workers_count: 1
 
+# Agent 7.80.1+ defaults metric_tag_filterlist_adp_only to true, causing the Core Agent to skip
+# the filterlist and defer to ADP. Set to false so the baseline Core Agent target still applies
+# the filterlist, keeping baseline and comparison comparable.
+metric_tag_filterlist_adp_only: false
+
 metric_tag_filterlist:
   - metric_name: tagfilter.exclude
     action: exclude
