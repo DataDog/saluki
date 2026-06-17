@@ -219,10 +219,11 @@ impl MetadataCollector for RemoteAgentWorkloadMetadataCollector {
         let mut entity_stream = self.client.get_workloadmeta_stream().map_err(StatusError::from);
         debug!("Established workload metadata entity stream.");
 
-        // Defer mark_ready() until after the first response is processed. Same rationale as the
-        // tagger collector: prevents DogStatsD from starting before the initial workloadmeta
-        // snapshot is received, which would cause origin detection to miss early metrics.
-        let mut initial_snapshot_received = false;
+        // Defer mark_ready() until the Agent signals initial_snapshot_complete. The Agent sends the
+        // initial workloadmeta snapshot as one or more chunks; only the last chunk has this flag
+        // set. Waiting for it ensures all existing workload state is populated before DogStatsD
+        // starts, so origin detection doesn't miss early metrics.
+        let mut initial_snapshot_complete = false;
 
         loop {
             select! {
@@ -256,8 +257,8 @@ impl MetadataCollector for RemoteAgentWorkloadMetadataCollector {
                             }
                         }
 
-                        if !initial_snapshot_received {
-                            initial_snapshot_received = true;
+                        if !initial_snapshot_complete && response.initial_snapshot_complete {
+                            initial_snapshot_complete = true;
                             self.health.mark_ready();
                         }
 
