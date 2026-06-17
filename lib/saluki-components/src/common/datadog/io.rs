@@ -5,7 +5,13 @@
 //! - Avoid breaking apart `TransactionForwarder` only to work around `#[allow(clippy::too_many_arguments)]`.
 //! - Avoid initializing the process-wide crypto provider from tests.
 
-use std::{collections::VecDeque, error::Error as _, path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    collections::VecDeque,
+    error::Error as _,
+    path::PathBuf,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use bytes::Buf;
 use futures::FutureExt as _;
@@ -99,7 +105,21 @@ pub struct TransactionForwarder<B> {
     metrics_builder: MetricsBuilder,
     client: HttpClient,
     endpoints: Vec<RoutableEndpoint>,
+    endpoint_request_mapper_factory: EndpointRequestMapperFactory<B>,
     _marker: std::marker::PhantomData<B>,
+}
+
+/// Builds request mappers for resolved endpoints.
+pub(crate) type EndpointRequestMapperFactory<B> =
+    Arc<dyn Fn(ResolvedEndpoint) -> EndpointRequestMapper<B> + Send + Sync>;
+
+/// Maps requests for a resolved endpoint before they are sent.
+pub(crate) type EndpointRequestMapper<B> =
+    Box<dyn FnMut(Request<TransactionBody<B>>) -> Request<TransactionBody<B>> + Send>;
+
+fn default_endpoint_request_mapper<B: 'static>(endpoint: ResolvedEndpoint) -> EndpointRequestMapper<B> {
+    let mapper = for_resolved_endpoint(endpoint);
+    Box::new(mapper)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -158,6 +178,26 @@ where
     where
         F: Fn(&Uri) -> Option<MetaString> + Send + Sync + 'static,
     {
+        Self::from_config_with_endpoint_request_mapper(
+            context,
+            config,
+            live_config,
+            endpoint_name,
+            telemetry,
+            metrics_builder,
+            Arc::new(default_endpoint_request_mapper::<B>),
+        )
+    }
+
+    /// Creates a new `TransactionForwarder` with a custom endpoint request mapper.
+    pub(crate) fn from_config_with_endpoint_request_mapper<F>(
+        context: ComponentContext, config: ForwarderConfiguration, live_config: Option<GenericConfiguration>,
+        endpoint_name: F, telemetry: ComponentTelemetry, metrics_builder: MetricsBuilder,
+        endpoint_request_mapper_factory: EndpointRequestMapperFactory<B>,
+    ) -> Result<Self, GenericError>
+    where
+        F: Fn(&Uri) -> Option<MetaString> + Send + Sync + 'static,
+    {
         let endpoints = config.build_routable_endpoints(live_config.clone())?;
         let mut client_builder = HttpClient::builder()
             .with_request_timeout(config.request_timeout())
@@ -189,6 +229,7 @@ where
             metrics_builder,
             client,
             endpoints,
+            endpoint_request_mapper_factory,
             _marker: std::marker::PhantomData,
         })
     }
@@ -210,6 +251,7 @@ where
             metrics_builder,
             client,
             endpoints,
+            endpoint_request_mapper_factory,
             _marker,
         } = self;
 
@@ -225,6 +267,7 @@ where
                 telemetry,
                 metrics_builder,
                 endpoints,
+                endpoint_request_mapper_factory,
             ),
         );
 
@@ -250,7 +293,7 @@ async fn run_io_loop<B>(
     mut transactions_rx: mpsc::Receiver<Transaction<B>>, io_shutdown_tx: oneshot::Sender<()>,
     context: ComponentContext, config: ForwarderConfiguration, live_config: Option<GenericConfiguration>,
     service: HttpClient, telemetry: ComponentTelemetry, metrics_builder: MetricsBuilder,
-    resolved_endpoints: Vec<RoutableEndpoint>,
+    resolved_endpoints: Vec<RoutableEndpoint>, endpoint_request_mapper_factory: EndpointRequestMapperFactory<B>,
 ) where
     B: Body + Buf + Clone + Send + Sync + 'static,
     B::Data: Send,
@@ -288,6 +331,7 @@ async fn run_io_loop<B>(
                 telemetry.clone(),
                 txnq_telemetry,
                 resolved_endpoint,
+                endpoint_request_mapper_factory.clone(),
             ),
         );
 
@@ -366,6 +410,7 @@ async fn run_endpoint_io_loop<B>(
     mut txns_rx: mpsc::Receiver<Transaction<B>>, task_barrier: Arc<Barrier>, context: ComponentContext,
     config: ForwarderConfiguration, live_config: Option<GenericConfiguration>, service: HttpClient,
     telemetry: ComponentTelemetry, txnq_telemetry: TransactionQueueTelemetry, endpoint: ResolvedEndpoint,
+    endpoint_request_mapper_factory: EndpointRequestMapperFactory<B>,
 ) where
     B: Body + Buf + Clone + Send + Sync + 'static,
     B::Data: Send,
@@ -379,6 +424,7 @@ async fn run_endpoint_io_loop<B>(
         endpoint_concurrency = config.endpoint_concurrency(),
         "Starting endpoint I/O task."
     );
+    let endpoint_request_mapper = Arc::new(Mutex::new((endpoint_request_mapper_factory)(endpoint)));
 
     // Build our endpoint service.
     //
@@ -389,8 +435,16 @@ async fn run_endpoint_io_loop<B>(
     // after the retry circuit breaker. This ensures that `RetryCircuitBreakerError::Open(req)` returns
     // the original `Request<TransactionBody<B>>` so we can reassemble it into a `Transaction<B>` for re-enqueuing.
     let mut service = ServiceBuilder::new()
-        // Set the request's URI to the endpoint's URI, and add the API key as a header.
-        .map_request(for_resolved_endpoint(endpoint))
+        // Set the request's URI and endpoint-specific headers.
+        .map_request({
+            let endpoint_request_mapper = Arc::clone(&endpoint_request_mapper);
+            move |request| {
+                let mut mapper = endpoint_request_mapper
+                    .lock()
+                    .expect("endpoint request mapper mutex poisoned");
+                mapper(request)
+            }
+        })
         // Signal backend support for arbitrary tag values when configured.
         .map_request(with_allow_arbitrary_tags(config.allow_arbitrary_tags()))
         // Set the User-Agent and DD-Agent-Version headers indicating the version of the data plane sending the request.
