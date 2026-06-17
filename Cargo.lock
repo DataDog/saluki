@@ -90,6 +90,8 @@ dependencies = [
  "datadog-agent-commons",
  "datadog-agent-config",
  "datadog-protos",
+ "futures",
+ "prost-types",
  "saluki-common",
  "saluki-component-config",
  "saluki-config-tools",

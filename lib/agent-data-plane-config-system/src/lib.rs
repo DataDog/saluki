@@ -3,7 +3,7 @@
 mod remote_agent;
 mod witness_impl;
 
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use agent_data_plane_config::{
     BootstrapConfiguration, ConfigViews, DatadogBootstrap, DatadogRuntimeAuthority, DogStatsDSalukiOnly,
@@ -12,6 +12,8 @@ use agent_data_plane_config::{
 };
 use bytesize::ByteSize;
 use datadog_agent_config::{drive, DatadogConfiguration, DatadogRemapper, KEY_ALIASES};
+use datadog_protos::agent::{config_event, ConfigSetting, ConfigSnapshot, ConfigUpdate as AgentConfigUpdate};
+use futures::StreamExt as _;
 pub use remote_agent::{Attachments, DatadogAgentConnection};
 use saluki_common::deser::PermissiveBool;
 use saluki_component_config::{
@@ -19,10 +21,14 @@ use saluki_component_config::{
     MrfConfig, ScopedConfig, TagFilterlistConfig,
 };
 use saluki_config_tools::{ConfigurationError, ConfigurationLoader, GenericConfiguration};
-use saluki_error::GenericError;
+use saluki_error::{generic_error, GenericError};
 use serde::Deserialize;
 use serde_with::serde_as;
-use tokio::sync::watch;
+use tokio::{
+    sync::{watch, Mutex},
+    time::sleep,
+};
+use tracing::{debug, warn};
 use witness_impl::Translator;
 
 /// Inputs used when loading local configuration sources.
@@ -97,24 +103,52 @@ impl LoadedConfigurationSystem {
     pub async fn start_runtime(
         self, authority: DatadogRuntimeAuthority,
     ) -> Result<StartedConfigurationSystem, GenericError> {
-        let datadog = self.datadog.as_typed::<DatadogConfiguration>()?;
-        let mut native = translate_datadog(&datadog, &self.saluki_only)?;
-        apply_local_control_overrides(&self.datadog, &mut native)?;
-        let attachments = remote_agent::build_attachments(&self.datadog, &native.control).await?;
-        let router_authority = if attachments.datadog_agent.is_some() {
-            DatadogRuntimeAuthority::Stream
+        let local_datadog = self.datadog.as_typed::<DatadogConfiguration>()?;
+        let mut local_native = translate_datadog(&local_datadog, &self.saluki_only)?;
+        apply_local_control_overrides(&self.datadog, &mut local_native)?;
+
+        let attachments = remote_agent::build_attachments(&self.datadog, &local_native.control, authority).await?;
+        let stream_connection = (authority == DatadogRuntimeAuthority::Stream)
+            .then(|| attachments.datadog_agent.clone())
+            .flatten();
+
+        let (source_snapshot, native, router_authority) = if let Some(connection) = stream_connection.clone() {
+            let source_snapshot = read_initial_datadog_stream_snapshot(connection).await?;
+            let datadog = source_snapshot.as_datadog_configuration()?;
+            let mut native = translate_datadog(&datadog, &self.saluki_only)?;
+            apply_json_control_overrides(&source_snapshot.as_json(), &mut native);
+            (source_snapshot, native, DatadogRuntimeAuthority::Stream)
         } else {
-            authority
+            (
+                DatadogSourceSnapshot::from_json(self.datadog.as_typed::<serde_json::Value>()?),
+                local_native,
+                DatadogRuntimeAuthority::Local,
+            )
         };
-        let router = ConfigUpdateRouter::new(native.clone(), self.saluki_only.clone(), router_authority);
+
+        let router = Arc::new(Mutex::new(ConfigUpdateRouter::new(
+            native.clone(),
+            self.saluki_only.clone(),
+            router_authority,
+        )));
+        let handles = router.lock().await.handles();
         let views = ConfigViews {
-            raw: SourceConfigView::new(scrub_json(self.datadog.as_typed::<serde_json::Value>()?)),
+            raw: SourceConfigView::new(scrub_json(source_snapshot.as_json())),
             internal: InternalConfigView::new(scrub_json(serde_json::to_value(&native)?)),
         };
 
+        if let Some(connection) = stream_connection {
+            tokio::spawn(run_config_stream_task(
+                connection,
+                source_snapshot,
+                router.clone(),
+                views.clone(),
+            ));
+        }
+
         Ok(StartedConfigurationSystem {
             saluki: native,
-            handles: router.handles(),
+            handles,
             views,
             router,
             datadog_source: self.datadog,
@@ -129,7 +163,7 @@ pub struct StartedConfigurationSystem {
     saluki: SalukiConfiguration,
     handles: DynamicConfigHandles,
     views: ConfigViews,
-    router: ConfigUpdateRouter,
+    router: Arc<Mutex<ConfigUpdateRouter>>,
     datadog_source: GenericConfiguration,
     attachments: Attachments,
     _saluki_source: GenericConfiguration,
@@ -161,9 +195,202 @@ impl StartedConfigurationSystem {
         self.attachments.clone()
     }
 
-    /// Returns the internal router for tests and future stream wiring.
-    pub fn router(&mut self) -> &mut ConfigUpdateRouter {
-        &mut self.router
+    /// Returns the internal router for tests.
+    pub fn router(&self) -> Arc<Mutex<ConfigUpdateRouter>> {
+        self.router.clone()
+    }
+}
+
+#[derive(Clone, Debug)]
+struct DatadogSourceSnapshot {
+    json: serde_json::Value,
+}
+
+impl DatadogSourceSnapshot {
+    fn from_json(json: serde_json::Value) -> Self {
+        Self { json }
+    }
+
+    fn from_stream_snapshot(snapshot: ConfigSnapshot) -> Result<Self, GenericError> {
+        let mut json = serde_json::Value::Object(serde_json::Map::new());
+        for setting in snapshot.settings {
+            apply_config_setting(&mut json, setting)?;
+        }
+        Ok(Self { json })
+    }
+
+    fn apply_stream_update(&mut self, update: AgentConfigUpdate) -> Result<(), GenericError> {
+        let setting = update
+            .setting
+            .ok_or_else(|| generic_error!("Datadog Agent config update did not include a setting."))?;
+        apply_config_setting(&mut self.json, setting)
+    }
+
+    fn as_json(&self) -> serde_json::Value {
+        self.json.clone()
+    }
+
+    fn as_datadog_configuration(&self) -> Result<DatadogConfiguration, GenericError> {
+        Ok(serde_json::from_value(self.json.clone())?)
+    }
+}
+
+async fn read_initial_datadog_stream_snapshot(
+    connection: DatadogAgentConnection,
+) -> Result<DatadogSourceSnapshot, GenericError> {
+    let session_id = connection.session_id().wait_for_update().await;
+    let mut client = connection.client();
+    let mut stream = client.stream_config_events(&session_id);
+
+    while let Some(result) = stream.next().await {
+        let event = result?;
+        match event.event {
+            Some(config_event::Event::Snapshot(snapshot)) => {
+                return DatadogSourceSnapshot::from_stream_snapshot(snapshot)
+            }
+            Some(config_event::Event::Update(_)) => {
+                return Err(generic_error!(
+                    "Datadog Agent config stream sent an update before the initial snapshot."
+                ));
+            }
+            None => debug!("Datadog Agent config stream sent an empty event before the initial snapshot."),
+        }
+    }
+
+    Err(generic_error!(
+        "Datadog Agent config stream ended before sending the initial snapshot."
+    ))
+}
+
+async fn run_config_stream_task(
+    connection: DatadogAgentConnection, mut source_snapshot: DatadogSourceSnapshot,
+    router: Arc<Mutex<ConfigUpdateRouter>>, views: ConfigViews,
+) {
+    loop {
+        let session_id = connection.session_id().wait_for_update().await;
+        let mut client = connection.client();
+        let mut stream = client.stream_config_events(&session_id);
+        debug!(%session_id, "Listening for Datadog Agent config stream updates.");
+
+        while let Some(result) = stream.next().await {
+            let event = match result {
+                Ok(event) => event,
+                Err(status) => {
+                    warn!(?status, "Datadog Agent config stream failed; reconnecting.");
+                    break;
+                }
+            };
+
+            let accepted_source_update = match event.event {
+                Some(config_event::Event::Snapshot(snapshot)) => {
+                    match DatadogSourceSnapshot::from_stream_snapshot(snapshot) {
+                        Ok(snapshot) => {
+                            source_snapshot = snapshot;
+                            true
+                        }
+                        Err(error) => {
+                            warn!(error = %error, "Rejecting malformed Datadog Agent config snapshot.");
+                            false
+                        }
+                    }
+                }
+                Some(config_event::Event::Update(update)) => match source_snapshot.apply_stream_update(update) {
+                    Ok(()) => true,
+                    Err(error) => {
+                        warn!(error = %error, "Rejecting malformed Datadog Agent config update.");
+                        false
+                    }
+                },
+                None => false,
+            };
+
+            if !accepted_source_update {
+                continue;
+            }
+
+            let datadog = match source_snapshot.as_datadog_configuration() {
+                Ok(datadog) => datadog,
+                Err(error) => {
+                    warn!(error = %error, "Rejecting Datadog Agent config update that failed to parse.");
+                    continue;
+                }
+            };
+
+            let mut router = router.lock().await;
+            match router.apply_datadog_source_snapshot(&datadog, &source_snapshot.as_json()) {
+                Ok(_) => update_views(&views, &source_snapshot, router.current()),
+                Err(error) => warn!(error = %error, "Rejecting Datadog Agent config update that failed translation."),
+            }
+        }
+
+        sleep(Duration::from_secs(1)).await;
+    }
+}
+
+fn apply_config_setting(root: &mut serde_json::Value, setting: ConfigSetting) -> Result<(), GenericError> {
+    let value = setting.value.map(protobuf_value_to_json).ok_or_else(|| {
+        generic_error!(
+            "Datadog Agent config setting `{}` did not include a value.",
+            setting.key
+        )
+    })?;
+    upsert_json_path(root, &setting.key, value);
+    Ok(())
+}
+
+fn upsert_json_path(root: &mut serde_json::Value, path: &str, value: serde_json::Value) {
+    if !root.is_object() {
+        *root = serde_json::Value::Object(serde_json::Map::new());
+    }
+
+    let mut current = root;
+    let mut segments = path.split('.').peekable();
+    while let Some(segment) = segments.next() {
+        let is_leaf = segments.peek().is_none();
+        if is_leaf {
+            current
+                .as_object_mut()
+                .expect("current value is an object")
+                .insert(segment.to_string(), value);
+            return;
+        }
+
+        let map = current.as_object_mut().expect("current value is an object");
+        current = map
+            .entry(segment.to_string())
+            .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+        if !current.is_object() {
+            *current = serde_json::Value::Object(serde_json::Map::new());
+        }
+    }
+}
+
+fn protobuf_value_to_json(value: prost_types::Value) -> serde_json::Value {
+    match value.kind {
+        Some(prost_types::value::Kind::NullValue(_)) | None => serde_json::Value::Null,
+        Some(prost_types::value::Kind::NumberValue(value)) => serde_json::Number::from_f64(value)
+            .map(serde_json::Value::Number)
+            .unwrap_or(serde_json::Value::Null),
+        Some(prost_types::value::Kind::StringValue(value)) => serde_json::Value::String(value),
+        Some(prost_types::value::Kind::BoolValue(value)) => serde_json::Value::Bool(value),
+        Some(prost_types::value::Kind::StructValue(value)) => serde_json::Value::Object(
+            value
+                .fields
+                .into_iter()
+                .map(|(key, value)| (key, protobuf_value_to_json(value)))
+                .collect(),
+        ),
+        Some(prost_types::value::Kind::ListValue(value)) => {
+            serde_json::Value::Array(value.values.into_iter().map(protobuf_value_to_json).collect())
+        }
+    }
+}
+
+fn update_views(views: &ConfigViews, source_snapshot: &DatadogSourceSnapshot, native: &SalukiConfiguration) {
+    views.raw.update(scrub_json(source_snapshot.as_json()));
+    match serde_json::to_value(native) {
+        Ok(value) => views.internal.update(scrub_json(value)),
+        Err(error) => warn!(error = %error, "Failed to update internal config view."),
     }
 }
 
@@ -297,11 +524,27 @@ impl ConfigUpdateRouter {
     /// Retranslates a Datadog snapshot and routes changed native slices.
     pub fn apply_datadog_snapshot(&mut self, snapshot: &DatadogConfiguration) -> Result<bool, GenericError> {
         let next = translate_datadog(snapshot, &self.saluki_only)?;
+        Ok(self.apply_native_snapshot(next))
+    }
+
+    /// Retranslates a source snapshot and routes changed native slices.
+    pub fn apply_datadog_source_snapshot(
+        &mut self, snapshot: &DatadogConfiguration, source: &serde_json::Value,
+    ) -> Result<bool, GenericError> {
+        let mut next = translate_datadog(snapshot, &self.saluki_only)?;
+        apply_json_control_overrides(source, &mut next);
+        Ok(self.apply_native_snapshot(next))
+    }
+
+    fn apply_native_snapshot(&mut self, next: SalukiConfiguration) -> bool {
         let changed = self.route_changed_slices(&next);
-        if changed {
-            self.current = next;
-        }
-        Ok(changed)
+        self.current = next;
+        changed
+    }
+
+    /// Returns the last accepted native configuration.
+    pub fn current(&self) -> &SalukiConfiguration {
+        &self.current
     }
 
     fn route_changed_slices(&mut self, next: &SalukiConfiguration) -> bool {
@@ -429,6 +672,43 @@ fn apply_local_control_overrides(
         native.control.stop_timeout_millis = value.saturating_mul(1000);
     }
     Ok(())
+}
+
+fn apply_json_control_overrides(source: &serde_json::Value, native: &mut SalukiConfiguration) {
+    if let Some(value) = json_path(source, "data_plane.enabled").and_then(serde_json::Value::as_bool) {
+        native.control.enabled = value;
+    }
+    if let Some(value) = json_path(source, "data_plane.standalone_mode").and_then(serde_json::Value::as_bool) {
+        native.control.standalone_mode = value;
+    }
+    if let Some(value) = json_path(source, "data_plane.checks.enabled").and_then(serde_json::Value::as_bool) {
+        native.control.checks.enabled = value;
+    }
+    if let Some(value) = json_path(source, "data_plane.dogstatsd.enabled").and_then(serde_json::Value::as_bool) {
+        native.control.dogstatsd.enabled = value;
+    }
+    if let Some(value) = json_path(source, "data_plane.otlp.enabled").and_then(serde_json::Value::as_bool) {
+        native.control.otlp.native.enabled = value;
+    }
+    if let Some(value) = json_path(source, "data_plane.otlp.proxy.enabled").and_then(serde_json::Value::as_bool) {
+        native.control.otlp.proxy.enabled = value;
+    }
+    if let Some(value) =
+        json_path(source, "data_plane.otlp.proxy.receiver.protocols.grpc.endpoint").and_then(serde_json::Value::as_str)
+    {
+        native.control.otlp.proxy.core_agent_otlp_grpc_endpoint = value.to_string();
+    }
+    if let Some(value) = json_path(source, "data_plane.stop_timeout").and_then(serde_json::Value::as_u64) {
+        native.control.stop_timeout_millis = value.saturating_mul(1000);
+    }
+}
+
+fn json_path<'a>(value: &'a serde_json::Value, path: &str) -> Option<&'a serde_json::Value> {
+    let mut current = value;
+    for segment in path.split('.') {
+        current = current.get(segment)?;
+    }
+    Some(current)
 }
 
 fn parse_saluki_only(config: &GenericConfiguration) -> Result<SalukiOnlyConfiguration, ConfigurationError> {

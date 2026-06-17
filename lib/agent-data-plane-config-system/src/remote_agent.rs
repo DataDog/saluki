@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use agent_data_plane_config::ControlConfiguration;
+use agent_data_plane_config::{ControlConfiguration, DatadogRuntimeAuthority};
 use datadog_agent_commons::ipc::{
     client::RemoteAgentClient,
     config::RemoteAgentClientConfiguration,
@@ -52,9 +52,12 @@ impl DatadogAgentConnection {
 }
 
 pub(crate) async fn build_attachments(
-    config: &GenericConfiguration, control: &ControlConfiguration,
+    config: &GenericConfiguration, control: &ControlConfiguration, authority: DatadogRuntimeAuthority,
 ) -> Result<Attachments, GenericError> {
-    if control.standalone_mode || !(control.remote_agent_enabled || control.use_new_config_stream_endpoint) {
+    if authority == DatadogRuntimeAuthority::Local
+        || control.standalone_mode
+        || !(control.remote_agent_enabled || control.use_new_config_stream_endpoint)
+    {
         return Ok(Attachments::default());
     }
 

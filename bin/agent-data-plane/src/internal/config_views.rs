@@ -84,8 +84,8 @@ impl Supervisable for ConfigViewsWorker {
     }
 }
 
-fn json_response(value: &serde_json::Value) -> impl IntoResponse {
-    match serde_json::to_string(value) {
+fn json_response(value: serde_json::Value) -> impl IntoResponse {
+    match serde_json::to_string(&value) {
         Ok(body) => (StatusCode::OK, body).into_response(),
         Err(error) => (
             StatusCode::INTERNAL_SERVER_ERROR,

@@ -14,6 +14,8 @@ bytesize = { workspace = true }
 datadog-agent-commons = { workspace = true }
 datadog-agent-config = { workspace = true }
 datadog-protos = { workspace = true }
+futures = { workspace = true }
+prost-types = { workspace = true }
 saluki-common = { workspace = true }
 saluki-component-config = { workspace = true }
 saluki-config-tools = { workspace = true }

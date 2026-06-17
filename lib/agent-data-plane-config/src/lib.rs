@@ -4,6 +4,8 @@
 //! contains only the native runtime model, bootstrap views, Saluki-only seed input, authority
 //! markers, and serialized `/config` view wrappers.
 
+use std::sync::{Arc, RwLock};
+
 use saluki_component_config::{
     AggregateConfig, ApmStatsEncoderConfig, ApmStatsTransformConfig, ChecksIpcConfig, DatadogEventsEncoderConfig,
     DatadogForwarderConfig, DatadogLogsEncoderConfig, DatadogMetricsEncoderConfig, DatadogServiceChecksEncoderConfig,
@@ -436,37 +438,85 @@ pub struct ConfigViews {
 }
 
 /// Serialized source-shaped config view.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct SourceConfigView {
-    json: serde_json::Value,
+    json: Arc<RwLock<serde_json::Value>>,
 }
 
 impl SourceConfigView {
     /// Creates a source view from scrubbed JSON.
     pub fn new(json: serde_json::Value) -> Self {
-        Self { json }
+        Self {
+            json: Arc::new(RwLock::new(json)),
+        }
     }
 
-    /// Returns the serialized JSON value.
-    pub fn as_json(&self) -> &serde_json::Value {
-        &self.json
+    /// Replaces the serialized JSON value.
+    pub fn update(&self, json: serde_json::Value) {
+        *self.json.write().unwrap_or_else(|error| error.into_inner()) = json;
+    }
+
+    /// Returns the current serialized JSON value.
+    pub fn as_json(&self) -> serde_json::Value {
+        self.json.read().unwrap_or_else(|error| error.into_inner()).clone()
+    }
+}
+
+impl PartialEq for SourceConfigView {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_json() == other.as_json()
+    }
+}
+
+impl Eq for SourceConfigView {}
+
+impl Serialize for SourceConfigView {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        self.as_json().serialize(serializer)
     }
 }
 
 /// Serialized internal native config view.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct InternalConfigView {
-    json: serde_json::Value,
+    json: Arc<RwLock<serde_json::Value>>,
 }
 
 impl InternalConfigView {
     /// Creates an internal view from scrubbed JSON.
     pub fn new(json: serde_json::Value) -> Self {
-        Self { json }
+        Self {
+            json: Arc::new(RwLock::new(json)),
+        }
     }
 
-    /// Returns the serialized JSON value.
-    pub fn as_json(&self) -> &serde_json::Value {
-        &self.json
+    /// Replaces the serialized JSON value.
+    pub fn update(&self, json: serde_json::Value) {
+        *self.json.write().unwrap_or_else(|error| error.into_inner()) = json;
+    }
+
+    /// Returns the current serialized JSON value.
+    pub fn as_json(&self) -> serde_json::Value {
+        self.json.read().unwrap_or_else(|error| error.into_inner()).clone()
+    }
+}
+
+impl PartialEq for InternalConfigView {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_json() == other.as_json()
+    }
+}
+
+impl Eq for InternalConfigView {}
+
+impl Serialize for InternalConfigView {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        self.as_json().serialize(serializer)
     }
 }

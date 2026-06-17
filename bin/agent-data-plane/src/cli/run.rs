@@ -78,7 +78,7 @@ pub async fn handle_run_command(
         "Agent Data Plane starting..."
     );
 
-    let started_config = loaded_config.start_runtime(DatadogRuntimeAuthority::Local).await?;
+    let started_config = loaded_config.start_runtime(DatadogRuntimeAuthority::Stream).await?;
     let saluki = started_config.saluki();
     let handles = started_config.dynamic_handles();
     let attachments = started_config.attachments();
