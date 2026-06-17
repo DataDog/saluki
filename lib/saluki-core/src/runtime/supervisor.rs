@@ -1168,6 +1168,7 @@ mod tests {
         init_behavior: InitBehavior,
         run_behavior: RunBehavior,
         start_count: Arc<AtomicUsize>,
+        brutal_shutdown: bool,
     }
 
     impl MockWorker {
@@ -1178,6 +1179,7 @@ mod tests {
                 init_behavior: InitBehavior::Instant,
                 run_behavior: RunBehavior::UntilShutdown,
                 start_count: Arc::new(AtomicUsize::new(0)),
+                brutal_shutdown: false,
             }
         }
 
@@ -1188,6 +1190,7 @@ mod tests {
                 init_behavior: InitBehavior::Instant,
                 run_behavior: RunBehavior::FailAfter(delay, "worker failed"),
                 start_count: Arc::new(AtomicUsize::new(0)),
+                brutal_shutdown: false,
             }
         }
 
@@ -1198,6 +1201,7 @@ mod tests {
                 init_behavior: InitBehavior::Instant,
                 run_behavior: RunBehavior::CompleteAfter(delay),
                 start_count: Arc::new(AtomicUsize::new(0)),
+                brutal_shutdown: false,
             }
         }
 
@@ -1208,6 +1212,7 @@ mod tests {
                 init_behavior: InitBehavior::Instant,
                 run_behavior: RunBehavior::SlowShutdown(delay),
                 start_count: Arc::new(AtomicUsize::new(0)),
+                brutal_shutdown: false,
             }
         }
 
@@ -1218,6 +1223,7 @@ mod tests {
                 init_behavior: InitBehavior::Instant,
                 run_behavior: RunBehavior::IgnoreShutdown,
                 start_count: Arc::new(AtomicUsize::new(0)),
+                brutal_shutdown: false,
             }
         }
 
@@ -1228,6 +1234,7 @@ mod tests {
                 init_behavior: InitBehavior::Instant,
                 run_behavior: RunBehavior::PanicAfter(delay),
                 start_count: Arc::new(AtomicUsize::new(0)),
+                brutal_shutdown: false,
             }
         }
 
@@ -1238,6 +1245,7 @@ mod tests {
                 init_behavior: InitBehavior::Fail("init failed"),
                 run_behavior: RunBehavior::UntilShutdown,
                 start_count: Arc::new(AtomicUsize::new(0)),
+                brutal_shutdown: false,
             }
         }
 
@@ -1248,12 +1256,19 @@ mod tests {
                 init_behavior: InitBehavior::Slow(init_delay),
                 run_behavior: RunBehavior::UntilShutdown,
                 start_count: Arc::new(AtomicUsize::new(0)),
+                brutal_shutdown: false,
             }
         }
 
         /// Returns a shared handle to the start count for this worker.
         fn start_count(&self) -> Arc<AtomicUsize> {
             Arc::clone(&self.start_count)
+        }
+
+        /// Configures this worker to use a `Brutal` shutdown strategy (immediate abort, no graceful wait).
+        fn with_brutal_shutdown(mut self) -> Self {
+            self.brutal_shutdown = true;
+            self
         }
     }
 
@@ -1264,7 +1279,11 @@ mod tests {
         }
 
         fn shutdown_strategy(&self) -> ShutdownStrategy {
-            ShutdownStrategy::Graceful(Duration::from_millis(500))
+            if self.brutal_shutdown {
+                ShutdownStrategy::Brutal
+            } else {
+                ShutdownStrategy::Graceful(Duration::from_millis(500))
+            }
         }
 
         async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
@@ -1522,6 +1541,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn transient_abnormal_exit_triggers_one_for_all() {
+        // A transient child's *own* abnormal exit is restartable, so under one-for-all it triggers a whole-group
+        // restart -- the sibling is restarted too, not just the transient.
+        let transient = MockWorker::failing("transient-worker", Duration::from_millis(50));
+        let transient_count = transient.start_count();
+
+        let stable = MockWorker::long_running("stable-worker");
+        let stable_count = stable.start_count();
+
+        let mut sup = Supervisor::new("test-sup").unwrap().with_restart_strategy(
+            RestartStrategy::one_for_all().with_intensity_and_period(20, Duration::from_secs(10)),
+        );
+        sup.add_worker(ChildSpecification::worker(transient).with_restart_type(RestartType::Transient));
+        sup.add_worker(stable);
+
+        let (tx, handle) = run_supervisor_with_trigger(sup).await;
+
+        sleep(Duration::from_millis(300)).await;
+        let _ = tx.send(());
+
+        let result = timeout(Duration::from_secs(2), handle).await.unwrap().unwrap();
+        assert!(result.is_ok());
+        assert!(
+            transient_count.load(Ordering::SeqCst) >= 2,
+            "transient worker must be restarted after its own abnormal exit"
+        );
+        assert!(
+            stable_count.load(Ordering::SeqCst) >= 2,
+            "the transient's abnormal exit must trigger a one-for-all that also restarts the sibling"
+        );
+    }
+
+    #[tokio::test]
     async fn restart_limit_exceeded_shuts_down_supervisor() {
         let mut sup = Supervisor::new("test-sup")
             .unwrap()
@@ -1682,6 +1734,47 @@ mod tests {
                 count.load(Ordering::SeqCst),
                 1,
                 "each temporary worker runs exactly once"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn transient_clean_exits_do_not_consume_restart_intensity() {
+        // With intensity=1, two *restartable* exits within the period would shut the supervisor down. Here several
+        // transient workers all complete cleanly. A transient child's clean exit isn't eligible for restart, so it
+        // must not consume the restart-intensity budget, and the supervisor must stay up.
+        let mut sup = Supervisor::new("test-sup")
+            .unwrap()
+            .with_restart_strategy(RestartStrategy::one_to_one().with_intensity_and_period(1, Duration::from_secs(10)));
+
+        let workers = [
+            MockWorker::completing("transient-0", Duration::from_millis(20)),
+            MockWorker::completing("transient-1", Duration::from_millis(20)),
+            MockWorker::completing("transient-2", Duration::from_millis(20)),
+            MockWorker::completing("transient-3", Duration::from_millis(20)),
+            MockWorker::completing("transient-4", Duration::from_millis(20)),
+        ];
+        let counts: Vec<_> = workers.iter().map(|w| w.start_count()).collect();
+        for worker in workers {
+            sup.add_worker(ChildSpecification::worker(worker).with_restart_type(RestartType::Transient));
+        }
+        // A long-running worker so the supervisor doesn't simply idle once the transients have completed.
+        sup.add_worker(MockWorker::long_running("stable-worker"));
+
+        let (tx, handle) = run_supervisor_with_trigger(sup).await;
+        sleep(Duration::from_millis(300)).await;
+        let _ = tx.send(());
+
+        let result = timeout(Duration::from_secs(2), handle).await.unwrap().unwrap();
+        assert!(
+            result.is_ok(),
+            "supervisor must not trip its restart limit on clean transient exits"
+        );
+        for count in counts {
+            assert_eq!(
+                count.load(Ordering::SeqCst),
+                1,
+                "each transient worker runs exactly once"
             );
         }
     }
@@ -2144,6 +2237,48 @@ mod tests {
         assert!(
             elapsed < Duration::from_secs(1),
             "stuck child must be aborted at the deadline (took {elapsed:?})"
+        );
+    }
+
+    #[tokio::test]
+    async fn ordered_shutdown_aborts_unresponsive_child() {
+        // Under the default `ShutdownMode::Ordered`, a child that never reacts to shutdown must be aborted once its
+        // graceful deadline (500ms) elapses, rather than hanging the supervisor.
+        let mut sup = Supervisor::new("test-sup").unwrap();
+        sup.add_worker(MockWorker::ignore_shutdown("stuck"));
+
+        let (tx, handle) = run_supervisor_with_trigger(sup).await;
+
+        let start = std::time::Instant::now();
+        tx.send(()).unwrap();
+        let result = timeout(Duration::from_secs(2), handle).await.unwrap().unwrap();
+        let elapsed = start.elapsed();
+
+        assert!(result.is_ok());
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "unresponsive child must be aborted at its deadline under ordered shutdown (took {elapsed:?})"
+        );
+    }
+
+    #[tokio::test]
+    async fn brutal_shutdown_aborts_child_immediately() {
+        // A child with a `Brutal` shutdown strategy is aborted at once on shutdown, with no graceful wait -- so even a
+        // child that ignores shutdown is torn down promptly rather than after the graceful deadline.
+        let mut sup = Supervisor::new("test-sup").unwrap();
+        sup.add_worker(MockWorker::ignore_shutdown("brutal-stuck").with_brutal_shutdown());
+
+        let (tx, handle) = run_supervisor_with_trigger(sup).await;
+
+        let start = std::time::Instant::now();
+        tx.send(()).unwrap();
+        let result = timeout(Duration::from_secs(2), handle).await.unwrap().unwrap();
+        let elapsed = start.elapsed();
+
+        assert!(result.is_ok());
+        assert!(
+            elapsed < Duration::from_millis(200),
+            "brutal-shutdown child must be aborted immediately, not after a graceful wait (took {elapsed:?})"
         );
     }
 }
