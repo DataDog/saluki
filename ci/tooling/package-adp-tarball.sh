@@ -37,30 +37,19 @@ mkdir -p "${stage}/tarball/opt/datadog/agent-data-plane/LICENSES"
 cp "${binary}" "${stage}/tarball/opt/datadog-agent/embedded/bin/"
 cp NOTICE LICENSE LICENSE-3rdparty.csv "${stage}/tarball/opt/datadog/agent-data-plane/"
 
-# Replicate the `license-builder` stage from docker/Dockerfile.agent-data-plane on the host so
-# the tarball ships the same per-license THIRD-PARTY-* files as the linux artifact. The awk
-# pipeline (single-occurrence sed paren strip and all) mirrors the Dockerfile verbatim.
-echo "[*] Fetching SPDX license-list-data v${SPDX_LICENSES_VERSION}"
-curl -sSfL -o "${stage}/spdx.tar.gz" \
-  "https://github.com/spdx/license-list-data/archive/refs/tags/v${SPDX_LICENSES_VERSION}.tar.gz"
-tar -C "${stage}" -xzf "${stage}/spdx.tar.gz"
-spdx_text_dir="${stage}/license-list-data-${SPDX_LICENSES_VERSION}/text"
+# Fetch the SPDX license texts and harvest the per-dependency THIRD-PARTY-* files using the same
+# shared scripts the container build runs (see docker/Dockerfile.agent-data-plane), so the tarball
+# ships an identical set of license files as the linux image.
+script_dir="$(cd "$(dirname "$0")" && pwd)"
 
-# Walk the third column of LICENSE-3rdparty.csv (the SPDX expression for each dependency); split
-# each row's expression on whitespace into individual SPDX identifiers; drop the join keywords
-# (OR/AND/WITH) and tokens we don't have texts for (Custom, LLVM-exception); strip parens used
-# for grouping multi-license expressions; dedupe; then copy each remaining identifier's
-# license text from the SPDX archive into the tarball as `THIRD-PARTY-<spdx-id>`.
+echo "[*] Fetching SPDX license-list-data v${SPDX_LICENSES_VERSION}"
+"${script_dir}/fetch-spdx-licenses.sh" "${stage}/spdx-licenses"
+
 echo "[*] Harvesting THIRD-PARTY-* license texts"
-tail -n +2 LICENSE-3rdparty.csv \
-  | awk -F ',' '{print $3}' \
-  | awk -F' ' '{for(i=1;i<=NF;i++) print $i}' \
-  | grep -v -E "(OR|AND|WITH|Custom|LLVM-exception)" \
-  | sed s/[\(\)]// \
-  | sort \
-  | uniq \
-  | xargs -I {} cp "${spdx_text_dir}/{}.txt" \
-      "${stage}/tarball/opt/datadog/agent-data-plane/LICENSES/THIRD-PARTY-{}"
+"${script_dir}/collect-third-party-licenses.sh" \
+  "${stage}/spdx-licenses/text" \
+  LICENSE-3rdparty.csv \
+  "${stage}/tarball/opt/datadog/agent-data-plane/LICENSES"
 
 mkdir -p "${OUTPUT_DIR}"
 output_path="${OUTPUT_DIR}/${tarball_name}"

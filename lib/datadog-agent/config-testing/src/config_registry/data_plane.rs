@@ -4,6 +4,14 @@ use super::schema;
 #[allow(unused_imports)]
 use super::*;
 
+static DATA_PLANE_STOP_TIMEOUT_SCHEMA: SchemaEntry = SchemaEntry {
+    schema: Schema::Saluki,
+    yaml_path: "data_plane.stop_timeout",
+    env_vars: &[],
+    value_type: ValueType::Integer,
+    default: None,
+};
+
 crate::declare_annotations! {
     /// `data_plane.api_listen_address`-Unprivileged API listen address
     DATA_PLANE_API_LISTEN_ADDRESS = SalukiAnnotation {
@@ -74,6 +82,17 @@ crate::declare_annotations! {
     /// `data_plane.secure_api_listen_address`-Privileged API listen address
     DATA_PLANE_SECURE_API_LISTEN_ADDRESS = SalukiAnnotation {
         schema: &schema::DATA_PLANE_SECURE_API_LISTEN_ADDRESS,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::GET_TYPED],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::CrossCutting,
+    };
+    /// `data_plane.stop_timeout`
+    DATA_PLANE_STOP_TIMEOUT = SalukiAnnotation {
+        schema: &DATA_PLANE_STOP_TIMEOUT_SCHEMA,
         support_level: SupportLevel::Full,
         additional_yaml_paths: &[],
         env_var_override: None,

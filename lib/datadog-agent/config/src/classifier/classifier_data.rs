@@ -47,13 +47,6 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         default: Some("200"),
     },
     ClassifierEntry {
-        yaml_path: "aggregator_stop_timeout",
-        aliases: &[],
-        support_level: SupportLevel::Incompatible(Severity::Low),
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
-        default: Some("2"),
-    },
-    ClassifierEntry {
         yaml_path: "aggregator_use_tags_store",
         aliases: &[],
         support_level: SupportLevel::Incompatible(Severity::Low),
@@ -397,13 +390,6 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         default: Some("false"),
     },
     ClassifierEntry {
-        yaml_path: "forwarder_flush_to_disk_mem_ratio",
-        aliases: &[],
-        support_level: SupportLevel::Incompatible(Severity::Medium),
-        pipeline_affinity: PipelineAffinity::CrossCutting,
-        default: Some("0.5"),
-    },
-    ClassifierEntry {
         yaml_path: "forwarder_low_prio_buffer_size",
         aliases: &[],
         support_level: SupportLevel::Incompatible(Severity::Medium),
@@ -416,20 +402,6 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::CrossCutting,
         default: Some("100"),
-    },
-    ClassifierEntry {
-        yaml_path: "forwarder_retry_queue_capacity_time_interval_sec",
-        aliases: &[],
-        support_level: SupportLevel::Incompatible(Severity::Medium),
-        pipeline_affinity: PipelineAffinity::CrossCutting,
-        default: Some("900"),
-    },
-    ClassifierEntry {
-        yaml_path: "forwarder_stop_timeout",
-        aliases: &[],
-        support_level: SupportLevel::Incompatible(Severity::Low),
-        pipeline_affinity: PipelineAffinity::CrossCutting,
-        default: Some("2"),
     },
     ClassifierEntry {
         yaml_path: "telemetry.dogstatsd.aggregator_channel_latency_buckets",

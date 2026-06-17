@@ -5,6 +5,17 @@ use super::schema;
 use super::*;
 
 crate::declare_annotations! {
+    /// `aggregator_stop_timeout`-Timeout (s) for aggregator flush on stop
+    AGGREGATOR_STOP_TIMEOUT = SalukiAnnotation {
+        schema: &schema::AGGREGATOR_STOP_TIMEOUT,
+        support_level: SupportLevel::Partial,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::GET_TYPED],
+        value_type_override: Some(ValueType::Integer),
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::CrossCutting,
+    };
     /// `vsock_addr`-vsock address for Agent IPC endpoint
     VSOCK_ADDR = SalukiAnnotation {
         schema: &schema::VSOCK_ADDR,
@@ -57,6 +68,17 @@ crate::declare_annotations! {
         env_var_override: None,
         used_by: &[structs::GET_TYPED],
         value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::CrossCutting,
+    };
+    /// `forwarder_stop_timeout`-Timeout (s) for forwarder graceful stop
+    FORWARDER_STOP_TIMEOUT = SalukiAnnotation {
+        schema: &schema::FORWARDER_STOP_TIMEOUT,
+        support_level: SupportLevel::Partial,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::GET_TYPED],
+        value_type_override: Some(ValueType::Integer),
         test_json: None,
         pipeline_affinity: PipelineAffinity::CrossCutting,
     };

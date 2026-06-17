@@ -51,11 +51,10 @@ architecture is fundamentally different or the feature is platform-specific.
 
 | Config Key                                                        | Description                                | Reason                                                                                                                                                                                                                                                                    |
 | ----------------------------------------------------------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `aggregator_buffer_size`                                          | Channel buffer depth for aggregator queues | Saluki topology uses fixed interconnect sizes and construction-time wiring; no per-component config knobs.                                                                                                                                                                |
-| `aggregator_flush_metrics_and_serialize_in_parallel_buffer_size`  | Parallel flush: series/sketch buffer size  | Saluki topology uses fixed interconnect sizes; no per-component config knobs.                                                                                                                                                                                             |
-| `aggregator_flush_metrics_and_serialize_in_parallel_chan_size`    | Parallel flush: channel size               | Saluki topology uses fixed interconnect sizes; no per-component config knobs.                                                                                                                                                                                             |
-| `aggregator_stop_timeout`                                         | Timeout (s) for aggregator flush on stop   | Saluki topology uses fixed interconnect sizes and construction-time wiring; no per-component config knobs.                                                                                                                                                                |
-| `aggregator_use_tags_store`                                       | Enable shared tag deduplication store      | Core agent concept with no ADP analog.                                                                                                                                                                                                                                    |
+| `aggregator_buffer_size`                                          | Channel buffer depth for aggregator queues | See below                                                                                                                                                                                                                                                                 |
+| `aggregator_flush_metrics_and_serialize_in_parallel_buffer_size`  | Parallel flush: series/sketch buffer size  | See below                                                                                                                                                                                                                                                                 |
+| `aggregator_flush_metrics_and_serialize_in_parallel_chan_size`    | Parallel flush: channel size               | See below                                                                                                                                                                                                                                                                 |
+| `aggregator_use_tags_store`                                       | Enable shared tag deduplication store      | See below                                                                                                                                                                                                                                                                 |
 | `config_id`                                                       | Fleet Automation config ID tag             | Core Agent uses this only on Agent HA telemetry metrics.                                                                                                                                                                                                                  |
 | `data_plane.telemetry_enabled`                                    | ADP telemetry toggle                       | See below                                                                                                                                                                                                                                                                 |
 | `data_plane.telemetry_listen_addr`                                | ADP telemetry listen address               | See below                                                                                                                                                                                                                                                                 |
@@ -88,6 +87,68 @@ architecture is fundamentally different or the feature is platform-specific.
 | `heroku_dyno`                                                     | Heroku dyno telemetry mode                 | See below                                                                                                                                                                                                                                                                 |
 | `logging_frequency`                                               | Transaction success log interval           | The core agent uses `logging_frequency` to throttle repetitive successful transaction logs. ADP logs successful forwarder operations below the default `info` level, so there is no matching info-level success-log stream to throttle. This key is intentionally unused. |
 | `use_dogstatsd`                                                   | Master DogStatsD enable toggle             | Core Agent evaluates and sets `data_plane.dogstatsd.enabled`.                                                                                                                                                                                                             |
+
+### `aggregator_buffer_size`
+
+The core Agent uses `aggregator_buffer_size` to size bounded Go channels feeding the aggregator and
+DogStatsD time sampler workers.
+
+ADP has no equivalent operator-facing setting. Its aggregate transform receives data through the
+Saluki topology interconnects, which are configured at topology construction time rather than by
+per-component Agent config keys. The default event interconnect capacity is 128 buffers, and each
+event buffer can hold up to 1024 events.
+
+Setting `aggregator_buffer_size` has no effect in ADP.
+
+### `aggregator_flush_metrics_and_serialize_in_parallel_buffer_size`
+
+The core Agent uses `aggregator_flush_metrics_and_serialize_in_parallel_buffer_size` during
+aggregator flushes, not for the aggregator's input queues. It controls how many flushed
+series or sketch objects are grouped into each internal buffered-channel slice while one
+goroutine produces flushed metrics and another goroutine serializes them.
+
+ADP has no equivalent flush-and-serialize iterable pipeline. The aggregate transform emits
+aggregated `Metric` events into the Saluki topology through `EventsBuffer` batches, and
+downstream encoder components serialize those events independently of the aggregate transform.
+
+The closest internal ADP buffering is topology-wide: `EventsBuffer` can hold up to 1024 events,
+and event interconnects default to 128 buffers. These are not configured through
+`aggregator_flush_metrics_and_serialize_in_parallel_buffer_size`, and setting this key has no
+effect in ADP.
+
+### `aggregator_flush_metrics_and_serialize_in_parallel_chan_size`
+
+The core Agent uses `aggregator_flush_metrics_and_serialize_in_parallel_chan_size` during
+aggregator flushes, together with
+`aggregator_flush_metrics_and_serialize_in_parallel_buffer_size`. The buffer size controls how
+many flushed series or sketch objects are grouped into each internal slice, while the channel
+size controls how many of those slices can queue between the flush producer goroutine and the
+consumer goroutine that serializes them.
+
+ADP has no equivalent flush-and-serialize iterable pipeline. The aggregate transform emits
+aggregated `Metric` events into the Saluki topology through `EventsBuffer` batches, and
+downstream encoder components serialize those events independently of the aggregate transform.
+
+The closest internal ADP buffering is topology-wide: `EventsBuffer` can hold up to 1024 events,
+and event interconnects default to 128 buffers. These are not configured through
+`aggregator_flush_metrics_and_serialize_in_parallel_chan_size`, and setting this key has no
+effect in ADP.
+
+### `aggregator_use_tags_store`
+
+The core Agent uses `aggregator_use_tags_store` to enable an aggregator-local, ref-counted
+tag store. The store deduplicates repeated tag slices across aggregator contexts: contexts
+retain shared tag entries while active, release them when they expire, and periodic shrinking
+removes entries that are no longer referenced.
+
+ADP does not have an aggregator-local tag store and does not need this toggle. Metrics reach
+the aggregate transform with Saluki `Context` values that already carry ADP-native tag
+structures. Tag reuse is handled before aggregation by the context resolver, the tags resolver,
+and `SharedTagSet` structural sharing.
+
+Related ADP-specific tuning is exposed through context/tag-set resolver settings such as
+`dogstatsd_cached_tagsets_limit`, not through `aggregator_use_tags_store`. Setting
+`aggregator_use_tags_store` has no effect in ADP.
 
 ### `data_plane.telemetry_enabled`
 
@@ -163,17 +224,37 @@ default values.
 
 | Config Key                             | Description                               |
 | -------------------------------------- | ----------------------------------------- |
+| `aggregator_stop_timeout`              | Timeout (s) for aggregator flush on stop  |
 | `dogstatsd_mapper_cache_size`          | Mapper result LRU cache size              |
 | `dogstatsd_metrics_stats_enable`       | Enable per-metric debug stats             |
 | `forwarder_apikey_validation_interval` | API key check interval (minutes)          |
 | `forwarder_high_prio_buffer_size`      | High-priority request queue size          |
 | `forwarder_num_workers`                | Concurrent forwarder workers              |
+| `forwarder_stop_timeout`               | Timeout (s) for forwarder graceful stop   |
 | `log_level`                            | Log verbosity directives                  |
 | `min_tls_version`                      | Minimum TLS version for HTTPS connections |
 | `multi_region_failover.enabled`        | Enable multi-region failover mode         |
 | `serializer_zstd_compressor_level`     | Zstd compression level                    |
 | `skip_ssl_validation`                  | Skip TLS cert validation                  |
 | `statsd_forward_host`                  | UDP packet forwarding destination host    |
+
+### `aggregator_stop_timeout`
+
+The core Agent uses `aggregator_stop_timeout` as the shutdown grace period for the aggregator's
+final flush. During shutdown, the core Agent tries to flush aggregated metrics, events, service
+checks, and related data to the forwarder before stopping. If `dogstatsd_flush_incomplete_buckets`
+is enabled, the same timeout also bounds draining in-flight DogStatsD time sampler batches before
+that final flush.
+
+ADP uses `aggregator_stop_timeout` together with `forwarder_stop_timeout` to configure its
+topology-wide graceful shutdown timeout. The default is `2 + 2 = 4` seconds. Set
+`data_plane.stop_timeout` to override the combined timeout directly.
+
+Support is partial because ADP does not apply this timeout only to an aggregator component.
+Shutdown is coordinated by the Saluki topology: sources stop first, downstream inputs close,
+and the aggregate transform performs its final flush when its input stream ends. Whether open
+aggregation windows are included is controlled by `aggregate_flush_open_windows`, also aliased
+as `dogstatsd_flush_incomplete_buckets`.
 
 ### `dogstatsd_mapper_cache_size`
 
@@ -219,6 +300,17 @@ value sizes ADP's per-endpoint high-priority pending queue.
 ADP uses `forwarder_max_concurrent_requests` to control endpoint concurrency.
 `forwarder_num_workers` is still read for HTTP connection pool sizing but no
 longer controls the maximum number of concurrent requests per endpoint.
+
+### `forwarder_stop_timeout`
+
+The core Agent uses `forwarder_stop_timeout` as the shutdown grace period for the forwarder.
+
+ADP uses `forwarder_stop_timeout` together with `aggregator_stop_timeout` to configure its
+topology-wide graceful shutdown timeout. The default is `2 + 2 = 4` seconds. Set
+`data_plane.stop_timeout` to override the combined timeout directly.
+
+Support is partial because ADP does not apply this timeout only to a forwarder component. It
+bounds graceful shutdown for the full Saluki topology.
 
 ### `log_level`
 
@@ -314,11 +406,8 @@ ways that are not yet fully characterized.
 
 | Config Key                                               | Description                                   | Issue   |
 | -------------------------------------------------------- | --------------------------------------------- | ------- |
-| `forwarder_flush_to_disk_mem_ratio`                      | Mem-to-disk flush threshold                   | [#1364] |
 | `forwarder_low_prio_buffer_size`                         | Low-priority request queue size               | [#1362] |
 | `forwarder_requeue_buffer_size`                          | In-memory re-queue buffer size                | [#1755] |
-| `forwarder_retry_queue_capacity_time_interval_sec`       | Retry queue time-based capacity               | [#1365] |
-| `forwarder_stop_timeout`                                 | Timeout (s) for forwarder graceful stop       | [#1754] |
 | `telemetry.dogstatsd.aggregator_channel_latency_buckets` | Histogram buckets: DSD aggregator channel lag | [#1679] |
 | `telemetry.dogstatsd.listeners_channel_latency_buckets`  | Histogram buckets: listener channel latency   | [#1679] |
 | `telemetry.dogstatsd.listeners_latency_buckets`          | Histogram buckets: listener processing        | [#1679] |
@@ -342,6 +431,7 @@ The following settings are specific to ADP and have no equivalent in the core ag
 | `apm_config.obfuscation.sql.replace_digits`                     | Replace digits in SQL obfuscation          |         |
 | `apm_config.obfuscation.sql.table_names`                        | Collect table names during obfuscation     |         |
 | `counter_expiry_seconds`                                        | Idle counter keep-alive duration           | 300     |
+| `data_plane.stop_timeout`                                       | ADP graceful shutdown timeout (s)          | derived |
 | `dogstatsd_allow_context_heap_allocs`                           | Allow heap allocations for contexts        |         |
 | `dogstatsd_autoscale_udp_listeners`                             | Bind multiple UDP sockets via SO_REUSEPORT |         |
 | `dogstatsd_buffer_count`                                        | Number of receive buffers                  |         |
@@ -364,6 +454,10 @@ The following settings are specific to ADP and have no equivalent in the core ag
 | `otlp_config.traces.string_interner_size`                       | OTLP trace string interner capacity        |         |
 | `otlp_string_interner_size`                                     | OTLP context interner capacity             |         |
 | `serializer_max_metrics_per_payload`                            | Max metrics per payload                    |         |
+
+### `data_plane.stop_timeout`
+
+ADP uses `data_plane.stop_timeout` as the topology-wide graceful shutdown timeout. If this key is unset, ADP defaults to `aggregator_stop_timeout + forwarder_stop_timeout`.
 
 ### `dogstatsd_minimum_sample_rate`
 
@@ -520,11 +614,13 @@ compressed wire payload bytes.
 | `forwarder_backoff_factor`                                     | Retry backoff jitter factor                        |
 | `forwarder_backoff_max`                                        | Retry backoff ceiling (secs)                       |
 | `forwarder_connection_reset_interval`                          | HTTP conn reset interval (secs)                    |
+| `forwarder_flush_to_disk_mem_ratio`                            | Mem-to-disk flush ratio                            |
 | `forwarder_http_protocol`                                      | HTTP version selection (auto/http1/http2)          |
 | `forwarder_max_concurrent_requests`                            | Max concurrent HTTP requests                       |
 | `forwarder_outdated_file_in_days`                              | Days before retry files are deleted                |
 | `forwarder_recovery_interval`                                  | Backoff recovery decrease factor                   |
 | `forwarder_recovery_reset`                                     | Reset errors on success                            |
+| `forwarder_retry_queue_capacity_time_interval_sec`             | Retry queue time-based capacity                    |
 | `forwarder_retry_queue_max_size`                               | Retry queue max size (deprecated)                  |
 | `forwarder_retry_queue_payloads_max_size`                      | Retry queue max size (bytes)                       |
 | `forwarder_storage_max_disk_ratio`                             | Max disk usage ratio for retry                     |
@@ -590,7 +686,6 @@ compressed wire payload bytes.
 [#1361]: https://github.com/DataDog/saluki/issues/1361
 [#1362]: https://github.com/DataDog/saluki/issues/1362
 [#1363]: https://github.com/DataDog/saluki/issues/1363
-[#1364]: https://github.com/DataDog/saluki/issues/1364
 [#1365]: https://github.com/DataDog/saluki/issues/1365
 [#1381]: https://github.com/DataDog/saluki/issues/1381
 [#1466]: https://github.com/DataDog/saluki/issues/1466
