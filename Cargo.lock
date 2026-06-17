@@ -48,6 +48,7 @@ dependencies = [
  "saluki-api",
  "saluki-app",
  "saluki-common",
+ "saluki-component-config",
  "saluki-components",
  "saluki-config-tools",
  "saluki-context",

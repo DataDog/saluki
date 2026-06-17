@@ -5,7 +5,7 @@ use std::{
 };
 
 use argh::FromArgs;
-use datadog_agent_commons::platform::PlatformSettings;
+use datadog_agent_commons::{ipc::client::RemoteAgentClient, platform::PlatformSettings};
 use datadog_agent_config::classifier::{ConfigClassifier, Pipeline, PipelineAffinity, Severity, SupportLevel};
 use datadog_agent_config::{DatadogRemapper, KEY_ALIASES};
 use resource_accounting::{ComponentBounds, ComponentRegistry};
@@ -13,6 +13,10 @@ use saluki_app::{
     accounting::{initialize_memory_bounds, MemoryBoundsConfiguration},
     bootstrap::BootstrapGuard,
     metrics::emit_startup_metrics,
+};
+use saluki_component_config::{
+    DogStatsDPostAggregateFilterConfig, DogStatsDPrefixFilterConfig, MetricTagFilterEntry, ScopedConfig,
+    TagFilterlistConfig,
 };
 use saluki_components::{
     config::{AutoscalingFailoverConfiguration, ClusterAgentConfiguration, MrfConfiguration},
@@ -32,7 +36,7 @@ use saluki_components::{
         MrfMetricsGatewayConfiguration, TraceObfuscationConfiguration, TraceSamplerConfiguration,
     },
 };
-use saluki_config_tools::{ConfigurationLoader, GenericConfiguration};
+use saluki_config_tools::{ConfigurationLoader, DurationString, GenericConfiguration};
 use saluki_core::health::HealthRegistry;
 use saluki_core::runtime::{RestartMode, RestartStrategy, Supervisor};
 use saluki_core::topology::TopologyBlueprint;
@@ -452,7 +456,7 @@ async fn add_baseline_metrics_pipeline_to_blueprint(
         ChainedConfiguration::default().with_transform_builder("host_enrichment", host_enrichment_config);
 
     if !dp_config.standalone_mode() {
-        let host_tags_config = HostTagsConfiguration::from_configuration(config).await?;
+        let host_tags_config = host_tags_config_from_raw(config).await?;
         metrics_enrich_config = metrics_enrich_config.with_transform_builder("host_tags", host_tags_config);
     }
 
@@ -470,6 +474,86 @@ async fn add_baseline_metrics_pipeline_to_blueprint(
     add_autoscaling_failover_metrics_pipeline_to_blueprint(blueprint, config)?;
 
     Ok(())
+}
+
+async fn host_tags_config_from_raw(config: &GenericConfiguration) -> Result<HostTagsConfiguration, GenericError> {
+    let client = RemoteAgentClient::from_configuration(config).await?;
+    let expected_tags_duration = config
+        .try_get_typed::<DurationString>("expected_tags_duration")?
+        .map(|value| value.as_duration());
+    Ok(HostTagsConfiguration::from_parts(client, expected_tags_duration))
+}
+
+fn ottl_filter_config_from_raw(config: &GenericConfiguration) -> Result<OttlFilterConfiguration, GenericError> {
+    let config = config
+        .try_get_typed::<crate::components::ottl_filter_processor::config::OttlFilterConfig>("ottl_filter_config")?
+        .unwrap_or_default();
+    Ok(OttlFilterConfiguration::from_native(config))
+}
+
+fn ottl_transform_config_from_raw(config: &GenericConfiguration) -> Result<OttlTransformConfiguration, GenericError> {
+    let config = config
+        .try_get_typed::<crate::components::ottl_transform_processor::config::OttlTransformConfig>(
+            "ottl_transform_config",
+        )?
+        .unwrap_or_default();
+    Ok(OttlTransformConfiguration::from_native(config))
+}
+
+fn dogstatsd_prefix_filter_config_from_raw(
+    config: &GenericConfiguration,
+) -> Result<DogStatsDPrefixFilterConfiguration, GenericError> {
+    let mut native = DogStatsDPrefixFilterConfig::default();
+    native.metric_prefix = config.try_get_typed("statsd_metric_namespace")?.unwrap_or_default();
+    if let Some(blocklist) = config
+        .try_get_typed("statsd_metric_namespace_blocklist")?
+        .or(config.try_get_typed("statsd_metric_namespace_blacklist")?)
+    {
+        native.metric_prefix_blocklist = blocklist;
+    }
+    native.metric_filterlist = config.try_get_typed("metric_filterlist")?.unwrap_or_default();
+    native.metric_filterlist_match_prefix = config.try_get_typed("metric_filterlist_match_prefix")?.unwrap_or(false);
+    native.metric_blocklist = config.try_get_typed("statsd_metric_blocklist")?.unwrap_or_default();
+    native.metric_blocklist_match_prefix = config
+        .try_get_typed("statsd_metric_blocklist_match_prefix")?
+        .unwrap_or(false);
+    Ok(DogStatsDPrefixFilterConfiguration::from_native(ScopedConfig::fixed(
+        native,
+    )))
+}
+
+fn tag_filterlist_config_from_raw(config: &GenericConfiguration) -> Result<TagFilterlistConfiguration, GenericError> {
+    let native = TagFilterlistConfig {
+        entries: config
+            .try_get_typed::<Vec<MetricTagFilterEntry>>("metric_tag_filterlist")?
+            .unwrap_or_default(),
+        cache_capacity: config
+            .try_get_typed("data_plane.dogstatsd.aggregator_tag_filter_cache_capacity")?
+            .unwrap_or(100_000),
+    };
+    Ok(TagFilterlistConfiguration::from_native(ScopedConfig::fixed(native)))
+}
+
+fn dogstatsd_post_aggregate_filter_config_from_raw(
+    config: &GenericConfiguration,
+) -> Result<DogStatsDPostAggregateFilterConfiguration, GenericError> {
+    let native = DogStatsDPostAggregateFilterConfig {
+        metric_filterlist: config.try_get_typed("metric_filterlist")?.unwrap_or_default(),
+        metric_filterlist_match_prefix: config.try_get_typed("metric_filterlist_match_prefix")?.unwrap_or(false),
+        metric_blocklist: config.try_get_typed("statsd_metric_blocklist")?.unwrap_or_default(),
+        metric_blocklist_match_prefix: config
+            .try_get_typed("statsd_metric_blocklist_match_prefix")?
+            .unwrap_or(false),
+        histogram_aggregates: config
+            .try_get_typed("histogram_aggregates")?
+            .unwrap_or_else(|| DogStatsDPostAggregateFilterConfig::default().histogram_aggregates),
+        histogram_percentiles: config
+            .try_get_typed("histogram_percentiles")?
+            .unwrap_or_else(|| DogStatsDPostAggregateFilterConfig::default().histogram_percentiles),
+    };
+    Ok(DogStatsDPostAggregateFilterConfiguration::from_native(
+        ScopedConfig::fixed(native),
+    ))
 }
 
 fn add_mrf_metrics_pipeline_to_blueprint(
@@ -620,10 +704,10 @@ async fn add_baseline_traces_pipeline_to_blueprint(
     let trace_obfuscation_config = TraceObfuscationConfiguration::from_apm_configuration(config)?;
     let trace_sampler_config = TraceSamplerConfiguration::from_configuration(config)
         .error_context("Failed to configure Trace Sampler transform.")?;
-    let ottl_filter_config = OttlFilterConfiguration::from_configuration(config)
-        .error_context("Failed to configure OTTL filter processor.")?;
-    let ottl_transform_config = OttlTransformConfiguration::from_configuration(config)
-        .error_context("Failed to configure OTTL transform processor.")?;
+    let ottl_filter_config =
+        ottl_filter_config_from_raw(config).error_context("Failed to configure OTTL filter processor.")?;
+    let ottl_transform_config =
+        ottl_transform_config_from_raw(config).error_context("Failed to configure OTTL transform processor.")?;
     let dd_traces_enrich_config = ChainedConfiguration::default()
         .with_transform_builder("ottl_filter", ottl_filter_config)
         .with_transform_builder("ottl_transform", ottl_transform_config)
@@ -693,15 +777,15 @@ async fn add_dsd_pipeline_to_blueprint(
         .error_context("Failed to configure DogStatsD source.")?
         .with_workload_provider(env_provider.workload().clone())
         .with_capture_entity_resolver(env_provider.workload().clone());
-    let dsd_prefix_filter_configuration = DogStatsDPrefixFilterConfiguration::from_configuration(config)?;
+    let dsd_prefix_filter_configuration = dogstatsd_prefix_filter_config_from_raw(config)?;
     let dsd_mapper_config = DogStatsDMapperConfiguration::from_configuration(config)?;
     let dsd_enrich_config =
         ChainedConfiguration::default().with_transform_builder("dogstatsd_mapper", dsd_mapper_config);
-    let dsd_tag_filterlist_config = TagFilterlistConfiguration::from_configuration(config)
-        .error_context("Failed to configure metric tag filterlist transform.")?;
+    let dsd_tag_filterlist_config =
+        tag_filterlist_config_from_raw(config).error_context("Failed to configure metric tag filterlist transform.")?;
     let dsd_agg_config =
         AggregateConfiguration::from_configuration(config).error_context("Failed to configure aggregate transform.")?;
-    let dsd_post_agg_filter_config = DogStatsDPostAggregateFilterConfiguration::from_configuration(config)
+    let dsd_post_agg_filter_config = dogstatsd_post_aggregate_filter_config_from_raw(config)
         .error_context("Failed to configure DogStatsD post-aggregate filter transform.")?;
     let events_enrich_config = ChainedConfiguration::default().with_transform_builder(
         "host_enrichment",

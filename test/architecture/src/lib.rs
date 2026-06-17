@@ -318,25 +318,21 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "enabled at step 9"]
     fn binary_components_must_not_use_from_configuration() {
         assert_no_binary_component_symbol("from_configuration");
     }
 
     #[test]
-    #[ignore = "enabled at step 9"]
     fn binary_components_must_not_use_generic_configuration() {
         assert_no_binary_component_symbol("GenericConfiguration");
     }
 
     #[test]
-    #[ignore = "enabled at step 9"]
     fn binary_components_must_not_use_try_get_typed() {
         assert_no_binary_component_symbol("try_get_typed");
     }
 
     #[test]
-    #[ignore = "enabled at step 9"]
     fn binary_components_must_not_import_raw_map_crate() {
         assert_no_binary_component_symbol("saluki_config_tools");
     }

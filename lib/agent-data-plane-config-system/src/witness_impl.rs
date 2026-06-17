@@ -1,6 +1,6 @@
 use agent_data_plane_config::SalukiConfiguration;
 use datadog_agent_config::{DatadogConfigConsumer, TranslateResult};
-use saluki_component_config::{EndpointConfig, ListenAddress};
+use saluki_component_config::{EndpointConfig, ListenAddress, MetricTagFilterEntry};
 use serde_json::Value;
 
 /// Datadog witness consumer that writes directly into the native Saluki model.
@@ -71,16 +71,43 @@ impl Translator {
                 self.native.components.dogstatsd.source.cached_contexts_limit = usize_value(value, 500_000);
             }
             "metric_filterlist" => {
-                self.native.components.dogstatsd.prefix_filter.allowlist = string_vec_value(value);
+                let values = string_vec_value(value);
+                self.native.components.dogstatsd.prefix_filter.metric_filterlist = values.clone();
+                self.native.components.dogstatsd.post_aggregate_filter.metric_filterlist = values;
             }
             "metric_filterlist_match_prefix" => {
-                self.native.components.dogstatsd.prefix_filter.match_prefix = bool_value(value);
+                let value = bool_value(value);
+                self.native
+                    .components
+                    .dogstatsd
+                    .prefix_filter
+                    .metric_filterlist_match_prefix = value;
+                self.native
+                    .components
+                    .dogstatsd
+                    .post_aggregate_filter
+                    .metric_filterlist_match_prefix = value;
             }
             "statsd_metric_blocklist" => {
-                self.native.components.dogstatsd.prefix_filter.blocklist = string_vec_value(value);
+                let values = string_vec_value(value);
+                self.native.components.dogstatsd.prefix_filter.metric_blocklist = values.clone();
+                self.native.components.dogstatsd.post_aggregate_filter.metric_blocklist = values;
+            }
+            "statsd_metric_blocklist_match_prefix" => {
+                let value = bool_value(value);
+                self.native
+                    .components
+                    .dogstatsd
+                    .prefix_filter
+                    .metric_blocklist_match_prefix = value;
+                self.native
+                    .components
+                    .dogstatsd
+                    .post_aggregate_filter
+                    .metric_blocklist_match_prefix = value;
             }
             "metric_tag_filterlist" => {
-                self.native.components.dogstatsd.tag_filterlist.tags = string_vec_value(value);
+                self.native.components.dogstatsd.tag_filterlist.entries = metric_tag_filter_entries(value);
             }
             "data_plane.dogstatsd.aggregator_tag_filter_cache_capacity" => {
                 self.native.components.dogstatsd.tag_filterlist.cache_capacity = usize_value(value, 100_000);
@@ -172,6 +199,16 @@ fn string_vec_value(value: Value) -> Vec<String> {
     match value {
         Value::Array(values) => values.into_iter().map(string_value).collect(),
         Value::String(s) => s.split_whitespace().map(str::to_string).collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn metric_tag_filter_entries(value: Value) -> Vec<MetricTagFilterEntry> {
+    match value {
+        Value::Array(values) => values
+            .into_iter()
+            .filter_map(|value| serde_json::from_value(value).ok())
+            .collect(),
         _ => Vec::new(),
     }
 }

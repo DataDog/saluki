@@ -39,6 +39,7 @@ resource-accounting = { workspace = true }
 saluki-api = { workspace = true }
 saluki-app = { workspace = true }
 saluki-common = { workspace = true }
+saluki-component-config = { workspace = true }
 saluki-components = { workspace = true }
 saluki-config-tools = { workspace = true }
 saluki-context = { workspace = true }

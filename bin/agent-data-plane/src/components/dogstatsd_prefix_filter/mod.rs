@@ -3,7 +3,7 @@
 use async_trait::async_trait;
 use metrics::{Counter, Gauge};
 use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
-use saluki_config_tools::GenericConfiguration;
+use saluki_component_config::{DogStatsDPrefixFilterConfig, ScopedConfig};
 use saluki_core::data_model::event::{metric::Metric, EventType};
 use saluki_core::{
     components::{
@@ -15,14 +15,10 @@ use saluki_core::{
 };
 use saluki_error::GenericError;
 use saluki_metrics::MetricsBuilder;
-use serde::Deserialize;
 use tokio::select;
 use tracing::{debug, error};
 
-use crate::components::dogstatsd_filterlist::{
-    Blocklist, EffectiveFilterlist, METRIC_FILTERLIST_CONFIG_KEY, METRIC_FILTERLIST_MATCH_PREFIX_CONFIG_KEY,
-    STATSD_METRIC_BLOCKLIST_CONFIG_KEY, STATSD_METRIC_BLOCKLIST_MATCH_PREFIX_CONFIG_KEY,
-};
+use crate::components::dogstatsd_filterlist::{Blocklist, EffectiveFilterlist};
 
 const METRIC_FILTERLIST_SIZE_METRIC: &str = "metric_filterlist_size";
 const METRIC_FILTERLIST_UPDATES_METRIC: &str = "metric_filterlist_updates_total";
@@ -33,69 +29,16 @@ const LISTENER_FILTERED_POINTS_METRIC: &str = "dogstatsd_listener_filtered_point
 /// Appends a prefix to every metric if specified.
 ///
 /// Checks if a metric name should be allowed.
-#[derive(Deserialize)]
-#[cfg_attr(test, derive(Debug, derive_where::DeriveWhere, serde::Serialize))]
-#[cfg_attr(test, derive_where(PartialEq))]
 pub struct DogStatsDPrefixFilterConfiguration {
-    #[serde(default, rename = "statsd_metric_namespace")]
-    metric_prefix: String,
-
-    #[serde(
-        default = "default_metric_prefix_blocklist",
-        rename = "statsd_metric_namespace_blocklist",
-        alias = "statsd_metric_namespace_blacklist"
-    )]
-    metric_prefix_blocklist: Vec<String>,
-
-    #[serde(default)]
-    metric_filterlist: Vec<String>,
-
-    #[serde(default)]
-    metric_filterlist_match_prefix: bool,
-
-    #[serde(default, rename = "statsd_metric_blocklist")]
-    metric_blocklist: Vec<String>,
-
-    #[serde(default, rename = "statsd_metric_blocklist_match_prefix")]
-    metric_blocklist_match_prefix: bool,
-
-    #[serde(skip)]
-    #[cfg_attr(test, derive_where(skip))]
-    configuration: Option<GenericConfiguration>,
-}
-
-fn default_metric_prefix_blocklist() -> Vec<String> {
-    vec![
-        "datadog.agent".to_string(),
-        "datadog.dogstatsd".to_string(),
-        "datadog.process".to_string(),
-        "datadog.trace_agent".to_string(),
-        "datadog.tracer".to_string(),
-        "activemq".to_string(),
-        "activemq_58".to_string(),
-        "airflow".to_string(),
-        "cassandra".to_string(),
-        "confluent".to_string(),
-        "hazelcast".to_string(),
-        "hive".to_string(),
-        "ignite".to_string(),
-        "jboss".to_string(),
-        "jvm".to_string(),
-        "kafka".to_string(),
-        "presto".to_string(),
-        "sidekiq".to_string(),
-        "solr".to_string(),
-        "tomcat".to_string(),
-        "runtime".to_string(),
-    ]
+    initial: DogStatsDPrefixFilterConfig,
+    configuration: ScopedConfig<DogStatsDPrefixFilterConfig>,
 }
 
 impl DogStatsDPrefixFilterConfiguration {
-    /// Creates a new `DogStatsDPrefixFilterConfiguration` from the given configuration.
-    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        let mut typed_config: DogStatsDPrefixFilterConfiguration = config.as_typed()?;
-        typed_config.configuration = Some(config.clone());
-        Ok(typed_config)
+    /// Creates a new `DogStatsDPrefixFilterConfiguration` from a native config handle.
+    pub fn from_native(configuration: ScopedConfig<DogStatsDPrefixFilterConfig>) -> Self {
+        let initial = configuration.current();
+        Self { initial, configuration }
     }
 }
 
@@ -113,21 +56,21 @@ impl TransformBuilder for DogStatsDPrefixFilterConfiguration {
     async fn build(&self, context: ComponentContext) -> Result<Box<dyn Transform + Send>, GenericError> {
         // Ensure our metric prefix has a trailing period so that we don't have to check for, and possibly add it, when we're
         // actually processing metrics.
-        let mut metric_prefix = self.metric_prefix.clone();
+        let mut metric_prefix = self.initial.metric_prefix.clone();
         if !metric_prefix.is_empty() && !metric_prefix.ends_with(".") {
             metric_prefix.push('.');
         }
         let metrics_builder = MetricsBuilder::from_component_context(&context);
         let effective_filterlist = EffectiveFilterlist::new(
-            self.metric_filterlist.clone(),
-            self.metric_filterlist_match_prefix,
-            self.metric_blocklist.clone(),
-            self.metric_blocklist_match_prefix,
+            self.initial.metric_filterlist.clone(),
+            self.initial.metric_filterlist_match_prefix,
+            self.initial.metric_blocklist.clone(),
+            self.initial.metric_blocklist_match_prefix,
         );
         let telemetry = FilterlistTelemetry::new(&metrics_builder);
         let mut filter = DogStatsDPrefixFilter {
             metric_prefix,
-            metric_prefix_blocklist: self.metric_prefix_blocklist.clone(),
+            metric_prefix_blocklist: self.initial.metric_prefix_blocklist.clone(),
             matcher: Blocklist::default(),
             effective_filterlist,
             telemetry,
@@ -192,7 +135,7 @@ struct DogStatsDPrefixFilter {
     matcher: Blocklist,
     effective_filterlist: EffectiveFilterlist,
     telemetry: FilterlistTelemetry,
-    configuration: Option<GenericConfiguration>,
+    configuration: ScopedConfig<DogStatsDPrefixFilterConfig>,
 }
 
 impl DogStatsDPrefixFilter {
@@ -205,18 +148,21 @@ impl DogStatsDPrefixFilter {
         }
     }
 
+    #[cfg(test)]
     fn update_metric_filterlist(&mut self, metric_filterlist: Vec<String>) {
         let count_update = self.effective_filterlist.metric_filterlist_is_active() || !metric_filterlist.is_empty();
         self.effective_filterlist.set_metric_filterlist(metric_filterlist);
         self.sync_effective_blocklist(count_update);
     }
 
+    #[cfg(test)]
     fn update_metric_blocklist(&mut self, metric_blocklist: Vec<String>) {
         let count_update = !self.effective_filterlist.metric_filterlist_is_active();
         self.effective_filterlist.set_metric_blocklist(metric_blocklist);
         self.sync_effective_blocklist(count_update);
     }
 
+    #[cfg(test)]
     fn update_metric_filterlist_match_prefix(&mut self, match_prefix: bool) {
         let count_update = self.effective_filterlist.metric_filterlist_is_active();
         self.effective_filterlist
@@ -224,11 +170,14 @@ impl DogStatsDPrefixFilter {
         self.sync_effective_blocklist(count_update);
     }
 
-    fn update_metric_blocklist_match_prefix(&mut self, match_prefix: bool) {
-        let count_update = !self.effective_filterlist.metric_filterlist_is_active();
-        self.effective_filterlist
-            .set_metric_blocklist_match_prefix(match_prefix);
-        self.sync_effective_blocklist(count_update);
+    fn apply_config(&mut self, config: DogStatsDPrefixFilterConfig) {
+        self.effective_filterlist = EffectiveFilterlist::new(
+            config.metric_filterlist,
+            config.metric_filterlist_match_prefix,
+            config.metric_blocklist,
+            config.metric_blocklist_match_prefix,
+        );
+        self.sync_effective_blocklist(true);
     }
 
     fn process_metric(&self, metric: &mut Metric) -> bool {
@@ -281,12 +230,7 @@ impl Transform for DogStatsDPrefixFilter {
         let mut health = context.take_health_handle();
         health.mark_ready();
 
-        let config = self.configuration.as_ref().unwrap();
-        let mut filterlist_watcher = config.watch_for_updates(METRIC_FILTERLIST_CONFIG_KEY);
-        let mut filterlist_match_prefix_watcher = config.watch_for_updates(METRIC_FILTERLIST_MATCH_PREFIX_CONFIG_KEY);
-        let mut blocklist_watcher = config.watch_for_updates(STATSD_METRIC_BLOCKLIST_CONFIG_KEY);
-        let mut blocklist_match_prefix_watcher =
-            config.watch_for_updates(STATSD_METRIC_BLOCKLIST_MATCH_PREFIX_CONFIG_KEY);
+        let mut configuration = self.configuration.clone();
 
         debug!("DogStatsD Prefix Filter transform started.");
 
@@ -308,29 +252,9 @@ impl Transform for DogStatsDPrefixFilter {
                     },
                     None => break,
                 },
-                (_, maybe_new_metric_filterlist) = filterlist_watcher.changed::<Vec<String>>() => {
-                    if let Some(new_filterlist) = maybe_new_metric_filterlist {
-                        debug!(?new_filterlist, "Updated metric filterlist.");
-                        self.update_metric_filterlist(new_filterlist);
-                    }
-                },
-                (_, maybe_new_filterlist_match_prefix) = filterlist_match_prefix_watcher.changed::<bool>() => {
-                    if let Some(new_match_prefix) = maybe_new_filterlist_match_prefix {
-                        debug!(new_match_prefix, "Updated metric filterlist match prefix.");
-                        self.update_metric_filterlist_match_prefix(new_match_prefix);
-                    }
-                },
-                (_, maybe_new_blocklist) = blocklist_watcher.changed::<Vec<String>>() => {
-                    if let Some(new_blocklist) = maybe_new_blocklist {
-                        debug!(?new_blocklist, "Updated metric blocklist.");
-                        self.update_metric_blocklist(new_blocklist);
-                    }
-                },
-                (_, maybe_new_blocklist_match_prefix) = blocklist_match_prefix_watcher.changed::<bool>() => {
-                    if let Some(new_match_prefix) = maybe_new_blocklist_match_prefix {
-                        debug!(new_match_prefix, "Updated metric blocklist match prefix.");
-                        self.update_metric_blocklist_match_prefix(new_match_prefix);
-                    }
+                _ = configuration.changed() => {
+                    self.apply_config(configuration.current());
+                    debug!("Updated DogStatsD prefix filter config.");
                 },
             }
         }
@@ -357,7 +281,7 @@ mod tests {
             matcher: Blocklist::default(),
             effective_filterlist: EffectiveFilterlist::default(),
             telemetry: FilterlistTelemetry::noop(),
-            configuration: None,
+            configuration: ScopedConfig::fixed(DogStatsDPrefixFilterConfig::default()),
         };
 
         let mut metric = Metric::gauge("bar", 1.0);
@@ -373,7 +297,7 @@ mod tests {
             matcher: Blocklist::default(),
             effective_filterlist: EffectiveFilterlist::default(),
             telemetry: FilterlistTelemetry::noop(),
-            configuration: None,
+            configuration: ScopedConfig::fixed(DogStatsDPrefixFilterConfig::default()),
         };
 
         let mut metric = Metric::gauge("barbar", 1.0);
@@ -389,7 +313,7 @@ mod tests {
             matcher: Blocklist::new(["foobar", "test"], false),
             effective_filterlist: EffectiveFilterlist::default(),
             telemetry: FilterlistTelemetry::noop(),
-            configuration: None,
+            configuration: ScopedConfig::fixed(DogStatsDPrefixFilterConfig::default()),
         };
 
         let mut metric = Metric::gauge("foobar", 1.0);
@@ -408,7 +332,7 @@ mod tests {
             matcher: Blocklist::new(["foo.bar", "test"], false),
             effective_filterlist: EffectiveFilterlist::default(),
             telemetry: FilterlistTelemetry::noop(),
-            configuration: None,
+            configuration: ScopedConfig::fixed(DogStatsDPrefixFilterConfig::default()),
         };
 
         let mut metric = Metric::gauge("bar", 1.0);
@@ -420,7 +344,7 @@ mod tests {
             matcher: Blocklist::default(),
             effective_filterlist: EffectiveFilterlist::default(),
             telemetry: FilterlistTelemetry::noop(),
-            configuration: None,
+            configuration: ScopedConfig::fixed(DogStatsDPrefixFilterConfig::default()),
         };
 
         let mut metric = Metric::gauge("foo", 1.0);
@@ -436,7 +360,7 @@ mod tests {
             matcher: Blocklist::new(["b", "test"], true),
             effective_filterlist: EffectiveFilterlist::default(),
             telemetry: FilterlistTelemetry::noop(),
-            configuration: None,
+            configuration: ScopedConfig::fixed(DogStatsDPrefixFilterConfig::default()),
         };
 
         // match prefix is true, "bar" has prefix "b"
@@ -456,7 +380,7 @@ mod tests {
             matcher: Blocklist::new(["fo", "test"], true),
             effective_filterlist: EffectiveFilterlist::default(),
             telemetry: FilterlistTelemetry::noop(),
-            configuration: None,
+            configuration: ScopedConfig::fixed(DogStatsDPrefixFilterConfig::default()),
         };
 
         // new_metric is "foo.bar", match prefix is true, "foo.bar" has prefix "fo"
@@ -486,7 +410,7 @@ mod tests {
                 false,
             ),
             telemetry: FilterlistTelemetry::noop(),
-            configuration: Some(cfg.clone()),
+            configuration: ScopedConfig::fixed(DogStatsDPrefixFilterConfig::default()),
         };
 
         let mut metric = Metric::gauge("foobar", 1.0);
@@ -578,7 +502,7 @@ mod tests {
             matcher: Blocklist::new(["foo"], false),
             effective_filterlist: EffectiveFilterlist::new(vec!["foo".to_string()], false, Vec::new(), false),
             telemetry: FilterlistTelemetry::noop(),
-            configuration: Some(cfg.clone()),
+            configuration: ScopedConfig::fixed(DogStatsDPrefixFilterConfig::default()),
         };
 
         let mut metric = Metric::gauge("foo.bar", 1.0);
@@ -627,7 +551,7 @@ mod tests {
                 false,
             ),
             telemetry,
-            configuration: None,
+            configuration: ScopedConfig::fixed(DogStatsDPrefixFilterConfig::default()),
         };
 
         filter.sync_effective_blocklist(false);
@@ -663,7 +587,7 @@ mod tests {
             matcher: Blocklist::default(),
             effective_filterlist: EffectiveFilterlist::new(vec!["foo".to_string()], true, Vec::new(), false),
             telemetry,
-            configuration: None,
+            configuration: ScopedConfig::fixed(DogStatsDPrefixFilterConfig::default()),
         };
 
         filter.sync_effective_blocklist(false);
@@ -688,7 +612,7 @@ mod tests {
             matcher: Blocklist::new(["foo", "bar"], true),
             effective_filterlist: EffectiveFilterlist::default(),
             telemetry,
-            configuration: None,
+            configuration: ScopedConfig::fixed(DogStatsDPrefixFilterConfig::default()),
         };
 
         let mut exact_metric = Metric::gauge("foo", 1.0);
@@ -708,18 +632,13 @@ mod config_smoke {
     use datadog_agent_config_testing::run_config_smoke_tests;
     use serde_json::json;
 
-    use super::DogStatsDPrefixFilterConfiguration;
-
     #[tokio::test]
     async fn smoke_test() {
         run_config_smoke_tests(
             structs::DOGSTATSD_PREFIX_FILTER_CONFIGURATION,
             &[],
             json!({}),
-            |cfg| {
-                cfg.as_typed::<DogStatsDPrefixFilterConfiguration>()
-                    .expect("DogStatsDPrefixFilterConfiguration should deserialize")
-            },
+            |cfg| cfg.as_typed::<serde_json::Value>().expect("config should deserialize"),
             KEY_ALIASES,
             DatadogRemapper::new,
         )

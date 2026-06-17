@@ -11,8 +11,8 @@ use agent_data_plane_config::{
 };
 use datadog_agent_config::{drive, DatadogConfiguration, DatadogRemapper, KEY_ALIASES};
 use saluki_component_config::{
-    DatadogForwarderConfig, DogStatsDDebugLogConfig, DogStatsDPrefixFilterConfig, MrfConfig, ScopedConfig,
-    TagFilterlistConfig,
+    DatadogForwarderConfig, DogStatsDDebugLogConfig, DogStatsDPostAggregateFilterConfig, DogStatsDPrefixFilterConfig,
+    MrfConfig, ScopedConfig, TagFilterlistConfig,
 };
 use saluki_config_tools::{ConfigurationError, ConfigurationLoader, GenericConfiguration};
 use saluki_error::GenericError;
@@ -151,6 +151,8 @@ pub struct DynamicConfigHandles {
     pub dogstatsd_prefix_filter: ScopedConfig<DogStatsDPrefixFilterConfig>,
     /// DogStatsD tag filterlist config handle.
     pub dogstatsd_tag_filterlist: ScopedConfig<TagFilterlistConfig>,
+    /// DogStatsD post-aggregate filter config handle.
+    pub dogstatsd_post_aggregate_filter: ScopedConfig<DogStatsDPostAggregateFilterConfig>,
     /// DogStatsD debug log config handle.
     pub dogstatsd_debug_log: ScopedConfig<DogStatsDDebugLogConfig>,
 }
@@ -164,6 +166,7 @@ pub struct ConfigUpdateRouter {
     mrf_tx: Option<watch::Sender<MrfConfig>>,
     prefix_tx: Option<watch::Sender<DogStatsDPrefixFilterConfig>>,
     tag_filter_tx: Option<watch::Sender<TagFilterlistConfig>>,
+    post_aggregate_filter_tx: Option<watch::Sender<DogStatsDPostAggregateFilterConfig>>,
     debug_log_tx: Option<watch::Sender<DogStatsDDebugLogConfig>>,
 }
 
@@ -181,6 +184,7 @@ impl ConfigUpdateRouter {
                 mrf_tx: None,
                 prefix_tx: None,
                 tag_filter_tx: None,
+                post_aggregate_filter_tx: None,
                 debug_log_tx: None,
             },
             DatadogRuntimeAuthority::Stream => {
@@ -188,6 +192,8 @@ impl ConfigUpdateRouter {
                 let (_, mrf_tx) = ScopedConfig::live(initial.components.metrics.multi_region_failover.clone());
                 let (_, prefix_tx) = ScopedConfig::live(initial.components.dogstatsd.prefix_filter.clone());
                 let (_, tag_filter_tx) = ScopedConfig::live(initial.components.dogstatsd.tag_filterlist.clone());
+                let (_, post_aggregate_filter_tx) =
+                    ScopedConfig::live(initial.components.dogstatsd.post_aggregate_filter.clone());
                 let (_, debug_log_tx) = ScopedConfig::live(initial.components.dogstatsd.debug_log.clone());
                 Self {
                     current: initial,
@@ -197,6 +203,7 @@ impl ConfigUpdateRouter {
                     mrf_tx: Some(mrf_tx),
                     prefix_tx: Some(prefix_tx),
                     tag_filter_tx: Some(tag_filter_tx),
+                    post_aggregate_filter_tx: Some(post_aggregate_filter_tx),
                     debug_log_tx: Some(debug_log_tx),
                 }
             }
@@ -213,6 +220,9 @@ impl ConfigUpdateRouter {
                 ),
                 dogstatsd_prefix_filter: ScopedConfig::fixed(self.current.components.dogstatsd.prefix_filter.clone()),
                 dogstatsd_tag_filterlist: ScopedConfig::fixed(self.current.components.dogstatsd.tag_filterlist.clone()),
+                dogstatsd_post_aggregate_filter: ScopedConfig::fixed(
+                    self.current.components.dogstatsd.post_aggregate_filter.clone(),
+                ),
                 dogstatsd_debug_log: ScopedConfig::fixed(self.current.components.dogstatsd.debug_log.clone()),
             },
             DatadogRuntimeAuthority::Stream => DynamicConfigHandles {
@@ -231,6 +241,12 @@ impl ConfigUpdateRouter {
                 dogstatsd_tag_filterlist: live_handle(
                     self.current.components.dogstatsd.tag_filterlist.clone(),
                     self.tag_filter_tx.as_ref().expect("tag filter sender"),
+                ),
+                dogstatsd_post_aggregate_filter: live_handle(
+                    self.current.components.dogstatsd.post_aggregate_filter.clone(),
+                    self.post_aggregate_filter_tx
+                        .as_ref()
+                        .expect("post-aggregate filter sender"),
                 ),
                 dogstatsd_debug_log: live_handle(
                     self.current.components.dogstatsd.debug_log.clone(),
@@ -271,6 +287,11 @@ impl ConfigUpdateRouter {
             &self.tag_filter_tx,
             &self.current.components.dogstatsd.tag_filterlist,
             &next.components.dogstatsd.tag_filterlist,
+        );
+        changed |= send_if_changed(
+            &self.post_aggregate_filter_tx,
+            &self.current.components.dogstatsd.post_aggregate_filter,
+            &next.components.dogstatsd.post_aggregate_filter,
         );
         changed |= send_if_changed(
             &self.debug_log_tx,

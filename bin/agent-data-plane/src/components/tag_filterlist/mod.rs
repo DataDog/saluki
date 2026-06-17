@@ -15,7 +15,9 @@ use foldhash::fast::RandomState as FoldHashState;
 use hashbrown::{HashMap, HashSet};
 use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_common::cache::{Cache, CacheBuilder};
-use saluki_config_tools::GenericConfiguration;
+use saluki_component_config::{
+    MetricTagFilterEntry, ScopedConfig, TagFilterAction as FilterAction, TagFilterlistConfig,
+};
 use saluki_context::{tags::Tag, Context, TagSetMutViewState};
 use saluki_core::{
     components::{
@@ -31,63 +33,13 @@ use saluki_core::{
 };
 use saluki_error::GenericError;
 use saluki_metrics::MetricsBuilder;
-use serde::{de::Deserializer, Deserialize};
 use tokio::select;
-use tracing::{debug, error, warn};
-
-use crate::components::dogstatsd_filterlist::METRIC_TAG_FILTERLIST_CONFIG_KEY;
+use tracing::{debug, error};
 
 const CONTEXT_CACHE_TTI: Duration = Duration::from_secs(30);
 const CONTEXT_CACHE_EXPIRATION_INTERVAL: Duration = Duration::from_secs(1);
 
-fn default_context_cache_capacity() -> usize {
-    100_000
-}
-
 use self::telemetry::Telemetry;
-
-/// Action applied to the configured tag list: keep only listed tags, or remove listed tags.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub enum FilterAction {
-    /// Keep only the tags whose key appears in the configured list.
-    Include,
-    /// Remove the tags whose key appears in the configured list.
-    #[default]
-    Exclude,
-}
-
-impl<'de> Deserialize<'de> for FilterAction {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let raw = Option::<String>::deserialize(deserializer)?;
-
-        match raw.as_deref() {
-            Some("include") => Ok(Self::Include),
-            Some("exclude") | None | Some("") => Ok(Self::Exclude),
-            Some(other) => {
-                warn!(
-                    action = %other,
-                    "`metric_tag_filterlist.*.action` should be either `include` or `exclude`; defaulting to `exclude`."
-                );
-                Ok(Self::Exclude)
-            }
-        }
-    }
-}
-
-/// A single metric tag filter entry.
-#[derive(Clone, Debug, Deserialize)]
-pub struct MetricTagFilterEntry {
-    /// The exact metric name this entry applies to.
-    pub metric_name: String,
-    /// Whether to include or exclude the listed tags.
-    #[serde(default)]
-    pub action: FilterAction,
-    /// Tag key names to include or exclude.
-    pub tags: Vec<String>,
-}
 
 /// Compiled filter table: metric name → (`is_exclude`, set of tag key names).
 pub type CompiledFilters = HashMap<String, (bool, HashSet<String, FoldHashState>), FoldHashState>;
@@ -146,34 +98,16 @@ pub fn compile_filters(entries: &[MetricTagFilterEntry]) -> CompiledFilters {
 ///
 /// Removes or retains specific tags from distribution metrics based on per-metric configuration.
 /// Configuration is read from `metric_tag_filterlist` and supports runtime updates via Remote Config.
-#[derive(Deserialize)]
 pub struct TagFilterlistConfiguration {
-    #[serde(default, rename = "metric_tag_filterlist")]
-    entries: Vec<MetricTagFilterEntry>,
-
-    /// Maximum number of entries in the per-context deduplication cache used by the tag filter.
-    ///
-    /// Configured via `data_plane.dogstatsd.aggregator_tag_filter_cache_capacity` in the agent config
-    /// stream. High-throughput deployments with many unique metric contexts may benefit from
-    /// increasing this value to reduce cache churn.
-    ///
-    /// Defaults to 100,000.
-    #[serde(skip)]
-    context_cache_capacity: usize,
-
-    #[serde(skip)]
-    configuration: Option<GenericConfiguration>,
+    initial: TagFilterlistConfig,
+    configuration: ScopedConfig<TagFilterlistConfig>,
 }
 
 impl TagFilterlistConfiguration {
-    /// Creates a new `TagFilterlistConfiguration` from the given configuration.
-    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        let mut typed: Self = config.as_typed()?;
-        typed.context_cache_capacity = config
-            .try_get_typed("data_plane.dogstatsd.aggregator_tag_filter_cache_capacity")?
-            .unwrap_or_else(default_context_cache_capacity);
-        typed.configuration = Some(config.clone());
-        Ok(typed)
+    /// Creates a new `TagFilterlistConfiguration` from a native config handle.
+    pub fn from_native(configuration: ScopedConfig<TagFilterlistConfig>) -> Self {
+        let initial = configuration.current();
+        Self { initial, configuration }
     }
 }
 
@@ -191,18 +125,15 @@ impl TransformBuilder for TagFilterlistConfiguration {
     async fn build(&self, context: ComponentContext) -> Result<Box<dyn Transform + Send>, GenericError> {
         let metrics_builder = MetricsBuilder::from_component_context(&context);
         let telemetry = Telemetry::new(&metrics_builder);
-        let filters = compile_filters(&self.entries);
+        let filters = compile_filters(&self.initial.entries);
         telemetry.set_size(filters.len());
 
         Ok(Box::new(TagFilterlist {
             filters,
-            configuration: self
-                .configuration
-                .clone()
-                .expect("configuration must be set via from_configuration"),
+            configuration: self.configuration.clone(),
             telemetry,
-            context_cache: build_context_cache(self.context_cache_capacity),
-            context_cache_capacity: self.context_cache_capacity,
+            context_cache: build_context_cache(self.initial.cache_capacity),
+            context_cache_capacity: self.initial.cache_capacity,
         }))
     }
 }
@@ -213,13 +144,13 @@ impl MemoryBounds for TagFilterlistConfiguration {
 
         builder
             .firm()
-            .with_fixed_amount("context cache", self.context_cache_capacity * 64);
+            .with_fixed_amount("context cache", self.initial.cache_capacity * 64);
     }
 }
 
 struct TagFilterlist {
     filters: CompiledFilters,
-    configuration: GenericConfiguration,
+    configuration: ScopedConfig<TagFilterlistConfig>,
     telemetry: Telemetry,
     context_cache: Cache<Context, Option<(Context, usize)>>,
     context_cache_capacity: usize,
@@ -241,8 +172,7 @@ impl Transform for TagFilterlist {
         let mut health = context.take_health_handle();
         health.mark_ready();
 
-        let mut watcher = self.configuration.watch_for_updates(METRIC_TAG_FILTERLIST_CONFIG_KEY);
-
+        let mut configuration = self.configuration.clone();
         let mut view_state = TagSetMutViewState::default();
 
         debug!("Metric Tag Filterlist transform started.");
@@ -293,8 +223,10 @@ impl Transform for TagFilterlist {
                     }
                     None => break,
                 },
-                (_, new_entries) = watcher.changed::<Vec<MetricTagFilterEntry>>() => {
-                    self.filters = compile_filters(new_entries.as_deref().unwrap_or(&[]));
+                _ = configuration.changed() => {
+                    let next = configuration.current();
+                    self.filters = compile_filters(&next.entries);
+                    self.context_cache_capacity = next.cache_capacity;
                     self.context_cache = build_context_cache(self.context_cache_capacity);
                     self.telemetry.set_size(self.filters.len());
                     self.telemetry.increment_updates();

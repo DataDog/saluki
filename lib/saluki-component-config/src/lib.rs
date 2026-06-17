@@ -8,7 +8,7 @@ pub mod dynamic;
 use std::collections::BTreeMap;
 
 pub use dynamic::ScopedConfig;
-use serde::Serialize;
+use serde::{de::Deserializer, Deserialize, Serialize};
 
 /// Network listen address used by component-native configuration.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -214,26 +214,131 @@ impl Default for DogStatsDConfig {
     }
 }
 
+/// Action applied by a per-metric tag filter entry.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
+pub enum TagFilterAction {
+    /// Keep only the configured tags.
+    Include,
+    /// Remove the configured tags.
+    #[default]
+    Exclude,
+}
+
+impl<'de> Deserialize<'de> for TagFilterAction {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        match Option::<String>::deserialize(deserializer)?.as_deref() {
+            Some("include") => Ok(Self::Include),
+            Some("exclude") | None | Some("") => Ok(Self::Exclude),
+            Some(_) => Ok(Self::Exclude),
+        }
+    }
+}
+
+/// One per-metric tag filter rule.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct MetricTagFilterEntry {
+    /// Exact metric name this rule applies to.
+    pub metric_name: String,
+    /// Whether the rule keeps or removes listed tags.
+    #[serde(default)]
+    pub action: TagFilterAction,
+    /// Tag key names controlled by this rule.
+    pub tags: Vec<String>,
+}
+
 /// DogStatsD prefix and blocklist filter runtime configuration.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Default)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct DogStatsDPrefixFilterConfig {
-    /// Allowed metric prefixes.
-    pub allowlist: Vec<String>,
-    /// Blocked metric prefixes.
-    pub blocklist: Vec<String>,
-    /// Whether entries match prefixes instead of exact names.
-    pub match_prefix: bool,
+    /// Metric namespace prepended to outgoing metric names.
+    pub metric_prefix: String,
+    /// Metric prefixes skipped when applying the namespace.
+    pub metric_prefix_blocklist: Vec<String>,
+    /// Current Agent metric filterlist values.
+    pub metric_filterlist: Vec<String>,
+    /// Whether current filterlist values match by prefix.
+    pub metric_filterlist_match_prefix: bool,
+    /// Legacy DogStatsD metric blocklist values.
+    pub metric_blocklist: Vec<String>,
+    /// Whether legacy blocklist values match by prefix.
+    pub metric_blocklist_match_prefix: bool,
+}
+
+impl Default for DogStatsDPrefixFilterConfig {
+    fn default() -> Self {
+        Self {
+            metric_prefix: String::new(),
+            metric_prefix_blocklist: default_metric_prefix_blocklist(),
+            metric_filterlist: Vec::new(),
+            metric_filterlist_match_prefix: false,
+            metric_blocklist: Vec::new(),
+            metric_blocklist_match_prefix: false,
+        }
+    }
 }
 
 /// DogStatsD post-aggregate filter runtime configuration.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Default)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct DogStatsDPostAggregateFilterConfig {
-    /// Allowed metric prefixes after aggregation.
-    pub allowlist: Vec<String>,
-    /// Blocked metric prefixes after aggregation.
-    pub blocklist: Vec<String>,
-    /// Whether entries match prefixes instead of exact names.
-    pub match_prefix: bool,
+    /// Current Agent metric filterlist values.
+    pub metric_filterlist: Vec<String>,
+    /// Whether current filterlist values match by prefix.
+    pub metric_filterlist_match_prefix: bool,
+    /// Legacy DogStatsD metric blocklist values.
+    pub metric_blocklist: Vec<String>,
+    /// Whether legacy blocklist values match by prefix.
+    pub metric_blocklist_match_prefix: bool,
+    /// Histogram aggregate suffixes produced by aggregation.
+    pub histogram_aggregates: Vec<String>,
+    /// Histogram percentile suffixes produced by aggregation.
+    pub histogram_percentiles: Vec<String>,
+}
+
+impl Default for DogStatsDPostAggregateFilterConfig {
+    fn default() -> Self {
+        Self {
+            metric_filterlist: Vec::new(),
+            metric_filterlist_match_prefix: false,
+            metric_blocklist: Vec::new(),
+            metric_blocklist_match_prefix: false,
+            histogram_aggregates: ["max", "median", "avg", "count"]
+                .into_iter()
+                .map(String::from)
+                .collect(),
+            histogram_percentiles: ["0.95"].into_iter().map(String::from).collect(),
+        }
+    }
+}
+
+fn default_metric_prefix_blocklist() -> Vec<String> {
+    [
+        "datadog.agent",
+        "datadog.dogstatsd",
+        "datadog.process",
+        "datadog.trace_agent",
+        "datadog.tracer",
+        "activemq",
+        "activemq_58",
+        "airflow",
+        "cassandra",
+        "confluent",
+        "hazelcast",
+        "hive",
+        "ignite",
+        "jboss",
+        "jvm",
+        "kafka",
+        "presto",
+        "sidekiq",
+        "solr",
+        "tomcat",
+        "runtime",
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect()
 }
 
 /// DogStatsD mapper runtime configuration.
@@ -246,12 +351,21 @@ pub struct DogStatsDMapperConfig {
 }
 
 /// Metric tag filterlist runtime configuration.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Default)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct TagFilterlistConfig {
-    /// Tag patterns filtered from metrics.
-    pub tags: Vec<String>,
+    /// Per-metric tag filter entries.
+    pub entries: Vec<MetricTagFilterEntry>,
     /// Cache capacity for filter decisions.
     pub cache_capacity: usize,
+}
+
+impl Default for TagFilterlistConfig {
+    fn default() -> Self {
+        Self {
+            entries: Vec::new(),
+            cache_capacity: 100_000,
+        }
+    }
 }
 
 /// Aggregate transform runtime configuration.
