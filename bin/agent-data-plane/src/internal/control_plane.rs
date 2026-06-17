@@ -1,5 +1,5 @@
 use agent_data_plane_config::ConfigViews;
-use datadog_agent_commons::ipc::{config::IpcAuthConfiguration, tls::build_ipc_server_tls_config};
+use datadog_agent_commons::ipc::tls::build_ipc_server_tls_config;
 use resource_accounting::ComponentRegistry;
 use saluki_api::EndpointType;
 use saluki_app::{
@@ -44,8 +44,7 @@ pub async fn create_control_plane_supervisor(
         EndpointType::Unprivileged,
         dp_config.api_listen_address().clone(),
     ));
-    let ipc_config = IpcAuthConfiguration::default();
-    let tls_config = build_ipc_server_tls_config(ipc_config.ipc_cert_file_path()).await?;
+    let tls_config = build_ipc_server_tls_config(dp_config.ipc_auth().ipc_cert_file_path()).await?;
 
     let mut privileged_api =
         DynamicAPIBuilder::new(EndpointType::Privileged, dp_config.secure_api_listen_address().clone())

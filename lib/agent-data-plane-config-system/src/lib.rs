@@ -671,6 +671,12 @@ fn apply_local_control_overrides(
     if let Some(value) = config.try_get_typed::<u64>("data_plane.stop_timeout")? {
         native.control.stop_timeout_millis = value.saturating_mul(1000);
     }
+    if let Some(value) = config.try_get_typed::<String>("auth_token_file_path")? {
+        native.control.ipc_auth.auth_token_file_path = Some(value);
+    }
+    if let Some(value) = config.try_get_typed::<String>("ipc_cert_file_path")? {
+        native.control.ipc_auth.ipc_cert_file_path = Some(value);
+    }
     Ok(())
 }
 
@@ -700,6 +706,12 @@ fn apply_json_control_overrides(source: &serde_json::Value, native: &mut SalukiC
     }
     if let Some(value) = json_path(source, "data_plane.stop_timeout").and_then(serde_json::Value::as_u64) {
         native.control.stop_timeout_millis = value.saturating_mul(1000);
+    }
+    if let Some(value) = json_path(source, "auth_token_file_path").and_then(serde_json::Value::as_str) {
+        native.control.ipc_auth.auth_token_file_path = Some(value.to_string());
+    }
+    if let Some(value) = json_path(source, "ipc_cert_file_path").and_then(serde_json::Value::as_str) {
+        native.control.ipc_auth.ipc_cert_file_path = Some(value.to_string());
     }
 }
 

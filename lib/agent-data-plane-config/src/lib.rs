@@ -51,6 +51,8 @@ pub struct ControlConfiguration {
     pub standalone_mode: bool,
     /// Runtime log level supplied by the active Datadog authority.
     pub log_level: Option<String>,
+    /// IPC authentication and TLS file paths.
+    pub ipc_auth: ControlIpcAuthConfiguration,
 }
 
 impl ControlConfiguration {
@@ -83,8 +85,18 @@ impl Default for ControlConfiguration {
             use_new_config_stream_endpoint: false,
             standalone_mode: false,
             log_level: None,
+            ipc_auth: ControlIpcAuthConfiguration::default(),
         }
     }
+}
+
+/// IPC authentication and TLS file paths.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Default)]
+pub struct ControlIpcAuthConfiguration {
+    /// Agent authentication token file path.
+    pub auth_token_file_path: Option<String>,
+    /// Agent IPC certificate file path.
+    pub ipc_cert_file_path: Option<String>,
 }
 
 /// Static gate for a pipeline or sub-pipeline.

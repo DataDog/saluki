@@ -1,6 +1,7 @@
-use std::time::Duration;
+use std::{path::PathBuf, time::Duration};
 
 use agent_data_plane_config::{ControlConfiguration, OtlpProxyGate, PipelineGate};
+use datadog_agent_commons::platform::PlatformSettings;
 use saluki_component_config::ListenAddress as NativeListenAddress;
 use saluki_error::{generic_error, GenericError};
 use saluki_io::net::ListenAddress;
@@ -15,6 +16,7 @@ pub struct DataPlaneConfiguration {
     stop_timeout: Duration,
     api_listen_address: ListenAddress,
     secure_api_listen_address: ListenAddress,
+    ipc_auth: DataPlaneIpcAuthConfiguration,
     checks: DataPlaneChecksConfiguration,
     dogstatsd: DataPlaneDogStatsDConfiguration,
     otlp: DataPlaneOtlpConfiguration,
@@ -35,6 +37,7 @@ impl DataPlaneConfiguration {
             stop_timeout: Duration::from_millis(control.stop_timeout_millis),
             api_listen_address: convert_listen_address(&control.api_listen_address, 5100)?,
             secure_api_listen_address: convert_listen_address(&control.secure_api_listen_address, 5101)?,
+            ipc_auth: DataPlaneIpcAuthConfiguration::from_control(control),
             checks: DataPlaneChecksConfiguration::from_gate(&control.checks),
             dogstatsd: DataPlaneDogStatsDConfiguration::from_gate(&control.dogstatsd),
             otlp: DataPlaneOtlpConfiguration::from_control(control),
@@ -74,6 +77,11 @@ impl DataPlaneConfiguration {
     /// Returns a reference to the secure API listen address.
     pub const fn secure_api_listen_address(&self) -> &ListenAddress {
         &self.secure_api_listen_address
+    }
+
+    /// Returns a reference to the IPC authentication configuration.
+    pub const fn ipc_auth(&self) -> &DataPlaneIpcAuthConfiguration {
+        &self.ipc_auth
     }
 
     /// Returns a reference to the Checks-specific data plane configuration.
@@ -140,6 +148,46 @@ fn parse_listen_address(value: &str, default_scheme: &str) -> Result<ListenAddre
         format!("{default_scheme}://{value}")
     };
     ListenAddress::try_from(raw.as_str()).map_err(|e| generic_error!("Invalid listen address `{}`: {}", value, e))
+}
+
+/// IPC authentication and TLS file paths.
+#[derive(Clone, Debug)]
+pub struct DataPlaneIpcAuthConfiguration {
+    auth_token_file_path: PathBuf,
+    ipc_cert_file_path: Option<PathBuf>,
+}
+
+impl DataPlaneIpcAuthConfiguration {
+    fn from_control(control: &ControlConfiguration) -> Self {
+        Self {
+            auth_token_file_path: control
+                .ipc_auth
+                .auth_token_file_path
+                .as_deref()
+                .filter(|path| !path.is_empty())
+                .map(PathBuf::from)
+                .unwrap_or_else(PlatformSettings::get_auth_token_path),
+            ipc_cert_file_path: control
+                .ipc_auth
+                .ipc_cert_file_path
+                .as_deref()
+                .filter(|path| !path.is_empty())
+                .map(PathBuf::from),
+        }
+    }
+
+    /// Returns the Agent IPC certificate file path.
+    pub fn ipc_cert_file_path(&self) -> PathBuf {
+        if let Some(path) = self.ipc_cert_file_path.as_ref() {
+            return path.clone();
+        }
+        let auth_token_dir = self
+            .auth_token_file_path
+            .parent()
+            .map(|path| path.to_path_buf())
+            .unwrap_or_else(|| PlatformSettings::get_config_dir_path().to_path_buf());
+        auth_token_dir.join(PlatformSettings::get_ipc_cert_filename())
+    }
 }
 
 /// Checks-specific data plane configuration.
