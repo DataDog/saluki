@@ -66,10 +66,12 @@
 //! `saluki-components` or `bin/agent-data-plane`.
 
 pub mod datadog_agent;
+pub mod dynamic;
 pub mod translate;
 
 pub use self::datadog_agent::{
     connect, Attachments, AutodiscoveryAttachment, DatadogAgentConnection, FlareAttachment, HostTagsAttachment,
     MetricsAttachment, RemoteAgentClientConfiguration, RemoteAgentRegistration, StatusAttachment, TelemetryAttachment,
 };
+pub use self::dynamic::{ConfigUpdateRouter, DynamicConfigHandles};
 pub use self::translate::{translate, Translator};
