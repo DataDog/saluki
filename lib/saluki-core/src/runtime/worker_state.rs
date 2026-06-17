@@ -5,6 +5,7 @@
 //! order or concurrently). It is deliberately agnostic about restart policy -- the supervisor decides what to do when a
 //! worker exits.
 
+use std::future::pending;
 use std::time::Duration;
 
 use saluki_common::collections::FastIndexMap;
@@ -76,7 +77,7 @@ impl WorkerState {
         // `None` immediately on an empty set and the supervisor would busy-loop. The set legitimately empties when all
         // children are non-restartable (e.g. `RestartType::Temporary`) and have exited.
         if self.worker_tasks.is_empty() {
-            std::future::pending::<()>().await;
+            pending::<()>().await;
         }
 
         match self.worker_tasks.join_next_with_id().await {

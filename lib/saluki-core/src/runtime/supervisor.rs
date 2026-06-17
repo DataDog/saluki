@@ -1116,7 +1116,10 @@ impl Supervisor {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::{
+        future::pending,
+        sync::atomic::{AtomicUsize, Ordering},
+    };
 
     use async_trait::async_trait;
     use tokio::{
@@ -1334,7 +1337,7 @@ mod tests {
                     RunBehavior::IgnoreShutdown => {
                         // Hold the handle (so the supervisor counts us as outstanding) but never react to it.
                         let _hold = process_shutdown;
-                        std::future::pending::<Result<(), GenericError>>().await
+                        pending().await
                     }
                     RunBehavior::PanicAfter(delay) => {
                         select! {
