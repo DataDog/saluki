@@ -46,6 +46,12 @@ pub struct ControlConfiguration {
     /// aggregator and forwarder stop timeouts when `data_plane.stop_timeout` is unset).
     pub stop_timeout: Duration,
 
+    /// The path the data plane writes its own process log to.
+    ///
+    /// Corresponds to the Datadog `data_plane.log_file` key. Defaults to empty; the config-system
+    /// supplies the real default (`/var/log/datadog/agent-data-plane.log`) via the witness drive.
+    pub log_file: String,
+
     /// The address the unprivileged ("API") HTTP server listens on.
     ///
     /// Defaults to `tcp://0.0.0.0:5100`.
@@ -91,6 +97,7 @@ impl Default for ControlConfiguration {
             remote_agent_enabled: false,
             use_new_config_stream_endpoint: false,
             stop_timeout: Duration::ZERO,
+            log_file: String::new(),
             api_listen_address: ListenAddress::any_tcp(5100),
             secure_api_listen_address: ListenAddress::any_tcp(5101),
             dogstatsd: PipelineGate { enabled: true },

@@ -64,3 +64,12 @@
 //! Depends on `datadog-agent-config`, `agent-data-plane-config`,
 //! `saluki-component-config`, and `saluki-config-tools`. Must not depend on
 //! `saluki-components` or `bin/agent-data-plane`.
+
+pub mod datadog_agent;
+pub mod translate;
+
+pub use self::datadog_agent::{
+    connect, Attachments, AutodiscoveryAttachment, DatadogAgentConnection, FlareAttachment, HostTagsAttachment,
+    MetricsAttachment, RemoteAgentClientConfiguration, RemoteAgentRegistration, StatusAttachment, TelemetryAttachment,
+};
+pub use self::translate::{translate, Translator};
