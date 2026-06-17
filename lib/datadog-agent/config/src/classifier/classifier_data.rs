@@ -82,13 +82,6 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         default: Some("\"tcp://0.0.0.0:5102\""),
     },
     ClassifierEntry {
-        yaml_path: "dogstatsd_disable_verbose_logs",
-        aliases: &[],
-        support_level: SupportLevel::Incompatible(Severity::Medium),
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
-        default: Some("false"),
-    },
-    ClassifierEntry {
         yaml_path: "dogstatsd_experimental_http.enabled",
         aliases: &[],
         support_level: SupportLevel::Incompatible(Severity::High),

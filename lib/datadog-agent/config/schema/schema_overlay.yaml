@@ -551,13 +551,14 @@ inventory:
         config_registry_filename: dogstatsd.rs
 
   dogstatsd_disable_verbose_logs:
-    support: none
-    severity: medium
-    planned: false
+    support: full
     pipelines: [dogstatsd]
     description: "Suppress noisy parse error logs"
-    documentation: "ADP does not emit the verbose parse-error logs that this key filters in the core Agent, so there is nothing to suppress."
     issue: "#1350"
+    test_support:
+      used_by: [DogStatsDConfiguration]
+      additional_attributes:
+        config_registry_filename: dogstatsd.rs
 
   dogstatsd_entity_id_precedence:
     support: full

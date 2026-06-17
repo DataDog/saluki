@@ -528,4 +528,15 @@ crate::declare_annotations! {
         test_json: None,
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
+    /// `dogstatsd_disable_verbose_logs`-Suppress noisy parse error logs
+    DOGSTATSD_DISABLE_VERBOSE_LOGS = SalukiAnnotation {
+        schema: &schema::DOGSTATSD_DISABLE_VERBOSE_LOGS,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::DOGSTATSD_CONFIGURATION],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
+    };
 }
