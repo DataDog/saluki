@@ -6,6 +6,7 @@ pub use self::collected::CollectedData;
 
 mod dogstatsd_forwarding;
 mod events;
+mod logs;
 mod metrics;
 mod service_checks;
 mod traces;
@@ -22,6 +23,9 @@ pub enum AnalysisMode {
 
     /// Compares service checks between the baseline and comparison targets.
     ServiceChecks,
+
+    /// Compares decoded stateful logs between the baseline and comparison targets.
+    Logs,
 
     /// Compares traces between the baseline and comparison targets.
     Traces,
@@ -87,6 +91,10 @@ impl AnalysisRunner {
             }
             AnalysisMode::ServiceChecks => {
                 let analyzer = service_checks::ServiceChecksAnalyzer::new(&self.baseline_data, &self.comparison_data);
+                analyzer.run_analysis()
+            }
+            AnalysisMode::Logs => {
+                let analyzer = logs::LogsAnalyzer::new(&self.baseline_data, &self.comparison_data);
                 analyzer.run_analysis()
             }
             AnalysisMode::Traces => {

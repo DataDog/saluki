@@ -12,5 +12,8 @@ pub use self::metrics::*;
 mod service_checks;
 pub use self::service_checks::*;
 
+mod logs;
+pub use self::logs::*;
+
 mod traces;
 pub use self::traces::*;

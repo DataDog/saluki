@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.24
 #
-# This Dockerfile builds the "correctness tools suite" -- `datadog-intake` and `millstone` -- which together
-# support the correctness testing framework for Agent Data Plane. The resulting image contains both binaries
+# This Dockerfile builds the "correctness tools suite" -- `datadog-intake`, `millstone`, and replay helpers -- which
+# together support the correctness testing framework for Agent Data Plane. The resulting image contains each binary
 # at their default paths under `/usr/local/bin`.
 
 ARG BUILD_IMAGE=ubuntu:24.04
@@ -26,7 +26,7 @@ RUN --mount=type=bind,source=rust-toolchain.toml,target=/tmp/rust-toolchain.toml
 WORKDIR /correctness-tools
 COPY . /correctness-tools
 
-# Build the correctness tools (`datadog-intake` and `millstone`).
+# Build the correctness tools.
 #
 # We mount caches at the target dir and cargo home so that local development workflows can take advantage of incremental
 # builds. We copy the resulting binaries out of the build cache to /out after building them.
@@ -36,12 +36,14 @@ RUN --mount=type=cache,target=/correctness-tools/target,id=correctness-tools-tar
     --mount=type=cache,target=/root/.cargo/registry,id=cargo-registry \
     --mount=type=cache,target=/root/.cargo/git,id=cargo-git \
     mkdir -p /out && \
-    cargo build --profile release --bin datadog-intake --bin millstone && \
+    cargo build --profile release --bin datadog-intake --bin millstone --bin stateful-log-replay && \
     cp /correctness-tools/target/release/datadog-intake /out/datadog-intake && \
-    cp /correctness-tools/target/release/millstone /out/millstone
+    cp /correctness-tools/target/release/millstone /out/millstone && \
+    cp /correctness-tools/target/release/stateful-log-replay /out/stateful-log-replay
 
-# Final stage: copy both binaries on top of the configured application base image.
+# Final stage: copy each binary on top of the configured application base image.
 FROM ${APP_IMAGE}
 
 COPY --from=builder /out/datadog-intake /usr/local/bin/datadog-intake
 COPY --from=builder /out/millstone /usr/local/bin/millstone
+COPY --from=builder /out/stateful-log-replay /usr/local/bin/stateful-log-replay

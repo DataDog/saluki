@@ -1,0 +1,233 @@
+syntax = "proto3";
+
+package datadog.intake.stateful;
+option go_package = "pkg/proto/pbgo/statefulpb";
+
+// ---------------------------------------------------------------------------
+// Dictionary-encoded
+// ---------------------------------------------------------------------------
+
+message DictEntryDefine {
+  uint64 id = 1;
+  string value = 2;
+}
+
+message DictEntryDelete {
+  uint64 id = 1;
+}
+
+// ---------------------------------------------------------------------------
+// Pattern dictionary
+// ---------------------------------------------------------------------------
+
+// pos_list is used to indicate where dynamic values should be inserted
+// it's more accurate than a marker
+// PatternDefine is also used to signal a update to an existing pattern.
+message PatternDefine {
+  uint64 pattern_id = 1;
+  string template = 2;
+  uint32 param_count = 3;
+  repeated uint32 pos_list = 4;
+}
+
+message PatternDelete {
+  uint64 pattern_id = 1;
+}
+
+// ---------------------------------------------------------------------------
+// Log payload
+// ---------------------------------------------------------------------------
+
+message TagSet {
+  DynamicValue tagset = 1;
+}
+
+message Tag {
+  DynamicValue key = 1;
+  DynamicValue value = 2;
+}
+
+message FlatLog {
+  // Delta encoded timestamp: add this to previous timestamp (or DeltaEncodingSync.timestamp) to get the absolute timestamp.
+  sint64 timestamp = 1;
+  // Delta encoded status: when 0 use last status.
+  // Use 1 to indicate no status.
+  uint64 status = 2;
+  // Delta encoded service: when 0 use last service. Otherwise use service in this dict entry.
+  // Use 1 to indicate no status.
+  uint64 service = 3;
+  // Delta encoded tags: when 0 use last tags. Otherwise use tags in this dict entry.
+  uint64 tags = 4;
+
+
+  // Delta encoded pattern_id: when 0 use last pattern_id. Otherwise use pattern_id in this dict entry.
+  uint64 pattern_id = 5;
+  // Values for the pattern.
+  repeated DynamicValue dynamic_values = 6;
+  // Optional - used instead of pattern_id and dynamic_values for e.g. larger logs.
+  string raw_log = 7;
+
+  // Delta encoded json_schema_id: when 0 use last json_schema_id. Otherwise use json_schema_id in this dict entry.
+  // Use 1 to indicate no json_schema_id.
+  uint64 json_schema_id = 8;
+  // Deprecated fallback values for the json schema.
+  repeated DynamicValue json_context_values = 9;
+  // Compact values for the json schema. json_context_value_kinds has one byte per schema key.
+  // Each kind consumes the next value from the corresponding packed value field.
+  // Kind values are defined by the JsonValueKind constants in the encoder/decoder.
+  bytes json_context_value_kinds = 10;
+  repeated int64 json_context_int_values = 11;
+  repeated double json_context_float_values = 12;
+  repeated uint64 json_context_dict_values = 13;
+  repeated bytes json_context_raw_values = 14;
+  repeated string json_context_string_values = 15;
+
+  // Optional UUID used to track logs when dual-sent via HTTP and gRPC.
+  optional string uuid = 100;
+}
+
+message Log {
+  sint64 timestamp = 1;
+  oneof content {
+    StructuredLog structured = 2;
+    string raw = 3;
+  }
+  // Tags identifying the log source (hostname, service, ddsource, container tags).
+  // Excludes status which varies per log because status is sent separately to improve delta encoding.
+  // All tags are joined together and sent as a single tagset.
+  TagSet tags = 4;
+
+  // Optional UUID used to track logs when dual-sent via HTTP and gRPC.
+  optional string uuid = 5;
+
+  // Log severity level (e.g. "info", "warn", "error"). Sent separately from tags because
+  // status changes per log while other tags remain stable, which would defeat delta encoding.
+  DynamicValue status = 6;
+
+  // Service is sent separately because sometimes it is a top-level JSON field and also in ddtags,
+  // and sometimes it only exists as a top-level field.
+  DynamicValue service = 7;
+}
+
+
+message JsonSchemaDefine {
+  uint64 schema_id = 1;
+  // Dictionary IDs for escaped JSON paths. Dots separate nested fields; literal dots
+  // and backslashes inside field names are backslash-escaped.
+  repeated uint64 keys = 2;
+  uint64 message_key_id = 3;
+}
+
+message JsonSchemaDelete {
+  uint64 schema_id = 1;
+}
+
+message StructuredLog {
+  uint64 pattern_id = 1;
+  repeated DynamicValue dynamic_values = 2;
+  // JSON structured log fields. Example:
+  // Input log: {"msg":"Evicted user tags","agent":"core","time":"2026-03-31","level":"INFO"}
+  // With schema-based encoding, converts to:
+  //     json_context_schema 44 (points to "agent,level,time" in dictionary)
+  //     json_context_values ["core", "INFO", "2026-03-31"]
+  //     json_message_key "msg"
+  //     pattern_id 123 (points to "Evicted {} tags")
+  //     dynamic_values ["user"]
+
+  // The key of the JSON object to put the message back into (e.g. "msg", "message", "log").
+  DynamicValue json_message_key = 4;
+
+  // Schema-based JSON context encoding separates repeating key structure from per-log values.
+  // json_context_schema_id references a DictEntryDefine whose value is a comma-separated sorted
+  // list of JSON keys (e.g. "level,service,timestamp"). Delta-encoded across batches.
+  uint64 json_context_schema_id = 5;
+
+  // json_context_values contains the leaf values in the same order as the schema keys.
+  // Each value is encoded as a DynamicValue (int64 for numbers, dict_index for repeated strings).
+  // Nested objects and arrays are serialized as JSON strings.
+  repeated DynamicValue json_context_values = 6;
+
+  // Deprecated: use json_context_schema_id and json_context_values instead.
+  bytes json_context = 3;
+}
+
+message DynamicValue {
+  oneof value {
+    int64 int_value = 1;
+    double float_value = 2;
+    bool bool_value = 6;
+    string string_value = 3;
+    uint64 dict_index = 4;
+    bytes raw_json_value = 7;
+  }
+
+  // When set to true, renders int_value, float_value, and bool_value back to JSON strings instead of JSON numbers/booleans.
+  // This preserves string-vs-number JSON typing for numeric-looking strings while keeping a numeric
+  // on-wire representation.
+  bool render_as_string = 5;
+}
+
+// Restores delta encoding state before replayed datums, for example when the
+// agent prepends lazy snapshot definitions ahead of already-encoded payload data.
+message DeltaEncodingSync {
+  uint64 timestamp = 1;
+  uint64 pattern_id = 2;
+  TagSet tags = 3;
+  uint64 status = 4;
+  uint64 service = 5;
+  uint64 flat_log_tags = 6;
+  uint64 json_schema_id = 7;
+}
+
+// ---------------------------------------------------------------------------
+// Streaming envelope
+// ---------------------------------------------------------------------------
+
+message Datum {
+  oneof data {
+    PatternDefine pattern_define = 1;
+    PatternDelete pattern_delete = 2;
+    DictEntryDefine dict_entry_define = 3;
+    DictEntryDelete dict_entry_delete = 4;
+    DeltaEncodingSync delta_encoding_sync = 5;
+    Log logs = 6;
+    FlatLog flat_log = 7;
+    JsonSchemaDefine json_schema_define = 8;
+    JsonSchemaDelete json_schema_delete = 9;
+  }
+}
+
+// DatumSequence wraps a sequence of Datum messages
+// Used for serialization in application-level compression
+message DatumSequence {
+  repeated Datum data = 1;
+}
+
+// data is sequence of pattern/dictionary changes + logs
+// the ordering is significant, must be processed in order
+message StatefulBatch {
+  uint32 batch_id = 1;
+
+  // Bytes of a serialized and compressed DatumSequence.
+  // This allows for Datums to be compressed while they are buffered in memory before being acked by the server.
+  bytes data = 2;
+}
+
+message BatchStatus {
+  uint32 batch_id = 1;
+
+  // TODO: only OK is used right now - should we just remove this enum?
+  enum Status {
+    UNKNOWN = 0;
+    OK = 1;
+  }
+  Status status = 2;
+}
+
+// ---------------------------------------------------------------------------
+// gRPC service definition (bi-directional streaming)
+// ---------------------------------------------------------------------------
+
+service StatefulLogsService {
+  rpc LogsStream(stream StatefulBatch) returns (stream BatchStatus);
+}

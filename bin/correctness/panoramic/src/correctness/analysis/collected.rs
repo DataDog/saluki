@@ -1,5 +1,5 @@
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
-use stele::{ClientStatisticsAggregator, Event, Metric, ServiceCheck, Span};
+use stele::{ClientStatisticsAggregator, Event, Metric, ServiceCheck, Span, StatefulLog};
 use tracing::debug;
 
 /// Collected data from a test target.
@@ -9,6 +9,7 @@ pub struct CollectedData {
     events: Vec<Event>,
     metrics: Vec<Metric>,
     service_checks: Vec<ServiceCheck>,
+    logs: Vec<StatefulLog>,
     spans: Vec<Span>,
     trace_stats: ClientStatisticsAggregator,
     dogstatsd_forwarded_packets: Vec<String>,
@@ -24,6 +25,7 @@ impl CollectedData {
         let events = get_captured_events(datadog_intake_port).await?;
         let metrics = get_captured_metrics(datadog_intake_port).await?;
         let service_checks = get_captured_service_checks(datadog_intake_port).await?;
+        let logs = get_captured_stateful_logs(datadog_intake_port).await?;
         let spans = get_captured_spans(datadog_intake_port).await?;
         let trace_stats = get_captured_trace_stats(datadog_intake_port).await?;
         let dogstatsd_forwarded_packets = get_captured_dogstatsd_forwarded_packets(datadog_intake_port).await?;
@@ -32,6 +34,7 @@ impl CollectedData {
             events,
             metrics,
             service_checks,
+            logs,
             spans,
             trace_stats,
             dogstatsd_forwarded_packets,
@@ -51,6 +54,11 @@ impl CollectedData {
     /// Returns a reference to the collected service checks.
     pub fn service_checks(&self) -> &[ServiceCheck] {
         &self.service_checks
+    }
+
+    /// Returns a reference to the collected stateful logs.
+    pub fn logs(&self) -> &[StatefulLog] {
+        &self.logs
     }
 
     /// Returns a reference to the collected spans.
@@ -115,6 +123,22 @@ async fn get_captured_service_checks(datadog_intake_port: u16) -> Result<Vec<Ser
     debug!("Service checks dumped successfully.");
 
     Ok(checks)
+}
+
+async fn get_captured_stateful_logs(datadog_intake_port: u16) -> Result<Vec<StatefulLog>, GenericError> {
+    let client = reqwest::Client::new();
+    let logs = client
+        .get(format!("http://localhost:{}/stateful-logs/dump", datadog_intake_port))
+        .send()
+        .await
+        .error_context("Failed to call stateful logs dump endpoint on datadog-intake server.")?
+        .json::<Vec<StatefulLog>>()
+        .await
+        .error_context("Failed to decode dumped stateful logs from datadog-intake response.")?;
+
+    debug!("Stateful logs dumped successfully.");
+
+    Ok(logs)
 }
 
 async fn get_captured_spans(datadog_intake_port: u16) -> Result<Vec<Span>, GenericError> {

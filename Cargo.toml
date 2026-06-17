@@ -5,9 +5,11 @@ members = [
   "bin/correctness/datadog-intake",
   "bin/correctness/millstone",
   "bin/correctness/panoramic",
+  "bin/correctness/stateful-log-replay",
   "bin/correctness/stele",
   "lib/datadog-agent-commons",
   "lib/ddsketch",
+  "lib/foldspace",
   "lib/ottl",
   "lib/process-memory",
   "lib/prometheus-exposition",
@@ -43,6 +45,7 @@ datadog-agent-commons = { path = "lib/datadog-agent-commons" }
 datadog-protos = { path = "lib/protos/datadog" }
 containerd-protos = { path = "lib/protos/containerd" }
 ddsketch = { path = "lib/ddsketch" }
+foldspace = { path = "lib/foldspace" }
 resource-accounting = { path = "lib/resource-accounting" }
 process-memory = { path = "lib/process-memory" }
 prometheus-exposition = { path = "lib/prometheus-exposition" }

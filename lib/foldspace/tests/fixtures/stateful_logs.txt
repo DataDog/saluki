@@ -1,0 +1,8 @@
+GET /api/users/100 returned 200 in 12ms
+GET /api/users/101 returned 200 in 15ms
+GET /api/users/102 returned 500 in 18ms
+worker alpha processed job 100
+worker beta processed job 101
+worker gamma processed job 102
+cache lookup key user:100 hit true
+cache lookup key user:101 hit false

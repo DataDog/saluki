@@ -1,0 +1,34 @@
+type: correctness
+runtime: docker
+analysis_mode: logs
+millstone:
+  image: saluki-images/correctness-tools:latest
+  config_path: millstone.yaml
+datadog_intake:
+  image: saluki-images/correctness-tools:latest
+baseline:
+  image: saluki-images/correctness-tools:latest
+  entrypoint:
+    - /usr/local/bin/stateful-log-replay
+  command:
+    - --listen
+    - 0.0.0.0:9130
+    - --logs-file
+    - /etc/stateful-logs/input.log
+    - --endpoint
+    - http://datadog-intake:2050
+  files:
+    - stateful_logs.txt:/etc/stateful-logs/input.log
+comparison:
+  image: saluki-images/correctness-tools:latest
+  entrypoint:
+    - /usr/local/bin/stateful-log-replay
+  command:
+    - --listen
+    - 0.0.0.0:9130
+    - --logs-file
+    - /etc/stateful-logs/input.log
+    - --endpoint
+    - http://datadog-intake:2050
+  files:
+    - stateful_logs.txt:/etc/stateful-logs/input.log

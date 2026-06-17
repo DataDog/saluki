@@ -12,11 +12,15 @@ mod events;
 mod metrics;
 mod misc;
 mod service_checks;
+mod stateful_logs;
 mod traces;
 
 pub use self::dogstatsd_forwarding::DogStatsDForwardingState;
+pub use self::stateful_logs::{StatefulLogsGrpcService, StatefulLogsState};
 
-pub fn initialize_app_router(dogstatsd_forwarding_state: DogStatsDForwardingState) -> Router {
+pub fn initialize_app_router(
+    dogstatsd_forwarding_state: DogStatsDForwardingState, stateful_logs_state: StatefulLogsState,
+) -> Router {
     let events_state = events::EventsState::new();
     let service_checks_state = service_checks::ServiceChecksState::new();
 
@@ -28,6 +32,7 @@ pub fn initialize_app_router(dogstatsd_forwarding_state: DogStatsDForwardingStat
         .merge(events::build_events_router(events_state.clone()))
         .merge(metrics::build_metrics_router())
         .merge(service_checks::build_service_checks_router(service_checks_state))
+        .merge(stateful_logs::build_stateful_logs_router(stateful_logs_state))
         .merge(traces::build_traces_router())
         .merge(misc::build_misc_router(events_state))
         .fallback(debug_fallback_handler)

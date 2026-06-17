@@ -33,6 +33,10 @@ mod checks_include {
     include!(concat!(env!("OUT_DIR"), "/checks.mod.rs"));
 }
 
+mod stateful_include {
+    include!(concat!(env!("OUT_DIR"), "/stateful.mod.rs"));
+}
+
 /// Metrics-related definitions.
 pub mod metrics {
     pub use super::include::agent_payload::metric_payload::*;
@@ -77,4 +81,9 @@ pub mod sketches {
 /// Checks definitions.
 pub mod checks {
     pub use super::checks_include::datadog::checks::v1::*;
+}
+
+/// Stateful logs definitions.
+pub mod stateful {
+    pub use super::stateful_include::datadog::intake::stateful::*;
 }

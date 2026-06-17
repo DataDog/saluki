@@ -1,0 +1,8 @@
+GET /checkout cart_id=cart-1001 user=alice status=200 latency_ms=42
+GET /checkout cart_id=cart-1002 user=bob status=200 latency_ms=38
+POST /payment order_id=ord-9001 user=alice status=202 latency_ms=188
+POST /payment order_id=ord-9002 user=bob status=500 latency_ms=611
+GET /checkout cart_id=cart-1003 user=carol status=200 latency_ms=44
+POST /payment order_id=ord-9003 user=carol status=202 latency_ms=173
+GET /inventory sku=sku-1 status=200 latency_ms=19
+GET /inventory sku=sku-2 status=404 latency_ms=27

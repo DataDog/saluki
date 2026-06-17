@@ -159,4 +159,13 @@ fn main() {
             &["proto"],
         )
         .expect("Failed to build gRPC service definitions for Checks IPC.");
+
+    tonic_prost_build::configure()
+        .build_server(true)
+        .include_file("stateful.mod.rs")
+        .compile_protos(
+            &["proto/datadog-agent/datadog/stateful/stateful_encoding.proto"],
+            &["proto/datadog-agent"],
+        )
+        .expect("Failed to build gRPC service definitions for Stateful Logs.");
 }

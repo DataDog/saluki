@@ -12,6 +12,9 @@ workspace = true
 axum = { workspace = true, features = ["http1", "json", "tokio", "tracing"] }
 base64 = { workspace = true }
 datadog-protos = { workspace = true }
+async-stream = { workspace = true }
+futures = { workspace = true }
+prost = { workspace = true }
 protobuf = { workspace = true }
 rmp-serde = { workspace = true }
 saluki-error = { workspace = true }
@@ -24,7 +27,9 @@ tokio = { workspace = true, features = [
   "rt",
   "rt-multi-thread",
   "signal",
+  "sync",
 ] }
+tonic = { workspace = true, features = ["transport", "codegen"] }
 tower-http = { workspace = true, features = [
   "compression-zstd",
   "decompression-deflate",

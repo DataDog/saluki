@@ -74,7 +74,7 @@ async fn run_docker_correctness_test(name: String, config: Config, tctx: TestCon
             otlp_direct_analysis_mode: config.otlp_direct_analysis_mode,
             additional_span_ignore_fields: config.additional_span_ignore_fields.clone(),
         }),
-        AnalysisMode::Events | AnalysisMode::Metrics | AnalysisMode::ServiceChecks => None,
+        AnalysisMode::Events | AnalysisMode::Metrics | AnalysisMode::ServiceChecks | AnalysisMode::Logs => None,
     };
     let analysis_runner = AnalysisRunner::new(config.analysis_mode, baseline_data, comparison_data, traces_options)
         .with_dogstatsd_forwarding_requirement(config.require_dogstatsd_forwarded_packets);
@@ -255,9 +255,8 @@ impl CorrectnessRunner {
     /// uses `sed` to derive two per-target configs in `/tmp`—one with `baseline` addresses and
     /// one with `comparison` addresses—before launching both millstone processes in parallel.
     ///
-    /// Two `sed` substitutions cover all target types:
-    /// - DSD socket targets: `/airlock/` → `/{group}-airlock/`
-    /// - TCP/gRPC targets: `://target` → `://{group}`
+    /// Test cases use `$GROUP` anywhere the target address differs between the baseline and
+    /// comparison groups, such as DSD socket paths or TCP/gRPC hostnames.
     ///
     /// Both agents are healthy before this container starts, so no startup wait is needed.
     async fn build_shared_millstone_group_runner(
