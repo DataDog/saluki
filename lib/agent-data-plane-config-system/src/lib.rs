@@ -1,5 +1,6 @@
 //! Configuration system facade: loading, translation, lifecycle, views, and runtime updates.
 
+mod remote_agent;
 mod witness_impl;
 
 use std::path::PathBuf;
@@ -11,6 +12,7 @@ use agent_data_plane_config::{
 };
 use bytesize::ByteSize;
 use datadog_agent_config::{drive, DatadogConfiguration, DatadogRemapper, KEY_ALIASES};
+pub use remote_agent::{Attachments, DatadogAgentConnection};
 use saluki_common::deser::PermissiveBool;
 use saluki_component_config::{
     DatadogForwarderConfig, DogStatsDDebugLogConfig, DogStatsDPostAggregateFilterConfig, DogStatsDPrefixFilterConfig,
@@ -98,7 +100,13 @@ impl LoadedConfigurationSystem {
         let datadog = self.datadog.as_typed::<DatadogConfiguration>()?;
         let mut native = translate_datadog(&datadog, &self.saluki_only)?;
         apply_local_control_overrides(&self.datadog, &mut native)?;
-        let router = ConfigUpdateRouter::new(native.clone(), self.saluki_only.clone(), authority);
+        let attachments = remote_agent::build_attachments(&self.datadog, &native.control).await?;
+        let router_authority = if attachments.datadog_agent.is_some() {
+            DatadogRuntimeAuthority::Stream
+        } else {
+            authority
+        };
+        let router = ConfigUpdateRouter::new(native.clone(), self.saluki_only.clone(), router_authority);
         let views = ConfigViews {
             raw: SourceConfigView::new(scrub_json(self.datadog.as_typed::<serde_json::Value>()?)),
             internal: InternalConfigView::new(scrub_json(serde_json::to_value(&native)?)),
@@ -110,6 +118,7 @@ impl LoadedConfigurationSystem {
             views,
             router,
             datadog_source: self.datadog,
+            attachments,
             _saluki_source: self.saluki,
         })
     }
@@ -122,6 +131,7 @@ pub struct StartedConfigurationSystem {
     views: ConfigViews,
     router: ConfigUpdateRouter,
     datadog_source: GenericConfiguration,
+    attachments: Attachments,
     _saluki_source: GenericConfiguration,
 }
 
@@ -144,6 +154,11 @@ impl StartedConfigurationSystem {
     /// Returns serialized config views.
     pub fn config_views(&self) -> ConfigViews {
         self.views.clone()
+    }
+
+    /// Returns typed attachments established during runtime start.
+    pub fn attachments(&self) -> Attachments {
+        self.attachments.clone()
     }
 
     /// Returns the internal router for tests and future stream wiring.

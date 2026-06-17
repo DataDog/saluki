@@ -1,5 +1,6 @@
 use std::future::Future;
 
+use agent_data_plane_config_system::Attachments;
 use resource_accounting::ComponentRegistry;
 use saluki_core::health::HealthRegistry;
 use saluki_core::runtime::Supervisor;
@@ -16,7 +17,10 @@ use crate::config::DataPlaneConfiguration;
 mod autodiscovery;
 mod host;
 mod workload;
-use self::workload::RemoteAgentWorkloadProvider;
+use self::{
+    autodiscovery::RemoteAgentAutodiscoveryProvider, host::RemoteAgentHostProvider,
+    workload::RemoteAgentWorkloadProvider,
+};
 
 /// Agent Data Plane-specific environment provider.
 #[derive(Clone)]
@@ -34,22 +38,42 @@ impl ADPEnvironmentProvider {
     ///
     /// If the provider supervisor can't be constructed, an error is returned.
     pub async fn from_data_plane_config(
-        dp_config: &DataPlaneConfiguration, _component_registry: &ComponentRegistry, health_registry: &HealthRegistry,
+        dp_config: &DataPlaneConfiguration, attachments: &Attachments, component_registry: &ComponentRegistry,
+        health_registry: &HealthRegistry,
     ) -> Result<(Self, Option<Supervisor>), GenericError> {
-        if !dp_config.standalone_mode() {
-            warn!(
-                "Remote environment providers are not attached yet; using a fixed hostname provider until typed \
-                 Datadog Agent attachments are wired."
-            );
+        if dp_config.standalone_mode() || attachments.datadog_agent.is_none() {
+            if !dp_config.standalone_mode() {
+                warn!("Datadog Agent attachments are unavailable; using fixed/no-op environment providers.");
+            }
+            let env = Self {
+                host_provider: BoxedHostProvider::from_provider(FixedHostProvider::from_hostname("localhost")),
+                workload_provider: None,
+                autodiscovery_provider: None,
+                health_registry: health_registry.clone(),
+            };
+            return Ok((env, None));
         }
 
+        let connection = attachments.datadog_agent.as_ref().expect("attachment checked");
+        let mut provider_component = component_registry.get_or_create("env_provider");
+        let mut env_supervisor = Supervisor::new("env-provider")?;
+
+        let host_provider = RemoteAgentHostProvider::from_client(connection.client());
+        provider_component
+            .bounds_builder()
+            .with_subcomponent("host", &host_provider);
+
+        let (autodiscovery_provider, autodiscovery_supervisor) =
+            RemoteAgentAutodiscoveryProvider::from_client(connection.client())?;
+        env_supervisor.add_worker(autodiscovery_supervisor);
+
         let env = Self {
-            host_provider: BoxedHostProvider::from_provider(FixedHostProvider::from_hostname("localhost")),
+            host_provider: BoxedHostProvider::from_provider(host_provider),
             workload_provider: None,
-            autodiscovery_provider: None,
+            autodiscovery_provider: Some(BoxedAutodiscoveryProvider::from_provider(autodiscovery_provider)),
             health_registry: health_registry.clone(),
         };
-        Ok((env, None))
+        Ok((env, Some(env_supervisor)))
     }
 
     /// Returns a future that resolves once the environment provider's background subsystems are ready.

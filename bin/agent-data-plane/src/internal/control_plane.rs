@@ -53,7 +53,12 @@ pub async fn create_control_plane_supervisor(
 
     privileged_api = control_surfaces.register_control_surfaces(privileged_api);
 
-    let _ = ra_bootstrap;
+    if let Some(ra_bootstrap) = &ra_bootstrap {
+        privileged_api = privileged_api
+            .with_grpc_service(ra_bootstrap.create_status_service())
+            .with_grpc_service(ra_bootstrap.create_flare_service())
+            .with_grpc_service(ra_bootstrap.create_telemetry_service());
+    }
 
     supervisor.add_worker(privileged_api);
 

@@ -87,15 +87,21 @@ version = "0.1.0"
 dependencies = [
  "agent-data-plane-config",
  "bytesize",
+ "datadog-agent-commons",
  "datadog-agent-config",
+ "datadog-protos",
  "saluki-common",
  "saluki-component-config",
  "saluki-config-tools",
  "saluki-error",
+ "saluki-io",
+ "saluki-metadata",
  "serde",
  "serde_json",
  "serde_with",
  "tokio",
+ "tonic",
+ "tracing",
 ]
 
 [[package]]

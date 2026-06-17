@@ -81,6 +81,7 @@ pub async fn handle_run_command(
     let started_config = loaded_config.start_runtime(DatadogRuntimeAuthority::Local).await?;
     let saluki = started_config.saluki();
     let handles = started_config.dynamic_handles();
+    let attachments = started_config.attachments();
     let dp_config = DataPlaneConfiguration::from_control(&saluki.control)
         .error_context("Failed to load data plane control configuration.")?;
     let _ = (
@@ -96,17 +97,25 @@ pub async fn handle_run_command(
     let component_registry = ComponentRegistry::default();
     let health_registry = HealthRegistry::new();
     let (env_provider, maybe_env_supervisor) =
-        ADPEnvironmentProvider::from_data_plane_config(&dp_config, &component_registry, &health_registry).await?;
+        ADPEnvironmentProvider::from_data_plane_config(&dp_config, &attachments, &component_registry, &health_registry)
+            .await?;
 
     let (mut blueprint, control_surfaces) =
         create_topology(&saluki, &handles, started_config.datadog_config(), &dp_config, &env_provider, &component_registry).await?;
+
+    let ra_bootstrap = match attachments.datadog_agent.clone() {
+        Some(connection) => {
+            Some(crate::internal::remote_agent::RemoteAgentBootstrap::from_connection(connection).await)
+        }
+        None => None,
+    };
 
     let mut internal_supervisor = create_internal_supervisor(
         &dp_config,
         &component_registry,
         health_registry.clone(),
         control_surfaces,
-        None,
+        ra_bootstrap,
         started_config.config_views(),
         handles.log_level.clone(),
         bootstrap_guard.logging().controller(),
