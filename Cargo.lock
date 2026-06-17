@@ -4277,6 +4277,14 @@ dependencies = [
 [[package]]
 name = "saluki-component-config"
 version = "0.1.0"
+dependencies = [
+ "bytesize",
+ "saluki-context",
+ "saluki-io",
+ "serde",
+ "stringtheory",
+ "tokio",
+]
 
 [[package]]
 name = "saluki-components"

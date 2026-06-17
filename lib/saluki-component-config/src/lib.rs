@@ -44,3 +44,26 @@
 //! This is a leaf crate. It must not depend on `datadog-agent-config`,
 //! `agent-data-plane-config`, `agent-data-plane-config-system`,
 //! `saluki-config-tools`, or `saluki-components`.
+//!
+//! # Module layout
+//!
+//! Config structs are organized one module per ownership domain: [`forwarder`], [`dogstatsd`],
+//! [`metrics`], [`logs`], [`events`], [`service_checks`], [`traces`], [`checks`], [`otlp`], and
+//! [`workload`]. The [`dynamic`] module holds the [`ScopedConfig`] handle. The domain config types
+//! and `ScopedConfig` are re-exported at the crate root for convenience.
+
+#![deny(missing_docs)]
+
+pub mod checks;
+pub mod dogstatsd;
+pub mod dynamic;
+pub mod events;
+pub mod forwarder;
+pub mod logs;
+pub mod metrics;
+pub mod otlp;
+pub mod service_checks;
+pub mod traces;
+pub mod workload;
+
+pub use self::dynamic::ScopedConfig;

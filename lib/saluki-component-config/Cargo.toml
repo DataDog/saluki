@@ -9,3 +9,12 @@ repository = { workspace = true }
 workspace = true
 
 [dependencies]
+bytesize = { workspace = true }
+saluki-context = { workspace = true }
+saluki-io = { workspace = true }
+serde = { workspace = true }
+stringtheory = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
