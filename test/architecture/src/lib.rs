@@ -112,31 +112,26 @@ mod tests {
     // -------------------------------------------------------------------------
 
     #[test]
-    #[ignore = "enabled at step 2"]
     fn leaf_must_not_depend_on_datadog_agent_config() {
         assert_no_dependency("lib/saluki-component-config", "datadog-agent-config");
     }
 
     #[test]
-    #[ignore = "enabled at step 2"]
     fn leaf_must_not_depend_on_agent_data_plane_config() {
         assert_no_dependency("lib/saluki-component-config", "agent-data-plane-config");
     }
 
     #[test]
-    #[ignore = "enabled at step 2"]
     fn leaf_must_not_depend_on_config_system() {
         assert_no_dependency("lib/saluki-component-config", "agent-data-plane-config-system");
     }
 
     #[test]
-    #[ignore = "enabled at step 2"]
     fn leaf_must_not_depend_on_raw_map() {
         assert_no_dependency("lib/saluki-component-config", "saluki-config-tools");
     }
 
     #[test]
-    #[ignore = "enabled at step 2"]
     fn leaf_must_not_depend_on_saluki_components() {
         assert_no_dependency("lib/saluki-component-config", "saluki-components");
     }
@@ -150,25 +145,21 @@ mod tests {
     // -------------------------------------------------------------------------
 
     #[test]
-    #[ignore = "enabled at step 3"]
     fn adp_config_must_not_depend_on_datadog_agent_config() {
         assert_no_dependency("lib/agent-data-plane-config", "datadog-agent-config");
     }
 
     #[test]
-    #[ignore = "enabled at step 3"]
     fn adp_config_must_not_depend_on_raw_map() {
         assert_no_dependency("lib/agent-data-plane-config", "saluki-config-tools");
     }
 
     #[test]
-    #[ignore = "enabled at step 3"]
     fn adp_config_must_not_depend_on_config_system() {
         assert_no_dependency("lib/agent-data-plane-config", "agent-data-plane-config-system");
     }
 
     #[test]
-    #[ignore = "enabled at step 3"]
     fn adp_config_must_not_depend_on_saluki_components() {
         assert_no_dependency("lib/agent-data-plane-config", "saluki-components");
     }
@@ -181,7 +172,6 @@ mod tests {
     // -------------------------------------------------------------------------
 
     #[test]
-    #[ignore = "enabled at step 7"]
     fn config_system_must_not_depend_on_saluki_components() {
         assert_no_dependency("lib/agent-data-plane-config-system", "saluki-components");
     }
