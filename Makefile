@@ -28,7 +28,7 @@ export ADP_SPDX_LICENSES_VERSION := 3.28.0
 export ADP_STANDALONE_IPC_CERT_FILE := /tmp/adp-ipc-cert.pem
 
 # macOS integration-test settings.
-MACOS_TEST_AGENT_VERSION ?= 7.78.0
+MACOS_TEST_AGENT_VERSION ?= 7.80.1
 MACOS_TEST_AGENT_DMG_DIR ?= /tmp/saluki-dda-dmg-cache
 MACOS_TEST_AGENT_DMG_URL ?= https://s3.amazonaws.com/dd-agent/datadog-agent-$(MACOS_TEST_AGENT_VERSION)-1.$(shell uname -m).dmg
 MACOS_TEST_AGENT_INSTALL_DIR ?= /tmp/saluki-dda/datadog-agent
