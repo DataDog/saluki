@@ -32,12 +32,19 @@ pub struct BootstrapConfiguration {
 #[derive(Clone, Debug, Default, serde::Deserialize)]
 pub struct DatadogBootstrap {
     /// Early logging configuration (level, format, file, syslog).
+    ///
+    /// Flattened: Datadog source keys are flat (`log_level`, `log_format_json`, ...), not nested
+    /// under a `logging` map, so the sub-struct's flat fields map directly. Defaulted so a source
+    /// that sets none of these keys still parses.
+    #[serde(flatten, default)]
     pub logging: LoggingBootstrap,
 
     /// Early telemetry configuration.
+    #[serde(flatten, default)]
     pub telemetry: TelemetryBootstrap,
 
     /// Agent IPC connection parameters.
+    #[serde(flatten, default)]
     pub agent_ipc: AgentIpcBootstrap,
 }
 

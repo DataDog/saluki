@@ -22,7 +22,12 @@ use crate::model::SalukiConfiguration;
 /// The parsed Saluki-schema-only configuration, grouped by subsystem.
 ///
 /// Parsed from `SALUKI_*` / `saluki.yaml`. Every field corresponds to a key in `SALUKI_KEYS`.
+///
+/// Every field is `#[serde(default)]`: the Saluki source is frequently absent entirely (a
+/// deployment may set no `SALUKI_*` keys), so each subsystem group must fall back to its defaults
+/// independently when its keys are missing.
 #[derive(Clone, Debug, Default, serde::Deserialize)]
+#[serde(default)]
 pub struct SalukiOnlyConfiguration {
     /// Cross-cutting / data-plane control knobs.
     pub data_plane: DataPlaneSalukiOnly,

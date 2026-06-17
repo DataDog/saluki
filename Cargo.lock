@@ -92,6 +92,7 @@ dependencies = [
  "figment",
  "futures",
  "prost-types",
+ "saluki-common",
  "saluki-component-config",
  "saluki-config-tools",
  "saluki-context",
@@ -99,7 +100,9 @@ dependencies = [
  "saluki-io",
  "serde",
  "serde_json",
+ "serde_yaml",
  "stringtheory",
+ "tempfile",
  "tokio",
  "tracing",
 ]

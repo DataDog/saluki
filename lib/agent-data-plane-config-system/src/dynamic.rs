@@ -38,6 +38,8 @@
 //! senders into the spawned task; the receivers handed out earlier stay alive as long as the task
 //! lives. So handles must be built (via `handles`) before `spawn` is called.
 
+use std::sync::Arc;
+
 use agent_data_plane_config::{RuntimeAuthority, SalukiConfiguration, SalukiOnlyConfiguration};
 use datadog_agent_config::DatadogConfiguration;
 use saluki_component_config::dogstatsd::{
@@ -50,6 +52,25 @@ use tokio::task::JoinHandle;
 use tracing::warn;
 
 use crate::translate::translate;
+
+/// The pair of snapshots `/config` views are produced from.
+///
+/// This is the router's shared "current views" state: the latest fully-applied raw Datadog source
+/// snapshot and the matching translated [`SalukiConfiguration`]. The router updates this atomically
+/// on every accepted update via a [`watch`] channel, so a view producer always observes a
+/// consistent (never torn mid-update) pair. Both are wrapped in [`Arc`] so a reader can cheaply
+/// clone the latest pair out of the channel without cloning the whole snapshot.
+///
+/// In [`RuntimeAuthority::LocalSnapshot`] mode no task runs, so this stays at the initial pair for
+/// the process lifetime -- correct, since there are no runtime updates.
+#[derive(Clone)]
+pub struct ViewSources {
+    /// The retained raw Datadog source snapshot. Serialized + scrubbed for `/config/raw`.
+    pub raw: Arc<serde_json::Value>,
+
+    /// The current translated model. Serialized + scrubbed for `/config/internal`.
+    pub model: Arc<SalukiConfiguration>,
+}
 
 /// The bundle of per-slice dynamic configuration handles.
 ///
@@ -118,6 +139,10 @@ pub struct ConfigUpdateRouter {
 
     /// The per-slice watch senders.
     senders: Senders,
+
+    /// The shared "current views" state. Seeded in [`new`](Self::new) and updated on every accepted
+    /// [`apply`](Self::apply). `/config` views are produced live-on-request from the latest value.
+    views_tx: watch::Sender<ViewSources>,
 }
 
 /// Replaces `cur` with `next` if they differ, reporting whether a change occurred.
@@ -146,6 +171,10 @@ impl ConfigUpdateRouter {
         authority: RuntimeAuthority,
     ) -> Self {
         let log_level = initial_log_level(&initial_snapshot);
+        let views_tx = watch::Sender::new(ViewSources {
+            raw: Arc::new(initial_snapshot.clone()),
+            model: Arc::new(initial.clone()),
+        });
         let senders = Senders {
             forwarder: watch::Sender::new(initial.components.forwarder.datadog.clone()),
             multi_region_failover: watch::Sender::new(initial.components.metrics.multi_region_failover.clone()),
@@ -162,7 +191,17 @@ impl ConfigUpdateRouter {
             last_good: initial,
             authority,
             senders,
+            views_tx,
         }
+    }
+
+    /// Returns a receiver of the shared "current views" state.
+    ///
+    /// `start_runtime` keeps this receiver in `StartedConfigurationSystem` and produces `/config`
+    /// views from its latest value. The receiver outlives the router (the sender is moved into the
+    /// spawned task in stream mode, and dropped harmlessly in local mode where no task runs).
+    pub fn views_rx(&self) -> watch::Receiver<ViewSources> {
+        self.views_tx.subscribe()
     }
 
     /// Whether this router produces live handles (it received an inbound stream).
@@ -251,6 +290,14 @@ impl ConfigUpdateRouter {
         self.senders
             .log_level
             .send_if_modified(|cur| replace_if_changed(cur, datadog.log_level.clone()));
+
+        // Publish the new (raw, model) pair atomically so `/config` views regenerate from the
+        // latest fully-applied snapshot. This is sent only on an accepted update, so a rejected
+        // update leaves the views at the last-good pair.
+        let _ = self.views_tx.send(ViewSources {
+            raw: Arc::new(raw_snapshot.clone()),
+            model: Arc::new(next.clone()),
+        });
 
         self.last_good = next;
     }
