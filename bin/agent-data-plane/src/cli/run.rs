@@ -15,8 +15,8 @@ use saluki_app::{
     metrics::emit_startup_metrics,
 };
 use saluki_component_config::{
-    DogStatsDPostAggregateFilterConfig, DogStatsDPrefixFilterConfig, MetricTagFilterEntry, MrfConfig, ScopedConfig,
-    TagFilterlistConfig,
+    DogStatsDDebugLogConfig, DogStatsDPostAggregateFilterConfig, DogStatsDPrefixFilterConfig, MetricTagFilterEntry,
+    MrfConfig, ScopedConfig, TagFilterlistConfig,
 };
 use saluki_components::{
     config::{AutoscalingFailoverConfiguration, ClusterAgentConfiguration, MrfConfiguration},
@@ -534,6 +534,24 @@ fn tag_filterlist_config_from_raw(config: &GenericConfiguration) -> Result<TagFi
     Ok(TagFilterlistConfiguration::from_native(ScopedConfig::fixed(native)))
 }
 
+fn dogstatsd_debug_log_config_from_raw(
+    config: &GenericConfiguration, default_log_file_path: PathBuf,
+) -> Result<DogStatsDDebugLogConfiguration, GenericError> {
+    let native = DogStatsDDebugLogConfig {
+        metrics_stats_enabled: config.try_get_typed("dogstatsd_metrics_stats_enable")?.unwrap_or(false),
+        logging_enabled: config.try_get_typed("dogstatsd_logging_enabled")?.unwrap_or(true),
+        log_file: config
+            .try_get_typed::<String>("dogstatsd_log_file")?
+            .unwrap_or_default(),
+        log_file_max_size_bytes: config
+            .try_get_typed::<bytesize::ByteSize>("dogstatsd_log_file_max_size")?
+            .unwrap_or_else(|| bytesize::ByteSize::mb(10))
+            .as_u64(),
+        log_file_max_rolls: config.try_get_typed("dogstatsd_log_file_max_rolls")?.unwrap_or(3),
+    };
+    DogStatsDDebugLogConfiguration::from_native(ScopedConfig::fixed(native), default_log_file_path)
+}
+
 fn dogstatsd_post_aggregate_filter_config_from_raw(
     config: &GenericConfiguration,
 ) -> Result<DogStatsDPostAggregateFilterConfiguration, GenericError> {
@@ -825,11 +843,9 @@ async fn add_dsd_pipeline_to_blueprint(
         "host_enrichment",
         HostEnrichmentConfiguration::from_environment_provider(env_provider.clone()),
     );
-    let dsd_debug_log_config = DogStatsDDebugLogConfiguration::from_configuration(
-        config,
-        PlatformSettings::get_default_dogstatsd_log_file_path(),
-    )
-    .error_context("Failed to configure DogStatsD debug log destination.")?;
+    let dsd_debug_log_config =
+        dogstatsd_debug_log_config_from_raw(config, PlatformSettings::get_default_dogstatsd_log_file_path())
+            .error_context("Failed to configure DogStatsD debug log destination.")?;
     let dsd_stats_config = DogStatsDStatisticsConfiguration::new();
 
     let stats_api_handler = dsd_stats_config.api_handler();

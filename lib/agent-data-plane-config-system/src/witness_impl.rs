@@ -51,6 +51,21 @@ impl Translator {
             "dogstatsd_mapper_profiles" => {
                 self.native.components.dogstatsd.mapper.profiles = array_value(value);
             }
+            "dogstatsd_logging_enabled" => {
+                self.native.components.dogstatsd.debug_log.logging_enabled = bool_value(value);
+            }
+            "dogstatsd_log_file" => {
+                self.native.components.dogstatsd.debug_log.log_file = string_value(value);
+            }
+            "dogstatsd_log_file_max_size" => {
+                self.native.components.dogstatsd.debug_log.log_file_max_size_bytes = u64_value(value, 10 * 1024 * 1024);
+            }
+            "dogstatsd_log_file_max_rolls" => {
+                self.native.components.dogstatsd.debug_log.log_file_max_rolls = usize_value(value, 3);
+            }
+            "dogstatsd_metrics_stats_enable" => {
+                self.native.components.dogstatsd.debug_log.metrics_stats_enabled = bool_value(value);
+            }
             "dogstatsd_port" => {
                 let port = u16_value(value, 8125);
                 self.native.components.dogstatsd.source.udp_address = ListenAddress::Udp(format!("127.0.0.1:{port}"));

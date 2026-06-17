@@ -386,12 +386,30 @@ impl Default for AggregateConfig {
 }
 
 /// DogStatsD debug log runtime configuration.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Default)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct DogStatsDDebugLogConfig {
-    /// Whether debug logging is enabled.
-    pub enabled: bool,
+    /// Whether metric-level stats should be written.
+    pub metrics_stats_enabled: bool,
+    /// Whether the debug log destination should be built.
+    pub logging_enabled: bool,
     /// Output file path.
-    pub path: String,
+    pub log_file: String,
+    /// Maximum active log file size before rotation, in bytes.
+    pub log_file_max_size_bytes: u64,
+    /// Number of rotated log files to keep.
+    pub log_file_max_rolls: usize,
+}
+
+impl Default for DogStatsDDebugLogConfig {
+    fn default() -> Self {
+        Self {
+            metrics_stats_enabled: false,
+            logging_enabled: true,
+            log_file: String::new(),
+            log_file_max_size_bytes: 10 * 1024 * 1024,
+            log_file_max_rolls: 3,
+        }
+    }
 }
 
 /// DogStatsD statistics destination runtime configuration.
