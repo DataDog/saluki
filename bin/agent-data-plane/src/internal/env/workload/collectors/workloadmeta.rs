@@ -216,10 +216,13 @@ impl MetadataCollector for RemoteAgentWorkloadMetadataCollector {
     }
 
     async fn watch(&mut self, operations_tx: &mut mpsc::Sender<MetadataOperation>) -> Result<(), GenericError> {
-        self.health.mark_ready();
-
         let mut entity_stream = self.client.get_workloadmeta_stream().map_err(StatusError::from);
         debug!("Established workload metadata entity stream.");
+
+        // Defer mark_ready() until after the first response is processed. Same rationale as the
+        // tagger collector: prevents DogStatsD from starting before the initial workloadmeta
+        // snapshot is received, which would cause origin detection to miss early metrics.
+        let mut initial_snapshot_received = false;
 
         loop {
             select! {
@@ -251,6 +254,11 @@ impl MetadataCollector for RemoteAgentWorkloadMetadataCollector {
                             if let Some(container) = event.container {
                                 self.handle_container_event(operations_tx, event_type, container).await?;
                             }
+                        }
+
+                        if !initial_snapshot_received {
+                            initial_snapshot_received = true;
+                            self.health.mark_ready();
                         }
 
                         trace!("Processed workload metadata stream event.");
