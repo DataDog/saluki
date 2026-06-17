@@ -70,6 +70,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "agent-data-plane-config"
+version = "0.1.0"
+dependencies = [
+ "saluki-component-config",
+]
+
+[[package]]
+name = "agent-data-plane-config-system"
+version = "0.1.0"
+dependencies = [
+ "agent-data-plane-config",
+ "datadog-agent-config",
+ "saluki-component-config",
+ "saluki-config-tools",
+]
+
+[[package]]
 name = "aho-corasick"
 version = "1.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4252,6 +4269,10 @@ dependencies = [
  "tokio-util",
  "tracing",
 ]
+
+[[package]]
+name = "saluki-component-config"
+version = "0.1.0"
 
 [[package]]
 name = "saluki-components"

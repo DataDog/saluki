@@ -6,6 +6,8 @@ members = [
   "bin/correctness/millstone",
   "bin/correctness/panoramic",
   "bin/correctness/stele",
+  "lib/agent-data-plane-config",
+  "lib/agent-data-plane-config-system",
   "lib/datadog-agent/commons",
   "lib/datadog-agent/config",
   "lib/datadog-agent/config-overlay-model",
@@ -21,6 +23,7 @@ members = [
   "lib/saluki-api",
   "lib/saluki-app",
   "lib/saluki-common",
+  "lib/saluki-component-config",
   "lib/saluki-components",
   "lib/saluki-config-tools",
   "lib/saluki-context",
@@ -42,6 +45,8 @@ license = "Apache-2.0"
 repository = "https://github.com/DataDog/saluki"
 
 [workspace.dependencies]
+agent-data-plane-config = { path = "lib/agent-data-plane-config" }
+agent-data-plane-config-system = { path = "lib/agent-data-plane-config-system" }
 datadog-agent-commons = { path = "lib/datadog-agent/commons" }
 datadog-agent-config = { path = "lib/datadog-agent/config" }
 datadog-agent-config-overlay-model = { path = "lib/datadog-agent/config-overlay-model" }
@@ -55,6 +60,7 @@ prometheus-exposition = { path = "lib/prometheus-exposition" }
 saluki-api = { path = "lib/saluki-api" }
 saluki-app = { path = "lib/saluki-app" }
 saluki-common = { path = "lib/saluki-common" }
+saluki-component-config = { path = "lib/saluki-component-config" }
 saluki-components = { path = "lib/saluki-components" }
 saluki-config-tools = { path = "lib/saluki-config-tools" }
 saluki-context = { path = "lib/saluki-context" }
