@@ -204,11 +204,17 @@ impl StartedConfigurationSystem {
 #[derive(Clone, Debug)]
 struct DatadogSourceSnapshot {
     json: serde_json::Value,
+    origin: String,
+    sequence_id: i32,
 }
 
 impl DatadogSourceSnapshot {
     fn from_json(json: serde_json::Value) -> Self {
-        Self { json }
+        Self {
+            json,
+            origin: String::new(),
+            sequence_id: 0,
+        }
     }
 
     fn from_stream_snapshot(snapshot: ConfigSnapshot) -> Result<Self, GenericError> {
@@ -216,14 +222,37 @@ impl DatadogSourceSnapshot {
         for setting in snapshot.settings {
             apply_config_setting(&mut json, setting)?;
         }
-        Ok(Self { json })
+        Ok(Self {
+            json,
+            origin: snapshot.origin,
+            sequence_id: snapshot.sequence_id,
+        })
     }
 
     fn apply_stream_update(&mut self, update: AgentConfigUpdate) -> Result<(), GenericError> {
+        if !self.origin.is_empty()
+            && !update.origin.is_empty()
+            && self.origin == update.origin
+            && update.sequence_id <= self.sequence_id
+        {
+            debug!(
+                origin = %update.origin,
+                update_sequence_id = update.sequence_id,
+                current_sequence_id = self.sequence_id,
+                "Ignoring stale Datadog Agent config update."
+            );
+            return Ok(());
+        }
+
+        let origin = update.origin;
+        let sequence_id = update.sequence_id;
         let setting = update
             .setting
             .ok_or_else(|| generic_error!("Datadog Agent config update did not include a setting."))?;
-        apply_config_setting(&mut self.json, setting)
+        apply_config_update_setting(&mut self.json, setting)?;
+        self.origin = origin;
+        self.sequence_id = sequence_id;
+        Ok(())
     }
 
     fn as_json(&self) -> serde_json::Value {
@@ -338,6 +367,21 @@ fn apply_config_setting(root: &mut serde_json::Value, setting: ConfigSetting) ->
     Ok(())
 }
 
+fn apply_config_update_setting(root: &mut serde_json::Value, setting: ConfigSetting) -> Result<(), GenericError> {
+    let value = setting.value.map(protobuf_value_to_json).ok_or_else(|| {
+        generic_error!(
+            "Datadog Agent config setting `{}` did not include a value.",
+            setting.key
+        )
+    })?;
+    if value.is_null() {
+        delete_json_path(root, &setting.key);
+    } else {
+        upsert_json_path(root, &setting.key, value);
+    }
+    Ok(())
+}
+
 fn upsert_json_path(root: &mut serde_json::Value, path: &str, value: serde_json::Value) {
     if !root.is_object() {
         *root = serde_json::Value::Object(serde_json::Map::new());
@@ -362,6 +406,25 @@ fn upsert_json_path(root: &mut serde_json::Value, path: &str, value: serde_json:
         if !current.is_object() {
             *current = serde_json::Value::Object(serde_json::Map::new());
         }
+    }
+}
+
+fn delete_json_path(root: &mut serde_json::Value, path: &str) {
+    let mut current = root;
+    let mut segments = path.split('.').peekable();
+    while let Some(segment) = segments.next() {
+        let is_leaf = segments.peek().is_none();
+        if is_leaf {
+            if let Some(map) = current.as_object_mut() {
+                map.remove(segment);
+            }
+            return;
+        }
+
+        let Some(next) = current.get_mut(segment) else {
+            return;
+        };
+        current = next;
     }
 }
 
