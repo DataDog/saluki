@@ -1,12 +1,14 @@
 //! Configuration system facade: loading, translation, lifecycle, views, and runtime updates.
 
+mod witness_impl;
+
 use std::path::PathBuf;
 
 use agent_data_plane_config::{
     BootstrapConfiguration, ConfigViews, DatadogRuntimeAuthority, InternalConfigView, SalukiConfiguration,
     SalukiOnlyConfiguration, SourceConfigView,
 };
-use datadog_agent_config::DatadogConfiguration;
+use datadog_agent_config::{drive, DatadogConfiguration, DatadogRemapper, KEY_ALIASES};
 use saluki_component_config::{
     DatadogForwarderConfig, DogStatsDDebugLogConfig, DogStatsDPrefixFilterConfig, MrfConfig, ScopedConfig,
     TagFilterlistConfig,
@@ -14,6 +16,7 @@ use saluki_component_config::{
 use saluki_config_tools::{ConfigurationError, ConfigurationLoader, GenericConfiguration};
 use saluki_error::GenericError;
 use tokio::sync::watch;
+use witness_impl::Translator;
 
 /// Inputs used when loading local configuration sources.
 #[derive(Clone, Debug, Default)]
@@ -34,7 +37,9 @@ pub struct ConfigurationSystem;
 impl ConfigurationSystem {
     /// Loads local sources once and returns the staged loaded object.
     pub async fn load(inputs: BootstrapInputs) -> Result<LoadedConfigurationSystem, ConfigurationError> {
-        let mut datadog_loader = ConfigurationLoader::default();
+        let mut datadog_loader = ConfigurationLoader::default()
+            .with_key_aliases(KEY_ALIASES)
+            .add_providers([DatadogRemapper::new()]);
         if let Some(path) = &inputs.datadog_config_path {
             datadog_loader = datadog_loader.from_yaml(path)?;
         }
@@ -295,33 +300,9 @@ where
 fn translate_datadog(
     datadog: &DatadogConfiguration, saluki_only: &SalukiOnlyConfiguration,
 ) -> Result<SalukiConfiguration, GenericError> {
-    let mut native = saluki_only.seed();
-    native.components.forwarder.datadog.endpoints = vec![saluki_component_config::EndpointConfig {
-        url: datadog.dd_url.clone(),
-        api_key: datadog.api_key.clone(),
-    }];
-    native.components.forwarder.datadog.allow_arbitrary_tags = datadog.allow_arbitrary_tags;
-    native.components.dogstatsd.source.buffer_size = datadog.dogstatsd_buffer_size.try_into().unwrap_or(8192);
-    native.components.dogstatsd.mapper.profiles = datadog.dogstatsd_mapper_profiles.clone();
-    native.components.dogstatsd.mapper.cache_size = datadog.dogstatsd_mapper_cache_size.try_into().unwrap_or(1000);
-    native.components.otlp.source.grpc_endpoint = datadog
-        .otlp_config
-        .as_ref()
-        .and_then(|otlp| otlp.receiver.as_ref())
-        .and_then(|receiver| receiver.protocols.as_ref())
-        .and_then(|protocols| protocols.grpc.as_ref())
-        .map(|grpc| grpc.endpoint.clone())
-        .unwrap_or_else(|| "127.0.0.1:4317".to_string());
-    native.components.otlp.source.http_endpoint = datadog
-        .otlp_config
-        .as_ref()
-        .and_then(|otlp| otlp.receiver.as_ref())
-        .and_then(|receiver| receiver.protocols.as_ref())
-        .and_then(|protocols| protocols.http.as_ref())
-        .map(|http| http.endpoint.clone())
-        .unwrap_or_else(|| "127.0.0.1:4318".to_string());
-    native.control.enabled = datadog.data_plane.is_some();
-    Ok(native)
+    let mut translator = Translator::new(saluki_only.seed());
+    drive(datadog, &mut translator)?;
+    Ok(translator.finish())
 }
 
 fn scrub_json(mut value: serde_json::Value) -> serde_json::Value {

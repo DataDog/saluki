@@ -1,4 +1,6 @@
 pub mod classifier;
+pub mod source_adapter;
+pub mod witness;
 
 /// Generated typed deserializer for the supported Datadog Agent configuration surface.
 ///
@@ -8,3 +10,5 @@ pub mod classifier;
 pub mod datadog_configuration;
 
 pub use datadog_configuration::DatadogConfiguration;
+pub use source_adapter::{DatadogRemapper, KEY_ALIASES};
+pub use witness::{drive, DatadogConfigConsumer, TranslateError, TranslateResult};
