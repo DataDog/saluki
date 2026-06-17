@@ -412,11 +412,17 @@ impl Default for DogStatsDSalukiOnly {
 }
 
 /// Saluki-only workload values.
-#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize, Default)]
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct WorkloadSalukiOnly {
     /// Whether workload collection is enabled.
     pub enabled: bool,
+}
+
+impl Default for WorkloadSalukiOnly {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
 }
 
 /// Datadog runtime authority.

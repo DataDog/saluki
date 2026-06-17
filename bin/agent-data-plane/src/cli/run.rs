@@ -95,9 +95,14 @@ pub async fn handle_run_command(
 
     let component_registry = ComponentRegistry::default();
     let health_registry = HealthRegistry::new();
-    let (env_provider, maybe_env_supervisor) =
-        ADPEnvironmentProvider::from_data_plane_config(&dp_config, &attachments, &component_registry, &health_registry)
-            .await?;
+    let (env_provider, maybe_env_supervisor) = ADPEnvironmentProvider::from_data_plane_config(
+        &dp_config,
+        &saluki.components.workload.source,
+        &attachments,
+        &component_registry,
+        &health_registry,
+    )
+    .await?;
 
     let (mut blueprint, control_surfaces) =
         create_topology(&saluki, &handles, started_config.datadog_config(), &dp_config, &env_provider, &component_registry).await?;

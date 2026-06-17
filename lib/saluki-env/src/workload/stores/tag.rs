@@ -322,6 +322,11 @@ impl TagStoreQuerier {
         }
     }
 
+    /// Gets the target entity for an alias.
+    pub fn get_entity_alias(&self, entity_id: &EntityId) -> Option<EntityId> {
+        self.aliases.pin().get(entity_id).cloned()
+    }
+
     /// Visits each entity alias in the tag store.
     pub fn visit_entity_aliases<F>(&self, mut visitor: F)
     where

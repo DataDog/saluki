@@ -2,6 +2,7 @@ use std::future::Future;
 
 use agent_data_plane_config_system::Attachments;
 use resource_accounting::ComponentRegistry;
+use saluki_component_config::WorkloadConfig;
 use saluki_core::health::HealthRegistry;
 use saluki_core::runtime::Supervisor;
 use saluki_env::{
@@ -38,8 +39,8 @@ impl ADPEnvironmentProvider {
     ///
     /// If the provider supervisor can't be constructed, an error is returned.
     pub async fn from_data_plane_config(
-        dp_config: &DataPlaneConfiguration, attachments: &Attachments, component_registry: &ComponentRegistry,
-        health_registry: &HealthRegistry,
+        dp_config: &DataPlaneConfiguration, workload_config: &WorkloadConfig, attachments: &Attachments,
+        component_registry: &ComponentRegistry, health_registry: &HealthRegistry,
     ) -> Result<(Self, Option<Supervisor>), GenericError> {
         if dp_config.standalone_mode() || attachments.datadog_agent.is_none() {
             if !dp_config.standalone_mode() {
@@ -67,9 +68,21 @@ impl ADPEnvironmentProvider {
             RemoteAgentAutodiscoveryProvider::from_client(connection.client())?;
         env_supervisor.add_worker(autodiscovery_supervisor);
 
+        let workload_provider = if workload_config.enabled {
+            let (workload_provider, workload_supervisor) =
+                RemoteAgentWorkloadProvider::from_client(connection.client(), health_registry)?;
+            provider_component
+                .bounds_builder()
+                .with_subcomponent("workload", &workload_provider);
+            env_supervisor.add_worker(workload_supervisor);
+            Some(workload_provider)
+        } else {
+            None
+        };
+
         let env = Self {
             host_provider: BoxedHostProvider::from_provider(host_provider),
-            workload_provider: None,
+            workload_provider,
             autodiscovery_provider: Some(BoxedAutodiscoveryProvider::from_provider(autodiscovery_provider)),
             health_registry: health_registry.clone(),
         };

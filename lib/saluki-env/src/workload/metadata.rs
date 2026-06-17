@@ -45,6 +45,14 @@ impl MetadataOperation {
         }
     }
 
+    /// Creates a new `MetadataOperation` that sets the tags for an entity.
+    pub fn set_tags(entity_id: EntityId, cardinality: OriginTagCardinality, tags: TagSet) -> Self {
+        Self {
+            entity_id,
+            actions: OneOrMany::One(MetadataAction::SetTags { cardinality, tags }),
+        }
+    }
+
     /// Creates a new `MetadataOperation` that attaches External Data to an entity.
     pub fn attach_external_data(entity_id: EntityId, external_data: ExternalData) -> Self {
         Self {
