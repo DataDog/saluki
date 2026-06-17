@@ -25,7 +25,7 @@ use tracing::error;
 use crate::common::datadog::{OTEL_TRACE_ID_META_KEY, SAMPLING_PRIORITY_METRIC_KEY};
 use crate::common::otlp::attributes::{get_int_attribute, HTTP_MAPPINGS};
 use crate::common::otlp::semantics::{
-    lookup_int64, Accessor, Concept, OtelSpanAccessor, OtlpAttributesAccessor, REGISTRY,
+    lookup_int64, lookup_string, Accessor, Concept, OtelSpanAccessor, OtlpAttributesAccessor, REGISTRY,
 };
 use crate::common::otlp::traces::normalize::{
     is_normalized_tag_value, normalize_service_into, normalize_tag_value_append_unchecked,
@@ -79,6 +79,7 @@ const NETWORK_PROTOCOL_NAME_KEY: &str = "network.protocol.name";
 const HTTP_STATUS_CODE_KEY: &str = "http.status_code";
 const HTTP_RESPONSE_STATUS_CODE_KEY: &str = "http.response.status_code";
 const SPAN_KIND_META_KEY: &str = "span.kind";
+const GRPC_STATUS_CODE_META_KEY: &str = "rpc.grpc.status_code";
 const W3C_TRACESTATE_META_KEY: &str = "w3c.tracestate";
 const OTEL_LIBRARY_NAME_META_KEY: &str = "otel.library.name";
 const OTEL_LIBRARY_VERSION_META_KEY: &str = "otel.library.version";
@@ -260,6 +261,63 @@ pub fn otel_span_to_dd_span(
 
     if let Some(scope) = instrumentation_scope {
         instrumentation_scope_attributes_to_attrs(scope, &mut attrs, interner);
+    }
+
+    // Mirror Agent 7.80.1's explicit Meta["rpc.grpc.status_code"] mapping. Integer codes are
+    // converted to canonical names (e.g., 14 → "UNAVAILABLE"); string-typed attributes that
+    // are already a name (e.g., "UNAVAILABLE") pass through via grpc_status_code_name_from_str.
+    // OTel semconv v1.39+ uses rpc.response.status_code instead of rpc.grpc.status_code for
+    // gRPC spans; that key is checked last, conditionally when the span is identified as gRPC
+    // via rpc.system.name or rpc.system (matching the Agent 7.80.1 fallback behavior).
+    let combined = OtelSpanAccessor::new(span_attributes, resource_attributes);
+    let grpc_name = lookup_int64(&REGISTRY, &combined, Concept::RpcGrpcStatusCode)
+        .and_then(|code| {
+            let name = grpc_status_code_name(code as u8);
+            if name.is_empty() {
+                None
+            } else {
+                Some(name)
+            }
+        })
+        .or_else(|| {
+            lookup_string(&REGISTRY, &combined, Concept::RpcGrpcStatusCode)
+                .filter(|s| !s.is_empty())
+                .and_then(|s| {
+                    // Parse string (either decimal "14" or canonical "UNAVAILABLE") to name.
+                    let name = grpc_status_code_name_from_str(&s);
+                    if name.is_empty() {
+                        None
+                    } else {
+                        Some(name)
+                    }
+                })
+        })
+        .or_else(|| {
+            // rpc.system.name is used by lading's OpentelemetryTraces generator (OTel semconv
+            // v1.39+); rpc.system is the older OTel key. Mirror the Agent's conditional: only
+            // apply rpc.response.status_code when the span is explicitly identified as gRPC.
+            let system_name = get_both_string_attribute(span_attributes, resource_attributes, "rpc.system.name");
+            let rpc_system = get_both_string_attribute(span_attributes, resource_attributes, "rpc.system");
+            let is_grpc = system_name == Some("grpc") || (system_name.is_none() && rpc_system == Some("grpc"));
+            if !is_grpc {
+                return None;
+            }
+            get_both_string_attribute(span_attributes, resource_attributes, "rpc.response.status_code")
+                .filter(|s| !s.is_empty())
+                .and_then(|s| {
+                    let name = grpc_status_code_name_from_str(s);
+                    if name.is_empty() {
+                        None
+                    } else {
+                        Some(name)
+                    }
+                })
+        });
+    if let Some(name) = grpc_name {
+        attrs.insert(
+            MetaString::from_static(GRPC_STATUS_CODE_META_KEY),
+            AttributeValue::String(MetaString::from_static(name)),
+        );
     }
 
     if !attrs.contains_key("db.name") {
@@ -1566,6 +1624,74 @@ fn parse_int_like<A: Accessor>(accessor: &A, key: &str) -> Option<i64> {
     accessor.get_string(key).and_then(|s| s.parse::<i64>().ok())
 }
 
+/// Maps a `tonic::Code` to its canonical OTel uppercase name.
+///
+/// Mirrors the names used by the Datadog Agent's `Meta["rpc.grpc.status_code"]` field.
+///
+/// Status code values: https://github.com/open-telemetry/opentelemetry-go/blob/dcfc16cebd0674eaaa7fe5316be8abe8a0f6d35e/semconv/v1.19.0/trace.go#L2024-L2059
+fn grpc_code_to_canonical_name(code: tonic::Code) -> &'static str {
+    match code {
+        tonic::Code::Ok => "OK",
+        tonic::Code::Cancelled => "CANCELLED",
+        tonic::Code::Unknown => "UNKNOWN",
+        tonic::Code::InvalidArgument => "INVALID_ARGUMENT",
+        tonic::Code::DeadlineExceeded => "DEADLINE_EXCEEDED",
+        tonic::Code::NotFound => "NOT_FOUND",
+        tonic::Code::AlreadyExists => "ALREADY_EXISTS",
+        tonic::Code::PermissionDenied => "PERMISSION_DENIED",
+        tonic::Code::ResourceExhausted => "RESOURCE_EXHAUSTED",
+        tonic::Code::FailedPrecondition => "FAILED_PRECONDITION",
+        tonic::Code::Aborted => "ABORTED",
+        tonic::Code::OutOfRange => "OUT_OF_RANGE",
+        tonic::Code::Unimplemented => "UNIMPLEMENTED",
+        tonic::Code::Internal => "INTERNAL",
+        tonic::Code::Unavailable => "UNAVAILABLE",
+        tonic::Code::DataLoss => "DATA_LOSS",
+        tonic::Code::Unauthenticated => "UNAUTHENTICATED",
+    }
+}
+
+/// Maps a gRPC status code integer to its canonical uppercase name, or `""` for out-of-range codes.
+fn grpc_status_code_name(code: u8) -> &'static str {
+    // tonic::Code::from_i32 maps anything outside 0–16 to Code::Unknown (which is code 2), so
+    // guard the range first to distinguish "code 2 = UNKNOWN" from "code 99 = invalid".
+    if code > 16 {
+        return "";
+    }
+    grpc_code_to_canonical_name(tonic::Code::from_i32(code as i32))
+}
+
+/// Parses a gRPC status code string (either decimal `"14"` or canonical `"UNAVAILABLE"`) to its
+/// canonical uppercase name, returning `""` for unrecognized inputs.
+fn grpc_status_code_name_from_str(s: &str) -> &'static str {
+    if let Ok(code) = s.parse::<u8>() {
+        return grpc_status_code_name(code);
+    }
+    let upper = s.to_uppercase();
+    let normalized = upper.strip_prefix("STATUSCODE.").unwrap_or(upper.as_str());
+    let code = match normalized {
+        "OK" => tonic::Code::Ok,
+        "CANCELLED" | "CANCELED" => tonic::Code::Cancelled,
+        "UNKNOWN" => tonic::Code::Unknown,
+        "INVALID_ARGUMENT" | "INVALIDARGUMENT" => tonic::Code::InvalidArgument,
+        "DEADLINE_EXCEEDED" | "DEADLINEEXCEEDED" => tonic::Code::DeadlineExceeded,
+        "NOT_FOUND" | "NOTFOUND" => tonic::Code::NotFound,
+        "ALREADY_EXISTS" | "ALREADYEXISTS" => tonic::Code::AlreadyExists,
+        "PERMISSION_DENIED" | "PERMISSIONDENIED" => tonic::Code::PermissionDenied,
+        "RESOURCE_EXHAUSTED" | "RESOURCEEXHAUSTED" => tonic::Code::ResourceExhausted,
+        "FAILED_PRECONDITION" | "FAILEDPRECONDITION" => tonic::Code::FailedPrecondition,
+        "ABORTED" => tonic::Code::Aborted,
+        "OUT_OF_RANGE" | "OUTOFRANGE" => tonic::Code::OutOfRange,
+        "UNIMPLEMENTED" => tonic::Code::Unimplemented,
+        "INTERNAL" => tonic::Code::Internal,
+        "UNAVAILABLE" => tonic::Code::Unavailable,
+        "DATA_LOSS" | "DATALOSS" => tonic::Code::DataLoss,
+        "UNAUTHENTICATED" => tonic::Code::Unauthenticated,
+        _ => return "",
+    };
+    grpc_code_to_canonical_name(code)
+}
+
 pub(super) fn bytes_to_hex_lowercase(bytes: &[u8]) -> String {
     if bytes.is_empty() {
         return String::new();
@@ -2086,6 +2212,43 @@ mod tests {
             let result = get_otel_status_code(&tc.span_attrs, &tc.resource_attrs, tc.ignore_missing_datadog_fields);
             assert_eq!(result, tc.expected, "test case: {}", tc.name);
         }
+    }
+
+    /// Verifies that `rpc.grpc.status_code` is promoted to a string in Meta,
+    /// matching Agent 7.80.1's explicit `Meta["rpc.grpc.status_code"]` mapping.
+    #[test]
+    fn test_otel_span_to_dd_span_grpc_status_code_meta() {
+        let interner = test_interner();
+        let mut string_builder = StringBuilder::new().with_interner(interner.clone());
+
+        let span = OtlpSpan {
+            name: "grpc-span".to_string(),
+            attributes: vec![kv_int("rpc.grpc.status_code", 14)],
+            ..Default::default()
+        };
+        let resource = Resource::default();
+
+        let dd_span = otel_span_to_dd_span(
+            &span,
+            &resource,
+            None,
+            false,
+            true,
+            &interner,
+            &mut string_builder,
+            None,
+        );
+
+        use saluki_core::data_model::event::trace::AttributeValue;
+        assert_eq!(
+            dd_span
+                .attributes
+                .get("rpc.grpc.status_code")
+                .and_then(AttributeValue::as_string)
+                .map(|s| s.as_ref()),
+            Some("UNAVAILABLE"),
+            "rpc.grpc.status_code must be the canonical name, not the decimal code"
+        );
     }
 
     /// TestOtelSpanToDDSpanDBNameMapping - Tests db.namespace to db.name mapping
