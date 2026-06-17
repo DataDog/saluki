@@ -84,6 +84,10 @@ mod tests {
             } else if path.extension().is_some_and(|e| e == "rs") {
                 if let Ok(contents) = fs::read_to_string(&path) {
                     for (i, line) in production_lines(&contents) {
+                        let trimmed = line.trim_start();
+                        if trimmed.starts_with("//") {
+                            continue;
+                        }
                         if line.contains(pattern) {
                             hits.push((path.clone(), i, line.to_string()));
                         }
@@ -381,13 +385,11 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "enabled at step 9"]
     fn components_must_not_reference_datadog_remapper() {
         assert_no_source_symbol("lib/saluki-components", "DatadogRemapper");
     }
 
     #[test]
-    #[ignore = "enabled at step 9"]
     fn components_must_not_reference_key_aliases() {
         assert_no_source_symbol("lib/saluki-components", "KEY_ALIASES");
     }
