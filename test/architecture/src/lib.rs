@@ -235,7 +235,6 @@ mod tests {
     // -------------------------------------------------------------------------
 
     #[test]
-    #[ignore = "enabled at step 9"]
     fn components_must_not_depend_on_adp_config() {
         assert_no_dependency("lib/saluki-components", "agent-data-plane-config");
     }
