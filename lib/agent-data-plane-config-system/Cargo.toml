@@ -9,7 +9,10 @@ repository = { workspace = true }
 workspace = true
 
 [dependencies]
-datadog-agent-config = { workspace = true }
 agent-data-plane-config = { workspace = true }
+datadog-agent-config = { workspace = true }
 saluki-component-config = { workspace = true }
 saluki-config-tools = { workspace = true }
+saluki-error = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }

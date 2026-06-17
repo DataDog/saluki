@@ -74,6 +74,8 @@ name = "agent-data-plane-config"
 version = "0.1.0"
 dependencies = [
  "saluki-component-config",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -84,6 +86,9 @@ dependencies = [
  "datadog-agent-config",
  "saluki-component-config",
  "saluki-config-tools",
+ "saluki-error",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]
@@ -4277,6 +4282,11 @@ dependencies = [
 [[package]]
 name = "saluki-component-config"
 version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tokio",
+]
 
 [[package]]
 name = "saluki-components"

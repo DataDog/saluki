@@ -1,52 +1,443 @@
 //! ADP-native configuration model: the typed output of configuration translation.
 //!
-//! # In scope
-//!
-//! - `SalukiConfiguration { control, components }`, the complete ADP-native runtime
-//!   configuration after translation. This is the single output model that all ADP
-//!   runtime code consumes.
-//!
-//! - `ControlConfiguration`: pipeline gates and topology-shaping decisions. Read only
-//!   by config-system and the topology builder, never by components.
-//!
-//! - `ComponentConfiguration` and its per-domain group wrappers (`ForwarderConfigs`,
-//!   `DogStatsDConfigs`, `MetricsConfigs`, etc.). Each group embeds
-//!   `saluki-component-config` leaf structs directly -- no duplicate model, no extra
-//!   conversion layer.
-//!
-//! - `BootstrapConfiguration { datadog: DatadogBootstrap, saluki: SalukiBootstrap }`:
-//!   the small typed pre-runtime slice. Its struct definition is the allowlist.
-//!
-//! - `SalukiOnlyConfiguration` and its per-subsystem sub-structs: the parsed
-//!   Saluki-schema-only input (`SALUKI_*` / `saluki.yaml`). Owns the `seed()` method
-//!   that produces a base `SalukiConfiguration` with defaults and Saluki-only values.
-//!
-//! - Authority enums (local vs stream).
-//!
-//! - Typed view models (`ConfigViews`, `SourceConfigView`, `InternalConfigView`).
-//!
-//! # Out of scope
-//!
-//! - Datadog source models (`DatadogConfiguration`), the witness trait
-//!   (`DatadogConfigConsumer`), the witness driver (`drive`), `KEY_ALIASES`,
-//!   `DatadogRemapper`. Those are Datadog source-language concerns and live in
-//!   `datadog-agent-config`.
-//!
-//! - Raw config maps (`GenericConfiguration`), loaders (`ConfigurationLoader`), merge
-//!   logic, watch plumbing, or any type from `saluki-config-tools`. This crate
-//!   describes the translated output, not the translation machinery.
-//!
-//! - The config-system facade (`ConfigurationSystem`, lifecycle objects, translator,
-//!   router). Those live in `agent-data-plane-config-system`.
-//!
-//! - Component implementations. Components consume the leaf structs from
-//!   `saluki-component-config`, never the group wrappers or `SalukiConfiguration`
-//!   directly.
-//!
-//! - Translation logic, witness implementations, or `consume_<key>` mappings.
-//!
-//! # Dependency rule
-//!
-//! Depends on `saluki-component-config` (embeds its leaf structs). Must not depend on
-//! `datadog-agent-config`, `saluki-config-tools`, `agent-data-plane-config-system`, or
-//! `saluki-components`.
+//! Source-language loading and translation live in `agent-data-plane-config-system`. This crate
+//! contains only the native runtime model, bootstrap views, Saluki-only seed input, authority
+//! markers, and serialized `/config` view wrappers.
+
+use saluki_component_config::{
+    AggregateConfig, ApmStatsEncoderConfig, ApmStatsTransformConfig, ChecksIpcConfig, DatadogEventsEncoderConfig,
+    DatadogForwarderConfig, DatadogLogsEncoderConfig, DatadogMetricsEncoderConfig, DatadogServiceChecksEncoderConfig,
+    DatadogTraceEncoderConfig, DogStatsDConfig, DogStatsDDebugLogConfig, DogStatsDMapperConfig,
+    DogStatsDPostAggregateFilterConfig, DogStatsDPrefixFilterConfig, DogStatsDStatisticsConfig, HostEnrichmentConfig,
+    HostTagsConfig, ListenAddress, MrfConfig, OtlpConfig, OtlpDecoderConfig, OtlpForwarderConfig, OtlpRelayConfig,
+    OttlFilterConfig, OttlTransformConfig, TagFilterlistConfig, TraceObfuscationConfig, TraceSamplerConfig,
+    WorkloadConfig,
+};
+use serde::{Deserialize, Serialize};
+
+/// Complete ADP-native runtime configuration after translation.
+#[derive(Clone, Debug, PartialEq, Serialize, Default)]
+pub struct SalukiConfiguration {
+    /// Orchestration-only topology and pipeline decisions.
+    pub control: ControlConfiguration,
+    /// Component-native runtime configuration grouped by ownership domain.
+    pub components: ComponentConfiguration,
+}
+
+/// Orchestration-only configuration.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct ControlConfiguration {
+    /// Whether the data plane should run.
+    pub enabled: bool,
+    /// Global shutdown timeout in milliseconds.
+    pub stop_timeout_millis: u64,
+    /// DogStatsD pipeline gate.
+    pub dogstatsd: PipelineGate,
+    /// Checks pipeline gate.
+    pub checks: PipelineGate,
+    /// OTLP pipeline gate.
+    pub otlp: OtlpPipelineGate,
+    /// Local API listen address.
+    pub api_listen_address: ListenAddress,
+    /// Secure local API listen address.
+    pub secure_api_listen_address: ListenAddress,
+    /// Whether remote-agent mode is enabled.
+    pub remote_agent_enabled: bool,
+    /// Whether to use the new config-stream endpoint.
+    pub use_new_config_stream_endpoint: bool,
+    /// Whether the process runs in standalone mode.
+    pub standalone_mode: bool,
+}
+
+impl ControlConfiguration {
+    /// Returns true when at least one pipeline needs the Datadog forwarder.
+    pub fn requires_datadog_forwarder(&self) -> bool {
+        self.dogstatsd.enabled()
+            || self.checks.enabled()
+            || self.otlp.metrics.enabled()
+            || self.otlp.logs.enabled()
+            || self.otlp.traces.enabled()
+    }
+
+    /// Returns true when any data pipeline is enabled.
+    pub fn data_pipelines_enabled(&self) -> bool {
+        self.requires_datadog_forwarder() || self.otlp.proxy.enabled
+    }
+}
+
+impl Default for ControlConfiguration {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            stop_timeout_millis: 4_000,
+            dogstatsd: PipelineGate::on(),
+            checks: PipelineGate::off(),
+            otlp: OtlpPipelineGate::default(),
+            api_listen_address: ListenAddress::Tcp("127.0.0.1:5000".to_string()),
+            secure_api_listen_address: ListenAddress::Tcp("127.0.0.1:5010".to_string()),
+            remote_agent_enabled: true,
+            use_new_config_stream_endpoint: false,
+            standalone_mode: false,
+        }
+    }
+}
+
+/// Static gate for a pipeline or sub-pipeline.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct PipelineGate {
+    /// Whether the pipeline is built.
+    pub enabled: bool,
+}
+
+impl PipelineGate {
+    /// Creates an enabled gate.
+    pub const fn on() -> Self {
+        Self { enabled: true }
+    }
+
+    /// Creates a disabled gate.
+    pub const fn off() -> Self {
+        Self { enabled: false }
+    }
+
+    /// Returns whether the gate is enabled.
+    pub const fn enabled(&self) -> bool {
+        self.enabled
+    }
+}
+
+impl Default for PipelineGate {
+    fn default() -> Self {
+        Self::off()
+    }
+}
+
+/// OTLP topology gates.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct OtlpPipelineGate {
+    /// Native OTLP source gate.
+    pub native: PipelineGate,
+    /// OTLP proxy-mode gate.
+    pub proxy: OtlpProxyGate,
+    /// Whether OTLP metrics are accepted.
+    pub metrics: PipelineGate,
+    /// Whether OTLP logs are accepted.
+    pub logs: PipelineGate,
+    /// Whether OTLP traces are accepted.
+    pub traces: PipelineGate,
+}
+
+impl Default for OtlpPipelineGate {
+    fn default() -> Self {
+        Self {
+            native: PipelineGate::off(),
+            proxy: OtlpProxyGate::default(),
+            metrics: PipelineGate::on(),
+            logs: PipelineGate::on(),
+            traces: PipelineGate::on(),
+        }
+    }
+}
+
+/// OTLP proxy-mode gate and target.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Default)]
+pub struct OtlpProxyGate {
+    /// Whether OTLP proxy mode is enabled.
+    pub enabled: bool,
+    /// Core-agent OTLP GRPC endpoint.
+    pub core_agent_otlp_grpc_endpoint: String,
+}
+
+/// Component-native runtime configuration grouped by ownership domain.
+#[derive(Clone, Debug, PartialEq, Serialize, Default)]
+pub struct ComponentConfiguration {
+    /// Forwarder components.
+    pub forwarder: ForwarderConfigs,
+    /// Metrics pipeline components.
+    pub metrics: MetricsConfigs,
+    /// Logs pipeline components.
+    pub logs: LogsConfigs,
+    /// Events pipeline components.
+    pub events: EventsConfigs,
+    /// Service-check pipeline components.
+    pub service_checks: ServiceChecksConfigs,
+    /// Trace pipeline components.
+    pub traces: TracesConfigs,
+    /// Check ingestion components.
+    pub checks: ChecksConfigs,
+    /// DogStatsD components.
+    pub dogstatsd: DogStatsDConfigs,
+    /// OTLP components.
+    pub otlp: OtlpConfigs,
+    /// Workload metadata components.
+    pub workload: WorkloadConfigs,
+}
+
+/// Forwarder component configs.
+#[derive(Clone, Debug, PartialEq, Serialize, Default)]
+pub struct ForwarderConfigs {
+    /// Datadog forwarder config.
+    pub datadog: DatadogForwarderConfig,
+}
+
+/// Metrics component configs.
+#[derive(Clone, Debug, PartialEq, Serialize, Default)]
+pub struct MetricsConfigs {
+    /// Datadog metrics encoder config.
+    pub datadog_encoder: DatadogMetricsEncoderConfig,
+    /// APM stats encoder config.
+    pub apm_stats_encoder: ApmStatsEncoderConfig,
+    /// APM stats transform config.
+    pub apm_stats_transform: ApmStatsTransformConfig,
+    /// Multi-region failover config.
+    pub multi_region_failover: MrfConfig,
+}
+
+/// Logs component configs.
+#[derive(Clone, Debug, PartialEq, Serialize, Default)]
+pub struct LogsConfigs {
+    /// Datadog logs encoder config.
+    pub datadog_encoder: DatadogLogsEncoderConfig,
+}
+
+/// Events component configs.
+#[derive(Clone, Debug, PartialEq, Serialize, Default)]
+pub struct EventsConfigs {
+    /// Datadog events encoder config.
+    pub datadog_encoder: DatadogEventsEncoderConfig,
+}
+
+/// Service-check component configs.
+#[derive(Clone, Debug, PartialEq, Serialize, Default)]
+pub struct ServiceChecksConfigs {
+    /// Datadog service-check encoder config.
+    pub datadog_encoder: DatadogServiceChecksEncoderConfig,
+}
+
+/// Trace component configs.
+#[derive(Clone, Debug, PartialEq, Serialize, Default)]
+pub struct TracesConfigs {
+    /// Datadog trace encoder config.
+    pub encoder: DatadogTraceEncoderConfig,
+    /// Trace sampler config.
+    pub sampler: TraceSamplerConfig,
+    /// Trace obfuscation config.
+    pub obfuscation: TraceObfuscationConfig,
+    /// OTTL filter config.
+    pub ottl_filter: OttlFilterConfig,
+    /// OTTL transform config.
+    pub ottl_transform: OttlTransformConfig,
+}
+
+/// Check ingestion component configs.
+#[derive(Clone, Debug, PartialEq, Serialize, Default)]
+pub struct ChecksConfigs {
+    /// Checks IPC source config.
+    pub ipc: ChecksIpcConfig,
+}
+
+/// DogStatsD component configs.
+#[derive(Clone, Debug, PartialEq, Serialize, Default)]
+pub struct DogStatsDConfigs {
+    /// DogStatsD source config.
+    pub source: DogStatsDConfig,
+    /// Prefix filter config.
+    pub prefix_filter: DogStatsDPrefixFilterConfig,
+    /// Mapper config.
+    pub mapper: DogStatsDMapperConfig,
+    /// Tag filterlist config.
+    pub tag_filterlist: TagFilterlistConfig,
+    /// Aggregate transform config.
+    pub aggregate: AggregateConfig,
+    /// Post-aggregate filter config.
+    pub post_aggregate_filter: DogStatsDPostAggregateFilterConfig,
+    /// Debug log config.
+    pub debug_log: DogStatsDDebugLogConfig,
+    /// DogStatsD statistics config.
+    pub statistics: DogStatsDStatisticsConfig,
+}
+
+/// OTLP component configs.
+#[derive(Clone, Debug, PartialEq, Serialize, Default)]
+pub struct OtlpConfigs {
+    /// Native OTLP source config.
+    pub source: OtlpConfig,
+    /// OTLP proxy relay config.
+    pub relay: OtlpRelayConfig,
+    /// OTLP decoder config.
+    pub decoder: OtlpDecoderConfig,
+    /// OTLP forwarder config.
+    pub forwarder: OtlpForwarderConfig,
+}
+
+/// Workload metadata component configs.
+#[derive(Clone, Debug, PartialEq, Serialize, Default)]
+pub struct WorkloadConfigs {
+    /// Workload collector config.
+    pub source: WorkloadConfig,
+    /// Host tags config.
+    pub host_tags: HostTagsConfig,
+    /// Host enrichment config.
+    pub host_enrichment: HostEnrichmentConfig,
+}
+
+/// Pre-runtime typed bootstrap slice.
+#[derive(Clone, Debug, PartialEq, Serialize, Default)]
+pub struct BootstrapConfiguration {
+    /// Datadog source bootstrap values.
+    pub datadog: DatadogBootstrap,
+    /// Saluki-only bootstrap values.
+    pub saluki: SalukiBootstrap,
+}
+
+/// Datadog bootstrap values read from local Datadog sources.
+#[derive(Clone, Debug, PartialEq, Serialize, Default)]
+pub struct DatadogBootstrap {
+    /// Log level used before runtime authority starts.
+    pub log_level: Option<String>,
+    /// Metrics level used before runtime authority starts.
+    pub metrics_level: Option<String>,
+    /// IPC command port.
+    pub cmd_port: Option<u16>,
+    /// IPC auth token path.
+    pub auth_token_file_path: Option<String>,
+}
+
+/// Saluki-only bootstrap values read from local Saluki sources.
+#[derive(Clone, Debug, PartialEq, Serialize, Default)]
+pub struct SalukiBootstrap {
+    /// Optional path to a Saluki-only config file.
+    pub config_path: Option<String>,
+}
+
+/// Saluki-schema-only source input.
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+pub struct SalukiOnlyConfiguration {
+    /// OTLP Saluki-only values.
+    pub otlp: OtlpSalukiOnly,
+    /// DogStatsD Saluki-only values.
+    pub dogstatsd: DogStatsDSalukiOnly,
+    /// Workload Saluki-only values.
+    pub workload: WorkloadSalukiOnly,
+}
+
+impl SalukiOnlyConfiguration {
+    /// Seeds the native model with defaults and Saluki-only values.
+    pub fn seed(&self) -> SalukiConfiguration {
+        let mut config = SalukiConfiguration::default();
+        config.components.otlp.source.string_interner_size = self.otlp.string_interner_size;
+        config.components.otlp.source.cached_contexts_limit = self.otlp.cached_contexts_limit;
+        config.components.dogstatsd.source.context_string_interner_size_bytes =
+            self.dogstatsd.string_interner_size_bytes;
+        config.components.dogstatsd.source.cached_contexts_limit = self.dogstatsd.cached_contexts_limit;
+        config.components.workload.source.enabled = self.workload.enabled;
+        config
+    }
+}
+
+impl Default for SalukiOnlyConfiguration {
+    fn default() -> Self {
+        Self {
+            otlp: OtlpSalukiOnly::default(),
+            dogstatsd: DogStatsDSalukiOnly::default(),
+            workload: WorkloadSalukiOnly::default(),
+        }
+    }
+}
+
+/// Saluki-only OTLP values.
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+pub struct OtlpSalukiOnly {
+    /// String interner size.
+    pub string_interner_size: usize,
+    /// Cached contexts limit.
+    pub cached_contexts_limit: usize,
+}
+
+impl Default for OtlpSalukiOnly {
+    fn default() -> Self {
+        Self {
+            string_interner_size: 32_768,
+            cached_contexts_limit: 500_000,
+        }
+    }
+}
+
+/// Saluki-only DogStatsD values.
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+pub struct DogStatsDSalukiOnly {
+    /// Context interner size in bytes.
+    pub string_interner_size_bytes: u64,
+    /// Cached contexts limit.
+    pub cached_contexts_limit: usize,
+}
+
+impl Default for DogStatsDSalukiOnly {
+    fn default() -> Self {
+        Self {
+            string_interner_size_bytes: 2 * 1024 * 1024,
+            cached_contexts_limit: 500_000,
+        }
+    }
+}
+
+/// Saluki-only workload values.
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize, Default)]
+pub struct WorkloadSalukiOnly {
+    /// Whether workload collection is enabled.
+    pub enabled: bool,
+}
+
+/// Datadog runtime authority.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+pub enum DatadogRuntimeAuthority {
+    /// Local sources are authoritative for runtime.
+    Local,
+    /// The Datadog Agent config stream is authoritative for runtime.
+    Stream,
+}
+
+/// Bundle of source and internal config views.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Default)]
+pub struct ConfigViews {
+    /// Source-shaped Datadog compatibility view.
+    pub raw: SourceConfigView,
+    /// ADP-native internal view.
+    pub internal: InternalConfigView,
+}
+
+/// Serialized source-shaped config view.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Default)]
+pub struct SourceConfigView {
+    json: serde_json::Value,
+}
+
+impl SourceConfigView {
+    /// Creates a source view from scrubbed JSON.
+    pub fn new(json: serde_json::Value) -> Self {
+        Self { json }
+    }
+
+    /// Returns the serialized JSON value.
+    pub fn as_json(&self) -> &serde_json::Value {
+        &self.json
+    }
+}
+
+/// Serialized internal native config view.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Default)]
+pub struct InternalConfigView {
+    json: serde_json::Value,
+}
+
+impl InternalConfigView {
+    /// Creates an internal view from scrubbed JSON.
+    pub fn new(json: serde_json::Value) -> Self {
+        Self { json }
+    }
+
+    /// Returns the serialized JSON value.
+    pub fn as_json(&self) -> &serde_json::Value {
+        &self.json
+    }
+}
