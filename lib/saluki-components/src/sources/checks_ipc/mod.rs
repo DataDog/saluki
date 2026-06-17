@@ -13,7 +13,6 @@ use datadog_protos::checks::{
 };
 use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_common::task::HandleExt as _;
-use saluki_config_tools::GenericConfiguration;
 use saluki_context::tags::{Tag, TagSet};
 use saluki_context::Context;
 use saluki_core::data_model::event::eventd::{AlertType, EventD, Priority};
@@ -48,9 +47,9 @@ pub struct ChecksIPCConfiguration {
 }
 
 impl ChecksIPCConfiguration {
-    /// Creates a new `ChecksIPCConfiguration` from the given configuration.
-    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        Ok(config.as_typed()?)
+    /// Creates a new `ChecksIPCConfiguration` from a native endpoint.
+    pub fn from_native(grpc_endpoint: ListenAddress) -> Self {
+        Self { grpc_endpoint }
     }
 }
 

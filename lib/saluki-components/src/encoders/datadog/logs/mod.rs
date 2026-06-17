@@ -4,7 +4,6 @@ use facet::Facet;
 use http::{uri::PathAndQuery, HeaderValue, Method, Uri};
 use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_common::iter::ReusableDeduplicator;
-use saluki_config_tools::GenericConfiguration;
 use saluki_context::tags::Tag;
 use saluki_core::{
     components::{encoders::*, ComponentContext},
@@ -59,13 +58,6 @@ pub struct DatadogLogsConfiguration {
         default = "default_zstd_compressor_level"
     )]
     zstd_compressor_level: i32,
-}
-
-impl DatadogLogsConfiguration {
-    /// Creates a new `DatadogLogsConfiguration` from the given configuration.
-    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        Ok(config.as_typed()?)
-    }
 }
 
 #[async_trait]

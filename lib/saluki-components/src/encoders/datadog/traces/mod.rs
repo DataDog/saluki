@@ -14,7 +14,6 @@ use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_common::collections::FastHashMap;
 use saluki_common::strings::StringBuilder;
 use saluki_common::task::HandleExt as _;
-use saluki_config_tools::GenericConfiguration;
 use saluki_context::tags::TagSet;
 use saluki_core::data_model::event::trace::AttributeValue;
 use saluki_core::topology::{EventsBuffer, PayloadsBuffer};
@@ -128,17 +127,11 @@ pub struct DatadogTraceConfiguration {
 }
 
 impl DatadogTraceConfiguration {
-    /// Creates a new `DatadogTraceConfiguration` from the given configuration.
-    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        let mut trace_config: Self = config.as_typed()?;
-
+    /// Creates a new `DatadogTraceConfiguration` from native values.
+    pub fn from_native(mut trace_config: Self) -> Self {
         let app_details = saluki_metadata::get_app_details();
         trace_config.version = format!("agent-data-plane/{}", app_details.version().raw());
-
-        trace_config.apm_config = ApmConfig::from_configuration(config)?;
-        trace_config.otlp_traces = config.try_get_typed("otlp_config.traces")?.unwrap_or_default();
-
-        Ok(trace_config)
+        trace_config
     }
 }
 

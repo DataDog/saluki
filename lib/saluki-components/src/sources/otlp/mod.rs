@@ -15,7 +15,6 @@ use prost::Message;
 use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_common::sync::shutdown::{ShutdownCoordinator, ShutdownHandle};
 use saluki_common::task::HandleExt as _;
-use saluki_config_tools::GenericConfiguration;
 use saluki_context::ContextResolver;
 use saluki_core::topology::interconnect::BufferedDispatcher;
 use saluki_core::{
@@ -125,13 +124,6 @@ pub struct OtlpConfiguration {
 }
 
 impl OtlpConfiguration {
-    /// Creates a new `OTLPConfiguration` from the given configuration.
-    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        let mut cfg: Self = config.as_typed()?;
-        cfg.otlp_config.traces.apply_env_overrides(config)?;
-        Ok(cfg)
-    }
-
     /// Sets the workload provider to use for configuring origin detection/enrichment.
     ///
     /// A workload provider must be set otherwise origin detection/enrichment won't be enabled.
@@ -504,7 +496,10 @@ mod config_smoke {
             structs::OTLP_CONFIGURATION,
             &[],
             json!({ "otlp_config": {} }),
-            |cfg| OtlpConfiguration::from_configuration(&cfg).expect("OtlpConfiguration should deserialize"),
+            |cfg| {
+                cfg.as_typed::<OtlpConfiguration>()
+                    .expect("OtlpConfiguration should deserialize")
+            },
             KEY_ALIASES,
             DatadogRemapper::new,
         )

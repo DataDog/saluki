@@ -8,7 +8,6 @@ use http::{uri::PathAndQuery, HeaderValue, Method, Uri};
 use protobuf::{rt::WireType, CodedOutputStream, Enum as _};
 use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_common::{iter::ReusableDeduplicator, task::HandleExt as _};
-use saluki_config_tools::GenericConfiguration;
 use saluki_context::tags::{SharedTagSet, Tag};
 use saluki_core::{
     components::{encoders::*, ComponentContext},
@@ -284,11 +283,6 @@ pub struct DatadogMetricsConfiguration {
 }
 
 impl DatadogMetricsConfiguration {
-    /// Creates a new `DatadogMetricsConfiguration` from the given configuration.
-    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        Ok(config.as_typed()?)
-    }
-
     /// Sets additional tags to be applied uniformly to all metrics forwarded by this destination.
     pub fn with_additional_tags(mut self, additional_tags: SharedTagSet) -> Self {
         // Add the additional tags to the forwarder configuration.

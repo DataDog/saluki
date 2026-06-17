@@ -2,7 +2,6 @@ use async_trait::async_trait;
 use facet::Facet;
 use http::{uri::PathAndQuery, HeaderValue, Method, Uri};
 use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
-use saluki_config_tools::GenericConfiguration;
 use saluki_core::{
     components::{encoders::*, ComponentContext},
     data_model::{
@@ -107,13 +106,6 @@ pub struct DatadogServiceChecksConfiguration {
     /// Defaults to `false`.
     #[serde(default = "default_log_payloads")]
     log_payloads: bool,
-}
-
-impl DatadogServiceChecksConfiguration {
-    /// Creates a new `DatadogServiceChecksConfiguration` from the given configuration.
-    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        Ok(config.as_typed()?)
-    }
 }
 
 #[async_trait]

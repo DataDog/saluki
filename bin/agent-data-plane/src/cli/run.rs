@@ -434,7 +434,7 @@ async fn create_topology(
 async fn add_checks_pipeline_to_blueprint(
     blueprint: &mut TopologyBlueprint, config: &GenericConfiguration,
 ) -> Result<(), GenericError> {
-    let checks_config = ChecksIPCConfiguration::from_configuration(config)?;
+    let checks_config = config.as_typed::<ChecksIPCConfiguration>()?;
 
     blueprint
         .add_source("checks_ipc_in", checks_config)?
@@ -460,7 +460,8 @@ async fn add_baseline_metrics_pipeline_to_blueprint(
         metrics_enrich_config = metrics_enrich_config.with_transform_builder("host_tags", host_tags_config);
     }
 
-    let dd_metrics_config = DatadogMetricsConfiguration::from_configuration(config)
+    let dd_metrics_config = config
+        .as_typed::<DatadogMetricsConfiguration>()
         .error_context("Failed to configure Datadog Metrics encoder.")?;
 
     blueprint
@@ -624,7 +625,8 @@ fn add_mrf_metrics_pipeline_to_blueprint(
 
     let mrf_gateway_config =
         MrfMetricsGatewayConfiguration::new(mrf_config.clone(), ScopedConfig::fixed(mrf_native_config));
-    let mrf_metrics_config = DatadogMetricsConfiguration::from_configuration(config)
+    let mrf_metrics_config = config
+        .as_typed::<DatadogMetricsConfiguration>()
         .error_context("Failed to configure Multi-Region Failover Datadog Metrics encoder.")?;
 
     let mrf_forwarder_config = DatadogForwarderConfiguration::from_configuration(config)
@@ -701,7 +703,8 @@ async fn add_baseline_logs_pipeline_to_blueprint(
     blueprint: &mut TopologyBlueprint, config: &GenericConfiguration,
 ) -> Result<(), GenericError> {
     // Create the back half of the logs processing pipeline.
-    let dd_logs_config = DatadogLogsConfiguration::from_configuration(config)
+    let dd_logs_config = config
+        .as_typed::<DatadogLogsConfiguration>()
         .map(BufferedIncrementalConfiguration::from_encoder_builder)
         .error_context("Failed to configure Datadog Logs encoder.")?;
 
@@ -717,7 +720,8 @@ async fn add_baseline_logs_pipeline_to_blueprint(
 async fn add_baseline_events_pipeline_to_blueprint(
     blueprint: &mut TopologyBlueprint, config: &GenericConfiguration,
 ) -> Result<(), GenericError> {
-    let dd_events_config = DatadogEventsConfiguration::from_configuration(config)
+    let dd_events_config = config
+        .as_typed::<DatadogEventsConfiguration>()
         .map(BufferedIncrementalConfiguration::from_encoder_builder)
         .error_context("Failed to configure Datadog Events encoder.")?;
 
@@ -731,7 +735,8 @@ async fn add_baseline_events_pipeline_to_blueprint(
 async fn add_baseline_service_checks_pipeline_to_blueprint(
     blueprint: &mut TopologyBlueprint, config: &GenericConfiguration,
 ) -> Result<(), GenericError> {
-    let dd_service_checks_config = DatadogServiceChecksConfiguration::from_configuration(config)
+    let dd_service_checks_config = config
+        .as_typed::<DatadogServiceChecksConfiguration>()
         .map(BufferedIncrementalConfiguration::from_encoder_builder)
         .error_context("Failed to configure Datadog Service Checks encoder.")?;
 
@@ -745,10 +750,13 @@ async fn add_baseline_service_checks_pipeline_to_blueprint(
 async fn add_baseline_traces_pipeline_to_blueprint(
     blueprint: &mut TopologyBlueprint, config: &GenericConfiguration, env_provider: &ADPEnvironmentProvider,
 ) -> Result<(), GenericError> {
-    let dd_traces_config = DatadogTraceConfiguration::from_configuration(config)
-        .error_context("Failed to configure Datadog Traces encoder.")?
-        .with_environment_provider(env_provider.clone())
-        .await?;
+    let dd_traces_config = DatadogTraceConfiguration::from_native(
+        config
+            .as_typed::<DatadogTraceConfiguration>()
+            .error_context("Failed to configure Datadog Traces encoder.")?,
+    )
+    .with_environment_provider(env_provider.clone())
+    .await?;
     let trace_obfuscation_config = TraceObfuscationConfiguration::from_apm_configuration(config)?;
     let trace_sampler_config = TraceSamplerConfiguration::from_configuration(config)
         .error_context("Failed to configure Trace Sampler transform.")?;
@@ -766,10 +774,13 @@ async fn add_baseline_traces_pipeline_to_blueprint(
         .error_context("Failed to configure APM Stats transform.")?
         .with_environment_provider(env_provider.clone())
         .await?;
-    let dd_apm_stats_encoder = DatadogApmStatsEncoderConfiguration::from_configuration(config)
-        .error_context("Failed to configure Datadog APM Stats encoder.")?
-        .with_environment_provider(env_provider.clone())
-        .await?;
+    let dd_apm_stats_encoder = DatadogApmStatsEncoderConfiguration::from_native(
+        config
+            .as_typed::<DatadogApmStatsEncoderConfiguration>()
+            .error_context("Failed to configure Datadog APM Stats encoder.")?,
+    )
+    .with_environment_provider(env_provider.clone())
+    .await?;
 
     blueprint
         .add_transform("traces_enrich", dd_traces_enrich_config)?
@@ -826,13 +837,14 @@ async fn add_dsd_pipeline_to_blueprint(
         .with_workload_provider(env_provider.workload().clone())
         .with_capture_entity_resolver(env_provider.workload().clone());
     let dsd_prefix_filter_configuration = dogstatsd_prefix_filter_config_from_raw(config)?;
-    let dsd_mapper_config = DogStatsDMapperConfiguration::from_configuration(config)?;
+    let dsd_mapper_config = config.as_typed::<DogStatsDMapperConfiguration>()?;
     let dsd_enrich_config =
         ChainedConfiguration::default().with_transform_builder("dogstatsd_mapper", dsd_mapper_config);
     let dsd_tag_filterlist_config =
         tag_filterlist_config_from_raw(config).error_context("Failed to configure metric tag filterlist transform.")?;
-    let dsd_agg_config =
-        AggregateConfiguration::from_configuration(config).error_context("Failed to configure aggregate transform.")?;
+    let dsd_agg_config = config
+        .as_typed::<AggregateConfiguration>()
+        .error_context("Failed to configure aggregate transform.")?;
     let dsd_post_agg_filter_config = dogstatsd_post_aggregate_filter_config_from_raw(config)
         .error_context("Failed to configure DogStatsD post-aggregate filter transform.")?;
     let events_enrich_config = ChainedConfiguration::default().with_transform_builder(
@@ -915,11 +927,14 @@ fn add_otlp_pipeline_to_blueprint(
             "OTLP proxy mode enabled. Select OTLP payloads will be proxied to the Core Agent."
         );
 
-        let otlp_relay_config = OtlpRelayConfiguration::from_configuration(config)?;
-        let otlp_decoder_config = OtlpDecoderConfiguration::from_configuration(config)?;
+        let otlp_relay_config = config.as_typed::<OtlpRelayConfiguration>()?;
+        let otlp_decoder_config = config.as_typed::<OtlpDecoderConfiguration>()?;
 
+        let core_agent_traces_internal_port = config
+            .try_get_typed("otlp_config.traces.internal_port")?
+            .unwrap_or(5003);
         let local_agent_otlp_forwarder_config =
-            OtlpForwarderConfiguration::from_configuration(config, core_agent_otlp_grpc_endpoint)?;
+            OtlpForwarderConfiguration::from_native(core_agent_otlp_grpc_endpoint, core_agent_traces_internal_port);
 
         blueprint
             // Components.
@@ -939,8 +954,9 @@ fn add_otlp_pipeline_to_blueprint(
     } else {
         info!("OTLP proxy mode disabled. OTLP signals will be handled natively.");
 
-        let otlp_config =
-            OtlpConfiguration::from_configuration(config)?.with_workload_provider(env_provider.workload().clone());
+        let otlp_config = config
+            .as_typed::<OtlpConfiguration>()?
+            .with_workload_provider(env_provider.workload().clone());
 
         blueprint
             // Components.

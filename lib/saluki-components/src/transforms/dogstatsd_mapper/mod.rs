@@ -9,7 +9,6 @@ use bytesize::ByteSize;
 use regex::Regex;
 use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_common::cache::{Cache, CacheBuilder};
-use saluki_config_tools::GenericConfiguration;
 use saluki_context::tags::SharedTagSet;
 use saluki_context::tags::TagSet;
 use saluki_context::{Context, ContextResolver, ContextResolverBuilder};
@@ -344,13 +343,6 @@ impl MetricMapper {
     #[cfg(test)]
     fn cache_len(&self) -> Option<usize> {
         self.cache.as_ref().map(|c| c.len())
-    }
-}
-
-impl DogStatsDMapperConfiguration {
-    /// Creates a new `DogstatsDMapperConfiguration` from the given configuration.
-    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        Ok(config.as_typed()?)
     }
 }
 

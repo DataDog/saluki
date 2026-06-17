@@ -8,7 +8,6 @@ use ddsketch::DDSketch;
 use hashbrown::{hash_map::Entry, HashMap};
 use resource_accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
 use saluki_common::time::get_unix_timestamp;
-use saluki_config_tools::GenericConfiguration;
 use saluki_context::Context;
 use saluki_core::{
     components::{transforms::*, ComponentContext},
@@ -188,11 +187,6 @@ pub struct AggregateConfiguration {
 }
 
 impl AggregateConfiguration {
-    /// Creates a new `AggregateConfiguration` from the given configuration.
-    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        Ok(config.as_typed()?)
-    }
-
     /// Creates a new `AggregateConfiguration` with default values.
     pub fn with_defaults() -> Self {
         Self {

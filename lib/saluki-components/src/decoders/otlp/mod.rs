@@ -4,7 +4,6 @@ use async_trait::async_trait;
 use otlp_protos::opentelemetry::proto::collector::trace::v1::ExportTraceServiceRequest;
 use prost::Message;
 use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
-use saluki_config_tools::GenericConfiguration;
 use saluki_core::{
     components::{
         decoders::{Decoder, DecoderBuilder, DecoderContext},
@@ -13,7 +12,7 @@ use saluki_core::{
     data_model::{event::EventType, payload::PayloadType},
     topology::interconnect::EventBufferManager,
 };
-use saluki_error::{generic_error, ErrorContext as _, GenericError};
+use saluki_error::{generic_error, GenericError};
 use serde::Deserialize;
 use tokio::{
     select,
@@ -41,17 +40,6 @@ pub struct OtlpDecoderConfiguration {
 struct OtlpDecoderConfig {
     #[serde(default)]
     traces: TracesConfig,
-}
-
-impl OtlpDecoderConfiguration {
-    /// Creates a new `OtlpDecoderConfiguration` from the given configuration.
-    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        let mut cfg: Self = config
-            .as_typed()
-            .error_context("Failed to load OTLP decoder configuration")?;
-        cfg.otlp_config.traces.apply_env_overrides(config)?;
-        Ok(cfg)
-    }
 }
 
 #[async_trait]
@@ -198,7 +186,8 @@ mod config_smoke {
             &[],
             json!({}),
             |cfg| {
-                OtlpDecoderConfiguration::from_configuration(&cfg).expect("OtlpDecoderConfiguration should deserialize")
+                cfg.as_typed::<OtlpDecoderConfiguration>()
+                    .expect("OtlpDecoderConfiguration should deserialize")
             },
             KEY_ALIASES,
             DatadogRemapper::new,
