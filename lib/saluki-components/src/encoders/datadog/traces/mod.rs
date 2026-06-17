@@ -14,6 +14,7 @@ use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_common::collections::FastHashMap;
 use saluki_common::strings::StringBuilder;
 use saluki_common::task::HandleExt as _;
+use saluki_component_config::DatadogTraceEncoderConfig;
 use saluki_context::tags::TagSet;
 use saluki_core::data_model::event::trace::AttributeValue;
 use saluki_core::topology::{EventsBuffer, PayloadsBuffer};
@@ -128,10 +129,18 @@ pub struct DatadogTraceConfiguration {
 
 impl DatadogTraceConfiguration {
     /// Creates a new `DatadogTraceConfiguration` from native values.
-    pub fn from_native(mut trace_config: Self) -> Self {
+    pub fn from_native(_config: DatadogTraceEncoderConfig) -> Self {
         let app_details = saluki_metadata::get_app_details();
-        trace_config.version = format!("agent-data-plane/{}", app_details.version().raw());
-        trace_config
+        Self {
+            compressor_kind: default_serializer_compressor_kind(),
+            zstd_compressor_level: default_zstd_compressor_level(),
+            flush_timeout_secs: default_flush_timeout_secs(),
+            default_hostname: None,
+            version: format!("agent-data-plane/{}", app_details.version().raw()),
+            apm_config: ApmConfig::default(),
+            otlp_traces: TracesConfig::default(),
+            env: default_env(),
+        }
     }
 }
 

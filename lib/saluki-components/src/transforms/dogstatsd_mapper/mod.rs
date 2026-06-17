@@ -9,6 +9,7 @@ use bytesize::ByteSize;
 use regex::Regex;
 use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_common::cache::{Cache, CacheBuilder};
+use saluki_component_config::DogStatsDMapperConfig;
 use saluki_context::tags::SharedTagSet;
 use saluki_context::tags::TagSet;
 use saluki_context::{Context, ContextResolver, ContextResolverBuilder};
@@ -94,6 +95,22 @@ impl FromStr for MapperProfileConfigs {
 impl std::fmt::Display for MapperProfileConfigs {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", serde_json::to_string(&self.0).unwrap_or_default())
+    }
+}
+
+impl DogStatsDMapperConfiguration {
+    /// Creates a DogStatsD mapper configuration from native config.
+    pub fn from_native(config: DogStatsDMapperConfig) -> Self {
+        let profiles = config
+            .profiles
+            .into_iter()
+            .filter_map(|value| serde_json::from_value(value).ok())
+            .collect();
+        Self {
+            context_string_interner_bytes: default_context_string_interner_size(),
+            cache_size: config.cache_size,
+            dogstatsd_mapper_profiles: MapperProfileConfigs(profiles),
+        }
     }
 }
 

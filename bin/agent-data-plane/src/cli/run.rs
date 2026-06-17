@@ -39,7 +39,6 @@ use saluki_core::topology::TopologyBlueprint;
 use saluki_env::EnvironmentProvider as _;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_io::net::ListenAddress;
-use serde::de::DeserializeOwned;
 use tracing::{info, warn};
 
 use crate::{
@@ -216,13 +215,13 @@ async fn create_topology(
         .await?;
     }
     if dp_config.logs_pipeline_required() {
-        add_baseline_logs_pipeline_to_blueprint(&mut blueprint).await?;
+        add_baseline_logs_pipeline_to_blueprint(&mut blueprint, &saluki.components).await?;
     }
     if dp_config.events_pipeline_required() {
-        add_baseline_events_pipeline_to_blueprint(&mut blueprint).await?;
+        add_baseline_events_pipeline_to_blueprint(&mut blueprint, &saluki.components).await?;
     }
     if dp_config.service_checks_pipeline_required() {
-        add_baseline_service_checks_pipeline_to_blueprint(&mut blueprint).await?;
+        add_baseline_service_checks_pipeline_to_blueprint(&mut blueprint, &saluki.components).await?;
     }
     if dp_config.traces_pipeline_required() {
         add_baseline_traces_pipeline_to_blueprint(&mut blueprint, &saluki.components, env_provider).await?;
@@ -272,9 +271,11 @@ async fn add_baseline_metrics_pipeline_to_blueprint(
 
     let _ = dp_config;
 
+    let metrics_encoder_config = DatadogMetricsConfiguration::from_native(components.metrics.datadog_encoder.clone());
+
     blueprint
         .add_transform("metrics_enrich", metrics_enrich_config)?
-        .add_encoder("dd_metrics_encode", empty_config::<DatadogMetricsConfiguration>()?)?
+        .add_encoder("dd_metrics_encode", metrics_encoder_config)?
         .connect_components_in_order(["metrics_enrich", "dd_metrics_encode", "dd_out"])?;
 
     add_mrf_metrics_pipeline_to_blueprint(blueprint, components, handles)?;
@@ -305,9 +306,11 @@ fn add_mrf_metrics_pipeline_to_blueprint(
             "multi_region_failover.api_key",
         );
 
+    let metrics_encoder_config = DatadogMetricsConfiguration::from_native(components.metrics.datadog_encoder.clone());
+
     blueprint
         .add_transform("mrf_metrics_gateway", mrf_gateway_config)?
-        .add_encoder("mrf_metrics_encode", empty_config::<DatadogMetricsConfiguration>()?)?
+        .add_encoder("mrf_metrics_encode", metrics_encoder_config)?
         .add_forwarder("mrf_dd_out", mrf_forwarder_config)?
         .connect_components_in_order([
             "metrics_enrich",
@@ -365,18 +368,24 @@ fn add_autoscaling_failover_metrics_pipeline_to_blueprint(
     Ok(())
 }
 
-async fn add_baseline_logs_pipeline_to_blueprint(blueprint: &mut TopologyBlueprint) -> Result<(), GenericError> {
-    let dd_logs_config =
-        empty_config::<DatadogLogsConfiguration>().map(BufferedIncrementalConfiguration::from_encoder_builder)?;
+async fn add_baseline_logs_pipeline_to_blueprint(
+    blueprint: &mut TopologyBlueprint, components: &ComponentConfiguration,
+) -> Result<(), GenericError> {
+    let dd_logs_config = BufferedIncrementalConfiguration::from_encoder_builder(DatadogLogsConfiguration::from_native(
+        components.logs.datadog_encoder.clone(),
+    ));
     blueprint
         .add_encoder("dd_logs_encode", dd_logs_config)?
         .connect_components("dd_logs_encode", "dd_out")?;
     Ok(())
 }
 
-async fn add_baseline_events_pipeline_to_blueprint(blueprint: &mut TopologyBlueprint) -> Result<(), GenericError> {
-    let dd_events_config =
-        empty_config::<DatadogEventsConfiguration>().map(BufferedIncrementalConfiguration::from_encoder_builder)?;
+async fn add_baseline_events_pipeline_to_blueprint(
+    blueprint: &mut TopologyBlueprint, components: &ComponentConfiguration,
+) -> Result<(), GenericError> {
+    let dd_events_config = BufferedIncrementalConfiguration::from_encoder_builder(
+        DatadogEventsConfiguration::from_native(components.events.datadog_encoder.clone()),
+    );
     blueprint
         .add_encoder("dd_events_encode", dd_events_config)?
         .connect_components("dd_events_encode", "dd_out")?;
@@ -384,10 +393,11 @@ async fn add_baseline_events_pipeline_to_blueprint(blueprint: &mut TopologyBluep
 }
 
 async fn add_baseline_service_checks_pipeline_to_blueprint(
-    blueprint: &mut TopologyBlueprint,
+    blueprint: &mut TopologyBlueprint, components: &ComponentConfiguration,
 ) -> Result<(), GenericError> {
-    let dd_service_checks_config = empty_config::<DatadogServiceChecksConfiguration>()
-        .map(BufferedIncrementalConfiguration::from_encoder_builder)?;
+    let dd_service_checks_config = BufferedIncrementalConfiguration::from_encoder_builder(
+        DatadogServiceChecksConfiguration::from_native(components.service_checks.datadog_encoder.clone()),
+    );
     blueprint
         .add_encoder("dd_service_checks_encode", dd_service_checks_config)?
         .connect_components("dd_service_checks_encode", "dd_out")?;
@@ -397,7 +407,7 @@ async fn add_baseline_service_checks_pipeline_to_blueprint(
 async fn add_baseline_traces_pipeline_to_blueprint(
     blueprint: &mut TopologyBlueprint, components: &ComponentConfiguration, env_provider: &ADPEnvironmentProvider,
 ) -> Result<(), GenericError> {
-    let dd_traces_config = DatadogTraceConfiguration::from_native(empty_config::<DatadogTraceConfiguration>()?)
+    let dd_traces_config = DatadogTraceConfiguration::from_native(components.traces.encoder.clone())
         .with_environment_provider(env_provider.clone())
         .await?;
     let trace_sampler_config = TraceSamplerConfiguration::from_native(components.traces.sampler.rate * 100.0);
@@ -414,7 +424,7 @@ async fn add_baseline_traces_pipeline_to_blueprint(
         .with_environment_provider(env_provider.clone())
         .await?;
     let dd_apm_stats_encoder =
-        DatadogApmStatsEncoderConfiguration::from_native(empty_config::<DatadogApmStatsEncoderConfiguration>()?)
+        DatadogApmStatsEncoderConfiguration::from_native(components.metrics.apm_stats_encoder.clone())
             .with_environment_provider(env_provider.clone())
             .await?;
 
@@ -431,7 +441,7 @@ async fn add_baseline_traces_pipeline_to_blueprint(
 }
 
 async fn add_dsd_pipeline_to_blueprint(
-    blueprint: &mut TopologyBlueprint, _components: &ComponentConfiguration, handles: &DynamicConfigHandles,
+    blueprint: &mut TopologyBlueprint, components: &ComponentConfiguration, handles: &DynamicConfigHandles,
     env_provider: &ADPEnvironmentProvider,
 ) -> Result<DogStatsDControlSurface, GenericError> {
     let dsd_config = DogStatsDConfiguration::default()
@@ -440,11 +450,11 @@ async fn add_dsd_pipeline_to_blueprint(
         .with_capture_entity_resolver(env_provider.workload().clone());
     let dsd_prefix_filter_configuration =
         DogStatsDPrefixFilterConfiguration::from_native(handles.dogstatsd_prefix_filter.clone());
-    let dsd_mapper_config = empty_config::<DogStatsDMapperConfiguration>()?;
+    let dsd_mapper_config = DogStatsDMapperConfiguration::from_native(components.dogstatsd.mapper.clone());
     let dsd_enrich_config =
         ChainedConfiguration::default().with_transform_builder("dogstatsd_mapper", dsd_mapper_config);
     let dsd_tag_filterlist_config = TagFilterlistConfiguration::from_native(handles.dogstatsd_tag_filterlist.clone());
-    let dsd_agg_config = empty_config::<AggregateConfiguration>()?;
+    let dsd_agg_config = AggregateConfiguration::from_native(components.dogstatsd.aggregate.clone());
     let dsd_post_agg_filter_config =
         DogStatsDPostAggregateFilterConfiguration::from_native(handles.dogstatsd_post_aggregate_filter.clone());
     let events_enrich_config = ChainedConfiguration::default().with_transform_builder(
@@ -516,7 +526,10 @@ fn add_otlp_pipeline_to_blueprint(
             OtlpForwarderConfiguration::from_native(core_agent_otlp_grpc_endpoint, 5003);
 
         blueprint
-            .add_relay("otlp_relay_in", empty_config::<OtlpRelayConfiguration>()?)?
+            .add_relay(
+                "otlp_relay_in",
+                OtlpRelayConfiguration::from_native(components.otlp.relay.clone()),
+            )?
             .add_forwarder("local_agent_otlp_out", local_agent_otlp_forwarder_config)?;
 
         if dp_config.otlp().proxy().proxy_metrics() {
@@ -530,13 +543,17 @@ fn add_otlp_pipeline_to_blueprint(
             blueprint.connect_components("otlp_relay_in.traces", "local_agent_otlp_out")?;
         } else {
             blueprint
-                .add_decoder("otlp_traces_decode", empty_config::<OtlpDecoderConfiguration>()?)?
+                .add_decoder(
+                    "otlp_traces_decode",
+                    OtlpDecoderConfiguration::from_native(components.otlp.decoder.clone()),
+                )?
                 .connect_components_in_order(["otlp_relay_in.traces", "otlp_traces_decode", "traces_enrich"])?;
         }
     } else {
         info!("OTLP proxy mode disabled. OTLP signals will be handled natively.");
 
-        let otlp_config = empty_config::<OtlpConfiguration>()?.with_workload_provider(env_provider.workload().clone());
+        let otlp_config = OtlpConfiguration::from_native(components.otlp.source.clone())
+            .with_workload_provider(env_provider.workload().clone());
 
         blueprint
             .add_source("otlp_in", otlp_config)?
@@ -544,7 +561,6 @@ fn add_otlp_pipeline_to_blueprint(
             .connect_components("otlp_in.logs", "dd_logs_encode")?
             .connect_components("otlp_in.traces", "traces_enrich")?;
     }
-    let _ = components;
     Ok(())
 }
 
@@ -565,13 +581,6 @@ fn native_listen_to_io(address: &NativeListenAddress, default_port: u16) -> Resu
         NativeListenAddress::Udp(value) => parse_io_listen_address(value, "udp"),
         NativeListenAddress::Unix(value) => parse_io_listen_address(value, "unix"),
     }
-}
-
-fn empty_config<T>() -> Result<T, GenericError>
-where
-    T: DeserializeOwned,
-{
-    Ok(serde_json::from_value(serde_json::json!({}))?)
 }
 
 fn write_sizing_guide(bounds: ComponentBounds) -> Result<(), GenericError> {

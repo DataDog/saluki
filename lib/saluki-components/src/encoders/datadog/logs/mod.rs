@@ -4,6 +4,7 @@ use facet::Facet;
 use http::{uri::PathAndQuery, HeaderValue, Method, Uri};
 use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_common::iter::ReusableDeduplicator;
+use saluki_component_config::DatadogLogsEncoderConfig;
 use saluki_context::tags::Tag;
 use saluki_core::{
     components::{encoders::*, ComponentContext},
@@ -58,6 +59,16 @@ pub struct DatadogLogsConfiguration {
         default = "default_zstd_compressor_level"
     )]
     zstd_compressor_level: i32,
+}
+
+impl DatadogLogsConfiguration {
+    /// Creates a logs encoder configuration from native config.
+    pub fn from_native(_config: DatadogLogsEncoderConfig) -> Self {
+        Self {
+            compressor_kind: default_serializer_compressor_kind(),
+            zstd_compressor_level: default_zstd_compressor_level(),
+        }
+    }
 }
 
 #[async_trait]

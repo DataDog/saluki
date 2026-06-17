@@ -15,6 +15,7 @@ use prost::Message;
 use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_common::sync::shutdown::{ShutdownCoordinator, ShutdownHandle};
 use saluki_common::task::HandleExt as _;
+use saluki_component_config::OtlpConfig as NativeOtlpConfig;
 use saluki_context::ContextResolver;
 use saluki_core::topology::interconnect::BufferedDispatcher;
 use saluki_core::{
@@ -124,6 +125,21 @@ pub struct OtlpConfiguration {
 }
 
 impl OtlpConfiguration {
+    /// Creates an OTLP source configuration from native config.
+    pub fn from_native(config: NativeOtlpConfig) -> Self {
+        let mut otlp_config = OtlpConfig::default();
+        otlp_config.receiver.protocols.grpc.endpoint = config.grpc_endpoint;
+        otlp_config.receiver.protocols.http.endpoint = config.http_endpoint;
+        Self {
+            otlp_config,
+            context_string_interner_bytes: ByteSize::b(config.string_interner_size as u64),
+            cached_contexts_limit: config.cached_contexts_limit,
+            cached_tagsets_limit: default_cached_tagsets_limit(),
+            allow_context_heap_allocations: default_allow_context_heap_allocations(),
+            workload_provider: None,
+        }
+    }
+
     /// Sets the workload provider to use for configuring origin detection/enrichment.
     ///
     /// A workload provider must be set otherwise origin detection/enrichment won't be enabled.

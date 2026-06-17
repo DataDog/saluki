@@ -5,6 +5,7 @@ use axum::body::Bytes;
 use facet::Facet;
 use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_common::buf::FrozenChunkedBytesBuffer;
+use saluki_component_config::OtlpRelayConfig as NativeOtlpRelayConfig;
 use saluki_core::components::relays::{Relay, RelayBuilder, RelayContext};
 use saluki_core::components::ComponentContext;
 use saluki_core::data_model::payload::{GrpcPayload, Payload, PayloadMetadata, PayloadType};
@@ -40,6 +41,15 @@ pub struct OtlpRelayConfig {
 }
 
 impl OtlpRelayConfiguration {
+    /// Creates an OTLP relay configuration from native config.
+    pub fn from_native(config: NativeOtlpRelayConfig) -> Self {
+        let mut otlp_config = OtlpRelayConfig::default();
+        if !config.grpc_endpoint.is_empty() {
+            otlp_config.receiver.protocols.grpc.endpoint = config.grpc_endpoint;
+        }
+        Self { otlp_config }
+    }
+
     fn http_endpoint(&self) -> ListenAddress {
         let transport = &self.otlp_config.receiver.protocols.http.transport;
         let endpoint = &self.otlp_config.receiver.protocols.http.endpoint;

@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use facet::Facet;
 use http::{uri::PathAndQuery, HeaderValue, Method, Uri};
 use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
+use saluki_component_config::DatadogServiceChecksEncoderConfig;
 use saluki_core::{
     components::{encoders::*, ComponentContext},
     data_model::{
@@ -106,6 +107,19 @@ pub struct DatadogServiceChecksConfiguration {
     /// Defaults to `false`.
     #[serde(default = "default_log_payloads")]
     log_payloads: bool,
+}
+
+impl DatadogServiceChecksConfiguration {
+    /// Creates a service-check encoder configuration from native config.
+    pub fn from_native(_config: DatadogServiceChecksEncoderConfig) -> Self {
+        Self {
+            max_payload_size: default_max_payload_size(),
+            max_uncompressed_payload_size: default_max_uncompressed_payload_size(),
+            compressor_kind: default_serializer_compressor_kind(),
+            zstd_compressor_level: default_zstd_compressor_level(),
+            log_payloads: default_log_payloads(),
+        }
+    }
 }
 
 #[async_trait]

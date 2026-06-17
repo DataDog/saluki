@@ -8,6 +8,7 @@ use http::{uri::PathAndQuery, HeaderValue, Method, Uri};
 use protobuf::{rt::WireType, CodedOutputStream, Enum as _};
 use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_common::{iter::ReusableDeduplicator, task::HandleExt as _};
+use saluki_component_config::DatadogMetricsEncoderConfig;
 use saluki_context::tags::{SharedTagSet, Tag};
 use saluki_core::{
     components::{encoders::*, ComponentContext},
@@ -283,6 +284,24 @@ pub struct DatadogMetricsConfiguration {
 }
 
 impl DatadogMetricsConfiguration {
+    /// Creates a metrics encoder configuration from native config.
+    pub fn from_native(config: DatadogMetricsEncoderConfig) -> Self {
+        Self {
+            max_metrics_per_payload: default_max_metrics_per_payload(),
+            max_payload_size: default_max_payload_size(),
+            max_uncompressed_payload_size: default_max_uncompressed_payload_size(),
+            max_series_payload_size: default_max_series_payload_size(),
+            max_series_uncompressed_payload_size: default_max_series_uncompressed_payload_size(),
+            max_series_points_per_payload: default_max_series_points_per_payload(),
+            flush_timeout_secs: default_flush_timeout_secs(),
+            compressor_kind: default_serializer_compressor_kind(),
+            zstd_compressor_level: config.compression_level,
+            use_v2_api_series: default_use_v2_api_series(),
+            log_payloads: default_log_payloads(),
+            additional_tags: None,
+        }
+    }
+
     /// Sets additional tags to be applied uniformly to all metrics forwarded by this destination.
     pub fn with_additional_tags(mut self, additional_tags: SharedTagSet) -> Self {
         // Add the additional tags to the forwarder configuration.

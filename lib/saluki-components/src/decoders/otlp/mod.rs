@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use otlp_protos::opentelemetry::proto::collector::trace::v1::ExportTraceServiceRequest;
 use prost::Message;
 use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
+use saluki_component_config::OtlpDecoderConfig as NativeOtlpDecoderConfig;
 use saluki_core::{
     components::{
         decoders::{Decoder, DecoderBuilder, DecoderContext},
@@ -40,6 +41,15 @@ pub struct OtlpDecoderConfiguration {
 struct OtlpDecoderConfig {
     #[serde(default)]
     traces: TracesConfig,
+}
+
+impl OtlpDecoderConfiguration {
+    /// Creates an OTLP decoder configuration from native config.
+    pub fn from_native(_config: NativeOtlpDecoderConfig) -> Self {
+        Self {
+            otlp_config: OtlpDecoderConfig::default(),
+        }
+    }
 }
 
 #[async_trait]
