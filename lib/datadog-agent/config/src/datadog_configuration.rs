@@ -60,6 +60,9 @@ pub struct DatadogConfiguration {
     #[serde(default)]
     pub api_key: String,
 
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    pub apm_config: Option<DatadogConfigurationApmConfig>,
+
     /// The host to listen on for Dogstatsd and traces. This is ignored by APM when
     /// `apm_config.apm_non_local_traffic` is enabled and ignored by DogStatsD when `dogstatsd_non_local_traffic`
     /// is enabled. The trace-agent uses this host to send metrics to.
@@ -376,6 +379,9 @@ pub struct DatadogConfiguration {
     #[serde(default = "defaults::datadog_configuration_min_tls_version")]
     pub min_tls_version: String,
 
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    pub multi_region_failover: Option<DatadogConfigurationMultiRegionFailover>,
+
     /// Enable more flexible no_proxy matching. See https://godoc.org/golang.org/x/net/http/httpproxy#Config
     /// for more information on accepted matching criteria.
     #[serde(default)]
@@ -498,6 +504,7 @@ impl Default for DatadogConfiguration {
             aggregator_stop_timeout: defaults::default_u64::<i64, 2>(),
             allow_arbitrary_tags: Default::default(),
             api_key: Default::default(),
+            apm_config: Default::default(),
             bind_host: Default::default(),
             cmd_port: defaults::default_u64::<i64, 5001>(),
             cri_connection_timeout: defaults::default_u64::<i64, 1>(),
@@ -563,6 +570,7 @@ impl Default for DatadogConfiguration {
             metric_filterlist: Default::default(),
             metric_filterlist_match_prefix: Default::default(),
             min_tls_version: defaults::datadog_configuration_min_tls_version(),
+            multi_region_failover: Default::default(),
             no_proxy_nonexact_match: Default::default(),
             observability_pipelines_worker: Default::default(),
             origin_detection_unified: Default::default(),
@@ -606,6 +614,257 @@ impl Default for DatadogConfigurationAgentIpc {
     fn default() -> Self {
         Self {
             grpc_max_message_size: defaults::default_u64::<i64, 134217728>(),
+        }
+    }
+}
+
+/// Enter specific configurations for your trace collection.
+/// Uncomment this parameter and the one below to enable them.
+/// See https://docs.datadoghq.com/agent/apm/
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+pub struct DatadogConfigurationApmConfig {
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    pub obfuscation: Option<DatadogConfigurationApmConfigObfuscation>,
+}
+
+impl Default for DatadogConfigurationApmConfig {
+    fn default() -> Self {
+        Self {
+            obfuscation: Default::default(),
+        }
+    }
+}
+
+/// Defines obfuscation rules for sensitive data.
+/// See https://docs.datadoghq.com/tracing/setup_overview/configure_data_security/#agent-trace-obfuscation
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+pub struct DatadogConfigurationApmConfigObfuscation {
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    pub credit_cards: Option<DatadogConfigurationApmConfigObfuscationCreditCards>,
+
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    pub elasticsearch: Option<DatadogConfigurationApmConfigObfuscationElasticsearch>,
+
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    pub http: Option<DatadogConfigurationApmConfigObfuscationHttp>,
+
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    pub memcached: Option<DatadogConfigurationApmConfigObfuscationMemcached>,
+
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    pub mongodb: Option<DatadogConfigurationApmConfigObfuscationMongodb>,
+
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    pub opensearch: Option<DatadogConfigurationApmConfigObfuscationOpensearch>,
+
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    pub redis: Option<DatadogConfigurationApmConfigObfuscationRedis>,
+
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    pub valkey: Option<DatadogConfigurationApmConfigObfuscationValkey>,
+}
+
+impl Default for DatadogConfigurationApmConfigObfuscation {
+    fn default() -> Self {
+        Self {
+            credit_cards: Default::default(),
+            elasticsearch: Default::default(),
+            http: Default::default(),
+            memcached: Default::default(),
+            mongodb: Default::default(),
+            opensearch: Default::default(),
+            redis: Default::default(),
+            valkey: Default::default(),
+        }
+    }
+}
+
+/// Obfuscation rules for credit card numbers found in trace span values.
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+pub struct DatadogConfigurationApmConfigObfuscationCreditCards {
+    /// Enables obfuscation rules for credit cards. Enabled by default.
+    #[serde(default = "defaults::default_bool::<true>")]
+    pub enabled: bool,
+
+    /// List of keys that should not be obfuscated.
+    #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+    pub keep_values: Vec<String>,
+
+    /// Enables a Luhn checksum check in order to eliminate false negatives. Disabled by default.
+    #[serde(default)]
+    pub luhn: bool,
+}
+
+impl Default for DatadogConfigurationApmConfigObfuscationCreditCards {
+    fn default() -> Self {
+        Self {
+            enabled: defaults::default_bool::<true>(),
+            keep_values: Default::default(),
+            luhn: Default::default(),
+        }
+    }
+}
+
+/// Obfuscation rules for Elasticsearch query bodies in trace spans.
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+pub struct DatadogConfigurationApmConfigObfuscationElasticsearch {
+    /// Enables obfuscation rules for spans of type "elasticsearch". Enabled by default.
+    #[serde(default = "defaults::default_bool::<true>")]
+    pub enabled: bool,
+
+    /// List of keys that should not be obfuscated.
+    #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+    pub keep_values: Vec<String>,
+
+    /// The set of keys for which their values will be passed through SQL obfuscation
+    #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+    pub obfuscate_sql_values: Vec<String>,
+}
+
+impl Default for DatadogConfigurationApmConfigObfuscationElasticsearch {
+    fn default() -> Self {
+        Self {
+            enabled: defaults::default_bool::<true>(),
+            keep_values: Default::default(),
+            obfuscate_sql_values: Default::default(),
+        }
+    }
+}
+
+/// Obfuscation rules for HTTP URLs and query strings in trace spans.
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+pub struct DatadogConfigurationApmConfigObfuscationHttp {
+    /// If enabled, path segments in URLs containing digits are replaced by "?"
+    #[serde(default)]
+    pub remove_paths_with_digits: bool,
+
+    /// Enables obfuscation of query strings in URLs
+    #[serde(default)]
+    pub remove_query_string: bool,
+}
+
+impl Default for DatadogConfigurationApmConfigObfuscationHttp {
+    fn default() -> Self {
+        Self {
+            remove_paths_with_digits: Default::default(),
+            remove_query_string: Default::default(),
+        }
+    }
+}
+
+/// Obfuscation rules for Memcached command strings in trace spans.
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+pub struct DatadogConfigurationApmConfigObfuscationMemcached {
+    /// Enables obfuscation rules for spans of type "memcached". Enabled by default.
+    #[serde(default = "defaults::default_bool::<true>")]
+    pub enabled: bool,
+
+    /// If enabled, the full command for the query will be kept, including any lookup
+    /// keys that could be present. The value for storage commands will still be
+    /// redacted if Memcached obfuscation is enabled.
+    #[serde(default)]
+    pub keep_command: bool,
+}
+
+impl Default for DatadogConfigurationApmConfigObfuscationMemcached {
+    fn default() -> Self {
+        Self {
+            enabled: defaults::default_bool::<true>(),
+            keep_command: Default::default(),
+        }
+    }
+}
+
+/// Obfuscation rules for MongoDB query documents in trace spans.
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+pub struct DatadogConfigurationApmConfigObfuscationMongodb {
+    /// Enables obfuscation rules for spans of type "mongodb". Enabled by default.
+    #[serde(default = "defaults::default_bool::<true>")]
+    pub enabled: bool,
+
+    /// List of keys that should not be obfuscated.
+    #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+    pub keep_values: Vec<String>,
+
+    /// The set of keys for which their values will be passed through SQL obfuscation
+    #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+    pub obfuscate_sql_values: Vec<String>,
+}
+
+impl Default for DatadogConfigurationApmConfigObfuscationMongodb {
+    fn default() -> Self {
+        Self {
+            enabled: defaults::default_bool::<true>(),
+            keep_values: Default::default(),
+            obfuscate_sql_values: Default::default(),
+        }
+    }
+}
+
+/// Obfuscation rules for OpenSearch query bodies in trace spans.
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+pub struct DatadogConfigurationApmConfigObfuscationOpensearch {
+    /// Enables obfuscation rules for spans of type "opensearch". Enabled by default.
+    #[serde(default = "defaults::default_bool::<true>")]
+    pub enabled: bool,
+
+    /// List of keys that should not be obfuscated.
+    #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+    pub keep_values: Vec<String>,
+
+    /// The set of keys for which their values will be passed through SQL obfuscation
+    #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+    pub obfuscate_sql_values: Vec<String>,
+}
+
+impl Default for DatadogConfigurationApmConfigObfuscationOpensearch {
+    fn default() -> Self {
+        Self {
+            enabled: defaults::default_bool::<true>(),
+            keep_values: Default::default(),
+            obfuscate_sql_values: Default::default(),
+        }
+    }
+}
+
+/// Obfuscation rules for Redis command arguments in trace spans.
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+pub struct DatadogConfigurationApmConfigObfuscationRedis {
+    /// Enables obfuscation rules for spans of type "redis". Enabled by default.
+    #[serde(default = "defaults::default_bool::<true>")]
+    pub enabled: bool,
+
+    /// When true, replaces all arguments of a redis command with a single "?". Disabled by default.
+    #[serde(default)]
+    pub remove_all_args: bool,
+}
+
+impl Default for DatadogConfigurationApmConfigObfuscationRedis {
+    fn default() -> Self {
+        Self {
+            enabled: defaults::default_bool::<true>(),
+            remove_all_args: Default::default(),
+        }
+    }
+}
+
+/// Obfuscation rules for Valkey command arguments in trace spans.
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+pub struct DatadogConfigurationApmConfigObfuscationValkey {
+    /// Enables obfuscation rules for spans of type "valkey". Enabled by default.
+    #[serde(default = "defaults::default_bool::<true>")]
+    pub enabled: bool,
+
+    /// When true, replaces all arguments of a valkey command with a single "?". Disabled by default.
+    #[serde(default)]
+    pub remove_all_args: bool,
+}
+
+impl Default for DatadogConfigurationApmConfigObfuscationValkey {
+    fn default() -> Self {
+        Self {
+            enabled: defaults::default_bool::<true>(),
+            remove_all_args: Default::default(),
         }
     }
 }
@@ -770,6 +1029,41 @@ impl Default for DatadogConfigurationEnablePayloads {
             series: defaults::default_bool::<true>(),
             service_checks: defaults::default_bool::<true>(),
             sketches: defaults::default_bool::<true>(),
+        }
+    }
+}
+
+/// `DatadogConfigurationMultiRegionFailover`
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+pub struct DatadogConfigurationMultiRegionFailover {
+    #[serde(default)]
+    pub api_key: String,
+
+    #[serde(default)]
+    pub dd_url: String,
+
+    #[serde(default)]
+    pub enabled: bool,
+
+    #[serde(default)]
+    pub failover_metrics: bool,
+
+    #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+    pub metric_allowlist: Vec<String>,
+
+    #[serde(default)]
+    pub site: String,
+}
+
+impl Default for DatadogConfigurationMultiRegionFailover {
+    fn default() -> Self {
+        Self {
+            api_key: Default::default(),
+            dd_url: Default::default(),
+            enabled: Default::default(),
+            failover_metrics: Default::default(),
+            metric_allowlist: Default::default(),
+            site: Default::default(),
         }
     }
 }

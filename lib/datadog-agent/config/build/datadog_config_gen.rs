@@ -33,8 +33,13 @@ pub fn generate(overlay: &SchemaOverlay, schema_path: &Path, manifest_dir: &Path
 
     let src = std::fs::read_to_string(schema_path)
         .unwrap_or_else(|e| panic!("failed to read {}: {}", schema_path.display(), e));
-    let schema: Value =
+    let mut schema: Value =
         serde_yaml::from_str(&src).unwrap_or_else(|e| panic!("failed to parse schema YAML as JSON value: {e}"));
+    // Inline subsystem `$ref` files (apm_config, multi_region_failover, ...) so their supported
+    // keys are projected into the generated config like inline sections; without this they are
+    // silently dropped and the witness driver cannot cover them.
+    let schema_dir = schema_path.parent().unwrap_or_else(|| Path::new("."));
+    resolve_refs(&mut schema, schema_dir);
     let properties = schema
         .get("properties")
         .and_then(Value::as_object)
@@ -70,6 +75,33 @@ pub fn generate(overlay: &SchemaOverlay, schema_path: &Path, manifest_dir: &Path
         .arg("2021")
         .arg(&path)
         .status();
+}
+
+/// Recursively replace any object node containing a `$ref: <file>` entry with the (also resolved)
+/// contents of the referenced file, found relative to `schema_dir`.
+///
+/// Mirrors the overlay-model's resolver but operates on the `serde_json::Value` this generator
+/// already parses. Build-time only; referenced files are local subsystem schemas.
+fn resolve_refs(value: &mut Value, schema_dir: &Path) {
+    if let Value::Object(map) = value {
+        if let Some(ref_path) = map.get("$ref").and_then(Value::as_str) {
+            let ref_file = schema_dir.join(ref_path);
+            let src = std::fs::read_to_string(&ref_file)
+                .unwrap_or_else(|e| panic!("failed to read referenced schema {}: {}", ref_file.display(), e));
+            let mut ref_doc: Value = serde_yaml::from_str(&src)
+                .unwrap_or_else(|e| panic!("failed to parse referenced schema {}: {}", ref_file.display(), e));
+            resolve_refs(&mut ref_doc, schema_dir);
+            *value = ref_doc;
+            return;
+        }
+        for child in map.values_mut() {
+            resolve_refs(child, schema_dir);
+        }
+    } else if let Value::Array(items) = value {
+        for item in items {
+            resolve_refs(item, schema_dir);
+        }
+    }
 }
 
 /// Collect the dotted paths of every `support: full` / `support: partial` overlay entry.
