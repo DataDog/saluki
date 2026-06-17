@@ -1,5 +1,5 @@
 use figment::Provider;
-use saluki_config::{ConfigurationLoader, GenericConfiguration};
+use saluki_config_tools::{ConfigurationLoader, GenericConfiguration};
 use serde::Serialize;
 use serde_json::json;
 
@@ -84,7 +84,7 @@ fn collect_unchanged_leaves(
 
 fn yaml_path_to_json(yaml_path: &str, value: serde_json::Value) -> serde_json::Value {
     let mut root = json!({});
-    saluki_config::upsert(&mut root, yaml_path, value);
+    saluki_config_tools::upsert(&mut root, yaml_path, value);
     root
 }
 
@@ -262,7 +262,7 @@ pub async fn run_config_smoke_tests<T, Factory, P, PF>(
             Some(raw) => serde_json::from_str(raw).expect("test_json is not valid JSON"),
             None => effective_test_value(annotation),
         };
-        saluki_config::upsert(&mut all_vals, annotation.yaml_path(), val);
+        saluki_config_tools::upsert(&mut all_vals, annotation.yaml_path(), val);
     }
     let all_keys_struct = config_factory(make_config_from_file(all_vals, key_aliases, &provider_factory).await);
     let full_map = serde_json::to_value(&all_keys_struct).expect("failed to serialize struct with all keys set");

@@ -8,7 +8,7 @@ use containerd_protos::services::{
 };
 use futures::{Stream, StreamExt as _, TryStreamExt as _};
 use hyper_util::rt::TokioIo;
-use saluki_config::GenericConfiguration;
+use saluki_config_tools::GenericConfiguration;
 use saluki_error::{generic_error, GenericError};
 use serde::Deserialize;
 use snafu::{ResultExt as _, Snafu};
@@ -259,7 +259,7 @@ async fn path_exists(path: &Path) -> bool {
 mod tests {
     use std::time::Duration;
 
-    use saluki_config::ConfigurationLoader;
+    use saluki_config_tools::ConfigurationLoader;
 
     use super::*;
 

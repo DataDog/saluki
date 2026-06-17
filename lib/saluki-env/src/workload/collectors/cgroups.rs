@@ -6,7 +6,7 @@ use saluki_common::{
     collections::{FastHashMap, FastHashSet},
     sync::shutdown::ShutdownHandle,
 };
-use saluki_config::GenericConfiguration;
+use saluki_config_tools::GenericConfiguration;
 use saluki_core::health::Health;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use stringtheory::{interning::GenericMapInterner, MetaString};

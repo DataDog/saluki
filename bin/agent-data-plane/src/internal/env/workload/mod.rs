@@ -3,7 +3,7 @@
 use std::{future::Future, num::NonZeroUsize, time::Duration};
 
 use resource_accounting::{ComponentRegistry, MemoryBounds, MemoryBoundsBuilder};
-use saluki_config::GenericConfiguration;
+use saluki_config_tools::GenericConfiguration;
 use saluki_context::{
     origin::{OriginTagCardinality, RawOrigin},
     tags::SharedTagSet,

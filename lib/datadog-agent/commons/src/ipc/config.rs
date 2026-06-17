@@ -3,7 +3,7 @@
 use std::{path::PathBuf, time::Duration};
 
 use backon::{BackoffBuilder, ConstantBuilder};
-use saluki_config::GenericConfiguration;
+use saluki_config_tools::GenericConfiguration;
 use saluki_error::{ErrorContext as _, GenericError};
 use serde::Deserialize;
 use tonic::transport::Uri;
@@ -272,7 +272,7 @@ impl BackoffBuilder for &RemoteAgentClientConfiguration {
 mod tests {
     use std::path::{Path, PathBuf};
 
-    use saluki_config::ConfigurationLoader;
+    use saluki_config_tools::ConfigurationLoader;
 
     use super::RemoteAgentClientConfiguration;
     use crate::platform::PlatformSettings;

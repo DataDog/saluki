@@ -49,7 +49,7 @@ dependencies = [
  "saluki-app",
  "saluki-common",
  "saluki-components",
- "saluki-config",
+ "saluki-config-tools",
  "saluki-context",
  "saluki-core",
  "saluki-env",
@@ -1088,7 +1088,7 @@ dependencies = [
  "pin-project-lite",
  "rustls",
  "rustls-pki-types",
- "saluki-config",
+ "saluki-config-tools",
  "saluki-error",
  "saluki-io",
  "saluki-metadata",
@@ -1134,7 +1134,7 @@ dependencies = [
  "datadog-agent-config-overlay-model",
  "figment",
  "indexmap",
- "saluki-config",
+ "saluki-config-tools",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -3135,7 +3135,7 @@ dependencies = [
  "reqwest",
  "rustls",
  "saluki-common",
- "saluki-config",
+ "saluki-config-tools",
  "saluki-error",
  "serde",
  "serde_json",
@@ -4203,7 +4203,7 @@ dependencies = [
  "ryu",
  "saluki-api",
  "saluki-common",
- "saluki-config",
+ "saluki-config-tools",
  "saluki-core",
  "saluki-error",
  "saluki-io",
@@ -4302,7 +4302,7 @@ dependencies = [
  "rustls",
  "saluki-api",
  "saluki-common",
- "saluki-config",
+ "saluki-config-tools",
  "saluki-context",
  "saluki-core",
  "saluki-env",
@@ -4333,7 +4333,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "saluki-config"
+name = "saluki-config-tools"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -4422,7 +4422,7 @@ dependencies = [
  "regex",
  "resource-accounting",
  "saluki-common",
- "saluki-config",
+ "saluki-config-tools",
  "saluki-context",
  "saluki-core",
  "saluki-error",

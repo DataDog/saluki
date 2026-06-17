@@ -6,7 +6,7 @@ use std::{
 
 use facet::Facet;
 use http::StatusCode;
-use saluki_config::GenericConfiguration;
+use saluki_config_tools::GenericConfiguration;
 use saluki_io::net::util::retry::{
     DefaultHttpRetryPolicy, ExponentialBackoff, HttpRetryPredicate, StandardHttpClassifier,
 };
@@ -290,7 +290,7 @@ fn secrets_in_use(config: &GenericConfiguration) -> bool {
 #[cfg(test)]
 mod tests {
     use http::{Request, Response};
-    use saluki_config::ConfigurationLoader;
+    use saluki_config_tools::ConfigurationLoader;
     use serde_json::json;
     use tower::retry::Policy;
 
@@ -501,7 +501,7 @@ mod tests {
     async fn policy_403_gate_reflects_dynamic_secrets_config_change() {
         use std::time::Duration as StdDuration;
 
-        use saluki_config::dynamic::ConfigUpdate;
+        use saluki_config_tools::dynamic::ConfigUpdate;
 
         let (config, sender) = ConfigurationLoader::for_tests(Some(json!({})), None, true).await;
         let sender = sender.expect("dynamic configuration sender should be present");

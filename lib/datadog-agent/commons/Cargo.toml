@@ -13,7 +13,7 @@ http-serde-ext = { workspace = true }
 pin-project-lite = { workspace = true }
 rustls = { workspace = true }
 rustls-pki-types = { workspace = true }
-saluki-config = { workspace = true }
+saluki-config-tools = { workspace = true }
 saluki-error = { workspace = true }
 saluki-io = { workspace = true }
 saluki-metadata = { workspace = true }

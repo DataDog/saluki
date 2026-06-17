@@ -606,7 +606,7 @@ pub struct MatrixConfig {
 
 impl MatrixConfig {
     fn from_yaml(config_path: &str) -> Result<Self, GenericError> {
-        use saluki_config::ConfigurationLoader;
+        use saluki_config_tools::ConfigurationLoader;
 
         let config_path = PathBuf::from(config_path)
             .canonicalize()

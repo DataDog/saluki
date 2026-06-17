@@ -5,7 +5,7 @@ use http::{Request, StatusCode, Uri};
 use http_body_util::Empty;
 use regex::Regex;
 use saluki_common::task::spawn_traced_named;
-use saluki_config::GenericConfiguration;
+use saluki_config_tools::GenericConfiguration;
 use saluki_error::{generic_error, GenericError};
 use saluki_io::net::client::http::HttpClient;
 use tokio::{
@@ -168,7 +168,7 @@ async fn run_validation_loop(
 }
 
 async fn wait_for_validation_config_change(
-    rx: &mut Option<broadcast::Receiver<saluki_config::dynamic::ConfigChangeEvent>>,
+    rx: &mut Option<broadcast::Receiver<saluki_config_tools::dynamic::ConfigChangeEvent>>,
 ) {
     let Some(rx) = rx else {
         std::future::pending::<()>().await;
@@ -352,7 +352,7 @@ mod tests {
     };
 
     use axum::{routing::get, Router};
-    use saluki_config::{dynamic::ConfigUpdate, ConfigurationLoader};
+    use saluki_config_tools::{dynamic::ConfigUpdate, ConfigurationLoader};
     use saluki_tls::initialize_default_crypto_provider;
     use serde_json::json;
     use tokio::net::TcpListener;

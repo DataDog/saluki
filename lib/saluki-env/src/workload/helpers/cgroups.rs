@@ -10,7 +10,7 @@ use std::{
 };
 
 use regex::Regex;
-use saluki_config::GenericConfiguration;
+use saluki_config_tools::GenericConfiguration;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use stringtheory::{
     interning::{GenericMapInterner, Interner as _},

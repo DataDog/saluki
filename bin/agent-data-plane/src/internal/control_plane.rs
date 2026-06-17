@@ -5,7 +5,7 @@ use saluki_app::{
     accounting::ResourceTelemetryWorker, config::ConfigWorker, dynamic_api::DynamicAPIBuilder,
     logging::LoggingOverrideController,
 };
-use saluki_config::GenericConfiguration;
+use saluki_config_tools::GenericConfiguration;
 use saluki_core::{
     health::HealthRegistry,
     runtime::{RestartStrategy, RuntimeConfiguration, Supervisor},

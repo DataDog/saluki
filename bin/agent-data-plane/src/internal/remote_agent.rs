@@ -15,7 +15,7 @@ use datadog_protos::agent::{
 use futures::StreamExt;
 use prost_types::value::Kind;
 use saluki_common::task::spawn_traced_named;
-use saluki_config::{dynamic::ConfigUpdate, upsert, GenericConfiguration};
+use saluki_config_tools::{dynamic::ConfigUpdate, upsert, GenericConfiguration};
 use saluki_core::observability::metrics::{
     get_shared_metrics_state, AggregatedMetricsProcessor, Reflector, TelemetryProcessor,
 };
