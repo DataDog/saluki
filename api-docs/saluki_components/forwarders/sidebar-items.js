@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"struct":["DatadogConfiguration","OtlpForwarderConfiguration"]};
+window.SIDEBAR_ITEMS = {"struct":["ClusterAgentForwarderConfiguration","DatadogConfiguration","OtlpForwarderConfiguration"]};
