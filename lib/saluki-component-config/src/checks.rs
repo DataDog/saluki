@@ -7,17 +7,10 @@ use saluki_io::net::ListenAddress;
 
 /// Configuration for the checks IPC source component.
 ///
-/// Mirrors `ChecksIPCConfiguration` in `saluki-components`.
-///
-/// # Derive deviation
-///
-/// This struct reuses [`ListenAddress`] from `saluki-io` to keep the field type identical to the
-/// component struct for a clean cutover. [`ListenAddress`] does not implement `PartialEq`,
-/// `serde::Serialize`, or `Default`, so this struct cannot derive them either. It derives `Clone`
-/// and `Debug` and provides a manual [`Default`]. When `ListenAddress` gains those impls upstream,
-/// this struct should be brought in line with the rest of the crate. The lack of `Serialize` means
-/// this slice is, for now, omitted from the future `/config/internal` view.
-#[derive(Clone, Debug)]
+/// Mirrors `ChecksIPCConfiguration` in `saluki-components`. Reuses [`ListenAddress`] from
+/// `saluki-io` to keep the field type identical to the component struct for a clean cutover.
+/// `ListenAddress` has no sensible universal default, so [`Default`] is implemented manually.
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
 pub struct ChecksIPCConfig {
     /// The gRPC endpoint the checks IPC server listens on.
     ///

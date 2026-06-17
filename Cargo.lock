@@ -73,7 +73,11 @@ dependencies = [
 name = "agent-data-plane-config"
 version = "0.1.0"
 dependencies = [
+ "bytesize",
  "saluki-component-config",
+ "saluki-io",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -1127,6 +1131,7 @@ name = "datadog-agent-config"
 version = "0.1.0"
 dependencies = [
  "datadog-agent-config-overlay-model",
+ "figment",
  "indexmap",
  "prettyplease",
  "schemars",

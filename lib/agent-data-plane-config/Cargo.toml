@@ -9,4 +9,10 @@ repository = { workspace = true }
 workspace = true
 
 [dependencies]
+bytesize = { workspace = true }
 saluki-component-config = { workspace = true }
+saluki-io = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

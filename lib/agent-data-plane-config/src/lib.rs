@@ -50,3 +50,24 @@
 //! Depends on `saluki-component-config` (embeds its leaf structs). Must not depend on
 //! `datadog-agent-config`, `saluki-config-tools`, `agent-data-plane-config-system`, or
 //! `saluki-components`.
+
+#![deny(missing_docs)]
+
+pub mod authority;
+pub mod bootstrap;
+pub mod control;
+pub mod model;
+pub mod saluki_only;
+pub mod views;
+
+pub use self::authority::RuntimeAuthority;
+pub use self::bootstrap::{
+    AgentIpcBootstrap, BootstrapConfiguration, DatadogBootstrap, LoggingBootstrap, SalukiBootstrap, TelemetryBootstrap,
+};
+pub use self::control::{ControlConfiguration, OtlpControl, OtlpProxyControl, PipelineGate};
+pub use self::model::{
+    ChecksConfigs, ComponentConfiguration, DogStatsDConfigs, EventsConfigs, ForwarderConfigs, LogsConfigs,
+    MetricsConfigs, OtlpConfigs, SalukiConfiguration, ServiceChecksConfigs, TracesConfigs, WorkloadConfigs,
+};
+pub use self::saluki_only::SalukiOnlyConfiguration;
+pub use self::views::{ConfigViews, InternalConfigView, SourceConfigView};

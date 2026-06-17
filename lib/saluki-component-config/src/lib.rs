@@ -66,4 +66,9 @@ pub mod service_checks;
 pub mod traces;
 pub mod workload;
 
+pub use self::dogstatsd::{
+    DogStatsDPostAggregateFilterConfig, DogStatsDPrefixFilterConfig, FilterAction, MetricTagFilterEntry,
+    TagFilterlistConfig,
+};
 pub use self::dynamic::ScopedConfig;
+pub use self::workload::WorkloadConfig;

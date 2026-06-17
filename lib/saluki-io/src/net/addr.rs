@@ -5,7 +5,7 @@ use std::{
 };
 
 use axum::extract::connect_info::Connected;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use url::Url;
 
 use super::Connection;
@@ -22,7 +22,7 @@ use super::Connection;
 /// - `udp://[::1]:53` (listen on IPv6 loopback, UDP port 53)
 /// - `unixgram:///tmp/app.socket` (listen on a Unix datagram socket at `/tmp/app.socket`)
 /// - `unix:///tmp/app.socket` (listen on a Unix stream socket at `/tmp/app.socket`)
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(try_from = "String")]
 pub enum ListenAddress {
     /// A TCP listen address.

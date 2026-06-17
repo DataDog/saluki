@@ -525,3 +525,131 @@ pub enum HistogramStatistic {
         suffix: MetaString,
     },
 }
+
+/// Configuration for the DogStatsD metric-tag filterlist transform.
+///
+/// Mirrors the resolved form of the DogStatsD metric-tag filterlist in `saluki-components`. This is
+/// a dynamic-capable slice: at runtime the metric-tag filterlist can be retranslated and pushed to
+/// the component via a [`ScopedConfig`]. The injected `Option<GenericConfiguration>` used by the
+/// original component for `watch_for_updates` is excluded.
+///
+/// [`ScopedConfig`]: crate::ScopedConfig
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize)]
+pub struct TagFilterlistConfig {
+    /// The per-metric tag filter entries.
+    ///
+    /// Each entry names a metric and either includes or excludes a set of tags on it. Defaults to
+    /// empty (no filtering).
+    pub entries: Vec<MetricTagFilterEntry>,
+
+    /// The capacity of the per-context filter result cache.
+    ///
+    /// Bounds how many distinct contexts have their computed filter decision cached. Defaults to 0.
+    pub context_cache_capacity: usize,
+}
+
+/// A single metric-tag filter entry within a [`TagFilterlistConfig`].
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize)]
+pub struct MetricTagFilterEntry {
+    /// The metric name this entry applies to.
+    pub metric_name: String,
+
+    /// Whether the listed tags are an include list or an exclude list.
+    ///
+    /// Defaults to [`FilterAction::Exclude`].
+    pub action: FilterAction,
+
+    /// The tags this entry includes or excludes, depending on `action`.
+    ///
+    /// Defaults to empty.
+    pub tags: Vec<String>,
+}
+
+/// Whether a metric-tag filter entry includes or excludes the listed tags.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Serialize)]
+pub enum FilterAction {
+    /// Keep only the listed tags; drop all others.
+    Include,
+
+    /// Drop the listed tags; keep all others.
+    ///
+    /// This is the default.
+    #[default]
+    Exclude,
+}
+
+/// Configuration for the DogStatsD metric prefix/name filter.
+///
+/// Mirrors the resolved form of the DogStatsD prefix filter in `saluki-components`. This is a
+/// dynamic-capable slice; the injected `Option<GenericConfiguration>` used by the original component
+/// for runtime watching is excluded.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize)]
+pub struct DogStatsDPrefixFilterConfig {
+    /// The metric name prefix this filter scopes itself to.
+    ///
+    /// Only metrics whose names start with this prefix are considered. Defaults to empty.
+    pub metric_prefix: String,
+
+    /// Metric prefixes that are unconditionally blocked.
+    ///
+    /// Defaults to empty.
+    pub metric_prefix_blocklist: Vec<String>,
+
+    /// The metric names (or prefixes) that are allowed through the filter.
+    ///
+    /// Defaults to empty.
+    pub metric_filterlist: Vec<String>,
+
+    /// Whether `metric_filterlist` entries match as prefixes rather than exact names.
+    ///
+    /// Defaults to `false`.
+    pub metric_filterlist_match_prefix: bool,
+
+    /// The metric names (or prefixes) that are blocked by the filter.
+    ///
+    /// Defaults to empty.
+    pub metric_blocklist: Vec<String>,
+
+    /// Whether `metric_blocklist` entries match as prefixes rather than exact names.
+    ///
+    /// Defaults to `false`.
+    pub metric_blocklist_match_prefix: bool,
+}
+
+/// Configuration for the DogStatsD post-aggregation metric filter.
+///
+/// Mirrors the resolved form of the DogStatsD post-aggregate filter in `saluki-components`. This is
+/// a dynamic-capable slice; the injected `Option<GenericConfiguration>` used by the original
+/// component for runtime watching is excluded.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize)]
+pub struct DogStatsDPostAggregateFilterConfig {
+    /// The metric names (or prefixes) that are allowed through the post-aggregation filter.
+    ///
+    /// Defaults to empty.
+    pub metric_filterlist: Vec<String>,
+
+    /// Whether `metric_filterlist` entries match as prefixes rather than exact names.
+    ///
+    /// Defaults to `false`.
+    pub metric_filterlist_match_prefix: bool,
+
+    /// The metric names (or prefixes) that are blocked by the post-aggregation filter.
+    ///
+    /// Defaults to empty.
+    pub metric_blocklist: Vec<String>,
+
+    /// Whether `metric_blocklist` entries match as prefixes rather than exact names.
+    ///
+    /// Defaults to `false`.
+    pub metric_blocklist_match_prefix: bool,
+
+    /// The set of histogram aggregate statistics to compute post-aggregation.
+    ///
+    /// Defaults to empty.
+    pub histogram_aggregates: Vec<String>,
+
+    /// The set of histogram percentiles to compute post-aggregation.
+    ///
+    /// Defaults to empty.
+    pub histogram_percentiles: Vec<String>,
+}

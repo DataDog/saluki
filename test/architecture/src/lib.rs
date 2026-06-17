@@ -33,16 +33,15 @@ mod tests {
     /// `[dependencies]` or `[build-dependencies]`.
     fn crate_has_dependency(crate_path: &Path, dep_name: &str) -> bool {
         let cargo_toml = crate_path.join("Cargo.toml");
-        let contents = fs::read_to_string(&cargo_toml)
-            .unwrap_or_else(|e| panic!("failed to read {}: {e}", cargo_toml.display()));
+        let contents =
+            fs::read_to_string(&cargo_toml).unwrap_or_else(|e| panic!("failed to read {}: {e}", cargo_toml.display()));
 
         // Match lines like `dep-name = ...` or `dep-name.workspace = ...`.
         // Anchored to line start to avoid matching partial names or comments.
         for line in contents.lines() {
             let trimmed = line.trim();
             if trimmed.starts_with(dep_name)
-                && trimmed[dep_name.len()..]
-                    .starts_with(|c: char| c == ' ' || c == '=' || c == '.')
+                && trimmed[dep_name.len()..].starts_with(|c: char| c == ' ' || c == '=' || c == '.')
             {
                 return true;
             }
@@ -146,25 +145,21 @@ mod tests {
     // -------------------------------------------------------------------------
 
     #[test]
-    #[ignore = "enabled at step 3"]
     fn adp_config_must_not_depend_on_datadog_agent_config() {
         assert_no_dependency("lib/agent-data-plane-config", "datadog-agent-config");
     }
 
     #[test]
-    #[ignore = "enabled at step 3"]
     fn adp_config_must_not_depend_on_raw_map() {
         assert_no_dependency("lib/agent-data-plane-config", "saluki-config-tools");
     }
 
     #[test]
-    #[ignore = "enabled at step 3"]
     fn adp_config_must_not_depend_on_config_system() {
         assert_no_dependency("lib/agent-data-plane-config", "agent-data-plane-config-system");
     }
 
     #[test]
-    #[ignore = "enabled at step 3"]
     fn adp_config_must_not_depend_on_saluki_components() {
         assert_no_dependency("lib/agent-data-plane-config", "saluki-components");
     }
@@ -255,8 +250,7 @@ mod tests {
     // -------------------------------------------------------------------------
 
     fn assert_no_binary_component_symbol(symbol: &str) {
-        let dir = workspace_root()
-            .join("bin/agent-data-plane/src/components");
+        let dir = workspace_root().join("bin/agent-data-plane/src/components");
         let hits = grep_rs_files(&dir, symbol);
         assert!(
             hits.is_empty(),
