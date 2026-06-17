@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use facet::Facet;
-use saluki_config_tools::GenericConfiguration;
+use saluki_component_config::{DatadogForwarderConfig, ScopedConfig};
 use saluki_error::GenericError;
 use saluki_io::net::client::http::{HttpProtocol, TlsMinimumVersion};
 use serde::Deserialize;
@@ -282,24 +282,26 @@ pub struct ForwarderConfiguration {
 }
 
 impl ForwarderConfiguration {
-    /// Creates a new `ForwarderConfiguration` from the given configuration.
-    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        let mut forwarder_config = config.as_typed::<Self>()?;
-        forwarder_config.parsed_min_tls_version = min_tls_version_from_config_value(&forwarder_config.min_tls_version);
-
-        if forwarder_config.api_key_validation_interval_mins <= 0 {
-            warn!(
-                config_key = "forwarder_apikey_validation_interval",
-                fallback_minutes = default_api_key_validation_interval_mins(),
-                "Configured API key validation interval is invalid; using default."
-            );
-            forwarder_config.api_key_validation_interval_mins = default_api_key_validation_interval_mins() as i64;
+    /// Creates a new `ForwarderConfiguration` from native component config.
+    pub fn from_native(config: &DatadogForwarderConfig) -> Self {
+        Self {
+            endpoint_concurrency: config.endpoint_concurrency,
+            endpoint_concurrency_multiplier: default_endpoint_concurrency_multiplier(),
+            request_timeout_secs: config.request_timeout_millis / 1000,
+            endpoint_buffer_size: default_endpoint_buffer_size(),
+            endpoint: EndpointConfiguration::from_native(&config.endpoints),
+            retry: RetryConfiguration::from_native(&config.retry),
+            proxy: None,
+            opw_metrics: OpwMetricsConfiguration::default(),
+            http_protocol: ForwarderHttpProtocol::default(),
+            connection_reset_interval_secs: default_forwarder_connection_reset_interval(),
+            skip_ssl_validation: !config.tls.verify,
+            sslkeylogfile: String::new(),
+            min_tls_version: default_min_tls_version(),
+            parsed_min_tls_version: min_tls_version_from_config_value(&default_min_tls_version()),
+            allow_arbitrary_tags: config.allow_arbitrary_tags,
+            api_key_validation_interval_mins: default_api_key_validation_interval_mins() as i64,
         }
-
-        // Handle fixing up the forwarder storage path if it's empty.
-        forwarder_config.retry.fix_empty_storage_path(config);
-
-        Ok(forwarder_config)
     }
 
     /// Returns the maximum number of concurrent requests for an individual endpoint.
@@ -352,7 +354,7 @@ impl ForwarderConfiguration {
     ///
     /// The normal primary and OPW metrics primary endpoints share the same dynamic API key source.
     pub(crate) fn build_routable_endpoints(
-        &self, configuration: Option<GenericConfiguration>,
+        &self, configuration: Option<ScopedConfig<DatadogForwarderConfig>>,
     ) -> Result<Vec<RoutableEndpoint>, GenericError> {
         // Label each endpoint so the I/O loop can route metrics to OPW and non-metrics to the normal primary.
         let mut endpoints = Vec::new();
@@ -452,7 +454,8 @@ impl ForwarderConfiguration {
 #[cfg(test)]
 mod tests {
     use datadog_agent_config::{DatadogRemapper, KEY_ALIASES};
-    use saluki_config_tools::ConfigurationLoader;
+    use saluki_component_config::EndpointConfig;
+    use saluki_config_tools::{ConfigurationLoader, GenericConfiguration};
 
     use super::*;
 
@@ -495,7 +498,18 @@ mod tests {
             DatadogRemapper::new,
         )
         .await;
-        ForwarderConfiguration::from_configuration(&cfg).expect("ForwarderConfiguration should deserialize")
+        parse_forwarder_configuration(&cfg)
+    }
+
+    fn parse_forwarder_configuration(cfg: &GenericConfiguration) -> ForwarderConfiguration {
+        let mut forwarder_config = cfg
+            .as_typed::<ForwarderConfiguration>()
+            .expect("ForwarderConfiguration should deserialize");
+        forwarder_config.parsed_min_tls_version = min_tls_version_from_config_value(&forwarder_config.min_tls_version);
+        if forwarder_config.api_key_validation_interval_mins <= 0 {
+            forwarder_config.api_key_validation_interval_mins = default_api_key_validation_interval_mins() as i64;
+        }
+        forwarder_config
     }
 
     async fn generic_config_from(
@@ -942,11 +956,16 @@ mod tests {
             None,
         )
         .await;
-        let config =
-            ForwarderConfiguration::from_configuration(&generic_config).expect("ForwarderConfiguration should parse");
+        let config = parse_forwarder_configuration(&generic_config);
 
         let endpoints = config
-            .build_routable_endpoints(Some(generic_config))
+            .build_routable_endpoints(Some(ScopedConfig::fixed(DatadogForwarderConfig {
+                endpoints: vec![EndpointConfig {
+                    url: DATADOG_URL.to_string(),
+                    api_key: "test-api-key".to_string(),
+                }],
+                ..DatadogForwarderConfig::default()
+            })))
             .expect("endpoints should resolve");
         let opw_endpoint = endpoints
             .iter()
@@ -967,11 +986,22 @@ mod tests {
             None,
         )
         .await;
-        let config =
-            ForwarderConfiguration::from_configuration(&generic_config).expect("ForwarderConfiguration should parse");
+        let config = parse_forwarder_configuration(&generic_config);
 
         let endpoints = config
-            .build_routable_endpoints(Some(generic_config))
+            .build_routable_endpoints(Some(ScopedConfig::fixed(DatadogForwarderConfig {
+                endpoints: vec![
+                    EndpointConfig {
+                        url: DATADOG_URL.to_string(),
+                        api_key: "test-api-key".to_string(),
+                    },
+                    EndpointConfig {
+                        url: "http://additional.example.com".to_string(),
+                        api_key: "extra-api-key".to_string(),
+                    },
+                ],
+                ..DatadogForwarderConfig::default()
+            })))
             .expect("endpoints should resolve");
         let additional = endpoints
             .iter()
@@ -1019,9 +1049,23 @@ mod config_smoke {
     use datadog_agent_config::{DatadogRemapper, KEY_ALIASES};
     use datadog_agent_config_testing::config_registry::structs;
     use datadog_agent_config_testing::run_config_smoke_tests;
+    use saluki_config_tools::GenericConfiguration;
     use serde_json::json;
 
     use super::ForwarderConfiguration;
+
+    fn parse_forwarder_configuration(cfg: &GenericConfiguration) -> ForwarderConfiguration {
+        let mut forwarder_config = cfg
+            .as_typed::<ForwarderConfiguration>()
+            .expect("ForwarderConfiguration should deserialize");
+        forwarder_config.parsed_min_tls_version =
+            super::min_tls_version_from_config_value(&forwarder_config.min_tls_version);
+        if forwarder_config.api_key_validation_interval_mins <= 0 {
+            forwarder_config.api_key_validation_interval_mins =
+                super::default_api_key_validation_interval_mins() as i64;
+        }
+        forwarder_config
+    }
 
     #[tokio::test]
     async fn smoke_test() {
@@ -1032,7 +1076,7 @@ mod config_smoke {
             structs::FORWARDER_CONFIGURATION,
             &[],
             json!({ "api_key": "smoke-test-api-key" }),
-            |cfg| ForwarderConfiguration::from_configuration(&cfg).expect("ForwarderConfiguration should deserialize"),
+            |cfg| parse_forwarder_configuration(&cfg),
             KEY_ALIASES,
             DatadogRemapper::new,
         )

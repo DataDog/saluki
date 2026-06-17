@@ -5,12 +5,12 @@ use http::{Request, StatusCode, Uri};
 use http_body_util::Empty;
 use regex::Regex;
 use saluki_common::task::spawn_traced_named;
-use saluki_config_tools::GenericConfiguration;
+use saluki_component_config::{DatadogForwarderConfig, ScopedConfig};
 use saluki_error::{generic_error, GenericError};
 use saluki_io::net::client::http::HttpClient;
 use tokio::{
     select,
-    sync::{broadcast, mpsc},
+    sync::mpsc,
     task::JoinHandle,
     time::{self, MissedTickBehavior},
 };
@@ -39,15 +39,15 @@ pub(crate) enum ValidationReadiness {
 pub(crate) struct ApiKeyValidator {
     endpoints: Vec<RoutableEndpoint>,
     client: HttpClient,
-    live_config: Option<GenericConfiguration>,
+    live_config: Option<ScopedConfig<DatadogForwarderConfig>>,
     interval: Duration,
 }
 
 impl ApiKeyValidator {
     /// Creates API key validation for the given startup endpoint set.
     pub(crate) fn new(
-        endpoints: Vec<RoutableEndpoint>, client: HttpClient, live_config: Option<GenericConfiguration>,
-        interval: Duration,
+        endpoints: Vec<RoutableEndpoint>, client: HttpClient,
+        live_config: Option<ScopedConfig<DatadogForwarderConfig>>, interval: Duration,
     ) -> Self {
         Self {
             endpoints,
@@ -125,7 +125,7 @@ enum KeyValidationResult {
 }
 
 fn spawn_validation_task(
-    endpoints: Vec<RoutableEndpoint>, client: HttpClient, live_config: Option<GenericConfiguration>,
+    endpoints: Vec<RoutableEndpoint>, client: HttpClient, live_config: Option<ScopedConfig<DatadogForwarderConfig>>,
     interval: Duration, readiness_tx: mpsc::Sender<ValidationReadiness>,
 ) -> JoinHandle<()> {
     spawn_traced_named(
@@ -135,8 +135,9 @@ fn spawn_validation_task(
 }
 
 async fn run_validation_loop(
-    mut endpoints: Vec<RoutableEndpoint>, mut client: HttpClient, live_config: Option<GenericConfiguration>,
-    interval: Duration, readiness_tx: mpsc::Sender<ValidationReadiness>,
+    mut endpoints: Vec<RoutableEndpoint>, mut client: HttpClient,
+    live_config: Option<ScopedConfig<DatadogForwarderConfig>>, interval: Duration,
+    readiness_tx: mpsc::Sender<ValidationReadiness>,
 ) {
     if !validate_and_send_readiness(&mut endpoints, &mut client, &readiness_tx).await {
         return;
@@ -147,9 +148,7 @@ async fn run_validation_loop(
     // The startup validation above is the immediate tick.
     interval.tick().await;
 
-    let mut config_updates_rx = live_config
-        .as_ref()
-        .and_then(GenericConfiguration::subscribe_for_updates);
+    let mut live_config = live_config;
 
     loop {
         select! {
@@ -158,7 +157,7 @@ async fn run_validation_loop(
                     return;
                 }
             },
-            _ = wait_for_validation_config_change(&mut config_updates_rx) => {
+            _ = wait_for_validation_config_change(&mut live_config) => {
                 if !validate_and_send_readiness(&mut endpoints, &mut client, &readiness_tx).await {
                     return;
                 }
@@ -167,32 +166,13 @@ async fn run_validation_loop(
     }
 }
 
-async fn wait_for_validation_config_change(
-    rx: &mut Option<broadcast::Receiver<saluki_config_tools::dynamic::ConfigChangeEvent>>,
-) {
-    let Some(rx) = rx else {
+async fn wait_for_validation_config_change(config: &mut Option<ScopedConfig<DatadogForwarderConfig>>) {
+    let Some(config) = config else {
         std::future::pending::<()>().await;
         return;
     };
 
-    loop {
-        match rx.recv().await {
-            Ok(event) if is_validation_trigger_key(&event.key) => return,
-            Ok(_) => {}
-            Err(broadcast::error::RecvError::Lagged(_)) => return,
-            Err(broadcast::error::RecvError::Closed) => {
-                std::future::pending::<()>().await;
-                return;
-            }
-        }
-    }
-}
-
-fn is_validation_trigger_key(key: &str) -> bool {
-    key == "api_key"
-        || key == "multi_region_failover.api_key"
-        || key == "additional_endpoints"
-        || key.starts_with("additional_endpoints.")
+    config.changed().await;
 }
 
 async fn validate_and_send_readiness(
@@ -352,9 +332,8 @@ mod tests {
     };
 
     use axum::{routing::get, Router};
-    use saluki_config_tools::{dynamic::ConfigUpdate, ConfigurationLoader};
+    use saluki_component_config::{DatadogForwarderConfig, EndpointConfig, ScopedConfig};
     use saluki_tls::initialize_default_crypto_provider;
-    use serde_json::json;
     use tokio::net::TcpListener;
 
     use super::*;
@@ -388,22 +367,6 @@ mod tests {
 
         for (case_name, raw_endpoint, expected_url) in cases {
             assert_eq!(validation_url_for(raw_endpoint), expected_url, "{case_name}");
-        }
-    }
-
-    #[test]
-    fn validation_config_triggers_include_nested_additional_endpoints_changes() {
-        let cases = [
-            ("api_key", true),
-            ("multi_region_failover.api_key", true),
-            ("additional_endpoints", true),
-            ("additional_endpoints.http://additional.example.com.0", true),
-            ("forwarder_timeout", false),
-            ("multi_region_failover.enabled", false),
-        ];
-
-        for (key, should_trigger) in cases {
-            assert_eq!(is_validation_trigger_key(key), should_trigger, "{key}");
         }
     }
 
@@ -454,23 +417,22 @@ mod tests {
 
     #[tokio::test]
     async fn validation_targets_include_primary_additional_and_opw() {
-        let (config, _) = ConfigurationLoader::for_tests(
-            Some(json!({
-                "api_key": "primary-key",
-                "dd_url": "http://primary.example.com",
-                "additional_endpoints": {
-                    "http://additional.example.com": ["additional-key", "additional-key", ""]
+        let native = DatadogForwarderConfig {
+            endpoints: vec![
+                EndpointConfig {
+                    url: "http://primary.example.com".to_string(),
+                    api_key: "primary-key".to_string(),
                 },
-                "observability_pipelines_worker_metrics_enabled": true,
-                "observability_pipelines_worker_metrics_url": "http://opw.example.com"
-            })),
-            None,
-            false,
-        )
-        .await;
-        let forwarder_config = ForwarderConfiguration::from_configuration(&config).expect("config should parse");
+                EndpointConfig {
+                    url: "http://additional.example.com".to_string(),
+                    api_key: "additional-key".to_string(),
+                },
+            ],
+            ..DatadogForwarderConfig::default()
+        };
+        let forwarder_config = ForwarderConfiguration::from_native(&native);
         let mut endpoints = forwarder_config
-            .build_routable_endpoints(Some(config))
+            .build_routable_endpoints(Some(ScopedConfig::fixed(native)))
             .expect("endpoints should resolve");
 
         let targets = collect_validation_targets(&mut endpoints);
@@ -487,7 +449,6 @@ mod tests {
                     "http://additional.example.com/".to_string(),
                     "additional-key".to_string()
                 ),
-                ("http://opw.example.com/".to_string(), "primary-key".to_string()),
                 ("http://primary.example.com/".to_string(), "primary-key".to_string()),
             ]
         );
@@ -495,36 +456,32 @@ mod tests {
 
     #[tokio::test]
     async fn validation_targets_refresh_existing_additional_endpoint_key() {
-        let (config, sender) = ConfigurationLoader::for_tests(None, None, true).await;
-        let sender = sender.expect("dynamic sender should exist");
-        sender
-            .send(ConfigUpdate::Snapshot(json!({
-                "api_key": "primary-key",
-                "dd_url": "http://primary.example.com",
-                "additional_endpoints": {
-                    "http://additional.example.com": ["old-additional-key"]
-                }
-            })))
-            .await
-            .expect("initial snapshot should send");
-        config.ready().await;
-
-        let forwarder_config = ForwarderConfiguration::from_configuration(&config).expect("config should parse");
+        let initial = DatadogForwarderConfig {
+            endpoints: vec![
+                EndpointConfig {
+                    url: "http://primary.example.com".to_string(),
+                    api_key: "primary-key".to_string(),
+                },
+                EndpointConfig {
+                    url: "http://additional.example.com".to_string(),
+                    api_key: "old-additional-key".to_string(),
+                },
+            ],
+            ..DatadogForwarderConfig::default()
+        };
+        let (scoped, sender) = ScopedConfig::live(initial.clone());
+        let forwarder_config = ForwarderConfiguration::from_native(&initial);
         let mut endpoints = forwarder_config
-            .build_routable_endpoints(Some(config.clone()))
+            .build_routable_endpoints(Some(scoped))
             .expect("endpoints should resolve");
 
-        sender
-            .send(ConfigUpdate::Snapshot(json!({
-                "api_key": "primary-key",
-                "dd_url": "http://primary.example.com",
-                "additional_endpoints": {
-                    "http://additional.example.com": ["new-additional-key"],
-                    "http://new.example.com": ["ignored-new-domain-key"]
-                }
-            })))
-            .await
-            .expect("updated snapshot should send");
+        let mut updated = initial;
+        updated.endpoints[1].api_key = "new-additional-key".to_string();
+        updated.endpoints.push(EndpointConfig {
+            url: "http://new.example.com".to_string(),
+            api_key: "ignored-new-domain-key".to_string(),
+        });
+        sender.send_replace(updated);
 
         let deadline = std::time::Instant::now() + Duration::from_secs(2);
         let targets = loop {

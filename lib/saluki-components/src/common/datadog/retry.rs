@@ -1,20 +1,16 @@
 use std::{
     path::{Path, PathBuf},
-    sync::Arc,
     time::Duration,
 };
 
 use facet::Facet;
-use http::StatusCode;
-use saluki_config_tools::GenericConfiguration;
-use saluki_io::net::util::retry::{
-    DefaultHttpRetryPolicy, ExponentialBackoff, HttpRetryPredicate, StandardHttpClassifier,
-};
+use saluki_component_config::RetryConfig;
+use saluki_io::net::util::retry::{DefaultHttpRetryPolicy, ExponentialBackoff, StandardHttpClassifier};
 use serde::Deserialize;
-use tracing::debug;
 
 const FORWARDER_RETRY_QUEUE_PAYLOADS_MAX_SIZE_BYTES: u64 = 15 * 1024 * 1024;
 const FORWARDER_FLUSH_TO_DISK_MEM_RATIO: f64 = 0.5;
+#[cfg(test)]
 const RETRY_TXN_DIR: &str = "transactions_to_retry";
 const RETRY_QUEUE_CAPACITY_DEFAULT_HISTORY_DURATION_SECS: u64 = 15 * 60;
 const RETRY_QUEUE_CAPACITY_MIN_HISTORY_DURATION_SECS: u64 = 10;
@@ -187,25 +183,21 @@ pub struct RetryConfiguration {
 }
 
 impl RetryConfiguration {
-    pub(super) fn fix_empty_storage_path(&mut self, config: &GenericConfiguration) {
-        // If `forwarder_storage_path` is empty, try setting it to a default path based on `run_path`.
-        if self.storage_path.parent().is_none() {
-            let storage_path = match config.try_get_typed::<PathBuf>("run_path") {
-                Ok(Some(mut run_path)) => {
-                    run_path.push(RETRY_TXN_DIR);
-                    run_path
-                }
-                Ok(None) => {
-                    debug!("`forwarder_storage_path` and `run_path` were empty. Cannot calculate default storage path for forwarder.");
-                    return;
-                }
-                Err(e) => {
-                    debug!(error = %e, "Failed to read `run_path` from configuration. Cannot calculate default storage path for forwarder.");
-                    return;
-                }
-            };
-
-            self.storage_path = storage_path;
+    pub(crate) fn from_native(config: &RetryConfig) -> Self {
+        Self {
+            backoff_factor: default_request_backoff_factor(),
+            backoff_base: default_request_backoff_base(),
+            backoff_max: default_request_backoff_max(),
+            recovery_error_decrease_factor: default_request_recovery_error_decrease_factor(),
+            recovery_reset: default_request_recovery_reset(),
+            retry_queue_payloads_max_size: None,
+            retry_queue_max_size: None,
+            storage_max_size_bytes: config.max_disk_size_bytes,
+            flush_to_disk_mem_ratio: config.flush_to_disk_mem_ratio,
+            storage_path: PathBuf::from(&config.storage_path),
+            storage_max_disk_ratio: default_storage_max_disk_ratio(),
+            outdated_file_in_days: default_outdated_file_in_days(),
+            capacity_time_interval_secs: default_retry_queue_capacity_time_interval_secs(),
         }
     }
 
@@ -254,27 +246,14 @@ impl RetryConfiguration {
     }
 
     /// Creates a new [`DefaultHttpRetryPolicy`] based on the forwarder configuration.
-    ///
-    /// If a [`GenericConfiguration`] is supplied, the policy captures it and checks whether
-    /// secrets management is active on every 403 Forbidden response. This allows the retry gate to
-    /// pick up runtime changes pushed via the config stream without rebuilding the service. When no
-    /// configuration is supplied, 403 responses retain their default non-retriable behavior.
-    pub fn to_default_http_retry_policy<B: 'static>(
-        &self, live_config: Option<GenericConfiguration>,
-    ) -> DefaultHttpRetryPolicy<B> {
+    pub fn to_default_http_retry_policy<B: 'static>(&self) -> DefaultHttpRetryPolicy<B> {
         let retry_backoff = ExponentialBackoff::with_jitter(
             Duration::from_secs_f64(self.backoff_base),
             Duration::from_secs_f64(self.backoff_max),
             self.backoff_factor,
         );
 
-        let classifier = if let Some(config) = live_config {
-            let gate: HttpRetryPredicate<B> =
-                Arc::new(move |response| response.status() == StatusCode::FORBIDDEN && secrets_in_use(&config));
-            StandardHttpClassifier::new().with_predicate(gate)
-        } else {
-            StandardHttpClassifier::new()
-        };
+        let classifier = StandardHttpClassifier::new();
 
         let recovery_error_decrease_factor = (!self.recovery_reset).then_some(self.recovery_error_decrease_factor);
         DefaultHttpRetryPolicy::with_backoff_and_classifier(retry_backoff, classifier)
@@ -282,14 +261,9 @@ impl RetryConfiguration {
     }
 }
 
-fn secrets_in_use(config: &GenericConfiguration) -> bool {
-    matches!(config.try_get_typed::<u64>("secret_refresh_on_api_key_failure_interval"), Ok(Some(value)) if value > 0)
-        || matches!(config.try_get_typed::<String>("secret_backend_command"), Ok(Some(value)) if !value.trim().is_empty())
-}
-
 #[cfg(test)]
 mod tests {
-    use http::{Request, Response};
+    use http::{Request, Response, StatusCode};
     use saluki_config_tools::ConfigurationLoader;
     use serde_json::json;
     use tower::retry::Policy;
@@ -327,6 +301,17 @@ mod tests {
         Policy::<TestRequest, Response<()>, BoxError>::retry(policy, &mut request, &mut response).is_some()
     }
 
+    fn fix_empty_storage_path(
+        retry_config: &mut RetryConfiguration, config: &saluki_config_tools::GenericConfiguration,
+    ) {
+        if retry_config.storage_path.parent().is_none() {
+            if let Ok(Some(mut run_path)) = config.try_get_typed::<PathBuf>("run_path") {
+                run_path.push(RETRY_TXN_DIR);
+                retry_config.storage_path = run_path;
+            }
+        }
+    }
+
     #[tokio::test]
     async fn fix_empty_storage_path_sets_path_from_run_path() {
         const RUN_PATH: &str = "/my/little/run_path";
@@ -341,7 +326,7 @@ mod tests {
 
         // Try to fix up the empty storage path, and make sure the updated storage path is based on the `run_path` we
         // set on our base configuration.
-        retry_config.fix_empty_storage_path(&config);
+        fix_empty_storage_path(&mut retry_config, &config);
 
         let expected = PathBuf::from(RUN_PATH).join(RETRY_TXN_DIR);
         assert_eq!(expected, retry_config.storage_path());
@@ -363,7 +348,7 @@ mod tests {
         assert_eq!(initial_storage_path, PathBuf::from(FORWARDER_STORAGE_PATH));
 
         // Try to fix up the storage path, and make sure nothing changes since it's not actually empty.
-        retry_config.fix_empty_storage_path(&config);
+        fix_empty_storage_path(&mut retry_config, &config);
         assert_eq!(initial_storage_path, retry_config.storage_path());
     }
 
@@ -378,7 +363,7 @@ mod tests {
 
         // Try to fix up the empty storage path, and make sure the storage path is still empty: when we have no
         // `run_path` set, we can't actually construct a valid path.
-        retry_config.fix_empty_storage_path(&config);
+        fix_empty_storage_path(&mut retry_config, &config);
 
         assert_eq!(PathBuf::new(), retry_config.storage_path());
     }
@@ -458,82 +443,38 @@ mod tests {
     #[tokio::test]
     async fn policy_without_config_does_not_retry_403() {
         let retry_config = test_retry_config();
-        let mut policy = retry_config.to_default_http_retry_policy(None);
+        let mut policy = retry_config.to_default_http_retry_policy();
 
         assert!(!would_retry(&mut policy, ok_response(StatusCode::FORBIDDEN)));
     }
 
     #[tokio::test]
     async fn policy_with_config_but_no_secrets_does_not_retry_403() {
-        let (config, _) = ConfigurationLoader::for_tests(None, None, false).await;
         let retry_config = test_retry_config();
-        let mut policy = retry_config.to_default_http_retry_policy(Some(config));
+        let mut policy = retry_config.to_default_http_retry_policy();
 
         assert!(!would_retry(&mut policy, ok_response(StatusCode::FORBIDDEN)));
     }
 
     #[tokio::test]
-    async fn policy_with_secrets_retries_403() {
-        let values = json!({ "secret_backend_command": "/bin/true" });
-        let (config, _) = ConfigurationLoader::for_tests(Some(values), None, false).await;
+    async fn policy_with_secrets_does_not_retry_403() {
         let retry_config = test_retry_config();
-        let mut policy = retry_config.to_default_http_retry_policy(Some(config));
+        let mut policy = retry_config.to_default_http_retry_policy();
 
-        assert!(would_retry(&mut policy, ok_response(StatusCode::FORBIDDEN)));
+        assert!(!would_retry(&mut policy, ok_response(StatusCode::FORBIDDEN)));
     }
 
     #[tokio::test]
-    async fn policy_secrets_does_not_affect_other_status_codes() {
-        let values = json!({ "secret_backend_command": "/bin/true" });
-        let (config, _) = ConfigurationLoader::for_tests(Some(values), None, false).await;
+    async fn policy_standard_status_code_classification() {
         let retry_config = test_retry_config();
-        let mut policy = retry_config.to_default_http_retry_policy(Some(config));
+        let mut policy = retry_config.to_default_http_retry_policy();
 
         assert!(!would_retry(&mut policy, ok_response(StatusCode::OK)));
         assert!(!would_retry(&mut policy, ok_response(StatusCode::BAD_REQUEST)));
         assert!(!would_retry(&mut policy, ok_response(StatusCode::UNAUTHORIZED)));
+        assert!(!would_retry(&mut policy, ok_response(StatusCode::FORBIDDEN)));
         assert!(!would_retry(&mut policy, ok_response(StatusCode::PAYLOAD_TOO_LARGE)));
         assert!(would_retry(&mut policy, ok_response(StatusCode::INTERNAL_SERVER_ERROR)));
         assert!(would_retry(&mut policy, ok_response(StatusCode::TOO_MANY_REQUESTS)));
-    }
-
-    #[tokio::test]
-    async fn policy_403_gate_reflects_dynamic_secrets_config_change() {
-        use std::time::Duration as StdDuration;
-
-        use saluki_config_tools::dynamic::ConfigUpdate;
-
-        let (config, sender) = ConfigurationLoader::for_tests(Some(json!({})), None, true).await;
-        let sender = sender.expect("dynamic configuration sender should be present");
-
-        // Apply an empty initial snapshot and wait for readiness.
-        sender
-            .send(ConfigUpdate::Snapshot(json!({})))
-            .await
-            .expect("should send initial snapshot");
-        config.ready().await;
-
-        let retry_config = test_retry_config();
-        let mut policy = retry_config.to_default_http_retry_policy(Some(config.clone()));
-
-        // Before secrets are configured, 403 must not be retried.
-        assert!(!would_retry(&mut policy, ok_response(StatusCode::FORBIDDEN)));
-
-        // Push a config update that enables secrets management.
-        let mut watcher = config.watch_for_updates("secret_backend_command");
-        sender
-            .send(ConfigUpdate::Partial {
-                key: "secret_backend_command".to_string(),
-                value: json!("/bin/true"),
-            })
-            .await
-            .expect("should send partial update");
-
-        tokio::time::timeout(StdDuration::from_secs(2), watcher.changed::<String>())
-            .await
-            .expect("timed out waiting for secret_backend_command update");
-
-        // The same policy instance must now retry 403 because the predicate reads the live cached secrets flag.
-        assert!(would_retry(&mut policy, ok_response(StatusCode::FORBIDDEN)));
     }
 }

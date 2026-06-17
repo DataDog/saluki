@@ -15,8 +15,8 @@ use saluki_app::{
     metrics::emit_startup_metrics,
 };
 use saluki_component_config::{
-    DogStatsDDebugLogConfig, DogStatsDPostAggregateFilterConfig, DogStatsDPrefixFilterConfig, MetricTagFilterEntry,
-    MrfConfig, ScopedConfig, TagFilterlistConfig,
+    DatadogForwarderConfig, DogStatsDDebugLogConfig, DogStatsDPostAggregateFilterConfig, DogStatsDPrefixFilterConfig,
+    EndpointConfig, MetricTagFilterEntry, MrfConfig, RetryConfig, ScopedConfig, TagFilterlistConfig, TlsClientConfig,
 };
 use saluki_components::{
     config::{AutoscalingFailoverConfiguration, ClusterAgentConfiguration, MrfConfiguration},
@@ -389,8 +389,9 @@ async fn create_topology(
         || dp_config.service_checks_pipeline_required()
         || dp_config.traces_pipeline_required()
     {
-        let dd_forwarder_config = DatadogForwarderConfiguration::from_configuration(config)
-            .error_context("Failed to configure Datadog forwarder.")?;
+        let dd_forwarder_config = DatadogForwarderConfiguration::from_native(ScopedConfig::fixed(
+            datadog_forwarder_config_from_raw(config).error_context("Failed to configure Datadog forwarder.")?,
+        ));
         blueprint.add_forwarder("dd_out", dd_forwarder_config)?;
     }
 
@@ -603,6 +604,91 @@ fn mrf_config_from_raw(config: &GenericConfiguration) -> Result<MrfConfig, Gener
     })
 }
 
+fn datadog_forwarder_config_from_raw(config: &GenericConfiguration) -> Result<DatadogForwarderConfig, GenericError> {
+    let api_key = config.try_get_typed::<String>("api_key")?.unwrap_or_default();
+    let dd_url = config
+        .try_get_typed::<String>("dd_url")?
+        .or(config.try_get_typed::<String>("url")?)
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| {
+            let site = config
+                .try_get_typed::<String>("site")
+                .ok()
+                .flatten()
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| "datadoghq.com".to_string());
+            format!("https://app.{site}")
+        });
+
+    let mut endpoints = vec![EndpointConfig { url: dd_url, api_key }];
+    if let Some(additional) = config.try_get_typed::<serde_json::Value>("additional_endpoints")? {
+        append_additional_endpoints(&mut endpoints, additional);
+    }
+
+    let storage_path = config
+        .try_get_typed::<String>("forwarder_storage_path")?
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            config
+                .try_get_typed::<PathBuf>("run_path")
+                .ok()
+                .flatten()
+                .map(|path| path.join("transactions_to_retry").to_string_lossy().into_owned())
+        })
+        .unwrap_or_default();
+
+    Ok(DatadogForwarderConfig {
+        endpoints,
+        endpoint_concurrency: config
+            .try_get_typed::<usize>("forwarder_max_concurrent_requests")?
+            .unwrap_or(10),
+        request_timeout_millis: config.try_get_typed::<u64>("forwarder_timeout")?.unwrap_or(20) * 1000,
+        allow_arbitrary_tags: config.try_get_typed("allow_arbitrary_tags")?.unwrap_or(false),
+        tls: TlsClientConfig {
+            verify: !config.try_get_typed("skip_ssl_validation")?.unwrap_or(false),
+        },
+        retry: RetryConfig {
+            storage_path,
+            max_disk_size_bytes: config
+                .try_get_typed("forwarder_storage_max_size_in_bytes")?
+                .unwrap_or(0),
+            flush_to_disk_mem_ratio: config
+                .try_get_typed("forwarder_flush_to_disk_mem_ratio")?
+                .unwrap_or(0.5),
+        },
+    })
+}
+
+fn append_additional_endpoints(endpoints: &mut Vec<EndpointConfig>, value: serde_json::Value) {
+    let value = match value {
+        serde_json::Value::String(raw) => serde_json::from_str(&raw).unwrap_or(serde_json::Value::String(raw)),
+        value => value,
+    };
+    let serde_json::Value::Object(map) = value else {
+        return;
+    };
+    for (url, keys) in map {
+        match keys {
+            serde_json::Value::Array(keys) => {
+                endpoints.extend(keys.into_iter().filter_map(|key| endpoint_from_json(&url, key)));
+            }
+            key => {
+                if let Some(endpoint) = endpoint_from_json(&url, key) {
+                    endpoints.push(endpoint);
+                }
+            }
+        }
+    }
+}
+
+fn endpoint_from_json(url: &str, key: serde_json::Value) -> Option<EndpointConfig> {
+    let api_key = key.as_str()?.trim().to_string();
+    (!api_key.is_empty()).then(|| EndpointConfig {
+        url: url.to_string(),
+        api_key,
+    })
+}
+
 fn add_mrf_metrics_pipeline_to_blueprint(
     blueprint: &mut TopologyBlueprint, config: &GenericConfiguration,
 ) -> Result<(), GenericError> {
@@ -629,15 +715,15 @@ fn add_mrf_metrics_pipeline_to_blueprint(
         .as_typed::<DatadogMetricsConfiguration>()
         .error_context("Failed to configure Multi-Region Failover Datadog Metrics encoder.")?;
 
-    let mrf_forwarder_config = DatadogForwarderConfiguration::from_configuration(config)
-        .map(|config| {
-            config.with_endpoint_override_and_api_key_refresh_config_path(
-                mrf_dd_url,
-                mrf_api_key,
-                "multi_region_failover.api_key",
-            )
-        })
-        .error_context("Failed to configure Multi-Region Failover Datadog forwarder.")?;
+    let mrf_forwarder_config = DatadogForwarderConfiguration::from_native(ScopedConfig::fixed(
+        datadog_forwarder_config_from_raw(config)
+            .error_context("Failed to configure Multi-Region Failover Datadog forwarder.")?,
+    ))
+    .with_endpoint_override_and_api_key_refresh_config_path(
+        mrf_dd_url,
+        mrf_api_key,
+        "multi_region_failover.api_key",
+    );
 
     blueprint
         .add_transform("mrf_metrics_gateway", mrf_gateway_config)?
