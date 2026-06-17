@@ -828,10 +828,8 @@ fn append_tags(target: &mut String, tags: &str) {
 
 #[cfg(test)]
 mod tests {
-    use datadog_agent_config::{DatadogRemapper, KEY_ALIASES};
     use datadog_protos::traces::AgentPayload;
     use protobuf::Message as _;
-    use saluki_config_tools::ConfigurationLoader;
     use saluki_core::data_model::event::trace::{Span as DdSpan, Trace};
     use stringtheory::MetaString;
 
@@ -840,20 +838,7 @@ mod tests {
     use crate::common::otlp::config::TracesConfig;
 
     async fn make_encoder(ets_enabled: bool) -> TraceEndpointEncoder {
-        let env_vars: Vec<(String, String)> = if ets_enabled {
-            vec![("APM_ERROR_TRACKING_STANDALONE_ENABLED".to_string(), "true".to_string())]
-        } else {
-            vec![]
-        };
-        let (cfg, _) = ConfigurationLoader::for_tests_with_provider_factory(
-            None,
-            Some(&env_vars),
-            false,
-            KEY_ALIASES,
-            DatadogRemapper::new,
-        )
-        .await;
-        let apm_config = ApmConfig::from_configuration(&cfg).expect("ApmConfig should deserialize");
+        let apm_config = ApmConfig::default().with_error_tracking_standalone(ets_enabled);
         TraceEndpointEncoder::new(
             MetaString::from("test-host"),
             "0.0.0".to_string(),

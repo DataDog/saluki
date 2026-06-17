@@ -9,7 +9,6 @@ use std::{
 
 use async_trait::async_trait;
 use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
-use saluki_config_tools::GenericConfiguration;
 use saluki_context::{origin::OriginTagCardinality, tags::TagSet};
 use saluki_core::{
     components::{transforms::*, ComponentContext},
@@ -61,14 +60,13 @@ pub struct ApmStatsTransformConfiguration {
 }
 
 impl ApmStatsTransformConfiguration {
-    /// Creates a new `ApmStatsTransformConfiguration` from the given configuration.
-    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        let apm_config = ApmConfig::from_configuration(config)?;
-        Ok(Self {
-            apm_config,
+    /// Creates a new `ApmStatsTransformConfiguration` from native config.
+    pub fn from_native() -> Self {
+        Self {
+            apm_config: ApmConfig::default(),
             default_hostname: None,
             workload_provider: None,
-        })
+        }
     }
 
     /// Sets the default hostname using the environment provider.

@@ -1,8 +1,7 @@
-use saluki_config_tools::GenericConfiguration;
-use saluki_error::GenericError;
 use serde::Deserialize;
 use stringtheory::MetaString;
 
+#[cfg(test)]
 use super::obfuscation::ObfuscationConfig;
 
 const fn default_target_traces_per_second() -> f64 {
@@ -82,6 +81,7 @@ impl Default for RareSamplerConfig {
 /// APM configuration.
 ///
 /// This configuration mirrors the Agent's trace agent configuration..
+#[cfg(test)]
 #[derive(Clone, Debug, Deserialize)]
 struct ApmConfiguration {
     #[serde(default)]
@@ -213,20 +213,12 @@ pub struct ApmConfig {
     /// Obfuscation configuration for trace data.
     ///
     /// Populated from `ApmConfiguration.obfuscation` in `from_configuration`; not read from serde directly.
+    #[cfg(test)]
     #[serde(skip)]
     obfuscation: ObfuscationConfig,
 }
 
 impl ApmConfig {
-    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        let wrapper = config.as_typed::<ApmConfiguration>()?;
-        let mut apm_config = wrapper.apm_config;
-        apm_config.enable_rare_sampler = wrapper.enable_rare_sampler;
-        apm_config.error_tracking_standalone = wrapper.enable_error_tracking_standalone;
-        apm_config.obfuscation = wrapper.obfuscation;
-        Ok(apm_config)
-    }
-
     /// Returns the target traces per second for priority sampling.
     pub const fn target_traces_per_second(&self) -> f64 {
         self.target_traces_per_second
@@ -309,9 +301,10 @@ impl ApmConfig {
         self.rare_sampler.cardinality
     }
 
-    /// Returns the obfuscation configuration.
-    pub fn obfuscation(&self) -> &ObfuscationConfig {
-        &self.obfuscation
+    #[cfg(test)]
+    pub(crate) fn with_error_tracking_standalone(mut self, enabled: bool) -> Self {
+        self.error_tracking_standalone = enabled;
+        self
     }
 }
 
@@ -330,6 +323,7 @@ impl Default for ApmConfig {
             hostname: MetaString::default(),
             enable_rare_sampler: default_rare_sampler_enabled(),
             rare_sampler: RareSamplerConfig::default(),
+            #[cfg(test)]
             obfuscation: ObfuscationConfig::default(),
         }
     }
@@ -353,7 +347,14 @@ mod tests {
             DatadogRemapper::new,
         )
         .await;
-        ApmConfig::from_configuration(&cfg).expect("ApmConfig should deserialize")
+        let parsed = cfg
+            .as_typed::<ApmConfiguration>()
+            .expect("ApmConfig should deserialize");
+        let mut apm_config = parsed.apm_config;
+        apm_config.enable_rare_sampler = parsed.enable_rare_sampler;
+        apm_config.error_tracking_standalone = parsed.enable_error_tracking_standalone;
+        apm_config.obfuscation = parsed.obfuscation;
+        apm_config
     }
 
     #[tokio::test]

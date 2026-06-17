@@ -757,9 +757,12 @@ async fn add_baseline_traces_pipeline_to_blueprint(
     )
     .with_environment_provider(env_provider.clone())
     .await?;
-    let trace_obfuscation_config = TraceObfuscationConfiguration::from_apm_configuration(config)?;
-    let trace_sampler_config = TraceSamplerConfiguration::from_configuration(config)
-        .error_context("Failed to configure Trace Sampler transform.")?;
+    let trace_obfuscation_config = TraceObfuscationConfiguration::new();
+    let otlp_sampling_percentage = config
+        .try_get_typed("otlp_config.traces.probabilistic_sampler.sampling_percentage")?
+        .or(config.try_get_typed("otlp_config_traces_probabilistic_sampler_sampling_percentage")?)
+        .unwrap_or(100.0);
+    let trace_sampler_config = TraceSamplerConfiguration::from_native(otlp_sampling_percentage);
     let ottl_filter_config =
         ottl_filter_config_from_raw(config).error_context("Failed to configure OTTL filter processor.")?;
     let ottl_transform_config =
@@ -770,8 +773,7 @@ async fn add_baseline_traces_pipeline_to_blueprint(
         .with_transform_builder("apm_onboarding", ApmOnboardingConfiguration)
         .with_transform_builder("trace_obfuscation", trace_obfuscation_config)
         .with_transform_builder("trace_sampler", trace_sampler_config);
-    let apm_stats_transform_config = ApmStatsTransformConfiguration::from_configuration(config)
-        .error_context("Failed to configure APM Stats transform.")?
+    let apm_stats_transform_config = ApmStatsTransformConfiguration::from_native()
         .with_environment_provider(env_provider.clone())
         .await?;
     let dd_apm_stats_encoder = DatadogApmStatsEncoderConfiguration::from_native(
