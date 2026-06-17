@@ -12,5 +12,5 @@ ifelse -n
     # so that origin detection has what it needs from the very first metric ADP processes.
     # Without this, some early metrics are processed before metadata is ready, producing extra
     # metric series that don't match the baseline and cause correctness test failures.
-    foreground { s6-sleep 2 }
+    foreground { s6-sleep 5 }
     s6-envdir -I /run/adp/env /opt/datadog-agent/embedded/bin/agent-data-plane --config /etc/datadog-agent/datadog.yaml run
