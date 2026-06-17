@@ -22,7 +22,7 @@ prost = { workspace = true }
 regex = { workspace = true, features = ["std", "perf"] }
 resource-accounting = { workspace = true }
 saluki-common = { workspace = true }
-saluki-config = { workspace = true }
+saluki-config-tools = { workspace = true }
 saluki-context = { workspace = true }
 saluki-core = { workspace = true }
 saluki-error = { workspace = true }

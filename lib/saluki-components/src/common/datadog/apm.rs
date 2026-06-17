@@ -1,4 +1,4 @@
-use saluki_config::GenericConfiguration;
+use saluki_config_tools::GenericConfiguration;
 use saluki_error::GenericError;
 use serde::Deserialize;
 use stringtheory::MetaString;
@@ -337,7 +337,7 @@ impl Default for ApmConfig {
 
 #[cfg(test)]
 mod tests {
-    use saluki_config::ConfigurationLoader;
+    use saluki_config_tools::ConfigurationLoader;
 
     use super::*;
     use crate::config::{DatadogRemapper, KEY_ALIASES};

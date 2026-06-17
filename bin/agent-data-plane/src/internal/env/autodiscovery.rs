@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use datadog_agent_commons::ipc::client::RemoteAgentClient;
 use futures::StreamExt;
 use saluki_common::sync::shutdown::ShutdownHandle;
-use saluki_config::GenericConfiguration;
+use saluki_config_tools::GenericConfiguration;
 use saluki_core::runtime::{InitializationError, Supervisable, Supervisor, SupervisorFuture};
 use saluki_env::autodiscovery::AutodiscoveryEvent;
 use saluki_env::AutodiscoveryProvider;

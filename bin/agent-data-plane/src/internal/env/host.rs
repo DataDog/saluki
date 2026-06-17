@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use datadog_agent_commons::ipc::client::RemoteAgentClient;
 use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
-use saluki_config::GenericConfiguration;
+use saluki_config_tools::GenericConfiguration;
 use saluki_env::HostProvider;
 use saluki_error::GenericError;
 use tokio::sync::OnceCell;

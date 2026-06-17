@@ -13,7 +13,7 @@ mod sql_tokenizer;
 use async_trait::async_trait;
 use facet::Facet;
 use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
-use saluki_config::GenericConfiguration;
+use saluki_config_tools::GenericConfiguration;
 use saluki_core::{
     components::{transforms::*, ComponentContext},
     data_model::event::{

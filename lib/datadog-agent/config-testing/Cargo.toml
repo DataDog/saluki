@@ -8,7 +8,7 @@ repository = { workspace = true }
 [dependencies]
 datadog-agent-config = { workspace = true }
 figment = { workspace = true }
-saluki-config = { workspace = true }
+saluki-config-tools = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 

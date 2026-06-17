@@ -8,7 +8,7 @@ use http::{uri::PathAndQuery, HeaderValue, Method, Uri};
 use protobuf::{rt::WireType, CodedOutputStream, Enum as _};
 use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_common::{iter::ReusableDeduplicator, task::HandleExt as _};
-use saluki_config::GenericConfiguration;
+use saluki_config_tools::GenericConfiguration;
 use saluki_context::tags::{SharedTagSet, Tag};
 use saluki_core::{
     components::{encoders::*, ComponentContext},
@@ -1666,7 +1666,7 @@ mod config_smoke {
 
 #[cfg(test)]
 mod use_v2_api_series_default {
-    use saluki_config::ConfigurationLoader;
+    use saluki_config_tools::ConfigurationLoader;
     use serde_json::json;
 
     use super::{DatadogMetricsConfiguration, SERIES_V2_COMPRESSED_SIZE_LIMIT, SERIES_V2_UNCOMPRESSED_SIZE_LIMIT};

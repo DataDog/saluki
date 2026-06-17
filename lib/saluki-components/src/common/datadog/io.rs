@@ -20,7 +20,7 @@ use http_body::Body;
 use http_body_util::BodyExt as _;
 use hyper::{body::Incoming, Response};
 use saluki_common::{hash::hash_single_stable, task::spawn_traced_named, time::get_unix_timestamp};
-use saluki_config::GenericConfiguration;
+use saluki_config_tools::GenericConfiguration;
 use saluki_core::components::ComponentContext;
 use saluki_error::{generic_error, GenericError};
 use saluki_io::net::{
@@ -871,7 +871,7 @@ mod tests {
         RootCertStore, ServerConfig,
     };
     use saluki_common::buf::FrozenChunkedBytesBuffer;
-    use saluki_config::ConfigurationLoader;
+    use saluki_config_tools::ConfigurationLoader;
     use saluki_core::{observability::ComponentMetricsExt as _, topology::ComponentId};
     use saluki_io::net::client::http::TlsMinimumVersion;
     use saluki_metrics::test::TestRecorder;

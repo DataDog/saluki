@@ -7,7 +7,7 @@ use std::{
 use facet::Facet;
 use http::uri::Authority;
 use regex::Regex;
-use saluki_config::GenericConfiguration;
+use saluki_config_tools::GenericConfiguration;
 use saluki_error::{ErrorContext as _, GenericError};
 use saluki_metadata;
 use serde::Deserialize;
@@ -590,7 +590,7 @@ fn compute_traces_authority(endpoint: &Url) -> Option<Authority> {
 
 #[cfg(test)]
 mod tests {
-    use saluki_config::{dynamic::ConfigUpdate, ConfigurationLoader};
+    use saluki_config_tools::{dynamic::ConfigUpdate, ConfigurationLoader};
 
     use super::*;
 

@@ -9,7 +9,7 @@ use std::{
 
 use async_trait::async_trait;
 use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
-use saluki_config::GenericConfiguration;
+use saluki_config_tools::GenericConfiguration;
 use saluki_context::{origin::OriginTagCardinality, tags::TagSet};
 use saluki_core::{
     components::{transforms::*, ComponentContext},

@@ -10,7 +10,7 @@ use airlock::{
     driver::{ContainerOs, DriverConfig},
 };
 use async_trait::async_trait;
-use saluki_config::ConfigurationLoader;
+use saluki_config_tools::ConfigurationLoader;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use serde::Deserialize;
 

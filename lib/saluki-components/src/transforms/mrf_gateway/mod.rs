@@ -4,7 +4,7 @@ use std::collections::HashSet;
 
 use async_trait::async_trait;
 use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
-use saluki_config::GenericConfiguration;
+use saluki_config_tools::GenericConfiguration;
 use saluki_core::{
     components::{
         transforms::{Transform, TransformBuilder, TransformContext},
@@ -217,7 +217,7 @@ impl Transform for MrfMetricsGateway {
 
 #[cfg(test)]
 mod tests {
-    use saluki_config::{dynamic::ConfigUpdate, ConfigurationLoader};
+    use saluki_config_tools::{dynamic::ConfigUpdate, ConfigurationLoader};
     use saluki_core::data_model::event::{metric::Metric, Event};
     use serde_json::json;
 

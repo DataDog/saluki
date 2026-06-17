@@ -1,6 +1,6 @@
 //! Multi-region failover configuration.
 
-use saluki_config::GenericConfiguration;
+use saluki_config_tools::GenericConfiguration;
 use saluki_error::GenericError;
 
 const MRF_METRICS_ENDPOINT_PREFIX: &str = "https://app.mrf.";
@@ -95,7 +95,7 @@ fn get_non_empty_string(config: &GenericConfiguration, key: &str) -> Result<Opti
 
 #[cfg(test)]
 mod tests {
-    use saluki_config::ConfigurationLoader;
+    use saluki_config_tools::ConfigurationLoader;
     use serde_json::json;
 
     use super::*;

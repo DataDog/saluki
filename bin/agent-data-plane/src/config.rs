@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use saluki_config::GenericConfiguration;
+use saluki_config_tools::GenericConfiguration;
 use saluki_error::{generic_error, GenericError};
 use saluki_io::net::ListenAddress;
 
@@ -345,7 +345,7 @@ impl DataPlaneOtlpProxyConfiguration {
 
 #[cfg(test)]
 mod tests {
-    use saluki_config::ConfigurationLoader;
+    use saluki_config_tools::ConfigurationLoader;
     use serde_json::json;
 
     use super::*;

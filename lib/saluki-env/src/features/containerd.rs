@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use saluki_config::GenericConfiguration;
+use saluki_config_tools::GenericConfiguration;
 #[cfg(unix)]
 use tracing::{debug, error};
 

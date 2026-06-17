@@ -16,7 +16,7 @@ use datadog_agent_commons::platform::PlatformSettings;
 use metrics::Level;
 use saluki_app::bootstrap::{AppBootstrapper, Bootstrap, BootstrapGuard};
 use saluki_components::config::{DatadogRemapper, KEY_ALIASES};
-use saluki_config::{ConfigurationLoader, GenericConfiguration};
+use saluki_config_tools::{ConfigurationLoader, GenericConfiguration};
 use saluki_core::runtime::Supervisor;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use tracing::{error, info, warn};

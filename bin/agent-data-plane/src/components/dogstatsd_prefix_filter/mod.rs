@@ -3,7 +3,7 @@
 use async_trait::async_trait;
 use metrics::{Counter, Gauge};
 use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
-use saluki_config::GenericConfiguration;
+use saluki_config_tools::GenericConfiguration;
 use saluki_core::data_model::event::{metric::Metric, EventType};
 use saluki_core::{
     components::{
@@ -344,7 +344,7 @@ impl Transform for DogStatsDPrefixFilter {
 #[cfg(test)]
 mod tests {
     use metrics::set_default_local_recorder;
-    use saluki_config::{dynamic::ConfigUpdate, ConfigurationLoader};
+    use saluki_config_tools::{dynamic::ConfigUpdate, ConfigurationLoader};
     use saluki_metrics::{test::TestRecorder, MetricsBuilder};
 
     use super::*;

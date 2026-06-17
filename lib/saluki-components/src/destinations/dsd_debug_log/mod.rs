@@ -8,7 +8,7 @@ use bytesize::ByteSize;
 use chrono::{DateTime, Utc};
 use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_common::collections::FastHashMap;
-use saluki_config::GenericConfiguration;
+use saluki_config_tools::GenericConfiguration;
 use saluki_context::tags::TagSet;
 use saluki_core::{
     components::{
@@ -358,7 +358,7 @@ mod tests {
 
     async fn deser_config(raw_json: &str) -> DogStatsDDebugLogConfiguration {
         let value = serde_json::from_str(raw_json).expect("test config should be valid JSON");
-        let (config, _) = saluki_config::ConfigurationLoader::for_tests(Some(value), None, false).await;
+        let (config, _) = saluki_config_tools::ConfigurationLoader::for_tests(Some(value), None, false).await;
 
         DogStatsDDebugLogConfiguration::from_configuration(&config, test_default_log_file_path())
             .expect("DogStatsDDebugLogConfiguration should deserialize")
@@ -423,7 +423,7 @@ mod tests {
     #[tokio::test]
     async fn negative_log_file_max_rolls_is_rejected() {
         let value = json!({ "dogstatsd_log_file_max_rolls": -1 });
-        let (config, _) = saluki_config::ConfigurationLoader::for_tests(Some(value), None, false).await;
+        let (config, _) = saluki_config_tools::ConfigurationLoader::for_tests(Some(value), None, false).await;
 
         let result = DogStatsDDebugLogConfiguration::from_configuration(&config, test_default_log_file_path());
         assert!(result.is_err());
@@ -446,7 +446,7 @@ mod tests {
     }
 
     async fn test_config(log_file: PathBuf, max_size: ByteSize, max_rolls: usize) -> DogStatsDDebugLogConfiguration {
-        let (config, _) = saluki_config::ConfigurationLoader::for_tests(
+        let (config, _) = saluki_config_tools::ConfigurationLoader::for_tests(
             Some(json!({
                 "dogstatsd_metrics_stats_enable": true,
                 "dogstatsd_logging_enabled": true,
@@ -521,11 +521,11 @@ mod tests {
     async fn dynamically_drops_until_metrics_stats_are_enabled() {
         use std::time::Duration;
 
-        use saluki_config::dynamic::ConfigUpdate;
+        use saluki_config_tools::dynamic::ConfigUpdate;
 
         let tempdir = tempdir().expect("temporary directory should be created");
         let log_file = tempdir.path().join("dogstatsd-stats.log");
-        let (config, sender) = saluki_config::ConfigurationLoader::for_tests(
+        let (config, sender) = saluki_config_tools::ConfigurationLoader::for_tests(
             Some(json!({
                 "dogstatsd_log_file": log_file.display().to_string(),
                 "dogstatsd_log_file_max_size": "64kb",

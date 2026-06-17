@@ -9,7 +9,7 @@ use saluki_api::{
     APIHandler, DynamicRoute, EndpointType,
 };
 use saluki_common::sync::shutdown::ShutdownHandle;
-use saluki_config::GenericConfiguration;
+use saluki_config_tools::GenericConfiguration;
 use saluki_core::runtime::{state::DataspaceRegistry, InitializationError, Supervisable, SupervisorFuture};
 use saluki_error::generic_error;
 use serde_json::Value;
