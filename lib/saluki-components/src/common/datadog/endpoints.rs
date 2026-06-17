@@ -4,26 +4,27 @@ use std::{
     sync::LazyLock,
 };
 
-use facet::Facet;
 use http::uri::Authority;
 use regex::Regex;
-use saluki_config_tools::GenericConfiguration;
+use saluki_component_config::forwarder as leaf;
+use saluki_component_config::ScopedConfig;
 use saluki_error::{ErrorContext as _, GenericError};
 use saluki_metadata;
-use serde::Deserialize;
-use serde_with::{serde_as, DisplayFromStr, OneOrMany, PickFirst};
 use snafu::{ResultExt, Snafu};
 use tracing::debug;
 use url::Url;
+
+/// Live forwarder configuration handle used to refresh API keys at request-build time.
+///
+/// A dynamic-capable forwarder reads `.current()` on this handle to pick up the latest API keys
+/// (primary and additional) published by the configuration system. A fixed deployment simply wraps
+/// the static configuration.
+pub(crate) type LiveForwarderConfig = ScopedConfig<leaf::DatadogForwarderConfig>;
 
 static DD_URL_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^app(\.mrf)?(\.[a-z]{2}\d)?\.(datad(oghq|0g)\.(com|eu)|ddog-gov\.com)$").unwrap());
 
 pub const DEFAULT_SITE: &str = "datadoghq.com";
-
-fn default_site() -> String {
-    DEFAULT_SITE.to_owned()
-}
 
 /// Error type for invalid endpoints.
 #[derive(Debug, Snafu)]
@@ -32,46 +33,24 @@ pub(crate) enum EndpointError {
     Parse { source: url::ParseError, endpoint: String },
 }
 
-#[serde_as]
-#[derive(Clone, Debug, Default, Deserialize, Facet)]
-#[cfg_attr(test, derive(PartialEq, serde::Serialize))]
-struct APIKeys(#[serde_as(as = "OneOrMany<_>")] Vec<String>);
-
-#[derive(Clone, Debug, Default, Deserialize, Facet)]
-#[cfg_attr(test, derive(PartialEq, serde::Serialize))]
-struct MappedAPIKeys(HashMap<String, APIKeys>);
-
-impl MappedAPIKeys {
-    fn mappings(&self) -> impl Iterator<Item = (&str, &APIKeys)> {
-        self.0.iter().map(|(k, v)| (k.as_str(), v))
-    }
-}
-
-impl FromStr for MappedAPIKeys {
-    type Err = serde_json::Error;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let inner = serde_json::from_str(s)?;
-        Ok(Self(inner))
-    }
-}
-
-#[cfg(test)]
-impl std::fmt::Display for MappedAPIKeys {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", serde_json::to_string(&self.0).unwrap_or_default())
-    }
-}
-
 /// A set of additional API endpoints to forward metrics to.
 ///
-/// Each endpoint can be associated with multiple API keys. Requests will be forwarded to each unique endpoint/API key pair.
-#[serde_as]
-#[derive(Clone, Debug, Default, Deserialize, Facet)]
-#[cfg_attr(test, derive(PartialEq, serde::Serialize))]
-pub(crate) struct AdditionalEndpoints(#[serde_as(as = "PickFirst<(DisplayFromStr, _)>")] MappedAPIKeys);
+/// Each endpoint can be associated with multiple API keys. Requests will be forwarded to each
+/// unique endpoint/API key pair.
+#[derive(Clone, Debug, Default)]
+#[cfg_attr(test, derive(PartialEq))]
+pub(crate) struct AdditionalEndpoints(HashMap<String, Vec<String>>);
 
 impl AdditionalEndpoints {
+    /// Builds the runtime additional endpoints from their leaf mirror.
+    pub(crate) fn from_native(cfg: &leaf::AdditionalEndpoints) -> Self {
+        Self(cfg.0.clone())
+    }
+
+    fn mappings(&self) -> impl Iterator<Item = (&str, &Vec<String>)> {
+        self.0.iter().map(|(k, v)| (k.as_str(), v))
+    }
+
     /// Returns the resolved endpoints from the additional endpoint configuration.
     ///
     /// This will generate a [`ResolvedEndpoint`] for each unique endpoint/API key pair, assigning
@@ -84,11 +63,11 @@ impl AdditionalEndpoints {
     /// If any of the additional endpoints aren't valid URLs, or a valid URL couldn't be constructed after applying
     /// the necessary normalization / modifications, an error will be returned.
     pub fn resolved_endpoints(
-        &self, configuration: Option<GenericConfiguration>,
+        &self, live_config: Option<LiveForwarderConfig>,
     ) -> Result<Vec<ResolvedEndpoint>, EndpointError> {
         let mut resolved = Vec::new();
 
-        for (raw_endpoint, api_keys) in self.0.mappings() {
+        for (raw_endpoint, api_keys) in self.mappings() {
             let endpoint = parse_and_normalize_endpoint(raw_endpoint)?;
             let logs_authority = compute_logs_authority(&endpoint);
             let traces_authority = compute_traces_authority(&endpoint);
@@ -96,7 +75,7 @@ impl AdditionalEndpoints {
             // Create a resolved endpoint for each unique, non-empty key. The index is the raw
             // position in the config list so that live lookups can use `vec[index]` directly.
             let mut seen = HashSet::new();
-            for (index, api_key) in api_keys.0.iter().enumerate() {
+            for (index, api_key) in api_keys.iter().enumerate() {
                 let trimmed_api_key = api_key.trim();
                 if trimmed_api_key.is_empty() || seen.contains(trimmed_api_key) {
                     continue;
@@ -106,8 +85,7 @@ impl AdditionalEndpoints {
                 resolved.push(ResolvedEndpoint {
                     endpoint: endpoint.clone(),
                     api_key: trimmed_api_key.to_string(),
-                    config: configuration.clone(),
-                    api_key_refresh_config_path: None,
+                    live_config: live_config.clone(),
                     api_key_index: Some(index),
                     raw_additional_url: Some(raw_endpoint.to_string()),
                     logs_authority: logs_authority.clone(),
@@ -121,15 +99,13 @@ impl AdditionalEndpoints {
 }
 
 /// Endpoint configuration for sending payloads to the Datadog platform.
-#[derive(Clone, Deserialize, Facet)]
-#[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
+///
+/// Behavior-carrying runtime type built from its leaf mirror via [`EndpointConfiguration::from_native`].
+#[derive(Clone)]
+#[cfg_attr(test, derive(Debug, PartialEq))]
 pub struct EndpointConfiguration {
     /// The API key to use.
     api_key: String,
-
-    /// Config path used to refresh the API key for primary-like endpoints.
-    #[serde(skip)]
-    api_key_refresh_config_path: Option<&'static str>,
 
     /// The site to send metrics to.
     ///
@@ -137,7 +113,6 @@ pub struct EndpointConfiguration {
     /// portion of the domain used to access the Datadog UI, such as `datadoghq.com` or `us5.datadoghq.com`.
     ///
     /// Defaults to `datadoghq.com`.
-    #[serde(default = "default_site")]
     site: String,
 
     /// The full URL base to send metrics to.
@@ -147,17 +122,29 @@ pub struct EndpointConfiguration {
     /// which are both useful when proxying traffic to an intermediate destination before forwarding to Datadog.
     ///
     /// Defaults to unset.
-    #[serde(default, alias = "url")]
     dd_url: Option<String>,
 
     /// Enables sending data to multiple endpoints and/or with multiple API keys via dual shipping.
     ///
     /// Defaults to empty.
-    #[serde(default)]
     additional_endpoints: AdditionalEndpoints,
 }
 
 impl EndpointConfiguration {
+    /// Builds the runtime endpoint configuration from its leaf mirror.
+    pub fn from_native(cfg: &leaf::EndpointConfiguration) -> Self {
+        Self {
+            api_key: cfg.api_key.clone(),
+            site: if cfg.site.is_empty() {
+                DEFAULT_SITE.to_owned()
+            } else {
+                cfg.site.clone()
+            },
+            dd_url: cfg.dd_url.clone(),
+            additional_endpoints: AdditionalEndpoints::from_native(&cfg.additional_endpoints),
+        }
+    }
+
     /// Sets the full URL base to send metrics to.
     pub fn set_dd_url(&mut self, url: String) {
         self.dd_url = Some(url);
@@ -166,11 +153,6 @@ impl EndpointConfiguration {
     /// Sets the API key to use.
     pub fn set_api_key(&mut self, api_key: String) {
         self.api_key = api_key;
-    }
-
-    /// Sets the config path used to refresh the API key.
-    pub fn set_api_key_refresh_config_path(&mut self, path: &'static str) {
-        self.api_key_refresh_config_path = Some(path);
     }
 
     /// Clears all additional endpoints.
@@ -185,26 +167,24 @@ impl EndpointConfiguration {
     /// If the primary endpoint isn't a valid URL, or a valid URL couldn't be constructed after applying the
     /// necessary normalization / modifications to the endpoint, an error will be returned.
     pub(crate) fn build_primary_endpoint(
-        &self, configuration: Option<GenericConfiguration>,
+        &self, live_config: Option<LiveForwarderConfig>,
     ) -> Result<ResolvedEndpoint, GenericError> {
         calculate_resolved_endpoint(self.dd_url.as_deref(), &self.site, &self.api_key)
             .error_context("Failed parsing/resolving the primary destination endpoint.")
-            .map(|endpoint| endpoint.with_configuration(configuration))
-            .map(|endpoint| endpoint.with_api_key_refresh_config_path(self.api_key_refresh_config_path))
+            .map(|endpoint| endpoint.with_live_config(live_config))
     }
 
     /// Builds the resolved primary endpoint from a URL override.
     pub(crate) fn build_primary_endpoint_override(
-        &self, url: &str, configuration: Option<GenericConfiguration>,
+        &self, url: &str, live_config: Option<LiveForwarderConfig>,
     ) -> Result<ResolvedEndpoint, EndpointError> {
         calculate_resolved_endpoint(Some(url), &self.site, &self.api_key)
-            .map(|endpoint| endpoint.with_configuration(configuration))
-            .map(|endpoint| endpoint.with_api_key_refresh_config_path(self.api_key_refresh_config_path))
+            .map(|endpoint| endpoint.with_live_config(live_config))
     }
 
     /// Builds the resolved additional endpoints.
     ///
-    /// If a [`GenericConfiguration`] is supplied, each additional endpoint will hold a live
+    /// If a [`LiveForwarderConfig`] is supplied, each additional endpoint will hold a live
     /// reference to it and refresh its API key on every request via [`ResolvedEndpoint::api_key`].
     ///
     /// # Errors
@@ -212,10 +192,10 @@ impl EndpointConfiguration {
     /// If any additional endpoint isn't a valid URL, or a valid URL couldn't be constructed after applying the
     /// necessary normalization / modifications to a particular endpoint, an error will be returned.
     pub(crate) fn build_additional_endpoints(
-        &self, configuration: Option<GenericConfiguration>,
+        &self, live_config: Option<LiveForwarderConfig>,
     ) -> Result<Vec<ResolvedEndpoint>, GenericError> {
         self.additional_endpoints
-            .resolved_endpoints(configuration)
+            .resolved_endpoints(live_config)
             .error_context("Failed parsing/resolving the additional destination endpoints.")
     }
 }
@@ -224,13 +204,11 @@ impl EndpointConfiguration {
 ///
 /// An endpoint is defined as a unique, fully qualified domain name that metrics will be sent to, such as
 /// `https://app.datadoghq.com`.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct ResolvedEndpoint {
     endpoint: Url,
     api_key: String,
-    config: Option<GenericConfiguration>,
-    /// Config path used to refresh the API key for primary-like endpoints. `None` uses `api_key`.
-    api_key_refresh_config_path: Option<&'static str>,
+    live_config: Option<LiveForwarderConfig>,
     /// Position of this key in the `additional_endpoints` config key list for its URL (raw
     /// `enumerate()` index, not a post-dedup counter). `None` for primary and OPW endpoints.
     api_key_index: Option<usize>,
@@ -243,6 +221,20 @@ pub struct ResolvedEndpoint {
     /// Pre-computed traces intake authority (for example, `trace.agent.datadoghq.com`).
     /// This is derived from the endpoint host when it contains `.agent.` marker.
     traces_authority: Option<Authority>,
+}
+
+impl std::fmt::Debug for ResolvedEndpoint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ResolvedEndpoint")
+            .field("endpoint", &self.endpoint)
+            .field("api_key", &self.api_key)
+            .field("has_live_config", &self.live_config.is_some())
+            .field("api_key_index", &self.api_key_index)
+            .field("raw_additional_url", &self.raw_additional_url)
+            .field("logs_authority", &self.logs_authority)
+            .field("traces_authority", &self.traces_authority)
+            .finish()
+    }
 }
 
 /// Routing role for a resolved endpoint.
@@ -274,12 +266,6 @@ impl RoutableEndpoint {
         self.route
     }
 
-    /// Returns the resolved endpoint.
-    #[cfg(test)]
-    pub(crate) const fn endpoint(&self) -> &ResolvedEndpoint {
-        &self.endpoint
-    }
-
     /// Returns the resolved endpoint mutably.
     pub(crate) const fn endpoint_mut(&mut self) -> &mut ResolvedEndpoint {
         &mut self.endpoint
@@ -306,8 +292,7 @@ impl ResolvedEndpoint {
         Ok(Self {
             endpoint,
             api_key: api_key.to_string(),
-            config: None,
-            api_key_refresh_config_path: None,
+            live_config: None,
             api_key_index: None,
             raw_additional_url: None,
             logs_authority,
@@ -315,17 +300,13 @@ impl ResolvedEndpoint {
         })
     }
 
-    /// Creates a new  `ResolvedEndpoint` instance from an existing `ResolvedEndpoint`, adding an optional `GenericConfiguration` which can be used to fetch the up-to-date API key.
-    pub fn with_configuration(mut self, config: Option<GenericConfiguration>) -> Self {
-        self.config = config;
-        self
-    }
-
-    /// Sets the config path used to refresh the API key for primary-like endpoints.
-    pub(crate) fn with_api_key_refresh_config_path(
-        mut self, api_key_refresh_config_path: Option<&'static str>,
-    ) -> Self {
-        self.api_key_refresh_config_path = api_key_refresh_config_path;
+    /// Returns a copy of this endpoint with a live forwarder configuration handle attached.
+    ///
+    /// When present, the handle is consulted on each call to [`api_key`][Self::api_key] so that
+    /// rotated API keys published by the configuration system take effect without rebuilding the
+    /// endpoint.
+    pub fn with_live_config(mut self, live_config: Option<LiveForwarderConfig>) -> Self {
+        self.live_config = live_config;
         self
     }
 
@@ -336,17 +317,18 @@ impl ResolvedEndpoint {
 
     /// Returns the API key associated with the endpoint.
     ///
-    /// If a [`GenericConfiguration`] has been configured, the API key will be queried from the configuration and
-    /// stored if it has been updated since the last time `api_key` was called.
+    /// If a [`LiveForwarderConfig`] has been configured, the API key is read from the latest
+    /// configuration value and stored if it has changed since the last call.
     ///
     /// For additional endpoints (those with an [`api_key_index`][Self::api_key_index]), the key is
-    /// looked up by position in the `additional_endpoints` config value. For the primary endpoint,
-    /// the `api_key` config key is used directly.
+    /// looked up by position in the latest `additional_endpoints` configuration value. For the
+    /// primary endpoint, the latest `endpoint.api_key` is used directly.
     pub fn api_key(&mut self) -> &str {
-        if let Some(config) = &self.config {
+        if let Some(live_config) = &self.live_config {
+            let current = live_config.current();
             if let (Some(index), Some(raw_url)) = (self.api_key_index, self.raw_additional_url.as_deref()) {
                 // Additional endpoint: look up current key by raw index in this URL's key list.
-                match lookup_additional_key(config, raw_url, index) {
+                match lookup_additional_key(&current, raw_url, index) {
                     Some(key) if key != self.api_key => {
                         debug!(endpoint = %self.endpoint, index, "Refreshed additional endpoint API key.");
                         self.api_key = key;
@@ -356,28 +338,17 @@ impl ResolvedEndpoint {
                             endpoint = %self.endpoint,
                             index,
                             "Could not refresh additional endpoint key from config (index out of range or \
-                             parse error). Continuing with last known valid API key."
+                             empty). Continuing with last known valid API key."
                         );
                     }
                     _ => {}
                 }
             } else {
-                // Primary / OPW endpoint: refresh from the configured API key source.
-                let api_key_refresh_config_path = self.api_key_refresh_config_path.unwrap_or("api_key");
-                match config.try_get_typed::<String>(api_key_refresh_config_path) {
-                    Ok(Some(api_key)) => {
-                        if !api_key.is_empty() && self.api_key != api_key {
-                            debug!(endpoint = %self.endpoint, key = api_key_refresh_config_path, "Refreshed API key.");
-                            self.api_key = api_key;
-                        }
-                    }
-                    Ok(None) | Err(_) => {
-                        debug!(
-                            key = api_key_refresh_config_path,
-                            "Failed to retrieve API key from remote source (missing or wrong type). Continuing with \
-                             last known valid API key."
-                        );
-                    }
+                // Primary / OPW / override endpoint: refresh from the current primary API key.
+                let api_key = current.endpoint.api_key;
+                if !api_key.is_empty() && self.api_key != api_key {
+                    debug!(endpoint = %self.endpoint, "Refreshed API key.");
+                    self.api_key = api_key;
                 }
             }
         }
@@ -411,14 +382,8 @@ impl ResolvedEndpoint {
 
     /// Returns whether this endpoint can refresh its API key from dynamic configuration.
     #[cfg(test)]
-    pub(crate) fn has_configuration(&self) -> bool {
-        self.config.is_some()
-    }
-
-    /// Returns whether this endpoint has an `api_key_index` (that is, is an additional endpoint).
-    #[cfg(test)]
-    pub(crate) fn has_api_key_index(&self) -> bool {
-        self.api_key_index.is_some()
+    pub(crate) fn has_live_config(&self) -> bool {
+        self.live_config.is_some()
     }
 
     /// Returns the pre-computed logs intake authority, if available.
@@ -536,20 +501,16 @@ fn calculate_resolved_endpoint(
     ResolvedEndpoint::from_raw_endpoint(&raw_endpoint, api_key)
 }
 
-/// Returns the API key at position `index` in `raw_url`'s key list from the live config.
+/// Returns the API key at position `index` in `raw_url`'s key list from the latest configuration.
 ///
 /// `raw_url` is the pre-normalization URL string (for example `"app.datadoghq.eu"`) as it appears as a
-/// key in the `additional_endpoints` config value. `index` is the raw `enumerate()` position of
-/// the key in that URLs list (not a post-dedup counter).
+/// key in the `additional_endpoints` configuration value. `index` is the raw `enumerate()` position of
+/// the key in that URL's list (not a post-dedup counter).
 ///
 /// Returns `None` if the URL is not present in the current config, if `index` is out of range, or
 /// if the key at that position is empty.
-fn lookup_additional_key(config: &GenericConfiguration, raw_url: &str, index: usize) -> Option<String> {
-    let additional = config
-        .try_get_typed::<AdditionalEndpoints>("additional_endpoints")
-        .ok()??
-        .0;
-    let key = additional.0.get(raw_url)?.0.get(index)?.trim();
+fn lookup_additional_key(config: &leaf::DatadogForwarderConfig, raw_url: &str, index: usize) -> Option<String> {
+    let key = config.endpoint.additional_endpoints.0.get(raw_url)?.get(index)?.trim();
     if key.is_empty() {
         None
     } else {
@@ -590,76 +551,32 @@ fn compute_traces_authority(endpoint: &Url) -> Option<Authority> {
 
 #[cfg(test)]
 mod tests {
-    use saluki_config_tools::{dynamic::ConfigUpdate, ConfigurationLoader};
+    use saluki_component_config::forwarder as leaf;
+    use saluki_component_config::ScopedConfig;
+    use tokio::sync::watch;
 
     use super::*;
 
-    fn additional_endpoints_to_sorted_strings(endpoints: &AdditionalEndpoints) -> Vec<String> {
-        let mut flattened = endpoints
-            .0
-            .mappings()
-            .flat_map(|(domain, api_keys)| api_keys.0.iter().map(move |api_key| format!("{}:{}", domain, api_key)))
-            .collect::<Vec<String>>();
-        flattened.sort();
-        flattened
+    fn additional_endpoints(entries: &[(&str, &[&str])]) -> AdditionalEndpoints {
+        let map = entries
+            .iter()
+            .map(|(url, keys)| (url.to_string(), keys.iter().map(|k| k.to_string()).collect::<Vec<_>>()))
+            .collect();
+        AdditionalEndpoints::from_native(&leaf::AdditionalEndpoints(map))
     }
 
-    #[test]
-    fn deser_additional_endpoints_json_direct_mapping() {
-        let raw_input = r#""{\"app.datadoghq.com\":\"fake-api-key-1\",\"app.datadoghq.eu\":\"fake-api-key-2\"}""#;
-
-        let result = serde_yaml::from_str::<AdditionalEndpoints>(raw_input)
-            .expect("should not fail to deserialize AdditionalEndpoints from JSON string");
-
-        let expected = vec!["app.datadoghq.com:fake-api-key-1", "app.datadoghq.eu:fake-api-key-2"];
-        let actual = additional_endpoints_to_sorted_strings(&result);
-        assert_eq!(expected, actual);
-    }
-
-    #[test]
-    fn deser_additional_endpoints_json_multiple_api_keys() {
-        let raw_input = r#""{\"app.datadoghq.com\":[\"fake-api-key-1a\",\"fake-api-key-1b\"],\"app.datadoghq.eu\":[\"fake-api-key-2a\",\"fake-api-key-2b\"]}""#;
-
-        let result = serde_yaml::from_str::<AdditionalEndpoints>(raw_input)
-            .expect("should not fail to deserialize AdditionalEndpoints from JSON string");
-
-        let expected = vec![
-            "app.datadoghq.com:fake-api-key-1a",
-            "app.datadoghq.com:fake-api-key-1b",
-            "app.datadoghq.eu:fake-api-key-2a",
-            "app.datadoghq.eu:fake-api-key-2b",
-        ];
-        let actual = additional_endpoints_to_sorted_strings(&result);
-        assert_eq!(expected, actual);
-    }
-
-    #[test]
-    fn deser_additional_endpoints_direct_mapping() {
-        let raw_input = "app.datadoghq.com: fake-api-key-1\napp.datadoghq.eu: fake-api-key-2";
-
-        let result = serde_yaml::from_str::<AdditionalEndpoints>(raw_input)
-            .expect("should not fail to deserialize AdditionalEndpoints from YAML string");
-
-        let expected = vec!["app.datadoghq.com:fake-api-key-1", "app.datadoghq.eu:fake-api-key-2"];
-        let actual = additional_endpoints_to_sorted_strings(&result);
-        assert_eq!(expected, actual);
-    }
-
-    #[test]
-    fn deser_additional_endpoints_multiple_api_keys() {
-        let raw_input = "app.datadoghq.com:\n  - fake-api-key-1a\n  - fake-api-key-1b\napp.datadoghq.eu:\n  - fake-api-key-2a\n  - fake-api-key-2b";
-
-        let result = serde_yaml::from_str::<AdditionalEndpoints>(raw_input)
-            .expect("should not fail to deserialize AdditionalEndpoints from YAML string");
-
-        let expected = vec![
-            "app.datadoghq.com:fake-api-key-1a",
-            "app.datadoghq.com:fake-api-key-1b",
-            "app.datadoghq.eu:fake-api-key-2a",
-            "app.datadoghq.eu:fake-api-key-2b",
-        ];
-        let actual = additional_endpoints_to_sorted_strings(&result);
-        assert_eq!(expected, actual);
+    fn forwarder_config_with_additional(entries: &[(&str, &[&str])]) -> leaf::DatadogForwarderConfig {
+        let map = entries
+            .iter()
+            .map(|(url, keys)| (url.to_string(), keys.iter().map(|k| k.to_string()).collect::<Vec<_>>()))
+            .collect();
+        leaf::DatadogForwarderConfig {
+            endpoint: leaf::EndpointConfiguration {
+                additional_endpoints: leaf::AdditionalEndpoints(map),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
     }
 
     #[test]
@@ -667,9 +584,7 @@ mod tests {
         // Keys at positions 0, 1 are valid; position 2 is empty (skipped); position 3 is a
         // duplicate of position 0 (skipped); position 4 is valid. Only positions 0, 1, 4 produce
         // ResolvedEndpoints, and their api_key_index should be 0, 1, 4 respectively.
-        let raw_input = r#""app.datadoghq.com": ["key-a", "key-b", "", "key-a", "key-c"]"#;
-        let raw_yaml = format!("{{{}}}", raw_input);
-        let endpoints: AdditionalEndpoints = serde_yaml::from_str(&raw_yaml).expect("should deserialize");
+        let endpoints = additional_endpoints(&[("app.datadoghq.com", &["key-a", "key-b", "", "key-a", "key-c"])]);
 
         let resolved = endpoints.resolved_endpoints(None).expect("should resolve");
 
@@ -690,8 +605,7 @@ mod tests {
         );
 
         // Two URLs have independent index spaces (both start from 0).
-        let raw_yaml2 = r#"app.datadoghq.eu: [eu-key-a, eu-key-b]"#;
-        let endpoints2: AdditionalEndpoints = serde_yaml::from_str(raw_yaml2).expect("should deserialize");
+        let endpoints2 = additional_endpoints(&[("app.datadoghq.eu", &["eu-key-a", "eu-key-b"])]);
         let resolved2 = endpoints2.resolved_endpoints(None).expect("should resolve");
         assert_eq!(resolved2[0].api_key_index(), Some(0));
         assert_eq!(resolved2[1].api_key_index(), Some(1));
@@ -701,39 +615,24 @@ mod tests {
     async fn api_key_dynamically_refreshes_from_additional_endpoints_config() {
         use std::time::{Duration, Instant};
 
-        // No static initial values for additional_endpoints — all from dynamic config only.
-        // This avoids figment's admerge concatenating the static array with the dynamic array,
-        // which would leave the old key-1 in position 0.
-        let (config, sender) = ConfigurationLoader::for_tests(None, None, true).await;
-        let sender = sender.expect("dynamic configuration sender should be present");
-
-        // Apply an initial snapshot with key-1 and wait for readiness.
-        sender
-            .send(ConfigUpdate::Snapshot(serde_json::json!({
-                "additional_endpoints": { "http://extra.example.com": ["key-1"] }
-            })))
-            .await
-            .expect("should send initial snapshot");
-        config.ready().await;
+        let initial = forwarder_config_with_additional(&[("http://extra.example.com", &["key-1"])]);
+        let (tx, rx) = watch::channel(initial.clone());
+        let live = ScopedConfig::live(initial, rx);
 
         // Build the additional endpoint with a live config reference.
-        let raw = r#"http://extra.example.com: [key-1]"#;
-        let additional: AdditionalEndpoints = serde_yaml::from_str(raw).expect("should deserialize");
-        let mut endpoints = additional
-            .resolved_endpoints(Some(config.clone()))
-            .expect("should resolve");
+        let additional = additional_endpoints(&[("http://extra.example.com", &["key-1"])]);
+        let mut endpoints = additional.resolved_endpoints(Some(live)).expect("should resolve");
         let endpoint = &mut endpoints[0];
 
         // Before the update, api_key() returns the original key.
         assert_eq!(endpoint.api_key(), "key-1");
 
-        // Push a snapshot that rotates the key.
-        sender
-            .send(ConfigUpdate::Snapshot(serde_json::json!({
-                "additional_endpoints": { "http://extra.example.com": ["key-2"] }
-            })))
-            .await
-            .expect("should send rotation snapshot");
+        // Publish a config that rotates the key.
+        tx.send(forwarder_config_with_additional(&[(
+            "http://extra.example.com",
+            &["key-2"],
+        )]))
+        .expect("receiver alive");
 
         // Poll api_key() until it reflects the new value; api_key() re-reads from live config on
         // every call so no watcher or rebuild is needed.

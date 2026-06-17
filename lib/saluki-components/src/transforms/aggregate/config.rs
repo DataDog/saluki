@@ -37,6 +37,24 @@ pub enum HistogramStatistic {
 }
 
 impl HistogramStatistic {
+    /// Builds the runtime histogram statistic from its leaf mirror.
+    pub fn from_native(stat: &saluki_component_config::dogstatsd::HistogramStatistic) -> Self {
+        use saluki_component_config::dogstatsd::HistogramStatistic as Leaf;
+
+        match stat {
+            Leaf::Count => HistogramStatistic::Count,
+            Leaf::Sum => HistogramStatistic::Sum,
+            Leaf::Minimum => HistogramStatistic::Minimum,
+            Leaf::Maximum => HistogramStatistic::Maximum,
+            Leaf::Average => HistogramStatistic::Average,
+            Leaf::Median => HistogramStatistic::Median,
+            Leaf::Percentile { q, suffix } => HistogramStatistic::Percentile {
+                q: *q,
+                suffix: suffix.clone(),
+            },
+        }
+    }
+
     /// Returns the suffix to be used for metrics representing this statistic.
     pub fn suffix(&self) -> &str {
         match self {
@@ -127,6 +145,15 @@ pub struct HistogramConfiguration {
 }
 
 impl HistogramConfiguration {
+    /// Builds the runtime histogram configuration from its leaf mirror.
+    pub fn from_native(cfg: &saluki_component_config::dogstatsd::HistogramConfiguration) -> Self {
+        Self {
+            statistics: cfg.statistics.iter().map(HistogramStatistic::from_native).collect(),
+            copy_to_distribution: cfg.copy_to_distribution,
+            copy_to_distribution_prefix: cfg.copy_to_distribution_prefix.clone(),
+        }
+    }
+
     #[cfg(test)]
     pub fn from_statistics(
         statistics: &[HistogramStatistic], copy_to_distribution: bool, copy_to_distribution_prefix: String,

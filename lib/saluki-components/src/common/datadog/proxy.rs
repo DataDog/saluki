@@ -1,29 +1,25 @@
 use std::net::IpAddr;
 use std::sync::Arc;
 
-use facet::Facet;
 use headers::Authorization;
 use hyper_http_proxy::{Intercept, Proxy};
-use saluki_config_tools::deserialize_space_separated_or_seq;
+use saluki_component_config::forwarder as leaf;
 use saluki_error::GenericError;
-use serde::Deserialize;
 use url::Url;
 
-#[derive(Clone, Deserialize, Facet)]
-#[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
+/// Proxy configuration for the Datadog forwarder.
+///
+/// Behavior-carrying runtime type built from its leaf mirror via [`ProxyConfiguration::from_native`].
+#[derive(Clone)]
+#[cfg_attr(test, derive(Debug, PartialEq))]
 pub struct ProxyConfiguration {
     /// The proxy server for HTTP requests.
-    #[serde(rename = "proxy_http")]
     http_server: Option<String>,
 
     /// The proxy server for HTTPS requests.
-    #[serde(rename = "proxy_https")]
     https_server: Option<String>,
 
     /// List of hosts that should bypass the proxy.
-    ///
-    /// In YAML this is a sequence under `proxy.no_proxy`. As an environment variable
-    /// (`DD_PROXY_NO_PROXY`), values are space-separated.
     ///
     /// Each entry can be one of:
     ///
@@ -39,25 +35,31 @@ pub struct ProxyConfiguration {
     ///   only, not the domain itself (for example, `.example.com` matches `sub.example.com` but not
     ///   `example.com`).
     /// - A wildcard `*`: bypasses the proxy for all destinations. Only used in nonexact mode.
-    #[serde(
-        default,
-        rename = "proxy_no_proxy",
-        deserialize_with = "deserialize_space_separated_or_seq"
-    )]
     no_proxy: Vec<String>,
 
     /// When true, `no_proxy` uses full domain/CIDR/wildcard matching, mirroring the behavior of Go's
     /// [`golang.org/x/net/http/httpproxy`](https://pkg.go.dev/golang.org/x/net/http/httpproxy) package.
     /// When false (the default), only exact host matches are applied; suffix and CIDR entries are ignored.
-    #[serde(default)]
     no_proxy_nonexact_match: bool,
 
     /// When true, proxy settings apply to requests for cloud provider metadata endpoints.
     ///
     /// When false (the default), the well-known cloud metadata addresses are automatically added to
     /// the `no_proxy` list so they always bypass the proxy.
-    #[serde(default)]
     use_proxy_for_cloud_metadata: bool,
+}
+
+impl ProxyConfiguration {
+    /// Builds the runtime proxy configuration from its leaf mirror.
+    pub fn from_native(cfg: &leaf::ProxyConfiguration) -> Self {
+        Self {
+            http_server: cfg.http_server.clone(),
+            https_server: cfg.https_server.clone(),
+            no_proxy: cfg.no_proxy.clone(),
+            no_proxy_nonexact_match: cfg.no_proxy_nonexact_match,
+            use_proxy_for_cloud_metadata: cfg.use_proxy_for_cloud_metadata,
+        }
+    }
 }
 
 /// Well-known cloud provider metadata endpoint addresses that bypass the proxy by default.
@@ -301,92 +303,14 @@ fn ip_in_cidr(network: IpAddr, prefix_len: u8, addr: IpAddr) -> bool {
 }
 
 #[cfg(test)]
-mod config_smoke {
-    use datadog_agent_config_testing::config_registry::structs;
-    use datadog_agent_config_testing::run_config_smoke_tests;
-    use serde_json::json;
-
-    use super::ProxyConfiguration;
-    use crate::config::{DatadogRemapper, KEY_ALIASES};
-
-    #[tokio::test]
-    async fn proxy_configuration_smoke_test() {
-        run_config_smoke_tests(
-            structs::PROXY_CONFIGURATION,
-            &[],
-            json!({}),
-            |cfg| {
-                cfg.as_typed::<ProxyConfiguration>()
-                    .expect("ProxyConfiguration should deserialize")
-            },
-            KEY_ALIASES,
-            DatadogRemapper::new,
-        )
-        .await
-    }
-}
-
-#[cfg(test)]
 mod tests {
+    use saluki_component_config::forwarder as leaf;
     use tracing::debug;
 
     use super::*;
 
-    fn deserialize_no_proxy(json: serde_json::Value) -> Vec<String> {
-        serde_json::from_value::<ProxyConfiguration>(json)
-            .expect("should deserialize")
-            .no_proxy
-    }
-
     fn matcher(entries: &[&str], nonexact: bool) -> NoProxyMatcher {
         NoProxyMatcher::new(&entries.iter().map(|s| s.to_string()).collect::<Vec<_>>(), nonexact)
-    }
-
-    // --- deserializer tests ---
-
-    #[test]
-    fn no_proxy_from_space_separated_string() {
-        let config = serde_json::json!({ "proxy_no_proxy": "host1.example.com host2.example.com" });
-        assert_eq!(
-            deserialize_no_proxy(config),
-            vec!["host1.example.com", "host2.example.com"]
-        );
-    }
-
-    #[test]
-    fn no_proxy_from_sequence() {
-        let config = serde_json::json!({ "proxy_no_proxy": ["host1.example.com", "host2.example.com"] });
-        assert_eq!(
-            deserialize_no_proxy(config),
-            vec!["host1.example.com", "host2.example.com"]
-        );
-    }
-
-    #[test]
-    fn no_proxy_empty_string_gives_empty_vec() {
-        let config = serde_json::json!({ "proxy_no_proxy": "" });
-        assert_eq!(deserialize_no_proxy(config), Vec::<String>::new());
-    }
-
-    #[test]
-    fn no_proxy_empty_sequence_gives_empty_vec() {
-        let config = serde_json::json!({ "proxy_no_proxy": [] });
-        assert_eq!(deserialize_no_proxy(config), Vec::<String>::new());
-    }
-
-    #[test]
-    fn no_proxy_absent_gives_empty_vec() {
-        let config = serde_json::json!({});
-        assert_eq!(deserialize_no_proxy(config), Vec::<String>::new());
-    }
-
-    #[test]
-    fn no_proxy_string_trims_extra_whitespace() {
-        let config = serde_json::json!({ "proxy_no_proxy": "  host1.example.com   host2.example.com  " });
-        assert_eq!(
-            deserialize_no_proxy(config),
-            vec!["host1.example.com", "host2.example.com"]
-        );
     }
 
     // --- wildcard ---
@@ -564,11 +488,11 @@ mod tests {
     // --- cloud metadata defaults ---
 
     fn proxy_config_with_cloud_flag(use_proxy: bool) -> ProxyConfiguration {
-        serde_json::from_value::<ProxyConfiguration>(serde_json::json!({
-            "proxy_http": "http://proxy.example.com:3128",
-            "use_proxy_for_cloud_metadata": use_proxy,
-        }))
-        .expect("should deserialize")
+        ProxyConfiguration::from_native(&leaf::ProxyConfiguration {
+            http_server: Some("http://proxy.example.com:3128".to_string()),
+            use_proxy_for_cloud_metadata: use_proxy,
+            ..Default::default()
+        })
     }
 
     #[test]
@@ -636,11 +560,11 @@ mod tests {
     }
 
     fn proxy_config_for_routing(proxy_http: &str, no_proxy: &[&str]) -> ProxyConfiguration {
-        serde_json::from_value::<ProxyConfiguration>(serde_json::json!({
-            "proxy_http": proxy_http,
-            "proxy_no_proxy": no_proxy,
-        }))
-        .expect("should deserialize")
+        ProxyConfiguration::from_native(&leaf::ProxyConfiguration {
+            http_server: Some(proxy_http.to_string()),
+            no_proxy: no_proxy.iter().map(|s| s.to_string()).collect(),
+            ..Default::default()
+        })
     }
 
     #[tokio::test]
@@ -732,10 +656,10 @@ mod tests {
         // handshake will fail after the tunnel is established (no real server behind it), but
         // receiving the CONNECT confirms the request was routed through the proxy.
         let (proxy_port, mut rx) = start_mock_connect_proxy().await;
-        let config = serde_json::from_value::<ProxyConfiguration>(serde_json::json!({
-            "proxy_https": format!("http://127.0.0.1:{proxy_port}"),
-        }))
-        .expect("should deserialize");
+        let config = ProxyConfiguration::from_native(&leaf::ProxyConfiguration {
+            https_server: Some(format!("http://127.0.0.1:{proxy_port}")),
+            ..Default::default()
+        });
         let proxies = config.build().unwrap();
 
         let mut client = saluki_io::net::client::http::HttpClient::builder()
@@ -769,11 +693,11 @@ mod tests {
         // the proxy. We verify this by asserting the proxy receives no CONNECT request.
         let (proxy_port, mut rx) = start_mock_connect_proxy().await;
         let direct_port = start_mock_http_server(http::StatusCode::OK).await;
-        let config = serde_json::from_value::<ProxyConfiguration>(serde_json::json!({
-            "proxy_https": format!("http://127.0.0.1:{proxy_port}"),
-            "proxy_no_proxy": [format!("127.0.0.1:{direct_port}")],
-        }))
-        .expect("should deserialize");
+        let config = ProxyConfiguration::from_native(&leaf::ProxyConfiguration {
+            https_server: Some(format!("http://127.0.0.1:{proxy_port}")),
+            no_proxy: vec![format!("127.0.0.1:{direct_port}")],
+            ..Default::default()
+        });
         let proxies = config.build().unwrap();
 
         let mut client = saluki_io::net::client::http::HttpClient::builder()

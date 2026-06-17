@@ -1,11 +1,9 @@
 use async_trait::async_trait;
 use datadog_protos::events as proto;
-use facet::Facet;
 use http::{uri::PathAndQuery, HeaderValue, Method, Uri};
 use protobuf::{rt::WireType, CodedOutputStream};
 use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_common::iter::ReusableDeduplicator;
-use saluki_config_tools::GenericConfiguration;
 use saluki_context::tags::Tag;
 use saluki_core::{
     components::{encoders::*, ComponentContext},
@@ -19,7 +17,6 @@ use saluki_core::{
 use saluki_error::{ErrorContext as _, GenericError};
 use saluki_io::compression::CompressionScheme;
 use saluki_metrics::MetricsBuilder;
-use serde::Deserialize;
 use tracing::{debug, error, warn};
 
 use crate::common::datadog::{
@@ -28,95 +25,24 @@ use crate::common::datadog::{
     request_builder::{EndpointEncoder, RequestBuilder},
     telemetry::ComponentTelemetry,
     DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT, DEFAULT_INTAKE_UNCOMPRESSED_SIZE_LIMIT,
-    DEFAULT_SERIALIZER_COMPRESSED_SIZE_LIMIT, DEFAULT_SERIALIZER_UNCOMPRESSED_SIZE_LIMIT,
 };
 
-const DEFAULT_SERIALIZER_COMPRESSOR_KIND: &str = "zstd";
 const MAX_EVENTS_PER_PAYLOAD: usize = 100;
 const EVENTS_FIELD_NUMBER: u32 = 1;
 
 static CONTENT_TYPE_PROTOBUF: HeaderValue = HeaderValue::from_static("application/x-protobuf");
 
-fn default_serializer_compressor_kind() -> String {
-    DEFAULT_SERIALIZER_COMPRESSOR_KIND.to_owned()
-}
-
-const fn default_zstd_compressor_level() -> i32 {
-    3
-}
-
-const fn default_max_payload_size() -> usize {
-    DEFAULT_SERIALIZER_COMPRESSED_SIZE_LIMIT
-}
-
-const fn default_max_uncompressed_payload_size() -> usize {
-    DEFAULT_SERIALIZER_UNCOMPRESSED_SIZE_LIMIT
-}
-
-const fn default_log_payloads() -> bool {
-    false
-}
-
 /// Datadog Events incremental encoder.
 ///
 /// Generates Datadog Events payloads for the Datadog platform.
-#[derive(Deserialize, Facet)]
-#[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
 pub struct DatadogEventsConfiguration {
-    /// Maximum compressed size, in bytes, of an events payload.
-    ///
-    /// This uses the same generic event payload setting as the Datadog Agent. ADP sends events to
-    /// `/api/v1/events_batch`, so the effective value is clamped to that endpoint's global intake limit of 3,200,000
-    /// bytes. If set to `0`, every non-empty compressed payload exceeds the limit and is dropped during flush.
-    ///
-    /// Defaults to 2,621,440 bytes.
-    #[serde(rename = "serializer_max_payload_size", default = "default_max_payload_size")]
-    max_payload_size: usize,
-
-    /// Maximum uncompressed size, in bytes, of an events payload.
-    ///
-    /// This uses the same generic event payload setting as the Datadog Agent. ADP sends events to
-    /// `/api/v1/events_batch`, so the effective value is clamped to that endpoint's global intake limit of 62,914,560
-    /// bytes. Values smaller than the minimum endpoint framing size prevent the request builder from starting.
-    ///
-    /// Defaults to 4,194,304 bytes.
-    #[serde(
-        rename = "serializer_max_uncompressed_payload_size",
-        default = "default_max_uncompressed_payload_size"
-    )]
-    max_uncompressed_payload_size: usize,
-
-    /// Compression kind to use for the request payloads.
-    ///
-    /// Defaults to `zstd`.
-    #[serde(
-        rename = "serializer_compressor_kind",
-        default = "default_serializer_compressor_kind"
-    )]
-    compressor_kind: String,
-
-    /// Compressor level to use when the compressor kind is `zstd`.
-    ///
-    /// Defaults to 3.
-    #[serde(
-        rename = "serializer_zstd_compressor_level",
-        default = "default_zstd_compressor_level"
-    )]
-    zstd_compressor_level: i32,
-
-    /// Whether to log event payload contents before encoding.
-    ///
-    /// This logs decoded event objects, not the encoded HTTP body.
-    ///
-    /// Defaults to `false`.
-    #[serde(default = "default_log_payloads")]
-    log_payloads: bool,
+    config: saluki_component_config::events::DatadogEventsConfig,
 }
 
 impl DatadogEventsConfiguration {
-    /// Creates a new `DatadogEventsConfiguration` from the given configuration.
-    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        Ok(config.as_typed()?)
+    /// Creates a new `DatadogEventsConfiguration` from the given component-native configuration.
+    pub fn from_native(config: saluki_component_config::events::DatadogEventsConfig) -> Self {
+        Self { config }
     }
 }
 
@@ -135,14 +61,15 @@ impl IncrementalEncoderBuilder for DatadogEventsConfiguration {
     async fn build(&self, context: ComponentContext) -> Result<Self::Output, GenericError> {
         let metrics_builder = MetricsBuilder::from_component_context(&context);
         let telemetry = ComponentTelemetry::from_builder(&metrics_builder);
-        let compression_scheme = CompressionScheme::new(&self.compressor_kind, self.zstd_compressor_level);
+        let compression_scheme =
+            CompressionScheme::new(&self.config.compressor_kind, self.config.zstd_compressor_level);
 
         // Create our request builder.
         let mut request_builder =
             RequestBuilder::new(EventsEndpointEncoder::new(), compression_scheme, RB_BUFFER_CHUNK_SIZE).await?;
         let (uncompressed_limit, compressed_limit) = clamp_payload_limits(
-            self.max_uncompressed_payload_size,
-            self.max_payload_size,
+            self.config.max_uncompressed_payload_size,
+            self.config.max_payload_size,
             DEFAULT_INTAKE_UNCOMPRESSED_SIZE_LIMIT,
             DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT,
         );
@@ -152,7 +79,7 @@ impl IncrementalEncoderBuilder for DatadogEventsConfiguration {
         Ok(DatadogEvents {
             request_builder,
             telemetry,
-            log_payloads: self.log_payloads,
+            log_payloads: self.config.log_payloads,
         })
     }
 }
@@ -325,30 +252,4 @@ fn encode_eventd(eventd: &EventD, tags_deduplicator: &mut ReusableDeduplicator<T
     event.set_tags(deduplicated_tags.map(|tag| tag.as_str().into()).collect());
 
     event
-}
-
-#[cfg(test)]
-mod config_smoke {
-    use datadog_agent_config_testing::config_registry::structs;
-    use datadog_agent_config_testing::run_config_smoke_tests;
-    use serde_json::json;
-
-    use super::DatadogEventsConfiguration;
-    use crate::config::{DatadogRemapper, KEY_ALIASES};
-
-    #[tokio::test]
-    async fn smoke_test() {
-        run_config_smoke_tests(
-            structs::DATADOG_EVENTS_CONFIGURATION,
-            &[],
-            json!({}),
-            |cfg| {
-                cfg.as_typed::<DatadogEventsConfiguration>()
-                    .expect("DatadogEventsConfiguration should deserialize")
-            },
-            KEY_ALIASES,
-            DatadogRemapper::new,
-        )
-        .await
-    }
 }

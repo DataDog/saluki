@@ -13,7 +13,7 @@ use datadog_protos::checks::{
 };
 use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_common::task::HandleExt as _;
-use saluki_config_tools::GenericConfiguration;
+use saluki_component_config::checks::ChecksIPCConfig;
 use saluki_context::tags::{Tag, TagSet};
 use saluki_context::Context;
 use saluki_core::data_model::event::eventd::{AlertType, EventD, Priority};
@@ -28,7 +28,6 @@ use saluki_core::{
 };
 use saluki_error::{generic_error, GenericError};
 use saluki_io::net::ListenAddress;
-use serde::Deserialize;
 use stringtheory::MetaString;
 use tokio::sync::mpsc;
 use tokio::{pin, select};
@@ -36,21 +35,16 @@ use tonic::transport::Server;
 use tonic::{Response, Status};
 use tracing::{debug, trace, warn};
 
-const fn default_grpc_endpoint() -> ListenAddress {
-    ListenAddress::any_tcp(5105)
-}
-
 /// Checks IPC source.
-#[derive(Debug, Deserialize)]
+#[derive(Debug)]
 pub struct ChecksIPCConfiguration {
-    #[serde(rename = "checks_ipc_endpoint", default = "default_grpc_endpoint")]
-    grpc_endpoint: ListenAddress,
+    config: ChecksIPCConfig,
 }
 
 impl ChecksIPCConfiguration {
-    /// Creates a new `ChecksIPCConfiguration` from the given configuration.
-    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        Ok(config.as_typed()?)
+    /// Creates a new `ChecksIPCConfiguration` from the given component-native configuration.
+    pub fn from_native(config: ChecksIPCConfig) -> Self {
+        Self { config }
     }
 }
 
@@ -71,7 +65,7 @@ impl SourceBuilder for ChecksIPCConfiguration {
 
     async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Source + Send>, GenericError> {
         Ok(Box::new(ChecksIPC {
-            grpc_endpoint: self.grpc_endpoint.clone(),
+            grpc_endpoint: self.config.grpc_endpoint.clone(),
         }))
     }
 }

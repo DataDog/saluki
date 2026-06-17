@@ -15,7 +15,7 @@ use prost::Message;
 use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_common::sync::shutdown::{ShutdownCoordinator, ShutdownHandle};
 use saluki_common::task::HandleExt as _;
-use saluki_config_tools::GenericConfiguration;
+use saluki_component_config::otlp::OtlpSourceConfig;
 use saluki_context::ContextResolver;
 use saluki_core::topology::interconnect::BufferedDispatcher;
 use saluki_core::{
@@ -30,7 +30,6 @@ use saluki_env::WorkloadProvider;
 use saluki_error::ErrorContext as _;
 use saluki_error::{generic_error, GenericError};
 use saluki_io::net::ListenAddress;
-use serde::Deserialize;
 use tokio::pin;
 use tokio::select;
 use tokio::sync::mpsc;
@@ -49,25 +48,8 @@ use self::resolver::build_context_resolver;
 use crate::common::otlp::origin::OtlpOriginTagResolver;
 use crate::common::otlp::traces::translator::OtlpTracesTranslator;
 
-const fn default_context_string_interner_size() -> ByteSize {
-    ByteSize::mib(2)
-}
-
-const fn default_cached_contexts_limit() -> usize {
-    500_000
-}
-
-const fn default_cached_tagsets_limit() -> usize {
-    500_000
-}
-
-const fn default_allow_context_heap_allocations() -> bool {
-    true
-}
-
 /// Configuration for the OTLP source.
-#[derive(Deserialize, Default)]
-#[cfg_attr(test, derive(derive_where::DeriveWhere, serde::Serialize))]
+#[cfg_attr(test, derive(derive_where::DeriveWhere))]
 #[cfg_attr(test, derive_where(PartialEq))]
 pub struct OtlpConfiguration {
     otlp_config: OtlpConfig,
@@ -77,10 +59,6 @@ pub struct OtlpConfiguration {
     /// This controls the amount of memory that can be used to intern metric names and tags. If the interner is full,
     /// metrics with contexts that haven't already been resolved may or may not be dropped, depending on the value of
     /// `allow_context_heap_allocations`.
-    #[serde(
-        rename = "otlp_string_interner_size",
-        default = "default_context_string_interner_size"
-    )]
     context_string_interner_bytes: ByteSize,
 
     /// The maximum number of cached contexts to allow.
@@ -90,7 +68,6 @@ pub struct OtlpConfiguration {
     /// and whether or not heap allocations are allowed.
     ///
     /// Defaults to 500,000.
-    #[serde(rename = "otlp_cached_contexts_limit", default = "default_cached_contexts_limit")]
     cached_contexts_limit: usize,
 
     /// The maximum number of cached tagsets to allow.
@@ -100,7 +77,6 @@ pub struct OtlpConfiguration {
     /// and whether or not heap allocations are allowed.
     ///
     /// Defaults to 500,000.
-    #[serde(rename = "otlp_cached_tagsets_limit", default = "default_cached_tagsets_limit")]
     cached_tagsets_limit: usize,
 
     /// Whether or not to allow heap allocations when resolving contexts.
@@ -112,24 +88,24 @@ pub struct OtlpConfiguration {
     /// interned, the metric is skipped.
     ///
     /// Defaults to `true`.
-    #[serde(
-        rename = "otlp_allow_context_heap_allocs",
-        default = "default_allow_context_heap_allocations"
-    )]
     allow_context_heap_allocations: bool,
 
     /// Workload provider to utilize for origin detection/enrichment.
-    #[serde(skip)]
     #[cfg_attr(test, derive_where(skip))]
     workload_provider: Option<Arc<dyn WorkloadProvider + Send + Sync>>,
 }
 
 impl OtlpConfiguration {
-    /// Creates a new `OTLPConfiguration` from the given configuration.
-    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        let mut cfg: Self = config.as_typed()?;
-        cfg.otlp_config.traces.apply_env_overrides(config)?;
-        Ok(cfg)
+    /// Creates a new `OtlpConfiguration` from the given component-native configuration.
+    pub fn from_native(config: &OtlpSourceConfig) -> Self {
+        Self {
+            otlp_config: OtlpConfig::from_native(&config.otlp_config),
+            context_string_interner_bytes: config.context_string_interner_bytes,
+            cached_contexts_limit: config.cached_contexts_limit,
+            cached_tagsets_limit: config.cached_tagsets_limit,
+            allow_context_heap_allocations: config.allow_context_heap_allocations,
+            workload_provider: None,
+        }
     }
 
     /// Sets the workload provider to use for configuring origin detection/enrichment.
@@ -487,27 +463,4 @@ async fn run_converter(
     }
 
     debug!("OTLP resource converter task stopped.");
-}
-
-#[cfg(test)]
-mod config_smoke {
-    use datadog_agent_config_testing::config_registry::structs;
-    use datadog_agent_config_testing::run_config_smoke_tests;
-    use serde_json::json;
-
-    use super::OtlpConfiguration;
-    use crate::config::{DatadogRemapper, KEY_ALIASES};
-
-    #[tokio::test]
-    async fn smoke_test() {
-        run_config_smoke_tests(
-            structs::OTLP_CONFIGURATION,
-            &[],
-            json!({ "otlp_config": {} }),
-            |cfg| OtlpConfiguration::from_configuration(&cfg).expect("OtlpConfiguration should deserialize"),
-            KEY_ALIASES,
-            DatadogRemapper::new,
-        )
-        .await
-    }
 }

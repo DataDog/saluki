@@ -53,6 +53,24 @@ pub enum ScopedConfig<T> {
     },
 }
 
+impl<T: Clone> Clone for ScopedConfig<T> {
+    /// Returns a handle observing the same configuration source.
+    ///
+    /// A [`Fixed`](ScopedConfig::Fixed) handle clones its wrapped value. A
+    /// [`Live`](ScopedConfig::Live) handle clones the retained `initial` value and the underlying
+    /// [`watch::Receiver`], so the clone observes the same channel: both handles see the same
+    /// published updates.
+    fn clone(&self) -> Self {
+        match self {
+            ScopedConfig::Fixed(value) => ScopedConfig::Fixed(value.clone()),
+            ScopedConfig::Live { initial, rx } => ScopedConfig::Live {
+                initial: initial.clone(),
+                rx: rx.clone(),
+            },
+        }
+    }
+}
+
 impl<T> ScopedConfig<T> {
     /// Creates a fixed handle wrapping the given value.
     ///

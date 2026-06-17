@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
-use std::str::FromStr;
 use std::sync::LazyLock;
 use std::time::Duration;
 
@@ -9,7 +8,6 @@ use bytesize::ByteSize;
 use regex::Regex;
 use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_common::cache::{Cache, CacheBuilder};
-use saluki_config_tools::GenericConfiguration;
 use saluki_context::tags::SharedTagSet;
 use saluki_context::tags::TagSet;
 use saluki_context::{Context, ContextResolver, ContextResolverBuilder};
@@ -21,8 +19,6 @@ use saluki_core::{
     topology::EventsBuffer,
 };
 use saluki_error::{generic_error, ErrorContext, GenericError};
-use serde::{Deserialize, Serialize};
-use serde_with::{serde_as, DisplayFromStr, PickFirst};
 use stringtheory::MetaString;
 
 const MATCH_TYPE_WILDCARD: &str = "wildcard";
@@ -31,27 +27,13 @@ const MATCH_TYPE_REGEX: &str = "regex";
 static ALLOWED_WILDCARD_MATCH_PATTERN: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^[a-zA-Z0-9\-_*.]+$").expect("Invalid regex in ALLOWED_WILDCARD_MATCH_PATTERN"));
 
-const fn default_context_string_interner_size() -> ByteSize {
-    ByteSize::kib(64)
-}
-
-const fn default_dogstatsd_mapper_cache_size() -> usize {
-    1000
-}
 /// DogStatsD mapper transform.
-#[serde_as]
-#[derive(Deserialize)]
-#[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
 pub struct DogStatsDMapperConfiguration {
     /// Total size of the string interner used for contexts, in bytes.
     ///
     /// This controls the amount of memory that will be pre-allocated for the purpose
     /// of interning mapped metric names and tags, which can help to avoid unnecessary
     /// allocations and allocator fragmentation.
-    #[serde(
-        rename = "dogstatsd_mapper_string_interner_size",
-        default = "default_context_string_interner_size"
-    )]
     context_string_interner_bytes: ByteSize,
 
     /// Maximum number of mapped results to cache.
@@ -61,44 +43,37 @@ pub struct DogStatsDMapperConfiguration {
     /// When set to `0`, the cache is disabled.
     ///
     /// Defaults to `1000`.
-    #[serde(
-        rename = "dogstatsd_mapper_cache_size",
-        default = "default_dogstatsd_mapper_cache_size"
-    )]
     cache_size: usize,
 
     /// Configuration related to metric mapping.
-    #[serde_as(as = "PickFirst<(DisplayFromStr, _)>")]
-    #[serde(default)]
     dogstatsd_mapper_profiles: MapperProfileConfigs,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 struct MappingProfileConfig {
     name: String,
     prefix: String,
     mappings: Vec<MetricMappingConfig>,
 }
-#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
+
+impl MappingProfileConfig {
+    fn from_native(cfg: &saluki_component_config::dogstatsd::MappingProfileConfig) -> Self {
+        Self {
+            name: cfg.name.clone(),
+            prefix: cfg.prefix.clone(),
+            mappings: cfg.mappings.iter().map(MetricMappingConfig::from_native).collect(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
 struct MapperProfileConfigs(pub Vec<MappingProfileConfig>);
 
-impl FromStr for MapperProfileConfigs {
-    type Err = serde_json::Error;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let profiles: Vec<MappingProfileConfig> = serde_json::from_str(s)?;
-        Ok(MapperProfileConfigs(profiles))
-    }
-}
-
-#[cfg(test)]
-impl std::fmt::Display for MapperProfileConfigs {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", serde_json::to_string(&self.0).unwrap_or_default())
-    }
-}
-
 impl MapperProfileConfigs {
+    fn from_native(cfg: &saluki_component_config::dogstatsd::MapperProfileConfigs) -> Self {
+        Self(cfg.0.iter().map(MappingProfileConfig::from_native).collect())
+    }
+
     fn build(
         &self, context: ComponentContext, context_string_interner_bytes: ByteSize, cache_size: usize,
     ) -> Result<MetricMapper, GenericError> {
@@ -214,22 +189,30 @@ fn build_regex(match_re: &str, match_type: &str) -> Result<Regex, GenericError> 
     })
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 struct MetricMappingConfig {
     // The metric name to extract groups from with the Wildcard or Regex match logic.
-    #[serde(rename = "match")]
     metric_match: String,
 
     // The type of match to apply to the `metric_match`. Either wildcard or regex.
-    #[serde(default)]
     match_type: String,
 
     // The new metric name to send to Datadog with the tags defined in the same group.
     name: String,
 
     // Map with the tag key and tag values collected from the `match_type` to inline.
-    #[serde(default)]
     tags: HashMap<String, String>,
+}
+
+impl MetricMappingConfig {
+    fn from_native(cfg: &saluki_component_config::dogstatsd::MetricMappingConfig) -> Self {
+        Self {
+            metric_match: cfg.metric_match.clone(),
+            match_type: cfg.match_type.clone(),
+            name: cfg.name.clone(),
+            tags: cfg.tags.clone(),
+        }
+    }
 }
 
 struct MappingProfile {
@@ -348,9 +331,13 @@ impl MetricMapper {
 }
 
 impl DogStatsDMapperConfiguration {
-    /// Creates a new `DogstatsDMapperConfiguration` from the given configuration.
-    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        Ok(config.as_typed()?)
+    /// Creates a new `DogStatsDMapperConfiguration` from its native configuration.
+    pub fn from_native(config: &saluki_component_config::dogstatsd::DogStatsDMapperConfig) -> Self {
+        Self {
+            context_string_interner_bytes: config.context_string_interner_bytes,
+            cache_size: config.cache_size,
+            dogstatsd_mapper_profiles: MapperProfileConfigs::from_native(&config.dogstatsd_mapper_profiles),
+        }
     }
 }
 
@@ -400,7 +387,13 @@ impl SynchronousTransform for DogStatsDMapper {
 #[cfg(test)]
 mod tests {
 
+    use std::collections::HashMap;
+
     use bytesize::ByteSize;
+    use saluki_component_config::dogstatsd::{
+        MapperProfileConfigs as LeafMapperProfileConfigs, MappingProfileConfig as LeafMappingProfileConfig,
+        MetricMappingConfig as LeafMetricMappingConfig,
+    };
     use saluki_context::Context;
     use saluki_core::{components::ComponentContext, data_model::event::metric::Metric, topology::ComponentId};
     use saluki_error::GenericError;
@@ -413,13 +406,83 @@ mod tests {
         Metric::counter(context, 1.0)
     }
 
+    /// Builds a leaf `MapperProfileConfigs` from the JSON shape used by these tests.
+    ///
+    /// Profiles are an array of objects with `name`/`prefix`/`mappings`, where each mapping has a
+    /// `match`, optional `match_type`, `name`, and optional `tags` map. Missing string fields
+    /// default to empty (mirroring the original serde defaults), which the builder then validates.
+    fn leaf_profiles_from_json(json_data: Value) -> LeafMapperProfileConfigs {
+        let profiles = json_data
+            .as_array()
+            .expect("mapper profiles JSON should be an array")
+            .iter()
+            .map(|profile| {
+                let mappings = profile
+                    .get("mappings")
+                    .and_then(Value::as_array)
+                    .map(|mappings| {
+                        mappings
+                            .iter()
+                            .map(|mapping| {
+                                let tags = mapping
+                                    .get("tags")
+                                    .and_then(Value::as_object)
+                                    .map(|obj| {
+                                        obj.iter()
+                                            .map(|(k, v)| (k.clone(), v.as_str().unwrap_or_default().to_string()))
+                                            .collect::<HashMap<String, String>>()
+                                    })
+                                    .unwrap_or_default();
+
+                                LeafMetricMappingConfig {
+                                    metric_match: mapping
+                                        .get("match")
+                                        .and_then(Value::as_str)
+                                        .unwrap_or_default()
+                                        .to_string(),
+                                    match_type: mapping
+                                        .get("match_type")
+                                        .and_then(Value::as_str)
+                                        .unwrap_or_default()
+                                        .to_string(),
+                                    name: mapping
+                                        .get("name")
+                                        .and_then(Value::as_str)
+                                        .unwrap_or_default()
+                                        .to_string(),
+                                    tags,
+                                }
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+
+                LeafMappingProfileConfig {
+                    name: profile
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string(),
+                    prefix: profile
+                        .get("prefix")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string(),
+                    mappings,
+                }
+            })
+            .collect();
+
+        LeafMapperProfileConfigs(profiles)
+    }
+
     fn mapper(json_data: Value) -> Result<MetricMapper, GenericError> {
         mapper_with_cache(json_data, 1000)
     }
 
     fn mapper_with_cache(json_data: Value, cache_size: usize) -> Result<MetricMapper, GenericError> {
         let context = ComponentContext::transform(ComponentId::try_from("test_mapper").unwrap());
-        let mpc: MapperProfileConfigs = serde_json::from_value(json_data)?;
+        let mpc = MapperProfileConfigs::from_native(&leaf_profiles_from_json(json_data));
         let context_string_interner_bytes = ByteSize::kib(64);
         mpc.build(context, context_string_interner_bytes, cache_size)
     }
@@ -1159,31 +1222,5 @@ mod tests {
             Some(1),
             "flood of identical names should populate exactly one cache entry"
         );
-    }
-}
-
-#[cfg(test)]
-mod config_smoke {
-    use datadog_agent_config_testing::config_registry::structs;
-    use datadog_agent_config_testing::run_config_smoke_tests;
-    use serde_json::json;
-
-    use super::DogStatsDMapperConfiguration;
-    use crate::config::{DatadogRemapper, KEY_ALIASES};
-
-    #[tokio::test]
-    async fn smoke_test() {
-        run_config_smoke_tests(
-            structs::DOGSTATSD_MAPPER_CONFIGURATION,
-            &[],
-            json!({}),
-            |cfg| {
-                cfg.as_typed::<DogStatsDMapperConfiguration>()
-                    .expect("DogStatsDMapperConfiguration should deserialize")
-            },
-            KEY_ALIASES,
-            DatadogRemapper::new,
-        )
-        .await
     }
 }

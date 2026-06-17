@@ -11,7 +11,7 @@ use otlp_protos::opentelemetry::proto::collector::trace::v1::{
 use prost::Message;
 use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_common::buf::FrozenChunkedBytesBuffer;
-use saluki_config_tools::GenericConfiguration;
+use saluki_component_config::otlp::OtlpForwarderConfig;
 use saluki_core::data_model::payload::Payload;
 use saluki_core::{
     components::{forwarders::*, ComponentContext},
@@ -36,17 +36,15 @@ pub struct OtlpForwarderConfiguration {
 }
 
 impl OtlpForwarderConfiguration {
-    /// Creates a new `OtlpForwarderConfiguration` from the given configuration.
-    pub fn from_configuration(
-        config: &GenericConfiguration, core_agent_otlp_grpc_endpoint: String,
-    ) -> Result<Self, GenericError> {
-        let core_agent_traces_internal_port = config
-            .try_get_typed("otlp_config.traces.internal_port")?
-            .unwrap_or(5003);
-        Ok(Self {
+    /// Creates a new `OtlpForwarderConfiguration` from the given native configuration.
+    ///
+    /// The Core Agent OTLP gRPC endpoint is injected by the caller; the internal traces port is read
+    /// from the native config slice.
+    pub fn from_native(config: &OtlpForwarderConfig, core_agent_otlp_grpc_endpoint: String) -> Self {
+        Self {
             core_agent_otlp_grpc_endpoint,
-            core_agent_traces_internal_port,
-        })
+            core_agent_traces_internal_port: config.core_agent_traces_internal_port,
+        }
     }
 }
 

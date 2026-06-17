@@ -69,6 +69,11 @@ pub struct DogStatsDConfig {
     /// Defaults to `false`.
     pub stream_log_too_big: bool,
 
+    /// Whether to lower DogStatsD parse-failure logs to debug level.
+    ///
+    /// Defaults to `false`.
+    pub disable_verbose_logs: bool,
+
     /// Listener types that require DogStatsD messages to be newline-terminated.
     ///
     /// Valid values are `udp`, `uds`, and `named_pipe`. Defaults to empty.
@@ -173,6 +178,7 @@ impl Default for DogStatsDConfig {
             socket_path: None,
             socket_stream_path: None,
             stream_log_too_big: false,
+            disable_verbose_logs: false,
             eol_required: Vec::new(),
             bind_host: None,
             non_local_traffic: false,

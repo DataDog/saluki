@@ -15,7 +15,6 @@
 use async_trait::async_trait;
 use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_common::collections::FastHashMap;
-use saluki_config_tools::GenericConfiguration;
 use saluki_core::{
     components::{transforms::*, ComponentContext},
     data_model::event::{
@@ -42,7 +41,6 @@ use crate::common::datadog::{
     apm::ApmConfig, sample_by_rate, DECISION_MAKER_MANUAL, DECISION_MAKER_PROBABILISTIC, OTEL_TRACE_ID_META_KEY,
     SAMPLING_PRIORITY_METRIC_KEY, TAG_DECISION_MAKER,
 };
-use crate::common::otlp::config::TracesConfig;
 
 // Sampling priority constants (matching datadog-agent)
 const PRIORITY_AUTO_DROP: i32 = 0;
@@ -57,14 +55,6 @@ const KEY_ANALYZED_SPANS: &str = "_dd.analyzed";
 
 // Decision maker values for `_dd.p.dm` (matching datadog-agent).
 
-fn normalize_sampling_rate(rate: f64) -> f64 {
-    if rate <= 0.0 || rate >= 1.0 {
-        1.0
-    } else {
-        rate
-    }
-}
-
 /// Configuration for the trace sampler transform.
 #[derive(Debug)]
 pub struct TraceSamplerConfiguration {
@@ -73,15 +63,12 @@ pub struct TraceSamplerConfiguration {
 }
 
 impl TraceSamplerConfiguration {
-    /// Creates a new `TraceSamplerConfiguration` from the given configuration.
-    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        let apm_config = ApmConfig::from_configuration(config)?;
-        let otlp_traces: TracesConfig = config.try_get_typed("otlp_config.traces")?.unwrap_or_default();
-        let otlp_sampling_rate = normalize_sampling_rate(otlp_traces.probabilistic_sampler.sampling_percentage / 100.0);
-        Ok(Self {
-            apm_config,
-            otlp_sampling_rate,
-        })
+    /// Creates a new `TraceSamplerConfiguration` from its native configuration.
+    pub fn from_native(config: &saluki_component_config::traces::TraceSamplerConfig) -> Self {
+        Self {
+            apm_config: ApmConfig::from_native(&config.apm_config),
+            otlp_sampling_rate: config.otlp_sampling_rate,
+        }
     }
 }
 

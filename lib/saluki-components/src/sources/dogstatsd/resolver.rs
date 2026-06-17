@@ -32,10 +32,10 @@ impl ContextResolvers {
             NonZeroUsize::new(config.effective_context_string_interner_bytes().as_u64() as usize)
                 .ok_or_else(|| generic_error!("context_string_interner_size must be greater than 0"))?;
 
-        let cached_contexts_limit = config.cached_contexts_limit;
-        let cached_tagsets_limit = config.cached_tagsets_limit;
-        let context_expiry_seconds = Duration::from_secs(config.context_expiry_seconds);
-        let allow_context_heap_allocations = config.allow_context_heap_allocations;
+        let cached_contexts_limit = config.config.cached_contexts_limit;
+        let cached_tagsets_limit = config.config.cached_tagsets_limit;
+        let context_expiry_seconds = Duration::from_secs(config.config.context_expiry_seconds);
+        let allow_context_heap_allocations = config.config.allow_context_heap_allocations;
 
         let interner = GenericMapInterner::new(context_string_interner_size);
 

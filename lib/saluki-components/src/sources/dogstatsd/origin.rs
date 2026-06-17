@@ -88,15 +88,6 @@ pub struct OriginEnrichmentConfiguration {
         default = "default_origin_detection_optout"
     )]
     origin_detection_optout: bool,
-
-    /// Whether or not to parse client-provided origin fields from DogStatsD payloads.
-    ///
-    /// When enabled, the `c:` (Local Data), `e:` (External Data), and `card:` (Cardinality) protocol fields are
-    /// parsed and used for origin enrichment.
-    ///
-    /// Defaults to `false`.
-    #[serde(rename = "dogstatsd_origin_detection_client", default)]
-    pub(super) origin_detection_client: bool,
 }
 
 impl Default for OriginEnrichmentConfiguration {
@@ -107,7 +98,6 @@ impl Default for OriginEnrichmentConfiguration {
             tag_cardinality: default_tag_cardinality(),
             origin_detection_unified: false,
             origin_detection_optout: default_origin_detection_optout(),
-            origin_detection_client: false,
         }
     }
 }
@@ -593,7 +583,6 @@ mod tests {
                 tag_cardinality: OriginTagCardinality::High,
                 origin_detection_unified: false,
                 origin_detection_optout: false,
-                origin_detection_client: false,
             };
 
             let origin_tags_resolver = build_tags_resolver_with_default_tags(tag_resolver_config);
@@ -624,7 +613,6 @@ mod tests {
             tag_cardinality: OriginTagCardinality::High,
             origin_detection_unified: true,
             origin_detection_optout: false,
-            origin_detection_client: false,
         };
 
         let origin_tags_resolver = build_tags_resolver_with_default_tags(tag_resolver_config);

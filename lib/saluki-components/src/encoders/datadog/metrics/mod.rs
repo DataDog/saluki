@@ -3,12 +3,10 @@ use std::{fmt, num::NonZeroU64, time::Duration};
 use async_trait::async_trait;
 use datadog_protos::metrics as proto;
 use ddsketch::DDSketch;
-use facet::Facet;
 use http::{uri::PathAndQuery, HeaderValue, Method, Uri};
 use protobuf::{rt::WireType, CodedOutputStream, Enum as _};
 use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_common::{iter::ReusableDeduplicator, task::HandleExt as _};
-use saluki_config_tools::GenericConfiguration;
 use saluki_context::tags::{SharedTagSet, Tag};
 use saluki_core::{
     components::{encoders::*, ComponentContext},
@@ -25,7 +23,6 @@ use saluki_core::{
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_io::compression::CompressionScheme;
 use saluki_metrics::MetricsBuilder;
-use serde::Deserialize;
 use serde_json::{Map as JsonMap, Number as JsonNumber, Value as JsonValue};
 use tokio::{pin, select, sync::mpsc, time::sleep};
 use tracing::{debug, error, warn};
@@ -45,8 +42,6 @@ const SERIES_V2_UNCOMPRESSED_SIZE_LIMIT: usize = 5_242_880; // 5 MiB
 // V1 series JSON endpoint limits match the Datadog Agent's generic serializer defaults.
 const SERIES_V1_COMPRESSED_SIZE_LIMIT: usize = DEFAULT_SERIALIZER_COMPRESSED_SIZE_LIMIT;
 const SERIES_V1_UNCOMPRESSED_SIZE_LIMIT: usize = DEFAULT_SERIALIZER_UNCOMPRESSED_SIZE_LIMIT;
-
-const DEFAULT_SERIALIZER_COMPRESSOR_KIND: &str = "zstd";
 
 // Protocol Buffers field numbers for series and sketch payload messages.
 //
@@ -96,197 +91,24 @@ const SERIES_V1_PAYLOAD_PREFIX: &[u8] = b"{\"series\":[";
 const SERIES_V1_PAYLOAD_SUFFIX: &[u8] = b"]}";
 const SERIES_V1_INPUT_SEPARATOR: &[u8] = b",";
 
-const fn default_max_metrics_per_payload() -> usize {
-    10_000
-}
-
-const fn default_max_payload_size() -> usize {
-    DEFAULT_SERIALIZER_COMPRESSED_SIZE_LIMIT
-}
-
-const fn default_max_uncompressed_payload_size() -> usize {
-    DEFAULT_SERIALIZER_UNCOMPRESSED_SIZE_LIMIT
-}
-
-const fn default_max_series_payload_size() -> usize {
-    SERIES_V2_COMPRESSED_SIZE_LIMIT
-}
-
-const fn default_max_series_uncompressed_payload_size() -> usize {
-    SERIES_V2_UNCOMPRESSED_SIZE_LIMIT
-}
-
-const fn default_max_series_points_per_payload() -> usize {
-    10_000
-}
-
-const fn default_flush_timeout_secs() -> u64 {
-    2
-}
-
-fn default_serializer_compressor_kind() -> String {
-    DEFAULT_SERIALIZER_COMPRESSOR_KIND.to_owned()
-}
-
-const fn default_zstd_compressor_level() -> i32 {
-    3
-}
-
-const fn default_use_v2_api_series() -> bool {
-    true
-}
-
-const fn default_log_payloads() -> bool {
-    false
-}
-
 /// Datadog Metrics encoder.
 ///
 /// Generates Datadog metrics payloads for the Datadog platform.
-#[derive(Clone, Deserialize, Facet)]
-#[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
-#[allow(dead_code)]
+#[derive(Clone)]
 pub struct DatadogMetricsConfiguration {
-    /// Maximum number of input metrics to encode into a single request payload.
-    ///
-    /// This applies both to the series and sketches endpoints.
-    ///
-    /// Defaults to 10,000.
-    #[serde(
-        rename = "serializer_max_metrics_per_payload",
-        default = "default_max_metrics_per_payload"
-    )]
-    max_metrics_per_payload: usize,
-
-    /// Maximum compressed size, in bytes, of generic payloads.
-    ///
-    /// This applies to V1 JSON series payloads and sketch payloads, matching the Datadog Agent's generic payload
-    /// builder. V2 series payloads use `serializer_max_series_payload_size` instead. The effective value is clamped to
-    /// the Agent's default intake-safe limit of 2,621,440 bytes, so larger configured values do not allow payloads that
-    /// intake may reject. If set to `0`, every non-empty compressed payload exceeds the limit and is dropped during
-    /// flush.
-    ///
-    /// Defaults to 2,621,440 bytes.
-    #[serde(rename = "serializer_max_payload_size", default = "default_max_payload_size")]
-    max_payload_size: usize,
-
-    /// Maximum uncompressed size, in bytes, of generic payloads.
-    ///
-    /// This applies to V1 JSON series payloads and sketch payloads, matching the Datadog Agent's generic payload
-    /// builder. V2 series payloads use `serializer_max_series_uncompressed_payload_size` instead. The effective value
-    /// is clamped to the Agent's default intake-safe limit of 4,194,304 bytes, so larger configured values do not allow
-    /// payloads that intake may reject. Values smaller than the minimum endpoint framing size prevent the request
-    /// builder from starting.
-    ///
-    /// Defaults to 4,194,304 bytes.
-    #[serde(
-        rename = "serializer_max_uncompressed_payload_size",
-        default = "default_max_uncompressed_payload_size"
-    )]
-    max_uncompressed_payload_size: usize,
-
-    /// Maximum compressed size, in bytes, of a V2 series payload.
-    ///
-    /// This applies only when `use_v2_api.series` is `true`. V1 series and sketches use `serializer_max_payload_size`
-    /// instead. The effective value is clamped to the V2 series API limit of 512,000 bytes, so larger configured values
-    /// do not allow payloads that intake would reject. High-throughput workloads may increase this up to that API limit
-    /// to reduce request count, at the cost of larger individual requests. If set to `0`, every non-empty compressed
-    /// payload exceeds the limit and is dropped during flush.
-    ///
-    /// Defaults to 512,000 bytes.
-    #[serde(
-        rename = "serializer_max_series_payload_size",
-        default = "default_max_series_payload_size"
-    )]
-    max_series_payload_size: usize,
-
-    /// Maximum uncompressed size, in bytes, of a V2 series payload.
-    ///
-    /// This applies only when `use_v2_api.series` is `true`. V1 series and sketches use
-    /// `serializer_max_uncompressed_payload_size` instead. The effective value is clamped to the V2 series API limit of
-    /// 5,242,880 bytes, so larger configured values do not allow payloads that intake would reject. This limit protects
-    /// the encoder before compression, so compressed payload size may still force a separate flush. Values smaller than
-    /// the minimum endpoint framing size prevent the request builder from starting.
-    ///
-    /// Defaults to 5,242,880 bytes.
-    #[serde(
-        rename = "serializer_max_series_uncompressed_payload_size",
-        default = "default_max_series_uncompressed_payload_size"
-    )]
-    max_series_uncompressed_payload_size: usize,
-
-    /// Maximum number of data points, across all series, to encode into a single series request payload.
-    ///
-    /// This applies only to series metrics (counters, gauges, rates, sets) and not to sketch metrics (histograms,
-    /// distributions). A single metric series may contribute multiple data points when it carries more than one
-    /// timestamp/value pair. When encoding an input would cause the running data point total to exceed this limit, the
-    /// current payload is flushed first and the input is placed in the next payload.
-    ///
-    /// Defaults to 10,000.
-    #[serde(
-        rename = "serializer_max_series_points_per_payload",
-        default = "default_max_series_points_per_payload"
-    )]
-    max_series_points_per_payload: usize,
-
-    /// Flush timeout for pending requests, in seconds.
-    ///
-    /// When the destination has written metrics to the in-flight request payload, but it hasn't yet reached the
-    /// payload size limits that would force the payload to be flushed, the destination will wait for a period of time
-    /// before flushing the in-flight request payload. This allows for the possibility of other events to be processed
-    /// and written into the request payload, thereby maximizing the payload size and reducing the number of requests
-    /// generated and sent overall.
-    ///
-    /// Defaults to 2 seconds.
-    #[serde(default = "default_flush_timeout_secs")]
-    flush_timeout_secs: u64,
-
-    /// Compression kind to use for the request payloads.
-    ///
-    /// Defaults to `zstd`.
-    #[serde(
-        rename = "serializer_compressor_kind",
-        default = "default_serializer_compressor_kind"
-    )]
-    compressor_kind: String,
-
-    /// Compressor level to use when the compressor kind is `zstd`.
-    ///
-    /// Defaults to 3.
-    #[serde(
-        rename = "serializer_zstd_compressor_level",
-        default = "default_zstd_compressor_level"
-    )]
-    zstd_compressor_level: i32,
-
-    /// Whether to use the V2 API for series metrics.
-    ///
-    /// When `true` (the default), series metrics are sent to the V2 protobuf endpoint (`/api/v2/series`). When
-    /// `false`, series metrics are sent to the legacy V1 JSON endpoint (`/api/v1/series`). Sketch metrics always use
-    /// the V2 endpoint (`/api/beta/sketches`) regardless of this setting.
-    ///
-    /// Defaults to `true`.
-    #[serde(default = "default_use_v2_api_series")]
-    use_v2_api_series: bool,
-
-    /// Whether to log metric payload contents before encoding.
-    ///
-    /// This logs decoded metric objects, not the encoded JSON/protobuf HTTP body.
-    ///
-    /// Defaults to `false`.
-    #[serde(default = "default_log_payloads")]
-    log_payloads: bool,
+    config: saluki_component_config::metrics::DatadogMetricsConfig,
 
     /// Additional tags to apply to all forwarded metrics.
-    #[serde(default, skip)]
-    #[facet(opaque)]
     additional_tags: Option<SharedTagSet>,
 }
 
 impl DatadogMetricsConfiguration {
-    /// Creates a new `DatadogMetricsConfiguration` from the given configuration.
-    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        Ok(config.as_typed()?)
+    /// Creates a new `DatadogMetricsConfiguration` from the given component-native configuration.
+    pub fn from_native(config: saluki_component_config::metrics::DatadogMetricsConfig) -> Self {
+        Self {
+            config,
+            additional_tags: None,
+        }
     }
 
     /// Sets additional tags to be applied uniformly to all metrics forwarded by this destination.
@@ -310,10 +132,11 @@ impl EncoderBuilder for DatadogMetricsConfiguration {
     async fn build(&self, context: ComponentContext) -> Result<Box<dyn Encoder + Send>, GenericError> {
         let metrics_builder = MetricsBuilder::from_component_context(&context);
         let telemetry = ComponentTelemetry::from_builder(&metrics_builder);
-        let compression_scheme = CompressionScheme::new(&self.compressor_kind, self.zstd_compressor_level);
+        let compression_scheme =
+            CompressionScheme::new(&self.config.compressor_kind, self.config.zstd_compressor_level);
 
         // Create our request builders.
-        let series_endpoint = if self.use_v2_api_series {
+        let series_endpoint = if self.config.use_v2_api_series {
             MetricsEndpoint::SeriesV2
         } else {
             MetricsEndpoint::SeriesV1
@@ -327,19 +150,19 @@ impl EncoderBuilder for DatadogMetricsConfiguration {
         }
 
         let mut series_rb = RequestBuilder::new(series_encoder, compression_scheme, RB_BUFFER_CHUNK_SIZE).await?;
-        series_rb.with_max_inputs_per_payload(self.max_metrics_per_payload);
-        series_rb.with_max_data_points_per_payload(self.max_series_points_per_payload);
+        series_rb.with_max_inputs_per_payload(self.config.max_metrics_per_payload);
+        series_rb.with_max_data_points_per_payload(self.config.max_series_points_per_payload);
 
         let generic_payload_limits = clamp_payload_limits(
-            self.max_uncompressed_payload_size,
-            self.max_payload_size,
+            self.config.max_uncompressed_payload_size,
+            self.config.max_payload_size,
             DEFAULT_SERIALIZER_UNCOMPRESSED_SIZE_LIMIT,
             DEFAULT_SERIALIZER_COMPRESSED_SIZE_LIMIT,
         );
         let (series_uncompressed_limit, series_compressed_limit) = if series_endpoint == MetricsEndpoint::SeriesV2 {
             clamp_payload_limits(
-                self.max_series_uncompressed_payload_size,
-                self.max_series_payload_size,
+                self.config.max_series_uncompressed_payload_size,
+                self.config.max_series_payload_size,
                 SERIES_V2_UNCOMPRESSED_SIZE_LIMIT,
                 SERIES_V2_COMPRESSED_SIZE_LIMIT,
             )
@@ -349,11 +172,11 @@ impl EncoderBuilder for DatadogMetricsConfiguration {
         series_rb.with_len_limits(series_uncompressed_limit, series_compressed_limit)?;
 
         let mut sketches_rb = RequestBuilder::new(sketches_encoder, compression_scheme, RB_BUFFER_CHUNK_SIZE).await?;
-        sketches_rb.with_max_inputs_per_payload(self.max_metrics_per_payload);
+        sketches_rb.with_max_inputs_per_payload(self.config.max_metrics_per_payload);
         let (sketches_uncompressed_limit, sketches_compressed_limit) = generic_payload_limits;
         sketches_rb.with_len_limits(sketches_uncompressed_limit, sketches_compressed_limit)?;
 
-        let flush_timeout = match self.flush_timeout_secs {
+        let flush_timeout = match self.config.flush_timeout_secs {
             // We always give ourselves a minimum flush timeout of 10ms to allow for some very minimal amount of
             // batching, while still practically flushing things almost immediately.
             0 => Duration::from_millis(10),
@@ -365,7 +188,7 @@ impl EncoderBuilder for DatadogMetricsConfiguration {
             sketches_rb,
             telemetry,
             flush_timeout,
-            log_payloads: self.log_payloads,
+            log_payloads: self.config.log_payloads,
         }))
     }
 }
@@ -389,8 +212,14 @@ impl MemoryBounds for DatadogMetricsConfiguration {
             .firm()
             // Capture the size of the "split re-encode" buffers in the request builders, which is where we keep owned
             // versions of metrics that we encode in case we need to actually re-encode them during a split operation.
-            .with_array::<Metric>("series metrics split re-encode buffer", self.max_metrics_per_payload)
-            .with_array::<Metric>("sketch metrics split re-encode buffer", self.max_metrics_per_payload);
+            .with_array::<Metric>(
+                "series metrics split re-encode buffer",
+                self.config.max_metrics_per_payload,
+            )
+            .with_array::<Metric>(
+                "sketch metrics split re-encode buffer",
+                self.config.max_metrics_per_payload,
+            );
     }
 }
 
@@ -1639,99 +1468,9 @@ mod tests {
 }
 
 #[cfg(test)]
-mod config_smoke {
-    use datadog_agent_config_testing::config_registry::structs;
-    use datadog_agent_config_testing::run_config_smoke_tests;
-    use serde_json::json;
-
-    use super::DatadogMetricsConfiguration;
-    use crate::config::{DatadogRemapper, KEY_ALIASES};
-
-    #[tokio::test]
-    async fn smoke_test() {
-        run_config_smoke_tests(
-            structs::DATADOG_METRICS_CONFIGURATION,
-            &[],
-            json!({}),
-            |cfg| {
-                cfg.as_typed::<DatadogMetricsConfiguration>()
-                    .expect("DatadogMetricsConfiguration should deserialize")
-            },
-            KEY_ALIASES,
-            DatadogRemapper::new,
-        )
-        .await
-    }
-}
-
-#[cfg(test)]
-mod use_v2_api_series_default {
-    use saluki_config_tools::ConfigurationLoader;
-    use serde_json::json;
-
-    use super::{DatadogMetricsConfiguration, SERIES_V2_COMPRESSED_SIZE_LIMIT, SERIES_V2_UNCOMPRESSED_SIZE_LIMIT};
-    use crate::{common::datadog::clamp_payload_limits, config::KEY_ALIASES};
-
-    /// `use_v2_api_series` defaults to `true` (preserves V2 protobuf behavior when the flag is absent).
-    /// The nested-form (`use_v2_api.series`) and env-var (`DD_USE_V2_API_SERIES`) paths to the flat key
-    /// are exercised end-to-end by the `config_smoke::smoke_test` runner via `KEY_ALIASES`.
-    #[tokio::test]
-    async fn defaults_to_true_when_absent() {
-        let cfg = ConfigurationLoader::default()
-            .with_key_aliases(KEY_ALIASES)
-            .add_providers([figment::providers::Serialized::defaults(json!({}))])
-            .into_generic()
-            .await
-            .expect("config should load");
-        let parsed: DatadogMetricsConfiguration = cfg.as_typed().expect("should deserialize");
-        assert!(parsed.use_v2_api_series);
-    }
-
-    #[tokio::test]
-    async fn deserializes_payload_limit_keys() {
-        let cfg = ConfigurationLoader::default()
-            .with_key_aliases(KEY_ALIASES)
-            .add_providers([figment::providers::Serialized::defaults(json!({
-                "serializer_max_payload_size": 4321,
-                "serializer_max_uncompressed_payload_size": 8765,
-                "serializer_max_series_payload_size": 1234,
-                "serializer_max_series_uncompressed_payload_size": 5678,
-            }))])
-            .into_generic()
-            .await
-            .expect("config should load");
-        let parsed: DatadogMetricsConfiguration = cfg.as_typed().expect("should deserialize");
-
-        assert_eq!(parsed.max_payload_size, 4321);
-        assert_eq!(parsed.max_uncompressed_payload_size, 8765);
-        assert_eq!(parsed.max_series_payload_size, 1234);
-        assert_eq!(parsed.max_series_uncompressed_payload_size, 5678);
-    }
-
-    #[tokio::test]
-    async fn deserializes_max_series_points_per_payload() {
-        // Default should be 10,000.
-        let cfg = ConfigurationLoader::default()
-            .with_key_aliases(KEY_ALIASES)
-            .add_providers([figment::providers::Serialized::defaults(json!({}))])
-            .into_generic()
-            .await
-            .expect("config should load");
-        let parsed: DatadogMetricsConfiguration = cfg.as_typed().expect("should deserialize");
-        assert_eq!(parsed.max_series_points_per_payload, 10_000);
-
-        // Explicit value should round-trip.
-        let cfg = ConfigurationLoader::default()
-            .with_key_aliases(KEY_ALIASES)
-            .add_providers([figment::providers::Serialized::defaults(json!({
-                "serializer_max_series_points_per_payload": 500,
-            }))])
-            .into_generic()
-            .await
-            .expect("config should load");
-        let parsed: DatadogMetricsConfiguration = cfg.as_typed().expect("should deserialize");
-        assert_eq!(parsed.max_series_points_per_payload, 500);
-    }
+mod payload_limit_clamping {
+    use super::{SERIES_V2_COMPRESSED_SIZE_LIMIT, SERIES_V2_UNCOMPRESSED_SIZE_LIMIT};
+    use crate::common::datadog::clamp_payload_limits;
 
     #[test]
     fn clamps_series_payload_limit_keys_to_api_limits() {

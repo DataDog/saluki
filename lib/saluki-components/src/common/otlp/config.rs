@@ -1,194 +1,201 @@
 //! Shared OTLP receiver configuration.
+//!
+//! These runtime types mirror their leaf counterparts in `saluki_component_config::otlp` and are
+//! built from them via `from_native`. They carry no source-language serde attributes; the
+//! configuration system owns source-to-native mapping (including env-var overrides that previously
+//! lived in `apply_env_overrides`).
 
 use bytesize::ByteSize;
-use facet::Facet;
-use saluki_config_tools::GenericConfiguration;
-use saluki_error::GenericError;
-use serde::Deserialize;
-
-fn default_grpc_endpoint() -> String {
-    "0.0.0.0:4317".to_string()
-}
-
-fn default_http_endpoint() -> String {
-    "0.0.0.0:4318".to_string()
-}
-
-fn default_transport() -> String {
-    "tcp".to_string()
-}
-
-fn default_max_recv_msg_size_mib() -> u64 {
-    4
-}
-
-pub(crate) const fn default_traces_string_interner_size() -> ByteSize {
-    ByteSize::kib(512)
-}
+use saluki_component_config::otlp as leaf;
 
 /// Receiver configuration for OTLP endpoints.
-///
-/// This follows the Datadog Agent `otlp_config.receiver` structure.
-#[derive(Deserialize, Debug, Default, Facet)]
-#[cfg_attr(test, derive(PartialEq, serde::Serialize))]
+#[derive(Debug, Default)]
+#[cfg_attr(test, derive(PartialEq))]
 pub struct Receiver {
     /// Protocol-specific receiver configuration.
-    #[serde(default)]
     pub protocols: Protocols,
 }
 
+impl Receiver {
+    /// Builds the runtime receiver configuration from its leaf mirror.
+    pub fn from_native(cfg: &leaf::Receiver) -> Self {
+        Self {
+            protocols: Protocols::from_native(&cfg.protocols),
+        }
+    }
+}
+
 /// Protocol configuration for OTLP receiver.
-#[derive(Deserialize, Debug, Default, Facet)]
-#[cfg_attr(test, derive(PartialEq, serde::Serialize))]
+#[derive(Debug, Default)]
+#[cfg_attr(test, derive(PartialEq))]
 pub struct Protocols {
     /// gRPC protocol configuration.
-    #[serde(default)]
     pub grpc: GrpcConfig,
 
     /// HTTP protocol configuration.
-    #[serde(default)]
     pub http: HttpConfig,
 }
 
+impl Protocols {
+    fn from_native(cfg: &leaf::Protocols) -> Self {
+        Self {
+            grpc: GrpcConfig::from_native(&cfg.grpc),
+            http: HttpConfig::from_native(&cfg.http),
+        }
+    }
+}
+
 /// gRPC receiver configuration.
-#[derive(Deserialize, Debug, Facet)]
-#[cfg_attr(test, derive(PartialEq, serde::Serialize))]
+#[derive(Debug)]
+#[cfg_attr(test, derive(PartialEq))]
 pub struct GrpcConfig {
     /// The gRPC endpoint to listen on for OTLP requests.
     ///
     /// Defaults to `0.0.0.0:4317`.
-    #[serde(default = "default_grpc_endpoint")]
     pub endpoint: String,
 
     /// The transport protocol to use for the gRPC listener.
     ///
     /// Defaults to `tcp`.
-    #[serde(default = "default_transport")]
     pub transport: String,
 
     /// Maximum size (in MiB) of a gRPC message that can be received.
     ///
     /// Defaults to 4 MiB.
-    #[serde(default = "default_max_recv_msg_size_mib", rename = "max_recv_msg_size_mib")]
     pub max_recv_msg_size_mib: u64,
 }
 
+impl GrpcConfig {
+    fn from_native(cfg: &leaf::GrpcConfig) -> Self {
+        Self {
+            endpoint: cfg.endpoint.clone(),
+            transport: cfg.transport.clone(),
+            max_recv_msg_size_mib: cfg.max_recv_msg_size_mib,
+        }
+    }
+}
+
 /// HTTP receiver configuration.
-#[derive(Deserialize, Debug, Facet)]
-#[cfg_attr(test, derive(PartialEq, serde::Serialize))]
+#[derive(Debug)]
+#[cfg_attr(test, derive(PartialEq))]
 pub struct HttpConfig {
     /// The HTTP endpoint to listen on for OTLP requests.
     ///
     /// Defaults to `0.0.0.0:4318`.
-    #[serde(default = "default_http_endpoint")]
     pub endpoint: String,
 
     /// The transport protocol to use for the HTTP listener.
     ///
     /// Defaults to `tcp`.
-    #[serde(default = "default_transport")]
     pub transport: String,
+}
+
+impl HttpConfig {
+    fn from_native(cfg: &leaf::HttpConfig) -> Self {
+        Self {
+            endpoint: cfg.endpoint.clone(),
+            transport: cfg.transport.clone(),
+        }
+    }
 }
 
 impl Default for GrpcConfig {
     fn default() -> Self {
-        Self {
-            endpoint: default_grpc_endpoint(),
-            transport: default_transport(),
-            max_recv_msg_size_mib: default_max_recv_msg_size_mib(),
-        }
+        Self::from_native(&leaf::GrpcConfig::default())
     }
 }
 
 impl Default for HttpConfig {
     fn default() -> Self {
-        Self {
-            endpoint: default_http_endpoint(),
-            transport: default_transport(),
-        }
+        Self::from_native(&leaf::HttpConfig::default())
     }
 }
 
 /// OTLP configuration.
 ///
-/// This mirrors the Agent's `otlp_config` and contains configuration for
-/// the OTLP receiver as well as signal-specific settings (metrics, logs, traces).
-#[derive(Deserialize, Debug, Default)]
-#[cfg_attr(test, derive(PartialEq, serde::Serialize))]
+/// This mirrors the leaf `OtlpConfig` and contains configuration for the OTLP receiver as well as
+/// signal-specific settings (metrics, logs, traces).
+#[derive(Debug, Default)]
+#[cfg_attr(test, derive(PartialEq))]
 pub struct OtlpConfig {
     /// OTLP receiver configuration.
-    #[serde(default)]
     pub receiver: Receiver,
 
     /// Metrics-specific OTLP configuration.
-    #[serde(default)]
     pub metrics: MetricsConfig,
 
     /// Logs-specific OTLP configuration.
-    #[serde(default)]
     pub logs: LogsConfig,
 
     /// Traces-specific OTLP configuration.
-    #[serde(default)]
     pub traces: TracesConfig,
 }
 
-/// Configuration for OTLP logs processing.
-#[derive(Deserialize, Debug)]
-#[cfg_attr(test, derive(PartialEq, serde::Serialize))]
-pub struct LogsConfig {
-    /// Whether to enable OTLP logs support.
-    ///
-    /// Defaults to `true`.
-    #[serde(default = "default_logs_enabled")]
-    pub enabled: bool,
-}
-
-fn default_logs_enabled() -> bool {
-    true
-}
-
-impl Default for LogsConfig {
-    fn default() -> Self {
+impl OtlpConfig {
+    /// Builds the runtime OTLP configuration from its leaf mirror.
+    pub fn from_native(cfg: &leaf::OtlpConfig) -> Self {
         Self {
-            enabled: default_logs_enabled(),
+            receiver: Receiver::from_native(&cfg.receiver),
+            metrics: MetricsConfig::from_native(&cfg.metrics),
+            logs: LogsConfig::from_native(&cfg.logs),
+            traces: TracesConfig::from_native(&cfg.traces),
         }
     }
 }
 
+/// Configuration for OTLP logs processing.
+#[derive(Debug)]
+#[cfg_attr(test, derive(PartialEq))]
+pub struct LogsConfig {
+    /// Whether to enable OTLP logs support.
+    ///
+    /// Defaults to `true`.
+    pub enabled: bool,
+}
+
+impl LogsConfig {
+    fn from_native(cfg: &leaf::LogsConfig) -> Self {
+        Self { enabled: cfg.enabled }
+    }
+}
+
+impl Default for LogsConfig {
+    fn default() -> Self {
+        Self::from_native(&leaf::LogsConfig::default())
+    }
+}
+
 /// Configuration for OTLP metrics processing.
-#[derive(Deserialize, Debug)]
-#[cfg_attr(test, derive(PartialEq, serde::Serialize))]
+#[derive(Debug)]
+#[cfg_attr(test, derive(PartialEq))]
 pub struct MetricsConfig {
     /// Whether to enable OTLP metrics support.
     ///
     /// Defaults to `true`.
-    #[serde(default = "default_metrics_enabled")]
     pub enabled: bool,
 }
 
-fn default_metrics_enabled() -> bool {
-    true
+impl MetricsConfig {
+    fn from_native(cfg: &leaf::MetricsConfig) -> Self {
+        Self { enabled: cfg.enabled }
+    }
 }
 
 impl Default for MetricsConfig {
     fn default() -> Self {
-        Self {
-            enabled: default_metrics_enabled(),
-        }
+        Self::from_native(&leaf::MetricsConfig::default())
     }
 }
 
 /// Configuration for OTLP traces processing.
 ///
-/// Mirrors the Agent's `otlp_config.traces` configuration.
-#[derive(Clone, Deserialize, Debug)]
-#[cfg_attr(test, derive(PartialEq, serde::Serialize))]
+/// Mirrors the leaf `otlp_config.traces` configuration.
+#[derive(Clone, Debug)]
+#[cfg_attr(test, derive(PartialEq))]
 pub struct TracesConfig {
     /// Whether to enable OTLP traces support.
     ///
     /// Defaults to `true`.
-    #[serde(default = "default_traces_enabled")]
     pub enabled: bool,
 
     /// Whether to skip deriving Datadog fields from standard OTLP attributes.
@@ -196,107 +203,71 @@ pub struct TracesConfig {
     /// When true, only uses explicit `datadog.*` prefixed attributes and skips
     /// fallback resolution from OTLP semantic conventions.
     ///
-    /// Corresponds to `otlp_config.traces.ignore_missing_datadog_fields` in the Agent.
-    ///
     /// Defaults to `false`.
-    #[serde(default)]
     pub ignore_missing_datadog_fields: bool,
 
     /// When true, `_top_level` and `_dd.measured` are derived using the OTLP span kind.
     ///
-    /// Corresponds to the `enable_otlp_compute_top_level_by_span_kind` feature flag
-    /// in the Agent's `apm_config.features`.
-    ///
     /// Defaults to `true`.
-    #[serde(default = "default_enable_otlp_compute_top_level_by_span_kind")]
     pub enable_otlp_compute_top_level_by_span_kind: bool,
 
     /// Probabilistic sampler configuration for OTLP traces.
-    ///
-    /// Corresponds to `otlp_config.traces.probabilistic_sampler` in the Agent.
-    #[serde(default)]
     pub probabilistic_sampler: ProbabilisticSampler,
 
     /// Total size of the string interner used for OTLP traces.
     ///
     /// Defaults to 512 KiB.
-    #[serde(rename = "string_interner_size", default = "default_traces_string_interner_size")]
     pub string_interner_bytes: ByteSize,
 
     /// The internal port on the Core Agent to forward traces to.
     ///
     /// Defaults to 5003.
-    #[serde(default = "default_internal_port")]
     #[allow(unused)]
     pub internal_port: u16,
 }
 
-const fn default_internal_port() -> u16 {
-    5003
+impl TracesConfig {
+    /// Builds the runtime traces configuration from its leaf mirror.
+    pub fn from_native(cfg: &leaf::TracesConfig) -> Self {
+        Self {
+            enabled: cfg.enabled,
+            ignore_missing_datadog_fields: cfg.ignore_missing_datadog_fields,
+            enable_otlp_compute_top_level_by_span_kind: cfg.enable_otlp_compute_top_level_by_span_kind,
+            probabilistic_sampler: ProbabilisticSampler::from_native(&cfg.probabilistic_sampler),
+            string_interner_bytes: cfg.string_interner_bytes,
+            internal_port: cfg.internal_port,
+        }
+    }
 }
 
 /// Configuration for OTLP traces probabilistic sampling.
-#[derive(Clone, Deserialize, Debug)]
-#[cfg_attr(test, derive(PartialEq, serde::Serialize))]
+#[derive(Clone, Debug)]
+#[cfg_attr(test, derive(PartialEq))]
 pub struct ProbabilisticSampler {
     /// Percentage of traces to ingest (0, 100].
     ///
     /// Invalid values (<= 0 || > 100) are disregarded and the default is used.
     ///
-    /// Corresponds to `otlp_config.traces.probabilistic_sampler.sampling_percentage` in the Agent.
-    ///
     /// Defaults to 100.0 (100% sampling).
-    #[serde(default = "default_sampling_percentage")]
     pub sampling_percentage: f64,
 }
 
-const fn default_sampling_percentage() -> f64 {
-    100.0
-}
-
-impl Default for ProbabilisticSampler {
-    fn default() -> Self {
+impl ProbabilisticSampler {
+    fn from_native(cfg: &leaf::ProbabilisticSampler) -> Self {
         Self {
-            sampling_percentage: default_sampling_percentage(),
+            sampling_percentage: cfg.sampling_percentage,
         }
     }
 }
 
-const fn default_enable_otlp_compute_top_level_by_span_kind() -> bool {
-    true
-}
-
-fn default_traces_enabled() -> bool {
-    true
-}
-
-impl TracesConfig {
-    /// Applies env var overrides for keys whose `DD_`-stripped flat form can't reach the nested
-    /// struct through normal serde deserialization.
-    ///
-    /// `DD_OTLP_CONFIG_TRACES_PROBABILISTIC_SAMPLER_SAMPLING_PERCENTAGE` strips to flat Figment key
-    /// `otlp_config_traces_probabilistic_sampler_sampling_percentage`. KEY_ALIASES ensures YAML and
-    /// env var land on the same key, but a nested struct can't see a flat key—so we read it
-    /// explicitly and override.
-    pub(crate) fn apply_env_overrides(&mut self, config: &GenericConfiguration) -> Result<(), GenericError> {
-        if let Some(pct) =
-            config.try_get_typed::<f64>("otlp_config_traces_probabilistic_sampler_sampling_percentage")?
-        {
-            self.probabilistic_sampler.sampling_percentage = pct;
-        }
-        Ok(())
+impl Default for ProbabilisticSampler {
+    fn default() -> Self {
+        Self::from_native(&leaf::ProbabilisticSampler::default())
     }
 }
 
 impl Default for TracesConfig {
     fn default() -> Self {
-        Self {
-            enabled: default_traces_enabled(),
-            ignore_missing_datadog_fields: false,
-            enable_otlp_compute_top_level_by_span_kind: default_enable_otlp_compute_top_level_by_span_kind(),
-            probabilistic_sampler: ProbabilisticSampler::default(),
-            string_interner_bytes: default_traces_string_interner_size(),
-            internal_port: default_internal_port(),
-        }
+        Self::from_native(&leaf::TracesConfig::default())
     }
 }

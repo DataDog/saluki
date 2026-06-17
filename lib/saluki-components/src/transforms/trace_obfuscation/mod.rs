@@ -11,9 +11,7 @@ mod sql_filters;
 mod sql_tokenizer;
 
 use async_trait::async_trait;
-use facet::Facet;
 use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
-use saluki_config_tools::GenericConfiguration;
 use saluki_core::{
     components::{transforms::*, ComponentContext},
     data_model::event::{
@@ -23,35 +21,24 @@ use saluki_core::{
     topology::EventsBuffer,
 };
 use saluki_error::GenericError;
-use serde::Deserialize;
 use stringtheory::MetaString;
 
 pub use self::obfuscator::{tags, ObfuscationConfig, Obfuscator};
-use crate::common::datadog::apm::ApmConfig;
 
 const TEXT_NON_PARSABLE_SQL: &str = "Non-parsable SQL query";
 
 /// Trace obfuscation configuration.
-#[derive(Deserialize, Facet)]
-#[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
 pub struct TraceObfuscationConfiguration {
     /// Obfuscator configuration.
-    #[serde(default)]
     pub config: ObfuscationConfig,
 }
 
 impl TraceObfuscationConfiguration {
-    /// Creates a new `TraceObfuscationConfiguration` from the given generic configuration.
-    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        Self::from_apm_configuration(config)
-    }
-
-    /// Creates a new `TraceObfuscationConfiguration` from the APM configuration section.
-    pub fn from_apm_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        let apm_config = ApmConfig::from_configuration(config)?;
-        Ok(Self {
-            config: apm_config.obfuscation().clone(),
-        })
+    /// Creates a new `TraceObfuscationConfiguration` from its native configuration.
+    pub fn from_native(config: &saluki_component_config::traces::TraceObfuscationConfig) -> Self {
+        Self {
+            config: ObfuscationConfig::from_native(&config.config),
+        }
     }
 
     /// Creates a new `TraceObfuscationConfiguration` with default settings.
@@ -304,31 +291,5 @@ impl SynchronousTransform for TraceObfuscation {
                 }
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod config_smoke {
-    use datadog_agent_config_testing::config_registry::structs;
-    use datadog_agent_config_testing::run_config_smoke_tests;
-    use serde_json::json;
-
-    use super::TraceObfuscationConfiguration;
-    use crate::config::{DatadogRemapper, KEY_ALIASES};
-
-    #[tokio::test]
-    async fn smoke_test() {
-        run_config_smoke_tests(
-            structs::TRACE_OBFUSCATION_CONFIGURATION,
-            &[],
-            json!({}),
-            |cfg| {
-                TraceObfuscationConfiguration::from_apm_configuration(&cfg)
-                    .expect("TraceObfuscationConfiguration should deserialize")
-            },
-            KEY_ALIASES,
-            DatadogRemapper::new,
-        )
-        .await
     }
 }

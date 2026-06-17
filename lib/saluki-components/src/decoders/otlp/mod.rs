@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use otlp_protos::opentelemetry::proto::collector::trace::v1::ExportTraceServiceRequest;
 use prost::Message;
 use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
-use saluki_config_tools::GenericConfiguration;
+use saluki_component_config::otlp::OtlpDecoderConfig;
 use saluki_core::{
     components::{
         decoders::{Decoder, DecoderBuilder, DecoderContext},
@@ -13,8 +13,7 @@ use saluki_core::{
     data_model::{event::EventType, payload::PayloadType},
     topology::interconnect::EventBufferManager,
 };
-use saluki_error::{generic_error, ErrorContext as _, GenericError};
-use serde::Deserialize;
+use saluki_error::{generic_error, GenericError};
 use tokio::{
     select,
     time::{interval, MissedTickBehavior},
@@ -28,29 +27,16 @@ use crate::common::otlp::{
 };
 
 /// Configuration for the OTLP decoder.
-#[derive(Deserialize, Default)]
-#[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
 pub struct OtlpDecoderConfiguration {
-    #[serde(default)]
-    otlp_config: OtlpDecoderConfig,
-}
-
-/// OTLP configuration for the decoder.
-#[derive(Deserialize, Default)]
-#[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
-struct OtlpDecoderConfig {
-    #[serde(default)]
     traces: TracesConfig,
 }
 
 impl OtlpDecoderConfiguration {
-    /// Creates a new `OtlpDecoderConfiguration` from the given configuration.
-    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        let mut cfg: Self = config
-            .as_typed()
-            .error_context("Failed to load OTLP decoder configuration")?;
-        cfg.otlp_config.traces.apply_env_overrides(config)?;
-        Ok(cfg)
+    /// Creates a new `OtlpDecoderConfiguration` from the given native configuration.
+    pub fn from_native(config: &OtlpDecoderConfig) -> Self {
+        Self {
+            traces: TracesConfig::from_native(&config.traces),
+        }
     }
 }
 
@@ -66,10 +52,9 @@ impl DecoderBuilder for OtlpDecoderConfiguration {
 
     async fn build(&self, context: ComponentContext) -> Result<Box<dyn Decoder + Send>, GenericError> {
         let metrics = build_metrics(&context);
-        let traces_interner_size =
-            std::num::NonZeroUsize::new(self.otlp_config.traces.string_interner_bytes.as_u64() as usize)
-                .ok_or_else(|| generic_error!("otlp_config.traces.string_interner_size must be greater than 0"))?;
-        let traces_translator = OtlpTracesTranslator::new(self.otlp_config.traces.clone(), traces_interner_size);
+        let traces_interner_size = std::num::NonZeroUsize::new(self.traces.string_interner_bytes.as_u64() as usize)
+            .ok_or_else(|| generic_error!("otlp_config.traces.string_interner_size must be greater than 0"))?;
+        let traces_translator = OtlpTracesTranslator::new(self.traces.clone(), traces_interner_size);
 
         Ok(Box::new(OtlpDecoder {
             traces_translator,
@@ -179,30 +164,5 @@ impl Decoder for OtlpDecoder {
         debug!("OTLP decoder stopped.");
 
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod config_smoke {
-    use datadog_agent_config_testing::config_registry::structs;
-    use datadog_agent_config_testing::run_config_smoke_tests;
-    use serde_json::json;
-
-    use super::OtlpDecoderConfiguration;
-    use crate::config::{DatadogRemapper, KEY_ALIASES};
-
-    #[tokio::test]
-    async fn smoke_test() {
-        run_config_smoke_tests(
-            structs::OTLP_DECODER_CONFIGURATION,
-            &[],
-            json!({}),
-            |cfg| {
-                OtlpDecoderConfiguration::from_configuration(&cfg).expect("OtlpDecoderConfiguration should deserialize")
-            },
-            KEY_ALIASES,
-            DatadogRemapper::new,
-        )
-        .await
     }
 }

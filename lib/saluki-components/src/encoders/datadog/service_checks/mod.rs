@@ -1,8 +1,6 @@
 use async_trait::async_trait;
-use facet::Facet;
 use http::{uri::PathAndQuery, HeaderValue, Method, Uri};
 use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
-use saluki_config_tools::GenericConfiguration;
 use saluki_core::{
     components::{encoders::*, ComponentContext},
     data_model::{
@@ -15,7 +13,6 @@ use saluki_core::{
 use saluki_error::{ErrorContext as _, GenericError};
 use saluki_io::compression::CompressionScheme;
 use saluki_metrics::MetricsBuilder;
-use serde::Deserialize;
 use tracing::{debug, error, warn};
 
 use crate::common::datadog::{
@@ -26,93 +23,21 @@ use crate::common::datadog::{
     DEFAULT_SERIALIZER_COMPRESSED_SIZE_LIMIT, DEFAULT_SERIALIZER_UNCOMPRESSED_SIZE_LIMIT,
 };
 
-const DEFAULT_SERIALIZER_COMPRESSOR_KIND: &str = "zstd";
 const MAX_SERVICE_CHECKS_PER_PAYLOAD: usize = 100;
 
 static CONTENT_TYPE_JSON: HeaderValue = HeaderValue::from_static("application/json");
 
-fn default_serializer_compressor_kind() -> String {
-    DEFAULT_SERIALIZER_COMPRESSOR_KIND.to_owned()
-}
-
-const fn default_zstd_compressor_level() -> i32 {
-    3
-}
-
-const fn default_max_payload_size() -> usize {
-    DEFAULT_SERIALIZER_COMPRESSED_SIZE_LIMIT
-}
-
-const fn default_max_uncompressed_payload_size() -> usize {
-    DEFAULT_SERIALIZER_UNCOMPRESSED_SIZE_LIMIT
-}
-
-const fn default_log_payloads() -> bool {
-    false
-}
-
 /// Datadog Service Checks incremental encoder.
 ///
 /// Generates Datadog Service Checks payloads for the Datadog platform.
-#[derive(Deserialize, Facet)]
-#[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
 pub struct DatadogServiceChecksConfiguration {
-    /// Maximum compressed size, in bytes, of a service check payload.
-    ///
-    /// This matches the Datadog Agent's generic payload limit for service checks. The effective value is
-    /// clamped to the Agent's default intake-safe limit of 2,621,440 bytes, so larger configured values do not allow
-    /// payloads that intake may reject. If set to `0`, every non-empty compressed payload exceeds the limit and is
-    /// dropped during flush.
-    ///
-    /// Defaults to 2,621,440 bytes.
-    #[serde(rename = "serializer_max_payload_size", default = "default_max_payload_size")]
-    max_payload_size: usize,
-
-    /// Maximum uncompressed size, in bytes, of a service check payload.
-    ///
-    /// This matches the Datadog Agent's generic payload limit for service checks. The effective value is
-    /// clamped to the Agent's default intake-safe limit of 4,194,304 bytes, so larger configured values do not allow
-    /// payloads that intake may reject. Values smaller than the minimum endpoint framing size prevent the request
-    /// builder from starting.
-    ///
-    /// Defaults to 4,194,304 bytes.
-    #[serde(
-        rename = "serializer_max_uncompressed_payload_size",
-        default = "default_max_uncompressed_payload_size"
-    )]
-    max_uncompressed_payload_size: usize,
-
-    /// Compression kind to use for the request payloads.
-    ///
-    /// Defaults to `zstd`.
-    #[serde(
-        rename = "serializer_compressor_kind",
-        default = "default_serializer_compressor_kind"
-    )]
-    compressor_kind: String,
-
-    /// Compressor level to use when the compressor kind is `zstd`.
-    ///
-    /// Defaults to 3.
-    #[serde(
-        rename = "serializer_zstd_compressor_level",
-        default = "default_zstd_compressor_level"
-    )]
-    zstd_compressor_level: i32,
-
-    /// Whether to log service check payload contents before encoding.
-    ///
-    /// This logs decoded service check objects, not the encoded HTTP body.
-    ///
-    /// Defaults to `false`.
-    #[serde(default = "default_log_payloads")]
-    log_payloads: bool,
+    config: saluki_component_config::service_checks::DatadogServiceChecksConfig,
 }
 
 impl DatadogServiceChecksConfiguration {
-    /// Creates a new `DatadogServiceChecksConfiguration` from the given configuration.
-    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        Ok(config.as_typed()?)
+    /// Creates a new `DatadogServiceChecksConfiguration` from the given component-native configuration.
+    pub fn from_native(config: saluki_component_config::service_checks::DatadogServiceChecksConfig) -> Self {
+        Self { config }
     }
 }
 
@@ -131,14 +56,15 @@ impl IncrementalEncoderBuilder for DatadogServiceChecksConfiguration {
     async fn build(&self, context: ComponentContext) -> Result<Self::Output, GenericError> {
         let metrics_builder = MetricsBuilder::from_component_context(&context);
         let telemetry = ComponentTelemetry::from_builder(&metrics_builder);
-        let compression_scheme = CompressionScheme::new(&self.compressor_kind, self.zstd_compressor_level);
+        let compression_scheme =
+            CompressionScheme::new(&self.config.compressor_kind, self.config.zstd_compressor_level);
 
         // Create our request builder.
         let mut request_builder =
             RequestBuilder::new(ServiceChecksEndpointEncoder, compression_scheme, RB_BUFFER_CHUNK_SIZE).await?;
         let (uncompressed_limit, compressed_limit) = clamp_payload_limits(
-            self.max_uncompressed_payload_size,
-            self.max_payload_size,
+            self.config.max_uncompressed_payload_size,
+            self.config.max_payload_size,
             DEFAULT_SERIALIZER_UNCOMPRESSED_SIZE_LIMIT,
             DEFAULT_SERIALIZER_COMPRESSED_SIZE_LIMIT,
         );
@@ -148,7 +74,7 @@ impl IncrementalEncoderBuilder for DatadogServiceChecksConfiguration {
         Ok(DatadogServiceChecks {
             request_builder,
             telemetry,
-            log_payloads: self.log_payloads,
+            log_payloads: self.config.log_payloads,
         })
     }
 }
@@ -274,31 +200,5 @@ impl EndpointEncoder for ServiceChecksEndpointEncoder {
 
     fn content_type(&self) -> HeaderValue {
         CONTENT_TYPE_JSON.clone()
-    }
-}
-
-#[cfg(test)]
-mod config_smoke {
-    use datadog_agent_config_testing::config_registry::structs;
-    use datadog_agent_config_testing::run_config_smoke_tests;
-    use serde_json::json;
-
-    use super::DatadogServiceChecksConfiguration;
-    use crate::config::{DatadogRemapper, KEY_ALIASES};
-
-    #[tokio::test]
-    async fn smoke_test() {
-        run_config_smoke_tests(
-            structs::DATADOG_SERVICE_CHECKS_CONFIGURATION,
-            &[],
-            json!({}),
-            |cfg| {
-                cfg.as_typed::<DatadogServiceChecksConfiguration>()
-                    .expect("DatadogServiceChecksConfiguration should deserialize")
-            },
-            KEY_ALIASES,
-            DatadogRemapper::new,
-        )
-        .await
     }
 }

@@ -8,7 +8,6 @@ use ddsketch::DDSketch;
 use hashbrown::{hash_map::Entry, HashMap};
 use resource_accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
 use saluki_common::time::get_unix_timestamp;
-use saluki_config_tools::GenericConfiguration;
 use saluki_context::Context;
 use saluki_core::{
     components::{transforms::*, ComponentContext},
@@ -19,7 +18,6 @@ use saluki_core::{
 };
 use saluki_error::GenericError;
 use saluki_metrics::MetricsBuilder;
-use serde::Deserialize;
 use smallvec::SmallVec;
 use stringtheory::MetaString;
 use tokio::{
@@ -35,30 +33,6 @@ mod config;
 use self::config::{HistogramConfiguration, HistogramStatistic};
 
 const PASSTHROUGH_IDLE_FLUSH_CHECK_INTERVAL: Duration = Duration::from_secs(2);
-
-const fn default_window_duration_seconds() -> NonZeroU64 {
-    NonZeroU64::new(10).expect("not zero")
-}
-
-const fn default_primary_flush_interval() -> Duration {
-    Duration::from_secs(15)
-}
-
-const fn default_context_limit() -> usize {
-    1_000_000
-}
-
-const fn default_counter_expiry_seconds() -> Option<u64> {
-    Some(300)
-}
-
-const fn default_passthrough_timestamped_metrics() -> bool {
-    true
-}
-
-const fn default_passthrough_idle_flush_timeout() -> Duration {
-    Duration::from_secs(1)
-}
 
 /// Aggregate transform.
 ///
@@ -79,8 +53,6 @@ const fn default_passthrough_idle_flush_timeout() -> Duration {
 /// are otherwise sparse. The expiration period is configurable, and allows a trade-off in how sparse/infrequent the
 /// updates to counters can be versus how long it takes for counters that don't exist anymore to actually cease to be
 /// emitted.
-#[derive(Deserialize)]
-#[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
 pub struct AggregateConfiguration {
     /// Size of the aggregation window, in seconds.
     ///
@@ -91,10 +63,6 @@ pub struct AggregateConfiguration {
     /// Window durations cannot be zero.
     ///
     /// Defaults to 10 seconds.
-    #[serde(
-        rename = "aggregate_window_duration_seconds",
-        default = "default_window_duration_seconds"
-    )]
     window_duration_seconds: NonZeroU64,
 
     /// How often to flush buckets.
@@ -103,7 +71,6 @@ pub struct AggregateConfiguration {
     /// systems, etc) and the frequency of updates (how often updates to a metric are emitted).
     ///
     /// Defaults to 15 seconds.
-    #[serde(rename = "aggregate_flush_interval", default = "default_primary_flush_interval")]
     primary_flush_interval: Duration,
 
     /// Maximum number of contexts to aggregate per window.
@@ -116,7 +83,6 @@ pub struct AggregateConfiguration {
     /// until the next window starts.
     ///
     /// Defaults to 1,000,000.
-    #[serde(rename = "aggregate_context_limit", default = "default_context_limit")]
     context_limit: usize,
 
     /// Whether to flush open buckets when stopping the transform.
@@ -130,11 +96,6 @@ pub struct AggregateConfiguration {
     /// In cases where flushing all outstanding data is paramount, this can be enabled.
     ///
     /// Defaults to `false`.
-    #[serde(
-        rename = "aggregate_flush_open_windows",
-        alias = "dogstatsd_flush_incomplete_buckets",
-        default
-    )]
     flush_open_windows: bool,
 
     /// How long to keep idle counters alive after they've been flushed, in seconds.
@@ -149,7 +110,6 @@ pub struct AggregateConfiguration {
     /// no further zero values will be emitted.
     ///
     /// Defaults to 300 seconds (5 minutes). Setting a value of `0` disables idle counter keep-alive.
-    #[serde(alias = "dogstatsd_expiry_seconds", default = "default_counter_expiry_seconds")]
     counter_expiry_seconds: Option<u64>,
 
     /// Whether or not to immediately forward (passthrough) metrics with pre-defined timestamps.
@@ -160,10 +120,6 @@ pub struct AggregateConfiguration {
     /// within the pipeline.
     ///
     /// Defaults to `true`.
-    #[serde(
-        rename = "dogstatsd_no_aggregation_pipeline",
-        default = "default_passthrough_timestamped_metrics"
-    )]
     passthrough_timestamped_metrics: bool,
 
     /// How often to flush buffered passthrough metrics.
@@ -173,37 +129,27 @@ pub struct AggregateConfiguration {
     /// amount of time that passthrough metrics will be buffered before being forwarded.
     ///
     /// Defaults to 1 seconds.
-    #[serde(
-        rename = "aggregate_passthrough_idle_flush_timeout",
-        default = "default_passthrough_idle_flush_timeout"
-    )]
     passthrough_idle_flush_timeout: Duration,
 
     /// Histogram aggregation configuration.
     ///
     /// Controls the aggregates/percentiles that are generated for distributions in "histogram" mode (client-side
     /// distribution aggregation).
-    #[serde(flatten)]
     hist_config: HistogramConfiguration,
 }
 
 impl AggregateConfiguration {
-    /// Creates a new `AggregateConfiguration` from the given configuration.
-    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        Ok(config.as_typed()?)
-    }
-
-    /// Creates a new `AggregateConfiguration` with default values.
-    pub fn with_defaults() -> Self {
+    /// Creates a new `AggregateConfiguration` from its native configuration.
+    pub fn from_native(config: &saluki_component_config::dogstatsd::AggregateConfig) -> Self {
         Self {
-            window_duration_seconds: default_window_duration_seconds(),
-            primary_flush_interval: default_primary_flush_interval(),
-            context_limit: default_context_limit(),
-            flush_open_windows: false,
-            counter_expiry_seconds: default_counter_expiry_seconds(),
-            passthrough_timestamped_metrics: default_passthrough_timestamped_metrics(),
-            passthrough_idle_flush_timeout: default_passthrough_idle_flush_timeout(),
-            hist_config: HistogramConfiguration::default(),
+            window_duration_seconds: config.window_duration_seconds,
+            primary_flush_interval: config.primary_flush_interval,
+            context_limit: config.context_limit,
+            flush_open_windows: config.flush_open_windows,
+            counter_expiry_seconds: config.counter_expiry_seconds,
+            passthrough_timestamped_metrics: config.passthrough_timestamped_metrics,
+            passthrough_idle_flush_timeout: config.passthrough_idle_flush_timeout,
+            hist_config: HistogramConfiguration::from_native(&config.hist_config),
         }
     }
 }
@@ -1514,36 +1460,5 @@ mod tests {
             recorder.gauge(("aggregate_active_contexts_by_type", &[("metric_type", "gauge")])),
             Some(0.0)
         );
-    }
-}
-
-#[cfg(test)]
-mod config_smoke {
-    use datadog_agent_config_testing::config_registry::structs;
-    use datadog_agent_config_testing::run_config_smoke_tests;
-    use serde_json::json;
-
-    use super::AggregateConfiguration;
-    use crate::config::{DatadogRemapper, KEY_ALIASES};
-
-    #[tokio::test]
-    async fn smoke_test() {
-        // Duration fields serialize as {secs, nanos}. We inject whole-second values so the nanos
-        // sub-fields are always 0 — they are not independently configurable.
-        run_config_smoke_tests(
-            structs::AGGREGATE_CONFIGURATION,
-            &[
-                "aggregate_flush_interval.nanos",
-                "aggregate_passthrough_idle_flush_timeout.nanos",
-            ],
-            json!({}),
-            |cfg| {
-                cfg.as_typed::<AggregateConfiguration>()
-                    .expect("AggregateConfiguration should deserialize")
-            },
-            KEY_ALIASES,
-            DatadogRemapper::new,
-        )
-        .await
     }
 }

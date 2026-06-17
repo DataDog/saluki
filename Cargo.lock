@@ -4357,7 +4357,7 @@ dependencies = [
  "rustls",
  "saluki-api",
  "saluki-common",
- "saluki-config-tools",
+ "saluki-component-config",
  "saluki-context",
  "saluki-core",
  "saluki-env",

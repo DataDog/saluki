@@ -1,10 +1,8 @@
 use async_trait::async_trait;
 use chrono::{SecondsFormat, Utc};
-use facet::Facet;
 use http::{uri::PathAndQuery, HeaderValue, Method, Uri};
 use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_common::iter::ReusableDeduplicator;
-use saluki_config_tools::GenericConfiguration;
 use saluki_context::tags::Tag;
 use saluki_core::{
     components::{encoders::*, ComponentContext},
@@ -18,7 +16,6 @@ use saluki_core::{
 use saluki_error::{ErrorContext as _, GenericError};
 use saluki_io::compression::CompressionScheme;
 use saluki_metrics::MetricsBuilder;
-use serde::Deserialize;
 use serde_json::{Map as JsonMap, Value as JsonValue};
 use tracing::{error, warn};
 
@@ -29,42 +26,20 @@ use crate::common::datadog::{
     DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT, DEFAULT_INTAKE_UNCOMPRESSED_SIZE_LIMIT,
 };
 
-const DEFAULT_SERIALIZER_COMPRESSOR_KIND: &str = "zstd";
 const MAX_LOGS_PER_PAYLOAD: usize = 1000;
 
 static CONTENT_TYPE_JSON: HeaderValue = HeaderValue::from_static("application/json");
 
-fn default_serializer_compressor_kind() -> String {
-    DEFAULT_SERIALIZER_COMPRESSOR_KIND.to_owned()
-}
-
-const fn default_zstd_compressor_level() -> i32 {
-    3
-}
-
 /// Datadog Logs incremental encoder.
-#[derive(Deserialize, Debug, Facet)]
-#[cfg_attr(test, derive(PartialEq, serde::Serialize))]
+#[derive(Debug)]
 pub struct DatadogLogsConfiguration {
-    /// Compression kind for Logs payloads. Defaults to `zstd`.
-    #[serde(
-        rename = "serializer_compressor_kind",
-        default = "default_serializer_compressor_kind"
-    )]
-    compressor_kind: String,
-
-    /// Compressor level to use when the compressor kind is `zstd`. Defaults to 3.
-    #[serde(
-        rename = "serializer_zstd_compressor_level",
-        default = "default_zstd_compressor_level"
-    )]
-    zstd_compressor_level: i32,
+    config: saluki_component_config::logs::DatadogLogsConfig,
 }
 
 impl DatadogLogsConfiguration {
-    /// Creates a new `DatadogLogsConfiguration` from the given configuration.
-    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        Ok(config.as_typed()?)
+    /// Creates a new `DatadogLogsConfiguration` from the given component-native configuration.
+    pub fn from_native(config: saluki_component_config::logs::DatadogLogsConfig) -> Self {
+        Self { config }
     }
 }
 
@@ -83,7 +58,8 @@ impl IncrementalEncoderBuilder for DatadogLogsConfiguration {
     async fn build(&self, context: ComponentContext) -> Result<Self::Output, GenericError> {
         let metrics_builder = MetricsBuilder::from_component_context(&context);
         let telemetry = ComponentTelemetry::from_builder(&metrics_builder);
-        let compression_scheme = CompressionScheme::new(&self.compressor_kind, self.zstd_compressor_level);
+        let compression_scheme =
+            CompressionScheme::new(&self.config.compressor_kind, self.config.zstd_compressor_level);
 
         let mut request_builder =
             RequestBuilder::new(LogsEndpointEncoder::new(), compression_scheme, RB_BUFFER_CHUNK_SIZE).await?;
@@ -258,31 +234,5 @@ impl EndpointEncoder for LogsEndpointEncoder {
 
     fn content_type(&self) -> HeaderValue {
         CONTENT_TYPE_JSON.clone()
-    }
-}
-
-#[cfg(test)]
-mod config_smoke {
-    use datadog_agent_config_testing::config_registry::structs;
-    use datadog_agent_config_testing::run_config_smoke_tests;
-    use serde_json::json;
-
-    use super::DatadogLogsConfiguration;
-    use crate::config::{DatadogRemapper, KEY_ALIASES};
-
-    #[tokio::test]
-    async fn smoke_test() {
-        run_config_smoke_tests(
-            structs::DATADOG_LOGS_CONFIGURATION,
-            &[],
-            json!({}),
-            |cfg| {
-                cfg.as_typed::<DatadogLogsConfiguration>()
-                    .expect("DatadogLogsConfiguration should deserialize")
-            },
-            KEY_ALIASES,
-            DatadogRemapper::new,
-        )
-        .await
     }
 }
