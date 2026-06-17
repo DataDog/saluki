@@ -5,8 +5,8 @@ mod witness_impl;
 use std::path::PathBuf;
 
 use agent_data_plane_config::{
-    BootstrapConfiguration, ConfigViews, DatadogRuntimeAuthority, InternalConfigView, SalukiConfiguration,
-    SalukiOnlyConfiguration, SourceConfigView,
+    BootstrapConfiguration, ConfigViews, DatadogBootstrap, DatadogRuntimeAuthority, InternalConfigView,
+    SalukiBootstrap, SalukiConfiguration, SalukiOnlyConfiguration, SourceConfigView,
 };
 use datadog_agent_config::{drive, DatadogConfiguration, DatadogRemapper, KEY_ALIASES};
 use saluki_component_config::{
@@ -57,7 +57,10 @@ impl ConfigurationSystem {
         }
         let saluki = saluki_loader.into_generic().await?;
 
-        let bootstrap = BootstrapConfiguration::default();
+        let bootstrap = BootstrapConfiguration {
+            datadog: parse_datadog_bootstrap(&datadog)?,
+            saluki: parse_saluki_bootstrap(&saluki)?,
+        };
         let saluki_only = saluki.as_typed::<SalukiOnlyConfiguration>().unwrap_or_default();
 
         Ok(LoadedConfigurationSystem {
@@ -295,6 +298,21 @@ where
         let _ = tx.send(next.clone());
     }
     true
+}
+
+fn parse_datadog_bootstrap(config: &GenericConfiguration) -> Result<DatadogBootstrap, ConfigurationError> {
+    Ok(DatadogBootstrap {
+        log_level: config.try_get_typed("log_level")?,
+        metrics_level: config.try_get_typed("metrics_level")?,
+        cmd_port: config.try_get_typed("cmd_port")?,
+        auth_token_file_path: config.try_get_typed("auth_token_file_path")?,
+    })
+}
+
+fn parse_saluki_bootstrap(config: &GenericConfiguration) -> Result<SalukiBootstrap, ConfigurationError> {
+    Ok(SalukiBootstrap {
+        config_path: config.try_get_typed("config_path")?,
+    })
 }
 
 fn translate_datadog(
