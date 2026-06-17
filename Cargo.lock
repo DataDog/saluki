@@ -85,9 +85,23 @@ name = "agent-data-plane-config-system"
 version = "0.1.0"
 dependencies = [
  "agent-data-plane-config",
+ "bytesize",
+ "datadog-agent-commons",
  "datadog-agent-config",
+ "datadog-protos",
+ "figment",
+ "futures",
+ "prost-types",
  "saluki-component-config",
  "saluki-config-tools",
+ "saluki-context",
+ "saluki-error",
+ "saluki-io",
+ "serde",
+ "serde_json",
+ "stringtheory",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
