@@ -8,4 +8,9 @@ ifelse -n
         foreground { /bin/s6-svc -d /var/run/s6/services/data-plane/ }
     }
     foreground { /initlog.sh "starting agent-data-plane" }
+    # Give the container metadata (cgroups, container ID) time to stabilize in the kind cluster
+    # so that origin detection has what it needs from the very first metric ADP processes.
+    # Without this, some early metrics are processed before metadata is ready, producing extra
+    # metric series that don't match the baseline and cause correctness test failures.
+    foreground { s6-sleep 2 }
     s6-envdir -I /run/adp/env /opt/datadog-agent/embedded/bin/agent-data-plane --config /etc/datadog-agent/datadog.yaml run
