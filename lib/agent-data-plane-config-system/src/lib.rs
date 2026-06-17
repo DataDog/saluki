@@ -5,8 +5,9 @@ mod witness_impl;
 use std::path::PathBuf;
 
 use agent_data_plane_config::{
-    BootstrapConfiguration, ConfigViews, DatadogBootstrap, DatadogRuntimeAuthority, InternalConfigView,
-    SalukiBootstrap, SalukiConfiguration, SalukiOnlyConfiguration, SourceConfigView,
+    BootstrapConfiguration, ConfigViews, DatadogBootstrap, DatadogRuntimeAuthority, DogStatsDSalukiOnly,
+    InternalConfigView, OtlpSalukiOnly, SalukiBootstrap, SalukiConfiguration, SalukiOnlyConfiguration,
+    SourceConfigView, WorkloadSalukiOnly,
 };
 use datadog_agent_config::{drive, DatadogConfiguration, DatadogRemapper, KEY_ALIASES};
 use saluki_component_config::{
@@ -61,7 +62,7 @@ impl ConfigurationSystem {
             datadog: parse_datadog_bootstrap(&datadog)?,
             saluki: parse_saluki_bootstrap(&saluki)?,
         };
-        let saluki_only = saluki.as_typed::<SalukiOnlyConfiguration>().unwrap_or_default();
+        let saluki_only = parse_saluki_only(&saluki)?;
 
         Ok(LoadedConfigurationSystem {
             datadog,
@@ -312,6 +313,33 @@ fn parse_datadog_bootstrap(config: &GenericConfiguration) -> Result<DatadogBoots
 fn parse_saluki_bootstrap(config: &GenericConfiguration) -> Result<SalukiBootstrap, ConfigurationError> {
     Ok(SalukiBootstrap {
         config_path: config.try_get_typed("config_path")?,
+    })
+}
+
+fn parse_saluki_only(config: &GenericConfiguration) -> Result<SalukiOnlyConfiguration, ConfigurationError> {
+    let defaults = SalukiOnlyConfiguration::default();
+    Ok(SalukiOnlyConfiguration {
+        otlp: OtlpSalukiOnly {
+            string_interner_size: config
+                .try_get_typed("otlp.string_interner_size")?
+                .unwrap_or(defaults.otlp.string_interner_size),
+            cached_contexts_limit: config
+                .try_get_typed("otlp.cached_contexts_limit")?
+                .unwrap_or(defaults.otlp.cached_contexts_limit),
+        },
+        dogstatsd: DogStatsDSalukiOnly {
+            string_interner_size_bytes: config
+                .try_get_typed("dogstatsd.string_interner_size_bytes")?
+                .unwrap_or(defaults.dogstatsd.string_interner_size_bytes),
+            cached_contexts_limit: config
+                .try_get_typed("dogstatsd.cached_contexts_limit")?
+                .unwrap_or(defaults.dogstatsd.cached_contexts_limit),
+        },
+        workload: WorkloadSalukiOnly {
+            enabled: config
+                .try_get_typed("workload.enabled")?
+                .unwrap_or(defaults.workload.enabled),
+        },
     })
 }
 

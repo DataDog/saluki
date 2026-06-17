@@ -312,6 +312,7 @@ pub struct SalukiBootstrap {
 
 /// Saluki-schema-only source input.
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(default)]
 pub struct SalukiOnlyConfiguration {
     /// OTLP Saluki-only values.
     pub otlp: OtlpSalukiOnly,
@@ -347,6 +348,7 @@ impl Default for SalukiOnlyConfiguration {
 
 /// Saluki-only OTLP values.
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(default)]
 pub struct OtlpSalukiOnly {
     /// String interner size.
     pub string_interner_size: usize,
@@ -365,6 +367,7 @@ impl Default for OtlpSalukiOnly {
 
 /// Saluki-only DogStatsD values.
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(default)]
 pub struct DogStatsDSalukiOnly {
     /// Context interner size in bytes.
     pub string_interner_size_bytes: u64,
@@ -383,6 +386,7 @@ impl Default for DogStatsDSalukiOnly {
 
 /// Saluki-only workload values.
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize, Default)]
+#[serde(default)]
 pub struct WorkloadSalukiOnly {
     /// Whether workload collection is enabled.
     pub enabled: bool,
