@@ -1362,20 +1362,11 @@ fn log_parse_failure(
     disable_verbose_logs: bool, listen_addr: &ListenAddress, peer_addr: &ConnectionAddress, frame: &[u8],
     error: &ParseError,
 ) {
+    let frame = String::from_utf8_lossy(frame);
     if disable_verbose_logs {
-        if !tracing::enabled!(tracing::Level::DEBUG) {
-            return;
-        }
-
-        let frame_lossy_str = String::from_utf8_lossy(frame);
-        debug!(%listen_addr, %peer_addr, frame = %frame_lossy_str, error = %error, "Failed to parse frame.");
+        debug!(%listen_addr, %peer_addr, %frame, %error, "Failed to parse frame.");
     } else {
-        if !tracing::enabled!(tracing::Level::WARN) {
-            return;
-        }
-
-        let frame_lossy_str = String::from_utf8_lossy(frame);
-        warn!(%listen_addr, %peer_addr, frame = %frame_lossy_str, error = %error, "Failed to parse frame.");
+        warn!(%listen_addr, %peer_addr, %frame, %error, "Failed to parse frame.");
     }
 }
 
