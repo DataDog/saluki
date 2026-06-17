@@ -15,7 +15,7 @@ use saluki_app::{
     metrics::emit_startup_metrics,
 };
 use saluki_component_config::{
-    DogStatsDPostAggregateFilterConfig, DogStatsDPrefixFilterConfig, MetricTagFilterEntry, ScopedConfig,
+    DogStatsDPostAggregateFilterConfig, DogStatsDPrefixFilterConfig, MetricTagFilterEntry, MrfConfig, ScopedConfig,
     TagFilterlistConfig,
 };
 use saluki_components::{
@@ -556,11 +556,40 @@ fn dogstatsd_post_aggregate_filter_config_from_raw(
     ))
 }
 
+fn mrf_config_from_raw(config: &GenericConfiguration) -> Result<MrfConfig, GenericError> {
+    let site = config
+        .try_get_typed::<String>("multi_region_failover.site")?
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let dd_url = config
+        .try_get_typed::<String>("multi_region_failover.dd_url")?
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let endpoint = dd_url.or_else(|| site.map(|site| format!("https://app.mrf.{site}")));
+    let api_key = config
+        .try_get_typed::<String>("multi_region_failover.api_key")?
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+
+    Ok(MrfConfig {
+        enabled: config.try_get_typed("multi_region_failover.enabled")?.unwrap_or(false),
+        failover_metrics: config
+            .try_get_typed("multi_region_failover.failover_metrics")?
+            .unwrap_or(false),
+        metric_allowlist: config
+            .try_get_typed("multi_region_failover.metric_allowlist")?
+            .unwrap_or_default(),
+        api_key,
+        endpoint,
+    })
+}
+
 fn add_mrf_metrics_pipeline_to_blueprint(
     blueprint: &mut TopologyBlueprint, config: &GenericConfiguration,
 ) -> Result<(), GenericError> {
-    let mrf_config = MrfConfiguration::from_configuration(config)
-        .error_context("Failed to configure Multi-Region Failover metrics pipeline.")?;
+    let mrf_native_config =
+        mrf_config_from_raw(config).error_context("Failed to configure Multi-Region Failover metrics pipeline.")?;
+    let mrf_config = MrfConfiguration::from_native(mrf_native_config.clone());
 
     let Some((mrf_dd_url, mrf_api_key)) = mrf_config.metrics_endpoint_override() else {
         if mrf_config.is_enabled() {
@@ -575,7 +604,8 @@ fn add_mrf_metrics_pipeline_to_blueprint(
         return Ok(());
     };
 
-    let mrf_gateway_config = MrfMetricsGatewayConfiguration::new(mrf_config.clone(), config.clone());
+    let mrf_gateway_config =
+        MrfMetricsGatewayConfiguration::new(mrf_config.clone(), ScopedConfig::fixed(mrf_native_config));
     let mrf_metrics_config = DatadogMetricsConfiguration::from_configuration(config)
         .error_context("Failed to configure Multi-Region Failover Datadog Metrics encoder.")?;
 

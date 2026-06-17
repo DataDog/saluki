@@ -165,6 +165,8 @@ pub struct ApmStatsTransformConfig {
 pub struct MrfConfig {
     /// Whether failover is enabled.
     pub enabled: bool,
+    /// Whether metrics should be sent to the failover branch.
+    pub failover_metrics: bool,
     /// Secondary endpoint URL.
     pub endpoint: Option<String>,
     /// API key for the secondary endpoint.

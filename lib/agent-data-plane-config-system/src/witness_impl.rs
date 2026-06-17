@@ -131,11 +131,21 @@ impl Translator {
             "multi_region_failover.enabled" => {
                 self.native.components.metrics.multi_region_failover.enabled = bool_value(value);
             }
+            "multi_region_failover.failover_metrics" => {
+                self.native.components.metrics.multi_region_failover.failover_metrics = bool_value(value);
+            }
             "multi_region_failover.api_key" => {
                 self.native.components.metrics.multi_region_failover.api_key = Some(string_value(value));
             }
             "multi_region_failover.dd_url" => {
                 self.native.components.metrics.multi_region_failover.endpoint = Some(string_value(value));
+            }
+            "multi_region_failover.site" => {
+                let site = string_value(value);
+                if !site.is_empty() {
+                    self.native.components.metrics.multi_region_failover.endpoint =
+                        Some(format!("https://app.mrf.{site}"));
+                }
             }
             "multi_region_failover.metric_allowlist" => {
                 self.native.components.metrics.multi_region_failover.metric_allowlist = string_vec_value(value);
