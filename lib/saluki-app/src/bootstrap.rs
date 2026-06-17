@@ -58,6 +58,15 @@ pub struct AppBootstrapper {
 }
 
 impl AppBootstrapper {
+    /// Creates a new `AppBootstrapper` with default subsystem settings.
+    pub fn new() -> Self {
+        Self {
+            logging_config: LoggingConfiguration::simple(),
+            metrics_prefix: "saluki".to_string(),
+            metrics_default_level: Level::INFO,
+        }
+    }
+
     /// Creates a new `AppBootstrapper`.
     ///
     /// The bootstrapper is initialized with a [`simple`][LoggingConfiguration::simple] logging configuration. Callers
@@ -68,11 +77,7 @@ impl AppBootstrapper {
     ///
     /// This currently doesn't fail, but the signature returns `Result` to leave room for future failures.
     pub fn from_configuration(_config: &GenericConfiguration) -> Result<Self, GenericError> {
-        Ok(Self {
-            logging_config: LoggingConfiguration::simple(),
-            metrics_prefix: "saluki".to_string(),
-            metrics_default_level: Level::INFO,
-        })
+        Ok(Self::new())
     }
 
     /// Sets the prefix to use for internal metrics.

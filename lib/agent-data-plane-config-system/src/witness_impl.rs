@@ -1,4 +1,4 @@
-use agent_data_plane_config::SalukiConfiguration;
+use agent_data_plane_config::{PipelineGate, SalukiConfiguration};
 use datadog_agent_config::{DatadogConfigConsumer, TranslateResult};
 use saluki_component_config::{EndpointConfig, ListenAddress, MetricTagFilterEntry};
 use serde_json::Value;
@@ -9,6 +9,8 @@ pub struct Translator {
     api_key: String,
     dd_url: String,
     additional_endpoints: Vec<EndpointConfig>,
+    aggregator_stop_timeout_secs: u64,
+    forwarder_stop_timeout_secs: u64,
 }
 
 impl Translator {
@@ -19,6 +21,8 @@ impl Translator {
             api_key: String::new(),
             dd_url: "https://app.datadoghq.com".to_string(),
             additional_endpoints: Vec::new(),
+            aggregator_stop_timeout_secs: 2,
+            forwarder_stop_timeout_secs: 2,
         }
     }
 
@@ -30,6 +34,10 @@ impl Translator {
         }];
         endpoints.extend(self.additional_endpoints);
         self.native.components.forwarder.datadog.endpoints = endpoints;
+        self.native.control.stop_timeout_millis = self
+            .aggregator_stop_timeout_secs
+            .saturating_add(self.forwarder_stop_timeout_secs)
+            .saturating_mul(1000);
         self.native
     }
 
@@ -39,6 +47,7 @@ impl Translator {
         };
         match key {
             "additional_endpoints" => self.consume_additional_endpoints_value(value),
+            "aggregator_stop_timeout" => self.aggregator_stop_timeout_secs = u64_value(value, 2),
             "allow_arbitrary_tags" => self.native.components.forwarder.datadog.allow_arbitrary_tags = bool_value(value),
             "api_key" => self.api_key = string_value(value),
             "dd_url" => self.dd_url = string_value(value),
@@ -137,11 +146,74 @@ impl Translator {
             "data_plane.use_new_config_stream_endpoint" => {
                 self.native.control.use_new_config_stream_endpoint = bool_value(value);
             }
+            "data_plane.otlp.proxy.logs.enabled" => {
+                self.native.control.otlp.logs = PipelineGate {
+                    enabled: bool_value(value),
+                }
+            }
+            "data_plane.otlp.proxy.metrics.enabled" => {
+                self.native.control.otlp.metrics = PipelineGate {
+                    enabled: bool_value(value),
+                };
+            }
+            "data_plane.otlp.proxy.traces.enabled" => {
+                self.native.control.otlp.traces = PipelineGate {
+                    enabled: bool_value(value),
+                };
+            }
             "otlp_config.receiver.protocols.grpc.endpoint" => {
                 self.native.components.otlp.source.grpc_endpoint = string_value(value);
             }
             "otlp_config.receiver.protocols.http.endpoint" => {
                 self.native.components.otlp.source.http_endpoint = string_value(value);
+            }
+            "forwarder_flush_to_disk_mem_ratio" => {
+                self.native.components.forwarder.datadog.retry.flush_to_disk_mem_ratio = f64_value(value, 0.5);
+            }
+            "forwarder_max_concurrent_requests" => {
+                self.native.components.forwarder.datadog.endpoint_concurrency = usize_value(value, 10);
+            }
+            "forwarder_storage_max_size_in_bytes" => {
+                self.native.components.forwarder.datadog.retry.max_disk_size_bytes = u64_value(value, 0);
+            }
+            "forwarder_storage_path" => {
+                self.native.components.forwarder.datadog.retry.storage_path = string_value(value);
+            }
+            "forwarder_stop_timeout" => self.forwarder_stop_timeout_secs = u64_value(value, 2),
+            "forwarder_timeout" => {
+                self.native.components.forwarder.datadog.request_timeout_millis =
+                    u64_value(value, 20).saturating_mul(1000);
+            }
+            "histogram_aggregates" => {
+                self.native
+                    .components
+                    .dogstatsd
+                    .post_aggregate_filter
+                    .histogram_aggregates = string_vec_value(value);
+            }
+            "histogram_percentiles" => {
+                self.native
+                    .components
+                    .dogstatsd
+                    .post_aggregate_filter
+                    .histogram_percentiles = string_vec_value(value);
+            }
+            "log_level" => self.native.control.log_level = Some(string_value(value)),
+            "skip_ssl_validation" => {
+                self.native.components.forwarder.datadog.tls.verify = !bool_value(value);
+            }
+            "statsd_metric_namespace" => {
+                self.native.components.dogstatsd.prefix_filter.metric_prefix = string_value(value);
+            }
+            "statsd_metric_namespace_blacklist" | "statsd_metric_namespace_blocklist" => {
+                self.native.components.dogstatsd.prefix_filter.metric_prefix_blocklist = string_vec_value(value);
+            }
+            "url" => self.dd_url = string_value(value),
+            "site" => {
+                let site = string_value(value);
+                if !site.is_empty() {
+                    self.dd_url = format!("https://app.{site}");
+                }
             }
             "multi_region_failover.enabled" => {
                 self.native.components.metrics.multi_region_failover.enabled = bool_value(value);
@@ -211,6 +283,10 @@ fn u64_value(value: Value, default: u64) -> u64 {
 
 fn u16_value(value: Value, default: u16) -> u16 {
     value.as_u64().and_then(|v| v.try_into().ok()).unwrap_or(default)
+}
+
+fn f64_value(value: Value, default: f64) -> f64 {
+    value.as_f64().unwrap_or(default)
 }
 
 fn array_value(value: Value) -> Vec<Value> {

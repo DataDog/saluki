@@ -251,7 +251,6 @@ mod tests {
     // -------------------------------------------------------------------------
 
     #[test]
-    #[ignore = "enabled at step 11"]
     fn binary_must_not_depend_on_raw_map() {
         assert_no_dependency("bin/agent-data-plane", "saluki-config-tools");
     }
@@ -264,31 +263,26 @@ mod tests {
     // -------------------------------------------------------------------------
 
     #[test]
-    #[ignore = "enabled at step 11"]
     fn binary_must_not_mention_generic_configuration() {
         assert_no_source_symbol("bin/agent-data-plane", "GenericConfiguration");
     }
 
     #[test]
-    #[ignore = "enabled at step 11"]
     fn binary_must_not_mention_configuration_loader() {
         assert_no_source_symbol("bin/agent-data-plane", "ConfigurationLoader");
     }
 
     #[test]
-    #[ignore = "enabled at step 11"]
     fn binary_must_not_import_raw_map_crate() {
         assert_no_source_symbol("bin/agent-data-plane", "saluki_config_tools");
     }
 
     #[test]
-    #[ignore = "enabled at step 11"]
     fn binary_must_not_import_datadog_remapper() {
         assert_no_source_symbol("bin/agent-data-plane", "DatadogRemapper");
     }
 
     #[test]
-    #[ignore = "enabled at step 11"]
     fn binary_must_not_import_key_aliases() {
         assert_no_source_symbol("bin/agent-data-plane", "KEY_ALIASES");
     }

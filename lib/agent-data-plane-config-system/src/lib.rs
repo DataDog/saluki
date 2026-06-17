@@ -9,13 +9,17 @@ use agent_data_plane_config::{
     InternalConfigView, OtlpSalukiOnly, SalukiBootstrap, SalukiConfiguration, SalukiOnlyConfiguration,
     SourceConfigView, WorkloadSalukiOnly,
 };
+use bytesize::ByteSize;
 use datadog_agent_config::{drive, DatadogConfiguration, DatadogRemapper, KEY_ALIASES};
+use saluki_common::deser::PermissiveBool;
 use saluki_component_config::{
     DatadogForwarderConfig, DogStatsDDebugLogConfig, DogStatsDPostAggregateFilterConfig, DogStatsDPrefixFilterConfig,
     MrfConfig, ScopedConfig, TagFilterlistConfig,
 };
 use saluki_config_tools::{ConfigurationError, ConfigurationLoader, GenericConfiguration};
 use saluki_error::GenericError;
+use serde::Deserialize;
+use serde_with::serde_as;
 use tokio::sync::watch;
 use witness_impl::Translator;
 
@@ -92,7 +96,8 @@ impl LoadedConfigurationSystem {
         self, authority: DatadogRuntimeAuthority,
     ) -> Result<StartedConfigurationSystem, GenericError> {
         let datadog = self.datadog.as_typed::<DatadogConfiguration>()?;
-        let native = translate_datadog(&datadog, &self.saluki_only)?;
+        let mut native = translate_datadog(&datadog, &self.saluki_only)?;
+        apply_local_control_overrides(&self.datadog, &mut native)?;
         let router = ConfigUpdateRouter::new(native.clone(), self.saluki_only.clone(), authority);
         let views = ConfigViews {
             raw: SourceConfigView::new(scrub_json(self.datadog.as_typed::<serde_json::Value>()?)),
@@ -104,6 +109,7 @@ impl LoadedConfigurationSystem {
             handles: router.handles(),
             views,
             router,
+            datadog_source: self.datadog,
             _saluki_source: self.saluki,
         })
     }
@@ -115,6 +121,7 @@ pub struct StartedConfigurationSystem {
     handles: DynamicConfigHandles,
     views: ConfigViews,
     router: ConfigUpdateRouter,
+    datadog_source: GenericConfiguration,
     _saluki_source: GenericConfiguration,
 }
 
@@ -122,6 +129,11 @@ impl StartedConfigurationSystem {
     /// Returns an owned copy of the native configuration.
     pub fn saluki(&self) -> SalukiConfiguration {
         self.saluki.clone()
+    }
+
+    /// Returns a reference to the raw Datadog `GenericConfiguration`.
+    pub fn datadog_config(&self) -> &GenericConfiguration {
+        &self.datadog_source
     }
 
     /// Returns dynamic config handles for topology assembly.
@@ -155,6 +167,8 @@ pub struct DynamicConfigHandles {
     pub dogstatsd_post_aggregate_filter: ScopedConfig<DogStatsDPostAggregateFilterConfig>,
     /// DogStatsD debug log config handle.
     pub dogstatsd_debug_log: ScopedConfig<DogStatsDDebugLogConfig>,
+    /// Runtime log-level handle.
+    pub log_level: ScopedConfig<Option<String>>,
 }
 
 /// Routes accepted updates to native config slices.
@@ -168,6 +182,7 @@ pub struct ConfigUpdateRouter {
     tag_filter_tx: Option<watch::Sender<TagFilterlistConfig>>,
     post_aggregate_filter_tx: Option<watch::Sender<DogStatsDPostAggregateFilterConfig>>,
     debug_log_tx: Option<watch::Sender<DogStatsDDebugLogConfig>>,
+    log_level_tx: Option<watch::Sender<Option<String>>>,
 }
 
 impl ConfigUpdateRouter {
@@ -186,6 +201,7 @@ impl ConfigUpdateRouter {
                 tag_filter_tx: None,
                 post_aggregate_filter_tx: None,
                 debug_log_tx: None,
+                log_level_tx: None,
             },
             DatadogRuntimeAuthority::Stream => {
                 let (_, forwarder_tx) = ScopedConfig::live(initial.components.forwarder.datadog.clone());
@@ -195,6 +211,7 @@ impl ConfigUpdateRouter {
                 let (_, post_aggregate_filter_tx) =
                     ScopedConfig::live(initial.components.dogstatsd.post_aggregate_filter.clone());
                 let (_, debug_log_tx) = ScopedConfig::live(initial.components.dogstatsd.debug_log.clone());
+                let (_, log_level_tx) = ScopedConfig::live(initial.control.log_level.clone());
                 Self {
                     current: initial,
                     saluki_only,
@@ -205,6 +222,7 @@ impl ConfigUpdateRouter {
                     tag_filter_tx: Some(tag_filter_tx),
                     post_aggregate_filter_tx: Some(post_aggregate_filter_tx),
                     debug_log_tx: Some(debug_log_tx),
+                    log_level_tx: Some(log_level_tx),
                 }
             }
         }
@@ -224,6 +242,7 @@ impl ConfigUpdateRouter {
                     self.current.components.dogstatsd.post_aggregate_filter.clone(),
                 ),
                 dogstatsd_debug_log: ScopedConfig::fixed(self.current.components.dogstatsd.debug_log.clone()),
+                log_level: ScopedConfig::fixed(self.current.control.log_level.clone()),
             },
             DatadogRuntimeAuthority::Stream => DynamicConfigHandles {
                 forwarder: live_handle(
@@ -251,6 +270,10 @@ impl ConfigUpdateRouter {
                 dogstatsd_debug_log: live_handle(
                     self.current.components.dogstatsd.debug_log.clone(),
                     self.debug_log_tx.as_ref().expect("debug log sender"),
+                ),
+                log_level: live_handle(
+                    self.current.control.log_level.clone(),
+                    self.log_level_tx.as_ref().expect("log level sender"),
                 ),
             },
         }
@@ -298,6 +321,11 @@ impl ConfigUpdateRouter {
             &self.current.components.dogstatsd.debug_log,
             &next.components.dogstatsd.debug_log,
         );
+        changed |= send_if_changed(
+            &self.log_level_tx,
+            &self.current.control.log_level,
+            &next.control.log_level,
+        );
         changed
     }
 }
@@ -326,15 +354,66 @@ fn parse_datadog_bootstrap(config: &GenericConfiguration) -> Result<DatadogBoots
     Ok(DatadogBootstrap {
         log_level: config.try_get_typed("log_level")?,
         metrics_level: config.try_get_typed("metrics_level")?,
+        log_format_json: read_permissive_bool(config, "log_format_json")?,
+        log_format_rfc3339: read_permissive_bool(config, "log_format_rfc3339")?,
+        log_to_console: read_permissive_bool(config, "log_to_console")?,
+        log_to_syslog: read_permissive_bool(config, "log_to_syslog")?,
+        syslog_rfc: read_permissive_bool(config, "syslog_rfc")?,
+        syslog_uri: config.try_get_typed("syslog_uri")?,
+        log_file_max_size_bytes: config
+            .try_get_typed::<ByteSize>("log_file_max_size")?
+            .map(|size| size.as_u64()),
+        log_file_max_rolls: config.try_get_typed("log_file_max_rolls")?,
+        disable_file_logging: read_permissive_bool(config, "disable_file_logging")?,
+        data_plane_log_file: config.try_get_typed("data_plane.log_file")?,
         cmd_port: config.try_get_typed("cmd_port")?,
         auth_token_file_path: config.try_get_typed("auth_token_file_path")?,
+        ipc_cert_file_path: config.try_get_typed("ipc_cert_file_path")?,
     })
 }
+
+fn read_permissive_bool(config: &GenericConfiguration, key: &str) -> Result<Option<bool>, ConfigurationError> {
+    Ok(config.try_get_typed::<PermissiveBoolValue>(key)?.map(|v| v.0))
+}
+
+#[serde_as]
+#[derive(Deserialize)]
+struct PermissiveBoolValue(#[serde_as(as = "PermissiveBool")] bool);
 
 fn parse_saluki_bootstrap(config: &GenericConfiguration) -> Result<SalukiBootstrap, ConfigurationError> {
     Ok(SalukiBootstrap {
         config_path: config.try_get_typed("config_path")?,
     })
+}
+
+fn apply_local_control_overrides(
+    config: &GenericConfiguration, native: &mut SalukiConfiguration,
+) -> Result<(), ConfigurationError> {
+    if let Some(value) = config.try_get_typed("data_plane.enabled")? {
+        native.control.enabled = value;
+    }
+    if let Some(value) = config.try_get_typed("data_plane.standalone_mode")? {
+        native.control.standalone_mode = value;
+    }
+    if let Some(value) = config.try_get_typed("data_plane.checks.enabled")? {
+        native.control.checks.enabled = value;
+    }
+    if let Some(value) = config.try_get_typed("data_plane.dogstatsd.enabled")? {
+        native.control.dogstatsd.enabled = value;
+    }
+    if let Some(value) = config.try_get_typed("data_plane.otlp.enabled")? {
+        native.control.otlp.native.enabled = value;
+    }
+    if let Some(value) = config.try_get_typed("data_plane.otlp.proxy.enabled")? {
+        native.control.otlp.proxy.enabled = value;
+    }
+    if let Some(value) = config.try_get_typed::<String>("data_plane.otlp.proxy.receiver.protocols.grpc.endpoint")? {
+        native.control.otlp.proxy.core_agent_otlp_grpc_endpoint = value;
+    }
+    if let Some(value) = config.try_get_typed::<u64>("data_plane.stop_timeout")? {
+        native.control.stop_timeout_millis = value.saturating_mul(1000);
+    }
+    Ok(())
 }
 
 fn parse_saluki_only(config: &GenericConfiguration) -> Result<SalukiOnlyConfiguration, ConfigurationError> {

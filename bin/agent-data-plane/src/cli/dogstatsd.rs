@@ -9,6 +9,7 @@ use std::time::Instant;
 
 use argh::{FromArgValue, FromArgs};
 use comfy_table::{presets::ASCII_FULL_CONDENSED, Cell, ContentArrangement, Row, Table};
+use saluki_component_config::DogStatsDConfig;
 #[cfg(any(target_os = "linux", test))]
 use saluki_components::sources::TimestampResolution;
 #[cfg(target_os = "linux")]
@@ -16,7 +17,6 @@ use saluki_components::sources::TrafficCaptureReader;
 use saluki_components::sources::DEFAULT_REPLAY_LOOPS;
 #[cfg(target_os = "linux")]
 use saluki_components::sources::REPLAY_CREDENTIALS_GID;
-use saluki_config_tools::{DurationString, GenericConfiguration};
 #[cfg(any(target_os = "linux", test))]
 use saluki_error::generic_error;
 use saluki_error::{ErrorContext as _, GenericError};
@@ -32,7 +32,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::debug;
 use tracing::{error, info};
 
-use crate::cli::utils::DataPlaneAPIClient;
+use crate::{cli::utils::DataPlaneAPIClient, config::DataPlaneConfiguration};
 
 /// DogStatsD-specific debugging commands.
 #[derive(FromArgs, Debug)]
@@ -75,8 +75,8 @@ struct StatsCommand {
     limit: Option<usize>,
 }
 
-const fn default_capture_duration() -> DurationString {
-    DurationString::new(Duration::from_secs(60))
+fn default_capture_duration() -> String {
+    "60s".to_string()
 }
 
 /// Starts a DogStatsD traffic capture.
@@ -85,7 +85,7 @@ const fn default_capture_duration() -> DurationString {
 struct CaptureCommand {
     /// how long the traffic capture should run for, using Go-style duration syntax such as `10s` or `1m0s`
     #[argh(option, short = 'd', long = "duration", default = "default_capture_duration()")]
-    capture_duration: DurationString,
+    capture_duration: String,
 
     /// directory path to write the capture into
     #[argh(option, short = 'p', long = "path")]
@@ -167,8 +167,13 @@ struct StatsResponse<'a> {
 }
 
 /// Entrypoint for the `dogstatsd` commands.
-pub async fn handle_dogstatsd_command(bootstrap_config: &GenericConfiguration, cmd: DogstatsdCommand) {
-    let mut api_client = match DataPlaneAPIClient::from_config(bootstrap_config) {
+pub async fn handle_dogstatsd_command(
+    dp_config: &DataPlaneConfiguration, dogstatsd_config: &DogStatsDConfig, cmd: DogstatsdCommand,
+) {
+    #[cfg(not(target_os = "linux"))]
+    let _ = dogstatsd_config;
+
+    let mut api_client = match DataPlaneAPIClient::from_data_plane_config(dp_config) {
         Ok(client) => client,
         Err(e) => {
             error!("Failed to create data plane API client: {:#}", e);
@@ -192,7 +197,7 @@ pub async fn handle_dogstatsd_command(bootstrap_config: &GenericConfiguration, c
         DogstatsdSubcommand::Replay(config) => {
             #[cfg(target_os = "linux")]
             {
-                if let Err(e) = handle_dogstatsd_replay(&mut api_client, bootstrap_config, config).await {
+                if let Err(e) = handle_dogstatsd_replay(&mut api_client, dogstatsd_config, config).await {
                     error!("Failed to replay DogStatsD traffic: {:#}", e);
                     std::process::exit(1);
                 }
@@ -248,9 +253,8 @@ async fn handle_dogstatsd_capture(
 ) -> Result<(), GenericError> {
     info!("Starting a DogStatsD traffic capture session...");
 
-    let capture_duration = cmd.capture_duration.to_string();
     let capture_path = api_client
-        .dogstatsd_capture(&capture_duration, cmd.capture_path.as_deref(), cmd.compressed)
+        .dogstatsd_capture(&cmd.capture_duration, cmd.capture_path.as_deref(), cmd.compressed)
         .await?;
 
     info!("Capture started. Data will be written to '{capture_path}'.");
@@ -260,7 +264,7 @@ async fn handle_dogstatsd_capture(
 
 #[cfg(target_os = "linux")]
 async fn handle_dogstatsd_replay(
-    api_client: &mut DataPlaneAPIClient, config: &GenericConfiguration, cmd: ReplayCommand,
+    api_client: &mut DataPlaneAPIClient, config: &DogStatsDConfig, cmd: ReplayCommand,
 ) -> Result<(), GenericError> {
     let socket_path = dogstatsd_socket_path(config)?;
 
@@ -310,8 +314,8 @@ async fn handle_dogstatsd_replay(
 }
 
 #[cfg(any(target_os = "linux", test))]
-fn dogstatsd_socket_path(config: &GenericConfiguration) -> Result<PathBuf, GenericError> {
-    match config.try_get_typed::<String>("dogstatsd_socket")? {
+fn dogstatsd_socket_path(config: &DogStatsDConfig) -> Result<PathBuf, GenericError> {
+    match config.socket_path.as_deref() {
         Some(path) if !path.is_empty() => Ok(PathBuf::from(path)),
         _ => Err(generic_error!(
             "DogStatsD replay requires `dogstatsd_socket` to be configured."
@@ -546,8 +550,7 @@ where
 mod tests {
     use std::time::Duration;
 
-    use saluki_config_tools::ConfigurationLoader;
-    use serde_json::json;
+    use saluki_component_config::DogStatsDConfig;
 
     use super::{
         compute_target_offset, default_capture_duration, default_replay_loops, dogstatsd_socket_path,
@@ -556,7 +559,7 @@ mod tests {
 
     #[test]
     fn dogstatsd_capture_default_duration_matches_go() {
-        assert_eq!(default_capture_duration().as_duration(), Duration::from_secs(60));
+        assert_eq!(default_capture_duration(), "60s");
     }
 
     #[test]
@@ -576,17 +579,19 @@ mod tests {
         assert_eq!(clamped, Duration::ZERO);
     }
 
-    #[tokio::test]
-    async fn dogstatsd_socket_path_requires_configured_socket() {
-        let (config, _) = ConfigurationLoader::for_tests(Some(json!({ "dogstatsd_socket": "" })), None, false).await;
+    #[test]
+    fn dogstatsd_socket_path_requires_configured_socket() {
+        let config = DogStatsDConfig::default();
         let err = dogstatsd_socket_path(&config).expect_err("empty socket should fail");
         assert!(err.to_string().contains("dogstatsd_socket"));
     }
 
-    #[tokio::test]
-    async fn dogstatsd_socket_path_reads_configured_socket() {
-        let (config, _) =
-            ConfigurationLoader::for_tests(Some(json!({ "dogstatsd_socket": "/tmp/dsd.sock" })), None, false).await;
+    #[test]
+    fn dogstatsd_socket_path_reads_configured_socket() {
+        let config = DogStatsDConfig {
+            socket_path: Some("/tmp/dsd.sock".to_string()),
+            ..DogStatsDConfig::default()
+        };
         let path = dogstatsd_socket_path(&config).expect("socket should be configured");
         assert_eq!(path, std::path::PathBuf::from("/tmp/dsd.sock"));
     }

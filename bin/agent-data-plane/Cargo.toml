@@ -14,6 +14,8 @@ fips = ["saluki-app/tls-fips", "saluki-components/fips"]
 antithesis = ["dep:antithesis_sdk", "antithesis_sdk/full", "dep:antithesis-instrumentation", "saluki-components/antithesis"]
 
 [dependencies]
+agent-data-plane-config = { workspace = true }
+agent-data-plane-config-system = { workspace = true }
 antithesis-instrumentation = { workspace = true, optional = true }
 antithesis_sdk = { workspace = true, optional = true }
 argh = { workspace = true, features = ["help"] }
@@ -23,7 +25,6 @@ chrono = { workspace = true }
 colored = { workspace = true }
 comfy-table = { workspace = true }
 datadog-agent-commons = { workspace = true }
-datadog-agent-config = { workspace = true }
 datadog-protos = { workspace = true }
 foldhash = { workspace = true }
 futures = { workspace = true }
@@ -41,7 +42,6 @@ saluki-app = { workspace = true }
 saluki-common = { workspace = true }
 saluki-component-config = { workspace = true }
 saluki-components = { workspace = true }
-saluki-config-tools = { workspace = true }
 saluki-context = { workspace = true }
 saluki-core = { workspace = true }
 saluki-env = { workspace = true }
@@ -77,7 +77,9 @@ tikv-jemallocator = { workspace = true, features = [
 chrono = { workspace = true }
 
 [dev-dependencies]
+datadog-agent-config = { workspace = true }
 datadog-agent-config-testing = { workspace = true }
 derive-where = { workspace = true }
 saluki-components = { workspace = true }
+saluki-config-tools = { workspace = true }
 saluki-metrics = { workspace = true, features = ["test"] }

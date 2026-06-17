@@ -47,6 +47,8 @@ pub struct ControlConfiguration {
     pub use_new_config_stream_endpoint: bool,
     /// Whether the process runs in standalone mode.
     pub standalone_mode: bool,
+    /// Runtime log level supplied by the active Datadog authority.
+    pub log_level: Option<String>,
 }
 
 impl ControlConfiguration {
@@ -78,6 +80,7 @@ impl Default for ControlConfiguration {
             remote_agent_enabled: true,
             use_new_config_stream_endpoint: false,
             standalone_mode: false,
+            log_level: None,
         }
     }
 }
@@ -297,10 +300,32 @@ pub struct DatadogBootstrap {
     pub log_level: Option<String>,
     /// Metrics level used before runtime authority starts.
     pub metrics_level: Option<String>,
+    /// Whether bootstrap logs are emitted as JSON.
+    pub log_format_json: Option<bool>,
+    /// Whether bootstrap log timestamps use RFC 3339 format.
+    pub log_format_rfc3339: Option<bool>,
+    /// Whether bootstrap logs are emitted to the console.
+    pub log_to_console: Option<bool>,
+    /// Whether bootstrap logs are emitted to syslog.
+    pub log_to_syslog: Option<bool>,
+    /// Whether syslog uses RFC formatting.
+    pub syslog_rfc: Option<bool>,
+    /// Syslog URI.
+    pub syslog_uri: Option<String>,
+    /// Maximum log file size, in bytes.
+    pub log_file_max_size_bytes: Option<u64>,
+    /// Number of rotated log files to keep.
+    pub log_file_max_rolls: Option<usize>,
+    /// Whether file logging is disabled.
+    pub disable_file_logging: Option<bool>,
+    /// ADP-specific log file path.
+    pub data_plane_log_file: Option<String>,
     /// IPC command port.
     pub cmd_port: Option<u16>,
     /// IPC auth token path.
     pub auth_token_file_path: Option<String>,
+    /// IPC certificate path.
+    pub ipc_cert_file_path: Option<String>,
 }
 
 /// Saluki-only bootstrap values read from local Saluki sources.

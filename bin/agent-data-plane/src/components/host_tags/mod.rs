@@ -16,13 +16,16 @@ use stringtheory::MetaString;
 ///
 /// Temporarily adds host tags to metrics to compensate for backend delays when a new host comes online,
 /// preventing gaps in queryability until the backend starts adding these tags automatically.
+#[allow(dead_code)]
 pub struct HostTagsConfiguration {
     client: RemoteAgentClient,
     expected_tags_duration: Duration,
 }
 
+#[allow(dead_code)]
 const DEFAULT_EXPECTED_TAGS_DURATION: Duration = Duration::ZERO;
 
+#[allow(dead_code)]
 impl HostTagsConfiguration {
     /// Creates a new `HostTagsConfiguration` from typed inputs.
     pub fn from_parts(client: RemoteAgentClient, expected_tags_duration: Option<Duration>) -> Self {
