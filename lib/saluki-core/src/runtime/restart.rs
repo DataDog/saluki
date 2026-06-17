@@ -92,18 +92,16 @@ pub enum RestartType {
     /// The child is restarted only if it exits abnormally.
     ///
     /// An abnormal exit is an error, panic, or forced abort. A normal exit (the child's future resolves with `Ok(())`)
-    /// is treated as intentional, and the child is not restarted.
+    /// is treated as intentional, and the child is not restarted. This governs the child's _own_ exit; a transient
+    /// child is still restarted when a sibling triggers a [`RestartMode::OneForAll`] group restart, matching
+    /// Erlang/OTP.
     Transient,
 
     /// The child is never restarted, regardless of how it exits.
     ///
     /// This suits short-lived, on-demand children -- for example, one task per network connection -- whose termination
-    /// is a normal part of operation.
-    ///
-    /// > **Note:** Mixing `Temporary` children into a non-dynamic supervisor that uses [`RestartMode::OneForAll`]
-    /// > is not yet fully supported: a one-for-all restart triggered by a sibling will currently restart temporary
-    /// > children as well. Temporary children are intended for one-for-one supervision (including the dynamic
-    /// > supervisor).
+    /// is a normal part of operation. A temporary child is never restarted even when a sibling triggers a
+    /// [`RestartMode::OneForAll`] group restart: it is shut down with the group but not brought back.
     Temporary,
 }
 

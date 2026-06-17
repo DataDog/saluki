@@ -236,3 +236,6 @@ Wireshark
 testsupport
 callee
 trivy
+Erlang
+OTP
+respawn(s|ed|ing)?

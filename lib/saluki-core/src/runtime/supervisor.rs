@@ -525,6 +525,24 @@ impl Supervisor {
         Ok(())
     }
 
+    /// Respawns children after a one-for-all restart, honoring each child's [`RestartType`].
+    ///
+    /// Every child except [`RestartType::Temporary`] is restarted, matching Erlang/OTP: a group restart restarts all
+    /// permanent and transient children -- regardless of how they last exited, including a transient child that had
+    /// already exited cleanly -- but never temporary children, which are shut down with the group and not brought back.
+    /// A transient child's "restart only on abnormal exit" rule governs its _own_ termination, not a group restart
+    /// driven by a sibling.
+    fn respawn_children_one_for_all(&self, worker_state: &mut WorkerState) -> Result<(), SupervisorError> {
+        debug!(supervisor_id = %self.supervisor_id, "Restarting all eligible static child processes.");
+        for child_spec_idx in 0..self.child_specs.len() {
+            if self.get_restart_type(child_spec_idx) != RestartType::Temporary {
+                self.spawn_child(child_spec_idx, worker_state)?;
+            }
+        }
+
+        Ok(())
+    }
+
     async fn run_inner(&self, process: Process, process_shutdown: ShutdownHandle) -> Result<(), SupervisorError> {
         if self.child_specs.is_empty() {
             return Err(SupervisorError::NoChildren);
@@ -598,7 +616,7 @@ impl Supervisor {
                                 RestartMode::OneForAll => {
                                     warn!(supervisor_id = %self.supervisor_id, worker_name = child_spec.name(), ?worker_result, "Child process terminated, restarting all processes.");
                                     worker_state.shutdown_workers().await;
-                                    self.spawn_all_children(&mut worker_state)?;
+                                    self.respawn_children_one_for_all(&mut worker_state)?;
                                 }
                             },
                             RestartAction::Shutdown => {
@@ -1159,6 +1177,70 @@ mod tests {
         assert!(
             stable_count.load(Ordering::SeqCst) >= 2,
             "stable worker should also have been restarted"
+        );
+    }
+
+    #[tokio::test]
+    async fn one_for_all_does_not_restart_temporary_children() {
+        // A permanent worker that fails repeatedly drives one-for-all restarts; a temporary sibling is shut down with
+        // the group on each cycle but, per OTP semantics, must never be brought back.
+        let failing = MockWorker::failing("failing-worker", Duration::from_millis(50));
+        let failing_count = failing.start_count();
+
+        let temp = MockWorker::long_running("temp-worker");
+        let temp_count = temp.start_count();
+
+        let mut sup = Supervisor::new("test-sup").unwrap().with_restart_strategy(
+            RestartStrategy::one_for_all().with_intensity_and_period(20, Duration::from_secs(10)),
+        );
+        sup.add_worker(ChildSpecification::worker(temp).with_restart_type(RestartType::Temporary));
+        sup.add_worker(failing);
+
+        let (tx, handle) = run_supervisor_with_trigger(sup).await;
+
+        // Let several one-for-all cycles occur.
+        sleep(Duration::from_millis(300)).await;
+        let _ = tx.send(());
+
+        let result = timeout(Duration::from_secs(2), handle).await.unwrap().unwrap();
+        assert!(result.is_ok());
+        assert!(
+            failing_count.load(Ordering::SeqCst) >= 2,
+            "permanent worker should have been restarted by one-for-all"
+        );
+        assert_eq!(
+            temp_count.load(Ordering::SeqCst),
+            1,
+            "temporary child must not be restarted by a one-for-all group restart"
+        );
+    }
+
+    #[tokio::test]
+    async fn one_for_all_restarts_transient_children() {
+        // A transient child that exits cleanly is not restarted on its own, but a one-for-all restart triggered by a
+        // sibling restarts it anyway -- matching OTP, where only temporary children are exempt from group restarts.
+        let transient = MockWorker::completing("transient-worker", Duration::from_millis(30));
+        let transient_count = transient.start_count();
+
+        // Fails after the transient has already exited cleanly, so the group restart is what brings the transient back.
+        let failing = MockWorker::failing("failing-worker", Duration::from_millis(80));
+
+        let mut sup = Supervisor::new("test-sup").unwrap().with_restart_strategy(
+            RestartStrategy::one_for_all().with_intensity_and_period(20, Duration::from_secs(10)),
+        );
+        sup.add_worker(ChildSpecification::worker(transient).with_restart_type(RestartType::Transient));
+        sup.add_worker(failing);
+
+        let (tx, handle) = run_supervisor_with_trigger(sup).await;
+
+        sleep(Duration::from_millis(300)).await;
+        let _ = tx.send(());
+
+        let result = timeout(Duration::from_secs(2), handle).await.unwrap().unwrap();
+        assert!(result.is_ok());
+        assert!(
+            transient_count.load(Ordering::SeqCst) >= 2,
+            "transient child must be restarted by a one-for-all group restart, even after a clean exit"
         );
     }
 
