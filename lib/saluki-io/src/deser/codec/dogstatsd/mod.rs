@@ -185,6 +185,11 @@ impl DogStatsDCodec {
     /// Different aspects of the codec's behavior (such as tag length, tag count, and timestamp parsing) can be
     /// controlled through its configuration. See [`DogStatsDCodecConfiguration`] for more information.
     pub fn from_configuration(config: DogStatsDCodecConfiguration) -> Self {
+        Self::from_config(config)
+    }
+
+    /// Sets the given configuration for the codec.
+    pub fn from_config(config: DogStatsDCodecConfiguration) -> Self {
         Self { config }
     }
 

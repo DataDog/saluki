@@ -345,37 +345,31 @@ mod tests {
     // -------------------------------------------------------------------------
 
     #[test]
-    #[ignore = "enabled at step 9"]
     fn components_must_not_use_from_configuration() {
         assert_no_source_symbol("lib/saluki-components", "from_configuration");
     }
 
     #[test]
-    #[ignore = "enabled at step 9"]
     fn components_must_not_use_try_get_typed() {
         assert_no_source_symbol("lib/saluki-components", "try_get_typed");
     }
 
     #[test]
-    #[ignore = "enabled at step 9"]
     fn components_must_not_use_as_typed() {
         assert_no_source_symbol("lib/saluki-components", "as_typed");
     }
 
     #[test]
-    #[ignore = "enabled at step 9"]
     fn components_must_not_watch_string_keys() {
         assert_no_source_symbol("lib/saluki-components", "watch_for_updates");
     }
 
     #[test]
-    #[ignore = "enabled at step 9"]
     fn components_must_not_subscribe_for_updates() {
         assert_no_source_symbol("lib/saluki-components", "subscribe_for_updates");
     }
 
     #[test]
-    #[ignore = "enabled at step 9"]
     fn components_must_not_import_raw_map_crate() {
         assert_no_source_symbol("lib/saluki-components", "saluki_config_tools");
     }

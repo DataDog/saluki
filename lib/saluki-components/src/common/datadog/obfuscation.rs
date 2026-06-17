@@ -1,8 +1,9 @@
 //! Obfuscation configuration types.
 
 use facet::Facet;
-use saluki_config_tools::deserialize_space_separated_or_seq;
 use serde::Deserialize;
+
+use crate::common::serde::deserialize_space_separated_or_seq;
 
 /// Configuration for the obfuscator.
 ///

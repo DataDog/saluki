@@ -4,10 +4,11 @@ use std::sync::Arc;
 use facet::Facet;
 use headers::Authorization;
 use hyper_http_proxy::{Intercept, Proxy};
-use saluki_config_tools::deserialize_space_separated_or_seq;
 use saluki_error::GenericError;
 use serde::Deserialize;
 use url::Url;
+
+use crate::common::serde::deserialize_space_separated_or_seq;
 
 #[derive(Clone, Deserialize, Facet)]
 #[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]

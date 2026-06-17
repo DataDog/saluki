@@ -554,6 +554,12 @@ fn dogstatsd_debug_log_config_from_raw(
     DogStatsDDebugLogConfiguration::from_native(ScopedConfig::fixed(native), default_log_file_path)
 }
 
+fn dogstatsd_config_from_raw(config: &GenericConfiguration) -> Result<DogStatsDConfiguration, GenericError> {
+    let run_path = config.try_get_typed::<PathBuf>("run_path")?;
+    let config = config.as_typed::<DogStatsDConfiguration>()?.with_run_path(run_path);
+    Ok(config)
+}
+
 fn dogstatsd_post_aggregate_filter_config_from_raw(
     config: &GenericConfiguration,
 ) -> Result<DogStatsDPostAggregateFilterConfiguration, GenericError> {
@@ -920,7 +926,7 @@ async fn add_dsd_pipeline_to_blueprint(
     //    │    (destination)    │    │                       (Datadog Platform)                        │
     //    └─────────────────────┘    └ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┘
 
-    let dsd_config = DogStatsDConfiguration::from_configuration(config)
+    let dsd_config = dogstatsd_config_from_raw(config)
         .error_context("Failed to configure DogStatsD source.")?
         .with_workload_provider(env_provider.workload().clone())
         .with_capture_entity_resolver(env_provider.workload().clone());

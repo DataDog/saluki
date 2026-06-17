@@ -22,7 +22,6 @@ use saluki_common::{
     sync::shutdown::{ShutdownCoordinator, ShutdownHandle},
     task::spawn_traced_named,
 };
-use saluki_config_tools::{deserialize_space_separated_or_seq, GenericConfiguration};
 use saluki_context::{
     origin::RawOrigin,
     tags::{RawTags, RawTagsFilter},
@@ -90,6 +89,7 @@ use self::origin::{
     mark_replay_process_id, origin_from_event_packet, origin_from_metric_packet, origin_from_service_check_packet,
     DogStatsDOriginTagResolver, OriginEnrichmentConfiguration,
 };
+use crate::common::serde::deserialize_space_separated_or_seq;
 
 mod resolver;
 use self::resolver::ContextResolvers;
@@ -619,12 +619,11 @@ async fn resolve_bind_host(host: &str) -> Result<std::net::IpAddr, Error> {
 }
 
 impl DogStatsDConfiguration {
-    /// Creates a new `DogStatsDConfiguration` from the given configuration.
-    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        let mut dogstatsd_config: Self = config.as_typed()?;
-        dogstatsd_config.fix_empty_capture_path(config);
-        dogstatsd_config.fix_capture_depth();
-        Ok(dogstatsd_config)
+    /// Applies source-adjacent fixups that require values outside the DogStatsD slice.
+    pub fn with_run_path(mut self, run_path: Option<PathBuf>) -> Self {
+        self.fix_empty_capture_path(run_path);
+        self.fix_capture_depth();
+        self
     }
 
     /// Gets both the `additional_tags` and any others specified by other configuration fields, such as `provider_kind`.
@@ -740,31 +739,18 @@ impl DogStatsDConfiguration {
         DogStatsDReplayAPIHandler::new(self.replay_control.clone())
     }
 
-    fn fix_empty_capture_path(&mut self, config: &GenericConfiguration) {
+    fn fix_empty_capture_path(&mut self, run_path: Option<PathBuf>) {
         if self.capture_path.parent().is_some() {
             return;
         }
 
-        let capture_path = match config.try_get_typed::<PathBuf>("run_path") {
-            Ok(Some(mut run_path)) => {
-                run_path.push(DOGSTATSD_CAPTURE_DIR);
-                run_path
-            }
-            Ok(None) => {
-                debug!(
-                    "`dogstatsd_capture_path` and `run_path` were empty. Default DogStatsD capture path is unavailable."
-                );
-                return;
-            }
-            Err(e) => {
-                debug!(
-                    error = %e,
-                    "Failed to read `run_path` from configuration. Default DogStatsD capture path is unavailable."
-                );
-                return;
-            }
+        let Some(mut capture_path) = run_path else {
+            debug!(
+                "`dogstatsd_capture_path` and `run_path` were empty. Default DogStatsD capture path is unavailable."
+            );
+            return;
         };
-
+        capture_path.push(DOGSTATSD_CAPTURE_DIR);
         self.capture_path = capture_path;
     }
 
@@ -877,7 +863,7 @@ impl SourceBuilder for DogStatsDConfiguration {
             .with_minimum_sample_rate(self.minimum_sample_rate)
             .with_client_origin_detection(self.origin_enrichment.origin_detection_client);
 
-        let codec = DogStatsDCodec::from_configuration(codec_config);
+        let codec = DogStatsDCodec::from_config(codec_config);
         let eol_required = self.eol_required();
 
         let enable_payloads_filter = EnablePayloadsFilter::default()
@@ -2524,14 +2510,22 @@ mod tests {
         }
     }
 
+    async fn dogstatsd_config_from_values(values: serde_json::Value) -> DogStatsDConfiguration {
+        let (config, _) = ConfigurationLoader::for_tests(Some(values), None, false).await;
+        let run_path = config
+            .try_get_typed::<PathBuf>("run_path")
+            .expect("run_path should parse");
+        config
+            .as_typed::<DogStatsDConfiguration>()
+            .expect("should deserialize")
+            .with_run_path(run_path)
+    }
+
     #[tokio::test]
     async fn fix_empty_capture_path_sets_path_from_run_path() {
         const RUN_PATH: &str = "/my/little/run_path";
 
-        let base_config_values = json!({ "run_path": RUN_PATH });
-        let (config, _) = ConfigurationLoader::for_tests(Some(base_config_values), None, false).await;
-
-        let dogstatsd_config = DogStatsDConfiguration::from_configuration(&config).expect("should deserialize");
+        let dogstatsd_config = dogstatsd_config_from_values(json!({ "run_path": RUN_PATH })).await;
 
         let expected = PathBuf::from(RUN_PATH).join(DOGSTATSD_CAPTURE_DIR);
         assert_eq!(expected, dogstatsd_config.capture_path);
@@ -2542,16 +2536,17 @@ mod tests {
         const RUN_PATH: &str = "/my/little/run_path";
         const CAPTURE_PATH: &str = "/custom/path/to/capture";
 
-        let base_config_values = json!({ "run_path": RUN_PATH, "dogstatsd_capture_path": CAPTURE_PATH });
-        let (config, _) = ConfigurationLoader::for_tests(Some(base_config_values), None, false).await;
-
-        let dogstatsd_config = DogStatsDConfiguration::from_configuration(&config).expect("should deserialize");
+        let dogstatsd_config = dogstatsd_config_from_values(json!({
+            "run_path": RUN_PATH,
+            "dogstatsd_capture_path": CAPTURE_PATH
+        }))
+        .await;
 
         assert_eq!(PathBuf::from(CAPTURE_PATH), dogstatsd_config.capture_path);
     }
 
     #[tokio::test]
-    async fn from_configuration_normalizes_capture_depth() {
+    async fn dogstatsd_config_normalizes_capture_depth() {
         let cases = [
             (json!({}), MIN_CAPTURE_DEPTH),
             (json!({ "dogstatsd_capture_depth": 0 }), MIN_CAPTURE_DEPTH),
@@ -2559,9 +2554,7 @@ mod tests {
         ];
 
         for (base_config_values, expected_depth) in cases {
-            let (config, _) = ConfigurationLoader::for_tests(Some(base_config_values), None, false).await;
-            let dogstatsd_config = DogStatsDConfiguration::from_configuration(&config).expect("should deserialize");
-
+            let dogstatsd_config = dogstatsd_config_from_values(base_config_values).await;
             assert_eq!(expected_depth, dogstatsd_config.capture_depth);
         }
     }
