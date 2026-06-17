@@ -1640,12 +1640,12 @@ mod tests {
 
 #[cfg(test)]
 mod config_smoke {
+    use datadog_agent_config::{DatadogRemapper, KEY_ALIASES};
     use datadog_agent_config_testing::config_registry::structs;
     use datadog_agent_config_testing::run_config_smoke_tests;
     use serde_json::json;
 
     use super::DatadogMetricsConfiguration;
-    use crate::config::{DatadogRemapper, KEY_ALIASES};
 
     #[tokio::test]
     async fn smoke_test() {
@@ -1666,11 +1666,12 @@ mod config_smoke {
 
 #[cfg(test)]
 mod use_v2_api_series_default {
+    use datadog_agent_config::KEY_ALIASES;
     use saluki_config_tools::ConfigurationLoader;
     use serde_json::json;
 
     use super::{DatadogMetricsConfiguration, SERIES_V2_COMPRESSED_SIZE_LIMIT, SERIES_V2_UNCOMPRESSED_SIZE_LIMIT};
-    use crate::{common::datadog::clamp_payload_limits, config::KEY_ALIASES};
+    use crate::common::datadog::clamp_payload_limits;
 
     /// `use_v2_api_series` defaults to `true` (preserves V2 protobuf behavior when the flag is absent).
     /// The nested-form (`use_v2_api.series`) and env-var (`DD_USE_V2_API_SERIES`) paths to the flat key

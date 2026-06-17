@@ -302,12 +302,12 @@ fn ip_in_cidr(network: IpAddr, prefix_len: u8, addr: IpAddr) -> bool {
 
 #[cfg(test)]
 mod config_smoke {
+    use datadog_agent_config::{DatadogRemapper, KEY_ALIASES};
     use datadog_agent_config_testing::config_registry::structs;
     use datadog_agent_config_testing::run_config_smoke_tests;
     use serde_json::json;
 
     use super::ProxyConfiguration;
-    use crate::config::{DatadogRemapper, KEY_ALIASES};
 
     #[tokio::test]
     async fn proxy_configuration_smoke_test() {

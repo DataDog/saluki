@@ -337,10 +337,10 @@ impl Default for ApmConfig {
 
 #[cfg(test)]
 mod tests {
+    use datadog_agent_config::{DatadogRemapper, KEY_ALIASES};
     use saluki_config_tools::ConfigurationLoader;
 
     use super::*;
-    use crate::config::{DatadogRemapper, KEY_ALIASES};
 
     async fn apm_config_from(
         file_values: Option<serde_json::Value>, env_vars: Option<&[(String, String)]>,

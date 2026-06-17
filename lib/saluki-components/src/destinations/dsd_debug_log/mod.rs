@@ -342,6 +342,7 @@ mod tests {
     };
 
     use bytesize::ByteSize;
+    use datadog_agent_config::{DatadogRemapper, KEY_ALIASES};
     use datadog_agent_config_testing::config_registry::structs;
     use datadog_agent_config_testing::run_config_smoke_tests;
     use saluki_context::Context;
@@ -350,7 +351,6 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{DogStatsDDebugLog, DogStatsDDebugLogConfiguration};
-    use crate::config::{DatadogRemapper, KEY_ALIASES};
 
     fn test_default_log_file_path() -> PathBuf {
         PathBuf::from("/tmp/default-dogstatsd-stats.log")

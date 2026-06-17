@@ -1164,12 +1164,12 @@ mod tests {
 
 #[cfg(test)]
 mod config_smoke {
+    use datadog_agent_config::{DatadogRemapper, KEY_ALIASES};
     use datadog_agent_config_testing::config_registry::structs;
     use datadog_agent_config_testing::run_config_smoke_tests;
     use serde_json::json;
 
     use super::DogStatsDMapperConfiguration;
-    use crate::config::{DatadogRemapper, KEY_ALIASES};
 
     #[tokio::test]
     async fn smoke_test() {

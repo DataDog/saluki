@@ -7,6 +7,7 @@ use std::{
 use argh::FromArgs;
 use datadog_agent_commons::platform::PlatformSettings;
 use datadog_agent_config::classifier::{ConfigClassifier, Pipeline, PipelineAffinity, Severity, SupportLevel};
+use datadog_agent_config::{DatadogRemapper, KEY_ALIASES};
 use resource_accounting::{ComponentBounds, ComponentRegistry};
 use saluki_app::{
     accounting::{initialize_memory_bounds, MemoryBoundsConfiguration},
@@ -14,9 +15,7 @@ use saluki_app::{
     metrics::emit_startup_metrics,
 };
 use saluki_components::{
-    config::{
-        AutoscalingFailoverConfiguration, ClusterAgentConfiguration, DatadogRemapper, MrfConfiguration, KEY_ALIASES,
-    },
+    config::{AutoscalingFailoverConfiguration, ClusterAgentConfiguration, MrfConfiguration},
     decoders::otlp::OtlpDecoderConfiguration,
     destinations::{DogStatsDDebugLogConfiguration, DogStatsDStatisticsConfiguration},
     encoders::{

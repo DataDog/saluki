@@ -835,6 +835,7 @@ fn append_tags(target: &mut String, tags: &str) {
 
 #[cfg(test)]
 mod tests {
+    use datadog_agent_config::{DatadogRemapper, KEY_ALIASES};
     use datadog_protos::traces::AgentPayload;
     use protobuf::Message as _;
     use saluki_config_tools::ConfigurationLoader;
@@ -844,7 +845,6 @@ mod tests {
     use super::*;
     use crate::common::datadog::apm::ApmConfig;
     use crate::common::otlp::config::TracesConfig;
-    use crate::config::{DatadogRemapper, KEY_ALIASES};
 
     async fn make_encoder(ets_enabled: bool) -> TraceEndpointEncoder {
         let env_vars: Vec<(String, String)> = if ets_enabled {
@@ -976,12 +976,12 @@ mod tests {
 
 #[cfg(test)]
 mod config_smoke {
+    use datadog_agent_config::{DatadogRemapper, KEY_ALIASES};
     use datadog_agent_config_testing::config_registry::structs;
     use datadog_agent_config_testing::run_config_smoke_tests;
     use serde_json::json;
 
     use super::DatadogTraceConfiguration;
-    use crate::config::{DatadogRemapper, KEY_ALIASES};
 
     #[tokio::test]
     async fn smoke_test() {

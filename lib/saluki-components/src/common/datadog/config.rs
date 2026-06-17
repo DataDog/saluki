@@ -451,10 +451,10 @@ impl ForwarderConfiguration {
 
 #[cfg(test)]
 mod tests {
+    use datadog_agent_config::{DatadogRemapper, KEY_ALIASES};
     use saluki_config_tools::ConfigurationLoader;
 
     use super::*;
-    use crate::config::{DatadogRemapper, KEY_ALIASES};
 
     // Two distinct proxy URLs to verify which one wins in precedence tests.
     const PROXY_A: &str = "http://proxy-a.example.com:3128";
@@ -1016,12 +1016,12 @@ mod tests {
 
 #[cfg(test)]
 mod config_smoke {
+    use datadog_agent_config::{DatadogRemapper, KEY_ALIASES};
     use datadog_agent_config_testing::config_registry::structs;
     use datadog_agent_config_testing::run_config_smoke_tests;
     use serde_json::json;
 
     use super::ForwarderConfiguration;
-    use crate::config::{DatadogRemapper, KEY_ALIASES};
 
     #[tokio::test]
     async fn smoke_test() {

@@ -36,10 +36,22 @@ mod tests {
         let contents =
             fs::read_to_string(&cargo_toml).unwrap_or_else(|e| panic!("failed to read {}: {e}", cargo_toml.display()));
 
-        // Match lines like `dep-name = ...` or `dep-name.workspace = ...`.
-        // Anchored to line start to avoid matching partial names or comments.
+        let mut in_prod_dependency_section = false;
+
         for line in contents.lines() {
             let trimmed = line.trim();
+            if trimmed.starts_with('[') && trimmed.ends_with(']') {
+                let section = trimmed.trim_matches(['[', ']']);
+                in_prod_dependency_section = section == "dependencies"
+                    || section == "build-dependencies"
+                    || (section.ends_with(".dependencies") && !section.contains("dev-dependencies"));
+                continue;
+            }
+
+            if !in_prod_dependency_section {
+                continue;
+            }
+
             if trimmed.starts_with(dep_name)
                 && trimmed[dep_name.len()..].starts_with(|c: char| c == ' ' || c == '=' || c == '.')
             {
@@ -71,14 +83,52 @@ mod tests {
                 collect_rs_hits(&path, pattern, hits);
             } else if path.extension().is_some_and(|e| e == "rs") {
                 if let Ok(contents) = fs::read_to_string(&path) {
-                    for (i, line) in contents.lines().enumerate() {
+                    for (i, line) in production_lines(&contents) {
                         if line.contains(pattern) {
-                            hits.push((path.clone(), i + 1, line.to_string()));
+                            hits.push((path.clone(), i, line.to_string()));
                         }
                     }
                 }
             }
         }
+    }
+
+    fn production_lines(contents: &str) -> Vec<(usize, &str)> {
+        let mut out = Vec::new();
+        let mut pending_test_cfg = false;
+        let mut skip_depth: Option<usize> = None;
+        let mut depth = 0usize;
+
+        for (idx, line) in contents.lines().enumerate() {
+            let line_no = idx + 1;
+            let trimmed = line.trim();
+            if trimmed == "#[cfg(test)]" {
+                pending_test_cfg = true;
+            }
+
+            let opens = trimmed.matches('{').count();
+            let closes = trimmed.matches('}').count();
+
+            if pending_test_cfg && trimmed.starts_with("mod ") && opens > 0 {
+                depth = depth.saturating_add(opens).saturating_sub(closes);
+                skip_depth = Some(depth);
+                pending_test_cfg = false;
+                continue;
+            }
+
+            if skip_depth.is_none() {
+                out.push((line_no, line));
+            }
+
+            depth = depth.saturating_add(opens).saturating_sub(closes);
+            if let Some(target_depth) = skip_depth {
+                if depth < target_depth {
+                    skip_depth = None;
+                }
+            }
+        }
+
+        out
     }
 
     fn assert_no_dependency(crate_rel_path: &str, forbidden_dep: &str) {
