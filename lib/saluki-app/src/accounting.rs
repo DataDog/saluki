@@ -1,10 +1,6 @@
 //! Resource accounting and telemetry.
 
-use std::{
-    collections::{HashMap, VecDeque},
-    env, fs,
-    time::Duration,
-};
+use std::{collections::VecDeque, env, fs, time::Duration};
 
 use bytesize::ByteSize;
 use metrics::{counter, gauge, Counter, Gauge, Level};
@@ -13,12 +9,12 @@ use resource_accounting::{
     ResourceStats, ResourceStatsSnapshot,
 };
 use saluki_api::{DynamicRoute, EndpointType};
-use saluki_common::sync::shutdown::ShutdownHandle;
+use saluki_common::{collections::FastHashMap, sync::shutdown::ShutdownHandle};
 use saluki_config::GenericConfiguration;
 use saluki_core::runtime::{state::DataspaceRegistry, InitializationError, Supervisable, SupervisorFuture};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use serde::Deserialize;
-use tokio::{pin, select, time::sleep};
+use tokio::{select, time::sleep};
 use tonic::async_trait;
 use tracing::{error, info, warn};
 
@@ -336,30 +332,32 @@ impl Supervisable for ResourceTelemetryWorker {
                 .ok_or_else(|| generic_error!("Dataspace not available."))?
                 .assert(memory_routes, "resource-telemetry-api");
 
-            let mut metrics = HashMap::new();
-
-            pin!(process_shutdown);
-
-            loop {
-                select! {
-                    _ = &mut process_shutdown => break,
-                    _ = sleep(Duration::from_secs(1)) => {
-                        ResourceGroupRegistry::global().visit_resource_groups(|group_name, stats| {
-                            let group_metrics = match metrics.get_mut(group_name) {
-                                Some(group_metrics) => group_metrics,
-                                None => metrics
-                                    .entry(group_name.to_string())
-                                    .or_insert_with(|| ResourceGroupMetrics::new(group_name)),
-                            };
-
-                            group_metrics.update(stats);
-                        });
-                    }
-                }
+            select! {
+                _ = process_shutdown => {},
+                _ = run_resource_group_metrics_loop() => {},
             }
 
             Ok(())
         }))
+    }
+}
+
+async fn run_resource_group_metrics_loop() {
+    let mut metrics = FastHashMap::default();
+
+    loop {
+        ResourceGroupRegistry::global().visit_resource_groups(|group_name, stats| {
+            let group_metrics = match metrics.get_mut(group_name) {
+                Some(group_metrics) => group_metrics,
+                None => metrics
+                    .entry(group_name.to_string())
+                    .or_insert_with(|| ResourceGroupMetrics::new(group_name)),
+            };
+
+            group_metrics.update(stats);
+        });
+
+        sleep(Duration::from_secs(1)).await;
     }
 }
 

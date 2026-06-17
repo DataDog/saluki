@@ -38,6 +38,14 @@ impl Supervisable for HealthRegistryWorker {
                 .ok_or_else(|| generic_error!("Dataspace not available."))?
                 .assert(health_routes, "health-registry-api");
 
+            // We pass the shutdown handle into the runner here, instead of our usual `select! { shutdown => ...,
+            // main_loop_future => ... }` pattern because we try to ensure that we give back the liveness receiver
+            // before the runner completes.
+            //
+            // TODO: We should actually use something like a proper mutex guard so that returning the receiver happens
+            // automatically when the runner future goes out of scope and is dropped, since right now we wouldn't be
+            // able to ensure the current behavior (returning the receiver before the runner completes) happens in the
+            // face of an exceptional error.
             runner.run(process_shutdown).await;
 
             Ok(())

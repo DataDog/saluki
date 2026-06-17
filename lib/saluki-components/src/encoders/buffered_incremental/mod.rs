@@ -10,7 +10,7 @@ use saluki_core::{
 };
 use saluki_error::GenericError;
 use saluki_metrics::MetricsBuilder;
-use tokio::{select, time::sleep};
+use tokio::{pin, select, time::sleep};
 use tracing::{debug, error};
 
 mod telemetry;
@@ -154,7 +154,7 @@ where
 
     let mut pending_flush = false;
     let pending_flush_timeout = sleep(flush_timeout);
-    tokio::pin!(pending_flush_timeout);
+    pin!(pending_flush_timeout);
 
     loop {
         select! {

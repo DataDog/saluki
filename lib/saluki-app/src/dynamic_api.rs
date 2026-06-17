@@ -23,10 +23,7 @@ use rcgen::{generate_simple_self_signed, CertifiedKey};
 use rustls::{pki_types::PrivateKeyDer, ServerConfig};
 use rustls_pki_types::PrivatePkcs8KeyDer;
 use saluki_api::{APIHandler, DynamicRoute, EndpointProtocol, EndpointType};
-use saluki_common::{
-    collections::FastIndexMap,
-    sync::shutdown::{ShutdownCoordinator, ShutdownHandle},
-};
+use saluki_common::{collections::FastIndexMap, sync::shutdown::ShutdownHandle};
 use saluki_core::runtime::{
     state::{AssertionUpdate, DataspaceRegistry, Identifier, IdentifierFilter, Subscription},
     InitializationError, Supervisable, SupervisorFuture,
@@ -34,14 +31,11 @@ use saluki_core::runtime::{
 use saluki_error::{generic_error, GenericError};
 use saluki_io::net::{
     listener::ConnectionOrientedListener,
-    server::{
-        http::{ErrorHandle, HttpServer},
-        multiplex_service::MultiplexService,
-    },
+    server::{http::HttpServer, multiplex_service::MultiplexService},
     util::hyper::TowerToHyperService,
     ListenAddress,
 };
-use tokio::{pin, select};
+use tokio::select;
 use tonic::{body::Body as GrpcBody, server::NamedService, service::RoutesBuilder};
 use tower::Service;
 use tracing::{debug, info, warn};
@@ -191,15 +185,15 @@ impl Supervisable for DynamicAPIBuilder {
 
         let dataspace = DataspaceRegistry::try_current().ok_or_else(|| generic_error!("Dataspace not available."))?;
 
-        // Subscribe to all dynamic route assertions.
-        let route_assertions = dataspace.subscribe::<DynamicRoute>(IdentifierFilter::All);
-
         // Bind the HTTP listener immediately so we fail fast on bind errors.
         let listener = ConnectionOrientedListener::from_listen_address(self.listen_address.clone())
             .await
             .map_err(|e| InitializationError::Failed { source: e.into() })?;
 
-        // Assert the actual bound address so other processes can discover it (e.g. when using port 0).
+        // Get the listen address our listener is bound to and assert it.
+        //
+        // This allows other processes to find out where we've bound to when the port isn't known ahead of time,
+        // such as during tests when binding to ephemeral ports.
         let bound_addr = listener
             .local_addr()
             .map_err(|e| InitializationError::Failed { source: e.into() })?;
@@ -219,21 +213,24 @@ impl Supervisable for DynamicAPIBuilder {
         Ok(Box::pin(async move {
             info!("Serving {} API on {}.", endpoint_type.name(), listen_address);
 
-            // TODO: Rework this to actually lift out the shutdown stuff into a `select!` here where we wait against
-            // both the event loop and the shutdown signal, and then do a blocking shutdown on the HTTP server when the
-            // process shutdown is triggered.
-            run_event_loop(
-                inner_http,
-                inner_grpc,
-                base_http,
-                base_grpc,
-                route_assertions,
-                endpoint_type,
-                process_shutdown,
-                server_shutdown_coordinator,
-                error_handle,
-            )
-            .await
+            // Subscribe to all dynamic route assertions.
+            let route_assertions = dataspace.subscribe::<DynamicRoute>(IdentifierFilter::All);
+
+            select! {
+                _ = process_shutdown => {
+                    // Trigger the HTTP server to shut down and wait for it to do so gracefully.
+                    debug!(endpoint_type = endpoint_type.name(), "Triggering shutdown of dynamic API endpoint.");
+
+                    server_shutdown_coordinator.shutdown_and_wait().await;
+
+                    Ok(())
+                },
+                maybe_err = error_handle => match maybe_err {
+                    Some(e) => Err(GenericError::from(e)),
+                    None => Ok(()),
+                },
+                result = run_event_loop(inner_http, inner_grpc, base_http, base_grpc, route_assertions, endpoint_type) => result,
+            }
         }))
     }
 }
@@ -276,85 +273,55 @@ impl Service<http::Request<AxumBody>> for DynamicRouterService {
 #[allow(clippy::too_many_arguments)]
 async fn run_event_loop(
     inner_http: Arc<ArcSwap<Router>>, inner_grpc: Arc<ArcSwap<Router>>, base_http: Router, base_grpc: Router,
-    mut route_assertions: Subscription<DynamicRoute>, endpoint_type: EndpointType, process_shutdown: ShutdownHandle,
-    server_shutdown_coordinator: ShutdownCoordinator, error_handle: ErrorHandle,
+    mut route_assertions: Subscription<DynamicRoute>, endpoint_type: EndpointType,
 ) -> Result<(), GenericError> {
     let mut http_handlers = FastIndexMap::default();
     let mut grpc_handlers = FastIndexMap::default();
 
-    pin!(process_shutdown, error_handle);
+    while let Some(update) = route_assertions.recv().await {
+        let mut rebuild_http = false;
+        let mut rebuild_grpc = false;
 
-    loop {
-        select! {
-            _ = &mut process_shutdown => {
-                debug!("Dynamic API shutting down.");
-                server_shutdown_coordinator.shutdown();
-                break;
-            }
-
-            maybe_err = &mut error_handle => {
-                if let Some(e) = maybe_err {
-                    return Err(GenericError::from(e));
+        match update {
+            AssertionUpdate::Asserted(id, route) => {
+                if route.endpoint_type() != endpoint_type {
+                    continue;
                 }
-                break;
-            }
 
-            maybe_update = route_assertions.recv() => {
-                let Some(update) = maybe_update else {
-                    warn!("Route subscription channel closed.");
-                    break;
-                };
+                match route.endpoint_protocol() {
+                    EndpointProtocol::Http => {
+                        debug!(?id, "Registering dynamic HTTP handler.");
+                        http_handlers.insert(id, route.into_router());
 
-                let mut rebuild_http = false;
-                let mut rebuild_grpc = false;
-
-                match update {
-                    AssertionUpdate::Asserted(id, route) => {
-                        if route.endpoint_type() != endpoint_type {
-                            continue;
-                        }
-
-                        match route.endpoint_protocol() {
-                            EndpointProtocol::Http => {
-                                debug!(?id, "Registering dynamic HTTP handler.");
-                                http_handlers.insert(id, route.into_router());
-
-                                rebuild_http = true;
-                            },
-                            EndpointProtocol::Grpc => {
-                                debug!(?id, "Registering dynamic gRPC handler.");
-                                grpc_handlers.insert(id, route.into_router());
-
-                                rebuild_grpc = true;
-                            },
-                        }
+                        rebuild_http = true;
                     }
-                    AssertionUpdate::Retracted(id) => {
-                        if http_handlers.swap_remove(&id).is_some() {
-                            debug!(?id, "Withdrawing dynamic HTTP handler.");
-                            rebuild_http = true;
-                        }
+                    EndpointProtocol::Grpc => {
+                        debug!(?id, "Registering dynamic gRPC handler.");
+                        grpc_handlers.insert(id, route.into_router());
 
-                        if grpc_handlers.swap_remove(&id).is_some() {
-                            debug!(?id, "Withdrawing dynamic gRPC handler.");
-                            rebuild_grpc = true;
-                        }
+                        rebuild_grpc = true;
                     }
                 }
-
-                if rebuild_http {
-                    rebuild_router(&inner_http, &base_http, &http_handlers, http_post_process);
+            }
+            AssertionUpdate::Retracted(id) => {
+                if http_handlers.swap_remove(&id).is_some() {
+                    debug!(?id, "Withdrawing dynamic HTTP handler.");
+                    rebuild_http = true;
                 }
 
-                if rebuild_grpc {
-                    rebuild_router(
-                        &inner_grpc,
-                        &base_grpc,
-                        &grpc_handlers,
-                        grpc_post_process,
-                    );
+                if grpc_handlers.swap_remove(&id).is_some() {
+                    debug!(?id, "Withdrawing dynamic gRPC handler.");
+                    rebuild_grpc = true;
                 }
             }
+        }
+
+        if rebuild_http {
+            rebuild_router(&inner_http, &base_http, &http_handlers, http_post_process);
+        }
+
+        if rebuild_grpc {
+            rebuild_router(&inner_grpc, &base_grpc, &grpc_handlers, grpc_post_process);
         }
     }
 

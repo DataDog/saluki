@@ -34,6 +34,7 @@ use saluki_io::compression::CompressionScheme;
 use saluki_metrics::MetricsBuilder;
 use serde::Deserialize;
 use stringtheory::MetaString;
+use tokio::pin;
 use tokio::{
     select,
     sync::mpsc::{self, Receiver, Sender},
@@ -302,7 +303,7 @@ async fn run_request_builder(
 ) -> Result<(), GenericError> {
     let mut pending_flush = false;
     let pending_flush_timeout = sleep(flush_timeout);
-    tokio::pin!(pending_flush_timeout);
+    pin!(pending_flush_timeout);
 
     loop {
         select! {
