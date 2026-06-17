@@ -15,7 +15,7 @@ use saluki_error::GenericError;
 use snafu::{OptionExt as _, Snafu};
 use tokio::{
     pin, select,
-    sync::{oneshot, Notify, OwnedSemaphorePermit, Semaphore},
+    sync::{oneshot, Notify},
 };
 use tracing::{debug, error, warn};
 
@@ -468,7 +468,7 @@ struct ChildEntry {
     spec: SupervisedChild,
     config: ChildConfig,
     /// Whether this child was added dynamically (via [`SupervisorHandle`]) rather than statically before the run. Used
-    /// to maintain the dynamic-children gauge and to enforce `max_dynamic_children`.
+    /// to maintain the dynamic-children gauge.
     dynamic: bool,
 }
 
@@ -489,13 +489,6 @@ impl ChildId {
 /// Error returned when spawning a dynamic child on a [`Supervisor`] fails.
 #[derive(Debug, Snafu)]
 pub enum SpawnError {
-    /// The supervisor is already running its configured maximum number of dynamic children.
-    #[snafu(display("supervisor is at capacity ({} dynamic children)", max))]
-    AtCapacity {
-        /// The configured maximum-dynamic-children limit.
-        max: usize,
-    },
-
     /// The supervisor has shut down for good and will not accept further spawns.
     ///
     /// This is _not_ returned for spawning before the supervisor starts or between restarts -- those spawns are queued
@@ -509,7 +502,6 @@ struct PendingSpawn {
     id: u64,
     spec: SupervisedChild,
     config: ChildConfig,
-    permit: Option<OwnedSemaphorePermit>,
     ack: Option<oneshot::Sender<()>>,
 }
 
@@ -534,8 +526,8 @@ impl SpawnQueue {
 
     /// Queues a spawn and wakes the supervisor, or returns [`SpawnError::SupervisorGone`] if the queue is closed.
     ///
-    /// On rejection the spawn is dropped here, which releases its capacity permit and drops its `ack` channel so a
-    /// `spawn_confirmed` caller observes the failure.
+    /// On rejection the spawn is dropped here, which drops its `ack` channel so a `spawn_confirmed` caller observes the
+    /// failure.
     fn push(&self, spawn: PendingSpawn) -> Result<(), SpawnError> {
         let mut guard = self.pending.lock().unwrap();
         match guard.as_mut() {
@@ -589,8 +581,6 @@ pub struct SupervisorHandle {
     running: Arc<AtomicBool>,
     id_counter: Arc<AtomicU64>,
     active: Arc<AtomicUsize>,
-    permits: Option<Arc<Semaphore>>,
-    max_dynamic_children: Option<usize>,
 }
 
 impl SupervisorHandle {
@@ -607,8 +597,8 @@ impl SupervisorHandle {
     ///
     /// # Errors
     ///
-    /// Returns [`SpawnError::AtCapacity`] if a maximum-dynamic-children limit is configured and currently reached, or
-    /// [`SpawnError::SupervisorGone`] if the supervisor isn't running.
+    /// Returns [`SpawnError::SupervisorGone`] only if the supervisor has shut down for good; before startup or between
+    /// restarts the spawn is queued rather than rejected.
     pub fn spawn<T: Supervisable + 'static>(&self, worker: T) -> Result<ChildId, SpawnError> {
         self.spawn_with(ChildSpecification::worker(worker).with_restart_type(RestartType::Temporary))
     }
@@ -623,14 +613,12 @@ impl SupervisorHandle {
     ///
     /// As [`spawn`](Self::spawn).
     pub fn spawn_with(&self, spec: ChildSpecification<WorkerSpec>) -> Result<ChildId, SpawnError> {
-        let permit = self.acquire_permit()?;
         let id = self.id_counter.fetch_add(1, Ordering::Relaxed);
         let (spec, config) = spec.into_worker_parts();
         self.spawn_queue.push(PendingSpawn {
             id,
             spec,
             config,
-            permit,
             ack: None,
         })?;
         Ok(ChildId(id))
@@ -642,7 +630,6 @@ impl SupervisorHandle {
     ///
     /// As [`spawn`](Self::spawn), plus [`SpawnError::SupervisorGone`] if the supervisor stops before confirming.
     pub async fn spawn_confirmed<T: Supervisable + 'static>(&self, worker: T) -> Result<ChildId, SpawnError> {
-        let permit = self.acquire_permit()?;
         let id = self.id_counter.fetch_add(1, Ordering::Relaxed);
         let (spec, config) = ChildSpecification::worker(worker)
             .with_restart_type(RestartType::Temporary)
@@ -652,7 +639,6 @@ impl SupervisorHandle {
             id,
             spec,
             config,
-            permit,
             ack: Some(ack_tx),
         })?;
         ack_rx.await.map_err(|_| SpawnError::SupervisorGone)?;
@@ -667,20 +653,6 @@ impl SupervisorHandle {
     /// Returns the number of dynamic children currently running under the supervisor.
     pub fn active_children(&self) -> usize {
         self.active.load(Ordering::Relaxed)
-    }
-
-    fn acquire_permit(&self) -> Result<Option<OwnedSemaphorePermit>, SpawnError> {
-        match &self.permits {
-            Some(semaphore) => {
-                Arc::clone(semaphore)
-                    .try_acquire_owned()
-                    .map(Some)
-                    .map_err(|_| SpawnError::AtCapacity {
-                        max: self.max_dynamic_children.unwrap_or(0),
-                    })
-            }
-            None => Ok(None),
-        }
     }
 }
 
@@ -717,7 +689,6 @@ pub struct Supervisor {
     auto_shutdown: AutoShutdown,
     shutdown_mode: ShutdownMode,
     runtime_mode: RuntimeMode,
-    max_dynamic_children: Option<usize>,
     // Shared across clones (a nested supervisor is cloned each time it runs) and across all handles. Handles queue
     // dynamic spawns here; the running supervisor drains them. Stays open (`Some`) until the supervisor shuts down for
     // good.
@@ -727,7 +698,6 @@ pub struct Supervisor {
     id_counter: Arc<AtomicU64>,
     // Number of dynamic children currently running, shared with handles so it can be surfaced as a gauge.
     active: Arc<AtomicUsize>,
-    permits: Option<Arc<Semaphore>>,
 }
 
 impl Supervisor {
@@ -749,12 +719,10 @@ impl Supervisor {
             auto_shutdown: AutoShutdown::default(),
             shutdown_mode: ShutdownMode::default(),
             runtime_mode: RuntimeMode::default(),
-            max_dynamic_children: None,
             spawn_queue: Arc::new(SpawnQueue::new()),
             running: Arc::new(AtomicBool::new(false)),
             id_counter: Arc::new(AtomicU64::new(0)),
             active: Arc::new(AtomicUsize::new(0)),
-            permits: None,
         })
     }
 
@@ -784,16 +752,6 @@ impl Supervisor {
         self
     }
 
-    /// Sets the maximum number of dynamic children allowed to run at once.
-    ///
-    /// Once `max` dynamic children are running, [`SupervisorHandle::spawn`] returns [`SpawnError::AtCapacity`] until one
-    /// exits and frees a slot. By default there is no limit. Static children do not count against this limit.
-    pub fn with_max_dynamic_children(mut self, max: usize) -> Self {
-        self.max_dynamic_children = Some(max);
-        self.permits = Some(Arc::new(Semaphore::new(max)));
-        self
-    }
-
     /// Returns a handle for spawning dynamic children on this supervisor while it runs.
     ///
     /// The handle can be created before the supervisor starts and cloned freely. Spawns made before it is running, or
@@ -806,8 +764,6 @@ impl Supervisor {
             running: Arc::clone(&self.running),
             id_counter: Arc::clone(&self.id_counter),
             active: Arc::clone(&self.active),
-            permits: self.permits.clone(),
-            max_dynamic_children: self.max_dynamic_children,
         }
     }
 
@@ -898,16 +854,9 @@ impl Supervisor {
     /// Spawns each queued dynamic child into the running supervisor's worker set and roster.
     fn spawn_pending(
         &self, spawns: Vec<PendingSpawn>, worker_state: &mut WorkerState, children: &mut FastHashMap<u64, ChildEntry>,
-        permits: &mut FastHashMap<u64, OwnedSemaphorePermit>, significant_remaining: &mut usize,
+        significant_remaining: &mut usize,
     ) {
-        for PendingSpawn {
-            id,
-            spec,
-            config,
-            permit,
-            ack,
-        } in spawns
-        {
+        for PendingSpawn { id, spec, config, ack } in spawns {
             let entry = ChildEntry {
                 spec,
                 config,
@@ -918,9 +867,6 @@ impl Supervisor {
                     if config.significant {
                         *significant_remaining += 1;
                     }
-                    if let Some(permit) = permit {
-                        permits.insert(id, permit);
-                    }
                     self.active.fetch_add(1, Ordering::Relaxed);
                     children.insert(id, entry);
                     if let Some(ack) = ack {
@@ -928,8 +874,8 @@ impl Supervisor {
                     }
                 }
                 Err(e) => {
-                    // Registration failed (e.g. an invalid name). Dropping the permit and ack frees the slot and lets a
-                    // `spawn_confirmed` caller observe the failure.
+                    // Registration failed (e.g. an invalid name). Dropping the ack lets a `spawn_confirmed` caller
+                    // observe the failure.
                     error!(supervisor_id = %self.supervisor_id, error = %e, "Failed to spawn dynamic child.");
                 }
             }
@@ -960,8 +906,6 @@ impl Supervisor {
         // The live roster of children -- both static (seeded below) and dynamic (added via the handle) -- keyed by a
         // stable id. A restart re-runs a child by id; a child that isn't restarted is removed from the roster.
         let mut children: FastHashMap<u64, ChildEntry> = FastHashMap::default();
-        // Permits held for dynamic children to enforce `max_dynamic_children`; released when the child is removed.
-        let mut permits: FastHashMap<u64, OwnedSemaphorePermit> = FastHashMap::default();
 
         // Spawn the static children. Initialization is folded into each worker's task, so this returns immediately --
         // children initialize concurrently in the background.
@@ -980,7 +924,6 @@ impl Supervisor {
                 self.spawn_queue.drain(),
                 &mut worker_state,
                 &mut children,
-                &mut permits,
                 &mut significant_remaining,
             );
 
@@ -997,7 +940,6 @@ impl Supervisor {
                         self.spawn_queue.close(),
                         &mut worker_state,
                         &mut children,
-                        &mut permits,
                         &mut significant_remaining,
                     );
                     worker_state.shutdown_workers().await;
@@ -1043,7 +985,6 @@ impl Supervisor {
                         // children would eventually trip the limit and tear the supervisor (and its siblings) down.
                         debug!(supervisor_id = %self.supervisor_id, worker_name = %child_name, restart = ?config.restart, ?worker_result, "Child process exited and is not eligible for restart.");
                         children.remove(&child_id);
-                        permits.remove(&child_id);
                         if dynamic {
                             self.active.fetch_sub(1, Ordering::Relaxed);
                         }
@@ -1079,7 +1020,6 @@ impl Supervisor {
                                     // restored (they're lost on a supervisor-level restart, matching Erlang/OTP), and
                                     // temporary children are not restarted.
                                     children.clear();
-                                    permits.clear();
                                     self.active.store(0, Ordering::Relaxed);
                                     self.respawn_children_one_for_all(&mut children, &mut worker_state)?;
                                     significant_remaining =
@@ -1197,12 +1137,10 @@ impl Supervisor {
             auto_shutdown: self.auto_shutdown,
             shutdown_mode: self.shutdown_mode,
             runtime_mode: self.runtime_mode.clone(),
-            max_dynamic_children: self.max_dynamic_children,
             spawn_queue: Arc::clone(&self.spawn_queue),
             running: Arc::clone(&self.running),
             id_counter: Arc::clone(&self.id_counter),
             active: Arc::clone(&self.active),
-            permits: self.permits.clone(),
         }
     }
 }
@@ -2106,55 +2044,6 @@ mod tests {
             0,
             "all dynamic children must be drained on shutdown"
         );
-    }
-
-    #[tokio::test]
-    async fn dynamic_children_respect_max_capacity() {
-        let sup = Supervisor::new("dyn-sup").unwrap().with_max_dynamic_children(2);
-        let handle = sup.handle();
-        let (tx, run) = run_supervisor_with_trigger(sup).await;
-        wait_running(&handle).await;
-
-        handle.spawn(MockWorker::long_running("c1")).unwrap();
-        handle.spawn(MockWorker::long_running("c2")).unwrap();
-        let err = handle.spawn(MockWorker::long_running("c3")).unwrap_err();
-        assert!(matches!(err, SpawnError::AtCapacity { max: 2 }));
-
-        tx.send(()).unwrap();
-        let result = timeout(Duration::from_secs(2), run).await.unwrap().unwrap();
-        assert!(result.is_ok());
-    }
-
-    #[tokio::test]
-    async fn dynamic_capacity_frees_when_child_completes() {
-        let sup = Supervisor::new("dyn-sup").unwrap().with_max_dynamic_children(1);
-        let handle = sup.handle();
-        let (tx, run) = run_supervisor_with_trigger(sup).await;
-        wait_running(&handle).await;
-
-        // A temporary child completes quickly; its slot frees once it's reaped and removed from the roster.
-        handle
-            .spawn(MockWorker::completing("c1", Duration::from_millis(20)))
-            .unwrap();
-        wait_until(|| handle.active_children() == 0).await;
-
-        // The slot frees when the completed child is reaped, shortly after it exits. Retry until it does.
-        let mut spawned = false;
-        for _ in 0..200 {
-            match handle.spawn(MockWorker::long_running("c2")) {
-                Ok(_) => {
-                    spawned = true;
-                    break;
-                }
-                Err(SpawnError::AtCapacity { .. }) => sleep(Duration::from_millis(5)).await,
-                Err(other) => panic!("unexpected spawn error: {other}"),
-            }
-        }
-        assert!(spawned, "capacity must free up after the first child completes");
-
-        tx.send(()).unwrap();
-        let result = timeout(Duration::from_secs(2), run).await.unwrap().unwrap();
-        assert!(result.is_ok());
     }
 
     #[tokio::test]
