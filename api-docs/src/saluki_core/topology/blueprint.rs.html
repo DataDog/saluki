@@ -5,7 +5,7 @@
 <a href=#5 id=5 data-nosnippet>5</a><span class="kw">use </span>saluki_common::sync::shutdown::ShutdownHandle;
 <a href=#6 id=6 data-nosnippet>6</a><span class="kw">use </span>saluki_error::{generic_error, ErrorContext <span class="kw">as _</span>, GenericError};
 <a href=#7 id=7 data-nosnippet>7</a><span class="kw">use </span>snafu::Snafu;
-<a href=#8 id=8 data-nosnippet>8</a><span class="kw">use </span>tokio::{runtime::Handle, select, sync::oneshot};
+<a href=#8 id=8 data-nosnippet>8</a><span class="kw">use </span>tokio::{pin, runtime::Handle, select, sync::oneshot};
 <a href=#9 id=9 data-nosnippet>9</a><span class="kw">use </span>tracing::{error, info};
 <a href=#10 id=10 data-nosnippet>10</a>
 <a href=#11 id=11 data-nosnippet>11</a><span class="kw">use super</span>::{
@@ -887,14 +887,14 @@
 <a href=#887 id=887 data-nosnippet>887</a>        <span class="kw">let </span>built = build_state.build(<span class="self">self</span>.name.clone()).<span class="kw">await</span><span class="question-mark">?</span>;
 <a href=#888 id=888 data-nosnippet>888</a>
 <a href=#889 id=889 data-nosnippet>889</a>        <span class="prelude-val">Ok</span>(Box::pin(<span class="kw">async move </span>{
-<a href=#890 id=890 data-nosnippet>890</a>            <span class="macro">tokio::pin!</span>(shutdown);
+<a href=#890 id=890 data-nosnippet>890</a>            <span class="macro">pin!</span>(shutdown);
 <a href=#891 id=891 data-nosnippet>891</a>
 <a href=#892 id=892 data-nosnippet>892</a>            <span class="comment">// If a readiness signal was provided, wait for it before spawning the components, but remain responsive to
 <a href=#893 id=893 data-nosnippet>893</a>            // shutdown so we exit promptly if asked to stop before we've started.
 <a href=#894 id=894 data-nosnippet>894</a>            </span><span class="kw">if let </span><span class="prelude-val">Some</span>(environment_ready) = environment_ready {
 <a href=#895 id=895 data-nosnippet>895</a>                <span class="macro">select!</span> {
-<a href=#896 id=896 data-nosnippet>896</a>                    <span class="kw">_ </span>= environment_ready =&gt; {},
-<a href=#897 id=897 data-nosnippet>897</a>                    <span class="kw">_ </span>= <span class="kw-2">&amp;mut </span>shutdown =&gt; <span class="kw">return </span><span class="prelude-val">Ok</span>(()),
+<a href=#896 id=896 data-nosnippet>896</a>                    <span class="kw">_ </span>= <span class="kw-2">&amp;mut </span>shutdown =&gt; <span class="kw">return </span><span class="prelude-val">Ok</span>(()),
+<a href=#897 id=897 data-nosnippet>897</a>                    <span class="kw">_ </span>= environment_ready =&gt; {},
 <a href=#898 id=898 data-nosnippet>898</a>                }
 <a href=#899 id=899 data-nosnippet>899</a>            }
 <a href=#900 id=900 data-nosnippet>900</a>
@@ -909,15 +909,15 @@
 <a href=#909 id=909 data-nosnippet>909</a>
 <a href=#910 id=910 data-nosnippet>910</a>            <span class="kw">let </span><span class="kw-2">mut </span>topology_failed = <span class="bool-val">false</span>;
 <a href=#911 id=911 data-nosnippet>911</a>            <span class="macro">select!</span> {
-<a href=#912 id=912 data-nosnippet>912</a>                <span class="comment">// A component finished before shutdown was requested, which we treat as a failure of the topology.
-<a href=#913 id=913 data-nosnippet>913</a>                </span><span class="kw">_ </span>= running.wait_for_unexpected_finish() =&gt; {
-<a href=#914 id=914 data-nosnippet>914</a>                    <span class="macro">error!</span>(<span class="string">"Topology component unexpectedly finished. Shutting down..."</span>);
-<a href=#915 id=915 data-nosnippet>915</a>                    topology_failed = <span class="bool-val">true</span>;
-<a href=#916 id=916 data-nosnippet>916</a>                },
-<a href=#917 id=917 data-nosnippet>917</a>
-<a href=#918 id=918 data-nosnippet>918</a>                <span class="comment">// The supervisor requested shutdown.
-<a href=#919 id=919 data-nosnippet>919</a>                </span><span class="kw">_ </span>= <span class="kw-2">&amp;mut </span>shutdown =&gt; {
-<a href=#920 id=920 data-nosnippet>920</a>                    <span class="macro">info!</span>(<span class="string">"Topology received shutdown signal. Shutting down..."</span>);
+<a href=#912 id=912 data-nosnippet>912</a>                <span class="comment">// The supervisor requested shutdown.
+<a href=#913 id=913 data-nosnippet>913</a>                </span><span class="kw">_ </span>= <span class="kw-2">&amp;mut </span>shutdown =&gt; {
+<a href=#914 id=914 data-nosnippet>914</a>                    <span class="macro">info!</span>(<span class="string">"Topology received shutdown signal. Shutting down..."</span>);
+<a href=#915 id=915 data-nosnippet>915</a>                },
+<a href=#916 id=916 data-nosnippet>916</a>
+<a href=#917 id=917 data-nosnippet>917</a>                <span class="comment">// A component finished before shutdown was requested, which we treat as a failure of the topology.
+<a href=#918 id=918 data-nosnippet>918</a>                </span><span class="kw">_ </span>= running.wait_for_unexpected_finish() =&gt; {
+<a href=#919 id=919 data-nosnippet>919</a>                    <span class="macro">error!</span>(<span class="string">"Topology component unexpectedly finished. Shutting down..."</span>);
+<a href=#920 id=920 data-nosnippet>920</a>                    topology_failed = <span class="bool-val">true</span>;
 <a href=#921 id=921 data-nosnippet>921</a>                },
 <a href=#922 id=922 data-nosnippet>922</a>            }
 <a href=#923 id=923 data-nosnippet>923</a>

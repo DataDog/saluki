@@ -27,7 +27,7 @@
 <a href=#27 id=27 data-nosnippet>27</a><span class="kw">use </span>saluki_metrics::MetricsBuilder;
 <a href=#28 id=28 data-nosnippet>28</a><span class="kw">use </span>serde::Deserialize;
 <a href=#29 id=29 data-nosnippet>29</a><span class="kw">use </span>serde_json::{Map <span class="kw">as </span>JsonMap, Number <span class="kw">as </span>JsonNumber, Value <span class="kw">as </span>JsonValue};
-<a href=#30 id=30 data-nosnippet>30</a><span class="kw">use </span>tokio::{select, sync::mpsc, time::sleep};
+<a href=#30 id=30 data-nosnippet>30</a><span class="kw">use </span>tokio::{pin, select, sync::mpsc, time::sleep};
 <a href=#31 id=31 data-nosnippet>31</a><span class="kw">use </span>tracing::{debug, error, warn};
 <a href=#32 id=32 data-nosnippet>32</a>
 <a href=#33 id=33 data-nosnippet>33</a><span class="kw">use </span><span class="kw">crate</span>::common::datadog::{
@@ -487,7 +487,7 @@
 <a href=#487 id=487 data-nosnippet>487</a>) -&gt; <span class="prelude-ty">Result</span>&lt;(), GenericError&gt; {
 <a href=#488 id=488 data-nosnippet>488</a>    <span class="kw">let </span><span class="kw-2">mut </span>pending_flush = <span class="bool-val">false</span>;
 <a href=#489 id=489 data-nosnippet>489</a>    <span class="kw">let </span>pending_flush_timeout = sleep(flush_timeout);
-<a href=#490 id=490 data-nosnippet>490</a>    <span class="macro">tokio::pin!</span>(pending_flush_timeout);
+<a href=#490 id=490 data-nosnippet>490</a>    <span class="macro">pin!</span>(pending_flush_timeout);
 <a href=#491 id=491 data-nosnippet>491</a>
 <a href=#492 id=492 data-nosnippet>492</a>    <span class="kw">loop </span>{
 <a href=#493 id=493 data-nosnippet>493</a>        <span class="macro">select!</span> {
