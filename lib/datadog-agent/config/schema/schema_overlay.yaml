@@ -1376,9 +1376,18 @@ inventory:
         config_registry_filename: forwarder.rs
 
   forwarder_requeue_buffer_size:
-    support: unknown
-    description: "In-memory re-queue buffer size"
+    support: none
     severity: low
+    planned: false
+    pipelines: [cross_cutting]
+    description: "In-memory re-queue buffer size"
+    documentation: |
+      ADP does not implement `forwarder_requeue_buffer_size`. The core Agent uses this setting to size a separate
+      count-bounded handoff channel from forwarder workers to the retry manager. ADP's endpoint I/O loop handles
+      send failures that need to be retried and owns the retry queue, so ADP does not need a separate queue for
+      worker-to-retry-manager communication. Those failures are re-enqueued into the low-priority retry queue, which
+      is bounded by payload bytes via `forwarder_retry_queue_payloads_max_size` and optional disk persistence settings.
+      See [#1755].
     issue: "#1755"
 
   forwarder_retry_queue_capacity_time_interval_sec:
