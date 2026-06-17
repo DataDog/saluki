@@ -337,6 +337,16 @@ pub struct DogStatsDConfiguration {
     #[serde(rename = "dogstatsd_stream_log_too_big", default)]
     stream_log_too_big: bool,
 
+    /// Whether ADP lowers DogStatsD parse-failure logs to debug level.
+    ///
+    /// When set to `true`, invalid metrics, events, and service checks still increment decode-failure telemetry, but
+    /// their parse-failure logs are emitted at debug level instead of warning level. Enable this to suppress noisy
+    /// parse-error logs from misbehaving clients.
+    ///
+    /// Defaults to `false`.
+    #[serde(rename = "dogstatsd_disable_verbose_logs", default)]
+    disable_verbose_logs: bool,
+
     /// Listener types that require DogStatsD messages to be newline-terminated.
     ///
     /// Valid values are `udp`, `uds`, and `named_pipe`. ADP accepts `named_pipe` for compatibility, but it has no effect
@@ -895,6 +905,7 @@ impl SourceBuilder for DogStatsDConfiguration {
             enabled_filter: enable_payloads_filter,
             origin_detection_enabled,
             stream_log_too_big: self.stream_log_too_big,
+            disable_verbose_logs: self.disable_verbose_logs,
             eol_required,
             additional_tags: self.additional_tags().into(),
             capture_entity_resolver: self.capture_entity_resolver.clone(),
@@ -945,6 +956,7 @@ pub struct DogStatsD {
     enabled_filter: EnablePayloadsFilter,
     origin_detection_enabled: bool,
     stream_log_too_big: bool,
+    disable_verbose_logs: bool,
     eol_required: EolRequired,
     additional_tags: Arc<[String]>,
     capture_entity_resolver: Option<Arc<dyn CaptureEntityResolver + Send + Sync>>,
@@ -960,6 +972,7 @@ struct ListenerContext {
     context_resolvers: ContextResolvers,
     origin_detection_enabled: bool,
     stream_log_too_big: bool,
+    disable_verbose_logs: bool,
     eol_required: EolRequired,
     additional_tags: Arc<[String]>,
     capture_entity_resolver: Option<Arc<dyn CaptureEntityResolver + Send + Sync>>,
@@ -976,6 +989,7 @@ struct HandlerContext {
     context_resolvers: ContextResolvers,
     origin_detection_enabled: bool,
     stream_log_too_big: bool,
+    disable_verbose_logs: bool,
     additional_tags: Arc<[String]>,
     capture_entity_resolver: Option<Arc<dyn CaptureEntityResolver + Send + Sync>>,
     traffic_capture: TrafficCapture,
@@ -1010,6 +1024,7 @@ impl Source for DogStatsD {
                 context_resolvers: self.context_resolvers.clone(),
                 origin_detection_enabled: self.origin_detection_enabled,
                 stream_log_too_big: self.stream_log_too_big,
+                disable_verbose_logs: self.disable_verbose_logs,
                 eol_required: self.eol_required,
                 additional_tags: self.additional_tags.clone(),
                 capture_entity_resolver: self.capture_entity_resolver.clone(),
@@ -1061,6 +1076,7 @@ async fn process_listener(
         context_resolvers,
         origin_detection_enabled,
         stream_log_too_big,
+        disable_verbose_logs,
         eol_required,
         additional_tags,
         capture_entity_resolver,
@@ -1103,6 +1119,7 @@ async fn process_listener(
                         context_resolvers: context_resolvers.clone(),
                         origin_detection_enabled,
                         stream_log_too_big,
+                        disable_verbose_logs,
                         additional_tags: additional_tags.clone(),
                         capture_entity_resolver: capture_entity_resolver.clone(),
                         traffic_capture: traffic_capture.clone(),
@@ -1155,6 +1172,7 @@ async fn drive_stream(
         mut context_resolvers,
         origin_detection_enabled,
         stream_log_too_big,
+        disable_verbose_logs,
         additional_tags,
         capture_entity_resolver,
         traffic_capture,
@@ -1263,8 +1281,7 @@ async fn drive_stream(
                                         continue
                                     },
                                     Err(e) => {
-                                        let frame_lossy_str = String::from_utf8_lossy(&frame);
-                                        warn!(%listen_addr, %peer_addr, frame = %frame_lossy_str, error = %e, "Failed to parse frame.");
+                                        log_parse_failure(disable_verbose_logs, &listen_addr, &peer_addr, &frame, &e);
                                     },
                                 }
                             }
@@ -1339,6 +1356,18 @@ fn should_warn_stream_log_too_big(listen_addr: &ListenAddress, error: &FramingEr
     stream_log_too_big
         && matches!(listen_addr, ListenAddress::Unix(_))
         && matches!(error, FramingError::InvalidFrame { .. })
+}
+
+fn log_parse_failure(
+    disable_verbose_logs: bool, listen_addr: &ListenAddress, peer_addr: &ConnectionAddress, frame: &[u8],
+    error: &ParseError,
+) {
+    let frame = String::from_utf8_lossy(frame);
+    if disable_verbose_logs {
+        debug!(%listen_addr, %peer_addr, %frame, %error, "Failed to parse frame.");
+    } else {
+        warn!(%listen_addr, %peer_addr, %frame, %error, "Failed to parse frame.");
+    }
 }
 
 fn capture_uds_traffic(
@@ -1911,6 +1940,18 @@ mod tests {
     fn stream_log_too_big_from_config() {
         let config = deser_config(r#"{"dogstatsd_stream_log_too_big": true}"#);
         assert!(config.stream_log_too_big);
+    }
+
+    #[test]
+    fn disable_verbose_logs_defaults_to_false() {
+        let config = deser_config("{}");
+        assert!(!config.disable_verbose_logs);
+    }
+
+    #[test]
+    fn disable_verbose_logs_from_config() {
+        let config = deser_config(r#"{"dogstatsd_disable_verbose_logs": true}"#);
+        assert!(config.disable_verbose_logs);
     }
 
     #[test]

@@ -5,17 +5,6 @@ use super::schema;
 use super::*;
 
 crate::declare_annotations! {
-    /// `dogstatsd_disable_verbose_logs`-Suppress noisy parse error logs
-    DOGSTATSD_DISABLE_VERBOSE_LOGS = SalukiAnnotation {
-        schema: &schema::DOGSTATSD_DISABLE_VERBOSE_LOGS,
-        support_level: SupportLevel::Incompatible(Severity::Medium),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
-    };
     /// `dogstatsd_pipe_name`-Windows named pipe path
     DOGSTATSD_PIPE_NAME = SalukiAnnotation {
         schema: &schema::DOGSTATSD_PIPE_NAME,
