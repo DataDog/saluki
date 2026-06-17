@@ -30,7 +30,7 @@ use saluki_context::{
 };
 use saluki_error::GenericError;
 use tokio::{
-    pin, select,
+    select,
     sync::broadcast::{self, error::RecvError, Receiver},
 };
 use tokio_util::sync::ReusableBoxFuture;
@@ -694,11 +694,13 @@ impl Supervisable for MetricsFlusherWorker {
 
     async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
         Ok(Box::pin(async move {
-            pin!(process_shutdown);
-
             select! {
                 _ = process_shutdown => {},
+<<<<<<< HEAD
                 _ = flush_metrics() => {},
+=======
+                _ = flush_metrics(FLUSH_INTERVAL) => {},
+>>>>>>> fb4ea4a74c (chore(core): clean up a bunch of code smells around supervisable worker implementations (#1860))
             }
 
             Ok(())
