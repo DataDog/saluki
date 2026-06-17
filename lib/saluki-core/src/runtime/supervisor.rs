@@ -1343,6 +1343,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn permanent_child_is_restarted_on_clean_exit() {
+        // A permanent worker that completes cleanly must still be restarted -- this is what distinguishes
+        // `Permanent` from `Transient`, which is left stopped after a clean exit.
+        let permanent = MockWorker::completing("permanent-worker", Duration::from_millis(50));
+        let permanent_count = permanent.start_count();
+
+        let mut sup = Supervisor::new("test-sup").unwrap().with_restart_strategy(
+            RestartStrategy::one_to_one().with_intensity_and_period(20, Duration::from_secs(10)),
+        );
+        // Added with the default restart policy, which is `Permanent`.
+        sup.add_worker(permanent);
+
+        let (tx, handle) = run_supervisor_with_trigger(sup).await;
+
+        sleep(Duration::from_millis(300)).await;
+        let _ = tx.send(());
+
+        let result = timeout(Duration::from_secs(2), handle).await.unwrap().unwrap();
+        assert!(result.is_ok());
+        assert!(
+            permanent_count.load(Ordering::SeqCst) >= 2,
+            "permanent worker must be restarted even after a clean exit"
+        );
+    }
+
+    #[tokio::test]
     async fn temporary_failures_do_not_consume_restart_intensity() {
         // With intensity=1, two *restartable* failures within the period would shut the supervisor down. Here several
         // temporary workers all fail quickly. Because temporary exits aren't eligible for restart, they must not consume
