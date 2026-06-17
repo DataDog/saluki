@@ -437,6 +437,12 @@ impl ForwarderConfiguration {
         self.allow_arbitrary_tags
     }
 
+    /// Overrides whether outbound requests should signal support for arbitrary tag values.
+    pub fn with_allow_arbitrary_tags(mut self, allow_arbitrary_tags: bool) -> Self {
+        self.allow_arbitrary_tags = allow_arbitrary_tags;
+        self
+    }
+
     /// Returns the API key validation interval.
     pub const fn api_key_validation_interval(&self) -> Duration {
         Duration::from_mins(self.api_key_validation_interval_mins as u64)

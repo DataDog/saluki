@@ -34,16 +34,6 @@ impl AutoscalingFailoverConfiguration {
     pub fn metrics(&self) -> &[String] {
         &self.metrics
     }
-
-    /// Updates whether the autoscaling failover branch is enabled.
-    pub(crate) const fn set_enabled(&mut self, enabled: bool) {
-        self.enabled = enabled;
-    }
-
-    /// Updates the metric name allowlist.
-    pub(crate) fn set_metrics(&mut self, metrics: Vec<String>) {
-        self.metrics = metrics;
-    }
 }
 
 #[cfg(test)]

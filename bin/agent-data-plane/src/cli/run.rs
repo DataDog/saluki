@@ -543,7 +543,7 @@ fn add_autoscaling_failover_metrics_pipeline_to_blueprint(
         return Ok(());
     }
 
-    let af_gateway_config = AutoscalingFailoverGatewayConfiguration::new(af_config, config.clone());
+    let af_gateway_config = AutoscalingFailoverGatewayConfiguration::new(af_config);
     let af_metrics_config = DatadogMetricsConfiguration::from_configuration(config)
         .error_context("Failed to configure autoscaling failover metrics encoder.")?;
     let cluster_agent_forwarder_config =

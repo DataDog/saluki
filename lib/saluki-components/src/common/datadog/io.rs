@@ -108,7 +108,6 @@ pub struct TransactionForwarder<B> {
     client: HttpClient,
     endpoints: Vec<RoutableEndpoint>,
     endpoint_request_mapper_factory: EndpointRequestMapperFactory<B>,
-    add_allow_arbitrary_tags_header: bool,
     _marker: std::marker::PhantomData<B>,
 }
 
@@ -181,7 +180,6 @@ where
     where
         F: Fn(&Uri) -> Option<MetaString> + Send + Sync + 'static,
     {
-        let add_allow_arbitrary_tags_header = config.allow_arbitrary_tags();
         Self::from_config_with_endpoint_request_mapper(
             context,
             config,
@@ -190,7 +188,6 @@ where
             telemetry,
             metrics_builder,
             Arc::new(default_endpoint_request_mapper::<B>),
-            add_allow_arbitrary_tags_header,
         )
     }
 
@@ -198,7 +195,7 @@ where
     pub(crate) fn from_config_with_endpoint_request_mapper<F>(
         context: ComponentContext, config: ForwarderConfiguration, live_config: Option<GenericConfiguration>,
         endpoint_name: F, telemetry: ComponentTelemetry, metrics_builder: MetricsBuilder,
-        endpoint_request_mapper_factory: EndpointRequestMapperFactory<B>, add_allow_arbitrary_tags_header: bool,
+        endpoint_request_mapper_factory: EndpointRequestMapperFactory<B>,
     ) -> Result<Self, GenericError>
     where
         F: Fn(&Uri) -> Option<MetaString> + Send + Sync + 'static,
@@ -235,7 +232,6 @@ where
             client,
             endpoints,
             endpoint_request_mapper_factory,
-            add_allow_arbitrary_tags_header,
             _marker: std::marker::PhantomData,
         })
     }
@@ -258,7 +254,6 @@ where
             client,
             endpoints,
             endpoint_request_mapper_factory,
-            add_allow_arbitrary_tags_header,
             _marker,
         } = self;
 
@@ -275,7 +270,6 @@ where
                 metrics_builder,
                 endpoints,
                 endpoint_request_mapper_factory,
-                add_allow_arbitrary_tags_header,
             ),
         );
 
@@ -302,7 +296,6 @@ async fn run_io_loop<B>(
     context: ComponentContext, config: ForwarderConfiguration, live_config: Option<GenericConfiguration>,
     service: HttpClient, telemetry: ComponentTelemetry, metrics_builder: MetricsBuilder,
     resolved_endpoints: Vec<RoutableEndpoint>, endpoint_request_mapper_factory: EndpointRequestMapperFactory<B>,
-    add_allow_arbitrary_tags_header: bool,
 ) where
     B: Body + Buf + Clone + Send + Sync + 'static,
     B::Data: Send,
@@ -341,7 +334,6 @@ async fn run_io_loop<B>(
                 txnq_telemetry,
                 resolved_endpoint,
                 endpoint_request_mapper_factory.clone(),
-                add_allow_arbitrary_tags_header,
             ),
         );
 
@@ -420,7 +412,7 @@ async fn run_endpoint_io_loop<B>(
     mut txns_rx: mpsc::Receiver<Transaction<B>>, task_barrier: Arc<Barrier>, context: ComponentContext,
     config: ForwarderConfiguration, live_config: Option<GenericConfiguration>, service: HttpClient,
     telemetry: ComponentTelemetry, txnq_telemetry: TransactionQueueTelemetry, endpoint: ResolvedEndpoint,
-    endpoint_request_mapper_factory: EndpointRequestMapperFactory<B>, add_allow_arbitrary_tags_header: bool,
+    endpoint_request_mapper_factory: EndpointRequestMapperFactory<B>,
 ) where
     B: Body + Buf + Clone + Send + Sync + 'static,
     B::Data: Send,
@@ -456,7 +448,7 @@ async fn run_endpoint_io_loop<B>(
             }
         })
         // Signal backend support for arbitrary tag values when configured.
-        .map_request(with_allow_arbitrary_tags(add_allow_arbitrary_tags_header))
+        .map_request(with_allow_arbitrary_tags(config.allow_arbitrary_tags()))
         // Set the User-Agent and DD-Agent-Version headers indicating the version of the data plane sending the request.
         .map_request(with_version_info())
         .concurrency_limit(config.endpoint_concurrency())

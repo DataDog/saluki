@@ -48,7 +48,7 @@ impl ClusterAgentForwarderConfiguration {
         config: &GenericConfiguration, endpoint_url: String, auth_token: String,
     ) -> Result<Self, GenericError> {
         let auth_header_value = bearer_auth_header_value(&auth_token)?;
-        let mut forwarder_config = ForwarderConfiguration::from_configuration(config)?;
+        let mut forwarder_config = ForwarderConfiguration::from_configuration(config)?.with_allow_arbitrary_tags(false);
 
         let endpoint = forwarder_config.endpoint_mut();
         endpoint.clear_additional_endpoints();
@@ -81,7 +81,6 @@ impl ForwarderBuilder for ClusterAgentForwarderConfiguration {
             telemetry.clone(),
             metrics_builder,
             endpoint_request_mapper_factory,
-            false,
         )?;
 
         Ok(Box::new(ClusterAgentForwarder { forwarder }))
