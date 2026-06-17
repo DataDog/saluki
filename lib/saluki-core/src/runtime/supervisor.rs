@@ -2,7 +2,7 @@ use std::{
     future::Future,
     pin::Pin,
     sync::{
-        atomic::{AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         Arc, Mutex,
     },
     time::Duration,
@@ -15,10 +15,7 @@ use saluki_error::GenericError;
 use snafu::{OptionExt as _, Snafu};
 use tokio::{
     pin, select,
-    sync::{
-        mpsc::{self, UnboundedSender},
-        oneshot, OwnedSemaphorePermit, Semaphore,
-    },
+    sync::{oneshot, Notify, OwnedSemaphorePermit, Semaphore},
 };
 use tracing::{debug, error, warn};
 
@@ -499,32 +496,97 @@ pub enum SpawnError {
         max: usize,
     },
 
-    /// The supervisor isn't currently running: it either hasn't started yet, or has shut down.
-    #[snafu(display("supervisor is not running"))]
+    /// The supervisor has shut down for good and will not accept further spawns.
+    ///
+    /// This is _not_ returned for spawning before the supervisor starts or between restarts -- those spawns are queued
+    /// and handed to the supervisor once it is running. It is returned only once the supervisor has terminated.
+    #[snafu(display("supervisor is gone"))]
     SupervisorGone,
 }
 
-/// A command sent from a [`SupervisorHandle`] to a running [`Supervisor`].
-enum DynCommand {
-    /// Spawn a new dynamic child.
-    Spawn {
-        id: u64,
-        spec: SupervisedChild,
-        config: ChildConfig,
-        permit: Option<OwnedSemaphorePermit>,
-        ack: Option<oneshot::Sender<()>>,
-    },
+/// A dynamic spawn queued by a [`SupervisorHandle`] for the supervisor to process.
+struct PendingSpawn {
+    id: u64,
+    spec: SupervisedChild,
+    config: ChildConfig,
+    permit: Option<OwnedSemaphorePermit>,
+    ack: Option<oneshot::Sender<()>>,
 }
 
-/// A handle for spawning dynamic children on a running [`Supervisor`].
+/// The queue of pending dynamic spawns, shared between a [`Supervisor`] and its [`SupervisorHandle`]s.
 ///
-/// Obtained from [`Supervisor::handle`] before the supervisor runs. Handles are cheap to clone and can be shared across
-/// tasks; spawning is non-blocking. A handle keeps working across supervisor restarts -- it always routes to the
-/// currently running supervisor -- and returns [`SpawnError::SupervisorGone`] when none is running.
+/// The queue is `Some` while the supervisor can still accept spawns -- including before its first run and between
+/// restarts -- and is taken (`None`) only when the supervisor shuts down for good. A successful [`push`](Self::push)
+/// therefore guarantees the spawn will be handed to the supervisor and started (even if only to be shut down again
+/// immediately); once the queue is closed, pushes are rejected so the caller observes [`SpawnError::SupervisorGone`].
+struct SpawnQueue {
+    pending: Mutex<Option<Vec<PendingSpawn>>>,
+    notify: Notify,
+}
+
+impl SpawnQueue {
+    fn new() -> Self {
+        Self {
+            pending: Mutex::new(Some(Vec::new())),
+            notify: Notify::new(),
+        }
+    }
+
+    /// Queues a spawn and wakes the supervisor, or returns [`SpawnError::SupervisorGone`] if the queue is closed.
+    ///
+    /// On rejection the spawn is dropped here, which releases its capacity permit and drops its `ack` channel so a
+    /// `spawn_confirmed` caller observes the failure.
+    fn push(&self, spawn: PendingSpawn) -> Result<(), SpawnError> {
+        let mut guard = self.pending.lock().unwrap();
+        match guard.as_mut() {
+            Some(pending) => {
+                pending.push(spawn);
+                drop(guard);
+                self.notify.notify_one();
+                Ok(())
+            }
+            None => Err(SpawnError::SupervisorGone),
+        }
+    }
+
+    /// Removes and returns all currently queued spawns, leaving the queue open.
+    fn drain(&self) -> Vec<PendingSpawn> {
+        match self.pending.lock().unwrap().as_mut() {
+            Some(pending) => std::mem::take(pending),
+            None => Vec::new(),
+        }
+    }
+
+    /// Closes the queue -- rejecting further pushes -- and returns any spawns still queued.
+    fn close(&self) -> Vec<PendingSpawn> {
+        self.pending.lock().unwrap().take().unwrap_or_default()
+    }
+
+    /// Reopens the queue if a previous run closed it, preserving anything currently queued.
+    fn reopen(&self) {
+        let guard = &mut *self.pending.lock().unwrap();
+        if guard.is_none() {
+            *guard = Some(Vec::new());
+        }
+    }
+
+    /// Waits until a spawn is queued (returning immediately if one was queued since the last wait).
+    async fn notified(&self) {
+        self.notify.notified().await;
+    }
+}
+
+/// A handle for spawning dynamic children on a [`Supervisor`].
+///
+/// Obtained from [`Supervisor::handle`], typically before the supervisor runs. Handles are cheap to clone and can be
+/// shared across tasks; spawning is non-blocking. A spawn is queued and handed to the supervisor whenever it is next
+/// running, so spawning before startup (or between restarts) succeeds and the child starts once the supervisor is up.
+/// Only once the supervisor has shut down for good do spawns return [`SpawnError::SupervisorGone`].
 #[derive(Clone)]
 pub struct SupervisorHandle {
     name: Arc<str>,
-    current_tx: Arc<Mutex<Option<UnboundedSender<DynCommand>>>>,
+    spawn_queue: Arc<SpawnQueue>,
+    running: Arc<AtomicBool>,
     id_counter: Arc<AtomicU64>,
     active: Arc<AtomicUsize>,
     permits: Option<Arc<Semaphore>>,
@@ -564,7 +626,7 @@ impl SupervisorHandle {
         let permit = self.acquire_permit()?;
         let id = self.id_counter.fetch_add(1, Ordering::Relaxed);
         let (spec, config) = spec.into_worker_parts();
-        self.send(DynCommand::Spawn {
+        self.spawn_queue.push(PendingSpawn {
             id,
             spec,
             config,
@@ -586,7 +648,7 @@ impl SupervisorHandle {
             .with_restart_type(RestartType::Temporary)
             .into_worker_parts();
         let (ack_tx, ack_rx) = oneshot::channel();
-        self.send(DynCommand::Spawn {
+        self.spawn_queue.push(PendingSpawn {
             id,
             spec,
             config,
@@ -599,7 +661,7 @@ impl SupervisorHandle {
 
     /// Returns whether the supervisor is currently running.
     pub fn is_running(&self) -> bool {
-        self.current_tx.lock().unwrap().is_some()
+        self.running.load(Ordering::Relaxed)
     }
 
     /// Returns the number of dynamic children currently running under the supervisor.
@@ -618,16 +680,6 @@ impl SupervisorHandle {
                     })
             }
             None => Ok(None),
-        }
-    }
-
-    fn send(&self, command: DynCommand) -> Result<(), SpawnError> {
-        // Holding the lock across the synchronous, non-blocking send is fine; if it fails, the command -- and any
-        // permit it carries -- is dropped, freeing the slot.
-        let guard = self.current_tx.lock().unwrap();
-        match guard.as_ref() {
-            Some(tx) => tx.send(command).map_err(|_| SpawnError::SupervisorGone),
-            None => Err(SpawnError::SupervisorGone),
         }
     }
 }
@@ -666,10 +718,12 @@ pub struct Supervisor {
     shutdown_mode: ShutdownMode,
     runtime_mode: RuntimeMode,
     max_dynamic_children: Option<usize>,
-    // Shared across clones (a nested supervisor is cloned each time it runs) and across all handles. The currently
-    // running supervisor publishes its command sender here so handles reach the live run; it's cleared when no run is
-    // active.
-    current_tx: Arc<Mutex<Option<UnboundedSender<DynCommand>>>>,
+    // Shared across clones (a nested supervisor is cloned each time it runs) and across all handles. Handles queue
+    // dynamic spawns here; the running supervisor drains them. Stays open (`Some`) until the supervisor shuts down for
+    // good.
+    spawn_queue: Arc<SpawnQueue>,
+    // Whether a run is currently active, shared with handles to back `is_running`.
+    running: Arc<AtomicBool>,
     id_counter: Arc<AtomicU64>,
     // Number of dynamic children currently running, shared with handles so it can be surfaced as a gauge.
     active: Arc<AtomicUsize>,
@@ -696,7 +750,8 @@ impl Supervisor {
             shutdown_mode: ShutdownMode::default(),
             runtime_mode: RuntimeMode::default(),
             max_dynamic_children: None,
-            current_tx: Arc::new(Mutex::new(None)),
+            spawn_queue: Arc::new(SpawnQueue::new()),
+            running: Arc::new(AtomicBool::new(false)),
             id_counter: Arc::new(AtomicU64::new(0)),
             active: Arc::new(AtomicUsize::new(0)),
             permits: None,
@@ -742,11 +797,13 @@ impl Supervisor {
     /// Returns a handle for spawning dynamic children on this supervisor while it runs.
     ///
     /// The handle can be created before the supervisor starts and cloned freely. Spawns made before it is running, or
-    /// after it stops, return [`SpawnError::SupervisorGone`].
+    /// between restarts, are queued and handed to the supervisor once it is up; only after it has shut down for good do
+    /// they return [`SpawnError::SupervisorGone`].
     pub fn handle(&self) -> SupervisorHandle {
         SupervisorHandle {
             name: Arc::clone(&self.supervisor_id),
-            current_tx: Arc::clone(&self.current_tx),
+            spawn_queue: Arc::clone(&self.spawn_queue),
+            running: Arc::clone(&self.running),
             id_counter: Arc::clone(&self.id_counter),
             active: Arc::clone(&self.active),
             permits: self.permits.clone(),
@@ -838,23 +895,65 @@ impl Supervisor {
         Ok(())
     }
 
+    /// Spawns each queued dynamic child into the running supervisor's worker set and roster.
+    fn spawn_pending(
+        &self, spawns: Vec<PendingSpawn>, worker_state: &mut WorkerState, children: &mut FastHashMap<u64, ChildEntry>,
+        permits: &mut FastHashMap<u64, OwnedSemaphorePermit>, significant_remaining: &mut usize,
+    ) {
+        for PendingSpawn {
+            id,
+            spec,
+            config,
+            permit,
+            ack,
+        } in spawns
+        {
+            let entry = ChildEntry {
+                spec,
+                config,
+                dynamic: true,
+            };
+            match worker_state.add_worker(id, &entry.spec) {
+                Ok(()) => {
+                    if config.significant {
+                        *significant_remaining += 1;
+                    }
+                    if let Some(permit) = permit {
+                        permits.insert(id, permit);
+                    }
+                    self.active.fetch_add(1, Ordering::Relaxed);
+                    children.insert(id, entry);
+                    if let Some(ack) = ack {
+                        let _ = ack.send(());
+                    }
+                }
+                Err(e) => {
+                    // Registration failed (e.g. an invalid name). Dropping the permit and ack frees the slot and lets a
+                    // `spawn_confirmed` caller observe the failure.
+                    error!(supervisor_id = %self.supervisor_id, error = %e, "Failed to spawn dynamic child.");
+                }
+            }
+        }
+    }
+
     async fn run_inner(&self, process: Process, process_shutdown: ShutdownHandle) -> Result<(), SupervisorError> {
-        // Publish a fresh command channel so handles can spawn dynamic children into this run, and re-point any existing
-        // handles at it (important when a nested supervisor is restarted: the old channel is replaced wholesale).
-        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
-        *self.current_tx.lock().unwrap() = Some(cmd_tx);
+        // Reopen the spawn queue if a previous run closed it (e.g. across a restart), preserving anything queued before
+        // this run starts, and mark the run active so handles observe us as running.
+        self.spawn_queue.reopen();
+        self.running.store(true, Ordering::Relaxed);
 
-        let result = self.supervise(process, process_shutdown, cmd_rx).await;
+        let result = self.supervise(process, process_shutdown).await;
 
-        // The run is over: stop routing handles to it, and reset the dynamic-children gauge.
-        *self.current_tx.lock().unwrap() = None;
+        // The run is over. Close the queue so later spawns observe `SupervisorGone`: a clean shutdown already closed it
+        // after draining, and this also covers abnormal exits (dropping any spawn that raced in as we were failing).
+        // Then clear the run state and reset the dynamic-children gauge.
+        self.spawn_queue.close();
+        self.running.store(false, Ordering::Relaxed);
         self.active.store(0, Ordering::Relaxed);
         result
     }
 
-    async fn supervise(
-        &self, process: Process, process_shutdown: ShutdownHandle, mut cmd_rx: mpsc::UnboundedReceiver<DynCommand>,
-    ) -> Result<(), SupervisorError> {
+    async fn supervise(&self, process: Process, process_shutdown: ShutdownHandle) -> Result<(), SupervisorError> {
         let mut restart_state = RestartState::new(self.restart_strategy);
         let mut worker_state = WorkerState::new(process, self.shutdown_mode);
 
@@ -875,45 +974,38 @@ impl Supervisor {
         pin!(process_shutdown);
 
         loop {
+            // Spawn anything queued since we last looked, including spawns made before this run started. The
+            // `notified()` arm below wakes us when new spawns are queued.
+            self.spawn_pending(
+                self.spawn_queue.drain(),
+                &mut worker_state,
+                &mut children,
+                &mut permits,
+                &mut significant_remaining,
+            );
+
             select! {
                 // Shutdown takes priority so a flood of dynamic spawns can't starve it.
                 biased;
 
-                // Shutdown has been triggered. Propagate it to all child processes and wait for them to exit.
+                // Shutdown has been triggered. Stop accepting new spawns but honor any already queued by spawning them
+                // (they then shut down with the group), then propagate shutdown to all children and wait for them to
+                // exit.
                 _ = &mut process_shutdown => {
                     debug!(supervisor_id = %self.supervisor_id, "Shutdown triggered, shutting down all child processes.");
+                    self.spawn_pending(
+                        self.spawn_queue.close(),
+                        &mut worker_state,
+                        &mut children,
+                        &mut permits,
+                        &mut significant_remaining,
+                    );
                     worker_state.shutdown_workers().await;
                     break;
                 }
 
-                // A handle asked us to spawn a dynamic child. The run loop holds a command sender for its whole
-                // lifetime, so `recv` never returns `None` here.
-                command = cmd_rx.recv() => match command {
-                    Some(DynCommand::Spawn { id, spec, config, permit, ack }) => {
-                        let entry = ChildEntry { spec, config, dynamic: true };
-                        match worker_state.add_worker(id, &entry.spec) {
-                            Ok(()) => {
-                                if config.significant {
-                                    significant_remaining += 1;
-                                }
-                                if let Some(permit) = permit {
-                                    permits.insert(id, permit);
-                                }
-                                self.active.fetch_add(1, Ordering::Relaxed);
-                                children.insert(id, entry);
-                                if let Some(ack) = ack {
-                                    let _ = ack.send(());
-                                }
-                            }
-                            Err(e) => {
-                                // Registration failed (e.g. an invalid name). Dropping the permit and ack frees the slot
-                                // and lets a `spawn_confirmed` caller observe the failure.
-                                error!(supervisor_id = %self.supervisor_id, error = %e, "Failed to spawn dynamic child.");
-                            }
-                        }
-                    }
-                    None => unreachable!("the run loop holds a command sender, so the channel cannot close"),
-                },
+                // A handle queued a dynamic spawn; wake and drain it at the top of the loop.
+                _ = self.spawn_queue.notified() => {}
 
                 (child_id, worker_result) = worker_state.wait_for_next_worker() => {
                     // Pull out what we need from the roster before we mutate it.
@@ -1106,7 +1198,8 @@ impl Supervisor {
             shutdown_mode: self.shutdown_mode,
             runtime_mode: self.runtime_mode.clone(),
             max_dynamic_children: self.max_dynamic_children,
-            current_tx: Arc::clone(&self.current_tx),
+            spawn_queue: Arc::clone(&self.spawn_queue),
+            running: Arc::clone(&self.running),
             id_counter: Arc::clone(&self.id_counter),
             active: Arc::clone(&self.active),
             permits: self.permits.clone(),
@@ -2144,24 +2237,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dynamic_spawn_fails_before_start_and_after_shutdown() {
+    async fn dynamic_spawn_queues_before_start_and_fails_after_shutdown() {
         let sup = Supervisor::new("dyn-sup").unwrap();
         let handle = sup.handle();
 
-        // Before the supervisor is running.
+        // Before the supervisor is running, a spawn is queued (not rejected) and runs once the supervisor starts.
         assert!(!handle.is_running());
-        let err = handle.spawn(MockWorker::long_running("c")).unwrap_err();
-        assert!(matches!(err, SpawnError::SupervisorGone));
+        let worker = MockWorker::long_running("queued-before-start");
+        let started = worker.start_count();
+        handle.spawn(worker).unwrap();
 
         let (tx, run) = run_supervisor_with_trigger(sup).await;
         wait_running(&handle).await;
+        wait_until(|| started.load(Ordering::SeqCst) == 1).await;
+
         tx.send(()).unwrap();
         let result = timeout(Duration::from_secs(2), run).await.unwrap().unwrap();
         assert!(result.is_ok());
 
-        // After shutdown, the handle is invalidated.
+        // Once the supervisor has shut down for good, the handle is gone and spawns are rejected.
         wait_until(|| !handle.is_running()).await;
-        let err = handle.spawn(MockWorker::long_running("c")).unwrap_err();
+        let err = handle.spawn(MockWorker::long_running("after-shutdown")).unwrap_err();
         assert!(matches!(err, SpawnError::SupervisorGone));
     }
 
