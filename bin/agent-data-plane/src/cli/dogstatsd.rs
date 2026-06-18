@@ -557,6 +557,7 @@ mod tests {
     fn bootstrap_with_socket(socket: Option<&str>) -> BootstrapConfiguration {
         let mut bootstrap = BootstrapConfiguration::default();
         bootstrap.datadog.local_api = LocalApiBootstrap {
+            api_listen_address: None,
             secure_api_listen_address: None,
             dogstatsd_socket: socket.map(|s| s.to_string()),
         };

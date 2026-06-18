@@ -85,11 +85,21 @@ impl DatadogBootstrap {
 /// remote-agent registration reports as its gRPC callback endpoint, and the DogStatsD UDS path the
 /// `dogstatsd replay` CLI sends to. They are local decisions, so they belong in the bootstrap
 /// allowlist rather than waiting for the runtime [`SalukiConfiguration`](crate::SalukiConfiguration).
+///
+/// In [`RuntimeAuthority::AgentStream`] mode these addresses are also applied to the translated
+/// control slice after the stream snapshot is received, because the stream snapshot from the Core
+/// Agent does not include ADP-specific listen addresses (they are set via framework-injected
+/// `DD_DATA_PLANE__*` env vars that are local to this process).
 #[derive(Clone, Debug, Default)]
 pub struct LocalApiBootstrap {
+    /// The unprivileged API listen address (`data_plane.api_listen_address`).
+    ///
+    /// Defaults to unset; callers fall back to the serde default `tcp://0.0.0.0:5100`.
+    pub api_listen_address: Option<String>,
+
     /// The privileged ("secure") API listen address (`data_plane.secure_api_listen_address`).
     ///
-    /// Defaults to unset; callers fall back to the historical `tcp://0.0.0.0:5101` default.
+    /// Defaults to unset; callers fall back to the serde default `tcp://0.0.0.0:5101`.
     pub secure_api_listen_address: Option<String>,
 
     /// The DogStatsD UDS socket path (`dogstatsd_socket`).

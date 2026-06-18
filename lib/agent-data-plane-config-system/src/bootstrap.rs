@@ -58,9 +58,16 @@ pub(crate) struct LoadedSources {
     /// The raw `data_plane.standalone_mode` value read at bootstrap time.
     ///
     /// `standalone_mode` is not in the Datadog Agent core schema, so it cannot go through the
-    /// Datadog witness. It is threaded through here so that [`start_local`](crate::system) can
-    /// apply it to `control.standalone_mode` after translation.
+    /// Datadog witness. It is threaded through here so that both `start_local` and `start_stream`
+    /// can apply it to `control.standalone_mode` after translation.
     pub standalone_mode: bool,
+
+    /// The raw `data_plane.otlp.enabled` value read at bootstrap time.
+    ///
+    /// `data_plane.otlp.enabled` is not in the Datadog Agent core schema (excluded from the
+    /// schema overlay), so it cannot go through the Datadog witness. It is threaded through here
+    /// so that both `start_local` and `start_stream` can apply it to `control.otlp.enabled`.
+    pub otlp_enabled: bool,
 }
 
 /// Reads both local sources once and parses the typed slices the lifecycle needs.
@@ -132,6 +139,9 @@ pub(crate) fn load_local_sources(
 
     // Local API/CLI decisions read from nested `data_plane.*` keys (and a top-level key). These are
     // read with the dotted accessor because the typed flatten path does not resolve nested keys.
+    let api_listen_address = datadog_generic
+        .try_get_typed::<String>("data_plane.api_listen_address")
+        .map_err(|e| generic_error!("Failed to read data_plane.api_listen_address: {}", e))?;
     let secure_api_listen_address = datadog_generic
         .try_get_typed::<String>("data_plane.secure_api_listen_address")
         .map_err(|e| generic_error!("Failed to read data_plane.secure_api_listen_address: {}", e))?;
@@ -139,9 +149,15 @@ pub(crate) fn load_local_sources(
         .try_get_typed::<String>("dogstatsd_socket")
         .map_err(|e| generic_error!("Failed to read dogstatsd_socket: {}", e))?;
     let local_api = LocalApiBootstrap {
+        api_listen_address,
         secure_api_listen_address,
         dogstatsd_socket,
     };
+
+    let otlp_enabled = datadog_generic
+        .try_get_typed::<bool>("data_plane.otlp.enabled")
+        .map_err(|e| generic_error!("Failed to read data_plane.otlp.enabled: {}", e))?
+        .unwrap_or(false);
 
     // --- Saluki source: saluki.yaml / SALUKI_*, plain (no Datadog aliases/remapper). ---
     let mut saluki_loader = ConfigurationLoader::default();
@@ -173,6 +189,7 @@ pub(crate) fn load_local_sources(
         datadog_snapshot,
         authority,
         standalone_mode,
+        otlp_enabled,
     })
 }
 

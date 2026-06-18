@@ -39,9 +39,10 @@ use datadog_agent_config::DatadogConfiguration;
 use saluki_common::scrubber::default_scrubber;
 use saluki_config_tools::dynamic::ConfigUpdate;
 use saluki_error::{generic_error, GenericError};
+use saluki_io::net::ListenAddress;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::bootstrap::{load_local_sources, LoadedSources};
 use crate::datadog_agent::{
@@ -149,11 +150,14 @@ impl LoadedConfigurationSystem {
             datadog_snapshot,
             authority,
             standalone_mode,
+            otlp_enabled,
         } = self.sources;
 
         match authority {
-            RuntimeAuthority::LocalSnapshot => start_local(saluki_only, datadog_snapshot, standalone_mode).await,
-            RuntimeAuthority::AgentStream => start_stream(bootstrap, saluki_only, registration).await,
+            RuntimeAuthority::LocalSnapshot => {
+                start_local(saluki_only, datadog_snapshot, standalone_mode, otlp_enabled).await
+            }
+            RuntimeAuthority::AgentStream => start_stream(bootstrap, saluki_only, registration, otlp_enabled).await,
         }
     }
 }
@@ -181,15 +185,17 @@ fn assemble(
 /// Starts the runtime in local-snapshot mode (no Agent connection).
 async fn start_local(
     saluki_only: SalukiOnlyConfiguration, datadog_snapshot: serde_json::Value, standalone_mode: bool,
+    otlp_enabled: bool,
 ) -> Result<StartedConfigurationSystem, GenericError> {
     let datadog: DatadogConfiguration = serde_json::from_value(datadog_snapshot.clone())
         .map_err(|e| generic_error!("Failed to parse the local Datadog snapshot at startup: {}", e))?;
     let mut initial = translate(&saluki_only, &datadog)
         .map_err(|e| generic_error!("Failed to translate the local Datadog snapshot at startup: {}", e))?;
 
-    // standalone_mode is not in the Datadog core schema so the witness cannot set it.
-    // Thread the bootstrap-time value through so the runtime control slice reflects it.
+    // standalone_mode and otlp_enabled are not in the Datadog core schema so the witness cannot
+    // set them. Thread the bootstrap-time values through so the runtime control slice reflects them.
     initial.control.standalone_mode = standalone_mode;
+    initial.control.otlp.enabled = otlp_enabled;
 
     // The `saluki-env` provider layer reads the runtime Datadog source map; in local mode that is
     // the retained local snapshot.
@@ -217,6 +223,7 @@ async fn start_local(
 /// Starts the runtime in stream mode (connected to the Agent).
 async fn start_stream(
     bootstrap: BootstrapConfiguration, saluki_only: SalukiOnlyConfiguration, registration: RemoteAgentRegistration,
+    otlp_enabled: bool,
 ) -> Result<StartedConfigurationSystem, GenericError> {
     let client_config = RemoteAgentClientConfiguration::from_bootstrap(&bootstrap);
     let connection = connect(client_config, registration).await?;
@@ -226,6 +233,7 @@ async fn start_stream(
     // The first snapshot is the initial runtime Datadog authority. Local Datadog sources are
     // bootstrap-only and are NOT merged here. Bounded wait so a silent Agent surfaces a clear error
     // instead of hanging.
+    info!("Waiting for initial configuration from Datadog Agent...");
     let snapshot = match tokio::time::timeout(FIRST_SNAPSHOT_TIMEOUT, next_snapshot(&mut stream)).await {
         Ok(Some(value)) => value,
         Ok(None) => {
@@ -241,12 +249,32 @@ async fn start_stream(
         }
     };
 
-    info!("Received initial configuration snapshot from the Datadog Agent.");
+    info!("Initial configuration received.");
 
     let datadog: DatadogConfiguration = serde_json::from_value(snapshot.clone())
         .map_err(|e| generic_error!("Failed to parse the initial Agent config snapshot: {}", e))?;
-    let initial = translate(&saluki_only, &datadog)
+    let mut initial = translate(&saluki_only, &datadog)
         .map_err(|e| generic_error!("Failed to translate the initial Agent config snapshot: {}", e))?;
+
+    // otlp_enabled is not in the Datadog core schema so it cannot go through the witness. Apply
+    // the bootstrap-time value to the control slice.
+    initial.control.otlp.enabled = otlp_enabled;
+
+    // The stream snapshot from the Core Agent does not include ADP-local listen addresses
+    // (set via DD_DATA_PLANE__* env vars). Apply the bootstrap-sourced addresses so the runtime
+    // control slice reflects the framework-injected values rather than the serde defaults.
+    if let Some(addr_str) = bootstrap.datadog.local_api.api_listen_address {
+        match ListenAddress::try_from(addr_str) {
+            Ok(addr) => initial.control.api_listen_address = addr,
+            Err(e) => warn!("Failed to apply bootstrap api_listen_address: {}", e),
+        }
+    }
+    if let Some(addr_str) = bootstrap.datadog.local_api.secure_api_listen_address {
+        match ListenAddress::try_from(addr_str) {
+            Ok(addr) => initial.control.secure_api_listen_address = addr,
+            Err(e) => warn!("Failed to apply bootstrap secure_api_listen_address: {}", e),
+        }
+    }
 
     // The `saluki-env` provider layer reads the runtime Datadog source map; in stream mode that is
     // the first stream snapshot (the runtime authority).
