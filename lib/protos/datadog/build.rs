@@ -49,10 +49,10 @@ fn get_field_serde_annotation(field: &FieldDescriptor, serde_custom_fn_suffix: O
 
     match serde_custom_fn_suffix {
         Some(suffix) => format!(
-            "#[serde(rename = \"{}\", serialize_with = \"crate::serde::serialize_proto_{}\", deserialize_with = \"crate::serde::deserialize_proto_{}\")]",
+            "#[serde(rename = \"{}\", default, serialize_with = \"crate::serde::serialize_proto_{}\", deserialize_with = \"crate::serde::deserialize_proto_{}\")]",
             field_name, suffix, suffix
         ),
-        None => format!("#[serde(rename = \"{}\")]", field_name),
+        None => format!("#[serde(rename = \"{}\", default)]", field_name),
     }
 }
 
