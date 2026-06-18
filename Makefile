@@ -65,10 +65,7 @@ export CARGO_TOOL_VERSION_cargo-sort ?= 1.0.9
 export CARGO_TOOL_VERSION_dummyhttp ?= 1.1.0
 export CARGO_TOOL_VERSION_cargo-machete ?= 0.9.1
 export CARGO_TOOL_VERSION_rustfilt ?= 0.2.1
-# cargo-auditable embeds an SBOM (the dependency tree) into the built binary. Used only by CI ADP
-# builds (host + Linux Docker) so released artifacts are auditable; local builds stay plain.
-# Keep >= 0.6.2: older versions panic when a rustc wrapper (buildcache) probes them with `rustc -vV`.
-export CARGO_TOOL_VERSION_cargo-auditable ?= 0.7.5
+export CARGO_TOOL_VERSION_cargo-auditable ?= 0.7.4
 export DDPROF_VERSION ?= 0.20.0
 export LADING_VERSION ?= sha-d608ffbce8f8c77b147d6750b3bb6d6948af239a
 
