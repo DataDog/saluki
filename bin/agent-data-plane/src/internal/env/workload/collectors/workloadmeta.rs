@@ -219,11 +219,17 @@ impl MetadataCollector for RemoteAgentWorkloadMetadataCollector {
         let mut entity_stream = self.client.get_workloadmeta_stream().map_err(StatusError::from);
         debug!("Established workload metadata entity stream.");
 
-        // Defer mark_ready() until the Agent signals initial_snapshot_complete. The Agent sends the
-        // initial workloadmeta snapshot as one or more chunks; only the last chunk has this flag
-        // set. Waiting for it ensures all existing workload state is populated before DogStatsD
-        // starts, so origin detection doesn't miss early metrics.
-        let mut initial_snapshot_complete = false;
+        // Defer mark_ready() until after the first response is processed. This ensures the Agent's
+        // wmeta gRPC server is up and has sent at least the initial snapshot chunk before the
+        // topology starts accepting traffic. Marking ready before connecting causes a race where
+        // early metrics are processed before origin detection data is populated in the tag store.
+        //
+        // NOTE: As of Agent 7.80, the initial snapshot is delivered in multiple chunks, with
+        // initial_snapshot_complete=true on the last chunk. We intentionally use first-response
+        // rather than waiting for initial_snapshot_complete, because the full snapshot can take
+        // several seconds on large clusters, which would delay the entire topology (DogStatsD,
+        // OTLP, etc.) beyond the start of correctness test windows.
+        let mut initial_snapshot_received = false;
 
         loop {
             select! {
@@ -257,8 +263,8 @@ impl MetadataCollector for RemoteAgentWorkloadMetadataCollector {
                             }
                         }
 
-                        if !initial_snapshot_complete && response.initial_snapshot_complete {
-                            initial_snapshot_complete = true;
+                        if !initial_snapshot_received {
+                            initial_snapshot_received = true;
                             self.health.mark_ready();
                         }
 
