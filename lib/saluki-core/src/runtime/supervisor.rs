@@ -496,6 +496,16 @@ pub enum SpawnError {
     /// starts, configure them statically with [`Supervisor::add_worker`] instead.
     #[snafu(display("supervisor is gone"))]
     SupervisorGone,
+
+    /// The supervisor was running but rejected the spawn (for example, an invalid child name).
+    ///
+    /// Unlike [`SupervisorGone`](Self::SupervisorGone), the supervisor accepted the request and then couldn't start the
+    /// child; the underlying error is preserved as the source.
+    #[snafu(display("supervisor rejected the spawn: {}", source))]
+    Rejected {
+        /// The underlying error that caused the spawn to be rejected.
+        source: GenericError,
+    },
 }
 
 /// A dynamic spawn request sent from a [`SupervisorHandle`] to the running supervisor.
@@ -541,7 +551,8 @@ impl SupervisorHandle {
     /// # Errors
     ///
     /// Returns [`SpawnError::SupervisorGone`] if the supervisor isn't currently running (it hasn't started yet, is
-    /// between restarts, or has shut down) and so can't accept the spawn.
+    /// between restarts, or has shut down) and so can't accept the spawn, or [`SpawnError::Rejected`] if the supervisor
+    /// accepts the request but can't start the child (for example, an invalid child name).
     pub async fn spawn<T: Supervisable + 'static>(&self, worker: T) -> Result<ChildId, SpawnError> {
         self.spawn_with(ChildSpecification::worker(worker).with_restart_type(RestartType::Temporary))
             .await
@@ -811,9 +822,10 @@ impl Supervisor {
                 let _ = ack.send(Ok(()));
             }
             Err(e) => {
-                // Registration failed (e.g. an invalid name). Dropping the ack lets the waiting caller observe the
-                // failure as `SupervisorGone`.
+                // Registration failed (e.g. an invalid child name). Report it to the waiting caller as `Rejected` --
+                // distinct from `SupervisorGone` -- so the underlying cause isn't lost.
                 error!(supervisor_id = %self.supervisor_id, error = %e, "Failed to spawn dynamic child.");
+                let _ = ack.send(Err(SpawnError::Rejected { source: e.into() }));
             }
         }
     }
@@ -853,14 +865,15 @@ impl Supervisor {
         // Now we supervise.
         pin!(process_shutdown);
 
-        loop {
+        let outcome = loop {
             select! {
                 // Shutdown takes priority so a flood of dynamic spawns can't starve it.
                 biased;
 
-                // Shutdown has been triggered; break out of the loop and tear down below. (We can't touch `cmd_rx`
-                // here, as the `recv` arm below borrows it for the duration of the `select!`.)
-                _ = &mut process_shutdown => break,
+                // Shutdown has been triggered; break out of the loop with a clean outcome and tear down below. (We
+                // can't touch `cmd_rx` in any arm's handler -- the `recv` arm below borrows it for the whole
+                // `select!` -- so all teardown happens after the loop.)
+                _ = &mut process_shutdown => break Ok(()),
 
                 // A handle asked us to spawn a dynamic child. The published sender keeps the channel open for the whole
                 // run, so `recv` only yields `None` once we close it during teardown.
@@ -887,8 +900,7 @@ impl Supervisor {
                         };
 
                         error!(supervisor_id = %self.supervisor_id, worker_name = full_name, "Child process failed to initialize: {}", source);
-                        worker_state.shutdown_workers().await;
-                        return Err(SupervisorError::FailedToInitialize { child_name: full_name, source });
+                        break Err(SupervisorError::FailedToInitialize { child_name: full_name, source });
                     }
 
                     // A worker exited abnormally if it returned an error, panicked, or was aborted; a clean exit is
@@ -922,8 +934,7 @@ impl Supervisor {
                             };
                             if auto_shutdown {
                                 warn!(supervisor_id = %self.supervisor_id, worker_name = %child_name, ?worker_result, "Significant child terminated; shutting down supervisor.");
-                                worker_state.shutdown_workers().await;
-                                return Err(SupervisorError::SignificantChildExited);
+                                break Err(SupervisorError::SignificantChildExited);
                             }
                         }
                     } else {
@@ -932,7 +943,9 @@ impl Supervisor {
                                 RestartMode::OneForOne => {
                                     warn!(supervisor_id = %self.supervisor_id, worker_name = %child_name, ?worker_result, "Child process terminated, restarting.");
                                     let spec = children.get(&child_id).expect("present for restart").spec.clone();
-                                    worker_state.add_worker(child_id, &spec)?;
+                                    if let Err(e) = worker_state.add_worker(child_id, &spec) {
+                                        break Err(e);
+                                    }
                                 }
                                 RestartMode::OneForAll => {
                                     warn!(supervisor_id = %self.supervisor_id, worker_name = %child_name, ?worker_result, "Child process terminated, restarting all processes.");
@@ -942,32 +955,37 @@ impl Supervisor {
                                     // temporary children are not restarted.
                                     children.clear();
                                     self.active.store(0, Ordering::Relaxed);
-                                    self.respawn_children_one_for_all(&mut children, &mut worker_state)?;
+                                    let respawn = self.respawn_children_one_for_all(&mut children, &mut worker_state);
+                                    if let Err(e) = respawn {
+                                        break Err(e);
+                                    }
                                     significant_remaining =
                                         children.values().filter(|entry| entry.config.significant).count();
                                 }
                             },
                             RestartAction::Shutdown => {
                                 error!(supervisor_id = %self.supervisor_id, worker_name = %child_name, ?worker_result, "Supervisor shutting down due to restart limits.");
-                                worker_state.shutdown_workers().await;
-                                return Err(SupervisorError::Shutdown);
+                                break Err(SupervisorError::Shutdown);
                             }
                         }
                     }
                 }
             }
-        }
+        };
 
-        // Shutdown was triggered. Stop accepting spawns and reject anything still queued -- rather than starting
-        // children only to tear them down immediately -- then shut down all children. Closing the channel also unblocks
-        // any handle parked on a full channel so it observes `SupervisorGone` instead of hanging into the deadline.
+        // The run is ending -- either cleanly (shutdown was signalled) or with an error (a child failed to initialize
+        // or restart, the restart limit was exceeded, or a significant child exited). On every path: stop accepting
+        // spawns and reject anything still queued -- rather
+        // than starting children only to tear them down immediately -- then shut down all children. Closing the channel
+        // before the (possibly slow) shutdown also unblocks any handle parked on a full channel, so a spawn racing the
+        // teardown observes `SupervisorGone` promptly instead of hanging until shutdown finishes.
         cmd_rx.close();
         while let Ok(spawn) = cmd_rx.try_recv() {
             let _ = spawn.ack.send(Err(SpawnError::SupervisorGone));
         }
         worker_state.shutdown_workers().await;
 
-        Ok(())
+        outcome
     }
 
     fn as_nested_process(&self, process: Process, process_shutdown: ShutdownHandle) -> WorkerFuture {
@@ -1132,6 +1150,7 @@ mod tests {
         run_behavior: RunBehavior,
         start_count: Arc<AtomicUsize>,
         brutal_shutdown: bool,
+        graceful_timeout: Duration,
     }
 
     impl MockWorker {
@@ -1143,6 +1162,7 @@ mod tests {
                 run_behavior: RunBehavior::UntilShutdown,
                 start_count: Arc::new(AtomicUsize::new(0)),
                 brutal_shutdown: false,
+                graceful_timeout: Duration::from_millis(500),
             }
         }
 
@@ -1154,6 +1174,7 @@ mod tests {
                 run_behavior: RunBehavior::FailAfter(delay, "worker failed"),
                 start_count: Arc::new(AtomicUsize::new(0)),
                 brutal_shutdown: false,
+                graceful_timeout: Duration::from_millis(500),
             }
         }
 
@@ -1165,6 +1186,7 @@ mod tests {
                 run_behavior: RunBehavior::CompleteAfter(delay),
                 start_count: Arc::new(AtomicUsize::new(0)),
                 brutal_shutdown: false,
+                graceful_timeout: Duration::from_millis(500),
             }
         }
 
@@ -1176,6 +1198,7 @@ mod tests {
                 run_behavior: RunBehavior::SlowShutdown(delay),
                 start_count: Arc::new(AtomicUsize::new(0)),
                 brutal_shutdown: false,
+                graceful_timeout: Duration::from_millis(500),
             }
         }
 
@@ -1187,6 +1210,7 @@ mod tests {
                 run_behavior: RunBehavior::IgnoreShutdown,
                 start_count: Arc::new(AtomicUsize::new(0)),
                 brutal_shutdown: false,
+                graceful_timeout: Duration::from_millis(500),
             }
         }
 
@@ -1198,6 +1222,7 @@ mod tests {
                 run_behavior: RunBehavior::PanicAfter(delay),
                 start_count: Arc::new(AtomicUsize::new(0)),
                 brutal_shutdown: false,
+                graceful_timeout: Duration::from_millis(500),
             }
         }
 
@@ -1209,6 +1234,7 @@ mod tests {
                 run_behavior: RunBehavior::UntilShutdown,
                 start_count: Arc::new(AtomicUsize::new(0)),
                 brutal_shutdown: false,
+                graceful_timeout: Duration::from_millis(500),
             }
         }
 
@@ -1220,6 +1246,7 @@ mod tests {
                 run_behavior: RunBehavior::UntilShutdown,
                 start_count: Arc::new(AtomicUsize::new(0)),
                 brutal_shutdown: false,
+                graceful_timeout: Duration::from_millis(500),
             }
         }
 
@@ -1231,6 +1258,12 @@ mod tests {
         /// Configures this worker to use a `Brutal` shutdown strategy (immediate abort, no graceful wait).
         fn with_brutal_shutdown(mut self) -> Self {
             self.brutal_shutdown = true;
+            self
+        }
+
+        /// Overrides the worker's graceful shutdown timeout (defaults to 500 milliseconds).
+        fn with_graceful_timeout(mut self, timeout: Duration) -> Self {
+            self.graceful_timeout = timeout;
             self
         }
     }
@@ -1245,7 +1278,7 @@ mod tests {
             if self.brutal_shutdown {
                 ShutdownStrategy::Brutal
             } else {
-                ShutdownStrategy::Graceful(Duration::from_millis(500))
+                ShutdownStrategy::Graceful(self.graceful_timeout)
             }
         }
 
@@ -2111,6 +2144,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dynamic_spawn_rejects_invalid_child_name() {
+        // While running, a spawn that fails registration (here, an empty/invalid child name) is reported as
+        // `Rejected` with the underlying cause -- not `SupervisorGone`, which means the supervisor isn't running.
+        let sup = Supervisor::new("dyn-sup").unwrap();
+        let handle = sup.handle();
+        let (tx, run) = run_supervisor_with_trigger(sup).await;
+        wait_running(&handle).await;
+
+        let err = handle.spawn(MockWorker::long_running("")).await.unwrap_err();
+        assert!(matches!(err, SpawnError::Rejected { .. }), "got {err:?}");
+
+        // The supervisor stays up and still accepts valid children.
+        assert!(handle.is_running());
+        handle.spawn(MockWorker::long_running("ok")).await.unwrap();
+        wait_until(|| handle.active_children() == 1).await;
+
+        tx.send(()).unwrap();
+        let result = timeout(Duration::from_secs(2), run).await.unwrap().unwrap();
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
     async fn concurrent_shutdown_drains_many_children_quickly() {
         const CHILDREN: usize = 500;
         const SHUTDOWN_DELAY: Duration = Duration::from_millis(50);
@@ -2169,6 +2224,44 @@ mod tests {
         assert!(
             elapsed < Duration::from_secs(1),
             "stuck child must be aborted at the deadline (took {elapsed:?})"
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_shutdown_honors_per_child_deadline() {
+        // Each child must be aborted at its OWN graceful deadline, not a single shared one. A responsive child with an
+        // effectively-infinite timeout (modeling a nested supervisor, which uses `Graceful(Duration::MAX)`) coexists
+        // with an unresponsive child with a short timeout. Under a shared `max` deadline the short-timeout child would
+        // never be aborted (the shared deadline would be `MAX`) and shutdown would hang.
+        let sup = Supervisor::new("dyn-sup")
+            .unwrap()
+            .with_shutdown_mode(ShutdownMode::Concurrent);
+        let handle = sup.handle();
+        let (tx, run) = run_supervisor_with_trigger(sup).await;
+        wait_running(&handle).await;
+
+        // Responds to shutdown promptly, but its deadline is effectively infinite.
+        handle
+            .spawn(MockWorker::long_running("responsive").with_graceful_timeout(Duration::MAX))
+            .await
+            .unwrap();
+        // Never responds; must be aborted at its own short deadline.
+        handle
+            .spawn(MockWorker::ignore_shutdown("stuck").with_graceful_timeout(Duration::from_millis(200)))
+            .await
+            .unwrap();
+        wait_until(|| handle.active_children() == 2).await;
+
+        let start = std::time::Instant::now();
+        tx.send(()).unwrap();
+        let result = timeout(Duration::from_secs(2), run).await.unwrap().unwrap();
+        let elapsed = start.elapsed();
+
+        assert!(result.is_ok());
+        assert_eq!(handle.active_children(), 0);
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "stuck child must be aborted at its own deadline despite an infinite-timeout sibling (took {elapsed:?})"
         );
     }
 

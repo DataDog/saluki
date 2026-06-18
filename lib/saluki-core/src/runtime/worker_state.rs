@@ -173,7 +173,8 @@ impl WorkerState {
                                     break;
                                 } else {
                                     debug!(?worker_task_id, "Non-target process exited successfully. Continuing to wait.");
-                                    self.worker_map.swap_remove(&worker_task_id);
+                                    let removed = self.worker_map.swap_remove(&worker_task_id);
+                                    debug_assert!(removed.is_some(), "non-target worker must be in the worker map");
                                 }
                             },
                             Some(Err(e)) => {
@@ -183,7 +184,8 @@ impl WorkerState {
                                     break;
                                 } else {
                                     debug!(?worker_task_id, "Non-target process exited with error. Continuing to wait.");
-                                    self.worker_map.swap_remove(&worker_task_id);
+                                    let removed = self.worker_map.swap_remove(&worker_task_id);
+                                    debug_assert!(removed.is_some(), "non-target worker must be in the worker map");
                                 }
                             }
                             None => unreachable!("worker task must exist in join set if we are waiting for it"),
@@ -201,15 +203,21 @@ impl WorkerState {
 
     /// Shuts down all workers at once, waiting for them concurrently.
     ///
-    /// Each worker is signalled up front, then we wait for them all under a single deadline -- the longest graceful
-    /// timeout among them -- so total shutdown time is bounded by the slowest worker rather than the sum of all
-    /// timeouts. This suits large, independent worker sets (for example, one task per network connection).
+    /// Each worker is signalled up front, then awaited concurrently under its **own** graceful deadline, so a worker
+    /// that ignores shutdown is aborted at its configured timeout regardless of its siblings. Total shutdown time is
+    /// therefore bounded by the slowest individual worker rather than the sum of all timeouts, which suits large,
+    /// independent worker sets (for example, one task per network connection).
+    ///
+    /// A worker whose graceful timeout is effectively unbounded (such as a nested supervisor, which uses
+    /// `Duration::MAX` because it bounds itself via its own children's deadlines) is waited on indefinitely and is
+    /// never aborted by this method.
     async fn shutdown_workers_concurrent(&mut self) {
         // Take ownership of all worker bookkeeping so we can consume each worker's shutdown coordinator. Signal every
-        // worker up front, tracking the longest graceful timeout as a single shared deadline.
-        let mut deadline = Duration::ZERO;
-        let mut has_graceful = false;
-        for (_, process_state) in std::mem::take(&mut self.worker_map) {
+        // graceful worker and immediately abort brutal ones, recording a per-worker abort deadline so each is held to
+        // its own timeout rather than a single shared one.
+        let now = tokio::time::Instant::now();
+        let mut pending: FastIndexMap<Id, (AbortHandle, Option<tokio::time::Instant>)> = FastIndexMap::default();
+        for (task_id, process_state) in std::mem::take(&mut self.worker_map) {
             let ProcessState {
                 worker_id,
                 shutdown_strategy,
@@ -221,8 +229,10 @@ impl WorkerState {
                 ShutdownStrategy::Graceful(timeout) => {
                     debug!(worker_id, shutdown_timeout = ?timeout, "Gracefully shutting down process.");
                     shutdown_coordinator.shutdown();
-                    has_graceful = true;
-                    deadline = deadline.max(timeout);
+                    // An effectively-infinite timeout (`Duration::MAX`) maps to `None` -- "never abort" -- which is
+                    // correct for nested supervisors, since they bound themselves via their own children's deadlines.
+                    let deadline = (timeout != Duration::MAX).then(|| now + timeout);
+                    pending.insert(task_id, (abort_handle, deadline));
                 }
                 ShutdownStrategy::Brutal => {
                     debug!(worker_id, "Forcefully aborting process.");
@@ -231,25 +241,41 @@ impl WorkerState {
             }
         }
 
-        // Wait for every task to exit. If the deadline expires first, abort whatever remains and reap it. If nothing
-        // asked for a graceful period (everything was aborted), there's no timeout to honor.
-        let shutdown_deadline = tokio::time::sleep(if has_graceful { deadline } else { Duration::MAX });
-        pin!(shutdown_deadline);
-
-        let mut aborted = false;
+        // Wait for every task to exit. Each iteration sleeps until the earliest still-pending abort deadline; when it
+        // fires we abort exactly those workers whose own deadline has passed (their tasks are then reaped by a later
+        // `join_next`). Brutal workers were aborted above and aren't tracked here.
         while !self.worker_tasks.is_empty() {
-            if aborted {
-                // The deadline has already passed and everything is aborted; just reap the remaining tasks.
-                let _ = self.worker_tasks.join_next_with_id().await;
-                continue;
-            }
-
-            select! {
-                _ = self.worker_tasks.join_next_with_id() => {}
-                _ = &mut shutdown_deadline => {
-                    debug!("Shutdown timeout expired, forcefully aborting all remaining processes.");
-                    self.worker_tasks.abort_all();
-                    aborted = true;
+            match pending.values().filter_map(|(_, deadline)| *deadline).min() {
+                Some(deadline) => {
+                    select! {
+                        joined = self.worker_tasks.join_next_with_id() => {
+                            let task_id = match joined {
+                                Some(Ok((task_id, _))) => Some(task_id),
+                                Some(Err(e)) => Some(e.id()),
+                                None => None,
+                            };
+                            if let Some(task_id) = task_id {
+                                pending.swap_remove(&task_id);
+                            }
+                        }
+                        _ = tokio::time::sleep_until(deadline) => {
+                            let now = tokio::time::Instant::now();
+                            pending.retain(|_, (abort_handle, deadline)| {
+                                if deadline.is_some_and(|deadline| deadline <= now) {
+                                    debug!("Shutdown timeout expired, forcefully aborting process.");
+                                    abort_handle.abort();
+                                    false
+                                } else {
+                                    true
+                                }
+                            });
+                        }
+                    }
+                }
+                // Only workers with no finite deadline remain (e.g. nested supervisors); wait for them to exit on their
+                // own.
+                None => {
+                    let _ = self.worker_tasks.join_next_with_id().await;
                 }
             }
         }
