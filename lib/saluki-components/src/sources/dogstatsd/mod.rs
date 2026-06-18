@@ -22,6 +22,7 @@ use saluki_common::{
     sync::shutdown::{ShutdownCoordinator, ShutdownHandle},
     task::spawn_traced_named,
 };
+use saluki_component_config::{DogStatsDConfig as NativeDogStatsDConfig, ListenAddress as NativeListenAddress};
 use saluki_context::{
     origin::RawOrigin,
     tags::{RawTags, RawTagsFilter},
@@ -618,7 +619,52 @@ async fn resolve_bind_host(host: &str) -> Result<std::net::IpAddr, Error> {
         .ok_or_else(|| Error::BindHostHasNoAddresses { host: host.to_string() })
 }
 
+fn apply_native_listen_address(address: &NativeListenAddress, port: &mut u16, bind_host: &mut Option<String>) {
+    let Some((host, parsed_port)) = native_socket_host_port(address) else {
+        *port = 0;
+        return;
+    };
+
+    *port = parsed_port;
+    if !host.is_empty() {
+        *bind_host = Some(host);
+    }
+}
+
+fn native_socket_host_port(address: &NativeListenAddress) -> Option<(String, u16)> {
+    let value = match address {
+        NativeListenAddress::Disabled | NativeListenAddress::Unix(_) => return None,
+        NativeListenAddress::Udp(value) | NativeListenAddress::Tcp(value) => value,
+    };
+
+    let raw = if value.contains("://") {
+        value.clone()
+    } else {
+        format!("socket://{value}")
+    };
+    let url = url::Url::parse(&raw).ok()?;
+    let port = url.port()?;
+    let host = url.host_str().unwrap_or_default().trim_matches(['[', ']']).to_string();
+    Some((host, port))
+}
+
 impl DogStatsDConfiguration {
+    /// Creates a DogStatsD source configuration from the native component slice.
+    pub fn from_native(config: NativeDogStatsDConfig) -> Self {
+        let mut native = Self {
+            buffer_size: config.buffer_size,
+            context_string_interner_size_bytes: Some(ByteSize::b(config.context_string_interner_size_bytes)),
+            cached_contexts_limit: config.cached_contexts_limit,
+            socket_path: config.socket_path,
+            additional_tags: config.additional_tags,
+            ..Self::default()
+        };
+
+        apply_native_listen_address(&config.udp_address, &mut native.port, &mut native.bind_host);
+        apply_native_listen_address(&config.tcp_address, &mut native.tcp_port, &mut native.bind_host);
+        native
+    }
+
     /// Applies source-adjacent fixups that require values outside the DogStatsD slice.
     pub fn with_run_path(mut self, run_path: Option<PathBuf>) -> Self {
         self.fix_empty_capture_path(run_path);

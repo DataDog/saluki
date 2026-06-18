@@ -449,7 +449,7 @@ async fn add_dsd_pipeline_to_blueprint(
     blueprint: &mut TopologyBlueprint, components: &ComponentConfiguration, handles: &DynamicConfigHandles,
     env_provider: &ADPEnvironmentProvider,
 ) -> Result<DogStatsDControlSurface, GenericError> {
-    let dsd_config = DogStatsDConfiguration::default()
+    let dsd_config = DogStatsDConfiguration::from_native(components.dogstatsd.source.clone())
         .with_run_path(None)
         .with_workload_provider(env_provider.workload().clone())
         .with_capture_entity_resolver(env_provider.workload().clone());
