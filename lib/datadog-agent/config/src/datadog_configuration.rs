@@ -63,6 +63,9 @@ pub struct DatadogConfiguration {
     #[serde(default)]
     pub auth_token_file_path: String,
 
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    pub autoscaling: Option<DatadogConfigurationAutoscaling>,
+
     /// The host to listen on for Dogstatsd and traces. This is ignored by APM when
     /// `apm_config.apm_non_local_traffic` is enabled and ignored by DogStatsD when `dogstatsd_non_local_traffic`
     /// is enabled. The trace-agent uses this host to send metrics to.
@@ -106,6 +109,9 @@ pub struct DatadogConfiguration {
 
     #[serde(default = "defaults::default_u64::<i64, 20>")]
     pub dogstatsd_context_expiry_seconds: i64,
+
+    #[serde(default)]
+    pub dogstatsd_disable_verbose_logs: bool,
 
     /// Disable enriching Dogstatsd metrics with tags from "origin detection" when Entity-ID is set.
     #[serde(default)]
@@ -505,6 +511,7 @@ impl Default for DatadogConfiguration {
             allow_arbitrary_tags: Default::default(),
             api_key: Default::default(),
             auth_token_file_path: Default::default(),
+            autoscaling: Default::default(),
             bind_host: Default::default(),
             cmd_port: defaults::default_u64::<i64, 5001>(),
             cri_connection_timeout: defaults::default_u64::<i64, 1>(),
@@ -515,6 +522,7 @@ impl Default for DatadogConfiguration {
             dogstatsd_capture_depth: Default::default(),
             dogstatsd_capture_path: Default::default(),
             dogstatsd_context_expiry_seconds: defaults::default_u64::<i64, 20>(),
+            dogstatsd_disable_verbose_logs: Default::default(),
             dogstatsd_entity_id_precedence: Default::default(),
             dogstatsd_eol_required: Default::default(),
             dogstatsd_flush_incomplete_buckets: Default::default(),
@@ -614,6 +622,40 @@ impl Default for DatadogConfigurationAgentIpc {
     fn default() -> Self {
         Self {
             grpc_max_message_size: defaults::default_u64::<i64, 134217728>(),
+        }
+    }
+}
+
+/// `DatadogConfigurationAutoscaling`
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+pub struct DatadogConfigurationAutoscaling {
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    pub failover: Option<DatadogConfigurationAutoscalingFailover>,
+}
+
+impl Default for DatadogConfigurationAutoscaling {
+    fn default() -> Self {
+        Self {
+            failover: Default::default(),
+        }
+    }
+}
+
+/// `DatadogConfigurationAutoscalingFailover`
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+pub struct DatadogConfigurationAutoscalingFailover {
+    #[serde(default)]
+    pub enabled: bool,
+
+    #[serde(default = "defaults::datadog_configuration_autoscaling_failover_metrics")]
+    pub metrics: Vec<String>,
+}
+
+impl Default for DatadogConfigurationAutoscalingFailover {
+    fn default() -> Self {
+        Self {
+            enabled: Default::default(),
+            metrics: defaults::datadog_configuration_autoscaling_failover_metrics(),
         }
     }
 }
@@ -1238,6 +1280,9 @@ pub mod defaults {
             "tomcat".to_string(),
             "runtime".to_string(),
         ]
+    }
+    pub(super) fn datadog_configuration_autoscaling_failover_metrics() -> Vec<String> {
+        vec!["container.memory.usage".to_string(), "container.cpu.usage".to_string()]
     }
     pub(super) fn datadog_configuration_data_plane_api_listen_address() -> String {
         "tcp://0.0.0.0:5100".to_string()

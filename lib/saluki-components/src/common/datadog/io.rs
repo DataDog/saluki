@@ -192,9 +192,9 @@ where
 
     /// Creates a new `TransactionForwarder` with a custom endpoint request mapper.
     pub(crate) fn from_config_with_endpoint_request_mapper<F>(
-        context: ComponentContext, config: ForwarderConfiguration, live_config: Option<GenericConfiguration>,
-        endpoint_name: F, telemetry: ComponentTelemetry, metrics_builder: MetricsBuilder,
-        endpoint_request_mapper_factory: EndpointRequestMapperFactory<B>,
+        context: ComponentContext, config: ForwarderConfiguration,
+        live_config: Option<ScopedConfig<DatadogForwarderConfig>>, endpoint_name: F, telemetry: ComponentTelemetry,
+        metrics_builder: MetricsBuilder, endpoint_request_mapper_factory: EndpointRequestMapperFactory<B>,
     ) -> Result<Self, GenericError>
     where
         F: Fn(&Uri) -> Option<MetaString> + Send + Sync + 'static,

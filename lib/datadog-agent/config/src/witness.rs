@@ -122,8 +122,26 @@ pub trait DatadogConfigConsumer {
     /// Consumes `auth_token_file_path`.
     fn consume_auth_token_file_path(&mut self, value: Option<Value>) -> TranslateResult;
 
+    /// Consumes `autoscaling.failover.enabled`.
+    fn consume_autoscaling_failover_enabled(&mut self, value: Option<Value>) -> TranslateResult;
+
+    /// Consumes `autoscaling.failover.metrics`.
+    fn consume_autoscaling_failover_metrics(&mut self, value: Option<Value>) -> TranslateResult;
+
     /// Consumes `bind_host`.
     fn consume_bind_host(&mut self, value: Option<Value>) -> TranslateResult;
+
+    /// Consumes `cluster_agent.auth_token`.
+    fn consume_cluster_agent_auth_token(&mut self, value: Option<Value>) -> TranslateResult;
+
+    /// Consumes `cluster_agent.enabled`.
+    fn consume_cluster_agent_enabled(&mut self, value: Option<Value>) -> TranslateResult;
+
+    /// Consumes `cluster_agent.kubernetes_service_name`.
+    fn consume_cluster_agent_kubernetes_service_name(&mut self, value: Option<Value>) -> TranslateResult;
+
+    /// Consumes `cluster_agent.url`.
+    fn consume_cluster_agent_url(&mut self, value: Option<Value>) -> TranslateResult;
 
     /// Consumes `cmd_port`.
     fn consume_cmd_port(&mut self, value: Option<Value>) -> TranslateResult;
@@ -194,6 +212,9 @@ pub trait DatadogConfigConsumer {
 
     /// Consumes `dogstatsd_context_expiry_seconds`.
     fn consume_dogstatsd_context_expiry_seconds(&mut self, value: Option<Value>) -> TranslateResult;
+
+    /// Consumes `dogstatsd_disable_verbose_logs`.
+    fn consume_dogstatsd_disable_verbose_logs(&mut self, value: Option<Value>) -> TranslateResult;
 
     /// Consumes `dogstatsd_entity_id_precedence`.
     fn consume_dogstatsd_entity_id_precedence(&mut self, value: Option<Value>) -> TranslateResult;
@@ -604,7 +625,14 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigCon
         &["apm_config", "obfuscation", "valkey", "remove_all_args"],
     ))?;
     consumer.consume_auth_token_file_path(lookup(&value, &["auth_token_file_path"]))?;
+    consumer.consume_autoscaling_failover_enabled(lookup(&value, &["autoscaling", "failover", "enabled"]))?;
+    consumer.consume_autoscaling_failover_metrics(lookup(&value, &["autoscaling", "failover", "metrics"]))?;
     consumer.consume_bind_host(lookup(&value, &["bind_host"]))?;
+    consumer.consume_cluster_agent_auth_token(lookup(&value, &["cluster_agent", "auth_token"]))?;
+    consumer.consume_cluster_agent_enabled(lookup(&value, &["cluster_agent", "enabled"]))?;
+    consumer
+        .consume_cluster_agent_kubernetes_service_name(lookup(&value, &["cluster_agent", "kubernetes_service_name"]))?;
+    consumer.consume_cluster_agent_url(lookup(&value, &["cluster_agent", "url"]))?;
     consumer.consume_cmd_port(lookup(&value, &["cmd_port"]))?;
     consumer.consume_cri_connection_timeout(lookup(&value, &["cri_connection_timeout"]))?;
     consumer.consume_cri_query_timeout(lookup(&value, &["cri_query_timeout"]))?;
@@ -654,6 +682,7 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigCon
     consumer.consume_dogstatsd_capture_depth(lookup(&value, &["dogstatsd_capture_depth"]))?;
     consumer.consume_dogstatsd_capture_path(lookup(&value, &["dogstatsd_capture_path"]))?;
     consumer.consume_dogstatsd_context_expiry_seconds(lookup(&value, &["dogstatsd_context_expiry_seconds"]))?;
+    consumer.consume_dogstatsd_disable_verbose_logs(lookup(&value, &["dogstatsd_disable_verbose_logs"]))?;
     consumer.consume_dogstatsd_entity_id_precedence(lookup(&value, &["dogstatsd_entity_id_precedence"]))?;
     consumer.consume_dogstatsd_eol_required(lookup(&value, &["dogstatsd_eol_required"]))?;
     consumer.consume_dogstatsd_flush_incomplete_buckets(lookup(&value, &["dogstatsd_flush_incomplete_buckets"]))?;

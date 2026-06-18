@@ -8,7 +8,7 @@ use http::{
 };
 use resource_accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
 use saluki_common::buf::FrozenChunkedBytesBuffer;
-use saluki_config::GenericConfiguration;
+use saluki_component_config::DatadogForwarderConfig;
 use saluki_core::{
     components::{forwarders::*, ComponentContext},
     data_model::payload::PayloadType,
@@ -44,11 +44,10 @@ pub struct ClusterAgentForwarderConfiguration {
 
 impl ClusterAgentForwarderConfiguration {
     /// Creates a new `ClusterAgentForwarderConfiguration` from the given Cluster Agent endpoint and bearer token.
-    pub fn from_configuration(
-        config: &GenericConfiguration, endpoint_url: String, auth_token: String,
-    ) -> Result<Self, GenericError> {
+    pub fn from_native(endpoint_url: String, auth_token: String) -> Result<Self, GenericError> {
         let auth_header_value = bearer_auth_header_value(&auth_token)?;
-        let mut forwarder_config = ForwarderConfiguration::from_configuration(config)?.with_allow_arbitrary_tags(false);
+        let mut forwarder_config =
+            ForwarderConfiguration::from_native(&DatadogForwarderConfig::default()).with_allow_arbitrary_tags(false);
 
         let endpoint = forwarder_config.endpoint_mut();
         endpoint.clear_additional_endpoints();
@@ -201,8 +200,6 @@ fn get_cluster_agent_endpoint_name(uri: &Uri) -> Option<MetaString> {
 #[cfg(test)]
 mod tests {
     use http::Method;
-    use saluki_config::ConfigurationLoader;
-    use serde_json::json;
 
     use super::*;
     use crate::common::datadog::endpoints::EndpointRoute;
@@ -235,29 +232,9 @@ mod tests {
         assert!(bearer_auth_header_value("bad\ntoken").is_err());
     }
 
-    #[tokio::test]
-    async fn configuration_uses_only_cluster_agent_endpoint() {
-        let (config, _) = ConfigurationLoader::for_tests(
-            Some(json!({
-                "api_key": "primary-api-key",
-                "dd_url": "https://app.datadoghq.com",
-                "additional_endpoints": {
-                    "https://additional.example.com": ["additional-api-key"]
-                },
-                "observability_pipelines_worker": {
-                    "metrics": {
-                        "enabled": true,
-                        "url": "https://opw.example.com"
-                    }
-                }
-            })),
-            None,
-            false,
-        )
-        .await;
-
-        let config = ClusterAgentForwarderConfiguration::from_configuration(
-            &config,
+    #[test]
+    fn configuration_uses_only_cluster_agent_endpoint() {
+        let config = ClusterAgentForwarderConfiguration::from_native(
             "https://cluster-agent.example.com".to_string(),
             "secret-token".to_string(),
         )

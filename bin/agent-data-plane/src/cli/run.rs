@@ -32,7 +32,6 @@ use saluki_components::{
         MrfMetricsGatewayConfiguration, TraceObfuscationConfiguration, TraceSamplerConfiguration,
     },
 };
-use saluki_config_tools::GenericConfiguration;
 use saluki_core::health::HealthRegistry;
 use saluki_core::runtime::{RestartMode, RestartStrategy, Supervisor};
 use saluki_core::topology::TopologyBlueprint;
@@ -105,7 +104,7 @@ pub async fn handle_run_command(
     .await?;
 
     let (mut blueprint, control_surfaces) =
-        create_topology(&saluki, &handles, started_config.datadog_config(), &dp_config, &env_provider, &component_registry).await?;
+        create_topology(&saluki, &handles, &dp_config, &env_provider, &component_registry).await?;
 
     let ra_bootstrap = match attachments.datadog_agent.clone() {
         Some(connection) => {
@@ -183,9 +182,8 @@ async fn wait_for_sigint() {
 }
 
 async fn create_topology(
-    saluki: &SalukiConfiguration, handles: &DynamicConfigHandles, config: &GenericConfiguration,
-    dp_config: &DataPlaneConfiguration, env_provider: &ADPEnvironmentProvider,
-    component_registry: &ComponentRegistry,
+    saluki: &SalukiConfiguration, handles: &DynamicConfigHandles, dp_config: &DataPlaneConfiguration,
+    env_provider: &ADPEnvironmentProvider, component_registry: &ComponentRegistry,
 ) -> Result<(TopologyBlueprint, TopologyControlSurfaces), GenericError> {
     let mut blueprint = TopologyBlueprint::new("primary", component_registry);
     blueprint.with_shutdown_timeout(dp_config.stop_timeout());
@@ -213,7 +211,6 @@ async fn create_topology(
             &mut blueprint,
             &saluki.components,
             handles,
-            config,
             dp_config,
             env_provider,
         )
@@ -268,7 +265,7 @@ async fn add_checks_pipeline_to_blueprint(
 
 async fn add_baseline_metrics_pipeline_to_blueprint(
     blueprint: &mut TopologyBlueprint, components: &ComponentConfiguration, handles: &DynamicConfigHandles,
-    config: &GenericConfiguration, dp_config: &DataPlaneConfiguration, env_provider: &ADPEnvironmentProvider,
+    dp_config: &DataPlaneConfiguration, env_provider: &ADPEnvironmentProvider,
 ) -> Result<(), GenericError> {
     let host_enrichment_config = HostEnrichmentConfiguration::from_environment_provider(env_provider.clone());
     let metrics_enrich_config =
@@ -284,7 +281,7 @@ async fn add_baseline_metrics_pipeline_to_blueprint(
         .connect_components_in_order(["metrics_enrich", "dd_metrics_encode", "dd_out"])?;
 
     add_mrf_metrics_pipeline_to_blueprint(blueprint, components, handles)?;
-    add_autoscaling_failover_metrics_pipeline_to_blueprint(blueprint, config)?;
+    add_autoscaling_failover_metrics_pipeline_to_blueprint(blueprint, components)?;
 
     Ok(())
 }
@@ -328,12 +325,10 @@ fn add_mrf_metrics_pipeline_to_blueprint(
 }
 
 fn add_autoscaling_failover_metrics_pipeline_to_blueprint(
-    blueprint: &mut TopologyBlueprint, config: &GenericConfiguration,
+    blueprint: &mut TopologyBlueprint, components: &ComponentConfiguration,
 ) -> Result<(), GenericError> {
-    let af_config = AutoscalingFailoverConfiguration::from_configuration(config)
-        .error_context("Failed to configure autoscaling failover metrics pipeline.")?;
-    let ca_config = ClusterAgentConfiguration::from_configuration(config)
-        .error_context("Failed to configure Cluster Agent metrics forwarding.")?;
+    let af_config = AutoscalingFailoverConfiguration::from_native(components.metrics.autoscaling_failover.clone());
+    let ca_config = ClusterAgentConfiguration::from_native(components.metrics.cluster_agent.clone());
 
     let Some((ca_url, ca_token)) = ca_config.endpoint_and_token() else {
         if af_config.is_branch_requested() {
@@ -353,11 +348,9 @@ fn add_autoscaling_failover_metrics_pipeline_to_blueprint(
     }
 
     let af_gateway_config = AutoscalingFailoverGatewayConfiguration::new(af_config);
-    let af_metrics_config = DatadogMetricsConfiguration::from_configuration(config)
-        .error_context("Failed to configure autoscaling failover metrics encoder.")?;
-    let cluster_agent_forwarder_config =
-        ClusterAgentForwarderConfiguration::from_configuration(config, ca_url, ca_token)
-            .error_context("Failed to configure Cluster Agent forwarder.")?;
+    let af_metrics_config = DatadogMetricsConfiguration::from_native(components.metrics.datadog_encoder.clone());
+    let cluster_agent_forwarder_config = ClusterAgentForwarderConfiguration::from_native(ca_url, ca_token)
+        .error_context("Failed to configure Cluster Agent forwarder.")?;
 
     blueprint
         .add_transform("af_metrics_gateway", af_gateway_config)?

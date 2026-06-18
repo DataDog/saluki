@@ -169,60 +169,39 @@ impl Transform for AutoscalingFailoverGateway {
 mod tests {
     use std::time::Duration;
 
-    use saluki_config::ConfigurationLoader;
+    use saluki_component_config::AutoscalingFailoverConfig;
     use saluki_core::data_model::event::{metric::Metric, Event};
-    use serde_json::json;
 
     use super::*;
 
-    async fn gateway_from_config(value: serde_json::Value) -> AutoscalingFailoverGateway {
-        let (config, _) = ConfigurationLoader::for_tests(Some(value), None, false).await;
-        let failover_config = AutoscalingFailoverConfiguration::from_configuration(&config)
-            .expect("autoscaling failover configuration should deserialize");
+    fn gateway(enabled: bool, metrics: Vec<&str>) -> AutoscalingFailoverGateway {
+        let failover_config = AutoscalingFailoverConfiguration::from_native(AutoscalingFailoverConfig {
+            enabled,
+            metrics: metrics.iter().map(|s| s.to_string()).collect(),
+        });
         AutoscalingFailoverGateway::new(failover_config)
     }
 
-    #[tokio::test]
-    async fn inactive_gateway_drops_everything() {
-        let gw = gateway_from_config(json!({
-            "autoscaling": {
-                "failover": {
-                    "enabled": false,
-                    "metrics": ["allowed.metric"]
-                }
-            }
-        }))
-        .await;
+    #[test]
+    fn inactive_gateway_drops_everything() {
+        let gw = gateway(false, vec!["allowed.metric"]);
 
         assert!(!gw.should_forward(&Event::Metric(Metric::counter("allowed.metric", 1.0))));
     }
 
-    #[tokio::test]
-    async fn empty_metric_allowlist_drops_everything() {
-        let gw = gateway_from_config(json!({
-            "autoscaling": {
-                "failover": {
-                    "enabled": true,
-                    "metrics": []
-                }
-            }
-        }))
-        .await;
+    #[test]
+    fn empty_metric_allowlist_drops_everything() {
+        let gw = gateway(true, vec![]);
 
         assert!(!gw.should_forward(&Event::Metric(Metric::counter("allowed.metric", 1.0))));
     }
 
-    #[tokio::test]
-    async fn active_gateway_forwards_only_allowed_series_metrics() {
-        let gw = gateway_from_config(json!({
-            "autoscaling": {
-                "failover": {
-                    "enabled": true,
-                    "metrics": ["allowed.counter", "allowed.gauge", "allowed.rate", "allowed.set"]
-                }
-            }
-        }))
-        .await;
+    #[test]
+    fn active_gateway_forwards_only_allowed_series_metrics() {
+        let gw = gateway(
+            true,
+            vec!["allowed.counter", "allowed.gauge", "allowed.rate", "allowed.set"],
+        );
 
         assert!(gw.should_forward(&Event::Metric(Metric::counter("allowed.counter", 1.0))));
         assert!(gw.should_forward(&Event::Metric(Metric::gauge("allowed.gauge", 1.0))));
@@ -235,17 +214,9 @@ mod tests {
         assert!(!gw.should_forward(&Event::Metric(Metric::counter("blocked.counter", 1.0))));
     }
 
-    #[tokio::test]
-    async fn active_gateway_drops_sketch_metrics_even_when_allowed() {
-        let gw = gateway_from_config(json!({
-            "autoscaling": {
-                "failover": {
-                    "enabled": true,
-                    "metrics": ["allowed.histogram", "allowed.distribution"]
-                }
-            }
-        }))
-        .await;
+    #[test]
+    fn active_gateway_drops_sketch_metrics_even_when_allowed() {
+        let gw = gateway(true, vec!["allowed.histogram", "allowed.distribution"]);
 
         assert!(!gw.should_forward(&Event::Metric(Metric::histogram("allowed.histogram", [1.0, 2.0, 3.0]))));
         assert!(!gw.should_forward(&Event::Metric(Metric::distribution(
