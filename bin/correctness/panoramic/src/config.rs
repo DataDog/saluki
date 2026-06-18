@@ -396,9 +396,14 @@ impl ActionConfig {
     /// Replaces `{{PANORAMIC_DYNAMIC_*}}` placeholders in string fields with resolved values.
     pub fn resolve_dynamic_vars(&mut self, vars: &HashMap<String, String>) {
         match self {
-            ActionConfig::CoreAgentConfigSet { key, endpoint, .. } => {
+            ActionConfig::CoreAgentConfigSet {
+                key, endpoint, value, ..
+            } => {
                 crate::dynamic_vars::resolve_placeholders(key, vars);
                 crate::dynamic_vars::resolve_placeholders(endpoint, vars);
+                if let serde_json::Value::String(s) = value {
+                    crate::dynamic_vars::resolve_placeholders(s, vars);
+                }
             }
         }
     }
@@ -407,9 +412,14 @@ impl ActionConfig {
     pub fn unresolved_placeholders(&self) -> Vec<String> {
         let mut out = Vec::new();
         match self {
-            ActionConfig::CoreAgentConfigSet { key, endpoint, .. } => {
+            ActionConfig::CoreAgentConfigSet {
+                key, endpoint, value, ..
+            } => {
                 crate::dynamic_vars::find_unresolved(key, &mut out);
                 crate::dynamic_vars::find_unresolved(endpoint, &mut out);
+                if let serde_json::Value::String(s) = value {
+                    crate::dynamic_vars::find_unresolved(s, &mut out);
+                }
             }
         }
         out
