@@ -610,13 +610,7 @@ impl Graph {
         let mut edges = self
             .edges
             .iter()
-            .map(|edge| {
-                TopologyEdgeSnapshot::new(
-                    edge.from.to_string(),
-                    edge.to.to_string(),
-                    data_type_snapshot(self.get_output_type(&edge.from)),
-                )
-            })
+            .map(|edge| TopologyEdgeSnapshot::new(edge.from.to_string(), edge.to.to_string()))
             .collect::<Vec<_>>();
         edges.sort_by(|left, right| left.from().cmp(right.from()).then_with(|| left.to().cmp(right.to())));
 
@@ -1461,7 +1455,6 @@ mod test {
         assert_eq!(
             snapshot,
             serde_json::json!({
-                "schema_version": 1,
                 "components": [
                     {
                         "id": "decoder",
@@ -1535,31 +1528,11 @@ mod test {
                     }
                 ],
                 "edges": [
-                    {
-                        "from": "decoder",
-                        "to": "fanout",
-                        "data_type": { "category": "event", "signals": ["metrics"], "label": "Metric" }
-                    },
-                    {
-                        "from": "encode",
-                        "to": "forward",
-                        "data_type": { "category": "payload", "signals": ["http"], "label": "HTTP" }
-                    },
-                    {
-                        "from": "fanout",
-                        "to": "encode",
-                        "data_type": { "category": "event", "signals": ["metrics"], "label": "Metric" }
-                    },
-                    {
-                        "from": "fanout.errors",
-                        "to": "error_out",
-                        "data_type": { "category": "event", "signals": ["events"], "label": "DatadogEvent" }
-                    },
-                    {
-                        "from": "relay_in",
-                        "to": "decoder",
-                        "data_type": { "category": "payload", "signals": ["raw"], "label": "Raw" }
-                    }
+                    { "from": "decoder", "to": "fanout" },
+                    { "from": "encode", "to": "forward" },
+                    { "from": "fanout", "to": "encode" },
+                    { "from": "fanout.errors", "to": "error_out" },
+                    { "from": "relay_in", "to": "decoder" }
                 ]
             })
         );

@@ -1,32 +1,19 @@
-//! Serializable snapshots of topology structure.
+//! JSON snapshots of topology structure.
 
 use std::{collections::HashMap, fmt::Write as _};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-/// Schema version for topology snapshots.
-pub const TOPOLOGY_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
-
-/// A serializable snapshot of a topology graph.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+/// A JSON snapshot of a topology graph.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct TopologySnapshot {
-    schema_version: u32,
     components: Vec<TopologyComponentSnapshot>,
     edges: Vec<TopologyEdgeSnapshot>,
 }
 
 impl TopologySnapshot {
     pub(super) fn new(components: Vec<TopologyComponentSnapshot>, edges: Vec<TopologyEdgeSnapshot>) -> Self {
-        Self {
-            schema_version: TOPOLOGY_SNAPSHOT_SCHEMA_VERSION,
-            components,
-            edges,
-        }
-    }
-
-    /// Returns the schema version for this topology snapshot.
-    pub const fn schema_version(&self) -> u32 {
-        self.schema_version
+        Self { components, edges }
     }
 
     /// Returns the component snapshots.
@@ -117,8 +104,8 @@ fn escape_mermaid_label(value: &str) -> String {
         .replace('|', "&#124;")
 }
 
-/// A serializable snapshot of one topology component.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+/// A JSON snapshot of one topology component.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct TopologyComponentSnapshot {
     id: String,
     kind: String,
@@ -159,8 +146,8 @@ impl TopologyComponentSnapshot {
     }
 }
 
-/// A serializable snapshot of one topology component output.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+/// A JSON snapshot of one topology component output.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct TopologyOutputSnapshot {
     id: String,
     name: String,
@@ -188,17 +175,16 @@ impl TopologyOutputSnapshot {
     }
 }
 
-/// A serializable snapshot of one topology edge.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+/// A JSON snapshot of one topology edge.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct TopologyEdgeSnapshot {
     from: String,
     to: String,
-    data_type: TopologyDataTypeSnapshot,
 }
 
 impl TopologyEdgeSnapshot {
-    pub(super) fn new(from: String, to: String, data_type: TopologyDataTypeSnapshot) -> Self {
-        Self { from, to, data_type }
+    pub(super) fn new(from: String, to: String) -> Self {
+        Self { from, to }
     }
 
     /// Returns the upstream component output ID.
@@ -210,15 +196,10 @@ impl TopologyEdgeSnapshot {
     pub fn to(&self) -> &str {
         &self.to
     }
-
-    /// Returns the data type carried by this edge.
-    pub const fn data_type(&self) -> &TopologyDataTypeSnapshot {
-        &self.data_type
-    }
 }
 
-/// A serializable event or payload data type.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+/// A JSON event or payload data type.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct TopologyDataTypeSnapshot {
     category: String,
     signals: Vec<String>,
@@ -275,11 +256,7 @@ mod tests {
                     Vec::new(),
                 ),
             ],
-            vec![TopologyEdgeSnapshot::new(
-                "source".to_string(),
-                "forwarder".to_string(),
-                TopologyDataTypeSnapshot::new("payload", vec!["raw"], "Raw".to_string()),
-            )],
+            vec![TopologyEdgeSnapshot::new("source".to_string(), "forwarder".to_string())],
         );
 
         assert_eq!(
@@ -320,7 +297,6 @@ mod tests {
             vec![TopologyEdgeSnapshot::new(
                 "transform.events".to_string(),
                 "destination".to_string(),
-                TopologyDataTypeSnapshot::new("event", vec!["metrics", "events"], "Metric|DatadogEvent".to_string()),
             )],
         );
 

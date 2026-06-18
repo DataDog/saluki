@@ -405,8 +405,13 @@ generate-adp-topology: build-adp
 generate-adp-topology: ## Generates ADP topology data for the docs viewer (FORMAT=json|mermaid, CONFIG=...)
 	@mkdir -p "$(dir $(ADP_TOPOLOGY_OUTPUT))"
 	@echo "[*] Generating ADP topology ($(ADP_TOPOLOGY_FORMAT)): $(ADP_TOPOLOGY_OUTPUT)"
-	@DD_API_KEY="$${DD_API_KEY:-api-key-adp-topology-viewer}" \
-	target/devel/agent-data-plane --config "$(CONFIG)" debug topology --format "$(ADP_TOPOLOGY_FORMAT)" > "$(ADP_TOPOLOGY_OUTPUT)"
+	@if [ "$(ADP_TOPOLOGY_FORMAT)" = "mermaid" ]; then \
+		DD_API_KEY="$${DD_API_KEY:-api-key-adp-topology-viewer}" \
+			target/devel/agent-data-plane --config "$(CONFIG)" debug topology --format mermaid --output "$(ADP_TOPOLOGY_OUTPUT)"; \
+	else \
+		DD_API_KEY="$${DD_API_KEY:-api-key-adp-topology-viewer}" \
+			target/devel/agent-data-plane --config "$(CONFIG)" debug topology --format json > "$(ADP_TOPOLOGY_OUTPUT)"; \
+	fi
 
 .PHONY: run-adp-topology-viewer
 run-adp-topology-viewer: check-js-build-tools

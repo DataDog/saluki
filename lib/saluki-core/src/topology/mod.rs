@@ -17,6 +17,9 @@ pub use self::context::TopologyContext;
 
 mod graph;
 
+mod diff;
+pub use self::diff::{diff_topology_snapshots, topology_diff_to_mermaid, TopologyDiffSnapshot};
+
 pub mod ids;
 pub use self::ids::{
     ComponentId, ComponentOutputId, OutputDefinition, OutputName, TypedComponentId, TypedComponentOutputId,
@@ -29,8 +32,7 @@ mod running;
 
 mod snapshot;
 pub use self::snapshot::{
-    TopologyComponentSnapshot, TopologyDataTypeSnapshot, TopologyEdgeSnapshot, TopologyOutputSnapshot,
-    TopologySnapshot, TOPOLOGY_SNAPSHOT_SCHEMA_VERSION,
+    TopologyComponentSnapshot, TopologyDataTypeSnapshot, TopologyEdgeSnapshot, TopologyOutputSnapshot, TopologySnapshot,
 };
 
 #[cfg(test)]
