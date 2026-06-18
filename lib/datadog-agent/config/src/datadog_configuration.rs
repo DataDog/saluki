@@ -60,6 +60,9 @@ pub struct DatadogConfiguration {
     #[serde(default)]
     pub api_key: String,
 
+    #[serde(default)]
+    pub auth_token_file_path: String,
+
     /// The host to listen on for Dogstatsd and traces. This is ignored by APM when
     /// `apm_config.apm_non_local_traffic` is enabled and ignored by DogStatsD when `dogstatsd_non_local_traffic`
     /// is enabled. The trace-agent uses this host to send metrics to.
@@ -349,6 +352,9 @@ pub struct DatadogConfiguration {
     #[serde(default)]
     pub histogram_copy_to_distribution_prefix: String,
 
+    #[serde(default)]
+    pub ipc_cert_file_path: String,
+
     /// If enabled the Agent will log using the RFC3339 format for the log time.
     #[serde(default)]
     pub log_format_rfc3339: bool,
@@ -498,6 +504,7 @@ impl Default for DatadogConfiguration {
             aggregator_stop_timeout: defaults::default_u64::<i64, 2>(),
             allow_arbitrary_tags: Default::default(),
             api_key: Default::default(),
+            auth_token_file_path: Default::default(),
             bind_host: Default::default(),
             cmd_port: defaults::default_u64::<i64, 5001>(),
             cri_connection_timeout: defaults::default_u64::<i64, 1>(),
@@ -557,6 +564,7 @@ impl Default for DatadogConfiguration {
             histogram_aggregates: defaults::datadog_configuration_histogram_aggregates(),
             histogram_copy_to_distribution: Default::default(),
             histogram_copy_to_distribution_prefix: Default::default(),
+            ipc_cert_file_path: Default::default(),
             log_format_rfc3339: Default::default(),
             log_level: defaults::datadog_configuration_log_level(),
             log_payloads: Default::default(),
@@ -619,6 +627,9 @@ pub struct DatadogConfigurationDataPlane {
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub dogstatsd: Option<DatadogConfigurationDataPlaneDogstatsd>,
 
+    #[serde(default)]
+    pub enabled: bool,
+
     #[serde(default = "defaults::datadog_configuration_data_plane_log_file")]
     pub log_file: String,
 
@@ -640,6 +651,7 @@ impl Default for DatadogConfigurationDataPlane {
         Self {
             api_listen_address: defaults::datadog_configuration_data_plane_api_listen_address(),
             dogstatsd: Default::default(),
+            enabled: Default::default(),
             log_file: defaults::datadog_configuration_data_plane_log_file(),
             otlp: Default::default(),
             remote_agent_enabled: defaults::default_bool::<true>(),
@@ -654,12 +666,16 @@ impl Default for DatadogConfigurationDataPlane {
 pub struct DatadogConfigurationDataPlaneDogstatsd {
     #[serde(default = "defaults::default_u64::<i64, 100000>")]
     pub aggregator_tag_filter_cache_capacity: i64,
+
+    #[serde(default = "defaults::default_bool::<true>")]
+    pub enabled: bool,
 }
 
 impl Default for DatadogConfigurationDataPlaneDogstatsd {
     fn default() -> Self {
         Self {
             aggregator_tag_filter_cache_capacity: defaults::default_u64::<i64, 100000>(),
+            enabled: defaults::default_bool::<true>(),
         }
     }
 }
@@ -667,6 +683,9 @@ impl Default for DatadogConfigurationDataPlaneDogstatsd {
 /// `DatadogConfigurationDataPlaneOtlp`
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
 pub struct DatadogConfigurationDataPlaneOtlp {
+    #[serde(default)]
+    pub enabled: bool,
+
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub proxy: Option<DatadogConfigurationDataPlaneOtlpProxy>,
 }
@@ -674,6 +693,7 @@ pub struct DatadogConfigurationDataPlaneOtlp {
 impl Default for DatadogConfigurationDataPlaneOtlp {
     fn default() -> Self {
         Self {
+            enabled: Default::default(),
             proxy: Default::default(),
         }
     }
@@ -682,11 +702,17 @@ impl Default for DatadogConfigurationDataPlaneOtlp {
 /// `DatadogConfigurationDataPlaneOtlpProxy`
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
 pub struct DatadogConfigurationDataPlaneOtlpProxy {
+    #[serde(default)]
+    pub enabled: bool,
+
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub logs: Option<DatadogConfigurationDataPlaneOtlpProxyLogs>,
 
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub metrics: Option<DatadogConfigurationDataPlaneOtlpProxyMetrics>,
+
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    pub receiver: Option<DatadogConfigurationDataPlaneOtlpProxyReceiver>,
 
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub traces: Option<DatadogConfigurationDataPlaneOtlpProxyTraces>,
@@ -695,8 +721,10 @@ pub struct DatadogConfigurationDataPlaneOtlpProxy {
 impl Default for DatadogConfigurationDataPlaneOtlpProxy {
     fn default() -> Self {
         Self {
+            enabled: Default::default(),
             logs: Default::default(),
             metrics: Default::default(),
+            receiver: Default::default(),
             traces: Default::default(),
         }
     }
@@ -728,6 +756,51 @@ impl Default for DatadogConfigurationDataPlaneOtlpProxyMetrics {
     fn default() -> Self {
         Self {
             enabled: defaults::default_bool::<true>(),
+        }
+    }
+}
+
+/// `DatadogConfigurationDataPlaneOtlpProxyReceiver`
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+pub struct DatadogConfigurationDataPlaneOtlpProxyReceiver {
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    pub protocols: Option<DatadogConfigurationDataPlaneOtlpProxyReceiverProtocols>,
+}
+
+impl Default for DatadogConfigurationDataPlaneOtlpProxyReceiver {
+    fn default() -> Self {
+        Self {
+            protocols: Default::default(),
+        }
+    }
+}
+
+/// `DatadogConfigurationDataPlaneOtlpProxyReceiverProtocols`
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+pub struct DatadogConfigurationDataPlaneOtlpProxyReceiverProtocols {
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    pub grpc: Option<DatadogConfigurationDataPlaneOtlpProxyReceiverProtocolsGrpc>,
+}
+
+impl Default for DatadogConfigurationDataPlaneOtlpProxyReceiverProtocols {
+    fn default() -> Self {
+        Self {
+            grpc: Default::default(),
+        }
+    }
+}
+
+/// `DatadogConfigurationDataPlaneOtlpProxyReceiverProtocolsGrpc`
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+pub struct DatadogConfigurationDataPlaneOtlpProxyReceiverProtocolsGrpc {
+    #[serde(default = "defaults::datadog_configuration_data_plane_otlp_proxy_receiver_protocols_grpc_endpoint")]
+    pub endpoint: String,
+}
+
+impl Default for DatadogConfigurationDataPlaneOtlpProxyReceiverProtocolsGrpc {
+    fn default() -> Self {
+        Self {
+            endpoint: defaults::datadog_configuration_data_plane_otlp_proxy_receiver_protocols_grpc_endpoint(),
         }
     }
 }
@@ -1174,6 +1247,9 @@ pub mod defaults {
     }
     pub(super) fn datadog_configuration_data_plane_secure_api_listen_address() -> String {
         "tcp://0.0.0.0:5101".to_string()
+    }
+    pub(super) fn datadog_configuration_data_plane_otlp_proxy_receiver_protocols_grpc_endpoint() -> String {
+        "127.0.0.1:4319".to_string()
     }
     pub(super) fn datadog_configuration_otlp_config_receiver_protocols_grpc_endpoint() -> String {
         "localhost:4317".to_string()

@@ -4,6 +4,22 @@ use super::schema;
 #[allow(unused_imports)]
 use super::*;
 
+static DATA_PLANE_CHECKS_ENABLED_SCHEMA: SchemaEntry = SchemaEntry {
+    schema: Schema::Saluki,
+    yaml_path: "data_plane.checks.enabled",
+    env_vars: &[],
+    value_type: ValueType::Bool,
+    default: Some("false"),
+};
+
+static DATA_PLANE_STANDALONE_MODE_SCHEMA: SchemaEntry = SchemaEntry {
+    schema: Schema::Saluki,
+    yaml_path: "data_plane.standalone_mode",
+    env_vars: &[],
+    value_type: ValueType::Bool,
+    default: Some("false"),
+};
+
 static DATA_PLANE_STOP_TIMEOUT_SCHEMA: SchemaEntry = SchemaEntry {
     schema: Schema::Saluki,
     yaml_path: "data_plane.stop_timeout",
@@ -24,6 +40,39 @@ crate::declare_annotations! {
         test_json: None,
         pipeline_affinity: PipelineAffinity::CrossCutting,
     };
+    /// `data_plane.checks.enabled`
+    DATA_PLANE_CHECKS_ENABLED = SalukiAnnotation {
+        schema: &DATA_PLANE_CHECKS_ENABLED_SCHEMA,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::GET_TYPED],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Checks]),
+    };
+    /// `data_plane.dogstatsd.enabled`-Enable the DogStatsD data plane
+    DATA_PLANE_DOGSTATSD_ENABLED = SalukiAnnotation {
+        schema: &schema::DATA_PLANE_DOGSTATSD_ENABLED,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::GET_TYPED],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
+    };
+    /// `data_plane.enabled`-Enable the data plane
+    DATA_PLANE_ENABLED = SalukiAnnotation {
+        schema: &schema::DATA_PLANE_ENABLED,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::GET_TYPED],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::CrossCutting,
+    };
     /// `data_plane.log_file`-ADP log file path
     DATA_PLANE_LOG_FILE = SalukiAnnotation {
         schema: &schema::DATA_PLANE_LOG_FILE,
@@ -34,6 +83,28 @@ crate::declare_annotations! {
         value_type_override: None,
         test_json: None,
         pipeline_affinity: PipelineAffinity::CrossCutting,
+    };
+    /// `data_plane.otlp.enabled`-Enable the native OTLP data plane
+    DATA_PLANE_OTLP_ENABLED = SalukiAnnotation {
+        schema: &schema::DATA_PLANE_OTLP_ENABLED,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::GET_TYPED],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `data_plane.otlp.proxy.enabled`-Enable OTLP proxy mode
+    DATA_PLANE_OTLP_PROXY_ENABLED = SalukiAnnotation {
+        schema: &schema::DATA_PLANE_OTLP_PROXY_ENABLED,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::GET_TYPED],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
     };
     /// `data_plane.otlp.proxy.logs.enabled`-Proxy OTLP logs to Core Agent
     DATA_PLANE_OTLP_PROXY_LOGS_ENABLED = SalukiAnnotation {
@@ -53,6 +124,17 @@ crate::declare_annotations! {
         additional_yaml_paths: &[],
         env_var_override: None,
         used_by: &[structs::GET_TYPED],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `data_plane.otlp.proxy.receiver.protocols.grpc.endpoint`-Core Agent OTLP proxy gRPC endpoint
+    DATA_PLANE_OTLP_PROXY_RECEIVER_PROTOCOLS_GRPC_ENDPOINT = SalukiAnnotation {
+        schema: &schema::DATA_PLANE_OTLP_PROXY_RECEIVER_PROTOCOLS_GRPC_ENDPOINT,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::OTLP_RELAY_CONFIGURATION],
         value_type_override: None,
         test_json: None,
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
@@ -82,6 +164,17 @@ crate::declare_annotations! {
     /// `data_plane.secure_api_listen_address`-Privileged API listen address
     DATA_PLANE_SECURE_API_LISTEN_ADDRESS = SalukiAnnotation {
         schema: &schema::DATA_PLANE_SECURE_API_LISTEN_ADDRESS,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::GET_TYPED],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::CrossCutting,
+    };
+    /// `data_plane.standalone_mode`
+    DATA_PLANE_STANDALONE_MODE = SalukiAnnotation {
+        schema: &DATA_PLANE_STANDALONE_MODE_SCHEMA,
         support_level: SupportLevel::Full,
         additional_yaml_paths: &[],
         env_var_override: None,

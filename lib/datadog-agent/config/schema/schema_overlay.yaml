@@ -384,6 +384,15 @@ inventory:
       additional_attributes:
         config_registry_filename: trace_obfuscation.rs
 
+  auth_token_file_path:
+    support: full
+    pipelines: [cross_cutting]
+    description: "IPC auth token file path"
+    test_support:
+      used_by: [RemoteAgentClientConfiguration]
+      additional_attributes:
+        config_registry_filename: get_typed.rs
+
   autoscaling.failover.enabled:
     support: full
     pipelines: [checks, dogstatsd, otlp]
@@ -512,6 +521,24 @@ inventory:
       additional_attributes:
         config_registry_filename: tag_filterlist.rs
 
+  data_plane.dogstatsd.enabled:
+    support: full
+    pipelines: [dogstatsd]
+    description: "Enable the DogStatsD data plane"
+    test_support:
+      used_by: [get_typed]
+      additional_attributes:
+        config_registry_filename: data_plane.rs
+
+  data_plane.enabled:
+    support: full
+    pipelines: [cross_cutting]
+    description: "Enable the data plane"
+    test_support:
+      used_by: [get_typed]
+      additional_attributes:
+        config_registry_filename: data_plane.rs
+
   data_plane.log_file:
     support: full
     pipelines: [cross_cutting]
@@ -520,6 +547,24 @@ inventory:
       ADP writes to its own log file, separate from the Core Agent. The Core Agent's `log_file`
       key is deliberately not consulted. Set `disable_file_logging: true` to disable file logging
       entirely, which causes this key to have no effect.
+    test_support:
+      used_by: [get_typed]
+      additional_attributes:
+        config_registry_filename: data_plane.rs
+
+  data_plane.otlp.enabled:
+    support: full
+    pipelines: [otlp]
+    description: "Enable the native OTLP data plane"
+    test_support:
+      used_by: [get_typed]
+      additional_attributes:
+        config_registry_filename: data_plane.rs
+
+  data_plane.otlp.proxy.enabled:
+    support: full
+    pipelines: [otlp]
+    description: "Enable OTLP proxy mode"
     test_support:
       used_by: [get_typed]
       additional_attributes:
@@ -540,6 +585,15 @@ inventory:
     description: "Proxy OTLP metrics to Core Agent"
     test_support:
       used_by: [get_typed]
+      additional_attributes:
+        config_registry_filename: data_plane.rs
+
+  data_plane.otlp.proxy.receiver.protocols.grpc.endpoint:
+    support: full
+    pipelines: [otlp]
+    description: "Core Agent OTLP proxy gRPC endpoint"
+    test_support:
+      used_by: [OtlpRelayConfiguration]
       additional_attributes:
         config_registry_filename: data_plane.rs
 
@@ -1560,6 +1614,15 @@ inventory:
       used_by: [AggregateConfiguration]
       additional_attributes:
         config_registry_filename: aggregate.rs
+
+  ipc_cert_file_path:
+    support: full
+    pipelines: [cross_cutting]
+    description: "IPC certificate file path"
+    test_support:
+      used_by: [RemoteAgentClientConfiguration]
+      additional_attributes:
+        config_registry_filename: get_typed.rs
 
   log_format_rfc3339:
     support: full
@@ -2603,7 +2666,6 @@ excluded:
   appsec.proxy.processor.port: "ignored in initial audit 2026-04-23"
   appsec.proxy.proxies: "ignored in initial audit 2026-04-23"
   auth_init_timeout: "ignored in initial audit 2026-04-23"
-  auth_token_file_path: "ignored in second bulk edit 2026-05-06"
   auto_exit.noprocess.enabled: "ignored in initial audit 2026-04-23"
   auto_exit.noprocess.excluded_processes: "ignored in initial audit 2026-04-23"
   auto_exit.validation_period: "ignored in initial audit 2026-04-23"
@@ -2872,11 +2934,6 @@ excluded:
   data_observability.forwarder.use_compression: "ignored in initial audit 2026-04-23"
   data_observability.forwarder.use_v2_api: "ignored in initial audit 2026-04-23"
   data_observability.forwarder.zstd_compression_level: "ignored in initial audit 2026-04-23"
-  data_plane.dogstatsd.enabled: "ignored in second bulk edit 2026-05-06"
-  data_plane.enabled: "ignored in second bulk edit 2026-05-06"
-  data_plane.otlp.enabled: "ignored in initial audit 2026-04-23"
-  data_plane.otlp.proxy.enabled: "ignored in initial audit 2026-04-23"
-  data_plane.otlp.proxy.receiver.protocols.grpc.endpoint: "ignored in initial audit 2026-04-23"
   data_streams.forwarder.additional_endpoints: "ignored in initial audit 2026-04-23"
   data_streams.forwarder.batch_max_concurrent_send: "ignored in initial audit 2026-04-23"
   data_streams.forwarder.batch_max_content_size: "ignored in initial audit 2026-04-23"
@@ -3207,7 +3264,6 @@ excluded:
   inventories_min_interval: "ignored in initial audit 2026-04-23"
   iot_host: "ignored in initial audit 2026-04-23"
   ipc_address: "ignored in initial audit 2026-04-23"
-  ipc_cert_file_path: "ignored in second bulk edit 2026-05-06"
   jmx_check_period: "ignored in initial audit 2026-04-23"
   jmx_collection_timeout: "ignored in initial audit 2026-04-23"
   jmx_custom_jars: "ignored in initial audit 2026-04-23"

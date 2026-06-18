@@ -377,6 +377,8 @@ pub struct SalukiBootstrap {
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct SalukiOnlyConfiguration {
+    /// Control-plane Saluki-only values.
+    pub control: ControlSalukiOnly,
     /// OTLP Saluki-only values.
     pub otlp: OtlpSalukiOnly,
     /// DogStatsD Saluki-only values.
@@ -389,6 +391,7 @@ impl SalukiOnlyConfiguration {
     /// Seeds the native model with defaults and Saluki-only values.
     pub fn seed(&self) -> SalukiConfiguration {
         let mut config = SalukiConfiguration::default();
+        self.apply_runtime_overrides(&mut config);
         config.components.otlp.source.string_interner_size = self.otlp.string_interner_size;
         config.components.otlp.source.cached_contexts_limit = self.otlp.cached_contexts_limit;
         config.components.dogstatsd.source.context_string_interner_size_bytes =
@@ -397,16 +400,38 @@ impl SalukiOnlyConfiguration {
         config.components.workload.source.enabled = self.workload.enabled;
         config
     }
+
+    /// Reapplies Saluki-only values that intentionally override Datadog-derived fields.
+    pub fn apply_runtime_overrides(&self, config: &mut SalukiConfiguration) {
+        config.control.standalone_mode = self.control.standalone_mode;
+        config.control.checks.enabled = self.control.checks_enabled;
+        if let Some(stop_timeout_secs) = self.control.stop_timeout_secs {
+            config.control.stop_timeout_millis = stop_timeout_secs.saturating_mul(1000);
+        }
+    }
 }
 
 impl Default for SalukiOnlyConfiguration {
     fn default() -> Self {
         Self {
+            control: ControlSalukiOnly::default(),
             otlp: OtlpSalukiOnly::default(),
             dogstatsd: DogStatsDSalukiOnly::default(),
             workload: WorkloadSalukiOnly::default(),
         }
     }
+}
+
+/// Saluki-only control-plane values.
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize, Default)]
+#[serde(default)]
+pub struct ControlSalukiOnly {
+    /// Whether the process runs without remote Agent attachment.
+    pub standalone_mode: bool,
+    /// Whether the checks pipeline is enabled.
+    pub checks_enabled: bool,
+    /// Direct graceful shutdown timeout, in seconds.
+    pub stop_timeout_secs: Option<u64>,
 }
 
 /// Saluki-only OTLP values.

@@ -6,9 +6,9 @@ mod witness_impl;
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use agent_data_plane_config::{
-    BootstrapConfiguration, ConfigViews, DatadogBootstrap, DatadogRuntimeAuthority, DogStatsDSalukiOnly,
-    InternalConfigView, OtlpSalukiOnly, SalukiBootstrap, SalukiConfiguration, SalukiOnlyConfiguration,
-    SourceConfigView, WorkloadSalukiOnly,
+    BootstrapConfiguration, ConfigViews, ControlSalukiOnly, DatadogBootstrap, DatadogRuntimeAuthority,
+    DogStatsDSalukiOnly, InternalConfigView, OtlpSalukiOnly, SalukiBootstrap, SalukiConfiguration,
+    SalukiOnlyConfiguration, SourceConfigView, WorkloadSalukiOnly,
 };
 use bytesize::ByteSize;
 use datadog_agent_config::{drive, DatadogConfiguration, DatadogRemapper, KEY_ALIASES};
@@ -104,8 +104,7 @@ impl LoadedConfigurationSystem {
         self, authority: DatadogRuntimeAuthority,
     ) -> Result<StartedConfigurationSystem, GenericError> {
         let local_datadog = self.datadog.as_typed::<DatadogConfiguration>()?;
-        let mut local_native = translate_datadog(&local_datadog, &self.saluki_only)?;
-        apply_local_control_overrides(&self.datadog, &mut local_native)?;
+        let local_native = translate_datadog(&local_datadog, &self.saluki_only)?;
 
         let attachments = remote_agent::build_attachments(&self.datadog, &local_native.control, authority).await?;
         let stream_connection = (authority == DatadogRuntimeAuthority::Stream)
@@ -115,8 +114,7 @@ impl LoadedConfigurationSystem {
         let (source_snapshot, native, router_authority) = if let Some(connection) = stream_connection.clone() {
             let source_snapshot = read_initial_datadog_stream_snapshot(connection).await?;
             let datadog = source_snapshot.as_datadog_configuration()?;
-            let mut native = translate_datadog(&datadog, &self.saluki_only)?;
-            apply_json_control_overrides(&source_snapshot.as_json(), &mut native);
+            let native = translate_datadog(&datadog, &self.saluki_only)?;
             (source_snapshot, native, DatadogRuntimeAuthority::Stream)
         } else {
             (
@@ -592,10 +590,9 @@ impl ConfigUpdateRouter {
 
     /// Retranslates a source snapshot and routes changed native slices.
     pub fn apply_datadog_source_snapshot(
-        &mut self, snapshot: &DatadogConfiguration, source: &serde_json::Value,
+        &mut self, snapshot: &DatadogConfiguration, _source: &serde_json::Value,
     ) -> Result<bool, GenericError> {
-        let mut next = translate_datadog(snapshot, &self.saluki_only)?;
-        apply_json_control_overrides(source, &mut next);
+        let next = translate_datadog(snapshot, &self.saluki_only)?;
         Ok(self.apply_native_snapshot(next))
     }
 
@@ -707,88 +704,20 @@ fn parse_saluki_bootstrap(config: &GenericConfiguration) -> Result<SalukiBootstr
     })
 }
 
-fn apply_local_control_overrides(
-    config: &GenericConfiguration, native: &mut SalukiConfiguration,
-) -> Result<(), ConfigurationError> {
-    if let Some(value) = config.try_get_typed("data_plane.enabled")? {
-        native.control.enabled = value;
-    }
-    if let Some(value) = config.try_get_typed("data_plane.standalone_mode")? {
-        native.control.standalone_mode = value;
-    }
-    if let Some(value) = config.try_get_typed("data_plane.checks.enabled")? {
-        native.control.checks.enabled = value;
-    }
-    if let Some(value) = config.try_get_typed("data_plane.dogstatsd.enabled")? {
-        native.control.dogstatsd.enabled = value;
-    }
-    if let Some(value) = config.try_get_typed("data_plane.otlp.enabled")? {
-        native.control.otlp.native.enabled = value;
-    }
-    if let Some(value) = config.try_get_typed("data_plane.otlp.proxy.enabled")? {
-        native.control.otlp.proxy.enabled = value;
-    }
-    if let Some(value) = config.try_get_typed::<String>("data_plane.otlp.proxy.receiver.protocols.grpc.endpoint")? {
-        native.control.otlp.proxy.core_agent_otlp_grpc_endpoint = value;
-    }
-    if let Some(value) = config.try_get_typed::<u64>("data_plane.stop_timeout")? {
-        native.control.stop_timeout_millis = value.saturating_mul(1000);
-    }
-    if let Some(value) = config.try_get_typed::<String>("auth_token_file_path")? {
-        native.control.ipc_auth.auth_token_file_path = Some(value);
-    }
-    if let Some(value) = config.try_get_typed::<String>("ipc_cert_file_path")? {
-        native.control.ipc_auth.ipc_cert_file_path = Some(value);
-    }
-    Ok(())
-}
-
-fn apply_json_control_overrides(source: &serde_json::Value, native: &mut SalukiConfiguration) {
-    if let Some(value) = json_path(source, "data_plane.enabled").and_then(serde_json::Value::as_bool) {
-        native.control.enabled = value;
-    }
-    if let Some(value) = json_path(source, "data_plane.standalone_mode").and_then(serde_json::Value::as_bool) {
-        native.control.standalone_mode = value;
-    }
-    if let Some(value) = json_path(source, "data_plane.checks.enabled").and_then(serde_json::Value::as_bool) {
-        native.control.checks.enabled = value;
-    }
-    if let Some(value) = json_path(source, "data_plane.dogstatsd.enabled").and_then(serde_json::Value::as_bool) {
-        native.control.dogstatsd.enabled = value;
-    }
-    if let Some(value) = json_path(source, "data_plane.otlp.enabled").and_then(serde_json::Value::as_bool) {
-        native.control.otlp.native.enabled = value;
-    }
-    if let Some(value) = json_path(source, "data_plane.otlp.proxy.enabled").and_then(serde_json::Value::as_bool) {
-        native.control.otlp.proxy.enabled = value;
-    }
-    if let Some(value) =
-        json_path(source, "data_plane.otlp.proxy.receiver.protocols.grpc.endpoint").and_then(serde_json::Value::as_str)
-    {
-        native.control.otlp.proxy.core_agent_otlp_grpc_endpoint = value.to_string();
-    }
-    if let Some(value) = json_path(source, "data_plane.stop_timeout").and_then(serde_json::Value::as_u64) {
-        native.control.stop_timeout_millis = value.saturating_mul(1000);
-    }
-    if let Some(value) = json_path(source, "auth_token_file_path").and_then(serde_json::Value::as_str) {
-        native.control.ipc_auth.auth_token_file_path = Some(value.to_string());
-    }
-    if let Some(value) = json_path(source, "ipc_cert_file_path").and_then(serde_json::Value::as_str) {
-        native.control.ipc_auth.ipc_cert_file_path = Some(value.to_string());
-    }
-}
-
-fn json_path<'a>(value: &'a serde_json::Value, path: &str) -> Option<&'a serde_json::Value> {
-    let mut current = value;
-    for segment in path.split('.') {
-        current = current.get(segment)?;
-    }
-    Some(current)
-}
-
 fn parse_saluki_only(config: &GenericConfiguration) -> Result<SalukiOnlyConfiguration, ConfigurationError> {
     let defaults = SalukiOnlyConfiguration::default();
     Ok(SalukiOnlyConfiguration {
+        control: ControlSalukiOnly {
+            standalone_mode: config
+                .try_get_typed("data_plane.standalone_mode")?
+                .unwrap_or(defaults.control.standalone_mode),
+            checks_enabled: config
+                .try_get_typed("data_plane.checks.enabled")?
+                .unwrap_or(defaults.control.checks_enabled),
+            stop_timeout_secs: config
+                .try_get_typed("data_plane.stop_timeout")?
+                .or(defaults.control.stop_timeout_secs),
+        },
         otlp: OtlpSalukiOnly {
             string_interner_size: config
                 .try_get_typed("otlp.string_interner_size")?
@@ -818,7 +747,9 @@ fn translate_datadog(
 ) -> Result<SalukiConfiguration, GenericError> {
     let mut translator = Translator::new(saluki_only.seed());
     drive(datadog, &mut translator)?;
-    Ok(translator.finish())
+    let mut native = translator.finish();
+    saluki_only.apply_runtime_overrides(&mut native);
+    Ok(native)
 }
 
 fn scrub_json(mut value: serde_json::Value) -> serde_json::Value {
@@ -849,4 +780,136 @@ fn scrub_json_inner(value: &mut serde_json::Value) {
 fn is_sensitive_key(key: &str) -> bool {
     let key = key.to_ascii_lowercase();
     key.contains("api_key") || key.contains("app_key") || key.contains("token") || key.contains("password")
+}
+
+#[cfg(test)]
+mod tests {
+    use prost_types::value::Kind;
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn stream_updates_ignore_stale_same_origin_events_and_delete_nulls() {
+        let mut snapshot = DatadogSourceSnapshot::from_stream_snapshot(ConfigSnapshot {
+            origin: "agent-a".to_string(),
+            sequence_id: 10,
+            settings: vec![setting("log_level", string_value_proto("info"))],
+        })
+        .expect("initial snapshot should parse");
+
+        snapshot
+            .apply_stream_update(update("agent-a", 9, "log_level", string_value_proto("debug")))
+            .expect("stale update should be ignored without failing");
+        assert_eq!(snapshot.as_json()["log_level"], json!("info"));
+        assert_eq!(snapshot.sequence_id, 10);
+
+        snapshot
+            .apply_stream_update(update("agent-a", 11, "log_level", string_value_proto("debug")))
+            .expect("newer update should apply");
+        assert_eq!(snapshot.as_json()["log_level"], json!("debug"));
+        assert_eq!(snapshot.sequence_id, 11);
+
+        snapshot
+            .apply_stream_update(update("agent-a", 12, "log_level", null_value_proto()))
+            .expect("null update should delete");
+        assert!(snapshot.as_json().get("log_level").is_none());
+    }
+
+    #[test]
+    fn datadog_witnesses_control_keys_and_saluki_only_control_overrides() {
+        let saluki_only = SalukiOnlyConfiguration {
+            control: ControlSalukiOnly {
+                standalone_mode: true,
+                checks_enabled: true,
+                stop_timeout_secs: Some(7),
+            },
+            ..SalukiOnlyConfiguration::default()
+        };
+        let datadog: DatadogConfiguration = serde_json::from_value(json!({
+            "auth_token_file_path": "/tmp/auth_token",
+            "ipc_cert_file_path": "/tmp/ipc_cert.pem",
+            "data_plane": {
+                "enabled": true,
+                "dogstatsd": { "enabled": false },
+                "otlp": {
+                    "enabled": true,
+                    "proxy": {
+                        "enabled": true,
+                        "receiver": { "protocols": { "grpc": { "endpoint": "127.0.0.1:14319" } } }
+                    }
+                }
+            }
+        }))
+        .expect("Datadog snapshot should parse");
+
+        let native = translate_datadog(&datadog, &saluki_only).expect("snapshot should translate");
+
+        assert!(native.control.enabled);
+        assert!(native.control.standalone_mode);
+        assert!(native.control.checks.enabled);
+        assert!(!native.control.dogstatsd.enabled);
+        assert!(native.control.otlp.native.enabled);
+        assert!(native.control.otlp.proxy.enabled);
+        assert_eq!(
+            native.control.otlp.proxy.core_agent_otlp_grpc_endpoint,
+            "127.0.0.1:14319"
+        );
+        assert_eq!(native.control.stop_timeout_millis, 7_000);
+        assert_eq!(
+            native.control.ipc_auth.auth_token_file_path.as_deref(),
+            Some("/tmp/auth_token")
+        );
+        assert_eq!(
+            native.control.ipc_auth.ipc_cert_file_path.as_deref(),
+            Some("/tmp/ipc_cert.pem")
+        );
+    }
+
+    #[test]
+    fn stream_router_updates_live_typed_handles() {
+        let mut initial = SalukiConfiguration::default();
+        initial.control.log_level = Some("info".to_string());
+        let mut router = ConfigUpdateRouter::new(
+            initial,
+            SalukiOnlyConfiguration::default(),
+            DatadogRuntimeAuthority::Stream,
+        );
+        let handles = router.handles();
+        let snapshot: DatadogConfiguration =
+            serde_json::from_value(json!({"log_level": "debug"})).expect("Datadog snapshot should parse");
+
+        assert!(router
+            .apply_datadog_snapshot(&snapshot)
+            .expect("snapshot should translate"));
+        assert_eq!(handles.log_level.current(), Some("debug".to_string()));
+    }
+
+    fn update(origin: &str, sequence_id: i32, key: &str, value: prost_types::Value) -> AgentConfigUpdate {
+        AgentConfigUpdate {
+            origin: origin.to_string(),
+            sequence_id,
+            setting: Some(setting(key, value)),
+        }
+    }
+
+    fn setting(key: &str, value: prost_types::Value) -> ConfigSetting {
+        ConfigSetting {
+            source: "test".to_string(),
+            key: key.to_string(),
+            value: Some(value),
+        }
+    }
+
+    fn string_value_proto(value: &str) -> prost_types::Value {
+        prost_types::Value {
+            kind: Some(Kind::StringValue(value.to_string())),
+        }
+    }
+
+    fn null_value_proto() -> prost_types::Value {
+        prost_types::Value {
+            kind: Some(Kind::NullValue(0)),
+        }
+    }
 }

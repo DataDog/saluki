@@ -93,6 +93,17 @@ crate::declare_annotations! {
         test_json: Some("4194304"),
         pipeline_affinity: PipelineAffinity::CrossCutting,
     };
+    /// `auth_token_file_path`-IPC auth token file path
+    AUTH_TOKEN_FILE_PATH = SalukiAnnotation {
+        schema: &schema::AUTH_TOKEN_FILE_PATH,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::REMOTE_AGENT_CLIENT_CONFIGURATION],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::CrossCutting,
+    };
     /// `autoscaling.failover.enabled`-Enable autoscaling failover metric routing
     AUTOSCALING_FAILOVER_ENABLED = SalukiAnnotation {
         schema: &schema::AUTOSCALING_FAILOVER_ENABLED,
@@ -158,6 +169,17 @@ crate::declare_annotations! {
         value_type_override: None,
         test_json: Some(r#""https://cluster-agent.example.com""#),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Checks, Pipeline::DogStatsD, Pipeline::Otlp]),
+    };
+    /// `ipc_cert_file_path`-IPC certificate file path
+    IPC_CERT_FILE_PATH = SalukiAnnotation {
+        schema: &schema::IPC_CERT_FILE_PATH,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::REMOTE_AGENT_CLIENT_CONFIGURATION],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::CrossCutting,
     };
     /// `log_level`-Log verbosity directives
     LOG_LEVEL = SalukiAnnotation {

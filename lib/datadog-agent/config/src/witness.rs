@@ -119,6 +119,9 @@ pub trait DatadogConfigConsumer {
     /// Consumes `apm_config.obfuscation.valkey.remove_all_args`.
     fn consume_apm_config_obfuscation_valkey_remove_all_args(&mut self, value: Option<Value>) -> TranslateResult;
 
+    /// Consumes `auth_token_file_path`.
+    fn consume_auth_token_file_path(&mut self, value: Option<Value>) -> TranslateResult;
+
     /// Consumes `bind_host`.
     fn consume_bind_host(&mut self, value: Option<Value>) -> TranslateResult;
 
@@ -139,14 +142,31 @@ pub trait DatadogConfigConsumer {
         &mut self, value: Option<Value>,
     ) -> TranslateResult;
 
+    /// Consumes `data_plane.dogstatsd.enabled`.
+    fn consume_data_plane_dogstatsd_enabled(&mut self, value: Option<Value>) -> TranslateResult;
+
+    /// Consumes `data_plane.enabled`.
+    fn consume_data_plane_enabled(&mut self, value: Option<Value>) -> TranslateResult;
+
     /// Consumes `data_plane.log_file`.
     fn consume_data_plane_log_file(&mut self, value: Option<Value>) -> TranslateResult;
+
+    /// Consumes `data_plane.otlp.enabled`.
+    fn consume_data_plane_otlp_enabled(&mut self, value: Option<Value>) -> TranslateResult;
+
+    /// Consumes `data_plane.otlp.proxy.enabled`.
+    fn consume_data_plane_otlp_proxy_enabled(&mut self, value: Option<Value>) -> TranslateResult;
 
     /// Consumes `data_plane.otlp.proxy.logs.enabled`.
     fn consume_data_plane_otlp_proxy_logs_enabled(&mut self, value: Option<Value>) -> TranslateResult;
 
     /// Consumes `data_plane.otlp.proxy.metrics.enabled`.
     fn consume_data_plane_otlp_proxy_metrics_enabled(&mut self, value: Option<Value>) -> TranslateResult;
+
+    /// Consumes `data_plane.otlp.proxy.receiver.protocols.grpc.endpoint`.
+    fn consume_data_plane_otlp_proxy_receiver_protocols_grpc_endpoint(
+        &mut self, value: Option<Value>,
+    ) -> TranslateResult;
 
     /// Consumes `data_plane.otlp.proxy.traces.enabled`.
     fn consume_data_plane_otlp_proxy_traces_enabled(&mut self, value: Option<Value>) -> TranslateResult;
@@ -330,6 +350,9 @@ pub trait DatadogConfigConsumer {
 
     /// Consumes `histogram_copy_to_distribution_prefix`.
     fn consume_histogram_copy_to_distribution_prefix(&mut self, value: Option<Value>) -> TranslateResult;
+
+    /// Consumes `ipc_cert_file_path`.
+    fn consume_ipc_cert_file_path(&mut self, value: Option<Value>) -> TranslateResult;
 
     /// Consumes `log_format_rfc3339`.
     fn consume_log_format_rfc3339(&mut self, value: Option<Value>) -> TranslateResult;
@@ -580,6 +603,7 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigCon
         &value,
         &["apm_config", "obfuscation", "valkey", "remove_all_args"],
     ))?;
+    consumer.consume_auth_token_file_path(lookup(&value, &["auth_token_file_path"]))?;
     consumer.consume_bind_host(lookup(&value, &["bind_host"]))?;
     consumer.consume_cmd_port(lookup(&value, &["cmd_port"]))?;
     consumer.consume_cri_connection_timeout(lookup(&value, &["cri_connection_timeout"]))?;
@@ -589,7 +613,11 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigCon
         &value,
         &["data_plane", "dogstatsd", "aggregator_tag_filter_cache_capacity"],
     ))?;
+    consumer.consume_data_plane_dogstatsd_enabled(lookup(&value, &["data_plane", "dogstatsd", "enabled"]))?;
+    consumer.consume_data_plane_enabled(lookup(&value, &["data_plane", "enabled"]))?;
     consumer.consume_data_plane_log_file(lookup(&value, &["data_plane", "log_file"]))?;
+    consumer.consume_data_plane_otlp_enabled(lookup(&value, &["data_plane", "otlp", "enabled"]))?;
+    consumer.consume_data_plane_otlp_proxy_enabled(lookup(&value, &["data_plane", "otlp", "proxy", "enabled"]))?;
     consumer.consume_data_plane_otlp_proxy_logs_enabled(lookup(
         &value,
         &["data_plane", "otlp", "proxy", "logs", "enabled"],
@@ -597,6 +625,18 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigCon
     consumer.consume_data_plane_otlp_proxy_metrics_enabled(lookup(
         &value,
         &["data_plane", "otlp", "proxy", "metrics", "enabled"],
+    ))?;
+    consumer.consume_data_plane_otlp_proxy_receiver_protocols_grpc_endpoint(lookup(
+        &value,
+        &[
+            "data_plane",
+            "otlp",
+            "proxy",
+            "receiver",
+            "protocols",
+            "grpc",
+            "endpoint",
+        ],
     ))?;
     consumer.consume_data_plane_otlp_proxy_traces_enabled(lookup(
         &value,
@@ -673,6 +713,7 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigCon
     consumer.consume_histogram_copy_to_distribution(lookup(&value, &["histogram_copy_to_distribution"]))?;
     consumer
         .consume_histogram_copy_to_distribution_prefix(lookup(&value, &["histogram_copy_to_distribution_prefix"]))?;
+    consumer.consume_ipc_cert_file_path(lookup(&value, &["ipc_cert_file_path"]))?;
     consumer.consume_log_format_rfc3339(lookup(&value, &["log_format_rfc3339"]))?;
     consumer.consume_log_level(lookup(&value, &["log_level"]))?;
     consumer.consume_log_payloads(lookup(&value, &["log_payloads"]))?;

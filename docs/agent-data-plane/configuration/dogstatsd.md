@@ -430,6 +430,8 @@ The following settings are specific to ADP and have no equivalent in the core ag
 | `apm_config.obfuscation.sql.replace_digits`                     | Replace digits in SQL obfuscation          |         |
 | `apm_config.obfuscation.sql.table_names`                        | Collect table names during obfuscation     |         |
 | `counter_expiry_seconds`                                        | Idle counter keep-alive duration           | 300     |
+| `data_plane.checks.enabled`                                     | Enable the checks data plane               | false   |
+| `data_plane.standalone_mode`                                    | Run without remote Agent attachment        | false   |
 | `data_plane.stop_timeout`                                       | ADP graceful shutdown timeout (s)          | derived |
 | `dogstatsd_allow_context_heap_allocs`                           | Allow heap allocations for contexts        |         |
 | `dogstatsd_autoscale_udp_listeners`                             | Bind multiple UDP sockets via SO_REUSEPORT |         |
@@ -559,6 +561,7 @@ compressed wire payload bytes.
 | `apm_config.obfuscation.redis.remove_all_args`                 | apm_config.obfuscation.redis.remove_all_args       |
 | `apm_config.obfuscation.valkey.enabled`                        | apm_config.obfuscation.valkey.enabled              |
 | `apm_config.obfuscation.valkey.remove_all_args`                | apm_config.obfuscation.valkey.remove_all_args      |
+| `auth_token_file_path`                                         | IPC auth token file path                           |
 | `autoscaling.failover.enabled`                                 | Enable autoscaling failover metric routing         |
 | `autoscaling.failover.metrics`                                 | Metric names forwarded to DCA for failover         |
 | `bind_host`                                                    | Global listen host fallback                        |
@@ -571,9 +574,14 @@ compressed wire payload bytes.
 | `cri_query_timeout`                                            | CRI container runtime query timeout (s)            |
 | `data_plane.api_listen_address`                                | Unprivileged API listen address                    |
 | `data_plane.dogstatsd.aggregator_tag_filter_cache_capacity`    | Tag-filter deduplication cache size                |
+| `data_plane.dogstatsd.enabled`                                 | Enable the DogStatsD data plane                    |
+| `data_plane.enabled`                                           | Enable the data plane                              |
 | `data_plane.log_file`                                          | ADP log file path                                  |
+| `data_plane.otlp.enabled`                                      | Enable the native OTLP data plane                  |
+| `data_plane.otlp.proxy.enabled`                                | Enable OTLP proxy mode                             |
 | `data_plane.otlp.proxy.logs.enabled`                           | Proxy OTLP logs to Core Agent                      |
 | `data_plane.otlp.proxy.metrics.enabled`                        | Proxy OTLP metrics to Core Agent                   |
+| `data_plane.otlp.proxy.receiver.protocols.grpc.endpoint`       | Core Agent OTLP proxy gRPC endpoint                |
 | `data_plane.otlp.proxy.traces.enabled`                         | Proxy OTLP traces to Core Agent                    |
 | `data_plane.remote_agent_enabled`                              | Enable remote agent mode                           |
 | `data_plane.secure_api_listen_address`                         | Privileged API listen address                      |
@@ -630,6 +638,7 @@ compressed wire payload bytes.
 | `histogram_aggregates`                                         | Histogram aggregate statistics                     |
 | `histogram_copy_to_distribution`                               | Copy histograms to distributions                   |
 | `histogram_copy_to_distribution_prefix`                        | Prefix for hist-to-dist copies                     |
+| `ipc_cert_file_path`                                           | IPC certificate file path                          |
 | `log_format_rfc3339`                                           | Use RFC 3339 timestamps in log output              |
 | `log_payloads`                                                 | Debug-log decoded payload contents before encoding |
 | `metric_filterlist`                                            | Metric name blocklist                              |

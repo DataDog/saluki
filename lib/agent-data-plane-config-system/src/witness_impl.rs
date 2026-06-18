@@ -59,12 +59,12 @@ impl Translator {
         let Some(value) = value else {
             return Ok(());
         };
+        let Some(value) = consume_control_key(self, key, value) else {
+            return Ok(());
+        };
+
         match key {
             "additional_endpoints" => self.consume_additional_endpoints_value(value),
-            "agent_ipc.grpc_max_message_size" => {
-                self.native.control.agent_ipc_grpc_max_message_size = Some(usize_value(value, 0));
-            }
-            "aggregator_stop_timeout" => self.aggregator_stop_timeout_secs = u64_value(value, 2),
             "allow_arbitrary_tags" => self.native.components.forwarder.datadog.allow_arbitrary_tags = bool_value(value),
             "api_key" => self.api_key = string_value(value),
             "apm_config.obfuscation.credit_cards.enabled" => {
@@ -141,17 +141,11 @@ impl Translator {
             "bind_host" => {
                 self.dogstatsd_bind_host = optional_string_value(value);
             }
-            "cmd_port" => {
-                self.native.control.cmd_port = Some(u16_value(value, 5001));
-            }
             "cri_connection_timeout" => {
                 self.native.components.workload.source.cri_connection_timeout_secs = u64_value(value, 0);
             }
             "cri_query_timeout" => {
                 self.native.components.workload.source.cri_query_timeout_secs = u64_value(value, 0);
-            }
-            "data_plane.log_file" => {
-                self.native.control.data_plane_log_file = optional_string_value(value);
             }
             "dogstatsd_buffer_size" => {
                 self.native.components.dogstatsd.source.buffer_size = usize_value(value, 8192);
@@ -227,9 +221,6 @@ impl Translator {
             }
             "enable_payloads.sketches" => {
                 self.native.components.dogstatsd.source.enable_payloads.sketches = bool_value(value);
-            }
-            "env" => {
-                self.native.control.env = optional_string_value(value);
             }
             "origin_detection_unified" => {
                 self.native.components.dogstatsd.source.origin.unified_detection = bool_value(value);
@@ -324,31 +315,6 @@ impl Translator {
             }
             "data_plane.dogstatsd.aggregator_tag_filter_cache_capacity" => {
                 self.native.components.dogstatsd.tag_filterlist.cache_capacity = usize_value(value, 100_000);
-            }
-            "data_plane.api_listen_address" => {
-                self.native.control.api_listen_address = ListenAddress::Tcp(string_value(value));
-            }
-            "data_plane.secure_api_listen_address" => {
-                self.native.control.secure_api_listen_address = ListenAddress::Tcp(string_value(value));
-            }
-            "data_plane.remote_agent_enabled" => self.native.control.remote_agent_enabled = bool_value(value),
-            "data_plane.use_new_config_stream_endpoint" => {
-                self.native.control.use_new_config_stream_endpoint = bool_value(value);
-            }
-            "data_plane.otlp.proxy.logs.enabled" => {
-                self.native.control.otlp.logs = PipelineGate {
-                    enabled: bool_value(value),
-                }
-            }
-            "data_plane.otlp.proxy.metrics.enabled" => {
-                self.native.control.otlp.metrics = PipelineGate {
-                    enabled: bool_value(value),
-                };
-            }
-            "data_plane.otlp.proxy.traces.enabled" => {
-                self.native.control.otlp.traces = PipelineGate {
-                    enabled: bool_value(value),
-                };
             }
             "otlp_config.logs.enabled" => {
                 let enabled = bool_value(value);
@@ -461,7 +427,6 @@ impl Translator {
             "forwarder_storage_path" => {
                 self.native.components.forwarder.datadog.retry.storage_path = string_value(value);
             }
-            "forwarder_stop_timeout" => self.forwarder_stop_timeout_secs = u64_value(value, 2),
             "forwarder_timeout" => {
                 self.native.components.forwarder.datadog.request_timeout_millis =
                     u64_value(value, 20).saturating_mul(1000);
@@ -494,10 +459,6 @@ impl Translator {
                     .post_aggregate_filter
                     .histogram_percentiles = string_vec_value(value);
             }
-            "log_format_rfc3339" => {
-                self.native.control.log_format_rfc3339 = Some(bool_value(value));
-            }
-            "log_level" => self.native.control.log_level = Some(string_value(value)),
             "log_payloads" => {
                 self.native.components.metrics.datadog_encoder.log_payloads = bool_value(value);
             }
@@ -570,12 +531,6 @@ impl Translator {
             "statsd_metric_namespace_blocklist" => {
                 self.native.components.dogstatsd.prefix_filter.metric_prefix_blocklist = string_vec_value(value);
             }
-            "syslog_rfc" => {
-                self.native.control.syslog_rfc = Some(bool_value(value));
-            }
-            "syslog_uri" => {
-                self.native.control.syslog_uri = optional_string_value(value);
-            }
             "use_proxy_for_cloud_metadata" => {
                 self.native
                     .components
@@ -592,9 +547,6 @@ impl Translator {
             }
             "vector.metrics.url" => {
                 self.native.components.forwarder.datadog.opw_metrics.vector_url = string_value(value);
-            }
-            "vsock_addr" => {
-                self.native.control.vsock_addr = optional_string_value(value);
             }
             "url" => self.dd_url = string_value(value),
             "site" => {
@@ -651,6 +603,90 @@ impl Translator {
             }
         }
     }
+}
+
+fn consume_control_key(translator: &mut Translator, key: &str, value: Value) -> Option<Value> {
+    match key {
+        "agent_ipc.grpc_max_message_size" => {
+            translator.native.control.agent_ipc_grpc_max_message_size = Some(usize_value(value, 0));
+        }
+        "aggregator_stop_timeout" => translator.aggregator_stop_timeout_secs = u64_value(value, 2),
+        "auth_token_file_path" => {
+            translator.native.control.ipc_auth.auth_token_file_path = optional_string_value(value);
+        }
+        "cmd_port" => {
+            translator.native.control.cmd_port = Some(u16_value(value, 5001));
+        }
+        "data_plane.api_listen_address" => {
+            translator.native.control.api_listen_address = ListenAddress::Tcp(string_value(value));
+        }
+        "data_plane.dogstatsd.enabled" => {
+            translator.native.control.dogstatsd = PipelineGate {
+                enabled: bool_value(value),
+            };
+        }
+        "data_plane.enabled" => {
+            translator.native.control.enabled = bool_value(value);
+        }
+        "data_plane.log_file" => {
+            translator.native.control.data_plane_log_file = optional_string_value(value);
+        }
+        "data_plane.otlp.enabled" => {
+            translator.native.control.otlp.native = PipelineGate {
+                enabled: bool_value(value),
+            };
+        }
+        "data_plane.otlp.proxy.enabled" => {
+            translator.native.control.otlp.proxy.enabled = bool_value(value);
+        }
+        "data_plane.otlp.proxy.logs.enabled" => {
+            translator.native.control.otlp.logs = PipelineGate {
+                enabled: bool_value(value),
+            };
+        }
+        "data_plane.otlp.proxy.metrics.enabled" => {
+            translator.native.control.otlp.metrics = PipelineGate {
+                enabled: bool_value(value),
+            };
+        }
+        "data_plane.otlp.proxy.receiver.protocols.grpc.endpoint" => {
+            translator.native.control.otlp.proxy.core_agent_otlp_grpc_endpoint = string_value(value);
+        }
+        "data_plane.otlp.proxy.traces.enabled" => {
+            translator.native.control.otlp.traces = PipelineGate {
+                enabled: bool_value(value),
+            };
+        }
+        "data_plane.remote_agent_enabled" => translator.native.control.remote_agent_enabled = bool_value(value),
+        "data_plane.secure_api_listen_address" => {
+            translator.native.control.secure_api_listen_address = ListenAddress::Tcp(string_value(value));
+        }
+        "data_plane.use_new_config_stream_endpoint" => {
+            translator.native.control.use_new_config_stream_endpoint = bool_value(value);
+        }
+        "env" => {
+            translator.native.control.env = optional_string_value(value);
+        }
+        "forwarder_stop_timeout" => translator.forwarder_stop_timeout_secs = u64_value(value, 2),
+        "ipc_cert_file_path" => {
+            translator.native.control.ipc_auth.ipc_cert_file_path = optional_string_value(value);
+        }
+        "log_format_rfc3339" => {
+            translator.native.control.log_format_rfc3339 = Some(bool_value(value));
+        }
+        "log_level" => translator.native.control.log_level = Some(string_value(value)),
+        "syslog_rfc" => {
+            translator.native.control.syslog_rfc = Some(bool_value(value));
+        }
+        "syslog_uri" => {
+            translator.native.control.syslog_uri = optional_string_value(value);
+        }
+        "vsock_addr" => {
+            translator.native.control.vsock_addr = optional_string_value(value);
+        }
+        _ => return Some(value),
+    }
+    None
 }
 
 fn bool_value(value: Value) -> bool {
@@ -750,6 +786,10 @@ impl DatadogConfigConsumer for Translator {
 
     fn consume_api_key(&mut self, value: Option<Value>) -> TranslateResult {
         self.consume_key("api_key", value)
+    }
+
+    fn consume_auth_token_file_path(&mut self, value: Option<Value>) -> TranslateResult {
+        self.consume_key("auth_token_file_path", value)
     }
 
     fn consume_apm_config_obfuscation_credit_cards_enabled(&mut self, value: Option<Value>) -> TranslateResult {
@@ -864,8 +904,24 @@ impl DatadogConfigConsumer for Translator {
         self.consume_key("data_plane.dogstatsd.aggregator_tag_filter_cache_capacity", value)
     }
 
+    fn consume_data_plane_dogstatsd_enabled(&mut self, value: Option<Value>) -> TranslateResult {
+        self.consume_key("data_plane.dogstatsd.enabled", value)
+    }
+
+    fn consume_data_plane_enabled(&mut self, value: Option<Value>) -> TranslateResult {
+        self.consume_key("data_plane.enabled", value)
+    }
+
     fn consume_data_plane_log_file(&mut self, value: Option<Value>) -> TranslateResult {
         self.consume_key("data_plane.log_file", value)
+    }
+
+    fn consume_data_plane_otlp_enabled(&mut self, value: Option<Value>) -> TranslateResult {
+        self.consume_key("data_plane.otlp.enabled", value)
+    }
+
+    fn consume_data_plane_otlp_proxy_enabled(&mut self, value: Option<Value>) -> TranslateResult {
+        self.consume_key("data_plane.otlp.proxy.enabled", value)
     }
 
     fn consume_data_plane_otlp_proxy_logs_enabled(&mut self, value: Option<Value>) -> TranslateResult {
@@ -874,6 +930,12 @@ impl DatadogConfigConsumer for Translator {
 
     fn consume_data_plane_otlp_proxy_metrics_enabled(&mut self, value: Option<Value>) -> TranslateResult {
         self.consume_key("data_plane.otlp.proxy.metrics.enabled", value)
+    }
+
+    fn consume_data_plane_otlp_proxy_receiver_protocols_grpc_endpoint(
+        &mut self, value: Option<Value>,
+    ) -> TranslateResult {
+        self.consume_key("data_plane.otlp.proxy.receiver.protocols.grpc.endpoint", value)
     }
 
     fn consume_data_plane_otlp_proxy_traces_enabled(&mut self, value: Option<Value>) -> TranslateResult {
@@ -1118,6 +1180,10 @@ impl DatadogConfigConsumer for Translator {
 
     fn consume_histogram_copy_to_distribution_prefix(&mut self, value: Option<Value>) -> TranslateResult {
         self.consume_key("histogram_copy_to_distribution_prefix", value)
+    }
+
+    fn consume_ipc_cert_file_path(&mut self, value: Option<Value>) -> TranslateResult {
+        self.consume_key("ipc_cert_file_path", value)
     }
 
     fn consume_log_format_rfc3339(&mut self, value: Option<Value>) -> TranslateResult {
