@@ -128,11 +128,11 @@ container:
 
 # Required: list of steps to run sequentially.
 # Each step is either a single assertion, a single action, or a parallel assertion block.
-assertions:
-  - type: process_stable_for
+procedure:
+  - assertion: process_stable_for
     duration: 10s
 
-  - type: port_listening
+  - assertion: port_listening
     port: 8125
     protocol: udp
     timeout: 30s
@@ -141,7 +141,7 @@ assertions:
     key: log_level
     value: debug
 
-  - type: log_contains
+  - assertion: log_contains
     pattern: "Topology healthy"
     timeout: 30s
 ```
@@ -151,17 +151,17 @@ assertions:
 By default, assertions run sequentially. To run multiple assertions concurrently, wrap them in a `parallel` block:
 
 ```yaml
-assertions:
+procedure:
   # This runs first, on its own
-  - type: log_contains
+  - assertion: log_contains
     pattern: "Agent started"
     timeout: 30s
 
   # These two run concurrently with each other
   - parallel:
-    - type: process_stable_for
+    - assertion: process_stable_for
       duration: 5s
-    - type: log_not_contains
+    - assertion: log_not_contains
       pattern: "panic|PANIC"
       regex: true
       during: 5s
@@ -188,7 +188,7 @@ Sets a runtime configuration key through the Core Agent command API.
 Verifies the container process doesn't exit unexpectedly for a specified duration.
 
 ```yaml
-- type: process_stable_for
+- assertion: process_stable_for
   duration: 15s
 ```
 
@@ -197,7 +197,7 @@ Verifies the container process doesn't exit unexpectedly for a specified duratio
 Waits for a port to become available.
 
 ```yaml
-- type: port_listening
+- assertion: port_listening
   port: 8125
   protocol: udp    # "tcp" or "udp"
   timeout: 30s
@@ -208,7 +208,7 @@ Waits for a port to become available.
 Waits for a pattern to appear in the container logs.
 
 ```yaml
-- type: log_contains
+- assertion: log_contains
   pattern: "Agent started"
   regex: false           # Optional: treat pattern as regex (default: false)
   timeout: 30s
@@ -220,7 +220,7 @@ Waits for a pattern to appear in the container logs.
 Verifies a pattern does NOT appear in the logs for a duration.
 
 ```yaml
-- type: log_not_contains
+- assertion: log_not_contains
   pattern: "panic|PANIC"
   regex: true
   during: 15s
@@ -233,7 +233,7 @@ Probes an HTTP or HTTPS endpoint and asserts on the response status code. HTTPS 
 
 ```yaml
 # Assert the endpoint returns a specific status code.
-- type: http_check
+- assertion: http_check
   endpoint: "http://localhost:5100/health"
   status:
     equal: 200
@@ -241,7 +241,7 @@ Probes an HTTP or HTTPS endpoint and asserts on the response status code. HTTPS 
 
 # Probe an HTTPS endpoint served with a self-signed certificate, asserting only that the route is
 # registered (i.e. the response is anything other than 404).
-- type: http_check
+- assertion: http_check
   endpoint: "https://localhost:5101/logging/override"
   status:
     not_equal: 404
@@ -254,7 +254,7 @@ Probes an HTTP or HTTPS endpoint and asserts on the response status code. HTTPS 
 Polls ADP's privileged `/config` endpoint until one key equals the expected value.
 
 ```yaml
-- type: adp_config_key_equals
+- assertion: adp_config_key_equals
   key: log_level
   value: debug
   timeout: 30s
@@ -266,12 +266,12 @@ Polls a file inside the container (via `docker exec cat`) until it exists and, o
 
 ```yaml
 # File must exist.
-- type: file_contains
+- assertion: file_contains
   path: "/var/log/datadog/agent-data-plane.log"
   timeout: 30s
 
 # File must exist and contain the pattern.
-- type: file_contains
+- assertion: file_contains
   path: "/var/log/datadog/agent-data-plane.log"
   pattern: "DATAPLANE"
   regex: false           # Optional: treat pattern as regex (default: false)
