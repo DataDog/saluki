@@ -95,15 +95,16 @@ informational and not relevant to the release process itself.
 
 ## Software bill of materials (SBOM)
 
-Every ADP binary produced in CI—both the internal/dev images built on each pipeline and the published release
-artifacts—embeds a software bill of materials (SBOM): a compact JSON record of the exact dependency tree the binary was
+Every ADP binary produced in CI -- both the internal/dev images built on each pipeline and the published release
+artifacts -- embeds a software bill of materials (SBOM): a compact JSON record of the exact dependency tree the binary was
 built from. This lets you audit a shipped binary for vulnerable dependencies without access to its source tree or
 `Cargo.lock`.
 
-The SBOM is produced by [`cargo-auditable`](https://github.com/rust-secure-code/cargo-auditable), which CI builds invoke
-as `cargo auditable build` (a transparent wrapper around `cargo build`). The dependency list lives in a dedicated linker
-section of the binary, adds only a few kilobytes, survives stripping, and is reproducible-build-safe (no timestamps;
-sorted output).
+The SBOM is produced by [`cargo-auditable`](https://github.com/rust-secure-code/cargo-auditable), used during CI to
+build ADP in a way that captures the exact dependencies used, both the name and version. The dependency list lives in a
+dedicated linker section of the binary, adds only a few kilobytes, survives stripping, and is reproducible-build-safe
+(no timestamps; sorted output). It is also natively supported by tools like `cargo-audit` and Trivy, making it possible
+for customers to audit ADP binaries for vulnerable dependencies without access to the source code or bespoke tooling.
 
 > [!NOTE]
 > Local developer builds (`make build-adp`, `make build-adp-host`, `make build-adp-image`) do **not** embed an SBOM. The
