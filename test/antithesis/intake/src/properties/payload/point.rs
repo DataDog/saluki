@@ -4,11 +4,13 @@ use antithesis_sdk::prelude::*;
 use datadog_protos::metrics::metric_payload::MetricSeries;
 use serde_json::json;
 
+use crate::capture::Target;
+
 /// Pyld21 -- max seconds a point timestamp may exceed intake wall clock.
 const MAX_SECONDS_IN_FUTURE: i64 = 600;
 
 /// Pyld20 -- no point value is NaN.
-pub(crate) fn value_not_nan(ms: &MetricSeries) {
+pub(crate) fn value_not_nan(target: Target, ms: &MetricSeries) {
     let mut count = 0usize;
     let mut first = None;
     for (i, p) in ms.points.iter().enumerate() {
@@ -23,12 +25,12 @@ pub(crate) fn value_not_nan(ms: &MetricSeries) {
     assert_always!(
         violation.is_none(),
         "Pyld20.value_not_nan",
-        &json!({ "metric": ms.metric(), "observed": violation })
+        &json!({ "lane": target, "metric": ms.metric(), "observed": violation })
     );
 }
 
 /// Pyld21 -- no point timestamp exceeds `intake_now` + 600s.
-pub(crate) fn future_bound(ms: &MetricSeries, intake_now_secs: i64) {
+pub(crate) fn future_bound(target: Target, ms: &MetricSeries, intake_now_secs: i64) {
     let bound = intake_now_secs.saturating_add(MAX_SECONDS_IN_FUTURE);
     let mut count = 0usize;
     let mut first = None;
@@ -44,6 +46,6 @@ pub(crate) fn future_bound(ms: &MetricSeries, intake_now_secs: i64) {
     assert_always!(
         violation.is_none(),
         "Pyld21.timestamp_future_bound",
-        &json!({ "metric": ms.metric(), "observed": violation })
+        &json!({ "lane": target, "metric": ms.metric(), "observed": violation })
     );
 }

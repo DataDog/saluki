@@ -7,6 +7,8 @@ use datadog_protos::metrics::metric_payload::{MetricSeries, Resource};
 use datadog_protos::metrics::MetricPayload;
 use serde_json::json;
 
+use crate::capture::Target;
+
 /// Pyld18 -- maximum resources per series.
 const MAX_RESOURCES_PER_SERIES: usize = 500;
 /// Pyld19 -- maximum host name length in bytes.
@@ -19,8 +21,8 @@ fn host_resource(series: &MetricSeries) -> Option<&Resource> {
 
 /// Pyld17 -- every metric context across all inbound traffic on a lane resolves a non-empty host,
 /// and they all share one host. `established` is set once from the first host seen so the check spans
-/// every request. Cross-lane host equality is checked by the differential oracle.
-pub(crate) fn host_consistent(payload: &MetricPayload, established: &OnceLock<String>) {
+/// every request. Cross-lane host equality is checked by the differential scenario.
+pub(crate) fn host_consistent(target: Target, payload: &MetricPayload, established: &OnceLock<String>) {
     let mut observed = None;
     for ms in &payload.series {
         let name = host_resource(ms).map_or("", Resource::name);
@@ -38,28 +40,28 @@ pub(crate) fn host_consistent(payload: &MetricPayload, established: &OnceLock<St
     assert_always!(
         observed.is_none(),
         "Pyld17.host_resource_resolved",
-        &json!({ "series": payload.series.len(), "host": established.get(), "observed": observed })
+        &json!({ "lane": target, "series": payload.series.len(), "host": established.get(), "observed": observed })
     );
 }
 
 /// Pyld18 -- resource count at most MaxResources(orgID).
-pub(crate) fn resource_count(ms: &MetricSeries) {
+pub(crate) fn resource_count(target: Target, ms: &MetricSeries) {
     let over = (ms.resources.len() > MAX_RESOURCES_PER_SERIES).then_some(ms.resources.len());
     assert_always!(
         over.is_none(),
         "Pyld18.resource_count",
-        &json!({ "metric": ms.metric(), "max_resources": MAX_RESOURCES_PER_SERIES, "observed": over })
+        &json!({ "lane": target, "metric": ms.metric(), "max_resources": MAX_RESOURCES_PER_SERIES, "observed": over })
     );
 }
 
 /// Pyld19 -- host name at most 255 bytes.
-pub(crate) fn host_name_length(ms: &MetricSeries) {
+pub(crate) fn host_name_length(target: Target, ms: &MetricSeries) {
     let over = host_resource(ms)
         .map(Resource::name)
         .filter(|name| name.len() > MAX_HOST_NAME_BYTES);
     assert_always!(
         over.is_none(),
         "Pyld19.host_name_length",
-        &json!({ "metric": ms.metric(), "observed": over })
+        &json!({ "lane": target, "metric": ms.metric(), "observed": over })
     );
 }

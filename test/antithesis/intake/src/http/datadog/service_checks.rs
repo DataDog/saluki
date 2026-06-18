@@ -2,26 +2,28 @@
 
 use axum::{
     body::{to_bytes, Body},
+    extract::State,
     http::StatusCode,
 };
 use serde::Deserialize;
 use tracing::error;
 
+use crate::http::state::AppState;
 use crate::http::MAX_DECOMPRESSED_BODY_BYTES;
 
 /// Handler for `POST /api/v1/check_run`.
-pub(crate) async fn handle_check_run_v1(body: Body) -> StatusCode {
+pub(crate) async fn handle_check_run_v1(State(state): State<AppState>, body: Body) -> StatusCode {
     let body = match to_bytes(body, MAX_DECOMPRESSED_BODY_BYTES).await {
         Ok(body) => body,
         Err(e) => {
-            error!(error = %e, cap = MAX_DECOMPRESSED_BODY_BYTES, "Rejected check_run body at the decompressed cap.");
+            error!(target = state.target.as_str(), error = %e, cap = MAX_DECOMPRESSED_BODY_BYTES, "Rejected check_run body at the decompressed cap.");
             return StatusCode::PAYLOAD_TOO_LARGE;
         }
     };
     let items = match serde_json::from_slice::<Vec<CheckRunItem>>(&body) {
         Ok(items) => items,
         Err(e) => {
-            error!(error = %e, "failed to parse check_run payload");
+            error!(target = state.target.as_str(), error = %e, "failed to parse check_run payload");
             return StatusCode::BAD_REQUEST;
         }
     };
