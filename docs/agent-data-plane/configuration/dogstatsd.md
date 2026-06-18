@@ -83,6 +83,7 @@ architecture is fundamentally different or the feature is platform-specific.
 | `dogstatsd_workers_count`                                         | Number of DSD processing workers           | ADP uses async tasks.                                                                                                                                                                                                                                                     |
 | `enable_json_stream_shared_compressor_buffers`                    | Pre-allocate shared compressor buffers     | ADP does not use a shared compressor buffer pool; Rust request builders own fixed-capacity scratch and compression buffers.                                                                                                                                               |
 | `entity_id`                                                       | Agent pod entity ID                        | ADP internal DogStatsD telemetry uses OpenMetrics.                                                                                                                                                                                                                        |
+| `forwarder_requeue_buffer_size`                                   | In-memory re-queue buffer size             | See below                                                                                                                                                                                                                                                                 |
 | `heroku_dyno`                                                     | Heroku dyno telemetry mode                 | See below                                                                                                                                                                                                                                                                 |
 | `logging_frequency`                                               | Transaction success log interval           | The core agent uses `logging_frequency` to throttle repetitive successful transaction logs. ADP logs successful forwarder operations below the default `info` level, so there is no matching info-level success-log stream to throttle. This key is intentionally unused. |
 | `use_dogstatsd`                                                   | Master DogStatsD enable toggle             | Core Agent evaluates and sets `data_plane.dogstatsd.enabled`.                                                                                                                                                                                                             |
@@ -198,6 +199,15 @@ ADP does not expose the core agent's packet-per-second expvar endpoint or a pers
 DogStatsD statistics endpoint to scrape. You do not need to set up scraper configuration for this
 per-metric data. The config keys `dogstatsd_stats_enable`, `dogstatsd_stats_buffer`, and
 `dogstatsd_stats_port` have no effect in ADP. See [#1352].
+
+### `forwarder_requeue_buffer_size`
+
+ADP does not implement `forwarder_requeue_buffer_size`. The core Agent uses this setting to size a separate
+count-bounded handoff channel from forwarder workers to the retry manager. ADP's endpoint I/O loop handles
+send failures that need to be retried and owns the retry queue, so ADP does not need a separate queue for
+worker-to-retry-manager communication. Those failures are re-enqueued into the low-priority retry queue, which
+is bounded by payload bytes via `forwarder_retry_queue_payloads_max_size` and optional disk persistence settings.
+See [#1755].
 
 ### `heroku_dyno`
 
@@ -406,7 +416,6 @@ ways that are not yet fully characterized.
 | Config Key                                               | Description                                   | Issue   |
 | -------------------------------------------------------- | --------------------------------------------- | ------- |
 | `forwarder_low_prio_buffer_size`                         | Low-priority request queue size               | [#1362] |
-| `forwarder_requeue_buffer_size`                          | In-memory re-queue buffer size                | [#1755] |
 | `telemetry.dogstatsd.aggregator_channel_latency_buckets` | Histogram buckets: DSD aggregator channel lag | [#1679] |
 | `telemetry.dogstatsd.listeners_channel_latency_buckets`  | Histogram buckets: listener channel latency   | [#1679] |
 | `telemetry.dogstatsd.listeners_latency_buckets`          | Histogram buckets: listener processing        | [#1679] |
