@@ -40,9 +40,7 @@ mod tests {
         // Anchored to line start to avoid matching partial names or comments.
         for line in contents.lines() {
             let trimmed = line.trim();
-            if trimmed.starts_with(dep_name)
-                && trimmed[dep_name.len()..].starts_with(|c: char| c == ' ' || c == '=' || c == '.')
-            {
+            if trimmed.starts_with(dep_name) && trimmed[dep_name.len()..].starts_with([' ', '=', '.']) {
                 return true;
             }
         }

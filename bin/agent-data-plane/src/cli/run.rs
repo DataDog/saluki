@@ -124,8 +124,10 @@ pub async fn handle_run_command(
     // Reload logging from the runtime configuration's log level once the authoritative config is
     // online (it may differ from the bootstrap-phase value).
     let runtime_log_level = log_level_handle.current();
-    let mut logging_bootstrap = agent_data_plane_config::LoggingBootstrap::default();
-    logging_bootstrap.log_level = Some(runtime_log_level);
+    let logging_bootstrap = agent_data_plane_config::LoggingBootstrap {
+        log_level: Some(runtime_log_level),
+        ..Default::default()
+    };
     match crate::internal::logging::LoggingConfigurationTranslator::translate(&logging_bootstrap) {
         Ok(logging_config) => {
             if let Err(e) = bootstrap_guard.logging_mut().reload(logging_config).await {

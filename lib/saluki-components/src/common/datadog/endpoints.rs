@@ -327,7 +327,7 @@ impl ResolvedEndpoint {
         if let Some(live_config) = &self.live_config {
             let current = live_config.current();
             if let (Some(index), Some(raw_url)) = (self.api_key_index, self.raw_additional_url.as_deref()) {
-                // Additional endpoint: look up current key by raw index in this URL's key list.
+                // Additional endpoint: look up current key by raw index in this URL key list.
                 match lookup_additional_key(&current, raw_url, index) {
                     Some(key) if key != self.api_key => {
                         debug!(endpoint = %self.endpoint, index, "Refreshed additional endpoint API key.");
@@ -505,7 +505,7 @@ fn calculate_resolved_endpoint(
 ///
 /// `raw_url` is the pre-normalization URL string (for example `"app.datadoghq.eu"`) as it appears as a
 /// key in the `additional_endpoints` configuration value. `index` is the raw `enumerate()` position of
-/// the key in that URL's list (not a post-dedup counter).
+/// the key in that URL list (not a post-dedup counter).
 ///
 /// Returns `None` if the URL is not present in the current config, if `index` is out of range, or
 /// if the key at that position is empty.

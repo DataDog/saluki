@@ -262,7 +262,7 @@ where
     Ok(collector)
 }
 
-/// Registers a synchronously-constructed collector: reserves its health component, builds it, and
+/// Registers a synchronously constructed collector: reserves its health component, builds it, and
 /// records its memory bounds. The Remote Agent collectors no longer build a client from raw config,
 /// so they are infallible to construct and do not need the async `build_collector`.
 fn register_collector<F, O>(

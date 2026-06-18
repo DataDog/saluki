@@ -251,7 +251,7 @@ fn render(resolved: &[ResolvedKey]) -> String {
             key.method, key.type_text
         ));
     }
-    out.push_str("\n");
+    out.push('\n');
     out.push_str("    /// Returns the first translation error recorded while consuming, if any.\n");
     out.push_str("    fn translate_error(&mut self) -> Option<TranslateError> {\n");
     out.push_str("        None\n");
@@ -297,7 +297,7 @@ fn render(resolved: &[ResolvedKey]) -> String {
         }
     }
     if !emitted.is_empty() {
-        out.push_str("\n");
+        out.push('\n');
     }
 
     // Emit the consume calls.
@@ -312,7 +312,7 @@ fn render(resolved: &[ResolvedKey]) -> String {
         ));
     }
 
-    out.push_str("\n");
+    out.push('\n');
     out.push_str("    match consumer.translate_error() {\n");
     out.push_str("        Some(e) => Err(e),\n");
     out.push_str("        None => Ok(()),\n");

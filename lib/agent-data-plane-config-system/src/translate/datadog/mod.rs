@@ -6,7 +6,7 @@
 //! -- lives in the subsystem modules, not here.
 //!
 //! Methods that can fail (enum parsing, address parsing, JSON parsing, `ByteSize` parsing) call the
-//! subsystem function, and on `Err` record the error via [`Translator::record_error`]; the driver
+//! subsystem function, and on `Err` record the error via `Translator::record_error`; the driver
 //! surfaces the first recorded error. On error the native field keeps its seeded/default value.
 
 pub mod checks;

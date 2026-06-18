@@ -8,7 +8,7 @@
 //!
 //! - [`RemoteAgentClientConfiguration`] is pure, typed config. It is parsed at the config-system
 //!   boundary from the typed [`BootstrapConfiguration`] (specifically its
-//!   [`AgentIpcBootstrap`](agent_data_plane_config::AgentIpcBootstrap) slice). It performs no I/O.
+//!   [`AgentIpcBootstrap`] slice). It performs no I/O.
 //! - [`connect`] performs the side effects: it constructs the underlying `datadog-agent-commons`
 //!   `RemoteAgentClient`, registers with the Core Agent, and spawns the registration-refresh loop.
 //!   Per the design, `connect` accepts only the typed [`RemoteAgentClientConfiguration`], never
@@ -53,7 +53,7 @@ const CONFIG_STREAM_CHANNEL_DEPTH: usize = 100;
 ///
 /// This struct holds everything required to establish the IPC connection. It is parsed once, at the
 /// config-system boundary, from the typed [`BootstrapConfiguration`] (its
-/// [`AgentIpcBootstrap`](agent_data_plane_config::AgentIpcBootstrap) slice) via
+/// [`AgentIpcBootstrap`] slice) via
 /// [`from_bootstrap`](Self::from_bootstrap). It is the typed analogue of the commons
 /// `RemoteAgentClientConfiguration`, which is parsed from a raw map; the fields mirror the Agent IPC
 /// keys that commons reads (`cmd_port`, `agent_ipc_endpoint`, `auth_token_file_path`).
@@ -61,7 +61,7 @@ const CONFIG_STREAM_CHANNEL_DEPTH: usize = 100;
 /// Fields not surfaced by the bootstrap allowlist (the IPC certificate path, the gRPC max message
 /// size, connect-retry tuning, and `vsock_addr`) are intentionally left to the defaults applied by
 /// commons when it parses the materialized map. The bootstrap slice is deliberately narrow; adding a
-/// field here requires adding it to [`AgentIpcBootstrap`](agent_data_plane_config::AgentIpcBootstrap)
+/// field here requires adding it to [`AgentIpcBootstrap`]
 /// first.
 ///
 /// This type performs no I/O. All side effects happen in [`connect`].
@@ -87,7 +87,7 @@ pub struct RemoteAgentClientConfiguration {
 impl RemoteAgentClientConfiguration {
     /// Builds the connection configuration from the typed bootstrap slice.
     ///
-    /// This reads the [`AgentIpcBootstrap`](agent_data_plane_config::AgentIpcBootstrap) slice of the
+    /// This reads the [`AgentIpcBootstrap`] slice of the
     /// bootstrap configuration. That slice is the typed source for Agent IPC connection parameters:
     /// it is loaded once from local Datadog sources (`datadog.yaml` / `DD_*`) before runtime
     /// authority exists, which is exactly where IPC connection params must come from.
@@ -146,7 +146,7 @@ pub struct RemoteAgentRegistration {
     pub flavor: String,
     /// The gRPC API endpoint the Agent should call back on (the secure API listen address).
     pub api_endpoint: String,
-    /// The fully-qualified gRPC service names this process serves to the Agent.
+    /// The fully qualified gRPC service names this process serves to the Agent.
     pub service_names: Vec<String>,
 }
 

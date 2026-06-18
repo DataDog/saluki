@@ -812,8 +812,10 @@ mod tests {
     use crate::common::otlp::config::TracesConfig;
 
     fn make_encoder(ets_enabled: bool) -> TraceEndpointEncoder {
-        let mut leaf_apm = saluki_component_config::traces::ApmConfig::default();
-        leaf_apm.error_tracking_standalone = ets_enabled;
+        let leaf_apm = saluki_component_config::traces::ApmConfig {
+            error_tracking_standalone: ets_enabled,
+            ..Default::default()
+        };
         let apm_config = ApmConfig::from_native(&leaf_apm);
         TraceEndpointEncoder::new(
             MetaString::from("test-host"),

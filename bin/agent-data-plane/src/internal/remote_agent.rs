@@ -57,7 +57,7 @@ impl RemoteAgentServices {
         }
     }
 
-    /// Returns the fully-qualified gRPC service names this process serves to the Agent.
+    /// Returns the fully qualified gRPC service names this process serves to the Agent.
     ///
     /// The binary passes these into the config-system's `RemoteAgentRegistration` so the Agent knows
     /// which services to call back on.

@@ -17,7 +17,7 @@
 //! # Runtime authority
 //!
 //! The authority is decided once, at [`load`](ConfigurationSystem::load) time, from the local
-//! Datadog `data_plane.*` keys (see [`crate::bootstrap::load_local_sources`]). It drives two
+//! Datadog `data_plane.*` keys (see `load_local_sources`). It drives two
 //! distinct `start_runtime` paths:
 //!
 //! - [`RuntimeAuthority::LocalSnapshot`]: the retained local Datadog snapshot is the runtime
@@ -131,7 +131,7 @@ impl LoadedConfigurationSystem {
     /// sources are bootstrap-only and are not merged), translates it, builds live handles, and
     /// spawns the inbound-update task over the remaining stream.
     ///
-    /// `registration` carries the identity (pid/display name/flavor/api endpoint) and the
+    /// `registration` carries the identity (pid/display name/flavor/API endpoint) and the
     /// gRPC service names the design's `start_runtime(service_names)` implies; the binary fills it.
     /// In `LocalSnapshot` mode it is unused.
     ///
@@ -139,7 +139,7 @@ impl LoadedConfigurationSystem {
     ///
     /// Returns an error if the Datadog snapshot cannot be parsed or translated, or (in stream mode)
     /// if the Agent connection fails or no first snapshot arrives within
-    /// [`FIRST_SNAPSHOT_TIMEOUT`].
+    /// `FIRST_SNAPSHOT_TIMEOUT`.
     pub async fn start_runtime(
         self, registration: RemoteAgentRegistration,
     ) -> Result<StartedConfigurationSystem, GenericError> {
@@ -350,7 +350,7 @@ impl StartedConfigurationSystem {
 
     /// Returns the current `/config` views, produced live-on-request and scrubbed.
     ///
-    /// Each call reads the latest fully-applied [`ViewSources`] pair from the router's watch channel
+    /// Each call reads the latest fully applied [`ViewSources`] pair from the router's watch channel
     /// (never a torn mid-update state), serializes each to YAML, and scrubs the serialized string
     /// with the shared [`default_scrubber`]. `/config/raw` is the Datadog source snapshot;
     /// `/config/internal` is the translated [`SalukiConfiguration`]. This never exposes
@@ -369,8 +369,8 @@ impl StartedConfigurationSystem {
 
     /// Returns a clone-able producer of the `/config` views, live-on-request.
     ///
-    /// Each invocation reads the latest fully-applied snapshot from the router's watch channel and
-    /// produces a freshly-scrubbed [`ConfigViews`]. The internal supervisor holds this producer for
+    /// Each invocation reads the latest fully applied snapshot from the router's watch channel and
+    /// produces a freshly scrubbed [`ConfigViews`]. The internal supervisor holds this producer for
     /// the lifetime of the process; it never holds a raw configuration map.
     pub fn view_producer(&self) -> ConfigViewProducer {
         let views_rx = self.views_rx.clone();

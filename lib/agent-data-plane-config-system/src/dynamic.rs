@@ -17,7 +17,7 @@
 //! ```
 //!
 //! Diff granularity is coarse: the unit is the whole component-consumed type `T`. The router compares
-//! the previous slice against the freshly-translated slice and sends only if any field changed.
+//! the previous slice against the freshly translated slice and sends only if any field changed.
 //!
 //! # Live vs fixed
 //!
@@ -55,7 +55,7 @@ use crate::translate::translate;
 
 /// The pair of snapshots `/config` views are produced from.
 ///
-/// This is the router's shared "current views" state: the latest fully-applied raw Datadog source
+/// This is the router's shared "current views" state: the latest fully applied raw Datadog source
 /// snapshot and the matching translated [`SalukiConfiguration`]. The router updates this atomically
 /// on every accepted update via a [`watch`] channel, so a view producer always observes a
 /// consistent (never torn mid-update) pair. Both are wrapped in [`Arc`] so a reader can cheaply
@@ -129,7 +129,7 @@ pub struct ConfigUpdateRouter {
     /// retranslation; it is also what `/config/raw` would serialize.
     snapshot: serde_json::Value,
 
-    /// The last successfully-translated configuration. The diff baseline: each accepted update is
+    /// The last successfully translated configuration. The diff baseline: each accepted update is
     /// diffed against this, and a rejected update leaves it untouched.
     last_good: SalukiConfiguration,
 
@@ -292,7 +292,7 @@ impl ConfigUpdateRouter {
             .send_if_modified(|cur| replace_if_changed(cur, datadog.log_level.clone()));
 
         // Publish the new (raw, model) pair atomically so `/config` views regenerate from the
-        // latest fully-applied snapshot. This is sent only on an accepted update, so a rejected
+        // latest fully applied snapshot. This is sent only on an accepted update, so a rejected
         // update leaves the views at the last-good pair.
         let _ = self.views_tx.send(ViewSources {
             raw: Arc::new(raw_snapshot.clone()),
@@ -371,7 +371,7 @@ impl ConfigUpdateRouter {
 
     /// Builds the full [`DynamicConfigHandles`] bundle from a translated configuration's slices.
     ///
-    /// The `initial` value for each handle is taken from `source` (the freshly-translated
+    /// The `initial` value for each handle is taken from `source` (the freshly translated
     /// [`SalukiConfiguration`]); the router only adds the receiver when live. `start_runtime` calls
     /// this once, before [`spawn`](Self::spawn), so the receivers are created while the senders still
     /// live in the router.

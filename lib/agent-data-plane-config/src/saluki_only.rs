@@ -47,7 +47,7 @@ pub struct SalukiOnlyConfiguration {
     /// Trace obfuscation knobs.
     pub trace_obfuscation: TraceObfuscationSalukiOnly,
 
-    /// Encoder knobs shared across metrics/traces/apm-stats encoders.
+    /// Encoder knobs shared across metrics/traces/APM-stats encoders.
     pub encoders: EncodersSalukiOnly,
 
     /// Process memory-accounting knobs.

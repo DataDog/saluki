@@ -234,3 +234,17 @@ launchd
 Wireshark
 testsupport
 callee
+cutover
+fixup(s?)
+getter(s?)
+impl(s?)
+param(s?)
+upsert(s|ed|ing)?
+serializer(s?)
+retranslation
+typify
+snake_case
+unparsed
+stringify
+resolver(s?)
+queryable

@@ -98,7 +98,7 @@ impl AppBootstrapper {
     /// Sets the logging configuration to use during bootstrap.
     ///
     /// Replaces the [`simple`][LoggingConfiguration::simple] default that
-    /// [`from_configuration`][Self::from_configuration] installs.
+    /// [`new`][Self::new] installs.
     pub fn with_logging_configuration(mut self, logging_config: LoggingConfiguration) -> Self {
         self.logging_config = logging_config;
         self

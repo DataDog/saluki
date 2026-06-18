@@ -19,7 +19,7 @@
 //!
 //! - `Translator`: the witness consumer that implements `DatadogConfigConsumer`. Holds
 //!   the in-progress `SalukiConfiguration` as its accumulator. Delegates to per-domain
-//!   subsystem translators (forwarder, dogstatsd, metrics, etc.).
+//!   subsystem translators (forwarder, DogStatsD, metrics, etc.).
 //!
 //! - Seed-then-drive translation: `Translator::new(saluki_only.seed())` followed by
 //!   `drive(&datadog, &mut translator)` followed by `translator.finish()`.
