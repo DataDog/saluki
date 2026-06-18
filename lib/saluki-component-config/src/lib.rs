@@ -54,7 +54,9 @@
 
 #![deny(missing_docs)]
 
+pub mod autoscaling_failover;
 pub mod checks;
+pub mod cluster_agent;
 pub mod dogstatsd;
 pub mod dynamic;
 pub mod events;

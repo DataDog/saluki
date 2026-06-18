@@ -10,7 +10,8 @@
 //! straight into these embedded leaf structs.
 
 use saluki_component_config::{
-    checks, dogstatsd, events, forwarder, logs, metrics, otlp, service_checks, traces, workload,
+    autoscaling_failover, checks, cluster_agent, dogstatsd, events, forwarder, logs, metrics, otlp, service_checks,
+    traces, workload,
 };
 
 use crate::control::ControlConfiguration;
@@ -68,6 +69,12 @@ pub struct ComponentConfiguration {
 
     /// Workload/environment collection configuration.
     pub workload: WorkloadConfigs,
+
+    /// Autoscaling failover gateway configuration.
+    pub autoscaling_failover: AutoscalingFailoverConfigs,
+
+    /// Cluster Agent forwarder configuration.
+    pub cluster_agent: ClusterAgentConfigs,
 }
 
 /// Forwarder-domain component configuration.
@@ -180,4 +187,18 @@ pub struct OtlpConfigs {
 pub struct WorkloadConfigs {
     /// Workload/environment collection configuration.
     pub config: workload::WorkloadConfig,
+}
+
+/// Autoscaling failover gateway configuration.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize)]
+pub struct AutoscalingFailoverConfigs {
+    /// Autoscaling failover gateway configuration.
+    pub gateway: autoscaling_failover::AutoscalingFailoverConfig,
+}
+
+/// Cluster Agent forwarder configuration.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize)]
+pub struct ClusterAgentConfigs {
+    /// Cluster Agent forwarder configuration.
+    pub forwarder: cluster_agent::ClusterAgentConfig,
 }

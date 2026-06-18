@@ -1,7 +1,9 @@
 //! Transform implementations.
 
 mod autoscaling_failover_gateway;
-pub use self::autoscaling_failover_gateway::AutoscalingFailoverGatewayConfiguration;
+pub use self::autoscaling_failover_gateway::{
+    AutoscalingFailoverConfiguration, AutoscalingFailoverGatewayConfiguration,
+};
 
 mod aggregate;
 pub use self::aggregate::AggregateConfiguration;

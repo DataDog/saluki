@@ -1,6 +1,6 @@
 //! Forwarder implementations.
 mod cluster_agent;
-pub use self::cluster_agent::ClusterAgentForwarderConfiguration;
+pub use self::cluster_agent::{ClusterAgentConfiguration, ClusterAgentForwarderConfiguration};
 
 mod datadog;
 pub use self::datadog::DatadogForwarderConfiguration;

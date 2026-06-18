@@ -63,6 +63,9 @@ pub struct DatadogConfiguration {
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub apm_config: Option<DatadogConfigurationApmConfig>,
 
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    pub autoscaling: Option<DatadogConfigurationAutoscaling>,
+
     /// The host to listen on for Dogstatsd and traces. This is ignored by APM when
     /// `apm_config.apm_non_local_traffic` is enabled and ignored by DogStatsD when `dogstatsd_non_local_traffic`
     /// is enabled. The trace-agent uses this host to send metrics to.
@@ -70,6 +73,9 @@ pub struct DatadogConfiguration {
     /// To solve this problem, ensure Dogstatsd is listening on IPv4 by setting this value to "127.0.0.1".
     #[serde(default)]
     pub bind_host: String,
+
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    pub cluster_agent: Option<DatadogConfigurationClusterAgent>,
 
     /// The port on which the IPC api listens.
     #[serde(default = "defaults::default_u64::<i64, 5001>")]
@@ -106,6 +112,9 @@ pub struct DatadogConfiguration {
 
     #[serde(default = "defaults::default_u64::<i64, 20>")]
     pub dogstatsd_context_expiry_seconds: i64,
+
+    #[serde(default)]
+    pub dogstatsd_disable_verbose_logs: bool,
 
     /// Disable enriching Dogstatsd metrics with tags from "origin detection" when Entity-ID is set.
     #[serde(default)]
@@ -505,7 +514,9 @@ impl Default for DatadogConfiguration {
             allow_arbitrary_tags: Default::default(),
             api_key: Default::default(),
             apm_config: Default::default(),
+            autoscaling: Default::default(),
             bind_host: Default::default(),
+            cluster_agent: Default::default(),
             cmd_port: defaults::default_u64::<i64, 5001>(),
             cri_connection_timeout: defaults::default_u64::<i64, 1>(),
             cri_query_timeout: defaults::default_u64::<i64, 5>(),
@@ -515,6 +526,7 @@ impl Default for DatadogConfiguration {
             dogstatsd_capture_depth: Default::default(),
             dogstatsd_capture_path: Default::default(),
             dogstatsd_context_expiry_seconds: defaults::default_u64::<i64, 20>(),
+            dogstatsd_disable_verbose_logs: Default::default(),
             dogstatsd_entity_id_precedence: Default::default(),
             dogstatsd_eol_required: Default::default(),
             dogstatsd_flush_incomplete_buckets: Default::default(),
@@ -865,6 +877,72 @@ impl Default for DatadogConfigurationApmConfigObfuscationValkey {
         Self {
             enabled: defaults::default_bool::<true>(),
             remove_all_args: Default::default(),
+        }
+    }
+}
+
+/// `DatadogConfigurationAutoscaling`
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+pub struct DatadogConfigurationAutoscaling {
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    pub failover: Option<DatadogConfigurationAutoscalingFailover>,
+}
+
+impl Default for DatadogConfigurationAutoscaling {
+    fn default() -> Self {
+        Self {
+            failover: Default::default(),
+        }
+    }
+}
+
+/// `DatadogConfigurationAutoscalingFailover`
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+pub struct DatadogConfigurationAutoscalingFailover {
+    #[serde(default)]
+    pub enabled: bool,
+
+    #[serde(default = "defaults::datadog_configuration_autoscaling_failover_metrics")]
+    pub metrics: Vec<String>,
+}
+
+impl Default for DatadogConfigurationAutoscalingFailover {
+    fn default() -> Self {
+        Self {
+            enabled: Default::default(),
+            metrics: defaults::datadog_configuration_autoscaling_failover_metrics(),
+        }
+    }
+}
+
+/// Settings for the Cluster Agent.
+/// See https://docs.datadoghq.com/agent/cluster_agent/
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+pub struct DatadogConfigurationClusterAgent {
+    /// Auth token used to make requests to the Kubernetes API server.
+    #[serde(default)]
+    pub auth_token: String,
+
+    /// Set to true to enable the Cluster Agent.
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Name of the Kubernetes service for the Cluster Agent.
+    #[serde(default = "defaults::datadog_configuration_cluster_agent_kubernetes_service_name")]
+    pub kubernetes_service_name: String,
+
+    /// The Cluster Agent endpoint. There's no need to set it if "kubernetes_service_name" is set.
+    #[serde(default)]
+    pub url: String,
+}
+
+impl Default for DatadogConfigurationClusterAgent {
+    fn default() -> Self {
+        Self {
+            auth_token: Default::default(),
+            enabled: Default::default(),
+            kubernetes_service_name: defaults::datadog_configuration_cluster_agent_kubernetes_service_name(),
+            url: Default::default(),
         }
     }
 }
@@ -1459,6 +1537,12 @@ pub mod defaults {
             "tomcat".to_string(),
             "runtime".to_string(),
         ]
+    }
+    pub(super) fn datadog_configuration_autoscaling_failover_metrics() -> Vec<String> {
+        vec!["container.memory.usage".to_string(), "container.cpu.usage".to_string()]
+    }
+    pub(super) fn datadog_configuration_cluster_agent_kubernetes_service_name() -> String {
+        "datadog-cluster-agent".to_string()
     }
     pub(super) fn datadog_configuration_data_plane_api_listen_address() -> String {
         "tcp://0.0.0.0:5100".to_string()

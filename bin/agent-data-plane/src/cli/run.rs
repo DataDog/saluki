@@ -24,13 +24,17 @@ use saluki_components::{
         DatadogLogsConfiguration, DatadogMetricsConfiguration, DatadogServiceChecksConfiguration,
         DatadogTraceConfiguration,
     },
-    forwarders::{ClusterAgentForwarderConfiguration, DatadogForwarderConfiguration, OtlpForwarderConfiguration},
+    forwarders::{
+        ClusterAgentConfiguration, ClusterAgentForwarderConfiguration, DatadogForwarderConfiguration,
+        OtlpForwarderConfiguration,
+    },
     relays::otlp::OtlpRelayConfiguration,
     sources::{ChecksIPCConfiguration, DogStatsDConfiguration, OtlpConfiguration},
     transforms::{
-        AggregateConfiguration, ApmStatsTransformConfiguration, AutoscalingFailoverGatewayConfiguration,
-        ChainedConfiguration, DogStatsDMapperConfiguration, HostEnrichmentConfiguration,
-        MrfMetricsGatewayConfiguration, TraceObfuscationConfiguration, TraceSamplerConfiguration,
+        AggregateConfiguration, ApmStatsTransformConfiguration, AutoscalingFailoverConfiguration,
+        AutoscalingFailoverGatewayConfiguration, ChainedConfiguration, DogStatsDMapperConfiguration,
+        HostEnrichmentConfiguration, MrfMetricsGatewayConfiguration, TraceObfuscationConfiguration,
+        TraceSamplerConfiguration,
     },
 };
 use saluki_core::health::HealthRegistry;
@@ -465,6 +469,49 @@ async fn add_baseline_metrics_pipeline_to_blueprint(
         .connect_components_in_order(["metrics_enrich", "dd_metrics_encode", "dd_out"])?;
 
     add_mrf_metrics_pipeline_to_blueprint(blueprint, components, handles)?;
+    add_autoscaling_failover_metrics_pipeline_to_blueprint(blueprint, components)?;
+
+    Ok(())
+}
+
+fn add_autoscaling_failover_metrics_pipeline_to_blueprint(
+    blueprint: &mut TopologyBlueprint, components: &ComponentConfiguration,
+) -> Result<(), GenericError> {
+    let af_config = AutoscalingFailoverConfiguration::from_native(&components.autoscaling_failover.gateway);
+    let ca_config = ClusterAgentConfiguration::from_native(&components.cluster_agent.forwarder);
+
+    let Some((ca_url, ca_token)) = ca_config.endpoint_and_token() else {
+        if af_config.is_branch_requested() {
+            warn!(
+                "autoscaling.failover is enabled, but cluster_agent.enabled, cluster_agent.auth_token, and a resolvable \
+                 Cluster Agent endpoint are required. Set cluster_agent.url or provide Kubernetes service env vars for \
+                 cluster_agent.kubernetes_service_name. The autoscaling failover metrics branch will not be wired, and \
+                 primary forwarding will continue."
+            );
+        }
+        return Ok(());
+    };
+
+    if !af_config.is_branch_requested() {
+        return Ok(());
+    }
+
+    let af_gateway_config = AutoscalingFailoverGatewayConfiguration::new(af_config);
+    let af_metrics_config = DatadogMetricsConfiguration::from_native(components.metrics.datadog_encoder.clone());
+    let cluster_agent_forwarder_config =
+        ClusterAgentForwarderConfiguration::from_native(&components.forwarder.datadog, ca_url, ca_token)
+            .error_context("Failed to configure Cluster Agent forwarder.")?;
+
+    blueprint
+        .add_transform("af_metrics_gateway", af_gateway_config)?
+        .add_encoder("af_metrics_encode", af_metrics_config)?
+        .add_forwarder("cluster_agent_out", cluster_agent_forwarder_config)?
+        .connect_components_in_order([
+            "metrics_enrich",
+            "af_metrics_gateway",
+            "af_metrics_encode",
+            "cluster_agent_out",
+        ])?;
 
     Ok(())
 }

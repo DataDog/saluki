@@ -682,6 +682,44 @@ impl DatadogConfigConsumer for Translator {
         control::set_forwarder_stop_timeout(self, value);
     }
 
+    // ----- dogstatsd: verbose logging -----
+
+    fn consume_dogstatsd_disable_verbose_logs(&mut self, value: bool) {
+        dogstatsd::set_disable_verbose_logs(&mut self.native_mut().components.dogstatsd.source, value);
+    }
+
+    // ----- autoscaling failover gateway -----
+
+    fn consume_autoscaling_failover_enabled(&mut self, value: bool) {
+        self.native_mut().components.autoscaling_failover.gateway.enabled = value;
+    }
+
+    fn consume_autoscaling_failover_metrics(&mut self, value: Vec<String>) {
+        self.native_mut().components.autoscaling_failover.gateway.metrics = value;
+    }
+
+    // ----- cluster agent forwarder -----
+
+    fn consume_cluster_agent_enabled(&mut self, value: bool) {
+        self.native_mut().components.cluster_agent.forwarder.enabled = value;
+    }
+
+    fn consume_cluster_agent_url(&mut self, value: String) {
+        self.native_mut().components.cluster_agent.forwarder.url = value;
+    }
+
+    fn consume_cluster_agent_auth_token(&mut self, value: String) {
+        self.native_mut().components.cluster_agent.forwarder.auth_token = value;
+    }
+
+    fn consume_cluster_agent_kubernetes_service_name(&mut self, value: String) {
+        self.native_mut()
+            .components
+            .cluster_agent
+            .forwarder
+            .kubernetes_service_name = value;
+    }
+
     // ----- bootstrap / logging / IPC keys with no runtime-model destination -----
     //
     // These keys are genuinely outside the translated runtime `SalukiConfiguration`. They configure

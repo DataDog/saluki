@@ -8,7 +8,7 @@ use http::{
 };
 use resource_accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
 use saluki_common::buf::FrozenChunkedBytesBuffer;
-use saluki_config::GenericConfiguration;
+use saluki_component_config::{cluster_agent as ca_leaf, forwarder as leaf};
 use saluki_core::{
     components::{forwarders::*, ComponentContext},
     data_model::payload::PayloadType,
@@ -30,6 +30,100 @@ use crate::common::datadog::{
 };
 
 const CLUSTER_AGENT_SERIES_PATH: &str = "/series";
+const DEFAULT_CLUSTER_AGENT_KUBERNETES_SERVICE_NAME: &str = "datadog-cluster-agent";
+
+/// Cluster Agent connection configuration derived from the typed leaf.
+///
+/// Wraps the raw `ClusterAgentConfig` leaf and provides endpoint resolution via either the
+/// configured URL or Kubernetes service environment variables.
+pub struct ClusterAgentConfiguration {
+    enabled: bool,
+    url: Option<String>,
+    kubernetes_service_name: Option<String>,
+    auth_token: Option<String>,
+}
+
+impl ClusterAgentConfiguration {
+    /// Creates a `ClusterAgentConfiguration` from the typed leaf config.
+    pub fn from_native(cfg: &ca_leaf::ClusterAgentConfig) -> Self {
+        let trim_non_empty = |s: &str| {
+            let t = s.trim().to_string();
+            if t.is_empty() {
+                None
+            } else {
+                Some(t)
+            }
+        };
+        Self {
+            enabled: cfg.enabled,
+            url: trim_non_empty(&cfg.url),
+            kubernetes_service_name: trim_non_empty(&cfg.kubernetes_service_name),
+            auth_token: trim_non_empty(&cfg.auth_token),
+        }
+    }
+
+    /// Returns `(endpoint_url, auth_token)` when the Cluster Agent forwarder can be configured.
+    ///
+    /// Returns `None` when the agent is disabled, the endpoint cannot be resolved, or the auth
+    /// token is absent.
+    pub fn endpoint_and_token(&self) -> Option<(String, String)> {
+        self.endpoint_and_token_with_env(|key| std::env::var(key).ok())
+    }
+
+    fn endpoint_and_token_with_env<F: Fn(&str) -> Option<String>>(&self, env: F) -> Option<(String, String)> {
+        if !self.enabled {
+            return None;
+        }
+        let endpoint = self.resolve_endpoint(env)?;
+        Some((endpoint, self.auth_token.clone()?))
+    }
+
+    fn resolve_endpoint<F: Fn(&str) -> Option<String>>(&self, env: F) -> Option<String> {
+        if let Some(url) = self.url.as_deref() {
+            return normalize_cluster_agent_url(url);
+        }
+        let service_name = self
+            .kubernetes_service_name
+            .as_deref()
+            .unwrap_or(DEFAULT_CLUSTER_AGENT_KUBERNETES_SERVICE_NAME);
+        if service_name.is_empty() {
+            return None;
+        }
+        resolve_kubernetes_service_endpoint(service_name, env)
+    }
+}
+
+fn normalize_cluster_agent_url(url: &str) -> Option<String> {
+    let normalized = if url.contains("://") {
+        url.to_string()
+    } else {
+        format!("https://{url}")
+    };
+    let parsed = url::Url::parse(&normalized).ok()?;
+    if parsed.scheme() == "https" && parsed.host_str().is_some() {
+        Some(normalized)
+    } else {
+        None
+    }
+}
+
+fn resolve_kubernetes_service_endpoint<F: Fn(&str) -> Option<String>>(service_name: &str, env: F) -> Option<String> {
+    let env_prefix = service_name.to_uppercase().replace('-', "_");
+    let host = env(&format!("{env_prefix}_SERVICE_HOST"))?.trim().to_string();
+    let port = env(&format!("{env_prefix}_SERVICE_PORT"))?.trim().to_string();
+    if host.is_empty() || port.is_empty() {
+        return None;
+    }
+    normalize_cluster_agent_url(&join_host_port(&host, &port))
+}
+
+fn join_host_port(host: &str, port: &str) -> String {
+    use std::net::IpAddr;
+    match host.parse::<IpAddr>() {
+        Ok(IpAddr::V6(_)) => format!("[{host}]:{port}"),
+        _ => format!("{host}:{port}"),
+    }
+}
 
 static DD_API_KEY_HEADER: HeaderName = HeaderName::from_static("dd-api-key");
 
@@ -44,11 +138,11 @@ pub struct ClusterAgentForwarderConfiguration {
 
 impl ClusterAgentForwarderConfiguration {
     /// Creates a new `ClusterAgentForwarderConfiguration` from the given Cluster Agent endpoint and bearer token.
-    pub fn from_configuration(
-        config: &GenericConfiguration, endpoint_url: String, auth_token: String,
+    pub fn from_native(
+        cfg: &leaf::DatadogForwarderConfig, endpoint_url: String, auth_token: String,
     ) -> Result<Self, GenericError> {
         let auth_header_value = bearer_auth_header_value(&auth_token)?;
-        let mut forwarder_config = ForwarderConfiguration::from_configuration(config)?.with_allow_arbitrary_tags(false);
+        let mut forwarder_config = ForwarderConfiguration::from_native(cfg).with_allow_arbitrary_tags(false);
 
         let endpoint = forwarder_config.endpoint_mut();
         endpoint.clear_additional_endpoints();
@@ -200,9 +294,9 @@ fn get_cluster_agent_endpoint_name(uri: &Uri) -> Option<MetaString> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use http::Method;
-    use saluki_config::ConfigurationLoader;
-    use serde_json::json;
 
     use super::*;
     use crate::common::datadog::endpoints::EndpointRoute;
@@ -235,29 +329,30 @@ mod tests {
         assert!(bearer_auth_header_value("bad\ntoken").is_err());
     }
 
-    #[tokio::test]
-    async fn configuration_uses_only_cluster_agent_endpoint() {
-        let (config, _) = ConfigurationLoader::for_tests(
-            Some(json!({
-                "api_key": "primary-api-key",
-                "dd_url": "https://app.datadoghq.com",
-                "additional_endpoints": {
-                    "https://additional.example.com": ["additional-api-key"]
-                },
-                "observability_pipelines_worker": {
-                    "metrics": {
-                        "enabled": true,
-                        "url": "https://opw.example.com"
-                    }
-                }
-            })),
-            None,
-            false,
-        )
-        .await;
+    #[test]
+    fn configuration_uses_only_cluster_agent_endpoint() {
+        let mut additional = HashMap::new();
+        additional.insert(
+            "https://additional.example.com".to_string(),
+            vec!["additional-api-key".to_string()],
+        );
+        let cfg = leaf::DatadogForwarderConfig {
+            endpoint: leaf::EndpointConfiguration {
+                api_key: "primary-api-key".to_string(),
+                dd_url: Some("https://app.datadoghq.com".to_string()),
+                additional_endpoints: leaf::AdditionalEndpoints(additional),
+                ..Default::default()
+            },
+            opw_metrics: leaf::OpwMetricsConfiguration {
+                observability_pipelines_worker_enabled: true,
+                observability_pipelines_worker_url: "https://opw.example.com".to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
 
-        let config = ClusterAgentForwarderConfiguration::from_configuration(
-            &config,
+        let config = ClusterAgentForwarderConfiguration::from_native(
+            &cfg,
             "https://cluster-agent.example.com".to_string(),
             "secret-token".to_string(),
         )

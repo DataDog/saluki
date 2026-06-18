@@ -59,6 +59,11 @@ pub fn set_stream_log_too_big(config: &mut DogStatsDConfig, value: bool) {
     config.stream_log_too_big = value;
 }
 
+/// `dogstatsd_disable_verbose_logs` -> whether verbose per-packet logs are suppressed.
+pub fn set_disable_verbose_logs(config: &mut DogStatsDConfig, value: bool) {
+    config.disable_verbose_logs = value;
+}
+
 /// `dogstatsd_eol_required` -> listener types requiring newline-terminated messages.
 pub fn set_eol_required(config: &mut DogStatsDConfig, value: Vec<String>) {
     config.eol_required = value;

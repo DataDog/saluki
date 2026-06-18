@@ -5,13 +5,7 @@
 //! - Avoid breaking apart `TransactionForwarder` only to work around `#[allow(clippy::too_many_arguments)]`.
 //! - Avoid initializing the process-wide crypto provider from tests.
 
-use std::{
-    collections::VecDeque,
-    error::Error as _,
-    path::PathBuf,
-    sync::{Arc, Mutex},
-    time::Duration,
-};
+use std::{collections::VecDeque, error::Error as _, path::PathBuf, sync::Arc, time::Duration};
 
 use bytes::Buf;
 use futures::FutureExt as _;
@@ -190,7 +184,7 @@ where
 
     /// Creates a new `TransactionForwarder` with a custom endpoint request mapper.
     pub(crate) fn from_config_with_endpoint_request_mapper<F>(
-        context: ComponentContext, config: ForwarderConfiguration, live_config: Option<GenericConfiguration>,
+        context: ComponentContext, config: ForwarderConfiguration, live_config: Option<LiveForwarderConfig>,
         endpoint_name: F, telemetry: ComponentTelemetry, metrics_builder: MetricsBuilder,
         endpoint_request_mapper_factory: EndpointRequestMapperFactory<B>,
     ) -> Result<Self, GenericError>
@@ -267,7 +261,7 @@ where
                 telemetry,
                 metrics_builder,
                 endpoints,
-                endpoint_request_mapper_factory,
+                endpoint_request_mapper_factory, // threaded through to each endpoint task
             ),
         );
 
@@ -293,6 +287,7 @@ async fn run_io_loop<B>(
     mut transactions_rx: mpsc::Receiver<Transaction<B>>, io_shutdown_tx: oneshot::Sender<()>,
     context: ComponentContext, config: ForwarderConfiguration, service: HttpClient, telemetry: ComponentTelemetry,
     metrics_builder: MetricsBuilder, resolved_endpoints: Vec<RoutableEndpoint>,
+    endpoint_request_mapper_factory: EndpointRequestMapperFactory<B>,
 ) where
     B: Body + Buf + Clone + Send + Sync + 'static,
     B::Data: Send,
@@ -329,6 +324,7 @@ async fn run_io_loop<B>(
                 telemetry.clone(),
                 txnq_telemetry,
                 resolved_endpoint,
+                Arc::clone(&endpoint_request_mapper_factory),
             ),
         );
 
@@ -407,6 +403,7 @@ async fn run_endpoint_io_loop<B>(
     mut txns_rx: mpsc::Receiver<Transaction<B>>, task_barrier: Arc<Barrier>, context: ComponentContext,
     config: ForwarderConfiguration, service: HttpClient, telemetry: ComponentTelemetry,
     txnq_telemetry: TransactionQueueTelemetry, endpoint: ResolvedEndpoint,
+    endpoint_request_mapper_factory: EndpointRequestMapperFactory<B>,
 ) where
     B: Body + Buf + Clone + Send + Sync + 'static,
     B::Data: Send,
@@ -428,9 +425,12 @@ async fn run_endpoint_io_loop<B>(
     // The body type conversion from `TransactionBody<B>` to `ClientBody` happens as the innermost layer,
     // after the retry circuit breaker. This ensures that `RetryCircuitBreakerError::Open(req)` returns
     // the original `Request<TransactionBody<B>>` so we can reassemble it into a `Transaction<B>` for re-enqueuing.
-    let mut service = ServiceBuilder::new()
-        // Set the request's URI to the endpoint's URI, and add the API key as a header.
-        .map_request(for_resolved_endpoint(endpoint))
+    // Build the inner service chain first (everything except the endpoint-specific mapper). The
+    // endpoint mapper is `Box<dyn FnMut>` which is not `Clone`, so it cannot go through
+    // `ServiceBuilder::map_request` (which requires `F: Clone`). We instead wrap it via
+    // `ServiceExt::map_request`, which only requires `F: FnMut`.
+    let endpoint_mapper = (endpoint_request_mapper_factory)(endpoint);
+    let inner = ServiceBuilder::new()
         // Signal backend support for arbitrary tag values when configured.
         .map_request(with_allow_arbitrary_tags(config.allow_arbitrary_tags()))
         // Set the User-Agent and DD-Agent-Version headers indicating the version of the data plane sending the request.
@@ -441,6 +441,8 @@ async fn run_endpoint_io_loop<B>(
         ))
         .map_request(|req: Request<TransactionBody<B>>| req.map(into_client_body))
         .service(service);
+    // Apply the endpoint-specific request mapper (sets URI, authentication headers, etc.).
+    let mut service = tower::ServiceExt::map_request(inner, endpoint_mapper);
 
     let mut retry_queue = RetryQueue::new(queue_id.clone(), config.retry().queue_max_size_bytes())
         .with_flush_to_disk_mem_ratio(config.retry().flush_to_disk_mem_ratio());

@@ -266,6 +266,12 @@ impl RoutableEndpoint {
         self.route
     }
 
+    /// Returns the resolved endpoint.
+    #[cfg(test)]
+    pub(crate) const fn endpoint(&self) -> &ResolvedEndpoint {
+        &self.endpoint
+    }
+
     /// Returns the resolved endpoint mutably.
     pub(crate) const fn endpoint_mut(&mut self) -> &mut ResolvedEndpoint {
         &mut self.endpoint

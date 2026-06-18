@@ -63,8 +63,20 @@ pub trait DatadogConfigConsumer {
     fn consume_apm_config_obfuscation_valkey_enabled(&mut self, value: bool);
     /// Consumes the value of the `apm_config.obfuscation.valkey.remove_all_args` key.
     fn consume_apm_config_obfuscation_valkey_remove_all_args(&mut self, value: bool);
+    /// Consumes the value of the `autoscaling.failover.enabled` key.
+    fn consume_autoscaling_failover_enabled(&mut self, value: bool);
+    /// Consumes the value of the `autoscaling.failover.metrics` key.
+    fn consume_autoscaling_failover_metrics(&mut self, value: Vec<String>);
     /// Consumes the value of the `bind_host` key.
     fn consume_bind_host(&mut self, value: String);
+    /// Consumes the value of the `cluster_agent.auth_token` key.
+    fn consume_cluster_agent_auth_token(&mut self, value: String);
+    /// Consumes the value of the `cluster_agent.enabled` key.
+    fn consume_cluster_agent_enabled(&mut self, value: bool);
+    /// Consumes the value of the `cluster_agent.kubernetes_service_name` key.
+    fn consume_cluster_agent_kubernetes_service_name(&mut self, value: String);
+    /// Consumes the value of the `cluster_agent.url` key.
+    fn consume_cluster_agent_url(&mut self, value: String);
     /// Consumes the value of the `cmd_port` key.
     fn consume_cmd_port(&mut self, value: i64);
     /// Consumes the value of the `cri_connection_timeout` key.
@@ -99,6 +111,8 @@ pub trait DatadogConfigConsumer {
     fn consume_dogstatsd_capture_path(&mut self, value: String);
     /// Consumes the value of the `dogstatsd_context_expiry_seconds` key.
     fn consume_dogstatsd_context_expiry_seconds(&mut self, value: i64);
+    /// Consumes the value of the `dogstatsd_disable_verbose_logs` key.
+    fn consume_dogstatsd_disable_verbose_logs(&mut self, value: bool);
     /// Consumes the value of the `dogstatsd_entity_id_precedence` key.
     fn consume_dogstatsd_entity_id_precedence(&mut self, value: bool);
     /// Consumes the value of the `dogstatsd_eol_required` key.
@@ -352,6 +366,9 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigCon
         .unwrap_or_else(section_defaults);
     let apm_config_obfuscation_redis = apm_config_obfuscation.redis.clone().unwrap_or_else(section_defaults);
     let apm_config_obfuscation_valkey = apm_config_obfuscation.valkey.clone().unwrap_or_else(section_defaults);
+    let autoscaling = config.autoscaling.clone().unwrap_or_else(section_defaults);
+    let autoscaling_failover = autoscaling.failover.clone().unwrap_or_else(section_defaults);
+    let cluster_agent = config.cluster_agent.clone().unwrap_or_else(section_defaults);
     let data_plane = config.data_plane.clone().unwrap_or_else(section_defaults);
     let data_plane_dogstatsd = data_plane.dogstatsd.clone().unwrap_or_else(section_defaults);
     let data_plane_otlp = data_plane.otlp.clone().unwrap_or_else(section_defaults);
@@ -434,7 +451,13 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigCon
     consumer.consume_apm_config_obfuscation_valkey_enabled(apm_config_obfuscation_valkey.enabled.clone());
     consumer
         .consume_apm_config_obfuscation_valkey_remove_all_args(apm_config_obfuscation_valkey.remove_all_args.clone());
+    consumer.consume_autoscaling_failover_enabled(autoscaling_failover.enabled.clone());
+    consumer.consume_autoscaling_failover_metrics(autoscaling_failover.metrics.clone());
     consumer.consume_bind_host(config.bind_host.clone());
+    consumer.consume_cluster_agent_auth_token(cluster_agent.auth_token.clone());
+    consumer.consume_cluster_agent_enabled(cluster_agent.enabled.clone());
+    consumer.consume_cluster_agent_kubernetes_service_name(cluster_agent.kubernetes_service_name.clone());
+    consumer.consume_cluster_agent_url(cluster_agent.url.clone());
     consumer.consume_cmd_port(config.cmd_port.clone());
     consumer.consume_cri_connection_timeout(config.cri_connection_timeout.clone());
     consumer.consume_cri_query_timeout(config.cri_query_timeout.clone());
@@ -454,6 +477,7 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigCon
     consumer.consume_dogstatsd_capture_depth(config.dogstatsd_capture_depth.clone());
     consumer.consume_dogstatsd_capture_path(config.dogstatsd_capture_path.clone());
     consumer.consume_dogstatsd_context_expiry_seconds(config.dogstatsd_context_expiry_seconds.clone());
+    consumer.consume_dogstatsd_disable_verbose_logs(config.dogstatsd_disable_verbose_logs.clone());
     consumer.consume_dogstatsd_entity_id_precedence(config.dogstatsd_entity_id_precedence.clone());
     consumer.consume_dogstatsd_eol_required(config.dogstatsd_eol_required.clone());
     consumer.consume_dogstatsd_flush_incomplete_buckets(config.dogstatsd_flush_incomplete_buckets.clone());
