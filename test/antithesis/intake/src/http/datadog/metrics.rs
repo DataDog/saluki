@@ -7,20 +7,20 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::{
-    body::to_bytes,
+    body::{to_bytes, Body},
     extract::{Request, State},
     http::StatusCode,
     response::{IntoResponse, Response},
 };
+use datadog_protos::metrics::SketchPayload;
+use protobuf::Message;
 use tracing::{debug, error};
 
 use crate::http::middleware::Measurements;
 use crate::http::state::AppState;
+use crate::http::MAX_DECOMPRESSED_BODY_BYTES;
 use crate::properties::payload::{bytes, envelope};
 use crate::series_observation::SeriesObservation;
-
-/// Memory backstop on the decompressed body buffered in the handler, above the Pyld06 5 MiB spec limit
-const MAX_DECOMPRESSED_BODY_BYTES: usize = 64 * 1024 * 1024;
 
 /// Reasons `handle_series` cannot evaluate a request.
 #[derive(Debug)]
@@ -111,6 +111,24 @@ pub(crate) async fn handle_series(State(state): State<AppState>, request: Reques
         (decode_ok, StatusCode::BAD_REQUEST),
     ]);
     Ok(failure.unwrap_or(StatusCode::ACCEPTED))
+}
+
+/// Handler for `POST /api/beta/sketches`.
+pub(crate) async fn handle_sketches(body: Body) -> StatusCode {
+    let body = match to_bytes(body, MAX_DECOMPRESSED_BODY_BYTES).await {
+        Ok(body) => body,
+        Err(e) => {
+            error!(error = %e, cap = MAX_DECOMPRESSED_BODY_BYTES, "Rejected sketches body at the decompressed cap.");
+            return StatusCode::PAYLOAD_TOO_LARGE;
+        }
+    };
+    match SketchPayload::parse_from_bytes(&body) {
+        Ok(_) => StatusCode::ACCEPTED,
+        Err(e) => {
+            error!(error = %e, "failed to parse sketch payload");
+            StatusCode::BAD_REQUEST
+        }
+    }
 }
 
 /// Return the first failed status check, in the given pipeline order, or `None`
