@@ -67,9 +67,14 @@ pub use self::restart::{RestartMode, RestartStrategy, RestartType};
 
 mod supervisor;
 pub use self::supervisor::{
+<<<<<<< HEAD
     AutoShutdown, ChildId, ChildSpecification, ChildState, InitializationError, ShutdownMode, ShutdownStrategy,
     SpawnError, Supervisable, Supervisor, SupervisorError, SupervisorFuture, SupervisorHandle, SupervisorSpec,
     WorkerSpec,
+=======
+    ChildSpecification, ChildState, InitializationError, ShutdownStrategy, Supervisable, Supervisor, SupervisorError,
+    SupervisorFuture, SupervisorSpec, WorkerSpec,
+>>>>>>> ed28518187 (enhancement(core): add configurable per-child restart types for supervisors (#1873))
 };
 
 mod worker_state;
