@@ -2,9 +2,10 @@
 //! [`ControlConfiguration`] rather than a component slice.
 //!
 //! These are the witnessed `data_plane.*` keys plus the two stop-timeout components. The pipeline
-//! gates themselves (`data_plane.enabled`, `data_plane.dogstatsd.enabled`, `data_plane.checks.enabled`,
-//! `data_plane.otlp.enabled`, `data_plane.standalone_mode`) are not part of the supported Datadog
-//! witness set, so they take their seeded/default values; only the keys witnessed here are clobbered.
+//! gates `data_plane.enabled` and `data_plane.dogstatsd.enabled` are now part of the witness set
+//! (they exist in the Datadog Agent core schema). The gates `data_plane.checks.enabled`,
+//! `data_plane.otlp.enabled`, and `data_plane.standalone_mode` are not in the Datadog schema and
+//! take their seeded/default values.
 //!
 //! Mirrors the binary's original `data_plane.*` -> control mapping in `bin/agent-data-plane/src/config.rs`.
 
@@ -13,6 +14,16 @@ use datadog_agent_config::TranslateError;
 use saluki_io::net::ListenAddress;
 
 use crate::translate::Translator;
+
+/// `data_plane.enabled` -> whether ADP is enabled (the master pipeline gate).
+pub fn set_enabled(control: &mut ControlConfiguration, value: bool) {
+    control.enabled = value;
+}
+
+/// `data_plane.dogstatsd.enabled` -> whether the DogStatsD pipeline is enabled.
+pub fn set_dogstatsd_enabled(control: &mut ControlConfiguration, value: bool) {
+    control.dogstatsd.enabled = value;
+}
 
 /// `data_plane.api_listen_address` -> the unprivileged API listen address.
 ///

@@ -512,6 +512,30 @@ inventory:
       additional_attributes:
         config_registry_filename: tag_filterlist.rs
 
+  data_plane.dogstatsd.enabled:
+    support: full
+    pipelines: [dogstatsd]
+    description: "DogStatsD pipeline enable gate"
+    documentation: |-
+      When true, ADP starts the DogStatsD ingestion pipeline. The Core Agent evaluates and
+      sets this key; it defaults to `true` in the schema.
+    test_support:
+      used_by: [get_typed]
+      additional_attributes:
+        config_registry_filename: data_plane.rs
+
+  data_plane.enabled:
+    support: full
+    pipelines: [cross_cutting]
+    description: "ADP enable gate"
+    documentation: |-
+      Master toggle: when false, ADP exits immediately after loading configuration. The Core
+      Agent sets this to true when ADP should run.
+    test_support:
+      used_by: [get_typed]
+      additional_attributes:
+        config_registry_filename: data_plane.rs
+
   data_plane.log_file:
     support: full
     pipelines: [cross_cutting]
@@ -2872,8 +2896,6 @@ excluded:
   data_observability.forwarder.use_compression: "ignored in initial audit 2026-04-23"
   data_observability.forwarder.use_v2_api: "ignored in initial audit 2026-04-23"
   data_observability.forwarder.zstd_compression_level: "ignored in initial audit 2026-04-23"
-  data_plane.dogstatsd.enabled: "ignored in second bulk edit 2026-05-06"
-  data_plane.enabled: "ignored in second bulk edit 2026-05-06"
   data_plane.otlp.enabled: "ignored in initial audit 2026-04-23"
   data_plane.otlp.proxy.enabled: "ignored in initial audit 2026-04-23"
   data_plane.otlp.proxy.receiver.protocols.grpc.endpoint: "ignored in initial audit 2026-04-23"

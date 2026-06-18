@@ -640,6 +640,14 @@ impl DatadogConfigConsumer for Translator {
 
     // ----- control (data_plane.* + stop-timeout components) -----
 
+    fn consume_data_plane_enabled(&mut self, value: bool) {
+        control::set_enabled(&mut self.native_mut().control, value);
+    }
+
+    fn consume_data_plane_dogstatsd_enabled(&mut self, value: bool) {
+        control::set_dogstatsd_enabled(&mut self.native_mut().control, value);
+    }
+
     fn consume_data_plane_api_listen_address(&mut self, value: String) {
         let r = control::set_api_listen_address(&mut self.native_mut().control, value);
         self.try_set(r);

@@ -148,10 +148,11 @@ impl LoadedConfigurationSystem {
             saluki_only,
             datadog_snapshot,
             authority,
+            standalone_mode,
         } = self.sources;
 
         match authority {
-            RuntimeAuthority::LocalSnapshot => start_local(saluki_only, datadog_snapshot).await,
+            RuntimeAuthority::LocalSnapshot => start_local(saluki_only, datadog_snapshot, standalone_mode).await,
             RuntimeAuthority::AgentStream => start_stream(bootstrap, saluki_only, registration).await,
         }
     }
@@ -179,12 +180,16 @@ fn assemble(
 
 /// Starts the runtime in local-snapshot mode (no Agent connection).
 async fn start_local(
-    saluki_only: SalukiOnlyConfiguration, datadog_snapshot: serde_json::Value,
+    saluki_only: SalukiOnlyConfiguration, datadog_snapshot: serde_json::Value, standalone_mode: bool,
 ) -> Result<StartedConfigurationSystem, GenericError> {
     let datadog: DatadogConfiguration = serde_json::from_value(datadog_snapshot.clone())
         .map_err(|e| generic_error!("Failed to parse the local Datadog snapshot at startup: {}", e))?;
-    let initial = translate(&saluki_only, &datadog)
+    let mut initial = translate(&saluki_only, &datadog)
         .map_err(|e| generic_error!("Failed to translate the local Datadog snapshot at startup: {}", e))?;
+
+    // standalone_mode is not in the Datadog core schema so the witness cannot set it.
+    // Thread the bootstrap-time value through so the runtime control slice reflects it.
+    initial.control.standalone_mode = standalone_mode;
 
     // The `saluki-env` provider layer reads the runtime Datadog source map; in local mode that is
     // the retained local snapshot.

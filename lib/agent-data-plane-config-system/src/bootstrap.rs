@@ -23,7 +23,7 @@ use std::path::PathBuf;
 
 use agent_data_plane_config::{BootstrapConfiguration, LocalApiBootstrap, RuntimeAuthority, SalukiOnlyConfiguration};
 use datadog_agent_config::{DatadogRemapper, KEY_ALIASES};
-use saluki_config_tools::ConfigurationLoader;
+use saluki_config_tools::{ConfigurationLoader, GenericConfiguration};
 use saluki_error::{generic_error, GenericError};
 
 /// The fixed env prefix for the Datadog source language (`DD_*`).
@@ -54,6 +54,13 @@ pub(crate) struct LoadedSources {
 
     /// The resolved runtime authority for this process.
     pub authority: RuntimeAuthority,
+
+    /// The raw `data_plane.standalone_mode` value read at bootstrap time.
+    ///
+    /// `standalone_mode` is not in the Datadog Agent core schema, so it cannot go through the
+    /// Datadog witness. It is threaded through here so that [`start_local`](crate::system) can
+    /// apply it to `control.standalone_mode` after translation.
+    pub standalone_mode: bool,
 }
 
 /// Reads both local sources once and parses the typed slices the lifecycle needs.
@@ -96,9 +103,17 @@ pub(crate) fn load_local_sources(
     let mut datadog_bootstrap: agent_data_plane_config::DatadogBootstrap = datadog_generic
         .as_typed()
         .map_err(|e| generic_error!("Failed to parse the Datadog bootstrap slice: {}", e))?;
-    let datadog_snapshot: serde_json::Value = datadog_generic
+    let mut datadog_snapshot: serde_json::Value = datadog_generic
         .as_typed()
         .map_err(|e| generic_error!("Failed to snapshot the local Datadog source: {}", e))?;
+
+    // Normalize flat DD_ env var keys to their nested JSON form for pipeline-gate flags.
+    // DD_DATA_PLANE_ENABLED produces the figment flat key `data_plane_enabled`; `DatadogConfiguration`
+    // needs the nested path `data_plane.enabled`. try_get_typed resolves the authoritative value
+    // (with flat-key fallback), and we inject it into the snapshot's nested object so that
+    // serde_json::from_value::<DatadogConfiguration> can find and witness it.
+    patch_snapshot_pipeline_gates(&mut datadog_snapshot, &datadog_generic)
+        .map_err(|e| generic_error!("Failed to normalize data_plane snapshot keys: {}", e))?;
 
     let standalone_mode = datadog_generic
         .try_get_typed::<bool>("data_plane.standalone_mode")
@@ -157,5 +172,49 @@ pub(crate) fn load_local_sources(
         saluki_only,
         datadog_snapshot,
         authority,
+        standalone_mode,
     })
+}
+
+/// Normalizes pipeline-gate flags that arrive as flat figment keys from `DD_*` env vars into their
+/// nested JSON form so that `serde_json::from_value::<DatadogConfiguration>` can find them.
+///
+/// `DD_DATA_PLANE_ENABLED` produces the flat figment key `data_plane_enabled` and JSON
+/// `{ "data_plane_enabled": "true" }`.
+/// The `DatadogConfiguration` struct expects the nested path `data_plane.enabled`. `try_get_typed`
+/// resolves the authoritative value with its flat-key fallback, and we inject it into the nested
+/// snapshot object.
+fn patch_snapshot_pipeline_gates(
+    snapshot: &mut serde_json::Value, generic: &GenericConfiguration,
+) -> Result<(), GenericError> {
+    let obj = snapshot
+        .as_object_mut()
+        .ok_or_else(|| generic_error!("Datadog snapshot is not a JSON object"))?;
+
+    // data_plane.enabled (schema default: false)
+    if let Ok(Some(v)) = generic.try_get_typed::<bool>("data_plane.enabled") {
+        let dp = obj
+            .entry("data_plane")
+            .or_insert_with(|| serde_json::Value::Object(Default::default()));
+        if let Some(dp_obj) = dp.as_object_mut() {
+            dp_obj.insert("enabled".to_string(), serde_json::Value::Bool(v));
+        }
+    }
+
+    // data_plane.dogstatsd.enabled (schema default: true)
+    if let Ok(Some(v)) = generic.try_get_typed::<bool>("data_plane.dogstatsd.enabled") {
+        let dp = obj
+            .entry("data_plane")
+            .or_insert_with(|| serde_json::Value::Object(Default::default()));
+        if let Some(dp_obj) = dp.as_object_mut() {
+            let dsd = dp_obj
+                .entry("dogstatsd")
+                .or_insert_with(|| serde_json::Value::Object(Default::default()));
+            if let Some(dsd_obj) = dsd.as_object_mut() {
+                dsd_obj.insert("enabled".to_string(), serde_json::Value::Bool(v));
+            }
+        }
+    }
+
+    Ok(())
 }

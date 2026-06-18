@@ -24,6 +24,28 @@ crate::declare_annotations! {
         test_json: None,
         pipeline_affinity: PipelineAffinity::CrossCutting,
     };
+    /// `data_plane.dogstatsd.enabled`-DogStatsD pipeline enable gate
+    DATA_PLANE_DOGSTATSD_ENABLED = SalukiAnnotation {
+        schema: &schema::DATA_PLANE_DOGSTATSD_ENABLED,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::GET_TYPED],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
+    };
+    /// `data_plane.enabled`-ADP enable gate
+    DATA_PLANE_ENABLED = SalukiAnnotation {
+        schema: &schema::DATA_PLANE_ENABLED,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::GET_TYPED],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::CrossCutting,
+    };
     /// `data_plane.log_file`-ADP log file path
     DATA_PLANE_LOG_FILE = SalukiAnnotation {
         schema: &schema::DATA_PLANE_LOG_FILE,

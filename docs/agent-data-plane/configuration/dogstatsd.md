@@ -571,6 +571,8 @@ compressed wire payload bytes.
 | `cri_query_timeout`                                            | CRI container runtime query timeout (s)            |
 | `data_plane.api_listen_address`                                | Unprivileged API listen address                    |
 | `data_plane.dogstatsd.aggregator_tag_filter_cache_capacity`    | Tag-filter deduplication cache size                |
+| `data_plane.dogstatsd.enabled`                                 | DogStatsD pipeline enable gate                     |
+| `data_plane.enabled`                                           | ADP enable gate                                    |
 | `data_plane.log_file`                                          | ADP log file path                                  |
 | `data_plane.otlp.proxy.logs.enabled`                           | Proxy OTLP logs to Core Agent                      |
 | `data_plane.otlp.proxy.metrics.enabled`                        | Proxy OTLP metrics to Core Agent                   |

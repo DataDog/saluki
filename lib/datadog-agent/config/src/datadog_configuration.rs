@@ -956,6 +956,9 @@ pub struct DatadogConfigurationDataPlane {
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub dogstatsd: Option<DatadogConfigurationDataPlaneDogstatsd>,
 
+    #[serde(default)]
+    pub enabled: bool,
+
     #[serde(default = "defaults::datadog_configuration_data_plane_log_file")]
     pub log_file: String,
 
@@ -977,6 +980,7 @@ impl Default for DatadogConfigurationDataPlane {
         Self {
             api_listen_address: defaults::datadog_configuration_data_plane_api_listen_address(),
             dogstatsd: Default::default(),
+            enabled: Default::default(),
             log_file: defaults::datadog_configuration_data_plane_log_file(),
             otlp: Default::default(),
             remote_agent_enabled: defaults::default_bool::<true>(),
@@ -991,12 +995,16 @@ impl Default for DatadogConfigurationDataPlane {
 pub struct DatadogConfigurationDataPlaneDogstatsd {
     #[serde(default = "defaults::default_u64::<i64, 100000>")]
     pub aggregator_tag_filter_cache_capacity: i64,
+
+    #[serde(default = "defaults::default_bool::<true>")]
+    pub enabled: bool,
 }
 
 impl Default for DatadogConfigurationDataPlaneDogstatsd {
     fn default() -> Self {
         Self {
             aggregator_tag_filter_cache_capacity: defaults::default_u64::<i64, 100000>(),
+            enabled: defaults::default_bool::<true>(),
         }
     }
 }

@@ -87,6 +87,10 @@ pub trait DatadogConfigConsumer {
     fn consume_data_plane_api_listen_address(&mut self, value: String);
     /// Consumes the value of the `data_plane.dogstatsd.aggregator_tag_filter_cache_capacity` key.
     fn consume_data_plane_dogstatsd_aggregator_tag_filter_cache_capacity(&mut self, value: i64);
+    /// Consumes the value of the `data_plane.dogstatsd.enabled` key.
+    fn consume_data_plane_dogstatsd_enabled(&mut self, value: bool);
+    /// Consumes the value of the `data_plane.enabled` key.
+    fn consume_data_plane_enabled(&mut self, value: bool);
     /// Consumes the value of the `data_plane.log_file` key.
     fn consume_data_plane_log_file(&mut self, value: String);
     /// Consumes the value of the `data_plane.otlp.proxy.logs.enabled` key.
@@ -465,6 +469,8 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigCon
     consumer.consume_data_plane_dogstatsd_aggregator_tag_filter_cache_capacity(
         data_plane_dogstatsd.aggregator_tag_filter_cache_capacity.clone(),
     );
+    consumer.consume_data_plane_dogstatsd_enabled(data_plane_dogstatsd.enabled.clone());
+    consumer.consume_data_plane_enabled(data_plane.enabled.clone());
     consumer.consume_data_plane_log_file(data_plane.log_file.clone());
     consumer.consume_data_plane_otlp_proxy_logs_enabled(data_plane_otlp_proxy_logs.enabled.clone());
     consumer.consume_data_plane_otlp_proxy_metrics_enabled(data_plane_otlp_proxy_metrics.enabled.clone());
