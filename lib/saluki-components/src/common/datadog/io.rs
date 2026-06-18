@@ -43,6 +43,8 @@ use super::{
     METRIC_INTAKE_PATHS,
 };
 
+type EndpointNameFn = dyn Fn(&Uri) -> Option<MetaString> + Send + Sync;
+
 /// Size of buffer chunks for request builder buffers.
 ///
 /// Used to influence the size of chunks in `ChunkedBytesBuffer`.
@@ -99,6 +101,7 @@ pub struct TransactionForwarder<B> {
     telemetry: ComponentTelemetry,
     metrics_builder: MetricsBuilder,
     client: HttpClient,
+    endpoint_name: Arc<EndpointNameFn>,
     endpoints: Vec<RoutableEndpoint>,
     _marker: std::marker::PhantomData<B>,
 }
@@ -160,13 +163,18 @@ where
         F: Fn(&Uri) -> Option<MetaString> + Send + Sync + 'static,
     {
         let endpoints = config.build_routable_endpoints(live_config.clone())?;
+        let endpoint_name: Arc<EndpointNameFn> = Arc::new(endpoint_name);
+        let endpoint_name_for_client = Arc::clone(&endpoint_name);
         let mut client_builder = HttpClient::builder()
             .with_request_timeout(config.request_timeout())
             .with_max_idle_conns_per_host(config.max_idle_connections_per_host())
             .with_min_tls_version(config.min_tls_version())
             .with_http_protocol(config.http_protocol())
             .with_bytes_sent_counter(telemetry.bytes_sent().clone())
-            .with_endpoint_telemetry(metrics_builder.clone(), Some(endpoint_name));
+            .with_endpoint_telemetry(
+                metrics_builder.clone(),
+                Some(move |uri: &Uri| endpoint_name_for_client(uri)),
+            );
         if let Some(path) = config.ssl_key_log_file_path() {
             client_builder = client_builder.with_tls_config(|builder| builder.with_key_log_file(path));
         }
@@ -189,6 +197,7 @@ where
             telemetry,
             metrics_builder,
             client,
+            endpoint_name,
             endpoints,
             _marker: std::marker::PhantomData,
         })
@@ -210,6 +219,7 @@ where
             telemetry,
             metrics_builder,
             client,
+            endpoint_name,
             endpoints,
             _marker,
         } = self;
@@ -225,6 +235,7 @@ where
                 client,
                 telemetry,
                 metrics_builder,
+                endpoint_name,
                 endpoints,
             ),
         );
@@ -241,7 +252,7 @@ async fn run_io_loop<B>(
     mut transactions_rx: mpsc::Receiver<Transaction<B>>, io_shutdown_tx: oneshot::Sender<()>,
     context: ComponentContext, config: ForwarderConfiguration, live_config: Option<GenericConfiguration>,
     service: HttpClient, telemetry: ComponentTelemetry, metrics_builder: MetricsBuilder,
-    resolved_endpoints: Vec<RoutableEndpoint>,
+    endpoint_name: Arc<EndpointNameFn>, resolved_endpoints: Vec<RoutableEndpoint>,
 ) where
     B: Body + Buf + Clone + Send + Sync + 'static,
     B::Data: Send,
@@ -278,6 +289,7 @@ async fn run_io_loop<B>(
                 service.clone(),
                 telemetry.clone(),
                 txnq_telemetry,
+                Arc::clone(&endpoint_name),
                 resolved_endpoint,
             ),
         );
@@ -357,7 +369,8 @@ fn should_route_to_endpoint(is_metrics_request: bool, has_metrics_primary: bool,
 async fn run_endpoint_io_loop<B>(
     mut txns_rx: mpsc::Receiver<Transaction<B>>, task_barrier: Arc<Barrier>, context: ComponentContext,
     config: ForwarderConfiguration, live_config: Option<GenericConfiguration>, service: HttpClient,
-    telemetry: ComponentTelemetry, txnq_telemetry: TransactionQueueTelemetry, endpoint: ResolvedEndpoint,
+    telemetry: ComponentTelemetry, txnq_telemetry: TransactionQueueTelemetry, endpoint_name: Arc<EndpointNameFn>,
+    endpoint: ResolvedEndpoint,
 ) where
     B: Body + Buf + Clone + Send + Sync + 'static,
     B::Data: Send,
@@ -454,6 +467,14 @@ async fn run_endpoint_io_loop<B>(
                     } else {
                         strip_metrics_validation_headers(txn)
                     };
+                    let transaction_size = txn.size_bytes();
+                    let transaction_endpoint_name = endpoint_name(txn.request_uri())
+                        .unwrap_or_else(|| MetaString::from(txn.request_uri().path().to_string()));
+                    telemetry.track_transaction_input(
+                        &endpoint_domain,
+                        &transaction_endpoint_name,
+                        transaction_size,
+                    );
 
                     match pending_txns.push_high_priority(txn).await {
                         Ok(push_result) => track_queue_drops(&telemetry, &endpoint_domain, push_result),

@@ -20,7 +20,8 @@ use crate::common::datadog::{
     protocol::MetricsPayloadInfo,
     telemetry::ComponentTelemetry,
     transaction::{Metadata, Transaction},
-    DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT,
+    DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT, METRICS_SERIES_V3_BETA_PATH, METRICS_SERIES_V3_PATH,
+    METRICS_SKETCHES_V3_PATH,
 };
 
 /// Datadog forwarder.
@@ -183,7 +184,10 @@ fn get_dd_endpoint_name(uri: &Uri) -> Option<MetaString> {
         "/api/v2/logs" => Some(MetaString::from_static("logs_v2")),
         "/api/v1/series" => Some(MetaString::from_static("series_v1")),
         "/api/v2/series" => Some(MetaString::from_static("series_v2")),
+        METRICS_SERIES_V3_PATH => Some(MetaString::from_static("series_v3")),
+        METRICS_SERIES_V3_BETA_PATH => Some(MetaString::from_static("series_v3beta")),
         "/api/beta/sketches" => Some(MetaString::from_static("sketches_v2")),
+        METRICS_SKETCHES_V3_PATH => Some(MetaString::from_static("sketches_v3")),
         "/api/v1/check_run" => Some(MetaString::from_static("check_run_v1")),
         "/api/v1/events_batch" => Some(MetaString::from_static("events_batch_v1")),
         "/api/v0.2/traces" => Some(MetaString::from_static("traces_v0.2")),
