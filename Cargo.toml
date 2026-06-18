@@ -143,7 +143,7 @@ rustls = { version = "0.23", default-features = false, features = [
 # see `saluki-tls`. Pinned to an upstream commit past the 0.1.0 crates.io release: 0.1.0 directly depends
 # on rustls-webpki 0.102 (open RUSTSEC advisories), which upstream has since dropped (alg_id now comes from
 # rustls-pki-types). Switch back to a crates.io version once a release newer than 0.1.0 is published.
-rustls-cng-crypto = { git = "https://github.com/tofay/rustls-cng-crypto", rev = "955b52e27ac76041e04459122ab4652875ab39a8", default-features = false }
+rustls-cng-crypto = { git = "https://github.com/tofay/rustls-cng-crypto", rev = "955b52e27ac76041e04459122ab4652875ab39a8", default-features = false, features = ["tls12"] }
 similar-asserts = { version = "2.0", default-features = false }
 slab = { version = "0.4.12", default-features = false }
 tokio-util = { version = "0.7.18", default-features = false }
