@@ -104,9 +104,27 @@ impl Action for CoreAgentConfigSetAction {
             )
             .await
         } else if ctx.target_is_windows() {
-            set_config_in_windows_container(&ctx.container_name, &self.endpoint(), &self.key, &value).await
+            set_config_in_windows_container(
+                &ctx.container_name,
+                &self.endpoint(),
+                &self.key,
+                &value,
+                self.timeout,
+                &ctx.cancel_token,
+                &ctx.container_exit_token,
+            )
+            .await
         } else {
-            set_config_in_linux_container(&ctx.container_name, &self.endpoint(), &self.key, &value).await
+            set_config_in_linux_container(
+                &ctx.container_name,
+                &self.endpoint(),
+                &self.key,
+                &value,
+                self.timeout,
+                &ctx.cancel_token,
+                &ctx.container_exit_token,
+            )
+            .await
         };
 
         match result {
@@ -180,7 +198,8 @@ async fn set_config_from_host(
 }
 
 async fn set_config_in_linux_container(
-    container_name: &str, endpoint: &str, key: &str, value: &str,
+    container_name: &str, endpoint: &str, key: &str, value: &str, timeout: Duration, cancel_token: &CancellationToken,
+    exit_token: &CancellationToken,
 ) -> Result<(), GenericError> {
     let endpoint = endpoint.replace("localhost", "127.0.0.1");
     let script = format!(
@@ -188,12 +207,24 @@ async fn set_config_in_linux_container(
         shell_quote(value),
         shell_quote(&endpoint)
     );
-    let output = exec_collect(container_name, vec!["sh".to_string(), "-c".to_string(), script]).await?;
-    check_status_output(key, &output)
+    let deadline = Instant::now() + timeout;
+    loop {
+        if cancel_token.is_cancelled() || exit_token.is_cancelled() {
+            return Err(generic_error!("Action cancelled because the target exited."));
+        }
+        if Instant::now() > deadline {
+            return Err(generic_error!("Timed out setting Core Agent runtime config '{}'.", key));
+        }
+        match exec_collect(container_name, vec!["sh".to_string(), "-c".to_string(), script.clone()]).await {
+            Ok(output) => return check_status_output(key, &output),
+            Err(_) => tokio::time::sleep(Duration::from_millis(500)).await,
+        }
+    }
 }
 
 async fn set_config_in_windows_container(
-    container_name: &str, endpoint: &str, key: &str, value: &str,
+    container_name: &str, endpoint: &str, key: &str, value: &str, timeout: Duration, cancel_token: &CancellationToken,
+    exit_token: &CancellationToken,
 ) -> Result<(), GenericError> {
     let endpoint = endpoint.replace("localhost", "127.0.0.1");
     let command = format!(
@@ -201,18 +232,30 @@ async fn set_config_in_windows_container(
         powershell_quote(value),
         powershell_quote(&endpoint)
     );
-    let output = exec_collect(
-        container_name,
-        vec![
-            "pwsh".to_string(),
-            "-NoProfile".to_string(),
-            "-NonInteractive".to_string(),
-            "-Command".to_string(),
-            command,
-        ],
-    )
-    .await?;
-    check_status_output(key, &output)
+    let deadline = Instant::now() + timeout;
+    loop {
+        if cancel_token.is_cancelled() || exit_token.is_cancelled() {
+            return Err(generic_error!("Action cancelled because the target exited."));
+        }
+        if Instant::now() > deadline {
+            return Err(generic_error!("Timed out setting Core Agent runtime config '{}'.", key));
+        }
+        match exec_collect(
+            container_name,
+            vec![
+                "pwsh".to_string(),
+                "-NoProfile".to_string(),
+                "-NonInteractive".to_string(),
+                "-Command".to_string(),
+                command.clone(),
+            ],
+        )
+        .await
+        {
+            Ok(output) => return check_status_output(key, &output),
+            Err(_) => tokio::time::sleep(Duration::from_millis(500)).await,
+        }
+    }
 }
 
 async fn exec_collect(container_name: &str, cmd: Vec<String>) -> Result<String, GenericError> {
