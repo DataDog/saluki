@@ -43,8 +43,7 @@ foreach ($f in @("NOTICE", "LICENSE", "LICENSE-3rdparty.csv")) {
     }
 }
 
-$FipsSuffix = if ($env:BUILD_FEATURES -eq "fips-cng") { "-fips" } else { "" }
-$ZipName = "agent-data-plane-$($env:ADP_VERSION)-windows-$($env:TARGET_ARCH)$FipsSuffix.zip"
+$ZipName = "agent-data-plane-$($env:ADP_VERSION)-windows-$($env:TARGET_ARCH)$($env:FIPS_SUFFIX).zip"
 Write-Host "[*] Packaging $ZipName"
 
 # Stage everything under a fresh per-invocation directory so re-runs don't pick up stale files.

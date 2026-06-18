@@ -182,20 +182,10 @@ test-integration-windows-amd64:
 build-release-zip-windows-amd64:
   extends: [.build-common-variables, .build-release-zip-windows-definition]
 
-# FIPS variant. Windows uses the OS-native CNG crypto provider (rustls-cng-crypto) in FIPS mode via
-# the `fips-cng` feature -- there's no aws-lc, hence no native crypto toolchain (NASM/LLVM/libclang/
-# perl/MSVC junction) and no bundled crypto DLL, so this job needs nothing the default build doesn't.
-# FIPS validation comes from Microsoft's per-Windows-version CNG module validation; the host must have
-# system-wide FIPS policy enabled at runtime for the build to operate in FIPS mode. The separate cargo
-# cache key keeps the FIPS feature's incremental compilation state from churning the default build's.
 build-release-zip-windows-amd64-fips:
   extends: [.build-common-variables, .build-release-zip-windows-definition]
   cache:
     key: windows-amd64-build-cargo-fips
-    paths:
-      - .ci-cache/cargo/
-      - .ci-cache/protoc/
-      - .ci-cache/rustup/
   variables:
     BUILD_FEATURES: "fips-cng"
     FIPS_SUFFIX: "-fips"
