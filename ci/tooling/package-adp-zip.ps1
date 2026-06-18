@@ -59,10 +59,6 @@ try {
         Copy-Item -Force $f (Join-Path $StageRoot $f)
     }
 
-    # No crypto DLL to bundle: Windows builds (default and FIPS) use the OS-native CNG provider via
-    # rustls-cng-crypto, so agent-data-plane.exe links only the OS bcrypt/ncrypt libraries. FIPS mode
-    # is governed at runtime by the host's system-wide FIPS policy, not by any shipped artifact.
-
     # Replicate the `license-builder` stage from docker/Dockerfile.agent-data-plane on the host so
     # the zip ships the same per-license THIRD-PARTY-* files as the linux/darwin artifacts. The
     # SPDX-id filter mirrors the awk/grep/sed pipeline in package-adp-tarball.sh.

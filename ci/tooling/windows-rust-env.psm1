@@ -152,10 +152,4 @@ function Initialize-RustEnvironment {
     Ensure-Protoc -Version $env:PROTOC_VERSION -ExpectedSha256 $env:PROTOC_SHA256 -InstallRoot $env:WINDOWS_CI_PROTOC_HOME
 }
 
-# NOTE: Windows builds (default and FIPS alike) use the OS-native CNG crypto provider via
-# `rustls-cng-crypto`, so no native crypto build toolchain is required. The previous
-# Install-CachedZipTool / Initialize-FipsBuildTools / New-VsBuildToolsJunction helpers existed only
-# to build aws-lc-fips-sys from source (NASM, LLVM/libclang, perl, an MSVC junction) and have been
-# removed along with the switch to CNG.
-
 Export-ModuleMember -Function Invoke-Native, Add-PathEntry, Ensure-Protoc, Initialize-RustEnvironment
