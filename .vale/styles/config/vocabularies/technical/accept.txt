@@ -234,3 +234,4 @@ launchd
 Wireshark
 testsupport
 callee
+trivy
