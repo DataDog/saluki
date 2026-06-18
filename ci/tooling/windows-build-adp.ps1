@@ -30,6 +30,20 @@ Set-Location $RepoRoot
 
 Initialize-RustEnvironment -RepoRoot $RepoRoot
 
+# Install cargo-auditable so the `cargo auditable build` below embeds an SBOM (the dependency tree)
+# into the binary, matching the linux/darwin CI builds. Installed the same way as protoc/NASM/LLVM:
+# a pinned version + SHA256, cached under .ci-cache (see .gitlab/windows.yml cache:paths). Keep the
+# version in sync with CARGO_TOOL_VERSION_cargo-auditable in the Makefile. The windows release zip is
+# flat -- cargo-auditable.exe sits at the archive root -- so BinSubdir is empty.
+$CargoAuditableVersion = "0.7.5"
+$CargoAuditableSha256 = "83a7d5955c7ac96ede5d896ac9ede5f7ecce9ece0e95d9e47acd766b09e2ef1b"
+Install-CachedZipTool `
+    -Url "https://github.com/rust-secure-code/cargo-auditable/releases/download/v$CargoAuditableVersion/cargo-auditable-x86_64-pc-windows-msvc.zip" `
+    -ExpectedSha256 $CargoAuditableSha256 `
+    -InstallRoot (Join-Path $RepoRoot ".ci-cache\cargo-auditable\$CargoAuditableVersion") `
+    -BinSubdir "" `
+    -BinaryName "cargo-auditable.exe"
+
 if ($env:BUILD_FEATURES -eq "fips") {
     # aws-lc-fips-sys (pulled in by --features fips -> rustls/fips) needs NASM, libclang,
     # and perl exposed -- see Initialize-FipsBuildTools for the full story.
@@ -62,7 +76,7 @@ if (-not $env:APP_GIT_HASH) {
 }
 
 Write-Host "[*] Building agent-data-plane (profile=$env:BUILD_PROFILE features=$env:BUILD_FEATURES)..."
-Invoke-Native cargo build --profile $env:BUILD_PROFILE --bin agent-data-plane --features $env:BUILD_FEATURES
+Invoke-Native cargo auditable build --profile $env:BUILD_PROFILE --bin agent-data-plane --features $env:BUILD_FEATURES
 
 Write-Host "[*] Packaging Windows release zip..."
 & (Join-Path $PSScriptRoot "package-adp-zip.ps1")
