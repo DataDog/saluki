@@ -1,6 +1,8 @@
 //! A workload provider based on the Datadog Agent's remote tagger and workloadmeta APIs.
 
-use std::{future::Future, num::NonZeroUsize, time::Duration};
+#[cfg(unix)]
+use std::future::Future;
+use std::{num::NonZeroUsize, time::Duration};
 
 use agent_data_plane_config_system::EnvConfig;
 use datadog_agent_commons::ipc::client::RemoteAgentClient;
