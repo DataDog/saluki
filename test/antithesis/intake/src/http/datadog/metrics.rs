@@ -1,10 +1,9 @@
 //! `/api/v2/series` handler and validation pipeline.
 //!
-//! `handle_series` fires every payload property's assertion, walks the envelope,
-//! byte-size, and decode checks in order, then returns the first failure status or
-//! `202 Accepted`.
+//! `handle_series` fires every payload property's assertion. It walks the
+//! envelope, byte-size, and decode checks in order. It returns the first failure
+//! status, or `202 Accepted` when every check holds.
 
-use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::{
@@ -15,7 +14,8 @@ use axum::{
 };
 use tracing::{debug, error};
 
-use crate::http::Measurements;
+use crate::http::middleware::Measurements;
+use crate::http::state::AppState;
 use crate::properties::payload::{bytes, envelope};
 use crate::series_observation::SeriesObservation;
 
@@ -56,9 +56,7 @@ impl IntoResponse for SeriesError {
 }
 
 /// Handler for `POST /api/v2/series`.
-pub(crate) async fn handle_series(
-    State(expected_hostname): State<Arc<str>>, request: Request,
-) -> Result<StatusCode, SeriesError> {
+pub(crate) async fn handle_series(State(state): State<AppState>, request: Request) -> Result<StatusCode, SeriesError> {
     // Pyld21 bounds points' timestamps against the intake wall clock at request receipt
     let now_secs = now_epoch_secs()?;
     let (parts, body) = request.into_parts();
@@ -96,7 +94,7 @@ pub(crate) async fn handle_series(
     let (observation, decode_ok) = SeriesObservation::decode(&body_bytes, decompression_applied);
 
     if let Some(observation) = observation.as_ref() {
-        observation.assert_payload_properties(now_secs, &expected_hostname);
+        observation.assert_payload_properties(now_secs, &state.hostname);
         debug!(
             bytes = body_bytes.len(),
             series = observation.series_len(),
