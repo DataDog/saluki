@@ -11,9 +11,10 @@ pub use dynamic::ScopedConfig;
 use serde::{de::Deserializer, Deserialize, Serialize};
 
 /// Network listen address used by component-native configuration.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
 pub enum ListenAddress {
     /// The listener is disabled.
+    #[default]
     Disabled,
     /// The listener binds a TCP socket.
     Tcp(String),
@@ -21,12 +22,6 @@ pub enum ListenAddress {
     Udp(String),
     /// The listener binds a Unix-domain socket.
     Unix(String),
-}
-
-impl Default for ListenAddress {
-    fn default() -> Self {
-        Self::Disabled
-    }
 }
 
 /// Common endpoint configuration for Datadog-style HTTP forwarders.
@@ -778,11 +773,11 @@ pub struct OttlTransformConfig {
 /// OTLP source runtime configuration.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct OtlpConfig {
-    /// GRPC listen endpoint.
+    /// gRPC listen endpoint.
     pub grpc_endpoint: String,
-    /// GRPC transport name.
+    /// gRPC transport name.
     pub grpc_transport: String,
-    /// Maximum GRPC receive message size, in MiB.
+    /// Maximum gRPC receive message size, in MiB.
     pub grpc_max_recv_msg_size_mib: u64,
     /// HTTP listen endpoint.
     pub http_endpoint: String,
@@ -826,7 +821,7 @@ impl Default for OtlpConfig {
 /// OTLP relay runtime configuration.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Default)]
 pub struct OtlpRelayConfig {
-    /// GRPC relay endpoint.
+    /// gRPC relay endpoint.
     pub grpc_endpoint: String,
 }
 

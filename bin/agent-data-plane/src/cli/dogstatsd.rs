@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet};
 #[cfg(target_os = "linux")]
 use std::path::Path;
 use std::path::PathBuf;
+#[cfg(any(target_os = "linux", test))]
 use std::time::Duration;
 #[cfg(target_os = "linux")]
 use std::time::Instant;

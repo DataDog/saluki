@@ -52,9 +52,7 @@ mod tests {
                 continue;
             }
 
-            if trimmed.starts_with(dep_name)
-                && trimmed[dep_name.len()..].starts_with(|c: char| c == ' ' || c == '=' || c == '.')
-            {
+            if trimmed.starts_with(dep_name) && trimmed[dep_name.len()..].starts_with([' ', '=', '.']) {
                 return true;
             }
         }

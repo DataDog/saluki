@@ -185,7 +185,7 @@ impl Default for OtlpPipelineGate {
 pub struct OtlpProxyGate {
     /// Whether OTLP proxy mode is enabled.
     pub enabled: bool,
-    /// Core-agent OTLP GRPC endpoint.
+    /// Core-agent OTLP gRPC endpoint.
     pub core_agent_otlp_grpc_endpoint: String,
 }
 
@@ -374,7 +374,7 @@ pub struct SalukiBootstrap {
 }
 
 /// Saluki-schema-only source input.
-#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct SalukiOnlyConfiguration {
     /// Control-plane Saluki-only values.
@@ -407,17 +407,6 @@ impl SalukiOnlyConfiguration {
         config.control.checks.enabled = self.control.checks_enabled;
         if let Some(stop_timeout_secs) = self.control.stop_timeout_secs {
             config.control.stop_timeout_millis = stop_timeout_secs.saturating_mul(1000);
-        }
-    }
-}
-
-impl Default for SalukiOnlyConfiguration {
-    fn default() -> Self {
-        Self {
-            control: ControlSalukiOnly::default(),
-            otlp: OtlpSalukiOnly::default(),
-            dogstatsd: DogStatsDSalukiOnly::default(),
-            workload: WorkloadSalukiOnly::default(),
         }
     }
 }

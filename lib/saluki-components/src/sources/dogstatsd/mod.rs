@@ -691,7 +691,7 @@ impl DogStatsDConfiguration {
         native
     }
 
-    /// Applies source-adjacent fixups that require values outside the DogStatsD slice.
+    /// Applies source-adjacent fix-ups that require values outside the DogStatsD slice.
     pub fn with_run_path(mut self, run_path: Option<PathBuf>) -> Self {
         self.fix_empty_capture_path(run_path);
         self.fix_capture_depth();

@@ -30,7 +30,9 @@ use self::telemetry::Telemetry;
 
 // Defaults mirror the Datadog Agent config defaults:
 // https://github.com/DataDog/datadog-agent/blob/12213fe95538f47d98d73bd945a87b3e24189285/pkg/config/setup/common_settings.go
+#[cfg(test)]
 const DEFAULT_HISTOGRAM_AGGREGATES: &[&str] = &["max", "median", "avg", "count"];
+#[cfg(test)]
 const DEFAULT_HISTOGRAM_PERCENTILES: &[&str] = &["0.95"];
 
 /// DogStatsD post-aggregate metric filter configuration.
@@ -43,10 +45,12 @@ pub struct DogStatsDPostAggregateFilterConfiguration {
     configuration: ScopedConfig<DogStatsDPostAggregateFilterConfig>,
 }
 
+#[cfg(test)]
 fn default_histogram_aggregates() -> Vec<String> {
     DEFAULT_HISTOGRAM_AGGREGATES.iter().copied().map(String::from).collect()
 }
 
+#[cfg(test)]
 fn default_histogram_percentiles() -> Vec<String> {
     DEFAULT_HISTOGRAM_PERCENTILES
         .iter()

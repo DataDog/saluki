@@ -96,6 +96,7 @@ impl EffectiveFilterlist {
     }
 
     /// Returns whether the current `metric_filterlist` is active.
+    #[cfg(test)]
     pub(super) fn metric_filterlist_is_active(&self) -> bool {
         !self.metric_filterlist.is_empty()
     }
