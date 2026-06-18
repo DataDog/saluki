@@ -92,3 +92,35 @@ regular CI builds. The relevant build arguments are all prefixed with `APP_` and
 
 This build metadata shouldn't need to be manually changed on a per-release basis, and so this section is mostly
 informational and not relevant to the release process itself.
+
+## Software bill of materials (SBOM)
+
+Every ADP binary produced in CI -- both the internal/dev images built on each pipeline and the published release
+artifacts -- embeds a software bill of materials (SBOM): a compact JSON record of the exact dependency tree the binary was
+built from. This lets you audit a shipped binary for vulnerable dependencies without access to its source tree or
+`Cargo.lock`.
+
+The SBOM is produced by [`cargo-auditable`](https://github.com/rust-secure-code/cargo-auditable), used during CI to
+build ADP in a way that captures the exact dependencies used, both the name and version. The dependency list lives in a
+dedicated linker section of the binary, adds only a few kilobytes, survives stripping, and is reproducible-build-safe
+(no timestamps; sorted output). It is also natively supported by tools like `cargo-audit` and Trivy, making it possible
+for customers to audit ADP binaries for vulnerable dependencies without access to the source code or bespoke tooling.
+
+> [!NOTE]
+> Local developer builds (`make build-adp`, `make build-adp-host`, `make build-adp-image`) do **not** embed an SBOM. The
+> wrapper is enabled only in CI, where GitLab sets `CI=true` (host builds) or the build passes `USE_CARGO_AUDITABLE=true`
+> (Linux Docker builds). The SBOM only matters for artifacts we ship, so local builds stay on plain `cargo build`.
+
+To inspect the SBOM embedded in a binary, use `rust-audit-info` or `cargo-audit`'s `bin` subcommand:
+
+```shell
+# Print the embedded dependency tree as JSON.
+rust-audit-info /usr/local/bin/agent-data-plane
+
+# Or scan it directly against the RustSec advisory database.
+cargo audit bin /usr/local/bin/agent-data-plane
+```
+
+The `cargo-auditable` version is pinned in the `Makefile` (the `CARGO_TOOL_VERSION_cargo-auditable` variable), which the
+host and Linux Docker builds share. The Windows build pins the same version and its archive checksum separately in
+`ci/tooling/windows-build-adp.ps1`; bump both together.

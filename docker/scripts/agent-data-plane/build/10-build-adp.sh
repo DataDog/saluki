@@ -68,11 +68,26 @@ TARGET_OUTPUT_DIR="/adp/target/${BUILD_PROFILE}"
 
 mkdir -p /out
 
+# In CI we wrap the build with `cargo auditable` so the binary embeds an SBOM (its dependency tree).
+# This is opt-in via USE_CARGO_AUDITABLE because the same Dockerfile builds locally too, where it
+# isn't wanted. cargo-auditable is baked into the build image (make cargo-preinstall); if it's
+# missing, fail loudly here rather than letting cargo emit a confusing "no such subcommand" error.
+cargo_subcmd="build"
+if [ "${USE_CARGO_AUDITABLE:-false}" = "true" ]; then
+    if ! command -v cargo-auditable >/dev/null 2>&1; then
+        echo "ERROR: USE_CARGO_AUDITABLE=true but cargo-auditable is not installed in the build image." >&2
+        echo "       Regenerate the build CI image (make cargo-preinstall) before enabling auditable builds." >&2
+        exit 1
+    fi
+    cargo_subcmd="auditable build"
+fi
+
 # The one cargo invocation shared by every target. TARGET_CFLAGS carries any target-mandated flags
 # (e.g. -mno-outline-atomics for aarch64 musl); BUILD_CFLAGS lets a caller append extra flags without
-# clobbering the target's own.
+# clobbering the target's own. cargo_subcmd is intentionally unquoted so `auditable build` splits
+# into two arguments (same word-splitting style as TARGET_CARGO_ARGS below).
 CFLAGS="${TARGET_CFLAGS} ${BUILD_CFLAGS:-}" \
-    cargo build \
+    cargo ${cargo_subcmd} \
         --profile "${BUILD_PROFILE}" \
         --package agent-data-plane \
         --features "${BUILD_FEATURES}" \
