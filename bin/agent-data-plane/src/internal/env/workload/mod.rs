@@ -238,6 +238,7 @@ impl CaptureEntityResolver for RemoteAgentWorkloadProvider {
     }
 }
 
+#[cfg(unix)]
 async fn build_collector<F, Fut, O>(
     collector_name: &str, health_registry: &HealthRegistry, bounds_builder: &mut MemoryBoundsBuilder<'_>, build: F,
 ) -> Result<O, GenericError>
