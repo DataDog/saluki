@@ -218,6 +218,14 @@ impl DatadogConfigConsumer for Translator {
         self.consume_key("auth_token_file_path", value)
     }
 
+    fn consume_autoscaling_failover_enabled(&mut self, value: Option<Value>) -> TranslateResult {
+        self.consume_key("autoscaling.failover.enabled", value)
+    }
+
+    fn consume_autoscaling_failover_metrics(&mut self, value: Option<Value>) -> TranslateResult {
+        self.consume_key("autoscaling.failover.metrics", value)
+    }
+
     fn consume_apm_config_obfuscation_credit_cards_enabled(&mut self, value: Option<Value>) -> TranslateResult {
         self.consume_key("apm_config.obfuscation.credit_cards.enabled", value)
     }
@@ -306,6 +314,22 @@ impl DatadogConfigConsumer for Translator {
 
     fn consume_bind_host(&mut self, value: Option<Value>) -> TranslateResult {
         self.consume_key("bind_host", value)
+    }
+
+    fn consume_cluster_agent_auth_token(&mut self, value: Option<Value>) -> TranslateResult {
+        self.consume_key("cluster_agent.auth_token", value)
+    }
+
+    fn consume_cluster_agent_enabled(&mut self, value: Option<Value>) -> TranslateResult {
+        self.consume_key("cluster_agent.enabled", value)
+    }
+
+    fn consume_cluster_agent_kubernetes_service_name(&mut self, value: Option<Value>) -> TranslateResult {
+        self.consume_key("cluster_agent.kubernetes_service_name", value)
+    }
+
+    fn consume_cluster_agent_url(&mut self, value: Option<Value>) -> TranslateResult {
+        self.consume_key("cluster_agent.url", value)
     }
 
     fn consume_cmd_port(&mut self, value: Option<Value>) -> TranslateResult {
@@ -398,6 +422,10 @@ impl DatadogConfigConsumer for Translator {
 
     fn consume_dogstatsd_context_expiry_seconds(&mut self, value: Option<Value>) -> TranslateResult {
         self.consume_key("dogstatsd_context_expiry_seconds", value)
+    }
+
+    fn consume_dogstatsd_disable_verbose_logs(&mut self, value: Option<Value>) -> TranslateResult {
+        self.consume_key("dogstatsd_disable_verbose_logs", value)
     }
 
     fn consume_dogstatsd_entity_id_precedence(&mut self, value: Option<Value>) -> TranslateResult {

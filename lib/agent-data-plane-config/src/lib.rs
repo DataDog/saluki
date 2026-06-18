@@ -7,13 +7,13 @@
 use std::sync::{Arc, RwLock};
 
 use saluki_component_config::{
-    AggregateConfig, ApmStatsEncoderConfig, ApmStatsTransformConfig, ChecksIpcConfig, DatadogEventsEncoderConfig,
-    DatadogForwarderConfig, DatadogLogsEncoderConfig, DatadogMetricsEncoderConfig, DatadogServiceChecksEncoderConfig,
-    DatadogTraceEncoderConfig, DogStatsDConfig, DogStatsDDebugLogConfig, DogStatsDMapperConfig,
-    DogStatsDPostAggregateFilterConfig, DogStatsDPrefixFilterConfig, DogStatsDStatisticsConfig, HostEnrichmentConfig,
-    HostTagsConfig, ListenAddress, MrfConfig, OtlpConfig, OtlpDecoderConfig, OtlpForwarderConfig, OtlpRelayConfig,
-    OttlFilterConfig, OttlTransformConfig, TagFilterlistConfig, TraceObfuscationConfig, TraceSamplerConfig,
-    WorkloadConfig,
+    AggregateConfig, ApmStatsEncoderConfig, ApmStatsTransformConfig, AutoscalingFailoverConfig, ChecksIpcConfig,
+    ClusterAgentConfig, DatadogEventsEncoderConfig, DatadogForwarderConfig, DatadogLogsEncoderConfig,
+    DatadogMetricsEncoderConfig, DatadogServiceChecksEncoderConfig, DatadogTraceEncoderConfig, DogStatsDConfig,
+    DogStatsDDebugLogConfig, DogStatsDMapperConfig, DogStatsDPostAggregateFilterConfig, DogStatsDPrefixFilterConfig,
+    DogStatsDStatisticsConfig, HostEnrichmentConfig, HostTagsConfig, ListenAddress, MrfConfig, OtlpConfig,
+    OtlpDecoderConfig, OtlpForwarderConfig, OtlpRelayConfig, OttlFilterConfig, OttlTransformConfig,
+    TagFilterlistConfig, TraceObfuscationConfig, TraceSamplerConfig, WorkloadConfig,
 };
 use serde::{Deserialize, Serialize};
 
@@ -232,6 +232,10 @@ pub struct MetricsConfigs {
     pub apm_stats_transform: ApmStatsTransformConfig,
     /// Multi-region failover config.
     pub multi_region_failover: MrfConfig,
+    /// Autoscaling failover config.
+    pub autoscaling_failover: AutoscalingFailoverConfig,
+    /// Cluster Agent forwarding config.
+    pub cluster_agent: ClusterAgentConfig,
 }
 
 /// Logs component configs.

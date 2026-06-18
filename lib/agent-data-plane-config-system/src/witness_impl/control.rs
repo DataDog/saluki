@@ -15,9 +15,38 @@ pub(super) fn consume_key(translator: &mut Translator, key: &str, value: Value) 
             translator.aggregator_stop_timeout_secs = u64_value(value, 2);
             None
         }
+        "autoscaling.failover.enabled" => {
+            translator.native.components.metrics.autoscaling_failover.enabled = bool_value(value);
+            None
+        }
+        "autoscaling.failover.metrics" => {
+            translator.native.components.metrics.autoscaling_failover.metrics = string_vec_value(value);
+            None
+        }
         "auth_token_file_path" => {
             translator.native.control.ipc_auth.auth_token_file_path = optional_string_value(value);
 
+            None
+        }
+        "cluster_agent.auth_token" => {
+            translator.native.components.metrics.cluster_agent.auth_token = optional_string_value(value);
+            None
+        }
+        "cluster_agent.enabled" => {
+            translator.native.components.metrics.cluster_agent.enabled = bool_value(value);
+            None
+        }
+        "cluster_agent.kubernetes_service_name" => {
+            translator
+                .native
+                .components
+                .metrics
+                .cluster_agent
+                .kubernetes_service_name = optional_string_value(value);
+            None
+        }
+        "cluster_agent.url" => {
+            translator.native.components.metrics.cluster_agent.url = optional_string_value(value);
             None
         }
         "cmd_port" => {

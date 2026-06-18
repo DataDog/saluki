@@ -860,3 +860,34 @@ pub struct WorkloadConfig {
     /// CRI query timeout, in seconds.
     pub cri_query_timeout_secs: u64,
 }
+
+/// Autoscaling failover runtime configuration.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct AutoscalingFailoverConfig {
+    /// Whether autoscaling failover is enabled.
+    pub enabled: bool,
+    /// Metric name allowlist.
+    pub metrics: Vec<String>,
+}
+
+impl Default for AutoscalingFailoverConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            metrics: vec!["container.memory.usage".to_string(), "container.cpu.usage".to_string()],
+        }
+    }
+}
+
+/// Cluster Agent forwarding runtime configuration.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Default)]
+pub struct ClusterAgentConfig {
+    /// Whether Cluster Agent forwarding is enabled.
+    pub enabled: bool,
+    /// Cluster Agent endpoint URL.
+    pub url: Option<String>,
+    /// Kubernetes service name for endpoint resolution.
+    pub kubernetes_service_name: Option<String>,
+    /// Bearer token for Cluster Agent authentication.
+    pub auth_token: Option<String>,
+}

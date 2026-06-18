@@ -30,6 +30,7 @@ pub(super) fn consume_key(translator: &mut Translator, key: &str, value: Value) 
 
             None
         }
+        "dogstatsd_disable_verbose_logs" => None,
         "dogstatsd_entity_id_precedence" => {
             translator
                 .native
