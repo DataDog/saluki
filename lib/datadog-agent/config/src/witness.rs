@@ -63,6 +63,12 @@ pub trait DatadogConfigConsumer {
     fn consume_apm_config_obfuscation_valkey_enabled(&mut self, value: bool);
     /// Consumes the value of the `apm_config.obfuscation.valkey.remove_all_args` key.
     fn consume_apm_config_obfuscation_valkey_remove_all_args(&mut self, value: bool);
+    /// Consumes the value of the `apm_config.probabilistic_sampler.enabled` key.
+    fn consume_apm_config_probabilistic_sampler_enabled(&mut self, value: bool);
+    /// Consumes the value of the `apm_config.probabilistic_sampler.sampling_percentage` key.
+    fn consume_apm_config_probabilistic_sampler_sampling_percentage(&mut self, value: f64);
+    /// Consumes the value of the `apm_config.target_traces_per_second` key.
+    fn consume_apm_config_target_traces_per_second(&mut self, value: f64);
     /// Consumes the value of the `autoscaling.failover.enabled` key.
     fn consume_autoscaling_failover_enabled(&mut self, value: bool);
     /// Consumes the value of the `autoscaling.failover.metrics` key.
@@ -370,6 +376,10 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigCon
         .unwrap_or_else(section_defaults);
     let apm_config_obfuscation_redis = apm_config_obfuscation.redis.clone().unwrap_or_else(section_defaults);
     let apm_config_obfuscation_valkey = apm_config_obfuscation.valkey.clone().unwrap_or_else(section_defaults);
+    let apm_config_probabilistic_sampler = apm_config
+        .probabilistic_sampler
+        .clone()
+        .unwrap_or_else(section_defaults);
     let autoscaling = config.autoscaling.clone().unwrap_or_else(section_defaults);
     let autoscaling_failover = autoscaling.failover.clone().unwrap_or_else(section_defaults);
     let cluster_agent = config.cluster_agent.clone().unwrap_or_else(section_defaults);
@@ -455,6 +465,11 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigCon
     consumer.consume_apm_config_obfuscation_valkey_enabled(apm_config_obfuscation_valkey.enabled.clone());
     consumer
         .consume_apm_config_obfuscation_valkey_remove_all_args(apm_config_obfuscation_valkey.remove_all_args.clone());
+    consumer.consume_apm_config_probabilistic_sampler_enabled(apm_config_probabilistic_sampler.enabled.clone());
+    consumer.consume_apm_config_probabilistic_sampler_sampling_percentage(
+        apm_config_probabilistic_sampler.sampling_percentage.clone(),
+    );
+    consumer.consume_apm_config_target_traces_per_second(apm_config.target_traces_per_second.clone());
     consumer.consume_autoscaling_failover_enabled(autoscaling_failover.enabled.clone());
     consumer.consume_autoscaling_failover_metrics(autoscaling_failover.metrics.clone());
     consumer.consume_bind_host(config.bind_host.clone());

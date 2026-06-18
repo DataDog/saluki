@@ -295,10 +295,21 @@ pub fn set_log_file_max_rolls(debug: &mut DogStatsDDebugLogConfig, value: i64) {
 /// `histogram_aggregates` -> the histogram aggregate statistics to compute.
 ///
 /// Mirrors the original parse: `count`/`sum`/`min`/`max`/`avg`/`median` map to the named variants.
-/// The original keeps the configured percentiles separately; the aggregate transform here tracks
-/// only the named aggregates, so percentile entries are ignored at this site.
+/// Percentile statistics (e.g. the default `Percentile { q: 0.95 }`) are not in the Datadog Agent
+/// core schema and are not set here; they are preserved from the existing config so that the default
+/// `histogram_percentiles = ["0.95"]` is not inadvertently lost.
 pub fn set_histogram_aggregates(aggregate: &mut AggregateConfig, value: Vec<String>) {
-    let mut statistics = Vec::with_capacity(value.len());
+    // Retain any existing Percentile statistics: `histogram_percentiles` is excluded from the
+    // Datadog schema overlay, so it cannot be witnessed. The default Percentile(0.95) must survive
+    // the histogram_aggregates update.
+    let mut statistics: Vec<HistogramStatistic> = aggregate
+        .hist_config
+        .statistics
+        .iter()
+        .filter(|s| matches!(s, HistogramStatistic::Percentile { .. }))
+        .cloned()
+        .collect();
+
     for entry in value {
         match entry.as_str() {
             "count" => statistics.push(HistogramStatistic::Count),

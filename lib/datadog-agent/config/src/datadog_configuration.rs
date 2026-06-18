@@ -637,12 +637,25 @@ impl Default for DatadogConfigurationAgentIpc {
 pub struct DatadogConfigurationApmConfig {
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub obfuscation: Option<DatadogConfigurationApmConfigObfuscation>,
+
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    pub probabilistic_sampler: Option<DatadogConfigurationApmConfigProbabilisticSampler>,
+
+    /// The target traces per second to sample. Sampling rates to apply are adjusted given
+    /// the received traffic and communicated to tracers. This configures head-based sampling.
+    /// As of 7.35.0 sampling cannot be disabled and setting 'max_traces_per_second' to 0 no longer
+    /// disables sampling, but instead sends no traces to the intake. To avoid rate limiting, set this
+    /// value sufficiently high for your traffic pattern.
+    #[serde(default = "defaults::datadog_configuration_apm_config_target_traces_per_second")]
+    pub target_traces_per_second: f64,
 }
 
 impl Default for DatadogConfigurationApmConfig {
     fn default() -> Self {
         Self {
             obfuscation: Default::default(),
+            probabilistic_sampler: Default::default(),
+            target_traces_per_second: defaults::datadog_configuration_apm_config_target_traces_per_second(),
         }
     }
 }
@@ -877,6 +890,28 @@ impl Default for DatadogConfigurationApmConfigObfuscationValkey {
         Self {
             enabled: defaults::default_bool::<true>(),
             remove_all_args: Default::default(),
+        }
+    }
+}
+
+/// Enables and configures the Probabilistic Sampler, compatible with the
+/// OTel Probabilistic Sampler Processor ( https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/processor/probabilisticsamplerprocessor#probabilistic-sampling-processor )
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+pub struct DatadogConfigurationApmConfigProbabilisticSampler {
+    /// Enables or disables the probabilistic sampler
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Samples this percentage (0-100) of traffic
+    #[serde(default = "defaults::datadog_configuration_apm_config_probabilistic_sampler_sampling_percentage")]
+    pub sampling_percentage: f64,
+}
+
+impl Default for DatadogConfigurationApmConfigProbabilisticSampler {
+    fn default() -> Self {
+        Self {
+            enabled: Default::default(),
+            sampling_percentage: defaults::datadog_configuration_apm_config_probabilistic_sampler_sampling_percentage(),
         }
     }
 }
@@ -1545,6 +1580,12 @@ pub mod defaults {
             "tomcat".to_string(),
             "runtime".to_string(),
         ]
+    }
+    pub(super) fn datadog_configuration_apm_config_target_traces_per_second() -> f64 {
+        10_f64
+    }
+    pub(super) fn datadog_configuration_apm_config_probabilistic_sampler_sampling_percentage() -> f64 {
+        0_f64
     }
     pub(super) fn datadog_configuration_autoscaling_failover_metrics() -> Vec<String> {
         vec!["container.memory.usage".to_string(), "container.cpu.usage".to_string()]

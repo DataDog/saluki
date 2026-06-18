@@ -35,6 +35,7 @@ pub enum ConfigurationStruct {
     RemoteAgentClientConfiguration,
     TagFilterlistConfiguration,
     TraceObfuscationConfiguration,
+    TraceSamplerConfiguration,
 
     /// Keys read via `get_typed` / `try_get_typed` rather than struct deserialization.
     #[serde(rename = "get_typed")]
@@ -67,6 +68,7 @@ impl ConfigurationStruct {
             ConfigurationStruct::RemoteAgentClientConfiguration => "REMOTE_AGENT_CLIENT_CONFIGURATION",
             ConfigurationStruct::TagFilterlistConfiguration => "TAG_FILTERLIST_CONFIGURATION",
             ConfigurationStruct::TraceObfuscationConfiguration => "TRACE_OBFUSCATION_CONFIGURATION",
+            ConfigurationStruct::TraceSamplerConfiguration => "TRACE_SAMPLER_CONFIGURATION",
             ConfigurationStruct::GetTyped => "GET_TYPED",
         }
     }

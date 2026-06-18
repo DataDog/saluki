@@ -24,7 +24,11 @@ pub fn set_grpc_transport(source: &mut OtlpSourceConfig, value: String) {
 
 /// `otlp_config.receiver.protocols.grpc.max_recv_msg_size_mib` -> OTLP gRPC max receive size (MiB).
 pub fn set_grpc_max_recv_msg_size_mib(source: &mut OtlpSourceConfig, value: i64) {
-    source.otlp_config.receiver.protocols.grpc.max_recv_msg_size_mib = value.max(0) as u64;
+    // The Datadog schema defaults this field to 0 (i64::default), which the Agent treats as
+    // "use built-in default". Only override when the user has set a positive value.
+    if value > 0 {
+        source.otlp_config.receiver.protocols.grpc.max_recv_msg_size_mib = value as u64;
+    }
 }
 
 /// `otlp_config.receiver.protocols.http.endpoint` -> OTLP HTTP receiver endpoint.

@@ -155,13 +155,14 @@ impl SourceBuilder for OtlpConfiguration {
             return Err(generic_error!("Only 'tcp' transport is supported for OTLP gRPC"));
         }
 
-        let http_socket_addr = self.otlp_config.receiver.protocols.http.endpoint.parse().map_err(|e| {
-            generic_error!(
-                "Invalid HTTP endpoint address '{}': {}",
-                self.otlp_config.receiver.protocols.http.endpoint,
-                e
-            )
-        })?;
+        // Resolve the HTTP endpoint the same way we resolve the gRPC endpoint: via the URL
+        // crate, which performs DNS hostname resolution and accepts "localhost:N" addresses.
+        let http_listen_str = format!("tcp://{}", self.otlp_config.receiver.protocols.http.endpoint);
+        let http_endpoint = ListenAddress::try_from(http_listen_str.as_str())
+            .map_err(|e| generic_error!("Invalid HTTP endpoint address '{}': {}", http_listen_str, e))?;
+        if !matches!(http_endpoint, ListenAddress::Tcp(_)) {
+            return Err(generic_error!("Only 'tcp' transport is supported for OTLP HTTP"));
+        }
 
         let maybe_origin_tags_resolver = self.workload_provider.clone().map(OtlpOriginTagResolver::new);
 
@@ -181,7 +182,7 @@ impl SourceBuilder for OtlpConfiguration {
             context_resolver,
             origin_tag_resolver: maybe_origin_tags_resolver,
             grpc_endpoint,
-            http_endpoint: ListenAddress::Tcp(http_socket_addr),
+            http_endpoint,
             grpc_max_recv_msg_size_bytes,
             metrics_translator_config,
             traces_translator,

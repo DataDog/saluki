@@ -75,6 +75,8 @@ pub mod structs {
     pub const OTLP_RELAY_CONFIGURATION: &str = "OtlpRelayConfiguration";
     /// Identifier for `TraceObfuscationConfiguration`.
     pub const TRACE_OBFUSCATION_CONFIGURATION: &str = "TraceObfuscationConfiguration";
+    /// Identifier for `TraceSamplerConfiguration`.
+    pub const TRACE_SAMPLER_CONFIGURATION: &str = "TraceSamplerConfiguration";
     /// Identifier for `RemoteAgentClientConfiguration`.
     pub const REMOTE_AGENT_CLIENT_CONFIGURATION: &str = "RemoteAgentClientConfiguration";
     /// Identifier for `TagFilterlistConfiguration`.

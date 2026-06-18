@@ -384,6 +384,45 @@ inventory:
       additional_attributes:
         config_registry_filename: trace_obfuscation.rs
 
+  apm_config.probabilistic_sampler.enabled:
+    support: full
+    pipelines: [traces]
+    description: "APM probabilistic sampler enabled gate"
+    documentation: |-
+      Enables the APM probabilistic sampler. When enabled, traces are sampled at the rate
+      configured by `apm_config.probabilistic_sampler.sampling_percentage`.
+    test_support:
+      used_by: [TraceSamplerConfiguration]
+      test_json: "true"
+      additional_attributes:
+        config_registry_filename: trace_sampler.rs
+
+  apm_config.probabilistic_sampler.sampling_percentage:
+    support: full
+    pipelines: [traces]
+    description: "APM probabilistic sampler sampling percentage"
+    documentation: |-
+      Percentage of traces to sample when the APM probabilistic sampler is enabled.
+      Valid range: (0, 100]. Values outside this range are ignored and the default is used.
+    test_support:
+      used_by: [TraceSamplerConfiguration]
+      test_json: "50.0"
+      additional_attributes:
+        config_registry_filename: trace_sampler.rs
+
+  apm_config.target_traces_per_second:
+    support: full
+    pipelines: [traces]
+    description: "APM target traces per second"
+    documentation: |-
+      Target traces per second for head-based sampling. Sampling rates communicated to tracers
+      are adjusted based on received traffic. Set sufficiently high to avoid rate limiting.
+    test_support:
+      used_by: [TraceSamplerConfiguration]
+      test_json: "1000000.0"
+      additional_attributes:
+        config_registry_filename: trace_sampler.rs
+
   autoscaling.failover.enabled:
     support: full
     pipelines: [checks, dogstatsd, otlp]
@@ -2584,9 +2623,7 @@ excluded:
   apm_config.peer_service_aggregation: "ignored in initial audit 2026-04-23"
   apm_config.peer_tags: "ignored in initial audit 2026-04-23"
   apm_config.peer_tags_aggregation: "ignored in initial audit 2026-04-23"
-  apm_config.probabilistic_sampler.enabled: "ignored in initial audit 2026-04-23"
   apm_config.probabilistic_sampler.hash_seed: "ignored in initial audit 2026-04-23"
-  apm_config.probabilistic_sampler.sampling_percentage: "ignored in initial audit 2026-04-23"
   apm_config.profiling_additional_endpoints: "ignored in initial audit 2026-04-23"
   apm_config.profiling_dd_url: "ignored in initial audit 2026-04-23"
   apm_config.profiling_max_request_bytes: "2026-06-10 APM trace/profiling pipeline feature (comp/trace); ADP does not run the trace agent."
@@ -2608,7 +2645,6 @@ excluded:
   apm_config.symdb_api_key: "ignored in initial audit 2026-04-23"
   apm_config.symdb_dd_url: "ignored in initial audit 2026-04-23"
   apm_config.sync_flushing: "ignored in initial audit 2026-04-23"
-  apm_config.target_traces_per_second: "ignored in initial audit 2026-04-23"
   apm_config.telemetry.additional_endpoints: "ignored in initial audit 2026-04-23"
   apm_config.telemetry.dd_url: "ignored in initial audit 2026-04-23"
   apm_config.telemetry.enabled: "ignored in initial audit 2026-04-23"

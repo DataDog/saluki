@@ -559,6 +559,8 @@ compressed wire payload bytes.
 | `apm_config.obfuscation.redis.remove_all_args`                 | apm_config.obfuscation.redis.remove_all_args       |
 | `apm_config.obfuscation.valkey.enabled`                        | apm_config.obfuscation.valkey.enabled              |
 | `apm_config.obfuscation.valkey.remove_all_args`                | apm_config.obfuscation.valkey.remove_all_args      |
+| `apm_config.probabilistic_sampler.enabled`                     | APM probabilistic sampler enabled gate             |
+| `apm_config.probabilistic_sampler.sampling_percentage`         | APM probabilistic sampler sampling percentage      |
 | `autoscaling.failover.enabled`                                 | Enable autoscaling failover metric routing         |
 | `autoscaling.failover.metrics`                                 | Metric names forwarded to DCA for failover         |
 | `bind_host`                                                    | Global listen host fallback                        |

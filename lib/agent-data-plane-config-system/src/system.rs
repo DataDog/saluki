@@ -194,7 +194,13 @@ async fn start_local(
 
     // standalone_mode and otlp_enabled are not in the Datadog core schema so the witness cannot
     // set them. Thread the bootstrap-time values through so the runtime control slice reflects them.
-    initial.control.standalone_mode = standalone_mode;
+    //
+    // `start_local` is only called for `LocalSnapshot` (no Agent connection), so the environment
+    // provider must use local-only host resolution. `standalone_mode` enables that path regardless
+    // of how the LocalSnapshot authority was reached (e.g. remote_agent_enabled=false also lands
+    // here but leaves LoadedSources::standalone_mode as false).
+    let _ = standalone_mode;
+    initial.control.standalone_mode = true;
     initial.control.otlp.enabled = otlp_enabled;
 
     // The `saluki-env` provider layer reads the runtime Datadog source map; in local mode that is

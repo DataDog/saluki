@@ -41,10 +41,13 @@ fn for_each_obfuscation(t: &mut Translator, f: impl Fn(&mut ObfuscationConfig)) 
 
 /// `env` -> default trace environment (mirrored to the APM stats encoder and the APM configs).
 pub fn set_env(t: &mut Translator, value: String) {
+    // The Datadog schema defaults `env` to "" (empty); the Core Agent uses "none" in that case.
+    // Normalize so ADP traces carry the same default environment tag as the Agent.
+    let env = if value.is_empty() { "none".to_string() } else { value };
     let native = t.native_mut();
-    native.components.traces.encoder.env = value.clone();
-    native.components.metrics.apm_stats_encoder.env = value.clone();
-    let meta = stringtheory::MetaString::from(value);
+    native.components.traces.encoder.env = env.clone();
+    native.components.metrics.apm_stats_encoder.env = env.clone();
+    let meta = stringtheory::MetaString::from(env);
     native.components.traces.encoder.apm_config.default_env = meta.clone();
     native.components.traces.sampler.apm_config.default_env = meta.clone();
     native.components.metrics.apm_stats_transform.apm_config.default_env = meta;

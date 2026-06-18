@@ -294,6 +294,19 @@ impl DatadogConfigConsumer for Translator {
         otlp::set_traces_sampling_percentage(self, value);
     }
 
+    fn consume_apm_config_probabilistic_sampler_enabled(&mut self, value: bool) {
+        self.native_mut().components.traces.sampler.apm_config.probabilistic_sampler.enabled = value;
+    }
+
+    fn consume_apm_config_probabilistic_sampler_sampling_percentage(&mut self, value: f64) {
+        self.native_mut().components.traces.sampler.apm_config.probabilistic_sampler.sampling_percentage = value;
+        traces::set_otlp_sampling_rate(&mut self.native_mut().components.traces.sampler, value);
+    }
+
+    fn consume_apm_config_target_traces_per_second(&mut self, value: f64) {
+        self.native_mut().components.traces.sampler.apm_config.target_traces_per_second = value;
+    }
+
     fn consume_apm_config_obfuscation_credit_cards_enabled(&mut self, value: bool) {
         traces::set_obfuscation_credit_cards_enabled(self, value);
     }
