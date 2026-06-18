@@ -84,7 +84,7 @@ impl WorkerState {
             Some(Ok((worker_task_id, worker_result))) => {
                 let process_state = self
                     .worker_map
-                    .swap_remove(&worker_task_id)
+                    .shift_remove(&worker_task_id)
                     .expect("worker task ID not found");
                 (process_state.worker_id, worker_result)
             }
@@ -92,7 +92,7 @@ impl WorkerState {
                 let worker_task_id = e.id();
                 let process_state = self
                     .worker_map
-                    .swap_remove(&worker_task_id)
+                    .shift_remove(&worker_task_id)
                     .expect("worker task ID not found");
                 let e = if e.is_cancelled() {
                     ProcessError::Aborted
@@ -163,6 +163,7 @@ impl WorkerState {
 
             // Wait for the process to exit by driving the `JoinSet`. If other workers complete while we're waiting,
             // we'll simply remove them from the worker map and continue waiting.
+            let mut aborted = false;
             loop {
                 select! {
                     worker_result = self.worker_tasks.join_next_with_id() => {
@@ -173,7 +174,7 @@ impl WorkerState {
                                     break;
                                 } else {
                                     debug!(?worker_task_id, "Non-target process exited successfully. Continuing to wait.");
-                                    let removed = self.worker_map.swap_remove(&worker_task_id);
+                                    let removed = self.worker_map.shift_remove(&worker_task_id);
                                     debug_assert!(removed.is_some(), "non-target worker must be in the worker map");
                                 }
                             },
@@ -184,17 +185,20 @@ impl WorkerState {
                                     break;
                                 } else {
                                     debug!(?worker_task_id, "Non-target process exited with error. Continuing to wait.");
-                                    let removed = self.worker_map.swap_remove(&worker_task_id);
+                                    let removed = self.worker_map.shift_remove(&worker_task_id);
                                     debug_assert!(removed.is_some(), "non-target worker must be in the worker map");
                                 }
                             }
                             None => unreachable!("worker task must exist in join set if we are waiting for it"),
                         }
                     },
-                    // We've exceeded the shutdown timeout, so we need to abort the process.
-                    _ = &mut shutdown_deadline => {
+                    // We've exceeded the shutdown timeout, so we abort the process. The `if !aborted` guard stops this
+                    // arm from re-firing on every poll once the deadline has elapsed (an elapsed `Sleep` stays ready),
+                    // which would otherwise spin re-aborting until the task is reaped.
+                    _ = &mut shutdown_deadline, if !aborted => {
                         debug!(worker_id, "Shutdown timeout expired, forcefully aborting process.");
                         abort_handle.abort();
+                        aborted = true;
                     }
                 }
             }
