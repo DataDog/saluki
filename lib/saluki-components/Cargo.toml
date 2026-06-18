@@ -10,10 +10,10 @@ workspace = true
 
 [features]
 default = []
-fips = ["_tls_fips", "saluki-io/fips"]
-fips-cng = ["_tls_fips", "saluki-io/fips-cng"]
+fips = ["_fips", "saluki-io/fips"]
+fips-cng = ["_fips", "saluki-io/fips-cng"]
 # Private marker enabled by both FIPS features; gates FIPS-specific behavior independent of the provider.
-_tls_fips = []
+_fips = []
 antithesis = ["dep:antithesis_sdk", "antithesis_sdk/full"]
 
 [dependencies]
