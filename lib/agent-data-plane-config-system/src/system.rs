@@ -479,6 +479,11 @@ mod tests {
     // reflects translated values and whose config_views() are non-empty, scrubbed, and secret-free.
     #[tokio::test]
     async fn start_runtime_local_translates_and_views_are_scrubbed() {
+        // Explicitly set DD_SITE so that the env-var layer and the YAML file agree, making the
+        // test deterministic even when the CI environment has DD_SITE=datadoghq.com pre-set.
+        // nextest runs each test in its own process, so this mutation does not affect other tests.
+        unsafe { std::env::set_var("DD_SITE", "us3.datadoghq.com") };
+
         let yaml = format!("data_plane:\n  standalone_mode: true\nsite: us3.datadoghq.com\napi_key: {FAKE_API_KEY}\n");
         let (inputs, _file) = local_inputs(&yaml);
 
