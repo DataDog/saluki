@@ -1,7 +1,9 @@
 use std::future::Future;
 
+use agent_data_plane_config::ControlConfiguration;
+use agent_data_plane_config_system::{Attachments, EnvConfig};
 use resource_accounting::ComponentRegistry;
-use saluki_config_tools::GenericConfiguration;
+use saluki_component_config::workload::WorkloadConfig;
 use saluki_core::health::HealthRegistry;
 use saluki_core::runtime::Supervisor;
 use saluki_env::{
@@ -9,10 +11,8 @@ use saluki_env::{
     host::providers::{BoxedHostProvider, FixedHostProvider},
     EnvironmentProvider,
 };
-use saluki_error::GenericError;
+use saluki_error::{generic_error, GenericError};
 use tracing::warn;
-
-use crate::config::DataPlaneConfiguration;
 
 mod autodiscovery;
 pub use self::autodiscovery::RemoteAgentAutodiscoveryProvider;
@@ -50,16 +50,20 @@ impl ADPEnvironmentProvider {
     ///
     /// In standalone mode, no supervisor is returned as all behavior/functionality is either provided via
     /// fixed configuration or operates in a no-op fashion.
-    pub async fn from_configuration(
-        config: &GenericConfiguration, dp_config: &DataPlaneConfiguration, component_registry: &ComponentRegistry,
-        health_registry: &HealthRegistry,
+    pub async fn from_typed(
+        env_config: &EnvConfig, workload_config: &WorkloadConfig, control: &ControlConfiguration,
+        attachments: Option<&Attachments>, component_registry: &ComponentRegistry, health_registry: &HealthRegistry,
     ) -> Result<(Self, Option<Supervisor>), GenericError> {
         // When we're in standalone mode, all of our functionality is either fixed or a no-op.
-        if dp_config.standalone_mode() {
+        if control.standalone_mode {
             warn!("Running in standalone mode. Origin detection/enrichment and other features dependent upon the Datadog Agent will not be available.");
 
+            // `FixedHostProvider` is a `saluki-env` type that reads the `hostname` key from the raw
+            // source map; it is supplied via the confined `EnvConfig` pass-through.
             let env = Self {
-                host_provider: BoxedHostProvider::from_provider(FixedHostProvider::from_configuration(config)?),
+                host_provider: BoxedHostProvider::from_provider(FixedHostProvider::from_configuration(
+                    env_config.raw(),
+                )?),
                 workload_provider: None,
                 autodiscovery_provider: None,
                 health_registry: health_registry.clone(),
@@ -68,16 +72,24 @@ impl ADPEnvironmentProvider {
         }
 
         // Otherwise, construct our real providers that will interact directly with the Datadog Agent.
+        // Their gRPC clients come from the config-system's typed attachment bundle, which only exists
+        // when connected to the Agent (stream mode).
+        let attachments = attachments.ok_or_else(|| {
+            generic_error!("Agent attachments are required to build the environment provider outside standalone mode.")
+        })?;
+
         let mut provider_component = component_registry.get_or_create("env_provider");
         let mut env_supervisor = Supervisor::new("env-provider")?;
 
-        let host_provider = RemoteAgentHostProvider::from_configuration(config).await?;
+        let host_provider = RemoteAgentHostProvider::from_client(attachments.host_tags.client());
         provider_component
             .bounds_builder()
             .with_subcomponent("host", &host_provider);
 
-        let (workload_provider, workload_supervisor) = RemoteAgentWorkloadProvider::from_configuration(
-            config,
+        let (workload_provider, workload_supervisor) = RemoteAgentWorkloadProvider::from_typed(
+            env_config,
+            workload_config,
+            attachments.metrics.client(),
             component_registry.get_or_create("workload"),
             health_registry,
         )
@@ -85,7 +97,7 @@ impl ADPEnvironmentProvider {
         env_supervisor.add_worker(workload_supervisor);
 
         let (autodiscovery_provider, autodiscovery_supervisor) =
-            RemoteAgentAutodiscoveryProvider::from_configuration(config).await?;
+            RemoteAgentAutodiscoveryProvider::from_client(attachments.autodiscovery.client())?;
         env_supervisor.add_worker(autodiscovery_supervisor);
 
         let env = Self {

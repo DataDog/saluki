@@ -1,11 +1,14 @@
+use std::path::PathBuf;
 use std::{
     collections::HashSet,
-    path::PathBuf,
     time::{Duration, Instant},
 };
 
+use agent_data_plane_config::{ComponentConfiguration, ControlConfiguration};
+use agent_data_plane_config_system::{
+    Attachments, DynamicConfigHandles, EnvConfig, LoadedConfigurationSystem, RemoteAgentRegistration,
+};
 use argh::FromArgs;
-use datadog_agent_commons::platform::PlatformSettings;
 use datadog_agent_config::classifier::{ConfigClassifier, Pipeline, PipelineAffinity, Severity, SupportLevel};
 use resource_accounting::{ComponentBounds, ComponentRegistry};
 use saluki_app::{
@@ -14,9 +17,6 @@ use saluki_app::{
     metrics::emit_startup_metrics,
 };
 use saluki_components::{
-    config::{
-        AutoscalingFailoverConfiguration, ClusterAgentConfiguration, DatadogRemapper, MrfConfiguration, KEY_ALIASES,
-    },
     decoders::otlp::OtlpDecoderConfiguration,
     destinations::{DogStatsDDebugLogConfiguration, DogStatsDStatisticsConfiguration},
     encoders::{
@@ -33,7 +33,6 @@ use saluki_components::{
         MrfMetricsGatewayConfiguration, TraceObfuscationConfiguration, TraceSamplerConfiguration,
     },
 };
-use saluki_config_tools::{ConfigurationLoader, GenericConfiguration};
 use saluki_core::health::HealthRegistry;
 use saluki_core::runtime::{RestartMode, RestartStrategy, Supervisor};
 use saluki_core::topology::TopologyBlueprint;
@@ -50,11 +49,10 @@ use crate::{
         tag_filterlist::TagFilterlistConfiguration,
     },
     internal::{
-        create_internal_supervisor, logging::LoggingConfigurationTranslator, remote_agent::RemoteAgentBootstrap,
+        create_internal_supervisor, env::ADPEnvironmentProvider, remote_agent::RemoteAgentServices,
         DogStatsDControlSurface, TopologyControlSurfaces,
     },
 };
-use crate::{config::DataPlaneConfiguration, internal::env::ADPEnvironmentProvider};
 
 /// Runs the data plane.
 #[derive(FromArgs, Debug)]
@@ -67,7 +65,7 @@ pub struct RunCommand {
 
 /// Entrypoint for the `run` commands.
 pub async fn handle_run_command(
-    started: Instant, bootstrap_config: GenericConfiguration, bootstrap_guard: &mut BootstrapGuard,
+    started: Instant, loaded: LoadedConfigurationSystem, bootstrap_guard: &mut BootstrapGuard,
     bootstrap_supervisor: Supervisor,
 ) -> Result<(), GenericError> {
     let app_details = saluki_metadata::get_app_details();
@@ -80,108 +78,121 @@ pub async fn handle_run_command(
         "Agent Data Plane starting..."
     );
 
-    // Load our "bootstrap" configuration.
-    //
-    // If remote agent mode is enabled, we'll register as a remote agent, which will unlock the ability to receive
-    // configuration updates from the Core Agent, which we'll use to build our final, updated configuration. Otherwise,
-    // we keep the bootstrap configuration and use it as-is.
-    let bootstrap_dp_config = DataPlaneConfiguration::from_configuration(&bootstrap_config)
-        .error_context("Failed to load data plane configuration.")?;
-
-    let in_standalone_mode = bootstrap_dp_config.standalone_mode();
-    let remote_agent_enabled = bootstrap_dp_config.remote_agent_enabled();
-    let use_new_config_stream_endpoint = bootstrap_dp_config.use_new_config_stream_endpoint();
-    let should_bootstrap_remote_agent = !in_standalone_mode && (remote_agent_enabled || use_new_config_stream_endpoint);
-
-    let ra_bootstrap = if should_bootstrap_remote_agent {
-        let ra_bootstrap = RemoteAgentBootstrap::from_configuration(&bootstrap_config, &bootstrap_dp_config)
-            .await
-            .error_context("Failed to bootstrap remote agent state.")?;
-
-        Some(ra_bootstrap)
-    } else {
-        None
+    // Build the remote-agent registration the config-system uses when connecting to the Agent. The
+    // gRPC service names and the callback endpoint (the secure API listen address) are local
+    // decisions, so they come from the typed bootstrap slice before runtime authority exists. In
+    // local-snapshot mode the registration is unused.
+    let secure_api_listen_address = loaded
+        .bootstrap()
+        .datadog
+        .local_api()
+        .secure_api_listen_address
+        .clone()
+        .unwrap_or_else(|| "tcp://0.0.0.0:5101".to_string());
+    let registration = RemoteAgentRegistration {
+        pid: std::process::id(),
+        display_name: app_details.full_name().to_string(),
+        flavor: app_details.full_name().replace(' ', "_").to_lowercase(),
+        api_endpoint: secure_api_listen_address,
+        service_names: RemoteAgentServices::service_names(),
     };
 
-    let (config, dp_config) = match &ra_bootstrap {
-        Some(ra_bootstrap) if use_new_config_stream_endpoint => {
-            // Build a new configuration that uses the configuration sent by the control plane as the authoritative
-            // configuration source, but with environment variables on top of that to allow for ADP-specific overriding: log
-            // level, etc.
-            let dynamic_config = ConfigurationLoader::default()
-                .with_key_aliases(KEY_ALIASES)
-                .add_providers([DatadogRemapper::new()])
-                .from_environment(PlatformSettings::get_env_var_prefix())?
-                .with_dynamic_configuration(ra_bootstrap.create_config_stream())
-                .into_generic()
-                .await?;
+    // Start the runtime. In stream mode this connects to the Agent and awaits the first config
+    // snapshot; in local-snapshot mode it translates the retained local snapshot. After this call the
+    // raw bootstrap snapshot is gone -- only typed outputs remain.
+    let mut started_config = loaded
+        .start_runtime(registration)
+        .await
+        .error_context("Failed to start the configuration system runtime.")?;
 
-            info!("Waiting for initial configuration from Datadog Agent...");
-            dynamic_config.ready().await;
-            info!("Initial configuration received.");
+    let saluki = started_config.saluki();
+    let control = saluki.control.clone();
+    let components = saluki.components.clone();
+    let handles = started_config
+        .dynamic_handles()
+        .ok_or_else(|| generic_error!("Dynamic configuration handles were already taken."))?;
+    let attachments = started_config.attachments();
+    let env_config = started_config.env_config();
+    let view_producer = started_config.view_producer();
 
-            // Now that the Datadog Agent has supplied its authoritative configuration, reload the logging subsystem
-            // so its destinations, format, and level reflect what the Agent specifies rather than the bootstrap-phase
-            // defaults.
-            match LoggingConfigurationTranslator::translate(&dynamic_config) {
-                Ok(logging_config) => {
-                    if let Err(e) = bootstrap_guard.logging_mut().reload(logging_config).await {
-                        warn!(
-                            error = %e,
-                            "Failed to reload logging from Agent configuration; continuing with bootstrap logging settings."
-                        );
-                    }
-                }
-                Err(e) => warn!(
-                    error = %e,
-                    "Failed to translate logging configuration from Agent; continuing with bootstrap logging settings."
-                ),
+    // Split the dynamic log-level handle off the bundle for the control plane's dynamic log-level
+    // worker; the rest of the bundle is consumed by topology construction. `ScopedConfig` is
+    // clone-able, so the split is a clone observing the same channel, and the original is replaced
+    // with a fixed handle to keep the bundle whole for the topology.
+    let log_level_handle = handles.log_level.clone();
+
+    // Reload logging from the runtime configuration's log level once the authoritative config is
+    // online (it may differ from the bootstrap-phase value).
+    let runtime_log_level = log_level_handle.current();
+    let mut logging_bootstrap = agent_data_plane_config::LoggingBootstrap::default();
+    logging_bootstrap.log_level = Some(runtime_log_level);
+    match crate::internal::logging::LoggingConfigurationTranslator::translate(&logging_bootstrap) {
+        Ok(logging_config) => {
+            if let Err(e) = bootstrap_guard.logging_mut().reload(logging_config).await {
+                warn!(error = %e, "Failed to reload logging from runtime configuration; continuing with bootstrap logging settings.");
             }
-
-            // Reload our data plane configuration based on the dynamic configuration.
-            let dynamic_dp_config = DataPlaneConfiguration::from_configuration(&dynamic_config)
-                .error_context("Failed to load data plane configuration.")?;
-
-            (dynamic_config, dynamic_dp_config)
         }
+        Err(e) => {
+            warn!(error = %e, "Failed to translate runtime logging configuration; continuing with bootstrap logging settings.")
+        }
+    }
 
-        // If dynamic configuration is disabled, the bootstrap configuration is already the complete and final configuration.
-        _ => (bootstrap_config, bootstrap_dp_config),
-    };
-
-    if !in_standalone_mode && !dp_config.enabled() {
+    if !control.standalone_mode && !control.enabled {
         info!("Agent Data Plane is not enabled. Exiting.");
         return Ok(());
     }
 
-    let active_pipelines = active_pipelines(&dp_config);
-    check_and_warn_config(&config, &active_pipelines).error_context("Incompatible configuration detected.")?;
+    let active_pipelines = active_pipelines(&control);
+    check_and_warn_config(&env_config, &active_pipelines).error_context("Incompatible configuration detected.")?;
 
     // Set up all of the building blocks for building our topologies and launching internal processes.
     let component_registry = ComponentRegistry::default();
     let health_registry = HealthRegistry::new();
-    let (env_provider, maybe_env_supervisor) =
-        ADPEnvironmentProvider::from_configuration(&config, &dp_config, &component_registry, &health_registry).await?;
+    let (env_provider, maybe_env_supervisor) = ADPEnvironmentProvider::from_typed(
+        &env_config,
+        &components.workload.config,
+        &control,
+        attachments.as_ref(),
+        &component_registry,
+        &health_registry,
+    )
+    .await?;
 
     // Create the blueprint for our primary topology.
-    let (mut blueprint, control_surfaces) =
-        create_topology(&config, &dp_config, &env_provider, &component_registry).await?;
+    let (mut blueprint, control_surfaces) = create_topology(
+        &control,
+        &components,
+        handles,
+        &attachments,
+        &env_config,
+        &env_provider,
+        &component_registry,
+    )
+    .await?;
+
+    // Build the remote-agent gRPC services from the typed attachments, when connected to the Agent.
+    let remote_agent_services = match attachments.as_ref() {
+        Some(attachments) => Some(RemoteAgentServices::from_attachments(attachments).await),
+        None => None,
+    };
 
     // Create the internal supervisor which drives our control plane and internal observability.
     let mut internal_supervisor = create_internal_supervisor(
-        &config,
-        &dp_config,
+        &control,
+        &env_config,
         &component_registry,
         health_registry.clone(),
         control_surfaces,
-        ra_bootstrap,
+        remote_agent_services,
         bootstrap_guard.logging().controller(),
+        log_level_handle,
+        view_producer,
     )
     .await
     .error_context("Failed to create internal supervisor.")?;
 
     // Run memory bounds validation to ensure that we can launch the topology with our configured memory limit, if any.
-    let bounds_config = MemoryBoundsConfiguration::try_from_config(&config)?;
+    let bounds_config = MemoryBoundsConfiguration::try_from_config(env_config.raw())?;
     let memory_limiter = initialize_memory_bounds(bounds_config, component_registry.root())?;
 
     if let Ok(val) = std::env::var("DD_ADP_WRITE_SIZING_GUIDE") {
@@ -195,18 +206,11 @@ pub async fn handle_run_command(
     }
 
     // Assemble the full supervision tree and run it.
-    //
-    // We run our internal supervisor (control plane, environment provider, etc) and our topology supervisor
-    // side-by-side, which means everyone has access to the same dataspace. This is crucial for allowing processes
-    // in the topology supervisor to (eventually) interact with components in the control plane, and vise versa.
     blueprint
         .with_health_registry(health_registry.clone())
         .with_memory_limiter(memory_limiter)
         .with_environment_readiness(env_provider.wait_for_ready());
 
-    // Acquire a readiness handle before handing the blueprint off to the supervisor. This waits until the topology has
-    // registered its components in the health registry and they've all reported ready, rather than racing the supervisor
-    // and potentially observing an empty/already-ready registry before the topology's components even exist.
     let topology_ready = blueprint.topology_ready();
 
     let root_restart_strategy = RestartStrategy::new(RestartMode::OneForOne, 0, Duration::from_secs(5));
@@ -221,8 +225,6 @@ pub async fn handle_run_command(
 
     // Once the topology is healthy, log readiness and emit our startup metrics.
     tokio::spawn(async move {
-        // If the topology is torn down before it ever becomes ready (for example, shutdown during startup), `wait`
-        // returns `false` and we skip reporting readiness.
         if topology_ready.wait().await {
             info!(
                 topology_ready_ms = started.elapsed().as_millis(),
@@ -250,18 +252,18 @@ async fn wait_for_sigint() {
 }
 
 /// Returns the set of [`Pipeline`] variants that are active based on our configuration.
-fn active_pipelines(dp_config: &DataPlaneConfiguration) -> HashSet<Pipeline> {
+fn active_pipelines(control: &ControlConfiguration) -> HashSet<Pipeline> {
     let mut s = HashSet::new();
-    if dp_config.dogstatsd().enabled() {
+    if control.dogstatsd.enabled() {
         s.insert(Pipeline::DogStatsD);
     }
-    if dp_config.checks().enabled() {
+    if control.checks.enabled() {
         s.insert(Pipeline::Checks);
     }
-    if dp_config.otlp().enabled() {
+    if control.otlp.enabled {
         s.insert(Pipeline::Otlp);
     }
-    if dp_config.traces_pipeline_required() {
+    if control.traces_pipeline_required() {
         s.insert(Pipeline::Traces);
     }
     s
@@ -269,29 +271,16 @@ fn active_pipelines(dp_config: &DataPlaneConfiguration) -> HashSet<Pipeline> {
 
 /// Check the resolved configuration against the config registry for incompatibilities.
 ///
-/// Classifies each flattened key in `config` with the config registry `Classifier`. Returns an
-/// `Error` if one or more high severity incompatibility is discovered. Emits warnings for less
-/// severe incompatibilities. Keys are only considered incompatible when they have non-default
+/// Classifies each flattened key in the runtime source map with the config registry `Classifier`.
+/// Returns an `Error` if one or more high severity incompatibility is discovered. Emits warnings for
+/// less severe incompatibilities. Keys are only considered incompatible when they have non-default
 /// values and the pipelines they affect are active.
-///
-/// # Input
-///
-/// - `config`: the state of our configuration which we will flatten and consider all keys from.
-/// - `active_pipelines`: the list of pipelines that are enabled based on the configuration.
-///
-/// # Error
-///
-/// To provide a better debugging experience in the presence of multiple high-severity incompatible
-/// keys, all keys are checked before returning. The error reports the count of incompatible keys;
-/// individual keys are logged at error level during iteration.
-///
-fn check_and_warn_config(
-    config: &GenericConfiguration, active_pipelines: &HashSet<Pipeline>,
-) -> Result<(), GenericError> {
+fn check_and_warn_config(env_config: &EnvConfig, active_pipelines: &HashSet<Pipeline>) -> Result<(), GenericError> {
     let classifier = ConfigClassifier::new();
     let mut high_severity_incompatibilities = 0u32;
     debug!("Analyzing configuration.");
-    for (key, val) in config
+    for (key, val) in env_config
+        .raw()
         .flattened_keys()
         .error_context("Unable to flatten configuration into a list of dot-separated keys.")?
     {
@@ -346,92 +335,94 @@ fn is_a_pipeline_affected(active_pipelines: &HashSet<Pipeline>, pipeline_affinit
         PipelineAffinity::Pipelines(affected_pipelines) => {
             for affected_pipeline in *affected_pipelines {
                 if active_pipelines.contains(affected_pipeline) {
-                    // We found an active pipeline that is in the affected list. Early return true.
                     return true;
                 }
             }
-            // We checked all affected pipelines against those that are active and none matched.
             false
         }
         PipelineAffinity::CrossCutting => true,
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn create_topology(
-    config: &GenericConfiguration, dp_config: &DataPlaneConfiguration, env_provider: &ADPEnvironmentProvider,
+    control: &ControlConfiguration, components: &ComponentConfiguration, handles: DynamicConfigHandles,
+    attachments: &Option<Attachments>, env_config: &EnvConfig, env_provider: &ADPEnvironmentProvider,
     component_registry: &ComponentRegistry,
 ) -> Result<(TopologyBlueprint, TopologyControlSurfaces), GenericError> {
     let mut blueprint = TopologyBlueprint::new("primary", component_registry);
-    blueprint.with_shutdown_timeout(dp_config.stop_timeout());
+    blueprint.with_shutdown_timeout(control.stop_timeout);
 
     let mut control_surfaces = TopologyControlSurfaces::default();
 
     // If no data pipelines are enabled, then there's nothing for us to do.
-    if !dp_config.data_pipelines_enabled() {
+    if !control.data_pipelines_enabled() {
         return Err(generic_error!("No data pipelines are enabled. Exiting."));
     }
 
-    // Create our baseline pipelines if necessary.
-    //
-    // We check if the "metrics" or "logs" pipeline is required, which represent the basic components necessary to
-    // forward metrics and logs to Datadog. This means that if either are enabled, we always create the forwarder, but
-    // we additionally create metrics- and logs-specific components connected to that forwarder depending on which of
-    // the baseline pipelines are required.
-    //
-    // Notably, we _don't_ need either of these if all we're doing is running the OTLP pipeline in proxy mode, which
-    // is the only reason we're differentiating here.
-    if dp_config.metrics_pipeline_required()
-        || dp_config.logs_pipeline_required()
-        || dp_config.events_pipeline_required()
-        || dp_config.service_checks_pipeline_required()
-        || dp_config.traces_pipeline_required()
+    // Create our baseline pipelines if necessary. The forwarder is created if any baseline pipeline
+    // that emits to Datadog is required; it receives the dynamic forwarder handle (for API-key
+    // refresh).
+    if control.metrics_pipeline_required()
+        || control.logs_pipeline_required()
+        || control.events_pipeline_required()
+        || control.service_checks_pipeline_required()
+        || control.traces_pipeline_required()
     {
-        let dd_forwarder_config = DatadogForwarderConfiguration::from_configuration(config)
-            .error_context("Failed to configure Datadog forwarder.")?;
+        let dd_forwarder_config = DatadogForwarderConfiguration::from_native(handles.forwarder.clone());
         blueprint.add_forwarder("dd_out", dd_forwarder_config)?;
     }
 
-    if dp_config.metrics_pipeline_required() {
-        add_baseline_metrics_pipeline_to_blueprint(&mut blueprint, config, dp_config, env_provider).await?;
+    if control.metrics_pipeline_required() {
+        add_baseline_metrics_pipeline_to_blueprint(
+            &mut blueprint,
+            components,
+            control,
+            &handles,
+            attachments,
+            env_provider,
+        )
+        .await?;
     }
 
-    if dp_config.logs_pipeline_required() {
-        add_baseline_logs_pipeline_to_blueprint(&mut blueprint, config).await?;
+    if control.logs_pipeline_required() {
+        add_baseline_logs_pipeline_to_blueprint(&mut blueprint, components).await?;
     }
 
-    if dp_config.events_pipeline_required() {
-        add_baseline_events_pipeline_to_blueprint(&mut blueprint, config).await?;
+    if control.events_pipeline_required() {
+        add_baseline_events_pipeline_to_blueprint(&mut blueprint, components).await?;
     }
 
-    if dp_config.service_checks_pipeline_required() {
-        add_baseline_service_checks_pipeline_to_blueprint(&mut blueprint, config).await?;
+    if control.service_checks_pipeline_required() {
+        add_baseline_service_checks_pipeline_to_blueprint(&mut blueprint, components).await?;
     }
 
-    if dp_config.traces_pipeline_required() {
-        add_baseline_traces_pipeline_to_blueprint(&mut blueprint, config, env_provider).await?;
+    if control.traces_pipeline_required() {
+        add_baseline_traces_pipeline_to_blueprint(&mut blueprint, components, env_config, env_provider).await?;
     }
 
     // Now we move on to our actual data pipelines.
-    if dp_config.checks().enabled() {
-        add_checks_pipeline_to_blueprint(&mut blueprint, config).await?;
+    if control.checks.enabled() {
+        add_checks_pipeline_to_blueprint(&mut blueprint, components).await?;
     }
 
-    if dp_config.dogstatsd().enabled() {
-        let dsd_control_surface = add_dsd_pipeline_to_blueprint(&mut blueprint, config, env_provider).await?;
+    if control.dogstatsd.enabled() {
+        let dsd_control_surface =
+            add_dsd_pipeline_to_blueprint(&mut blueprint, components, &handles, env_provider).await?;
         control_surfaces.attach_dogstatsd(dsd_control_surface);
     }
 
-    if dp_config.otlp().enabled() {
-        add_otlp_pipeline_to_blueprint(&mut blueprint, config, dp_config, env_provider)?;
+    if control.otlp.enabled {
+        add_otlp_pipeline_to_blueprint(&mut blueprint, components, control, env_provider)?;
     }
 
     Ok((blueprint, control_surfaces))
 }
 
 async fn add_checks_pipeline_to_blueprint(
-    blueprint: &mut TopologyBlueprint, config: &GenericConfiguration,
+    blueprint: &mut TopologyBlueprint, components: &ComponentConfiguration,
 ) -> Result<(), GenericError> {
-    let checks_config = ChecksIPCConfiguration::from_configuration(config)?;
+    let checks_config = ChecksIPCConfiguration::from_native(components.checks.ipc.clone());
 
     blueprint
         .add_source("checks_ipc_in", checks_config)?
@@ -444,67 +435,62 @@ async fn add_checks_pipeline_to_blueprint(
 }
 
 async fn add_baseline_metrics_pipeline_to_blueprint(
-    blueprint: &mut TopologyBlueprint, config: &GenericConfiguration, dp_config: &DataPlaneConfiguration,
-    env_provider: &ADPEnvironmentProvider,
+    blueprint: &mut TopologyBlueprint, components: &ComponentConfiguration, control: &ControlConfiguration,
+    handles: &DynamicConfigHandles, attachments: &Option<Attachments>, env_provider: &ADPEnvironmentProvider,
 ) -> Result<(), GenericError> {
     // Create the back half of the metrics processing pipeline.
     let host_enrichment_config = HostEnrichmentConfiguration::from_environment_provider(env_provider.clone());
     let mut metrics_enrich_config =
         ChainedConfiguration::default().with_transform_builder("host_enrichment", host_enrichment_config);
 
-    if !dp_config.standalone_mode() {
-        let host_tags_config = HostTagsConfiguration::from_configuration(config).await?;
-        metrics_enrich_config = metrics_enrich_config.with_transform_builder("host_tags", host_tags_config);
+    if !control.standalone_mode {
+        // Host tags require the Agent connection; the host-tags attachment client is only present in
+        // stream mode. In standalone/local mode there is no client, so host-tags enrichment is skipped.
+        if let Some(attachments) = attachments.as_ref() {
+            let host_tags_config = HostTagsConfiguration::from_native(
+                attachments.host_tags.client(),
+                components.workload.config.host_tags_expected_duration,
+            );
+            metrics_enrich_config = metrics_enrich_config.with_transform_builder("host_tags", host_tags_config);
+        }
     }
 
-    let dd_metrics_config = DatadogMetricsConfiguration::from_configuration(config)
-        .error_context("Failed to configure Datadog Metrics encoder.")?;
+    let dd_metrics_config = DatadogMetricsConfiguration::from_native(components.metrics.datadog_encoder.clone());
 
     blueprint
-        // Components.
         .add_transform("metrics_enrich", metrics_enrich_config)?
         .add_encoder("dd_metrics_encode", dd_metrics_config)?
-        // Metrics, then forwarding.
         .connect_components_in_order(["metrics_enrich", "dd_metrics_encode", "dd_out"])?;
 
-    add_mrf_metrics_pipeline_to_blueprint(blueprint, config)?;
-    add_autoscaling_failover_metrics_pipeline_to_blueprint(blueprint, config)?;
+    add_mrf_metrics_pipeline_to_blueprint(blueprint, components, handles)?;
 
     Ok(())
 }
 
 fn add_mrf_metrics_pipeline_to_blueprint(
-    blueprint: &mut TopologyBlueprint, config: &GenericConfiguration,
+    blueprint: &mut TopologyBlueprint, components: &ComponentConfiguration, handles: &DynamicConfigHandles,
 ) -> Result<(), GenericError> {
-    let mrf_config = MrfConfiguration::from_configuration(config)
-        .error_context("Failed to configure Multi-Region Failover metrics pipeline.")?;
+    let mrf = &components.metrics.multi_region_failover;
 
-    let Some((mrf_dd_url, mrf_api_key)) = mrf_config.metrics_endpoint_override() else {
-        if mrf_config.is_enabled() {
+    // The MRF metrics branch is only wired when a static MRF endpoint override is configured: both an
+    // API key and a resolved `dd_url` are required. (`site` alone does not yield a metrics URL here;
+    // the operator must set `multi_region_failover.dd_url`.)
+    let Some((mrf_dd_url, mrf_api_key)) = mrf_metrics_endpoint_override(mrf) else {
+        if mrf.enabled {
             warn!(
-                "Multi-Region Failover is enabled, but multi_region_failover.api_key and one of \
-                 multi_region_failover.dd_url or multi_region_failover.site are required for metrics forwarding. The \
-                 MRF metrics branch will not be wired, and primary forwarding will continue. Restart ADP after \
-                 configuring the static MRF endpoint settings."
+                "Multi-Region Failover is enabled, but the MRF API key and endpoint are required for metrics \
+                 forwarding. The MRF metrics branch will not be wired, and primary forwarding will continue. Restart \
+                 ADP after configuring the static MRF endpoint settings."
             );
         }
-
         return Ok(());
     };
 
-    let mrf_gateway_config = MrfMetricsGatewayConfiguration::new(mrf_config.clone(), config.clone());
-    let mrf_metrics_config = DatadogMetricsConfiguration::from_configuration(config)
-        .error_context("Failed to configure Multi-Region Failover Datadog Metrics encoder.")?;
+    let mrf_gateway_config = MrfMetricsGatewayConfiguration::from_native(handles.multi_region_failover.clone());
+    let mrf_metrics_config = DatadogMetricsConfiguration::from_native(components.metrics.datadog_encoder.clone());
 
-    let mrf_forwarder_config = DatadogForwarderConfiguration::from_configuration(config)
-        .map(|config| {
-            config.with_endpoint_override_and_api_key_refresh_config_path(
-                mrf_dd_url,
-                mrf_api_key,
-                "multi_region_failover.api_key",
-            )
-        })
-        .error_context("Failed to configure Multi-Region Failover Datadog forwarder.")?;
+    let mrf_forwarder_config = DatadogForwarderConfiguration::from_native(handles.forwarder.clone())
+        .with_endpoint_override(mrf_dd_url, mrf_api_key);
 
     blueprint
         .add_transform("mrf_metrics_gateway", mrf_gateway_config)?
@@ -520,75 +506,40 @@ fn add_mrf_metrics_pipeline_to_blueprint(
     Ok(())
 }
 
-fn add_autoscaling_failover_metrics_pipeline_to_blueprint(
-    blueprint: &mut TopologyBlueprint, config: &GenericConfiguration,
-) -> Result<(), GenericError> {
-    let af_config = AutoscalingFailoverConfiguration::from_configuration(config)
-        .error_context("Failed to configure autoscaling failover metrics pipeline.")?;
-    let ca_config = ClusterAgentConfiguration::from_configuration(config)
-        .error_context("Failed to configure Cluster Agent metrics forwarding.")?;
-
-    let Some((ca_url, ca_token)) = ca_config.endpoint_and_token() else {
-        if af_config.is_branch_requested() {
-            warn!(
-                "autoscaling.failover is enabled, but cluster_agent.enabled, cluster_agent.auth_token, and a resolvable \
-                 Cluster Agent endpoint are required. Set cluster_agent.url or provide Kubernetes service env vars for \
-                 cluster_agent.kubernetes_service_name. The autoscaling failover metrics branch will not be wired, and \
-                 primary forwarding will continue."
-            );
+/// Returns the `(dd_url, api_key)` MRF metrics endpoint override if fully configured.
+///
+/// Requires both `multi_region_failover.api_key` and `multi_region_failover.dd_url` to be set. This
+/// mirrors the previous behavior of requiring a resolved static endpoint before wiring the MRF
+/// metrics branch.
+fn mrf_metrics_endpoint_override(mrf: &saluki_component_config::forwarder::MrfConfig) -> Option<(String, String)> {
+    match (mrf.dd_url.as_ref(), mrf.api_key.as_ref()) {
+        (Some(dd_url), Some(api_key)) if !dd_url.is_empty() && !api_key.is_empty() => {
+            Some((dd_url.clone(), api_key.clone()))
         }
-
-        return Ok(());
-    };
-
-    if !af_config.is_branch_requested() {
-        return Ok(());
+        _ => None,
     }
-
-    let af_gateway_config = AutoscalingFailoverGatewayConfiguration::new(af_config);
-    let af_metrics_config = DatadogMetricsConfiguration::from_configuration(config)
-        .error_context("Failed to configure autoscaling failover metrics encoder.")?;
-    let cluster_agent_forwarder_config =
-        ClusterAgentForwarderConfiguration::from_configuration(config, ca_url, ca_token)
-            .error_context("Failed to configure Cluster Agent forwarder.")?;
-
-    blueprint
-        .add_transform("af_metrics_gateway", af_gateway_config)?
-        .add_encoder("af_metrics_encode", af_metrics_config)?
-        .add_forwarder("cluster_agent_out", cluster_agent_forwarder_config)?
-        .connect_components_in_order([
-            "metrics_enrich",
-            "af_metrics_gateway",
-            "af_metrics_encode",
-            "cluster_agent_out",
-        ])?;
-
-    Ok(())
 }
 
 async fn add_baseline_logs_pipeline_to_blueprint(
-    blueprint: &mut TopologyBlueprint, config: &GenericConfiguration,
+    blueprint: &mut TopologyBlueprint, components: &ComponentConfiguration,
 ) -> Result<(), GenericError> {
-    // Create the back half of the logs processing pipeline.
-    let dd_logs_config = DatadogLogsConfiguration::from_configuration(config)
-        .map(BufferedIncrementalConfiguration::from_encoder_builder)
-        .error_context("Failed to configure Datadog Logs encoder.")?;
+    let dd_logs_config = BufferedIncrementalConfiguration::from_encoder_builder(DatadogLogsConfiguration::from_native(
+        components.logs.encoder.clone(),
+    ));
 
     blueprint
-        // Components.
         .add_encoder("dd_logs_encode", dd_logs_config)?
-        // Logs.
         .connect_components("dd_logs_encode", "dd_out")?;
 
     Ok(())
 }
 
 async fn add_baseline_events_pipeline_to_blueprint(
-    blueprint: &mut TopologyBlueprint, config: &GenericConfiguration,
+    blueprint: &mut TopologyBlueprint, components: &ComponentConfiguration,
 ) -> Result<(), GenericError> {
-    let dd_events_config = DatadogEventsConfiguration::from_configuration(config)
-        .map(BufferedIncrementalConfiguration::from_encoder_builder)
-        .error_context("Failed to configure Datadog Events encoder.")?;
+    let dd_events_config = BufferedIncrementalConfiguration::from_encoder_builder(
+        DatadogEventsConfiguration::from_native(components.events.encoder.clone()),
+    );
 
     blueprint
         .add_encoder("dd_events_encode", dd_events_config)?
@@ -598,11 +549,11 @@ async fn add_baseline_events_pipeline_to_blueprint(
 }
 
 async fn add_baseline_service_checks_pipeline_to_blueprint(
-    blueprint: &mut TopologyBlueprint, config: &GenericConfiguration,
+    blueprint: &mut TopologyBlueprint, components: &ComponentConfiguration,
 ) -> Result<(), GenericError> {
-    let dd_service_checks_config = DatadogServiceChecksConfiguration::from_configuration(config)
-        .map(BufferedIncrementalConfiguration::from_encoder_builder)
-        .error_context("Failed to configure Datadog Service Checks encoder.")?;
+    let dd_service_checks_config = BufferedIncrementalConfiguration::from_encoder_builder(
+        DatadogServiceChecksConfiguration::from_native(components.service_checks.encoder.clone()),
+    );
 
     blueprint
         .add_encoder("dd_service_checks_encode", dd_service_checks_config)?
@@ -612,33 +563,42 @@ async fn add_baseline_service_checks_pipeline_to_blueprint(
 }
 
 async fn add_baseline_traces_pipeline_to_blueprint(
-    blueprint: &mut TopologyBlueprint, config: &GenericConfiguration, env_provider: &ADPEnvironmentProvider,
+    blueprint: &mut TopologyBlueprint, components: &ComponentConfiguration, env_config: &EnvConfig,
+    env_provider: &ADPEnvironmentProvider,
 ) -> Result<(), GenericError> {
-    let dd_traces_config = DatadogTraceConfiguration::from_configuration(config)
-        .error_context("Failed to configure Datadog Traces encoder.")?
+    let dd_traces_config = DatadogTraceConfiguration::from_native(components.traces.encoder.clone())
         .with_environment_provider(env_provider.clone())
         .await?;
-    let trace_obfuscation_config = TraceObfuscationConfiguration::from_apm_configuration(config)?;
-    let trace_sampler_config = TraceSamplerConfiguration::from_configuration(config)
-        .error_context("Failed to configure Trace Sampler transform.")?;
-    let ottl_filter_config = OttlFilterConfiguration::from_configuration(config)
-        .error_context("Failed to configure OTTL filter processor.")?;
-    let ottl_transform_config = OttlTransformConfiguration::from_configuration(config)
-        .error_context("Failed to configure OTTL transform processor.")?;
+    let trace_obfuscation_config = TraceObfuscationConfiguration::from_native(&components.traces.obfuscation);
+    let trace_sampler_config = TraceSamplerConfiguration::from_native(&components.traces.sampler);
+    // The OTTL trace processors are Saluki-schema-only knobs with no home in `SalukiConfiguration`;
+    // their typed config is read from the runtime source map via the confined `EnvConfig` accessor.
+    let ottl_filter_config = OttlFilterConfiguration::from_native(
+        env_config
+            .get_typed("ottl_filter_config")
+            .error_context("Failed to read `ottl_filter_config`.")?
+            .unwrap_or_default(),
+    );
+    let ottl_transform_config = OttlTransformConfiguration::from_native(
+        env_config
+            .get_typed("ottl_transform_config")
+            .error_context("Failed to read `ottl_transform_config`.")?
+            .unwrap_or_default(),
+    );
     let dd_traces_enrich_config = ChainedConfiguration::default()
         .with_transform_builder("ottl_filter", ottl_filter_config)
         .with_transform_builder("ottl_transform", ottl_transform_config)
         .with_transform_builder("apm_onboarding", ApmOnboardingConfiguration)
         .with_transform_builder("trace_obfuscation", trace_obfuscation_config)
         .with_transform_builder("trace_sampler", trace_sampler_config);
-    let apm_stats_transform_config = ApmStatsTransformConfiguration::from_configuration(config)
-        .error_context("Failed to configure APM Stats transform.")?
-        .with_environment_provider(env_provider.clone())
-        .await?;
-    let dd_apm_stats_encoder = DatadogApmStatsEncoderConfiguration::from_configuration(config)
-        .error_context("Failed to configure Datadog APM Stats encoder.")?
-        .with_environment_provider(env_provider.clone())
-        .await?;
+    let apm_stats_transform_config =
+        ApmStatsTransformConfiguration::from_native(&components.metrics.apm_stats_transform)
+            .with_environment_provider(env_provider.clone())
+            .await?;
+    let dd_apm_stats_encoder =
+        DatadogApmStatsEncoderConfiguration::from_native(components.metrics.apm_stats_encoder.clone())
+            .with_environment_provider(env_provider.clone())
+            .await?;
 
     blueprint
         .add_transform("traces_enrich", dd_traces_enrich_config)?
@@ -653,57 +613,21 @@ async fn add_baseline_traces_pipeline_to_blueprint(
 }
 
 async fn add_dsd_pipeline_to_blueprint(
-    blueprint: &mut TopologyBlueprint, config: &GenericConfiguration, env_provider: &ADPEnvironmentProvider,
+    blueprint: &mut TopologyBlueprint, components: &ComponentConfiguration, handles: &DynamicConfigHandles,
+    env_provider: &ADPEnvironmentProvider,
 ) -> Result<DogStatsDControlSurface, GenericError> {
-    // We're creating the "front half" of the DogStatsD pipeline, which deals solely with accepting DogStatsD payloads,
-    // and enriching/processing them in DSD-specific ways, relevant to how the Datadog Agent is expected to behave.
-    //
-    //                                                 ┌─────────────────────┐
-    //                              metrics            │      DogStatsD      │
-    //               ┌ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ │       (source)      │ ─ ─ ─ ─ ─ ─ ─ ┐
-    //               │                 │               └─────────────────────┘               │
-    //               │                 │                          │                          │
-    //               │                 │                          │ service checks           │ events
-    //               │                 ▼                          ▼                          ▼
-    //               │      ┌─────────────────────┐    ┌─────────────────────┐    ┌─────────────────────┐
-    //               │      │     DSD Enrich      │    │     DSD Service     │    │     DSD Events      │
-    //               │      │ (chained transform) │    │    Checks (encoder) │    │      (encoder)      │
-    //               │      │┌───────────────────┐│    └─────────────────────┘    └─────────────────────┘
-    //               │      ││    DSD Mapper     ││               │                          │
-    //               │      │└───────────────────┘│               │                          │
-    //               │      └─────────────────────┘               │                          │
-    //               │                 │                          │                          │
-    //               │                 ▼                          │                          │
-    //               │      ┌─────────────────────┐               │                          │
-    //               │      │  DSD Prefix/Filter  │               │                          │
-    //               │      │     (transform)     │               │                          │
-    //               │      └─────────────────────┘               │                          │
-    //               │                 │                          │                          │
-    //               │                 │        ┌ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┐           │
-    //               │                 └ ─ ─ ─▶ │        Metrics Pipeline       │           │
-    //               │                          │  (aggregate, enrich, encode)  │           │
-    //               │                          └ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┘           │
-    //               │                                       │                               │
-    //               ▼                                       ▼                               ▼
-    //    ┌─────────────────────┐    ┌ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┐
-    //    │      DSD Stats      │    │                           Forwarder                             │
-    //    │    (destination)    │    │                       (Datadog Platform)                        │
-    //    └─────────────────────┘    └ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┘
-
-    let dsd_config = DogStatsDConfiguration::from_configuration(config)
-        .error_context("Failed to configure DogStatsD source.")?
+    let dsd_config = DogStatsDConfiguration::from_native(components.dogstatsd.source.clone())
         .with_workload_provider(env_provider.workload().clone())
         .with_capture_entity_resolver(env_provider.workload().clone());
-    let dsd_prefix_filter_configuration = DogStatsDPrefixFilterConfiguration::from_configuration(config)?;
-    let dsd_mapper_config = DogStatsDMapperConfiguration::from_configuration(config)?;
+    let dsd_prefix_filter_configuration =
+        DogStatsDPrefixFilterConfiguration::from_native(handles.prefix_filter.clone());
+    let dsd_mapper_config = DogStatsDMapperConfiguration::from_native(&components.dogstatsd.mapper);
     let dsd_enrich_config =
         ChainedConfiguration::default().with_transform_builder("dogstatsd_mapper", dsd_mapper_config);
-    let dsd_tag_filterlist_config = TagFilterlistConfiguration::from_configuration(config)
-        .error_context("Failed to configure metric tag filterlist transform.")?;
-    let dsd_agg_config =
-        AggregateConfiguration::from_configuration(config).error_context("Failed to configure aggregate transform.")?;
-    let dsd_post_agg_filter_config = DogStatsDPostAggregateFilterConfiguration::from_configuration(config)
-        .error_context("Failed to configure DogStatsD post-aggregate filter transform.")?;
+    let dsd_tag_filterlist_config = TagFilterlistConfiguration::from_native(handles.tag_filterlist.clone());
+    let dsd_agg_config = AggregateConfiguration::from_native(&components.dogstatsd.aggregate);
+    let dsd_post_agg_filter_config =
+        DogStatsDPostAggregateFilterConfiguration::from_native(handles.post_aggregate_filter.clone());
     let events_enrich_config = ChainedConfiguration::default().with_transform_builder(
         "host_enrichment",
         HostEnrichmentConfiguration::from_environment_provider(env_provider.clone()),
@@ -712,11 +636,7 @@ async fn add_dsd_pipeline_to_blueprint(
         "host_enrichment",
         HostEnrichmentConfiguration::from_environment_provider(env_provider.clone()),
     );
-    let dsd_debug_log_config = DogStatsDDebugLogConfiguration::from_configuration(
-        config,
-        PlatformSettings::get_default_dogstatsd_log_file_path(),
-    )
-    .error_context("Failed to configure DogStatsD debug log destination.")?;
+    let dsd_debug_log_config = DogStatsDDebugLogConfiguration::from_native(handles.debug_log.clone());
     let dsd_stats_config = DogStatsDStatisticsConfiguration::new();
 
     let stats_api_handler = dsd_stats_config.api_handler();
@@ -724,7 +644,6 @@ async fn add_dsd_pipeline_to_blueprint(
     let replay_api_handler = dsd_config.replay_api_handler();
 
     blueprint
-        // Components.
         .add_source("dsd_in", dsd_config)?
         .add_transform("dsd_prefix_filter", dsd_prefix_filter_configuration)?
         .add_transform("dsd_enrich", dsd_enrich_config)?
@@ -734,7 +653,6 @@ async fn add_dsd_pipeline_to_blueprint(
         .add_transform("events_enrich", events_enrich_config)?
         .add_transform("service_checks_enrich", service_checks_enrich_config)?
         .add_destination("dsd_stats_out", dsd_stats_config)?
-        // Metrics.
         .connect_components_in_order([
             "dsd_in.metrics",
             "dsd_enrich",
@@ -744,20 +662,16 @@ async fn add_dsd_pipeline_to_blueprint(
             "dsd_post_agg_filter",
             "metrics_enrich",
         ])?
-        // Events.
         .connect_components_in_order(["dsd_in.events", "events_enrich", "dd_events_encode"])?
-        // Service checks.
         .connect_components_in_order([
             "dsd_in.service_checks",
             "service_checks_enrich",
             "dd_service_checks_encode",
         ])?
-        // DogStatsD Stats.
         .connect_components("dsd_in.metrics", "dsd_stats_out")?;
 
     if dsd_debug_log_config.enabled() {
         blueprint
-            // DogStatsD debug log.
             .add_destination("dsd_debug_log_out", dsd_debug_log_config)?
             .connect_components("dsd_in.metrics", "dsd_debug_log_out")?;
     }
@@ -769,14 +683,14 @@ async fn add_dsd_pipeline_to_blueprint(
 }
 
 fn add_otlp_pipeline_to_blueprint(
-    blueprint: &mut TopologyBlueprint, config: &GenericConfiguration, dp_config: &DataPlaneConfiguration,
+    blueprint: &mut TopologyBlueprint, components: &ComponentConfiguration, control: &ControlConfiguration,
     env_provider: &ADPEnvironmentProvider,
 ) -> Result<(), GenericError> {
-    if dp_config.otlp().proxy().enabled() {
-        let core_agent_otlp_grpc_endpoint = dp_config.otlp().proxy().core_agent_otlp_grpc_endpoint().to_string();
-        let proxy_metrics = dp_config.otlp().proxy().proxy_metrics();
-        let proxy_logs = dp_config.otlp().proxy().proxy_logs();
-        let proxy_traces = dp_config.otlp().proxy().proxy_traces();
+    if control.otlp.proxy.enabled {
+        let core_agent_otlp_grpc_endpoint = control.otlp.proxy.core_agent_otlp_grpc_endpoint.clone();
+        let proxy_metrics = control.otlp.proxy.proxy_metrics;
+        let proxy_logs = control.otlp.proxy.proxy_logs;
+        let proxy_traces = control.otlp.proxy.proxy_traces;
 
         info!(
             proxy_grpc_endpoint = %core_agent_otlp_grpc_endpoint,
@@ -786,40 +700,32 @@ fn add_otlp_pipeline_to_blueprint(
             "OTLP proxy mode enabled. Select OTLP payloads will be proxied to the Core Agent."
         );
 
-        let otlp_relay_config = OtlpRelayConfiguration::from_configuration(config)?;
-        let otlp_decoder_config = OtlpDecoderConfiguration::from_configuration(config)?;
+        let otlp_relay_config = OtlpRelayConfiguration::from_native(&components.otlp.relay);
+        let otlp_decoder_config = OtlpDecoderConfiguration::from_native(&components.otlp.decoder);
 
         let local_agent_otlp_forwarder_config =
-            OtlpForwarderConfiguration::from_configuration(config, core_agent_otlp_grpc_endpoint)?;
+            OtlpForwarderConfiguration::from_native(&components.otlp.forwarder, core_agent_otlp_grpc_endpoint);
 
         blueprint
-            // Components.
             .add_relay("otlp_relay_in", otlp_relay_config)?
             .add_forwarder("local_agent_otlp_out", local_agent_otlp_forwarder_config)?
-            // Metrics and logs directly to the forwarders.
             .connect_components(["otlp_relay_in.metrics", "otlp_relay_in.logs"], "local_agent_otlp_out")?;
 
-        if dp_config.otlp().proxy().proxy_traces() {
+        if control.otlp.proxy.proxy_traces {
             blueprint.connect_components("otlp_relay_in.traces", "local_agent_otlp_out")?;
         } else {
             blueprint
                 .add_decoder("otlp_traces_decode", otlp_decoder_config)?
-                // Traces to decoder, then to the trace pipeline: obfuscation, enrichment, encoding, stats, forwarding.
                 .connect_components_in_order(["otlp_relay_in.traces", "otlp_traces_decode", "traces_enrich"])?;
         }
     } else {
         info!("OTLP proxy mode disabled. OTLP signals will be handled natively.");
 
-        let otlp_config =
-            OtlpConfiguration::from_configuration(config)?.with_workload_provider(env_provider.workload().clone());
+        let otlp_config = OtlpConfiguration::from_native(&components.otlp.source)
+            .with_workload_provider(env_provider.workload().clone());
 
         blueprint
-            // Components.
             .add_source("otlp_in", otlp_config)?
-            // Metrics, logs, and traces.
-            //
-            // We send OTLP metrics directly to the enrichment stage of the metrics pipeline, skipping aggregation,
-            // to avoid transforming counters into rates.
             .connect_components("otlp_in.metrics", "metrics_enrich")?
             .connect_components("otlp_in.logs", "dd_logs_encode")?
             .connect_components("otlp_in.traces", "traces_enrich")?;

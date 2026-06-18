@@ -1,3 +1,4 @@
+use agent_data_plane_config::BootstrapConfiguration;
 use futures::TryFutureExt as _;
 use http::{header::CONTENT_TYPE, uri::PathAndQuery, Request, Response, StatusCode, Uri};
 use http_body_util::BodyExt as _;
@@ -8,12 +9,9 @@ use hyper::body::Bytes;
 use hyper::body::Incoming;
 #[cfg(target_os = "linux")]
 use prost::Message as _;
-use saluki_config_tools::GenericConfiguration;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_io::net::{client::http::HttpClient, ListenAddress};
 use serde::{Deserialize, Serialize};
-
-use crate::config::DataPlaneConfiguration;
 
 /// Typed API client for interacting with the APIs exposed by ADP.
 pub struct DataPlaneAPIClient {
@@ -41,20 +39,28 @@ struct DogStatsDReplaySessionResponseBody {
 }
 
 impl DataPlaneAPIClient {
-    /// Creates a new `DataPlaneAPIClient` from the given generic configuration.
+    /// Creates a new `DataPlaneAPIClient` from the typed bootstrap configuration.
+    ///
+    /// The privileged ("secure") API listen address is a local decision read from the bootstrap slice
+    /// (`data_plane.secure_api_listen_address`), falling back to the historical `tcp://0.0.0.0:5101`.
     ///
     /// # Errors
     ///
-    /// If the data plane configuration can't be deserialized, or the data plane API endpoints can't be
+    /// If the configured listen address can't be parsed, or the data plane API endpoint can't be
     /// determined, an error will be returned.
-    pub fn from_config(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        let dp_config = DataPlaneConfiguration::from_configuration(config)?;
-
-        let listen_address = dp_config.secure_api_listen_address();
+    pub fn from_config(bootstrap: &BootstrapConfiguration) -> Result<Self, GenericError> {
+        let listen_address_raw = bootstrap
+            .datadog
+            .local_api()
+            .secure_api_listen_address
+            .clone()
+            .unwrap_or_else(|| "tcp://0.0.0.0:5101".to_string());
+        let listen_address = ListenAddress::try_from(listen_address_raw)
+            .map_err(|e| generic_error!("Failed to parse secure API listen address: {}", e))?;
 
         let builder = HttpClient::builder().with_tls_config(|b| b.danger_accept_invalid_certs());
 
-        let (builder, authority) = match listen_address {
+        let (builder, authority) = match &listen_address {
             ListenAddress::Tcp(_) => {
                 let local_address = listen_address
                     .as_local_connect_addr()

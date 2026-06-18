@@ -68,6 +68,7 @@
 pub mod bootstrap;
 pub mod datadog_agent;
 pub mod dynamic;
+pub mod env_config;
 pub mod system;
 pub mod translate;
 
@@ -76,7 +77,9 @@ pub use self::datadog_agent::{
     MetricsAttachment, RemoteAgentClientConfiguration, RemoteAgentRegistration, StatusAttachment, TelemetryAttachment,
 };
 pub use self::dynamic::{ConfigUpdateRouter, DynamicConfigHandles, ViewSources};
+pub use self::env_config::EnvConfig;
 pub use self::system::{
-    ConfigurationSystem, ConfigurationSystemInputs, LoadedConfigurationSystem, StartedConfigurationSystem,
+    ConfigViewProducer, ConfigurationSystem, ConfigurationSystemInputs, LoadedConfigurationSystem,
+    StartedConfigurationSystem,
 };
 pub use self::translate::{translate, Translator};

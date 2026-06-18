@@ -3,7 +3,8 @@
 //! Drops post-aggregation scalar metrics whose generated histogram aggregate names match the metric filterlist.
 use async_trait::async_trait;
 use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
-use saluki_config_tools::GenericConfiguration;
+use saluki_component_config::dogstatsd::DogStatsDPostAggregateFilterConfig;
+use saluki_component_config::ScopedConfig;
 use saluki_core::{
     components::{
         transforms::{Transform, TransformBuilder, TransformContext},
@@ -18,84 +19,32 @@ use saluki_core::{
 };
 use saluki_error::{generic_error, GenericError};
 use saluki_metrics::MetricsBuilder;
-use serde::Deserialize;
 use stringtheory::MetaString;
 use tokio::select;
 use tracing::{debug, error};
 
-use crate::components::dogstatsd_filterlist::{
-    Blocklist, EffectiveFilterlist, METRIC_FILTERLIST_CONFIG_KEY, METRIC_FILTERLIST_MATCH_PREFIX_CONFIG_KEY,
-    STATSD_METRIC_BLOCKLIST_CONFIG_KEY, STATSD_METRIC_BLOCKLIST_MATCH_PREFIX_CONFIG_KEY,
-};
+use crate::components::dogstatsd_filterlist::{Blocklist, EffectiveFilterlist};
 
 mod telemetry;
 
 use self::telemetry::Telemetry;
-
-// Defaults mirror the Datadog Agent config defaults:
-// https://github.com/DataDog/datadog-agent/blob/12213fe95538f47d98d73bd945a87b3e24189285/pkg/config/setup/common_settings.go
-const DEFAULT_HISTOGRAM_AGGREGATES: &[&str] = &["max", "median", "avg", "count"];
-const DEFAULT_HISTOGRAM_PERCENTILES: &[&str] = &["0.95"];
 
 /// DogStatsD post-aggregate metric filter configuration.
 ///
 /// This transform mirrors the Agent time-sampler metric filter for DogStatsD histogram aggregate series after the
 /// aggregate transform has expanded histograms into scalar metrics. It uses `metric_filterlist` when non-empty,
 /// otherwise it falls back to the legacy `statsd_metric_blocklist`.
-#[derive(Deserialize)]
+///
+/// The configuration arrives as a typed [`ScopedConfig<DogStatsDPostAggregateFilterConfig>`]; the
+/// transform reacts to runtime updates published on that handle by rebuilding its effective matcher.
 pub struct DogStatsDPostAggregateFilterConfiguration {
-    /// Agent metric filterlist used for post-aggregate histogram series filtering.
-    #[serde(default)]
-    metric_filterlist: Vec<String>,
-
-    /// Whether `metric_filterlist` entries match by prefix instead of exact name.
-    #[serde(default)]
-    metric_filterlist_match_prefix: bool,
-
-    /// Legacy DogStatsD metric blocklist kept for Agent compatibility.
-    ///
-    /// This is only used when the newer `metric_filterlist` is empty.
-    #[serde(default, rename = "statsd_metric_blocklist")]
-    metric_blocklist: Vec<String>,
-
-    /// Whether legacy `statsd_metric_blocklist` entries match by prefix instead of exact name.
-    #[serde(default, rename = "statsd_metric_blocklist_match_prefix")]
-    metric_blocklist_match_prefix: bool,
-
-    /// Histogram aggregate suffixes that the aggregate transform may generate.
-    #[serde(default = "default_histogram_aggregates")]
-    histogram_aggregates: Vec<String>,
-
-    /// Histogram percentile suffixes that the aggregate transform may generate.
-    #[serde(default = "default_histogram_percentiles")]
-    histogram_percentiles: Vec<String>,
-
-    #[serde(skip)]
-    configuration: Option<GenericConfiguration>,
-}
-
-fn default_histogram_aggregates() -> Vec<String> {
-    DEFAULT_HISTOGRAM_AGGREGATES.iter().copied().map(String::from).collect()
-}
-
-fn default_histogram_percentiles() -> Vec<String> {
-    DEFAULT_HISTOGRAM_PERCENTILES
-        .iter()
-        .copied()
-        .map(String::from)
-        .collect()
+    config: ScopedConfig<DogStatsDPostAggregateFilterConfig>,
 }
 
 impl DogStatsDPostAggregateFilterConfiguration {
-    /// Creates a new `DogStatsDPostAggregateFilterConfiguration` from the given configuration.
-    ///
-    /// # Errors
-    ///
-    /// If the configuration can't be deserialized, an error is returned.
-    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        let mut typed_config: Self = config.as_typed()?;
-        typed_config.configuration = Some(config.clone());
-        Ok(typed_config)
+    /// Creates a new `DogStatsDPostAggregateFilterConfiguration` from the given native configuration handle.
+    pub fn from_native(config: ScopedConfig<DogStatsDPostAggregateFilterConfig>) -> Self {
+        Self { config }
     }
 }
 
@@ -111,21 +60,22 @@ impl TransformBuilder for DogStatsDPostAggregateFilterConfiguration {
     }
 
     async fn build(&self, context: ComponentContext) -> Result<Box<dyn Transform + Send>, GenericError> {
+        let current = self.config.current();
         let metrics_builder = MetricsBuilder::from_component_context(&context);
         let histogram_suffixes =
-            HistogramSuffixes::from_configuration(&self.histogram_aggregates, &self.histogram_percentiles)?;
+            HistogramSuffixes::from_histogram_config(&current.histogram_aggregates, &current.histogram_percentiles)?;
         let effective_filterlist = EffectiveFilterlist::new(
-            self.metric_filterlist.clone(),
-            self.metric_filterlist_match_prefix,
-            self.metric_blocklist.clone(),
-            self.metric_blocklist_match_prefix,
+            current.metric_filterlist.clone(),
+            current.metric_filterlist_match_prefix,
+            current.metric_blocklist.clone(),
+            current.metric_blocklist_match_prefix,
         );
         let mut filter = DogStatsDPostAggregateFilter {
             matcher: Blocklist::default(),
             effective_filterlist,
             histogram_suffixes,
             telemetry: Telemetry::new(&metrics_builder),
-            configuration: self.configuration.clone(),
+            config: self.config.clone(),
         };
         filter.sync_matcher();
 
@@ -147,7 +97,7 @@ struct HistogramSuffixes {
 }
 
 impl HistogramSuffixes {
-    fn from_configuration(aggregates: &[String], percentiles: &[String]) -> Result<Self, GenericError> {
+    fn from_histogram_config(aggregates: &[String], percentiles: &[String]) -> Result<Self, GenericError> {
         let mut values = aggregates
             .iter()
             .map(|aggregate| MetaString::from(aggregate.as_str()))
@@ -198,7 +148,7 @@ struct DogStatsDPostAggregateFilter {
     effective_filterlist: EffectiveFilterlist,
     histogram_suffixes: HistogramSuffixes,
     telemetry: Telemetry,
-    configuration: Option<GenericConfiguration>,
+    config: ScopedConfig<DogStatsDPostAggregateFilterConfig>,
 }
 
 impl DogStatsDPostAggregateFilter {
@@ -213,25 +163,26 @@ impl DogStatsDPostAggregateFilter {
         self.matcher = Blocklist::new(histogram_values.iter().map(String::as_str), match_prefix);
     }
 
-    fn update_metric_filterlist(&mut self, metric_filterlist: Vec<String>) {
-        self.effective_filterlist.set_metric_filterlist(metric_filterlist);
-        self.sync_matcher();
-    }
-
-    fn update_metric_blocklist(&mut self, metric_blocklist: Vec<String>) {
-        self.effective_filterlist.set_metric_blocklist(metric_blocklist);
-        self.sync_matcher();
-    }
-
-    fn update_metric_filterlist_match_prefix(&mut self, match_prefix: bool) {
-        self.effective_filterlist
-            .set_metric_filterlist_match_prefix(match_prefix);
-        self.sync_matcher();
-    }
-
-    fn update_metric_blocklist_match_prefix(&mut self, match_prefix: bool) {
-        self.effective_filterlist
-            .set_metric_blocklist_match_prefix(match_prefix);
+    /// Rebuilds local state from the latest published configuration slice.
+    ///
+    /// The dynamic filterlist/blocklist source keys are retranslated into the whole
+    /// `DogStatsDPostAggregateFilterConfig` slice by the config-system; this rebuilds the effective
+    /// filterlist, histogram suffixes, and matcher from it. A failed histogram-suffix rebuild
+    /// (invalid percentile) is logged and the previous matcher is retained.
+    fn apply_update(&mut self, updated: DogStatsDPostAggregateFilterConfig) {
+        match HistogramSuffixes::from_histogram_config(&updated.histogram_aggregates, &updated.histogram_percentiles) {
+            Ok(histogram_suffixes) => self.histogram_suffixes = histogram_suffixes,
+            Err(e) => {
+                error!(error = %e, "Failed to rebuild histogram suffixes from updated config; retaining previous matcher.");
+                return;
+            }
+        }
+        self.effective_filterlist = EffectiveFilterlist::new(
+            updated.metric_filterlist,
+            updated.metric_filterlist_match_prefix,
+            updated.metric_blocklist,
+            updated.metric_blocklist_match_prefix,
+        );
         self.sync_matcher();
     }
 
@@ -261,17 +212,6 @@ impl Transform for DogStatsDPostAggregateFilter {
         let mut health = context.take_health_handle();
         health.mark_ready();
 
-        let configuration = self
-            .configuration
-            .as_ref()
-            .expect("configuration must be set via from_configuration");
-        let mut filterlist_watcher = configuration.watch_for_updates(METRIC_FILTERLIST_CONFIG_KEY);
-        let mut filterlist_match_prefix_watcher =
-            configuration.watch_for_updates(METRIC_FILTERLIST_MATCH_PREFIX_CONFIG_KEY);
-        let mut blocklist_watcher = configuration.watch_for_updates(STATSD_METRIC_BLOCKLIST_CONFIG_KEY);
-        let mut blocklist_match_prefix_watcher =
-            configuration.watch_for_updates(STATSD_METRIC_BLOCKLIST_MATCH_PREFIX_CONFIG_KEY);
-
         debug!("DogStatsD post-aggregate filter transform started.");
 
         loop {
@@ -287,29 +227,10 @@ impl Transform for DogStatsDPostAggregateFilter {
                     },
                     None => break,
                 },
-                (_, maybe_new_metric_filterlist) = filterlist_watcher.changed::<Vec<String>>() => {
-                    if let Some(new_filterlist) = maybe_new_metric_filterlist {
-                        debug!(?new_filterlist, "Updated metric filterlist.");
-                        self.update_metric_filterlist(new_filterlist);
-                    }
-                },
-                (_, maybe_new_filterlist_match_prefix) = filterlist_match_prefix_watcher.changed::<bool>() => {
-                    if let Some(new_match_prefix) = maybe_new_filterlist_match_prefix {
-                        debug!(match_prefix = new_match_prefix, "Updated metric filterlist match prefix.");
-                        self.update_metric_filterlist_match_prefix(new_match_prefix);
-                    }
-                },
-                (_, maybe_new_blocklist) = blocklist_watcher.changed::<Vec<String>>() => {
-                    if let Some(new_blocklist) = maybe_new_blocklist {
-                        debug!(?new_blocklist, "Updated metric blocklist.");
-                        self.update_metric_blocklist(new_blocklist);
-                    }
-                },
-                (_, maybe_new_blocklist_match_prefix) = blocklist_match_prefix_watcher.changed::<bool>() => {
-                    if let Some(new_match_prefix) = maybe_new_blocklist_match_prefix {
-                        debug!(match_prefix = new_match_prefix, "Updated metric blocklist match prefix.");
-                        self.update_metric_blocklist_match_prefix(new_match_prefix);
-                    }
+                _ = self.config.changed() => {
+                    let updated = self.config.current();
+                    debug!("Updated DogStatsD post-aggregate metric filterlist.");
+                    self.apply_update(updated);
                 },
             }
         }
@@ -322,10 +243,9 @@ impl Transform for DogStatsDPostAggregateFilter {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
 
     use metrics::set_default_local_recorder;
-    use saluki_config_tools::{dynamic::ConfigUpdate, ConfigurationLoader};
+    use saluki_component_config::dogstatsd::DogStatsDPostAggregateFilterConfig;
     use saluki_context::Context;
     use saluki_core::{
         data_model::event::{metric::Metric, Event},
@@ -335,6 +255,17 @@ mod tests {
 
     use super::*;
     use crate::components::dogstatsd_post_aggregate_filter::telemetry::FILTERED_METRICS_METRIC;
+
+    fn default_histogram_aggregates() -> Vec<String> {
+        ["max", "median", "avg", "count"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
+    }
+
+    fn default_histogram_percentiles() -> Vec<String> {
+        ["0.95"].iter().map(|s| s.to_string()).collect()
+    }
 
     fn filter_with(
         metric_filterlist: Vec<&str>, metric_filterlist_match_prefix: bool, metric_blocklist: Vec<&str>,
@@ -350,7 +281,7 @@ mod tests {
             .map(ToString::to_string)
             .collect::<Vec<_>>();
         let histogram_suffixes =
-            HistogramSuffixes::from_configuration(&histogram_aggregates, &histogram_percentiles).unwrap();
+            HistogramSuffixes::from_histogram_config(&histogram_aggregates, &histogram_percentiles).unwrap();
 
         let mut filter = DogStatsDPostAggregateFilter {
             matcher: Blocklist::default(),
@@ -362,7 +293,7 @@ mod tests {
             ),
             histogram_suffixes,
             telemetry,
-            configuration: None,
+            config: ScopedConfig::fixed(DogStatsDPostAggregateFilterConfig::default()),
         };
         filter.sync_matcher();
         filter
@@ -518,7 +449,7 @@ mod tests {
         let histogram_aggregates = Vec::new();
         let histogram_percentiles = vec!["1.1".to_string()];
 
-        let result = HistogramSuffixes::from_configuration(&histogram_aggregates, &histogram_percentiles);
+        let result = HistogramSuffixes::from_histogram_config(&histogram_aggregates, &histogram_percentiles);
 
         assert!(result.is_err());
     }
@@ -551,42 +482,6 @@ mod tests {
     }
 
     // Mirrors Datadog Agent runtime metric filterlist update behavior:
-    // https://github.com/DataDog/datadog-agent/blob/12213fe95538f47d98d73bd945a87b3e24189285/pkg/aggregator/demultiplexer_agent_test.go#L390
-    #[tokio::test]
-    async fn runtime_updates_rebuild_the_effective_matcher() {
-        let (config, sender) = ConfigurationLoader::for_tests(Some(serde_json::json!({})), None, true).await;
-        let sender = sender.expect("sender should exist");
-        sender
-            .send(ConfigUpdate::Snapshot(serde_json::json!({})))
-            .await
-            .unwrap();
-        config.ready().await;
-
-        let mut filter = noop_filter(vec!["request.duration.max"], false, vec![], false);
-        filter.configuration = Some(config.clone());
-
-        assert!(filter.should_filter_metric(&Metric::gauge("request.duration.max", 1.0)));
-        assert!(!filter.should_filter_metric(&Metric::gauge("request.duration.avg", 1.0)));
-
-        let mut filterlist_watcher = config.watch_for_updates("metric_filterlist");
-        sender
-            .send(ConfigUpdate::Partial {
-                key: "metric_filterlist".to_string(),
-                value: serde_json::json!(["request.duration.avg"]),
-            })
-            .await
-            .unwrap();
-
-        let (_, new_filterlist) =
-            tokio::time::timeout(Duration::from_secs(2), filterlist_watcher.changed::<Vec<String>>())
-                .await
-                .expect("timed out waiting for metric_filterlist update");
-
-        filter.update_metric_filterlist(new_filterlist.unwrap());
-
-        assert!(!filter.should_filter_metric(&Metric::gauge("request.duration.max", 1.0)));
-        assert!(filter.should_filter_metric(&Metric::gauge("request.duration.avg", 1.0)));
-    }
 
     #[test]
     fn falls_back_to_legacy_blocklist_only_when_filterlist_is_empty() {

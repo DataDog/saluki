@@ -3,7 +3,6 @@ use datadog_agent_commons::ipc::client::RemoteAgentClient;
 use datadog_protos::agent::{EntityId as RemoteEntityId, EventType, TagCardinality as RemoteTagCardinality};
 use futures::{StreamExt as _, TryStreamExt as _};
 use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
-use saluki_config_tools::GenericConfiguration;
 use saluki_context::{
     origin::OriginTagCardinality,
     tags::{Tag, TagSet},
@@ -41,23 +40,17 @@ pub struct RemoteAgentTaggerMetadataCollector {
 }
 
 impl RemoteAgentTaggerMetadataCollector {
-    /// Creates a new `RemoteAgentTaggerMetadataCollector` from the given configuration.
+    /// Creates a new `RemoteAgentTaggerMetadataCollector` from the metrics attachment's client.
     ///
-    /// ## Errors
-    ///
-    /// If the Agent gRPC client can't be created (invalid API endpoint, missing authentication token, etc), or if the
-    /// authentication token is invalid, an error will be returned.
-    pub async fn from_configuration(
-        config: &GenericConfiguration, health: Health, interner: GenericMapInterner,
-    ) -> Result<Self, GenericError> {
-        let client = RemoteAgentClient::from_configuration(config).await?;
-
-        Ok(Self {
+    /// The client comes from the config-system's typed attachment bundle; this collector no longer
+    /// builds its own client from raw configuration.
+    pub fn from_client(client: RemoteAgentClient, health: Health, interner: GenericMapInterner) -> Self {
+        Self {
             client,
             interner,
             health,
             telemetry: Telemetry::new(),
-        })
+        }
     }
 
     fn try_intern(&self, value: &str) -> Option<MetaString> {

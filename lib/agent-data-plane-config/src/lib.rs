@@ -62,7 +62,8 @@ pub mod views;
 
 pub use self::authority::RuntimeAuthority;
 pub use self::bootstrap::{
-    AgentIpcBootstrap, BootstrapConfiguration, DatadogBootstrap, LoggingBootstrap, SalukiBootstrap, TelemetryBootstrap,
+    AgentIpcBootstrap, BootstrapConfiguration, DatadogBootstrap, LocalApiBootstrap, LoggingBootstrap, SalukiBootstrap,
+    TelemetryBootstrap,
 };
 pub use self::control::{ControlConfiguration, OtlpControl, OtlpProxyControl, PipelineGate};
 pub use self::model::{

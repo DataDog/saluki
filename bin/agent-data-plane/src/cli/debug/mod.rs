@@ -1,5 +1,5 @@
+use agent_data_plane_config::BootstrapConfiguration;
 use argh::FromArgs;
-use saluki_config_tools::GenericConfiguration;
 use tracing::{error, info};
 
 use crate::cli::utils::DataPlaneAPIClient;
@@ -62,8 +62,8 @@ pub struct SetMetricLevelCommand {
 }
 
 /// Entrypoint for the `debug` commands.
-pub async fn handle_debug_command(bootstrap_config: &GenericConfiguration, cmd: DebugCommand) {
-    let mut api_client = match DataPlaneAPIClient::from_config(bootstrap_config) {
+pub async fn handle_debug_command(bootstrap: &BootstrapConfiguration, cmd: DebugCommand) {
+    let mut api_client = match DataPlaneAPIClient::from_config(bootstrap) {
         Ok(client) => client,
         Err(e) => {
             error!("Failed to create data plane API client: {:#}", e);

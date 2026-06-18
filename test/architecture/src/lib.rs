@@ -185,7 +185,6 @@ mod tests {
     // -------------------------------------------------------------------------
 
     #[test]
-    #[ignore = "enabled at step 9"]
     fn components_must_not_depend_on_adp_config() {
         assert_no_dependency("lib/saluki-components", "agent-data-plane-config");
     }
@@ -198,7 +197,6 @@ mod tests {
     // -------------------------------------------------------------------------
 
     #[test]
-    #[ignore = "enabled at step 11"]
     fn binary_must_not_depend_on_raw_map() {
         assert_no_dependency("bin/agent-data-plane", "saluki-config-tools");
     }
@@ -211,31 +209,26 @@ mod tests {
     // -------------------------------------------------------------------------
 
     #[test]
-    #[ignore = "enabled at step 11"]
     fn binary_must_not_mention_generic_configuration() {
         assert_no_source_symbol("bin/agent-data-plane", "GenericConfiguration");
     }
 
     #[test]
-    #[ignore = "enabled at step 11"]
     fn binary_must_not_mention_configuration_loader() {
         assert_no_source_symbol("bin/agent-data-plane", "ConfigurationLoader");
     }
 
     #[test]
-    #[ignore = "enabled at step 11"]
     fn binary_must_not_import_raw_map_crate() {
         assert_no_source_symbol("bin/agent-data-plane", "saluki_config_tools");
     }
 
     #[test]
-    #[ignore = "enabled at step 11"]
     fn binary_must_not_import_datadog_remapper() {
         assert_no_source_symbol("bin/agent-data-plane", "DatadogRemapper");
     }
 
     #[test]
-    #[ignore = "enabled at step 11"]
     fn binary_must_not_import_key_aliases() {
         assert_no_source_symbol("bin/agent-data-plane", "KEY_ALIASES");
     }
@@ -265,25 +258,21 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "enabled at step 9"]
     fn binary_components_must_not_use_from_configuration() {
         assert_no_binary_component_symbol("from_configuration");
     }
 
     #[test]
-    #[ignore = "enabled at step 9"]
     fn binary_components_must_not_use_generic_configuration() {
         assert_no_binary_component_symbol("GenericConfiguration");
     }
 
     #[test]
-    #[ignore = "enabled at step 9"]
     fn binary_components_must_not_use_try_get_typed() {
         assert_no_binary_component_symbol("try_get_typed");
     }
 
     #[test]
-    #[ignore = "enabled at step 9"]
     fn binary_components_must_not_import_raw_map_crate() {
         assert_no_binary_component_symbol("saluki_config_tools");
     }
@@ -296,49 +285,41 @@ mod tests {
     // -------------------------------------------------------------------------
 
     #[test]
-    #[ignore = "enabled at step 9"]
     fn components_must_not_use_from_configuration() {
         assert_no_source_symbol("lib/saluki-components", "from_configuration");
     }
 
     #[test]
-    #[ignore = "enabled at step 9"]
     fn components_must_not_use_try_get_typed() {
         assert_no_source_symbol("lib/saluki-components", "try_get_typed");
     }
 
     #[test]
-    #[ignore = "enabled at step 9"]
     fn components_must_not_use_as_typed() {
         assert_no_source_symbol("lib/saluki-components", "as_typed");
     }
 
     #[test]
-    #[ignore = "enabled at step 9"]
     fn components_must_not_watch_string_keys() {
         assert_no_source_symbol("lib/saluki-components", "watch_for_updates");
     }
 
     #[test]
-    #[ignore = "enabled at step 9"]
     fn components_must_not_subscribe_for_updates() {
         assert_no_source_symbol("lib/saluki-components", "subscribe_for_updates");
     }
 
     #[test]
-    #[ignore = "enabled at step 9"]
     fn components_must_not_import_raw_map_crate() {
         assert_no_source_symbol("lib/saluki-components", "saluki_config_tools");
     }
 
     #[test]
-    #[ignore = "enabled at step 9"]
     fn components_must_not_reference_datadog_remapper() {
         assert_no_source_symbol("lib/saluki-components", "DatadogRemapper");
     }
 
     #[test]
-    #[ignore = "enabled at step 9"]
     fn components_must_not_reference_key_aliases() {
         assert_no_source_symbol("lib/saluki-components", "KEY_ALIASES");
     }

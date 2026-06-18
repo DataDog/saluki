@@ -45,7 +45,7 @@ pub struct TracesFilterConfig {
 ///
 /// Matches the structure used by the OpenTelemetry Collector Contrib filterprocessor.
 /// Read from the `ottl_filter_config` key at the top level of the data-plane configuration (see
-/// [`super::OttlFilterConfiguration::from_configuration`]). Example:
+/// [`super::OttlFilterConfiguration::from_native`]). Example:
 ///
 /// ```yaml
 /// ottl_filter_config:

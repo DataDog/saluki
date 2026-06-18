@@ -1,29 +1,32 @@
-//! Translation between the Datadog Agent's [`GenericConfiguration`] and ADP's [`LoggingConfiguration`].
+//! Translation between the Datadog Agent's typed logging bootstrap slice and ADP's [`LoggingConfiguration`].
 //!
 //! ADP's logging behavior must follow the Datadog Agent's logging configuration for the settings that are sensibly
 //! shared (level, format, console output, rotation), but it must use its own per-subagent destination so it doesn't
 //! collide with the Core Agent's own log file. This module owns those rules in one place.
 
+use std::str::FromStr as _;
+
+use agent_data_plane_config::LoggingBootstrap;
 use async_trait::async_trait;
 use bytesize::ByteSize;
 use datadog_agent_commons::platform::PlatformSettings;
 use saluki_app::logging::{LogLevel, LoggingConfiguration, LoggingOverrideController};
-use saluki_common::{deser::PermissiveBool, sync::shutdown::ShutdownHandle};
-use saluki_config_tools::GenericConfiguration;
+use saluki_common::sync::shutdown::ShutdownHandle;
+use saluki_component_config::ScopedConfig;
 use saluki_core::runtime::{InitializationError, Supervisable, SupervisorFuture};
-use saluki_error::{ErrorContext as _, GenericError};
-use serde::Deserialize;
-use serde_with::serde_as;
+use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use tokio::{pin, select};
 use tracing::{debug, warn};
 
-const DATA_PLANE_LOG_FILE_KEY: &str = "data_plane.log_file";
 // `tracing` targets use Rust crate/module names, so Cargo package names with hyphens appear with underscores.
 const FIRST_PARTY_LOG_TARGETS: &[&str] = &[
     "agent_data_plane",
+    "agent_data_plane_config",
+    "agent_data_plane_config_system",
     "containerd_protos",
     "datadog_protos",
     "datadog_agent_commons",
+    "datadog_agent_config",
     "ddsketch",
     "resource_accounting",
     "otlp_protos",
@@ -33,8 +36,8 @@ const FIRST_PARTY_LOG_TARGETS: &[&str] = &[
     "saluki_api",
     "saluki_app",
     "saluki_common",
+    "saluki_component_config",
     "saluki_components",
-    "saluki_config_tools",
     "saluki_context",
     "saluki_core",
     "saluki_env",
@@ -58,74 +61,62 @@ const FIRST_PARTY_LOG_TARGETS: &[&str] = &[
 pub struct LoggingConfigurationTranslator;
 
 impl LoggingConfigurationTranslator {
-    /// Builds a [`LoggingConfiguration`] from the given configuration, applying ADP's per-subagent rules.
+    /// Builds a [`LoggingConfiguration`] from the typed logging bootstrap slice, applying ADP's
+    /// per-subagent rules.
     ///
     /// # Errors
     ///
-    /// Returns an error if any of the consulted keys is present but can't be parsed into the expected type.
-    pub fn translate(config: &GenericConfiguration) -> Result<LoggingConfiguration, GenericError> {
+    /// Returns an error if the configured log level cannot be parsed, or the configured
+    /// `log_file_max_size` cannot be parsed as a byte size.
+    pub fn translate(logging_bootstrap: &LoggingBootstrap) -> Result<LoggingConfiguration, GenericError> {
         let mut logging = LoggingConfiguration::simple();
 
-        let maybe_log_level = config
-            .try_get_typed::<String>("log_level")
-            .error_context("Failed to read `log_level`.")?;
-        logging.log_level = parse_optional_log_level_raw(maybe_log_level)?;
+        logging.log_level = parse_optional_log_level_raw(logging_bootstrap.log_level.clone())?;
 
-        if let Some(format_json) = read_permissive_bool(config, "log_format_json")? {
+        if let Some(format_json) = logging_bootstrap.log_format_json {
             logging.log_format_json = format_json;
         }
 
-        if let Some(format_rfc3339) = read_permissive_bool(config, "log_format_rfc3339")? {
+        if let Some(format_rfc3339) = logging_bootstrap.log_format_rfc3339 {
             logging.log_format_rfc3339 = format_rfc3339;
         }
 
-        if let Some(to_console) = read_permissive_bool(config, "log_to_console")? {
+        if let Some(to_console) = logging_bootstrap.log_to_console {
             logging.log_to_console = to_console;
         }
 
-        if let Some(to_syslog) = read_permissive_bool(config, "log_to_syslog")? {
+        if let Some(to_syslog) = logging_bootstrap.log_to_syslog {
             logging.log_to_syslog = to_syslog;
         }
 
         if logging.log_to_syslog {
-            if let Some(syslog_rfc) = read_permissive_bool(config, "syslog_rfc")? {
+            if let Some(syslog_rfc) = logging_bootstrap.syslog_rfc {
                 logging.syslog_rfc = syslog_rfc;
             }
 
-            let configured = config
-                .try_get_typed::<String>("syslog_uri")
-                .error_context("Failed to read `syslog_uri`.")?;
-            logging.syslog_uri = match configured {
-                Some(uri) if !uri.is_empty() => uri,
+            logging.syslog_uri = match logging_bootstrap.syslog_uri.as_deref() {
+                Some(uri) if !uri.is_empty() => uri.to_string(),
                 _ => PlatformSettings::get_default_syslog_uri().to_string(),
             };
         }
 
-        if let Some(max_size) = config
-            .try_get_typed::<ByteSize>("log_file_max_size")
-            .error_context("Failed to read `log_file_max_size`.")?
-        {
-            logging.log_file_max_size = max_size;
+        if let Some(max_size) = logging_bootstrap.log_file_max_size.as_deref() {
+            logging.log_file_max_size = ByteSize::from_str(max_size)
+                .map_err(|e| generic_error!("Failed to parse `log_file_max_size`: {}", e))?;
         }
 
-        if let Some(max_rolls) = config
-            .try_get_typed::<usize>("log_file_max_rolls")
-            .error_context("Failed to read `log_file_max_rolls`.")?
-        {
+        if let Some(max_rolls) = logging_bootstrap.log_file_max_rolls {
             logging.log_file_max_rolls = max_rolls;
         }
 
         // File destination: per-subagent key only, with the platform default as fallback. The Core Agent's `log_file`
         // is deliberately never consulted. `disable_file_logging` short-circuits the file output entirely.
-        let disable_file_logging = read_permissive_bool(config, "disable_file_logging")?.unwrap_or(false);
+        let disable_file_logging = logging_bootstrap.disable_file_logging.unwrap_or(false);
         logging.log_file = if disable_file_logging {
             String::new()
         } else {
-            let configured = config
-                .try_get_typed::<String>(DATA_PLANE_LOG_FILE_KEY)
-                .with_error_context(|| format!("Failed to read `{}`.", DATA_PLANE_LOG_FILE_KEY))?;
-            match configured {
-                Some(path) if !path.is_empty() => path,
+            match logging_bootstrap.data_plane_log_file.as_deref() {
+                Some(path) if !path.is_empty() => path.to_string(),
                 _ => PlatformSettings::get_default_log_file_path()
                     .to_string_lossy()
                     .into_owned(),
@@ -135,20 +126,6 @@ impl LoggingConfigurationTranslator {
         Ok(logging)
     }
 }
-
-/// Reads a configuration key as a permissive boolean (accepts `true`/`false`, `"true"`/`"false"`, `"1"`/`"0"`, etc.).
-///
-/// Returns `Ok(None)` if the key is absent.
-fn read_permissive_bool(config: &GenericConfiguration, key: &str) -> Result<Option<bool>, GenericError> {
-    Ok(config
-        .try_get_typed::<PermissiveBoolValue>(key)
-        .with_error_context(|| format!("Failed to read `{}`.", key))?
-        .map(|v| v.0))
-}
-
-#[serde_as]
-#[derive(Deserialize)]
-struct PermissiveBoolValue(#[serde_as(as = "PermissiveBool")] bool);
 
 fn parse_optional_log_level_raw(maybe_log_level: Option<String>) -> Result<LogLevel, GenericError> {
     match maybe_log_level {
@@ -188,21 +165,21 @@ fn first_party_log_level_filter(level: &str) -> Result<LogLevel, GenericError> {
     LogLevel::try_from(filter).error_context("Failed to parse first-party log filter directives.")
 }
 
-/// A worker that watches for updates to `log_level` and adjusts the logging stack's current filter directives to match.
+/// A worker that reacts to typed `log_level` updates and adjusts the logging stack's current filter
+/// directives to match.
 ///
-/// The worker relies on dynamic configuration; if it's not enabled, the worker simply idles until shutdown.
+/// The worker consumes the typed [`ScopedConfig<String>`] log-level handle from the config-system's
+/// dynamic handle bundle. When the handle is fixed (local-snapshot mode), it simply idles until
+/// shutdown.
 pub struct DynamicLogLevelWorker {
-    config: GenericConfiguration,
+    log_level: ScopedConfig<String>,
     controller: LoggingOverrideController,
 }
 
 impl DynamicLogLevelWorker {
-    /// Creates a new `DynamicLogLevelWorker` watching the given configuration.
-    pub fn new(config: &GenericConfiguration, controller: LoggingOverrideController) -> Self {
-        Self {
-            config: config.clone(),
-            controller,
-        }
+    /// Creates a new `DynamicLogLevelWorker` from the typed log-level handle.
+    pub fn new(log_level: ScopedConfig<String>, controller: LoggingOverrideController) -> Self {
+        Self { log_level, controller }
     }
 }
 
@@ -213,7 +190,7 @@ impl Supervisable for DynamicLogLevelWorker {
     }
 
     async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
-        let mut watcher = self.config.watch_for_updates("log_level");
+        let mut log_level = self.log_level.clone();
         let controller = self.controller.clone();
 
         Ok(Box::pin(async move {
@@ -224,8 +201,9 @@ impl Supervisable for DynamicLogLevelWorker {
             loop {
                 select! {
                     _ = &mut process_shutdown => break,
-                    (_, new_log_level) = watcher.changed::<String>() => {
-                        match parse_optional_log_level_raw(new_log_level) {
+                    _ = log_level.changed() => {
+                        let new_log_level = log_level.current();
+                        match parse_optional_log_level_raw(Some(new_log_level)) {
                             Ok(log_level) => {
                                 if let Err(e) = controller.update_base(log_level.as_env_filter()).await {
                                     warn!(error = %e, %log_level, "Failed to apply updated log level.");
@@ -246,240 +224,172 @@ impl Supervisable for DynamicLogLevelWorker {
 
 #[cfg(test)]
 mod tests {
-    use saluki_config_tools::ConfigurationLoader;
-    use serde_json::{json, Value};
-
     use super::*;
 
-    async fn translate_logging(config_json: Option<Value>) -> Result<LoggingConfiguration, GenericError> {
-        let (config, _) = ConfigurationLoader::for_tests(config_json, None, false).await;
-        LoggingConfigurationTranslator::translate(&config)
+    /// Builds a `LoggingBootstrap` with all fields defaulted; tests set only what they exercise.
+    fn bootstrap() -> LoggingBootstrap {
+        LoggingBootstrap::default()
     }
 
-    async fn translate_logging_with_env(env_vars: &[(String, String)]) -> Result<LoggingConfiguration, GenericError> {
-        let (config, _) = ConfigurationLoader::for_tests(None, Some(env_vars), false).await;
-        LoggingConfigurationTranslator::translate(&config)
+    fn translate(b: &LoggingBootstrap) -> Result<LoggingConfiguration, GenericError> {
+        LoggingConfigurationTranslator::translate(b)
     }
 
-    async fn translate_filter(config_json: Option<Value>) -> Result<String, GenericError> {
-        translate_logging(config_json)
-            .await
-            .map(|logging| logging.log_level.as_env_filter().to_string())
+    fn filter_directives(b: &LoggingBootstrap) -> Vec<String> {
+        let logging = translate(b).expect("translate logging config");
+        logging
+            .log_level
+            .as_env_filter()
+            .to_string()
+            .split(',')
+            .map(str::to_string)
+            .collect()
     }
 
-    async fn translate_filter_directives(config_json: Option<Value>) -> Result<Vec<String>, GenericError> {
-        translate_filter(config_json)
-            .await
-            .map(|filter| filter.split(',').map(str::to_string).collect())
+    #[test]
+    fn missing_log_level_defaults_to_first_party_info() {
+        let directives = filter_directives(&bootstrap());
+        assert!(directives.contains(&"agent_data_plane=info".to_string()));
     }
 
-    #[tokio::test]
-    async fn missing_log_level_defaults_to_first_party_info() {
-        let filter = translate_filter(None).await.expect("translate logging config");
-
-        assert!(filter.contains("agent_data_plane=info"));
-    }
-
-    #[tokio::test]
-    async fn plain_log_level_becomes_first_party_filter() {
-        let directives = translate_filter_directives(Some(json!({ "log_level": "warn" })))
-            .await
-            .expect("translate logging config");
-
+    #[test]
+    fn plain_log_level_becomes_first_party_filter() {
+        let mut b = bootstrap();
+        b.log_level = Some("warn".to_string());
+        let directives = filter_directives(&b);
         assert!(directives.contains(&"agent_data_plane=warn".to_string()));
         assert!(directives.contains(&"saluki_components=warn".to_string()));
     }
 
-    #[tokio::test]
-    async fn plain_log_level_does_not_enable_dependency_targets() {
-        let directives = translate_filter_directives(Some(json!({ "log_level": "warn" })))
-            .await
-            .expect("translate logging config");
-
+    #[test]
+    fn plain_log_level_does_not_enable_dependency_targets() {
+        let mut b = bootstrap();
+        b.log_level = Some("warn".to_string());
+        let directives = filter_directives(&b);
         assert!(!directives.contains(&"hyper=warn".to_string()));
         assert!(!directives.contains(&"tokio=warn".to_string()));
         assert!(!directives.contains(&"tonic=warn".to_string()));
     }
 
-    #[tokio::test]
-    async fn plain_log_level_does_not_include_global_directive() {
-        let directives = translate_filter_directives(Some(json!({ "log_level": "warn" })))
-            .await
-            .expect("translate logging config");
-
+    #[test]
+    fn plain_log_level_does_not_include_global_directive() {
+        let mut b = bootstrap();
+        b.log_level = Some("warn".to_string());
+        let directives = filter_directives(&b);
         assert!(!directives.contains(&"warn".to_string()));
     }
 
-    #[tokio::test]
-    async fn env_plain_log_level_becomes_first_party_filter() {
-        let env_vars = [("LOG_LEVEL".to_string(), "warn".to_string())];
-        let (config, _) = ConfigurationLoader::for_tests(None, Some(&env_vars), false).await;
-        let filter = LoggingConfigurationTranslator::translate(&config)
-            .expect("translate logging config")
-            .log_level
-            .as_env_filter()
-            .to_string();
-
-        assert!(filter.contains("agent_data_plane=warn"));
+    #[test]
+    fn plain_log_level_is_case_insensitive() {
+        let mut b = bootstrap();
+        b.log_level = Some("WaRn".to_string());
+        let directives = filter_directives(&b);
+        assert!(directives.contains(&"agent_data_plane=warn".to_string()));
     }
 
-    #[tokio::test]
-    async fn plain_log_level_is_case_insensitive() {
-        let filter = translate_filter(Some(json!({ "log_level": "WaRn" })))
-            .await
-            .expect("translate logging config");
-
-        assert!(filter.contains("agent_data_plane=warn"));
-    }
-
-    #[tokio::test]
-    async fn advanced_log_level_directives_are_preserved() {
-        let directives = translate_filter_directives(Some(json!({
-            "log_level": "warn,agent_data_plane=debug,hyper=warn"
-        })))
-        .await
-        .expect("translate logging config");
-
+    #[test]
+    fn advanced_log_level_directives_are_preserved() {
+        let mut b = bootstrap();
+        b.log_level = Some("warn,agent_data_plane=debug,hyper=warn".to_string());
+        let directives = filter_directives(&b);
         assert!(directives.contains(&"warn".to_string()));
         assert!(directives.contains(&"agent_data_plane=debug".to_string()));
         assert!(directives.contains(&"hyper=warn".to_string()));
     }
 
-    #[tokio::test]
-    async fn invalid_log_level_returns_error() {
-        let result = translate_filter(Some(json!({ "log_level": "agent_data_plane=verbose" }))).await;
-        assert!(result.is_err());
+    #[test]
+    fn invalid_log_level_returns_error() {
+        let mut b = bootstrap();
+        b.log_level = Some("agent_data_plane=verbose".to_string());
+        assert!(translate(&b).is_err());
     }
 
-    #[tokio::test]
-    async fn missing_syslog_values_default_to_disabled() {
-        let logging = translate_logging(None).await.expect("translate logging config");
-
+    #[test]
+    fn missing_syslog_values_default_to_disabled() {
+        let logging = translate(&bootstrap()).expect("translate logging config");
         assert!(!logging.log_to_syslog);
         assert!(logging.syslog_uri.is_empty());
         assert!(!logging.syslog_rfc);
     }
 
-    #[tokio::test]
-    async fn yaml_syslog_values_are_translated() {
-        let logging = translate_logging(Some(json!({
-            "log_to_syslog": true,
-            "syslog_uri": "udp://127.0.0.1:1514",
-            "syslog_rfc": true,
-        })))
-        .await
-        .expect("translate logging config");
-
+    #[test]
+    fn syslog_values_are_translated() {
+        let mut b = bootstrap();
+        b.log_to_syslog = Some(true);
+        b.syslog_uri = Some("udp://127.0.0.1:1514".to_string());
+        b.syslog_rfc = Some(true);
+        let logging = translate(&b).expect("translate logging config");
         assert!(logging.log_to_syslog);
         assert_eq!(logging.syslog_uri, "udp://127.0.0.1:1514");
         assert!(logging.syslog_rfc);
     }
 
-    #[tokio::test]
-    async fn env_syslog_values_are_translated() {
-        let env_vars = [
-            ("LOG_TO_SYSLOG".to_string(), "true".to_string()),
-            ("SYSLOG_URI".to_string(), "tcp://127.0.0.1:1514".to_string()),
-            ("SYSLOG_RFC".to_string(), "1".to_string()),
-        ];
-        let logging = translate_logging_with_env(&env_vars)
-            .await
-            .expect("translate logging config");
-
-        assert!(logging.log_to_syslog);
-        assert_eq!(logging.syslog_uri, "tcp://127.0.0.1:1514");
-        assert!(logging.syslog_rfc);
-    }
-
-    #[tokio::test]
-    async fn enabled_syslog_with_missing_uri_uses_platform_default() {
-        let logging = translate_logging(Some(json!({ "log_to_syslog": true })))
-            .await
-            .expect("translate logging config");
-
+    #[test]
+    fn enabled_syslog_with_missing_uri_uses_platform_default() {
+        let mut b = bootstrap();
+        b.log_to_syslog = Some(true);
+        let logging = translate(&b).expect("translate logging config");
         assert!(logging.log_to_syslog);
         assert_eq!(logging.syslog_uri, PlatformSettings::get_default_syslog_uri());
     }
 
-    #[tokio::test]
-    async fn enabled_syslog_with_empty_uri_uses_platform_default() {
-        let logging = translate_logging(Some(json!({
-            "log_to_syslog": true,
-            "syslog_uri": "",
-        })))
-        .await
-        .expect("translate logging config");
-
+    #[test]
+    fn enabled_syslog_with_empty_uri_uses_platform_default() {
+        let mut b = bootstrap();
+        b.log_to_syslog = Some(true);
+        b.syslog_uri = Some(String::new());
+        let logging = translate(&b).expect("translate logging config");
         assert!(logging.log_to_syslog);
         assert_eq!(logging.syslog_uri, PlatformSettings::get_default_syslog_uri());
     }
 
-    #[tokio::test]
-    async fn configured_syslog_uri_has_no_effect_when_syslog_is_disabled() {
-        let logging = translate_logging(Some(json!({
-            "log_to_syslog": false,
-            "syslog_uri": "udp://127.0.0.1:1514",
-        })))
-        .await
-        .expect("translate logging config");
-
+    #[test]
+    fn configured_syslog_uri_has_no_effect_when_syslog_is_disabled() {
+        let mut b = bootstrap();
+        b.log_to_syslog = Some(false);
+        b.syslog_uri = Some("udp://127.0.0.1:1514".to_string());
+        let logging = translate(&b).expect("translate logging config");
         assert!(!logging.log_to_syslog);
         assert!(logging.syslog_uri.is_empty());
     }
 
-    #[tokio::test]
-    async fn syslog_rfc_has_no_effect_when_syslog_is_disabled() {
-        let logging = translate_logging(Some(json!({
-            "log_to_syslog": false,
-            "syslog_rfc": true,
-        })))
-        .await
-        .expect("translate logging config");
-
+    #[test]
+    fn syslog_rfc_has_no_effect_when_syslog_is_disabled() {
+        let mut b = bootstrap();
+        b.log_to_syslog = Some(false);
+        b.syslog_rfc = Some(true);
+        let logging = translate(&b).expect("translate logging config");
         assert!(!logging.log_to_syslog);
         assert!(!logging.syslog_rfc);
     }
 
-    #[tokio::test]
-    async fn syslog_rfc_defaults_to_false_when_syslog_is_enabled() {
-        let logging = translate_logging(Some(json!({
-            "log_to_syslog": true,
-            "syslog_uri": "udp://127.0.0.1:1514",
-        })))
-        .await
-        .expect("translate logging config");
-
+    #[test]
+    fn syslog_rfc_defaults_to_false_when_syslog_is_enabled() {
+        let mut b = bootstrap();
+        b.log_to_syslog = Some(true);
+        b.syslog_uri = Some("udp://127.0.0.1:1514".to_string());
+        let logging = translate(&b).expect("translate logging config");
         assert!(logging.log_to_syslog);
         assert!(!logging.syslog_rfc);
     }
 
-    #[tokio::test]
-    async fn data_plane_log_file_behavior_remains_unchanged_with_syslog_config() {
-        let logging = translate_logging(Some(json!({
-            "data_plane": {
-                "log_file": "/tmp/adp.log",
-            },
-            "log_to_syslog": true,
-        })))
-        .await
-        .expect("translate logging config");
-
+    #[test]
+    fn data_plane_log_file_behavior_remains_unchanged_with_syslog_config() {
+        let mut b = bootstrap();
+        b.data_plane_log_file = Some("/tmp/adp.log".to_string());
+        b.log_to_syslog = Some(true);
+        let logging = translate(&b).expect("translate logging config");
         assert_eq!(logging.log_file, "/tmp/adp.log");
         assert!(logging.log_to_syslog);
     }
 
-    #[tokio::test]
-    async fn disable_file_logging_behavior_remains_unchanged_with_syslog_config() {
-        let logging = translate_logging(Some(json!({
-            "disable_file_logging": true,
-            "data_plane": {
-                "log_file": "/tmp/adp.log",
-            },
-            "log_to_syslog": true,
-        })))
-        .await
-        .expect("translate logging config");
-
+    #[test]
+    fn disable_file_logging_behavior_remains_unchanged_with_syslog_config() {
+        let mut b = bootstrap();
+        b.disable_file_logging = Some(true);
+        b.data_plane_log_file = Some("/tmp/adp.log".to_string());
+        b.log_to_syslog = Some(true);
+        let logging = translate(&b).expect("translate logging config");
         assert!(logging.log_file.is_empty());
         assert!(logging.log_to_syslog);
     }

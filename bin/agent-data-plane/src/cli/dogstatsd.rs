@@ -3,10 +3,12 @@ use std::collections::{HashMap, HashSet};
 #[cfg(target_os = "linux")]
 use std::path::Path;
 use std::path::PathBuf;
+#[cfg(any(target_os = "linux", test))]
 use std::time::Duration;
 #[cfg(target_os = "linux")]
 use std::time::Instant;
 
+use agent_data_plane_config::BootstrapConfiguration;
 use argh::{FromArgValue, FromArgs};
 use comfy_table::{presets::ASCII_FULL_CONDENSED, Cell, ContentArrangement, Row, Table};
 #[cfg(any(target_os = "linux", test))]
@@ -16,7 +18,6 @@ use saluki_components::sources::TrafficCaptureReader;
 use saluki_components::sources::DEFAULT_REPLAY_LOOPS;
 #[cfg(target_os = "linux")]
 use saluki_components::sources::REPLAY_CREDENTIALS_GID;
-use saluki_config_tools::{DurationString, GenericConfiguration};
 #[cfg(any(target_os = "linux", test))]
 use saluki_error::generic_error;
 use saluki_error::{ErrorContext as _, GenericError};
@@ -75,8 +76,8 @@ struct StatsCommand {
     limit: Option<usize>,
 }
 
-const fn default_capture_duration() -> DurationString {
-    DurationString::new(Duration::from_secs(60))
+fn default_capture_duration() -> String {
+    "60s".to_string()
 }
 
 /// Starts a DogStatsD traffic capture.
@@ -85,7 +86,7 @@ const fn default_capture_duration() -> DurationString {
 struct CaptureCommand {
     /// how long the traffic capture should run for, using Go-style duration syntax such as `10s` or `1m0s`
     #[argh(option, short = 'd', long = "duration", default = "default_capture_duration()")]
-    capture_duration: DurationString,
+    capture_duration: String,
 
     /// directory path to write the capture into
     #[argh(option, short = 'p', long = "path")]
@@ -167,8 +168,8 @@ struct StatsResponse<'a> {
 }
 
 /// Entrypoint for the `dogstatsd` commands.
-pub async fn handle_dogstatsd_command(bootstrap_config: &GenericConfiguration, cmd: DogstatsdCommand) {
-    let mut api_client = match DataPlaneAPIClient::from_config(bootstrap_config) {
+pub async fn handle_dogstatsd_command(bootstrap: &BootstrapConfiguration, cmd: DogstatsdCommand) {
+    let mut api_client = match DataPlaneAPIClient::from_config(bootstrap) {
         Ok(client) => client,
         Err(e) => {
             error!("Failed to create data plane API client: {:#}", e);
@@ -192,7 +193,7 @@ pub async fn handle_dogstatsd_command(bootstrap_config: &GenericConfiguration, c
         DogstatsdSubcommand::Replay(config) => {
             #[cfg(target_os = "linux")]
             {
-                if let Err(e) = handle_dogstatsd_replay(&mut api_client, bootstrap_config, config).await {
+                if let Err(e) = handle_dogstatsd_replay(&mut api_client, bootstrap, config).await {
                     error!("Failed to replay DogStatsD traffic: {:#}", e);
                     std::process::exit(1);
                 }
@@ -260,9 +261,9 @@ async fn handle_dogstatsd_capture(
 
 #[cfg(target_os = "linux")]
 async fn handle_dogstatsd_replay(
-    api_client: &mut DataPlaneAPIClient, config: &GenericConfiguration, cmd: ReplayCommand,
+    api_client: &mut DataPlaneAPIClient, bootstrap: &BootstrapConfiguration, cmd: ReplayCommand,
 ) -> Result<(), GenericError> {
-    let socket_path = dogstatsd_socket_path(config)?;
+    let socket_path = dogstatsd_socket_path(bootstrap)?;
 
     info!("Preparing DogStatsD replay from '{}'.", cmd.replay_file_path.display());
 
@@ -310,8 +311,8 @@ async fn handle_dogstatsd_replay(
 }
 
 #[cfg(any(target_os = "linux", test))]
-fn dogstatsd_socket_path(config: &GenericConfiguration) -> Result<PathBuf, GenericError> {
-    match config.try_get_typed::<String>("dogstatsd_socket")? {
+fn dogstatsd_socket_path(bootstrap: &BootstrapConfiguration) -> Result<PathBuf, GenericError> {
+    match bootstrap.datadog.local_api().dogstatsd_socket.as_deref() {
         Some(path) if !path.is_empty() => Ok(PathBuf::from(path)),
         _ => Err(generic_error!(
             "DogStatsD replay requires `dogstatsd_socket` to be configured."
@@ -546,17 +547,25 @@ where
 mod tests {
     use std::time::Duration;
 
-    use saluki_config_tools::ConfigurationLoader;
-    use serde_json::json;
+    use agent_data_plane_config::{BootstrapConfiguration, LocalApiBootstrap};
 
     use super::{
         compute_target_offset, default_capture_duration, default_replay_loops, dogstatsd_socket_path,
         TimestampResolution,
     };
 
+    fn bootstrap_with_socket(socket: Option<&str>) -> BootstrapConfiguration {
+        let mut bootstrap = BootstrapConfiguration::default();
+        bootstrap.datadog.local_api = LocalApiBootstrap {
+            secure_api_listen_address: None,
+            dogstatsd_socket: socket.map(|s| s.to_string()),
+        };
+        bootstrap
+    }
+
     #[test]
     fn dogstatsd_capture_default_duration_matches_go() {
-        assert_eq!(default_capture_duration().as_duration(), Duration::from_secs(60));
+        assert_eq!(default_capture_duration(), "60s");
     }
 
     #[test]
@@ -576,18 +585,17 @@ mod tests {
         assert_eq!(clamped, Duration::ZERO);
     }
 
-    #[tokio::test]
-    async fn dogstatsd_socket_path_requires_configured_socket() {
-        let (config, _) = ConfigurationLoader::for_tests(Some(json!({ "dogstatsd_socket": "" })), None, false).await;
-        let err = dogstatsd_socket_path(&config).expect_err("empty socket should fail");
+    #[test]
+    fn dogstatsd_socket_path_requires_configured_socket() {
+        let bootstrap = bootstrap_with_socket(Some(""));
+        let err = dogstatsd_socket_path(&bootstrap).expect_err("empty socket should fail");
         assert!(err.to_string().contains("dogstatsd_socket"));
     }
 
-    #[tokio::test]
-    async fn dogstatsd_socket_path_reads_configured_socket() {
-        let (config, _) =
-            ConfigurationLoader::for_tests(Some(json!({ "dogstatsd_socket": "/tmp/dsd.sock" })), None, false).await;
-        let path = dogstatsd_socket_path(&config).expect("socket should be configured");
+    #[test]
+    fn dogstatsd_socket_path_reads_configured_socket() {
+        let bootstrap = bootstrap_with_socket(Some("/tmp/dsd.sock"));
+        let path = dogstatsd_socket_path(&bootstrap).expect("socket should be configured");
         assert_eq!(path, std::path::PathBuf::from("/tmp/dsd.sock"));
     }
 }

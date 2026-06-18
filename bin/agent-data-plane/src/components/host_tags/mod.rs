@@ -6,7 +6,6 @@ use std::{
 use async_trait::async_trait;
 use datadog_agent_commons::ipc::client::RemoteAgentClient;
 use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
-use saluki_config_tools::{DurationString, GenericConfiguration};
 use saluki_context::tags::{SharedTagSet, Tag};
 use saluki_core::{components::transforms::*, topology::EventsBuffer};
 use saluki_core::{components::ComponentContext, data_model::event::metric::Metric};
@@ -22,21 +21,14 @@ pub struct HostTagsConfiguration {
     expected_tags_duration: Duration,
 }
 
-const DEFAULT_EXPECTED_TAGS_DURATION: Duration = Duration::ZERO;
-
 impl HostTagsConfiguration {
-    /// Creates a new `HostTagsConfiguration` from the given configuration.
-    pub async fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        let client = RemoteAgentClient::from_configuration(config).await?;
-        let expected_tags_duration = config
-            .try_get_typed::<DurationString>("expected_tags_duration")?
-            .map(|ds| ds.as_duration())
-            .unwrap_or(DEFAULT_EXPECTED_TAGS_DURATION);
-
-        Ok(Self {
+    /// Creates a new `HostTagsConfiguration` from the host-tags attachment client and the typed
+    /// host-tags collection duration (from the workload configuration slice).
+    pub fn from_native(client: RemoteAgentClient, expected_tags_duration: Duration) -> Self {
+        Self {
             client,
             expected_tags_duration,
-        })
+        }
     }
 }
 

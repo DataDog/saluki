@@ -21,7 +21,7 @@
 
 use std::path::PathBuf;
 
-use agent_data_plane_config::{BootstrapConfiguration, RuntimeAuthority, SalukiOnlyConfiguration};
+use agent_data_plane_config::{BootstrapConfiguration, LocalApiBootstrap, RuntimeAuthority, SalukiOnlyConfiguration};
 use datadog_agent_config::{DatadogRemapper, KEY_ALIASES};
 use saluki_config_tools::ConfigurationLoader;
 use saluki_error::{generic_error, GenericError};
@@ -93,7 +93,7 @@ pub(crate) fn load_local_sources(
     // snapshot is fixed in LocalSnapshot mode).
     let datadog_generic = datadog_loader.bootstrap_generic();
 
-    let datadog_bootstrap = datadog_generic
+    let mut datadog_bootstrap: agent_data_plane_config::DatadogBootstrap = datadog_generic
         .as_typed()
         .map_err(|e| generic_error!("Failed to parse the Datadog bootstrap slice: {}", e))?;
     let datadog_snapshot: serde_json::Value = datadog_generic
@@ -115,6 +115,19 @@ pub(crate) fn load_local_sources(
         RuntimeAuthority::AgentStream
     };
 
+    // Local API/CLI decisions read from nested `data_plane.*` keys (and a top-level key). These are
+    // read with the dotted accessor because the typed flatten path does not resolve nested keys.
+    let secure_api_listen_address = datadog_generic
+        .try_get_typed::<String>("data_plane.secure_api_listen_address")
+        .map_err(|e| generic_error!("Failed to read data_plane.secure_api_listen_address: {}", e))?;
+    let dogstatsd_socket = datadog_generic
+        .try_get_typed::<String>("dogstatsd_socket")
+        .map_err(|e| generic_error!("Failed to read dogstatsd_socket: {}", e))?;
+    let local_api = LocalApiBootstrap {
+        secure_api_listen_address,
+        dogstatsd_socket,
+    };
+
     // --- Saluki source: saluki.yaml / SALUKI_*, plain (no Datadog aliases/remapper). ---
     let mut saluki_loader = ConfigurationLoader::default();
     if let Some(path) = saluki_config_path.as_ref() {
@@ -131,6 +144,8 @@ pub(crate) fn load_local_sources(
     let saluki_bootstrap = saluki_generic
         .as_typed()
         .map_err(|e| generic_error!("Failed to parse the Saluki bootstrap slice: {}", e))?;
+
+    datadog_bootstrap.local_api = local_api;
 
     let bootstrap = BootstrapConfiguration {
         datadog: datadog_bootstrap,

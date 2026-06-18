@@ -2,8 +2,10 @@
 
 use std::{future::Future, num::NonZeroUsize, time::Duration};
 
+use agent_data_plane_config_system::EnvConfig;
+use datadog_agent_commons::ipc::client::RemoteAgentClient;
 use resource_accounting::{ComponentRegistry, MemoryBounds, MemoryBoundsBuilder};
-use saluki_config_tools::GenericConfiguration;
+use saluki_component_config::workload::WorkloadConfig;
 use saluki_context::{
     origin::{OriginTagCardinality, RawOrigin},
     tags::SharedTagSet,
@@ -85,15 +87,21 @@ impl RemoteAgentWorkloadProvider {
     ///
     /// If there is an issue with any of the provider configuration, or creating the underlying metadata collectors, an
     /// error is returned.
-    pub async fn from_configuration(
-        config: &GenericConfiguration, component_registry: ComponentRegistry, health_registry: &HealthRegistry,
+    pub async fn from_typed(
+        env_config: &EnvConfig, workload_config: &WorkloadConfig, client: RemoteAgentClient,
+        component_registry: ComponentRegistry, health_registry: &HealthRegistry,
     ) -> Result<(Self, Supervisor), GenericError> {
+        // The `saluki-env` collectors (containerd, cgroups, feature detection, on-demand PID
+        // resolution) are out of scope for typed config; they consume the runtime source map via the
+        // confined `EnvConfig` pass-through. The Remote Agent collectors receive their client from the
+        // config-system's typed attachment instead of building one from raw config.
+        let config = env_config.raw();
         let mut component_registry = component_registry.get_or_create("remote-agent");
         let mut provider_bounds = component_registry.bounds_builder();
 
         // Create our string interner which will get used primarily for tags, but also for any other long-ish lived strings.
-        let string_interner_size_bytes = config
-            .try_get_typed::<NonZeroUsize>("remote_agent_string_interner_size_bytes")?
+        // The typed `WorkloadConfig` carries this as a plain `usize`; a value of 0 means "use the default".
+        let string_interner_size_bytes = NonZeroUsize::new(workload_config.remote_agent_string_interner_size_bytes)
             .unwrap_or(DEFAULT_STRING_INTERNER_SIZE_BYTES);
         let string_interner = GenericMapInterner::new(string_interner_size_bytes);
 
@@ -144,20 +152,19 @@ impl RemoteAgentWorkloadProvider {
             collector_workers.push(MetadataCollectorWorker::new(cgroups_collector, operations_tx.clone()));
         }
 
-        // Finally, add the Remote Agent collectors: one for the tagger, and one for workloadmeta.
+        // Finally, add the Remote Agent collectors: one for the tagger, and one for workloadmeta. These
+        // receive their client from the typed attachment and are constructed infallibly.
         let ra_tags_collector =
-            build_collector("remote-agent-tags", health_registry, &mut collector_bounds, |health| {
-                RemoteAgentTaggerMetadataCollector::from_configuration(config, health, string_interner.clone())
-            })
-            .await?;
+            register_collector("remote-agent-tags", health_registry, &mut collector_bounds, |health| {
+                RemoteAgentTaggerMetadataCollector::from_client(client.clone(), health, string_interner.clone())
+            })?;
 
         collector_workers.push(MetadataCollectorWorker::new(ra_tags_collector, operations_tx.clone()));
 
         let ra_wmeta_collector =
-            build_collector("remote-agent-wmeta", health_registry, &mut collector_bounds, |health| {
-                RemoteAgentWorkloadMetadataCollector::from_configuration(config, health, string_interner.clone())
-            })
-            .await?;
+            register_collector("remote-agent-wmeta", health_registry, &mut collector_bounds, |health| {
+                RemoteAgentWorkloadMetadataCollector::from_client(client.clone(), health, string_interner.clone())
+            })?;
 
         collector_workers.push(MetadataCollectorWorker::new(ra_wmeta_collector, operations_tx));
 
@@ -250,6 +257,32 @@ where
             )
         })?;
     let collector = build(health).await?;
+    bounds_builder.with_subcomponent(collector_name, &collector);
+
+    Ok(collector)
+}
+
+/// Registers a synchronously-constructed collector: reserves its health component, builds it, and
+/// records its memory bounds. The Remote Agent collectors no longer build a client from raw config,
+/// so they are infallible to construct and do not need the async `build_collector`.
+fn register_collector<F, O>(
+    collector_name: &str, health_registry: &HealthRegistry, bounds_builder: &mut MemoryBoundsBuilder<'_>, build: F,
+) -> Result<O, GenericError>
+where
+    F: FnOnce(Health) -> O,
+    O: MemoryBounds,
+{
+    let health = health_registry
+        .register_component(format!(
+            "{WORKLOAD_HEALTH_PREFIX}remote_agent.collector.{collector_name}"
+        ))
+        .ok_or_else(|| {
+            generic_error!(
+                "Component '{WORKLOAD_HEALTH_PREFIX}remote_agent.collector.{collector_name}' already registered in \
+                 health registry."
+            )
+        })?;
+    let collector = build(health);
     bounds_builder.with_subcomponent(collector_name, &collector);
 
     Ok(collector)

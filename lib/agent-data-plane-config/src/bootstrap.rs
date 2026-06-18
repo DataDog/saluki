@@ -46,6 +46,14 @@ pub struct DatadogBootstrap {
     /// Agent IPC connection parameters.
     #[serde(flatten, default)]
     pub agent_ipc: AgentIpcBootstrap,
+
+    /// Local API/CLI decisions read before runtime authority exists.
+    ///
+    /// These come from nested `data_plane.*` keys, which the typed flatten path does not resolve
+    /// reliably; the config-system fills this slice explicitly during local source loading. It is
+    /// therefore `#[serde(skip)]` here.
+    #[serde(skip)]
+    pub local_api: LocalApiBootstrap,
 }
 
 impl DatadogBootstrap {
@@ -63,6 +71,31 @@ impl DatadogBootstrap {
     pub fn agent_ipc(&self) -> &AgentIpcBootstrap {
         &self.agent_ipc
     }
+
+    /// Returns the local API/CLI decisions.
+    pub fn local_api(&self) -> &LocalApiBootstrap {
+        &self.local_api
+    }
+}
+
+/// Local API/CLI decisions read at bootstrap.
+///
+/// These are local control decisions needed before (or independent of) runtime authority: the
+/// privileged ("secure") API listen address the non-run CLI handlers connect to and that the
+/// remote-agent registration reports as its gRPC callback endpoint, and the DogStatsD UDS path the
+/// `dogstatsd replay` CLI sends to. They are local decisions, so they belong in the bootstrap
+/// allowlist rather than waiting for the runtime [`SalukiConfiguration`](crate::SalukiConfiguration).
+#[derive(Clone, Debug, Default)]
+pub struct LocalApiBootstrap {
+    /// The privileged ("secure") API listen address (`data_plane.secure_api_listen_address`).
+    ///
+    /// Defaults to unset; callers fall back to the historical `tcp://0.0.0.0:5101` default.
+    pub secure_api_listen_address: Option<String>,
+
+    /// The DogStatsD UDS socket path (`dogstatsd_socket`).
+    ///
+    /// Used only by the `dogstatsd replay` CLI on Linux. Defaults to unset.
+    pub dogstatsd_socket: Option<String>,
 }
 
 /// Early logging configuration read at bootstrap.

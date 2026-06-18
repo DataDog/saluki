@@ -3,7 +3,6 @@ use datadog_agent_commons::ipc::client::RemoteAgentClient;
 use datadog_protos::agent::{Container, KubernetesPod, WorkloadmetaEventType};
 use futures::{StreamExt as _, TryStreamExt as _};
 use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
-use saluki_config_tools::GenericConfiguration;
 use saluki_context::origin::ExternalData;
 use saluki_core::health::Health;
 use saluki_env::workload::{collectors::MetadataCollector, EntityId, MetadataOperation};
@@ -45,23 +44,17 @@ pub struct RemoteAgentWorkloadMetadataCollector {
 }
 
 impl RemoteAgentWorkloadMetadataCollector {
-    /// Creates a new `RemoteAgentWorkloadMetadataCollector` from the given configuration.
+    /// Creates a new `RemoteAgentWorkloadMetadataCollector` from the metrics attachment's client.
     ///
-    /// # Errors
-    ///
-    /// If the Agent gRPC client can't be created (invalid API endpoint, missing authentication token, etc), or if the
-    /// authentication token is invalid, an error will be returned.
-    pub async fn from_configuration(
-        config: &GenericConfiguration, health: Health, interner: GenericMapInterner,
-    ) -> Result<Self, GenericError> {
-        let client = RemoteAgentClient::from_configuration(config).await?;
-
-        Ok(Self {
+    /// The client comes from the config-system's typed attachment bundle; this collector no longer
+    /// builds its own client from raw configuration.
+    pub fn from_client(client: RemoteAgentClient, health: Health, interner: GenericMapInterner) -> Self {
+        Self {
             client,
             health,
             interner,
             telemetry: Telemetry::new(),
-        })
+        }
     }
 
     fn try_intern(&self, value: &str) -> Option<MetaString> {

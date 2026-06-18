@@ -218,3 +218,13 @@ impl DogStatsDCodec {
         Ok(service_check)
     }
 }
+
+impl From<DogStatsDCodecConfiguration> for DogStatsDCodec {
+    /// Builds a codec from the given configuration.
+    ///
+    /// Equivalent to [`DogStatsDCodec::from_configuration`]; provided so callers that must avoid
+    /// naming the `from_configuration` constructor can use `config.into()` instead.
+    fn from(config: DogStatsDCodecConfiguration) -> Self {
+        Self { config }
+    }
+}

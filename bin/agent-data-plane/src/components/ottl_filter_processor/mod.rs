@@ -8,7 +8,6 @@
 use async_trait::async_trait;
 use ottl::{CallbackMap, EnumMap, OttlParser, Value};
 use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
-use saluki_config_tools::GenericConfiguration;
 use saluki_core::{
     components::{transforms::*, ComponentContext},
     data_model::event::trace::{Span, Trace},
@@ -20,30 +19,24 @@ use tracing::{debug, error};
 mod config;
 mod span_context;
 
-use config::{ErrorMode, OttlFilterConfig};
+use config::ErrorMode;
+pub use config::OttlFilterConfig;
 use span_context::{SpanFilterContext, SpanFilterFamily};
 
-/// Configuration for the OTTL filter processor, loaded from the data plane config.
+/// Configuration for the OTTL filter processor.
 #[derive(Clone, Debug)]
 pub struct OttlFilterConfiguration {
     config: OttlFilterConfig,
 }
 
 impl OttlFilterConfiguration {
-    /// Creates configuration from the given generic configuration.
+    /// Creates configuration from the given typed OTTL filter config.
     ///
-    /// Reads the OTTL filter config from the `ottl_filter_config` key at the top level of the
-    /// data-plane configuration. The YAML structure is: `error_mode`, `traces.span` (list
-    /// of OTTL condition strings). If the key is absent, a default (no-op) config is used.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if a value at `ottl_filter_config` exists but fails to deserialize.
-    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        let filter_config = config.try_get_typed::<OttlFilterConfig>("ottl_filter_config")?;
-        Ok(Self {
-            config: filter_config.unwrap_or_default(),
-        })
+    /// The config is a Saluki-schema-only knob (`ottl_filter_config`) read from the source map by the
+    /// config-system and handed to the binary as a typed value. A default (no-op) config drops no
+    /// spans.
+    pub fn from_native(config: OttlFilterConfig) -> Self {
+        Self { config }
     }
 }
 
@@ -153,7 +146,6 @@ mod tests {
     use std::sync::Arc;
 
     use saluki_common::collections::FastHashMap;
-    use saluki_config_tools::ConfigurationLoader;
     use saluki_core::{
         components::{transforms::*, ComponentContext},
         data_model::event::{
@@ -165,6 +157,21 @@ mod tests {
     use stringtheory::MetaString;
 
     use super::*;
+
+    /// Deserializes the inner `ottl_filter_config` value from a test JSON document into the typed
+    /// config, mirroring how the config-system feeds the component its typed slice.
+    fn config_from(json: serde_json::Value) -> Result<OttlFilterConfiguration, GenericError> {
+        let inner = json
+            .get("ottl_filter_config")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+        let typed: OttlFilterConfig = if inner.is_null() {
+            OttlFilterConfig::default()
+        } else {
+            serde_json::from_value(inner).map_err(|e| generic_error!("invalid ottl_filter_config: {}", e))?
+        };
+        Ok(OttlFilterConfiguration::from_native(typed))
+    }
 
     fn make_span(_trace_id: u64, span_id: u64, meta: HashMap<String, String>) -> Span {
         let mut attr_map = FastHashMap::default();
@@ -200,9 +207,8 @@ mod tests {
 
     /// When `ottl_filter_config` is absent, config defaults to empty conditions and no spans are dropped.
     #[tokio::test]
-    async fn from_configuration_absent_key_returns_default() {
-        let (config, _) = ConfigurationLoader::for_tests(None, None, false).await;
-        let ottl_config = OttlFilterConfiguration::from_configuration(&config).expect("should succeed");
+    async fn absent_key_returns_default() {
+        let ottl_config = config_from(serde_json::Value::Null).expect("should succeed");
         let ctx = ComponentContext::transform(ComponentId::try_from("ottl_filter").unwrap());
         let mut transform = ottl_config.build(ctx).await.expect("build should succeed");
         let span = make_span(1, 1, HashMap::from([("a".into(), "b".into())]));
@@ -213,16 +219,15 @@ mod tests {
         assert_eq!(span_count_in_buffer(&buffer), 1, "default config must not drop spans");
     }
 
-    /// When `ottl_filter_config` is present but invalid (for example, unknown fields), `from_configuration` returns an error.
+    /// When `ottl_filter_config` is present but invalid (for example, unknown fields), the typed deserialization returns an error.
     #[tokio::test]
-    async fn from_configuration_invalid_yaml_returns_error() {
+    async fn invalid_yaml_returns_error() {
         let invalid = serde_json::json!({
             "ottl_filter_config": {
                 "unknown_field": 1
             }
         });
-        let (config, _) = ConfigurationLoader::for_tests(Some(invalid), None, false).await;
-        let result = OttlFilterConfiguration::from_configuration(&config);
+        let result = config_from(invalid);
         assert!(result.is_err(), "invalid ottl_filter_config must yield error");
     }
 
@@ -234,8 +239,7 @@ mod tests {
                 "traces": { "span": ["syntax error !!"] }
             }
         });
-        let (config, _) = ConfigurationLoader::for_tests(Some(cfg_json), None, false).await;
-        let ottl_config = OttlFilterConfiguration::from_configuration(&config).expect("config is valid");
+        let ottl_config = config_from(cfg_json).expect("config is valid");
         let ctx = ComponentContext::transform(ComponentId::try_from("ottl_filter").unwrap());
         let result = ottl_config.build(ctx).await;
         assert!(result.is_err(), "invalid OTTL condition must make build fail");
@@ -254,8 +258,7 @@ mod tests {
                 }
             }
         });
-        let (config, _) = ConfigurationLoader::for_tests(Some(cfg_json), None, false).await;
-        let ottl_config = OttlFilterConfiguration::from_configuration(&config).expect("config is valid");
+        let ottl_config = config_from(cfg_json).expect("config is valid");
         let ctx = ComponentContext::transform(ComponentId::try_from("ottl_filter").unwrap());
         let mut transform = ottl_config.build(ctx).await.expect("build must succeed");
         let span_match_first = make_span(1, 1, HashMap::from([("a".into(), "x".into())]));
@@ -282,8 +285,7 @@ mod tests {
     /// With no conditions configured, no span is dropped.
     #[tokio::test]
     async fn should_drop_span_empty_parsers_returns_false() {
-        let (config, _) = ConfigurationLoader::for_tests(None, None, false).await;
-        let ottl_config = OttlFilterConfiguration::from_configuration(&config).unwrap();
+        let ottl_config = config_from(serde_json::Value::Null).unwrap();
         let ctx = ComponentContext::transform(ComponentId::try_from("ottl_filter").unwrap());
         let mut transform = ottl_config.build(ctx).await.unwrap();
         let span = make_span(1, 1, HashMap::from([("drop".into(), "me".into())]));
@@ -300,8 +302,7 @@ mod tests {
         let cfg_json = serde_json::json!({
             "ottl_filter_config": { "traces": { "span": ["attributes[\"env\"] == \"drop\""] } }
         });
-        let (config, _) = ConfigurationLoader::for_tests(Some(cfg_json), None, false).await;
-        let ottl_config = OttlFilterConfiguration::from_configuration(&config).unwrap();
+        let ottl_config = config_from(cfg_json).unwrap();
         let ctx = ComponentContext::transform(ComponentId::try_from("ottl_filter").unwrap());
         let mut transform = ottl_config.build(ctx).await.unwrap();
         let span = make_span(1, 1, HashMap::from([("env".into(), "drop".into())]));
@@ -318,8 +319,7 @@ mod tests {
         let cfg_json = serde_json::json!({
             "ottl_filter_config": { "traces": { "span": ["attributes[\"env\"] == \"drop\""] } }
         });
-        let (config, _) = ConfigurationLoader::for_tests(Some(cfg_json), None, false).await;
-        let ottl_config = OttlFilterConfiguration::from_configuration(&config).unwrap();
+        let ottl_config = config_from(cfg_json).unwrap();
         let ctx = ComponentContext::transform(ComponentId::try_from("ottl_filter").unwrap());
         let mut transform = ottl_config.build(ctx).await.unwrap();
         let span = make_span(1, 1, HashMap::from([("env".into(), "keep".into())]));
@@ -336,8 +336,7 @@ mod tests {
         let cfg_json = serde_json::json!({
             "ottl_filter_config": { "traces": { "span": ["resource.attributes[\"host.name\"] == \"localhost\""] } }
         });
-        let (config, _) = ConfigurationLoader::for_tests(Some(cfg_json), None, false).await;
-        let ottl_config = OttlFilterConfiguration::from_configuration(&config).unwrap();
+        let ottl_config = config_from(cfg_json).unwrap();
         let ctx = ComponentContext::transform(ComponentId::try_from("ottl_filter").unwrap());
         let mut transform = ottl_config.build(ctx).await.unwrap();
         let span = make_span(1, 1, HashMap::new());
@@ -366,8 +365,7 @@ mod tests {
                 }
             }
         });
-        let (config, _) = ConfigurationLoader::for_tests(Some(cfg_json), None, false).await;
-        let ottl_config = OttlFilterConfiguration::from_configuration(&config).unwrap();
+        let ottl_config = config_from(cfg_json).unwrap();
         let ctx = ComponentContext::transform(ComponentId::try_from("ottl_filter").unwrap());
         let mut transform = ottl_config.build(ctx).await.unwrap();
         let span_first_false_second_true = make_span(
@@ -400,8 +398,7 @@ mod tests {
                 "traces": { "span": ["attributes[\"x\"]"] }
             }
         });
-        let (config, _) = ConfigurationLoader::for_tests(Some(cfg_json), None, false).await;
-        let ottl_config = OttlFilterConfiguration::from_configuration(&config).unwrap();
+        let ottl_config = config_from(cfg_json).unwrap();
         let ctx = ComponentContext::transform(ComponentId::try_from("ottl_filter").unwrap());
         let mut transform = ottl_config.build(ctx).await.unwrap();
         let span = make_span(1, 1, HashMap::from([("x".into(), "value".into())]));
@@ -425,8 +422,7 @@ mod tests {
                 "traces": { "span": ["attributes[\"x\"] > 1"] }
             }
         });
-        let (config, _) = ConfigurationLoader::for_tests(Some(cfg_json), None, false).await;
-        let ottl_config = OttlFilterConfiguration::from_configuration(&config).unwrap();
+        let ottl_config = config_from(cfg_json).unwrap();
         let ctx = ComponentContext::transform(ComponentId::try_from("ottl_filter").unwrap());
         let mut transform = ottl_config.build(ctx).await.unwrap();
         let span = make_span(1, 1, HashMap::from([("x".into(), "string".into())]));
@@ -446,8 +442,7 @@ mod tests {
                 "traces": { "span": ["attributes[\"x\"] > 1"] }
             }
         });
-        let (config, _) = ConfigurationLoader::for_tests(Some(cfg_json), None, false).await;
-        let ottl_config = OttlFilterConfiguration::from_configuration(&config).unwrap();
+        let ottl_config = config_from(cfg_json).unwrap();
         let ctx = ComponentContext::transform(ComponentId::try_from("ottl_filter").unwrap());
         let mut transform = ottl_config.build(ctx).await.unwrap();
         let span = make_span(1, 1, HashMap::from([("x".into(), "string".into())]));
@@ -467,8 +462,7 @@ mod tests {
                 "traces": { "span": ["attributes[\"x\"] > 1"] }
             }
         });
-        let (config, _) = ConfigurationLoader::for_tests(Some(cfg_json), None, false).await;
-        let ottl_config = OttlFilterConfiguration::from_configuration(&config).unwrap();
+        let ottl_config = config_from(cfg_json).unwrap();
         let ctx = ComponentContext::transform(ComponentId::try_from("ottl_filter").unwrap());
         let mut transform = ottl_config.build(ctx).await.unwrap();
         let span = make_span(1, 1, HashMap::from([("x".into(), "string".into())]));
@@ -485,8 +479,7 @@ mod tests {
         let cfg_json = serde_json::json!({
             "ottl_filter_config": { "traces": { "span": ["attributes[\"drop\"] == \"yes\""] } }
         });
-        let (config, _) = ConfigurationLoader::for_tests(Some(cfg_json), None, false).await;
-        let ottl_config = OttlFilterConfiguration::from_configuration(&config).unwrap();
+        let ottl_config = config_from(cfg_json).unwrap();
         let ctx = ComponentContext::transform(ComponentId::try_from("ottl_filter").unwrap());
         let mut transform = ottl_config.build(ctx).await.unwrap();
         let keep1 = make_span(
@@ -535,8 +528,7 @@ mod tests {
         let cfg_json = serde_json::json!({
             "ottl_filter_config": { "traces": { "span": ["attributes[\"env\"] == \"drop\""] } }
         });
-        let (config, _) = ConfigurationLoader::for_tests(Some(cfg_json), None, false).await;
-        let ottl_config = OttlFilterConfiguration::from_configuration(&config).unwrap();
+        let ottl_config = config_from(cfg_json).unwrap();
         let ctx = ComponentContext::transform(ComponentId::try_from("ottl_filter").unwrap());
         let mut transform = ottl_config.build(ctx).await.unwrap();
         let s1 = make_span(1, 1, HashMap::from([("env".into(), "drop".into())]));
@@ -571,8 +563,7 @@ mod tests {
         let cfg_json = serde_json::json!({
             "ottl_filter_config": { "traces": { "span": ["attributes[\"env\"] == \"drop\""] } }
         });
-        let (config, _) = ConfigurationLoader::for_tests(Some(cfg_json), None, false).await;
-        let ottl_config = OttlFilterConfiguration::from_configuration(&config).unwrap();
+        let ottl_config = config_from(cfg_json).unwrap();
         let ctx = ComponentContext::transform(ComponentId::try_from("ottl_filter").unwrap());
         let mut transform = ottl_config.build(ctx).await.unwrap();
 
@@ -603,8 +594,7 @@ mod tests {
         let cfg_json = serde_json::json!({
             "ottl_filter_config": { "traces": { "span": ["attributes[\"drop\"] == \"yes\""] } }
         });
-        let (config, _) = ConfigurationLoader::for_tests(Some(cfg_json), None, false).await;
-        let ottl_config = OttlFilterConfiguration::from_configuration(&config).unwrap();
+        let ottl_config = config_from(cfg_json).unwrap();
         let ctx = ComponentContext::transform(ComponentId::try_from("ottl_filter").unwrap());
         let mut transform = ottl_config.build(ctx).await.unwrap();
 
@@ -635,8 +625,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "performance test; run with: cargo test -- --ignored --nocapture perf_throughput"]
     async fn perf_throughput_filter_none() {
-        let (config, _) = ConfigurationLoader::for_tests(None, None, false).await;
-        let ottl_config = OttlFilterConfiguration::from_configuration(&config).unwrap();
+        let ottl_config = config_from(serde_json::Value::Null).unwrap();
         let ctx = ComponentContext::transform(ComponentId::try_from("ottl_filter").unwrap());
         let mut transform = ottl_config.build(ctx).await.unwrap();
 

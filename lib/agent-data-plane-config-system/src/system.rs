@@ -29,6 +29,7 @@
 //!   ingests subsequent updates; dynamic handles are `Live`; `attachments()` returns `Some`.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use agent_data_plane_config::{
     BootstrapConfiguration, ConfigViews, ControlConfiguration, InternalConfigView, RuntimeAuthority,
@@ -47,6 +48,7 @@ use crate::datadog_agent::{
     connect, Attachments, DatadogAgentConnection, RemoteAgentClientConfiguration, RemoteAgentRegistration,
 };
 use crate::dynamic::{ConfigUpdateRouter, DynamicConfigHandles, ViewSources};
+use crate::env_config::EnvConfig;
 use crate::translate::translate;
 
 /// How long to wait for the first config snapshot from the Agent stream before giving up.
@@ -149,7 +151,7 @@ impl LoadedConfigurationSystem {
         } = self.sources;
 
         match authority {
-            RuntimeAuthority::LocalSnapshot => start_local(saluki_only, datadog_snapshot),
+            RuntimeAuthority::LocalSnapshot => start_local(saluki_only, datadog_snapshot).await,
             RuntimeAuthority::AgentStream => start_stream(bootstrap, saluki_only, registration).await,
         }
     }
@@ -176,13 +178,17 @@ fn assemble(
 }
 
 /// Starts the runtime in local-snapshot mode (no Agent connection).
-fn start_local(
+async fn start_local(
     saluki_only: SalukiOnlyConfiguration, datadog_snapshot: serde_json::Value,
 ) -> Result<StartedConfigurationSystem, GenericError> {
     let datadog: DatadogConfiguration = serde_json::from_value(datadog_snapshot.clone())
         .map_err(|e| generic_error!("Failed to parse the local Datadog snapshot at startup: {}", e))?;
     let initial = translate(&saluki_only, &datadog)
         .map_err(|e| generic_error!("Failed to translate the local Datadog snapshot at startup: {}", e))?;
+
+    // The `saluki-env` provider layer reads the runtime Datadog source map; in local mode that is
+    // the retained local snapshot.
+    let env_config = EnvConfig::from_snapshot(datadog_snapshot.clone()).await?;
 
     let (router, handles, views_rx, saluki) =
         assemble(saluki_only, datadog_snapshot, initial, RuntimeAuthority::LocalSnapshot);
@@ -196,6 +202,7 @@ fn start_local(
         saluki,
         handles: Some(handles),
         attachments: None,
+        env_config,
         views_rx,
         connection: None,
         router_task,
@@ -236,6 +243,10 @@ async fn start_stream(
     let initial = translate(&saluki_only, &datadog)
         .map_err(|e| generic_error!("Failed to translate the initial Agent config snapshot: {}", e))?;
 
+    // The `saluki-env` provider layer reads the runtime Datadog source map; in stream mode that is
+    // the first stream snapshot (the runtime authority).
+    let env_config = EnvConfig::from_snapshot(snapshot.clone()).await?;
+
     let (router, handles, views_rx, saluki) = assemble(saluki_only, snapshot, initial, RuntimeAuthority::AgentStream);
 
     let attachments = connection.attachments();
@@ -247,6 +258,7 @@ async fn start_stream(
         saluki,
         handles: Some(handles),
         attachments: Some(attachments),
+        env_config,
         views_rx,
         connection: Some(connection),
         router_task,
@@ -285,6 +297,9 @@ pub struct StartedConfigurationSystem {
     /// The typed per-consumer attachments. `Some` only in stream mode.
     attachments: Option<Attachments>,
 
+    /// The runtime Datadog source map, materialized for the `saluki-env` provider layer.
+    env_config: EnvConfig,
+
     /// The live "current views" receiver. `/config` views are produced from its latest value.
     views_rx: watch::Receiver<ViewSources>,
 
@@ -315,6 +330,15 @@ impl StartedConfigurationSystem {
         self.handles.take()
     }
 
+    /// Returns the runtime environment configuration for the `saluki-env` provider layer.
+    ///
+    /// This is a confined pass-through of the runtime Datadog source map (see [`EnvConfig`]). The
+    /// `saluki-env` crate is out of scope for typed config and consumes a raw map; the binary passes
+    /// `env_config.raw()` straight into its constructors without naming the raw-map type.
+    pub fn env_config(&self) -> EnvConfig {
+        self.env_config.clone()
+    }
+
     /// Returns the typed attachment bundle, or `None` in local-snapshot mode.
     ///
     /// In `LocalSnapshot` mode there is no Agent connection, so there is nothing to attach to; the
@@ -342,7 +366,25 @@ impl StartedConfigurationSystem {
     pub fn control(&self) -> &ControlConfiguration {
         &self.saluki.control
     }
+
+    /// Returns a clone-able producer of the `/config` views, live-on-request.
+    ///
+    /// Each invocation reads the latest fully-applied snapshot from the router's watch channel and
+    /// produces a freshly-scrubbed [`ConfigViews`]. The internal supervisor holds this producer for
+    /// the lifetime of the process; it never holds a raw configuration map.
+    pub fn view_producer(&self) -> ConfigViewProducer {
+        let views_rx = self.views_rx.clone();
+        Arc::new(move || {
+            let sources = views_rx.borrow();
+            let raw = SourceConfigView::new(scrub_to_yaml(sources.raw.as_ref()));
+            let internal = InternalConfigView::new(scrub_to_yaml(sources.model.as_ref()));
+            ConfigViews::new(raw, internal)
+        })
+    }
 }
+
+/// A clone-able producer of [`ConfigViews`], live-on-request from the router's retained snapshot.
+pub type ConfigViewProducer = Arc<dyn Fn() -> ConfigViews + Send + Sync>;
 
 /// Serializes a value to YAML and scrubs sensitive data from the serialized string.
 ///

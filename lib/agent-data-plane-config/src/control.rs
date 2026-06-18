@@ -85,6 +85,49 @@ impl ControlConfiguration {
     pub fn requires_datadog_forwarder(&self) -> bool {
         self.dogstatsd.enabled() || self.checks.enabled() || self.otlp.enabled
     }
+
+    /// Returns `true` if any data pipeline is enabled.
+    ///
+    /// Mirrors the binary's historical `DataPlaneConfiguration::data_pipelines_enabled`.
+    pub fn data_pipelines_enabled(&self) -> bool {
+        self.checks.enabled() || self.dogstatsd.enabled() || self.otlp.enabled
+    }
+
+    /// Returns `true` if the baseline metrics pipeline is required.
+    ///
+    /// The baseline metrics pipeline (aggregation, enrichment, encoding, forwarding) is required by
+    /// higher-level pipelines: Checks, DogStatsD, or OTLP when not in proxy mode.
+    pub fn metrics_pipeline_required(&self) -> bool {
+        self.checks.enabled() || self.dogstatsd.enabled() || (self.otlp.enabled && !self.otlp.proxy.enabled)
+    }
+
+    /// Returns `true` if the baseline logs pipeline is required.
+    ///
+    /// Required by Checks, or by OTLP when not in proxy mode.
+    pub fn logs_pipeline_required(&self) -> bool {
+        self.checks.enabled() || (self.otlp.enabled && !self.otlp.proxy.enabled)
+    }
+
+    /// Returns `true` if the baseline events pipeline is required.
+    ///
+    /// Required by Checks or DogStatsD.
+    pub fn events_pipeline_required(&self) -> bool {
+        self.checks.enabled() || self.dogstatsd.enabled()
+    }
+
+    /// Returns `true` if the baseline service checks pipeline is required.
+    ///
+    /// Required by Checks or DogStatsD.
+    pub fn service_checks_pipeline_required(&self) -> bool {
+        self.checks.enabled() || self.dogstatsd.enabled()
+    }
+
+    /// Returns `true` if the baseline traces pipeline is required.
+    ///
+    /// Required by OTLP when not in proxy mode, or in proxy mode when traces are not proxied.
+    pub fn traces_pipeline_required(&self) -> bool {
+        self.otlp.enabled && (!self.otlp.proxy.enabled || !self.otlp.proxy.proxy_traces)
+    }
 }
 
 impl Default for ControlConfiguration {

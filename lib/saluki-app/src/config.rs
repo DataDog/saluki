@@ -1,4 +1,13 @@
 //! Configuration API handler.
+//!
+//! Serves the `/config` compatibility views over the privileged API. The worker is source-agnostic:
+//! it holds a clone-able **view producer** -- a closure that returns the two already-scrubbed,
+//! already-serialized view strings (`raw`, `internal`) on each call -- rather than any configuration
+//! map. This keeps `saluki-app` free of any raw-configuration type while still serving live-on-request
+//! views: the producer regenerates from the configuration system's current retained snapshot every
+//! time a route is hit.
+
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use http::StatusCode;
@@ -9,42 +18,54 @@ use saluki_api::{
     APIHandler, DynamicRoute, EndpointType,
 };
 use saluki_common::sync::shutdown::ShutdownHandle;
-use saluki_config_tools::GenericConfiguration;
 use saluki_core::runtime::{state::DataspaceRegistry, InitializationError, Supervisable, SupervisorFuture};
 use saluki_error::generic_error;
-use serde_json::Value;
+
+/// A clone-able producer of the `/config` views.
+///
+/// Returns the `(raw, internal)` pair of already-scrubbed, already-serialized view strings. It is
+/// invoked once per request so the served views reflect the latest accepted configuration.
+pub type ConfigViewProducer = Arc<dyn Fn() -> ConfigViewStrings + Send + Sync>;
+
+/// The pair of serialized `/config` view strings.
+#[derive(Clone)]
+pub struct ConfigViewStrings {
+    /// The source-shaped view, served at `/config` and `/config/raw`.
+    pub raw: String,
+
+    /// The ADP-native (internal) view, served at `/config/internal`.
+    pub internal: String,
+}
 
 /// State used for the config API handler.
 #[derive(Clone)]
 pub struct ConfigState {
-    config: GenericConfiguration,
+    producer: ConfigViewProducer,
 }
 
 /// An API handler for returning the current configuration.
 ///
-/// This handler exposes a single route -- `/config` -- that returns the current configuration in its serialized JSON
-/// form. This allows determining exactly how the process' configuration looks based on the various providers being
-/// used, including any dynamic changes being applied.
+/// Exposes three routes -- `/config`, `/config/raw`, and `/config/internal`. `/config` is a
+/// compatibility alias for `/config/raw` (the source-shaped, scrubbed effective configuration);
+/// `/config/internal` returns the ADP-native Saluki shape. The handler never exposes a raw
+/// configuration map.
 pub struct ConfigAPIHandler {
     state: ConfigState,
 }
 
 impl ConfigAPIHandler {
-    fn new(config: GenericConfiguration) -> Self {
+    fn new(producer: ConfigViewProducer) -> Self {
         Self {
-            state: ConfigState { config },
+            state: ConfigState { producer },
         }
     }
 
-    async fn config_handler(State(state): State<ConfigState>) -> impl IntoResponse {
-        match state.config.as_typed::<Value>() {
-            Ok(config) => (StatusCode::OK, serde_json::to_string(&config).unwrap()).into_response(),
-            Err(e) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to get configuration: {}", e),
-            )
-                .into_response(),
-        }
+    async fn raw_handler(State(state): State<ConfigState>) -> impl IntoResponse {
+        (StatusCode::OK, (state.producer)().raw).into_response()
+    }
+
+    async fn internal_handler(State(state): State<ConfigState>) -> impl IntoResponse {
+        (StatusCode::OK, (state.producer)().internal).into_response()
     }
 }
 
@@ -56,7 +77,10 @@ impl APIHandler for ConfigAPIHandler {
     }
 
     fn generate_routes(&self) -> Router<Self::State> {
-        Router::new().route("/config", get(Self::config_handler))
+        Router::new()
+            .route("/config", get(Self::raw_handler))
+            .route("/config/raw", get(Self::raw_handler))
+            .route("/config/internal", get(Self::internal_handler))
     }
 }
 
@@ -70,10 +94,13 @@ pub struct ConfigWorker {
 }
 
 impl ConfigWorker {
-    /// Creates a new [`ConfigWorker`] with the given configuration.
-    pub fn new(config: GenericConfiguration) -> Self {
+    /// Creates a new [`ConfigWorker`] driven by the given view producer.
+    ///
+    /// The producer is invoked once per request, so the served views reflect the configuration
+    /// system's latest accepted snapshot (live-on-request).
+    pub fn new(producer: ConfigViewProducer) -> Self {
         Self {
-            handler: ConfigAPIHandler::new(config),
+            handler: ConfigAPIHandler::new(producer),
         }
     }
 }

@@ -2,17 +2,6 @@
 
 use stringtheory::MetaString;
 
-/// Configuration key for the current Agent metric filterlist.
-pub(super) const METRIC_FILTERLIST_CONFIG_KEY: &str = "metric_filterlist";
-/// Configuration key for prefix matching on the current Agent metric filterlist.
-pub(super) const METRIC_FILTERLIST_MATCH_PREFIX_CONFIG_KEY: &str = "metric_filterlist_match_prefix";
-/// Configuration key for per-metric tag filter rules.
-pub(super) const METRIC_TAG_FILTERLIST_CONFIG_KEY: &str = "metric_tag_filterlist";
-/// Configuration key for the legacy Agent DogStatsD metric blocklist.
-pub(super) const STATSD_METRIC_BLOCKLIST_CONFIG_KEY: &str = "statsd_metric_blocklist";
-/// Configuration key for prefix matching on the legacy Agent DogStatsD metric blocklist.
-pub(super) const STATSD_METRIC_BLOCKLIST_MATCH_PREFIX_CONFIG_KEY: &str = "statsd_metric_blocklist_match_prefix";
-
 /// Compiled blocklist for metric names that should be filtered.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(super) struct Blocklist {
@@ -109,26 +98,6 @@ impl EffectiveFilterlist {
     /// Returns whether the current `metric_filterlist` is active.
     pub(super) fn metric_filterlist_is_active(&self) -> bool {
         !self.metric_filterlist.is_empty()
-    }
-
-    /// Replaces the current `metric_filterlist`.
-    pub(super) fn set_metric_filterlist(&mut self, values: Vec<String>) {
-        self.metric_filterlist = values;
-    }
-
-    /// Replaces the current `metric_filterlist_match_prefix`.
-    pub(super) fn set_metric_filterlist_match_prefix(&mut self, match_prefix: bool) {
-        self.metric_filterlist_match_prefix = match_prefix;
-    }
-
-    /// Replaces the legacy `statsd_metric_blocklist`.
-    pub(super) fn set_metric_blocklist(&mut self, values: Vec<String>) {
-        self.metric_blocklist = values;
-    }
-
-    /// Replaces the legacy `statsd_metric_blocklist_match_prefix`.
-    pub(super) fn set_metric_blocklist_match_prefix(&mut self, match_prefix: bool) {
-        self.metric_blocklist_match_prefix = match_prefix;
     }
 
     /// Builds a metric-name blocklist from the active filter values.
