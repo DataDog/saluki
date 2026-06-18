@@ -110,17 +110,13 @@ impl MetadataCollector for RemoteAgentTaggerMetadataCollector {
     }
 
     async fn watch(&mut self, operations_tx: &mut mpsc::Sender<MetadataOperation>) -> Result<(), GenericError> {
+        self.health.mark_ready();
+
         let mut entity_stream = self
             .client
             .get_tagger_stream(RemoteTagCardinality::High)
             .map_err(StatusError::from);
         debug!("Established tagger entity stream.");
-
-        // Defer mark_ready() until after the first response is processed. This ensures the Agent's
-        // tagger gRPC server is up and has sent at least the initial snapshot before the topology
-        // starts accepting DogStatsD metrics. Marking ready before connecting causes a race where
-        // early metrics are processed before origin detection data is populated in the tag store.
-        let mut initial_snapshot_received = false;
 
         loop {
             select! {
@@ -193,11 +189,6 @@ impl MetadataCollector for RemoteAgentTaggerMetadataCollector {
                                     debug!(error = %e, "Failed to send metadata operation.");
                                 }
                             }
-                        }
-
-                        if !initial_snapshot_received {
-                            initial_snapshot_received = true;
-                            self.health.mark_ready();
                         }
 
                         trace!("Processed tagger stream event.");

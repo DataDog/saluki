@@ -11,7 +11,7 @@ use saluki_error::GenericError;
 use saluki_metrics::static_metrics;
 use stringtheory::interning::{GenericMapInterner, Interner as _};
 use tokio::{select, sync::mpsc, time::sleep};
-use tracing::{error, warn};
+use tracing::{debug, error, warn};
 
 use super::MetadataCollector;
 use crate::workload::{
@@ -74,28 +74,16 @@ impl MetadataCollector for ContainerdMetadataCollector {
     }
 
     async fn watch(&mut self, operations_tx: &mut mpsc::Sender<MetadataOperation>) -> Result<(), GenericError> {
-        // Scan all namespaces for existing containers and send the resulting PID→container alias operations to the
-        // aggregator before marking ready. This ensures the tag store has all existing container PID mappings populated
-        // before DogStatsD starts accepting metrics, preventing origin detection from missing early metrics when PID
-        // resolution via cgroups is unavailable and the containerd alias is the only resolution path.
-        for ns in &self.watched_namespaces {
-            let watcher = NamespaceWatcher::new(self.client.clone(), ns.clone(), self.tag_interner.clone());
-            if let Some(operations) = watcher.build_initial_metadata_operations().await {
-                for operation in operations {
-                    operations_tx.send(operation).await?;
-                }
-            }
-        }
-
-        // All initial PID mappings are in the aggregator. Mark ready so the environment readiness gate can unblock.
         self.health.mark_ready();
 
-        // Continue watching for live container lifecycle events (task started/deleted).
-        let event_watchers = self.watched_namespaces.iter().map(|ns| {
-            NamespaceWatcher::new(self.client.clone(), ns.clone(), self.tag_interner.clone()).watch_events_only()
-        });
+        // Create a watcher for each namespace, and then join all of their watch streams, which then we'll just funnel
+        // back to the operations channel.
+        let watchers = self
+            .watched_namespaces
+            .iter()
+            .map(|ns| NamespaceWatcher::new(self.client.clone(), ns.clone(), self.tag_interner.clone()).watch());
 
-        let mut operations_stream = select_all(event_watchers);
+        let mut operations_stream = select_all(watchers);
 
         loop {
             select! {
@@ -217,13 +205,27 @@ impl NamespaceWatcher {
         Some(operations)
     }
 
-    /// Watches for live containerd events only, without performing an initial scan.
-    ///
-    /// This is used by [`ContainerdMetadataCollector`] after the initial scan has already been performed explicitly,
-    /// so that live events are processed without duplicating the initial scan.
-    fn watch_events_only(self) -> impl Stream<Item = MetadataOperation> + Unpin {
+    fn watch(self) -> impl Stream<Item = MetadataOperation> + Unpin {
+        debug!(
+            namespace = self.namespace.name,
+            "Starting containerd namespace watcher."
+        );
+
+        // We watch the given namespace for all of the relevant events, and convert those into metadata operations that
+        // we pass back to be collected by the parent watcher task, which then forwards them to the metadata aggregator.
         Box::pin(stream! {
+            // Do an initial scan of the namespace to get all of the existing containers, their tasks and images, and
+            // so on, and generate metadata operations from that as a way to prime the store.
+            if let Some(initial_operations) = self.build_initial_metadata_operations().await {
+                for operation in initial_operations {
+                    yield operation;
+                }
+            }
+
+            // Now watch for events.
             loop {
+                // TODO: We should be creating this stream -- and polling it! -- before we build our initial metadata
+                // operations in order to ensure that we have an overlap between new events and the initial scan.
                 let mut event_stream = match self.client.watch_events(CONTAINERD_WATCH_EVENTS, &self.namespace).await {
                     Ok(stream) => stream,
                     Err(e) => {

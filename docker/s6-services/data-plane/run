@@ -1,11 +1,4 @@
 #!/usr/bin/execlineb -P
 
-# Check if agent-data-plane exists before running (mirrors the built-in data-plane/run guard).
-ifelse -n
-    { s6-test -x "/opt/datadog-agent/embedded/bin/agent-data-plane" }
-    {
-        foreground { /initlog.sh "agent-data-plane not bundled, disabling" }
-        foreground { /bin/s6-svc -d /var/run/s6/services/data-plane/ }
-    }
-    foreground { /initlog.sh "starting agent-data-plane" }
-    s6-envdir -I /run/adp/env agent-data-plane --config /etc/datadog-agent/datadog.yaml run
+foreground { /initlog.sh "starting agent-data-plane" }
+s6-envdir -I /run/adp/env agent-data-plane --config /etc/datadog-agent/datadog.yaml run
