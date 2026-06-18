@@ -1,8 +1,8 @@
 //! Transport Layer Security (TLS) configuration and helpers.
 
-#[cfg(all(unix, not(feature = "_tls_fips")))]
+#[cfg(all(unix, not(feature = "_fips")))]
 use std::os::unix::fs::OpenOptionsExt;
-#[cfg(not(feature = "_tls_fips"))]
+#[cfg(not(feature = "_fips"))]
 use std::{
     fmt::{Debug, Formatter},
     fs::{File, OpenOptions},
@@ -14,7 +14,7 @@ use std::{
     sync::{Arc, Mutex, OnceLock},
 };
 
-#[cfg(not(feature = "_tls_fips"))]
+#[cfg(not(feature = "_fips"))]
 use rustls::KeyLog;
 use rustls::{
     client::{
@@ -26,11 +26,11 @@ use rustls::{
     version::{TLS12, TLS13},
     ClientConfig, DigitallySignedStruct, RootCertStore, SignatureScheme, SupportedProtocolVersion,
 };
-#[cfg(not(feature = "_tls_fips"))]
+#[cfg(not(feature = "_fips"))]
 use saluki_common::collections::FastHashMap;
 use saluki_error::{generic_error, GenericError};
 use tracing::debug;
-#[cfg(not(feature = "_tls_fips"))]
+#[cfg(not(feature = "_fips"))]
 use tracing::warn;
 
 /// Tracks if the default cryptography provider for `rustls` has been set.
@@ -39,7 +39,7 @@ static DEFAULT_CRYPTO_PROVIDER_SET: OnceLock<()> = OnceLock::new();
 /// Default root certificate store to use for TLS when one isn't explicitly provided.
 static DEFAULT_ROOT_CERT_STORE_MUTEX: Mutex<()> = Mutex::new(());
 static DEFAULT_ROOT_CERT_STORE: OnceLock<Arc<RootCertStore>> = OnceLock::new();
-#[cfg(not(feature = "_tls_fips"))]
+#[cfg(not(feature = "_fips"))]
 static KEY_LOG_FILES: OnceLock<Mutex<FastHashMap<PathBuf, Option<Arc<NssKeyLogFile>>>>> = OnceLock::new();
 
 // Various defaults for TLS configuration.
@@ -102,13 +102,13 @@ impl ServerCertVerifier for AcceptAllServerCertVerifier {
     }
 }
 
-#[cfg(not(feature = "_tls_fips"))]
+#[cfg(not(feature = "_fips"))]
 struct NssKeyLogFile {
     path: PathBuf,
     file: Mutex<File>,
 }
 
-#[cfg(not(feature = "_tls_fips"))]
+#[cfg(not(feature = "_fips"))]
 impl NssKeyLogFile {
     fn open_shared<P: Into<PathBuf>>(path: P) -> Option<Arc<Self>> {
         let path = path.into();
@@ -152,17 +152,17 @@ impl NssKeyLogFile {
     }
 }
 
-#[cfg(not(feature = "_tls_fips"))]
+#[cfg(not(feature = "_fips"))]
 impl Debug for NssKeyLogFile {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("NssKeyLogFile").field("path", &self.path).finish()
     }
 }
 
-#[cfg(feature = "_tls_fips")]
+#[cfg(feature = "_fips")]
 static FIPS_KEY_LOG_WARNED_PATHS: OnceLock<Mutex<saluki_common::collections::FastHashSet<PathBuf>>> = OnceLock::new();
 
-#[cfg(feature = "_tls_fips")]
+#[cfg(feature = "_fips")]
 fn fips_key_log_warn_once(path: PathBuf) {
     let warned =
         FIPS_KEY_LOG_WARNED_PATHS.get_or_init(|| Mutex::new(saluki_common::collections::FastHashSet::default()));
@@ -177,7 +177,7 @@ fn fips_key_log_warn_once(path: PathBuf) {
     }
 }
 
-#[cfg(not(feature = "_tls_fips"))]
+#[cfg(not(feature = "_fips"))]
 impl KeyLog for NssKeyLogFile {
     fn log(&self, label: &str, client_random: &[u8], secret: &[u8]) {
         let line = match build_nss_key_log_line(label, client_random, secret) {
@@ -201,7 +201,7 @@ impl KeyLog for NssKeyLogFile {
     }
 }
 
-#[cfg(not(feature = "_tls_fips"))]
+#[cfg(not(feature = "_fips"))]
 fn open_key_log_file(path: &Path) -> io::Result<File> {
     let mut options = OpenOptions::new();
     options.write(true).create(true).append(true);
@@ -212,7 +212,7 @@ fn open_key_log_file(path: &Path) -> io::Result<File> {
     options.open(path)
 }
 
-#[cfg(not(feature = "_tls_fips"))]
+#[cfg(not(feature = "_fips"))]
 fn build_nss_key_log_line(label: &str, client_random: &[u8], secret: &[u8]) -> io::Result<Vec<u8>> {
     let mut line = Vec::new();
     write!(line, "{label} ")?;
@@ -224,7 +224,7 @@ fn build_nss_key_log_line(label: &str, client_random: &[u8], secret: &[u8]) -> i
     Ok(line)
 }
 
-#[cfg(not(feature = "_tls_fips"))]
+#[cfg(not(feature = "_fips"))]
 fn write_hex(writer: &mut impl Write, bytes: &[u8]) -> io::Result<()> {
     for byte in bytes {
         write!(writer, "{byte:02x}")?;
@@ -348,10 +348,10 @@ impl ClientTLSConfigBuilder {
         };
 
         if let Some(path) = self.key_log_file_path {
-            #[cfg(feature = "_tls_fips")]
+            #[cfg(feature = "_fips")]
             fips_key_log_warn_once(path);
 
-            #[cfg(not(feature = "_tls_fips"))]
+            #[cfg(not(feature = "_fips"))]
             if let Some(key_log) = NssKeyLogFile::open_shared(path) {
                 config.key_log = key_log;
             }
@@ -365,13 +365,13 @@ impl ClientTLSConfigBuilder {
         // FIPS requires the Extended Master Secret extension (RFC 7627) for TLS 1.2. Both the AWS-LC and Windows CNG
         // FIPS providers expect it, and `config.fips()` below will not return true for a TLS 1.2-capable config without
         // it.
-        #[cfg(feature = "_tls_fips")]
+        #[cfg(feature = "_fips")]
         {
             config.require_ems = true;
         }
 
         // Do our final check that this configuration is FIPS compliant.
-        #[cfg(feature = "_tls_fips")]
+        #[cfg(feature = "_fips")]
         if !config.fips() {
             return Err(generic_error!("Client TLS configuration is not FIPS compliant."));
         }
@@ -415,7 +415,7 @@ pub fn initialize_default_crypto_provider() -> Result<(), GenericError> {
     // In FIPS builds, fail fast if the installed provider isn't actually operating in FIPS mode. On Windows this most
     // commonly means the host's system-wide FIPS policy is disabled (CNG then exposes no FIPS-approved cryptography);
     // elsewhere it indicates a provider/build mismatch.
-    #[cfg(feature = "_tls_fips")]
+    #[cfg(feature = "_fips")]
     if !CryptoProvider::get_default()
         .ok_or_else(|| generic_error!("Default TLS cryptography provider missing immediately after installation."))?
         .fips()
@@ -582,14 +582,14 @@ pub fn load_platform_root_certificates_inner() -> Result<RootCertStore, GenericE
 
 #[cfg(test)]
 mod tests {
-    #[cfg(not(feature = "_tls_fips"))]
+    #[cfg(not(feature = "_fips"))]
     use std::fs;
-    #[cfg(all(unix, not(feature = "_tls_fips")))]
+    #[cfg(all(unix, not(feature = "_fips")))]
     use std::os::unix::fs::PermissionsExt;
 
     use rustls::{ProtocolVersion, RootCertStore};
 
-    #[cfg(not(feature = "_tls_fips"))]
+    #[cfg(not(feature = "_fips"))]
     use super::{build_nss_key_log_line, open_key_log_file};
     use super::{ClientTLSConfigBuilder, TlsMinimumVersion};
 
@@ -611,7 +611,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(feature = "_tls_fips"))]
+    #[cfg(not(feature = "_fips"))]
     fn nss_key_log_lines_are_written_in_hex_format() {
         let output =
             build_nss_key_log_line("CLIENT_RANDOM", &[0xab, 0xcd], &[0x01, 0x23]).expect("key log line should build");
@@ -620,7 +620,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(feature = "_tls_fips"))]
+    #[cfg(not(feature = "_fips"))]
     fn client_config_uses_configured_key_log_file() {
         let _ = super::initialize_default_crypto_provider();
         let tempdir = tempfile::tempdir().expect("temporary directory should be created");
@@ -639,7 +639,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(feature = "_tls_fips"))]
+    #[cfg(not(feature = "_fips"))]
     fn client_config_ignores_unwritable_key_log_file() {
         let _ = super::initialize_default_crypto_provider();
         let tempdir = tempfile::tempdir().expect("temporary directory should be created");
@@ -657,7 +657,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(feature = "_tls_fips"))]
+    #[cfg(not(feature = "_fips"))]
     fn client_configs_append_to_shared_key_log_file() {
         let _ = super::initialize_default_crypto_provider();
         let tempdir = tempfile::tempdir().expect("temporary directory should be created");
@@ -681,7 +681,7 @@ mod tests {
         assert_eq!(contents, "CLIENT_RANDOM abcd 0123\nCLIENT_RANDOM ef01 4567\n");
     }
 
-    #[cfg(all(unix, not(feature = "_tls_fips")))]
+    #[cfg(all(unix, not(feature = "_fips")))]
     #[test]
     fn key_log_file_is_created_with_owner_only_permissions() {
         let tempdir = tempfile::tempdir().expect("temporary directory should be created");
@@ -699,7 +699,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "_tls_fips")]
+    #[cfg(feature = "_fips")]
     fn key_log_file_ignored_in_fips_mode() {
         let _ = super::initialize_default_crypto_provider();
         let tempdir = tempfile::tempdir().expect("temporary directory should be created");

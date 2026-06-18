@@ -11,13 +11,13 @@ workspace = true
 [features]
 default = []
 # FIPS for non-Windows builds: AWS-LC in FIPS mode. (Windows uses `fips-cng`.)
-fips = ["_tls_fips", "rustls/fips"]
+fips = ["_fips", "rustls/fips"]
 # FIPS for Windows builds: the OS-native CNG provider in FIPS mode. Never enable on non-Windows;
 # `rustls-cng-crypto` is a Windows-only dependency, so activating this elsewhere is an error.
-fips-cng = ["_tls_fips", "rustls-cng-crypto/fips"]
+fips-cng = ["_fips", "rustls-cng-crypto/fips"]
 # Private marker enabled by both FIPS features. Gates FIPS-specific behavior (key-log suppression,
 # Extended Master Secret, and the `config.fips()` compliance check) independent of the active provider.
-_tls_fips = []
+_fips = []
 
 [dependencies]
 rustls = { workspace = true, features = ["std"] }
