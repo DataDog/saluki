@@ -244,9 +244,9 @@ pub fn create_assertion(config: &AssertionConfig) -> Result<Box<dyn Assertion>, 
 /// identity-mapped from the test config; `is_host_process` and `host_process_exit_code` flip).
 pub(crate) async fn run_assertion_steps(test_case: &IntegrationConfig, ctx: &AssertionContext) -> Vec<AssertionResult> {
     let mut results = Vec::new();
-    let total_steps = test_case.assertions.len();
+    let total_steps = test_case.procedure.len();
 
-    for (step_index, step) in test_case.assertions.iter().enumerate() {
+    for (step_index, step) in test_case.procedure.iter().enumerate() {
         match step {
             AssertionStep::Action(action_config) => {
                 let action = match crate::actions::create_action(action_config) {

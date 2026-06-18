@@ -17,25 +17,25 @@ container:
   exposed_ports:
     - "55101/tcp"
 
-assertions:
-  - type: adp_config_key_equals
+procedure:
+  - assertion: adp_config_key_equals
     key: log_level
     value: info
     timeout: 60s
   - action: core_agent_config_set
     key: log_level
     value: debug
-  - type: adp_config_key_equals
+  - assertion: adp_config_key_equals
     key: log_level
     value: debug
     timeout: 60s
   - parallel:
-      - type: process_stable_for
+      - assertion: process_stable_for
         duration: 10s
-      - type: log_not_contains
+      - assertion: log_not_contains
         pattern: "Error while reading config event stream"
         during: 10s
-      - type: log_not_contains
+      - assertion: log_not_contains
         pattern: "panic|PANIC"
         regex: true
         during: 10s

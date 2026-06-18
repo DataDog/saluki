@@ -16,14 +16,14 @@ env:
   DD_AGGREGATE_CONTEXT_LIMIT: "10000000"
 
 
-assertions:
-  - type: log_contains
+procedure:
+  - assertion: log_contains
     pattern: "Memory limiting behavior will be best effort."
     timeout: 60s
   - parallel:
-      - type: process_stable_for
+      - assertion: process_stable_for
         duration: 10s
-      - type: log_not_contains
+      - assertion: log_not_contains
         pattern: "panic|PANIC"
         regex: true
         during: 10s

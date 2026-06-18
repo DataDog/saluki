@@ -16,27 +16,27 @@ container:
   exposed_ports:
     - "58125/udp"
 
-assertions:
+procedure:
   # Make sure we initially see ADP try to reach out to the Core Agent for its configuration.
-  - type: log_contains
+  - assertion: log_contains
     pattern: "Waiting for initial configuration from Datadog Agent"
     timeout: 60s
   # Make sure the process becomes healthy, and stays up without errors, for ~10 seconds after.
   - parallel:
-      - type: process_stable_for
+      - assertion: process_stable_for
         duration: 10s
-      - type: log_contains
+      - assertion: log_contains
         pattern: "Topology healthy"
         timeout: 60s
-      - type: log_not_contains
+      - assertion: log_not_contains
         pattern: "Error while reading config event stream"
         during: 10s
       # Added with the Configuration Classifier (config check feature). Default config values
       # must not trigger unsupported-key warnings.
-      - type: log_not_contains
+      - assertion: log_not_contains
         pattern: "Unsupported configuration key"
         during: 10s
-      - type: log_not_contains
+      - assertion: log_not_contains
         pattern: "panic|PANIC"
         regex: true
         during: 10s

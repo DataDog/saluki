@@ -16,11 +16,11 @@ container:
   exposed_ports:
     - "58125/udp"
 
-assertions:
-  - type: log_contains
+procedure:
+  - assertion: log_contains
     pattern: "Initial configuration received."
     timeout: 60s
-  - type: file_contains
+  - assertion: file_contains
     path: "C:\\adp\\adp-custom.log"
     pattern: "DATAPLANE"
     timeout: 60s

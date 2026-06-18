@@ -11,17 +11,17 @@ env:
   DD_DATA_PLANE_STANDALONE_MODE: "true"
 
 
-assertions:
+procedure:
   # Make sure we always emit our initial startup log, which contains relevant information
   # about the build version, architecture, and other details.
-  - type: log_contains
+  - assertion: log_contains
     pattern: "Agent Data Plane starting"
     timeout: 60s
   # Make sure the process becomes healthy, and stays up without errors, for ~10 seconds after.
   - parallel:
-      - type: process_stable_for
+      - assertion: process_stable_for
         duration: 10s
-      - type: log_not_contains
+      - assertion: log_not_contains
         pattern: "panic|PANIC"
         regex: true
         during: 10s

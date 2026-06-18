@@ -19,15 +19,15 @@ env:
   DD_DOGSTATSD_TELEMETRY_ENABLED_LISTENER_ID: "true" # Incompatible(Medium) - triggers generic warning
 
 
-assertions:
-  - type: log_contains
+procedure:
+  - assertion: log_contains
     pattern: 'key:"dogstatsd_telemetry_enabled_listener_id" | Unsupported configuration key. Proceeding.'
     regex: true
     timeout: 60s
   - parallel:
-      - type: process_stable_for
+      - assertion: process_stable_for
         duration: 10s
-      - type: log_not_contains
+      - assertion: log_not_contains
         pattern: "panic|PANIC"
         regex: true
         during: 10s

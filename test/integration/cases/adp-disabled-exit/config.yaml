@@ -11,8 +11,8 @@ env:
   DD_DATA_PLANE_STANDALONE_MODE: "false"
 
 
-assertions:
+procedure:
   # ADP should log that it's not enabled and exit.
-  - type: log_contains
+  - assertion: log_contains
     pattern: "Agent Data Plane is not enabled. Exiting."
     timeout: 60s

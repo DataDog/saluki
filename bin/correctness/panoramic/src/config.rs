@@ -122,8 +122,8 @@ pub struct IntegrationConfig {
     #[serde(default)]
     pub env: HashMap<String, String>,
 
-    /// List of assertion steps to run.
-    pub assertions: Vec<AssertionStep>,
+    /// Ordered list of steps (assertions and actions) to execute.
+    pub procedure: Vec<AssertionStep>,
 
     /// Runtimes under which this test is eligible to run.
     ///
@@ -259,7 +259,7 @@ fn default_action_timeout() -> HumanDuration {
 
 /// Configuration for a single assertion.
 #[derive(Clone, Debug, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "assertion", rename_all = "snake_case")]
 pub enum AssertionConfig {
     /// Check that the process doesn't exit for a specified duration.
     ProcessStableFor {
@@ -558,14 +558,14 @@ impl Test for IntegrationConfig {
 impl IntegrationConfig {
     /// Replaces `{{PANORAMIC_DYNAMIC_*}}` placeholders in all assertion steps.
     pub fn resolve_dynamic_vars(&mut self, vars: &HashMap<String, String>) {
-        for step in &mut self.assertions {
+        for step in &mut self.procedure {
             step.resolve_dynamic_vars(vars);
         }
     }
 
     /// Returns any unresolved `{{PANORAMIC_DYNAMIC_*}}` placeholders across all assertion steps.
     pub fn unresolved_placeholders(&self) -> Vec<String> {
-        self.assertions
+        self.procedure
             .iter()
             .flat_map(|s| s.unresolved_placeholders())
             .collect()
@@ -573,7 +573,7 @@ impl IntegrationConfig {
 
     /// Count total individual assertions across all steps.
     pub fn total_assertion_count(&self) -> usize {
-        self.assertions
+        self.procedure
             .iter()
             .map(|step| match step {
                 AssertionStep::Single(_) | AssertionStep::Action(_) => 1,
@@ -1024,7 +1024,7 @@ type: integration
 name: windows-smoke
 timeout: 10s
 runtimes: [windows]
-assertions: []
+procedure: []
 "#,
         );
 
@@ -1044,7 +1044,7 @@ type: integration
 name: windows-smoke
 timeout: 10s
 runtimes: [windows]
-assertions: []
+procedure: []
 "#,
         );
 
@@ -1063,7 +1063,7 @@ type: integration
 name: linux-smoke
 timeout: 10s
 runtimes: [linux]
-assertions: []
+procedure: []
 "#,
         );
 
