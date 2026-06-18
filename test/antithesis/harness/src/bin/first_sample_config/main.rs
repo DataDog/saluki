@@ -1,10 +1,10 @@
-//! Antithesis `first_` command: sample this timeline's `datadog.yaml` and release ADP.
+//! Antithesis `first_` command: sample this timeline's `datadog.yaml` and release blocked targets.
 //!
 //! Runs once per execution path after `setup_complete`, so the sample (see
 //! [`harness::config`], Antithesis SDK randomness) is a post-snapshot, per-timeline
 //! decision Antithesis branches. Writes the config to the shared `agent-config`
-//! volume then a `ready` sentinel the blocked ADP entrypoint waits on; running
-//! upstream of ADP's boot is what makes each timeline boot under its own config.
+//! volume then a `ready` sentinel the blocked target entrypoints wait on; running
+//! upstream of target boot is what makes each timeline boot under its own config.
 //! Deployment fields come from the environment (see [`Cli`]).
 
 use std::fs;
@@ -12,7 +12,7 @@ use std::path::PathBuf;
 
 use antithesis_sdk::prelude::*;
 use antithesis_sdk::random::AntithesisRng;
-use anyhow::Context as _;
+use anyhow::Context;
 use clap::Parser;
 use harness::config::{ConfigProfile, DatadogConfig};
 use rand::rand_core::UnwrapErr;
@@ -23,7 +23,7 @@ use serde_json::json;
 #[command(name = "first_sample_config")]
 struct Cli {
     /// Directory to write `datadog.yaml` and the `ready` sentinel into (shared
-    /// `agent-config` volume; the ADP container reads it).
+    /// `agent-config` volume; blocked target containers read it).
     #[arg(long, env = "CONFIG_DIR", default_value = "/agent-config")]
     config_dir: PathBuf,
     /// Which `datadog.yaml` variation to sample. The differential scenario sets
@@ -72,7 +72,7 @@ fn main() -> anyhow::Result<()> {
     let details = serde_json::to_value(&config).unwrap_or_else(|e| json!({ "serialize_error": e.to_string() }));
     assert_reachable!("first_sample_config.config_sampled", &details);
 
-    // Release ADP: it blocks on this sentinel, then boots under the config above.
+    // Release blocked targets: they wait on this sentinel, then boot under the config above.
     let ready_path = cli.config_dir.join("ready");
     fs::write(&ready_path, b"ready\n").with_context(|| format!("write sentinel {}", ready_path.display()))?;
     Ok(())

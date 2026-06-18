@@ -8,6 +8,7 @@ use protobuf::Message;
 use serde_json::json;
 use tracing::error;
 
+use crate::capture::Target;
 use crate::properties::payload::{metric_payload, point, resource, series};
 
 /// A decoded `/api/v2/series` payload.
@@ -18,9 +19,9 @@ pub(crate) struct SeriesObservation {
 
 impl SeriesObservation {
     /// Decode a raw `/api/v2/series` body and fire the decode-success assertion.
-    pub(crate) fn decode(body_bytes: &[u8], decompression_applied: bool) -> (Option<Self>, bool) {
+    pub(crate) fn decode(target: Target, body_bytes: &[u8], decompression_applied: bool) -> (Option<Self>, bool) {
         let decode_result = MetricPayload::parse_from_bytes(body_bytes);
-        metric_payload::decode_success(decode_result.is_ok(), body_bytes.len(), decompression_applied);
+        metric_payload::decode_success(target, decode_result.is_ok(), body_bytes.len(), decompression_applied);
         let decode_ok = decode_result.is_ok();
         let observation = decode_result
             .map(Self::from_payload)
@@ -43,36 +44,41 @@ impl SeriesObservation {
     /// Fire all payload properties that need the decoded protobuf
     /// shape. `established_host` carries the first-seen host so Pyld17 holds
     /// across all inbound traffic.
-    pub(crate) fn assert_payload_properties(&self, now_secs: i64, established_host: &OnceLock<String>) {
+    pub(crate) fn assert_payload_properties(&self, target: Target, now_secs: i64, established_host: &OnceLock<String>) {
         if !self.payload.series.is_empty() {
             // Lets triage distinguish an Agent that came up and flushed from one
             // that never did.
             assert_reachable!(
                 "intake.first_series_observed",
-                &json!({ "series": self.payload.series.len() })
+                &json!({ "lane": target, "series": self.payload.series.len() })
             );
         }
 
-        metric_payload::point_count(&self.payload);
-        resource::host_consistent(&self.payload, established_host);
+        metric_payload::point_count(target, &self.payload);
+        resource::host_consistent(target, &self.payload, established_host);
         for ms in &self.payload.series {
-            evaluate_series(ms, now_secs);
+            evaluate_series(target, ms, now_secs);
         }
+    }
+
+    /// Return the decoded payload.
+    pub(crate) fn into_payload(self) -> MetricPayload {
+        self.payload
     }
 }
 
 /// Fire every per-series property assertion.
-fn evaluate_series(ms: &MetricSeries, now_secs: i64) {
-    series::type_in_domain(ms);
-    series::tag_prefix(ms);
-    series::series_point_count(ms);
-    series::origin(ms);
-    resource::resource_count(ms);
-    resource::host_name_length(ms);
-    series::metric_non_empty(ms);
-    series::metric_length(ms);
-    series::metric_alphabetic(ms);
-    series::tag_count(ms);
-    point::value_not_nan(ms);
-    point::future_bound(ms, now_secs);
+fn evaluate_series(target: Target, ms: &MetricSeries, now_secs: i64) {
+    series::type_in_domain(target, ms);
+    series::tag_prefix(target, ms);
+    series::series_point_count(target, ms);
+    series::origin(target, ms);
+    resource::resource_count(target, ms);
+    resource::host_name_length(target, ms);
+    series::metric_non_empty(target, ms);
+    series::metric_length(target, ms);
+    series::metric_alphabetic(target, ms);
+    series::tag_count(target, ms);
+    point::value_not_nan(target, ms);
+    point::future_bound(target, ms, now_secs);
 }
