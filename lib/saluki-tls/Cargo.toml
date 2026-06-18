@@ -10,7 +10,14 @@ workspace = true
 
 [features]
 default = []
-fips = ["rustls/fips"]
+# FIPS for non-Windows builds: AWS-LC in FIPS mode. (Windows uses `fips-cng`.)
+fips = ["_tls_fips", "rustls/fips"]
+# FIPS for Windows builds: the OS-native CNG provider in FIPS mode. Never enable on non-Windows;
+# `rustls-cng-crypto` is a Windows-only dependency, so activating this elsewhere is an error.
+fips-cng = ["_tls_fips", "rustls-cng-crypto/fips"]
+# Private marker enabled by both FIPS features. Gates FIPS-specific behavior (key-log suppression,
+# Extended Master Secret, and the `config.fips()` compliance check) independent of the active provider.
+_tls_fips = []
 
 [dependencies]
 rustls = { workspace = true, features = ["std"] }
@@ -19,6 +26,14 @@ saluki-common = { workspace = true }
 saluki-error = { workspace = true }
 tracing = { workspace = true }
 
+# The crypto provider is selected by target. Only this crate installs the process-wide default provider,
+# so only it needs a concrete provider: AWS-LC everywhere except Windows, which uses the OS-native CNG.
+[target.'cfg(not(windows))'.dependencies]
+rustls = { workspace = true, features = ["aws_lc_rs"] }
+
+[target.'cfg(windows)'.dependencies]
+rustls-cng-crypto = { workspace = true }
+
 [dev-dependencies]
-rcgen = { workspace = true, features = ["crypto", "aws_lc_rs", "pem"] }
+rcgen = { workspace = true, features = ["crypto", "ring", "pem"] }
 tempfile = { workspace = true }

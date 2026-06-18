@@ -130,9 +130,11 @@ where
 /// - non-infinite timeouts for various stages of the request lifecycle (30 second connect timeout, 60 second per-request timeout)
 /// - connection pool for reusing connections (45 second idle connection timeout, and a maximum of 5 idle connections
 ///   per host)
-/// - support for FIPS-compliant cryptography (if the `fips` feature is enabled in the `saluki-tls` crate) via [AWS-LC][aws-lc]
+/// - support for FIPS-compliant cryptography when a FIPS feature is enabled in the `saluki-tls` crate, via the
+///   target's crypto provider ([AWS-LC][aws-lc] off-Windows, the OS-native [CNG][cng] on Windows)
 ///
 /// [aws-lc]: https://github.com/aws/aws-lc-rs
+/// [cng]: https://learn.microsoft.com/en-us/windows/win32/seccng/cng-portal
 pub struct HttpClientBuilder {
     connector_builder: HttpsCapableConnectorBuilder,
     hyper_builder: Builder,

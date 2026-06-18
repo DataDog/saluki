@@ -10,6 +10,7 @@ workspace = true
 
 [features]
 tls-fips = ["saluki-io/fips", "saluki-tls/fips"]
+tls-fips-cng = ["saluki-io/fips-cng", "saluki-tls/fips-cng"]
 
 [dependencies]
 arc-swap = { workspace = true }
@@ -23,7 +24,7 @@ hyper = { workspace = true }
 iana-time-zone = { workspace = true }
 itoa = { workspace = true }
 metrics = { workspace = true }
-rcgen = { workspace = true, features = ["crypto", "aws_lc_rs", "pem"] }
+rcgen = { workspace = true, features = ["crypto", "ring", "pem"] }
 resource-accounting = { workspace = true }
 rustls = { workspace = true, features = ["tls12"] }
 rustls-pki-types = { workspace = true }

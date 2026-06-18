@@ -43,8 +43,13 @@ mod utils;
 #[tokio::main]
 async fn main() -> ExitCode {
     // Install the rustls crypto provider once at startup. Both reqwest and kube use rustls 0.23,
-    // which requires an explicit provider install when multiple TLS-using crates are present.
-    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    // which requires an explicit provider install when multiple TLS-using crates are present. The
+    // provider is selected by target to match the rest of the project (AWS-LC off-Windows, CNG on Windows).
+    #[cfg(windows)]
+    let provider = rustls_cng_crypto::default_provider();
+    #[cfg(not(windows))]
+    let provider = rustls::crypto::aws_lc_rs::default_provider();
+    let _ = provider.install_default();
 
     let cli: Cli = argh::from_env();
 

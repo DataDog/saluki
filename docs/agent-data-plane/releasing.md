@@ -48,6 +48,24 @@ The release process for ADP roughly looks like this:
   CI pipeline: <link to GitLab CI pipeline for the git tag>
   ```
 
+## FIPS builds
+
+Alongside the standard artifacts, the release pipeline produces FIPS variants (the `-fips` image tag and the `-fips`
+release tarballs and zip). FIPS builds use a FIPS-validated cryptographic provider for all TLS, selected by platform:
+
+- **Linux**: [AWS-LC][aws-lc] in FIPS mode. The validated module is compiled into the statically linked binary.
+- **Windows**: the operating system's native [CNG][cng] provider. The binary bundles no cryptographic library; FIPS
+  validation is provided by Microsoft's per-Windows-version CNG module validation.
+- **macOS**: FIPS builds are not produced (out of scope).
+
+> [!WARNING]
+> The Windows FIPS build operates in FIPS mode only when the host has the system-wide FIPS policy enabled
+> (`HKLM\System\CurrentControlSet\Control\Lsa\FIPSAlgorithmPolicy`). Without it, ADP fails closed at startup rather than
+> falling back to non-FIPS cryptography, so enable the policy on any host that runs the Windows FIPS build.
+
+[aws-lc]: https://github.com/aws/aws-lc-rs
+[cng]: https://learn.microsoft.com/en-us/windows/win32/seccng/cng-portal
+
 ## Determining the version
 
 > [!NOTE]

@@ -11,6 +11,7 @@ workspace = true
 [features]
 default = []
 fips = ["saluki-tls/fips"]
+fips-cng = ["saluki-tls/fips-cng"]
 
 [dependencies]
 async-compression = { workspace = true, features = ["gzip", "tokio", "zlib"] }
@@ -81,3 +82,11 @@ proptest = { workspace = true }
 rand_distr = { workspace = true }
 tempfile = { workspace = true }
 tokio-test = { workspace = true }
+
+# Concrete crypto provider for the rustls-based unit tests, selected by target to mirror the main
+# provider selection in `saluki-tls` (AWS-LC off-Windows, OS-native CNG on Windows).
+[target.'cfg(not(windows))'.dev-dependencies]
+rustls = { workspace = true, features = ["aws_lc_rs"] }
+
+[target.'cfg(windows)'.dev-dependencies]
+rustls-cng-crypto = { workspace = true }

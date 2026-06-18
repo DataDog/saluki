@@ -614,9 +614,14 @@ mod tests {
     use super::{configure_tls_alpn_for_http_protocol, HttpProtocol};
 
     fn empty_tls_config() -> rustls::ClientConfig {
-        rustls::ClientConfig::builder_with_provider(rustls::crypto::aws_lc_rs::default_provider().into())
+        #[cfg(windows)]
+        let provider = rustls_cng_crypto::default_provider();
+        #[cfg(not(windows))]
+        let provider = rustls::crypto::aws_lc_rs::default_provider();
+
+        rustls::ClientConfig::builder_with_provider(provider.into())
             .with_safe_default_protocol_versions()
-            .expect("AWS-LC default protocol versions should be valid")
+            .expect("default protocol versions should be valid")
             .with_root_certificates(rustls::RootCertStore::empty())
             .with_no_client_auth()
     }

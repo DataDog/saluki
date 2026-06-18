@@ -5,7 +5,8 @@
 # All inputs come from the environment so the GitLab job can pass them via `docker run -e`:
 #
 #   BUILD_PROFILE     Cargo profile (release on dev pipelines, optimized-release on tagged).
-#   BUILD_FEATURES    Cargo features list (default | fips).
+#   BUILD_FEATURES    Cargo features list (empty for default | fips-cng). Windows uses the OS-native
+#                     CNG crypto provider, so the FIPS build selects `fips-cng` (not AWS-LC's `fips`).
 #   ADP_VERSION       Version slug for the zip filename (CI sets to ${ADP_IMAGE_VERSION}).
 #   TARGET_ARCH       amd64 (only Windows arch in scope today).
 #   OUTPUT_DIR        Directory under c:\mnt where the final zip lands so GitLab `artifacts:`
@@ -43,18 +44,6 @@ Install-CachedZipTool `
     -InstallRoot (Join-Path $RepoRoot ".ci-cache\cargo-auditable\$CargoAuditableVersion") `
     -BinSubdir "" `
     -BinaryName "cargo-auditable.exe"
-
-if ($env:BUILD_FEATURES -eq "fips") {
-    # aws-lc-fips-sys (pulled in by --features fips -> rustls/fips) needs NASM, libclang,
-    # and perl exposed -- see Initialize-FipsBuildTools for the full story.
-    Initialize-FipsBuildTools -RepoRoot $RepoRoot
-    # aws-lc-fips-sys's CMake builder calls its own printenv.bat which hard-codes the VS
-    # search to %ProgramFiles(x86)%\Microsoft Visual Studio (and vswhere there), neither of
-    # which resolve to the buildimage's actual install at c:\devtools\vstudio. The junction
-    # makes the script's default-path search find it; the script itself then runs vcvarsall
-    # internally so we don't need to activate the MSVC environment in our session.
-    New-VsBuildToolsJunction
-}
 
 # saluki-metadata reads these at build time. Must match the values the Makefile passes through
 # (ADP_APP_FULL_NAME / ADP_APP_SHORT_NAME / ADP_APP_IDENTIFIER / ADP_APP_GIT_HASH /

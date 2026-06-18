@@ -45,3 +45,11 @@ tracing-subscriber = { workspace = true, features = [
   "tracing-log",
 ] }
 treediff = { workspace = true, features = ["with-serde-json"] }
+
+# Match the per-target crypto provider used elsewhere (AWS-LC off-Windows, OS-native CNG on Windows).
+# panoramic installs the process-wide default at startup for its reqwest/kube TLS usage.
+[target.'cfg(not(windows))'.dependencies]
+rustls = { workspace = true, features = ["aws_lc_rs"] }
+
+[target.'cfg(windows)'.dependencies]
+rustls-cng-crypto = { workspace = true }

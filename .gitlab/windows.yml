@@ -141,8 +141,6 @@ test-integration-windows-amd64:
       - .ci-cache/cargo/
       - .ci-cache/protoc/
       - .ci-cache/rustup/
-      # cargo-auditable is downloaded at job runtime by windows-build-adp.ps1; cache its install
-      # root so the cold-download cost is paid once per runner (matches the protoc pattern).
       - .ci-cache/cargo-auditable/
   variables:
     TARGET_ARCH: "amd64"
@@ -184,12 +182,12 @@ test-integration-windows-amd64:
 build-release-zip-windows-amd64:
   extends: [.build-common-variables, .build-release-zip-windows-definition]
 
-# FIPS variant. Pulls in rustls/fips -> aws-lc-fips-sys, which builds AWS-LC from source on
-# every target and so needs the full native toolchain (NASM, LLVM/libclang, MSVC environment,
-# perl) at build time. windows-build-adp.ps1 wires those in via Initialize-FipsBuildTools and
-# friends in ci/tooling/windows-rust-env.psm1; the cache:paths below persist the heaviest
-# downloads (LLVM in particular) between runs. Uses a separate cargo cache key so FIPS and
-# non-FIPS dependency graphs don't churn each other's incremental compilation state.
+# FIPS variant. Windows uses the OS-native CNG crypto provider (rustls-cng-crypto) in FIPS mode via
+# the `fips-cng` feature -- there's no aws-lc, hence no native crypto toolchain (NASM/LLVM/libclang/
+# perl/MSVC junction) and no bundled crypto DLL, so this job needs nothing the default build doesn't.
+# FIPS validation comes from Microsoft's per-Windows-version CNG module validation; the host must have
+# system-wide FIPS policy enabled at runtime for the build to operate in FIPS mode. The separate cargo
+# cache key keeps the FIPS feature's incremental compilation state from churning the default build's.
 build-release-zip-windows-amd64-fips:
   extends: [.build-common-variables, .build-release-zip-windows-definition]
   cache:
@@ -198,15 +196,6 @@ build-release-zip-windows-amd64-fips:
       - .ci-cache/cargo/
       - .ci-cache/protoc/
       - .ci-cache/rustup/
-      # cargo-auditable is downloaded at job runtime by windows-build-adp.ps1; cache its install root.
-      - .ci-cache/cargo-auditable/
-      # NASM and LLVM are installed at job runtime by Initialize-FipsBuildTools in
-      # ci/tooling/windows-rust-env.psm1; cache the install roots so the cold-download cost
-      # is paid once per runner. LLVM dominates (~1.5 GB extracted) since bindgen needs
-      # libclang for aws-lc-fips-sys on x86_64-pc-windows-msvc. Go and Ninja come from the
-      # buildimage itself, so they don't need a cache path.
-      - .ci-cache/nasm/
-      - .ci-cache/llvm/
   variables:
-    BUILD_FEATURES: "fips"
+    BUILD_FEATURES: "fips-cng"
     FIPS_SUFFIX: "-fips"

@@ -153,7 +153,7 @@ impl TlsCertificateValidation {
     }
 
     fn ensure_supported(self) -> Result<(), GenericError> {
-        #[cfg(feature = "fips")]
+        #[cfg(feature = "_tls_fips")]
         if matches!(self, Self::Disabled) {
             return Err(generic_error!(
                 "`skip_ssl_validation: true` is unsupported in FIPS mode because disabling TLS certificate validation is not FIPS-compliant."
@@ -1198,7 +1198,7 @@ app.datadoghq.com: [key-a, key-b]
         );
     }
 
-    #[cfg(feature = "fips")]
+    #[cfg(feature = "_tls_fips")]
     #[test]
     fn skip_ssl_validation_rejected_in_fips_mode() {
         let error = TlsCertificateValidation::Disabled

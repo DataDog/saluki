@@ -38,4 +38,8 @@ allow-git = [
 
   # Yet-to-be-published version of incremental Protocol Buffers encoding library.
   "https://github.com/tobz/piecemeal.git",
+
+  # `rustls-cng-crypto` (Windows CNG rustls provider), pinned to an upstream commit past the 0.1.0 crates.io
+  # release: 0.1.0 pulls rustls-webpki 0.102 (open RUSTSEC advisories), which upstream has since dropped.
+  "https://github.com/tofay/rustls-cng-crypto",
 ]
