@@ -14,14 +14,14 @@ env:
   DD_MEMORY_LIMIT: "2gb"
 
 
-assertions:
-  - type: log_contains
+procedure:
+  - assertion: log_contains
     pattern: "Verified memory bounds."
     timeout: 60s
   - parallel:
-      - type: process_stable_for
+      - assertion: process_stable_for
         duration: 10s
-      - type: log_not_contains
+      - assertion: log_not_contains
         pattern: "panic|PANIC"
         regex: true
         during: 10s

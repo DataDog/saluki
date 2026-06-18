@@ -13,8 +13,8 @@ env:
   DD_DATA_PLANE_OTLP_ENABLED: "false"
 
 
-assertions:
+procedure:
   # ADP should log that no pipelines are enabled and exit.
-  - type: log_contains
+  - assertion: log_contains
     pattern: "No data pipelines are enabled. Exiting."
     timeout: 60s

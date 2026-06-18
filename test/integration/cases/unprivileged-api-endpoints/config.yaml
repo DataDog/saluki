@@ -15,26 +15,26 @@ container:
   exposed_ports:
     - "55100/tcp"
 
-assertions:
+procedure:
   - parallel:
-      - type: process_stable_for
+      - assertion: process_stable_for
         duration: 10s
-      - type: http_check
+      - assertion: http_check
         endpoint: "http://localhost:55100/ready"
         status:
           equal: 200
         timeout: 60s
-      - type: http_check
+      - assertion: http_check
         endpoint: "http://localhost:55100/live"
         status:
           equal: 200
         timeout: 60s
-      - type: http_check
+      - assertion: http_check
         endpoint: "http://localhost:55100/memory/status"
         status:
           equal: 200
         timeout: 60s
-      - type: log_not_contains
+      - assertion: log_not_contains
         pattern: "panic|PANIC"
         regex: true
         during: 10s

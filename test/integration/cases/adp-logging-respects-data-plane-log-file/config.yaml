@@ -16,13 +16,13 @@ container:
   exposed_ports:
     - "58125/udp"
 
-assertions:
+procedure:
   # Wait for ADP to receive its initial configuration from the Core Agent and reload logging.
-  - type: log_contains
+  - assertion: log_contains
     pattern: "Initial configuration received."
     timeout: 30s
   # ADP writes to the explicitly-configured per-subagent path.
-  - type: file_contains
+  - assertion: file_contains
     path: "/tmp/adp-custom.log"
     pattern: "DATAPLANE"
     timeout: 30s

@@ -15,27 +15,27 @@ container:
   exposed_ports:
     - "55100/tcp"
 
-assertions:
+procedure:
   # Make sure the process becomes healthy, and stays up without errors, with the telemetry routes
   # served on the unprivileged API endpoint.
   - parallel:
-      - type: process_stable_for
+      - assertion: process_stable_for
         duration: 10s
-      - type: port_listening
+      - assertion: port_listening
         port: 55100
         protocol: tcp
         timeout: 60s
-      - type: http_check
+      - assertion: http_check
         endpoint: "http://localhost:55100/metrics"
         status:
           equal: 200
         timeout: 60s
-      - type: http_check
+      - assertion: http_check
         endpoint: "http://localhost:55100/compat/metrics"
         status:
           equal: 200
         timeout: 60s
-      - type: log_not_contains
+      - assertion: log_not_contains
         pattern: "panic|PANIC"
         regex: true
         during: 10s

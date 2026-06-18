@@ -16,18 +16,18 @@ container:
   exposed_ports:
     - "58125/udp"
 
-assertions:
+procedure:
   # ADP should report registration success. Allow 15s (matching adp-cmd-port): registration can only
   # succeed once the Core Agent's CMD/IPC API server is listening, which can take ~10s to come up on
   # slower hosts.
-  - type: log_contains
+  - assertion: log_contains
     pattern: "Successfully registered with the Datadog Agent."
     timeout: 60s
   # Make sure the process becomes healthy, and stays up without errors, for ~10 seconds after.
   - parallel:
-      - type: process_stable_for
+      - assertion: process_stable_for
         duration: 10s
-      - type: log_not_contains
+      - assertion: log_not_contains
         pattern: "panic|PANIC"
         regex: true
         during: 10s

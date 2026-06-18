@@ -8,6 +8,7 @@ use std::{
 use async_trait::async_trait;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use serde::Deserialize;
+use serde_json::Value;
 
 use crate::correctness::analysis::AnalysisMode;
 use crate::correctness::config::{
@@ -121,8 +122,8 @@ pub struct IntegrationConfig {
     #[serde(default)]
     pub env: HashMap<String, String>,
 
-    /// List of assertion steps to run.
-    pub assertions: Vec<AssertionStep>,
+    /// Ordered list of steps (assertions and actions) to execute.
+    pub procedure: Vec<AssertionStep>,
 
     /// Runtimes under which this test is eligible to run.
     ///
@@ -218,8 +219,7 @@ pub struct ContainerConfig {
 
 /// A single step in the assertion pipeline.
 ///
-/// Each step is either a single assertion or a parallel block of assertions
-/// that run concurrently.
+/// Each step is either a single assertion, a parallel block of assertions, or a sequential action.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(untagged)]
 pub enum AssertionStep {
@@ -228,13 +228,38 @@ pub enum AssertionStep {
         /// The assertions to run in parallel.
         parallel: Vec<AssertionConfig>,
     },
+    /// A single action that runs on its own.
+    Action(ActionConfig),
     /// A single assertion that runs on its own.
     Single(AssertionConfig),
 }
 
+/// Configuration for a single action.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+pub enum ActionConfig {
+    /// Set a runtime configuration value through the Core Agent command API.
+    CoreAgentConfigSet {
+        /// Runtime configuration key to set.
+        key: String,
+        /// Value to set. Strings are sent without JSON quoting; other values are serialized as JSON.
+        value: Value,
+        /// Core Agent runtime config endpoint template. `{key}` is replaced with `key`.
+        #[serde(default = "crate::actions::default_core_agent_config_endpoint_template")]
+        endpoint: String,
+        /// Timeout for waiting for the Core Agent API to accept the mutation.
+        #[serde(default = "default_action_timeout")]
+        timeout: HumanDuration,
+    },
+}
+
+fn default_action_timeout() -> HumanDuration {
+    HumanDuration(Duration::from_secs(30))
+}
+
 /// Configuration for a single assertion.
 #[derive(Clone, Debug, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "assertion", rename_all = "snake_case")]
 pub enum AssertionConfig {
     /// Check that the process doesn't exit for a specified duration.
     ProcessStableFor {
@@ -329,6 +354,19 @@ pub enum AssertionConfig {
         /// Timeout for waiting for the file (and pattern, if any) to appear.
         timeout: HumanDuration,
     },
+
+    /// Poll ADP's `/config` endpoint until one key equals the expected value.
+    AdpConfigKeyEquals {
+        /// Configuration key to compare. Dotted paths address nested objects.
+        key: String,
+        /// Expected value.
+        value: Value,
+        /// ADP `/config` endpoint.
+        #[serde(default = "crate::assertions::default_adp_config_endpoint")]
+        endpoint: String,
+        /// Timeout for waiting for the value to appear.
+        timeout: HumanDuration,
+    },
 }
 
 /// Which log streams to check.
@@ -354,6 +392,40 @@ pub enum HttpStatusMatcher {
     NotEqual(u16),
 }
 
+impl ActionConfig {
+    /// Replaces `{{PANORAMIC_DYNAMIC_*}}` placeholders in string fields with resolved values.
+    pub fn resolve_dynamic_vars(&mut self, vars: &HashMap<String, String>) {
+        match self {
+            ActionConfig::CoreAgentConfigSet {
+                key, endpoint, value, ..
+            } => {
+                crate::dynamic_vars::resolve_placeholders(key, vars);
+                crate::dynamic_vars::resolve_placeholders(endpoint, vars);
+                if let serde_json::Value::String(s) = value {
+                    crate::dynamic_vars::resolve_placeholders(s, vars);
+                }
+            }
+        }
+    }
+
+    /// Returns any unresolved `{{PANORAMIC_DYNAMIC_*}}` placeholders in string fields.
+    pub fn unresolved_placeholders(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        match self {
+            ActionConfig::CoreAgentConfigSet {
+                key, endpoint, value, ..
+            } => {
+                crate::dynamic_vars::find_unresolved(key, &mut out);
+                crate::dynamic_vars::find_unresolved(endpoint, &mut out);
+                if let serde_json::Value::String(s) = value {
+                    crate::dynamic_vars::find_unresolved(s, &mut out);
+                }
+            }
+        }
+        out
+    }
+}
+
 impl AssertionConfig {
     /// Replaces `{{PANORAMIC_DYNAMIC_*}}` placeholders in string fields with resolved values.
     pub fn resolve_dynamic_vars(&mut self, vars: &HashMap<String, String>) {
@@ -372,6 +444,10 @@ impl AssertionConfig {
                 if let Some(p) = pattern {
                     crate::dynamic_vars::resolve_placeholders(p, vars);
                 }
+            }
+            AssertionConfig::AdpConfigKeyEquals { key, endpoint, .. } => {
+                crate::dynamic_vars::resolve_placeholders(key, vars);
+                crate::dynamic_vars::resolve_placeholders(endpoint, vars);
             }
             AssertionConfig::ProcessStableFor { .. } | AssertionConfig::AdpExitsWith { .. } => {}
         }
@@ -396,6 +472,10 @@ impl AssertionConfig {
                     crate::dynamic_vars::find_unresolved(p, &mut out);
                 }
             }
+            AssertionConfig::AdpConfigKeyEquals { key, endpoint, .. } => {
+                crate::dynamic_vars::find_unresolved(key, &mut out);
+                crate::dynamic_vars::find_unresolved(endpoint, &mut out);
+            }
             AssertionConfig::ProcessStableFor { .. } | AssertionConfig::AdpExitsWith { .. } => {}
         }
         out
@@ -407,6 +487,7 @@ impl AssertionStep {
     pub fn resolve_dynamic_vars(&mut self, vars: &HashMap<String, String>) {
         match self {
             AssertionStep::Single(config) => config.resolve_dynamic_vars(vars),
+            AssertionStep::Action(config) => config.resolve_dynamic_vars(vars),
             AssertionStep::Parallel { parallel } => {
                 for config in parallel {
                     config.resolve_dynamic_vars(vars);
@@ -419,6 +500,7 @@ impl AssertionStep {
     pub fn unresolved_placeholders(&self) -> Vec<String> {
         match self {
             AssertionStep::Single(config) => config.unresolved_placeholders(),
+            AssertionStep::Action(config) => config.unresolved_placeholders(),
             AssertionStep::Parallel { parallel } => parallel.iter().flat_map(|c| c.unresolved_placeholders()).collect(),
         }
     }
@@ -476,14 +558,14 @@ impl Test for IntegrationConfig {
 impl IntegrationConfig {
     /// Replaces `{{PANORAMIC_DYNAMIC_*}}` placeholders in all assertion steps.
     pub fn resolve_dynamic_vars(&mut self, vars: &HashMap<String, String>) {
-        for step in &mut self.assertions {
+        for step in &mut self.procedure {
             step.resolve_dynamic_vars(vars);
         }
     }
 
     /// Returns any unresolved `{{PANORAMIC_DYNAMIC_*}}` placeholders across all assertion steps.
     pub fn unresolved_placeholders(&self) -> Vec<String> {
-        self.assertions
+        self.procedure
             .iter()
             .flat_map(|s| s.unresolved_placeholders())
             .collect()
@@ -491,10 +573,10 @@ impl IntegrationConfig {
 
     /// Count total individual assertions across all steps.
     pub fn total_assertion_count(&self) -> usize {
-        self.assertions
+        self.procedure
             .iter()
             .map(|step| match step {
-                AssertionStep::Single(_) => 1,
+                AssertionStep::Single(_) | AssertionStep::Action(_) => 1,
                 AssertionStep::Parallel { parallel } => parallel.len(),
             })
             .sum()
@@ -942,7 +1024,7 @@ type: integration
 name: windows-smoke
 timeout: 10s
 runtimes: [windows]
-assertions: []
+procedure: []
 "#,
         );
 
@@ -962,7 +1044,7 @@ type: integration
 name: windows-smoke
 timeout: 10s
 runtimes: [windows]
-assertions: []
+procedure: []
 "#,
         );
 
@@ -981,7 +1063,7 @@ type: integration
 name: linux-smoke
 timeout: 10s
 runtimes: [linux]
-assertions: []
+procedure: []
 "#,
         );
 

@@ -15,11 +15,11 @@ container:
   exposed_ports:
     - "55101/tcp"
 
-assertions:
+procedure:
   - parallel:
-      - type: process_stable_for
+      - assertion: process_stable_for
         duration: 10s
-      - type: port_listening
+      - assertion: port_listening
         port: 55101
         protocol: tcp
         timeout: 60s
@@ -27,37 +27,37 @@ assertions:
       # worker. A GET request therefore returns 405 Method Not Allowed when the route is present;
       # if the worker failed to assert its DynamicRoute, the request would return 404 instead.
       # Asserting "status != 404" lets us verify route registration without exercising the routes.
-      - type: http_check
+      - assertion: http_check
         endpoint: "https://localhost:55101/logging/override"
         status:
           not_equal: 404
         insecure_skip_verify: true
         timeout: 60s
-      - type: http_check
+      - assertion: http_check
         endpoint: "https://localhost:55101/logging/reset"
         status:
           not_equal: 404
         insecure_skip_verify: true
         timeout: 60s
-      - type: http_check
+      - assertion: http_check
         endpoint: "https://localhost:55101/metrics/override"
         status:
           not_equal: 404
         insecure_skip_verify: true
         timeout: 60s
-      - type: http_check
+      - assertion: http_check
         endpoint: "https://localhost:55101/metrics/reset"
         status:
           not_equal: 404
         insecure_skip_verify: true
         timeout: 60s
-      - type: http_check
+      - assertion: http_check
         endpoint: "https://localhost:55101/config"
         status:
           not_equal: 404
         insecure_skip_verify: true
         timeout: 60s
-      - type: log_not_contains
+      - assertion: log_not_contains
         pattern: "panic|PANIC"
         regex: true
         during: 10s

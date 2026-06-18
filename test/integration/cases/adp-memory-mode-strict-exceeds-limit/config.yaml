@@ -16,10 +16,10 @@ env:
   DD_AGGREGATE_CONTEXT_LIMIT: "10000000"
 
 
-assertions:
+procedure:
   # Observe ADP's actual exit code, regardless of runtime. On linux (s6) this greps the
   # supervisor's exit log line; on mac this reads the exit code recorded by the
   # Unix runner.
-  - type: adp_exits_with
+  - assertion: adp_exits_with
     expected_code: 1
     timeout: 60s
