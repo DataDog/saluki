@@ -192,6 +192,12 @@ impl AggregateConfiguration {
     pub fn from_native(config: AggregateConfig) -> Self {
         Self {
             primary_flush_interval: Duration::from_millis(config.flush_interval_millis),
+            flush_open_windows: config.flush_open_windows,
+            passthrough_timestamped_metrics: config.passthrough_timestamped_metrics,
+            hist_config: HistogramConfiguration::with_copy_config(
+                config.histogram_copy_to_distribution,
+                config.histogram_copy_to_distribution_prefix,
+            ),
             ..Self::with_defaults()
         }
     }

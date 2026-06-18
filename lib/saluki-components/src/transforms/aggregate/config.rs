@@ -127,6 +127,14 @@ pub struct HistogramConfiguration {
 }
 
 impl HistogramConfiguration {
+    pub(super) fn with_copy_config(copy_to_distribution: bool, copy_to_distribution_prefix: String) -> Self {
+        Self {
+            copy_to_distribution,
+            copy_to_distribution_prefix,
+            ..Self::default()
+        }
+    }
+
     #[cfg(test)]
     pub fn from_statistics(
         statistics: &[HistogramStatistic], copy_to_distribution: bool, copy_to_distribution_prefix: String,

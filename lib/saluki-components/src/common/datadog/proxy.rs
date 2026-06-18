@@ -4,6 +4,7 @@ use std::sync::Arc;
 use facet::Facet;
 use headers::Authorization;
 use hyper_http_proxy::{Intercept, Proxy};
+use saluki_component_config::ProxyConfig as NativeProxyConfig;
 use saluki_error::GenericError;
 use serde::Deserialize;
 use url::Url;
@@ -68,6 +69,21 @@ const CLOUD_METADATA_ADDRS: &[&str] = &[
 ];
 
 impl ProxyConfiguration {
+    pub(crate) fn from_native(config: &NativeProxyConfig) -> Option<Self> {
+        let has_proxy = config.http.as_ref().is_some_and(|value| !value.trim().is_empty())
+            || config.https.as_ref().is_some_and(|value| !value.trim().is_empty())
+            || !config.no_proxy.is_empty()
+            || config.no_proxy_nonexact_match
+            || config.use_proxy_for_cloud_metadata;
+        has_proxy.then(|| Self {
+            http_server: config.http.clone(),
+            https_server: config.https.clone(),
+            no_proxy: config.no_proxy.clone(),
+            no_proxy_nonexact_match: config.no_proxy_nonexact_match,
+            use_proxy_for_cloud_metadata: config.use_proxy_for_cloud_metadata,
+        })
+    }
+
     /// Builds the configured proxies.
     ///
     /// Each proxy uses a custom intercept that forwards only requests matching the proxy's scheme

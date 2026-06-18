@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use saluki_component_config::DogStatsDOriginConfig as NativeDogStatsDOriginConfig;
 use saluki_context::{
     origin::{OriginTagCardinality, OriginTagsResolver, RawOrigin},
     tags::SharedTagSet,
@@ -113,6 +114,18 @@ impl Default for OriginEnrichmentConfiguration {
 }
 
 impl OriginEnrichmentConfiguration {
+    pub(super) fn from_native(config: NativeDogStatsDOriginConfig) -> Self {
+        Self {
+            enabled: config.enabled,
+            entity_id_precedence: config.entity_id_precedence,
+            tag_cardinality: OriginTagCardinality::try_from(config.tag_cardinality)
+                .unwrap_or(default_tag_cardinality()),
+            origin_detection_unified: config.unified_detection,
+            origin_detection_optout: config.optout_enabled,
+            origin_detection_client: config.client_detection,
+        }
+    }
+
     pub(super) const fn enabled(&self) -> bool {
         self.enabled
     }

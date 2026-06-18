@@ -185,19 +185,19 @@ pub struct RetryConfiguration {
 impl RetryConfiguration {
     pub(crate) fn from_native(config: &RetryConfig) -> Self {
         Self {
-            backoff_factor: default_request_backoff_factor(),
-            backoff_base: default_request_backoff_base(),
-            backoff_max: default_request_backoff_max(),
-            recovery_error_decrease_factor: default_request_recovery_error_decrease_factor(),
-            recovery_reset: default_request_recovery_reset(),
-            retry_queue_payloads_max_size: None,
-            retry_queue_max_size: None,
+            backoff_factor: config.backoff_factor,
+            backoff_base: config.backoff_base_secs,
+            backoff_max: config.backoff_max_secs,
+            recovery_error_decrease_factor: config.recovery_interval,
+            recovery_reset: config.recovery_reset,
+            retry_queue_payloads_max_size: config.retry_queue_payloads_max_size_bytes,
+            retry_queue_max_size: config.retry_queue_max_size_bytes,
             storage_max_size_bytes: config.max_disk_size_bytes,
             flush_to_disk_mem_ratio: config.flush_to_disk_mem_ratio,
             storage_path: PathBuf::from(&config.storage_path),
-            storage_max_disk_ratio: default_storage_max_disk_ratio(),
-            outdated_file_in_days: default_outdated_file_in_days(),
-            capacity_time_interval_secs: default_retry_queue_capacity_time_interval_secs(),
+            storage_max_disk_ratio: config.storage_max_disk_ratio,
+            outdated_file_in_days: config.outdated_file_in_days,
+            capacity_time_interval_secs: config.capacity_time_interval_secs,
         }
     }
 

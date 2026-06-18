@@ -53,6 +53,22 @@ pub struct ControlConfiguration {
     pub log_level: Option<String>,
     /// IPC authentication and TLS file paths.
     pub ipc_auth: ControlIpcAuthConfiguration,
+    /// Agent IPC maximum gRPC message size.
+    pub agent_ipc_grpc_max_message_size: Option<usize>,
+    /// IPC command port.
+    pub cmd_port: Option<u16>,
+    /// Data plane log file path.
+    pub data_plane_log_file: Option<String>,
+    /// Whether log timestamps use RFC 3339 format.
+    pub log_format_rfc3339: Option<bool>,
+    /// Whether syslog uses RFC formatting.
+    pub syslog_rfc: Option<bool>,
+    /// Syslog URI.
+    pub syslog_uri: Option<String>,
+    /// Default deployment environment name.
+    pub env: Option<String>,
+    /// Vsock address for guest/host transports.
+    pub vsock_addr: Option<String>,
 }
 
 impl ControlConfiguration {
@@ -86,6 +102,14 @@ impl Default for ControlConfiguration {
             standalone_mode: false,
             log_level: None,
             ipc_auth: ControlIpcAuthConfiguration::default(),
+            agent_ipc_grpc_max_message_size: None,
+            cmd_port: None,
+            data_plane_log_file: None,
+            log_format_rfc3339: None,
+            syslog_rfc: None,
+            syslog_uri: None,
+            env: None,
+            vsock_addr: None,
         }
     }
 }

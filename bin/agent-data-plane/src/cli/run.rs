@@ -423,7 +423,10 @@ async fn add_baseline_traces_pipeline_to_blueprint(
             OttlTransformConfiguration::from_native(Default::default()),
         )
         .with_transform_builder("apm_onboarding", ApmOnboardingConfiguration)
-        .with_transform_builder("trace_obfuscation", TraceObfuscationConfiguration::new())
+        .with_transform_builder(
+            "trace_obfuscation",
+            TraceObfuscationConfiguration::from_native(components.traces.obfuscation.clone()),
+        )
         .with_transform_builder("trace_sampler", trace_sampler_config);
     let apm_stats_transform_config = ApmStatsTransformConfiguration::from_native()
         .with_environment_provider(env_provider.clone())

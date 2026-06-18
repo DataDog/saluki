@@ -8,8 +8,9 @@ use super::json::JsonObfuscator;
 use super::memcached::obfuscate_memcached_command;
 use super::redis::{obfuscate_redis_string, obfuscate_valkey_string, quantize_redis_string};
 pub use crate::common::datadog::obfuscation::{
-    CreditCardObfuscationConfig, HttpObfuscationConfig, MemcachedObfuscationConfig, ObfuscationConfig,
-    RedisObfuscationConfig, SqlObfuscationConfig, ValkeyObfuscationConfig,
+    CreditCardObfuscationConfig, EsObfuscationConfig, HttpObfuscationConfig, MemcachedObfuscationConfig,
+    MongoObfuscationConfig, ObfuscationConfig, OpenSearchObfuscationConfig, RedisObfuscationConfig,
+    SqlObfuscationConfig, ValkeyObfuscationConfig,
 };
 
 /// Tag name constants for span metadata.

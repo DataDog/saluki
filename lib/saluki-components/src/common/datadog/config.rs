@@ -97,6 +97,13 @@ impl From<ForwarderHttpProtocol> for HttpProtocol {
     }
 }
 
+fn http_protocol_from_native(value: &str) -> ForwarderHttpProtocol {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "http1" => ForwarderHttpProtocol::Http1,
+        _ => ForwarderHttpProtocol::Auto,
+    }
+}
+
 /// OPW metrics endpoint configuration.
 #[derive(Clone, Default, Deserialize, Facet)]
 #[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
@@ -286,21 +293,30 @@ impl ForwarderConfiguration {
     pub fn from_native(config: &DatadogForwarderConfig) -> Self {
         Self {
             endpoint_concurrency: config.endpoint_concurrency,
-            endpoint_concurrency_multiplier: default_endpoint_concurrency_multiplier(),
+            endpoint_concurrency_multiplier: config.endpoint_concurrency_multiplier,
             request_timeout_secs: config.request_timeout_millis / 1000,
-            endpoint_buffer_size: default_endpoint_buffer_size(),
+            endpoint_buffer_size: config.endpoint_buffer_size,
             endpoint: EndpointConfiguration::from_native(&config.endpoints),
             retry: RetryConfiguration::from_native(&config.retry),
-            proxy: None,
-            opw_metrics: OpwMetricsConfiguration::default(),
-            http_protocol: ForwarderHttpProtocol::default(),
-            connection_reset_interval_secs: default_forwarder_connection_reset_interval(),
+            proxy: ProxyConfiguration::from_native(&config.proxy),
+            opw_metrics: OpwMetricsConfiguration {
+                observability_pipelines_worker_enabled: config.opw_metrics.opw_enabled,
+                observability_pipelines_worker_url: config.opw_metrics.opw_url.clone(),
+                vector_enabled: config.opw_metrics.vector_enabled,
+                vector_url: config.opw_metrics.vector_url.clone(),
+            },
+            http_protocol: http_protocol_from_native(&config.http_protocol),
+            connection_reset_interval_secs: config.connection_reset_interval_secs,
             skip_ssl_validation: !config.tls.verify,
-            sslkeylogfile: String::new(),
-            min_tls_version: default_min_tls_version(),
-            parsed_min_tls_version: min_tls_version_from_config_value(&default_min_tls_version()),
+            sslkeylogfile: config.ssl_key_log_file.clone(),
+            min_tls_version: config.min_tls_version.clone(),
+            parsed_min_tls_version: min_tls_version_from_config_value(&config.min_tls_version),
             allow_arbitrary_tags: config.allow_arbitrary_tags,
-            api_key_validation_interval_mins: default_api_key_validation_interval_mins() as i64,
+            api_key_validation_interval_mins: if config.api_key_validation_interval_mins <= 0 {
+                default_api_key_validation_interval_mins() as i64
+            } else {
+                config.api_key_validation_interval_mins
+            },
         }
     }
 

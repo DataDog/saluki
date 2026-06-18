@@ -129,7 +129,15 @@ impl OtlpConfiguration {
     pub fn from_native(config: NativeOtlpConfig) -> Self {
         let mut otlp_config = OtlpConfig::default();
         otlp_config.receiver.protocols.grpc.endpoint = config.grpc_endpoint;
+        otlp_config.receiver.protocols.grpc.transport = config.grpc_transport;
+        otlp_config.receiver.protocols.grpc.max_recv_msg_size_mib = config.grpc_max_recv_msg_size_mib;
         otlp_config.receiver.protocols.http.endpoint = config.http_endpoint;
+        otlp_config.receiver.protocols.http.transport = config.http_transport;
+        otlp_config.metrics.enabled = config.metrics_enabled;
+        otlp_config.logs.enabled = config.logs_enabled;
+        otlp_config.traces.enabled = config.traces_enabled;
+        otlp_config.traces.internal_port = config.traces_internal_port;
+        otlp_config.traces.probabilistic_sampler.sampling_percentage = config.traces_sampling_percentage;
         Self {
             otlp_config,
             context_string_interner_bytes: ByteSize::b(config.string_interner_size as u64),

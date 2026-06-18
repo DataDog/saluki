@@ -653,10 +653,36 @@ impl DogStatsDConfiguration {
     pub fn from_native(config: NativeDogStatsDConfig) -> Self {
         let mut native = Self {
             buffer_size: config.buffer_size,
+            buffer_count: config.buffer_count,
+            socket_receive_buffer_size: config.socket_receive_buffer_size,
+            socket_path: config.socket_path,
+            socket_stream_path: config.socket_stream_path,
+            stream_log_too_big: config.stream_log_too_big,
+            eol_required: config.eol_required,
+            non_local_traffic: config.non_local_traffic,
+            autoscale_udp_listeners: config.autoscale_udp_listeners,
+            allow_context_heap_allocations: config.allow_context_heap_allocations,
+            no_aggregation_pipeline_support: config.no_aggregation_pipeline_support,
+            context_string_interner_entry_count: config.context_string_interner_entry_count,
             context_string_interner_size_bytes: Some(ByteSize::b(config.context_string_interner_size_bytes)),
             cached_contexts_limit: config.cached_contexts_limit,
-            socket_path: config.socket_path,
+            cached_tagsets_limit: config.cached_tagsets_limit,
+            context_expiry_seconds: config.context_expiry_seconds,
+            permissive_decoding: config.permissive_decoding,
+            minimum_sample_rate: config.minimum_sample_rate,
+            enable_payloads: EnablePayloadsConfiguration {
+                series: config.enable_payloads.series,
+                sketches: config.enable_payloads.sketches,
+                events: config.enable_payloads.events,
+                service_checks: config.enable_payloads.service_checks,
+            },
+            origin_enrichment: OriginEnrichmentConfiguration::from_native(config.origin),
             additional_tags: config.additional_tags,
+            capture_path: PathBuf::from(config.capture_path),
+            capture_depth: config.capture_depth,
+            provider_kind: config.provider_kind,
+            statsd_forward_host: config.statsd_forward_host.map(MetaString::from),
+            statsd_forward_port: config.statsd_forward_port,
             ..Self::default()
         };
 

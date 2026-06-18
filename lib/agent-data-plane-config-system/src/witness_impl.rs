@@ -11,6 +11,8 @@ pub struct Translator {
     additional_endpoints: Vec<EndpointConfig>,
     aggregator_stop_timeout_secs: u64,
     forwarder_stop_timeout_secs: u64,
+    dogstatsd_bind_host: Option<String>,
+    dogstatsd_non_local_traffic: bool,
 }
 
 impl Translator {
@@ -23,11 +25,23 @@ impl Translator {
             additional_endpoints: Vec::new(),
             aggregator_stop_timeout_secs: 2,
             forwarder_stop_timeout_secs: 2,
+            dogstatsd_bind_host: None,
+            dogstatsd_non_local_traffic: false,
         }
     }
 
     /// Finishes translation and resolves multi-key fields.
     pub fn finish(mut self) -> SalukiConfiguration {
+        let dogstatsd_host = if self.dogstatsd_non_local_traffic {
+            Some("0.0.0.0")
+        } else {
+            self.dogstatsd_bind_host.as_deref()
+        };
+        if let Some(host) = dogstatsd_host {
+            set_network_listen_host(&mut self.native.components.dogstatsd.source.udp_address, host);
+            set_network_listen_host(&mut self.native.components.dogstatsd.source.tcp_address, host);
+        }
+
         let mut endpoints = vec![EndpointConfig {
             url: self.dd_url,
             api_key: self.api_key,
@@ -47,12 +61,187 @@ impl Translator {
         };
         match key {
             "additional_endpoints" => self.consume_additional_endpoints_value(value),
+            "agent_ipc.grpc_max_message_size" => {
+                self.native.control.agent_ipc_grpc_max_message_size = Some(usize_value(value, 0));
+            }
             "aggregator_stop_timeout" => self.aggregator_stop_timeout_secs = u64_value(value, 2),
             "allow_arbitrary_tags" => self.native.components.forwarder.datadog.allow_arbitrary_tags = bool_value(value),
             "api_key" => self.api_key = string_value(value),
+            "apm_config.obfuscation.credit_cards.enabled" => {
+                self.native.components.traces.obfuscation.credit_cards.enabled = bool_value(value);
+            }
+            "apm_config.obfuscation.credit_cards.keep_values" => {
+                self.native.components.traces.obfuscation.credit_cards.keep_values = string_vec_value(value);
+            }
+            "apm_config.obfuscation.credit_cards.luhn" => {
+                self.native.components.traces.obfuscation.credit_cards.luhn = bool_value(value);
+            }
+            "apm_config.obfuscation.elasticsearch.enabled" => {
+                self.native.components.traces.obfuscation.elasticsearch.enabled = bool_value(value);
+            }
+            "apm_config.obfuscation.elasticsearch.keep_values" => {
+                self.native.components.traces.obfuscation.elasticsearch.keep_values = string_vec_value(value);
+            }
+            "apm_config.obfuscation.elasticsearch.obfuscate_sql_values" => {
+                self.native
+                    .components
+                    .traces
+                    .obfuscation
+                    .elasticsearch
+                    .obfuscate_sql_values = string_vec_value(value);
+            }
+            "apm_config.obfuscation.http.remove_paths_with_digits" => {
+                self.native.components.traces.obfuscation.http.remove_paths_with_digits = bool_value(value);
+            }
+            "apm_config.obfuscation.http.remove_query_string" => {
+                self.native.components.traces.obfuscation.http.remove_query_string = bool_value(value);
+            }
+            "apm_config.obfuscation.memcached.enabled" => {
+                self.native.components.traces.obfuscation.memcached.enabled = bool_value(value);
+            }
+            "apm_config.obfuscation.memcached.keep_command" => {
+                self.native.components.traces.obfuscation.memcached.keep_command = bool_value(value);
+            }
+            "apm_config.obfuscation.mongodb.enabled" => {
+                self.native.components.traces.obfuscation.mongodb.enabled = bool_value(value);
+            }
+            "apm_config.obfuscation.mongodb.keep_values" => {
+                self.native.components.traces.obfuscation.mongodb.keep_values = string_vec_value(value);
+            }
+            "apm_config.obfuscation.mongodb.obfuscate_sql_values" => {
+                self.native.components.traces.obfuscation.mongodb.obfuscate_sql_values = string_vec_value(value);
+            }
+            "apm_config.obfuscation.opensearch.enabled" => {
+                self.native.components.traces.obfuscation.opensearch.enabled = bool_value(value);
+            }
+            "apm_config.obfuscation.opensearch.keep_values" => {
+                self.native.components.traces.obfuscation.opensearch.keep_values = string_vec_value(value);
+            }
+            "apm_config.obfuscation.opensearch.obfuscate_sql_values" => {
+                self.native
+                    .components
+                    .traces
+                    .obfuscation
+                    .opensearch
+                    .obfuscate_sql_values = string_vec_value(value);
+            }
+            "apm_config.obfuscation.redis.enabled" => {
+                self.native.components.traces.obfuscation.redis.enabled = bool_value(value);
+            }
+            "apm_config.obfuscation.redis.remove_all_args" => {
+                self.native.components.traces.obfuscation.redis.remove_all_args = bool_value(value);
+            }
+            "apm_config.obfuscation.valkey.enabled" => {
+                self.native.components.traces.obfuscation.valkey.enabled = bool_value(value);
+            }
+            "apm_config.obfuscation.valkey.remove_all_args" => {
+                self.native.components.traces.obfuscation.valkey.remove_all_args = bool_value(value);
+            }
             "dd_url" => self.dd_url = string_value(value),
+            "bind_host" => {
+                self.dogstatsd_bind_host = optional_string_value(value);
+            }
+            "cmd_port" => {
+                self.native.control.cmd_port = Some(u16_value(value, 5001));
+            }
+            "cri_connection_timeout" => {
+                self.native.components.workload.source.cri_connection_timeout_secs = u64_value(value, 0);
+            }
+            "cri_query_timeout" => {
+                self.native.components.workload.source.cri_query_timeout_secs = u64_value(value, 0);
+            }
+            "data_plane.log_file" => {
+                self.native.control.data_plane_log_file = optional_string_value(value);
+            }
             "dogstatsd_buffer_size" => {
                 self.native.components.dogstatsd.source.buffer_size = usize_value(value, 8192);
+            }
+            "dogstatsd_capture_depth" => {
+                self.native.components.dogstatsd.source.capture_depth = usize_value(value, 1024);
+            }
+            "dogstatsd_capture_path" => {
+                self.native.components.dogstatsd.source.capture_path = string_value(value);
+            }
+            "dogstatsd_context_expiry_seconds" => {
+                self.native.components.dogstatsd.source.context_expiry_seconds = u64_value(value, 20);
+            }
+            "dogstatsd_entity_id_precedence" => {
+                self.native.components.dogstatsd.source.origin.entity_id_precedence = bool_value(value);
+            }
+            "dogstatsd_eol_required" => {
+                self.native.components.dogstatsd.source.eol_required = string_vec_value(value);
+            }
+            "dogstatsd_flush_incomplete_buckets" => {
+                self.native.components.dogstatsd.aggregate.flush_open_windows = bool_value(value);
+            }
+            "dogstatsd_no_aggregation_pipeline" => {
+                let enabled = bool_value(value);
+                self.native.components.dogstatsd.source.no_aggregation_pipeline_support = enabled;
+                self.native
+                    .components
+                    .dogstatsd
+                    .aggregate
+                    .passthrough_timestamped_metrics = enabled;
+            }
+            "dogstatsd_non_local_traffic" => {
+                let enabled = bool_value(value);
+                self.native.components.dogstatsd.source.non_local_traffic = enabled;
+                self.dogstatsd_non_local_traffic = enabled;
+            }
+            "dogstatsd_origin_detection" => {
+                self.native.components.dogstatsd.source.origin.enabled = bool_value(value);
+            }
+            "dogstatsd_origin_detection_client" => {
+                self.native.components.dogstatsd.source.origin.client_detection = bool_value(value);
+            }
+            "dogstatsd_origin_optout_enabled" => {
+                self.native.components.dogstatsd.source.origin.optout_enabled = bool_value(value);
+            }
+            "dogstatsd_so_rcvbuf" => {
+                self.native.components.dogstatsd.source.socket_receive_buffer_size = usize_value(value, 0);
+            }
+            "dogstatsd_stream_log_too_big" => {
+                self.native.components.dogstatsd.source.stream_log_too_big = bool_value(value);
+            }
+            "dogstatsd_stream_socket" => {
+                self.native.components.dogstatsd.source.socket_stream_path = optional_string_value(value);
+            }
+            "dogstatsd_string_interner_size" => {
+                self.native
+                    .components
+                    .dogstatsd
+                    .source
+                    .context_string_interner_entry_count = u64_value(value, 4096);
+            }
+            "dogstatsd_tag_cardinality" => {
+                self.native.components.dogstatsd.source.origin.tag_cardinality = string_value(value);
+            }
+            "enable_payloads.events" => {
+                self.native.components.dogstatsd.source.enable_payloads.events = bool_value(value);
+            }
+            "enable_payloads.series" => {
+                self.native.components.dogstatsd.source.enable_payloads.series = bool_value(value);
+            }
+            "enable_payloads.service_checks" => {
+                self.native.components.dogstatsd.source.enable_payloads.service_checks = bool_value(value);
+            }
+            "enable_payloads.sketches" => {
+                self.native.components.dogstatsd.source.enable_payloads.sketches = bool_value(value);
+            }
+            "env" => {
+                self.native.control.env = optional_string_value(value);
+            }
+            "origin_detection_unified" => {
+                self.native.components.dogstatsd.source.origin.unified_detection = bool_value(value);
+            }
+            "provider_kind" => {
+                self.native.components.dogstatsd.source.provider_kind = string_value(value);
+            }
+            "statsd_forward_host" => {
+                self.native.components.dogstatsd.source.statsd_forward_host = optional_string_value(value);
+            }
+            "statsd_forward_port" => {
+                self.native.components.dogstatsd.source.statsd_forward_port = u16_value(value, 0);
             }
             "dogstatsd_mapper_cache_size" => {
                 self.native.components.dogstatsd.mapper.cache_size = usize_value(value, 1000);
@@ -161,17 +350,110 @@ impl Translator {
                     enabled: bool_value(value),
                 };
             }
+            "otlp_config.logs.enabled" => {
+                let enabled = bool_value(value);
+                self.native.control.otlp.logs.enabled = enabled;
+                self.native.components.otlp.source.logs_enabled = enabled;
+            }
+            "otlp_config.metrics.enabled" => {
+                let enabled = bool_value(value);
+                self.native.control.otlp.metrics.enabled = enabled;
+                self.native.components.otlp.source.metrics_enabled = enabled;
+            }
+            "otlp_config.traces.enabled" => {
+                let enabled = bool_value(value);
+                self.native.control.otlp.traces.enabled = enabled;
+                self.native.components.otlp.source.traces_enabled = enabled;
+            }
             "otlp_config.receiver.protocols.grpc.endpoint" => {
                 self.native.components.otlp.source.grpc_endpoint = string_value(value);
+            }
+            "otlp_config.receiver.protocols.grpc.max_recv_msg_size_mib" => {
+                self.native.components.otlp.source.grpc_max_recv_msg_size_mib = u64_value(value, 4);
+            }
+            "otlp_config.receiver.protocols.grpc.transport" => {
+                self.native.components.otlp.source.grpc_transport = string_value(value);
             }
             "otlp_config.receiver.protocols.http.endpoint" => {
                 self.native.components.otlp.source.http_endpoint = string_value(value);
             }
+            "otlp_config.traces.internal_port" => {
+                self.native.components.otlp.source.traces_internal_port = u16_value(value, 5003);
+            }
+            "otlp_config.traces.probabilistic_sampler.sampling_percentage" => {
+                let percentage = f64_value(value, 100.0);
+                self.native.components.otlp.source.traces_sampling_percentage = percentage;
+                self.native.components.traces.sampler.rate = percentage / 100.0;
+            }
+            "forwarder_apikey_validation_interval" => {
+                self.native
+                    .components
+                    .forwarder
+                    .datadog
+                    .api_key_validation_interval_mins = i64_value(value, 60);
+            }
+            "forwarder_backoff_base" => {
+                self.native.components.forwarder.datadog.retry.backoff_base_secs = f64_value(value, 2.0);
+            }
+            "forwarder_backoff_factor" => {
+                self.native.components.forwarder.datadog.retry.backoff_factor = f64_value(value, 2.0);
+            }
+            "forwarder_backoff_max" => {
+                self.native.components.forwarder.datadog.retry.backoff_max_secs = f64_value(value, 64.0);
+            }
+            "forwarder_connection_reset_interval" => {
+                self.native.components.forwarder.datadog.connection_reset_interval_secs = u64_value(value, 0);
+            }
             "forwarder_flush_to_disk_mem_ratio" => {
                 self.native.components.forwarder.datadog.retry.flush_to_disk_mem_ratio = f64_value(value, 0.5);
             }
+            "forwarder_high_prio_buffer_size" => {
+                self.native.components.forwarder.datadog.endpoint_buffer_size = usize_value(value, 100);
+            }
+            "forwarder_http_protocol" => {
+                self.native.components.forwarder.datadog.http_protocol = string_value(value);
+            }
             "forwarder_max_concurrent_requests" => {
                 self.native.components.forwarder.datadog.endpoint_concurrency = usize_value(value, 10);
+            }
+            "forwarder_num_workers" => {
+                self.native.components.forwarder.datadog.endpoint_concurrency_multiplier = usize_value(value, 1);
+            }
+            "forwarder_outdated_file_in_days" => {
+                self.native.components.forwarder.datadog.retry.outdated_file_in_days = u32_value(value, 10);
+            }
+            "forwarder_recovery_interval" => {
+                self.native.components.forwarder.datadog.retry.recovery_interval = u32_value(value, 2);
+            }
+            "forwarder_recovery_reset" => {
+                self.native.components.forwarder.datadog.retry.recovery_reset = bool_value(value);
+            }
+            "forwarder_retry_queue_capacity_time_interval_sec" => {
+                self.native
+                    .components
+                    .forwarder
+                    .datadog
+                    .retry
+                    .capacity_time_interval_secs = u64_value(value, 15 * 60);
+            }
+            "forwarder_retry_queue_max_size" => {
+                self.native
+                    .components
+                    .forwarder
+                    .datadog
+                    .retry
+                    .retry_queue_max_size_bytes = Some(u64_value(value, 0));
+            }
+            "forwarder_retry_queue_payloads_max_size" => {
+                self.native
+                    .components
+                    .forwarder
+                    .datadog
+                    .retry
+                    .retry_queue_payloads_max_size_bytes = Some(u64_value(value, 15 * 1024 * 1024));
+            }
+            "forwarder_storage_max_disk_ratio" => {
+                self.native.components.forwarder.datadog.retry.storage_max_disk_ratio = f64_value(value, 0.8);
             }
             "forwarder_storage_max_size_in_bytes" => {
                 self.native.components.forwarder.datadog.retry.max_disk_size_bytes = u64_value(value, 0);
@@ -191,6 +473,20 @@ impl Translator {
                     .post_aggregate_filter
                     .histogram_aggregates = string_vec_value(value);
             }
+            "histogram_copy_to_distribution" => {
+                self.native
+                    .components
+                    .dogstatsd
+                    .aggregate
+                    .histogram_copy_to_distribution = bool_value(value);
+            }
+            "histogram_copy_to_distribution_prefix" => {
+                self.native
+                    .components
+                    .dogstatsd
+                    .aggregate
+                    .histogram_copy_to_distribution_prefix = string_value(value);
+            }
             "histogram_percentiles" => {
                 self.native
                     .components
@@ -198,15 +494,107 @@ impl Translator {
                     .post_aggregate_filter
                     .histogram_percentiles = string_vec_value(value);
             }
+            "log_format_rfc3339" => {
+                self.native.control.log_format_rfc3339 = Some(bool_value(value));
+            }
             "log_level" => self.native.control.log_level = Some(string_value(value)),
+            "log_payloads" => {
+                self.native.components.metrics.datadog_encoder.log_payloads = bool_value(value);
+            }
+            "min_tls_version" => {
+                self.native.components.forwarder.datadog.min_tls_version = string_value(value);
+            }
+            "no_proxy_nonexact_match" => {
+                self.native.components.forwarder.datadog.proxy.no_proxy_nonexact_match = bool_value(value);
+            }
+            "observability_pipelines_worker.metrics.enabled" => {
+                self.native.components.forwarder.datadog.opw_metrics.opw_enabled = bool_value(value);
+            }
+            "observability_pipelines_worker.metrics.url" => {
+                self.native.components.forwarder.datadog.opw_metrics.opw_url = string_value(value);
+            }
+            "proxy.http" => {
+                self.native.components.forwarder.datadog.proxy.http = optional_string_value(value);
+            }
+            "proxy.https" => {
+                self.native.components.forwarder.datadog.proxy.https = optional_string_value(value);
+            }
+            "proxy.no_proxy" => {
+                self.native.components.forwarder.datadog.proxy.no_proxy = string_vec_value(value);
+            }
+            "serializer_compressor_kind" => {
+                self.native.components.metrics.datadog_encoder.compressor_kind = string_value(value);
+            }
+            "serializer_max_payload_size" => {
+                self.native.components.metrics.datadog_encoder.max_payload_size = usize_value(value, 2_621_440);
+            }
+            "serializer_max_series_payload_size" => {
+                self.native.components.metrics.datadog_encoder.max_series_payload_size = usize_value(value, 512_000);
+            }
+            "serializer_max_series_points_per_payload" => {
+                self.native
+                    .components
+                    .metrics
+                    .datadog_encoder
+                    .max_series_points_per_payload = usize_value(value, 10_000);
+            }
+            "serializer_max_series_uncompressed_payload_size" => {
+                self.native
+                    .components
+                    .metrics
+                    .datadog_encoder
+                    .max_series_uncompressed_payload_size = usize_value(value, 5_242_880);
+            }
+            "serializer_max_uncompressed_payload_size" => {
+                self.native
+                    .components
+                    .metrics
+                    .datadog_encoder
+                    .max_uncompressed_payload_size = usize_value(value, 4_194_304);
+            }
+            "serializer_zstd_compressor_level" => {
+                self.native.components.metrics.datadog_encoder.compression_level = i32_value(value, 3);
+            }
             "skip_ssl_validation" => {
                 self.native.components.forwarder.datadog.tls.verify = !bool_value(value);
+            }
+            "sslkeylogfile" => {
+                self.native.components.forwarder.datadog.ssl_key_log_file = string_value(value);
             }
             "statsd_metric_namespace" => {
                 self.native.components.dogstatsd.prefix_filter.metric_prefix = string_value(value);
             }
-            "statsd_metric_namespace_blacklist" | "statsd_metric_namespace_blocklist" => {
+            "statsd_metric_namespace_blacklist" => {
                 self.native.components.dogstatsd.prefix_filter.metric_prefix_blocklist = string_vec_value(value);
+            }
+            "statsd_metric_namespace_blocklist" => {
+                self.native.components.dogstatsd.prefix_filter.metric_prefix_blocklist = string_vec_value(value);
+            }
+            "syslog_rfc" => {
+                self.native.control.syslog_rfc = Some(bool_value(value));
+            }
+            "syslog_uri" => {
+                self.native.control.syslog_uri = optional_string_value(value);
+            }
+            "use_proxy_for_cloud_metadata" => {
+                self.native
+                    .components
+                    .forwarder
+                    .datadog
+                    .proxy
+                    .use_proxy_for_cloud_metadata = bool_value(value);
+            }
+            "use_v2_api.series" => {
+                self.native.components.metrics.datadog_encoder.use_v2_api_series = bool_value(value);
+            }
+            "vector.metrics.enabled" => {
+                self.native.components.forwarder.datadog.opw_metrics.vector_enabled = bool_value(value);
+            }
+            "vector.metrics.url" => {
+                self.native.components.forwarder.datadog.opw_metrics.vector_url = string_value(value);
+            }
+            "vsock_addr" => {
+                self.native.control.vsock_addr = optional_string_value(value);
             }
             "url" => self.dd_url = string_value(value),
             "site" => {
@@ -237,7 +625,7 @@ impl Translator {
             "multi_region_failover.metric_allowlist" => {
                 self.native.components.metrics.multi_region_failover.metric_allowlist = string_vec_value(value);
             }
-            _ => {}
+            unknown => unreachable!("unhandled Datadog config witness key: {unknown}"),
         }
         Ok(())
     }
@@ -285,8 +673,37 @@ fn u16_value(value: Value, default: u16) -> u16 {
     value.as_u64().and_then(|v| v.try_into().ok()).unwrap_or(default)
 }
 
+fn u32_value(value: Value, default: u32) -> u32 {
+    value.as_u64().and_then(|v| v.try_into().ok()).unwrap_or(default)
+}
+
+fn i32_value(value: Value, default: i32) -> i32 {
+    value.as_i64().and_then(|v| v.try_into().ok()).unwrap_or(default)
+}
+
+fn i64_value(value: Value, default: i64) -> i64 {
+    value.as_i64().unwrap_or(default)
+}
+
 fn f64_value(value: Value, default: f64) -> f64 {
     value.as_f64().unwrap_or(default)
+}
+
+fn optional_string_value(value: Value) -> Option<String> {
+    let value = string_value(value);
+    (!value.is_empty()).then_some(value)
+}
+
+fn set_network_listen_host(address: &mut ListenAddress, host: &str) {
+    match address {
+        ListenAddress::Udp(value) | ListenAddress::Tcp(value) => {
+            let port = value.rsplit_once(':').map(|(_, port)| port).unwrap_or_default();
+            if !port.is_empty() {
+                *value = format!("{host}:{port}");
+            }
+        }
+        ListenAddress::Disabled | ListenAddress::Unix(_) => {}
+    }
 }
 
 fn array_value(value: Value) -> Vec<Value> {

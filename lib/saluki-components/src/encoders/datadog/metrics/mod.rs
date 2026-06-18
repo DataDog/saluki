@@ -287,17 +287,17 @@ impl DatadogMetricsConfiguration {
     /// Creates a metrics encoder configuration from native config.
     pub fn from_native(config: DatadogMetricsEncoderConfig) -> Self {
         Self {
-            max_metrics_per_payload: default_max_metrics_per_payload(),
-            max_payload_size: default_max_payload_size(),
-            max_uncompressed_payload_size: default_max_uncompressed_payload_size(),
-            max_series_payload_size: default_max_series_payload_size(),
-            max_series_uncompressed_payload_size: default_max_series_uncompressed_payload_size(),
-            max_series_points_per_payload: default_max_series_points_per_payload(),
-            flush_timeout_secs: default_flush_timeout_secs(),
-            compressor_kind: default_serializer_compressor_kind(),
+            max_metrics_per_payload: config.max_metrics_per_payload,
+            max_payload_size: config.max_payload_size,
+            max_uncompressed_payload_size: config.max_uncompressed_payload_size,
+            max_series_payload_size: config.max_series_payload_size,
+            max_series_uncompressed_payload_size: config.max_series_uncompressed_payload_size,
+            max_series_points_per_payload: config.max_series_points_per_payload,
+            flush_timeout_secs: config.flush_timeout_secs,
+            compressor_kind: config.compressor_kind,
             zstd_compressor_level: config.compression_level,
-            use_v2_api_series: default_use_v2_api_series(),
-            log_payloads: default_log_payloads(),
+            use_v2_api_series: config.use_v2_api_series,
+            log_payloads: config.log_payloads,
             additional_tags: None,
         }
     }

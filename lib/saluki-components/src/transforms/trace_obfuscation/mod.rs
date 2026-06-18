@@ -13,6 +13,9 @@ mod sql_tokenizer;
 use async_trait::async_trait;
 use facet::Facet;
 use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
+use saluki_component_config::{
+    JsonObfuscationConfig as NativeJsonObfuscationConfig, TraceObfuscationConfig as NativeTraceObfuscationConfig,
+};
 use saluki_core::{
     components::{transforms::*, ComponentContext},
     data_model::event::{
@@ -44,6 +47,69 @@ impl TraceObfuscationConfiguration {
         Self {
             config: ObfuscationConfig::default(),
         }
+    }
+
+    /// Creates a trace obfuscation configuration from native config.
+    pub fn from_native(config: NativeTraceObfuscationConfig) -> Self {
+        Self {
+            config: ObfuscationConfig {
+                credit_cards: credit_cards_from_native(config.credit_cards),
+                http: obfuscator::HttpObfuscationConfig {
+                    remove_path_digits: config.http.remove_paths_with_digits,
+                    remove_query_string: config.http.remove_query_string,
+                },
+                memcached: obfuscator::MemcachedObfuscationConfig {
+                    enabled: config.memcached.enabled,
+                    keep_command: config.memcached.keep_command,
+                },
+                redis: obfuscator::RedisObfuscationConfig {
+                    enabled: config.redis.enabled,
+                    remove_all_args: config.redis.remove_all_args,
+                },
+                valkey: obfuscator::ValkeyObfuscationConfig {
+                    enabled: config.valkey.enabled,
+                    remove_all_args: config.valkey.remove_all_args,
+                },
+                sql: obfuscator::SqlObfuscationConfig::default(),
+                mongo: mongo_from_native(config.mongodb),
+                es: es_from_native(config.elasticsearch),
+                open_search: open_search_from_native(config.opensearch),
+            },
+        }
+    }
+}
+
+fn credit_cards_from_native(
+    config: saluki_component_config::CreditCardObfuscationConfig,
+) -> obfuscator::CreditCardObfuscationConfig {
+    obfuscator::CreditCardObfuscationConfig {
+        enabled: config.enabled,
+        luhn: config.luhn,
+        keep_values: config.keep_values,
+    }
+}
+
+fn es_from_native(config: NativeJsonObfuscationConfig) -> obfuscator::EsObfuscationConfig {
+    obfuscator::EsObfuscationConfig {
+        enabled: config.enabled,
+        keep_values: config.keep_values,
+        obfuscate_sql_values: config.obfuscate_sql_values,
+    }
+}
+
+fn mongo_from_native(config: NativeJsonObfuscationConfig) -> obfuscator::MongoObfuscationConfig {
+    obfuscator::MongoObfuscationConfig {
+        enabled: config.enabled,
+        keep_values: config.keep_values,
+        obfuscate_sql_values: config.obfuscate_sql_values,
+    }
+}
+
+fn open_search_from_native(config: NativeJsonObfuscationConfig) -> obfuscator::OpenSearchObfuscationConfig {
+    obfuscator::OpenSearchObfuscationConfig {
+        enabled: config.enabled,
+        keep_values: config.keep_values,
+        obfuscate_sql_values: config.obfuscate_sql_values,
     }
 }
 
