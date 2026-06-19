@@ -23,6 +23,10 @@ pub trait DatadogConfigConsumer {
     fn consume_allow_arbitrary_tags(&mut self, value: bool);
     /// Consumes the value of the `api_key` key.
     fn consume_api_key(&mut self, value: String);
+    /// Consumes the value of the `apm_config.error_tracking_standalone.enabled` key.
+    fn consume_apm_config_error_tracking_standalone_enabled(&mut self, value: bool);
+    /// Consumes the value of the `apm_config.errors_per_second` key.
+    fn consume_apm_config_errors_per_second(&mut self, value: f64);
     /// Consumes the value of the `apm_config.obfuscation.credit_cards.enabled` key.
     fn consume_apm_config_obfuscation_credit_cards_enabled(&mut self, value: bool);
     /// Consumes the value of the `apm_config.obfuscation.credit_cards.keep_values` key.
@@ -237,6 +241,8 @@ pub trait DatadogConfigConsumer {
     fn consume_metric_filterlist(&mut self, value: Vec<String>);
     /// Consumes the value of the `metric_filterlist_match_prefix` key.
     fn consume_metric_filterlist_match_prefix(&mut self, value: bool);
+    /// Consumes the value of the `metric_tag_filterlist` key.
+    fn consume_metric_tag_filterlist(&mut self, value: Vec<::serde_json::Value>);
     /// Consumes the value of the `min_tls_version` key.
     fn consume_min_tls_version(&mut self, value: String);
     /// Consumes the value of the `multi_region_failover.api_key` key.
@@ -355,6 +361,10 @@ fn section_defaults<T: serde::de::DeserializeOwned>() -> T {
 pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigConsumer) -> Result<(), TranslateError> {
     let agent_ipc = config.agent_ipc.clone().unwrap_or_else(section_defaults);
     let apm_config = config.apm_config.clone().unwrap_or_else(section_defaults);
+    let apm_config_error_tracking_standalone = apm_config
+        .error_tracking_standalone
+        .clone()
+        .unwrap_or_else(section_defaults);
     let apm_config_obfuscation = apm_config.obfuscation.clone().unwrap_or_else(section_defaults);
     let apm_config_obfuscation_credit_cards = apm_config_obfuscation
         .credit_cards
@@ -428,6 +438,8 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigCon
     consumer.consume_aggregator_stop_timeout(config.aggregator_stop_timeout.clone());
     consumer.consume_allow_arbitrary_tags(config.allow_arbitrary_tags.clone());
     consumer.consume_api_key(config.api_key.clone());
+    consumer.consume_apm_config_error_tracking_standalone_enabled(apm_config_error_tracking_standalone.enabled.clone());
+    consumer.consume_apm_config_errors_per_second(apm_config.errors_per_second.clone());
     consumer.consume_apm_config_obfuscation_credit_cards_enabled(apm_config_obfuscation_credit_cards.enabled.clone());
     consumer.consume_apm_config_obfuscation_credit_cards_keep_values(
         apm_config_obfuscation_credit_cards.keep_values.clone(),
@@ -558,6 +570,7 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigCon
     consumer.consume_log_payloads(config.log_payloads.clone());
     consumer.consume_metric_filterlist(config.metric_filterlist.clone());
     consumer.consume_metric_filterlist_match_prefix(config.metric_filterlist_match_prefix.clone());
+    consumer.consume_metric_tag_filterlist(config.metric_tag_filterlist.clone());
     consumer.consume_min_tls_version(config.min_tls_version.clone());
     consumer.consume_multi_region_failover_api_key(multi_region_failover.api_key.clone());
     consumer.consume_multi_region_failover_dd_url(multi_region_failover.dd_url.clone());

@@ -197,6 +197,26 @@ inventory:
       additional_attributes:
         config_registry_filename: forwarder.rs
 
+  apm_config.error_tracking_standalone.enabled:
+    support: full
+    pipelines: [traces]
+    description: "Enable Error Tracking Standalone mode"
+    test_support:
+      used_by: [TraceSamplerConfiguration]
+      test_json: "true"
+      additional_attributes:
+        config_registry_filename: trace_sampler.rs
+
+  apm_config.errors_per_second:
+    support: full
+    pipelines: [traces]
+    description: "APM error traces per second limit"
+    test_support:
+      used_by: [TraceSamplerConfiguration]
+      test_json: "1000000.0"
+      additional_attributes:
+        config_registry_filename: trace_sampler.rs
+
   apm_config.obfuscation.credit_cards.enabled:
     support: full
     pipelines: [traces]
@@ -1704,6 +1724,15 @@ inventory:
       additional_attributes:
         config_registry_filename: dogstatsd_prefix_filter.rs
 
+  metric_tag_filterlist:
+    support: full
+    pipelines: [dogstatsd]
+    description: "Per-metric tag include/exclude rules"
+    test_support:
+      used_by: [TagFilterlistConfiguration]
+      additional_attributes:
+        config_registry_filename: dogstatsd_tag_filterlist.rs
+
   min_tls_version:
     support: partial
     warn: true
@@ -2578,8 +2607,6 @@ excluded:
   apm_config.enable_rare_sampler: "ignored in initial audit 2026-04-23"
   apm_config.enabled: "ignored in initial audit 2026-04-23"
   apm_config.env: "ignored in initial audit 2026-04-23"
-  apm_config.error_tracking_standalone.enabled: "ignored in initial audit 2026-04-23"
-  apm_config.errors_per_second: "ignored in initial audit 2026-04-23"
   apm_config.extra_sample_rate: "ignored in initial audit 2026-04-23"
   apm_config.features: "ignored in initial audit 2026-04-23"
   apm_config.filter_tags.reject: "ignored in initial audit 2026-04-23"
@@ -3491,7 +3518,6 @@ excluded:
   metadata_ip_resolution_from_hostname: "ignored in initial audit 2026-04-23"
   metadata_provider_stop_timeout: "ignored in initial audit 2026-04-23"
   metadata_providers: "ignored in initial audit 2026-04-23"
-  metric_tag_filterlist: "ignored in second bulk edit 2026-05-06"
   metric_tag_filterlist_adp_only: "2026-06-10 Gate controlling whether tag filtering applies only when ADP is enabled; full-agent-only key, ADP always applies filtering unconditionally."
   metrics_port: "ignored in initial audit 2026-04-23"
   multi_region_failover.failover_apm: "ignored in initial audit 2026-04-23"

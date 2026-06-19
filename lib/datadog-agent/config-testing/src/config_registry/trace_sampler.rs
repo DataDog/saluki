@@ -5,6 +5,28 @@ use super::schema;
 use super::*;
 
 crate::declare_annotations! {
+    /// `apm_config.error_tracking_standalone.enabled`-Enable Error Tracking Standalone mode
+    APM_CONFIG_ERROR_TRACKING_STANDALONE_ENABLED = SalukiAnnotation {
+        schema: &schema::APM_CONFIG_ERROR_TRACKING_STANDALONE_ENABLED,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::TRACE_SAMPLER_CONFIGURATION],
+        value_type_override: None,
+        test_json: Some("true"),
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Traces]),
+    };
+    /// `apm_config.errors_per_second`-APM error traces per second limit
+    APM_CONFIG_ERRORS_PER_SECOND = SalukiAnnotation {
+        schema: &schema::APM_CONFIG_ERRORS_PER_SECOND,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::TRACE_SAMPLER_CONFIGURATION],
+        value_type_override: None,
+        test_json: Some("1000000.0"),
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Traces]),
+    };
     /// `apm_config.probabilistic_sampler.enabled`-APM probabilistic sampler enabled gate
     APM_CONFIG_PROBABILISTIC_SAMPLER_ENABLED = SalukiAnnotation {
         schema: &schema::APM_CONFIG_PROBABILISTIC_SAMPLER_ENABLED,
@@ -25,6 +47,17 @@ crate::declare_annotations! {
         used_by: &[structs::TRACE_SAMPLER_CONFIGURATION],
         value_type_override: None,
         test_json: Some("50.0"),
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Traces]),
+    };
+    /// `apm_config.target_traces_per_second`-APM target traces per second
+    APM_CONFIG_TARGET_TRACES_PER_SECOND = SalukiAnnotation {
+        schema: &schema::APM_CONFIG_TARGET_TRACES_PER_SECOND,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::TRACE_SAMPLER_CONFIGURATION],
+        value_type_override: None,
+        test_json: Some("1000000.0"),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Traces]),
     };
 }

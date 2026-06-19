@@ -12,8 +12,8 @@ use bytesize::ByteSize;
 use datadog_agent_config::TranslateError;
 use saluki_component_config::dogstatsd::{
     AggregateConfig, DogStatsDConfig, DogStatsDDebugLogConfig, DogStatsDMapperConfig,
-    DogStatsDPostAggregateFilterConfig, DogStatsDPrefixFilterConfig, HistogramStatistic, MapperProfileConfigs,
-    MappingProfileConfig, MetricMappingConfig, TagFilterlistConfig,
+    DogStatsDPostAggregateFilterConfig, DogStatsDPrefixFilterConfig, FilterAction, HistogramStatistic,
+    MapperProfileConfigs, MappingProfileConfig, MetricMappingConfig, MetricTagFilterEntry, TagFilterlistConfig,
 };
 use saluki_context::origin::OriginTagCardinality;
 use stringtheory::MetaString;
@@ -295,7 +295,7 @@ pub fn set_log_file_max_rolls(debug: &mut DogStatsDDebugLogConfig, value: i64) {
 /// `histogram_aggregates` -> the histogram aggregate statistics to compute.
 ///
 /// Mirrors the original parse: `count`/`sum`/`min`/`max`/`avg`/`median` map to the named variants.
-/// Percentile statistics (e.g. the default `Percentile { q: 0.95 }`) are not in the Datadog Agent
+/// Percentile statistics (for example the default `Percentile { q: 0.95 }`) are not in the Datadog Agent
 /// core schema and are not set here; they are preserved from the existing config so that the default
 /// `histogram_percentiles = ["0.95"]` is not inadvertently lost.
 pub fn set_histogram_aggregates(aggregate: &mut AggregateConfig, value: Vec<String>) {
@@ -347,6 +347,47 @@ pub fn set_histogram_copy_to_distribution_prefix(aggregate: &mut AggregateConfig
 /// `data_plane.dogstatsd.aggregator_tag_filter_cache_capacity` -> tag-filter context cache capacity.
 pub fn set_tag_filter_cache_capacity(tag_filterlist: &mut TagFilterlistConfig, value: i64) {
     tag_filterlist.context_cache_capacity = value.max(0) as usize;
+}
+
+/// `metric_tag_filterlist` -> per-metric tag include/exclude entries.
+///
+/// The witnessed value is the raw JSON array from the Datadog schema (`type: array`). Each element
+/// is expected to be `{ metric_name, action, tags }` mirroring the Agent's `datadog.yaml` shape.
+pub fn set_tag_filterlist_entries(
+    tag_filterlist: &mut TagFilterlistConfig, value: Vec<serde_json::Value>,
+) -> Result<(), TranslateError> {
+    let mut entries = Vec::with_capacity(value.len());
+    for raw in value {
+        match parse_tag_filter_entry(raw) {
+            Ok(e) => entries.push(e),
+            Err(reason) => return Err(TranslateError::for_key("metric_tag_filterlist", reason)),
+        }
+    }
+    tag_filterlist.entries = entries;
+    Ok(())
+}
+
+fn parse_tag_filter_entry(raw: serde_json::Value) -> Result<MetricTagFilterEntry, String> {
+    #[derive(serde::Deserialize)]
+    struct RawEntry {
+        metric_name: String,
+        #[serde(default)]
+        action: String,
+        #[serde(default)]
+        tags: Vec<String>,
+    }
+
+    let parsed: RawEntry = serde_json::from_value(raw).map_err(|e| format!("invalid tag filterlist entry: {e}"))?;
+    let action = match parsed.action.as_str() {
+        "include" => FilterAction::Include,
+        "" | "exclude" => FilterAction::Exclude,
+        other => return Err(format!("unknown filter action '{other}'")),
+    };
+    Ok(MetricTagFilterEntry {
+        metric_name: parsed.metric_name,
+        action,
+        tags: parsed.tags,
+    })
 }
 
 // ----- prefix filter -----

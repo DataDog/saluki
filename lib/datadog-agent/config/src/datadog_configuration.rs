@@ -380,6 +380,9 @@ pub struct DatadogConfiguration {
     #[serde(default)]
     pub metric_filterlist_match_prefix: bool,
 
+    #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+    pub metric_tag_filterlist: Vec<::serde_json::Value>,
+
     /// This option defines the minimum TLS version that will be used when
     /// submitting data to the Datadog intake specified in "site" or "dd_url".
     /// This parameter defaults to "tlsv1.2".
@@ -581,6 +584,7 @@ impl Default for DatadogConfiguration {
             log_payloads: Default::default(),
             metric_filterlist: Default::default(),
             metric_filterlist_match_prefix: Default::default(),
+            metric_tag_filterlist: Default::default(),
             min_tls_version: defaults::datadog_configuration_min_tls_version(),
             multi_region_failover: Default::default(),
             no_proxy_nonexact_match: Default::default(),
@@ -636,6 +640,15 @@ impl Default for DatadogConfigurationAgentIpc {
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
 pub struct DatadogConfigurationApmConfig {
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    pub error_tracking_standalone: Option<DatadogConfigurationApmConfigErrorTrackingStandalone>,
+
+    /// The target error trace chunks to receive per second. The TPS is spread
+    /// to catch all combinations of service, name, resource, http.status, and error.type.
+    /// Set to 0 to disable the errors sampler.
+    #[serde(default = "defaults::datadog_configuration_apm_config_errors_per_second")]
+    pub errors_per_second: f64,
+
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub obfuscation: Option<DatadogConfigurationApmConfigObfuscation>,
 
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
@@ -653,9 +666,27 @@ pub struct DatadogConfigurationApmConfig {
 impl Default for DatadogConfigurationApmConfig {
     fn default() -> Self {
         Self {
+            error_tracking_standalone: Default::default(),
+            errors_per_second: defaults::datadog_configuration_apm_config_errors_per_second(),
             obfuscation: Default::default(),
             probabilistic_sampler: Default::default(),
             target_traces_per_second: defaults::datadog_configuration_apm_config_target_traces_per_second(),
+        }
+    }
+}
+
+/// Enables Error Tracking Standalone
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+pub struct DatadogConfigurationApmConfigErrorTrackingStandalone {
+    /// Enables or disables Error Tracking Standalone
+    #[serde(default)]
+    pub enabled: bool,
+}
+
+impl Default for DatadogConfigurationApmConfigErrorTrackingStandalone {
+    fn default() -> Self {
+        Self {
+            enabled: Default::default(),
         }
     }
 }
@@ -1580,6 +1611,9 @@ pub mod defaults {
             "tomcat".to_string(),
             "runtime".to_string(),
         ]
+    }
+    pub(super) fn datadog_configuration_apm_config_errors_per_second() -> f64 {
+        10_f64
     }
     pub(super) fn datadog_configuration_apm_config_target_traces_per_second() -> f64 {
         10_f64

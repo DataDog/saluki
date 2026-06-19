@@ -539,6 +539,8 @@ compressed wire payload bytes.
 | `agent_ipc.grpc_max_message_size`                              | Max inbound gRPC message size for IPC client       |
 | `allow_arbitrary_tags`                                         | Relax backend tag validation via HTTP header       |
 | `api_key`                                                      | API key for endpoint auth                          |
+| `apm_config.error_tracking_standalone.enabled`                 | Enable Error Tracking Standalone mode              |
+| `apm_config.errors_per_second`                                 | APM error traces per second limit                  |
 | `apm_config.obfuscation.credit_cards.enabled`                  | apm_config.obfuscation.credit_cards.enabled        |
 | `apm_config.obfuscation.credit_cards.keep_values`              | apm_config.obfuscation.credit_cards.keep_values    |
 | `apm_config.obfuscation.credit_cards.luhn`                     | apm_config.obfuscation.credit_cards.luhn           |
@@ -561,6 +563,7 @@ compressed wire payload bytes.
 | `apm_config.obfuscation.valkey.remove_all_args`                | apm_config.obfuscation.valkey.remove_all_args      |
 | `apm_config.probabilistic_sampler.enabled`                     | APM probabilistic sampler enabled gate             |
 | `apm_config.probabilistic_sampler.sampling_percentage`         | APM probabilistic sampler sampling percentage      |
+| `apm_config.target_traces_per_second`                          | APM target traces per second                       |
 | `autoscaling.failover.enabled`                                 | Enable autoscaling failover metric routing         |
 | `autoscaling.failover.metrics`                                 | Metric names forwarded to DCA for failover         |
 | `bind_host`                                                    | Global listen host fallback                        |
@@ -638,6 +641,7 @@ compressed wire payload bytes.
 | `log_payloads`                                                 | Debug-log decoded payload contents before encoding |
 | `metric_filterlist`                                            | Metric name blocklist                              |
 | `metric_filterlist_match_prefix`                               | Blocklist uses prefix matching                     |
+| `metric_tag_filterlist`                                        | Per-metric tag include/exclude rules               |
 | `multi_region_failover.api_key`                                | API key for the failover-region endpoint           |
 | `multi_region_failover.dd_url`                                 | Failover intake URL                                |
 | `multi_region_failover.failover_metrics`                       | Enable metrics forwarding to failover region       |

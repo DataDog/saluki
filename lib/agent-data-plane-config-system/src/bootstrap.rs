@@ -169,9 +169,18 @@ pub(crate) fn load_local_sources(
         .map_err(|e| generic_error!("Failed to apply the Saluki environment provider (prefix SALUKI): {}", e))?;
     let saluki_generic = saluki_loader.bootstrap_generic();
 
-    let saluki_only: SalukiOnlyConfiguration = saluki_generic
+    let mut saluki_only: SalukiOnlyConfiguration = saluki_generic
         .as_typed()
         .map_err(|e| generic_error!("Failed to parse the Saluki-schema-only configuration: {}", e))?;
+
+    // `dogstatsd_tcp_port` is not in the Datadog core schema, so it cannot go through the overlay
+    // witness. The Saluki source owns this key, but existing deployments set it via `DD_*` env
+    // vars. Bridge the Datadog source value into the Saluki-only struct when not already set.
+    if saluki_only.dogstatsd.tcp_port.is_none() {
+        if let Ok(Some(v)) = datadog_generic.try_get_typed::<u16>("dogstatsd_tcp_port") {
+            saluki_only.dogstatsd.tcp_port = Some(v);
+        }
+    }
     let saluki_bootstrap = saluki_generic
         .as_typed()
         .map_err(|e| generic_error!("Failed to parse the Saluki bootstrap slice: {}", e))?;

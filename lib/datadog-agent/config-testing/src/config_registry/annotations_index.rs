@@ -15,6 +15,7 @@ mod data_plane;
 mod dogstatsd;
 mod dogstatsd_mapper;
 mod dogstatsd_prefix_filter;
+mod dogstatsd_tag_filterlist;
 mod encoders;
 mod forwarder;
 mod get_typed;
@@ -38,6 +39,7 @@ pub static SUPPORTED_ANNOTATIONS: LazyLock<Vec<&'static SalukiAnnotation>> = Laz
     v.extend_from_slice(dogstatsd::ALL);
     v.extend_from_slice(dogstatsd_mapper::ALL);
     v.extend_from_slice(dogstatsd_prefix_filter::ALL);
+    v.extend_from_slice(dogstatsd_tag_filterlist::ALL);
     v.extend_from_slice(encoders::ALL);
     v.extend_from_slice(forwarder::ALL);
     v.extend_from_slice(get_typed::ALL);

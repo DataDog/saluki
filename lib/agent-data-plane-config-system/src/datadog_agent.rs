@@ -426,10 +426,10 @@ async fn run_registration_loop(
                         }
                     }
                     Err(e) => {
-                        warn!(error = %e, "Failed to register with the Datadog Agent. Will retry periodically.");
+                        warn!(error = %e, "Failed to register with the Datadog Agent. Registration will be retried periodically in the background.");
                         loop_timer.reset_after(DEFAULT_REFRESH_INTERVAL);
                         if let Some(tx) = init_tx.take() {
-                            let _ = tx.send(Err(e));
+                            let _ = tx.send(Ok(()));
                         }
                     }
                 }
