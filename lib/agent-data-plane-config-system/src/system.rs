@@ -200,9 +200,8 @@ fn assemble(
 /// autodiscovery). In that case we establish a lightweight Agent connection for the env-provider
 /// attachments without subscribing to the config stream.
 async fn start_local(
-    bootstrap: BootstrapConfiguration, saluki_only: SalukiOnlyConfiguration,
-    datadog_snapshot: serde_json::Value, standalone_mode: bool, otlp_enabled: bool,
-    registration: RemoteAgentRegistration,
+    bootstrap: BootstrapConfiguration, saluki_only: SalukiOnlyConfiguration, datadog_snapshot: serde_json::Value,
+    standalone_mode: bool, otlp_enabled: bool, registration: RemoteAgentRegistration,
 ) -> Result<StartedConfigurationSystem, GenericError> {
     let datadog: DatadogConfiguration = serde_json::from_value(datadog_snapshot.clone())
         .map_err(|e| generic_error!("Failed to parse the local Datadog snapshot at startup: {}", e))?;

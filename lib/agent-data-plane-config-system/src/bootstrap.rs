@@ -22,6 +22,7 @@
 use std::path::PathBuf;
 
 use agent_data_plane_config::{BootstrapConfiguration, LocalApiBootstrap, RuntimeAuthority, SalukiOnlyConfiguration};
+use bytesize::ByteSize;
 use datadog_agent_config::{DatadogRemapper, KEY_ALIASES};
 use saluki_config_tools::{ConfigurationLoader, GenericConfiguration};
 use saluki_error::{generic_error, GenericError};
@@ -173,14 +174,11 @@ pub(crate) fn load_local_sources(
         .as_typed()
         .map_err(|e| generic_error!("Failed to parse the Saluki-schema-only configuration: {}", e))?;
 
-    // `dogstatsd_tcp_port` is not in the Datadog core schema, so it cannot go through the overlay
-    // witness. The Saluki source owns this key, but existing deployments set it via `DD_*` env
-    // vars. Bridge the Datadog source value into the Saluki-only struct when not already set.
-    if saluki_only.dogstatsd.tcp_port.is_none() {
-        if let Ok(Some(v)) = datadog_generic.try_get_typed::<u16>("dogstatsd_tcp_port") {
-            saluki_only.dogstatsd.tcp_port = Some(v);
-        }
-    }
+    // DD->Saluki migration bridge: Saluki-schema-only keys are owned by the Saluki source
+    // (SALUKI_* / saluki.yaml), but existing deployments and test configs set them via DD_* env
+    // vars. Bridge each Datadog source value into the Saluki-only struct when the Saluki source
+    // has not already set it. SALUKI_* always wins (it is checked first).
+    bridge_dd_fallbacks(&mut saluki_only, &datadog_generic);
     let saluki_bootstrap = saluki_generic
         .as_typed()
         .map_err(|e| generic_error!("Failed to parse the Saluki bootstrap slice: {}", e))?;
@@ -243,4 +241,48 @@ fn patch_snapshot_pipeline_gates(
     }
 
     Ok(())
+}
+
+/// Bridges Saluki-schema-only keys from the Datadog source (`DD_*`) into the Saluki-only struct.
+///
+/// Saluki-schema-only keys are owned by the Saluki source (`SALUKI_*` / `saluki.yaml`). The clean
+/// end state reads them only from there. However, existing deployments and test infrastructure set
+/// these keys via `DD_*` env vars. This function provides a bounded migration-compatibility layer:
+/// each value is read from the Datadog source only when the Saluki source has not already set it.
+fn bridge_dd_fallbacks(saluki_only: &mut SalukiOnlyConfiguration, dd: &GenericConfiguration) {
+    // ---- dogstatsd ----
+    if saluki_only.dogstatsd.tcp_port.is_none() {
+        if let Ok(Some(v)) = dd.try_get_typed::<u16>("dogstatsd_tcp_port") {
+            saluki_only.dogstatsd.tcp_port = Some(v);
+        }
+    }
+    if saluki_only.dogstatsd.string_interner_size_bytes.is_none() {
+        if let Ok(Some(v)) = dd.try_get_typed::<ByteSize>("dogstatsd_string_interner_size_bytes") {
+            saluki_only.dogstatsd.string_interner_size_bytes = Some(v.0);
+        }
+    }
+    if saluki_only.dogstatsd.autoscale_udp_listeners.is_none() {
+        if let Ok(Some(v)) = dd.try_get_typed::<bool>("dogstatsd_autoscale_udp_listeners") {
+            saluki_only.dogstatsd.autoscale_udp_listeners = Some(v);
+        }
+    }
+
+    // ---- aggregate ----
+    if saluki_only.aggregate.context_limit.is_none() {
+        if let Ok(Some(v)) = dd.try_get_typed::<usize>("aggregate_context_limit") {
+            saluki_only.aggregate.context_limit = Some(v);
+        }
+    }
+
+    // ---- otlp ----
+    if saluki_only.otlp.cached_contexts_limit.is_none() {
+        if let Ok(Some(v)) = dd.try_get_typed::<usize>("otlp_cached_context_limit") {
+            saluki_only.otlp.cached_contexts_limit = Some(v);
+        }
+    }
+    if saluki_only.otlp.traces_string_interner_size.is_none() {
+        if let Ok(Some(v)) = dd.try_get_typed::<ByteSize>("otlp_config.traces.string_interner_size") {
+            saluki_only.otlp.traces_string_interner_size = Some(v.0);
+        }
+    }
 }
