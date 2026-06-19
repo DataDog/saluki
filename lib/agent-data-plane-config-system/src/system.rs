@@ -21,8 +21,10 @@
 //! distinct `start_runtime` paths:
 //!
 //! - [`RuntimeAuthority::LocalSnapshot`]: the retained local Datadog snapshot is the runtime
-//!   authority. No Agent connection is made, no inbound stream task runs, and all dynamic handles
-//!   are `Fixed`. [`StartedConfigurationSystem::attachments`] returns `None`.
+//!   authority. No inbound stream task runs and all dynamic handles are `Fixed`. When
+//!   `standalone_mode` is `false` a lightweight Agent connection is established for metadata
+//!   services (hostname, workload/origin detection, autodiscovery) and `attachments()` returns
+//!   `Some`; in true standalone mode no connection is made and `attachments()` returns `None`.
 //! - [`RuntimeAuthority::AgentStream`]: the config-system connects to the Agent, awaits the first
 //!   `ConfigUpdate::Snapshot`, and uses that as the initial runtime Datadog snapshot (local Datadog
 //!   sources are bootstrap-only and are **not** merged into runtime config). The inbound stream task
@@ -155,7 +157,15 @@ impl LoadedConfigurationSystem {
 
         match authority {
             RuntimeAuthority::LocalSnapshot => {
-                start_local(saluki_only, datadog_snapshot, standalone_mode, otlp_enabled).await
+                start_local(
+                    bootstrap,
+                    saluki_only,
+                    datadog_snapshot,
+                    standalone_mode,
+                    otlp_enabled,
+                    registration,
+                )
+                .await
             }
             RuntimeAuthority::AgentStream => start_stream(bootstrap, saluki_only, registration, otlp_enabled).await,
         }
@@ -182,10 +192,17 @@ fn assemble(
     (router, handles, views_rx, initial)
 }
 
-/// Starts the runtime in local-snapshot mode (no Agent connection).
+/// Starts the runtime in local-snapshot mode.
+///
+/// Config authority is the retained local snapshot -- no config stream from the Agent. However, when
+/// `standalone_mode` is `false` (the normal `remote_agent_enabled=false` case in a bundled image),
+/// the Agent IS available for metadata services (hostname, workload/origin detection,
+/// autodiscovery). In that case we establish a lightweight Agent connection for the env-provider
+/// attachments without subscribing to the config stream.
 async fn start_local(
-    saluki_only: SalukiOnlyConfiguration, datadog_snapshot: serde_json::Value, standalone_mode: bool,
-    otlp_enabled: bool,
+    bootstrap: BootstrapConfiguration, saluki_only: SalukiOnlyConfiguration,
+    datadog_snapshot: serde_json::Value, standalone_mode: bool, otlp_enabled: bool,
+    registration: RemoteAgentRegistration,
 ) -> Result<StartedConfigurationSystem, GenericError> {
     let datadog: DatadogConfiguration = serde_json::from_value(datadog_snapshot.clone())
         .map_err(|e| generic_error!("Failed to parse the local Datadog snapshot at startup: {}", e))?;
@@ -193,15 +210,34 @@ async fn start_local(
         .map_err(|e| generic_error!("Failed to translate the local Datadog snapshot at startup: {}", e))?;
 
     // standalone_mode and otlp_enabled are not in the Datadog core schema so the witness cannot
-    // set them. Thread the bootstrap-time values through so the runtime control slice reflects them.
-    //
-    // `start_local` is only called for `LocalSnapshot` (no Agent connection), so the environment
-    // provider must use local-only host resolution. `standalone_mode` enables that path regardless
-    // of how the LocalSnapshot authority was reached (e.g. remote_agent_enabled=false also lands
-    // here but leaves LoadedSources::standalone_mode as false).
-    let _ = standalone_mode;
-    initial.control.standalone_mode = true;
+    // set them. Thread the bootstrap-time values through.
+    initial.control.standalone_mode = standalone_mode;
     initial.control.otlp.enabled = otlp_enabled;
+
+    // When not in standalone mode the Agent is available for metadata services (hostname, workload,
+    // autodiscovery). Connect to it so the env-provider can build real gRPC-backed providers -- the
+    // same behavior the binary had before the config-system cutover. The config stream from this
+    // connection is unused; only the attachments matter.
+    let (connection, attachments) = if !standalone_mode {
+        let client_config = RemoteAgentClientConfiguration::from_bootstrap(&bootstrap);
+        match connect(client_config, registration).await {
+            Ok(conn) => {
+                let att = conn.attachments();
+                (Some(conn), Some(att))
+            }
+            Err(e) => {
+                warn!(
+                    error = %e,
+                    "Failed to connect to the Datadog Agent for metadata services; \
+                     falling back to standalone mode (origin detection will be unavailable)."
+                );
+                initial.control.standalone_mode = true;
+                (None, None)
+            }
+        }
+    } else {
+        (None, None)
+    };
 
     // The `saluki-env` provider layer reads the runtime Datadog source map; in local mode that is
     // the retained local snapshot.
@@ -218,10 +254,10 @@ async fn start_local(
     Ok(StartedConfigurationSystem {
         saluki,
         handles: Some(handles),
-        attachments: None,
+        attachments,
         env_config,
         views_rx,
-        connection: None,
+        connection,
         router_task,
     })
 }
