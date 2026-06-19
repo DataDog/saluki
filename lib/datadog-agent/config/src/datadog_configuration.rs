@@ -1277,10 +1277,8 @@ pub mod defaults {
     }
     pub(super) fn datadog_configuration_histogram_aggregates() -> Vec<String> {
         vec![
-            "max".to_string(),
-            "median".to_string(),
-            "avg".to_string(),
-            "count".to_string(),
+            "max".to_string(), "median".to_string(), "avg".to_string(), "count"
+            .to_string()
         ]
     }
     pub(super) fn datadog_configuration_log_level() -> String {
@@ -1299,27 +1297,14 @@ pub mod defaults {
         String,
     > {
         vec![
-            "datadog.agent".to_string(),
-            "datadog.dogstatsd".to_string(),
-            "datadog.process".to_string(),
-            "datadog.trace_agent".to_string(),
-            "datadog.tracer".to_string(),
-            "activemq".to_string(),
-            "activemq_58".to_string(),
-            "airflow".to_string(),
-            "cassandra".to_string(),
-            "confluent".to_string(),
-            "hazelcast".to_string(),
-            "hive".to_string(),
-            "ignite".to_string(),
-            "jboss".to_string(),
-            "jvm".to_string(),
-            "kafka".to_string(),
-            "presto".to_string(),
-            "sidekiq".to_string(),
-            "solr".to_string(),
-            "tomcat".to_string(),
-            "runtime".to_string(),
+            "datadog.agent".to_string(), "datadog.dogstatsd".to_string(),
+            "datadog.process".to_string(), "datadog.trace_agent".to_string(),
+            "datadog.tracer".to_string(), "activemq".to_string(), "activemq_58"
+            .to_string(), "airflow".to_string(), "cassandra".to_string(), "confluent"
+            .to_string(), "hazelcast".to_string(), "hive".to_string(), "ignite"
+            .to_string(), "jboss".to_string(), "jvm".to_string(), "kafka".to_string(),
+            "presto".to_string(), "sidekiq".to_string(), "solr".to_string(), "tomcat"
+            .to_string(), "runtime".to_string()
         ]
     }
     pub(super) fn datadog_configuration_autoscaling_failover_metrics() -> Vec<String> {
