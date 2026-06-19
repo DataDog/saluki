@@ -70,6 +70,44 @@ dependencies = [
 ]
 
 [[package]]
+name = "agent-data-plane-config"
+version = "0.1.0"
+dependencies = [
+ "bytesize",
+ "saluki-component-config",
+ "saluki-io",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "agent-data-plane-config-system"
+version = "0.1.0"
+dependencies = [
+ "agent-data-plane-config",
+ "bytesize",
+ "datadog-agent-commons",
+ "datadog-agent-config",
+ "datadog-protos",
+ "figment",
+ "futures",
+ "prost-types",
+ "saluki-common",
+ "saluki-component-config",
+ "saluki-config-tools",
+ "saluki-context",
+ "saluki-error",
+ "saluki-io",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "stringtheory",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "aho-corasick"
 version = "1.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4337,6 +4375,18 @@ dependencies = [
  "tokio-test",
  "tokio-util",
  "tracing",
+]
+
+[[package]]
+name = "saluki-component-config"
+version = "0.1.0"
+dependencies = [
+ "bytesize",
+ "saluki-context",
+ "saluki-io",
+ "serde",
+ "stringtheory",
+ "tokio",
 ]
 
 [[package]]

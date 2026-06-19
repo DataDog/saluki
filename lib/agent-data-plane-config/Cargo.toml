@@ -1,0 +1,18 @@
+[package]
+name = "agent-data-plane-config"
+version = "0.1.0"
+edition = { workspace = true }
+license = { workspace = true }
+repository = { workspace = true }
+
+[lints]
+workspace = true
+
+[dependencies]
+bytesize = { workspace = true }
+saluki-component-config = { workspace = true }
+saluki-io = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
