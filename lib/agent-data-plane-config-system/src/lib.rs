@@ -46,3 +46,7 @@
 //!                                               | tools          |  | config         |
 //!                                               +----------------+  +----------------+
 //! ```
+//!
+
+// TODO(visibility): add crate-boundary architectural guard when arch tests are wired up
+pub(crate) mod translate;

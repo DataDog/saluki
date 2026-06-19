@@ -75,7 +75,6 @@ version = "0.1.0"
 dependencies = [
  "bytesize",
  "saluki-component-config",
- "saluki-io",
  "serde",
  "serde_json",
 ]
@@ -85,26 +84,11 @@ name = "agent-data-plane-config-system"
 version = "0.1.0"
 dependencies = [
  "agent-data-plane-config",
- "bytesize",
- "datadog-agent-commons",
  "datadog-agent-config",
- "datadog-protos",
- "figment",
- "futures",
- "prost-types",
- "saluki-common",
  "saluki-component-config",
- "saluki-config-tools",
  "saluki-context",
- "saluki-error",
- "saluki-io",
- "serde",
  "serde_json",
- "serde_yaml",
  "stringtheory",
- "tempfile",
- "tokio",
- "tracing",
 ]
 
 [[package]]
@@ -4384,7 +4368,6 @@ version = "0.1.0"
 dependencies = [
  "bytesize",
  "saluki-context",
- "saluki-io",
  "serde",
  "stringtheory",
  "tokio",
