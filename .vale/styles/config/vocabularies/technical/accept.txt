@@ -242,3 +242,9 @@ Erlang
 OTP
 respawn(s|ed|ing)?
 validator
+typify
+snake_case
+unparsed
+stringify
+cutover
+[Aa]uditability

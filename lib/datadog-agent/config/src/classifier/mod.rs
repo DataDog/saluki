@@ -143,7 +143,8 @@ pub enum SupportLevel {
 ///
 /// Carries only what the classifier needs: enough to look up a key, determine its support level,
 /// check whether a value is the default, and report which pipelines are affected.
-pub struct ClassifierEntry {
+// TODO(visibility): add crate-boundary architectural guard when arch tests are wired up
+pub(crate) struct ClassifierEntry {
     /// Canonical dot-separated YAML path.
     pub yaml_path: &'static str,
     /// Additional YAML paths (aliases) that resolve to this key.
