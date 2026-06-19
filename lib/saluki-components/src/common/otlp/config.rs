@@ -2,7 +2,7 @@
 
 use bytesize::ByteSize;
 use facet::Facet;
-use saluki_config::GenericConfiguration;
+use saluki_config_tools::GenericConfiguration;
 use saluki_error::GenericError;
 use serde::Deserialize;
 

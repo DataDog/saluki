@@ -1,7 +1,7 @@
 use std::future::Future;
 
 use resource_accounting::ComponentRegistry;
-use saluki_config::GenericConfiguration;
+use saluki_config_tools::GenericConfiguration;
 use saluki_core::health::HealthRegistry;
 use saluki_core::runtime::Supervisor;
 use saluki_env::{

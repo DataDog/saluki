@@ -8,7 +8,7 @@ use http::{
 };
 use resource_accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
 use saluki_common::buf::FrozenChunkedBytesBuffer;
-use saluki_config::GenericConfiguration;
+use saluki_config_tools::GenericConfiguration;
 use saluki_core::{
     components::{forwarders::*, ComponentContext},
     data_model::payload::PayloadType,
@@ -201,7 +201,7 @@ fn get_cluster_agent_endpoint_name(uri: &Uri) -> Option<MetaString> {
 #[cfg(test)]
 mod tests {
     use http::Method;
-    use saluki_config::ConfigurationLoader;
+    use saluki_config_tools::ConfigurationLoader;
     use serde_json::json;
 
     use super::*;

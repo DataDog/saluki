@@ -9,7 +9,7 @@ use saluki_api::{
     routing::{post, Router},
     APIHandler, Json, StatusCode,
 };
-use saluki_config::parse_duration;
+use saluki_config_tools::parse_duration;
 use serde::{Deserialize, Serialize};
 
 use super::DogStatsDCaptureControl;

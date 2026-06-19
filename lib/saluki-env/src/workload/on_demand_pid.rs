@@ -6,7 +6,7 @@ use std::time::Duration;
 
 #[cfg(target_os = "linux")]
 use saluki_common::cache::{Cache, CacheBuilder};
-use saluki_config::GenericConfiguration;
+use saluki_config_tools::GenericConfiguration;
 use saluki_error::GenericError;
 use saluki_metrics::static_metrics;
 use stringtheory::interning::GenericMapInterner;

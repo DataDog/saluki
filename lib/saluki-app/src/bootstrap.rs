@@ -1,7 +1,7 @@
 //! Bootstrap utilities.
 
 use metrics::Level;
-use saluki_config::GenericConfiguration;
+use saluki_config_tools::GenericConfiguration;
 use saluki_core::runtime::Supervisor;
 use saluki_error::{ErrorContext as _, GenericError};
 

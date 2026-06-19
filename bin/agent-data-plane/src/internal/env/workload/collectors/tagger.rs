@@ -3,7 +3,7 @@ use datadog_agent_commons::ipc::client::RemoteAgentClient;
 use datadog_protos::agent::{EntityId as RemoteEntityId, EventType, TagCardinality as RemoteTagCardinality};
 use futures::{StreamExt as _, TryStreamExt as _};
 use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
-use saluki_config::GenericConfiguration;
+use saluki_config_tools::GenericConfiguration;
 use saluki_context::{
     origin::OriginTagCardinality,
     tags::{Tag, TagSet},

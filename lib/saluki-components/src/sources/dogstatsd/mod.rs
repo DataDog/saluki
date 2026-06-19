@@ -24,7 +24,7 @@ use saluki_common::{
     sync::shutdown::{ShutdownCoordinator, ShutdownHandle},
     task::spawn_traced_named,
 };
-use saluki_config::{deserialize_space_separated_or_seq, GenericConfiguration};
+use saluki_config_tools::{deserialize_space_separated_or_seq, GenericConfiguration};
 use saluki_context::{
     origin::RawOrigin,
     tags::{RawTags, RawTagsFilter},
@@ -1883,7 +1883,7 @@ mod tests {
 
     use bytes::Bytes;
     use bytesize::ByteSize;
-    use saluki_config::ConfigurationLoader;
+    use saluki_config_tools::ConfigurationLoader;
     use saluki_context::{origin::RawOrigin, ContextResolverBuilder, TagsResolverBuilder};
     use saluki_core::{components::ComponentContext, pooling::ObjectPool as _, topology::ComponentId};
     use saluki_env::workload::{CaptureEntityResolver, EntityId};

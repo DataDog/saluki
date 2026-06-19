@@ -1,5 +1,5 @@
 use argh::FromArgs;
-use saluki_config::GenericConfiguration;
+use saluki_config_tools::GenericConfiguration;
 use tracing::{error, info};
 
 use crate::cli::utils::DataPlaneAPIClient;

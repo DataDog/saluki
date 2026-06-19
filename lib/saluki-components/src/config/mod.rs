@@ -13,7 +13,7 @@ pub use self::autoscaling_failover::AutoscalingFailoverConfiguration;
 pub use self::cluster_agent::ClusterAgentConfiguration;
 pub use self::mrf::MrfConfiguration;
 
-/// Key aliases to pass to [`ConfigurationLoader::with_key_aliases`][saluki_config::ConfigurationLoader::with_key_aliases].
+/// Key aliases to pass to [`ConfigurationLoader::with_key_aliases`][saluki_config_tools::ConfigurationLoader::with_key_aliases].
 ///
 /// Each entry maps a nested dot-separated path to a flat key name. When the nested path is found in a loaded
 /// config file, its value is also emitted under the flat key—but only if the flat key isn't already
@@ -171,12 +171,12 @@ const ENV_REMAPPINGS: &[(&str, &str)] = &[("http_proxy", "proxy_http"), ("https_
 /// Reads environment variables case-insensitively and maps them to config keys (for example, `HTTP_PROXY` →
 /// `proxy_http`). Values are snapshotted at construction time.
 ///
-/// Add this provider to a [`ConfigurationLoader`][saluki_config::ConfigurationLoader] *after* file-based
+/// Add this provider to a [`ConfigurationLoader`][saluki_config_tools::ConfigurationLoader] *after* file-based
 /// providers and *before* vendor-prefixed env providers (for example, `DD_`) to achieve the correct precedence:
 /// file < remapped env vars < `DD_`-prefixed.
 ///
 /// For YAML key aliasing (for example, `proxy.http` → `proxy_http`), pass [`KEY_ALIASES`] to
-/// [`ConfigurationLoader::with_key_aliases`][saluki_config::ConfigurationLoader::with_key_aliases] instead—
+/// [`ConfigurationLoader::with_key_aliases`][saluki_config_tools::ConfigurationLoader::with_key_aliases] instead—
 /// that's handled at file-load time.
 pub struct DatadogRemapper {
     values: serde_json::Map<String, serde_json::Value>,

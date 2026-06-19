@@ -10,7 +10,7 @@ use datadog_protos::agent::{
     TagCardinality, WorkloadmetaEventType, WorkloadmetaFilter, WorkloadmetaKind, WorkloadmetaSource,
     WorkloadmetaStreamRequest, WorkloadmetaStreamResponse,
 };
-use saluki_config::GenericConfiguration;
+use saluki_config_tools::GenericConfiguration;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_io::net::client::http::HttpsCapableConnectorBuilder;
 use tonic::{

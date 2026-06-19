@@ -2,7 +2,7 @@
 
 use std::net::IpAddr;
 
-use saluki_config::GenericConfiguration;
+use saluki_config_tools::GenericConfiguration;
 use saluki_error::GenericError;
 
 const DEFAULT_CLUSTER_AGENT_KUBERNETES_SERVICE_NAME: &str = "datadog-cluster-agent";
@@ -116,7 +116,7 @@ fn join_host_port(host: &str, port: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use saluki_config::ConfigurationLoader;
+    use saluki_config_tools::ConfigurationLoader;
     use serde_json::json;
 
     use super::*;

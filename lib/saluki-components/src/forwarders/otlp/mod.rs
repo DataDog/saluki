@@ -11,7 +11,7 @@ use otlp_protos::opentelemetry::proto::collector::trace::v1::{
 use prost::Message;
 use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_common::buf::FrozenChunkedBytesBuffer;
-use saluki_config::GenericConfiguration;
+use saluki_config_tools::GenericConfiguration;
 use saluki_core::data_model::payload::Payload;
 use saluki_core::{
     components::{forwarders::*, ComponentContext},

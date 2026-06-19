@@ -3,7 +3,7 @@
 //! Drops post-aggregation scalar metrics whose generated histogram aggregate names match the metric filterlist.
 use async_trait::async_trait;
 use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
-use saluki_config::GenericConfiguration;
+use saluki_config_tools::GenericConfiguration;
 use saluki_core::{
     components::{
         transforms::{Transform, TransformBuilder, TransformContext},
@@ -325,7 +325,7 @@ mod tests {
     use std::time::Duration;
 
     use metrics::set_default_local_recorder;
-    use saluki_config::{dynamic::ConfigUpdate, ConfigurationLoader};
+    use saluki_config_tools::{dynamic::ConfigUpdate, ConfigurationLoader};
     use saluki_context::Context;
     use saluki_core::{
         data_model::event::{metric::Metric, Event},

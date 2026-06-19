@@ -30,7 +30,7 @@ rustls-pki-types = { workspace = true }
 ryu = { workspace = true }
 saluki-api = { workspace = true }
 saluki-common = { workspace = true }
-saluki-config = { workspace = true }
+saluki-config-tools = { workspace = true }
 saluki-core = { workspace = true }
 saluki-error = { workspace = true }
 saluki-io = { workspace = true }

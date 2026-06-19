@@ -169,7 +169,7 @@ impl Transform for AutoscalingFailoverGateway {
 mod tests {
     use std::time::Duration;
 
-    use saluki_config::ConfigurationLoader;
+    use saluki_config_tools::ConfigurationLoader;
     use saluki_core::data_model::event::{metric::Metric, Event};
     use serde_json::json;
 

@@ -1,4 +1,4 @@
-use saluki_config::GenericConfiguration;
+use saluki_config_tools::GenericConfiguration;
 use tracing::info;
 
 use super::{has_host_mapped_cgroupfs, has_host_mapped_procfs, ContainerdDetector, Feature};

@@ -9,7 +9,7 @@ use bytesize::ByteSize;
 use datadog_agent_commons::platform::PlatformSettings;
 use saluki_app::logging::{LogLevel, LoggingConfiguration, LoggingOverrideController};
 use saluki_common::{deser::PermissiveBool, sync::shutdown::ShutdownHandle};
-use saluki_config::GenericConfiguration;
+use saluki_config_tools::GenericConfiguration;
 use saluki_core::runtime::{InitializationError, Supervisable, SupervisorFuture};
 use saluki_error::{ErrorContext as _, GenericError};
 use serde::Deserialize;
@@ -34,7 +34,7 @@ const FIRST_PARTY_LOG_TARGETS: &[&str] = &[
     "saluki_app",
     "saluki_common",
     "saluki_components",
-    "saluki_config",
+    "saluki_config_tools",
     "saluki_context",
     "saluki_core",
     "saluki_env",
@@ -246,7 +246,7 @@ impl Supervisable for DynamicLogLevelWorker {
 
 #[cfg(test)]
 mod tests {
-    use saluki_config::ConfigurationLoader;
+    use saluki_config_tools::ConfigurationLoader;
     use serde_json::{json, Value};
 
     use super::*;

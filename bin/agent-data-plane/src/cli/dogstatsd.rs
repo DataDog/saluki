@@ -16,7 +16,7 @@ use saluki_components::sources::TrafficCaptureReader;
 use saluki_components::sources::DEFAULT_REPLAY_LOOPS;
 #[cfg(target_os = "linux")]
 use saluki_components::sources::REPLAY_CREDENTIALS_GID;
-use saluki_config::{DurationString, GenericConfiguration};
+use saluki_config_tools::{DurationString, GenericConfiguration};
 #[cfg(any(target_os = "linux", test))]
 use saluki_error::generic_error;
 use saluki_error::{ErrorContext as _, GenericError};
@@ -546,7 +546,7 @@ where
 mod tests {
     use std::time::Duration;
 
-    use saluki_config::ConfigurationLoader;
+    use saluki_config_tools::ConfigurationLoader;
     use serde_json::json;
 
     use super::{

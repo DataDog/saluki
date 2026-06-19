@@ -10,7 +10,7 @@ use resource_accounting::{
 };
 use saluki_api::{DynamicRoute, EndpointType};
 use saluki_common::{collections::FastHashMap, sync::shutdown::ShutdownHandle};
-use saluki_config::GenericConfiguration;
+use saluki_config_tools::GenericConfiguration;
 use saluki_core::runtime::{state::DataspaceRegistry, InitializationError, Supervisable, SupervisorFuture};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use serde::Deserialize;

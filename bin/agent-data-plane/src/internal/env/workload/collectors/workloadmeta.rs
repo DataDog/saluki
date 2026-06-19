@@ -3,7 +3,7 @@ use datadog_agent_commons::ipc::client::RemoteAgentClient;
 use datadog_protos::agent::{Container, KubernetesPod, WorkloadmetaEventType};
 use futures::{StreamExt as _, TryStreamExt as _};
 use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
-use saluki_config::GenericConfiguration;
+use saluki_config_tools::GenericConfiguration;
 use saluki_context::origin::ExternalData;
 use saluki_core::health::Health;
 use saluki_env::workload::{collectors::MetadataCollector, EntityId, MetadataOperation};

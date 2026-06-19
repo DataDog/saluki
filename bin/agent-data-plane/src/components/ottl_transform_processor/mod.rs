@@ -11,7 +11,7 @@ use async_trait::async_trait;
 use ottl::{CallbackMap, EnumMap, OttlParser};
 use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_common::collections::FastHashMap;
-use saluki_config::GenericConfiguration;
+use saluki_config_tools::GenericConfiguration;
 use saluki_core::{
     components::{transforms::*, ComponentContext},
     data_model::event::trace::{AttributeValue, Span},
@@ -155,7 +155,7 @@ mod tests {
     use std::sync::Arc;
 
     use saluki_common::collections::FastHashMap;
-    use saluki_config::ConfigurationLoader;
+    use saluki_config_tools::ConfigurationLoader;
     use saluki_core::{
         components::{transforms::*, ComponentContext},
         data_model::event::{

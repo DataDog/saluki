@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use facet::Facet;
-use saluki_config::GenericConfiguration;
+use saluki_config_tools::GenericConfiguration;
 use saluki_error::GenericError;
 use saluki_io::net::client::http::{HttpProtocol, TlsMinimumVersion};
 use serde::Deserialize;
@@ -451,7 +451,7 @@ impl ForwarderConfiguration {
 
 #[cfg(test)]
 mod tests {
-    use saluki_config::ConfigurationLoader;
+    use saluki_config_tools::ConfigurationLoader;
 
     use super::*;
     use crate::config::{DatadogRemapper, KEY_ALIASES};

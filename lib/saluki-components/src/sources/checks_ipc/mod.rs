@@ -13,7 +13,7 @@ use datadog_protos::checks::{
 };
 use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_common::task::HandleExt as _;
-use saluki_config::GenericConfiguration;
+use saluki_config_tools::GenericConfiguration;
 use saluki_context::tags::{Tag, TagSet};
 use saluki_context::Context;
 use saluki_core::data_model::event::eventd::{AlertType, EventD, Priority};
