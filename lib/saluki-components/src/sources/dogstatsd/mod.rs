@@ -8,8 +8,10 @@
 
 use std::{
     collections::VecDeque,
+    future::Future,
     num::NonZeroUsize,
     path::PathBuf,
+    pin::Pin,
     sync::{Arc, LazyLock},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -36,7 +38,7 @@ use saluki_core::data_model::event::{
 };
 use saluki_core::{
     components::{sources::*, ComponentContext},
-    pooling::FixedSizeObjectPool,
+    pooling::ElasticObjectPool,
     topology::{interconnect::EventBufferManager, EventsBuffer, OutputDefinition},
 };
 use saluki_env::{workload::CaptureEntityResolver, WorkloadProvider};
@@ -126,7 +128,7 @@ const fn default_buffer_size() -> usize {
 }
 
 const fn default_buffer_count() -> usize {
-    128
+    256
 }
 
 const fn default_port() -> u16 {
@@ -253,13 +255,13 @@ pub struct DogStatsDConfiguration {
     #[serde(rename = "dogstatsd_buffer_size", default = "default_buffer_size")]
     buffer_size: usize,
 
-    /// The number of message buffers to allocate overall.
+    /// The maximum number of message buffers to allocate overall.
     ///
-    /// This represents the maximum number of message buffers available for processing incoming metrics, which loosely
-    /// correlates with how many messages can be received per second. The default value should be suitable for the
-    /// majority of workloads, but high-throughput workloads may consider increasing this value.
+    /// DogStatsD allocates enough buffers to service configured listeners at startup, then allocates additional buffers
+    /// on demand as active stream connections need them. This setting caps that growth. The default value should be
+    /// suitable for the majority of workloads, but high-throughput workloads may consider increasing this value.
     ///
-    /// Defaults to 128.
+    /// Defaults to 256.
     #[serde(rename = "dogstatsd_buffer_count", default = "default_buffer_count")]
     buffer_count: usize,
 
@@ -693,6 +695,28 @@ impl DogStatsDConfiguration {
         NonZeroUsize::new(streams)
     }
 
+    fn configured_min_buffer_count(&self) -> usize {
+        let mut min_buffers = 0;
+
+        if self.port != 0 {
+            min_buffers += self.udp_streams_to_yield().map(NonZeroUsize::get).unwrap_or(1);
+        }
+
+        if self.tcp_port != 0 {
+            min_buffers += 1;
+        }
+
+        if self.socket_path.is_some() {
+            min_buffers += 1;
+        }
+
+        if self.socket_stream_path.is_some() {
+            min_buffers += 1;
+        }
+
+        min_buffers
+    }
+
     /// Sets the workload provider to use for configuring origin detection/enrichment.
     ///
     /// A workload provider must be set otherwise origin detection/enrichment won't be enabled.
@@ -895,11 +919,13 @@ impl SourceBuilder for DogStatsDConfiguration {
 
         self.replay_control.bind(captured_tagger);
 
+        let (io_buffer_pool, io_buffer_pool_shrinker) =
+            build_io_buffer_pool(min_buffers, self.buffer_count, self.buffer_size);
+
         Ok(Box::new(DogStatsD {
             listeners,
-            io_buffer_pool: FixedSizeObjectPool::with_builder("dsd_packet_bufs", self.buffer_count, || {
-                FixedSizeVec::with_capacity(get_adjusted_buffer_size(self.buffer_size))
-            }),
+            io_buffer_pool,
+            io_buffer_pool_shrinker: Box::pin(io_buffer_pool_shrinker),
             codec,
             context_resolvers,
             enabled_filter: enable_payloads_filter,
@@ -928,15 +954,19 @@ impl SourceBuilder for DogStatsDConfiguration {
 
 impl MemoryBounds for DogStatsDConfiguration {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
+        let min_buffers = self.configured_min_buffer_count();
+        let additional_buffers = self.buffer_count.saturating_sub(min_buffers);
+        let adjusted_buffer_size = get_adjusted_buffer_size(self.buffer_size);
+
         builder
             .minimum()
             // Capture the size of the heap allocation when the component is built.
             .with_single_value::<DogStatsD>("source struct")
-            // We allocate our I/O buffers entirely up front.
+            // We allocate the listener reservation up front.
             .with_expr(UsageExpr::product(
                 "buffers",
-                UsageExpr::config("dogstatsd_buffer_count", self.buffer_count),
-                UsageExpr::config("dogstatsd_buffer_size", get_adjusted_buffer_size(self.buffer_size)),
+                UsageExpr::constant("dogstatsd_min_buffer_count", min_buffers),
+                UsageExpr::config("dogstatsd_buffer_size", adjusted_buffer_size),
             ))
             // We also allocate the backing storage for the string interner up front, which is used by our context
             // resolver.
@@ -944,13 +974,20 @@ impl MemoryBounds for DogStatsDConfiguration {
                 "dogstatsd_string_interner_size_bytes",
                 self.effective_context_string_interner_bytes().as_u64() as usize,
             ));
+
+        builder.firm().with_expr(UsageExpr::product(
+            "elastic buffers",
+            UsageExpr::config("dogstatsd_buffer_count_max_extra", additional_buffers),
+            UsageExpr::config("dogstatsd_buffer_size", adjusted_buffer_size),
+        ));
     }
 }
 
 /// DogStatsD source.
 pub struct DogStatsD {
     listeners: Vec<Listener>,
-    io_buffer_pool: FixedSizeObjectPool<BytesBuffer>,
+    io_buffer_pool: ElasticObjectPool<BytesBuffer>,
+    io_buffer_pool_shrinker: Pin<Box<dyn Future<Output = ()> + Send>>,
     codec: DogStatsDCodec,
     context_resolvers: ContextResolvers,
     enabled_filter: EnablePayloadsFilter,
@@ -967,7 +1004,7 @@ pub struct DogStatsD {
 struct ListenerContext {
     shutdown_handle: ShutdownHandle,
     listener: Listener,
-    io_buffer_pool: FixedSizeObjectPool<BytesBuffer>,
+    io_buffer_pool: ElasticObjectPool<BytesBuffer>,
     codec: DogStatsDCodec,
     context_resolvers: ContextResolvers,
     origin_detection_enabled: bool,
@@ -984,7 +1021,7 @@ struct HandlerContext {
     listen_addr: ListenAddress,
     framer: DsdFramer,
     codec: DogStatsDCodec,
-    io_buffer_pool: FixedSizeObjectPool<BytesBuffer>,
+    io_buffer_pool: ElasticObjectPool<BytesBuffer>,
     metrics: Metrics,
     context_resolvers: ContextResolvers,
     origin_detection_enabled: bool,
@@ -1005,6 +1042,10 @@ impl Source for DogStatsD {
         let mut health = context.take_health_handle();
 
         let mut listener_shutdown_coordinator = ShutdownCoordinator::default();
+        spawn_traced_named(
+            "dogstatsd-io-buffer-pool-shrinker",
+            process_io_buffer_pool_shrinker(self.io_buffer_pool_shrinker, listener_shutdown_coordinator.register()),
+        );
 
         // For each listener, spawn a dedicated task to run it.
         for listener in self.listeners {
@@ -1063,6 +1104,30 @@ impl Source for DogStatsD {
 
         Ok(())
     }
+}
+
+async fn process_io_buffer_pool_shrinker(
+    io_buffer_pool_shrinker: Pin<Box<dyn Future<Output = ()> + Send>>, shutdown_handle: ShutdownHandle,
+) {
+    pin!(shutdown_handle);
+
+    select! {
+        _ = &mut shutdown_handle => {
+            debug!("I/O buffer pool shrinker received shutdown signal.");
+        },
+        _ = io_buffer_pool_shrinker => {
+            debug!("I/O buffer pool shrinker stopped.");
+        },
+    }
+}
+
+fn build_io_buffer_pool(
+    min_buffers: usize, max_buffers: usize, buffer_size: usize,
+) -> (ElasticObjectPool<BytesBuffer>, impl Future<Output = ()> + Send) {
+    let adjusted_buffer_size = get_adjusted_buffer_size(buffer_size);
+    ElasticObjectPool::with_builder("dsd_packet_bufs", min_buffers, max_buffers, move || {
+        FixedSizeVec::with_capacity(adjusted_buffer_size)
+    })
 }
 
 async fn process_listener(
@@ -1776,7 +1841,7 @@ mod tests {
     use bytesize::ByteSize;
     use saluki_config::ConfigurationLoader;
     use saluki_context::{origin::RawOrigin, ContextResolverBuilder, TagsResolverBuilder};
-    use saluki_core::{components::ComponentContext, topology::ComponentId};
+    use saluki_core::{components::ComponentContext, pooling::ObjectPool as _, topology::ComponentId};
     use saluki_env::workload::{CaptureEntityResolver, EntityId};
     use saluki_io::{
         deser::codec::dogstatsd::{DogStatsDCodec, DogStatsDCodecConfiguration, ParsedPacket},
@@ -1788,6 +1853,7 @@ mod tests {
     use tokio::{net::UdpSocket, sync::mpsc, time::timeout};
 
     use super::{
+        build_io_buffer_pool, default_buffer_size,
         forwarder::{
             ConnectedPacketForwarder, ForwardPacket, PacketForwarder, PacketForwarderTarget, FORWARDER_QUEUE_CAPACITY,
         },
@@ -2149,6 +2215,44 @@ mod tests {
         let config = deser_config("{}");
         assert!(!config.autoscale_udp_listeners);
         assert!(config.udp_streams_to_yield().is_none());
+    }
+
+    #[test]
+    fn configured_min_buffer_count_matches_enabled_listeners() {
+        let udp_only = deser_config("{}");
+        assert_eq!(udp_only.configured_min_buffer_count(), 1);
+
+        let all_listener_types = DogStatsDConfiguration {
+            port: 8125,
+            tcp_port: 9000,
+            socket_path: Some("/tmp/dsd.socket".to_string()),
+            socket_stream_path: Some("/tmp/dsd-stream.socket".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(all_listener_types.configured_min_buffer_count(), 4);
+    }
+
+    #[tokio::test]
+    async fn dogstatsd_io_buffer_pool_grows_on_demand_until_limit() {
+        let (pool, shrinker) = build_io_buffer_pool(1, 2, default_buffer_size());
+
+        let initial_buffer = timeout(Duration::from_secs(1), pool.acquire())
+            .await
+            .expect("initial buffer should be available");
+        let on_demand_buffer = timeout(Duration::from_secs(1), pool.acquire())
+            .await
+            .expect("pool should grow on demand before hitting the limit");
+
+        let capped_acquire = timeout(Duration::from_millis(25), pool.acquire()).await;
+        assert!(capped_acquire.is_err(), "pool should wait once it reaches the limit");
+
+        drop(initial_buffer);
+        timeout(Duration::from_secs(1), pool.acquire())
+            .await
+            .expect("returned buffer should unblock acquisition");
+
+        drop(on_demand_buffer);
+        drop(shrinker);
     }
 
     #[test]

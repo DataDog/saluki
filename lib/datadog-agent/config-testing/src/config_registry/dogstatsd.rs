@@ -25,7 +25,7 @@ static DOGSTATSD_BUFFER_COUNT_SCHEMA: SchemaEntry = SchemaEntry {
     yaml_path: "dogstatsd_buffer_count",
     env_vars: &[],
     value_type: ValueType::Integer,
-    default: None,
+    default: Some("256"),
 };
 
 static DOGSTATSD_CACHED_CONTEXTS_LIMIT_SCHEMA: SchemaEntry = SchemaEntry {
