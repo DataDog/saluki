@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"struct":["Boundary","Probe"]};
+window.SIDEBAR_ITEMS = {"struct":["Boundary","Probe","Wide"]};
