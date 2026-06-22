@@ -385,16 +385,24 @@ inventory:
         config_registry_filename: trace_obfuscation.rs
 
   autoscaling.failover.enabled:
-    support: unknown
+    support: full
+    pipelines: [checks, dogstatsd, otlp]
     description: "Enable autoscaling failover metric routing"
-    severity: medium
-    issue: "#1684"
+    test_support:
+      used_by: [get_typed]
+      test_json: "true"
+      additional_attributes:
+        config_registry_filename: get_typed.rs
 
   autoscaling.failover.metrics:
-    support: unknown
+    support: full
+    pipelines: [checks, dogstatsd, otlp]
     description: "Metric names forwarded to DCA for failover"
-    severity: medium
-    issue: "#1684"
+    test_support:
+      used_by: [get_typed]
+      test_json: '["container.memory.usage"]'
+      additional_attributes:
+        config_registry_filename: get_typed.rs
 
   bind_host:
     support: full
@@ -405,16 +413,50 @@ inventory:
       additional_attributes:
         config_registry_filename: dogstatsd.rs
 
+  cluster_agent.auth_token:
+    support: full
+    pipelines: [checks, dogstatsd, otlp]
+    description: "Bearer token for Cluster Agent requests"
+    test_support:
+      used_by: [get_typed]
+      test_json: '"cluster-agent-token"'
+      additional_attributes:
+        config_registry_filename: get_typed.rs
+
   cluster_agent.enabled:
-    support: unknown
+    support: full
+    pipelines: [checks, dogstatsd, otlp]
     description: "Enable Cluster Agent communication"
-    severity: low
-    issue: "#1684"
+    test_support:
+      used_by: [get_typed]
+      test_json: "true"
+      additional_attributes:
+        config_registry_filename: get_typed.rs
+
+  cluster_agent.kubernetes_service_name:
+    support: full
+    pipelines: [checks, dogstatsd, otlp]
+    description: "Cluster Agent Kubernetes service name"
+    test_support:
+      used_by: [get_typed]
+      test_json: '"datadog-cluster-agent"'
+      additional_attributes:
+        config_registry_filename: get_typed.rs
+
+  cluster_agent.url:
+    support: full
+    pipelines: [checks, dogstatsd, otlp]
+    description: "Cluster Agent HTTPS endpoint"
+    test_support:
+      used_by: [get_typed]
+      test_json: '"https://cluster-agent.example.com"'
+      additional_attributes:
+        config_registry_filename: get_typed.rs
 
   cmd_port:
     support: full
     pipelines: [cross_cutting]
-    description: "Datadog Agent IPC/CMD API port"
+    description: "Core Agent CMD API port for ADP gRPC IPC"
     test_support:
       used_by: [RemoteAgentClientConfiguration]
       test_json: "5101"
@@ -619,13 +661,14 @@ inventory:
         config_registry_filename: dogstatsd.rs
 
   dogstatsd_disable_verbose_logs:
-    support: none
-    severity: medium
-    planned: false
+    support: full
     pipelines: [dogstatsd]
     description: "Suppress noisy parse error logs"
-    documentation: "ADP does not emit the verbose parse-error logs that this key filters in the core Agent, so there is nothing to suppress."
     issue: "#1350"
+    test_support:
+      used_by: [DogStatsDConfiguration]
+      additional_attributes:
+        config_registry_filename: dogstatsd.rs
 
   dogstatsd_entity_id_precedence:
     support: full
@@ -1376,9 +1419,18 @@ inventory:
         config_registry_filename: forwarder.rs
 
   forwarder_requeue_buffer_size:
-    support: unknown
-    description: "In-memory re-queue buffer size"
+    support: none
     severity: low
+    planned: false
+    pipelines: [cross_cutting]
+    description: "In-memory re-queue buffer size"
+    documentation: |
+      ADP does not implement `forwarder_requeue_buffer_size`. The core Agent uses this setting to size a separate
+      count-bounded handoff channel from forwarder workers to the retry manager. ADP's endpoint I/O loop handles
+      send failures that need to be retried and owns the retry queue, so ADP does not need a separate queue for
+      worker-to-retry-manager communication. Those failures are re-enqueued into the low-priority retry queue, which
+      is bounded by payload bytes via `forwarder_retry_queue_payloads_max_size` and optional disk persistence settings.
+      See [#1755].
     issue: "#1755"
 
   forwarder_retry_queue_capacity_time_interval_sec:
@@ -2646,7 +2698,6 @@ excluded:
   cluster_agent.appsec.injector.mode: "ignored in initial audit 2026-04-23"
   cluster_agent.appsec.injector.processor.service.name: "ignored in initial audit 2026-04-23"
   cluster_agent.appsec.injector.processor.service.namespace: "ignored in initial audit 2026-04-23"
-  cluster_agent.auth_token: "ignored in initial audit 2026-04-23"
   cluster_agent.client_reconnect_period_seconds: "ignored in initial audit 2026-04-23"
   cluster_agent.cluster_tagger.grpc_max_message_size: "ignored in initial audit 2026-04-23"
   cluster_agent.cmd_port: "ignored in initial audit 2026-04-23"
@@ -2657,7 +2708,6 @@ excluded:
   cluster_agent.kube_metadata_collection.resources: "ignored in initial audit 2026-04-23"
   cluster_agent.kubernetes_resources_collection.deployment_annotations_exclude: "ignored in initial audit 2026-04-23"
   cluster_agent.kubernetes_resources_collection.pod_annotations_exclude: "ignored in initial audit 2026-04-23"
-  cluster_agent.kubernetes_service_name: "ignored in initial audit 2026-04-23"
   cluster_agent.language_detection.cleanup.language_ttl: "ignored in initial audit 2026-04-23"
   cluster_agent.language_detection.cleanup.period: "ignored in initial audit 2026-04-23"
   cluster_agent.language_detection.patcher.base_backoff: "ignored in initial audit 2026-04-23"
@@ -2678,7 +2728,6 @@ excluded:
   cluster_agent.tracing.enabled: "ignored in initial audit 2026-04-23"
   cluster_agent.tracing.env: "ignored in initial audit 2026-04-23"
   cluster_agent.tracing.sample_rate: "ignored in initial audit 2026-04-23"
-  cluster_agent.url: "ignored in initial audit 2026-04-23"
   cluster_checks.advanced_dispatching_enabled: "ignored in initial audit 2026-04-23"
   cluster_checks.clc_runners_port: "ignored in initial audit 2026-04-23"
   cluster_checks.cluster_tag_name: "ignored in initial audit 2026-04-23"

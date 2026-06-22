@@ -218,6 +218,7 @@ impl UnixIntegrationRunner {
         // Phase: spawn ADP.
         let spawn_start = Instant::now();
         let config_path_str = config_path.to_string_lossy().into_owned();
+        let core_agent_auth_token_path = PathBuf::from(auth_token_path.clone());
         let adp_forced = build_adp_forced_env(auth_token_path);
         let adp_env = build_process_env(&self.test_case.env, &adp_forced);
         let process_config = UnixProcessConfig::new(self.test_case.name.clone(), binary_path)
@@ -251,6 +252,7 @@ impl UnixIntegrationRunner {
                 process.name().to_string(),
                 adp_exit_token.clone(),
                 process.exit_code_cell(),
+                Some(core_agent_auth_token_path),
             )
             .await;
         phase_timings.push(PhaseTiming {
@@ -333,7 +335,8 @@ impl UnixIntegrationRunner {
     }
 
     async fn run_assertions(
-        &self, process_display_name: String, exit_token: CancellationToken, exit_code_cell: airlock::unix::ExitCodeCell,
+        &self, process_display_name: String, exit_token: CancellationToken,
+        exit_code_cell: airlock::unix::ExitCodeCell, core_agent_auth_token_path: Option<PathBuf>,
     ) -> Vec<AssertionResult> {
         let ctx = AssertionContext {
             log_buffer: self.log_buffer.clone(),
@@ -346,6 +349,7 @@ impl UnixIntegrationRunner {
             is_host_process: true,
             host_process_exit_code: Some(exit_code_cell),
             docker_container_exit_code: None,
+            core_agent_auth_token_path,
         };
         crate::assertions::run_assertion_steps(&self.test_case, &ctx).await
     }

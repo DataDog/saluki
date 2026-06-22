@@ -21,8 +21,11 @@ use saluki_error::GenericError;
 use serde::{Deserialize, Serialize, Serializer};
 use serde_json;
 use stringtheory::MetaString;
-use tokio::sync::{Mutex, OwnedMutexGuard};
-use tokio::time::{Duration, Instant};
+use tokio::time::{sleep, Duration, Instant};
+use tokio::{
+    pin,
+    sync::{Mutex, OwnedMutexGuard},
+};
 use tokio::{select, sync::mpsc, sync::oneshot};
 
 type StatsRequestReceiver = mpsc::Receiver<(oneshot::Sender<StatsResponse>, u64)>;
@@ -111,8 +114,8 @@ impl Destination for DogStatsDStats {
         let mut current_stats: Option<HashMap<ContextNoOrigin, MetricSample>> = None;
         let mut stats_collection_start_time = 0;
         let mut stats_collection_end_time = 0;
-        let collection_done = tokio::time::sleep(std::time::Duration::ZERO);
-        tokio::pin!(collection_done);
+        let collection_done = sleep(std::time::Duration::ZERO);
+        pin!(collection_done);
 
         health.mark_ready();
 

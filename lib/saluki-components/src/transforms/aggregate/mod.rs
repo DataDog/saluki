@@ -23,7 +23,7 @@ use serde::Deserialize;
 use smallvec::SmallVec;
 use stringtheory::MetaString;
 use tokio::{
-    select,
+    pin, select,
     time::{interval, interval_at},
 };
 use tracing::{debug, error, info, trace, warn};
@@ -303,7 +303,7 @@ impl Transform for Aggregate {
         health.mark_ready();
         debug!("Aggregation transform started.");
 
-        tokio::pin!(passthrough_flush);
+        pin!(passthrough_flush);
 
         loop {
             select! {
@@ -569,8 +569,27 @@ impl AggregationState {
     }
 
     fn insert(&mut self, timestamp: u64, metric: Metric) -> bool {
+        // The context map is hard-capped at `context_limit` and no path grows it past the cap. This is the one
+        // non-advisory runtime memory bound, so we assert it as an invariant under Antithesis. The numeric form hands
+        // the search the margin to the limit as a gradient.
+        #[cfg(feature = "antithesis")]
+        antithesis_sdk::assert_always_less_than_or_equal_to!(
+            self.contexts.len(),
+            self.context_limit,
+            "aggregate context map within context_limit",
+            &serde_json::json!({ "len": self.contexts.len(), "limit": self.context_limit })
+        );
+
         // If we haven't seen this context yet, and it would put us over the limit to insert it, then return early.
         if !self.contexts.contains_key(metric.context()) && self.contexts.len() >= self.context_limit {
+            // Anti-vacuity anchor: prove a run actually reaches the cap, else the invariant above passes trivially.
+            #[cfg(feature = "antithesis")]
+            antithesis_sdk::assert_sometimes!(
+                true,
+                "aggregate context limit breached",
+                &serde_json::json!({ "limit": self.context_limit })
+            );
+
             self.context_limit_breached = true;
             return false;
         }
@@ -632,11 +651,45 @@ impl AggregationState {
         if self.last_flush != 0 {
             let start = align_to_bucket_start(self.last_flush, bucket_width_secs);
 
+            // Clock-skew guards. Bucketing reads the wall clock while the flush cadence is monotonic, so a wall-clock
+            // jump is not bounded by the flush interval. A backward jump empties the zero-value range (a silent counter
+            // gap); a forward jump makes the loop below run once per bucket across the whole jumped span — O(jump) work
+            // and allocation. Assert before the loop so a flood fails fast rather than after the damage is done.
+            #[cfg(feature = "antithesis")]
+            {
+                // Generous versus the normal cadence (default 15s flush over a 10s bucket yields 1-2 buckets); a bound
+                // this large trips only on a multi-hour wall-clock jump, never on a slow-but-sane flush.
+                const MAX_ZERO_VALUE_BUCKETS_PER_FLUSH: u64 = 10_000;
+                antithesis_sdk::assert_always!(
+                    current_time >= self.last_flush,
+                    "aggregate flush wall-clock did not move backward",
+                    &serde_json::json!({ "current_time": current_time, "last_flush": self.last_flush })
+                );
+                antithesis_sdk::assert_always_less_than_or_equal_to!(
+                    current_time.saturating_sub(self.last_flush) / bucket_width_secs.get(),
+                    MAX_ZERO_VALUE_BUCKETS_PER_FLUSH,
+                    "aggregate zero-value bucket span bounded across a flush",
+                    &serde_json::json!({
+                        "current_time": current_time,
+                        "last_flush": self.last_flush,
+                        "bucket_width_secs": bucket_width_secs.get()
+                    })
+                );
+            }
+
             for bucket_start in (start..current_time).step_by(bucket_width_secs.get() as usize) {
                 if is_bucket_closed(current_time, bucket_start, bucket_width_secs, flush_open_buckets) {
                     zero_value_buckets.push((bucket_start, MetricValues::counter((bucket_start, 0.0))));
                 }
             }
+
+            // Anti-vacuity anchor: prove the idle-counter zero-value path actually runs in some timeline.
+            #[cfg(feature = "antithesis")]
+            antithesis_sdk::assert_sometimes!(
+                !zero_value_buckets.is_empty(),
+                "aggregate flush generated zero-value counter buckets",
+                &serde_json::json!({ "count": zero_value_buckets.len() })
+            );
         }
 
         // Iterate over each context we're tracking, and flush any values that are in buckets which are now closed.

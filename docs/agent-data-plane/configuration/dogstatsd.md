@@ -58,7 +58,6 @@ architecture is fundamentally different or the feature is platform-specific.
 | `config_id`                                                       | Fleet Automation config ID tag             | Core Agent uses this only on Agent HA telemetry metrics.                                                                                                                                                                                                                  |
 | `data_plane.telemetry_enabled`                                    | ADP telemetry toggle                       | See below                                                                                                                                                                                                                                                                 |
 | `data_plane.telemetry_listen_addr`                                | ADP telemetry listen address               | See below                                                                                                                                                                                                                                                                 |
-| `dogstatsd_disable_verbose_logs`                                  | Suppress noisy parse error logs            | ADP does not emit the verbose parse-error logs that this key filters in the core Agent, so there is nothing to suppress.                                                                                                                                                  |
 | `dogstatsd_host_socket_path`                                      | Host UDS socket dir for DSD                | Not read by DSD server; admission controller only.                                                                                                                                                                                                                        |
 | `dogstatsd_mem_based_rate_limiter.enabled`                        | Memory-based rate limiter toggle           | See below                                                                                                                                                                                                                                                                 |
 | `dogstatsd_mem_based_rate_limiter.go_gc`                          | Memory rate limiter GC percent             | Go GC-specific; ADP uses `memory_limit` instead.                                                                                                                                                                                                                          |
@@ -84,6 +83,7 @@ architecture is fundamentally different or the feature is platform-specific.
 | `dogstatsd_workers_count`                                         | Number of DSD processing workers           | ADP uses async tasks.                                                                                                                                                                                                                                                     |
 | `enable_json_stream_shared_compressor_buffers`                    | Pre-allocate shared compressor buffers     | ADP does not use a shared compressor buffer pool; Rust request builders own fixed-capacity scratch and compression buffers.                                                                                                                                               |
 | `entity_id`                                                       | Agent pod entity ID                        | ADP internal DogStatsD telemetry uses OpenMetrics.                                                                                                                                                                                                                        |
+| `forwarder_requeue_buffer_size`                                   | In-memory re-queue buffer size             | See below                                                                                                                                                                                                                                                                 |
 | `heroku_dyno`                                                     | Heroku dyno telemetry mode                 | See below                                                                                                                                                                                                                                                                 |
 | `logging_frequency`                                               | Transaction success log interval           | The core agent uses `logging_frequency` to throttle repetitive successful transaction logs. ADP logs successful forwarder operations below the default `info` level, so there is no matching info-level success-log stream to throttle. This key is intentionally unused. |
 | `use_dogstatsd`                                                   | Master DogStatsD enable toggle             | Core Agent evaluates and sets `data_plane.dogstatsd.enabled`.                                                                                                                                                                                                             |
@@ -199,6 +199,15 @@ ADP does not expose the core agent's packet-per-second expvar endpoint or a pers
 DogStatsD statistics endpoint to scrape. You do not need to set up scraper configuration for this
 per-metric data. The config keys `dogstatsd_stats_enable`, `dogstatsd_stats_buffer`, and
 `dogstatsd_stats_port` have no effect in ADP. See [#1352].
+
+### `forwarder_requeue_buffer_size`
+
+ADP does not implement `forwarder_requeue_buffer_size`. The core Agent uses this setting to size a separate
+count-bounded handoff channel from forwarder workers to the retry manager. ADP's endpoint I/O loop handles
+send failures that need to be retried and owns the retry queue, so ADP does not need a separate queue for
+worker-to-retry-manager communication. Those failures are re-enqueued into the low-priority retry queue, which
+is bounded by payload bytes via `forwarder_retry_queue_payloads_max_size` and optional disk persistence settings.
+See [#1755].
 
 ### `heroku_dyno`
 
@@ -406,11 +415,7 @@ ways that are not yet fully characterized.
 
 | Config Key                                               | Description                                   | Issue   |
 | -------------------------------------------------------- | --------------------------------------------- | ------- |
-| `autoscaling.failover.enabled`                           | Enable autoscaling failover metric routing    | [#1684] |
-| `autoscaling.failover.metrics`                           | Metric names forwarded to DCA for failover    | [#1684] |
-| `cluster_agent.enabled`                                  | Enable Cluster Agent communication            | [#1684] |
 | `forwarder_low_prio_buffer_size`                         | Low-priority request queue size               | [#1362] |
-| `forwarder_requeue_buffer_size`                          | In-memory re-queue buffer size                | [#1755] |
 | `telemetry.dogstatsd.aggregator_channel_latency_buckets` | Histogram buckets: DSD aggregator channel lag | [#1679] |
 | `telemetry.dogstatsd.listeners_channel_latency_buckets`  | Histogram buckets: listener channel latency   | [#1679] |
 | `telemetry.dogstatsd.listeners_latency_buckets`          | Histogram buckets: listener processing        | [#1679] |
@@ -563,8 +568,14 @@ compressed wire payload bytes.
 | `apm_config.obfuscation.redis.remove_all_args`                 | apm_config.obfuscation.redis.remove_all_args       |
 | `apm_config.obfuscation.valkey.enabled`                        | apm_config.obfuscation.valkey.enabled              |
 | `apm_config.obfuscation.valkey.remove_all_args`                | apm_config.obfuscation.valkey.remove_all_args      |
+| `autoscaling.failover.enabled`                                 | Enable autoscaling failover metric routing         |
+| `autoscaling.failover.metrics`                                 | Metric names forwarded to DCA for failover         |
 | `bind_host`                                                    | Global listen host fallback                        |
-| `cmd_port`                                                     | Datadog Agent IPC/CMD API port                     |
+| `cluster_agent.auth_token`                                     | Bearer token for Cluster Agent requests            |
+| `cluster_agent.enabled`                                        | Enable Cluster Agent communication                 |
+| `cluster_agent.kubernetes_service_name`                        | Cluster Agent Kubernetes service name              |
+| `cluster_agent.url`                                            | Cluster Agent HTTPS endpoint                       |
+| `cmd_port`                                                     | Core Agent CMD API port for ADP gRPC IPC           |
 | `cri_connection_timeout`                                       | CRI container runtime connection timeout (s)       |
 | `cri_query_timeout`                                            | CRI container runtime query timeout (s)            |
 | `data_plane.api_listen_address`                                | Unprivileged API listen address                    |
@@ -581,6 +592,7 @@ compressed wire payload bytes.
 | `dogstatsd_capture_depth`                                      | Traffic capture channel depth                      |
 | `dogstatsd_capture_path`                                       | Traffic capture file location                      |
 | `dogstatsd_context_expiry_seconds`                             | Context cache TTL (seconds)                        |
+| `dogstatsd_disable_verbose_logs`                               | Suppress noisy parse error logs                    |
 | `dogstatsd_entity_id_precedence`                               | Entity ID over auto-detection                      |
 | `dogstatsd_eol_required`                                       | Require newline-terminated messages                |
 | `dogstatsd_flush_incomplete_buckets`                           | Flush open buckets on shutdown                     |
@@ -690,7 +702,6 @@ compressed wire payload bytes.
 [#1679]: https://github.com/DataDog/saluki/issues/1679
 [#1681]: https://github.com/DataDog/saluki/issues/1681
 [#1682]: https://github.com/DataDog/saluki/issues/1682
-[#1684]: https://github.com/DataDog/saluki/issues/1684
 [#1687]: https://github.com/DataDog/saluki/issues/1687
 [#1749]: https://github.com/DataDog/saluki/issues/1749
 [#1753]: https://github.com/DataDog/saluki/issues/1753

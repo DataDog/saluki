@@ -24,6 +24,16 @@ export ADP_APP_BUILD_TIME := $(APP_BUILD_TIME)
 # set of license texts as the linux Docker artifact; bump in lockstep with the Dockerfile.
 export ADP_SPDX_LICENSES_VERSION := 3.28.0
 
+# Cargo subcommand used to build ADP on the host. In CI we wrap the build with `cargo auditable`
+# so released binaries embed an SBOM (dependency tree); locally it stays plain `cargo build`.
+# GitLab sets CI=true. The Linux Docker build gates this independently via the USE_CARGO_AUDITABLE
+# build-arg (see docker/scripts/agent-data-plane/build/10-build-adp.sh); only the host build
+# (build-adp-host, used by the macOS release tarball jobs) reads this variable.
+ADP_CARGO_BUILD_SUBCMD := build
+ifeq ($(CI),true)
+override ADP_CARGO_BUILD_SUBCMD = auditable build
+endif
+
 # ADP-specific settings used when running.
 export ADP_STANDALONE_IPC_CERT_FILE := /tmp/adp-ipc-cert.pem
 
@@ -55,6 +65,7 @@ export CARGO_TOOL_VERSION_cargo-sort ?= 1.0.9
 export CARGO_TOOL_VERSION_dummyhttp ?= 1.1.0
 export CARGO_TOOL_VERSION_cargo-machete ?= 0.9.1
 export CARGO_TOOL_VERSION_rustfilt ?= 0.2.1
+export CARGO_TOOL_VERSION_cargo-auditable ?= 0.7.4
 export DDPROF_VERSION ?= 0.20.0
 export LADING_VERSION ?= sha-d608ffbce8f8c77b147d6750b3bb6d6948af239a
 
@@ -617,6 +628,9 @@ list-integration-tests: ## Lists available ADP integration tests
 .PHONY: build-adp-host
 build-adp-host: BUILD_PROFILE ?= release
 build-adp-host: check-rust-build-tools
+# In CI, install cargo-auditable so the build below can embed an SBOM (ADP_CARGO_BUILD_SUBCMD
+# resolves to `auditable build`). Locally this prerequisite is absent and the build stays plain.
+build-adp-host: $(if $(filter true,$(CI)),cargo-install-cargo-auditable)
 build-adp-host: ## Builds the agent-data-plane binary for the current host (Cargo profile from $$BUILD_PROFILE, default: release)
 	@echo "[*] Building agent-data-plane ($(BUILD_PROFILE), host target)..."
 	@APP_FULL_NAME="$(ADP_APP_FULL_NAME)" \
@@ -625,7 +639,7 @@ build-adp-host: ## Builds the agent-data-plane binary for the current host (Carg
 		APP_GIT_HASH="$(ADP_APP_GIT_HASH)" \
 		APP_VERSION="$(ADP_APP_VERSION)" \
 		APP_BUILD_DATE="$(ADP_APP_BUILD_DATE)" \
-		cargo build --profile $(BUILD_PROFILE) --bin agent-data-plane
+		cargo $(ADP_CARGO_BUILD_SUBCMD) --profile $(BUILD_PROFILE) --bin agent-data-plane
 
 .PHONY: package-adp-host
 package-adp-host: BUILD_PROFILE ?= release
@@ -932,6 +946,7 @@ setup-hooks: ## Configure Git to use the committed hooks in .githooks/
 cargo-preinstall: cargo-install-dd-rust-license-tool cargo-install-cargo-deny cargo-install-cargo-hack
 cargo-preinstall: cargo-install-cargo-nextest cargo-install-cargo-autoinherit cargo-install-cargo-sort
 cargo-preinstall: cargo-install-dummyhttp cargo-install-cargo-machete cargo-install-rustfilt
+cargo-preinstall: cargo-install-cargo-auditable
 cargo-preinstall: ## Pre-installs all necessary Cargo tools (used for CI)
 	@echo "[*] Pre-installed all necessary Cargo tools!"
 

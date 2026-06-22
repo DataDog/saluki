@@ -17,15 +17,15 @@ container:
   exposed_ports:
     - "58125/udp"
 
-assertions:
-  - type: log_contains
+procedure:
+  - assertion: log_contains
     pattern: "Initial configuration received."
     timeout: 30s
-  - type: file_contains
+  - assertion: file_contains
     path: "/tmp/coreagent-only-mac.log"
     pattern: "CORE"
     timeout: 30s
-  - type: file_contains
+  - assertion: file_contains
     path: "/tmp/adp-mac-ignores-core-agent-log-file.log"
     pattern: "DATAPLANE"
     timeout: 30s

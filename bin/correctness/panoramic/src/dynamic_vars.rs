@@ -17,8 +17,8 @@
 //!     PANORAMIC_DYNAMIC_CONTAINER_IP: "hostname -i | awk '{print $1}'"
 //!     DD_BIND_HOST: "{{PANORAMIC_DYNAMIC_CONTAINER_IP}}"
 //!
-//! assertions:
-//!   - type: log_contains
+//! procedure:
+//!   - assertion: log_contains
 //!     pattern: "listen_addr:{{PANORAMIC_DYNAMIC_CONTAINER_IP}}:8125"
 //!     timeout: 15s
 //! ```

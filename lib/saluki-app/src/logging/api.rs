@@ -12,7 +12,7 @@ use saluki_core::runtime::{state::DataspaceRegistry, InitializationError, Superv
 use saluki_error::{generic_error, GenericError};
 use serde::Deserialize;
 use tokio::{
-    select,
+    pin, select,
     sync::{mpsc, Mutex},
     time::sleep,
 };
@@ -231,7 +231,7 @@ async fn process_override_actions(state: &mut LoggingOverrideWorkerState, proces
     let mut override_active = false;
     let override_timeout = sleep(Duration::from_secs(3600));
 
-    tokio::pin!(override_timeout, process_shutdown);
+    pin!(override_timeout, process_shutdown);
 
     loop {
         select! {

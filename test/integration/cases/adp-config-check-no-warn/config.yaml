@@ -22,14 +22,14 @@ env:
   DD_DOGSTATSD_TELEMETRY_ENABLED_LISTENER_ID: "true" # Incompatible(Medium, DogStatsD)
 
 
-assertions:
+procedure:
   - parallel:
-      - type: process_stable_for
+      - assertion: process_stable_for
         duration: 10s
-      - type: log_not_contains
+      - assertion: log_not_contains
         pattern: "Unsupported configuration key"
         during: 10s
-      - type: log_not_contains
+      - assertion: log_not_contains
         pattern: "panic|PANIC"
         regex: true
         during: 10s

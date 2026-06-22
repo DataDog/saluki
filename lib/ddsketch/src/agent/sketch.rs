@@ -186,6 +186,11 @@ impl DDSketch {
     }
 
     fn adjust_basic_stats(&mut self, v: f64, n: u64) {
+        // Every insert path funnels through here, so this is where we guard that the incoming sample is finite. If
+        // this is not true something has gone wrong with the DogStatsD codec.
+        #[cfg(feature = "antithesis")]
+        antithesis_sdk::assert_always!(v.is_finite(), "DDSketch sample is finite at insert");
+
         if v < self.min {
             self.min = v;
         }
@@ -195,6 +200,9 @@ impl DDSketch {
         }
 
         self.count += n;
+        // It's possible that self.sum will be INF after this multiplication, even though we've demonstrated that `v`
+        // is finite. The Datadog Agent sketch sum behaves the same way, so we do not assert that self.sum is itself
+        // finite.
         self.sum += v * n as f64;
 
         if n == 1 {
@@ -711,6 +719,18 @@ fn trim_left(bins: &mut SmallVec<[Bin; 4]>, bin_limit: u16) {
 
     // Drop the removed prefix, leaving exactly bin_limit bins.
     bins.drain(0..num_to_remove);
+
+    // This is the one place every mutating method routes through, so asserting here guards the bin-count bound for
+    // all of them.
+    #[cfg(feature = "antithesis")]
+    {
+        antithesis_sdk::assert_reachable!("DDSketch bin collapse reached");
+        antithesis_sdk::assert_always_less_than_or_equal_to!(
+            bins.len(),
+            bin_limit,
+            "DDSketch bin count within bin_limit"
+        );
+    }
 }
 
 #[allow(clippy::cast_possible_truncation)]
