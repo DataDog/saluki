@@ -1,0 +1,39 @@
+type: integration
+name: "adp-config-internal-dogstatsd"
+description: "Verifies DogStatsD source config set via DD_* is translated end-to-end and served on /config/internal."
+timeout: 120s
+runtimes: [linux, mac, windows]
+
+env:
+  DD_API_KEY: "00000000000000000000000000000000"
+  DD_HOSTNAME: "integration-test-config-internal"
+  DD_DATA_PLANE_ENABLED: "true"
+  DD_DATA_PLANE_STANDALONE_MODE: "false"
+  DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+  # A witnessed source field (driven by the Datadog translation) and a Saluki-schema-only source
+  # field (seeded). Asserting both on /config/internal proves the translation runs end-to-end.
+  DD_DOGSTATSD_PORT: "9999"
+  DD_DOGSTATSD_TCP_PORT: "8200"
+
+container:
+  exposed_ports:
+    - "55101/tcp"
+
+procedure:
+  - assertion: adp_config_key_equals
+    key: components.dogstatsd.source.port
+    value: 9999
+    endpoint: "https://localhost:55101/config/internal"
+    timeout: 60s
+  - assertion: adp_config_key_equals
+    key: components.dogstatsd.source.tcp_port
+    value: 8200
+    endpoint: "https://localhost:55101/config/internal"
+    timeout: 60s
+  - parallel:
+      - assertion: process_stable_for
+        duration: 10s
+      - assertion: log_not_contains
+        pattern: "panic|PANIC"
+        regex: true
+        during: 10s
