@@ -1078,7 +1078,6 @@ async fn process_listener(
     }
 
     let mut stream_shutdown_coordinator = DynamicShutdownCoordinator::default();
-    let mut stream_idx: u32 = 0;
 
     info!(%listen_addr, "DogStatsD listener started.");
 
@@ -1108,11 +1107,9 @@ async fn process_listener(
                     };
 
                     let task_name = format!(
-                        "dogstatsd-stream-handler-{}-{}",
+                        "dogstatsd-stream-handler-{}",
                         listen_addr.listener_type(),
-                        stream_idx,
                     );
-                    stream_idx = stream_idx.wrapping_add(1);
                     spawn_traced_named(task_name, process_stream(stream, source_context.clone(), handler_context, stream_shutdown_coordinator.register(), enabled_filter));
                 }
                 Err(e) => {
