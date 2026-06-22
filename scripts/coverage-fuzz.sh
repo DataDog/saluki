@@ -11,13 +11,19 @@ CORPUS_DIR="fuzz/corpus/apd"
 
 
 # --- Prerequisites ---
-rustup component add llvm-tools-preview --toolchain nightly 2>/dev/null || true
+rustup component add llvm-tools-preview --toolchain nightly
 if ! command -v grcov &>/dev/null; then
   echo "Installing grcov..."
   cargo install grcov
 fi
 
-LLVM_PROFDATA=$(rustup run nightly rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin/llvm-profdata
+
+HOST_TRIPLET=$(rustc -vV | sed -n 's|host: ||p')
+LLVM_PROFDATA=$(rustup run nightly rustc --print sysroot)/lib/rustlib/${HOST_TRIPLET}/bin/llvm-profdata
+if ! command -v $LLVM_PROFDATA &>/dev/null; then
+  echo could not find llvm-profdata
+  exit 1
+fi
 
 # --- Optional: sample a subset of the corpus ---
 if [[ -n "$NUM_SAMPLES" ]]; then
@@ -47,7 +53,7 @@ echo "Merging profraw files → $PROFDATA..."
 echo "Generating HTML coverage report..."
 grcov "$PROFDATA" \
   -s . \
-  --binary-path target/x86_64-unknown-linux-gnu/coverage/x86_64-unknown-linux-gnu/release/ \
+  --binary-path "target/${HOST_TRIPLET}/coverage/${HOST_TRIPLET}/release/" \
   -t html \
   --ignore-not-existing \
   --llvm \
