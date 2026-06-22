@@ -10,8 +10,15 @@ workspace = true
 
 [dependencies]
 agent-data-plane-config = { workspace = true }
+bytesize = { workspace = true }
 datadog-agent-config = { workspace = true }
 saluki-component-config = { workspace = true }
+saluki-config-tools = { workspace = true }
 saluki-context = { workspace = true }
+saluki-error = { workspace = true }
 serde_json = { workspace = true }
 stringtheory = { workspace = true }
+
+[dev-dependencies]
+figment = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt"] }

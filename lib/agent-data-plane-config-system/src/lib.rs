@@ -49,4 +49,7 @@
 //!
 
 // TODO(visibility): add crate-boundary architectural guard when arch tests are wired up
+mod system;
 pub(crate) mod translate;
+
+pub use self::system::{ConfigurationSystem, ConfigurationSystemLoader};
