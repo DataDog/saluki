@@ -3,8 +3,10 @@
 #![deny(warnings)]
 #![deny(missing_docs)]
 
+use datadog_intake::build_intake;
 use saluki_error::{ErrorContext as _, GenericError};
 use tokio::{
+    net::TcpListener,
     select,
     signal::unix::{signal, SignalKind},
     sync::mpsc,
@@ -42,11 +44,12 @@ async fn run() -> Result<(), GenericError> {
 
     info!("datadog-intake started: listening on 0.0.0.0:2049");
 
-    datadog_intake::serve(
-        "0.0.0.0:2049".parse().unwrap(),
-        async move { shutdown_rx.recv().await.unwrap_or(()) },
-    )
-    .await
+    let listener = TcpListener::bind("0.0.0.0:2049").await.unwrap();
+    let (router, _signals) = build_intake();
+    axum::serve(listener, router)
+        .with_graceful_shutdown(async move { shutdown_rx.recv().await.unwrap_or(()) })
+        .await
+        .map_err(Into::into)
 }
 
 fn spawn_signal_handlers(shutdown_tx: mpsc::Sender<()>) -> Result<(), GenericError> {

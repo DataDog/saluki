@@ -15,10 +15,7 @@ use saluki_app::{
     memory::{initialize_memory_bounds, MemoryBoundsConfiguration},
     metrics::emit_startup_metrics,
 };
-use saluki_components::{
-    destinations::DogStatsDStatisticsConfiguration,
-    forwarders::DatadogConfiguration,
-};
+use saluki_components::{destinations::DogStatsDStatisticsConfiguration, forwarders::DatadogConfiguration};
 use saluki_config::{ConfigurationLoader, GenericConfiguration};
 use saluki_core::health::HealthRegistry;
 use saluki_core::topology::TopologyBlueprint;
@@ -41,13 +38,8 @@ pub type InProcessIntakeHandler = saluki_io::net::client::http::InProcessHandler
 
 pub use saluki_io::net::listener::Listener as DsdInProcessListener;
 
-
-
 // extract stuff to get a function that gives us enough to build the topology
-// get rid of the supervisor - we don't need it
-// the topology should shut itself down after a fixed delay
-// its shutdown sequence will include a flush to the intake ("flush open bucket")
-// ( or a sleep of 17secs after sending the payloads )
+// get rid of the supervisor - we don't need itß
 // tokio runtime
 // spawn topology
 // call the network calls to send packets to the topology
@@ -56,12 +48,9 @@ pub use saluki_io::net::listener::Listener as DsdInProcessListener;
 /// When `intake` is `Some`, the Datadog forwarder is wired to an in-process intake (see
 /// [`InProcessIntakeHandler`]) so the integration test can observe payloads without standing up
 /// a real TCP listener. In production callers always pass `None`.
-pub async fn handle_run_command(
-    bootstrap_config: serde_json::Value,
-    intake: Option<InProcessIntakeHandler>,
-    dsd_listener: Option<DsdInProcessListener>,
-    shutdown: tokio::sync::oneshot::Receiver<()>,
-    started: Instant,
+pub async fn fuzz_run_command(
+    bootstrap_config: serde_json::Value, intake: InProcessIntakeHandler, dsd_listener: DsdInProcessListener,
+    shutdown: tokio::sync::oneshot::Receiver<()>, started: Instant,
 ) -> Result<(), GenericError> {
     info!("Agent Data Plane starting...");
 
@@ -74,7 +63,10 @@ pub async fn handle_run_command(
     let in_standalone_mode = dp_config.standalone_mode();
     // Bootstrap (logging, TLS, metrics) sets global process state — only run once.
     // Drop the MutexGuard before `.await` to keep the future Send.
-    let needs_bootstrap = BOOTSTRAP_GUARD.lock().expect("BOOTSTRAP_GUARD mutex poisoned").is_none();
+    let needs_bootstrap = BOOTSTRAP_GUARD
+        .lock()
+        .expect("BOOTSTRAP_GUARD mutex poisoned")
+        .is_none();
     if needs_bootstrap {
         let bootstrapper = AppBootstrapper::from_configuration(&config)?;
         let guard = bootstrapper.bootstrap_without_logging().await?;
@@ -83,7 +75,6 @@ pub async fn handle_run_command(
     // simpl: no remote loading, only the local config
     assert!(!dp_config.remote_agent_enabled());
     assert!(!dp_config.use_new_config_stream_endpoint());
-
 
     if !in_standalone_mode && !dp_config.enabled() {
         info!("Agent Data Plane is not enabled. Exiting.");
@@ -190,7 +181,7 @@ pub async fn handle_run_command(
 async fn create_topology(
     config: &GenericConfiguration, dp_config: &DataPlaneConfiguration, env_provider: &ADPEnvironmentProvider,
     component_registry: &ComponentRegistry, dsd_stats_config: DogStatsDStatisticsConfiguration,
-    intake: Option<InProcessIntakeHandler>, dsd_listener: Option<DsdInProcessListener>,
+    intake: InProcessIntakeHandler, dsd_listener: DsdInProcessListener,
 ) -> Result<TopologyBlueprint, GenericError> {
     let mut blueprint = TopologyBlueprint::new("primary", component_registry);
 
@@ -215,9 +206,7 @@ async fn create_topology(
         let mut dd_forwarder_config =
             DatadogConfiguration::from_configuration(config).error_context("Failed to configure Datadog forwarder.")?;
 
-        if let Some(handler) = intake {
-            dd_forwarder_config = dd_forwarder_config.with_in_process_handler(handler);
-        }
+        dd_forwarder_config = dd_forwarder_config.with_in_process_handler(intake);
 
         blueprint.add_forwarder("dd_out", dd_forwarder_config)?;
     }
@@ -236,7 +225,14 @@ async fn create_topology(
 
     // Now we move on to our actual data pipelines.
     if dp_config.dogstatsd().enabled() {
-        add_dsd_pipeline_to_blueprint(&mut blueprint, config, env_provider, dsd_stats_config, dsd_listener).await?;
+        add_dsd_pipeline_to_blueprint(
+            &mut blueprint,
+            config,
+            env_provider,
+            dsd_stats_config,
+            Some(dsd_listener),
+        )
+        .await?;
     }
 
     if dp_config.otlp().enabled() {

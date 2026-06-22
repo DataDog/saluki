@@ -56,7 +56,7 @@ use saluki_io::net::{listener::Listener, ConnectionAddress};
 use tokio::sync::mpsc;
 use tracing::info;
 
-use crate::fuzz_run::handle_run_command;
+use crate::fuzz_run::fuzz_run_command;
 
 pub const INTAKE_PORT: u16 = 2049;
 
@@ -172,10 +172,10 @@ pub async fn inner(corpus: DogStatsDInput) {
     let dsd_listener = Listener::in_process(dsd_rx);
 
     let (st1_tx, st1_rx) = tokio::sync::oneshot::channel();
-    let saluki_handle = tokio::spawn(handle_run_command(
+    let saluki_handle = tokio::spawn(fuzz_run_command(
         config,
-        Some(intake_handler),
-        Some(dsd_listener),
+        intake_handler,
+        dsd_listener,
         st1_rx,
         Instant::now(),
     ));
