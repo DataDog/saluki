@@ -272,6 +272,7 @@ fn merge_component(base: &TopologyComponentSnapshot, head: &TopologyComponentSna
     TopologyComponentSnapshot::new(
         head.id().to_string(),
         head.kind().to_string(),
+        head.rust_type().to_string(),
         head.input().cloned(),
         outputs.into_values().collect(),
     )
@@ -675,7 +676,13 @@ mod tests {
     fn component(
         id: &str, kind: &str, input: Option<TopologyDataTypeSnapshot>, outputs: Vec<TopologyOutputSnapshot>,
     ) -> TopologyComponentSnapshot {
-        TopologyComponentSnapshot::new(id.to_string(), kind.to_string(), input, outputs)
+        TopologyComponentSnapshot::new(
+            id.to_string(),
+            kind.to_string(),
+            format!("test::{kind}::{id}"),
+            input,
+            outputs,
+        )
     }
 
     fn output(id: &str, name: &str, data_type: TopologyDataTypeSnapshot) -> TopologyOutputSnapshot {

@@ -29,9 +29,12 @@ export ADP_STANDALONE_IPC_CERT_FILE := /tmp/adp-ipc-cert.pem
 ADP_TOPOLOGY_DATA_DIR := docs/public/adp-topology
 ADP_TOPOLOGY_JSON_OUTPUT := $(ADP_TOPOLOGY_DATA_DIR)/current.json
 ADP_TOPOLOGY_MERMAID_OUTPUT := $(ADP_TOPOLOGY_DATA_DIR)/current.mmd
+ADP_TOPOLOGY_DIFF_DIR := target/adp-topology
+ADP_TOPOLOGY_DIFF_BASE_OUTPUT := $(ADP_TOPOLOGY_DIFF_DIR)/base.json
+ADP_TOPOLOGY_DIFF_HEAD_OUTPUT := $(ADP_TOPOLOGY_DIFF_DIR)/head.json
 ADP_TOPOLOGY_FORMAT := $(or $(FORMAT),json)
 ADP_TOPOLOGY_OUTPUT := $(if $(filter mermaid,$(ADP_TOPOLOGY_FORMAT)),$(or $(OUTPUT),$(ADP_TOPOLOGY_MERMAID_OUTPUT)),$(ADP_TOPOLOGY_JSON_OUTPUT))
-ADP_TOPOLOGY_VIEWER_URL := http://localhost:5173/saluki/agent-data-plane/topology
+ADP_TOPOLOGY_VIEWER_URL := http://localhost:5173/topology
 
 ifneq ($(filter generate-adp-topology,$(MAKECMDGOALS)),)
 ifeq ($(strip $(CONFIG)),)
@@ -44,6 +47,32 @@ ifneq ($(strip $(OUTPUT)),)
 ifneq ($(ADP_TOPOLOGY_FORMAT),mermaid)
 $(error OUTPUT is only valid when FORMAT=mermaid)
 endif
+endif
+endif
+
+ifneq ($(filter diff-adp-topology run-adp-topology-diff-viewer,$(MAKECMDGOALS)),)
+ifeq ($(strip $(BASE_CONFIG)),)
+$(error BASE_CONFIG is required. Usage: make diff-adp-topology BASE_CONFIG=./base.yaml HEAD_CONFIG=./head.yaml [FORMAT=json|mermaid] [OUTPUT=./topology-diff.mmd])
+endif
+ifeq ($(strip $(HEAD_CONFIG)),)
+$(error HEAD_CONFIG is required. Usage: make diff-adp-topology BASE_CONFIG=./base.yaml HEAD_CONFIG=./head.yaml [FORMAT=json|mermaid] [OUTPUT=./topology-diff.mmd])
+endif
+ifneq ($(filter-out json mermaid,$(ADP_TOPOLOGY_FORMAT)),)
+$(error FORMAT must be 'json' or 'mermaid')
+endif
+ifneq ($(strip $(OUTPUT)),)
+ifneq ($(ADP_TOPOLOGY_FORMAT),mermaid)
+$(error OUTPUT is only valid when FORMAT=mermaid)
+endif
+endif
+endif
+
+ifneq ($(filter run-adp-topology-diff-viewer,$(MAKECMDGOALS)),)
+ifneq ($(strip $(FORMAT)),)
+$(error FORMAT is not valid for run-adp-topology-diff-viewer; the viewer always uses JSON snapshots)
+endif
+ifneq ($(strip $(OUTPUT)),)
+$(error OUTPUT is not valid for run-adp-topology-diff-viewer; the viewer uses generated JSON snapshots)
 endif
 endif
 
@@ -413,13 +442,46 @@ generate-adp-topology: ## Generates ADP topology data for the docs viewer (FORMA
 			target/devel/agent-data-plane --config "$(CONFIG)" debug topology --format json > "$(ADP_TOPOLOGY_OUTPUT)"; \
 	fi
 
+.PHONY: diff-adp-topology
+diff-adp-topology: build-adp
+diff-adp-topology: ## Diffs two generated ADP topologies (BASE_CONFIG=..., HEAD_CONFIG=..., FORMAT=json|mermaid)
+	@mkdir -p "$(ADP_TOPOLOGY_DIFF_DIR)"
+	@echo "[*] Generating base ADP topology: $(ADP_TOPOLOGY_DIFF_BASE_OUTPUT)"
+	@DD_API_KEY="$${DD_API_KEY:-api-key-adp-topology-viewer}" \
+		target/devel/agent-data-plane --config "$(BASE_CONFIG)" debug topology --format json > "$(ADP_TOPOLOGY_DIFF_BASE_OUTPUT)"
+	@echo "[*] Generating head ADP topology: $(ADP_TOPOLOGY_DIFF_HEAD_OUTPUT)"
+	@DD_API_KEY="$${DD_API_KEY:-api-key-adp-topology-viewer}" \
+		target/devel/agent-data-plane --config "$(HEAD_CONFIG)" debug topology --format json > "$(ADP_TOPOLOGY_DIFF_HEAD_OUTPUT)"
+	@echo "[*] Generating ADP topology diff ($(ADP_TOPOLOGY_FORMAT))"
+	@if [ "$(ADP_TOPOLOGY_FORMAT)" = "mermaid" ] && [ -n "$(strip $(OUTPUT))" ]; then \
+		target/devel/agent-data-plane debug topology --diff-base "$(ADP_TOPOLOGY_DIFF_BASE_OUTPUT)" --diff-head "$(ADP_TOPOLOGY_DIFF_HEAD_OUTPUT)" --format mermaid --output "$(OUTPUT)"; \
+	else \
+		target/devel/agent-data-plane debug topology --diff-base "$(ADP_TOPOLOGY_DIFF_BASE_OUTPUT)" --diff-head "$(ADP_TOPOLOGY_DIFF_HEAD_OUTPUT)" --format "$(ADP_TOPOLOGY_FORMAT)"; \
+	fi
+
+.PHONY: run-adp-topology-diff-viewer
+run-adp-topology-diff-viewer: build-adp
+run-adp-topology-diff-viewer: ## Diffs two ADP configs and opens the external topology viewer (BASE_CONFIG=..., HEAD_CONFIG=...)
+	@$(MAKE) --no-print-directory diff-adp-topology BASE_CONFIG="$(BASE_CONFIG)" HEAD_CONFIG="$(HEAD_CONFIG)" FORMAT=json
+	@echo "[*] Topology diff viewer: $(ADP_TOPOLOGY_VIEWER_URL)?base=base.json&head=head.json"
+	@npx --yes github:DataDog/adp-visualizer-ts --base "$(ADP_TOPOLOGY_DIFF_BASE_OUTPUT)" --head "$(ADP_TOPOLOGY_DIFF_HEAD_OUTPUT)" --saluki-root "."
+
 .PHONY: run-adp-topology-viewer
-run-adp-topology-viewer: check-js-build-tools
+run-adp-topology-viewer: build-adp
 run-adp-topology-viewer: ## Generates ADP topology data and runs the docs viewer (CONFIG=...)
 	@$(MAKE) --no-print-directory generate-adp-topology CONFIG="$(CONFIG)" FORMAT=json
 	@echo "[*] Topology viewer: $(ADP_TOPOLOGY_VIEWER_URL)"
-	@bun install
-	@bun run docs:dev
+	@npx --yes github:DataDog/adp-visualizer-ts --data "$(ADP_TOPOLOGY_JSON_OUTPUT)" --saluki-root "."
+
+.PHONY: run-adp-viewer
+run-adp-viewer: ## Shorthand for run-adp-topology-viewer (CONFIG=./your-config.yaml)
+run-adp-viewer:
+	@$(MAKE) --no-print-directory run-adp-topology-viewer CONFIG="$(CONFIG)"
+
+.PHONY: run-adp-diff-viewer
+run-adp-diff-viewer: ## Shorthand for run-adp-topology-diff-viewer (BASE_CONFIG=./base.yaml HEAD_CONFIG=./head.yaml)
+run-adp-diff-viewer:
+	@$(MAKE) --no-print-directory run-adp-topology-diff-viewer BASE_CONFIG="$(BASE_CONFIG)" HEAD_CONFIG="$(HEAD_CONFIG)"
 
 ##@ Kubernetes
 

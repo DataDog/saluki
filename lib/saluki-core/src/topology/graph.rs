@@ -108,27 +108,34 @@ impl fmt::Display for DataType {
 #[derive(Debug, Clone)]
 enum Node {
     Source {
+        rust_type: &'static str,
         outputs: Vec<TypedComponentOutputId>,
     },
     Relay {
+        rust_type: &'static str,
         outputs: Vec<TypedComponentOutputId>,
     },
     Decoder {
+        rust_type: &'static str,
         input_ty: PayloadType,
         output_ty: EventType,
     },
     Transform {
+        rust_type: &'static str,
         input_ty: EventType,
         outputs: Vec<TypedComponentOutputId>,
     },
     Encoder {
+        rust_type: &'static str,
         input_ty: EventType,
         output_ty: PayloadType,
     },
     Forwarder {
+        rust_type: &'static str,
         input_ty: PayloadType,
     },
     Destination {
+        rust_type: &'static str,
         input_ty: EventType,
     },
 }
@@ -167,7 +174,13 @@ impl Graph {
         }
 
         let outputs = construct_typed_output_ids(&component_id, builder.outputs())?;
-        self.nodes.insert(component_id.clone(), Node::Source { outputs });
+        self.nodes.insert(
+            component_id.clone(),
+            Node::Source {
+                rust_type: builder.rust_type(),
+                outputs,
+            },
+        );
 
         Ok(component_id)
     }
@@ -188,7 +201,13 @@ impl Graph {
         }
 
         let outputs = construct_typed_output_ids(&component_id, builder.outputs())?;
-        self.nodes.insert(component_id.clone(), Node::Relay { outputs });
+        self.nodes.insert(
+            component_id.clone(),
+            Node::Relay {
+                rust_type: builder.rust_type(),
+                outputs,
+            },
+        );
 
         Ok(component_id)
     }
@@ -211,6 +230,7 @@ impl Graph {
         self.nodes.insert(
             component_id.clone(),
             Node::Decoder {
+                rust_type: builder.rust_type(),
                 input_ty: builder.input_payload_type(),
                 output_ty: builder.output_event_type(),
             },
@@ -240,6 +260,7 @@ impl Graph {
         self.nodes.insert(
             component_id.clone(),
             Node::Transform {
+                rust_type: builder.rust_type(),
                 input_ty: builder.input_event_type(),
                 outputs,
             },
@@ -265,6 +286,7 @@ impl Graph {
         self.nodes.insert(
             component_id.clone(),
             Node::Encoder {
+                rust_type: builder.rust_type(),
                 input_ty: builder.input_event_type(),
                 output_ty: builder.output_payload_type(),
             },
@@ -292,6 +314,7 @@ impl Graph {
         self.nodes.insert(
             component_id.clone(),
             Node::Forwarder {
+                rust_type: builder.rust_type(),
                 input_ty: builder.input_payload_type(),
             },
         );
@@ -318,6 +341,7 @@ impl Graph {
         self.nodes.insert(
             component_id.clone(),
             Node::Destination {
+                rust_type: builder.rust_type(),
                 input_ty: builder.input_event_type(),
             },
         );
@@ -347,7 +371,7 @@ impl Graph {
             Some(node) => match node {
                 // Sources, relays, and transforms support named outputs, so we have to dig into their outputs to make
                 // sure the given output ID exists.
-                Node::Source { outputs } | Node::Relay { outputs } | Node::Transform { outputs, .. } => {
+                Node::Source { outputs, .. } | Node::Relay { outputs, .. } | Node::Transform { outputs, .. } => {
                     if !outputs
                         .iter()
                         .any(|output| output.component_output() == &component_output_id)
@@ -387,14 +411,14 @@ impl Graph {
             Node::Decoder { input_ty, .. } => DataType::Payload(input_ty),
             Node::Transform { input_ty, .. } => DataType::Event(input_ty),
             Node::Encoder { input_ty, .. } => DataType::Event(input_ty),
-            Node::Forwarder { input_ty } => DataType::Payload(input_ty),
-            Node::Destination { input_ty } => DataType::Event(input_ty),
+            Node::Forwarder { input_ty, .. } => DataType::Payload(input_ty),
+            Node::Destination { input_ty, .. } => DataType::Event(input_ty),
         }
     }
 
     fn get_output_type(&self, id: &ComponentOutputId) -> DataType {
         match &self.nodes[&id.component_id()] {
-            Node::Source { outputs } | Node::Relay { outputs } | Node::Transform { outputs, .. } => outputs
+            Node::Source { outputs, .. } | Node::Relay { outputs, .. } | Node::Transform { outputs, .. } => outputs
                 .iter()
                 .find(|output| output.component_output().output() == id.output())
                 .map(|output| output.output_ty())
@@ -566,7 +590,7 @@ impl Graph {
             let typed_component_id = TypedComponentId::new(component_id.clone(), component_type);
 
             match node {
-                Node::Source { outputs } | Node::Relay { outputs } | Node::Transform { outputs, .. } => {
+                Node::Source { outputs, .. } | Node::Relay { outputs, .. } | Node::Transform { outputs, .. } => {
                     let per_component = mappings.entry(typed_component_id).or_default();
                     for output in outputs {
                         per_component.insert(output.component_output().output(), Vec::new());
@@ -621,16 +645,25 @@ impl Graph {
         let component_type = self
             .get_component_type(component_id)
             .expect("component should exist in graph");
+        let rust_type = match node {
+            Node::Source { rust_type, .. }
+            | Node::Relay { rust_type, .. }
+            | Node::Decoder { rust_type, .. }
+            | Node::Transform { rust_type, .. }
+            | Node::Encoder { rust_type, .. }
+            | Node::Forwarder { rust_type, .. }
+            | Node::Destination { rust_type, .. } => *rust_type,
+        };
         let input = match node {
             Node::Source { .. } | Node::Relay { .. } => None,
             Node::Decoder { input_ty, .. } => Some(data_type_snapshot((*input_ty).into())),
             Node::Transform { input_ty, .. } => Some(data_type_snapshot((*input_ty).into())),
             Node::Encoder { input_ty, .. } => Some(data_type_snapshot((*input_ty).into())),
-            Node::Forwarder { input_ty } => Some(data_type_snapshot((*input_ty).into())),
-            Node::Destination { input_ty } => Some(data_type_snapshot((*input_ty).into())),
+            Node::Forwarder { input_ty, .. } => Some(data_type_snapshot((*input_ty).into())),
+            Node::Destination { input_ty, .. } => Some(data_type_snapshot((*input_ty).into())),
         };
         let mut outputs = match node {
-            Node::Source { outputs } | Node::Relay { outputs } | Node::Transform { outputs, .. } => outputs
+            Node::Source { outputs, .. } | Node::Relay { outputs, .. } | Node::Transform { outputs, .. } => outputs
                 .iter()
                 .map(|output| {
                     let component_output = output.component_output();
@@ -658,6 +691,7 @@ impl Graph {
         TopologyComponentSnapshot::new(
             component_id.to_string(),
             component_type.as_str().to_string(),
+            rust_type.to_string(),
             input,
             outputs,
         )
@@ -1459,6 +1493,7 @@ mod test {
                     {
                         "id": "decoder",
                         "kind": "decoder",
+                        "rust_type": "saluki_core::topology::test_util::TestDecoderBuilder",
                         "input": { "category": "payload", "signals": ["raw"], "label": "Raw" },
                         "outputs": [
                             {
@@ -1471,6 +1506,7 @@ mod test {
                     {
                         "id": "encode",
                         "kind": "encoder",
+                        "rust_type": "saluki_core::topology::test_util::TestEncoderBuilder",
                         "input": { "category": "event", "signals": ["metrics"], "label": "Metric" },
                         "outputs": [
                             {
@@ -1483,12 +1519,14 @@ mod test {
                     {
                         "id": "error_out",
                         "kind": "destination",
+                        "rust_type": "saluki_core::topology::test_util::TestDestinationBuilder",
                         "input": { "category": "event", "signals": ["events"], "label": "DatadogEvent" },
                         "outputs": []
                     },
                     {
                         "id": "fanout",
                         "kind": "transform",
+                        "rust_type": "saluki_core::topology::test_util::TestTransformBuilder",
                         "input": { "category": "event", "signals": ["metrics"], "label": "Metric" },
                         "outputs": [
                             {
@@ -1506,12 +1544,14 @@ mod test {
                     {
                         "id": "forward",
                         "kind": "forwarder",
+                        "rust_type": "saluki_core::topology::test_util::TestForwarderBuilder",
                         "input": { "category": "payload", "signals": ["http"], "label": "HTTP" },
                         "outputs": []
                     },
                     {
                         "id": "relay_in",
                         "kind": "relay",
+                        "rust_type": "saluki_core::topology::test_util::TestRelayBuilder",
                         "input": null,
                         "outputs": [
                             {

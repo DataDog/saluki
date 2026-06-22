@@ -11,6 +11,11 @@ use crate::{components::ComponentContext, data_model::payload::PayloadType};
 /// aspects of the built forwarder, such as the data types allowed for input events.
 #[async_trait]
 pub trait ForwarderBuilder: MemoryBounds {
+    /// Returns the Rust type name for this builder.
+    fn rust_type(&self) -> &'static str {
+        std::any::type_name::<Self>()
+    }
+
     /// Data types allowed as input payloads to this forwarder.
     fn input_payload_type(&self) -> PayloadType;
 

@@ -12,6 +12,11 @@ use crate::{components::ComponentContext, data_model::event::EventType, topology
 /// transform.
 #[async_trait]
 pub trait TransformBuilder: MemoryBounds {
+    /// Returns the Rust type name for this builder.
+    fn rust_type(&self) -> &'static str {
+        std::any::type_name::<Self>()
+    }
+
     /// Event type allowed as input events to this transform.
     fn input_event_type(&self) -> EventType;
 

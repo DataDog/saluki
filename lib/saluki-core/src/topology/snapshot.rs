@@ -109,17 +109,20 @@ fn escape_mermaid_label(value: &str) -> String {
 pub struct TopologyComponentSnapshot {
     id: String,
     kind: String,
+    rust_type: String,
     input: Option<TopologyDataTypeSnapshot>,
     outputs: Vec<TopologyOutputSnapshot>,
 }
 
 impl TopologyComponentSnapshot {
     pub(super) fn new(
-        id: String, kind: String, input: Option<TopologyDataTypeSnapshot>, outputs: Vec<TopologyOutputSnapshot>,
+        id: String, kind: String, rust_type: String, input: Option<TopologyDataTypeSnapshot>,
+        outputs: Vec<TopologyOutputSnapshot>,
     ) -> Self {
         Self {
             id,
             kind,
+            rust_type,
             input,
             outputs,
         }
@@ -133,6 +136,11 @@ impl TopologyComponentSnapshot {
     /// Returns the component kind.
     pub fn kind(&self) -> &str {
         &self.kind
+    }
+
+    /// Returns the Rust type for the component builder.
+    pub fn rust_type(&self) -> &str {
+        &self.rust_type
     }
 
     /// Returns the component input data type, if it has one.
@@ -242,6 +250,7 @@ mod tests {
                 TopologyComponentSnapshot::new(
                     "source".to_string(),
                     "source".to_string(),
+                    "test::Source".to_string(),
                     None,
                     vec![TopologyOutputSnapshot::new(
                         "source".to_string(),
@@ -252,6 +261,7 @@ mod tests {
                 TopologyComponentSnapshot::new(
                     "forwarder".to_string(),
                     "forwarder".to_string(),
+                    "test::Forwarder".to_string(),
                     Some(TopologyDataTypeSnapshot::new("payload", vec!["raw"], "Raw".to_string())),
                     Vec::new(),
                 ),
@@ -272,6 +282,7 @@ mod tests {
                 TopologyComponentSnapshot::new(
                     "transform".to_string(),
                     "transform".to_string(),
+                    "test::Transform".to_string(),
                     None,
                     vec![TopologyOutputSnapshot::new(
                         "transform.events".to_string(),
@@ -286,6 +297,7 @@ mod tests {
                 TopologyComponentSnapshot::new(
                     "destination".to_string(),
                     "destination".to_string(),
+                    "test::Destination".to_string(),
                     Some(TopologyDataTypeSnapshot::new(
                         "event",
                         vec!["metrics", "events"],

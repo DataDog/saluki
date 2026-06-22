@@ -17,6 +17,11 @@ use crate::{
 /// decoder.
 #[async_trait]
 pub trait DecoderBuilder: MemoryBounds {
+    /// Returns the Rust type name for this builder.
+    fn rust_type(&self) -> &'static str {
+        std::any::type_name::<Self>()
+    }
+
     /// Data types allowed as input payloads to this decoder.
     fn input_payload_type(&self) -> PayloadType;
 
