@@ -178,6 +178,7 @@ pub async fn handle_run_command(
     // Create the internal supervisor which drives our control plane and internal observability.
     let mut internal_supervisor = create_internal_supervisor(
         config,
+        Arc::clone(&system),
         &dp_config,
         &component_registry,
         health_registry.clone(),

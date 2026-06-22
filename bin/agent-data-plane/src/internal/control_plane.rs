@@ -1,3 +1,6 @@
+use std::sync::Arc;
+
+use agent_data_plane_config_system::ConfigurationSystem;
 use datadog_agent_commons::ipc::{config::IpcAuthConfiguration, tls::build_ipc_server_tls_config};
 use resource_accounting::ComponentRegistry;
 use saluki_api::EndpointType;
@@ -15,8 +18,8 @@ use saluki_error::GenericError;
 use crate::{
     config::DataPlaneConfiguration,
     internal::{
-        logging::DynamicLogLevelWorker, remote_agent::RemoteAgentBootstrap, telemetry::InternalTelemetryAPIWorker,
-        TopologyControlSurfaces,
+        config_internal::InternalConfigWorker, logging::DynamicLogLevelWorker, remote_agent::RemoteAgentBootstrap,
+        telemetry::InternalTelemetryAPIWorker, TopologyControlSurfaces,
     },
 };
 
@@ -31,8 +34,8 @@ use crate::{
 ///
 /// If the supervisor can't be created, an error is returned.
 pub async fn create_control_plane_supervisor(
-    config: &GenericConfiguration, dp_config: &DataPlaneConfiguration, component_registry: &ComponentRegistry,
-    health_registry: HealthRegistry, control_surfaces: TopologyControlSurfaces,
+    config: &GenericConfiguration, system: Arc<ConfigurationSystem>, dp_config: &DataPlaneConfiguration,
+    component_registry: &ComponentRegistry, health_registry: HealthRegistry, control_surfaces: TopologyControlSurfaces,
     ra_bootstrap: Option<RemoteAgentBootstrap>, logging_controller: LoggingOverrideController,
 ) -> Result<Supervisor, GenericError> {
     let mut supervisor = Supervisor::new("ctrl-pln")?
@@ -44,6 +47,7 @@ pub async fn create_control_plane_supervisor(
     supervisor.add_worker(InternalTelemetryAPIWorker::new());
     supervisor.add_worker(DynamicLogLevelWorker::new(config, logging_controller));
     supervisor.add_worker(ConfigWorker::new(config.clone()));
+    supervisor.add_worker(InternalConfigWorker::new(system));
 
     supervisor.add_worker(DynamicAPIBuilder::new(
         EndpointType::Unprivileged,
