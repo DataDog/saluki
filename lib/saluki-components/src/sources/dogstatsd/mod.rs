@@ -2219,9 +2219,32 @@ mod tests {
 
     #[test]
     fn configured_min_buffer_count_matches_enabled_listeners() {
-        let udp_only = deser_config("{}");
-        assert_eq!(udp_only.configured_min_buffer_count(), 1);
+        // No listeners configured -> no buffers reserved.
+        assert_eq!(DogStatsDConfiguration::default().configured_min_buffer_count(), 0);
 
+        // Each listener type reserves a single buffer on its own. Non-autoscaled UDP yields one socket, so it
+        // contributes one as well.
+        let udp = DogStatsDConfiguration {
+            port: 8125,
+            ..Default::default()
+        };
+        let tcp = DogStatsDConfiguration {
+            tcp_port: 9000,
+            ..Default::default()
+        };
+        let unixgram = DogStatsDConfiguration {
+            socket_path: Some("/tmp/dsd.socket".to_string()),
+            ..Default::default()
+        };
+        let unix_stream = DogStatsDConfiguration {
+            socket_stream_path: Some("/tmp/dsd-stream.socket".to_string()),
+            ..Default::default()
+        };
+        for config in [&udp, &tcp, &unixgram, &unix_stream] {
+            assert_eq!(config.configured_min_buffer_count(), 1);
+        }
+
+        // All four listener types together reserve one buffer each.
         let all_listener_types = DogStatsDConfiguration {
             port: 8125,
             tcp_port: 9000,
@@ -2230,6 +2253,34 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(all_listener_types.configured_min_buffer_count(), 4);
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn configured_min_buffer_count_reserves_one_buffer_per_autoscaled_udp_socket() {
+        // When UDP autoscaling is enabled, the UDP listener yields one socket per stream handler, and each socket
+        // retains its own buffer for the lifetime of the stream. The reservation must track that socket count rather
+        // than a flat 1, otherwise the memory-bounds minimum understates the pool's actual minimum capacity.
+        let config = DogStatsDConfiguration {
+            port: 8125,
+            autoscale_udp_listeners: true,
+            ..Default::default()
+        };
+
+        // Use the same helper the listener-building path uses as the oracle, so this stays correct regardless of the
+        // host's vCPU count.
+        let udp_sockets = config
+            .udp_streams_to_yield()
+            .expect("autoscaling yields at least one stream")
+            .get();
+        assert_eq!(config.configured_min_buffer_count(), udp_sockets);
+
+        // Adding a connection-oriented listener adds exactly one buffer on top of the UDP socket reservation.
+        let with_stream = DogStatsDConfiguration {
+            socket_stream_path: Some("/tmp/dsd-stream.socket".to_string()),
+            ..config
+        };
+        assert_eq!(with_stream.configured_min_buffer_count(), udp_sockets + 1);
     }
 
     #[tokio::test]
