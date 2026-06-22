@@ -1,9 +1,11 @@
 use std::{
     collections::HashSet,
     path::PathBuf,
+    sync::Arc,
     time::{Duration, Instant},
 };
 
+use agent_data_plane_config_system::ConfigurationSystem;
 use argh::FromArgs;
 use datadog_agent_commons::platform::PlatformSettings;
 use datadog_agent_config::classifier::{ConfigClassifier, Pipeline, PipelineAffinity, Severity, SupportLevel};
@@ -154,22 +156,28 @@ pub async fn handle_run_command(
         return Ok(());
     }
 
+    // The configuration system takes ownership of the now-final configuration, establishing it as
+    // the single source. Components that have not yet been flipped onto typed config read through
+    // `raw_map()`, which stays live in remote-agent stream mode exactly as before.
+    let system = Arc::new(ConfigurationSystem::load(config).start().await?);
+    let config = system.raw_map();
+
     let active_pipelines = active_pipelines(&dp_config);
-    check_and_warn_config(&config, &active_pipelines).error_context("Incompatible configuration detected.")?;
+    check_and_warn_config(config, &active_pipelines).error_context("Incompatible configuration detected.")?;
 
     // Set up all of the building blocks for building our topologies and launching internal processes.
     let component_registry = ComponentRegistry::default();
     let health_registry = HealthRegistry::new();
     let (env_provider, maybe_env_supervisor) =
-        ADPEnvironmentProvider::from_configuration(&config, &dp_config, &component_registry, &health_registry).await?;
+        ADPEnvironmentProvider::from_configuration(config, &dp_config, &component_registry, &health_registry).await?;
 
     // Create the blueprint for our primary topology.
     let (mut blueprint, control_surfaces) =
-        create_topology(&config, &dp_config, &env_provider, &component_registry).await?;
+        create_topology(&system, &dp_config, &env_provider, &component_registry).await?;
 
     // Create the internal supervisor which drives our control plane and internal observability.
     let mut internal_supervisor = create_internal_supervisor(
-        &config,
+        config,
         &dp_config,
         &component_registry,
         health_registry.clone(),
@@ -181,7 +189,7 @@ pub async fn handle_run_command(
     .error_context("Failed to create internal supervisor.")?;
 
     // Run memory bounds validation to ensure that we can launch the topology with our configured memory limit, if any.
-    let bounds_config = MemoryBoundsConfiguration::try_from_config(&config)?;
+    let bounds_config = MemoryBoundsConfiguration::try_from_config(config)?;
     let memory_limiter = initialize_memory_bounds(bounds_config, component_registry.root())?;
 
     if let Ok(val) = std::env::var("DD_ADP_WRITE_SIZING_GUIDE") {
@@ -358,9 +366,12 @@ fn is_a_pipeline_affected(active_pipelines: &HashSet<Pipeline>, pipeline_affinit
 }
 
 async fn create_topology(
-    config: &GenericConfiguration, dp_config: &DataPlaneConfiguration, env_provider: &ADPEnvironmentProvider,
+    system: &ConfigurationSystem, dp_config: &DataPlaneConfiguration, env_provider: &ADPEnvironmentProvider,
     component_registry: &ComponentRegistry,
 ) -> Result<(TopologyBlueprint, TopologyControlSurfaces), GenericError> {
+    // Un-flipped components read the raw map; the DogStatsD helper takes the whole system so it can
+    // reach typed config for the flipped source.
+    let config = system.raw_map();
     let mut blueprint = TopologyBlueprint::new("primary", component_registry);
     blueprint.with_shutdown_timeout(dp_config.stop_timeout());
 
@@ -417,7 +428,7 @@ async fn create_topology(
     }
 
     if dp_config.dogstatsd().enabled() {
-        let dsd_control_surface = add_dsd_pipeline_to_blueprint(&mut blueprint, config, env_provider).await?;
+        let dsd_control_surface = add_dsd_pipeline_to_blueprint(&mut blueprint, system, env_provider).await?;
         control_surfaces.attach_dogstatsd(dsd_control_surface);
     }
 
@@ -655,8 +666,11 @@ async fn add_baseline_traces_pipeline_to_blueprint(
 }
 
 async fn add_dsd_pipeline_to_blueprint(
-    blueprint: &mut TopologyBlueprint, config: &GenericConfiguration, env_provider: &ADPEnvironmentProvider,
+    blueprint: &mut TopologyBlueprint, system: &ConfigurationSystem, env_provider: &ADPEnvironmentProvider,
 ) -> Result<DogStatsDControlSurface, GenericError> {
+    // The whole helper reads the raw map. The signature takes the system so each sub-component can
+    // move onto typed config independently without further changing the parameter list.
+    let config = system.raw_map();
     // We're creating the "front half" of the DogStatsD pipeline, which deals solely with accepting DogStatsD payloads,
     // and enriching/processing them in DSD-specific ways, relevant to how the Datadog Agent is expected to behave.
     //

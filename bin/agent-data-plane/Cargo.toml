@@ -14,6 +14,7 @@ fips = ["saluki-app/tls-fips", "saluki-components/fips"]
 antithesis = ["dep:antithesis_sdk", "antithesis_sdk/full", "dep:antithesis-instrumentation", "saluki-components/antithesis"]
 
 [dependencies]
+agent-data-plane-config-system = { workspace = true }
 antithesis-instrumentation = { workspace = true, optional = true }
 antithesis_sdk = { workspace = true, optional = true }
 argh = { workspace = true, features = ["help"] }
