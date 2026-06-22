@@ -456,7 +456,7 @@ inventory:
   cmd_port:
     support: full
     pipelines: [cross_cutting]
-    description: "Datadog Agent IPC/CMD API port"
+    description: "Core Agent CMD API port for ADP gRPC IPC"
     test_support:
       used_by: [RemoteAgentClientConfiguration]
       test_json: "5101"

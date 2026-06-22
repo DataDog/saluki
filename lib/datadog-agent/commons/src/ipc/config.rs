@@ -106,13 +106,13 @@ impl Default for IpcAuthConfiguration {
 /// Datadog Agent IPC client configuration.
 #[derive(Deserialize)]
 pub struct RemoteAgentClientConfiguration {
-    /// Datadog Agent IPC endpoint to connect to.
+    /// Legacy ADP-only Core Agent CMD API gRPC endpoint override.
     ///
-    /// Caution/weird: This is configuration is only available on agent-data-plane, and would allow
-    /// one to connect to an Agent at a URI other than localhost/127.0.0.1. However, the Datadog
-    /// configuration schema doesn't account for this and instead provides `cmd_port`. Therefore,
+    /// This key is only available to `agent-data-plane`. Despite the `agent_ipc` name, it targets the Core Agent's
+    /// CMD API gRPC server, not the separate `agent_ipc.*` HTTP config listener. The Datadog Agent configuration schema
+    /// exposes `cmd_port` for this server, so `cmd_port` is the supported way to follow the Agent's configured port.
     ///
-    /// **CAUTION**: if `cmd_port` is set, then `ipc_endpoint` is ignored.
+    /// If `cmd_port` is set, `ipc_endpoint` is ignored.
     ///
     /// Defaults to `https://127.0.0.1:5001`.
     #[serde(
@@ -122,7 +122,7 @@ pub struct RemoteAgentClientConfiguration {
     )]
     ipc_endpoint: Uri,
 
-    /// The port that will be used to connect to the Datadog Agent IPC on the local host.
+    /// Core Agent CMD API port used for remote-agent gRPC IPC on localhost.
     ///
     /// Takes precedence over `ipc_endpoint` if set.
     cmd_port: Option<u16>,
@@ -217,7 +217,7 @@ impl RemoteAgentClientConfiguration {
         &self.auth
     }
 
-    /// Returns the IPC endpoint URI.
+    /// Returns the Core Agent CMD API gRPC endpoint URI.
     ///
     /// If `cmd_port` is set, the endpoint is built from it, ignoring `ipc_endpoint`.
     pub fn endpoint(&self) -> Result<Uri, GenericError> {
