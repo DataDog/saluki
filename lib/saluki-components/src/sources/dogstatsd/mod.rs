@@ -350,6 +350,12 @@ pub struct DogStatsDConfiguration {
     /// Additional tags to add to all metrics.
     #[serde(rename = "dogstatsd_tags", default)]
     additional_tags: Vec<String>,
+
+    /// Optional pre-built listener injected at runtime, in addition to those derived from
+    /// configuration. Used by test harnesses that want to feed packets over a tokio channel
+    /// instead of through the kernel. See [`Self::with_extra_listener`].
+    #[serde(skip)]
+    extra_listener: std::sync::Mutex<Option<Listener>>,
 }
 
 impl DogStatsDConfiguration {
@@ -380,6 +386,16 @@ impl DogStatsDConfiguration {
         W: WorkloadProvider + Send + Sync + 'static,
     {
         self.workload_provider = Some(Arc::new(workload_provider));
+        self
+    }
+
+    /// Adds a pre-built listener to be used alongside the listeners derived from configuration.
+    ///
+    /// Intended for in-process test harnesses (see [`Listener::in_process`]) that feed packets
+    /// over a tokio channel instead of through the kernel. Only one extra listener is supported;
+    /// subsequent calls replace the previous one.
+    pub fn with_extra_listener(self, listener: Listener) -> Self {
+        *self.extra_listener.lock().expect("extra_listener mutex poisoned") = Some(listener);
         self
     }
 
@@ -430,6 +446,10 @@ impl DogStatsDConfiguration {
                     listener_type: "UDS (stream)",
                 })?;
             listeners.push(listener);
+        }
+
+        if let Some(extra) = self.extra_listener.lock().expect("extra_listener mutex poisoned").take() {
+            listeners.push(extra);
         }
 
         Ok(listeners)
@@ -620,12 +640,7 @@ impl Metrics {
 fn build_metrics(listen_addr: &ListenAddress, component_context: &ComponentContext) -> Metrics {
     let builder = MetricsBuilder::from_component_context(component_context);
 
-    let listener_type = match listen_addr {
-        ListenAddress::Tcp(_) => "tcp",
-        ListenAddress::Udp(_) => "udp",
-        ListenAddress::Unix(_) => "unix",
-        ListenAddress::Unixgram(_) => "unixgram",
-    };
+    let listener_type = listen_addr.listener_type();
 
     Metrics {
         metrics_received: builder.register_counter_with_tags(

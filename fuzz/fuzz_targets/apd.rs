@@ -8,6 +8,7 @@ use libfuzzer_sys::fuzz_target;
 
 use arbitrary::{Arbitrary, Unstructured};
 use barkus_core::{generate::decode, ir::GrammarIr, profile::Profile};
+use tokio::runtime::RngSeed;
 
 pub static PROFILE: LazyLock<Profile> = LazyLock::new(|| Profile::default());
 
@@ -38,9 +39,14 @@ impl<'a> Arbitrary<'a> for FuzzDogStatsDInput {
             .map_err(|_| arbitrary::Error::IncorrectFormat)?;
         let aggregated_messages = aggregate_metric_lines(message_lines);
 
-        Ok(FuzzDogStatsDInput{ metrics: DogStatsDInput {
-            messages: aggregated_messages,
-        }})
+        let metrics = DogStatsDInput { messages: aggregated_messages };
+
+        // No metrics, skip this input.
+        if metrics.messages.is_empty() {
+            return Err(arbitrary::Error::IncorrectFormat);
+        }
+
+        Ok(FuzzDogStatsDInput { metrics })
     }
 }
 
@@ -48,6 +54,7 @@ fuzz_target!(|input: FuzzDogStatsDInput| {
     tokio::runtime::Builder::new_current_thread()
         .start_paused(true)
         .enable_all()
+        .rng_seed(RngSeed::from_bytes(b"fixed-but we could seed from the fuzzed input"))
         .build()
         .expect("failed to build tokio runtime")
         .block_on(async {

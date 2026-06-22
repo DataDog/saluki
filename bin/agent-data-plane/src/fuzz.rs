@@ -9,13 +9,15 @@
 //! Three coupled changes make `tokio::time::pause()` auto-advance behave correctly here. Each
 //! one is necessary; removing any of them stretches the test out to many real seconds.
 //!
-//! 1. **In-memory transport between forwarder and intake.** The intake's axum router is served
-//!    over a [`tokio::io::DuplexStream`] handed back by a custom hyper connector instead of
-//!    over loopback TCP. With kernel I/O on the path, paused-tokio sees every task parked on
-//!    real I/O during a request roundtrip and auto-advances simulated time, firing periodic
-//!    timers and burning real CPU. With duplex IO, writing on one half wakes the other half via
-//!    in-memory wakers — the runtime always has a runnable task and never auto-advances during
-//!    a request.
+//! 1. **In-memory transports on both edges of ADP.** Neither leg of the pipeline goes through
+//!    the kernel. The DogStatsD source is fed by an in-process `Listener` (see
+//!    [`saluki_io::net::listener::Listener::in_process`]) backed by a tokio mpsc channel; the
+//!    Datadog forwarder hits an `InProcessHandler` that hands [`tokio::io::DuplexStream`]
+//!    halves to a hyper-server task running the intake's axum router. With kernel I/O on the
+//!    path, paused-tokio sees every task parked on real I/O and auto-advances simulated time,
+//!    firing periodic timers and burning real CPU. With in-memory transports, writing always
+//!    wakes the reader via in-memory wakers — the runtime always has a runnable task and never
+//!    auto-advances during a request.
 //!
 //! 2. **Ambient worker pool for the topology.** [`saluki_core`]'s default
 //!    `WorkerPoolConfiguration::Dedicated` builds its own multi-thread runtime to run
@@ -32,14 +34,14 @@
 //!
 //! # Wait condition
 //!
-//! Under paused tokio with a finite injected corpus, the aggregator naturally produces one
-//! payload per metric type once the first flush window closes — then everything goes quiet (no
-//! more metrics arrive, the runtime no longer advances real wall clock). The test therefore
-//! waits for `>= 1` series payload as the end-to-end invariant: it proves the pipeline went all
-//! the way from UDS → source → aggregator → encoder → forwarder → in-process intake.
+//! After injecting the corpus, the harness waits for the in-process intake to observe its
+//! first series payload, or for 40 simulated seconds — whichever happens first — and then
+//! shuts down. Under paused tokio with auto-advance, the timeout elapses in microseconds of
+//! wall clock when nothing else is making progress, so a bad input bounds the iteration cost
+//! rather than hanging libfuzzer. Inputs that decode to zero metrics are rejected upstream
+//! via `arbitrary::Error::IncorrectFormat` so [`inner`] is never called on them.
 
 #![allow(dead_code)]
-use std::path::Path;
 use std::sync::Arc;
 use std::{
     collections::BTreeMap,
@@ -50,8 +52,8 @@ use std::{
 use bytes::Bytes;
 use hyper_util::{rt::TokioIo, service::TowerToHyperService};
 use saluki_error::{generic_error, GenericError};
-use tempfile::TempDir;
-use tokio::time::{self};
+use saluki_io::net::{listener::Listener, ConnectionAddress};
+use tokio::sync::mpsc;
 use tracing::info;
 
 use crate::fuzz_run::handle_run_command;
@@ -84,7 +86,14 @@ pub struct DogStatsDInput {
     pub messages: Vec<(u64, Vec<Bytes>)>,
 }
 
-async fn inject_plan(socket: tokio::net::UnixDatagram, plan: Vec<(u64, Vec<Bytes>)>) -> Result<(), GenericError> {
+async fn inject_plan(
+    tx: mpsc::Sender<(Bytes, ConnectionAddress)>, plan: Vec<(u64, Vec<Bytes>)>,
+) -> Result<(), GenericError> {
+    // Synthetic peer address for every injected packet — datagram peers don't have a meaningful
+    // identity here, and `ProcessLike(None)` matches what UDS-datagram returns when no peer
+    // credentials are attached.
+    let peer = ConnectionAddress::ProcessLike(None);
+
     let start = Instant::now();
     let mut maybe_prev_ts = None;
     for (ts, packets) in &plan {
@@ -99,7 +108,7 @@ async fn inject_plan(socket: tokio::net::UnixDatagram, plan: Vec<(u64, Vec<Bytes
         }
         info!(?ts, "Injecting");
         for packet in packets {
-            if let Err(e) = socket.send(packet).await {
+            if let Err(e) = tx.send((packet.clone(), peer.clone())).await {
                 eprintln!("inject error: {e}");
             }
         }
@@ -109,15 +118,15 @@ async fn inject_plan(socket: tokio::net::UnixDatagram, plan: Vec<(u64, Vec<Bytes
 
 const DD_YAML_CONFIG: &str = "bin/agent-data-plane/fuzz_datadog_config.yaml";
 
-fn build_config_object(agent_unix_socket: &Path, intake_port: u16) -> serde_json::Value {
-    // health port useless?
+fn build_config_object(intake_port: u16) -> serde_json::Value {
+    // No `dogstatsd_socket`/`dogstatsd_port`: the source listens only on the in-process
+    // listener injected via `DogStatsDConfiguration::with_extra_listener`.
     serde_json::json!({
         "hostname": "correctness-testing",
         "api_key": "dummy",
         "health_port": 5555,
         "dd_url": format!("http://localhost:{intake_port}"),
         "dogstatsd_port": 0,
-        "dogstatsd_socket": agent_unix_socket.to_str().expect("socket path is not valid UTF-8"),
         "dogstatsd_worker_count": 1,
         "data_plane": {
             "enabled": true,
@@ -133,11 +142,6 @@ fn build_config_object(agent_unix_socket: &Path, intake_port: u16) -> serde_json
 // value lies in pair comparison "if you changed that config value, we do expect some/no change in the output when running the same corpus with/without that config entry. Do we actually observe that ?"
 
 pub async fn inner(corpus: DogStatsDInput) {
-    // ADP listens for DogStatsD on a UDS we create in a tempdir; injection writes packets there.
-    let dir = TempDir::with_prefix("saluki").expect("could not create temp dir");
-    let unix_socket_path = dir.path().join("dsd_socket");
-    info!(?unix_socket_path, "Created UDS");
-
     // Build the intake router and its signal receivers. The router itself drives request
     // handling; signals are readable immediately, no separate listener task is needed.
     let (intake_router, intake_signals) = datadog_intake::build_intake();
@@ -145,7 +149,7 @@ pub async fn inner(corpus: DogStatsDInput) {
     // The in-process connector ignores the URI host/port — it always returns a duplex pair —
     // but ADP still parses `dd_url` into a real URI. Use a literal IP + arbitrary port so URL
     // parsing succeeds without consulting DNS.
-    let config = build_config_object(&unix_socket_path, /* placeholder */ 1);
+    let config = build_config_object(/* placeholder */ 1);
 
     // Per-connection handler: hand the server-side IO half to a fresh `serve_connection` task
     // that drives the axum router. `axum::Router` already implements `tower::Service`, so
@@ -161,50 +165,45 @@ pub async fn inner(corpus: DogStatsDInput) {
         });
     });
 
+    // In-process DogStatsD transport: ADP's source drains `dsd_rx`; the injector below pushes
+    // packets through `dsd_tx`. Channel capacity is comfortably above any single burst from
+    // the corpus generator.
+    let (dsd_tx, dsd_rx) = mpsc::channel::<(Bytes, ConnectionAddress)>(1024);
+    let dsd_listener = Listener::in_process(dsd_rx);
+
     let (st1_tx, st1_rx) = tokio::sync::oneshot::channel();
     let saluki_handle = tokio::spawn(handle_run_command(
         config,
         Some(intake_handler),
+        Some(dsd_listener),
         st1_rx,
         Instant::now(),
     ));
 
-    // Wait for ADP to create the socket file before trying to connect.
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-    loop {
-        if unix_socket_path.exists() {
-            break;
-        }
-        if saluki_handle.is_finished() {
-            let result = saluki_handle.await.expect("ADP task panicked");
-            panic!("ADP task exited before creating socket: {:?}", result);
-        }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "timed out waiting for ADP to create socket at {unix_socket_path:?}"
-        );
-        time::sleep(Duration::from_millis(100)).await;
-    }
-    info!("Socket ready, connecting");
-
-    // run injection
-    let socket = tokio::net::UnixDatagram::unbound().expect("failed to create unbound Unix datagram socket");
-    socket
-        .connect(&unix_socket_path)
-        .expect("failed to connect to dogstatsd UDS — is saluki listening?");
     info!("Starting injection");
-    inject_plan(socket, corpus.messages)
+    inject_plan(dsd_tx, corpus.messages)
         .await
-        .expect("failed to inject corpus into dogstatsd socket");
+        .expect("failed to inject corpus into dogstatsd channel");
 
-    // See the module-level docs for why we wait for a single series payload.
-    info!("Waiting for series payload at fake-intake");
+    // Shut down as soon as the intake observes its first series payload — or after a 40-sim-sec
+    // timeout, whichever comes first. The timeout bounds iteration cost on inputs that never
+    // produce a payload (e.g. a single zero-valued counter that sits in the aggregator without
+    // ever crossing a closed-bucket boundary); under paused tokio with auto-advance the 40 sim
+    // seconds elapse in microseconds of wall clock.
     let mut series_rx = intake_signals.series_v2_count;
-    series_rx
-        .wait_for(|&n| n >= 1)
-        .await
-        .expect("intake server dropped before receiving series payload");
-    info!(count = *series_rx.borrow(), "Received expected series payload");
+    let outcome = tokio::time::timeout(
+        Duration::from_secs(40),
+        series_rx.wait_for(|&n| n >= 1),
+    )
+    .await
+    .map(|res| res.map(|guard| *guard));
+    match outcome {
+        Ok(Ok(count)) => info!(count, "Intake received first series payload"),
+        Ok(Err(_)) => panic!("intake series-count watch closed before any payload arrived"),
+        Err(_) => {
+            info!("Timed out waiting for intake payload after 40 sim seconds; shutting down anyway")
+        }
+    }
 
     info!("Trigger shutdown");
     let _ = st1_tx.send(());

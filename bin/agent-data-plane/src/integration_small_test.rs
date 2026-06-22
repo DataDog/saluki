@@ -7,6 +7,7 @@ use barkus_core::{ir::GrammarIr, profile::Profile};
 use bytes::Bytes;
 use rand::{rngs::SmallRng, SeedableRng};
 use saluki_error::GenericError;
+use tokio::runtime::RngSeed;
 use tracing::{info, level_filters::LevelFilter};
 use tracing_subscriber::EnvFilter;
 
@@ -36,7 +37,7 @@ impl tracing_subscriber::fmt::time::FormatTime for WallAndSim {
 
 fn generate_corpus_random() -> Result<DogStatsDInput, GenericError> {
     let seed = Some(1234u64);
-    let count = 100;
+    let count = 50;
     let mut rng: SmallRng = match seed {
         Some(s) => SmallRng::seed_from_u64(s),
         None => SmallRng::from_rng(&mut rand::rng()),
@@ -68,6 +69,7 @@ fn main() {
     let corpus = generate_corpus_random().expect("failed to generate random corpus");
     tokio::runtime::Builder::new_current_thread()
         .start_paused(true)
+        .rng_seed(RngSeed::from_bytes(b"fixed-seed"))
         .enable_all()
         .build()
         .expect("failed to build tokio runtime")

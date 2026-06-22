@@ -1,11 +1,15 @@
 //! Network listeners.
 use std::{future::pending, io, net::SocketAddr};
 
+use bytes::Bytes;
 use snafu::{ResultExt as _, Snafu};
-use tokio::net::{TcpListener, UdpSocket};
+use tokio::{
+    net::{TcpListener, UdpSocket},
+    sync::mpsc,
+};
 
 use super::{
-    addr::ListenAddress,
+    addr::{ConnectionAddress, ListenAddress},
     stream::{Connection, Stream},
     unix::{enable_uds_socket_credentials, ensure_unix_socket_free, set_unix_socket_write_only},
 };
@@ -75,6 +79,10 @@ enum ListenerInner {
     Unixgram(Option<tokio::net::UnixDatagram>),
     #[cfg(unix)]
     Unix(tokio::net::UnixListener),
+    /// In-process listener backed by a tokio channel. Holds the receiver in an `Option` so
+    /// that `accept()` can take it on first call and `pending().await` on subsequent calls,
+    /// matching the connectionless idiom used by `Udp` and `Unixgram`.
+    InProcess(Option<mpsc::Receiver<(Bytes, ConnectionAddress)>>),
 }
 
 /// A network listener.
@@ -107,6 +115,11 @@ impl Listener {
     /// If the listen address cannot be bound, or if the listener cannot be configured correctly, an error is returned.
     pub async fn from_listen_address(listen_address: ListenAddress) -> Result<Self, ListenerError> {
         let inner = match &listen_address {
+            ListenAddress::InProcess => {
+                return Err(ListenerError::InvalidConfiguration {
+                    reason: "in-process listeners must be constructed via Listener::in_process",
+                });
+            }
             ListenAddress::Tcp(addr) => {
                 TcpListener::bind(addr)
                     .await
@@ -171,6 +184,18 @@ impl Listener {
         Ok(Self { listen_address, inner })
     }
 
+    /// Creates a new in-process `Listener` that yields packets from the given channel.
+    ///
+    /// The first call to [`accept`](Self::accept) returns a single `Stream` that drains the
+    /// channel; subsequent calls park forever (matching connectionless semantics for
+    /// UDP/UDS-datagram).
+    pub fn in_process(rx: mpsc::Receiver<(Bytes, ConnectionAddress)>) -> Self {
+        Self {
+            listen_address: ListenAddress::InProcess,
+            inner: ListenerInner::InProcess(Some(rx)),
+        }
+    }
+
     /// Gets a reference to the listen address.
     pub fn listen_address(&self) -> &ListenAddress {
         &self.listen_address
@@ -228,6 +253,13 @@ impl Listener {
                     })?;
                     Ok(socket.into())
                 }),
+            ListenerInner::InProcess(rx) => {
+                if let Some(rx) = rx.take() {
+                    Ok(rx.into())
+                } else {
+                    pending().await
+                }
+            }
         }
     }
 }

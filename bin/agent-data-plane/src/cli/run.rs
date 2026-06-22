@@ -333,7 +333,7 @@ async fn create_topology(
 
     // Now we move on to our actual data pipelines.
     if dp_config.dogstatsd().enabled() {
-        add_dsd_pipeline_to_blueprint(&mut blueprint, config, env_provider, dsd_stats_config).await?;
+        add_dsd_pipeline_to_blueprint(&mut blueprint, config, env_provider, dsd_stats_config, None).await?;
     }
 
     if dp_config.otlp().enabled() {
@@ -434,6 +434,7 @@ async fn add_baseline_traces_pipeline_to_blueprint(
 pub(crate) async fn add_dsd_pipeline_to_blueprint(
     blueprint: &mut TopologyBlueprint, config: &GenericConfiguration, env_provider: &ADPEnvironmentProvider,
     dsd_stats_config: DogStatsDStatisticsConfiguration,
+    extra_dsd_listener: Option<saluki_io::net::listener::Listener>,
 ) -> Result<(), GenericError> {
     // We're creating the "front half" of the DogStatsD pipeline, which deals solely with accepting DogStatsD payloads,
     // and enriching/processing them in DSD-specific ways, relevant to how the Datadog Agent is expected to behave.
@@ -465,9 +466,12 @@ pub(crate) async fn add_dsd_pipeline_to_blueprint(
     //    │    (destination)    │    │                       (Datadog Platform)                        │
     //    └─────────────────────┘    └ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┘
 
-    let dsd_config = DogStatsDConfiguration::from_configuration(config)
+    let mut dsd_config = DogStatsDConfiguration::from_configuration(config)
         .error_context("Failed to configure DogStatsD source.")?
         .with_workload_provider(env_provider.workload().clone());
+    if let Some(listener) = extra_dsd_listener {
+        dsd_config = dsd_config.with_extra_listener(listener);
+    }
     let dsd_prefix_filter_configuration = DogStatsDPrefixFilterConfiguration::from_configuration(config)?;
     let dsd_mapper_config = DogStatsDMapperConfiguration::from_configuration(config)?;
     let dsd_enrich_config =

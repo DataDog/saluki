@@ -5,11 +5,12 @@ use std::{
     task::{Context, Poll},
 };
 
-use bytes::BufMut;
+use bytes::{BufMut, Bytes};
 use pin_project::pin_project;
 use tokio::{
     io::{AsyncRead, AsyncReadExt as _, AsyncWrite, ReadBuf},
     net::{TcpStream, UdpSocket},
+    sync::mpsc,
 };
 
 use super::{
@@ -96,6 +97,9 @@ enum Connectionless {
     /// A Unix domain socket in datagram mode (SOCK_DGRAM).
     #[cfg(unix)]
     Unixgram(tokio::net::UnixDatagram),
+
+    /// An in-process channel carrying pre-framed datagrams.
+    InProcess(mpsc::Receiver<(Bytes, ConnectionAddress)>),
 }
 
 impl Connectionless {
@@ -104,6 +108,17 @@ impl Connectionless {
             Self::Udp(inner) => inner.recv_buf_from(buf).await.map(|(n, addr)| (n, addr.into())),
             #[cfg(unix)]
             Self::Unixgram(inner) => unixgram_recvmsg(inner, buf).await,
+            Self::InProcess(rx) => match rx.recv().await {
+                Some((bytes, addr)) => {
+                    let n = bytes.len();
+                    buf.put_slice(&bytes);
+                    Ok((n, addr))
+                }
+                // Sender dropped — mimic an idle connectionless socket (UDP/UDS-datagram return
+                // no EOF; they just stop receiving). The caller relies on the outer shutdown
+                // signal to exit `drive_stream`.
+                None => std::future::pending().await,
+            },
         }
     }
 }
@@ -194,6 +209,16 @@ impl From<tokio::net::UnixStream> for Stream {
         Self {
             inner: StreamInner::Connection {
                 socket: Connection::Unix(stream),
+            },
+        }
+    }
+}
+
+impl From<mpsc::Receiver<(Bytes, ConnectionAddress)>> for Stream {
+    fn from(rx: mpsc::Receiver<(Bytes, ConnectionAddress)>) -> Self {
+        Self {
+            inner: StreamInner::Connectionless {
+                socket: Connectionless::InProcess(rx),
             },
         }
     }

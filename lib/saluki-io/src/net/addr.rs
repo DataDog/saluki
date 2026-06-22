@@ -38,6 +38,14 @@ pub enum ListenAddress {
     /// A Unix stream listen address.
     #[cfg(unix)]
     Unix(PathBuf),
+
+    /// An in-process listen address.
+    ///
+    /// Used by test harnesses that want to feed packets to a source over a tokio channel instead
+    /// of through the kernel. The actual receiver is carried by the [`Listener`](crate::net::listener::Listener)
+    /// — this variant exists so dispatch on address (framer selection, metric tags, logging)
+    /// has a stable identity.
+    InProcess,
 }
 
 impl ListenAddress {
@@ -55,6 +63,7 @@ impl ListenAddress {
             Self::Unixgram(_) => "unixgram",
             #[cfg(unix)]
             Self::Unix(_) => "unix",
+            Self::InProcess => "in_process",
         }
     }
 
@@ -87,6 +96,7 @@ impl ListenAddress {
             Self::Unixgram(_) => None,
             #[cfg(unix)]
             Self::Unix(_) => None,
+            Self::InProcess => None,
         }
     }
 
@@ -111,6 +121,7 @@ impl fmt::Display for ListenAddress {
             Self::Unixgram(path) => write!(f, "unixgram://{}", path.display()),
             #[cfg(unix)]
             Self::Unix(path) => write!(f, "unix://{}", path.display()),
+            Self::InProcess => write!(f, "in-process://"),
         }
     }
 }

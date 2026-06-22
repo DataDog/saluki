@@ -29,5 +29,6 @@ pub fn get_framer(listen_address: &ListenAddress) -> DsdFramer {
         ListenAddress::Unixgram(_) => DsdFramer::NonStream(newline_framer),
         #[cfg(unix)]
         ListenAddress::Unix(_) => DsdFramer::Stream(NestedFramer::new(newline_framer, LengthDelimitedFramer)),
+        ListenAddress::InProcess => DsdFramer::NonStream(newline_framer),
     }
 }

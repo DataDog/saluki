@@ -39,6 +39,8 @@ use crate::{config::DataPlaneConfiguration, env_provider::ADPEnvironmentProvider
 /// lockstep with request progress.
 pub type InProcessIntakeHandler = saluki_io::net::client::http::InProcessHandler;
 
+pub use saluki_io::net::listener::Listener as DsdInProcessListener;
+
 
 
 // extract stuff to get a function that gives us enough to build the topology
@@ -57,6 +59,7 @@ pub type InProcessIntakeHandler = saluki_io::net::client::http::InProcessHandler
 pub async fn handle_run_command(
     bootstrap_config: serde_json::Value,
     intake: Option<InProcessIntakeHandler>,
+    dsd_listener: Option<DsdInProcessListener>,
     shutdown: tokio::sync::oneshot::Receiver<()>,
     started: Instant,
 ) -> Result<(), GenericError> {
@@ -104,6 +107,7 @@ pub async fn handle_run_command(
         &component_registry,
         dsd_stats_config.clone(),
         intake,
+        dsd_listener,
     )
     .await?;
 
@@ -186,7 +190,7 @@ pub async fn handle_run_command(
 async fn create_topology(
     config: &GenericConfiguration, dp_config: &DataPlaneConfiguration, env_provider: &ADPEnvironmentProvider,
     component_registry: &ComponentRegistry, dsd_stats_config: DogStatsDStatisticsConfiguration,
-    intake: Option<InProcessIntakeHandler>,
+    intake: Option<InProcessIntakeHandler>, dsd_listener: Option<DsdInProcessListener>,
 ) -> Result<TopologyBlueprint, GenericError> {
     let mut blueprint = TopologyBlueprint::new("primary", component_registry);
 
@@ -232,7 +236,7 @@ async fn create_topology(
 
     // Now we move on to our actual data pipelines.
     if dp_config.dogstatsd().enabled() {
-        add_dsd_pipeline_to_blueprint(&mut blueprint, config, env_provider, dsd_stats_config).await?;
+        add_dsd_pipeline_to_blueprint(&mut blueprint, config, env_provider, dsd_stats_config, dsd_listener).await?;
     }
 
     if dp_config.otlp().enabled() {
