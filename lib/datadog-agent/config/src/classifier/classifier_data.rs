@@ -278,6 +278,13 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         default: Some("\"\""),
     },
     ClassifierEntry {
+        yaml_path: "forwarder_requeue_buffer_size",
+        aliases: &[],
+        support_level: SupportLevel::Incompatible(Severity::Low),
+        pipeline_affinity: PipelineAffinity::CrossCutting,
+        default: Some("100"),
+    },
+    ClassifierEntry {
         yaml_path: "heroku_dyno",
         aliases: &[],
         support_level: SupportLevel::Incompatible(Severity::High),
@@ -386,13 +393,6 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         yaml_path: "forwarder_low_prio_buffer_size",
         aliases: &[],
         support_level: SupportLevel::Incompatible(Severity::Medium),
-        pipeline_affinity: PipelineAffinity::CrossCutting,
-        default: Some("100"),
-    },
-    ClassifierEntry {
-        yaml_path: "forwarder_requeue_buffer_size",
-        aliases: &[],
-        support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::CrossCutting,
         default: Some("100"),
     },

@@ -190,6 +190,7 @@ swappable
 syslog
 teardown
 tracestate
+typestate
 uid(s?)
 unary
 unescape
@@ -234,3 +235,7 @@ launchd
 Wireshark
 testsupport
 callee
+trivy
+Erlang
+OTP
+respawn(s|ed|ing)?

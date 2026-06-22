@@ -44,6 +44,9 @@ ARG BUILD_PROFILE=release
 ARG BUILD_FEATURES=default
 ARG BUILD_TARGET
 ARG BUILD_CFLAGS=""
+# When "true", wrap the cargo build with `cargo auditable` so the binary embeds an SBOM (dependency
+# tree). CI sets this for published/internal builds; local `make build-adp-image` leaves it false.
+ARG USE_CARGO_AUDITABLE=false
 ARG APP_FULL_NAME=""
 ARG APP_SHORT_NAME=""
 ARG APP_IDENTIFIER=""
@@ -69,6 +72,7 @@ ENV BUILD_TARGET=${BUILD_TARGET}
 ENV BUILD_PROFILE=${BUILD_PROFILE}
 ENV BUILD_FEATURES=${BUILD_FEATURES}
 ENV BUILD_CFLAGS=${BUILD_CFLAGS}
+ENV USE_CARGO_AUDITABLE=${USE_CARGO_AUDITABLE}
 
 # Build Agent Data Plane.
 WORKDIR /adp
