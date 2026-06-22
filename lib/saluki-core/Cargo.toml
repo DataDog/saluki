@@ -12,6 +12,7 @@ workspace = true
 loom = ["dep:loom"]
 
 [dependencies]
+antithesis_sdk = { workspace = true, optional = true }
 async-trait = { workspace = true }
 bitmask-enum = { workspace = true }
 ddsketch = { workspace = true }

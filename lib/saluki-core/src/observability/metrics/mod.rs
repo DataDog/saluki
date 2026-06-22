@@ -696,11 +696,7 @@ impl Supervisable for MetricsFlusherWorker {
         Ok(Box::pin(async move {
             select! {
                 _ = process_shutdown => {},
-<<<<<<< HEAD
                 _ = flush_metrics() => {},
-=======
-                _ = flush_metrics(FLUSH_INTERVAL) => {},
->>>>>>> fb4ea4a74c (chore(core): clean up a bunch of code smells around supervisable worker implementations (#1860))
             }
 
             Ok(())

@@ -122,6 +122,47 @@ impl Distribution<i64> for Wide {
 }
 
 // ===========================================================================
+// Wide — a log-uniform magnitude sampler with a random sign and a boundary tail.
+// Draws spread evenly across orders of magnitude so values land in distinct
+// buckets, and ~1/8 of draws are a type boundary so the extremes still appear.
+// The `f64` body spans 1e-30..1e30, the `i64` body spans 1..1e18, and the tail
+// reaches f64::MAX / i64::MAX, which is what overflows a sketch sum or count.
+// ===========================================================================
+
+/// A log-uniform, random-sign magnitude sampler with a boundary tail. See the
+/// section note above.
+#[derive(Debug, Clone, Copy)]
+pub struct Wide;
+
+impl Distribution<f64> for Wide {
+    fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> f64 {
+        if rng.random_ratio(1, 8) {
+            return BOUNDARIES_F64[rng.random_range(0..BOUNDARIES_F64.len())];
+        }
+        let mag = 10f64.powf(rng.random_range(-30.0..30.0));
+        if rng.random_range(0..2u8) == 0 {
+            -mag
+        } else {
+            mag
+        }
+    }
+}
+
+impl Distribution<i64> for Wide {
+    fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> i64 {
+        if rng.random_ratio(1, 8) {
+            return BOUNDARIES_I64[rng.random_range(0..BOUNDARIES_I64.len())];
+        }
+        let mag = num_traits::cast::<f64, i64>(10f64.powf(rng.random_range(0.0..18.0))).unwrap_or(i64::MAX);
+        if rng.random_range(0..2u8) == 0 {
+            -mag
+        } else {
+            mag
+        }
+    }
+}
+
+// ===========================================================================
 // Boundary<T> — a finite type-boundary sampler: each fixed-width max ±1 and the
 // half-range midpoint ±1, the same idea as the boundary tables above but for one type.
 // ===========================================================================
