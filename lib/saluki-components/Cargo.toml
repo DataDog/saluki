@@ -63,6 +63,7 @@ resource-accounting = { workspace = true }
 rmp-serde = { workspace = true }
 saluki-api = { workspace = true }
 saluki-common = { workspace = true }
+saluki-component-config = { workspace = true }
 saluki-config-tools = { workspace = true }
 saluki-context = { workspace = true }
 saluki-core = { workspace = true }

@@ -81,6 +81,8 @@ pub mod structs {
     pub const TAG_FILTERLIST_CONFIGURATION: &str = "TagFilterlistConfiguration";
     /// Keys read via `get_typed` / `try_get_typed` rather than struct deserialization.
     pub const GET_TYPED: &str = "get_typed";
+    /// Sentinel for keys migrated to the config translation system (not a real struct).
+    pub const MIGRATED_TO_CONFIG_SYSTEM: &str = "MigratedToConfigSystem";
 }
 
 /// The ADP pipeline a config key affects.

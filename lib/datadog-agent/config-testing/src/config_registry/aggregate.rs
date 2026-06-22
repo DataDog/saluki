@@ -106,7 +106,7 @@ crate::declare_annotations! {
         support_level: SupportLevel::Full,
         additional_yaml_paths: &[],
         env_var_override: None,
-        used_by: &[structs::AGGREGATE_CONFIGURATION, structs::DOGSTATSD_CONFIGURATION],
+        used_by: &[structs::AGGREGATE_CONFIGURATION],
         value_type_override: None,
         test_json: None,
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD, Pipeline::Checks]),

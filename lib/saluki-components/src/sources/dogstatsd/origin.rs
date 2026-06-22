@@ -1,12 +1,12 @@
 use std::sync::Arc;
 
+use saluki_component_config::dogstatsd::OriginEnrichmentConfiguration;
 use saluki_context::{
     origin::{OriginTagCardinality, OriginTagsResolver, RawOrigin},
     tags::SharedTagSet,
 };
 use saluki_env::{workload::origin::ResolvedOrigin, WorkloadProvider};
 use saluki_io::deser::codec::dogstatsd::{EventPacket, MetricPacket, ServiceCheckPacket};
-use serde::Deserialize;
 use tracing::trace;
 
 use super::{replay::CapturedTaggerHandle, tags::WellKnownTags};
@@ -22,99 +22,6 @@ fn captured_process_id_from_replay(process_id: u32) -> Option<u32> {
         Some(process_id & !REPLAY_PROCESS_ID_MARKER)
     } else {
         None
-    }
-}
-
-const fn default_tag_cardinality() -> OriginTagCardinality {
-    OriginTagCardinality::Low
-}
-
-const fn default_origin_detection_optout() -> bool {
-    true
-}
-
-/// Origin enrichment configuration.
-///
-/// Origin enrichment controls the when and how of enriching metrics ingested via DogStatsD based on various sources of
-/// "origin" information, such as specific metric tags or UDS socket credentials. Enrichment involves adding additional
-/// metric tags that describe the origin of the metric, such as the Kubernetes pod or container.
-#[derive(Clone, Deserialize)]
-#[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
-pub struct OriginEnrichmentConfiguration {
-    /// Whether or not to enable origin detection.
-    ///
-    /// If disabled, no origin tags will be added to events even if the origin information is detected.
-    ///
-    /// Defaults to `false`.
-    #[serde(rename = "dogstatsd_origin_detection", default)]
-    enabled: bool,
-
-    /// Whether or not a client-provided entity ID should take precedence over automatically detected origin metadata.
-    ///
-    /// When a client-provided entity ID is specified, and an origin process ID has automatically been detected, setting
-    /// this to `true` will cause the origin process ID to be ignored.
-    ///
-    /// Defaults to `false`.
-    #[serde(rename = "dogstatsd_entity_id_precedence", default)]
-    entity_id_precedence: bool,
-
-    /// The default cardinality of tags to enrich metrics with.
-    #[serde(rename = "dogstatsd_tag_cardinality", default = "default_tag_cardinality")]
-    tag_cardinality: OriginTagCardinality,
-
-    /// Whether or not to use the unified origin detection behavior.
-    ///
-    /// When set to `true`, all detected entity IDs -- UDS Origin Detection, `dd.internal.entity_id`, container ID from
-    /// DogStatsD payload -- will be used for querying tags to enrich with. When set to `false`, the original precedence
-    /// behavior will be used, which enriches with the entity ID detected via Origin Detection first [1], and then
-    /// potentially again with either the client-provided entity ID (`dd.internal.entity_id`) or the container ID from
-    /// the DogStatsD payload, with the client-provided entity ID taking precedence.
-    ///
-    /// Defaults to `false`.
-    ///
-    /// [1]: if an entity ID was detected via Origin Detection, it's only used if either no client-provided entity ID
-    ///      was present or if `entity_id_precedence` is set to `false`.
-    #[serde(rename = "origin_detection_unified", default)]
-    origin_detection_unified: bool,
-
-    /// Whether or not to opt out of origin detection for DogStatsD metrics.
-    ///
-    /// When set to `true`, and the metric explicitly denotes a cardinality of `"none"`, origin enrichment will be
-    /// skipped. This is only applicable to DogStatsD metrics when unified origin detection behavior isn't enabled.
-    ///
-    /// Defaults to `true`.
-    #[serde(
-        rename = "dogstatsd_origin_optout_enabled",
-        default = "default_origin_detection_optout"
-    )]
-    origin_detection_optout: bool,
-
-    /// Whether or not to parse client-provided origin fields from DogStatsD payloads.
-    ///
-    /// When enabled, the `c:` (Local Data), `e:` (External Data), and `card:` (Cardinality) protocol fields are
-    /// parsed and used for origin enrichment.
-    ///
-    /// Defaults to `false`.
-    #[serde(rename = "dogstatsd_origin_detection_client", default)]
-    pub(super) origin_detection_client: bool,
-}
-
-impl Default for OriginEnrichmentConfiguration {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            entity_id_precedence: false,
-            tag_cardinality: default_tag_cardinality(),
-            origin_detection_unified: false,
-            origin_detection_optout: default_origin_detection_optout(),
-            origin_detection_client: false,
-        }
-    }
-}
-
-impl OriginEnrichmentConfiguration {
-    pub(super) const fn enabled(&self) -> bool {
-        self.enabled
     }
 }
 

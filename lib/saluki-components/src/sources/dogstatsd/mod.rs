@@ -10,7 +10,6 @@ use std::{
     collections::VecDeque,
     future::Future,
     num::NonZeroUsize,
-    path::PathBuf,
     pin::Pin,
     sync::{Arc, LazyLock},
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -24,7 +23,6 @@ use saluki_common::{
     sync::shutdown::{ShutdownCoordinator, ShutdownHandle},
     task::spawn_traced_named,
 };
-use saluki_config_tools::{deserialize_space_separated_or_seq, GenericConfiguration};
 use saluki_context::{
     origin::RawOrigin,
     tags::{RawTags, RawTagsFilter},
@@ -54,8 +52,6 @@ use saluki_io::{
         ConnectionAddress, ListenAddress, ProcessCredentials, ProcessIdentity, Stream,
     },
 };
-use serde::{Deserialize, Deserializer};
-use serde_with::{serde_as, NoneAsEmptyString};
 use snafu::{ResultExt as _, Snafu};
 use stringtheory::MetaString;
 use tokio::{
@@ -90,7 +86,7 @@ pub use self::replay::{
 mod origin;
 use self::origin::{
     mark_replay_process_id, origin_from_event_packet, origin_from_metric_packet, origin_from_service_check_packet,
-    DogStatsDOriginTagResolver, OriginEnrichmentConfiguration,
+    DogStatsDOriginTagResolver,
 };
 
 mod resolver;
@@ -123,470 +119,52 @@ enum Error {
 /// 4096 entries × 512 bytes = 2 MiB, matching ADP's previous default.
 const INTERNER_BASELINE_BYTES_PER_ENTRY: u64 = 512;
 
-const fn default_buffer_size() -> usize {
-    8192
-}
-
-const fn default_buffer_count() -> usize {
-    128
-}
-
-const fn default_buffer_count_max() -> usize {
-    256
-}
-
-const fn default_port() -> u16 {
-    8125
-}
-
-const fn default_tcp_port() -> u16 {
-    0
-}
-
-const fn default_statsd_forward_port() -> u16 {
-    0
-}
-
-const fn default_socket_receive_buffer_size() -> usize {
-    0
-}
-
-const fn default_allow_context_heap_allocations() -> bool {
-    true
-}
-
-const fn default_no_aggregation_pipeline_support() -> bool {
-    true
-}
-
-const fn default_context_string_interner_entry_count() -> u64 {
-    4096
-}
-
-const fn default_cached_contexts_limit() -> usize {
-    500_000
-}
-
-const fn default_cached_tagsets_limit() -> usize {
-    500_000
-}
-
-const fn default_context_expiry_seconds() -> u64 {
-    20
-}
-
-const fn default_dogstatsd_permissive_decoding() -> bool {
-    true
-}
-
-const fn default_dogstatsd_minimum_sample_rate() -> f64 {
-    0.000000003845
-}
-
-const fn default_true() -> bool {
-    true
-}
-
-/// Controls which payload types are forwarded to the backend.
-#[derive(Deserialize)]
-#[cfg_attr(test, derive(PartialEq, serde::Serialize))]
-pub struct EnablePayloadsConfiguration {
-    /// Whether or not to enable sending series (counter/gauge/rate) payloads.
-    ///
-    /// Defaults to `true`.
-    #[serde(default = "default_true")]
-    pub series: bool,
-
-    /// Whether or not to enable sending sketch (distribution) payloads.
-    ///
-    /// Defaults to `true`.
-    #[serde(default = "default_true")]
-    pub sketches: bool,
-
-    /// Whether or not to enable sending event payloads.
-    ///
-    /// Defaults to `true`.
-    #[serde(default = "default_true")]
-    pub events: bool,
-
-    /// Whether or not to enable sending service check payloads.
-    ///
-    /// Defaults to `true`.
-    #[serde(default = "default_true")]
-    pub service_checks: bool,
-}
-
-impl Default for EnablePayloadsConfiguration {
-    fn default() -> Self {
-        Self {
-            series: true,
-            sketches: true,
-            events: true,
-            service_checks: true,
-        }
-    }
-}
-
 const MIN_CAPTURE_DEPTH: usize = 1024;
 
-const fn default_capture_depth() -> usize {
-    MIN_CAPTURE_DEPTH
-}
-
-const DOGSTATSD_CAPTURE_DIR: &str = "dsd_capture";
-
-fn deserialize_empty_metastring_as_none<'de, D>(deserializer: D) -> Result<Option<MetaString>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let value = Option::<MetaString>::deserialize(deserializer)?;
-    Ok(value.filter(|host| !host.is_empty()))
-}
-
-/// DogStatsD source.
+/// Builder for the DogStatsD *source* component.
 ///
-/// Accepts metrics over TCP, UDP, or Unix Domain Sockets in the StatsD/DogStatsD format.
-#[serde_as]
-#[derive(Deserialize, Default)]
+/// Accepts metrics over TCP, UDP, or Unix Domain Sockets in the StatsD/DogStatsD format. This is the
+/// source only - one member of the DogStatsD component family (source, mapper, aggregate, debug-log,
+/// filter).
+///
+/// It is built from a `SourceConfig` (the plain, translated config data, defined in
+/// `saluki-component-config`) plus runtime-injected state. The config values live in `self.source`;
+/// the runtime handles (workload provider, capture-entity resolver, capture and replay control) and
+/// the `build()` behavior live on this type.
+///
+/// This type has no `Deserialize`. It is constructed by `new` from an already-translated
+/// `SourceConfig`, never deserialized from raw config: the raw Datadog config is deserialized
+/// upstream into the native model, and the translated result reaches the source as `SourceConfig`.
+///
+/// It embeds `SourceConfig` (the source's slice), not `dogstatsd::Config` (the whole DogStatsD
+/// domain group). It cannot name `dogstatsd::Config`: that type lives in `agent-data-plane-config`,
+/// which `saluki-components` must not depend on.
+#[derive(Default)]
 #[cfg_attr(test, derive(derive_where::DeriveWhere, serde::Serialize))]
 #[cfg_attr(test, derive_where(PartialEq))]
 pub struct DogStatsDConfiguration {
-    /// The size of the buffer used to receive messages into, in bytes.
-    ///
-    /// Payloads can't exceed this size, or they will be truncated, leading to discarded messages.
-    ///
-    /// Defaults to 8192 bytes.
-    #[serde(rename = "dogstatsd_buffer_size", default = "default_buffer_size")]
-    buffer_size: usize,
-
-    /// The number of message buffers to allocate up front.
-    ///
-    /// This is the baseline pool size allocated at startup. The pool then grows on demand up to
-    /// `dogstatsd_buffer_count_max` as active stream connections need additional buffers. The default value should be
-    /// suitable for the majority of workloads.
-    ///
-    /// Defaults to 128.
-    #[serde(rename = "dogstatsd_buffer_count", default = "default_buffer_count")]
-    buffer_count: usize,
-
-    /// The maximum number of message buffers to allocate overall.
-    ///
-    /// The pool starts at `dogstatsd_buffer_count` buffers and grows on demand up to this limit as active stream
-    /// connections need them, which loosely correlates with how many messages can be received per second. This caps
-    /// memory growth. The default value should be suitable for the majority of workloads, but high-throughput or
-    /// high-fan-in workloads may consider increasing this value.
-    ///
-    /// The pool never holds fewer buffers than `dogstatsd_buffer_count`, so a value below the baseline is treated as
-    /// equal to it.
-    ///
-    /// Defaults to 256, or `dogstatsd_buffer_count` if that is larger.
-    #[serde(rename = "dogstatsd_buffer_count_max", default = "default_buffer_count_max")]
-    buffer_count_max: usize,
-
-    /// The port to listen on in UDP mode.
-    ///
-    /// If set to `0`, UDP isn't used.
-    ///
-    /// Defaults to 8125.
-    #[serde(rename = "dogstatsd_port", default = "default_port")]
-    port: u16,
-
-    /// The size of the DogStatsD UDP/UDS socket receive buffer, in bytes.
-    ///
-    /// If set to `0`, the OS default is used.
-    ///
-    /// Defaults to 0.
-    #[serde(rename = "dogstatsd_so_rcvbuf", default = "default_socket_receive_buffer_size")]
-    socket_receive_buffer_size: usize,
-
-    /// The port to listen on in TCP mode.
-    ///
-    /// If set to `0`, TCP isn't used.
-    ///
-    /// Defaults to 0.
-    #[serde(rename = "dogstatsd_tcp_port", default = "default_tcp_port")]
-    tcp_port: u16,
-
-    /// The host to forward framed DogStatsD messages to over UDP.
-    ///
-    /// Forwarding is enabled only when this value is non-empty and `statsd_forward_port` is non-zero. Setup failures
-    /// are logged, and send failures are tracked through telemetry.
-    ///
-    /// Defaults to unset.
-    #[serde(
-        rename = "statsd_forward_host",
-        default,
-        deserialize_with = "deserialize_empty_metastring_as_none"
-    )]
-    statsd_forward_host: Option<MetaString>,
-
-    /// The port to forward framed DogStatsD messages to over UDP.
-    ///
-    /// Forwarding is enabled only when this value is non-zero and `statsd_forward_host` is non-empty.
-    ///
-    /// Defaults to 0.
-    #[serde(rename = "statsd_forward_port", default = "default_statsd_forward_port")]
-    statsd_forward_port: u16,
-
-    /// The Unix domain socket path to listen on, in datagram mode.
-    ///
-    /// If not set, UDS (in datagram mode) isn't used.
-    ///
-    /// Defaults to unset.
-    #[serde(rename = "dogstatsd_socket", default)]
-    #[serde_as(as = "NoneAsEmptyString")]
-    socket_path: Option<String>,
-
-    /// The Unix domain socket path to listen on, in stream mode.
-    ///
-    /// If not set, UDS (in stream mode) isn't used.
-    ///
-    /// Defaults to unset.
-    #[serde(rename = "dogstatsd_stream_socket", default)]
-    #[serde_as(as = "NoneAsEmptyString")]
-    socket_stream_path: Option<String>,
-
-    /// Controls whether ADP logs oversized DogStatsD stream frames.
-    ///
-    /// When set to `true`, ADP emits a warning when a UDS stream frame exceeds the
-    /// configured DogStatsD buffer size. The frame is still rejected either way.
-    ///
-    /// Enable this when diagnosing clients that send oversized UDS stream frames.
-    ///
-    /// Defaults to `false`.
-    #[serde(rename = "dogstatsd_stream_log_too_big", default)]
-    stream_log_too_big: bool,
-
-    /// Whether ADP lowers DogStatsD parse-failure logs to debug level.
-    ///
-    /// When set to `true`, invalid metrics, events, and service checks still increment decode-failure telemetry, but
-    /// their parse-failure logs are emitted at debug level instead of warning level. Enable this to suppress noisy
-    /// parse-error logs from misbehaving clients.
-    ///
-    /// Defaults to `false`.
-    #[serde(rename = "dogstatsd_disable_verbose_logs", default)]
-    disable_verbose_logs: bool,
-
-    /// Listener types that require DogStatsD messages to be newline-terminated.
-    ///
-    /// Valid values are `udp`, `uds`, and `named_pipe`. ADP accepts `named_pipe` for compatibility, but it has no effect
-    /// until named pipe listeners are supported. Invalid values are ignored.
-    ///
-    /// Enable this when DogStatsD clients must reject packets or stream frames that don't end with a newline.
-    ///
-    /// Defaults to unset, which accepts the final message without a newline.
-    #[serde(
-        rename = "dogstatsd_eol_required",
-        default,
-        deserialize_with = "deserialize_space_separated_or_seq"
-    )]
-    eol_required: Vec<String>,
-
-    /// The host address to bind DogStatsD UDP and TCP listeners to.
-    ///
-    /// When set, UDP and TCP listeners bind to this address. Accepts either an IP literal (for example,
-    /// `192.168.1.50`, `::1`) or a hostname that resolves via DNS (for example, `agent.internal`).
-    /// Ignored when `dogstatsd_non_local_traffic` is `true`.
-    ///
-    /// Defaults to unset, which binds to `127.0.0.1`.
-    #[serde(rename = "bind_host", default)]
-    #[serde_as(as = "NoneAsEmptyString")]
-    bind_host: Option<String>,
-
-    /// Whether or not to listen for non-local traffic in UDP mode.
-    ///
-    /// If set to `true`, the listener will accept packets from any interface/address. Otherwise, the source will only
-    /// listen on the address specified by `bind_host`, or `127.0.0.1` if `bind_host` isn't set.
-    ///
-    /// Defaults to `false`.
-    #[serde(rename = "dogstatsd_non_local_traffic", default)]
-    non_local_traffic: bool,
-
-    /// Whether to autoscale UDP stream handlers using `SO_REUSEPORT`.
-    ///
-    /// When enabled on Linux, the DogStatsD source binds multiple UDP sockets to the configured port with
-    /// `SO_REUSEPORT`, allowing the kernel to load-balance incoming datagrams across independent stream handler
-    /// tasks. The number of sockets scales with available vCPUs: one stream handler base, plus one additional
-    /// per 8 vCPUs, capped at 4 total.
-    ///
-    /// Has no effect on non-Linux platforms because `SO_REUSEPORT` doesn't provide kernel-level load balancing
-    /// there; a warning is logged at startup if enabled outside of Linux.
-    ///
-    /// Enable this on multi-vCPU Linux deployments where UDP DogStatsD throughput is bottlenecked on a single
-    /// receive task.
-    ///
-    /// Defaults to `false`.
-    #[serde(rename = "dogstatsd_autoscale_udp_listeners", default)]
-    autoscale_udp_listeners: bool,
-
-    /// Whether or not to allow heap allocations when resolving contexts.
-    ///
-    /// When resolving contexts during parsing, the metric name and tags are interned to reduce memory usage. The
-    /// interner has a fixed size, however, which means some strings can fail to be interned if the interner is full.
-    /// When set to `true`, we allow these strings to be allocated on the heap like normal, but this can lead to
-    /// increased (unbounded) memory usage. When set to `false`, if the metric name and all of its tags can't be
-    /// interned, the metric is skipped.
-    ///
-    /// Defaults to `true`.
-    #[serde(
-        rename = "dogstatsd_allow_context_heap_allocs",
-        default = "default_allow_context_heap_allocations"
-    )]
-    allow_context_heap_allocations: bool,
-
-    /// Whether or not to enable support for no-aggregation pipelines.
-    ///
-    /// When enabled, this influences how metrics are parsed, specifically around user-provided metric timestamps. When
-    /// metric timestamps are present, it's used as a signal to any aggregation transforms that the metric shouldn't
-    /// be aggregated.
-    ///
-    /// Defaults to `true`.
-    #[serde(
-        rename = "dogstatsd_no_aggregation_pipeline",
-        default = "default_no_aggregation_pipeline_support"
-    )]
-    no_aggregation_pipeline_support: bool,
-
-    /// Number of entries for the string interner, as interpreted by the Core Datadog Agent.
-    ///
-    /// When `dogstatsd_string_interner_size_bytes` isn't set, this value is multiplied by 512 bytes per entry to
-    /// derive the interner byte size. This provides backwards compatibility for customers migrating configurations
-    /// from the Core Agent, where this setting represents an entry count rather than a byte size.
-    ///
-    /// Defaults to 4096 entries, which yields 2 MiB when converted.
-    #[serde(
-        rename = "dogstatsd_string_interner_size",
-        default = "default_context_string_interner_entry_count"
-    )]
-    context_string_interner_entry_count: u64,
-
-    /// Total size of the string interner used for contexts, in bytes.
-    ///
-    /// When set, this takes priority over `dogstatsd_string_interner_size`. This controls the amount of memory that
-    /// can be used to intern metric names and tags. If the interner is full, metrics with contexts that haven't
-    /// already been resolved may or may not be dropped, depending on the value of `allow_context_heap_allocations`.
-    #[serde(rename = "dogstatsd_string_interner_size_bytes", default)]
-    context_string_interner_size_bytes: Option<ByteSize>,
-
-    /// The maximum number of cached contexts to allow.
-    ///
-    /// This is the maximum number of resolved contexts that can be cached at any given time. This limit doesn't affect
-    /// the total number of contexts that can be _alive_ at any given time, which is dependent on the interner capacity
-    /// and whether or not heap allocations are allowed.
-    ///
-    /// Defaults to 500,000.
-    #[serde(
-        rename = "dogstatsd_cached_contexts_limit",
-        default = "default_cached_contexts_limit"
-    )]
-    cached_contexts_limit: usize,
-
-    /// The maximum number of cached tagsets to allow.
-    ///
-    /// This is the maximum number of resolved tagsets that can be cached at any given time. This limit doesn't affect
-    /// the total number of tagsets that can be _alive_ at any given time, which is dependent on the interner capacity
-    /// and whether or not heap allocations are allowed.
-    ///
-    /// Defaults to 500,000.
-    #[serde(rename = "dogstatsd_cached_tagsets_limit", default = "default_cached_tagsets_limit")]
-    cached_tagsets_limit: usize,
-
-    /// The number of seconds after which cached contexts will expire.
-    ///
-    /// Higher values allow for more effective caching for sparse metrics at the cost of increased memory usage.
-    ///
-    /// Defaults to 20 seconds.
-    #[serde(
-        rename = "dogstatsd_context_expiry_seconds",
-        default = "default_context_expiry_seconds"
-    )]
-    context_expiry_seconds: u64,
-
-    /// Whether or not to enable permissive mode in the decoder.
-    ///
-    /// Permissive mode allows the decoder to relax its strictness around the allowed payloads, which lets it match the
-    /// decoding behavior of the Datadog Agent.
-    ///
-    /// Defaults to `true`.
-    #[serde(
-        rename = "dogstatsd_permissive_decoding",
-        default = "default_dogstatsd_permissive_decoding"
-    )]
-    permissive_decoding: bool,
-
-    /// The minimum sample rate allowed for metrics.
-    ///
-    /// When metrics are sent with a sample rate _lower_ than this value then it will be clamped to this value. This is
-    /// done in order to ensure an upper bound on how many equivalent samples are tracked for the metric, as high sample
-    /// rates (very small numbers, such as `0.00000001`) can lead to large memory growth.
-    ///
-    /// A warning log will be emitted when clamping occurs, as this represents an effective loss of metric samples.
-    ///
-    /// Defaults to `0.000000003845`. (~260M samples)
-    #[serde(
-        rename = "dogstatsd_minimum_sample_rate",
-        default = "default_dogstatsd_minimum_sample_rate"
-    )]
-    minimum_sample_rate: f64,
-
-    /// Which payload types to forward to the backend.
-    #[serde(rename = "enable_payloads", default)]
-    enable_payloads: EnablePayloadsConfiguration,
-
-    /// Configuration related to origin detection and enrichment.
-    #[serde(flatten, default)]
-    origin_enrichment: OriginEnrichmentConfiguration,
+    /// The resolved, source-agnostic configuration this source consumes.
+    source: saluki_component_config::dogstatsd::SourceConfig,
 
     /// Workload provider to utilize for origin detection/enrichment.
-    #[serde(skip)]
+    #[cfg_attr(test, serde(skip))]
     #[cfg_attr(test, derive_where(skip))]
     workload_provider: Option<Arc<dyn WorkloadProvider + Send + Sync>>,
 
     /// Resolver to use for mapping live sender PIDs to container entities during traffic capture.
-    #[serde(skip, default)]
+    #[cfg_attr(test, serde(skip))]
     #[cfg_attr(test, derive_where(skip))]
     capture_entity_resolver: Option<Arc<dyn CaptureEntityResolver + Send + Sync>>,
 
-    /// Additional tags to add to all metrics.
-    #[serde(rename = "dogstatsd_tags", default)]
-    additional_tags: Vec<String>,
-
-    /// The directory where DogStatsD capture files are written by default.
-    ///
-    /// When set to an empty path, the source attempts to derive the directory from `run_path` by appending
-    /// `dsd_capture`. If neither value is available, callers must provide an explicit capture path when starting a
-    /// capture session.
-    ///
-    /// Defaults to empty.
-    #[serde(rename = "dogstatsd_capture_path", default)]
-    capture_path: PathBuf,
-
-    /// The maximum number of captured packets that can be queued for persistence.
-    ///
-    /// This controls the depth of the in-process capture queue. Values below `1024` are raised to `1024` before the
-    /// capture writer starts, preventing a zero-depth rendezvous channel from serializing DogStatsD stream handlers
-    /// behind capture persistence.
-    ///
-    /// Defaults to `1024`.
-    #[serde(rename = "dogstatsd_capture_depth", default = "default_capture_depth")]
-    capture_depth: usize,
-
-    #[serde(skip, default)]
+    /// Control handle bound to the running traffic-capture surface.
+    #[cfg_attr(test, serde(skip))]
     #[cfg_attr(test, derive_where(skip))]
     capture_control: DogStatsDCaptureControl,
 
-    #[serde(skip, default)]
+    /// Control handle bound to the running replay surface.
+    #[cfg_attr(test, serde(skip))]
     #[cfg_attr(test, derive_where(skip))]
     replay_control: DogStatsDReplayControl,
-
-    /// Provider kind tag appended to all metrics as `provider_kind:<value>`.
-    ///
-    /// Set via `DD_PROVIDER_KIND` by the Helm chart on GKE Autopilot (`gke-autopilot`) and GKE on
-    /// Google Distributed Cloud (`gke-gdc`). When empty or absent, no tag is added.
-    ///
-    /// Defaults to `""` (disabled).
-    #[serde(default)]
-    provider_kind: String,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -639,27 +217,37 @@ async fn resolve_bind_host(host: &str) -> Result<std::net::IpAddr, Error> {
 }
 
 impl DogStatsDConfiguration {
-    /// Creates a new `DogStatsDConfiguration` from the given configuration.
-    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        let mut dogstatsd_config: Self = config.as_typed()?;
-        dogstatsd_config.fix_empty_capture_path(config);
-        dogstatsd_config.fix_capture_depth();
-        Ok(dogstatsd_config)
+    /// Creates a new `DogStatsDConfiguration` from its component-native configuration.
+    ///
+    /// The native `SourceConfig` is the resolved, source-agnostic data the source consumes. The
+    /// injected runtime state (workload provider, capture-entity resolver, and the capture/replay
+    /// control handles) starts unset and is supplied separately. The capture-queue depth floor is
+    /// re-applied here because the native value is the raw configured depth.
+    pub fn new(source: saluki_component_config::dogstatsd::SourceConfig) -> Self {
+        let mut config = Self {
+            source,
+            workload_provider: None,
+            capture_entity_resolver: None,
+            capture_control: Default::default(),
+            replay_control: Default::default(),
+        };
+        config.fix_capture_depth();
+        config
     }
 
     /// Gets both the `additional_tags` and any others specified by other configuration fields, such as `provider_kind`.
     fn additional_tags(&self) -> Vec<String> {
-        if self.provider_kind.is_empty() {
-            return self.additional_tags.clone();
+        if self.source.provider_kind.is_empty() {
+            return self.source.additional_tags.clone();
         }
 
-        let mut tags = self.additional_tags.clone();
-        tags.push(format!("provider_kind:{}", self.provider_kind.clone()));
+        let mut tags = self.source.additional_tags.clone();
+        tags.push(format!("provider_kind:{}", self.source.provider_kind.clone()));
         tags
     }
 
     fn fix_capture_depth(&mut self) {
-        self.capture_depth = self.capture_depth.max(MIN_CAPTURE_DEPTH);
+        self.source.capture_depth = self.source.capture_depth.max(MIN_CAPTURE_DEPTH);
     }
 
     /// Returns the effective string interner size in bytes.
@@ -668,23 +256,23 @@ impl DogStatsDConfiguration {
     /// `dogstatsd_string_interner_size` (an entry count) is multiplied by 512 bytes per entry to derive the byte
     /// size.
     fn effective_context_string_interner_bytes(&self) -> ByteSize {
-        match self.context_string_interner_size_bytes {
+        match self.source.context_string_interner_size_bytes {
             Some(explicit_bytes) => explicit_bytes,
-            None => ByteSize::b(self.context_string_interner_entry_count * INTERNER_BASELINE_BYTES_PER_ENTRY),
+            None => ByteSize::b(self.source.context_string_interner_entry_count * INTERNER_BASELINE_BYTES_PER_ENTRY),
         }
     }
 
     fn eol_required(&self) -> EolRequired {
-        EolRequired::from_config_values(&self.eol_required)
+        EolRequired::from_config_values(&self.source.eol_required)
     }
 
     fn statsd_forward_target(&self) -> Option<(&MetaString, u16)> {
-        let host = self.statsd_forward_host.as_ref()?;
-        if self.statsd_forward_port == 0 {
+        let host = self.source.statsd_forward_host.as_ref()?;
+        if self.source.statsd_forward_port == 0 {
             return None;
         }
 
-        Some((host, self.statsd_forward_port))
+        Some((host, self.source.statsd_forward_port))
     }
 
     fn packet_forwarder_target(&self) -> Option<PacketForwarderTarget> {
@@ -698,12 +286,12 @@ impl DogStatsDConfiguration {
     /// Returns `None` when autoscaling is disabled, which keeps the legacy single-socket behavior. The platform
     /// gate for `SO_REUSEPORT` lives inside the listener—this method intentionally stays platform-agnostic.
     fn udp_streams_to_yield(&self) -> Option<NonZeroUsize> {
-        if !self.autoscale_udp_listeners {
+        if !self.source.autoscale_udp_listeners {
             return None;
         }
 
         #[cfg(not(target_os = "linux"))]
-        if self.autoscale_udp_listeners {
+        if self.source.autoscale_udp_listeners {
             warn!("UDP stream handler autoscaling not supported on non-Linux platforms. Default to single stream handler.");
             return None;
         }
@@ -769,34 +357,6 @@ impl DogStatsDConfiguration {
         DogStatsDReplayAPIHandler::new(self.replay_control.clone())
     }
 
-    fn fix_empty_capture_path(&mut self, config: &GenericConfiguration) {
-        if self.capture_path.parent().is_some() {
-            return;
-        }
-
-        let capture_path = match config.try_get_typed::<PathBuf>("run_path") {
-            Ok(Some(mut run_path)) => {
-                run_path.push(DOGSTATSD_CAPTURE_DIR);
-                run_path
-            }
-            Ok(None) => {
-                debug!(
-                    "`dogstatsd_capture_path` and `run_path` were empty. Default DogStatsD capture path is unavailable."
-                );
-                return;
-            }
-            Err(e) => {
-                debug!(
-                    error = %e,
-                    "Failed to read `run_path` from configuration. Default DogStatsD capture path is unavailable."
-                );
-                return;
-            }
-        };
-
-        self.capture_path = capture_path;
-    }
-
     /// Using the current configuration, determines which listeners should be created and adds an address for each into
     /// a `Vec<ListenAddress>`. This function has no side effects so that it can be unit tested whereas build_listeners`
     /// actually binds the listeners on the system.
@@ -807,7 +367,7 @@ impl DogStatsDConfiguration {
     ///   - `bind_host=Some(ip)`     → `ip`
     ///   - `bind_host=None`         → `127.0.0.1`
     fn build_addresses(&self, bind_host: Option<std::net::IpAddr>) -> Vec<ListenAddress> {
-        let bind_ip: std::net::IpAddr = if self.non_local_traffic {
+        let bind_ip: std::net::IpAddr = if self.source.non_local_traffic {
             [0, 0, 0, 0].into()
         } else {
             bind_host.unwrap_or_else(|| [127, 0, 0, 1].into())
@@ -815,19 +375,22 @@ impl DogStatsDConfiguration {
 
         let mut addresses: Vec<ListenAddress> = Vec::new();
 
-        if self.port != 0 {
-            addresses.push(ListenAddress::Udp(std::net::SocketAddr::new(bind_ip, self.port)));
+        if self.source.port != 0 {
+            addresses.push(ListenAddress::Udp(std::net::SocketAddr::new(bind_ip, self.source.port)));
         }
 
-        if self.tcp_port != 0 {
-            addresses.push(ListenAddress::Tcp(std::net::SocketAddr::new(bind_ip, self.tcp_port)));
+        if self.source.tcp_port != 0 {
+            addresses.push(ListenAddress::Tcp(std::net::SocketAddr::new(
+                bind_ip,
+                self.source.tcp_port,
+            )));
         }
 
-        if let Some(socket_path) = &self.socket_path {
+        if let Some(socket_path) = &self.source.socket_path {
             addresses.push(ListenAddress::Unixgram(socket_path.into()));
         }
 
-        if let Some(socket_stream_path) = &self.socket_stream_path {
+        if let Some(socket_stream_path) = &self.source.socket_stream_path {
             addresses.push(ListenAddress::Unix(socket_stream_path.into()));
         }
 
@@ -839,10 +402,10 @@ impl DogStatsDConfiguration {
         // Resolve `bind_host` to an IP (via DNS if needed). Skip the lookup when
         // `non_local_traffic=true` since `bind_host` is ignored in that branch—matches Go's
         // laziness and avoids failing startup on an unresolvable hostname that wouldn't be used.
-        let bind_host: Option<std::net::IpAddr> = if self.non_local_traffic {
+        let bind_host: Option<std::net::IpAddr> = if self.source.non_local_traffic {
             None
         } else {
-            match &self.bind_host {
+            match &self.source.bind_host {
                 Some(host) => Some(resolve_bind_host(host).await?),
                 None => None,
             }
@@ -851,7 +414,7 @@ impl DogStatsDConfiguration {
         let addresses = self.build_addresses(bind_host);
         let mut listeners = Vec::new();
         let socket_receive_buffer_size =
-            (self.socket_receive_buffer_size != 0).then_some(self.socket_receive_buffer_size);
+            (self.source.socket_receive_buffer_size != 0).then_some(self.source.socket_receive_buffer_size);
         let udp_streams_to_yield = self.udp_streams_to_yield();
         for address in addresses {
             let listener_type = address.listener_type();
@@ -881,7 +444,7 @@ impl SourceBuilder for DogStatsDConfiguration {
         // deadlocking any of the others. Connectionless listeners retain their buffer for the lifetime of the stream,
         // so multi-socket UDP listeners require one buffer per yielded socket.
         let min_buffers: usize = listeners.iter().map(Listener::min_buffer_reservation).sum();
-        let max_buffers = self.effective_max_buffer_count();
+        let max_buffers = self.source.buffer_count_max.max(self.source.buffer_count);
         if max_buffers < min_buffers {
             return Err(generic_error!(
                 "The maximum I/O buffer count ({}) must be at least {} to service all configured listeners.",
@@ -890,34 +453,34 @@ impl SourceBuilder for DogStatsDConfiguration {
             ));
         }
 
-        let origin_detection_enabled = self.origin_enrichment.enabled();
+        let origin_detection_enabled = self.source.origin_enrichment.enabled;
         // Single CapturedTaggerHandle is cloned to both the resolver (reader of the captured store) and the replay
         // control surface (writer). Both sides reference the same atomic slot.
         let captured_tagger = CapturedTaggerHandle::new();
 
         let maybe_origin_tags_resolver = self.workload_provider.clone().map(|provider| {
-            DogStatsDOriginTagResolver::new(self.origin_enrichment.clone(), provider, captured_tagger.clone())
+            DogStatsDOriginTagResolver::new(self.source.origin_enrichment.clone(), provider, captured_tagger.clone())
         });
         let context_resolvers = ContextResolvers::new(self, &context, maybe_origin_tags_resolver)
             .error_context("Failed to create context resolvers.")?;
 
         let codec_config = DogStatsDCodecConfiguration::default()
-            .with_timestamps(self.no_aggregation_pipeline_support)
-            .with_permissive_mode(self.permissive_decoding)
-            .with_minimum_sample_rate(self.minimum_sample_rate)
-            .with_client_origin_detection(self.origin_enrichment.origin_detection_client);
+            .with_timestamps(self.source.no_aggregation_pipeline_support)
+            .with_permissive_mode(self.source.permissive_decoding)
+            .with_minimum_sample_rate(self.source.minimum_sample_rate)
+            .with_client_origin_detection(self.source.origin_enrichment.origin_detection_client);
 
         let codec = DogStatsDCodec::from_configuration(codec_config);
         let eol_required = self.eol_required();
 
         let enable_payloads_filter = EnablePayloadsFilter::default()
-            .with_allow_series(self.enable_payloads.series)
-            .with_allow_sketches(self.enable_payloads.sketches)
-            .with_allow_events(self.enable_payloads.events)
-            .with_allow_service_checks(self.enable_payloads.service_checks);
+            .with_allow_series(self.source.enable_payloads.series)
+            .with_allow_sketches(self.source.enable_payloads.sketches)
+            .with_allow_events(self.source.enable_payloads.events)
+            .with_allow_service_checks(self.source.enable_payloads.service_checks);
         let traffic_capture = TrafficCapture::with_workload_provider(
-            self.capture_path.clone(),
-            self.capture_depth.max(MIN_CAPTURE_DEPTH),
+            self.source.capture_path.clone(),
+            self.source.capture_depth.max(MIN_CAPTURE_DEPTH),
             self.workload_provider.clone(),
         );
         self.capture_control.bind(traffic_capture.clone());
@@ -929,7 +492,7 @@ impl SourceBuilder for DogStatsDConfiguration {
         // maximum is never below the baseline, so configs that only raise `dogstatsd_buffer_count` keep their full
         // capacity instead of being silently reduced to the `dogstatsd_buffer_count_max` default.
         let (io_buffer_pool, io_buffer_pool_shrinker) =
-            build_io_buffer_pool(self.buffer_count, max_buffers, self.buffer_size);
+            build_io_buffer_pool(self.source.buffer_count, max_buffers, self.source.buffer_size);
 
         Ok(Box::new(DogStatsD {
             listeners,
@@ -939,8 +502,8 @@ impl SourceBuilder for DogStatsDConfiguration {
             context_resolvers,
             enabled_filter: enable_payloads_filter,
             origin_detection_enabled,
-            stream_log_too_big: self.stream_log_too_big,
-            disable_verbose_logs: self.disable_verbose_logs,
+            stream_log_too_big: self.source.stream_log_too_big,
+            disable_verbose_logs: self.source.disable_verbose_logs,
             eol_required,
             additional_tags: self.additional_tags().into(),
             capture_entity_resolver: self.capture_entity_resolver.clone(),
@@ -963,8 +526,9 @@ impl SourceBuilder for DogStatsDConfiguration {
 
 impl MemoryBounds for DogStatsDConfiguration {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
-        let additional_buffers = self.effective_max_buffer_count().saturating_sub(self.buffer_count);
-        let adjusted_buffer_size = get_adjusted_buffer_size(self.buffer_size);
+        let max_buffers = self.source.buffer_count_max.max(self.source.buffer_count);
+        let additional_buffers = max_buffers.saturating_sub(self.source.buffer_count);
+        let adjusted_buffer_size = get_adjusted_buffer_size(self.source.buffer_size);
 
         builder
             .minimum()
@@ -973,7 +537,7 @@ impl MemoryBounds for DogStatsDConfiguration {
             // We allocate the baseline buffer pool up front.
             .with_expr(UsageExpr::product(
                 "buffers",
-                UsageExpr::config("dogstatsd_buffer_count", self.buffer_count),
+                UsageExpr::config("dogstatsd_buffer_count", self.source.buffer_count),
                 UsageExpr::config("dogstatsd_buffer_size", adjusted_buffer_size),
             ))
             // We also allocate the backing storage for the string interner up front, which is used by our context
@@ -1876,14 +1440,13 @@ mod tests {
         collections::HashMap,
         io::ErrorKind,
         net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4},
-        path::PathBuf,
         sync::{Arc, OnceLock},
         time::Duration,
     };
 
     use bytes::Bytes;
     use bytesize::ByteSize;
-    use saluki_config_tools::ConfigurationLoader;
+    use saluki_component_config::dogstatsd::SourceConfig;
     use saluki_context::{origin::RawOrigin, ContextResolverBuilder, TagsResolverBuilder};
     use saluki_core::{components::ComponentContext, pooling::ObjectPool as _, topology::ComponentId};
     use saluki_env::workload::{CaptureEntityResolver, EntityId};
@@ -1892,7 +1455,6 @@ mod tests {
         net::{ConnectionAddress, ListenAddress, ProcessCredentials, ProcessIdentity},
     };
     use saluki_metrics::test::TestRecorder;
-    use serde_json::json;
     use stringtheory::MetaString;
     use tokio::{net::UdpSocket, sync::mpsc, time::timeout};
 
@@ -1903,8 +1465,7 @@ mod tests {
         },
         handle_metric_packet,
         metrics::build_metrics,
-        resolve_capture_container_id, ContextResolvers, DogStatsDConfiguration, DOGSTATSD_CAPTURE_DIR,
-        MIN_CAPTURE_DEPTH,
+        resolve_capture_container_id, ContextResolvers, DogStatsDConfiguration, MIN_CAPTURE_DEPTH,
     };
 
     const LINUX_EAFNOSUPPORT: i32 = 97;
@@ -2010,10 +1571,6 @@ mod tests {
         }
     }
 
-    fn deser_config(json: &str) -> DogStatsDConfiguration {
-        serde_json::from_str(json).expect("failed to deserialize config")
-    }
-
     fn udp_listen_address() -> ListenAddress {
         ListenAddress::Udp(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 8125)))
     }
@@ -2024,71 +1581,45 @@ mod tests {
 
     #[test]
     fn interner_size_defaults_to_2mib() {
-        let config = deser_config("{}");
+        let config = DogStatsDConfiguration::new(SourceConfig::default());
         assert_eq!(config.effective_context_string_interner_bytes(), ByteSize::mib(2));
     }
 
     #[test]
-    fn socket_receive_buffer_size_defaults_to_zero() {
-        let config = deser_config("{}");
-        assert_eq!(config.socket_receive_buffer_size, 0);
-    }
-
-    #[test]
-    fn socket_receive_buffer_size_from_config() {
-        let config = deser_config(r#"{"dogstatsd_so_rcvbuf": 131072}"#);
-        assert_eq!(config.socket_receive_buffer_size, 131_072);
-    }
-
-    #[test]
-    fn stream_log_too_big_defaults_to_false() {
-        let config = deser_config("{}");
-        assert!(!config.stream_log_too_big);
-    }
-
-    #[test]
-    fn stream_log_too_big_from_config() {
-        let config = deser_config(r#"{"dogstatsd_stream_log_too_big": true}"#);
-        assert!(config.stream_log_too_big);
-    }
-
-    #[test]
-    fn disable_verbose_logs_defaults_to_false() {
-        let config = deser_config("{}");
-        assert!(!config.disable_verbose_logs);
-    }
-
-    #[test]
-    fn disable_verbose_logs_from_config() {
-        let config = deser_config(r#"{"dogstatsd_disable_verbose_logs": true}"#);
-        assert!(config.disable_verbose_logs);
-    }
-
-    #[test]
     fn statsd_forward_defaults_disabled() {
-        let config = deser_config("{}");
-        assert!(config.statsd_forward_host.is_none());
-        assert_eq!(config.statsd_forward_port, 0);
+        let config = DogStatsDConfiguration::new(SourceConfig::default());
+        assert!(config.source.statsd_forward_host.is_none());
+        assert_eq!(config.source.statsd_forward_port, 0);
         assert!(config.statsd_forward_target().is_none());
     }
 
     #[test]
     fn statsd_forward_empty_host_disabled() {
-        let config = deser_config(r#"{"statsd_forward_host": "", "statsd_forward_port": 9125}"#);
-        assert!(config.statsd_forward_host.is_none());
+        let config = DogStatsDConfiguration::new(SourceConfig {
+            statsd_forward_port: 9125,
+            ..Default::default()
+        });
+        assert!(config.source.statsd_forward_host.is_none());
         assert!(config.statsd_forward_target().is_none());
     }
 
     #[test]
     fn statsd_forward_zero_port_disabled() {
-        let config = deser_config(r#"{"statsd_forward_host": "127.0.0.1", "statsd_forward_port": 0}"#);
-        assert_eq!(config.statsd_forward_host.as_deref(), Some("127.0.0.1"));
+        let config = DogStatsDConfiguration::new(SourceConfig {
+            statsd_forward_host: Some("127.0.0.1".into()),
+            ..Default::default()
+        });
+        assert_eq!(config.source.statsd_forward_host.as_deref(), Some("127.0.0.1"));
         assert!(config.statsd_forward_target().is_none());
     }
 
     #[test]
     fn statsd_forward_host_and_port_enabled() {
-        let config = deser_config(r#"{"statsd_forward_host": "127.0.0.1", "statsd_forward_port": 9125}"#);
+        let config = DogStatsDConfiguration::new(SourceConfig {
+            statsd_forward_host: Some("127.0.0.1".into()),
+            statsd_forward_port: 9125,
+            ..Default::default()
+        });
         let (host, port) = config.statsd_forward_target().expect("forwarding should be enabled");
         assert_eq!(host.as_ref(), "127.0.0.1");
         assert_eq!(port, 9125);
@@ -2096,7 +1627,11 @@ mod tests {
 
     #[test]
     fn statsd_forward_invalid_target_still_builds_forwarder_handle() {
-        let config = deser_config(r#"{"statsd_forward_host": "not a valid host", "statsd_forward_port": 9125}"#);
+        let config = DogStatsDConfiguration::new(SourceConfig {
+            statsd_forward_host: Some("not a valid host".into()),
+            statsd_forward_port: 9125,
+            ..Default::default()
+        });
         assert!(config.packet_forwarder_target().is_some());
     }
 
@@ -2256,8 +1791,8 @@ mod tests {
 
     #[test]
     fn autoscale_udp_listeners_defaults_to_false() {
-        let config = deser_config("{}");
-        assert!(!config.autoscale_udp_listeners);
+        let config = DogStatsDConfiguration::new(SourceConfig::default());
+        assert!(!config.source.autoscale_udp_listeners);
         assert!(config.udp_streams_to_yield().is_none());
     }
 
@@ -2310,8 +1845,11 @@ mod tests {
     #[test]
     #[cfg(target_os = "linux")]
     fn autoscale_udp_listeners_from_config_linux() {
-        let config = deser_config(r#"{"dogstatsd_autoscale_udp_listeners": true}"#);
-        assert!(config.autoscale_udp_listeners);
+        let config = DogStatsDConfiguration::new(SourceConfig {
+            autoscale_udp_listeners: true,
+            ..Default::default()
+        });
+        assert!(config.source.autoscale_udp_listeners);
 
         let streams = config
             .udp_streams_to_yield()
@@ -2326,15 +1864,18 @@ mod tests {
     #[test]
     #[cfg(not(target_os = "linux"))]
     fn autoscale_udp_listeners_from_config_non_linux() {
-        let config = deser_config(r#"{"dogstatsd_autoscale_udp_listeners": true}"#);
-        assert!(config.autoscale_udp_listeners);
+        let config = DogStatsDConfiguration::new(SourceConfig {
+            autoscale_udp_listeners: true,
+            ..Default::default()
+        });
+        assert!(config.source.autoscale_udp_listeners);
 
         assert_eq!(None, config.udp_streams_to_yield());
     }
 
     #[test]
     fn eol_required_defaults_to_no_listeners() {
-        let config = deser_config("{}");
+        let config = DogStatsDConfiguration::new(SourceConfig::default());
         let eol_required = config.eol_required();
 
         assert!(!eol_required.for_listener(&udp_listen_address()));
@@ -2343,7 +1884,10 @@ mod tests {
 
     #[test]
     fn eol_required_matches_configured_listener_types() {
-        let config = deser_config(r#"{"dogstatsd_eol_required": ["udp", "uds"]}"#);
+        let config = DogStatsDConfiguration::new(SourceConfig {
+            eol_required: vec!["udp".to_string(), "uds".to_string()],
+            ..Default::default()
+        });
         let eol_required = config.eol_required();
 
         assert!(eol_required.for_listener(&udp_listen_address()));
@@ -2354,14 +1898,6 @@ mod tests {
             assert!(eol_required.for_listener(&ListenAddress::Unixgram("/tmp/dsd.sock".into())));
             assert!(eol_required.for_listener(&ListenAddress::Unix("/tmp/dsd-stream.sock".into())));
         }
-    }
-
-    #[test]
-    fn eol_required_accepts_space_separated_string() {
-        let config = deser_config(r#"{"dogstatsd_eol_required": "udp uds"}"#);
-        let eol_required = config.eol_required();
-
-        assert!(eol_required.for_listener(&udp_listen_address()));
     }
 
     #[test]
@@ -2381,28 +1917,39 @@ mod tests {
     #[test]
     fn interner_size_from_entry_count() {
         // A Core Agent migration config with entry count 4096 should yield 2 MiB, not 4096 bytes.
-        let config = deser_config(r#"{"dogstatsd_string_interner_size": 4096}"#);
+        let config = DogStatsDConfiguration::new(SourceConfig {
+            context_string_interner_entry_count: 4096,
+            ..Default::default()
+        });
         assert_eq!(config.effective_context_string_interner_bytes(), ByteSize::mib(2));
     }
 
     #[test]
     fn interner_size_from_explicit_bytes() {
-        let config = deser_config(r#"{"dogstatsd_string_interner_size_bytes": 4194304}"#);
+        let config = DogStatsDConfiguration::new(SourceConfig {
+            context_string_interner_size_bytes: Some(ByteSize::b(4194304)),
+            ..Default::default()
+        });
         assert_eq!(config.effective_context_string_interner_bytes(), ByteSize::b(4194304));
     }
 
     #[test]
     fn interner_size_explicit_bytes_takes_priority() {
-        let config = deser_config(
-            r#"{"dogstatsd_string_interner_size": 4096, "dogstatsd_string_interner_size_bytes": 8388608}"#,
-        );
+        let config = DogStatsDConfiguration::new(SourceConfig {
+            context_string_interner_entry_count: 4096,
+            context_string_interner_size_bytes: Some(ByteSize::b(8388608)),
+            ..Default::default()
+        });
         // The _bytes key (8 MiB) takes priority over the entry count.
         assert_eq!(config.effective_context_string_interner_bytes(), ByteSize::b(8388608));
     }
 
     #[test]
     fn interner_size_custom_entry_count() {
-        let config = deser_config(r#"{"dogstatsd_string_interner_size": 8192}"#);
+        let config = DogStatsDConfiguration::new(SourceConfig {
+            context_string_interner_entry_count: 8192,
+            ..Default::default()
+        });
         // 8192 entries * 512 bytes = 4 MiB
         assert_eq!(config.effective_context_string_interner_bytes(), ByteSize::mib(4));
     }
@@ -2435,11 +1982,14 @@ mod tests {
     #[test]
     fn build_addresses_assertion_function_works() {
         let config = DogStatsDConfiguration {
-            port: 0,
-            tcp_port: 123,
-            socket_path: None,
-            socket_stream_path: None,
-            non_local_traffic: false,
+            source: SourceConfig {
+                port: 0,
+                tcp_port: 123,
+                socket_path: None,
+                socket_stream_path: None,
+                non_local_traffic: false,
+                ..Default::default()
+            },
             ..Default::default()
         };
         let mut expected = vec![ListenAddress::Tcp(SocketAddr::V4(SocketAddrV4::new(
@@ -2455,11 +2005,14 @@ mod tests {
     #[test]
     fn build_addresses_no_listeners() {
         let config = DogStatsDConfiguration {
-            port: 0,
-            tcp_port: 0,
-            socket_path: None,
-            socket_stream_path: None,
-            non_local_traffic: false,
+            source: SourceConfig {
+                port: 0,
+                tcp_port: 0,
+                socket_path: None,
+                socket_stream_path: None,
+                non_local_traffic: false,
+                ..Default::default()
+            },
             ..Default::default()
         };
         let mut expected = vec![];
@@ -2471,11 +2024,14 @@ mod tests {
     #[test]
     fn build_addresses_udp_local_only() {
         let config = DogStatsDConfiguration {
-            port: 8125,
-            tcp_port: 0,
-            socket_path: None,
-            socket_stream_path: None,
-            non_local_traffic: false,
+            source: SourceConfig {
+                port: 8125,
+                tcp_port: 0,
+                socket_path: None,
+                socket_stream_path: None,
+                non_local_traffic: false,
+                ..Default::default()
+            },
             ..Default::default()
         };
         let mut expected = vec![ListenAddress::Udp(SocketAddr::V4(SocketAddrV4::new(
@@ -2490,11 +2046,14 @@ mod tests {
     #[test]
     fn build_addresses_udp_non_local_only() {
         let config = DogStatsDConfiguration {
-            port: 8125,
-            tcp_port: 0,
-            socket_path: None,
-            socket_stream_path: None,
-            non_local_traffic: true,
+            source: SourceConfig {
+                port: 8125,
+                tcp_port: 0,
+                socket_path: None,
+                socket_stream_path: None,
+                non_local_traffic: true,
+                ..Default::default()
+            },
             ..Default::default()
         };
         let mut expected = vec![ListenAddress::Udp(SocketAddr::V4(SocketAddrV4::new(
@@ -2509,11 +2068,14 @@ mod tests {
     #[test]
     fn build_addresses_tcp_local_only() {
         let config = DogStatsDConfiguration {
-            port: 0,
-            tcp_port: 9000,
-            socket_path: None,
-            socket_stream_path: None,
-            non_local_traffic: false,
+            source: SourceConfig {
+                port: 0,
+                tcp_port: 9000,
+                socket_path: None,
+                socket_stream_path: None,
+                non_local_traffic: false,
+                ..Default::default()
+            },
             ..Default::default()
         };
         let mut expected = vec![ListenAddress::Tcp(SocketAddr::V4(SocketAddrV4::new(
@@ -2528,11 +2090,14 @@ mod tests {
     #[test]
     fn build_addresses_tcp_non_local_only() {
         let config = DogStatsDConfiguration {
-            port: 0,
-            tcp_port: 9000,
-            socket_path: None,
-            socket_stream_path: None,
-            non_local_traffic: true,
+            source: SourceConfig {
+                port: 0,
+                tcp_port: 9000,
+                socket_path: None,
+                socket_stream_path: None,
+                non_local_traffic: true,
+                ..Default::default()
+            },
             ..Default::default()
         };
         let mut expected = vec![ListenAddress::Tcp(SocketAddr::V4(SocketAddrV4::new(
@@ -2547,11 +2112,14 @@ mod tests {
     #[test]
     fn build_addresses_unixgram_only() {
         let config = DogStatsDConfiguration {
-            port: 0,
-            tcp_port: 0,
-            socket_path: Some("/tmp/dsd.sock".to_string()),
-            socket_stream_path: None,
-            non_local_traffic: false,
+            source: SourceConfig {
+                port: 0,
+                tcp_port: 0,
+                socket_path: Some("/tmp/dsd.sock".to_string()),
+                socket_stream_path: None,
+                non_local_traffic: false,
+                ..Default::default()
+            },
             ..Default::default()
         };
         let mut expected = vec![ListenAddress::Unixgram("/tmp/dsd.sock".into())];
@@ -2563,11 +2131,14 @@ mod tests {
     #[test]
     fn build_addresses_unix_stream_only() {
         let config = DogStatsDConfiguration {
-            port: 0,
-            tcp_port: 0,
-            socket_path: None,
-            socket_stream_path: Some("/tmp/dsd-stream.sock".to_string()),
-            non_local_traffic: false,
+            source: SourceConfig {
+                port: 0,
+                tcp_port: 0,
+                socket_path: None,
+                socket_stream_path: Some("/tmp/dsd-stream.sock".to_string()),
+                non_local_traffic: false,
+                ..Default::default()
+            },
             ..Default::default()
         };
         let mut expected = vec![ListenAddress::Unix("/tmp/dsd-stream.sock".into())];
@@ -2579,11 +2150,14 @@ mod tests {
     #[test]
     fn build_addresses_all_four_non_local() {
         let config = DogStatsDConfiguration {
-            port: 8125,
-            tcp_port: 9000,
-            socket_path: Some("/tmp/dsd.sock".to_string()),
-            socket_stream_path: Some("/tmp/dsd-stream.sock".to_string()),
-            non_local_traffic: true,
+            source: SourceConfig {
+                port: 8125,
+                tcp_port: 9000,
+                socket_path: Some("/tmp/dsd.sock".to_string()),
+                socket_stream_path: Some("/tmp/dsd-stream.sock".to_string()),
+                non_local_traffic: true,
+                ..Default::default()
+            },
             ..Default::default()
         };
         let mut expected = vec![
@@ -2600,11 +2174,14 @@ mod tests {
     #[test]
     fn build_addresses_all_four_local() {
         let config = DogStatsDConfiguration {
-            port: 8125,
-            tcp_port: 9000,
-            socket_path: Some("/tmp/dsd.sock".to_string()),
-            socket_stream_path: Some("/tmp/dsd-stream.sock".to_string()),
-            non_local_traffic: false,
+            source: SourceConfig {
+                port: 8125,
+                tcp_port: 9000,
+                socket_path: Some("/tmp/dsd.sock".to_string()),
+                socket_stream_path: Some("/tmp/dsd-stream.sock".to_string()),
+                non_local_traffic: false,
+                ..Default::default()
+            },
             ..Default::default()
         };
         let mut expected = vec![
@@ -2622,11 +2199,14 @@ mod tests {
     #[test]
     fn build_addresses_bind_host_applies_to_udp_and_tcp() {
         let config = DogStatsDConfiguration {
-            port: 8125,
-            tcp_port: 9000,
-            socket_path: Some("/tmp/dsd.sock".to_string()),
-            socket_stream_path: None,
-            non_local_traffic: false,
+            source: SourceConfig {
+                port: 8125,
+                tcp_port: 9000,
+                socket_path: Some("/tmp/dsd.sock".to_string()),
+                socket_stream_path: None,
+                non_local_traffic: false,
+                ..Default::default()
+            },
             ..Default::default()
         };
         let bind_host = Some(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 50)));
@@ -2645,11 +2225,14 @@ mod tests {
     #[test]
     fn build_addresses_non_local_clobbers_bind_host() {
         let config = DogStatsDConfiguration {
-            port: 8125,
-            tcp_port: 9000,
-            socket_path: None,
-            socket_stream_path: Some("/tmp/dsd-stream.sock".to_string()),
-            non_local_traffic: true,
+            source: SourceConfig {
+                port: 8125,
+                tcp_port: 9000,
+                socket_path: None,
+                socket_stream_path: Some("/tmp/dsd-stream.sock".to_string()),
+                non_local_traffic: true,
+                ..Default::default()
+            },
             ..Default::default()
         };
         let bind_host = Some(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 50)));
@@ -2680,45 +2263,17 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn fix_empty_capture_path_sets_path_from_run_path() {
-        const RUN_PATH: &str = "/my/little/run_path";
+    #[test]
+    fn new_normalizes_capture_depth() {
+        let cases = [(0, MIN_CAPTURE_DEPTH), (512, MIN_CAPTURE_DEPTH), (2048, 2048)];
 
-        let base_config_values = json!({ "run_path": RUN_PATH });
-        let (config, _) = ConfigurationLoader::for_tests(Some(base_config_values), None, false).await;
+        for (configured_depth, expected_depth) in cases {
+            let config = DogStatsDConfiguration::new(SourceConfig {
+                capture_depth: configured_depth,
+                ..Default::default()
+            });
 
-        let dogstatsd_config = DogStatsDConfiguration::from_configuration(&config).expect("should deserialize");
-
-        let expected = PathBuf::from(RUN_PATH).join(DOGSTATSD_CAPTURE_DIR);
-        assert_eq!(expected, dogstatsd_config.capture_path);
-    }
-
-    #[tokio::test]
-    async fn fix_empty_capture_path_keeps_explicit_path() {
-        const RUN_PATH: &str = "/my/little/run_path";
-        const CAPTURE_PATH: &str = "/custom/path/to/capture";
-
-        let base_config_values = json!({ "run_path": RUN_PATH, "dogstatsd_capture_path": CAPTURE_PATH });
-        let (config, _) = ConfigurationLoader::for_tests(Some(base_config_values), None, false).await;
-
-        let dogstatsd_config = DogStatsDConfiguration::from_configuration(&config).expect("should deserialize");
-
-        assert_eq!(PathBuf::from(CAPTURE_PATH), dogstatsd_config.capture_path);
-    }
-
-    #[tokio::test]
-    async fn from_configuration_normalizes_capture_depth() {
-        let cases = [
-            (json!({}), MIN_CAPTURE_DEPTH),
-            (json!({ "dogstatsd_capture_depth": 0 }), MIN_CAPTURE_DEPTH),
-            (json!({ "dogstatsd_capture_depth": 2048 }), 2048),
-        ];
-
-        for (base_config_values, expected_depth) in cases {
-            let (config, _) = ConfigurationLoader::for_tests(Some(base_config_values), None, false).await;
-            let dogstatsd_config = DogStatsDConfiguration::from_configuration(&config).expect("should deserialize");
-
-            assert_eq!(expected_depth, dogstatsd_config.capture_depth);
+            assert_eq!(expected_depth, config.source.capture_depth);
         }
     }
 
@@ -2796,31 +2351,5 @@ mod tests {
             origin.process_id(),
             Some(super::origin::mark_replay_process_id(captured_pid))
         );
-    }
-}
-
-#[cfg(test)]
-mod config_smoke {
-    use datadog_agent_config_testing::config_registry::structs;
-    use datadog_agent_config_testing::run_config_smoke_tests;
-    use serde_json::json;
-
-    use super::DogStatsDConfiguration;
-    use crate::config::{DatadogRemapper, KEY_ALIASES};
-
-    #[tokio::test]
-    async fn smoke_test() {
-        run_config_smoke_tests(
-            structs::DOGSTATSD_CONFIGURATION,
-            &[],
-            json!({}),
-            |cfg| {
-                cfg.as_typed::<DogStatsDConfiguration>()
-                    .expect("DogStatsDConfiguration should deserialize")
-            },
-            KEY_ALIASES,
-            DatadogRemapper::new,
-        )
-        .await
     }
 }

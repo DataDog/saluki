@@ -12,6 +12,11 @@ use serde::{Deserialize, Serialize};
 /// configuration smoke test code generation. Each variant in this enum should be an exact name
 /// match to a struct that consumes its value directly from Agent configuration either by
 /// deserializing or by environment variable.
+///
+/// One variant, `MigratedToConfigSystem`, is not a struct: it is a sentinel for keys that no
+/// longer deserialize into any struct because their component now reads them through the config
+/// translation system. It keeps those keys' `used_by` non-empty (required by overlay validation)
+/// without claiming a deserializing consumer.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Deserialize, Serialize)]
 pub enum ConfigurationStruct {
     AggregateConfiguration,
@@ -39,6 +44,10 @@ pub enum ConfigurationStruct {
     /// Keys read via `get_typed` / `try_get_typed` rather than struct deserialization.
     #[serde(rename = "get_typed")]
     GetTyped,
+
+    /// Sentinel for keys whose component now reads them through the config translation system
+    /// instead of deserializing them into a struct. Not a real struct; see the type docs.
+    MigratedToConfigSystem,
 }
 
 impl ConfigurationStruct {
@@ -68,6 +77,7 @@ impl ConfigurationStruct {
             ConfigurationStruct::TagFilterlistConfiguration => "TAG_FILTERLIST_CONFIGURATION",
             ConfigurationStruct::TraceObfuscationConfiguration => "TRACE_OBFUSCATION_CONFIGURATION",
             ConfigurationStruct::GetTyped => "GET_TYPED",
+            ConfigurationStruct::MigratedToConfigSystem => "MIGRATED_TO_CONFIG_SYSTEM",
         }
     }
 }

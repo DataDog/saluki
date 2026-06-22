@@ -409,7 +409,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Global listen host fallback"
     test_support:
-      used_by: [DogStatsDConfiguration]
+      used_by: [MigratedToConfigSystem]
       additional_attributes:
         config_registry_filename: dogstatsd.rs
 
@@ -624,7 +624,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Receive buffer size (bytes)"
     test_support:
-      used_by: [DogStatsDConfiguration]
+      used_by: [MigratedToConfigSystem]
       value_type_override: integer
       additional_attributes:
         config_registry_filename: dogstatsd.rs
@@ -635,7 +635,7 @@ inventory:
     description: "Traffic capture channel depth"
     issue: "#1381"
     test_support:
-      used_by: [DogStatsDConfiguration]
+      used_by: [MigratedToConfigSystem]
       value_type_override: integer
       additional_attributes:
         config_registry_filename: dogstatsd.rs
@@ -646,7 +646,7 @@ inventory:
     description: "Traffic capture file location"
     issue: "#1381"
     test_support:
-      used_by: [DogStatsDConfiguration]
+      used_by: [MigratedToConfigSystem]
       additional_attributes:
         config_registry_filename: dogstatsd.rs
 
@@ -655,7 +655,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Context cache TTL (seconds)"
     test_support:
-      used_by: [DogStatsDConfiguration]
+      used_by: [MigratedToConfigSystem]
       value_type_override: integer
       additional_attributes:
         config_registry_filename: dogstatsd.rs
@@ -666,7 +666,7 @@ inventory:
     description: "Suppress noisy parse error logs"
     issue: "#1350"
     test_support:
-      used_by: [DogStatsDConfiguration]
+      used_by: [MigratedToConfigSystem]
       additional_attributes:
         config_registry_filename: dogstatsd.rs
 
@@ -675,7 +675,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Entity ID over auto-detection"
     test_support:
-      used_by: [DogStatsDConfiguration]
+      used_by: [MigratedToConfigSystem]
       env_var_override: [DD_DOGSTATSD_ENTITY_ID_PRECEDENCE]
       additional_attributes:
         config_registry_filename: dogstatsd.rs
@@ -685,7 +685,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Require newline-terminated messages"
     test_support:
-      used_by: [DogStatsDConfiguration]
+      used_by: [MigratedToConfigSystem]
       test_json: '["udp"]'
       additional_attributes:
         config_registry_filename: dogstatsd.rs
@@ -934,7 +934,7 @@ inventory:
     pipelines: [dogstatsd, checks]
     description: "Enable no-agg timestamped path"
     test_support:
-      used_by: [AggregateConfiguration, DogStatsDConfiguration]
+      used_by: [AggregateConfiguration]
       additional_attributes:
         config_registry_filename: aggregate.rs
 
@@ -951,7 +951,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Accept non-localhost UDP/TCP"
     test_support:
-      used_by: [DogStatsDConfiguration]
+      used_by: [MigratedToConfigSystem]
       additional_attributes:
         config_registry_filename: dogstatsd.rs
 
@@ -960,7 +960,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Enable UDS origin detection"
     test_support:
-      used_by: [DogStatsDConfiguration]
+      used_by: [MigratedToConfigSystem]
       env_var_override: [DD_DOGSTATSD_ORIGIN_DETECTION]
       additional_attributes:
         config_registry_filename: dogstatsd.rs
@@ -970,7 +970,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Honor client origin proto fields"
     test_support:
-      used_by: [DogStatsDConfiguration]
+      used_by: [MigratedToConfigSystem]
       env_var_override: [DD_DOGSTATSD_ORIGIN_DETECTION_CLIENT]
       additional_attributes:
         config_registry_filename: dogstatsd.rs
@@ -980,7 +980,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Allow clients to opt out origin"
     test_support:
-      used_by: [DogStatsDConfiguration]
+      used_by: [MigratedToConfigSystem]
       env_var_override: [DD_DOGSTATSD_ORIGIN_OPTOUT_ENABLED]
       additional_attributes:
         config_registry_filename: dogstatsd.rs
@@ -1031,7 +1031,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "UDP listen port"
     test_support:
-      used_by: [DogStatsDConfiguration]
+      used_by: [MigratedToConfigSystem]
       value_type_override: integer
       additional_attributes:
         config_registry_filename: dogstatsd.rs
@@ -1049,7 +1049,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Socket receive buffer size"
     test_support:
-      used_by: [DogStatsDConfiguration]
+      used_by: [MigratedToConfigSystem]
       value_type_override: integer
       additional_attributes:
         config_registry_filename: dogstatsd.rs
@@ -1059,7 +1059,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "UDS datagram socket path"
     test_support:
-      used_by: [DogStatsDConfiguration]
+      used_by: [MigratedToConfigSystem]
       additional_attributes:
         config_registry_filename: dogstatsd.rs
 
@@ -1122,7 +1122,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Log oversized UDS stream frames"
     test_support:
-      used_by: [DogStatsDConfiguration]
+      used_by: [MigratedToConfigSystem]
       additional_attributes:
         config_registry_filename: dogstatsd.rs
 
@@ -1131,7 +1131,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "UDS stream socket path"
     test_support:
-      used_by: [DogStatsDConfiguration]
+      used_by: [MigratedToConfigSystem]
       additional_attributes:
         config_registry_filename: dogstatsd.rs
 
@@ -1140,7 +1140,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "String interner capacity"
     test_support:
-      used_by: [DogStatsDConfiguration]
+      used_by: [MigratedToConfigSystem]
       value_type_override: integer
       additional_attributes:
         config_registry_filename: dogstatsd.rs
@@ -1150,7 +1150,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Default tag cardinality level"
     test_support:
-      used_by: [DogStatsDConfiguration]
+      used_by: [MigratedToConfigSystem]
       env_var_override: [DD_DOGSTATSD_TAG_CARDINALITY]
       test_json: '"high"'
       additional_attributes:
@@ -1161,7 +1161,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Extra tags added to all DSD data"
     test_support:
-      used_by: [DogStatsDConfiguration]
+      used_by: [MigratedToConfigSystem]
       additional_attributes:
         config_registry_filename: dogstatsd.rs
 
@@ -1204,7 +1204,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Allow sending event payloads"
     test_support:
-      used_by: [DogStatsDConfiguration]
+      used_by: [MigratedToConfigSystem]
       additional_attributes:
         config_registry_filename: dogstatsd.rs
 
@@ -1213,7 +1213,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Allow sending series payloads"
     test_support:
-      used_by: [DogStatsDConfiguration]
+      used_by: [MigratedToConfigSystem]
       additional_attributes:
         config_registry_filename: dogstatsd.rs
 
@@ -1222,7 +1222,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Allow sending service check payloads"
     test_support:
-      used_by: [DogStatsDConfiguration]
+      used_by: [MigratedToConfigSystem]
       additional_attributes:
         config_registry_filename: dogstatsd.rs
 
@@ -1231,7 +1231,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Allow sending sketch payloads"
     test_support:
-      used_by: [DogStatsDConfiguration]
+      used_by: [MigratedToConfigSystem]
       additional_attributes:
         config_registry_filename: dogstatsd.rs
 
@@ -1804,7 +1804,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Unified origin detection mode"
     test_support:
-      used_by: [DogStatsDConfiguration]
+      used_by: [MigratedToConfigSystem]
       env_var_override: [DD_ORIGIN_DETECTION_UNIFIED]
       additional_attributes:
         config_registry_filename: dogstatsd.rs
@@ -1898,7 +1898,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Provider kind static tag"
     test_support:
-      used_by: [DogStatsDConfiguration]
+      used_by: [MigratedToConfigSystem]
       env_var_override: [DD_PROVIDER_KIND]
       additional_attributes:
         config_registry_filename: dogstatsd.rs
@@ -2137,7 +2137,7 @@ inventory:
       be split differently while carrying the same DogStatsD messages. ADP logs setup failures
       and tracks send failures through telemetry.
     test_support:
-      used_by: [DogStatsDConfiguration]
+      used_by: [MigratedToConfigSystem]
       test_json: '"127.0.0.1"'
       additional_attributes:
         config_registry_filename: dogstatsd.rs
@@ -2147,7 +2147,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "UDP packet forwarding destination port"
     test_support:
-      used_by: [DogStatsDConfiguration]
+      used_by: [MigratedToConfigSystem]
       value_type_override: integer
       test_json: "9125"
       additional_attributes:

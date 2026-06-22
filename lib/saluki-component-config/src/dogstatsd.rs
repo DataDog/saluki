@@ -1,12 +1,10 @@
-//! Component-native configuration for the DogStatsD source.
+//! Configuration for the DogStatsD source component.
 //!
-//! Mirrors `DogStatsDConfiguration` in `saluki-components` with source key names, aliases, and
-//! `Deserialize` implementations stripped. This is the resolved, source-agnostic data the source
-//! component receives as its runtime configuration.
-//!
-//! Injected/non-config state is excluded: workload providers, capture-entity resolvers, capture and
-//! replay control handles, and the retained `Option<GenericConfiguration>`.
-// TODO: delete `saluki-components` duplication of these at cut-over time and delete this comment!
+//! The types here hold the resolved, source-agnostic config values the DogStatsD source consumes at
+//! runtime. They are plain data: no behavior, no runtime handles, and no `Deserialize`. The
+//! translated-config system builds them field-by-field from Datadog keys; nothing deserializes into
+//! them. See the `SourceConfig` docs for how this slice relates to `dogstatsd::Config` and
+//! `DogStatsDConfiguration`.
 
 use std::path::PathBuf;
 
@@ -14,11 +12,21 @@ use bytesize::ByteSize;
 use saluki_context::origin::OriginTagCardinality;
 use stringtheory::MetaString;
 
-/// Configuration for the DogStatsD source component.
+/// Configuration data for the DogStatsD *source* component: the resolved, source-agnostic values
+/// the source consumes (listeners, parser and decoding options, interner sizing, capture settings).
 ///
-/// Mirrors `DogStatsDConfiguration` in `saluki-components`. The injected `workload_provider`,
-/// `capture_entity_resolver`, `capture_control`, and `replay_control` fields are excluded as
-/// runtime-injected state.
+/// Plain data only - no behavior, no runtime handles, and no `Deserialize`. The translated-config
+/// system builds this field-by-field from Datadog keys; it is never deserialized into directly. It
+/// derives `Serialize` for diagnostics.
+///
+/// It lives in this leaf crate so its two consumers can share it without depending on each other:
+/// - `agent-data-plane-config`'s `dogstatsd::Config` embeds it as the `source` slice of the
+///   DogStatsD domain family.
+/// - `saluki-components`' `DogStatsDConfiguration` (the source's builder) embeds it by value and
+///   adds the runtime handles plus the `build()` behavior.
+///
+/// It is named `SourceConfig`, not `Config`, because `dogstatsd::Config` is the larger domain group
+/// that contains this slice.
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]
 pub struct SourceConfig {
     /// The size of the receive buffer, in bytes.
