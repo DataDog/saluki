@@ -12,8 +12,10 @@ use tracing::warn;
 
 use crate::platform::PlatformSettings;
 
-fn default_agent_ipc_endpoint() -> Uri {
-    Uri::from_static("https://127.0.0.1:5001")
+const DEFAULT_CMD_PORT: u16 = 5001;
+
+const fn default_cmd_port() -> u16 {
+    DEFAULT_CMD_PORT
 }
 
 const fn default_connect_retry_attempts() -> usize {
@@ -106,26 +108,11 @@ impl Default for IpcAuthConfiguration {
 /// Datadog Agent IPC client configuration.
 #[derive(Deserialize)]
 pub struct RemoteAgentClientConfiguration {
-    /// Legacy ADP-only Core Agent CMD API gRPC endpoint override.
-    ///
-    /// This key is only available to `agent-data-plane`. Despite the `agent_ipc` name, it targets the Core Agent's
-    /// CMD API gRPC server, not the separate `agent_ipc.*` HTTP config listener. The Datadog Agent configuration schema
-    /// exposes `cmd_port` for this server, so `cmd_port` is the supported way to follow the Agent's configured port.
-    ///
-    /// If `cmd_port` is set, `ipc_endpoint` is ignored.
-    ///
-    /// Defaults to `https://127.0.0.1:5001`.
-    #[serde(
-        rename = "agent_ipc_endpoint",
-        with = "http_serde_ext::uri",
-        default = "default_agent_ipc_endpoint"
-    )]
-    ipc_endpoint: Uri,
-
     /// Core Agent CMD API port used for remote-agent gRPC IPC on localhost.
     ///
-    /// Takes precedence over `ipc_endpoint` if set.
-    cmd_port: Option<u16>,
+    /// Defaults to `5001`.
+    #[serde(default = "default_cmd_port")]
+    cmd_port: u16,
 
     /// Authentication configuration for the IPC endpoint.
     #[serde(flatten, default)]
@@ -218,16 +205,10 @@ impl RemoteAgentClientConfiguration {
     }
 
     /// Returns the Core Agent CMD API gRPC endpoint URI.
-    ///
-    /// If `cmd_port` is set, the endpoint is built from it, ignoring `ipc_endpoint`.
     pub fn endpoint(&self) -> Result<Uri, GenericError> {
-        if let Some(cmd_port) = self.cmd_port {
-            format!("https://127.0.0.1:{}", cmd_port)
-                .parse::<Uri>()
-                .with_error_context(|| format!("failed to build URI from cmd_port {cmd_port}"))
-        } else {
-            Ok(self.ipc_endpoint.clone())
-        }
+        format!("https://127.0.0.1:{}", self.cmd_port)
+            .parse::<Uri>()
+            .with_error_context(|| format!("failed to build URI from cmd_port {}", self.cmd_port))
     }
 
     /// Returns the maximum message size for gRPC.
@@ -396,23 +377,6 @@ mod tests {
         values.insert("cmd_port".to_string(), 7777.into());
         let config = config_from_values(values).await;
         assert_eq!(config.endpoint().unwrap().to_string(), "https://127.0.0.1:7777/");
-    }
-
-    #[tokio::test]
-    async fn cmd_port_takes_precedence_over_ipc_endpoint() {
-        let mut values = serde_json::Map::new();
-        values.insert("cmd_port".to_string(), 8888.into());
-        values.insert("agent_ipc_endpoint".to_string(), "https://10.0.0.1:3333".into());
-        let config = config_from_values(values).await;
-        assert_eq!(config.endpoint().unwrap().to_string(), "https://127.0.0.1:8888/");
-    }
-
-    #[tokio::test]
-    async fn ipc_endpoint_used_when_no_cmd_port() {
-        let mut values = serde_json::Map::new();
-        values.insert("agent_ipc_endpoint".to_string(), "https://10.0.0.1:3333".into());
-        let config = config_from_values(values).await;
-        assert_eq!(config.endpoint().unwrap().to_string(), "https://10.0.0.1:3333/");
     }
 
     #[cfg(target_os = "linux")]
