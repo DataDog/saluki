@@ -1084,7 +1084,6 @@ dependencies = [
  "backon",
  "datadog-protos",
  "futures",
- "http-serde-ext",
  "pin-project-lite",
  "rustls",
  "rustls-pki-types",

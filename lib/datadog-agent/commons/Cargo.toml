@@ -9,7 +9,6 @@ repository = { workspace = true }
 backon = { workspace = true, features = ["tokio-sleep"] }
 datadog-protos = { workspace = true }
 futures = { workspace = true }
-http-serde-ext = { workspace = true }
 pin-project-lite = { workspace = true }
 rustls = { workspace = true }
 rustls-pki-types = { workspace = true }
