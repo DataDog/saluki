@@ -5,6 +5,7 @@
 
 #![deny(warnings)]
 #![deny(missing_docs)]
+use std::path::Path;
 use std::time::Instant;
 
 // Pull in the Antithesis coverage-instrumentation runtime shim only when
@@ -45,10 +46,8 @@ static ALLOC: resource_accounting::TrackingAllocator<std::alloc::System> =
 async fn main() -> Result<(), GenericError> {
     let started = Instant::now();
 
-    // Initialize the Antithesis SDK as early as possible so assertions and lifecycle hooks register
-    // their catalog before any are evaluated. No-op outside Antithesis and absent in production builds.
     #[cfg(feature = "antithesis")]
-    antithesis_sdk::antithesis_init();
+    initialize_antithesis();
 
     let cli: Cli = argh::from_env();
 
@@ -61,14 +60,7 @@ async fn main() -> Result<(), GenericError> {
     // Load our "bootstrap" configuration -- static configuration on disk or from environment variables -- so we can
     // initialize basic subsystems before executing the given subcommand.
     let bootstrap_config_path = cli.config_file.unwrap_or_else(PlatformSettings::get_config_file_path);
-    let bootstrap_config = ConfigurationLoader::default()
-        .with_key_aliases(KEY_ALIASES)
-        .from_yaml(&bootstrap_config_path)
-        .error_context("Failed to load Datadog Agent configuration file during bootstrap.")?
-        .add_providers([DatadogRemapper::new()])
-        .from_environment(PlatformSettings::get_env_var_prefix())
-        .error_context("Environment variable prefix should not be empty.")?
-        .bootstrap_generic();
+    let bootstrap_config = load_bootstrap_config(&bootstrap_config_path)?.bootstrap_generic();
 
     // Translate the bootstrap configuration into ADP's logging configuration, applying ADP-specific rules
     // (per-subagent log file key, never sharing a file with the Core Agent).
@@ -122,6 +114,52 @@ async fn main() -> Result<(), GenericError> {
     Ok(())
 }
 
+/// Initializes the Antithesis SDK and installs a panic-reporting hook. Set
+/// ideally before any panics are possible.
+#[cfg(feature = "antithesis")]
+fn initialize_antithesis() {
+    antithesis_sdk::antithesis_init();
+
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let location = info.location().map_or_else(String::new, |l| l.to_string());
+        let payload = info.payload();
+        let message = payload
+            .downcast_ref::<&str>()
+            .map(|s| (*s).to_string())
+            .or_else(|| payload.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "<non-string panic payload>".to_string());
+        antithesis_sdk::assert_unreachable!(
+            "agent-data-plane panicked",
+            &serde_json::json!({ "message": message, "location": location })
+        );
+        default_hook(info);
+    }));
+}
+
+/// Loads bootstrap configuration from the on-disk file and environment
+/// variables.
+fn load_bootstrap_config(bootstrap_config_path: &Path) -> Result<ConfigurationLoader, GenericError> {
+    let loaded = ConfigurationLoader::default()
+        .with_key_aliases(KEY_ALIASES)
+        .from_yaml(bootstrap_config_path)
+        .error_context("Failed to load Datadog Agent configuration file during bootstrap.")
+        .and_then(|loader| {
+            loader
+                .add_providers([DatadogRemapper::new()])
+                .from_environment(PlatformSettings::get_env_var_prefix())
+                .error_context("Environment variable prefix should not be empty.")
+        });
+    // A graceful config rejection exits 1 rather than crashing; classify that against a clean boot.
+    #[cfg(feature = "antithesis")]
+    antithesis_sdk::assert_always_or_unreachable!(
+        loaded.is_ok(),
+        "agent-data-plane boots under sampled config",
+        &serde_json::json!({ "phase": "config_load", "error": loaded.as_ref().err().map(|e| format!("{e:?}")) })
+    );
+    loaded
+}
+
 fn parse_metrics_level(config: &GenericConfiguration) -> Result<Level, GenericError> {
     let raw = config
         .try_get_typed::<String>("metrics_level")
@@ -157,6 +195,13 @@ async fn run_inner(
                     }
                     Err(e) => {
                         error!("{:?}", e);
+                        // Same boot property as the config-load gate, distinguished by `phase` in the details.
+                        #[cfg(feature = "antithesis")]
+                        antithesis_sdk::assert_always_or_unreachable!(
+                            false,
+                            "agent-data-plane boots under sampled config",
+                            &serde_json::json!({ "phase": "run_setup", "error": format!("{e:?}") })
+                        );
                         Some(1)
                     }
                 };

@@ -697,7 +697,25 @@ impl GenericConfiguration {
         let mut maybe_ready_rx = self.inner.ready_signal.lock().await;
         if let Some(ready_rx) = maybe_ready_rx.take() {
             // We're the first caller to wait for readiness.
-            if ready_rx.await.is_err() {
+            //
+            // There is no timeout on this await by design: if the Core Agent never sends the first snapshot, startup
+            // blocks here forever.
+            #[cfg(feature = "antithesis")]
+            antithesis_sdk::assert_reachable!("config readiness wait entered", &serde_json::json!({}));
+
+            let ready_result = ready_rx.await;
+
+            #[cfg(feature = "antithesis")]
+            if ready_result.is_err() {
+                antithesis_sdk::assert_unreachable!(
+                    "config readiness sender dropped before signalling — updater task may have panicked",
+                    &serde_json::json!({})
+                );
+            } else {
+                antithesis_sdk::assert_sometimes!(true, "config readiness signal received", &serde_json::json!({}));
+            }
+
+            if ready_result.is_err() {
                 error!("Failed to receive configuration readiness signal; updater task may have panicked.");
             }
         }
