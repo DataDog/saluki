@@ -53,3 +53,6 @@ mod system;
 pub(crate) mod translate;
 
 pub use self::system::{ConfigurationSystem, ConfigurationSystemLoader};
+
+#[cfg(test)]
+mod smoke_test;

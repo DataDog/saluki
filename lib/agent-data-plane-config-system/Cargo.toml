@@ -19,6 +19,13 @@ saluki-error = { workspace = true }
 serde_json = { workspace = true }
 stringtheory = { workspace = true }
 
+[build-dependencies]
+datadog-agent-config-overlay-model = { workspace = true }
+indexmap = { workspace = true }
+
 [dev-dependencies]
+agent-data-plane-config = { workspace = true }
 figment = { workspace = true }
+saluki-config-tools = { workspace = true }
+serde_json = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt"] }
