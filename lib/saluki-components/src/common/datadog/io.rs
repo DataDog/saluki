@@ -469,7 +469,7 @@ async fn run_endpoint_io_loop<B>(
                     };
                     let transaction_size = txn.size_bytes();
                     let transaction_endpoint_name = endpoint_name(txn.request_uri())
-                        .unwrap_or_else(|| MetaString::from(txn.request_uri().path().to_string()));
+                        .unwrap_or_else(|| MetaString::from(txn.request_uri().path()));
                     telemetry.track_transaction_input(
                         &endpoint_domain,
                         &transaction_endpoint_name,
