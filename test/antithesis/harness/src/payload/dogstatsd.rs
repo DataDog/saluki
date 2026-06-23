@@ -102,11 +102,19 @@ fn choose_message<R: Rng + ?Sized>(rng: &mut R) -> Message {
 }
 
 /// Write one `DogStatsD` message of a sampled type to `buf` at the given vibe.
-pub fn send<R: Rng + ?Sized>(rng: &mut R, buf: &mut Vec<u8>, vibe: Vibe) {
+/// Returns the packed value count when a multi-value metric was emitted, else
+/// `None`.
+pub fn send<R: Rng + ?Sized>(rng: &mut R, buf: &mut Vec<u8>, vibe: Vibe) -> Option<usize> {
     buf.clear();
     match choose_message(rng) {
-        Message::Event => events::write(rng, buf, vibe),
-        Message::ServiceCheck => service_checks::write(rng, buf, vibe),
+        Message::Event => {
+            events::write(rng, buf, vibe);
+            None
+        }
+        Message::ServiceCheck => {
+            service_checks::write(rng, buf, vibe);
+            None
+        }
         Message::Metric => metrics::write(rng, buf, vibe),
     }
 }

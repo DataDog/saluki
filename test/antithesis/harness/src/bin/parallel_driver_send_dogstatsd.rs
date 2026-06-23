@@ -1,20 +1,14 @@
-//! Feral `DogStatsD` load generator. A producer thread writes sampled lines into
-//! a bounded channel; a consumer thread ships them over the socket. Antithesis
-//! runs many of these in parallel to drive concurrency and push context limits.
+//! Feral `DogStatsD` load generator. Drives one batch of sampled lines to the
+//! dogstatsd socket via the shared `harness::driver` engine. Antithesis runs
+//! many of these in parallel to drive concurrency and push context limits.
 
 #[cfg(unix)]
 mod unix_driver {
-    use std::os::unix::net::UnixDatagram;
-    use std::path::{Path, PathBuf};
-    use std::sync::mpsc::sync_channel;
-    use std::thread::{self, sleep};
-    use std::time::{Duration, Instant};
+    use std::path::PathBuf;
 
     use antithesis_sdk::prelude::*;
-    use antithesis_sdk::random::{random_choice, AntithesisRng};
     use clap::Parser;
-    use harness::payload::dogstatsd;
-    use rand::{rand_core::UnwrapErr, RngExt};
+    use harness::driver::{self, Batch};
     use serde_json::json;
 
     #[derive(Debug, Parser)]
@@ -28,107 +22,48 @@ mod unix_driver {
         dogstatsd_socket: PathBuf,
     }
 
-    /// Per-batch composition: 50% clean, 25% feral, 25% mixed.
-    #[derive(Clone, Copy)]
-    enum Batch {
-        Clean,
-        Feral,
-        Mixed,
-    }
-
     pub(super) fn run() -> anyhow::Result<()> {
         antithesis_init();
 
         let config = Config::try_parse()?;
 
         // Socket unavailable (ADP booting, or a fault). No-op exit, not a failure.
-        let Some(socket) = connect_with_retry(&config.dogstatsd_socket) else {
+        let Some(socket) = driver::connect_with_retry(&config.dogstatsd_socket) else {
             return Ok(());
         };
 
-        let batch = match random_choice(&[Batch::Clean, Batch::Clean, Batch::Feral, Batch::Mixed]) {
-            Some(Batch::Feral) => Batch::Feral,
-            Some(Batch::Mixed) => Batch::Mixed,
-            _ => Batch::Clean,
-        };
-        let count = {
-            let mut rng = UnwrapErr(AntithesisRng);
-            rng.random_range(0..=10_000u64)
-        };
-
-        let (tx, rx) = sync_channel::<Vec<u8>>(2024);
-
-        let producer = thread::spawn(move || {
-            let mut rng = UnwrapErr(AntithesisRng);
-            for _ in 0..count {
-                let vibe = match batch {
-                    Batch::Clean => dogstatsd::Vibe::Clean,
-                    Batch::Feral => dogstatsd::Vibe::Feral,
-                    Batch::Mixed => dogstatsd::sample_vibe(),
-                };
-                let mut line = Vec::new();
-                dogstatsd::send(&mut rng, &mut line, vibe);
-                if tx.send(line).is_err() {
-                    break;
-                }
-            }
-        });
-
-        let consumer = thread::spawn(move || {
-            let mut attempted = 0usize;
-            while let Ok(line) = rx.recv() {
-                if socket.send(&line).is_ok() {
-                    attempted += 1;
-                }
-            }
-            attempted
-        });
-
-        producer.join().expect("producer thread panicked");
-        let attempted = consumer.join().expect("consumer thread panicked");
+        let batch = Batch::sample();
+        let stats = driver::run(batch, vec![socket]);
+        let sent = stats.sent[0];
+        let max_packed = stats.max_packed[0];
 
         assert_reachable!(
             "workload ran a dogstatsd batch",
-            &json!({ "attempted": attempted, "dogstatsd_socket": config.dogstatsd_socket.display().to_string() })
+            &json!({ "sent": sent, "dogstatsd_socket": config.dogstatsd_socket.display().to_string() })
+        );
+        assert_sometimes!(sent > 0, "workload sent a dogstatsd line", &json!({ "sent": sent }));
+        assert_sometimes!(
+            max_packed > 0,
+            "workload emitted a multi-value metric",
+            &json!({ "sent": sent, "max_packed_values": max_packed })
         );
         assert_sometimes!(
-            attempted > 0,
-            "workload delivered a dogstatsd line",
-            &json!({ "attempted": attempted })
-        );
-        assert_sometimes!(
-            attempted > 0 && matches!(batch, Batch::Clean),
+            sent > 0 && matches!(batch, Batch::Clean),
             "workload ran a fully clean batch",
-            &json!({ "attempted": attempted })
+            &json!({ "sent": sent })
         );
         assert_sometimes!(
-            attempted > 0 && matches!(batch, Batch::Feral),
+            sent > 0 && matches!(batch, Batch::Feral),
             "workload ran a fully feral batch",
-            &json!({ "attempted": attempted })
+            &json!({ "sent": sent })
         );
         assert_sometimes!(
-            attempted > 0 && matches!(batch, Batch::Mixed),
+            sent > 0 && matches!(batch, Batch::Mixed),
             "workload ran a mixed batch",
-            &json!({ "attempted": attempted })
+            &json!({ "sent": sent })
         );
 
         Ok(())
-    }
-
-    /// Wait for ADP to bind the socket, intentionally naive.
-    fn connect_with_retry(path: &Path) -> Option<UnixDatagram> {
-        let deadline = Instant::now() + Duration::from_secs(30);
-        loop {
-            if let Ok(socket) = UnixDatagram::unbound() {
-                if socket.connect(path).is_ok() {
-                    return Some(socket);
-                }
-            }
-            if Instant::now() >= deadline {
-                return None;
-            }
-            sleep(Duration::from_millis(250));
-        }
     }
 }
 
