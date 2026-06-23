@@ -37,6 +37,10 @@ $Binary = Join-Path $CargoTargetDir "$env:BUILD_PROFILE\agent-data-plane.exe"
 if (-not (Test-Path $Binary)) {
     throw "package-adp-zip: expected binary at '$Binary' (run windows-build-adp.ps1 first)"
 }
+$BinaryPDB = Join-Path $CargoTargetDir "$env:BUILD_PROFILE\agent-data-plane.pdb"
+if (-not (Test-Path $BinaryPDB)) {
+    throw "package-adp-zip: expected PDB at '$BinaryPDB' (run windows-build-adp.ps1 first)"
+}
 foreach ($f in @("NOTICE", "LICENSE", "LICENSE-3rdparty.csv")) {
     if (-not (Test-Path $f)) {
         throw "package-adp-zip: missing '$f' in CWD ($RepoRoot)"
@@ -55,6 +59,7 @@ try {
     New-Item -ItemType Directory -Force (Join-Path $StageRoot "LICENSES") | Out-Null
 
     Copy-Item -Force $Binary (Join-Path $StageRoot "bin\agent-data-plane.exe")
+    Copy-Item -Force $BinaryPDB (Join-Path $StageRoot "bin\agent-data-plane.pdb")
     foreach ($f in @("NOTICE", "LICENSE", "LICENSE-3rdparty.csv")) {
         Copy-Item -Force $f (Join-Path $StageRoot $f)
     }

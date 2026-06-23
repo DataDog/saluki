@@ -110,7 +110,7 @@ test-integration-windows-amd64:
       powershell.exe -NoProfile -NonInteractive -File c:\mnt\ci\tooling\windows-integration-tests.ps1
     - If ($lastExitCode -ne "0") { exit "$lastExitCode" }
 
-# Builds the Windows release zip (agent-data-plane.exe + LICENSE/NOTICE/LICENSE-3rdparty.csv +
+# Builds the Windows release zip (agent-data-plane.{exe,pdb} + LICENSE/NOTICE/LICENSE-3rdparty.csv +
 # LICENSES/THIRD-PARTY-*) inside the cached LTSC2022 build image and exposes it as a job
 # artifact. The release-stage `push-release-zip-windows-amd64*` jobs in .gitlab/release.yml
 # consume the artifact and `aws s3 cp` it to s3.
