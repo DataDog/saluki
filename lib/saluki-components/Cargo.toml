@@ -15,7 +15,7 @@ antithesis = [
   "dep:antithesis_sdk",
   "antithesis_sdk/full",
   "ddsketch/antithesis",
-  "saluki-config/antithesis",
+  "saluki-config-tools/antithesis",
   "saluki-context/antithesis",
   "saluki-core/antithesis",
   "saluki-io/antithesis",
