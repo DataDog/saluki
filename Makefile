@@ -32,6 +32,7 @@ ADP_TOPOLOGY_MERMAID_OUTPUT := $(ADP_TOPOLOGY_DATA_DIR)/current.mmd
 ADP_TOPOLOGY_DIFF_DIR := target/adp-topology
 ADP_TOPOLOGY_DIFF_BASE_OUTPUT := $(ADP_TOPOLOGY_DIFF_DIR)/base.json
 ADP_TOPOLOGY_DIFF_HEAD_OUTPUT := $(ADP_TOPOLOGY_DIFF_DIR)/head.json
+ADP_TOPOLOGY_DIFF_OUTPUT := $(ADP_TOPOLOGY_DIFF_DIR)/diff.json
 ADP_TOPOLOGY_FORMAT := $(or $(FORMAT),json)
 ADP_TOPOLOGY_OUTPUT := $(if $(filter mermaid,$(ADP_TOPOLOGY_FORMAT)),$(or $(OUTPUT),$(ADP_TOPOLOGY_MERMAID_OUTPUT)),$(ADP_TOPOLOGY_JSON_OUTPUT))
 ADP_TOPOLOGY_VIEWER_URL := http://localhost:5173/topology
@@ -456,7 +457,7 @@ diff-adp-topology: ## Diffs two generated ADP topologies (BASE_CONFIG=..., HEAD_
 	@if [ "$(ADP_TOPOLOGY_FORMAT)" = "mermaid" ] && [ -n "$(strip $(OUTPUT))" ]; then \
 		target/devel/agent-data-plane debug topology --diff-base "$(ADP_TOPOLOGY_DIFF_BASE_OUTPUT)" --diff-head "$(ADP_TOPOLOGY_DIFF_HEAD_OUTPUT)" --format mermaid --output "$(OUTPUT)"; \
 	else \
-		target/devel/agent-data-plane debug topology --diff-base "$(ADP_TOPOLOGY_DIFF_BASE_OUTPUT)" --diff-head "$(ADP_TOPOLOGY_DIFF_HEAD_OUTPUT)" --format "$(ADP_TOPOLOGY_FORMAT)"; \
+		target/devel/agent-data-plane debug topology --diff-base "$(ADP_TOPOLOGY_DIFF_BASE_OUTPUT)" --diff-head "$(ADP_TOPOLOGY_DIFF_HEAD_OUTPUT)" --format json > "$(ADP_TOPOLOGY_DIFF_OUTPUT)"; \
 	fi
 
 .PHONY: run-adp-topology-diff-viewer
@@ -464,7 +465,7 @@ run-adp-topology-diff-viewer: build-adp
 run-adp-topology-diff-viewer: ## Diffs two ADP configs and opens the external topology viewer (BASE_CONFIG=..., HEAD_CONFIG=...)
 	@$(MAKE) --no-print-directory diff-adp-topology BASE_CONFIG="$(BASE_CONFIG)" HEAD_CONFIG="$(HEAD_CONFIG)" FORMAT=json
 	@echo "[*] Topology diff viewer: $(ADP_TOPOLOGY_VIEWER_URL)?base=base.json&head=head.json"
-	@npx --yes github:DataDog/adp-visualizer-ts --base "$(ADP_TOPOLOGY_DIFF_BASE_OUTPUT)" --head "$(ADP_TOPOLOGY_DIFF_HEAD_OUTPUT)" --saluki-root "."
+	@npx --yes github:DataDog/adp-visualizer-ts --base "$(ADP_TOPOLOGY_DIFF_BASE_OUTPUT)" --head "$(ADP_TOPOLOGY_DIFF_HEAD_OUTPUT)" --diff "$(ADP_TOPOLOGY_DIFF_OUTPUT)" --saluki-root "."
 
 .PHONY: run-adp-topology-viewer
 run-adp-topology-viewer: build-adp
