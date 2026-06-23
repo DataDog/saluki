@@ -235,6 +235,7 @@ launchd
 Wireshark
 testsupport
 callee
+Bazel
 trivy
 Erlang
 OTP

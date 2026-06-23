@@ -1,3 +1,4 @@
+use std::net::ToSocketAddrs as _;
 use std::sync::Arc;
 use std::sync::LazyLock;
 use std::time::Duration;
@@ -179,13 +180,12 @@ impl SourceBuilder for OtlpConfiguration {
             return Err(generic_error!("Only 'tcp' transport is supported for OTLP gRPC"));
         }
 
-        let http_socket_addr = self.otlp_config.receiver.protocols.http.endpoint.parse().map_err(|e| {
-            generic_error!(
-                "Invalid HTTP endpoint address '{}': {}",
-                self.otlp_config.receiver.protocols.http.endpoint,
-                e
-            )
-        })?;
+        let http_endpoint_str = &self.otlp_config.receiver.protocols.http.endpoint;
+        let http_socket_addr = http_endpoint_str
+            .to_socket_addrs()
+            .map_err(|e| generic_error!("Invalid HTTP endpoint address '{}': {}", http_endpoint_str, e))?
+            .next()
+            .ok_or_else(|| generic_error!("No addresses resolved for HTTP endpoint '{}'", http_endpoint_str))?;
 
         let maybe_origin_tags_resolver = self.workload_provider.clone().map(OtlpOriginTagResolver::new);
 

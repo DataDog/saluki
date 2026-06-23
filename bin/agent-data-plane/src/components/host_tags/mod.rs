@@ -43,22 +43,28 @@ impl HostTagsConfiguration {
 #[async_trait]
 impl SynchronousTransformBuilder for HostTagsConfiguration {
     async fn build(&self, _context: ComponentContext) -> Result<Box<dyn SynchronousTransform + Send>, GenericError> {
-        // Make an initial request of the host tags from the Datadog Agent.
-        //
-        // We only pay attention to the "system" tags, as the "google_cloud_platform" tags are not relevant here.
-        let host_tags_reply = self.client.get_host_tags().await?.into_inner();
-        let host_tags = host_tags_reply
-            .system
-            .into_iter()
-            .map(|s| Arc::from(s.as_str()))
-            .map(MetaString::from)
-            .map(Tag::from)
-            .collect::<SharedTagSet>();
+        // Only fetch host tags when enrichment is enabled (`expected_tags_duration > 0`), matching the Core
+        // Agent; at the default of 0 the tags are discarded immediately. Fetching always would block `build()`
+        // on the Core Agent's slow `GetHostTags` RPC, delaying DogStatsD draining and starving origin detection.
+        let host_tags = if self.expected_tags_duration > Duration::ZERO {
+            // We only pay attention to the "system" tags, as the "google_cloud_platform" tags are not relevant here.
+            let host_tags_reply = self.client.get_host_tags().await?.into_inner();
+            let host_tags = host_tags_reply
+                .system
+                .into_iter()
+                .map(|s| Arc::from(s.as_str()))
+                .map(MetaString::from)
+                .map(Tag::from)
+                .collect::<SharedTagSet>();
+            Some(host_tags)
+        } else {
+            None
+        };
 
         Ok(Box::new(HostTagsEnrichment {
             start: Instant::now(),
             expected_tags_duration: self.expected_tags_duration,
-            host_tags: Some(host_tags),
+            host_tags,
         }))
     }
 }

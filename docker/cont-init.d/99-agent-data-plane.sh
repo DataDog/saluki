@@ -19,11 +19,6 @@ env | grep '^ADP_DD_' | while IFS='=' read -r key value; do
     printf "%s" "$value" > "/run/adp/env/$new_key"
 done
 
-# When ADP is handling DSD, disable DSD in the Core Agent.
-if [[ "${DD_DATA_PLANE_DOGSTATSD_ENABLED}" == "true" ]]; then
-    printf "0" > /run/agent/env/DD_USE_DOGSTATSD
-fi
-
 # When ADP is handling OTLP, redirect Agent's OTLP receivers to unused localhost ports
 # so ADP can bind to the actual ports (4317, 4318)
 if [[ "${DD_DATA_PLANE_OTLP_ENABLED}" == "true" ]]; then
