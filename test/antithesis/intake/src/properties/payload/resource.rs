@@ -1,10 +1,15 @@
 //! Resource-level checks
 
+<<<<<<< HEAD
 use std::sync::OnceLock;
 
 use antithesis_sdk::prelude::*;
 use datadog_protos::metrics::metric_payload::{MetricSeries, Resource};
 use datadog_protos::metrics::MetricPayload;
+=======
+use antithesis_sdk::prelude::*;
+use datadog_protos::metrics::metric_payload::{MetricSeries, Resource};
+>>>>>>> 9c1abdeb85 (enhancement(antithesis): Introduce rig intake API (#1826))
 use serde_json::json;
 
 /// Pyld18 -- maximum resources per series.
@@ -17,6 +22,7 @@ fn host_resource(series: &MetricSeries) -> Option<&Resource> {
     series.resources.iter().find(|r| r.type_() == "host")
 }
 
+<<<<<<< HEAD
 /// Pyld17 -- every metric context across all inbound traffic on a lane resolves a non-empty host,
 /// and they all share one host. `established` is set once from the first host seen so the check spans
 /// every request. Cross-lane host equality is checked by the differential oracle.
@@ -39,6 +45,19 @@ pub(crate) fn host_consistent(payload: &MetricPayload, established: &OnceLock<St
         observed.is_none(),
         "Pyld17.host_resource_resolved",
         &json!({ "series": payload.series.len(), "host": established.get(), "observed": observed })
+=======
+/// Pyld17 -- the resolved host resource is named the Agent hostname.
+pub(crate) fn host_resolved(ms: &MetricSeries, expected: &str) {
+    let observed = match host_resource(ms) {
+        None => Some(json!({ "resolution": "missing", "resolved": serde_json::Value::Null })),
+        Some(host) if host.name() != expected => Some(json!({ "resolution": "mismatch", "resolved": host.name() })),
+        Some(_) => None,
+    };
+    assert_always!(
+        observed.is_none(),
+        "Pyld17.host_resource_resolved",
+        &json!({ "metric": ms.metric(), "expected": expected, "observed": observed })
+>>>>>>> 9c1abdeb85 (enhancement(antithesis): Introduce rig intake API (#1826))
     );
 }
 

@@ -173,16 +173,24 @@ dependencies = [
  "headers",
  "mime",
  "protobuf",
+<<<<<<< HEAD
  "serde",
  "serde_json",
  "tokio",
  "tower",
  "tower-http 0.7.0",
+=======
+ "serde_json",
+ "tokio",
+ "tower",
+ "tower-http",
+>>>>>>> 9c1abdeb85 (enhancement(antithesis): Introduce rig intake API (#1826))
  "tracing",
  "tracing-subscriber",
 ]
 
 [[package]]
+<<<<<<< HEAD
 name = "antithesis-scenario-general"
 version = "0.1.0"
 dependencies = [
@@ -195,6 +203,8 @@ dependencies = [
 ]
 
 [[package]]
+=======
+>>>>>>> 9c1abdeb85 (enhancement(antithesis): Introduce rig intake API (#1826))
 name = "antithesis_sdk"
 version = "0.2.9"
 source = "git+https://github.com/antithesishq/antithesis-sdk-rust?rev=78c9db56771f0f6b01cb5404765c5a96852c159c#78c9db56771f0f6b01cb5404765c5a96852c159c"

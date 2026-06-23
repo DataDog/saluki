@@ -37,5 +37,9 @@
 
 pub mod http;
 
+<<<<<<< HEAD
+=======
+mod intake;
+>>>>>>> 9c1abdeb85 (enhancement(antithesis): Introduce rig intake API (#1826))
 mod properties;
 mod series_observation;

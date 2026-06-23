@@ -76,11 +76,19 @@ COPY . /tools
 RUN --mount=type=cache,target=/tools/target,id=antithesis-tools-target \
     --mount=type=cache,target=/root/.cargo/registry,id=cargo-registry \
     --mount=type=cache,target=/root/.cargo/git,id=cargo-git \
+<<<<<<< HEAD:test/antithesis/scenarios/general/Dockerfile
     cargo build --release --package antithesis-intake --bin antithesis-intake && \
     cargo build --release --package harness \
         --bin first_sample_config \
         --bin eventually_adp_alive && \
     cargo build --release --package antithesis-scenario-general --bins && \
+=======
+    cargo build --release \
+        --bin antithesis-intake \
+        --bin parallel_driver_send_dogstatsd --bin parallel_driver_sketchburst \
+        --bin eventually_adp_alive \
+        --bin first_sample_config && \
+>>>>>>> 9c1abdeb85 (enhancement(antithesis): Introduce rig intake API (#1826)):test/antithesis/deploy/Dockerfile
     cp /tools/target/release/antithesis-intake /usr/local/bin/antithesis-intake && \
     cp /tools/target/release/parallel_driver_send_dogstatsd /usr/local/bin/parallel_driver_send_dogstatsd && \
     cp /tools/target/release/parallel_driver_sketchburst /usr/local/bin/parallel_driver_sketchburst && \

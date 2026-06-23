@@ -35,7 +35,10 @@ members = [
   "lib/stringtheory",
   "test/antithesis/harness",
   "test/antithesis/intake",
+<<<<<<< HEAD
   "test/antithesis/scenarios/general",
+=======
+>>>>>>> 9c1abdeb85 (enhancement(antithesis): Introduce rig intake API (#1826))
 ]
 resolver = "2"
 
