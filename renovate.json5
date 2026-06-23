@@ -50,6 +50,25 @@
   //     weekly non-major group)
   "osvVulnerabilityAlerts": true,
 
+  // Paths Renovate skips entirely, before any manager (built-in or custom) extracts from them.
+  //
+  // This overrides the list inherited from `config:recommended` (via `:ignoreModulesAndTests`).
+  // We reproduce its defaults but drop the broad `**/test/**` entry: that pattern would otherwise
+  // hide test/correctness/cases/*/config.yaml from the custom Agent-pin manager below, so the
+  // OTLP baseline image pins would silently keep drifting. The only dependency files under test/
+  // that built-in managers recognize live in test/antithesis/deploy (a Dockerfile and a
+  // docker-compose), which we keep ignoring here to preserve current behavior.
+  "ignorePaths": [
+    "**/node_modules/**",
+    "**/bower_components/**",
+    "**/vendor/**",
+    "**/examples/**",
+    "**/__tests__/**",
+    "**/tests/**",
+    "**/__fixtures__/**",
+    "test/antithesis/**"
+  ],
+
   // Package-manager-specific rules.
   "packageRules": [
     // Use Cargo's semver interpretation for all Cargo dependencies. Cargo
@@ -86,6 +105,40 @@
       "prBodyNotes": [
         "**Cargo major update** — Before merging, verify the workspace compiles and check upstream release notes for removed features or API changes."
       ]
+    }
+  ],
+
+  // Custom managers for Datadog Agent version pins that Renovate's built-in managers don't see.
+  //
+  // The `dockerfile` manager already bumps docker/Dockerfile.datadog-agent (the
+  // `registry.datadoghq.com/agent` FROM/ARG). But several other pins for the same Agent are
+  // hand-maintained in files no default manager parses, so they were silently left behind on past
+  // bumps (see the 7.80.1 -> 7.80.2 update). Manage them here, tied to the same depName
+  // (`registry.datadoghq.com/agent`) so they bump in lockstep with -- and in the same PR as -- the
+  // main Agent image.
+  //
+  // `currentValue` captures only the numeric version; any image-tag suffix (-full, -ltsc2022, -jmx)
+  // is matched but left out of the group, so Renovate rewrites just the number and preserves the
+  // suffix in place. Because the suffixed tags are published together with the bare release, every
+  // pin tracks the same single Agent version rather than drifting onto separate per-suffix streams.
+  "customManagers": [
+    {
+      "customType": "regex",
+      "fileMatch": [
+        "(^|/)Makefile$",
+        "^\\.gitlab/windows\\.yml$",
+        "^test/correctness/cases/.+/config\\.yaml$"
+      ],
+      "matchStrings": [
+        // Bare version, e.g. `MACOS_TEST_AGENT_VERSION ?= 7.80.2` (Makefile).
+        "MACOS_TEST_AGENT_VERSION \\?= (?<currentValue>[\\d.]+)",
+        // Image pins, e.g. `registry.datadoghq.com/agent:7.80.2-full` or `:7.80.2-ltsc2022`.
+        // The `-suffix` is matched but not captured, so only the number is rewritten.
+        "registry\\.datadoghq\\.com/agent:(?<currentValue>[\\d.]+)(?:-[a-z0-9]+)?"
+      ],
+      "datasourceTemplate": "docker",
+      "depNameTemplate": "registry.datadoghq.com/agent",
+      "versioningTemplate": "docker"
     }
   ]
 }
