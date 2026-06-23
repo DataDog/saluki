@@ -96,6 +96,18 @@ fn normalize_env_for_runtime(mut env: HashMap<String, String>, runtime: &str) ->
                 env.entry((*target).to_string()).or_insert(value);
             }
         }
+
+        // As of Agent 7.80, the Core Agent only honors `data_plane.enabled` on Linux (and later
+        // macOS); on every other platform `sanitizeDataPlaneConfig` installs an authoritative
+        // `data_plane.enabled=false` override unless `DD_DATA_PLANE_FORCE_ENABLE=true` is set. The
+        // Core Agent runs inside the Windows target container (started by the ADP entrypoint) and
+        // reads this flat env var, so without it the Agent streams `data_plane.enabled=false` to ADP
+        // and ADP exits with "Agent Data Plane is not enabled." Mirror the macOS host-process path
+        // (see `unix_runner::build_core_agent_forced_env`) and force-enable when ADP is requested.
+        if env.get("DD_DATA_PLANE_ENABLED").is_some_and(|value| value == "true") {
+            env.entry("DD_DATA_PLANE_FORCE_ENABLE".to_string())
+                .or_insert_with(|| "true".to_string());
+        }
     }
 
     env
@@ -1141,5 +1153,47 @@ mod tests {
         let normalized = normalize_env_for_runtime(env, crate::config::LINUX_RUNTIME);
 
         assert!(!normalized.contains_key("DD_DATA_PLANE__ENABLED"));
+    }
+
+    #[test]
+    fn windows_runtime_force_enables_adp_when_enabled() {
+        let env = HashMap::from([("DD_DATA_PLANE_ENABLED".to_string(), "true".to_string())]);
+
+        let normalized = normalize_env_for_runtime(env, crate::config::WINDOWS_RUNTIME);
+
+        // The Core Agent in the Windows target container needs DD_DATA_PLANE_FORCE_ENABLE on
+        // non-Linux platforms (Agent 7.80+ `sanitizeDataPlaneConfig`), otherwise it streams
+        // data_plane.enabled=false to ADP and ADP exits.
+        assert_eq!(normalized.get("DD_DATA_PLANE_FORCE_ENABLE"), Some(&"true".to_string()));
+    }
+
+    #[test]
+    fn windows_runtime_does_not_force_enable_adp_when_disabled() {
+        let env = HashMap::from([("DD_DATA_PLANE_ENABLED".to_string(), "false".to_string())]);
+
+        let normalized = normalize_env_for_runtime(env, crate::config::WINDOWS_RUNTIME);
+
+        assert!(!normalized.contains_key("DD_DATA_PLANE_FORCE_ENABLE"));
+    }
+
+    #[test]
+    fn windows_runtime_preserves_explicit_force_enable_value() {
+        let env = HashMap::from([
+            ("DD_DATA_PLANE_ENABLED".to_string(), "true".to_string()),
+            ("DD_DATA_PLANE_FORCE_ENABLE".to_string(), "false".to_string()),
+        ]);
+
+        let normalized = normalize_env_for_runtime(env, crate::config::WINDOWS_RUNTIME);
+
+        assert_eq!(normalized.get("DD_DATA_PLANE_FORCE_ENABLE"), Some(&"false".to_string()));
+    }
+
+    #[test]
+    fn linux_runtime_does_not_force_enable_adp() {
+        let env = HashMap::from([("DD_DATA_PLANE_ENABLED".to_string(), "true".to_string())]);
+
+        let normalized = normalize_env_for_runtime(env, crate::config::LINUX_RUNTIME);
+
+        assert!(!normalized.contains_key("DD_DATA_PLANE_FORCE_ENABLE"));
     }
 }
