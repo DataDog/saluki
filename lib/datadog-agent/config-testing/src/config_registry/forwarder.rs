@@ -44,7 +44,7 @@ crate::declare_annotations! {
         support_level: SupportLevel::Full,
         additional_yaml_paths: &[],
         env_var_override: Some(&["DD_OBSERVABILITY_PIPELINES_WORKER_METRICS_ENABLED"]),
-        used_by: &[structs::FORWARDER_CONFIGURATION],
+        used_by: &[structs::DATADOG_METRICS_CONFIGURATION, structs::FORWARDER_CONFIGURATION],
         value_type_override: None,
         test_json: None,
         pipeline_affinity: PipelineAffinity::CrossCutting,
@@ -55,7 +55,7 @@ crate::declare_annotations! {
         support_level: SupportLevel::Full,
         additional_yaml_paths: &[],
         env_var_override: Some(&["DD_OBSERVABILITY_PIPELINES_WORKER_METRICS_URL"]),
-        used_by: &[structs::FORWARDER_CONFIGURATION],
+        used_by: &[structs::DATADOG_METRICS_CONFIGURATION, structs::FORWARDER_CONFIGURATION],
         value_type_override: None,
         test_json: None,
         pipeline_affinity: PipelineAffinity::CrossCutting,
@@ -66,7 +66,7 @@ crate::declare_annotations! {
         support_level: SupportLevel::Full,
         additional_yaml_paths: &[],
         env_var_override: Some(&["DD_VECTOR_METRICS_ENABLED"]),
-        used_by: &[structs::FORWARDER_CONFIGURATION],
+        used_by: &[structs::DATADOG_METRICS_CONFIGURATION, structs::FORWARDER_CONFIGURATION],
         value_type_override: None,
         test_json: None,
         pipeline_affinity: PipelineAffinity::CrossCutting,
@@ -77,7 +77,7 @@ crate::declare_annotations! {
         support_level: SupportLevel::Full,
         additional_yaml_paths: &[],
         env_var_override: Some(&["DD_VECTOR_METRICS_URL"]),
-        used_by: &[structs::FORWARDER_CONFIGURATION],
+        used_by: &[structs::DATADOG_METRICS_CONFIGURATION, structs::FORWARDER_CONFIGURATION],
         value_type_override: None,
         test_json: None,
         pipeline_affinity: PipelineAffinity::CrossCutting,
@@ -88,7 +88,7 @@ crate::declare_annotations! {
         support_level: SupportLevel::Full,
         additional_yaml_paths: &[],
         env_var_override: None,
-        used_by: &[structs::FORWARDER_CONFIGURATION],
+        used_by: &[structs::DATADOG_METRICS_CONFIGURATION, structs::FORWARDER_CONFIGURATION],
         value_type_override: None,
         test_json: Some(r#"{"smoke-host-1.example.com": ["smoke-api-key"]}"#),
         pipeline_affinity: PipelineAffinity::CrossCutting,
@@ -323,5 +323,27 @@ crate::declare_annotations! {
         value_type_override: Some(ValueType::Integer),
         test_json: None,
         pipeline_affinity: PipelineAffinity::CrossCutting,
+    };
+    /// `observability_pipelines_worker.metrics.use_v3_api.series`-Use V3 series for OPW
+    OBSERVABILITY_PIPELINES_WORKER_METRICS_USE_V3_API_SERIES = SalukiAnnotation {
+        schema: &schema::OBSERVABILITY_PIPELINES_WORKER_METRICS_USE_V3_API_SERIES,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: Some(&["DD_OBSERVABILITY_PIPELINES_WORKER_METRICS_USE_V3_API_SERIES"]),
+        used_by: &[structs::DATADOG_METRICS_CONFIGURATION, structs::FORWARDER_CONFIGURATION],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
+    };
+    /// `vector.metrics.use_v3_api.series`-Use V3 series for Vector
+    VECTOR_METRICS_USE_V3_API_SERIES = SalukiAnnotation {
+        schema: &schema::VECTOR_METRICS_USE_V3_API_SERIES,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: Some(&["DD_VECTOR_METRICS_USE_V3_API_SERIES"]),
+        used_by: &[structs::DATADOG_METRICS_CONFIGURATION, structs::FORWARDER_CONFIGURATION],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
 }

@@ -29,6 +29,14 @@ pub const DEFAULT_SERIALIZER_COMPRESSED_SIZE_LIMIT: usize = 2_621_440; // 2.5 Mi
 /// Datadog Agent default uncompressed size limit for generic payloads.
 pub const DEFAULT_SERIALIZER_UNCOMPRESSED_SIZE_LIMIT: usize = 4_194_304; // 4 MiB
 
+/// Datadog Agent default serializer compressor.
+pub(crate) const DEFAULT_SERIALIZER_COMPRESSOR_KIND: &str = "zstd";
+
+/// Returns the Datadog Agent default serializer compressor.
+pub(crate) fn default_serializer_compressor_kind() -> String {
+    DEFAULT_SERIALIZER_COMPRESSOR_KIND.to_owned()
+}
+
 /// Returns payload limits capped to the provided upper bounds.
 pub fn clamp_payload_limits(
     uncompressed_len_limit: usize, compressed_len_limit: usize, max_uncompressed_len_limit: usize,

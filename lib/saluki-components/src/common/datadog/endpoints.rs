@@ -13,10 +13,10 @@ use saluki_metadata;
 use serde::Deserialize;
 use serde_with::{serde_as, DisplayFromStr, OneOrMany, PickFirst};
 use snafu::{ResultExt, Snafu};
-use tracing::debug;
+use tracing::{debug, warn};
 use url::Url;
 
-use super::protocol::{MetricsPayloadInfo, MetricsProtocolVersion};
+use super::protocol::{MetricsPayloadInfo, MetricsProtocolVersion, UseV3ApiSeriesConfig};
 
 static DD_URL_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^app(\.mrf)?(\.[a-z]{2}\d)?\.(datad(oghq|0g)\.(com|eu)|ddog-gov\.com)$").unwrap());
@@ -53,17 +53,55 @@ pub struct EndpointV3Settings {
     pub series_shadow_mode: bool,
 }
 
+/// Inputs used to derive V3 settings for one endpoint.
+pub(crate) struct V3EndpointConfig<'a> {
+    /// Endpoint string as it appeared in configuration for this routed endpoint.
+    pub(crate) configured_endpoint: &'a str,
+    /// Resolved endpoint URL.
+    pub(crate) resolved_endpoint: &'a Url,
+    /// Optional primary endpoint name used by serializer V3 endpoint-list matching.
+    pub(crate) serializer_v3_configured_endpoint: Option<&'a str>,
+    /// Whether the ADP V3 series safety gate is enabled.
+    pub(crate) data_plane_v3_series_enabled: bool,
+    /// Agent-compatible V3 series config.
+    pub(crate) series_config: &'a UseV3ApiSeriesConfig,
+    /// OPW/Vector route-specific V3 override.
+    pub(crate) metrics_primary_v3_override: Option<bool>,
+    /// Serializer V3 series endpoint list.
+    pub(crate) serializer_v3_series_endpoints: &'a [String],
+    /// Serializer V3 sketches endpoint list.
+    pub(crate) serializer_v3_sketches_endpoints: &'a [String],
+    /// Whether series validation mode is enabled.
+    pub(crate) series_validate: bool,
+    /// Whether sketches validation mode is enabled.
+    pub(crate) sketches_validate: bool,
+    /// Sites eligible for V3 series shadow traffic.
+    pub(crate) series_shadow_sites: &'a [String],
+}
+
 impl EndpointV3Settings {
+    /// Returns endpoint settings with all V3 routing disabled.
+    pub const fn disabled() -> Self {
+        Self {
+            use_v3_series: false,
+            use_v3_sketches: false,
+            series_validation_mode: false,
+            sketches_validation_mode: false,
+            series_shadow_mode: false,
+        }
+    }
+
     /// Creates V3 settings for a specific endpoint based on URL matching.
     ///
     /// The `v3_series_endpoints` and `v3_sketches_endpoints` are lists of configured endpoint names.
     /// If the endpoint name matches any entry, V3 is enabled for that metric type.
+    #[cfg(test)]
     pub fn from_endpoint_url(
         configured_endpoint: &str, resolved_endpoint: &Url, v3_series_endpoints: &[String],
         v3_sketches_endpoints: &[String], series_validate: bool, sketches_validate: bool,
         series_shadow_sites: &[String],
     ) -> Self {
-        let use_v3_series = v3_series_endpoints.iter().any(|e| configured_endpoint == e);
+        let use_v3_series = serializer_v3_config_matches_endpoint(configured_endpoint, v3_series_endpoints);
         let use_v3_sketches = v3_sketches_endpoints.iter().any(|e| configured_endpoint == e);
         let series_shadow_mode = !use_v3_series
             && extract_site_from_url(resolved_endpoint.as_str())
@@ -74,6 +112,60 @@ impl EndpointV3Settings {
             use_v3_sketches,
             series_validation_mode: use_v3_series && series_validate,
             sketches_validation_mode: use_v3_sketches && sketches_validate,
+            series_shadow_mode,
+        }
+    }
+
+    /// Creates V3 settings using Agent-compatible series V3 configuration plus the ADP safety gate.
+    ///
+    /// `V3EndpointConfig::serializer_v3_configured_endpoint` lets metrics-primary OPW/Vector routes match
+    /// `serializer_experimental_use_v3_api.series.endpoints` against the normal primary endpoint name, matching the
+    /// Core Agent resolver behavior.
+    pub fn from_v3_config(config: V3EndpointConfig<'_>) -> Self {
+        let serializer_use_v3_series =
+            serializer_v3_config_matches_endpoint(config.configured_endpoint, config.serializer_v3_series_endpoints)
+                || config.serializer_v3_configured_endpoint.is_some_and(|endpoint| {
+                    serializer_v3_config_matches_endpoint(endpoint, config.serializer_v3_series_endpoints)
+                });
+        let use_v3_series = config.data_plane_v3_series_enabled
+            && if serializer_use_v3_series {
+                true
+            } else if let Some(metrics_primary_use_v3) = config.metrics_primary_v3_override {
+                metrics_primary_use_v3
+            } else if let Some(endpoint_value) = config.series_config.endpoints.get(config.configured_endpoint) {
+                evaluate_series_v3_mode(
+                    "use_v3_api.series.endpoints",
+                    endpoint_value,
+                    config.configured_endpoint,
+                    Some(config.resolved_endpoint),
+                )
+            } else {
+                evaluate_series_v3_mode(
+                    "use_v3_api.series.enabled",
+                    &config.series_config.enabled,
+                    config.configured_endpoint,
+                    Some(config.resolved_endpoint),
+                )
+            };
+
+        let use_v3_sketches = config
+            .serializer_v3_sketches_endpoints
+            .iter()
+            .any(|e| config.configured_endpoint == e);
+        let series_shadow_mode = config.data_plane_v3_series_enabled
+            && !use_v3_series
+            && extract_site_from_url(config.resolved_endpoint.as_str()).is_some_and(|site| {
+                config
+                    .series_shadow_sites
+                    .iter()
+                    .any(|shadow_site| shadow_site == &site)
+            });
+
+        Self {
+            use_v3_series,
+            use_v3_sketches,
+            series_validation_mode: use_v3_series && config.series_validate,
+            sketches_validation_mode: use_v3_sketches && config.sketches_validate,
             series_shadow_mode,
         }
     }
@@ -141,6 +233,93 @@ impl EndpointV3Settings {
     }
 }
 
+fn serializer_v3_config_matches_endpoint(configured_endpoint: &str, v3_series_endpoints: &[String]) -> bool {
+    v3_series_endpoints
+        .iter()
+        .any(|endpoint| configured_endpoint == endpoint)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SeriesV3Mode {
+    Enabled,
+    Disabled,
+    DatadogOnly,
+    Invalid,
+}
+
+fn parse_series_v3_mode(value: &str) -> SeriesV3Mode {
+    let trimmed = value.trim();
+    if trimmed.eq_ignore_ascii_case("true")
+        || trimmed == "1"
+        || trimmed.eq_ignore_ascii_case("t")
+        || trimmed.eq_ignore_ascii_case("yes")
+        || trimmed.eq_ignore_ascii_case("on")
+    {
+        SeriesV3Mode::Enabled
+    } else if trimmed.eq_ignore_ascii_case("false")
+        || trimmed == "0"
+        || trimmed.eq_ignore_ascii_case("f")
+        || trimmed.eq_ignore_ascii_case("no")
+        || trimmed.eq_ignore_ascii_case("off")
+        || trimmed.is_empty()
+    {
+        SeriesV3Mode::Disabled
+    } else if trimmed.eq_ignore_ascii_case("datadog_only") {
+        SeriesV3Mode::DatadogOnly
+    } else {
+        SeriesV3Mode::Invalid
+    }
+}
+
+pub(crate) fn evaluate_series_v3_mode(
+    config_key: &'static str, value: &str, configured_endpoint: &str, resolved_endpoint: Option<&Url>,
+) -> bool {
+    match parse_series_v3_mode(value) {
+        SeriesV3Mode::Enabled => true,
+        SeriesV3Mode::Disabled => false,
+        SeriesV3Mode::DatadogOnly => {
+            Url::parse(configured_endpoint).is_ok_and(|url| is_datadog_url(&url))
+                || resolved_endpoint.is_some_and(is_datadog_url)
+        }
+        SeriesV3Mode::Invalid => {
+            warn!(
+                config_key,
+                value, "Invalid V3 series mode value. Expected true, false, or datadog_only; treating as false."
+            );
+            false
+        }
+    }
+}
+
+pub(crate) fn series_v3_config_can_enable_v3(series_config: &UseV3ApiSeriesConfig) -> bool {
+    if series_config
+        .endpoints
+        .iter()
+        .any(|(endpoint, value)| evaluate_series_v3_mode("use_v3_api.series.endpoints", value, endpoint, None))
+    {
+        return true;
+    }
+
+    match parse_series_v3_mode(&series_config.enabled) {
+        SeriesV3Mode::Enabled | SeriesV3Mode::DatadogOnly => true,
+        SeriesV3Mode::Disabled => false,
+        SeriesV3Mode::Invalid => {
+            warn!(
+                config_key = "use_v3_api.series.enabled",
+                value = series_config.enabled,
+                "Invalid V3 series mode value. Expected true, false, or datadog_only; treating as false."
+            );
+            false
+        }
+    }
+}
+
+pub(crate) fn is_datadog_url(url: &Url) -> bool {
+    url.host_str()
+        .map(|host| host.trim_end_matches('.').to_ascii_lowercase())
+        .is_some_and(|host| DD_URL_REGEX.is_match(&host))
+}
+
 pub(crate) fn extract_site_from_url(raw_url: &str) -> Option<String> {
     let url = Url::parse(raw_url).ok()?;
     let hostname = url.host_str()?.trim_end_matches('.').to_ascii_lowercase();
@@ -167,6 +346,10 @@ struct APIKeys(#[serde_as(as = "OneOrMany<_>")] Vec<String>);
 struct MappedAPIKeys(HashMap<String, APIKeys>);
 
 impl MappedAPIKeys {
+    fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
     fn mappings(&self) -> impl Iterator<Item = (&str, &APIKeys)> {
         self.0.iter().map(|(k, v)| (k.as_str(), v))
     }
@@ -197,6 +380,11 @@ impl std::fmt::Display for MappedAPIKeys {
 pub(crate) struct AdditionalEndpoints(#[serde_as(as = "PickFirst<(DisplayFromStr, _)>")] MappedAPIKeys);
 
 impl AdditionalEndpoints {
+    /// Returns true if no additional endpoints are configured.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
     /// Returns the resolved endpoints from the additional endpoint configuration.
     ///
     /// This will generate a [`ResolvedEndpoint`] for each unique endpoint/API key pair, assigning
@@ -317,6 +505,17 @@ impl EndpointConfiguration {
             .error_context("Failed parsing/resolving the primary destination endpoint.")
             .map(|endpoint| endpoint.with_configuration(configuration))
             .map(|endpoint| endpoint.with_api_key_refresh_config_path(self.api_key_refresh_config_path))
+    }
+
+    /// Returns the configured primary endpoint string without resolving or version-prefixing it.
+    pub(crate) fn configured_primary_endpoint(&self) -> String {
+        match self.dd_url.as_deref() {
+            Some(url) => url.to_string(),
+            None => {
+                let base_domain = if self.site.is_empty() { DEFAULT_SITE } else { &self.site };
+                format!("https://app.{base_domain}")
+            }
+        }
     }
 
     /// Builds the resolved primary endpoint from a URL override.
@@ -1089,6 +1288,147 @@ mod tests {
             false,
             &["datadoghq.com".to_string()],
         );
+
+        assert!(settings.use_v3_series);
+    }
+
+    fn v3_endpoint_config<'a>(
+        endpoint: &'a ResolvedEndpoint, series_config: &'a UseV3ApiSeriesConfig,
+    ) -> V3EndpointConfig<'a> {
+        V3EndpointConfig {
+            configured_endpoint: endpoint.configured_endpoint(),
+            resolved_endpoint: endpoint.endpoint(),
+            serializer_v3_configured_endpoint: None,
+            data_plane_v3_series_enabled: true,
+            series_config,
+            metrics_primary_v3_override: None,
+            serializer_v3_series_endpoints: &[],
+            serializer_v3_sketches_endpoints: &[],
+            series_validate: false,
+            sketches_validate: false,
+            series_shadow_sites: &[],
+        }
+    }
+
+    #[test]
+    fn agent_v3_default_requires_data_plane_gate() {
+        let resolved = ResolvedEndpoint::from_raw_endpoint("https://app.datadoghq.com", "fake-api-key")
+            .expect("endpoint should resolve");
+        let series_config = UseV3ApiSeriesConfig::default();
+
+        let settings = EndpointV3Settings::from_v3_config(V3EndpointConfig {
+            data_plane_v3_series_enabled: false,
+            series_shadow_sites: &["datadoghq.com".to_string()],
+            ..v3_endpoint_config(&resolved, &series_config)
+        });
+        assert!(!settings.use_v3_series);
+
+        let settings = EndpointV3Settings::from_v3_config(V3EndpointConfig {
+            series_shadow_sites: &["datadoghq.com".to_string()],
+            ..v3_endpoint_config(&resolved, &series_config)
+        });
+        assert!(settings.use_v3_series);
+    }
+
+    #[test]
+    fn agent_v3_endpoint_overrides_win_over_global_default() {
+        let resolved = ResolvedEndpoint::from_raw_endpoint("https://app.datadoghq.com", "fake-api-key")
+            .expect("endpoint should resolve");
+        let mut series_config = UseV3ApiSeriesConfig::default();
+        series_config
+            .endpoints
+            .insert(resolved.configured_endpoint().to_string(), "false".to_string());
+
+        let settings = EndpointV3Settings::from_v3_config(V3EndpointConfig {
+            series_shadow_sites: &["datadoghq.com".to_string()],
+            ..v3_endpoint_config(&resolved, &series_config)
+        });
+        assert!(!settings.use_v3_series);
+
+        series_config = UseV3ApiSeriesConfig {
+            enabled: "false".to_string(),
+            ..Default::default()
+        };
+        series_config
+            .endpoints
+            .insert(resolved.configured_endpoint().to_string(), "true".to_string());
+
+        let settings = EndpointV3Settings::from_v3_config(V3EndpointConfig {
+            series_shadow_sites: &["datadoghq.com".to_string()],
+            ..v3_endpoint_config(&resolved, &series_config)
+        });
+        assert!(settings.use_v3_series);
+    }
+
+    #[test]
+    fn agent_v3_datadog_only_matches_datadog_intake_urls() {
+        let datadog = ResolvedEndpoint::from_raw_endpoint("https://app.datadoghq.com", "fake-api-key")
+            .expect("endpoint should resolve");
+        let custom = ResolvedEndpoint::from_raw_endpoint("https://example.com", "fake-api-key")
+            .expect("endpoint should resolve");
+        let series_config = UseV3ApiSeriesConfig {
+            enabled: "datadog_only".to_string(),
+            endpoints: HashMap::new(),
+        };
+
+        let datadog_settings = EndpointV3Settings::from_v3_config(v3_endpoint_config(&datadog, &series_config));
+        let custom_settings = EndpointV3Settings::from_v3_config(v3_endpoint_config(&custom, &series_config));
+
+        assert!(datadog_settings.use_v3_series);
+        assert!(!custom_settings.use_v3_series);
+    }
+
+    #[test]
+    fn metrics_primary_v3_uses_route_specific_override() {
+        let resolved = ResolvedEndpoint::from_raw_endpoint("https://vector.example.com", "fake-api-key")
+            .expect("endpoint should resolve");
+        let series_config = UseV3ApiSeriesConfig::default();
+
+        let settings = EndpointV3Settings::from_v3_config(V3EndpointConfig {
+            metrics_primary_v3_override: Some(false),
+            ..v3_endpoint_config(&resolved, &series_config)
+        });
+        assert!(!settings.use_v3_series);
+
+        let settings = EndpointV3Settings::from_v3_config(V3EndpointConfig {
+            metrics_primary_v3_override: Some(true),
+            ..v3_endpoint_config(&resolved, &series_config)
+        });
+        assert!(settings.use_v3_series);
+    }
+
+    #[test]
+    fn metrics_primary_serializer_v3_can_match_primary_endpoint_name() {
+        let resolved = ResolvedEndpoint::from_raw_endpoint("https://vector.example.com", "fake-api-key")
+            .expect("endpoint should resolve");
+        let series_config = UseV3ApiSeriesConfig::default();
+        let serializer_v3_endpoints = vec!["https://app.datadoghq.com".to_string()];
+
+        let settings = EndpointV3Settings::from_v3_config(V3EndpointConfig {
+            serializer_v3_configured_endpoint: Some("https://app.datadoghq.com"),
+            metrics_primary_v3_override: Some(false),
+            serializer_v3_series_endpoints: &serializer_v3_endpoints,
+            ..v3_endpoint_config(&resolved, &series_config)
+        });
+
+        assert!(settings.use_v3_series);
+    }
+
+    #[test]
+    fn serializer_v3_endpoint_list_wins_when_data_plane_gate_enabled() {
+        let resolved = ResolvedEndpoint::from_raw_endpoint("https://vector.example.com", "fake-api-key")
+            .expect("endpoint should resolve");
+        let series_config = UseV3ApiSeriesConfig {
+            enabled: "false".to_string(),
+            ..Default::default()
+        };
+        let serializer_v3_endpoints = vec![resolved.configured_endpoint().to_string()];
+
+        let settings = EndpointV3Settings::from_v3_config(V3EndpointConfig {
+            metrics_primary_v3_override: Some(false),
+            serializer_v3_series_endpoints: &serializer_v3_endpoints,
+            ..v3_endpoint_config(&resolved, &series_config)
+        });
 
         assert!(settings.use_v3_series);
     }

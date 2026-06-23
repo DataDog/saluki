@@ -144,8 +144,13 @@ pub const KEY_ALIASES: &[(&str, &str)] = &[
         "observability_pipelines_worker.metrics.url",
         "observability_pipelines_worker_metrics_url",
     ),
+    (
+        "observability_pipelines_worker.metrics.use_v3_api.series",
+        "observability_pipelines_worker_metrics_use_v3_api_series",
+    ),
     ("vector.metrics.enabled", "vector_metrics_enabled"),
     ("vector.metrics.url", "vector_metrics_url"),
+    ("vector.metrics.use_v3_api.series", "vector_metrics_use_v3_api_series"),
     // Agent IPC relates to some of the Agent's IPC configuration options.
     //
     // We don't use them in this crate, but we still depend on them for stuff like the environment provider, and this is
@@ -155,6 +160,15 @@ pub const KEY_ALIASES: &[(&str, &str)] = &[
     // `use_v2_api.series` lives at a nested YAML path but the Agent's env var is `DD_USE_V2_API_SERIES` (flat). This
     // alias bridges the two so file and env var sources land on the same Figment key.
     ("use_v2_api.series", "use_v2_api_series"),
+    // `use_v3_api.series` follows the Agent's nested config shape. Flatten it so both YAML and env-var sources feed the
+    // shared ADP config structs.
+    ("use_v3_api.series.enabled", "use_v3_api_series_enabled"),
+    ("use_v3_api.series.endpoints", "use_v3_api_series_endpoints"),
+    // ADP-specific safety gate for enabling authoritative V3 series.
+    (
+        "data_plane.metrics.v3.series.enabled",
+        "data_plane_metrics_v3_series_enabled",
+    ),
 ];
 
 /// Remappings from environment variable names to canonical config keys.

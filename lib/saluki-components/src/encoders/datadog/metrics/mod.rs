@@ -31,6 +31,7 @@ use saluki_metrics::MetricsBuilder;
 use serde::Deserialize;
 use tokio::{io::AsyncWriteExt as _, select, sync::mpsc, time::sleep};
 use tracing::{debug, error, warn};
+use url::Url;
 use uuid::Uuid;
 
 #[cfg(test)]
@@ -44,9 +45,10 @@ use self::{
 };
 use crate::{
     common::datadog::{
-        clamp_payload_limits,
+        clamp_payload_limits, default_serializer_compressor_kind,
+        endpoints::{series_v3_config_can_enable_v3, AdditionalEndpoints},
         io::RB_BUFFER_CHUNK_SIZE,
-        protocol::{MetricsPayloadInfo, V3ApiConfig},
+        protocol::{MetricsPayloadInfo, UseV3ApiSeriesConfig, V3ApiConfig},
         request_builder::RequestBuilder,
         telemetry::ComponentTelemetry,
         DEFAULT_SERIALIZER_COMPRESSED_SIZE_LIMIT, DEFAULT_SERIALIZER_UNCOMPRESSED_SIZE_LIMIT, METRICS_SERIES_V3_PATH,
@@ -63,12 +65,8 @@ mod v1;
 mod v2;
 mod v3;
 
-const DEFAULT_SERIALIZER_COMPRESSOR_KIND: &str = "zstd";
 const V3_SERIES_ENDPOINT_URI: &str = METRICS_SERIES_V3_PATH;
 const V3_SKETCHES_ENDPOINT_URI: &str = METRICS_SKETCHES_V3_PATH;
-
-// V3 keeps the Datadog Agent's point-count limit as an internal bound, not user-facing ADP configuration.
-const SERIES_V3_POINTS_PER_PAYLOAD_LIMIT: usize = 10_000;
 
 const fn default_max_metrics_per_payload() -> usize {
     10_000
@@ -98,10 +96,6 @@ const fn default_flush_timeout_secs() -> u64 {
     2
 }
 
-fn default_serializer_compressor_kind() -> String {
-    DEFAULT_SERIALIZER_COMPRESSOR_KIND.to_owned()
-}
-
 const fn default_zstd_compressor_level() -> i32 {
     3
 }
@@ -114,8 +108,10 @@ const fn default_log_payloads() -> bool {
     false
 }
 
-fn series_shadow_config_for_endpoint(series_endpoint: MetricsEndpoint, sample_rate: f64) -> SeriesShadowConfig {
-    SeriesShadowConfig::new(if series_endpoint == MetricsEndpoint::SeriesV2 {
+fn series_shadow_config_for_endpoint(
+    series_endpoint: MetricsEndpoint, sample_rate: f64, v3_shadow_enabled: bool,
+) -> SeriesShadowConfig {
+    SeriesShadowConfig::new(if v3_shadow_enabled && series_endpoint == MetricsEndpoint::SeriesV2 {
         sample_rate
     } else {
         0.0
@@ -154,6 +150,54 @@ impl MetricsEncoderMode {
     fn needs_tagging(self) -> bool {
         matches!(self, Self::V3Enabled | Self::Validation)
     }
+}
+
+fn metrics_encoder_mode_for_config(
+    use_v3: bool, validate: bool, metrics_v3_disabled_by_compressor: bool,
+) -> MetricsEncoderMode {
+    let use_v3 = use_v3 && !metrics_v3_disabled_by_compressor;
+    MetricsEncoderMode::from_config(use_v3, use_v3 && validate)
+}
+
+fn selected_metrics_primary_v3_override(
+    opw_enabled: bool, opw_url: &str, opw_use_v3_series: bool, vector_enabled: bool, vector_url: &str,
+    vector_use_v3_series: bool,
+) -> Option<bool> {
+    if opw_enabled {
+        metrics_primary_v3_override_for_url(opw_url, opw_use_v3_series)
+    } else if vector_enabled {
+        metrics_primary_v3_override_for_url(vector_url, vector_use_v3_series)
+    } else {
+        None
+    }
+}
+
+fn metrics_primary_v3_override_for_url(url: &str, use_v3_series: bool) -> Option<bool> {
+    metrics_primary_url_can_resolve(url).then_some(use_v3_series)
+}
+
+fn metrics_primary_url_can_resolve(url: &str) -> bool {
+    let url = url.trim();
+    if url.is_empty() {
+        return false;
+    }
+
+    let url = if url.starts_with("http://") || url.starts_with("https://") {
+        url.to_string()
+    } else {
+        format!("https://{url}")
+    };
+    Url::parse(&url).is_ok_and(|url| url.host_str().is_some())
+}
+
+fn series_v3_can_be_enabled_for_config(
+    serializer_use_v3_series: bool, metrics_primary_v3_override: Option<bool>, has_additional_endpoints: bool,
+    series_config: &UseV3ApiSeriesConfig,
+) -> bool {
+    serializer_use_v3_series
+        || metrics_primary_v3_override == Some(true)
+        || ((metrics_primary_v3_override != Some(false) || has_additional_endpoints)
+            && series_v3_config_can_enable_v3(series_config))
 }
 
 /// Datadog Metrics encoder.
@@ -302,6 +346,50 @@ pub struct DatadogMetricsConfiguration {
     /// Configures which endpoints receive V3 payloads and whether validation mode is enabled.
     #[serde(rename = "serializer_experimental_use_v3_api", default)]
     v3_api: V3ApiConfig,
+
+    /// Agent-compatible V3 API configuration for series metrics.
+    #[serde(flatten)]
+    use_v3_api_series: UseV3ApiSeriesConfig,
+
+    /// ADP safety gate for authoritative V3 series metrics.
+    ///
+    /// Defaults to `false`.
+    #[serde(default, rename = "data_plane_metrics_v3_series_enabled")]
+    data_plane_metrics_v3_series_enabled: bool,
+
+    /// Enables routing all metrics to Observability Pipelines Worker.
+    #[serde(default, rename = "observability_pipelines_worker_metrics_enabled")]
+    observability_pipelines_worker_metrics_enabled: bool,
+
+    /// Endpoint of the Observability Pipelines Worker instance to route metrics to.
+    #[serde(default, rename = "observability_pipelines_worker_metrics_url")]
+    observability_pipelines_worker_metrics_url: String,
+
+    /// Enables V3 series metrics when routing to Observability Pipelines Worker.
+    ///
+    /// Defaults to `false`.
+    #[serde(default, rename = "observability_pipelines_worker_metrics_use_v3_api_series")]
+    observability_pipelines_worker_metrics_use_v3_api_series: bool,
+
+    /// Enables routing all metrics to Vector.
+    #[serde(default, rename = "vector_metrics_enabled")]
+    vector_metrics_enabled: bool,
+
+    /// Endpoint of the Vector instance to route metrics to.
+    #[serde(default, rename = "vector_metrics_url")]
+    vector_metrics_url: String,
+
+    /// Enables V3 series metrics when routing to Vector.
+    ///
+    /// Deprecated in favor of `observability_pipelines_worker.metrics.use_v3_api.series`.
+    ///
+    /// Defaults to `false`.
+    #[serde(default, rename = "vector_metrics_use_v3_api_series")]
+    vector_metrics_use_v3_api_series: bool,
+
+    /// Additional endpoints that metrics may be dual-shipped to.
+    #[serde(default)]
+    additional_endpoints: AdditionalEndpoints,
 }
 
 impl DatadogMetricsConfiguration {
@@ -348,7 +436,7 @@ impl EncoderBuilder for DatadogMetricsConfiguration {
             self.max_series_payload_size,
             self.max_series_uncompressed_payload_size,
             self.max_metrics_per_payload,
-            SERIES_V3_POINTS_PER_PAYLOAD_LIMIT,
+            self.max_series_points_per_payload,
         );
 
         let v2_endpoint_config = EndpointConfiguration::new(
@@ -363,17 +451,42 @@ impl EncoderBuilder for DatadogMetricsConfiguration {
         );
 
         // Derive the encoding mode for each metric type from the configuration.
-        let series_mode =
-            MetricsEncoderMode::from_config(self.v3_api.use_v3_series(), self.v3_api.use_v3_series_validate());
-        let sketches_mode =
-            MetricsEncoderMode::from_config(self.v3_api.use_v3_sketches(), self.v3_api.use_v3_sketches_validate());
+        let metrics_v3_disabled_by_compressor = matches!(v3_compression_scheme, CompressionScheme::Zlib(_));
+        let metrics_primary_v3_override = selected_metrics_primary_v3_override(
+            self.observability_pipelines_worker_metrics_enabled,
+            &self.observability_pipelines_worker_metrics_url,
+            self.observability_pipelines_worker_metrics_use_v3_api_series,
+            self.vector_metrics_enabled,
+            &self.vector_metrics_url,
+            self.vector_metrics_use_v3_api_series,
+        );
+        let series_v3_can_be_enabled = series_v3_can_be_enabled_for_config(
+            self.v3_api.use_v3_series(),
+            metrics_primary_v3_override,
+            !self.additional_endpoints.is_empty(),
+            &self.use_v3_api_series,
+        );
+        let use_v3_series = self.data_plane_metrics_v3_series_enabled && series_v3_can_be_enabled;
+        let series_mode = metrics_encoder_mode_for_config(
+            use_v3_series,
+            self.v3_api.series.validate,
+            metrics_v3_disabled_by_compressor,
+        );
+        let sketches_mode = metrics_encoder_mode_for_config(
+            self.v3_api.use_v3_sketches(),
+            self.v3_api.sketches.validate,
+            metrics_v3_disabled_by_compressor,
+        );
         let series_endpoint = if self.use_v2_api_series {
             MetricsEndpoint::SeriesV2
         } else {
             MetricsEndpoint::SeriesV1
         };
-        let series_shadow_config =
-            series_shadow_config_for_endpoint(series_endpoint, self.v3_api.series.shadow_sample_rate);
+        let series_shadow_config = series_shadow_config_for_endpoint(
+            series_endpoint,
+            self.v3_api.series.shadow_sample_rate,
+            self.data_plane_metrics_v3_series_enabled && !metrics_v3_disabled_by_compressor,
+        );
         let v3_runtime_config = V3RuntimeConfig {
             endpoint_config,
             payload_limits,
@@ -1631,7 +1744,7 @@ serializer_experimental_use_v3_api:
     fn agent_v3_api_shadow_defaults_match_agent() {
         let config = serde_yaml::from_str::<DatadogMetricsConfiguration>("").expect("configuration should deserialize");
 
-        assert_eq!(0.001, config.v3_api.series.shadow_sample_rate);
+        assert_eq!(0.0, config.v3_api.series.shadow_sample_rate);
         assert_eq!(vec!["datadoghq.com"], config.v3_api.series.shadow_sites);
     }
 
@@ -1645,8 +1758,68 @@ serializer_experimental_use_v3_api:
 
     #[test]
     fn shadow_sampling_is_disabled_for_v1_series_baseline() {
-        assert!(series_shadow_config_for_endpoint(MetricsEndpoint::SeriesV2, 1.0).is_enabled());
-        assert!(!series_shadow_config_for_endpoint(MetricsEndpoint::SeriesV1, 1.0).is_enabled());
+        assert!(series_shadow_config_for_endpoint(MetricsEndpoint::SeriesV2, 1.0, true).is_enabled());
+        assert!(!series_shadow_config_for_endpoint(MetricsEndpoint::SeriesV1, 1.0, true).is_enabled());
+        assert!(!series_shadow_config_for_endpoint(MetricsEndpoint::SeriesV2, 1.0, false).is_enabled());
+    }
+
+    #[test]
+    fn metrics_v3_disabled_by_compressor_uses_v2_only() {
+        assert_eq!(
+            MetricsEncoderMode::V2Only,
+            metrics_encoder_mode_for_config(true, false, true)
+        );
+        assert_eq!(
+            MetricsEncoderMode::V2Only,
+            metrics_encoder_mode_for_config(true, true, true)
+        );
+        assert_eq!(
+            MetricsEncoderMode::V3Enabled,
+            metrics_encoder_mode_for_config(true, false, false)
+        );
+        assert_eq!(
+            MetricsEncoderMode::Validation,
+            metrics_encoder_mode_for_config(true, true, false)
+        );
+    }
+
+    #[test]
+    fn agent_default_v3_does_not_enable_opw_only_encoder_mode() {
+        let series_config = UseV3ApiSeriesConfig::default();
+        let invalid_metrics_primary_override =
+            selected_metrics_primary_v3_override(true, "http://[::1", false, true, "http://vector.example.com", false);
+
+        assert!(!series_v3_can_be_enabled_for_config(
+            false,
+            Some(false),
+            false,
+            &series_config
+        ));
+        assert!(series_v3_can_be_enabled_for_config(
+            false,
+            Some(true),
+            false,
+            &series_config
+        ));
+        assert!(series_v3_can_be_enabled_for_config(
+            false,
+            Some(false),
+            true,
+            &series_config
+        ));
+        assert!(series_v3_can_be_enabled_for_config(
+            true,
+            Some(false),
+            false,
+            &series_config
+        ));
+        assert_eq!(None, invalid_metrics_primary_override);
+        assert!(series_v3_can_be_enabled_for_config(
+            false,
+            invalid_metrics_primary_override,
+            false,
+            &series_config
+        ));
     }
 
     #[tokio::test]
