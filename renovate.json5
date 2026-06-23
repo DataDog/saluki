@@ -50,25 +50,6 @@
   //     weekly non-major group)
   "osvVulnerabilityAlerts": true,
 
-  // Paths Renovate skips entirely, before any manager (built-in or custom) extracts from them.
-  //
-  // This overrides the list inherited from `config:recommended` (via `:ignoreModulesAndTests`).
-  // We reproduce its defaults but drop the broad `**/test/**` entry: that pattern would otherwise
-  // hide test/correctness/cases/*/config.yaml from the custom Agent-pin manager below, so the
-  // OTLP baseline image pins would silently keep drifting. The only dependency files under test/
-  // that built-in managers recognize live in test/antithesis/deploy (a Dockerfile and a
-  // docker-compose), which we keep ignoring here to preserve current behavior.
-  "ignorePaths": [
-    "**/node_modules/**",
-    "**/bower_components/**",
-    "**/vendor/**",
-    "**/examples/**",
-    "**/__tests__/**",
-    "**/tests/**",
-    "**/__fixtures__/**",
-    "test/antithesis/**"
-  ],
-
   // Package-manager-specific rules.
   "packageRules": [
     // Use Cargo's semver interpretation for all Cargo dependencies. Cargo
