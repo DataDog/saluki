@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"mod":["payload","rand"]};
+window.SIDEBAR_ITEMS = {"mod":["driver","payload","rand"]};
