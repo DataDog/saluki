@@ -84,6 +84,8 @@ impl ComponentTelemetry {
     pub fn track_transaction_input(&self, domain: &str, endpoint: &str, bytes: u64) {
         let mut telemetry = self.transaction_input_by_endpoint.lock().unwrap();
         let per_endpoint = telemetry
+            // TODO: Avoid allocating key strings on every transaction if we can make the telemetry registry lookup
+            // support borrowed endpoint/domain keys.
             .entry((domain.to_string(), endpoint.to_string()))
             .or_insert_with(|| {
                 let tags = [("domain", domain.to_string()), ("endpoint", endpoint.to_string())];
