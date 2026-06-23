@@ -393,8 +393,11 @@ fn build_core_agent_forced_env(
         ("DD_RUN_PATH", state_dir.to_string_lossy().into_owned()),
     ];
 
-    if adp_owns_dogstatsd(test_env) {
-        forced.push(("DD_USE_DOGSTATSD", "false".to_string()));
+    // When ADP is enabled, tell the Core Agent to force-enable ADP. On macOS, the Core Agent has
+    // a darwin guard that ignores `data_plane.enabled`, so `data_plane.force_enable` is required
+    // to trigger the handoff (stopping Core Agent's DogStatsD and enabling ADP via config stream).
+    if env_is_true(test_env, "DD_DATA_PLANE_ENABLED") {
+        forced.push(("DD_DATA_PLANE_FORCE_ENABLE", "true".to_string()));
     }
 
     forced
@@ -520,7 +523,6 @@ mod tests {
 
         assert_eq!(env.get("DD_AUTH_TOKEN_FILE_PATH"), Some(&auth_token_path));
         assert_eq!(env.get("DD_RUN_PATH"), Some(&state_dir.to_string_lossy().into_owned()));
-        assert_eq!(env.get("DD_USE_DOGSTATSD"), Some(&"false".to_string()));
         assert!(!env.contains_key("DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_ENDPOINT"));
         assert!(!env.contains_key("DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_ENDPOINT"));
     }
