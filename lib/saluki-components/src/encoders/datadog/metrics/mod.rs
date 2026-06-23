@@ -1187,6 +1187,10 @@ fn record_v3_serializer_stats(telemetry: &V3SerializerTelemetry, stats: &V3Encod
 }
 
 async fn compressed_v3_len(bytes: &[u8], compression_scheme: CompressionScheme) -> Result<usize, GenericError> {
+    if matches!(compression_scheme, CompressionScheme::Noop) {
+        return Ok(bytes.len());
+    }
+
     let buffer = ChunkedBytesBuffer::new(RB_BUFFER_CHUNK_SIZE);
     let mut compressor = Compressor::from_scheme(compression_scheme, buffer);
     compressor
