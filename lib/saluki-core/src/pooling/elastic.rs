@@ -270,7 +270,11 @@ where
 
                 Poll::Ready(T::from_data(strategy, data))
             }
-            Poll::Ready(None) => unreachable!("semaphore should never be closed"),
+            Poll::Ready(None) => {
+                #[cfg(feature = "antithesis")]
+                antithesis_sdk::assert_unreachable!("elastic object pool semaphore closed", &serde_json::json!({}));
+                unreachable!("semaphore should never be closed")
+            }
             Poll::Pending => {
                 trace!("Permit not yet available. Waiting for next available permit.");
 

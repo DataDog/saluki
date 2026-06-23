@@ -575,7 +575,7 @@ compressed wire payload bytes.
 | `cluster_agent.enabled`                                        | Enable Cluster Agent communication                 |
 | `cluster_agent.kubernetes_service_name`                        | Cluster Agent Kubernetes service name              |
 | `cluster_agent.url`                                            | Cluster Agent HTTPS endpoint                       |
-| `cmd_port`                                                     | Datadog Agent IPC/CMD API port                     |
+| `cmd_port`                                                     | Core Agent CMD API port for ADP gRPC IPC           |
 | `cri_connection_timeout`                                       | CRI container runtime connection timeout (s)       |
 | `cri_query_timeout`                                            | CRI container runtime query timeout (s)            |
 | `data_plane.api_listen_address`                                | Unprivileged API listen address                    |

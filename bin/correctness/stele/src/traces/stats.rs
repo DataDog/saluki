@@ -424,6 +424,8 @@ impl From<&proto::ClientGroupedStats> for AggregationKey {
         payload.is_trace_root.value().hash(&mut hasher);
         payload.HTTP_method.hash(&mut hasher);
         payload.HTTP_endpoint.hash(&mut hasher);
+        payload.GRPC_status_code.hash(&mut hasher);
+        payload.DB_type.hash(&mut hasher);
 
         Self(hasher.finish())
     }

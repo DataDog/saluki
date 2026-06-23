@@ -38,7 +38,7 @@ endif
 export ADP_STANDALONE_IPC_CERT_FILE := /tmp/adp-ipc-cert.pem
 
 # macOS integration-test settings.
-MACOS_TEST_AGENT_VERSION ?= 7.78.0
+MACOS_TEST_AGENT_VERSION ?= 7.80.1
 MACOS_TEST_AGENT_DMG_DIR ?= /tmp/saluki-dda-dmg-cache
 MACOS_TEST_AGENT_DMG_URL ?= https://s3.amazonaws.com/dd-agent/datadog-agent-$(MACOS_TEST_AGENT_VERSION)-1.$(shell uname -m).dmg
 MACOS_TEST_AGENT_INSTALL_DIR ?= /tmp/saluki-dda/datadog-agent
@@ -75,7 +75,7 @@ export WINDOWS_CROSS_LLVM_BIN ?= /opt/homebrew/opt/llvm/bin
 export WINDOWS_CROSS_CARGO_ARGS ?= --package agent-data-plane
 
 # Version of source repositories (Git tag) for vendored Protocol Buffers definitions.
-export PROTOBUF_SRC_REPO_DD_AGENT ?= 7.73.x
+export PROTOBUF_SRC_REPO_DD_AGENT ?= 7.80.x
 export PROTOBUF_SRC_REPO_AGENT_PAYLOAD ?= v5.0.164
 export PROTOBUF_SRC_REPO_CONTAINERD ?= v2.2.0
 export PROTOBUF_SRC_REPO_SKETCHES_GO ?= v1.4.7

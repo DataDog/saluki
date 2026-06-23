@@ -1,12 +1,13 @@
-//! Feral `DogStatsD` load generator: pick a batch size, then fire that many
-//! sampled metric lines at the socket and exit. Antithesis runs many of these
-//! in parallel to drive concurrency and push context limits.
+//! Feral `DogStatsD` load generator. A producer thread writes sampled lines into
+//! a bounded channel; a consumer thread ships them over the socket. Antithesis
+//! runs many of these in parallel to drive concurrency and push context limits.
 
 #[cfg(unix)]
 mod unix_driver {
     use std::os::unix::net::UnixDatagram;
     use std::path::{Path, PathBuf};
-    use std::thread::sleep;
+    use std::sync::mpsc::sync_channel;
+    use std::thread::{self, sleep};
     use std::time::{Duration, Instant};
 
     use antithesis_sdk::prelude::*;
@@ -39,7 +40,6 @@ mod unix_driver {
         antithesis_init();
 
         let config = Config::try_parse()?;
-        let mut rng = UnwrapErr(AntithesisRng);
 
         // Socket unavailable (ADP booting, or a fault). No-op exit, not a failure.
         let Some(socket) = connect_with_retry(&config.dogstatsd_socket) else {
@@ -51,20 +51,41 @@ mod unix_driver {
             Some(Batch::Mixed) => Batch::Mixed,
             _ => Batch::Clean,
         };
-        let count = rng.random_range(0..=10_000u64);
-        let mut line: Vec<u8> = Vec::new();
-        let mut attempted = 0usize;
-        for _ in 0..count {
-            let vibe = match batch {
-                Batch::Clean => dogstatsd::Vibe::Clean,
-                Batch::Feral => dogstatsd::Vibe::Feral,
-                Batch::Mixed => dogstatsd::sample_vibe(),
-            };
-            dogstatsd::send(&mut rng, &mut line, vibe);
-            if socket.send(&line).is_ok() {
-                attempted += 1;
+        let count = {
+            let mut rng = UnwrapErr(AntithesisRng);
+            rng.random_range(0..=10_000u64)
+        };
+
+        let (tx, rx) = sync_channel::<Vec<u8>>(2024);
+
+        let producer = thread::spawn(move || {
+            let mut rng = UnwrapErr(AntithesisRng);
+            for _ in 0..count {
+                let vibe = match batch {
+                    Batch::Clean => dogstatsd::Vibe::Clean,
+                    Batch::Feral => dogstatsd::Vibe::Feral,
+                    Batch::Mixed => dogstatsd::sample_vibe(),
+                };
+                let mut line = Vec::new();
+                dogstatsd::send(&mut rng, &mut line, vibe);
+                if tx.send(line).is_err() {
+                    break;
+                }
             }
-        }
+        });
+
+        let consumer = thread::spawn(move || {
+            let mut attempted = 0usize;
+            while let Ok(line) = rx.recv() {
+                if socket.send(&line).is_ok() {
+                    attempted += 1;
+                }
+            }
+            attempted
+        });
+
+        producer.join().expect("producer thread panicked");
+        let attempted = consumer.join().expect("consumer thread panicked");
 
         assert_reachable!(
             "workload ran a dogstatsd batch",

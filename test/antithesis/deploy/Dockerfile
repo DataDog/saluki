@@ -78,10 +78,12 @@ RUN --mount=type=cache,target=/tools/target,id=antithesis-tools-target \
     --mount=type=cache,target=/root/.cargo/git,id=cargo-git \
     cargo build --release \
         --bin datadog-intake \
-        --bin parallel_driver_send_dogstatsd --bin finally_verify_delivery --bin eventually_adp_alive \
+        --bin parallel_driver_send_dogstatsd --bin parallel_driver_sketchburst \
+        --bin finally_verify_delivery --bin eventually_adp_alive \
         --bin first_sample_config && \
     cp /tools/target/release/datadog-intake /usr/local/bin/datadog-intake && \
     cp /tools/target/release/parallel_driver_send_dogstatsd /usr/local/bin/parallel_driver_send_dogstatsd && \
+    cp /tools/target/release/parallel_driver_sketchburst /usr/local/bin/parallel_driver_sketchburst && \
     cp /tools/target/release/finally_verify_delivery /usr/local/bin/finally_verify_delivery && \
     cp /tools/target/release/eventually_adp_alive /usr/local/bin/eventually_adp_alive && \
     cp /tools/target/release/first_sample_config /usr/local/bin/first_sample_config
@@ -138,6 +140,7 @@ COPY test/antithesis/deploy/workload/test/ /opt/antithesis/test/
 # Inject the compiled test-command binaries into the "main" test template.
 COPY --from=tools-builder --chmod=755 /usr/local/bin/first_sample_config /opt/antithesis/test/v1/main/first_sample_config
 COPY --from=tools-builder --chmod=755 /usr/local/bin/parallel_driver_send_dogstatsd /opt/antithesis/test/v1/main/parallel_driver_send_dogstatsd
+COPY --from=tools-builder --chmod=755 /usr/local/bin/parallel_driver_sketchburst /opt/antithesis/test/v1/main/parallel_driver_sketchburst
 COPY --from=tools-builder --chmod=755 /usr/local/bin/finally_verify_delivery /opt/antithesis/test/v1/main/finally_verify_delivery
 COPY --from=tools-builder --chmod=755 /usr/local/bin/eventually_adp_alive /opt/antithesis/test/v1/main/eventually_adp_alive
 COPY --chmod=755 test/antithesis/deploy/workload/entrypoint.sh /entrypoint.sh

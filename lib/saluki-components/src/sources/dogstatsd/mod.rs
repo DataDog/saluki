@@ -1096,7 +1096,6 @@ async fn process_listener(
     }
 
     let mut stream_shutdown_coordinator = ShutdownCoordinator::default();
-    let mut stream_idx: u32 = 0;
 
     info!(%listen_addr, "DogStatsD listener started.");
 
@@ -1127,11 +1126,9 @@ async fn process_listener(
                     };
 
                     let task_name = format!(
-                        "dogstatsd-stream-handler-{}-{}",
+                        "dogstatsd-stream-handler-{}",
                         listen_addr.listener_type(),
-                        stream_idx,
                     );
-                    stream_idx = stream_idx.wrapping_add(1);
                     spawn_traced_named(task_name, process_stream(stream, source_context.clone(), handler_context, stream_shutdown_coordinator.register(), enabled_filter));
                 }
                 Err(e) => {
@@ -1706,28 +1703,59 @@ async fn dispatch_events(mut event_buffer: EventsBuffer, source_context: &Source
     // Dispatch any eventd events, if present.
     if event_buffer.has_event_type(EventType::EventD) {
         let eventd_events = event_buffer.extract(Event::is_eventd);
-        if let Err(e) = source_context
-            .dispatcher()
-            .buffered_named("events")
+        let events_output = source_context.dispatcher().buffered_named("events");
+
+        // The `events` output is always wired in the DSD topology, so a missing output is an invariant violation that
+        // crashes this component.
+        #[cfg(feature = "antithesis")]
+        if events_output.is_err() {
+            antithesis_sdk::assert_unreachable!("dsd 'events' output missing at dispatch", &serde_json::json!({}));
+        }
+
+        if let Err(e) = events_output
             .expect("events output should always exist")
             .send_all(eventd_events)
             .await
         {
             error!(%listen_addr, error = %e, "Failed to dispatch eventd events.");
+
+            // Dispatch failure increments no counter, so this assertion is the only in-SUT signal that the failure
+            // path ran.
+            #[cfg(feature = "antithesis")]
+            antithesis_sdk::assert_sometimes!(
+                true,
+                "dsd dispatch failed mid-buffer",
+                &serde_json::json!({ "stream": "events" })
+            );
         }
     }
 
     // Dispatch any service check events, if present.
     if event_buffer.has_event_type(EventType::ServiceCheck) {
         let service_check_events = event_buffer.extract(Event::is_service_check);
-        if let Err(e) = source_context
-            .dispatcher()
-            .buffered_named("service_checks")
+        let service_checks_output = source_context.dispatcher().buffered_named("service_checks");
+
+        #[cfg(feature = "antithesis")]
+        if service_checks_output.is_err() {
+            antithesis_sdk::assert_unreachable!(
+                "dsd 'service_checks' output missing at dispatch",
+                &serde_json::json!({})
+            );
+        }
+
+        if let Err(e) = service_checks_output
             .expect("service checks output should always exist")
             .send_all(service_check_events)
             .await
         {
             error!(%listen_addr, error = %e, "Failed to dispatch service check events.");
+
+            #[cfg(feature = "antithesis")]
+            antithesis_sdk::assert_sometimes!(
+                true,
+                "dsd dispatch failed mid-buffer",
+                &serde_json::json!({ "stream": "service_checks" })
+            );
         }
     }
 
@@ -1739,6 +1767,13 @@ async fn dispatch_events(mut event_buffer: EventsBuffer, source_context: &Source
             .await
         {
             error!(%listen_addr, error = %e, "Failed to dispatch metric events.");
+
+            #[cfg(feature = "antithesis")]
+            antithesis_sdk::assert_sometimes!(
+                true,
+                "dsd dispatch failed mid-buffer",
+                &serde_json::json!({ "stream": "metrics" })
+            );
         }
     }
 }

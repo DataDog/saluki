@@ -14,7 +14,7 @@ additional_span_ignore_fields:
   - metrics.http.status_code
   - meta.error.msg
 baseline:
-  image: registry.datadoghq.com/agent:7.75.4-full
+  image: registry.datadoghq.com/agent:7.80.1-full
   files:
     - collector.yaml:/etc/datadog-agent/otel-config.yaml
     - datadog_agent.yaml:/etc/datadog-agent/datadog.yaml

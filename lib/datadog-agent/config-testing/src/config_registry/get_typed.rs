@@ -27,7 +27,7 @@ crate::declare_annotations! {
         test_json: Some(r#""host""#),
         pipeline_affinity: PipelineAffinity::CrossCutting,
     };
-    /// `cmd_port`-Datadog Agent IPC/CMD API port
+    /// `cmd_port`-Core Agent CMD API port for ADP gRPC IPC
     CMD_PORT = SalukiAnnotation {
         schema: &schema::CMD_PORT,
         support_level: SupportLevel::Full,

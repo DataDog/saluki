@@ -185,7 +185,11 @@ where
                 strategy.metrics.in_use().increment(1.0);
                 Poll::Ready(T::from_data(strategy, data))
             }
-            None => unreachable!("semaphore should never be closed"),
+            None => {
+                #[cfg(feature = "antithesis")]
+                antithesis_sdk::assert_unreachable!("fixed object pool semaphore closed", &serde_json::json!({}));
+                unreachable!("semaphore should never be closed")
+            }
         }
     }
 }
