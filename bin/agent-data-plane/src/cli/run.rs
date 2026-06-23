@@ -453,8 +453,10 @@ async fn add_baseline_metrics_pipeline_to_blueprint(
         ChainedConfiguration::default().with_transform_builder("host_enrichment", host_enrichment_config);
 
     if !dp_config.standalone_mode() {
-        let host_tags_config = HostTagsConfiguration::from_configuration(config).await?;
-        metrics_enrich_config = metrics_enrich_config.with_transform_builder("host_tags", host_tags_config);
+        let host_tags_config = HostTagsConfiguration::from_configuration(config)?;
+        if host_tags_config.enabled() {
+            metrics_enrich_config = metrics_enrich_config.with_transform_builder("host_tags", host_tags_config);
+        }
     }
 
     let dd_metrics_config = DatadogMetricsConfiguration::from_configuration(config)
