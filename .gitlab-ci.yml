@@ -106,6 +106,13 @@ default:
   rules:
     if: $CI_COMMIT_BRANCH =~ /^mq-working-branch/
 
+# The nightly full-suite SMP run: a scheduled pipeline on main with SMP_NIGHTLY set. Create the
+# schedule in the GitLab UI with the variable SMP_NIGHTLY=true (mirrors the FUZZ_SCHEDULED /
+# BUILD_HELPER_IMAGES scheduled-pipeline pattern).
+.on_smp_nightly:
+  rules:
+    if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_BRANCH == "main" && $SMP_NIGHTLY == "true"
+
 # Common build-specific variables that need to be shared across stages.
 .build-common-variables:
   variables:

@@ -807,12 +807,12 @@ check-smp-experiments: ## Verifies SMP experiment configs are up-to-date (CI)
 
 .PHONY: profile-run-smp-experiment
 profile-run-smp-experiment: ## Runs a specific SMP experiment for Saluki
-ifeq ($(shell test -f test/smp/regression/adp/cases/$(EXPERIMENT)/lading/lading.yaml || echo not-found), not-found)
-	$(error "Lading configuration for '$(EXPERIMENT)' not found. (test/smp/regression/adp/cases/$(EXPERIMENT)/lading/lading.yaml) ")
+ifeq ($(shell test -f test/smp/regression/adp/full/cases/$(EXPERIMENT)/lading/lading.yaml || echo not-found), not-found)
+	$(error "Lading configuration for '$(EXPERIMENT)' not found. (test/smp/regression/adp/full/cases/$(EXPERIMENT)/lading/lading.yaml) ")
 endif
 	@echo "[*] Running '$(EXPERIMENT)' experiment (15 minutes)..."
 	@docker run --rm --network host \
-	    --mount type=bind,source=./test/smp/regression/adp/cases/$(EXPERIMENT)/lading/lading.yaml,target=/tmp/lading.yaml \
+	    --mount type=bind,source=./test/smp/regression/adp/full/cases/$(EXPERIMENT)/lading/lading.yaml,target=/tmp/lading.yaml \
 		--mount type=bind,source=/tmp/adp-dogstatsd-dgram.sock,target=/tmp/adp-dogstatsd-dgram.sock \
 		--mount type=bind,source=/tmp/adp-dogstatsd-stream.sock,target=/tmp/adp-dogstatsd-stream.sock \
 		ghcr.io/datadog/lading:$(LADING_VERSION) \

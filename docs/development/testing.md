@@ -107,10 +107,13 @@ throughput—not output correctness.
 ### Experiments
 
 Defined in `test/smp/regression/adp/experiments.yaml`. Run `make generate-smp-experiments` to generate per-case configs
-in `test/smp/regression/adp/cases/`. Each case gets an `experiment.yaml` (target config) and `lading/lading.yaml` (load
-config).
+into two suites: `test/smp/regression/adp/quality-gates/` (experiments with `checks:` bounds) and
+`test/smp/regression/adp/full/` (all experiments). Each case gets an `experiment.yaml` (target config) and
+`lading/lading.yaml` (load config). See `test/smp/README.md` for the suite model.
 
-CI compares current branch against merge-base of main—purely "has your change regressed or improved?"
+PRs gate only on the quality-gates suite, comparing the branch against the merge-base of main—"has your change regressed
+or improved against the bounds?" The full suite runs nightly on `main` (date-anchored against the previous nightly,
+reported to Slack) and on-demand as a manual job on a PR; it is for long-term trend analysis and does not gate.
 
 You can run experiments locally with `smp local-run` to debug experiment configs without waiting for CI (single
 replicate, no statistical analysis). This is mainly useful when iterating on a new or broken experiment—for normal
