@@ -73,7 +73,7 @@ pub(crate) struct V3EncoderStats {
 pub(crate) struct V3ColumnBytes {
     pub(crate) field_number: u32,
     pub(crate) bytes: Vec<u8>,
-    pub(crate) compressed_bytes: Vec<u8>,
+    pub(crate) compressed_len: usize,
 }
 
 /// V3 columnar metrics writer.
@@ -771,7 +771,7 @@ fn write_bytes_column(
         columns.push(V3ColumnBytes {
             field_number,
             bytes: bytes.to_vec(),
-            compressed_bytes: Vec::new(),
+            compressed_len: 0,
         });
     }
 
@@ -802,7 +802,7 @@ where
         columns.push(V3ColumnBytes {
             field_number,
             bytes,
-            compressed_bytes: Vec::new(),
+            compressed_len: 0,
         });
     }
 

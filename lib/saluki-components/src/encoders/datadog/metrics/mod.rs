@@ -1,7 +1,6 @@
 use std::{collections::VecDeque, ops::Range, time::Duration};
 
 use async_trait::async_trait;
-use bytes::Bytes;
 use ddsketch::DDSketch;
 use facet::Facet;
 use http::{HeaderValue, Method, Request};
@@ -1182,12 +1181,12 @@ fn record_v3_serializer_stats(telemetry: &V3SerializerTelemetry, stats: &V3Encod
 
     for column in &stats.columns {
         let uncompressed_size = column.bytes.len() as u64;
-        let compressed_size = column.compressed_bytes.len() as u64;
+        let compressed_size = column.compressed_len as u64;
         telemetry.record_column_size(column.field_number, uncompressed_size, compressed_size);
     }
 }
 
-async fn compress_v3_bytes(bytes: &[u8], compression_scheme: CompressionScheme) -> Result<Vec<u8>, GenericError> {
+async fn compressed_v3_len(bytes: &[u8], compression_scheme: CompressionScheme) -> Result<usize, GenericError> {
     let buffer = ChunkedBytesBuffer::new(RB_BUFFER_CHUNK_SIZE);
     let mut compressor = Compressor::from_scheme(compression_scheme, buffer);
     compressor
@@ -1203,7 +1202,7 @@ async fn compress_v3_bytes(bytes: &[u8], compression_scheme: CompressionScheme) 
         .await
         .error_context("Failed to shutdown V3 compressor.")?;
 
-    Ok(compressor.into_inner().freeze().into_bytes().to_vec())
+    Ok(compressor.into_inner().freeze().len())
 }
 
 fn split_v3_metric_ranges_by_point_limit(
@@ -1497,9 +1496,8 @@ fn is_v3_series_resource_tag(tag: &Tag) -> bool {
 async fn create_v3_request(
     endpoint_uri: &str, mut encoded: V3EncodedMetrics, compression_scheme: CompressionScheme,
 ) -> Result<V3EncodedRequest, GenericError> {
-    // Build the final protobuf payload by concatenating independently compressed streams:
-    // the outer Payload field header, each MetricData column field header, and each column stream.
-    // gzip/zstd decoders handle concatenated streams transparently as a single uncompressed byte stream.
+    // Keep the wire payload as one continuous compressed stream. Per-column compressed sizes are measured
+    // independently for telemetry.
     let mut header_buf = [0; 16];
     let header_len = {
         let mut header_writer = CodedOutputStream::bytes(&mut header_buf);
@@ -1510,33 +1508,33 @@ async fn create_v3_request(
     };
 
     let uncompressed_len = header_len + encoded.payload.len();
-    let mut compressed_body = compress_v3_bytes(&header_buf[..header_len], compression_scheme)
-        .await
-        .error_context("Failed to compress V3 payload header.")?;
-
     for column in &mut encoded.stats.columns {
-        let mut column_header_buf = [0; 16];
-        let column_header_len = {
-            let mut header_writer = CodedOutputStream::bytes(&mut column_header_buf);
-            header_writer.write_tag(column.field_number, WireType::LengthDelimited)?;
-            header_writer.write_uint64_no_tag(column.bytes.len() as u64)?;
-            header_writer.flush()?;
-            header_writer.total_bytes_written() as usize
-        };
-
-        let compressed_column_header = compress_v3_bytes(&column_header_buf[..column_header_len], compression_scheme)
+        column.compressed_len = compressed_v3_len(&column.bytes, compression_scheme)
             .await
-            .error_context("Failed to compress V3 column header.")?;
-        column.compressed_bytes = compress_v3_bytes(&column.bytes, compression_scheme)
-            .await
-            .error_context("Failed to compress V3 column.")?;
-
-        compressed_body.extend_from_slice(&compressed_column_header);
-        compressed_body.extend_from_slice(&column.compressed_bytes);
+            .error_context("Failed to measure V3 column compressed size.")?;
     }
 
-    let compressed_len = compressed_body.len();
-    let compressed_buf = FrozenChunkedBytesBuffer::from(Bytes::from(compressed_body));
+    let buffer = ChunkedBytesBuffer::new(RB_BUFFER_CHUNK_SIZE);
+    let mut compressor = Compressor::from_scheme(compression_scheme, buffer);
+    compressor
+        .write_all(&header_buf[..header_len])
+        .await
+        .error_context("Failed to compress V3 payload.")?;
+    compressor
+        .write_all(&encoded.payload)
+        .await
+        .error_context("Failed to compress V3 payload.")?;
+    compressor
+        .flush()
+        .await
+        .error_context("Failed to flush V3 compressor.")?;
+    compressor
+        .shutdown()
+        .await
+        .error_context("Failed to shutdown V3 compressor.")?;
+
+    let compressed_buf = compressor.into_inner().freeze();
+    let compressed_len = compressed_buf.len();
 
     let mut builder = Request::builder()
         .method(Method::POST)
@@ -1572,6 +1570,7 @@ fn content_encoding_for_scheme(compression_scheme: CompressionScheme) -> Option<
 mod tests {
     use std::{io::Cursor, sync::Arc};
 
+    use bytes::Bytes;
     use saluki_context::{
         tags::{Tag, TagSet},
         Context,
@@ -1657,8 +1656,8 @@ serializer_experimental_use_v3_api:
     }
 
     #[tokio::test]
-    async fn create_v3_request_uses_column_streams_for_body_and_telemetry() {
-        let metrics = vec![Metric::counter("v3.column.stream", 42.0)];
+    async fn create_v3_request_uses_single_stream_body_and_column_telemetry() {
+        let metrics = vec![Metric::counter("v3.single.stream", 42.0)];
         let encoded = encode_v3_metrics_batch(&metrics, &SharedTagSet::default()).expect("metrics should encode to V3");
         let expected_payload = encoded.payload.clone();
 
@@ -1667,7 +1666,7 @@ serializer_experimental_use_v3_api:
             .expect("request should be created");
 
         for column in &request.stats.columns {
-            assert_eq!(column.compressed_bytes, column.bytes);
+            assert_eq!(column.compressed_len, column.bytes.len());
         }
 
         let mut expected_body = Vec::new();
@@ -1684,7 +1683,7 @@ serializer_experimental_use_v3_api:
 
     #[tokio::test]
     async fn create_v3_request_zstd_body_decodes_to_metric_payload() {
-        let metrics = vec![Metric::counter("v3.column.stream.zstd", 42.0)];
+        let metrics = vec![Metric::counter("v3.single.stream.zstd", 42.0)];
         let encoded = encode_v3_metrics_batch(&metrics, &SharedTagSet::default()).expect("metrics should encode to V3");
         let expected_payload = encoded.payload.clone();
 
@@ -1693,9 +1692,10 @@ serializer_experimental_use_v3_api:
             .expect("request should be created");
 
         for column in &request.stats.columns {
-            let decoded_column = zstd::stream::decode_all(Cursor::new(&column.compressed_bytes))
-                .expect("compressed column should decode");
-            assert_eq!(decoded_column, column.bytes);
+            let expected_compressed_len = compressed_v3_len(&column.bytes, CompressionScheme::zstd_default())
+                .await
+                .expect("column compressed size should be measured");
+            assert_eq!(column.compressed_len, expected_compressed_len);
         }
 
         let mut expected_body = Vec::new();
@@ -1737,7 +1737,7 @@ serializer_experimental_use_v3_api:
             .find(|column| column.field_number == VALUE_SINT64_FIELD_NUMBER)
             .expect("sint64 value column should be present");
         let value_sint64_len = value_sint64_column.bytes.len() as u64;
-        assert_eq!(value_sint64_column.compressed_bytes.len() as u64, value_sint64_len);
+        assert_eq!(value_sint64_column.compressed_len as u64, value_sint64_len);
 
         record_v3_serializer_stats(&serializer_telemetry, &request.stats);
 
