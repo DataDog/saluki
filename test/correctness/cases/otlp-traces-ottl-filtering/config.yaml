@@ -12,7 +12,7 @@ additional_span_ignore_fields:
   - metrics._top_level
   - metrics._dd.measured
 baseline:
-  image: registry.datadoghq.com/agent:7.80.1-full
+  image: saluki-images/datadog-agent:testing-release
   # Run DDOT (otel-agent) directly so the image entrypoint does not treat our args as a command to exec.
   #entrypoint:
   #  - /opt/datadog-agent/embedded/bin/otel-agent
