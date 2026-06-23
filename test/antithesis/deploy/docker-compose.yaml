@@ -14,7 +14,7 @@ services:
     environment:
       NO_COLOR: "1"
     healthcheck:
-      # datadog-intake serves HTTP on :2049. /dev/tcp avoids needing curl in the image.
+      # antithesis-intake serves HTTP on :2049. /dev/tcp avoids needing curl in the image.
       test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/localhost/2049'"]
       interval: 2s
       timeout: 2s
