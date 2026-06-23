@@ -37,7 +37,12 @@ $Binary = Join-Path $CargoTargetDir "$env:BUILD_PROFILE\agent-data-plane.exe"
 if (-not (Test-Path $Binary)) {
     throw "package-adp-zip: expected binary at '$Binary' (run windows-build-adp.ps1 first)"
 }
-$BinaryPDB = Join-Path $CargoTargetDir "$env:BUILD_PROFILE\agent-data-plane.pdb"
+# We _specifically_ use the underscore-separated name here because Cargo will build ADP with the underscore-separated name,
+# due to hyphens not being valid in module names, which means the PDB is named that way, too... but then it will post-process
+# the executable by itself to rename it to `agent-data-plane.exe`, while the PDB stays as `agent_data_plane.pdb`.
+#
+# We keep it this way when copying it because the PDB path is hardcoded into the executable with the underscore-separated name.
+$BinaryPDB = Join-Path $CargoTargetDir "$env:BUILD_PROFILE\agent_data_plane.pdb"
 if (-not (Test-Path $BinaryPDB)) {
     throw "package-adp-zip: expected PDB at '$BinaryPDB' (run windows-build-adp.ps1 first)"
 }
@@ -59,7 +64,7 @@ try {
     New-Item -ItemType Directory -Force (Join-Path $StageRoot "LICENSES") | Out-Null
 
     Copy-Item -Force $Binary (Join-Path $StageRoot "bin\agent-data-plane.exe")
-    Copy-Item -Force $BinaryPDB (Join-Path $StageRoot "bin\agent-data-plane.pdb")
+    Copy-Item -Force $BinaryPDB (Join-Path $StageRoot "bin\agent_data_plane.pdb")
     foreach ($f in @("NOTICE", "LICENSE", "LICENSE-3rdparty.csv")) {
         Copy-Item -Force $f (Join-Path $StageRoot $f)
     }
