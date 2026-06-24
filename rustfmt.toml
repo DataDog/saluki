@@ -6,4 +6,5 @@ fn_params_layout = "Compressed"
 ignore = [
     "lib/datadog-agent/config/src/classifier/classifier_data.rs",
     "lib/datadog-agent/config/src/datadog_configuration.rs",
+    "lib/datadog-agent/config/src/witness.rs",
 ]
