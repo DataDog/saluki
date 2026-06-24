@@ -8,6 +8,7 @@ use saluki_error::GenericError;
 
 use super::constants::*;
 use super::interner::Interner;
+use super::telemetry::V3ValueEncodingStats;
 use super::types::{value_type_for_values, V3MetricType, V3ValueType};
 
 const FLAG_NO_INDEX: u64 = 0x100;
@@ -51,6 +52,28 @@ struct V3EncodedData {
     pub sketch_num_bins: Vec<u64>,
     pub sketch_bin_keys: Vec<i32>,
     pub sketch_bin_cnts: Vec<u32>,
+    pub value_encoding_stats: V3ValueEncodingStats,
+}
+
+/// Encoded V3 metrics payload with telemetry data.
+pub struct V3EncodedMetrics {
+    /// Serialized `MetricData` protobuf payload.
+    pub(crate) payload: Vec<u8>,
+    /// Telemetry produced while encoding the payload.
+    pub(crate) stats: V3EncoderStats,
+}
+
+/// Telemetry data produced while encoding a V3 metrics payload.
+pub(crate) struct V3EncoderStats {
+    pub(crate) value_encoding_stats: V3ValueEncodingStats,
+    pub(crate) columns: Vec<V3ColumnBytes>,
+}
+
+/// Raw stream bytes for a single V3 column before protobuf field framing.
+pub(crate) struct V3ColumnBytes {
+    pub(crate) field_number: u32,
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) compressed_len: usize,
 }
 
 /// V3 columnar metrics writer.
@@ -107,6 +130,7 @@ pub struct V3Writer {
     // Scratch data
     tag_ids: Vec<i64>,
     resource_ids: Vec<(i64, i64)>,
+    value_encoding_stats: V3ValueEncodingStats,
 }
 
 impl V3Writer {
@@ -181,70 +205,226 @@ impl V3Writer {
             sketch_num_bins: self.sketch_num_bins,
             sketch_bin_keys: self.sketch_bin_keys,
             sketch_bin_cnts: self.sketch_bin_cnts,
+            value_encoding_stats: self.value_encoding_stats,
         }
     }
 
     /// Finalizes the writer and serializes the data to the given output buffer.
     ///
     /// This performs delta encoding on all index arrays.
-    pub fn finalize(self, output: &mut Vec<u8>) -> Result<(), GenericError> {
+    pub fn finalize(self) -> Result<V3EncodedMetrics, GenericError> {
         let data = self.finalize_inner();
-
-        // Create our writer and start, well.. writing!
-        let mut os = CodedOutputStream::vec(output);
+        let mut output = Vec::new();
+        let mut columns = Vec::new();
 
         // Dictionary fields (bytes - varint-length-prefixed strings concatenated)
         if !data.dict_name_bytes.is_empty() {
-            os.write_bytes(DICT_NAME_STR_FIELD_NUMBER, &data.dict_name_bytes)?;
+            write_bytes_column(
+                &mut output,
+                &mut columns,
+                DICT_NAME_STR_FIELD_NUMBER,
+                &data.dict_name_bytes,
+            )?;
         }
         if !data.dict_tags_bytes.is_empty() {
-            os.write_bytes(DICT_TAGS_STR_FIELD_NUMBER, &data.dict_tags_bytes)?;
+            write_bytes_column(
+                &mut output,
+                &mut columns,
+                DICT_TAGS_STR_FIELD_NUMBER,
+                &data.dict_tags_bytes,
+            )?;
         }
 
         // Packed repeated fields for dictionaries
-        os.write_repeated_packed_sint64(DICT_TAGSETS_FIELD_NUMBER, &data.dict_tagsets)?;
+        write_packed_column(
+            &mut output,
+            &mut columns,
+            DICT_TAGSETS_FIELD_NUMBER,
+            |os| os.write_repeated_packed_sint64(DICT_TAGSETS_FIELD_NUMBER, &data.dict_tagsets),
+            |os| os.write_repeated_packed_sint64_no_tag(&data.dict_tagsets),
+        )?;
 
         if !data.dict_resource_str_bytes.is_empty() {
-            os.write_bytes(DICT_RESOURCE_STR_FIELD_NUMBER, &data.dict_resource_str_bytes)?;
+            write_bytes_column(
+                &mut output,
+                &mut columns,
+                DICT_RESOURCE_STR_FIELD_NUMBER,
+                &data.dict_resource_str_bytes,
+            )?;
         }
 
-        os.write_repeated_packed_int64(DICT_RESOURCE_LEN_FIELD_NUMBER, &data.dict_resource_len)?;
-        os.write_repeated_packed_sint64(DICT_RESOURCE_TYPE_FIELD_NUMBER, &data.dict_resource_type)?;
-        os.write_repeated_packed_sint64(DICT_RESOURCE_NAME_FIELD_NUMBER, &data.dict_resource_name)?;
+        write_packed_column(
+            &mut output,
+            &mut columns,
+            DICT_RESOURCE_LEN_FIELD_NUMBER,
+            |os| os.write_repeated_packed_int64(DICT_RESOURCE_LEN_FIELD_NUMBER, &data.dict_resource_len),
+            |os| os.write_repeated_packed_int64_no_tag(&data.dict_resource_len),
+        )?;
+        write_packed_column(
+            &mut output,
+            &mut columns,
+            DICT_RESOURCE_TYPE_FIELD_NUMBER,
+            |os| os.write_repeated_packed_sint64(DICT_RESOURCE_TYPE_FIELD_NUMBER, &data.dict_resource_type),
+            |os| os.write_repeated_packed_sint64_no_tag(&data.dict_resource_type),
+        )?;
+        write_packed_column(
+            &mut output,
+            &mut columns,
+            DICT_RESOURCE_NAME_FIELD_NUMBER,
+            |os| os.write_repeated_packed_sint64(DICT_RESOURCE_NAME_FIELD_NUMBER, &data.dict_resource_name),
+            |os| os.write_repeated_packed_sint64_no_tag(&data.dict_resource_name),
+        )?;
 
         if !data.dict_source_type_bytes.is_empty() {
-            os.write_bytes(DICT_SOURCE_TYPE_NAME_FIELD_NUMBER, &data.dict_source_type_bytes)?;
+            write_bytes_column(
+                &mut output,
+                &mut columns,
+                DICT_SOURCE_TYPE_NAME_FIELD_NUMBER,
+                &data.dict_source_type_bytes,
+            )?;
         }
 
-        os.write_repeated_packed_int32(DICT_ORIGIN_INFO_FIELD_NUMBER, &data.dict_origin_info)?;
+        write_packed_column(
+            &mut output,
+            &mut columns,
+            DICT_ORIGIN_INFO_FIELD_NUMBER,
+            |os| os.write_repeated_packed_int32(DICT_ORIGIN_INFO_FIELD_NUMBER, &data.dict_origin_info),
+            |os| os.write_repeated_packed_int32_no_tag(&data.dict_origin_info),
+        )?;
         if !data.dict_unit_bytes.is_empty() {
-            os.write_bytes(DICT_UNIT_STR_FIELD_NUMBER, &data.dict_unit_bytes)?;
+            write_bytes_column(
+                &mut output,
+                &mut columns,
+                DICT_UNIT_STR_FIELD_NUMBER,
+                &data.dict_unit_bytes,
+            )?;
         }
 
         // Per-metric columns
-        os.write_repeated_packed_uint64(TYPES_FIELD_NUMBER, &data.types)?;
-        os.write_repeated_packed_sint64(NAMES_FIELD_NUMBER, &data.names)?;
-        os.write_repeated_packed_sint64(TAGS_FIELD_NUMBER, &data.tags)?;
-        os.write_repeated_packed_sint64(RESOURCES_FIELD_NUMBER, &data.resources)?;
-        os.write_repeated_packed_uint64(INTERVALS_FIELD_NUMBER, &data.intervals)?;
-        os.write_repeated_packed_uint64(NUM_POINTS_FIELD_NUMBER, &data.num_points)?;
-        os.write_repeated_packed_sint64(SOURCE_TYPE_NAME_FIELD_NUMBER, &data.source_type_names)?;
-        os.write_repeated_packed_sint64(ORIGIN_INFO_FIELD_NUMBER, &data.origin_infos)?;
-        os.write_repeated_packed_sint64(UNIT_REFS_FIELD_NUMBER, &data.unit_refs)?;
+        write_packed_column(
+            &mut output,
+            &mut columns,
+            TYPES_FIELD_NUMBER,
+            |os| os.write_repeated_packed_uint64(TYPES_FIELD_NUMBER, &data.types),
+            |os| os.write_repeated_packed_uint64_no_tag(&data.types),
+        )?;
+        write_packed_column(
+            &mut output,
+            &mut columns,
+            NAMES_FIELD_NUMBER,
+            |os| os.write_repeated_packed_sint64(NAMES_FIELD_NUMBER, &data.names),
+            |os| os.write_repeated_packed_sint64_no_tag(&data.names),
+        )?;
+        write_packed_column(
+            &mut output,
+            &mut columns,
+            TAGS_FIELD_NUMBER,
+            |os| os.write_repeated_packed_sint64(TAGS_FIELD_NUMBER, &data.tags),
+            |os| os.write_repeated_packed_sint64_no_tag(&data.tags),
+        )?;
+        write_packed_column(
+            &mut output,
+            &mut columns,
+            RESOURCES_FIELD_NUMBER,
+            |os| os.write_repeated_packed_sint64(RESOURCES_FIELD_NUMBER, &data.resources),
+            |os| os.write_repeated_packed_sint64_no_tag(&data.resources),
+        )?;
+        write_packed_column(
+            &mut output,
+            &mut columns,
+            INTERVALS_FIELD_NUMBER,
+            |os| os.write_repeated_packed_uint64(INTERVALS_FIELD_NUMBER, &data.intervals),
+            |os| os.write_repeated_packed_uint64_no_tag(&data.intervals),
+        )?;
+        write_packed_column(
+            &mut output,
+            &mut columns,
+            NUM_POINTS_FIELD_NUMBER,
+            |os| os.write_repeated_packed_uint64(NUM_POINTS_FIELD_NUMBER, &data.num_points),
+            |os| os.write_repeated_packed_uint64_no_tag(&data.num_points),
+        )?;
+        write_packed_column(
+            &mut output,
+            &mut columns,
+            SOURCE_TYPE_NAME_FIELD_NUMBER,
+            |os| os.write_repeated_packed_sint64(SOURCE_TYPE_NAME_FIELD_NUMBER, &data.source_type_names),
+            |os| os.write_repeated_packed_sint64_no_tag(&data.source_type_names),
+        )?;
+        write_packed_column(
+            &mut output,
+            &mut columns,
+            ORIGIN_INFO_FIELD_NUMBER,
+            |os| os.write_repeated_packed_sint64(ORIGIN_INFO_FIELD_NUMBER, &data.origin_infos),
+            |os| os.write_repeated_packed_sint64_no_tag(&data.origin_infos),
+        )?;
+        write_packed_column(
+            &mut output,
+            &mut columns,
+            UNIT_REFS_FIELD_NUMBER,
+            |os| os.write_repeated_packed_sint64(UNIT_REFS_FIELD_NUMBER, &data.unit_refs),
+            |os| os.write_repeated_packed_sint64_no_tag(&data.unit_refs),
+        )?;
 
         // Point data
-        os.write_repeated_packed_sint64(TIMESTAMPS_FIELD_NUMBER, &data.timestamps)?;
-        os.write_repeated_packed_sint64(VALS_SINT64_FIELD_NUMBER, &data.vals_sint64)?;
-        os.write_repeated_packed_float(VALS_FLOAT32_FIELD_NUMBER, &data.vals_float32)?;
-        os.write_repeated_packed_double(VALS_FLOAT64_FIELD_NUMBER, &data.vals_float64)?;
+        write_packed_column(
+            &mut output,
+            &mut columns,
+            TIMESTAMPS_FIELD_NUMBER,
+            |os| os.write_repeated_packed_sint64(TIMESTAMPS_FIELD_NUMBER, &data.timestamps),
+            |os| os.write_repeated_packed_sint64_no_tag(&data.timestamps),
+        )?;
+        write_packed_column(
+            &mut output,
+            &mut columns,
+            VALS_SINT64_FIELD_NUMBER,
+            |os| os.write_repeated_packed_sint64(VALS_SINT64_FIELD_NUMBER, &data.vals_sint64),
+            |os| os.write_repeated_packed_sint64_no_tag(&data.vals_sint64),
+        )?;
+        write_packed_column(
+            &mut output,
+            &mut columns,
+            VALS_FLOAT32_FIELD_NUMBER,
+            |os| os.write_repeated_packed_float(VALS_FLOAT32_FIELD_NUMBER, &data.vals_float32),
+            |os| os.write_repeated_packed_float_no_tag(&data.vals_float32),
+        )?;
+        write_packed_column(
+            &mut output,
+            &mut columns,
+            VALS_FLOAT64_FIELD_NUMBER,
+            |os| os.write_repeated_packed_double(VALS_FLOAT64_FIELD_NUMBER, &data.vals_float64),
+            |os| os.write_repeated_packed_double_no_tag(&data.vals_float64),
+        )?;
 
         // Sketch data
-        os.write_repeated_packed_uint64(SKETCH_NUM_BINS_FIELD_NUMBER, &data.sketch_num_bins)?;
-        os.write_repeated_packed_sint32(SKETCH_BIN_KEYS_FIELD_NUMBER, &data.sketch_bin_keys)?;
-        os.write_repeated_packed_uint32(SKETCH_BIN_CNTS_FIELD_NUMBER, &data.sketch_bin_cnts)?;
+        write_packed_column(
+            &mut output,
+            &mut columns,
+            SKETCH_NUM_BINS_FIELD_NUMBER,
+            |os| os.write_repeated_packed_uint64(SKETCH_NUM_BINS_FIELD_NUMBER, &data.sketch_num_bins),
+            |os| os.write_repeated_packed_uint64_no_tag(&data.sketch_num_bins),
+        )?;
+        write_packed_column(
+            &mut output,
+            &mut columns,
+            SKETCH_BIN_KEYS_FIELD_NUMBER,
+            |os| os.write_repeated_packed_sint32(SKETCH_BIN_KEYS_FIELD_NUMBER, &data.sketch_bin_keys),
+            |os| os.write_repeated_packed_sint32_no_tag(&data.sketch_bin_keys),
+        )?;
+        write_packed_column(
+            &mut output,
+            &mut columns,
+            SKETCH_BIN_CNTS_FIELD_NUMBER,
+            |os| os.write_repeated_packed_uint32(SKETCH_BIN_CNTS_FIELD_NUMBER, &data.sketch_bin_cnts),
+            |os| os.write_repeated_packed_uint32_no_tag(&data.sketch_bin_cnts),
+        )?;
 
-        os.flush()?;
-        Ok(())
+        Ok(V3EncodedMetrics {
+            payload: output,
+            stats: V3EncoderStats {
+                value_encoding_stats: data.value_encoding_stats,
+                columns,
+            },
+        })
     }
 
     // Internal helper methods
@@ -523,6 +703,12 @@ impl<'a> V3MetricBuilder<'a> {
 
         // Determine the best value type for all points in this metric.
         let val_ty = value_type_for_values(self.writer.vals_float64[start..end].iter().copied());
+        let is_sketch = (self.writer.types[self.metric_idx] & 0x0F) == V3MetricType::Sketch as u64;
+        let float_values_len = end - start;
+        if is_sketch {
+            // Sketches always carry one integer count per point in addition to sum/min/max values.
+            self.writer.value_encoding_stats.sint64 += count as u64;
+        }
 
         // Update the type field
         self.writer.types[self.metric_idx] |= val_ty.as_u64();
@@ -530,11 +716,12 @@ impl<'a> V3MetricBuilder<'a> {
         // Convert values to the appropriate storage
         match val_ty {
             V3ValueType::Zero => {
+                self.writer.value_encoding_stats.zero += float_values_len as u64;
                 // Values are all zero, don't store anything
                 self.writer.vals_float64.truncate(start);
             }
             V3ValueType::Sint64 => {
-                let is_sketch = (self.writer.types[self.metric_idx] & 0x0F) == V3MetricType::Sketch as u64;
+                self.writer.value_encoding_stats.sint64 += float_values_len as u64;
                 if is_sketch {
                     // For sketches, vals_sint64 already has one count per point (pushed by add_sketch),
                     // and vals_float64 has 3 values per point (sum, min, max). When compacting to Sint64,
@@ -556,16 +743,70 @@ impl<'a> V3MetricBuilder<'a> {
                 self.writer.vals_float64.truncate(start);
             }
             V3ValueType::Float32 => {
+                self.writer.value_encoding_stats.float32 += float_values_len as u64;
                 for i in start..end {
                     self.writer.vals_float32.push(self.writer.vals_float64[i] as f32);
                 }
                 self.writer.vals_float64.truncate(start);
             }
             V3ValueType::Float64 => {
+                self.writer.value_encoding_stats.float64 += float_values_len as u64;
                 // Already stored in vals_float64, keep them
             }
         }
     }
+}
+
+fn write_bytes_column(
+    output: &mut Vec<u8>, columns: &mut Vec<V3ColumnBytes>, field_number: u32, bytes: &[u8],
+) -> Result<(), GenericError> {
+    let start = output.len();
+    {
+        let mut os = CodedOutputStream::vec(output);
+        os.write_bytes(field_number, bytes)?;
+        os.flush()?;
+    }
+
+    if output.len() != start {
+        columns.push(V3ColumnBytes {
+            field_number,
+            bytes: bytes.to_vec(),
+            compressed_len: 0,
+        });
+    }
+
+    Ok(())
+}
+
+fn write_packed_column<F, R>(
+    output: &mut Vec<u8>, columns: &mut Vec<V3ColumnBytes>, field_number: u32, write_framed: F, write_raw: R,
+) -> Result<(), GenericError>
+where
+    F: FnOnce(&mut CodedOutputStream<'_>) -> protobuf::Result<()>,
+    R: FnOnce(&mut CodedOutputStream<'_>) -> protobuf::Result<()>,
+{
+    let start = output.len();
+    {
+        let mut os = CodedOutputStream::vec(output);
+        write_framed(&mut os)?;
+        os.flush()?;
+    }
+
+    if output.len() != start {
+        let mut bytes = Vec::new();
+        {
+            let mut os = CodedOutputStream::vec(&mut bytes);
+            write_raw(&mut os)?;
+            os.flush()?;
+        }
+        columns.push(V3ColumnBytes {
+            field_number,
+            bytes,
+            compressed_len: 0,
+        });
+    }
+
+    Ok(())
 }
 
 fn append_len_str(dst: &mut Vec<u8>, s: &str) {
@@ -752,9 +993,8 @@ mod tests {
     #[test]
     fn test_serialize_empty() {
         let writer = V3Writer::new();
-        let mut output = Vec::new();
-        writer.finalize(&mut output).unwrap();
-        assert!(output.is_empty());
+        let encoded = writer.finalize().unwrap();
+        assert!(encoded.payload.is_empty());
     }
 
     #[test]
@@ -811,10 +1051,78 @@ mod tests {
             metric.close();
         }
 
-        let mut output = Vec::new();
-        writer.finalize(&mut output).unwrap();
+        let encoded = writer.finalize().unwrap();
 
         // Should produce non-empty output
-        assert!(!output.is_empty());
+        assert!(!encoded.payload.is_empty());
+        assert_eq!(encoded.stats.value_encoding_stats.sint64, 1);
+    }
+
+    #[test]
+    fn test_column_stats_for_bytes_column_use_raw_column_stream() {
+        let mut writer = V3Writer::new();
+
+        {
+            let mut metric = writer.write(V3MetricType::Gauge, "test.metric");
+            metric.add_point(1000, 42.0);
+            metric.close();
+        }
+
+        let encoded = writer.finalize().unwrap();
+        let name_column = encoded
+            .stats
+            .columns
+            .iter()
+            .find(|column| column.field_number == DICT_NAME_STR_FIELD_NUMBER)
+            .expect("name dictionary column should be present");
+
+        let mut expected = Vec::new();
+        append_len_str(&mut expected, "test.metric");
+        assert_eq!(name_column.bytes, expected);
+    }
+
+    #[test]
+    fn test_column_stats_for_packed_column_use_raw_column_stream() {
+        let mut writer = V3Writer::new();
+
+        {
+            let mut metric = writer.write(V3MetricType::Gauge, "test.metric");
+            metric.add_point(1000, 42.0);
+            metric.close();
+        }
+
+        let encoded = writer.finalize().unwrap();
+        let timestamps_column = encoded
+            .stats
+            .columns
+            .iter()
+            .find(|column| column.field_number == TIMESTAMPS_FIELD_NUMBER)
+            .expect("timestamp column should be present");
+
+        let mut expected = Vec::new();
+        {
+            let mut os = CodedOutputStream::vec(&mut expected);
+            os.write_sint64_no_tag(1000).unwrap();
+            os.flush().unwrap();
+        }
+        assert_eq!(timestamps_column.bytes, expected);
+    }
+
+    #[test]
+    fn test_column_stats_do_not_include_absent_columns() {
+        let mut writer = V3Writer::new();
+
+        {
+            let mut metric = writer.write(V3MetricType::Gauge, "test.metric");
+            metric.add_point(1000, 42.0);
+            metric.close();
+        }
+
+        let encoded = writer.finalize().unwrap();
+        assert!(!encoded
+            .stats
+            .columns
+            .iter()
+            .any(|column| column.field_number == UNIT_REFS_FIELD_NUMBER));
     }
 }

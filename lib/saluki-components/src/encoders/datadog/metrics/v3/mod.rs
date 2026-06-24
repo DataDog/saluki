@@ -18,9 +18,12 @@
 mod constants;
 mod interner;
 mod payload;
+mod telemetry;
 mod types;
 mod writer;
 
 pub(super) use payload::{V3EncodedRequest, V3PayloadLimits, V3PayloadRequest};
+pub(crate) use telemetry::{V3PayloadSplitReason, V3SerializerTelemetry};
 pub use types::V3MetricType;
-pub use writer::V3Writer;
+pub(crate) use writer::V3EncoderStats;
+pub use writer::{V3EncodedMetrics, V3Writer};

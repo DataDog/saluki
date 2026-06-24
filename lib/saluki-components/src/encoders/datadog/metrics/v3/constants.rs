@@ -27,3 +27,33 @@ pub const SOURCE_TYPE_NAME_FIELD_NUMBER: u32 = 23;
 pub const ORIGIN_INFO_FIELD_NUMBER: u32 = 24;
 pub const DICT_UNIT_STR_FIELD_NUMBER: u32 = 25;
 pub const UNIT_REFS_FIELD_NUMBER: u32 = 26;
+
+pub(super) const COLUMN_NAMES: [&str; 27] = [
+    "reserved",
+    "DictNameStr",
+    "DictTagsStr",
+    "DictTagsets",
+    "DictResourceStr",
+    "DictResourcesLen",
+    "DictResourceType",
+    "DictResourceName",
+    "DictSourceTypeName",
+    "DictOriginInfo",
+    "Type",
+    "Name",
+    "Tags",
+    "Resources",
+    "Interval",
+    "NumPoints",
+    "Timestamp",
+    "ValueSint64",
+    "ValueFloat32",
+    "ValueFloat64",
+    "SketchNBins",
+    "SketchBinKeys",
+    "SketchBinCounts",
+    "SourceTypeName",
+    "OriginInfo",
+    "DictUnitStr",
+    "UnitRef",
+];

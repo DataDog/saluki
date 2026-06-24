@@ -37,7 +37,10 @@ use uuid::Uuid;
 use self::shadow::shadow_sample_matches;
 use self::{
     shadow::{SeriesShadowConfig, SeriesShadowState},
-    v3::{V3EncodedRequest, V3PayloadLimits, V3PayloadRequest},
+    v3::{
+        V3EncodedMetrics, V3EncodedRequest, V3EncoderStats, V3MetricType, V3PayloadLimits, V3PayloadRequest,
+        V3PayloadSplitReason, V3SerializerTelemetry, V3Writer,
+    },
 };
 use crate::{
     common::datadog::{
@@ -327,6 +330,7 @@ impl EncoderBuilder for DatadogMetricsConfiguration {
     async fn build(&self, context: ComponentContext) -> Result<Box<dyn Encoder + Send>, GenericError> {
         let metrics_builder = MetricsBuilder::from_component_context(&context);
         let telemetry = ComponentTelemetry::from_builder(&metrics_builder);
+        let v3_serializer_telemetry = V3SerializerTelemetry::from_builder(&metrics_builder);
 
         let v2_compression_scheme = CompressionScheme::new(&self.compressor_kind, self.zstd_compressor_level);
         let v3_compression_scheme = if self.v3_api.compression_level > 0 {
@@ -376,6 +380,7 @@ impl EncoderBuilder for DatadogMetricsConfiguration {
             series_endpoint_uri,
             shadow_series_endpoint_uri,
             series_shadow_config,
+            serializer_telemetry: v3_serializer_telemetry,
         };
         let generic_payload_limits = clamp_payload_limits(
             self.max_uncompressed_payload_size,
@@ -477,6 +482,7 @@ struct V3RuntimeConfig {
     series_endpoint_uri: String,
     shadow_series_endpoint_uri: String,
     series_shadow_config: SeriesShadowConfig,
+    serializer_telemetry: V3SerializerTelemetry,
 }
 
 #[async_trait]
@@ -603,12 +609,14 @@ async fn run_request_builder(
         endpoint_config: &v3_runtime_config.endpoint_config,
         payload_limits: v3_runtime_config.payload_limits,
         series_endpoint_uri: &v3_runtime_config.series_endpoint_uri,
+        serializer_telemetry: &v3_runtime_config.serializer_telemetry,
         telemetry: &telemetry,
     };
     let v3_shadow_flush_context = V3FlushContext {
         endpoint_config: &v3_runtime_config.endpoint_config,
         payload_limits: v3_runtime_config.payload_limits,
         series_endpoint_uri: &v3_runtime_config.shadow_series_endpoint_uri,
+        serializer_telemetry: &v3_runtime_config.serializer_telemetry,
         telemetry: &telemetry,
     };
 
@@ -1011,6 +1019,7 @@ struct V3FlushContext<'a> {
     endpoint_config: &'a EndpointConfiguration,
     payload_limits: V3PayloadLimits,
     series_endpoint_uri: &'a str,
+    serializer_telemetry: &'a V3SerializerTelemetry,
     telemetry: &'a ComponentTelemetry,
 }
 
@@ -1117,7 +1126,6 @@ async fn encode_v3_payload_requests(
                 continue;
             }
         };
-
         let encoded_request =
             match create_v3_request(endpoint_uri, encoded, context.endpoint_config.compression_scheme()).await {
                 Ok(request) => request,
@@ -1129,6 +1137,7 @@ async fn encode_v3_payload_requests(
             };
 
         if context.payload_limits.request_fits(&encoded_request) {
+            record_v3_serializer_stats(context.serializer_telemetry, &encoded_request.stats);
             requests.push(V3PayloadRequest {
                 request: encoded_request.request,
                 event_count,
@@ -1139,6 +1148,10 @@ async fn encode_v3_payload_requests(
 
         if range.len() == 1 {
             // The encoded request is too large and this range cannot be split any further.
+            context.serializer_telemetry.record_item_too_big();
+            context
+                .serializer_telemetry
+                .record_split_reason(V3PayloadSplitReason::ItemTooBig);
             warn!(
                 payload_kind,
                 compressed_len = encoded_request.compressed_len,
@@ -1152,12 +1165,48 @@ async fn encode_v3_payload_requests(
         }
 
         // Retry this oversized range as two smaller ranges, preserving the original metric order.
+        context
+            .serializer_telemetry
+            .record_split_reason(V3PayloadSplitReason::PayloadFull);
         let pivot = range.start + range.len() / 2;
         pending_ranges.push_front(pivot..range.end);
         pending_ranges.push_front(range.start..pivot);
     }
 
     requests
+}
+
+fn record_v3_serializer_stats(telemetry: &V3SerializerTelemetry, stats: &V3EncoderStats) {
+    telemetry.record_values_count(stats.value_encoding_stats);
+
+    for column in &stats.columns {
+        let uncompressed_size = column.bytes.len() as u64;
+        let compressed_size = column.compressed_len as u64;
+        telemetry.record_column_size(column.field_number, uncompressed_size, compressed_size);
+    }
+}
+
+async fn compressed_v3_len(bytes: &[u8], compression_scheme: CompressionScheme) -> Result<usize, GenericError> {
+    if matches!(compression_scheme, CompressionScheme::Noop) {
+        return Ok(bytes.len());
+    }
+
+    let buffer = ChunkedBytesBuffer::new(RB_BUFFER_CHUNK_SIZE);
+    let mut compressor = Compressor::from_scheme(compression_scheme, buffer);
+    compressor
+        .write_all(bytes)
+        .await
+        .error_context("Failed to compress V3 bytes.")?;
+    compressor
+        .flush()
+        .await
+        .error_context("Failed to flush V3 compressor.")?;
+    compressor
+        .shutdown()
+        .await
+        .error_context("Failed to shutdown V3 compressor.")?;
+
+    Ok(compressor.into_inner().freeze().len())
 }
 
 fn split_v3_metric_ranges_by_point_limit(
@@ -1184,6 +1233,7 @@ fn split_v3_metric_ranges_by_point_limit(
         if !context.payload_limits.point_count_fits(metric_points) {
             // This metric exceeds the point limit by itself, so it cannot fit in any V3 payload request.
             // Close the current range before dropping this oversized metric.
+            context.serializer_telemetry.record_item_too_big();
             if let Some(start) = current_start.take() {
                 if start < idx {
                     ranges.push_back(start..idx);
@@ -1205,6 +1255,9 @@ fn split_v3_metric_ranges_by_point_limit(
         if would_exceed_point_limit {
             // This metric fits by itself, but not together with the current range.
             // Adding this metric would overflow the current range, so start a new range at this metric.
+            context
+                .serializer_telemetry
+                .record_split_reason(V3PayloadSplitReason::MaxPoints);
             if let Some(start) = current_start {
                 ranges.push_back(start..idx);
             }
@@ -1269,34 +1322,33 @@ async fn flush_payload(
 }
 
 // Encodes a batch of metrics to V3 columnar format.
-fn encode_v3_metrics_batch(metrics: &[Metric], additional_tags: &SharedTagSet) -> Result<Vec<u8>, GenericError> {
-    let mut writer = v3::V3Writer::new();
+fn encode_v3_metrics_batch(
+    metrics: &[Metric], additional_tags: &SharedTagSet,
+) -> Result<V3EncodedMetrics, GenericError> {
+    let mut writer = V3Writer::new();
     let mut tags_deduplicator = ReusableDeduplicator::new();
 
     for metric in metrics {
         write_metric_to_v3(&mut writer, metric, additional_tags, &mut tags_deduplicator);
     }
 
-    let mut output = Vec::new();
     writer
-        .finalize(&mut output)
-        .map_err(|e| generic_error!("Failed to serialize V3 payload: {}", e))?;
-
-    Ok(output)
+        .finalize()
+        .map_err(|e| generic_error!("Failed to serialize V3 payload: {}", e))
 }
 
 /// Writes a single metric to the V3 writer.
 fn write_metric_to_v3(
-    writer: &mut v3::V3Writer, metric: &Metric, additional_tags: &SharedTagSet,
+    writer: &mut V3Writer, metric: &Metric, additional_tags: &SharedTagSet,
     tags_deduplicator: &mut ReusableDeduplicator<Tag>,
 ) {
     let metric_type = match metric.values() {
-        MetricValues::Counter(..) => v3::V3MetricType::Count,
-        MetricValues::Rate(..) => v3::V3MetricType::Rate,
-        MetricValues::Gauge(..) | MetricValues::Set(..) => v3::V3MetricType::Gauge,
-        MetricValues::Histogram(..) | MetricValues::Distribution(..) => v3::V3MetricType::Sketch,
+        MetricValues::Counter(..) => V3MetricType::Count,
+        MetricValues::Rate(..) => V3MetricType::Rate,
+        MetricValues::Gauge(..) | MetricValues::Set(..) => V3MetricType::Gauge,
+        MetricValues::Histogram(..) | MetricValues::Distribution(..) => V3MetricType::Sketch,
     };
-    let is_sketch = metric_type == v3::V3MetricType::Sketch;
+    let is_sketch = metric_type == V3MetricType::Sketch;
 
     let mut builder = writer.write(metric_type, metric.context().name());
 
@@ -1360,7 +1412,7 @@ fn write_metric_to_v3(
         }
     }
 
-    if metric_type != v3::V3MetricType::Sketch {
+    if metric_type != V3MetricType::Sketch {
         if let Some(unit) = metric.metadata().unit() {
             builder.set_unit(unit);
         }
@@ -1446,20 +1498,26 @@ fn is_v3_series_resource_tag(tag: &Tag) -> bool {
 
 /// Creates a V3 HTTP request from encoded payload data.
 async fn create_v3_request(
-    endpoint_uri: &str, payload: Vec<u8>, compression_scheme: CompressionScheme,
+    endpoint_uri: &str, mut encoded: V3EncodedMetrics, compression_scheme: CompressionScheme,
 ) -> Result<V3EncodedRequest, GenericError> {
-    // Our `payload` is the inner `MetricData` message structure at this point, so we just manually write out the
-    // `Payload` message framing before writing the metric data.
+    // Keep the wire payload as one continuous compressed stream. Per-column compressed sizes are measured
+    // independently for telemetry.
     let mut header_buf = [0; 16];
     let header_len = {
         let mut header_writer = CodedOutputStream::bytes(&mut header_buf);
         header_writer.write_tag(3, WireType::LengthDelimited)?;
-        header_writer.write_uint64_no_tag(payload.len() as u64)?;
+        header_writer.write_uint64_no_tag(encoded.payload.len() as u64)?;
         header_writer.flush()?;
         header_writer.total_bytes_written() as usize
     };
 
-    let uncompressed_len = header_len + payload.len();
+    let uncompressed_len = header_len + encoded.payload.len();
+    for column in &mut encoded.stats.columns {
+        column.compressed_len = compressed_v3_len(&column.bytes, compression_scheme)
+            .await
+            .error_context("Failed to measure V3 column compressed size.")?;
+    }
+
     let buffer = ChunkedBytesBuffer::new(RB_BUFFER_CHUNK_SIZE);
     let mut compressor = Compressor::from_scheme(compression_scheme, buffer);
     compressor
@@ -1467,7 +1525,7 @@ async fn create_v3_request(
         .await
         .error_context("Failed to compress V3 payload.")?;
     compressor
-        .write_all(&payload)
+        .write_all(&encoded.payload)
         .await
         .error_context("Failed to compress V3 payload.")?;
     compressor
@@ -1479,7 +1537,6 @@ async fn create_v3_request(
         .await
         .error_context("Failed to shutdown V3 compressor.")?;
 
-    let content_encoding = compressor.content_encoding();
     let compressed_buf = compressor.into_inner().freeze();
     let compressed_len = compressed_buf.len();
 
@@ -1488,7 +1545,7 @@ async fn create_v3_request(
         .uri(endpoint_uri)
         .header(http::header::CONTENT_TYPE, "application/x-protobuf");
 
-    if let Some(encoding) = content_encoding {
+    if let Some(encoding) = content_encoding_for_scheme(compression_scheme) {
         builder = builder.header(http::header::CONTENT_ENCODING, encoding);
     }
 
@@ -1500,13 +1557,24 @@ async fn create_v3_request(
         request,
         compressed_len,
         uncompressed_len,
+        stats: encoded.stats,
     })
+}
+
+fn content_encoding_for_scheme(compression_scheme: CompressionScheme) -> Option<HeaderValue> {
+    match compression_scheme {
+        CompressionScheme::Noop => None,
+        CompressionScheme::Gzip(_) => Some(HeaderValue::from_static("gzip")),
+        CompressionScheme::Zlib(_) => Some(HeaderValue::from_static("deflate")),
+        CompressionScheme::Zstd(_) => Some(HeaderValue::from_static("zstd")),
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::{io::Cursor, sync::Arc};
 
+    use bytes::Bytes;
     use saluki_context::{
         tags::{Tag, TagSet},
         Context,
@@ -1515,6 +1583,7 @@ mod tests {
         event::{metric::MetricMetadata, Event},
         payload::Payload,
     };
+    use saluki_metrics::test::TestRecorder;
     use stringtheory::MetaString;
     use tokio::time::timeout;
 
@@ -1582,15 +1651,130 @@ serializer_experimental_use_v3_api:
 
     #[tokio::test]
     async fn create_v3_request_uses_configured_endpoint_uri() {
-        let request = create_v3_request(
-            "/api/intake/metrics/custom/series",
-            Vec::new(),
-            CompressionScheme::noop(),
-        )
-        .await
-        .expect("request should be created");
+        let encoded = V3Writer::new().finalize().expect("empty V3 payload should encode");
+        let request = create_v3_request("/api/intake/metrics/custom/series", encoded, CompressionScheme::noop())
+            .await
+            .expect("request should be created");
 
         assert_eq!("/api/intake/metrics/custom/series", request.request.uri());
+    }
+
+    #[tokio::test]
+    async fn create_v3_request_uses_single_stream_body_and_column_telemetry() {
+        let metrics = vec![Metric::counter("v3.single.stream", 42.0)];
+        let encoded = encode_v3_metrics_batch(&metrics, &SharedTagSet::default()).expect("metrics should encode to V3");
+        let expected_payload = encoded.payload.clone();
+
+        let request = create_v3_request(V3_SERIES_ENDPOINT_URI, encoded, CompressionScheme::noop())
+            .await
+            .expect("request should be created");
+
+        for column in &request.stats.columns {
+            assert_eq!(column.compressed_len, column.bytes.len());
+        }
+
+        let mut expected_body = Vec::new();
+        {
+            let mut os = CodedOutputStream::vec(&mut expected_body);
+            os.write_tag(3, WireType::LengthDelimited).unwrap();
+            os.write_uint64_no_tag(expected_payload.len() as u64).unwrap();
+            os.flush().unwrap();
+        }
+        expected_body.extend_from_slice(&expected_payload);
+
+        assert_eq!(request.request.into_body().into_bytes(), Bytes::from(expected_body));
+    }
+
+    #[tokio::test]
+    async fn create_v3_request_zstd_body_decodes_to_metric_payload() {
+        let metrics = vec![Metric::counter("v3.single.stream.zstd", 42.0)];
+        let encoded = encode_v3_metrics_batch(&metrics, &SharedTagSet::default()).expect("metrics should encode to V3");
+        let expected_payload = encoded.payload.clone();
+
+        let request = create_v3_request(V3_SERIES_ENDPOINT_URI, encoded, CompressionScheme::zstd_default())
+            .await
+            .expect("request should be created");
+
+        for column in &request.stats.columns {
+            let expected_compressed_len = compressed_v3_len(&column.bytes, CompressionScheme::zstd_default())
+                .await
+                .expect("column compressed size should be measured");
+            assert_eq!(column.compressed_len, expected_compressed_len);
+        }
+
+        let mut expected_body = Vec::new();
+        {
+            let mut os = CodedOutputStream::vec(&mut expected_body);
+            os.write_tag(3, WireType::LengthDelimited).unwrap();
+            os.write_uint64_no_tag(expected_payload.len() as u64).unwrap();
+            os.flush().unwrap();
+        }
+        expected_body.extend_from_slice(&expected_payload);
+
+        let decoded_body = zstd::stream::decode_all(Cursor::new(request.request.into_body().into_bytes()))
+            .expect("compressed V3 body should decode");
+        assert_eq!(decoded_body, expected_body);
+    }
+
+    #[tokio::test]
+    async fn v3_serializer_stats_record_agent_style_value_and_column_counters() {
+        const VALUE_SINT64_FIELD_NUMBER: u32 = 17;
+
+        let recorder = TestRecorder::default();
+        let _local = metrics::set_default_local_recorder(&recorder);
+        let serializer_telemetry = V3SerializerTelemetry::from_builder(&MetricsBuilder::default());
+        let metrics = vec![
+            Metric::gauge("v3.telemetry.zero", [(123, 0.0), (124, 0.0)]),
+            Metric::counter("v3.telemetry.sint64", [(123, 100.0), (124, 200.0)]),
+            Metric::gauge("v3.telemetry.float32", [(123, 1.5), (124, 2.25)]),
+            Metric::gauge("v3.telemetry.float64", [(123, (1i64 << 30) as f64), (124, 1.5)]),
+        ];
+        let encoded = encode_v3_metrics_batch(&metrics, &SharedTagSet::default()).expect("metrics should encode to V3");
+        let request = create_v3_request(V3_SERIES_ENDPOINT_URI, encoded, CompressionScheme::noop())
+            .await
+            .expect("request should be created");
+
+        let value_sint64_column = request
+            .stats
+            .columns
+            .iter()
+            .find(|column| column.field_number == VALUE_SINT64_FIELD_NUMBER)
+            .expect("sint64 value column should be present");
+        let value_sint64_len = value_sint64_column.bytes.len() as u64;
+        assert_eq!(value_sint64_column.compressed_len as u64, value_sint64_len);
+
+        record_v3_serializer_stats(&serializer_telemetry, &request.stats);
+
+        assert_eq!(
+            recorder.counter(("serializer.v3_values_count", &[("type", "zero")])),
+            Some(2)
+        );
+        assert_eq!(
+            recorder.counter(("serializer.v3_values_count", &[("type", "sint64")])),
+            Some(2)
+        );
+        assert_eq!(
+            recorder.counter(("serializer.v3_values_count", &[("type", "float32")])),
+            Some(2)
+        );
+        assert_eq!(
+            recorder.counter(("serializer.v3_values_count", &[("type", "float64")])),
+            Some(2)
+        );
+        assert_eq!(
+            recorder.counter((
+                "serializer.v3_column_size",
+                &[("column", "ValueSint64"), ("compressed", "uncompressed")]
+            )),
+            Some(value_sint64_len)
+        );
+        assert_eq!(
+            recorder.counter((
+                "serializer.v3_column_size",
+                &[("column", "ValueSint64"), ("compressed", "compressed")]
+            )),
+            Some(value_sint64_len)
+        );
     }
 
     async fn create_v3_test_request(metrics: &[Metric]) -> V3EncodedRequest {
@@ -1601,12 +1785,14 @@ serializer_experimental_use_v3_api:
     }
 
     fn test_v3_flush_context<'a>(
-        ep_config: &'a EndpointConfiguration, payload_limits: V3PayloadLimits, telemetry: &'a ComponentTelemetry,
+        ep_config: &'a EndpointConfiguration, payload_limits: V3PayloadLimits,
+        serializer_telemetry: &'a V3SerializerTelemetry, telemetry: &'a ComponentTelemetry,
     ) -> V3FlushContext<'a> {
         V3FlushContext {
             endpoint_config: ep_config,
             payload_limits,
             series_endpoint_uri: V3_SERIES_ENDPOINT_URI,
+            serializer_telemetry,
             telemetry,
         }
     }
@@ -1624,8 +1810,9 @@ serializer_experimental_use_v3_api:
         let limits = V3PayloadLimits::new(single_request.compressed_len, usize::MAX, 10_000, 10_000);
         let ep_config = EndpointConfiguration::new(CompressionScheme::noop(), 10_000, None);
         let telemetry = ComponentTelemetry::from_builder(&MetricsBuilder::default());
+        let serializer_telemetry = V3SerializerTelemetry::from_builder(&MetricsBuilder::default());
 
-        let context = test_v3_flush_context(&ep_config, limits, &telemetry);
+        let context = test_v3_flush_context(&ep_config, limits, &serializer_telemetry, &telemetry);
         let requests = encode_v3_payload_requests(V3_SERIES_ENDPOINT_URI, &metrics, context, "series").await;
 
         assert_eq!(2, requests.len());
@@ -1636,6 +1823,52 @@ serializer_experimental_use_v3_api:
         assert!(requests
             .iter()
             .all(|request| request.request.body().len() <= limits.max_compressed_size));
+    }
+
+    #[tokio::test]
+    async fn v3_serializer_stats_record_payload_full_split_reason() {
+        let metrics = vec![
+            Metric::counter("v3.telemetry.payload_full.one", 1.0),
+            Metric::counter("v3.telemetry.payload_full.two", 2.0),
+        ];
+        let single_request = create_v3_test_request(&metrics[..1]).await;
+        let limits = V3PayloadLimits::new(single_request.compressed_len, usize::MAX, 10_000, 10_000);
+        let ep_config = EndpointConfiguration::new(CompressionScheme::noop(), 10_000, None);
+        let recorder = TestRecorder::default();
+        let _local = metrics::set_default_local_recorder(&recorder);
+        let telemetry = ComponentTelemetry::from_builder(&MetricsBuilder::default());
+        let serializer_telemetry = V3SerializerTelemetry::from_builder(&MetricsBuilder::default());
+
+        let context = test_v3_flush_context(&ep_config, limits, &serializer_telemetry, &telemetry);
+        let requests = encode_v3_payload_requests(V3_SERIES_ENDPOINT_URI, &metrics, context, "series").await;
+
+        assert_eq!(2, requests.len());
+        assert_eq!(
+            recorder.counter(("serializer.v3_payload_split_reason", &[("reason", "payload_full")])),
+            Some(1)
+        );
+    }
+
+    #[tokio::test]
+    async fn v3_serializer_stats_record_item_too_big_split_reason() {
+        let metrics = vec![Metric::counter("v3.telemetry.item_too_big", 1.0)];
+        let request = create_v3_test_request(&metrics).await;
+        let limits = V3PayloadLimits::new(request.compressed_len - 1, usize::MAX, 10_000, 10_000);
+        let ep_config = EndpointConfiguration::new(CompressionScheme::noop(), 10_000, None);
+        let recorder = TestRecorder::default();
+        let _local = metrics::set_default_local_recorder(&recorder);
+        let telemetry = ComponentTelemetry::from_builder(&MetricsBuilder::default());
+        let serializer_telemetry = V3SerializerTelemetry::from_builder(&MetricsBuilder::default());
+
+        let context = test_v3_flush_context(&ep_config, limits, &serializer_telemetry, &telemetry);
+        let requests = encode_v3_payload_requests(V3_SERIES_ENDPOINT_URI, &metrics, context, "series").await;
+
+        assert!(requests.is_empty());
+        assert_eq!(recorder.counter("serializer.v3_item_too_big"), Some(1));
+        assert_eq!(
+            recorder.counter(("serializer.v3_payload_split_reason", &[("reason", "item_too_big")])),
+            Some(1)
+        );
     }
 
     #[tokio::test]
@@ -1651,8 +1884,9 @@ serializer_experimental_use_v3_api:
         let limits = V3PayloadLimits::new(usize::MAX, single_request.uncompressed_len, 10_000, 10_000);
         let ep_config = EndpointConfiguration::new(CompressionScheme::noop(), 10_000, None);
         let telemetry = ComponentTelemetry::from_builder(&MetricsBuilder::default());
+        let serializer_telemetry = V3SerializerTelemetry::from_builder(&MetricsBuilder::default());
 
-        let context = test_v3_flush_context(&ep_config, limits, &telemetry);
+        let context = test_v3_flush_context(&ep_config, limits, &serializer_telemetry, &telemetry);
         let requests = encode_v3_payload_requests(V3_SERIES_ENDPOINT_URI, &metrics, context, "series").await;
 
         assert_eq!(2, requests.len());
@@ -1672,13 +1906,39 @@ serializer_experimental_use_v3_api:
         let limits = V3PayloadLimits::new(usize::MAX, usize::MAX, 10_000, 3);
         let ep_config = EndpointConfiguration::new(CompressionScheme::noop(), 10_000, None);
         let telemetry = ComponentTelemetry::from_builder(&MetricsBuilder::default());
-        let context = test_v3_flush_context(&ep_config, limits, &telemetry);
+        let serializer_telemetry = V3SerializerTelemetry::from_builder(&MetricsBuilder::default());
+        let context = test_v3_flush_context(&ep_config, limits, &serializer_telemetry, &telemetry);
 
         let ranges = split_v3_metric_ranges_by_point_limit(&metrics, context, "series")
             .into_iter()
             .collect::<Vec<_>>();
 
         assert_eq!(vec![0..1, 1..3], ranges);
+    }
+
+    #[test]
+    fn v3_serializer_stats_record_max_points_split_reason() {
+        let metrics = vec![
+            Metric::counter("v3.telemetry.max_points.one", [(123, 1.0), (124, 2.0)]),
+            Metric::counter("v3.telemetry.max_points.two", [(123, 3.0), (124, 4.0)]),
+        ];
+        let limits = V3PayloadLimits::new(usize::MAX, usize::MAX, 10_000, 2);
+        let ep_config = EndpointConfiguration::new(CompressionScheme::noop(), 10_000, None);
+        let recorder = TestRecorder::default();
+        let _local = metrics::set_default_local_recorder(&recorder);
+        let telemetry = ComponentTelemetry::from_builder(&MetricsBuilder::default());
+        let serializer_telemetry = V3SerializerTelemetry::from_builder(&MetricsBuilder::default());
+        let context = test_v3_flush_context(&ep_config, limits, &serializer_telemetry, &telemetry);
+
+        let ranges = split_v3_metric_ranges_by_point_limit(&metrics, context, "series")
+            .into_iter()
+            .collect::<Vec<_>>();
+
+        assert_eq!(vec![0..1, 1..2], ranges);
+        assert_eq!(
+            recorder.counter(("serializer.v3_payload_split_reason", &[("reason", "max_points")])),
+            Some(1)
+        );
     }
 
     #[test]
@@ -1691,7 +1951,8 @@ serializer_experimental_use_v3_api:
         let limits = V3PayloadLimits::new(usize::MAX, usize::MAX, 10_000, 10_000);
         let ep_config = EndpointConfiguration::new(CompressionScheme::noop(), 10_000, None);
         let telemetry = ComponentTelemetry::from_builder(&MetricsBuilder::default());
-        let context = test_v3_flush_context(&ep_config, limits, &telemetry);
+        let serializer_telemetry = V3SerializerTelemetry::from_builder(&MetricsBuilder::default());
+        let context = test_v3_flush_context(&ep_config, limits, &serializer_telemetry, &telemetry);
 
         let ranges = split_v3_metric_ranges_by_point_limit(&metrics, context, "series")
             .into_iter()
@@ -1713,10 +1974,11 @@ serializer_experimental_use_v3_api:
         let limits = V3PayloadLimits::new(single_request.compressed_len, usize::MAX, 10_000, 10_000);
         let ep_config = EndpointConfiguration::new(CompressionScheme::noop(), 10_000, None);
         let telemetry = ComponentTelemetry::from_builder(&MetricsBuilder::default());
+        let serializer_telemetry = V3SerializerTelemetry::from_builder(&MetricsBuilder::default());
         let batch_id = Uuid::now_v7();
         let (mut payloads_tx, mut payloads_rx) = tokio::sync::mpsc::channel(8);
 
-        let context = test_v3_flush_context(&ep_config, limits, &telemetry);
+        let context = test_v3_flush_context(&ep_config, limits, &serializer_telemetry, &telemetry);
         encode_and_flush_v3_series_metrics(
             context,
             &mut metrics,
@@ -1778,10 +2040,11 @@ serializer_experimental_use_v3_api:
         let limits = V3PayloadLimits::new(single_request.compressed_len, usize::MAX, 10_000, 10_000);
         let ep_config = EndpointConfiguration::new(CompressionScheme::noop(), 10_000, None);
         let telemetry = ComponentTelemetry::from_builder(&MetricsBuilder::default());
+        let serializer_telemetry = V3SerializerTelemetry::from_builder(&MetricsBuilder::default());
         let batch_id = Uuid::now_v7();
         let (mut payloads_tx, mut payloads_rx) = tokio::sync::mpsc::channel(8);
 
-        let context = test_v3_flush_context(&ep_config, limits, &telemetry);
+        let context = test_v3_flush_context(&ep_config, limits, &serializer_telemetry, &telemetry);
         encode_and_flush_v3_sketch_metrics(
             context,
             &mut metrics,
@@ -1834,7 +2097,8 @@ serializer_experimental_use_v3_api:
         let same_unit = Metric::from_parts(context, MetricValues::gauge([3.0_f64]), metadata);
 
         let payload = encode_v3_metrics_batch(&[gauge, no_unit, same_unit], &SharedTagSet::default())
-            .expect("V3 metric should encode successfully");
+            .expect("V3 metric should encode successfully")
+            .payload;
 
         let expected_unit_dict = [
             0xca, 0x01, // field 25, length-delimited.
@@ -1870,7 +2134,8 @@ serializer_experimental_use_v3_api:
         let histogram = Metric::from_parts(context, MetricValues::histogram([1.0_f64]), metadata);
 
         let payload = encode_v3_metrics_batch(&[histogram], &SharedTagSet::default())
-            .expect("V3 sketch metric should encode successfully");
+            .expect("V3 sketch metric should encode successfully")
+            .payload;
 
         assert!(
             !payload
@@ -1895,8 +2160,9 @@ serializer_experimental_use_v3_api:
         let metadata = MetricMetadata::default().with_hostname(Some(Arc::from("host-a")));
         let metric = Metric::from_parts(context, MetricValues::gauge([1.0_f64]), metadata);
 
-        let payload =
-            encode_v3_metrics_batch(&[metric], &SharedTagSet::default()).expect("V3 series should encode successfully");
+        let payload = encode_v3_metrics_batch(&[metric], &SharedTagSet::default())
+            .expect("V3 series should encode successfully")
+            .payload;
 
         assert_contains_bytes(&payload, b"env:prod");
         assert!(!contains_bytes(&payload, b"device:switch1"));
@@ -1925,8 +2191,9 @@ serializer_experimental_use_v3_api:
         let metadata = MetricMetadata::default().with_hostname(Some(Arc::from("")));
         let metric = Metric::from_parts(context, MetricValues::gauge([1.0_f64]), metadata);
 
-        let payload =
-            encode_v3_metrics_batch(&[metric], &additional_tags).expect("V3 series should encode successfully");
+        let payload = encode_v3_metrics_batch(&[metric], &additional_tags)
+            .expect("V3 series should encode successfully")
+            .payload;
 
         assert_contains_bytes(&payload, b"env:prod");
         assert_contains_bytes(&payload, b"team:core");
@@ -1954,8 +2221,9 @@ serializer_experimental_use_v3_api:
         let metadata = MetricMetadata::default().with_hostname(Some(Arc::from("host-a")));
         let metric = Metric::from_parts(context, MetricValues::histogram([1.0_f64]), metadata);
 
-        let payload =
-            encode_v3_metrics_batch(&[metric], &SharedTagSet::default()).expect("V3 sketch should encode successfully");
+        let payload = encode_v3_metrics_batch(&[metric], &SharedTagSet::default())
+            .expect("V3 sketch should encode successfully")
+            .payload;
 
         assert_contains_bytes(&payload, b"env:prod");
         assert_contains_bytes(&payload, b"device:switch1");
@@ -1978,7 +2246,9 @@ serializer_experimental_use_v3_api:
                 .expect("V2 request builder should be created"),
         );
         let v3_endpoint_config = EndpointConfiguration::new(CompressionScheme::noop(), 10_000, None);
-        let telemetry = ComponentTelemetry::from_builder(&MetricsBuilder::default());
+        let metrics_builder = MetricsBuilder::default();
+        let telemetry = ComponentTelemetry::from_builder(&metrics_builder);
+        let serializer_telemetry = V3SerializerTelemetry::from_builder(&metrics_builder);
         let (events_tx, events_rx) = tokio::sync::mpsc::channel(1);
         let (payloads_tx, mut payloads_rx) = tokio::sync::mpsc::channel(8);
 
@@ -1993,6 +2263,7 @@ serializer_experimental_use_v3_api:
                 series_endpoint_uri: V3_SERIES_ENDPOINT_URI.to_string(),
                 shadow_series_endpoint_uri: "/api/intake/metrics/v3beta/series".to_string(),
                 series_shadow_config: SeriesShadowConfig::new(0.0),
+                serializer_telemetry,
             },
             telemetry,
             events_rx,
@@ -2058,7 +2329,9 @@ serializer_experimental_use_v3_api:
                 .expect("V2 request builder should be created"),
         );
         let v3_endpoint_config = EndpointConfiguration::new(CompressionScheme::noop(), 10_000, None);
-        let telemetry = ComponentTelemetry::from_builder(&MetricsBuilder::default());
+        let metrics_builder = MetricsBuilder::default();
+        let telemetry = ComponentTelemetry::from_builder(&metrics_builder);
+        let serializer_telemetry = V3SerializerTelemetry::from_builder(&metrics_builder);
         let (events_tx, events_rx) = tokio::sync::mpsc::channel(1);
         let (payloads_tx, mut payloads_rx) = tokio::sync::mpsc::channel(8);
 
@@ -2073,6 +2346,7 @@ serializer_experimental_use_v3_api:
                 series_endpoint_uri: V3_SERIES_ENDPOINT_URI.to_string(),
                 shadow_series_endpoint_uri: "/api/intake/metrics/v3beta/custom".to_string(),
                 series_shadow_config: SeriesShadowConfig::new(1.0),
+                serializer_telemetry,
             },
             telemetry,
             events_rx,
@@ -2135,7 +2409,9 @@ serializer_experimental_use_v3_api:
                 .expect("V2 request builder should be created"),
         );
         let v3_endpoint_config = EndpointConfiguration::new(CompressionScheme::noop(), 10_000, None);
-        let telemetry = ComponentTelemetry::from_builder(&MetricsBuilder::default());
+        let metrics_builder = MetricsBuilder::default();
+        let telemetry = ComponentTelemetry::from_builder(&metrics_builder);
+        let serializer_telemetry = V3SerializerTelemetry::from_builder(&metrics_builder);
         let (events_tx, events_rx) = tokio::sync::mpsc::channel(1);
         let (payloads_tx, mut payloads_rx) = tokio::sync::mpsc::channel(8);
 
@@ -2150,6 +2426,7 @@ serializer_experimental_use_v3_api:
                 series_endpoint_uri: V3_SERIES_ENDPOINT_URI.to_string(),
                 shadow_series_endpoint_uri: "/api/intake/metrics/v3beta/series".to_string(),
                 series_shadow_config: SeriesShadowConfig::new(0.0),
+                serializer_telemetry,
             },
             telemetry,
             events_rx,
