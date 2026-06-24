@@ -22,26 +22,33 @@
 //!   [`SalukiConfiguration`]. The master is translated once at `start()` and frozen for the process
 //!   lifetime; only the DogStatsD source is real in this stage.
 
+use std::sync::Arc;
+
 use agent_data_plane_config::{SalukiConfiguration, SalukiOnlyConfiguration};
+use arc_swap::ArcSwap;
 use bytesize::ByteSize;
 use datadog_agent_config::DatadogConfiguration;
 use saluki_config_tools::GenericConfiguration;
 use saluki_error::{ErrorContext as _, GenericError};
 
+use crate::dynamic::{self, DynamicConfigHandles};
 use crate::translate::translate;
 
 /// The running configuration system.
 ///
-/// Holds the retained source map and the translated master [`SalukiConfiguration`]. The master is a
-/// plain, immutable field: translated once at [`ConfigurationSystemLoader::start`] and never
-/// mutated. A later dynamic flip swaps this for a swappable container without changing
-/// [`saluki`](Self::saluki) or [`raw_map`](Self::raw_map).
+/// Holds the retained source map and the translated [`SalukiConfiguration`]. The current model is
+/// stored in an [`ArcSwap`] so the dynamic router can atomically publish retranslated configs
+/// without blocking readers. [`saluki`](Self::saluki) loads the current snapshot;
+/// [`dynamic_handles`](Self::dynamic_handles) exposes typed live handles for components.
 pub struct ConfigurationSystem {
     /// The retained source map. The single source of raw config for un-flipped components.
     config: GenericConfiguration,
 
-    /// The translated master. Frozen at `start()`; only the DogStatsD source is real in this stage.
-    saluki: SalukiConfiguration,
+    /// The atomically-swappable current translated model.
+    current: Arc<ArcSwap<SalukiConfiguration>>,
+
+    /// Typed dynamic config handles for components.
+    handles: DynamicConfigHandles,
 }
 
 impl ConfigurationSystem {
@@ -63,12 +70,16 @@ impl ConfigurationSystem {
         &self.config
     }
 
-    /// Returns an owned clone of the translated master [`SalukiConfiguration`].
+    /// Returns an owned clone of the current [`SalukiConfiguration`].
     ///
-    /// The clone is cheap relative to startup cost and lets a flipped helper take a fully owned
-    /// slice. In this stage only `components.dogstatsd.source` carries real translated values.
+    /// After dynamic updates the clone reflects the latest accepted translation.
     pub fn saluki(&self) -> SalukiConfiguration {
-        self.saluki.clone()
+        (**self.current.load()).clone()
+    }
+
+    /// Returns the typed dynamic config handles for components.
+    pub fn dynamic_handles(&self) -> &DynamicConfigHandles {
+        &self.handles
     }
 }
 
@@ -103,9 +114,13 @@ impl ConfigurationSystemLoader {
 
         let saluki = translate(&saluki_only, &datadog).error_context("Failed to translate configuration.")?;
 
+        let current = Arc::new(ArcSwap::from_pointee(saluki));
+        let handles = dynamic::start_dynamic_router(&self.config, &current, &saluki_only);
+
         Ok(ConfigurationSystem {
             config: self.config,
-            saluki,
+            current,
+            handles,
         })
     }
 }

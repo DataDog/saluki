@@ -49,9 +49,11 @@
 //!
 
 // TODO(visibility): add crate-boundary architectural guard when arch tests are wired up
+mod dynamic;
 mod system;
 pub(crate) mod translate;
 
+pub use self::dynamic::DynamicConfigHandles;
 pub use self::system::{ConfigurationSystem, ConfigurationSystemLoader};
 
 #[cfg(test)]

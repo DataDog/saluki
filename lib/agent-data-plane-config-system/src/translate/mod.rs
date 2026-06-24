@@ -20,7 +20,6 @@ use datadog_agent_config::{drive, DatadogConfiguration, TranslateError};
 ///
 /// The accumulator composes the output type [`SalukiConfiguration`], along with accumulated
 /// translation errors.
-#[allow(dead_code)]
 pub(crate) struct Translator {
     /// The in-progress native model. Seeded from the Saluki-only base, then overlaid by the drive.
     pub(crate) saluki: SalukiConfiguration,
@@ -35,7 +34,6 @@ impl Translator {
     /// `base` is the lowest-precedence starting point (typically `saluki_only.seed()`). The Datadog
     /// drive overlays its schema fields on top, so the base only usefully carries disjoint
     /// Saluki-schema-only fields.
-    #[allow(dead_code)]
     pub(crate) fn new(base: SalukiConfiguration) -> Self {
         Self {
             saluki: base,
@@ -44,13 +42,11 @@ impl Translator {
     }
 
     /// Returns the finished native model.
-    #[allow(dead_code)]
     pub(crate) fn finish(self) -> SalukiConfiguration {
         self.saluki
     }
 
     /// Records a semantic translation error. The first recorded error is surfaced by `drive`.
-    #[allow(dead_code)]
     pub(crate) fn record_error(&mut self, e: TranslateError) {
         self.errors.push(e);
     }
@@ -66,7 +62,6 @@ impl Translator {
 /// Returns the first [`TranslateError`] recorded while consuming a witnessed value (for example, a
 /// value that cannot be parsed into its native destination). Callers decide policy: startup bails;
 /// a dynamic update is rejected and the last-good config retained.
-#[allow(dead_code)]
 pub(crate) fn translate(
     saluki_only: &SalukiOnlyConfiguration, datadog: &DatadogConfiguration,
 ) -> Result<SalukiConfiguration, TranslateError> {
