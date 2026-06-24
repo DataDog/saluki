@@ -323,29 +323,7 @@ async fn run_background_shrinker<T: Poolable>(strategy: Arc<ElasticStrategy<T>>)
                 active, min_capacity, "Pool qualifies for shrinking. Attempting to remove single item..."
             );
 
-            // Try acquiring a permit from the pool, giving us permission to remove an item.
-            let permit = strategy
-                .available
-                .acquire()
-                .await
-                .expect("semaphore should never be closed");
-
-            // Lock the pool and remove an item, taking care to update the active count while holding the lock.
-            let item = {
-                let item = strategy.items.lock().unwrap().pop_back().unwrap();
-                strategy.active.fetch_sub(1, AcqRel);
-                item
-            };
-
-            // Drop the item itself, and update our metrics.
-            drop(item);
-            strategy.metrics.deleted().increment(1);
-            strategy.metrics.capacity().decrement(1.0);
-
-            // Forget the permit so that we shrink the overall number of permits attached to the semaphore.
-            permit.forget();
-
-            debug!("Shrinker successfully removed an item from the pool.");
+            try_shrink_one_available_item(&strategy);
         } else {
             debug!(
                 avg_demand = average_demand.value(),
@@ -353,6 +331,33 @@ async fn run_background_shrinker<T: Poolable>(strategy: Arc<ElasticStrategy<T>>)
             );
         }
     }
+}
+
+fn try_shrink_one_available_item<T: Poolable>(strategy: &ElasticStrategy<T>) -> bool {
+    // Only shrink idle pool capacity. Waiting here can let the shrinker consume the next returned item ahead of
+    // application waiters that are already blocked on the same semaphore.
+    let Ok(permit) = strategy.available.try_acquire() else {
+        debug!("Pool qualifies for shrinking, but no idle item is available.");
+        return false;
+    };
+
+    // Lock the pool and remove an item, taking care to update the active count while holding the lock.
+    let item = {
+        let item = strategy.items.lock().unwrap().pop_back().unwrap();
+        strategy.active.fetch_sub(1, AcqRel);
+        item
+    };
+
+    // Drop the item itself, and update our metrics.
+    drop(item);
+    strategy.metrics.deleted().increment(1);
+    strategy.metrics.capacity().decrement(1.0);
+
+    // Forget the permit so that we shrink the overall number of permits attached to the semaphore.
+    permit.forget();
+
+    debug!("Shrinker successfully removed an item from the pool.");
+    true
 }
 
 struct Ewma {
@@ -378,7 +383,7 @@ impl Ewma {
 mod tests {
     use tokio_test::{assert_pending, assert_ready, task::spawn};
 
-    use super::ElasticObjectPool;
+    use super::{try_shrink_one_available_item, ElasticObjectPool};
     use crate::{pooled, pooling::ObjectPool as _};
 
     pooled! {
@@ -442,5 +447,31 @@ mod tests {
 
         drop(third_item);
         assert_eq!(pool.strategy.available.available_permits(), 2);
+    }
+
+    #[test]
+    fn shrinker_does_not_wait_for_returned_items() {
+        let (pool, _) = ElasticObjectPool::<TestObject>::with_capacity("test", 1, 2);
+
+        let mut first_acquire = spawn(pool.acquire());
+        let first_item = assert_ready!(first_acquire.poll());
+
+        let mut second_acquire = spawn(pool.acquire());
+        let second_item = assert_ready!(second_acquire.poll());
+
+        let mut third_acquire = spawn(pool.acquire());
+        assert_pending!(third_acquire.poll());
+        assert!(!third_acquire.is_woken());
+
+        assert!(!try_shrink_one_available_item(&pool.strategy));
+
+        drop(first_item);
+        assert!(third_acquire.is_woken());
+
+        let third_item = assert_ready!(third_acquire.poll());
+        assert_eq!(pool.strategy.active.load(std::sync::atomic::Ordering::Acquire), 2);
+
+        drop(second_item);
+        drop(third_item);
     }
 }

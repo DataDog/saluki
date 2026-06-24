@@ -442,7 +442,8 @@ The following settings are specific to ADP and have no equivalent in the core ag
 | `data_plane.stop_timeout`                                       | ADP graceful shutdown timeout (s)          | derived |
 | `dogstatsd_allow_context_heap_allocs`                           | Allow heap allocations for contexts        |         |
 | `dogstatsd_autoscale_udp_listeners`                             | Bind multiple UDP sockets via SO_REUSEPORT |         |
-| `dogstatsd_buffer_count`                                        | Number of receive buffers                  |         |
+| `dogstatsd_buffer_count_max`                                    | Max receive buffers                        | 256     |
+| `dogstatsd_buffer_count`                                        | Baseline receive buffers                   | 128     |
 | `dogstatsd_cached_contexts_limit`                               | Max cached metric contexts                 |         |
 | `dogstatsd_cached_tagsets_limit`                                | Max cached tagsets                         |         |
 | `dogstatsd_mapper_string_interner_size`                         | Mapper string interner capacity            |         |
