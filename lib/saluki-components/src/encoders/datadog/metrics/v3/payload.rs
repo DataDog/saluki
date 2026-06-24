@@ -2,6 +2,8 @@ use http::Request;
 use saluki_common::buf::FrozenChunkedBytesBuffer;
 use saluki_core::data_model::event::metric::Metric;
 
+use super::V3EncoderStats;
+
 /// Limits used when building V3 metrics payloads.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct V3PayloadLimits {
@@ -42,6 +44,7 @@ pub(crate) struct V3EncodedRequest {
     pub(crate) request: Request<FrozenChunkedBytesBuffer>,
     pub(crate) compressed_len: usize,
     pub(crate) uncompressed_len: usize,
+    pub(crate) stats: V3EncoderStats,
 }
 
 /// V3 payload request ready to send with telemetry counts.
