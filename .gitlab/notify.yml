@@ -1,11 +1,6 @@
 notify-nightly-failure:
-  stage: notify
-  image: registry.ddbuild.io/slack-notifier:v95115791-8eb5fca-sdm-gbi-noble@sha256:362e2b649afcac25b1054b1e27b667b55a8a1adc1469c10ba753a78b914c6d3f
-  tags: ["arch:amd64"]
+  extends: .slack-notifier-channel.on-failure
   only:
     - $AGENT_NIGHTLY == "true"
-  when: on_failure
-  script:
-    - BUILD_URL="$CI_PROJECT_URL/pipelines/$CI_PIPELINE_ID"
-    - MESSAGE=":host-red: $CI_PROJECT_NAME nightly pipeline (latest Agent main) <$BUILD_URL|$CI_PIPELINE_ID> failed."
-    - postmessage "#agent-data-plane" "$MESSAGE"
+  variables:
+    CHANNEL: "#agent-data-plane"
