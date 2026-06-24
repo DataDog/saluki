@@ -28,7 +28,7 @@ use crate::common::datadog::{
 /// Forwards Datadog-specific payloads to the Datadog platform. Handles the standard Datadog Agent configuration,
 /// in terms of specifying additional endpoints, adding the necessary HTTP request headers for authentication,
 /// identification, and more.
-pub struct DatadogConfiguration {
+pub struct DatadogForwarderConfiguration {
     /// Forwarder configuration settings.
     ///
     /// See [`ForwarderConfiguration`] for more information about the available settings.
@@ -37,8 +37,8 @@ pub struct DatadogConfiguration {
     configuration: Option<GenericConfiguration>,
 }
 
-impl DatadogConfiguration {
-    /// Creates a new `DatadogConfiguration` from the given configuration.
+impl DatadogForwarderConfiguration {
+    /// Creates a new `DatadogForwarderConfiguration` from the given configuration.
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
         let forwarder_config = ForwarderConfiguration::from_configuration(config)?;
         Ok(Self {
@@ -73,7 +73,7 @@ impl DatadogConfiguration {
 }
 
 #[async_trait]
-impl ForwarderBuilder for DatadogConfiguration {
+impl ForwarderBuilder for DatadogForwarderConfiguration {
     fn input_payload_type(&self) -> PayloadType {
         PayloadType::Http
     }
@@ -94,7 +94,7 @@ impl ForwarderBuilder for DatadogConfiguration {
     }
 }
 
-impl MemoryBounds for DatadogConfiguration {
+impl MemoryBounds for DatadogForwarderConfiguration {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
         builder
             .minimum()
@@ -220,8 +220,8 @@ mod tests {
             .expect("initial dynamic snapshot should be sent");
         generic_config.ready().await;
 
-        let config = DatadogConfiguration::from_configuration(&generic_config)
-            .expect("DatadogConfiguration should parse")
+        let config = DatadogForwarderConfiguration::from_configuration(&generic_config)
+            .expect("DatadogForwarderConfiguration should parse")
             .with_endpoint_override_and_api_key_refresh_config_path(
                 "http://mrf.example.test".to_string(),
                 "mrf-api-key".to_string(),
