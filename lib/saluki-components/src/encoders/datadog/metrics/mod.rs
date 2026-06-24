@@ -181,13 +181,11 @@ fn metrics_primary_url_can_resolve(url: &str) -> bool {
     if url.is_empty() {
         return false;
     }
-
-    let url = if url.starts_with("http://") || url.starts_with("https://") {
-        url.to_string()
+    if url.starts_with("http://") || url.starts_with("https://") {
+        Url::parse(url).is_ok_and(|url| url.host_str().is_some())
     } else {
-        format!("https://{url}")
-    };
-    Url::parse(&url).is_ok_and(|url| url.host_str().is_some())
+        Url::parse(&format!("https://{url}")).is_ok_and(|url| url.host_str().is_some())
+    }
 }
 
 fn series_v3_can_be_enabled_for_config(
