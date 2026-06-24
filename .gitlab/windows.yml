@@ -84,15 +84,9 @@ test-integration-windows-amd64:
     PANORAMIC_LOG_DIR: integration-logs
   script:
     - *windows-build-image-pull-script
-    # Resolve the ADP base image (the Datadog Agent image ADP is layered onto for the Windows
-    # integration tests). Default to the pinned released Agent; on the nightly schedule
-    # (AGENT_NIGHTLY=true -- see docs/development/nightly-agent.md) build against the latest `main`
-    # Windows Agent dev image so the Windows integration suite catches ADP/Agent incompatibilities
-    # before the Agent version is bumped. NIGHTLY_WINDOWS_AGENT_IMAGE lets the schedule override the
-    # registry/tag without a code change.
     - |
       $WindowsAdpBaseImage = "registry.datadoghq.com/agent:7.80.2-ltsc2022"
-      if ($env:AGENT_NIGHTLY -eq "true") {
+      if ($env:AGENT_NIGHTLY -eq "true") { # for nightly run, use latest Agent
         if ($env:NIGHTLY_WINDOWS_AGENT_IMAGE) {
           $WindowsAdpBaseImage = $env:NIGHTLY_WINDOWS_AGENT_IMAGE
         } else {

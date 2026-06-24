@@ -27,17 +27,9 @@ build-bundled-agent-adp-image:
   retry: 2
   timeout: 10m
   script:
-    # Resolve the Datadog Agent base image for the converged Agent+ADP image.
-    #
-    # By default we build against the pinned released Agent. On the nightly schedule
-    # (AGENT_NIGHTLY=true, set on the GitLab pipeline schedule -- see docs/development/nightly-agent.md)
-    # we instead build against the latest `main` Agent+DDOT dev image so the correctness and
-    # integration suites catch ADP/Agent incompatibilities before the Agent version is bumped.
-    # NIGHTLY_AGENT_IMAGE lets the schedule override the registry/tag without a code change (e.g.
-    # an internal mirror if the runner cannot reach Docker Hub).
     - |
       DD_AGENT_IMAGE="registry.datadoghq.com/agent:${PUBLIC_DD_AGENT_VERSION}"
-      if [ "${AGENT_NIGHTLY}" = "true" ]; then
+      if [ "${AGENT_NIGHTLY}" = "true" ]; then # for nightly run, use latest Agent
         DD_AGENT_IMAGE="${NIGHTLY_AGENT_IMAGE:-datadog/agent-dev:master-py3-full}"
       fi
       echo "Building converged image on DD_AGENT_IMAGE=${DD_AGENT_IMAGE}"
