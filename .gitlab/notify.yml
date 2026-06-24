@@ -1,0 +1,12 @@
+# Sends a Slack alert to #agent-data-plane when the nightly pipeline fails.
+#
+# Extends the internal slack-notifier template. Restricted to nightly schedule
+# runs (AGENT_NIGHTLY=true) so it never fires on PR or regular main pipelines.
+notify-nightly-failure:
+  extends: .slack-notifier-channel.on-failure
+  rules:
+    - if: '$AGENT_NIGHTLY == "true"'
+      when: on_failure
+  variables:
+    CHANNEL: "#agent-data-plane"
+    MESSAGE: ":host-red: $CI_PROJECT_NAME nightly pipeline (latest Agent main) <$CI_PROJECT_URL/pipelines/$CI_PIPELINE_ID|$CI_PIPELINE_ID> failed."
