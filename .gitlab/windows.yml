@@ -92,6 +92,10 @@ test-integration-windows-amd64:
         } else {
           $WindowsAdpBaseImage = "datadog/agent-dev:main-py3-jmx-win-servercore-ltsc2022"
         }
+        docker pull $WindowsAdpBaseImage
+        docker run --rm $WindowsAdpBaseImage version
+        $WindowsAdpBaseImage = $(docker inspect --format='{{index .RepoDigests 0}}' $WindowsAdpBaseImage)
+        Write-Host "Pinned nightly Agent image to digest: $WindowsAdpBaseImage"
       }
       Write-Host "Using WINDOWS_ADP_BASE_IMAGE=$WindowsAdpBaseImage"
     - >

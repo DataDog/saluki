@@ -31,6 +31,10 @@ build-bundled-agent-adp-image:
       DD_AGENT_IMAGE="registry.datadoghq.com/agent:${PUBLIC_DD_AGENT_VERSION}"
       if [ "${AGENT_NIGHTLY}" = "true" ]; then # for nightly run, use latest Agent
         DD_AGENT_IMAGE="${NIGHTLY_AGENT_IMAGE:-datadog/agent-dev:master-py3-full}"
+        docker pull "$DD_AGENT_IMAGE"
+        docker run --rm "$DD_AGENT_IMAGE" version
+        DD_AGENT_IMAGE=$(docker inspect --format='{{index .RepoDigests 0}}' "$DD_AGENT_IMAGE")
+        echo "Pinned nightly Agent image to digest: $DD_AGENT_IMAGE"
       fi
       echo "Building converged image on DD_AGENT_IMAGE=${DD_AGENT_IMAGE}"
     - docker buildx build
