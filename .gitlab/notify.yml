@@ -1,6 +1,9 @@
 notify-nightly-failure:
-  extends: .slack-notifier-channel.on-failure
+  extends: .slack-notifier-channel-base
   only:
     - $AGENT_NIGHTLY == "true"
-  variables:
-    CHANNEL: "#agent-data-plane"
+  when: on_failure
+  script:
+    - BUILD_URL="$CI_PROJECT_URL/pipelines/$CI_PIPELINE_ID"
+    - MESSAGE=":host-red: $CI_PROJECT_NAME nightly pipeline (latest Agent main) <$BUILD_URL|$CI_PIPELINE_ID> failed."
+    - postmessage "#agent-data-plane" "$MESSAGE"
