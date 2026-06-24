@@ -34,6 +34,9 @@ use_v3_api:
   series:
     enabled: true
 serializer_experimental_use_v3_api:
+  series:
+    endpoints:
+      - "http://datadog-intake:2049"
   sketches:
     endpoints:
       - "http://datadog-intake:2049"
