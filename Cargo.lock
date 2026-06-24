@@ -1751,7 +1751,6 @@ dependencies = [
  "itoa",
  "num-traits",
  "rand 0.10.1",
- "rand_distr",
  "ryu",
  "serde",
  "serde_json",
