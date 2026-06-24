@@ -232,8 +232,17 @@ impl DatadogConfigConsumer for Translator {
     fn consume_log_format_rfc3339(&mut self, _value: bool) {}
     fn consume_log_level(&mut self, _value: String) {}
     fn consume_log_payloads(&mut self, _value: bool) {}
-    fn consume_metric_filterlist(&mut self, _value: Vec<String>) {}
-    fn consume_metric_filterlist_match_prefix(&mut self, _value: bool) {}
+    fn consume_metric_filterlist(&mut self, value: Vec<String>) {
+        self.saluki.components.dogstatsd.prefix_filter.metric_filterlist = value;
+    }
+
+    fn consume_metric_filterlist_match_prefix(&mut self, value: bool) {
+        self.saluki
+            .components
+            .dogstatsd
+            .prefix_filter
+            .metric_filterlist_match_prefix = value;
+    }
     fn consume_min_tls_version(&mut self, _value: String) {}
     fn consume_multi_region_failover_api_key(&mut self, _value: String) {}
     fn consume_multi_region_failover_dd_url(&mut self, _value: String) {}
@@ -290,10 +299,25 @@ impl DatadogConfigConsumer for Translator {
         self.saluki.components.dogstatsd.source.statsd_forward_port = value.clamp(0, u16::MAX as i64) as u16;
     }
 
-    fn consume_statsd_metric_blocklist(&mut self, _value: Vec<String>) {}
-    fn consume_statsd_metric_blocklist_match_prefix(&mut self, _value: bool) {}
-    fn consume_statsd_metric_namespace(&mut self, _value: String) {}
-    fn consume_statsd_metric_namespace_blacklist(&mut self, _value: Vec<String>) {}
+    fn consume_statsd_metric_blocklist(&mut self, value: Vec<String>) {
+        self.saluki.components.dogstatsd.prefix_filter.metric_blocklist = value;
+    }
+
+    fn consume_statsd_metric_blocklist_match_prefix(&mut self, value: bool) {
+        self.saluki
+            .components
+            .dogstatsd
+            .prefix_filter
+            .metric_blocklist_match_prefix = value;
+    }
+
+    fn consume_statsd_metric_namespace(&mut self, value: String) {
+        self.saluki.components.dogstatsd.prefix_filter.metric_prefix = value;
+    }
+
+    fn consume_statsd_metric_namespace_blacklist(&mut self, value: Vec<String>) {
+        self.saluki.components.dogstatsd.prefix_filter.metric_prefix_blocklist = value;
+    }
     fn consume_syslog_rfc(&mut self, _value: bool) {}
     fn consume_syslog_uri(&mut self, _value: String) {}
     fn consume_use_proxy_for_cloud_metadata(&mut self, _value: bool) {}

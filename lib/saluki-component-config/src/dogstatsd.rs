@@ -302,3 +302,44 @@ impl Default for OriginEnrichmentConfiguration {
         }
     }
 }
+
+/// Configuration data for the DogStatsD metric prefix and listener-side metric filter.
+///
+/// Plain data only: no behavior, no runtime handles, no `Deserialize`. The translated-config system
+/// builds this field-by-field from Datadog keys; it is never deserialized into directly.
+///
+/// `metric_prefix_blocklist` keeps the existing component name (it is an exemption list for
+/// prefixing, not a list of metrics to drop). Datadog defaults for this field, including the long
+/// default list from `statsd_metric_namespace_blacklist`, come from the witness drive.
+#[derive(Clone, Debug, Default, Eq, PartialEq, serde::Serialize)]
+pub struct PrefixFilterConfig {
+    /// The metric namespace prefix prepended to every metric name.
+    ///
+    /// Defaults to empty (no prefix).
+    pub metric_prefix: String,
+
+    /// Metric name prefixes exempt from namespace prefixing.
+    ///
+    /// Defaults to empty; Datadog defaults come from the witness drive.
+    pub metric_prefix_blocklist: Vec<String>,
+
+    /// The metric allowlist. When non-empty, only metrics matching this list are forwarded.
+    ///
+    /// Defaults to empty (all metrics forwarded).
+    pub metric_filterlist: Vec<String>,
+
+    /// Whether `metric_filterlist` entries match as a prefix rather than exact.
+    ///
+    /// Defaults to `false`.
+    pub metric_filterlist_match_prefix: bool,
+
+    /// The metric blocklist. Metrics matching this list are dropped.
+    ///
+    /// Defaults to empty (no metrics dropped).
+    pub metric_blocklist: Vec<String>,
+
+    /// Whether `metric_blocklist` entries match as a prefix rather than exact.
+    ///
+    /// Defaults to `false`.
+    pub metric_blocklist_match_prefix: bool,
+}

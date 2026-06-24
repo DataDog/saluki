@@ -16,4 +16,7 @@
 pub struct Config {
     /// DogStatsD source configuration (listeners, parser/decoding options).
     pub source: saluki_component_config::dogstatsd::SourceConfig,
+
+    /// DogStatsD prefix and listener-side metric filter configuration.
+    pub prefix_filter: saluki_component_config::dogstatsd::PrefixFilterConfig,
 }

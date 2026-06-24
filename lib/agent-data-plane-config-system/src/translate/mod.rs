@@ -149,4 +149,43 @@ mod tests {
         };
         assert!(translate(&saluki_only, &datadog).is_err());
     }
+
+    #[test]
+    fn drive_overlays_prefix_filter_slice() {
+        let saluki_only = SalukiOnlyConfiguration::default();
+        let datadog = DatadogConfiguration {
+            statsd_metric_namespace: "myapp".to_string(),
+            statsd_metric_namespace_blacklist: vec!["jvm".to_string()],
+            metric_filterlist: vec!["allowed.metric".to_string()],
+            metric_filterlist_match_prefix: true,
+            statsd_metric_blocklist: vec!["blocked.metric".to_string()],
+            statsd_metric_blocklist_match_prefix: true,
+            ..Default::default()
+        };
+
+        let config = translate(&saluki_only, &datadog).expect("translation succeeds");
+        let pf = &config.components.dogstatsd.prefix_filter;
+        assert_eq!(pf.metric_prefix, "myapp");
+        assert_eq!(pf.metric_prefix_blocklist, vec!["jvm"]);
+        assert_eq!(pf.metric_filterlist, vec!["allowed.metric"]);
+        assert!(pf.metric_filterlist_match_prefix);
+        assert_eq!(pf.metric_blocklist, vec!["blocked.metric"]);
+        assert!(pf.metric_blocklist_match_prefix);
+    }
+
+    #[test]
+    fn default_namespace_blacklist_reaches_prefix_filter() {
+        let saluki_only = SalukiOnlyConfiguration::default();
+        let datadog = DatadogConfiguration::default();
+        let config = translate(&saluki_only, &datadog).expect("translation succeeds");
+        assert!(
+            !config
+                .components
+                .dogstatsd
+                .prefix_filter
+                .metric_prefix_blocklist
+                .is_empty(),
+            "generated default blocklist should flow through"
+        );
+    }
 }

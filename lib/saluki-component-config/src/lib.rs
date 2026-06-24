@@ -29,5 +29,7 @@
 pub mod dogstatsd;
 pub mod dynamic;
 
-pub use self::dogstatsd::{EnablePayloadsConfiguration, OriginEnrichmentConfiguration, SourceConfig};
+pub use self::dogstatsd::{
+    EnablePayloadsConfiguration, OriginEnrichmentConfiguration, PrefixFilterConfig, SourceConfig,
+};
 pub use self::dynamic::DynamicConfig;
