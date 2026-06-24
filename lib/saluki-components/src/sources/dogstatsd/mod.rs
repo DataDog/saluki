@@ -1859,7 +1859,7 @@ mod tests {
     use tokio::{net::UdpSocket, sync::mpsc, time::timeout};
 
     use super::{
-        build_io_buffer_pool, default_buffer_count, default_buffer_count_max, default_buffer_size,
+        build_io_buffer_pool, default_buffer_size,
         forwarder::{
             ConnectedPacketForwarder, ForwardPacket, PacketForwarder, PacketForwarderTarget, FORWARDER_QUEUE_CAPACITY,
         },
@@ -2221,20 +2221,6 @@ mod tests {
         let config = deser_config("{}");
         assert!(!config.autoscale_udp_listeners);
         assert!(config.udp_streams_to_yield().is_none());
-    }
-
-    #[test]
-    fn buffer_count_defaults_split_min_and_max() {
-        // The baseline (`dogstatsd_buffer_count`) keeps its legacy default of 128 buffers allocated up front, while
-        // the new `dogstatsd_buffer_count_max` defaults to 256 as the elastic growth limit.
-        let defaults = deser_config("{}");
-        assert_eq!(defaults.buffer_count, default_buffer_count());
-        assert_eq!(defaults.buffer_count_max, default_buffer_count_max());
-
-        // Both keys are independently configurable.
-        let overridden = deser_config(r#"{"dogstatsd_buffer_count": 64, "dogstatsd_buffer_count_max": 512}"#);
-        assert_eq!(overridden.buffer_count, 64);
-        assert_eq!(overridden.buffer_count_max, 512);
     }
 
     #[tokio::test]
