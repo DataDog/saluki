@@ -1,0 +1,43 @@
+type: integration
+name: "adp-config-dynamic-prefix-filter"
+description: "Verifies a Core Agent runtime config mutation propagates through the typed translation pipeline to /config/internal."
+timeout: 120s
+runtimes: [linux, mac, windows]
+
+env:
+  DD_API_KEY: "00000000000000000000000000000000"
+  DD_HOSTNAME: "integration-test-dynamic-prefix-filter"
+  DD_DATA_PLANE_ENABLED: "true"
+  DD_DATA_PLANE_STANDALONE_MODE: "false"
+  DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT: "true"
+  DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+  DD_LOG_LEVEL: "info"
+
+container:
+  exposed_ports:
+    - "55101/tcp"
+
+procedure:
+  - assertion: adp_config_key_equals
+    key: components.dogstatsd.prefix_filter.metric_filterlist
+    value: []
+    endpoint: "https://localhost:55101/config/internal"
+    timeout: 60s
+  - action: core_agent_config_set
+    key: metric_filterlist
+    value: ["test.prefix"]
+  - assertion: adp_config_key_equals
+    key: components.dogstatsd.prefix_filter.metric_filterlist
+    value: ["test.prefix"]
+    endpoint: "https://localhost:55101/config/internal"
+    timeout: 60s
+  - parallel:
+      - assertion: process_stable_for
+        duration: 10s
+      - assertion: log_not_contains
+        pattern: "Error while reading config event stream"
+        during: 10s
+      - assertion: log_not_contains
+        pattern: "panic|PANIC"
+        regex: true
+        during: 10s
