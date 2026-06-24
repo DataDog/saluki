@@ -47,7 +47,7 @@ use crate::{
     components::{
         apm_onboarding::ApmOnboardingConfiguration,
         dogstatsd_post_aggregate_filter::DogStatsDPostAggregateFilterConfiguration,
-        dogstatsd_prefix_filter::DogStatsDPrefixFilterConfiguration, host_tags::HostTagsConfiguration,
+        dogstatsd_prefix_filter::DogStatsDPrefixFilterBuilder, host_tags::HostTagsConfiguration,
         ottl_filter_processor::OttlFilterConfiguration, ottl_transform_processor::OttlTransformConfiguration,
         tag_filterlist::TagFilterlistConfiguration,
     },
@@ -710,7 +710,8 @@ async fn add_dsd_pipeline_to_blueprint(
     let dsd_config = DogStatsDConfiguration::new(system.saluki().components.dogstatsd.source)
         .with_workload_provider(env_provider.workload().clone())
         .with_capture_entity_resolver(env_provider.workload().clone());
-    let dsd_prefix_filter_configuration = DogStatsDPrefixFilterConfiguration::from_configuration(config)?;
+    let dsd_prefix_filter_configuration =
+        DogStatsDPrefixFilterBuilder::new(system.dynamic_handles().prefix_filter.clone());
     let dsd_mapper_config = DogStatsDMapperConfiguration::from_configuration(config)?;
     let dsd_enrich_config =
         ChainedConfiguration::default().with_transform_builder("dogstatsd_mapper", dsd_mapper_config);

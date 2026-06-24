@@ -70,7 +70,7 @@ impl Blocklist {
 ///
 /// The current `metric_filterlist` takes precedence when configured. Otherwise, the legacy
 /// `statsd_metric_blocklist` values are active.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub(super) struct EffectiveFilterlist {
     metric_filterlist: Vec<String>,
     metric_filterlist_match_prefix: bool,
@@ -107,6 +107,7 @@ impl EffectiveFilterlist {
     }
 
     /// Returns whether the current `metric_filterlist` is active.
+    #[allow(dead_code)]
     pub(super) fn metric_filterlist_is_active(&self) -> bool {
         !self.metric_filterlist.is_empty()
     }
