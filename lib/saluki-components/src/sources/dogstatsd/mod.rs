@@ -123,13 +123,15 @@ enum Error {
 /// 4096 entries × 512 bytes = 2 MiB, matching ADP's previous default.
 const INTERNER_BASELINE_BYTES_PER_ENTRY: u64 = 512;
 
-const DEFAULT_INITIAL_BUFFER_COUNT: usize = 128;
-
 const fn default_buffer_size() -> usize {
     8192
 }
 
-const fn default_max_buffer_count() -> usize {
+const fn default_buffer_count() -> usize {
+    128
+}
+
+const fn default_buffer_count_max() -> usize {
     256
 }
 
@@ -257,15 +259,26 @@ pub struct DogStatsDConfiguration {
     #[serde(rename = "dogstatsd_buffer_size", default = "default_buffer_size")]
     buffer_size: usize,
 
+    /// The number of message buffers to allocate up front.
+    ///
+    /// This is the baseline pool size allocated at startup. The pool then grows on demand up to
+    /// `dogstatsd_buffer_count_max` as active stream connections need additional buffers. The default value should be
+    /// suitable for the majority of workloads.
+    ///
+    /// Defaults to 128.
+    #[serde(rename = "dogstatsd_buffer_count", default = "default_buffer_count")]
+    buffer_count: usize,
+
     /// The maximum number of message buffers to allocate overall.
     ///
-    /// DogStatsD allocates a baseline of buffers at startup, then allocates additional buffers on demand as active
-    /// stream connections need them. This setting caps that growth. The default value should be suitable for the
-    /// majority of workloads, but high-throughput workloads may consider increasing this value.
+    /// The pool starts at `dogstatsd_buffer_count` buffers and grows on demand up to this limit as active stream
+    /// connections need them, which loosely correlates with how many messages can be received per second. This caps
+    /// memory growth. The default value should be suitable for the majority of workloads, but high-throughput or
+    /// high-fan-in workloads may consider increasing this value.
     ///
     /// Defaults to 256.
-    #[serde(rename = "dogstatsd_buffer_count", default = "default_max_buffer_count")]
-    buffer_count: usize,
+    #[serde(rename = "dogstatsd_buffer_count_max", default = "default_buffer_count_max")]
+    buffer_count_max: usize,
 
     /// The port to listen on in UDP mode.
     ///
@@ -697,33 +710,6 @@ impl DogStatsDConfiguration {
         NonZeroUsize::new(streams)
     }
 
-    fn configured_initial_buffer_count(&self) -> usize {
-        let mut listener_buffers = 0;
-
-        if self.port != 0 {
-            listener_buffers += self.udp_streams_to_yield().map(NonZeroUsize::get).unwrap_or(1);
-        }
-
-        if self.tcp_port != 0 {
-            listener_buffers += 1;
-        }
-
-        if self.socket_path.is_some() {
-            listener_buffers += 1;
-        }
-
-        if self.socket_stream_path.is_some() {
-            listener_buffers += 1;
-        }
-
-        if listener_buffers == 0 {
-            return 0;
-        }
-
-        self.buffer_count
-            .min(listener_buffers.max(DEFAULT_INITIAL_BUFFER_COUNT))
-    }
-
     /// Sets the workload provider to use for configuring origin detection/enrichment.
     ///
     /// A workload provider must be set otherwise origin detection/enrichment won't be enabled.
@@ -883,11 +869,11 @@ impl SourceBuilder for DogStatsDConfiguration {
         // deadlocking any of the others. Connectionless listeners retain their buffer for the lifetime of the stream,
         // so multi-socket UDP listeners require one buffer per yielded socket.
         let min_buffers: usize = listeners.iter().map(Listener::min_buffer_reservation).sum();
-        if self.buffer_count < min_buffers {
+        if self.buffer_count_max < min_buffers {
             return Err(generic_error!(
-                "Must have a minimum of {} I/O buffers to service all configured listeners (have {}).",
+                "`dogstatsd_buffer_count_max` ({}) must be at least {} to service all configured listeners.",
+                self.buffer_count_max,
                 min_buffers,
-                self.buffer_count,
             ));
         }
 
@@ -926,9 +912,20 @@ impl SourceBuilder for DogStatsDConfiguration {
 
         self.replay_control.bind(captured_tagger);
 
-        let initial_buffers = self.configured_initial_buffer_count();
+        // The elastic pool's baseline can't exceed its maximum. If a misconfigured baseline is larger than the
+        // maximum, clamp it down so the pool behaves as a fixed-size pool at the maximum.
+        let initial_buffers = if self.buffer_count > self.buffer_count_max {
+            warn!(
+                buffer_count = self.buffer_count,
+                buffer_count_max = self.buffer_count_max,
+                "`dogstatsd_buffer_count` exceeds `dogstatsd_buffer_count_max`; clamping baseline to the maximum."
+            );
+            self.buffer_count_max
+        } else {
+            self.buffer_count
+        };
         let (io_buffer_pool, io_buffer_pool_shrinker) =
-            build_io_buffer_pool(initial_buffers, self.buffer_count, self.buffer_size);
+            build_io_buffer_pool(initial_buffers, self.buffer_count_max, self.buffer_size);
 
         Ok(Box::new(DogStatsD {
             listeners,
@@ -962,18 +959,18 @@ impl SourceBuilder for DogStatsDConfiguration {
 
 impl MemoryBounds for DogStatsDConfiguration {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
-        let initial_buffers = self.configured_initial_buffer_count();
-        let additional_buffers = self.buffer_count.saturating_sub(initial_buffers);
+        let initial_buffers = self.buffer_count.min(self.buffer_count_max);
+        let additional_buffers = self.buffer_count_max.saturating_sub(initial_buffers);
         let adjusted_buffer_size = get_adjusted_buffer_size(self.buffer_size);
 
         builder
             .minimum()
             // Capture the size of the heap allocation when the component is built.
             .with_single_value::<DogStatsD>("source struct")
-            // We allocate the initial buffer reservation up front.
+            // We allocate the baseline buffer pool up front.
             .with_expr(UsageExpr::product(
                 "buffers",
-                UsageExpr::constant("dogstatsd_initial_buffer_count", initial_buffers),
+                UsageExpr::config("dogstatsd_buffer_count", initial_buffers),
                 UsageExpr::config("dogstatsd_buffer_size", adjusted_buffer_size),
             ))
             // We also allocate the backing storage for the string interner up front, which is used by our context
@@ -983,9 +980,10 @@ impl MemoryBounds for DogStatsDConfiguration {
                 self.effective_context_string_interner_bytes().as_u64() as usize,
             ));
 
+        // The pool can grow on demand up to its maximum, so account for the additional headroom as firm usage.
         builder.firm().with_expr(UsageExpr::product(
             "elastic buffers",
-            UsageExpr::config("dogstatsd_buffer_count_max_extra", additional_buffers),
+            UsageExpr::constant("dogstatsd_buffer_count_max_extra", additional_buffers),
             UsageExpr::config("dogstatsd_buffer_size", adjusted_buffer_size),
         ));
     }
@@ -1861,14 +1859,14 @@ mod tests {
     use tokio::{net::UdpSocket, sync::mpsc, time::timeout};
 
     use super::{
-        build_io_buffer_pool, default_buffer_size, default_max_buffer_count,
+        build_io_buffer_pool, default_buffer_count, default_buffer_count_max, default_buffer_size,
         forwarder::{
             ConnectedPacketForwarder, ForwardPacket, PacketForwarder, PacketForwarderTarget, FORWARDER_QUEUE_CAPACITY,
         },
         handle_metric_packet,
         metrics::build_metrics,
-        resolve_capture_container_id, ContextResolvers, DogStatsDConfiguration, DEFAULT_INITIAL_BUFFER_COUNT,
-        DOGSTATSD_CAPTURE_DIR, MIN_CAPTURE_DEPTH,
+        resolve_capture_container_id, ContextResolvers, DogStatsDConfiguration, DOGSTATSD_CAPTURE_DIR,
+        MIN_CAPTURE_DEPTH,
     };
 
     const LINUX_EAFNOSUPPORT: i32 = 97;
@@ -2226,44 +2224,27 @@ mod tests {
     }
 
     #[test]
-    fn configured_initial_buffer_count_preserves_legacy_baseline() {
-        let udp_only = deser_config("{}");
-        assert_eq!(udp_only.configured_initial_buffer_count(), DEFAULT_INITIAL_BUFFER_COUNT);
+    fn buffer_count_defaults_split_min_and_max() {
+        // The baseline (`dogstatsd_buffer_count`) keeps its legacy default of 128 buffers allocated up front, while
+        // the new `dogstatsd_buffer_count_max` defaults to 256 as the elastic growth limit.
+        let defaults = deser_config("{}");
+        assert_eq!(defaults.buffer_count, default_buffer_count());
+        assert_eq!(defaults.buffer_count_max, default_buffer_count_max());
 
-        let all_listener_types = DogStatsDConfiguration {
-            port: 8125,
-            tcp_port: 9000,
-            socket_path: Some("/tmp/dsd.socket".to_string()),
-            socket_stream_path: Some("/tmp/dsd-stream.socket".to_string()),
-            buffer_count: default_max_buffer_count(),
-            ..Default::default()
-        };
-        assert_eq!(
-            all_listener_types.configured_initial_buffer_count(),
-            DEFAULT_INITIAL_BUFFER_COUNT
-        );
-
-        let explicit_smaller_cap = DogStatsDConfiguration {
-            port: 8125,
-            buffer_count: 64,
-            ..Default::default()
-        };
-        assert_eq!(explicit_smaller_cap.configured_initial_buffer_count(), 64);
-
-        let no_listeners = DogStatsDConfiguration {
-            buffer_count: default_max_buffer_count(),
-            ..Default::default()
-        };
-        assert_eq!(no_listeners.configured_initial_buffer_count(), 0);
+        // Both keys are independently configurable.
+        let overridden = deser_config(r#"{"dogstatsd_buffer_count": 64, "dogstatsd_buffer_count_max": 512}"#);
+        assert_eq!(overridden.buffer_count, 64);
+        assert_eq!(overridden.buffer_count_max, 512);
     }
 
     #[tokio::test]
     async fn dogstatsd_io_buffer_pool_grows_on_demand_until_limit() {
-        let max_buffers = DEFAULT_INITIAL_BUFFER_COUNT + 1;
-        let (pool, shrinker) = build_io_buffer_pool(DEFAULT_INITIAL_BUFFER_COUNT, max_buffers, default_buffer_size());
+        let min_buffers = 2;
+        let max_buffers = 3;
+        let (pool, shrinker) = build_io_buffer_pool(min_buffers, max_buffers, default_buffer_size());
 
-        let mut initial_buffers = Vec::with_capacity(DEFAULT_INITIAL_BUFFER_COUNT);
-        for _ in 0..DEFAULT_INITIAL_BUFFER_COUNT {
+        let mut initial_buffers = Vec::with_capacity(min_buffers);
+        for _ in 0..min_buffers {
             initial_buffers.push(
                 timeout(Duration::from_secs(1), pool.acquire())
                     .await

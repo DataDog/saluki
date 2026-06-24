@@ -25,7 +25,7 @@ static DOGSTATSD_BUFFER_COUNT_SCHEMA: SchemaEntry = SchemaEntry {
     yaml_path: "dogstatsd_buffer_count",
     env_vars: &[],
     value_type: ValueType::Integer,
-    default: Some("256"),
+    default: Some("128"),
 };
 
 static DOGSTATSD_CACHED_CONTEXTS_LIMIT_SCHEMA: SchemaEntry = SchemaEntry {
@@ -74,6 +74,14 @@ static DOGSTATSD_TCP_PORT_SCHEMA: SchemaEntry = SchemaEntry {
     env_vars: &[],
     value_type: ValueType::Integer,
     default: None,
+};
+
+static DOGSTATSD_BUFFER_COUNT_MAX_SCHEMA: SchemaEntry = SchemaEntry {
+    schema: Schema::Saluki,
+    yaml_path: "dogstatsd_buffer_count_max",
+    env_vars: &[],
+    value_type: ValueType::Integer,
+    default: Some("256"),
 };
 
 crate::declare_annotations! {
@@ -520,6 +528,17 @@ crate::declare_annotations! {
     /// `enable_payloads.sketches`-Allow sending sketch payloads
     ENABLE_PAYLOADS_SKETCHES = SalukiAnnotation {
         schema: &schema::ENABLE_PAYLOADS_SKETCHES,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::DOGSTATSD_CONFIGURATION],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
+    };
+    /// `dogstatsd_buffer_count_max`
+    DOGSTATSD_BUFFER_COUNT_MAX = SalukiAnnotation {
+        schema: &DOGSTATSD_BUFFER_COUNT_MAX_SCHEMA,
         support_level: SupportLevel::Full,
         additional_yaml_paths: &[],
         env_var_override: None,
