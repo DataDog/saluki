@@ -276,7 +276,10 @@ pub struct DogStatsDConfiguration {
     /// memory growth. The default value should be suitable for the majority of workloads, but high-throughput or
     /// high-fan-in workloads may consider increasing this value.
     ///
-    /// Defaults to 256.
+    /// The pool never holds fewer buffers than `dogstatsd_buffer_count`, so a value below the baseline is treated as
+    /// equal to it.
+    ///
+    /// Defaults to 256, or `dogstatsd_buffer_count` if that is larger.
     #[serde(rename = "dogstatsd_buffer_count_max", default = "default_buffer_count_max")]
     buffer_count_max: usize,
 
@@ -710,6 +713,15 @@ impl DogStatsDConfiguration {
         NonZeroUsize::new(streams)
     }
 
+    /// Returns the effective maximum size of the I/O buffer pool.
+    ///
+    /// The pool can never hold fewer buffers than the configured baseline, so a `dogstatsd_buffer_count_max` below
+    /// `dogstatsd_buffer_count` (including a legacy config that only raised `dogstatsd_buffer_count`) is treated as
+    /// equal to the baseline rather than reducing capacity.
+    fn effective_max_buffer_count(&self) -> usize {
+        self.buffer_count_max.max(self.buffer_count)
+    }
+
     /// Sets the workload provider to use for configuring origin detection/enrichment.
     ///
     /// A workload provider must be set otherwise origin detection/enrichment won't be enabled.
@@ -869,10 +881,11 @@ impl SourceBuilder for DogStatsDConfiguration {
         // deadlocking any of the others. Connectionless listeners retain their buffer for the lifetime of the stream,
         // so multi-socket UDP listeners require one buffer per yielded socket.
         let min_buffers: usize = listeners.iter().map(Listener::min_buffer_reservation).sum();
-        if self.buffer_count_max < min_buffers {
+        let max_buffers = self.effective_max_buffer_count();
+        if max_buffers < min_buffers {
             return Err(generic_error!(
-                "`dogstatsd_buffer_count_max` ({}) must be at least {} to service all configured listeners.",
-                self.buffer_count_max,
+                "The maximum I/O buffer count ({}) must be at least {} to service all configured listeners.",
+                max_buffers,
                 min_buffers,
             ));
         }
@@ -912,20 +925,11 @@ impl SourceBuilder for DogStatsDConfiguration {
 
         self.replay_control.bind(captured_tagger);
 
-        // The elastic pool's baseline can't exceed its maximum. If a misconfigured baseline is larger than the
-        // maximum, clamp it down so the pool behaves as a fixed-size pool at the maximum.
-        let initial_buffers = if self.buffer_count > self.buffer_count_max {
-            warn!(
-                buffer_count = self.buffer_count,
-                buffer_count_max = self.buffer_count_max,
-                "`dogstatsd_buffer_count` exceeds `dogstatsd_buffer_count_max`; clamping baseline to the maximum."
-            );
-            self.buffer_count_max
-        } else {
-            self.buffer_count
-        };
+        // The pool allocates `buffer_count` buffers up front and may grow on demand up to `max_buffers`. The effective
+        // maximum is never below the baseline, so configs that only raise `dogstatsd_buffer_count` keep their full
+        // capacity instead of being silently reduced to the `dogstatsd_buffer_count_max` default.
         let (io_buffer_pool, io_buffer_pool_shrinker) =
-            build_io_buffer_pool(initial_buffers, self.buffer_count_max, self.buffer_size);
+            build_io_buffer_pool(self.buffer_count, max_buffers, self.buffer_size);
 
         Ok(Box::new(DogStatsD {
             listeners,
@@ -959,8 +963,7 @@ impl SourceBuilder for DogStatsDConfiguration {
 
 impl MemoryBounds for DogStatsDConfiguration {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
-        let initial_buffers = self.buffer_count.min(self.buffer_count_max);
-        let additional_buffers = self.buffer_count_max.saturating_sub(initial_buffers);
+        let additional_buffers = self.effective_max_buffer_count().saturating_sub(self.buffer_count);
         let adjusted_buffer_size = get_adjusted_buffer_size(self.buffer_size);
 
         builder
@@ -970,7 +973,7 @@ impl MemoryBounds for DogStatsDConfiguration {
             // We allocate the baseline buffer pool up front.
             .with_expr(UsageExpr::product(
                 "buffers",
-                UsageExpr::config("dogstatsd_buffer_count", initial_buffers),
+                UsageExpr::config("dogstatsd_buffer_count", self.buffer_count),
                 UsageExpr::config("dogstatsd_buffer_size", adjusted_buffer_size),
             ))
             // We also allocate the backing storage for the string interner up front, which is used by our context
@@ -2221,6 +2224,22 @@ mod tests {
         let config = deser_config("{}");
         assert!(!config.autoscale_udp_listeners);
         assert!(config.udp_streams_to_yield().is_none());
+    }
+
+    #[test]
+    fn effective_max_buffer_count_never_below_baseline() {
+        // A legacy config that only raised `dogstatsd_buffer_count` keeps its full capacity rather than being capped
+        // to the `dogstatsd_buffer_count_max` default.
+        let legacy = deser_config(r#"{"dogstatsd_buffer_count": 1024}"#);
+        assert_eq!(legacy.effective_max_buffer_count(), 1024);
+
+        // An explicit maximum above the baseline is honored as-is.
+        let explicit = deser_config(r#"{"dogstatsd_buffer_count": 128, "dogstatsd_buffer_count_max": 512}"#);
+        assert_eq!(explicit.effective_max_buffer_count(), 512);
+
+        // A maximum below the baseline is treated as equal to the baseline.
+        let below = deser_config(r#"{"dogstatsd_buffer_count": 200, "dogstatsd_buffer_count_max": 64}"#);
+        assert_eq!(below.effective_max_buffer_count(), 200);
     }
 
     #[tokio::test]
