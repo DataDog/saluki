@@ -1254,6 +1254,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "datadog-metrics-v3"
+version = "0.1.0"
+
+[[package]]
 name = "datadog-protos"
 version = "0.1.0"
 dependencies = [
@@ -4399,6 +4403,7 @@ dependencies = [
 name = "saluki-components"
 version = "0.1.0"
 dependencies = [
+ "antithesis_sdk",
  "arc-swap",
  "async-trait",
  "axum",
@@ -4407,6 +4412,7 @@ dependencies = [
  "bytesize",
  "chrono",
  "datadog-agent-config-testing",
+ "datadog-metrics-v3",
  "datadog-protos",
  "ddsketch",
  "derive-where",

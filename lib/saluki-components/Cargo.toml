@@ -13,6 +13,8 @@ default = []
 fips = ["saluki-io/fips"]
 
 [dependencies]
+datadog-metrics-v3 = { workspace = true }
+antithesis_sdk = { workspace = true, optional = true }
 arc-swap = { workspace = true }
 async-trait = { workspace = true }
 axum = { workspace = true }
