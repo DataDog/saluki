@@ -1,5 +1,7 @@
 notify-nightly-failure:
-  extends: .slack-notifier-channel-base
+  stage: notify
+  image: registry.ddbuild.io/slack-notifier:v95115791-8eb5fca-sdm-gbi-noble@sha256:362e2b649afcac25b1054b1e27b667b55a8a1adc1469c10ba753a78b914c6d3f
+  tags: ["arch:amd64"]
   only:
     - $AGENT_NIGHTLY == "true"
   when: on_failure
