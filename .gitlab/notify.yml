@@ -1,9 +1,6 @@
 notify-nightly-failure:
   extends: .slack-notifier-channel.on-failure
   only:
-    refs:
-      - main
-    variables:
-      - $AGENT_NIGHTLY == "true"
+    - $AGENT_NIGHTLY == "true"
   variables:
     CHANNEL: "#agent-data-plane"
