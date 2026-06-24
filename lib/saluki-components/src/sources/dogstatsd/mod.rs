@@ -129,7 +129,7 @@ const fn default_buffer_size() -> usize {
     8192
 }
 
-const fn default_buffer_count() -> usize {
+const fn default_max_buffer_count() -> usize {
     256
 }
 
@@ -264,7 +264,7 @@ pub struct DogStatsDConfiguration {
     /// majority of workloads, but high-throughput workloads may consider increasing this value.
     ///
     /// Defaults to 256.
-    #[serde(rename = "dogstatsd_buffer_count", default = "default_buffer_count")]
+    #[serde(rename = "dogstatsd_buffer_count", default = "default_max_buffer_count")]
     buffer_count: usize,
 
     /// The port to listen on in UDP mode.
@@ -1865,7 +1865,7 @@ mod tests {
     use tokio::{net::UdpSocket, sync::mpsc, time::timeout};
 
     use super::{
-        build_io_buffer_pool, default_buffer_count, default_buffer_size,
+        build_io_buffer_pool, default_buffer_size, default_max_buffer_count,
         forwarder::{
             ConnectedPacketForwarder, ForwardPacket, PacketForwarder, PacketForwarderTarget, FORWARDER_QUEUE_CAPACITY,
         },
@@ -2278,7 +2278,7 @@ mod tests {
             tcp_port: 9000,
             socket_path: Some("/tmp/dsd.socket".to_string()),
             socket_stream_path: Some("/tmp/dsd-stream.socket".to_string()),
-            buffer_count: default_buffer_count(),
+            buffer_count: default_max_buffer_count(),
             ..Default::default()
         };
         assert_eq!(all_listener_types.configured_min_buffer_count(), 4);
@@ -2295,7 +2295,7 @@ mod tests {
         assert_eq!(explicit_smaller_cap.configured_initial_buffer_count(), 64);
 
         let no_listeners = DogStatsDConfiguration {
-            buffer_count: default_buffer_count(),
+            buffer_count: default_max_buffer_count(),
             ..Default::default()
         };
         assert_eq!(no_listeners.configured_initial_buffer_count(), 0);
