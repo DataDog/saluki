@@ -2,12 +2,12 @@
 
 ADP pins a released Datadog Agent version for its end-to-end suites (`PUBLIC_DD_AGENT_VERSION`
 and the Windows base image). That pin only moves when the automated Agent version bump lands, so an
-incompatibility between ADP `main` and Agent `main` — a changed config-stream key, a new IPC
-behavior, a tightened platform gate — is not discovered until the bump, well after it was
+incompatibility between ADP `main` and Agent `main`—a changed config-stream key, a new IPC
+behavior, a tightened platform gate—is not discovered until the bump, well after it was
 introduced upstream.
 
 The nightly schedule closes that gap: it runs the correctness and integration suites against the
-**latest `main` Agent dev images** so incompatibilities surface within a day.
+**latest `main` Agent development images** so incompatibilities surface within a day.
 
 ## How it works
 
@@ -37,10 +37,9 @@ Create the schedule once in the GitLab project (**Build → Pipeline schedules �
 The schedule owner is responsible for watching the results; failure notifications are not wired up
 yet (a Slack alert is a planned follow-up).
 
-## Overriding the dev image registry
+## Overriding the nightly image registry
 
-The defaults pull from Docker Hub (`datadog/agent-dev`). If the runners cannot reach Docker Hub —
-ADP CI otherwise uses `registry.ddbuild.io` mirrors — set the image explicitly on the schedule
+The defaults pull from Docker Hub (`datadog/agent-dev`). If the runners cannot reach Docker Hub—ADP CI otherwise uses `registry.ddbuild.io` mirrors—set the image explicitly on the schedule
 without changing code:
 
 - `NIGHTLY_AGENT_IMAGE` overrides the Linux base image.
