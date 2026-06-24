@@ -206,8 +206,8 @@ run-benchmarks-adp-full:
   stage: benchmark
   # The full SMP suite (superset of all experiments). Runs automatically on the nightly schedule
   # for long-term trend analysis, and on-demand as a manual job on a PR. This is NOT a PR gate:
-  # it does not run `smp job result`, so it never fails the pipeline on a regression. The
-  # reporting jobs below convey the outcome (Slack on the nightly, PR comment on-demand).
+  # it does not run `smp job result`, so it never fails the pipeline on a regression. It builds
+  # and delivers its own report inline (Slack on the nightly, PR comment on-demand).
   rules:
     - if: !reference [.on_mq_branch, rules, if]
       when: never
@@ -228,6 +228,7 @@ run-benchmarks-adp-full:
       - submission_metadata # for provenance, debugging
       - outputs/report.md # for debugging, also on S3
       - outputs/report.json # for debugging, also on S3
+      - outputs/condensed-report.md # the posted report, for debugging
     when: always
   script:
     # Do some pre-flight steps like creating directories, installing helper utilities, setting credentials, and so on.
@@ -252,60 +253,25 @@ run-benchmarks-adp-full:
       --wait
       --wait-delay-seconds 60
       --submission-metadata submission_metadata
-    # Pull the analysis report so the reporting jobs can format it. We intentionally do NOT run
-    # `job result` here: the full suite is for trend analysis, not gating.
+    # Pull the analysis report, then build and deliver the condensed report. We intentionally do
+    # NOT run `job result` here: the full suite is for trend analysis, not gating.
     - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
       job sync
       --submission-metadata submission_metadata
       --output-path outputs
-
-report-benchmarks-adp-full-slack:
-  stage: benchmark
-  # Nightly only: condense the full-suite report.json and hand it to the Slack reporter (stubbed
-  # for now). Runs whether or not run-benchmarks-adp-full succeeded.
-  rules:
-    - if: !reference [.on_smp_nightly, rules, if]
-      when: always
-  needs:
-    - job: run-benchmarks-adp-full
-      artifacts: true
-  image: "${SALUKI_SMP_CI_IMAGE}"
-  timeout: 5m
-  artifacts:
-    expire_in: 1 week
-    paths:
-      - outputs/condensed-report.md
-    when: always
-  script:
+    # Condense the report and deliver it. Reporting lives in this job (rather than a separate
+    # one) because the on-demand run is an optional manual job: a separate `needs`-based report
+    # job would run even when the manual job is not triggered, since GitLab does not block
+    # dependents on an un-triggered `allow_failure` manual job.
     - python3 ./ci/tooling/build-smp-report.py
       --report-json outputs/report.json
       --output-report outputs/condensed-report.md
-    - ./ci/tooling/report-smp-to-slack.sh outputs/condensed-report.md
-
-report-benchmarks-adp-full-pr:
-  stage: benchmark
-  # On-demand (manual full run on a PR): post the condensed full-suite report to the linked PR.
-  # Gated behind the manual run-benchmarks-adp-full job, so it only runs once that is triggered.
-  rules:
-    - if: !reference [.on_mq_branch, rules, if]
-      when: never
-    - if: !reference [.on_development_branch, rules, if]
-      when: always
-  needs:
-    - job: run-benchmarks-adp-full
-      artifacts: true
-  image: "${SALUKI_SMP_CI_IMAGE}"
-  timeout: 5m
-  artifacts:
-    expire_in: 1 week
-    paths:
-      - outputs/condensed-report.md
-    when: always
-  script:
-    - python3 ./ci/tooling/build-smp-report.py
-      --report-json outputs/report.json
-      --output-report outputs/condensed-report.md
-    - cat outputs/condensed-report.md | /usr/local/bin/pr-commenter --for-pr="$CI_COMMIT_REF_NAME" --header="Regression Detector (Agent Data Plane, full suite)"
+    - |
+      if [ "$CI_PIPELINE_SOURCE" = "schedule" ]; then
+        ./ci/tooling/report-smp-to-slack.sh outputs/condensed-report.md
+      else
+        cat outputs/condensed-report.md | /usr/local/bin/pr-commenter --for-pr="$CI_COMMIT_REF_NAME" --header="Regression Detector (Agent Data Plane, full suite)"
+      fi
 
 binary-size-analysis:
   stage: benchmark
