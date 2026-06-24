@@ -513,6 +513,15 @@ async fn run_request_builder(
                         MetricValues::Histogram(..) | MetricValues::Distribution(..) => &mut sketches_request_builder,
                     };
 
+                    // A series metric whose points are all non-finite would encode to a series with no
+                    // points, which intake rejects as an empty value set. Drop it whole rather than emit
+                    // an empty series.
+                    if !has_emittable_point(&metric) {
+                        debug!(metric = %metric.context().name(), "Dropping series metric with no finite points.");
+                        telemetry.events_dropped_encoder().increment(1);
+                        continue;
+                    }
+
                     // Encode the metric. If we get it back, that means the current request is full, and we need to
                     // flush it before we can try to encode the metric again... so we'll hold on to it in that case
                     // before flushing and trying to encode it again.
@@ -967,6 +976,11 @@ fn encode_series_v2_metric(
         let value = maybe_interval
             .map(|interval| value / interval.as_secs_f64())
             .unwrap_or(value);
+
+        if !emittable(value) {
+            continue;
+        }
+
         let timestamp = timestamp.map(|ts| ts.get()).unwrap_or(0) as i64;
 
         write_point(output_stream, scratch_buf, value, timestamp)?;
@@ -1001,6 +1015,11 @@ fn encode_series_v1_metric(
         let value = maybe_interval
             .map(|interval| value / interval.as_secs_f64())
             .unwrap_or(value);
+
+        if !emittable(value) {
+            continue;
+        }
+
         let timestamp = timestamp.map(|ts| ts.get()).unwrap_or(0) as i64;
 
         // V1 emits each point as a [timestamp, value] tuple — not a nested object.
@@ -1167,6 +1186,22 @@ fn write_origin_metadata(
     output_stream.write_raw_bytes(scratch_buf)
 }
 
+/// Returns `true` if a point value may be emitted to a series payload.
+#[inline]
+fn emittable(point: f64) -> bool {
+    point.is_finite()
+}
+
+/// Returns `true` if a series metric has at least one emittable point.
+fn has_emittable_point(metric: &Metric) -> bool {
+    match metric.values() {
+        MetricValues::Counter(points) | MetricValues::Gauge(points) | MetricValues::Rate(points, _) => {
+            points.into_iter().any(|(_, value)| emittable(value))
+        }
+        _ => true,
+    }
+}
+
 fn write_point(
     output_stream: &mut CodedOutputStream<'_>, scratch_buf: &mut Vec<u8>, value: f64, timestamp: i64,
 ) -> Result<(), protobuf::Error> {
@@ -1331,7 +1366,8 @@ where
 mod tests {
     use std::{sync::Arc, time::Duration};
 
-    use protobuf::CodedOutputStream;
+    use datadog_protos::metrics::MetricSeries;
+    use protobuf::{CodedOutputStream, Message};
     use saluki_common::iter::ReusableDeduplicator;
     use saluki_context::{tags::SharedTagSet, Context};
     use saluki_core::data_model::event::metric::{Metric, MetricMetadata, MetricOrigin, MetricValues};
@@ -1489,6 +1525,76 @@ mod tests {
             tag_pos.is_some(),
             "series payload should contain unit field (field 6 = 'millisecond'), got bytes: {:?}",
             payload
+        );
+    }
+
+    #[test]
+    fn series_v2_drops_non_finite_points() {
+        // The intake contract requires finite metric values, so the encoder drops any non-finite
+        // point rather than forward NaN or infinity to intake.
+        let context = Context::from_static_parts("my.gauge", &[]);
+        let gauge = Metric::from_parts(
+            context,
+            MetricValues::gauge([(1, 1.0_f64), (2, f64::NAN), (3, f64::INFINITY), (4, 2.0)]),
+            MetricMetadata::default(),
+        );
+
+        let host_tags = SharedTagSet::default();
+        let mut scratch_buf = Vec::new();
+        let mut tags_deduplicator = ReusableDeduplicator::new();
+
+        let mut payload = Vec::new();
+        {
+            let mut writer = CodedOutputStream::vec(&mut payload);
+            encode_series_v2_metric(
+                &gauge,
+                &host_tags,
+                &mut writer,
+                &mut scratch_buf,
+                &mut tags_deduplicator,
+            )
+            .expect("Failed to encode gauge as series metric");
+            writer.flush().expect("Failed to flush");
+        }
+
+        // Decode the serialized MetricSeries and assert that only the two finite points survived, and
+        // that none of the surviving values is non-finite.
+        let series = MetricSeries::parse_from_bytes(&payload).expect("encoder produced an undecodable MetricSeries");
+        let values: Vec<f64> = series.points.iter().map(|p| p.value).collect();
+        assert_eq!(
+            values,
+            vec![1.0, 2.0],
+            "non-finite points must be dropped, got {:?}",
+            values
+        );
+        assert!(
+            values.iter().all(|v| v.is_finite()),
+            "no serialized point may be non-finite, got {:?}",
+            values
+        );
+    }
+
+    #[test]
+    fn series_v1_drops_non_finite_points() {
+        // V1 drops non-finite points too, rather than emit a substitute value.
+        let context = Context::from_static_parts("my.gauge", &[]);
+        let gauge = Metric::from_parts(
+            context,
+            MetricValues::gauge([(1, 1.0_f64), (2, f64::NAN), (3, f64::INFINITY), (4, 2.0)]),
+            MetricMetadata::default(),
+        );
+
+        let json = encode_one_v1(&gauge);
+        let points = json["points"].as_array().expect("points is array");
+        let values: Vec<f64> = points
+            .iter()
+            .map(|p| p[1].as_f64().expect("point value is a number"))
+            .collect();
+        assert_eq!(
+            values,
+            vec![1.0, 2.0],
+            "non-finite points must be dropped, got {:?}",
+            values
         );
     }
 
