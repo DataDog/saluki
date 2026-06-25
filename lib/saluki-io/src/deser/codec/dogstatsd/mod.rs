@@ -56,11 +56,7 @@ impl<'a> From<NomParserError<'a>> for ParseError {
             nom::Err::Incomplete(_) => {
                 // The DSD codec uses complete parsers, so `Incomplete` is structurally impossible. Surface it to
                 // Antithesis before the panic guards the invariant.
-                #[cfg(feature = "antithesis")]
-                antithesis_sdk::assert_unreachable!(
-                    "DogStatsD codec received Incomplete from a complete parser",
-                    &serde_json::json!({})
-                );
+                saluki_antithesis::unreachable!("DogStatsD codec received Incomplete from a complete parser");
                 unreachable!("DogStatsD codec only supports complete payloads")
             }
         }

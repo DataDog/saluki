@@ -8,11 +8,7 @@ repository = { workspace = true }
 [lints]
 workspace = true
 
-[features]
-antithesis = ["dep:antithesis_sdk", "antithesis_sdk/full", "ddsketch/antithesis", "saluki-context/antithesis", "stringtheory/antithesis"]
-
 [dependencies]
-antithesis_sdk = { workspace = true, optional = true }
 async-trait = { workspace = true }
 bitmask-enum = { workspace = true }
 ddsketch = { workspace = true }
@@ -27,6 +23,7 @@ pastey = { workspace = true }
 pin-project = { workspace = true }
 prometheus-exposition = { workspace = true }
 resource-accounting = { workspace = true }
+saluki-antithesis = { workspace = true }
 saluki-api = { workspace = true }
 saluki-common = { workspace = true }
 saluki-context = { workspace = true }
