@@ -191,6 +191,9 @@ dependencies = [
 
 [[package]]
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> 2b0cad11a7 (enhancement(antithesis): Move antithesis/deploy to scenarios/general (#1890))
 name = "antithesis-scenario-general"
 version = "0.1.0"
 dependencies = [
@@ -203,8 +206,11 @@ dependencies = [
 ]
 
 [[package]]
+<<<<<<< HEAD
 =======
 >>>>>>> 9c1abdeb85 (enhancement(antithesis): Introduce rig intake API (#1826))
+=======
+>>>>>>> 2b0cad11a7 (enhancement(antithesis): Move antithesis/deploy to scenarios/general (#1890))
 name = "antithesis_sdk"
 version = "0.2.9"
 source = "git+https://github.com/antithesishq/antithesis-sdk-rust?rev=78c9db56771f0f6b01cb5404765c5a96852c159c#78c9db56771f0f6b01cb5404765c5a96852c159c"
