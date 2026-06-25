@@ -268,13 +268,9 @@ display-image-tags:
       cat <<EOF
       # Image Tags
 
-      ## Agent Data Plane (suitable for internal deployments, GBI-based)
+      ## Agent Data Plane (suitable for internal deployments, GBI-based, Nydus-compatible)
       Non-FIPS: ${IMAGE_REGISTRY}/${ADP_IMAGE_TAG}
       FIPS:     ${IMAGE_REGISTRY}/${ADP_IMAGE_TAG_FIPS}
-
-      ## Agent Data Plane (suitable for internal deployments, GBI-based, Nydus-compatible)
-      Non-FIPS: ${IMAGE_REGISTRY}/${ADP_IMAGE_TAG}-nydus
-      FIPS:     ${IMAGE_REGISTRY}/${ADP_IMAGE_TAG_FIPS}-nydus
       EOF
 
 # Builds the darwin release tarball natively on a macOS runner and exposes it as a GitLab job
