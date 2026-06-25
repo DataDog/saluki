@@ -2660,6 +2660,78 @@ serializer_experimental_use_v3_api:
     }
 
     #[tokio::test]
+    async fn authoritative_v3_sketches_flush_previous_point_limit_batch() {
+        let v3_endpoint_config = EndpointConfiguration::new(CompressionScheme::noop(), 10_000, None);
+        let recorder = TestRecorder::default();
+        let _local = metrics::set_default_local_recorder(&recorder);
+        let metrics_builder = MetricsBuilder::default();
+        let telemetry = ComponentTelemetry::from_builder(&metrics_builder);
+        let serializer_telemetry = V3SerializerTelemetry::from_builder(&metrics_builder);
+        let (events_tx, events_rx) = tokio::sync::mpsc::channel(1);
+        let (payloads_tx, mut payloads_rx) = tokio::sync::mpsc::channel(8);
+
+        let request_builder_handle = tokio::spawn(run_request_builder(
+            None,
+            None,
+            MetricsEncoderMode::V2Only,
+            MetricsEncoderMode::V3Enabled,
+            V3RuntimeConfig {
+                endpoint_config: v3_endpoint_config,
+                payload_limits: V3PayloadLimits::new(usize::MAX, usize::MAX, 10_000, 3),
+                series_endpoint_uri: V3_SERIES_ENDPOINT_URI.to_string(),
+                shadow_series_endpoint_uri: "/api/intake/metrics/v3beta/series".to_string(),
+                series_shadow_config: SeriesShadowConfig::new(0.0),
+                serializer_telemetry,
+            },
+            telemetry,
+            events_rx,
+            payloads_tx,
+            Duration::from_millis(250),
+            false,
+        ));
+
+        let mut events = EventsBuffer::default();
+        assert!(events
+            .try_push(Event::Metric(Metric::distribution(
+                "authoritative.v3.sketch.points.one",
+                [(123, 1.0), (124, 2.0)]
+            )))
+            .is_none());
+        assert!(events
+            .try_push(Event::Metric(Metric::distribution(
+                "authoritative.v3.sketch.points.two",
+                [(123, 3.0), (124, 4.0)]
+            )))
+            .is_none());
+        events_tx
+            .send(events)
+            .await
+            .expect("events should be sent to request builder");
+
+        for expected in ["point-limit", "timeout"] {
+            let payload = timeout(Duration::from_secs(1), payloads_rx.recv())
+                .await
+                .unwrap_or_else(|_| panic!("{expected} sketches payload should arrive before timeout"))
+                .expect("payload channel should remain open");
+            let Payload::Http(http_payload) = payload else {
+                panic!("expected HTTP payload");
+            };
+            let (_, request) = http_payload.into_parts();
+            assert_eq!(V3_SKETCHES_ENDPOINT_URI, request.uri());
+        }
+        assert_eq!(
+            recorder.counter(("serializer.v3_payload_split_reason", &[("reason", "max_points")])),
+            Some(1)
+        );
+
+        drop(events_tx);
+        request_builder_handle
+            .await
+            .expect("request builder task should complete")
+            .expect("request builder should stop cleanly");
+    }
+
+    #[tokio::test]
     async fn authoritative_v3_does_not_flush_on_v2_boundary() {
         let v2_endpoint_config = EndpointConfiguration::new(CompressionScheme::noop(), 1, None);
         let v2_series_builder = Some(
