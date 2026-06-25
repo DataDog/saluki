@@ -32,7 +32,7 @@ data_plane:
         enabled: true
 use_v3_api:
   series:
-    enabled: true
+    enabled: "true"
 serializer_experimental_use_v3_api:
   series:
     endpoints:
