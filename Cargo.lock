@@ -149,6 +149,7 @@ dependencies = [
  "headers",
  "mime",
  "protobuf",
+ "serde",
  "serde_json",
  "tokio",
  "tower",
