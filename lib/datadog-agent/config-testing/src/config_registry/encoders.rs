@@ -27,7 +27,7 @@ crate::declare_annotations! {
         support_level: SupportLevel::Full,
         additional_yaml_paths: &[],
         env_var_override: None,
-        used_by: &[structs::DATADOG_EVENTS_CONFIGURATION, structs::DATADOG_LOGS_CONFIGURATION, structs::DATADOG_METRICS_CONFIGURATION, structs::DATADOG_SERVICE_CHECKS_CONFIGURATION, structs::DATADOG_TRACE_CONFIGURATION],
+        used_by: &[structs::DATADOG_EVENTS_CONFIGURATION, structs::DATADOG_LOGS_CONFIGURATION, structs::DATADOG_METRICS_CONFIGURATION, structs::DATADOG_SERVICE_CHECKS_CONFIGURATION, structs::DATADOG_TRACE_CONFIGURATION, structs::FORWARDER_CONFIGURATION],
         value_type_override: None,
         test_json: None,
         pipeline_affinity: PipelineAffinity::CrossCutting,
@@ -250,6 +250,28 @@ crate::declare_annotations! {
         used_by: &[structs::DATADOG_METRICS_CONFIGURATION, structs::FORWARDER_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
+    };
+    /// `use_v3_api.series.enabled`-Global V3 series mode
+    USE_V3_API_SERIES_ENABLED = SalukiAnnotation {
+        schema: &schema::USE_V3_API_SERIES_ENABLED,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: Some(&["DD_USE_V3_API_SERIES_ENABLED"]),
+        used_by: &[structs::DATADOG_METRICS_CONFIGURATION, structs::FORWARDER_CONFIGURATION],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
+    };
+    /// `use_v3_api.series.endpoints`-Per-endpoint V3 series modes
+    USE_V3_API_SERIES_ENDPOINTS = SalukiAnnotation {
+        schema: &schema::USE_V3_API_SERIES_ENDPOINTS,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: Some(&["DD_USE_V3_API_SERIES_ENDPOINTS"]),
+        used_by: &[structs::DATADOG_METRICS_CONFIGURATION, structs::FORWARDER_CONFIGURATION],
+        value_type_override: None,
+        test_json: Some(r#""{\"http://datadog.example.com\":\"false\"}""#),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
 }

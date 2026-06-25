@@ -25,6 +25,14 @@ dogstatsd_workers_count: 1
 # Enable V3 metrics encoding for all endpoints.
 #
 # Validation mode is off here so this case compares Agent V3 output against ADP V3 output directly.
+data_plane:
+  metrics:
+    v3:
+      series:
+        enabled: true
+use_v3_api:
+  series:
+    enabled: "true"
 serializer_experimental_use_v3_api:
   series:
     endpoints:

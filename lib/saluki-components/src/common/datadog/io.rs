@@ -36,7 +36,7 @@ use tracing::{debug, error, warn};
 
 use super::{
     config::ForwarderConfiguration,
-    endpoints::{EndpointRoute, EndpointV3Settings, ResolvedEndpoint, RoutableEndpoint},
+    endpoints::{EndpointRoute, EndpointV3Settings, ResolvedEndpoint, RoutableEndpoint, V3EndpointConfig},
     middleware::{for_resolved_endpoint, with_allow_arbitrary_tags, with_version_info},
     telemetry::{ComponentTelemetry, SharedTransactionQueueTelemetry, TransactionQueueTelemetry},
     transaction::{Metadata, Transaction, TransactionBody},
@@ -290,6 +290,7 @@ async fn run_io_loop<B>(
                 telemetry.clone(),
                 txnq_telemetry,
                 Arc::clone(&endpoint_name),
+                route,
                 resolved_endpoint,
             ),
         );
@@ -370,7 +371,7 @@ async fn run_endpoint_io_loop<B>(
     mut txns_rx: mpsc::Receiver<Transaction<B>>, task_barrier: Arc<Barrier>, context: ComponentContext,
     config: ForwarderConfiguration, live_config: Option<GenericConfiguration>, service: HttpClient,
     telemetry: ComponentTelemetry, txnq_telemetry: TransactionQueueTelemetry, endpoint_name: Arc<EndpointNameFn>,
-    endpoint: ResolvedEndpoint,
+    route: EndpointRoute, endpoint: ResolvedEndpoint,
 ) where
     B: Body + Buf + Clone + Send + Sync + 'static,
     B::Data: Send,
@@ -383,15 +384,28 @@ async fn run_endpoint_io_loop<B>(
 
     // Match against the endpoint string from configuration, not the version-prefixed URL used for requests.
     let v3_api = config.v3_api();
-    let endpoint_v3_settings = EndpointV3Settings::from_endpoint_url(
-        &configured_endpoint,
-        endpoint.endpoint(),
-        &v3_api.series.endpoints,
-        &v3_api.sketches.endpoints,
-        v3_api.series.validate,
-        v3_api.sketches.validate,
-        &v3_api.series.shadow_sites,
-    );
+    let metrics_primary_v3_override = (route == EndpointRoute::MetricsPrimary)
+        .then(|| config.opw_metrics_v3_series_override())
+        .flatten();
+    let serializer_v3_configured_endpoint =
+        (route == EndpointRoute::MetricsPrimary).then(|| config.primary_configured_endpoint());
+    let endpoint_v3_settings = if config.compressor_disables_metrics_v3() {
+        EndpointV3Settings::disabled()
+    } else {
+        EndpointV3Settings::from_v3_config(V3EndpointConfig {
+            configured_endpoint: &configured_endpoint,
+            resolved_endpoint: endpoint.endpoint(),
+            serializer_v3_configured_endpoint: serializer_v3_configured_endpoint.as_deref(),
+            data_plane_v3_series_enabled: config.data_plane_metrics_v3_series_enabled(),
+            series_config: config.use_v3_api_series(),
+            metrics_primary_v3_override,
+            serializer_v3_series_endpoints: &v3_api.series.endpoints,
+            serializer_v3_sketches_endpoints: &v3_api.sketches.endpoints,
+            series_validate: v3_api.series.validate,
+            sketches_validate: v3_api.sketches.validate,
+            series_shadow_sites: &v3_api.series.shadow_sites,
+        })
+    };
     debug!(
         endpoint_url,
         endpoint_concurrency = config.endpoint_concurrency(),

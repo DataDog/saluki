@@ -449,6 +449,51 @@ properties:
     description: Forwarder timeout in seconds
     tags:
     - template_section:Common
+  use_v3_api:
+    node_type: section
+    type: object
+    visibility: public
+    description: Controls the use of the v3 metrics intake.
+    tags:
+    - template_section:Common
+    properties:
+      series:
+        node_type: section
+        type: object
+        visibility: public
+        description: Controls the use of the v3 metrics intake for non-distribution
+          metrics (series).
+        tags:
+        - template_section:Common
+        properties:
+          enabled:
+            node_type: setting
+            type: string
+            default: 'true'
+            visibility: public
+            description: |-
+              Global default for the non-distribution metrics intake version. Accepted values:
+                - true: v3 for every destination except Observability Pipelines Worker.
+                - datadog_only: v3 only when the destination URL is a Datadog endpoint.
+                - false: v2 everywhere.
+            tags:
+            - template_section:Common
+          endpoints:
+            node_type: setting
+            type: object
+            default: {}
+            additionalProperties:
+              type: string
+            visibility: public
+            description: |-
+              Per-URL override map for non-distribution metrics intake version. The URL
+              must match exactly what was configured under `dd_url` or `additional_endpoints`.
+              Accepted values:
+                - true: v3 for every destination except Observability Pipelines Worker.
+                - datadog_only: v3 only when the destination URL is a Datadog endpoint.
+                - false: v2 everywhere.
+            tags:
+            - template_section:Common
   forwarder_retry_queue_payloads_max_size:
     node_type: setting
     type: integer
@@ -1077,6 +1122,14 @@ properties:
             example: '"http://127.0.0.1:8080"'
             tags:
             - template_section:Common
+          use_v3_api:
+            node_type: section
+            type: object
+            properties:
+              series:
+                node_type: setting
+                type: boolean
+                default: false
       logs:
         node_type: section
         type: object
@@ -9469,7 +9522,7 @@ properties:
           shadow_sample_rate:
             node_type: setting
             type: number
-            default: 0.001
+            default: 0
             tags:
             - golang_type:float64
           shadow_sites:
@@ -10005,6 +10058,14 @@ properties:
             node_type: setting
             type: string
             default: ''
+          use_v3_api:
+            node_type: section
+            type: object
+            properties:
+              series:
+                node_type: setting
+                type: boolean
+                default: false
       traces:
         node_type: section
         type: object
