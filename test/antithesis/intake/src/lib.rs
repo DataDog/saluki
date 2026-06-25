@@ -37,6 +37,5 @@
 
 pub mod http;
 
-mod intake;
 mod properties;
 mod series_observation;
