@@ -109,9 +109,9 @@ const fn default_log_payloads() -> bool {
 }
 
 fn series_shadow_config_for_endpoint(
-    series_endpoint: MetricsEndpoint, sample_rate: f64, v3_shadow_enabled: bool,
+    series_endpoint: MetricsEndpoint, sample_rate: f64, metrics_v3_disabled_by_compressor: bool,
 ) -> SeriesShadowConfig {
-    SeriesShadowConfig::new(if v3_shadow_enabled && series_endpoint == MetricsEndpoint::SeriesV2 {
+    SeriesShadowConfig::new(if !metrics_v3_disabled_by_compressor && series_endpoint == MetricsEndpoint::SeriesV2 {
         sample_rate
     } else {
         0.0
@@ -483,7 +483,7 @@ impl EncoderBuilder for DatadogMetricsConfiguration {
         let series_shadow_config = series_shadow_config_for_endpoint(
             series_endpoint,
             self.v3_api.series.shadow_sample_rate,
-            self.data_plane_metrics_v3_series_enabled && !metrics_v3_disabled_by_compressor,
+            metrics_v3_disabled_by_compressor,
         );
         let v3_runtime_config = V3RuntimeConfig {
             endpoint_config,
@@ -1755,10 +1755,10 @@ serializer_experimental_use_v3_api:
     }
 
     #[test]
-    fn shadow_sampling_is_disabled_for_v1_series_baseline() {
-        assert!(series_shadow_config_for_endpoint(MetricsEndpoint::SeriesV2, 1.0, true).is_enabled());
-        assert!(!series_shadow_config_for_endpoint(MetricsEndpoint::SeriesV1, 1.0, true).is_enabled());
-        assert!(!series_shadow_config_for_endpoint(MetricsEndpoint::SeriesV2, 1.0, false).is_enabled());
+    fn shadow_sampling_is_disabled_for_v1_series_baseline_or_v3_incompatible_compressor() {
+        assert!(series_shadow_config_for_endpoint(MetricsEndpoint::SeriesV2, 1.0, false).is_enabled());
+        assert!(!series_shadow_config_for_endpoint(MetricsEndpoint::SeriesV1, 1.0, false).is_enabled());
+        assert!(!series_shadow_config_for_endpoint(MetricsEndpoint::SeriesV2, 1.0, true).is_enabled());
     }
 
     #[test]
