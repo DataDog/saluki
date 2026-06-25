@@ -670,7 +670,18 @@ impl DogStatsDConfiguration {
     fn effective_context_string_interner_bytes(&self) -> ByteSize {
         match self.context_string_interner_size_bytes {
             Some(explicit_bytes) => explicit_bytes,
-            None => ByteSize::b(self.context_string_interner_entry_count * INTERNER_BASELINE_BYTES_PER_ENTRY),
+            None => {
+                saluki_antithesis::always_le!(
+                    self.context_string_interner_entry_count,
+                    u64::MAX / INTERNER_BASELINE_BYTES_PER_ENTRY,
+                    "dogstatsd interner byte-size multiply does not overflow",
+                    { "entry_count": self.context_string_interner_entry_count }
+                );
+                ByteSize::b(
+                    self.context_string_interner_entry_count
+                        .saturating_mul(INTERNER_BASELINE_BYTES_PER_ENTRY),
+                )
+            }
         }
     }
 
@@ -1133,6 +1144,12 @@ async fn process_io_buffer_pool_shrinker(
 fn build_io_buffer_pool(
     min_buffers: usize, max_buffers: usize, buffer_size: usize,
 ) -> (ElasticObjectPool<BytesBuffer>, impl Future<Output = ()> + Send) {
+    saluki_antithesis::always_le!(
+        buffer_size,
+        usize::MAX - 4,
+        "dogstatsd buffer size add does not overflow",
+        { "buffer_size": buffer_size }
+    );
     let adjusted_buffer_size = get_adjusted_buffer_size(buffer_size);
     ElasticObjectPool::with_builder("dsd_packet_bufs", min_buffers, max_buffers, move || {
         FixedSizeVec::with_capacity(adjusted_buffer_size)
