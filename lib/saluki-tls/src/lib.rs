@@ -374,28 +374,22 @@ impl ClientTLSConfigBuilder {
 
 /// Initializes the default TLS cryptography provider used by `rustls`.
 ///
-/// This explicitly sets the [AWS-LC][aws_lc] provider as the default provider for all future TLS configurations, which
-/// provides the ability to run in FIPS mode for FIPS-compliant builds.
-///
-/// This is the only supported cryptography provider in Saluki.
+/// This explicitly sets the platform default provider for all future TLS configurations: CNG on Windows and AWS-LC on
+/// other platforms. The non-Windows provider gives FIPS-compliant builds the ability to run in FIPS mode.
 ///
 /// # Errors
 ///
 /// If the default cryptography provider has already been set, an error will be returned.
-///
-/// [aws_lc]: https://github.com/aws/aws-lc-rs
 pub fn initialize_default_crypto_provider() -> Result<(), GenericError> {
     if DEFAULT_CRYPTO_PROVIDER_SET.get().is_some() {
         return Err(generic_error!("Default TLS cryptography provider already initialized."));
     }
 
-    // Set the process-wide default `CryptoProvider` to AWS-LC.
-    //
-    // This locks in AWS-LC as the default provider for all future TLS configurations, regardless of whether they use
-    // the configuration builders here or not. (The main caveat is that it's only relevant if `rustls` is being used.)
-    rustls::crypto::aws_lc_rs::default_provider()
-        .install_default()
-        .map_err(|_| generic_error!("Failed to install AWS-LC as default cryptography provider. This is likely due to a conflicting provider already being installed."))?;
+    default_crypto_provider().install_default().map_err(|_| {
+        generic_error!(
+            "Failed to install the default TLS cryptography provider. This is likely due to a conflicting provider already being installed."
+        )
+    })?;
 
     // With the process-wide default having been set, mark it as having been set.
     DEFAULT_CRYPTO_PROVIDER_SET
@@ -403,6 +397,16 @@ pub fn initialize_default_crypto_provider() -> Result<(), GenericError> {
         .expect("should be impossible for DEFAULT_CRYPTO_PROVIDER_SET to be initialized twice");
 
     Ok(())
+}
+
+#[cfg(not(windows))]
+fn default_crypto_provider() -> CryptoProvider {
+    rustls::crypto::aws_lc_rs::default_provider()
+}
+
+#[cfg(windows)]
+fn default_crypto_provider() -> CryptoProvider {
+    rustls_cng_crypto::default_provider()
 }
 
 /// Initializes the default root certificate store from the platform's native certificate store.

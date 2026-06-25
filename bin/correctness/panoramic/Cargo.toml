@@ -23,7 +23,7 @@ kube = { workspace = true, features = ["client", "http-proxy", "rustls-tls", "ws
 rand = { workspace = true, features = ["std", "std_rng", "thread_rng"] }
 rand_distr = { workspace = true }
 regex = { workspace = true, features = ["std"] }
-reqwest = { workspace = true, features = ["json", "zstd", "rustls", "query"] }
+reqwest = { workspace = true, features = ["json", "zstd", "rustls-no-provider", "query"] }
 rustls = { workspace = true }
 saluki-common = { workspace = true }
 saluki-config = { workspace = true }
@@ -45,3 +45,9 @@ tracing-subscriber = { workspace = true, features = [
   "tracing-log",
 ] }
 treediff = { workspace = true, features = ["with-serde-json"] }
+
+[target.'cfg(not(windows))'.dependencies]
+rustls = { workspace = true, features = ["aws_lc_rs"] }
+
+[target.'cfg(windows)'.dependencies]
+rustls-cng-crypto = { workspace = true }

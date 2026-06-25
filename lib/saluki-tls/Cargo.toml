@@ -10,7 +10,7 @@ workspace = true
 
 [features]
 default = []
-fips = ["rustls/fips"]
+fips = ["rustls/fips", "rustls-cng-crypto/fips"]
 
 [dependencies]
 rustls = { workspace = true, features = ["std"] }
@@ -19,6 +19,18 @@ saluki-common = { workspace = true }
 saluki-error = { workspace = true }
 tracing = { workspace = true }
 
+[target.'cfg(not(windows))'.dependencies]
+rustls = { workspace = true, features = ["aws_lc_rs"] }
+
+[target.'cfg(windows)'.dependencies]
+rustls-cng-crypto = { workspace = true }
+
 [dev-dependencies]
-rcgen = { workspace = true, features = ["crypto", "aws_lc_rs", "pem"] }
+rcgen = { workspace = true, features = ["crypto", "pem"] }
 tempfile = { workspace = true }
+
+[target.'cfg(not(windows))'.dev-dependencies]
+rcgen = { workspace = true, features = ["aws_lc_rs"] }
+
+[target.'cfg(windows)'.dev-dependencies]
+rcgen = { workspace = true, features = ["ring"] }

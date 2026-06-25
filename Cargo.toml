@@ -109,7 +109,6 @@ hyper-http-proxy = { version = "1.1", default-features = false, features = [
   "rustls-tls-native-roots",
 ] }
 hyper-rustls = { version = "0.27", default-features = false, features = [
-  "aws-lc-rs",
   "http1",
   "http2",
   "rustls-native-certs",
@@ -135,9 +134,11 @@ k8s-openapi = { version = "0.27", default-features = false, features = ["v1_33"]
 kube = { version = "3.1", default-features = false }
 regex = { version = "1.12", default-features = false }
 rustls = { version = "0.23", default-features = false, features = [
-  "aws_lc_rs",
   "logging",
   "std",
+  "tls12",
+] }
+rustls-cng-crypto = { version = "0.2.0", git = "https://github.com/DataDog/rustls-cng-crypto", rev = "d1d0b4c4583aac70f526704866b6d69d715cc24c", default-features = false, features = [
   "tls12",
 ] }
 similar-asserts = { version = "2.0", default-features = false }
@@ -165,9 +166,7 @@ faster-hex = { version = "0.10", default-features = false }
 rustls-pki-types = { version = "1.14", default-features = false, features = [
   "alloc",
 ] }
-tokio-rustls = { version = "0.26", default-features = false, features = [
-  "aws_lc_rs",
-] }
+tokio-rustls = { version = "0.26", default-features = false }
 tokio-vsock = { version = "0.7", default-features = false }
 anyhow = { version = "1", default-features = false }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }

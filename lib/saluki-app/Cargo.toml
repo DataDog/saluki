@@ -23,7 +23,7 @@ hyper = { workspace = true }
 iana-time-zone = { workspace = true }
 itoa = { workspace = true }
 metrics = { workspace = true }
-rcgen = { workspace = true, features = ["crypto", "aws_lc_rs", "pem"] }
+rcgen = { workspace = true, features = ["crypto", "pem"] }
 resource-accounting = { workspace = true }
 rustls = { workspace = true, features = ["tls12"] }
 rustls-pki-types = { workspace = true }
@@ -56,6 +56,12 @@ tracing-subscriber = { workspace = true, features = [
   "tracing-log",
 ] }
 url = { workspace = true, features = ["std"] }
+
+[target.'cfg(not(windows))'.dependencies]
+rcgen = { workspace = true, features = ["aws_lc_rs"] }
+
+[target.'cfg(windows)'.dependencies]
+rcgen = { workspace = true, features = ["ring"] }
 
 [dev-dependencies]
 http-body-util = { workspace = true }
