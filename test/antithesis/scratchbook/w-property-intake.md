@@ -50,7 +50,7 @@ those riding as extensions. W6 reads the decompressed length in the handler.
 ## Hostname and W17
 
 W17 resolves each series host against `DD_HOSTNAME`, default `antithesis-adp`.
-Keep it in sync with `hostname:` in `test/antithesis/deploy/adp/datadog.yaml`. The `intake`
+Keep it in sync with `hostname:` in `test/antithesis/scenarios/general/adp/datadog.yaml`. The `intake`
 image sets `DD_HOSTNAME=antithesis-adp`.
 
 Source-confirmed contract. The Agent emits a `type=host` resource on every v2

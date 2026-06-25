@@ -7,8 +7,8 @@ services:
     platform: linux/amd64
     init: true
     build:
-      context: ../../..
-      dockerfile: test/antithesis/deploy/Dockerfile
+      context: ../../../..
+      dockerfile: test/antithesis/scenarios/general/Dockerfile
       target: intake
     image: intake:latest
     environment:
@@ -26,8 +26,8 @@ services:
     platform: linux/amd64
     init: true
     build:
-      context: ../../..
-      dockerfile: test/antithesis/deploy/Dockerfile
+      context: ../../../..
+      dockerfile: test/antithesis/scenarios/general/Dockerfile
       target: adp
     image: adp:latest
     command: ["run"]
@@ -51,13 +51,13 @@ services:
     platform: linux/amd64
     init: true
     build:
-      context: ../../..
-      dockerfile: test/antithesis/deploy/Dockerfile
+      context: ../../../..
+      dockerfile: test/antithesis/scenarios/general/Dockerfile
       target: workload
     image: workload:latest
     environment:
       NO_COLOR: "1"
-      DSD_SOCKET: "/var/run/datadog/dsd.socket"
+      ADP_DOGSTATSD_SOCKET: "/var/run/datadog/dsd.socket"
       INTAKE_ADDR: "intake:2049"
     volumes:
       - dogstatsd-socket:/var/run/datadog

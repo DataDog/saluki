@@ -751,7 +751,7 @@ endif
 
 ##@ Antithesis
 
-ANTITHESIS_CONFIG_DIR := test/antithesis/deploy
+ANTITHESIS_CONFIG_DIR := test/antithesis/scenarios/general
 ANTITHESIS_COMPOSE_FILE := $(ANTITHESIS_CONFIG_DIR)/docker-compose.yaml
 
 .PHONY: check-antithesis-tools
