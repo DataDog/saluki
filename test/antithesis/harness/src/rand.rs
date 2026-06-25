@@ -4,41 +4,10 @@ use std::marker::PhantomData;
 
 use rand::distr::Distribution;
 use rand::{Rng, RngExt};
-use rand_distr::LogNormal;
 
 // ===========================================================================
-// Probe — a boundary-biased magnitude sampler. ~1/8 of draws are a boundary
-// value, the rest a typical log-normal magnitude.
+// Probe — a range-bounded, boundary-biased u64 sampler.
 // ===========================================================================
-
-/// `u64` boundary values: 0, 1, and each fixed-width max ±1.
-const BOUNDARIES_U64: &[u64] = &[
-    0,
-    1,
-    i8::MAX as u64 - 1,
-    i8::MAX as u64,
-    i8::MAX as u64 + 1,
-    u8::MAX as u64 - 1,
-    u8::MAX as u64,
-    u8::MAX as u64 + 1,
-    i16::MAX as u64 - 1,
-    i16::MAX as u64,
-    i16::MAX as u64 + 1,
-    u16::MAX as u64 - 1,
-    u16::MAX as u64,
-    u16::MAX as u64 + 1,
-    i32::MAX as u64 - 1,
-    i32::MAX as u64,
-    i32::MAX as u64 + 1,
-    u32::MAX as u64 - 1,
-    u32::MAX as u64,
-    u32::MAX as u64 + 1,
-    i64::MAX as u64 - 1,
-    i64::MAX as u64,
-    i64::MAX as u64 + 1,
-    u64::MAX - 1,
-    u64::MAX,
-];
 
 /// `i64` boundary values: 0, ±1, and each signed-width min/max.
 const BOUNDARIES_I64: &[i64] = &[
@@ -69,67 +38,46 @@ const BOUNDARIES_F64: &[f64] = &[
     f64::MIN,
 ];
 
-/// A boundary-biased distribution: ~1/8 of draws are a boundary value, the rest a
-/// "typical" log-normal magnitude. Generic over the numeric output type so a draw
-/// site reads `let v: i64 = Probe.sample(rng)` and gets type-appropriate
-/// boundaries. `i64`/`f64` draws carry a random sign.
+/// A range-bounded, boundary-biased `u64` sampler: about one draw in four a
+/// range edge, the rest log-uniform over the non-zero interior, so `0` appears
+/// only as an edge.
 #[derive(Debug, Clone, Copy)]
-pub struct Probe;
+pub struct Probe {
+    min: u64,
+    max: u64,
+}
+
+impl Probe {
+    /// Creates a sampler over `[min, max]`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `min` exceeds `max`.
+    #[must_use]
+    pub const fn new(min: u64, max: u64) -> Self {
+        assert!(min <= max, "Probe min must not exceed max");
+        Self { min, max }
+    }
+}
 
 impl Distribution<u64> for Probe {
     fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> u64 {
-        if rng.random_ratio(1, 8) {
-            BOUNDARIES_U64[rng.random_range(0..BOUNDARIES_U64.len())]
-        } else {
-            typical(rng)
-        }
-    }
-}
-
-impl Distribution<i64> for Probe {
-    fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> i64 {
-        if rng.random_ratio(1, 8) {
-            BOUNDARIES_I64[rng.random_range(0..BOUNDARIES_I64.len())]
-        } else {
-            let magnitude = num_traits::cast::<u64, i64>(typical(rng)).unwrap_or(i64::MAX);
+        if rng.random_ratio(1, 4) {
             if rng.random_ratio(1, 2) {
-                -magnitude
+                self.min
             } else {
-                magnitude
+                self.max
             }
-        }
-    }
-}
-
-impl Distribution<f64> for Probe {
-    fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> f64 {
-        if rng.random_ratio(1, 8) {
-            BOUNDARIES_F64[rng.random_range(0..BOUNDARIES_F64.len())]
         } else {
-            let magnitude = num_traits::cast::<u64, f64>(typical(rng)).unwrap_or(f64::MAX);
-            if rng.random_ratio(1, 2) {
-                -magnitude
-            } else {
-                magnitude
-            }
+            // Log-uniform so the interior is covered evenly across magnitudes.
+            let lo = num_traits::cast::<u64, f64>(self.min.max(1)).unwrap_or(1.0).ln();
+            let hi = num_traits::cast::<u64, f64>(self.max.max(1)).unwrap_or(1.0).ln();
+            let exponent = lo + rng.random::<f64>() * (hi - lo);
+            num_traits::cast::<f64, u64>(exponent.exp().round())
+                .unwrap_or(self.max)
+                .clamp(self.min, self.max)
         }
     }
-}
-
-/// Approximate probability of a typical draw landing in each range:
-///
-/// | Value range            | Probability |
-/// |------------------------|-------------|
-/// | `<= 16`                | ~15%        |
-/// | `16 ..= 256`           | ~21%        |
-/// | `256 ..= 1_024`        | ~14%        |
-/// | `1_024 ..= 4_096`      | ~14%        |
-/// | `4_096 ..= 65_536`     | ~22%        |
-/// | `65_536 ..= 1_048_576` | ~11%        |
-/// | `> 1_048_576`          | ~4%         |
-fn typical<R: Rng + ?Sized>(rng: &mut R) -> u64 {
-    let dist = LogNormal::new(1024.0_f64.ln(), 4.0).expect("median > 0 and sigma >= 0");
-    num_traits::cast::<f64, u64>(dist.sample(rng).round()).unwrap_or(u64::MAX)
 }
 
 // ===========================================================================
@@ -175,7 +123,7 @@ impl Distribution<i64> for Wide {
 
 // ===========================================================================
 // Boundary<T> — a finite type-boundary sampler: each fixed-width max ±1 and the
-// half-range midpoint ±1, the same idea as Probe's arrays but for one type.
+// half-range midpoint ±1, the same idea as the boundary tables above but for one type.
 // ===========================================================================
 
 /// A boundary-value sampler for `T`: each fixed-width max ±1 and the half-range

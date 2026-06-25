@@ -31,13 +31,6 @@ impl Serialize for GoDuration {
     }
 }
 
-impl Distribution<GoDuration> for Probe {
-    fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> GoDuration {
-        let millis: u64 = self.sample(rng);
-        GoDuration(Duration::from_millis(millis))
-    }
-}
-
 /// A duration the Agent reads as a plain integer number of seconds (`GetInt`),
 /// rendered as that integer.
 #[derive(Debug, Clone, Copy)]
@@ -46,13 +39,6 @@ struct DurationSeconds(Duration);
 impl Serialize for DurationSeconds {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.serialize_u64(self.0.as_secs())
-    }
-}
-
-impl Distribution<DurationSeconds> for Probe {
-    fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> DurationSeconds {
-        let secs: u64 = self.sample(rng);
-        DurationSeconds(Duration::from_secs(secs))
     }
 }
 
@@ -105,9 +91,7 @@ impl Distribution<TagCardinality> for StandardUniform {
 /// The Agent's `DogStatsD` configuration surface. `dogstatsd_socket` is
 /// supplied by the environment; the rest are sampled.
 ///
-/// Numeric fields are sampled with [`Probe`]: usually a typical value (so ADP
-/// boots and runs), occasionally a boundary value to probe overflow and
-/// wraparound.
+/// Numeric fields are sampled with [`Probe`] over a per-field range.
 #[allow(clippy::struct_field_names, clippy::struct_excessive_bools)]
 #[derive(Debug, Serialize)]
 pub(crate) struct DogStatsdConfig {
@@ -170,7 +154,7 @@ pub(crate) struct DogStatsdConfig {
 /// Keep `0` and sub-128 values rare.
 fn sample_buffer_size<R: Rng + ?Sized>(rng: &mut R) -> u64 {
     if rng.random_ratio(1, 16) {
-        Probe.sample(rng)
+        Probe::new(0, 536_870_912).sample(rng)
     } else {
         rng.random_range(128..=65_536)
     }
@@ -183,17 +167,21 @@ impl DogStatsdConfig {
         Self {
             dogstatsd_socket: dogstatsd_socket.to_path_buf(),
             dogstatsd_buffer_size: sample_buffer_size(rng),
-            dogstatsd_so_rcvbuf: Probe.sample(rng),
-            dogstatsd_packet_buffer_size: Probe.sample(rng),
-            dogstatsd_packet_buffer_flush_timeout: Probe.sample(rng),
-            dogstatsd_queue_size: Probe.sample(rng),
-            dogstatsd_pipeline_count: Probe.sample(rng),
-            dogstatsd_workers_count: Probe.sample(rng),
-            dogstatsd_expiry_seconds: Probe.sample(rng),
-            dogstatsd_context_expiry_seconds: Probe.sample(rng),
-            dogstatsd_string_interner_size: Probe.sample(rng),
-            dogstatsd_mapper_cache_size: Probe.sample(rng),
-            dogstatsd_no_aggregation_pipeline_batch_size: Probe.sample(rng),
+            dogstatsd_so_rcvbuf: Probe::new(0, 34_359_738_368).sample(rng),
+            dogstatsd_packet_buffer_size: Probe::new(1, 10_000_000).sample(rng),
+            dogstatsd_packet_buffer_flush_timeout: GoDuration(Duration::from_millis(
+                Probe::new(1, 86_400_000).sample(rng),
+            )),
+            dogstatsd_queue_size: Probe::new(1, 10_000_000).sample(rng),
+            dogstatsd_pipeline_count: Probe::new(1, 1_000_000).sample(rng),
+            dogstatsd_workers_count: Probe::new(0, 1_000_000).sample(rng),
+            dogstatsd_expiry_seconds: DurationSeconds(Duration::from_secs(Probe::new(0, 31_536_000_000).sample(rng))),
+            dogstatsd_context_expiry_seconds: DurationSeconds(Duration::from_secs(
+                Probe::new(0, 31_536_000_000).sample(rng),
+            )),
+            dogstatsd_string_interner_size: Probe::new(1, 134_217_728).sample(rng),
+            dogstatsd_mapper_cache_size: Probe::new(0, 100_000_000).sample(rng),
+            dogstatsd_no_aggregation_pipeline_batch_size: Probe::new(1, 10_000_000).sample(rng),
             dogstatsd_tag_cardinality: rng.random(),
             dogstatsd_non_local_traffic: rng.random(),
             dogstatsd_origin_detection: rng.random(),
@@ -247,7 +235,7 @@ impl DatadogConfig {
             api_key: api_key.to_owned(),
             dd_url: dd_url.to_owned(),
             log_level: rng.random(),
-            aggregate_context_limit: Probe.sample(rng),
+            aggregate_context_limit: Probe::new(1, 100_000_000).sample(rng),
             dogstatsd: DogStatsdConfig::sample(rng, dogstatsd_socket),
         }
     }
