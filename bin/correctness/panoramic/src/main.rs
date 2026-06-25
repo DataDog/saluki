@@ -52,8 +52,8 @@ fn default_crypto_provider() -> rustls::crypto::CryptoProvider {
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    // Install the rustls crypto provider once at startup. Both reqwest and kube use rustls 0.23,
-    // which requires an explicit provider install when multiple TLS-using crates are present.
+    // Install the rustls crypto provider once at startup. reqwest is built without selecting a provider, so the
+    // process-wide provider must be installed before any Rustls client configuration is built.
     let _ = default_crypto_provider().install_default();
 
     let cli: Cli = argh::from_env();

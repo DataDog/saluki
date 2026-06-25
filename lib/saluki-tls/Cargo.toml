@@ -10,7 +10,8 @@ workspace = true
 
 [features]
 default = []
-fips = ["rustls/fips", "rustls-cng-crypto/fips"]
+fips = ["rustls/fips"]
+cng-fips = ["rustls-cng-crypto/fips"]
 
 [dependencies]
 rustls = { workspace = true, features = ["std"] }

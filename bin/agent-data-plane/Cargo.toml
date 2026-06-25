@@ -11,6 +11,7 @@ workspace = true
 [features]
 default = []
 fips = ["saluki-app/tls-fips", "saluki-components/fips"]
+cng-fips = ["saluki-app/tls-cng-fips", "saluki-components/cng-fips"]
 antithesis = ["dep:antithesis_sdk", "antithesis_sdk/full", "dep:antithesis-instrumentation", "saluki-components/antithesis"]
 
 [dependencies]

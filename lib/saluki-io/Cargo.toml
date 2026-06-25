@@ -12,6 +12,7 @@ workspace = true
 default = []
 antithesis = ["dep:antithesis_sdk", "antithesis_sdk/full", "saluki-context/antithesis", "saluki-core/antithesis", "stringtheory/antithesis"]
 fips = ["saluki-tls/fips"]
+cng-fips = ["saluki-tls/cng-fips"]
 
 [dependencies]
 antithesis_sdk = { workspace = true, optional = true }
