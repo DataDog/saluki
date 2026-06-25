@@ -813,6 +813,7 @@ async fn run_request_builder(
                     // Keep a clone so we can add it to the next V3 shadow batch if that next batch samples in.
                     let metric_for_next_shadow_batch = (is_series
                         && matches!(endpoint_mode, MetricsEncoderMode::V2Only)
+                        && series_shadow_config.is_enabled()
                         && !series_shadow_active)
                         .then(|| metric.clone());
                     let mut v2_encoded = false;
@@ -852,14 +853,17 @@ async fn run_request_builder(
                         let should_flush_v3 = match endpoint_mode {
                             MetricsEncoderMode::V2Only => series_shadow_active && v2_flushed,
                             MetricsEncoderMode::V3Enabled => {
-                                if v3_flush_context.payload_limits.point_count_exceeds_limit(*v3_points)
+                                if v3_flush_context.payload_limits.point_count_fits(metric_point_count)
+                                    && v3_flush_context.payload_limits.point_count_exceeds_limit(*v3_points)
                                     && v3_metrics.len() > 1
                                 {
                                     v3_flush_context
                                         .serializer_telemetry
                                         .record_split_reason(V3PayloadSplitReason::MaxPoints);
-                                    split_metric = v3_metrics.pop();
-                                    *v3_points = v3_points.saturating_sub(metric_point_count);
+                                    if let Some(metric) = v3_metrics.pop() {
+                                        *v3_points = v3_points.saturating_sub(metric.values().len());
+                                        split_metric = Some(metric);
+                                    }
                                     true
                                 } else {
                                     v3_flush_context.payload_limits.should_flush_point_count_limit(*v3_points)
@@ -874,9 +878,11 @@ async fn run_request_builder(
                             if !matches!(endpoint_mode, MetricsEncoderMode::V3Enabled) {
                                 // V2 flushes the previous batch without the current metric. Pop it
                                 // from V3 before flushing so both batches cover the same set of metrics.
-                                split_metric = if v2_flushed { v3_metrics.pop() } else { None };
-                                if split_metric.is_some() {
-                                    *v3_points = v3_points.saturating_sub(metric_point_count);
+                                if v2_flushed {
+                                    if let Some(metric) = v3_metrics.pop() {
+                                        *v3_points = v3_points.saturating_sub(metric.values().len());
+                                        split_metric = Some(metric);
+                                    }
                                 }
                             }
                             let flush_context = if series_shadow_active {
@@ -2168,6 +2174,32 @@ serializer_experimental_use_v3_api:
     }
 
     #[test]
+    fn v3_metric_ranges_drop_oversized_metric_after_previous_range() {
+        let metrics = vec![
+            Metric::counter("v3.points.oversized.before", [(123, 1.0), (124, 2.0)]),
+            Metric::counter(
+                "v3.points.oversized.too_big",
+                [(123, 3.0), (124, 4.0), (125, 5.0), (126, 6.0)],
+            ),
+            Metric::counter("v3.points.oversized.after", 7.0),
+        ];
+        let limits = V3PayloadLimits::new(usize::MAX, usize::MAX, 10_000, 3);
+        let ep_config = EndpointConfiguration::new(CompressionScheme::noop(), 10_000, None);
+        let recorder = TestRecorder::default();
+        let _local = metrics::set_default_local_recorder(&recorder);
+        let telemetry = ComponentTelemetry::from_builder(&MetricsBuilder::default());
+        let serializer_telemetry = V3SerializerTelemetry::from_builder(&MetricsBuilder::default());
+        let context = test_v3_flush_context(&ep_config, limits, &serializer_telemetry, &telemetry);
+
+        let ranges = split_v3_metric_ranges_by_point_limit(&metrics, context, "series")
+            .into_iter()
+            .collect::<Vec<_>>();
+
+        assert_eq!(vec![0..1, 2..3], ranges);
+        assert_eq!(recorder.counter("serializer.v3_item_too_big"), Some(1));
+    }
+
+    #[test]
     fn v3_metric_ranges_skip_zero_point_metrics() {
         let metrics = vec![
             Metric::counter("v3.points.zero.before", 1.0),
@@ -2538,6 +2570,168 @@ serializer_experimental_use_v3_api:
         assert_eq!(flushed_requests[0].1, flushed_requests[1].1);
         assert_eq!(flushed_requests[2].1, flushed_requests[3].1);
         assert_ne!(flushed_requests[0].1, flushed_requests[2].1);
+
+        drop(events_tx);
+        request_builder_handle
+            .await
+            .expect("request builder task should complete")
+            .expect("request builder should stop cleanly");
+    }
+
+    #[tokio::test]
+    async fn authoritative_v3_flushes_previous_point_limit_batch() {
+        let v3_endpoint_config = EndpointConfiguration::new(CompressionScheme::noop(), 10_000, None);
+        let recorder = TestRecorder::default();
+        let _local = metrics::set_default_local_recorder(&recorder);
+        let metrics_builder = MetricsBuilder::default();
+        let telemetry = ComponentTelemetry::from_builder(&metrics_builder);
+        let serializer_telemetry = V3SerializerTelemetry::from_builder(&metrics_builder);
+        let (events_tx, events_rx) = tokio::sync::mpsc::channel(1);
+        let (payloads_tx, mut payloads_rx) = tokio::sync::mpsc::channel(8);
+
+        let request_builder_handle = tokio::spawn(run_request_builder(
+            None,
+            None,
+            MetricsEncoderMode::V3Enabled,
+            MetricsEncoderMode::V2Only,
+            V3RuntimeConfig {
+                endpoint_config: v3_endpoint_config,
+                payload_limits: V3PayloadLimits::new(usize::MAX, usize::MAX, 10_000, 3),
+                series_endpoint_uri: V3_SERIES_ENDPOINT_URI.to_string(),
+                shadow_series_endpoint_uri: "/api/intake/metrics/v3beta/series".to_string(),
+                series_shadow_config: SeriesShadowConfig::new(0.0),
+                serializer_telemetry,
+            },
+            telemetry,
+            events_rx,
+            payloads_tx,
+            Duration::from_millis(250),
+            false,
+        ));
+
+        let mut events = EventsBuffer::default();
+        assert!(events
+            .try_push(Event::Metric(Metric::counter(
+                "authoritative.v3.points.one",
+                [(123, 1.0), (124, 2.0)]
+            )))
+            .is_none());
+        assert!(events
+            .try_push(Event::Metric(Metric::counter(
+                "authoritative.v3.points.two",
+                [(123, 3.0), (124, 4.0)]
+            )))
+            .is_none());
+        events_tx
+            .send(events)
+            .await
+            .expect("events should be sent to request builder");
+
+        let payload = timeout(Duration::from_secs(1), payloads_rx.recv())
+            .await
+            .expect("point-limit payload should arrive before timeout")
+            .expect("payload channel should remain open");
+        let Payload::Http(http_payload) = payload else {
+            panic!("expected HTTP payload");
+        };
+        let (_, request) = http_payload.into_parts();
+        assert_eq!(V3_SERIES_ENDPOINT_URI, request.uri());
+        assert!(timeout(Duration::from_millis(50), payloads_rx.recv()).await.is_err());
+
+        let payload = timeout(Duration::from_secs(1), payloads_rx.recv())
+            .await
+            .expect("timeout payload should arrive before timeout")
+            .expect("payload channel should remain open");
+        let Payload::Http(http_payload) = payload else {
+            panic!("expected HTTP payload");
+        };
+        let (_, request) = http_payload.into_parts();
+        assert_eq!(V3_SERIES_ENDPOINT_URI, request.uri());
+        assert_eq!(
+            recorder.counter(("serializer.v3_payload_split_reason", &[("reason", "max_points")])),
+            Some(1)
+        );
+
+        drop(events_tx);
+        request_builder_handle
+            .await
+            .expect("request builder task should complete")
+            .expect("request builder should stop cleanly");
+    }
+
+    #[tokio::test]
+    async fn authoritative_v3_does_not_flush_on_v2_boundary() {
+        let v2_endpoint_config = EndpointConfiguration::new(CompressionScheme::noop(), 1, None);
+        let v2_series_builder = Some(
+            v2::create_v2_request_builder(MetricsEndpoint::SeriesV2, &v2_endpoint_config)
+                .await
+                .expect("V2 request builder should be created"),
+        );
+        let v3_endpoint_config = EndpointConfiguration::new(CompressionScheme::noop(), 10_000, None);
+        let metrics_builder = MetricsBuilder::default();
+        let telemetry = ComponentTelemetry::from_builder(&metrics_builder);
+        let serializer_telemetry = V3SerializerTelemetry::from_builder(&metrics_builder);
+        let (events_tx, events_rx) = tokio::sync::mpsc::channel(1);
+        let (payloads_tx, mut payloads_rx) = tokio::sync::mpsc::channel(8);
+
+        let request_builder_handle = tokio::spawn(run_request_builder(
+            v2_series_builder,
+            None,
+            MetricsEncoderMode::V3Enabled,
+            MetricsEncoderMode::V2Only,
+            V3RuntimeConfig {
+                endpoint_config: v3_endpoint_config,
+                payload_limits: V3PayloadLimits::new(usize::MAX, usize::MAX, 10_000, 10_000),
+                series_endpoint_uri: V3_SERIES_ENDPOINT_URI.to_string(),
+                shadow_series_endpoint_uri: "/api/intake/metrics/v3beta/series".to_string(),
+                series_shadow_config: SeriesShadowConfig::new(0.0),
+                serializer_telemetry,
+            },
+            telemetry,
+            events_rx,
+            payloads_tx,
+            Duration::from_millis(250),
+            false,
+        ));
+
+        let mut events = EventsBuffer::default();
+        assert!(events
+            .try_push(Event::Metric(Metric::counter("authoritative.v3.decouple.one", 1.0)))
+            .is_none());
+        assert!(events
+            .try_push(Event::Metric(Metric::counter("authoritative.v3.decouple.two", 2.0)))
+            .is_none());
+        events_tx
+            .send(events)
+            .await
+            .expect("events should be sent to request builder");
+
+        let payload = timeout(Duration::from_secs(1), payloads_rx.recv())
+            .await
+            .expect("V2 split payload should arrive before timeout")
+            .expect("payload channel should remain open");
+        let Payload::Http(http_payload) = payload else {
+            panic!("expected HTTP payload");
+        };
+        let (_, request) = http_payload.into_parts();
+        assert_eq!("/api/v2/series", request.uri());
+        assert!(timeout(Duration::from_millis(50), payloads_rx.recv()).await.is_err());
+
+        let mut timeout_flush_uris = Vec::new();
+        for _ in 0..2 {
+            let payload = timeout(Duration::from_secs(1), payloads_rx.recv())
+                .await
+                .expect("timeout payload should arrive before timeout")
+                .expect("payload channel should remain open");
+            let Payload::Http(http_payload) = payload else {
+                panic!("expected HTTP payload");
+            };
+            let (_, request) = http_payload.into_parts();
+            timeout_flush_uris.push(request.uri().to_string());
+        }
+        assert_eq!(2, timeout_flush_uris.len());
+        assert!(timeout_flush_uris.iter().any(|uri| uri == "/api/v2/series"));
+        assert!(timeout_flush_uris.iter().any(|uri| uri == V3_SERIES_ENDPOINT_URI));
 
         drop(events_tx);
         request_builder_handle
