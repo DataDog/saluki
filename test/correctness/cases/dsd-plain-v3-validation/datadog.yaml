@@ -25,6 +25,14 @@ dogstatsd_workers_count: 1
 # Enable V3 metrics encoding in validation mode: both V2 and V3 payloads are sent simultaneously,
 # paired by X-Metrics-Request-ID. V3 payloads are counted in the metrics dump; V2 payloads are
 # used only for comparison against V3 to validate encoding correctness.
+data_plane:
+  metrics:
+    v3:
+      series:
+        enabled: true
+use_v3_api:
+  series:
+    enabled: "true"
 serializer_experimental_use_v3_api:
   series:
     endpoints:

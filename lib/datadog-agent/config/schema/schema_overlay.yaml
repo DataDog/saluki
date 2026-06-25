@@ -50,7 +50,7 @@ inventory:
     pipelines: [cross_cutting]
     description: "Dual-ship to extra endpoints"
     test_support:
-      used_by: [ForwarderConfiguration]
+      used_by: [DatadogMetricsConfiguration, ForwarderConfiguration]
       test_json: '{"smoke-host-1.example.com": ["smoke-api-key"]}'
       additional_attributes:
         config_registry_filename: forwarder.rs
@@ -1775,7 +1775,7 @@ inventory:
     pipelines: [cross_cutting]
     description: "Route metrics to OPW instance"
     test_support:
-      used_by: [ForwarderConfiguration]
+      used_by: [DatadogMetricsConfiguration, ForwarderConfiguration]
       env_var_override: [DD_OBSERVABILITY_PIPELINES_WORKER_METRICS_ENABLED]
       additional_attributes:
         config_registry_filename: forwarder.rs
@@ -1785,19 +1785,20 @@ inventory:
     pipelines: [cross_cutting]
     description: "OPW metrics intake URL"
     test_support:
-      used_by: [ForwarderConfiguration]
+      used_by: [DatadogMetricsConfiguration, ForwarderConfiguration]
       env_var_override: [DD_OBSERVABILITY_PIPELINES_WORKER_METRICS_URL]
       additional_attributes:
         config_registry_filename: forwarder.rs
 
   observability_pipelines_worker.metrics.use_v3_api.series:
-    support: none
-    severity: low
-    planned: true
-    issue: "#1468"
-    pipelines: [cross_cutting]
-    description: "OPW metrics v3 series API opt-in"
-    documentation: "V2 to V3 migration PR in progress. Feature is missing but actively being addressed."
+    support: full
+    pipelines: [dogstatsd]
+    description: "Use V3 series for OPW"
+    test_support:
+      used_by: [DatadogMetricsConfiguration, ForwarderConfiguration]
+      env_var_override: [DD_OBSERVABILITY_PIPELINES_WORKER_METRICS_USE_V3_API_SERIES]
+      additional_attributes:
+        config_registry_filename: forwarder.rs
 
   origin_detection_unified:
     support: full
@@ -1945,6 +1946,7 @@ inventory:
           DatadogMetricsConfiguration,
           DatadogServiceChecksConfiguration,
           DatadogTraceConfiguration,
+          ForwarderConfiguration,
         ]
       additional_attributes:
         config_registry_filename: encoders.rs
@@ -2299,29 +2301,32 @@ inventory:
         config_registry_filename: encoders.rs
 
   use_v3_api.series.enabled:
-    support: none
-    severity: low
-    planned: true
-    issue: "#1468"
-    pipelines: [dogstatsd, checks, traces]
-    description: "Global default for series intake API version"
-    documentation: "V2 to V3 migration PR in progress. Feature is missing but actively being addressed."
+    support: full
+    pipelines: [dogstatsd]
+    description: "Global V3 series mode"
+    test_support:
+      used_by: [DatadogMetricsConfiguration, ForwarderConfiguration]
+      env_var_override: [DD_USE_V3_API_SERIES_ENABLED]
+      additional_attributes:
+        config_registry_filename: encoders.rs
 
   use_v3_api.series.endpoints:
-    support: none
-    severity: low
-    planned: true
-    issue: "#1468"
-    pipelines: [dogstatsd, checks, traces]
-    description: "Per-URL override map for series intake version"
-    documentation: "V2 to V3 migration PR in progress. Feature is missing but actively being addressed."
+    support: full
+    pipelines: [dogstatsd]
+    description: "Per-endpoint V3 series modes"
+    test_support:
+      used_by: [DatadogMetricsConfiguration, ForwarderConfiguration]
+      env_var_override: [DD_USE_V3_API_SERIES_ENDPOINTS]
+      test_json: '"{\"http://datadog.example.com\":\"false\"}"'
+      additional_attributes:
+        config_registry_filename: encoders.rs
 
   vector.metrics.enabled:
     support: full
     pipelines: [cross_cutting]
     description: "Route metrics to OPW (legacy alias)"
     test_support:
-      used_by: [ForwarderConfiguration]
+      used_by: [DatadogMetricsConfiguration, ForwarderConfiguration]
       env_var_override: [DD_VECTOR_METRICS_ENABLED]
       additional_attributes:
         config_registry_filename: forwarder.rs
@@ -2331,19 +2336,20 @@ inventory:
     pipelines: [cross_cutting]
     description: "OPW metrics intake URL (legacy alias)"
     test_support:
-      used_by: [ForwarderConfiguration]
+      used_by: [DatadogMetricsConfiguration, ForwarderConfiguration]
       env_var_override: [DD_VECTOR_METRICS_URL]
       additional_attributes:
         config_registry_filename: forwarder.rs
 
   vector.metrics.use_v3_api.series:
-    support: none
-    severity: low
-    planned: true
-    issue: "#1468"
-    pipelines: [cross_cutting]
-    description: "OPW metrics v3 series API opt-in (legacy alias)"
-    documentation: "V2 to V3 migration PR in progress. Feature is missing but actively being addressed."
+    support: full
+    pipelines: [dogstatsd]
+    description: "Use V3 series for Vector"
+    test_support:
+      used_by: [DatadogMetricsConfiguration, ForwarderConfiguration]
+      env_var_override: [DD_VECTOR_METRICS_USE_V3_API_SERIES]
+      additional_attributes:
+        config_registry_filename: forwarder.rs
 
   vsock_addr:
     support: full

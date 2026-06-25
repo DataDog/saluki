@@ -8,8 +8,9 @@ use serde::Deserialize;
 use tracing::warn;
 
 use super::{
+    default_serializer_compressor_kind,
     endpoints::{EndpointConfiguration, EndpointRoute, RoutableEndpoint},
-    protocol::V3ApiConfig,
+    protocol::{UseV3ApiSeriesConfig, V3ApiConfig},
     proxy::ProxyConfiguration,
     retry::RetryConfiguration,
 };
@@ -114,6 +115,12 @@ pub(crate) struct OpwMetricsConfiguration {
     #[serde(default, rename = "observability_pipelines_worker_metrics_url")]
     observability_pipelines_worker_url: String,
 
+    /// Enables V3 series metrics when routing to Observability Pipelines Worker.
+    ///
+    /// Defaults to `false`.
+    #[serde(default, rename = "observability_pipelines_worker_metrics_use_v3_api_series")]
+    observability_pipelines_worker_use_v3_api_series: bool,
+
     /// Enables routing all metrics to Vector.
     ///
     /// Deprecated in favor of `observability_pipelines_worker.metrics.enabled`.
@@ -129,12 +136,21 @@ pub(crate) struct OpwMetricsConfiguration {
     /// Defaults to unset.
     #[serde(default, rename = "vector_metrics_url")]
     vector_url: String,
+
+    /// Enables V3 series metrics when routing to Vector.
+    ///
+    /// Deprecated in favor of `observability_pipelines_worker.metrics.use_v3_api.series`.
+    ///
+    /// Defaults to `false`.
+    #[serde(default, rename = "vector_metrics_use_v3_api_series")]
+    vector_use_v3_api_series: bool,
 }
 
 struct SelectedOpwMetricsEndpoint<'a> {
     enabled_key: &'static str,
     url_key: &'static str,
     url: &'a str,
+    use_v3_series: bool,
 }
 
 impl OpwMetricsConfiguration {
@@ -144,6 +160,7 @@ impl OpwMetricsConfiguration {
                 enabled_key: "observability_pipelines_worker.metrics.enabled",
                 url_key: "observability_pipelines_worker.metrics.url",
                 url: &self.observability_pipelines_worker_url,
+                use_v3_series: self.observability_pipelines_worker_use_v3_api_series,
             });
         }
 
@@ -152,6 +169,7 @@ impl OpwMetricsConfiguration {
                 enabled_key: "vector.metrics.enabled",
                 url_key: "vector.metrics.url",
                 url: &self.vector_url,
+                use_v3_series: self.vector_use_v3_api_series,
             });
         }
 
@@ -235,6 +253,27 @@ pub struct ForwarderConfiguration {
     /// based on endpoint URL matching.
     #[serde(rename = "serializer_experimental_use_v3_api", default)]
     v3_api: V3ApiConfig,
+
+    /// Agent-compatible V3 API configuration for series metrics.
+    #[serde(flatten)]
+    use_v3_api_series: UseV3ApiSeriesConfig,
+
+    /// ADP safety gate for authoritative V3 series metrics.
+    ///
+    /// Defaults to `false`. This keeps ADP on V2 unless both Agent-compatible V3 config and this ADP-specific flag
+    /// enable V3.
+    #[serde(default, rename = "data_plane_metrics_v3_series_enabled")]
+    data_plane_metrics_v3_series_enabled: bool,
+
+    /// Payload compressor kind used by the metrics serializer.
+    ///
+    /// V3 metrics intake is incompatible with zlib/deflate, so the forwarder needs this setting to keep endpoint
+    /// filtering aligned with the encoder when zlib forces metrics back to V2.
+    #[serde(
+        rename = "serializer_compressor_kind",
+        default = "default_serializer_compressor_kind"
+    )]
+    serializer_compressor_kind: String,
 
     /// Whether to disable TLS certificate validation for Datadog intake forwarding.
     ///
@@ -427,6 +466,33 @@ impl ForwarderConfiguration {
     /// Returns a reference to the V3 API configuration.
     pub fn v3_api(&self) -> &V3ApiConfig {
         &self.v3_api
+    }
+
+    /// Returns the Agent-compatible V3 series configuration.
+    pub(crate) const fn use_v3_api_series(&self) -> &UseV3ApiSeriesConfig {
+        &self.use_v3_api_series
+    }
+
+    /// Returns true when the ADP V3 series safety gate is enabled.
+    pub(crate) const fn data_plane_metrics_v3_series_enabled(&self) -> bool {
+        self.data_plane_metrics_v3_series_enabled
+    }
+
+    /// Returns the OPW/Vector V3 series override for metrics-primary routing, if configured.
+    pub(crate) fn opw_metrics_v3_series_override(&self) -> Option<bool> {
+        self.opw_metrics
+            .selected_endpoint()
+            .map(|selected| selected.use_v3_series)
+    }
+
+    /// Returns the configured primary endpoint string without resolving or version-prefixing it.
+    pub(crate) fn primary_configured_endpoint(&self) -> String {
+        self.endpoint.configured_primary_endpoint()
+    }
+
+    /// Returns whether the configured metrics compressor is incompatible with Metrics V3.
+    pub(crate) fn compressor_disables_metrics_v3(&self) -> bool {
+        self.serializer_compressor_kind.trim().eq_ignore_ascii_case("zlib")
     }
 
     /// Returns whether TLS certificate validation is disabled for Datadog intake forwarding.
@@ -889,6 +955,84 @@ mod tests {
             endpoint_urls_by_route(&config, EndpointRoute::MetricsPrimary),
             vec![OPW_URI]
         );
+    }
+
+    #[tokio::test]
+    async fn use_v3_api_series_config_loads_agent_nested_yaml_shape() {
+        let config = forwarder_config_from(
+            config_with(serde_json::json!({
+                "use_v3_api": {
+                    "series": {
+                        "enabled": "datadog_only",
+                        "endpoints": {
+                            "http://datadog.example.com": false
+                        }
+                    }
+                },
+                "data_plane": {
+                    "metrics": {
+                        "v3": {
+                            "series": {
+                                "enabled": true
+                            }
+                        }
+                    }
+                }
+            })),
+            None,
+        )
+        .await;
+
+        assert!(config.data_plane_metrics_v3_series_enabled());
+        assert_eq!(config.use_v3_api_series().enabled, "datadog_only");
+        assert_eq!(
+            config.use_v3_api_series().endpoints.get(DATADOG_URL),
+            Some(&"false".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn serializer_compressor_kind_zlib_disables_metrics_v3() {
+        let config = forwarder_config_from(
+            config_with(serde_json::json!({
+                "serializer_compressor_kind": "zlib",
+            })),
+            None,
+        )
+        .await;
+
+        assert!(config.compressor_disables_metrics_v3());
+
+        let config = forwarder_config_from(
+            config_with(serde_json::json!({
+                "serializer_compressor_kind": "zstd",
+            })),
+            None,
+        )
+        .await;
+
+        assert!(!config.compressor_disables_metrics_v3());
+    }
+
+    #[tokio::test]
+    async fn opw_metrics_v3_series_override_loads_agent_nested_yaml_shape() {
+        let config = forwarder_config_from(
+            config_with(serde_json::json!({
+                "observability_pipelines_worker": {
+                    "metrics": {
+                        "enabled": true,
+                        "url": OPW_URL,
+                        "use_v3_api": {
+                            "series": true
+                        }
+                    }
+                }
+            })),
+            None,
+        )
+        .await;
+
+        assert_eq!(config.opw_metrics_v3_series_override(), Some(true));
     }
 
     #[tokio::test]

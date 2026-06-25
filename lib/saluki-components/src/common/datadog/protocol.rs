@@ -1,5 +1,7 @@
 //! Protocol version types for Datadog payloads.
 
+use std::collections::HashMap;
+
 use facet::Facet;
 use serde::{Deserialize, Serialize};
 
@@ -10,11 +12,67 @@ fn default_v3_beta_series_route() -> String {
 }
 
 const fn default_v3_series_shadow_sample_rate() -> f64 {
-    0.001
+    0.0
 }
 
 fn default_v3_series_shadow_sites() -> Vec<String> {
     vec!["datadoghq.com".to_string()]
+}
+
+fn default_use_v3_api_series_enabled() -> String {
+    "true".to_string()
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum V3SeriesModeValue {
+    String(String),
+    Bool(bool),
+}
+
+impl V3SeriesModeValue {
+    fn into_string(self) -> String {
+        match self {
+            Self::String(value) => value,
+            Self::Bool(value) => value.to_string(),
+        }
+    }
+}
+
+/// Deserializes an Agent V3 series mode value.
+///
+/// The Datadog Agent accepts string values such as `true`, `false`, and `datadog_only`, while YAML values may also be
+/// written as booleans. Normalize those supported forms into the string form used by the evaluator.
+pub fn deserialize_v3_series_mode<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    V3SeriesModeValue::deserialize(deserializer).map(V3SeriesModeValue::into_string)
+}
+
+/// Deserializes per-endpoint Agent V3 series mode overrides.
+pub fn deserialize_v3_series_endpoint_modes<'de, D>(deserializer: D) -> Result<HashMap<String, String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum EndpointModes {
+        JsonString(String),
+        Map(HashMap<String, V3SeriesModeValue>),
+    }
+
+    let values = match EndpointModes::deserialize(deserializer)? {
+        EndpointModes::JsonString(raw) => {
+            serde_json::from_str::<HashMap<String, V3SeriesModeValue>>(&raw).map_err(serde::de::Error::custom)?
+        }
+        EndpointModes::Map(values) => values,
+    };
+
+    Ok(values
+        .into_iter()
+        .map(|(endpoint, value)| (endpoint, value.into_string()))
+        .collect())
 }
 
 /// The type of metrics payload.
@@ -153,7 +211,7 @@ pub struct V3ApiSettings {
     ///
     /// This only applies to series metrics when V3 is not authoritative.
     ///
-    /// Defaults to `0.001`.
+    /// Defaults to `0`.
     #[serde(default = "default_v3_series_shadow_sample_rate")]
     pub shadow_sample_rate: f64,
 
@@ -214,14 +272,36 @@ impl V3ApiConfig {
     pub fn use_v3_sketches(&self) -> bool {
         self.sketches.is_enabled()
     }
+}
 
-    /// Returns true if validation mode is enabled for series metrics.
-    pub fn use_v3_series_validate(&self) -> bool {
-        self.series.is_enabled() && self.series.validate
-    }
+/// Agent-compatible `use_v3_api.series` configuration.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Facet)]
+pub struct UseV3ApiSeriesConfig {
+    /// Global V3 series mode.
+    ///
+    /// Valid Agent values are truthy strings, falsy strings, and `datadog_only`. Invalid values are treated as false by
+    /// the evaluator.
+    #[serde(
+        default = "default_use_v3_api_series_enabled",
+        deserialize_with = "deserialize_v3_series_mode",
+        rename = "use_v3_api_series_enabled"
+    )]
+    pub enabled: String,
 
-    /// Returns true if validation mode is enabled for sketch metrics.
-    pub fn use_v3_sketches_validate(&self) -> bool {
-        self.sketches.is_enabled() && self.sketches.validate
+    /// Per-endpoint V3 series mode overrides.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_v3_series_endpoint_modes",
+        rename = "use_v3_api_series_endpoints"
+    )]
+    pub endpoints: HashMap<String, String>,
+}
+
+impl Default for UseV3ApiSeriesConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_use_v3_api_series_enabled(),
+            endpoints: HashMap::new(),
+        }
     }
 }
