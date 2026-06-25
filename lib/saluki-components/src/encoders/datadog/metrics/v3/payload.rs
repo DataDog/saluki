@@ -37,6 +37,14 @@ impl V3PayloadLimits {
     pub(crate) fn should_flush_metric_count_limit(self, metrics: &[Metric]) -> bool {
         metrics.len() >= self.max_metrics_per_payload
     }
+
+    pub(crate) fn should_flush_point_count_limit(self, data_point_count: usize) -> bool {
+        data_point_count >= self.max_points_per_payload
+    }
+
+    pub(crate) fn point_count_exceeds_limit(self, data_point_count: usize) -> bool {
+        data_point_count > self.max_points_per_payload
+    }
 }
 
 /// Encoded V3 request with measured payload sizes.
