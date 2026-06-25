@@ -111,11 +111,13 @@ const fn default_log_payloads() -> bool {
 fn series_shadow_config_for_endpoint(
     series_endpoint: MetricsEndpoint, sample_rate: f64, metrics_v3_disabled_by_compressor: bool,
 ) -> SeriesShadowConfig {
-    SeriesShadowConfig::new(if !metrics_v3_disabled_by_compressor && series_endpoint == MetricsEndpoint::SeriesV2 {
-        sample_rate
-    } else {
-        0.0
-    })
+    SeriesShadowConfig::new(
+        if !metrics_v3_disabled_by_compressor && series_endpoint == MetricsEndpoint::SeriesV2 {
+            sample_rate
+        } else {
+            0.0
+        },
+    )
 }
 
 /// Encoding mode for a metrics endpoint.

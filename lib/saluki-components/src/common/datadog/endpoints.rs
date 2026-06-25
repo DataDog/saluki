@@ -271,6 +271,19 @@ fn parse_series_v3_mode(value: &str) -> SeriesV3Mode {
     }
 }
 
+fn configured_endpoint_is_datadog_url(configured_endpoint: &str) -> bool {
+    let endpoint = configured_endpoint.trim();
+    if endpoint.is_empty() {
+        return false;
+    }
+
+    if Url::parse(endpoint).is_ok_and(|url| is_datadog_url(&url)) {
+        return true;
+    }
+
+    Authority::from_str(endpoint).is_ok_and(|authority| is_datadog_host(authority.host()))
+}
+
 pub(crate) fn evaluate_series_v3_mode(
     config_key: &'static str, value: &str, configured_endpoint: &str, resolved_endpoint: Option<&Url>,
 ) -> bool {
@@ -278,8 +291,7 @@ pub(crate) fn evaluate_series_v3_mode(
         SeriesV3Mode::Enabled => true,
         SeriesV3Mode::Disabled => false,
         SeriesV3Mode::DatadogOnly => {
-            Url::parse(configured_endpoint).is_ok_and(|url| is_datadog_url(&url))
-                || resolved_endpoint.is_some_and(is_datadog_url)
+            configured_endpoint_is_datadog_url(configured_endpoint) || resolved_endpoint.is_some_and(is_datadog_url)
         }
         SeriesV3Mode::Invalid => {
             warn!(
@@ -314,10 +326,17 @@ pub(crate) fn series_v3_config_can_enable_v3(series_config: &UseV3ApiSeriesConfi
     }
 }
 
+fn is_datadog_host(host: &str) -> bool {
+    let host = host.trim_end_matches('.');
+    if host.bytes().any(|byte| byte.is_ascii_uppercase()) {
+        DD_URL_REGEX.is_match(&host.to_ascii_lowercase())
+    } else {
+        DD_URL_REGEX.is_match(host)
+    }
+}
+
 pub(crate) fn is_datadog_url(url: &Url) -> bool {
-    url.host_str()
-        .map(|host| host.trim_end_matches('.').to_ascii_lowercase())
-        .is_some_and(|host| DD_URL_REGEX.is_match(&host))
+    url.host_str().is_some_and(is_datadog_host)
 }
 
 pub(crate) fn extract_site_from_url(raw_url: &str) -> Option<String> {
@@ -1376,6 +1395,57 @@ mod tests {
 
         assert!(datadog_settings.use_v3_series);
         assert!(!custom_settings.use_v3_series);
+    }
+
+    #[test]
+    fn agent_v3_datadog_only_config_viability_accepts_schemeless_datadog_endpoints() {
+        let mut series_config = UseV3ApiSeriesConfig {
+            enabled: "false".to_string(),
+            endpoints: HashMap::new(),
+        };
+        series_config
+            .endpoints
+            .insert("app.datadoghq.com".to_string(), "datadog_only".to_string());
+
+        assert!(series_v3_config_can_enable_v3(&series_config));
+
+        series_config.endpoints.clear();
+        series_config
+            .endpoints
+            .insert("app.datadoghq.com:443".to_string(), "datadog_only".to_string());
+
+        assert!(series_v3_config_can_enable_v3(&series_config));
+
+        series_config.endpoints.clear();
+        series_config
+            .endpoints
+            .insert("APP.DATADOGHQ.COM".to_string(), "datadog_only".to_string());
+
+        assert!(series_v3_config_can_enable_v3(&series_config));
+
+        series_config.endpoints.clear();
+        series_config
+            .endpoints
+            .insert("example.com".to_string(), "datadog_only".to_string());
+
+        assert!(!series_v3_config_can_enable_v3(&series_config));
+    }
+
+    #[test]
+    fn agent_v3_datadog_only_endpoint_override_matches_schemeless_host_port() {
+        let resolved = ResolvedEndpoint::from_raw_endpoint("app.datadoghq.com:443", "fake-api-key")
+            .expect("endpoint should resolve");
+        let mut series_config = UseV3ApiSeriesConfig {
+            enabled: "false".to_string(),
+            endpoints: HashMap::new(),
+        };
+        series_config
+            .endpoints
+            .insert(resolved.configured_endpoint().to_string(), "datadog_only".to_string());
+
+        let settings = EndpointV3Settings::from_v3_config(v3_endpoint_config(&resolved, &series_config));
+
+        assert!(settings.use_v3_series);
     }
 
     #[test]
