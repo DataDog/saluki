@@ -152,8 +152,7 @@ impl EndpointV3Settings {
             .serializer_v3_sketches_endpoints
             .iter()
             .any(|e| config.configured_endpoint == e);
-        let series_shadow_mode = config.data_plane_v3_series_enabled
-            && !use_v3_series
+        let series_shadow_mode = !use_v3_series
             && extract_site_from_url(config.resolved_endpoint.as_str()).is_some_and(|site| {
                 config
                     .series_shadow_sites
@@ -1341,12 +1340,16 @@ mod tests {
             ..v3_endpoint_config(&resolved, &series_config)
         });
         assert!(!settings.use_v3_series);
+        assert!(settings.series_shadow_mode);
+        assert!(settings.should_receive_payload(Some(MetricsPayloadInfo::v3_shadow_series())));
+        assert!(!settings.should_receive_payload(Some(MetricsPayloadInfo::v3_series())));
 
         let settings = EndpointV3Settings::from_v3_config(V3EndpointConfig {
             series_shadow_sites: &["datadoghq.com".to_string()],
             ..v3_endpoint_config(&resolved, &series_config)
         });
         assert!(settings.use_v3_series);
+        assert!(!settings.series_shadow_mode);
     }
 
     #[test]
