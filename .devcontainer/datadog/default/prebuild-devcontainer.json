@@ -20,7 +20,7 @@
   "forwardPorts": [22],
   "features": {
     // Campaigner update PRs should take care of bumping those versions
-    "registry.ddbuild.io/workspaces/features/base:0.4.0": {},
+    "registry.ddbuild.io/workspaces/features/base:0.4.121117009": {},
     "registry.ddbuild.io/workspaces/features/claude-code:0.1.117404273": {},
     // ADP-specific setup
     "./features/adp": {}
