@@ -168,9 +168,7 @@ async fn run_inner(
                 }
             }
 
-            if let Some(exit_code) = exit_code {
-                return Ok(Some(exit_code));
-            }
+            return Ok(exit_code);
         }
         Action::Debug(cmd) => handle_debug_command(&bootstrap_config, cmd).await,
         Action::Config(_) => handle_config_command(&bootstrap_config).await,
