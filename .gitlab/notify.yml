@@ -6,4 +6,6 @@ notify-nightly-failure:
     - if: $AGENT_NIGHTLY == "true"
       when: on_failure
   script:
-    - 'postmessage "#agent-data-plane" ":host-red: $CI_PROJECT_NAME $CI_COMMIT_REF_NAME pipeline <$CI_PROJECT_URL/pipelines/$CI_PIPELINE_ID|$CI_PIPELINE_ID> failed."'
+    - 'BUILD_URL="$CI_PROJECT_URL/pipelines/$CI_PIPELINE_ID"'
+    - 'MESSAGE_TEXT=":host-red: $CI_PROJECT_NAME $CI_COMMIT_REF_NAME pipeline <$BUILD_URL|$CI_PIPELINE_ID> failed."'
+    - postmessage "#agent-data-plane" "$MESSAGE_TEXT"
