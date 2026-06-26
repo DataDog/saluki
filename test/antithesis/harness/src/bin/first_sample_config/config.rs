@@ -42,27 +42,19 @@ impl Serialize for DurationSeconds {
     }
 }
 
-/// Agent log level
+/// Agent log level.
 ///
-/// Restricted to quiet levels on purpose. Antithesis enforces a per-hour
-/// log-output budget per run and `info`/`debug`/`trace` is a whole awful lot of
-/// logs.
+/// Pinned to `error`. That's the quietest level that still logs and a value
+/// both the Datadog Agent and ADP parse identically. Louder levels blow
+/// Antithesis's per-hour log-output budget. `off` is intentionally
+/// absent. `serde_yaml` renders it as the bare scalar `off`, which a YAML 1.1
+/// reader decodes as the boolean `false`, and the Datadog Agent then rejects
+/// the level and refuses to boot.
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum LogLevel {
     /// Errors only — the quietest level that still logs.
     Error,
-    /// No logs at all — the floor of the log-output budget.
-    Off,
-}
-
-impl Distribution<LogLevel> for StandardUniform {
-    fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> LogLevel {
-        match rng.random_range(0..2u8) {
-            0 => LogLevel::Error,
-            _ => LogLevel::Off,
-        }
-    }
 }
 
 /// Tag granularity for origin-detected `DogStatsD` tags.
@@ -234,7 +226,7 @@ impl DatadogConfig {
             hostname: hostname.to_owned(),
             api_key: api_key.to_owned(),
             dd_url: dd_url.to_owned(),
-            log_level: rng.random(),
+            log_level: LogLevel::Error,
             aggregate_context_limit: Probe::new(1, 100_000_000).sample(rng),
             dogstatsd: DogStatsdConfig::sample(rng, dogstatsd_socket),
         }
