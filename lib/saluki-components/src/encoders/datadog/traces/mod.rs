@@ -565,7 +565,7 @@ impl TraceEndpointEncoder {
             // Container tags go in the payload-level attributes map.
             if let Some(ct) = &container_tags {
                 let k_ref = self.string_table.intern(CONTAINER_TAGS_META_KEY);
-                let v_ref = self.string_table.intern(&ct);
+                let v_ref = self.string_table.intern(ct);
                 tp.attributes().write_entry(k_ref, |av: &mut _| {
                     av.value(|vo| vo.string_value_ref(v_ref)).map(|_| ())
                 })?;
@@ -594,10 +594,8 @@ impl TraceEndpointEncoder {
                     let resource_ref = self.string_table.intern(span.resource());
                     let type_ref = self.string_table.intern(span.span_type());
                     let env_ref = (!span.env.is_empty()).then(|| self.string_table.intern(&span.env));
-                    let version_ref =
-                        (!span.version.is_empty()).then(|| self.string_table.intern(&span.version));
-                    let component_ref =
-                        (!span.component.is_empty()).then(|| self.string_table.intern(&span.component));
+                    let version_ref = (!span.version.is_empty()).then(|| self.string_table.intern(&span.version));
+                    let component_ref = (!span.component.is_empty()).then(|| self.string_table.intern(&span.component));
 
                     chunk.add_spans(|s| {
                         s.service_ref(service_ref)?
@@ -613,7 +611,7 @@ impl TraceEndpointEncoder {
                         {
                             let mut attrs = s.attributes();
                             for (k, v) in &span.attributes {
-                                let k_ref = self.string_table.intern(&k);
+                                let k_ref = self.string_table.intern(k);
                                 attrs.write_entry(k_ref, |av: &mut _| {
                                     encode_idx_attribute_value(av, v, &mut self.string_table)
                                 })?;
@@ -647,7 +645,7 @@ impl TraceEndpointEncoder {
                                 {
                                     let mut lattrs = sl.attributes();
                                     for (k, v) in link.attributes() {
-                                        let k_ref = self.string_table.intern(&k);
+                                        let k_ref = self.string_table.intern(k);
                                         lattrs.write_entry(k_ref, |av: &mut _| {
                                             encode_idx_attribute_value(av, v, &mut self.string_table)
                                         })?;
@@ -666,7 +664,7 @@ impl TraceEndpointEncoder {
                                 {
                                     let mut eattrs = se.attributes();
                                     for (k, v) in event.attributes() {
-                                        let k_ref = self.string_table.intern(&k);
+                                        let k_ref = self.string_table.intern(k);
                                         eattrs.write_entry(k_ref, |av: &mut _| {
                                             encode_idx_attribute_value(av, v, &mut self.string_table)
                                         })?;
@@ -794,7 +792,7 @@ fn encode_idx_attribute_value<S: ScratchBuffer>(
 ) -> std::io::Result<()> {
     builder
         .value(|vo| match value {
-            AttributeValue::String(s) => vo.string_value_ref(st.intern(&s)),
+            AttributeValue::String(s) => vo.string_value_ref(st.intern(s)),
             AttributeValue::Bool(b) => vo.bool_value(*b),
             AttributeValue::Int(i) => vo.int_value(*i),
             AttributeValue::Float(f) => vo.double_value(*f),
@@ -808,7 +806,7 @@ fn encode_idx_attribute_value<S: ScratchBuffer>(
             AttributeValue::KeyValueList(kvs) => vo.key_value_list(|kvl| {
                 for (k, v) in kvs {
                     kvl.add_key_values(|kv| {
-                        kv.key(st.intern(&k))?
+                        kv.key(st.intern(k))?
                             .value(|av| encode_idx_attribute_value(av, v, st))?;
                         Ok(())
                     })?;
