@@ -543,30 +543,36 @@ impl SupervisorHandle {
         &self.name
     }
 
-    /// Spawns a new dynamic worker (temporary, non-significant) and waits until the supervisor has started it.
+    /// Spawns a new dynamic worker.
     ///
-    /// Returns once the supervisor has registered and begun running the child. Use [`spawn_with`](Self::spawn_with) to
-    /// configure the child's restart policy or significance.
+    /// Dynamic workers are temporary children that are not restarted by the supervisor when they die or when the
+    /// supervisor itself is restarted. They are useful for short-lived, non-critical background tasks that require
+    /// structured concurrency: the process should be cancelled when the supervisor itself is restarted or terminated,
+    /// and so on.
+    ///
+    /// Use [`spawn_with`](Self::spawn_with) to configure the child's restart policy or significance.
     ///
     /// # Errors
     ///
-    /// Returns [`SpawnError::SupervisorGone`] if the supervisor isn't currently running (it hasn't started yet, is
-    /// between restarts, or has shut down) and so can't accept the spawn, or [`SpawnError::Rejected`] if the supervisor
-    /// accepts the request but can't start the child (for example, an invalid child name).
+    /// If the supervisor isn't current running, or if the child specification is invalid, an error is returned.
     pub async fn spawn<T: Supervisable + 'static>(&self, worker: T) -> Result<ChildId, SpawnError> {
         self.spawn_with(ChildSpecification::worker(worker).with_restart_type(RestartType::Temporary))
             .await
     }
 
-    /// Spawns a new dynamic child from a fully configured [`ChildSpecification`], waiting until it has started.
+    /// Spawns a new dynamic child from a fully configured [`ChildSpecification`].
     ///
-    /// Like [`spawn`](Self::spawn), but the child's restart policy and significance are taken from `spec` as-is, so set
-    /// [`with_restart_type`][ChildSpecification::with_restart_type] explicitly (dynamic children are usually
-    /// [`RestartType::Temporary`]).
+    /// Dynamic workers are temporary children that are not restarted by the supervisor when they die or when the
+    /// supervisor itself is restarted. They are useful for short-lived, non-critical background tasks that require
+    /// structured concurrency: the process should be cancelled when the supervisor itself is restarted or terminated,
+    /// and so on.
+    ///
+    /// This method allows for configuring more advanced aspects of the child process, such as its restart type and
+    /// significance.
     ///
     /// # Errors
     ///
-    /// As [`spawn`](Self::spawn).
+    /// If the supervisor isn't current running, or if the child specification is invalid, an error is returned.
     pub async fn spawn_with(&self, spec: ChildSpecification<WorkerSpec>) -> Result<ChildId, SpawnError> {
         let id = self.id_counter.fetch_add(1, Ordering::Relaxed);
         let (spec, config) = spec.into_worker_parts();
