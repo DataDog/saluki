@@ -6,7 +6,7 @@ schedule:
 repo: DataDog/saluki
 branch: main
 pull_request: draft      # open | draft | none  (default: draft)
-model: claude-sonnet.    # optional LLM override (default: auto)
+model: claude-sonnet    # optional LLM override (default: auto)
 notifications:
   slack:
     channel: "#agent-data-plane"
