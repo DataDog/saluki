@@ -1,5 +1,7 @@
 //! Raw `/api/v2/series` observation and payload-property assertions.
 
+use std::sync::OnceLock;
+
 use antithesis_sdk::prelude::*;
 use datadog_protos::metrics::{metric_payload::MetricSeries, MetricPayload};
 use protobuf::Message;
@@ -38,8 +40,10 @@ impl SeriesObservation {
         self.payload.series.len()
     }
 
-    /// Fire all payload properties that need the decoded protobuf shape.
-    pub(crate) fn assert_payload_properties(&self, now_secs: i64, expected_hostname: &str) {
+    /// Fire all payload properties that need the decoded protobuf
+    /// shape. `established_host` carries the first-seen host so Pyld17 holds
+    /// across all inbound traffic.
+    pub(crate) fn assert_payload_properties(&self, now_secs: i64, established_host: &OnceLock<String>) {
         if !self.payload.series.is_empty() {
             // Lets triage distinguish an Agent that came up and flushed from one
             // that never did.
@@ -50,19 +54,19 @@ impl SeriesObservation {
         }
 
         metric_payload::point_count(&self.payload);
+        resource::host_consistent(&self.payload, established_host);
         for ms in &self.payload.series {
-            evaluate_series(ms, now_secs, expected_hostname);
+            evaluate_series(ms, now_secs);
         }
     }
 }
 
 /// Fire every per-series property assertion.
-fn evaluate_series(ms: &MetricSeries, now_secs: i64, expected_hostname: &str) {
+fn evaluate_series(ms: &MetricSeries, now_secs: i64) {
     series::type_in_domain(ms);
     series::tag_prefix(ms);
     series::series_point_count(ms);
     series::origin(ms);
-    resource::host_resolved(ms, expected_hostname);
     resource::resource_count(ms);
     resource::host_name_length(ms);
     series::metric_non_empty(ms);

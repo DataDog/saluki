@@ -4,8 +4,6 @@
 
 #[cfg(unix)]
 mod unix_intake {
-    use std::sync::Arc;
-
     use antithesis_intake::http::build_router;
     use antithesis_sdk::prelude::*;
     use anyhow::{Context, Result};
@@ -21,10 +19,6 @@ mod unix_intake {
         /// Address the HTTP intake binds and serves on.
         #[arg(long = "listen-addr", env = "LISTEN_ADDR", default_value = "0.0.0.0:2049")]
         listen_addr: String,
-
-        /// Agent hostname, resolved by Pyld17 (keep in sync with `hostname` in `datadog.yaml`)
-        #[arg(long = "hostname", env = "DD_HOSTNAME", default_value = "antithesis-adp")]
-        hostname: String,
     }
 
     #[tokio::main]
@@ -51,8 +45,6 @@ mod unix_intake {
 
     /// Build the intake app, bind the listener, and serve until a shutdown signal.
     async fn serve(config: Config) -> Result<()> {
-        info!(hostname = %config.hostname, "Pyld17 resolves each series host against this hostname.");
-
         let (shutdown_tx, mut shutdown_rx) = mpsc::channel(1);
         spawn_signal_handlers(shutdown_tx).context("Failed to configure signal handlers.")?;
 
@@ -61,7 +53,7 @@ mod unix_intake {
             .context("Failed to bind HTTP intake listener.")?;
         info!("antithesis-intake started: listening on {}.", config.listen_addr);
 
-        axum::serve(listener, build_router(Arc::from(config.hostname.as_str())))
+        axum::serve(listener, build_router())
             .with_graceful_shutdown(async move { shutdown_rx.recv().await.unwrap_or(()) })
             .await
             .map_err(Into::into)
