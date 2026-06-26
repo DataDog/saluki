@@ -109,10 +109,17 @@ impl Default for Scrubber {
         // Bearer token in the canonical 64-hex form (for example, an IPC/Cluster Agent auth token in an
         // `Authorization: Bearer <token>` header): mask the first 59 hex characters and keep the last 5 for
         // correlation. Runs before `bearer_catchall_replacer` so the masked output is left untouched by it.
-        let bearer_hex_replacer = Replacer {
+        let bearer_hex_replacer_upper = Replacer {
             regex: Some(Regex::new(r"\bBearer [a-fA-F0-9]{59}([a-fA-F0-9]{5})\b").unwrap()),
             repl: Some(b"Bearer ***********************************************************$1".to_vec()),
             hints: Some(vec!["Bearer".to_string()]),
+            repl_func: None,
+        };
+
+        let bearer_hex_replacer_lower = Replacer {
+            regex: Some(Regex::new(r"\bbearer [a-fA-F0-9]{59}([a-fA-F0-9]{5})\b").unwrap()),
+            repl: Some(b"bearer ***********************************************************$1".to_vec()),
+            hints: Some(vec!["bearer".to_string()]),
             repl_func: None,
         };
 
@@ -120,10 +127,17 @@ impl Default for Scrubber {
         // whitespace, and `"` so the match stops at the JSON string boundary and cannot span into adjacent
         // fields, keeping scrubbed JSON valid (and the `*` exclusion avoids re-matching the output of
         // `bearer_hex_replacer`). This is the JSON-safe equivalent of the upstream `\bBearer\s+[^*]+\b`.
-        let bearer_catchall_replacer = Replacer {
+        let bearer_catchall_replacer_upper = Replacer {
             regex: Some(Regex::new(r#"\bBearer\s+[^*\s"]+"#).unwrap()),
             repl: Some(b"Bearer ********".to_vec()),
             hints: Some(vec!["Bearer".to_string()]),
+            repl_func: None,
+        };
+
+        let bearer_catchall_replacer_lower = Replacer {
+            regex: Some(Regex::new(r#"\bbearer\s+[^*\s"]+"#).unwrap()),
+            repl: Some(b"bearer ********".to_vec()),
+            hints: Some(vec!["bearer".to_string()]),
             repl_func: None,
         };
 
@@ -167,8 +181,10 @@ impl Default for Scrubber {
                 api_key_replacer,
                 app_key_replacer,
                 rc_app_key_replacer,
-                bearer_hex_replacer,
-                bearer_catchall_replacer,
+                bearer_hex_replacer_upper,
+                bearer_hex_replacer_lower,
+                bearer_catchall_replacer_upper,
+                bearer_catchall_replacer_lower,
                 uri_password_replacer,
                 password_replacer,
                 token_replacer,
@@ -531,6 +547,16 @@ mod tests {
         assert_clean(
             "Authorization: Bearer my-arbitrary-token-value",
             "Authorization: Bearer ********",
+        );
+
+        // Now in lowercase for case insensitivity.
+        assert_clean(
+            &format!("Authorization: bearer {token}"),
+            &format!("Authorization: bearer {masked}"),
+        );
+        assert_clean(
+            "Authorization: bearer my-arbitrary-token-value",
+            "Authorization: bearer ********",
         );
     }
 
