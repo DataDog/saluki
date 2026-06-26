@@ -28,9 +28,6 @@ envelope wrap around the compressed bytes of a
 
 Some properties reference rig-controlled parameters. `MaxTags(orgID)` and
 `MaxResources(orgID)` are per-org caps with defaults 100 and 500 respectively.
-`hostname` is the value the rig passes to the Agent via the `DD_HOSTNAME`
-environment variable. The Agent's hostname provider chain resolves this first,
-short-circuiting cloud-metadata and OS fallbacks.
 
 | Number | Category      | Name                   | Description                                                    |
 |--------|---------------|------------------------|----------------------------------------------------------------|
@@ -49,7 +46,7 @@ short-circuiting cloud-metadata and OS fallbacks.
 | Pyld14    | MetricSeries  | Tag Prefix Reserved    | no tag starts with `device:` or `dd.internal.resource:`        |
 | Pyld15    | MetricSeries  | Per-Series Point Count | `len(points) <=` configured `serializer_max_series_points_per_payload` |
 | Pyld16    | MetricSeries  | Origin Populated       | `origin.{product, category, service}` enum-valid               |
-| Pyld17    | Resource      | Host Resource Resolved | intake's `Host()` scan resolves a `(type="host", name=hostname)` resource |
+| Pyld17    | Resource      | Host Resource Resolved | every series resolves a non-empty `(type="host")` resource and all series in a payload share one host |
 | Pyld18    | Resource      | Resource Count         | `len(resources) <= MaxResources(orgID)`                        |
 | Pyld19    | Resource      | Host Name Length       | host `name <= 255` bytes                                       |
 | Pyld20    | MetricPoint   | Value Not-NaN          | `value` is not NaN                                             |

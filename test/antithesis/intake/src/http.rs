@@ -3,8 +3,6 @@
 //! This module composes the intake router while submodules keep protocol groups
 //! and middleware separate.
 
-use std::sync::Arc;
-
 use axum::{http::StatusCode, Router};
 
 mod datadog;
@@ -21,9 +19,9 @@ const MAX_DECOMPRESSED_BODY_BYTES: usize = 64 * 1024 * 1024;
 
 /// Build the intake router. `/api/v2/series` fires payload assertions. Datadog endpoints answer
 /// 202. A malformed body gets 400. An oversized body gets 413. Unmatched paths answer 200.
-pub fn build_router(hostname: Arc<str>) -> Router {
+pub fn build_router() -> Router {
     Router::new()
         .merge(datadog::routes())
         .fallback(|| async { StatusCode::OK })
-        .with_state(AppState { hostname })
+        .with_state(AppState::default())
 }

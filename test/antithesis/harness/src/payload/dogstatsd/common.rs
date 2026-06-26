@@ -94,7 +94,10 @@ pub(crate) const ABERRANT_VALUES: &[&[u8]] = &[
 /// Unix-timestamp payloads (the `d:` / `T` fields).
 pub(crate) const COMPLIANT_TS: &[&[u8]] = &[b"1700000000", b"1", b"1609459200"];
 
-const COMPLIANT_TAG_KEYS: &[&[u8]] = &[b"env", b"service", b"region", b"version", b"team", b"host", b"shard"];
+// NOTE `host` is excluded. `DogStatsD` promotes a `host` tag to the metric host
+// resource, emitting varying `host` instances plays hell with Pyld17
+// host-consistency check.
+const COMPLIANT_TAG_KEYS: &[&[u8]] = &[b"env", b"service", b"region", b"version", b"team", b"shard"];
 const ABERRANT_TAG_KEYS: &[&[u8]] = &[b"", b" ", b":", b",", b"#", b"\0", b"\x80"];
 const COMPLIANT_TAG_VALUES: &[&[u8]] = &[
     b"prod",
