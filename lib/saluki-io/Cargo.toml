@@ -10,11 +10,9 @@ workspace = true
 
 [features]
 default = []
-antithesis = ["dep:antithesis_sdk", "antithesis_sdk/full", "saluki-context/antithesis", "saluki-core/antithesis", "stringtheory/antithesis"]
 fips = ["saluki-tls/fips"]
 
 [dependencies]
-antithesis_sdk = { workspace = true, optional = true }
 async-compression = { workspace = true, features = ["gzip", "tokio", "zlib"] }
 axum = { workspace = true, features = ["tokio"] }
 bytes = { workspace = true }

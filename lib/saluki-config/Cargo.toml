@@ -8,11 +8,7 @@ repository = { workspace = true }
 [lints]
 workspace = true
 
-[features]
-antithesis = ["dep:antithesis_sdk", "antithesis_sdk/full"]
-
 [dependencies]
-antithesis_sdk = { workspace = true, optional = true }
 figment = { workspace = true, features = ["env"] }
 saluki-antithesis = { workspace = true }
 saluki-error = { workspace = true }

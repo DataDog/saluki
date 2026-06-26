@@ -10,11 +10,9 @@ workspace = true
 
 [features]
 default = []
-antithesis = ["dep:antithesis_sdk", "antithesis_sdk/full"]
 loom = ["dep:loom"]
 
 [dependencies]
-antithesis_sdk = { workspace = true, optional = true }
 foldhash = { workspace = true }
 loom = { workspace = true, optional = true }
 protobuf = { workspace = true }
