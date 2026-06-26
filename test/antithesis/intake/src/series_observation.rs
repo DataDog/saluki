@@ -1,10 +1,7 @@
 //! Raw `/api/v2/series` observation and payload-property assertions.
 
-<<<<<<< HEAD
 use std::sync::OnceLock;
 
-=======
->>>>>>> 9c1abdeb85 (enhancement(antithesis): Introduce rig intake API (#1826))
 use antithesis_sdk::prelude::*;
 use datadog_protos::metrics::{metric_payload::MetricSeries, MetricPayload};
 use protobuf::Message;
@@ -43,15 +40,10 @@ impl SeriesObservation {
         self.payload.series.len()
     }
 
-<<<<<<< HEAD
     /// Fire all payload properties that need the decoded protobuf
     /// shape. `established_host` carries the first-seen host so Pyld17 holds
     /// across all inbound traffic.
     pub(crate) fn assert_payload_properties(&self, now_secs: i64, established_host: &OnceLock<String>) {
-=======
-    /// Fire all payload properties that need the decoded protobuf shape.
-    pub(crate) fn assert_payload_properties(&self, now_secs: i64, expected_hostname: &str) {
->>>>>>> 9c1abdeb85 (enhancement(antithesis): Introduce rig intake API (#1826))
         if !self.payload.series.is_empty() {
             // Lets triage distinguish an Agent that came up and flushed from one
             // that never did.
@@ -62,32 +54,19 @@ impl SeriesObservation {
         }
 
         metric_payload::point_count(&self.payload);
-<<<<<<< HEAD
         resource::host_consistent(&self.payload, established_host);
         for ms in &self.payload.series {
             evaluate_series(ms, now_secs);
-=======
-        for ms in &self.payload.series {
-            evaluate_series(ms, now_secs, expected_hostname);
->>>>>>> 9c1abdeb85 (enhancement(antithesis): Introduce rig intake API (#1826))
         }
     }
 }
 
 /// Fire every per-series property assertion.
-<<<<<<< HEAD
 fn evaluate_series(ms: &MetricSeries, now_secs: i64) {
-=======
-fn evaluate_series(ms: &MetricSeries, now_secs: i64, expected_hostname: &str) {
->>>>>>> 9c1abdeb85 (enhancement(antithesis): Introduce rig intake API (#1826))
     series::type_in_domain(ms);
     series::tag_prefix(ms);
     series::series_point_count(ms);
     series::origin(ms);
-<<<<<<< HEAD
-=======
-    resource::host_resolved(ms, expected_hostname);
->>>>>>> 9c1abdeb85 (enhancement(antithesis): Introduce rig intake API (#1826))
     resource::resource_count(ms);
     resource::host_name_length(ms);
     series::metric_non_empty(ms);

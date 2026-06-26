@@ -296,6 +296,12 @@ pub struct DatadogConfiguration {
     #[serde(default = "defaults::datadog_configuration_serializer_compressor_kind")]
     pub serializer_compressor_kind: String,
 
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    pub serializer_experimental_use_v3_api: Option<
+        DatadogConfigurationSerializerExperimentalUseV3Api,
+
+    >,
+
     #[serde(default = "defaults::default_u64::<i64, 2621440>")]
     pub serializer_max_payload_size: i64,
 
@@ -356,6 +362,9 @@ pub struct DatadogConfiguration {
 
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub use_v2_api: Option<DatadogConfigurationUseV2Api>,
+
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    pub use_v3_api: Option<DatadogConfigurationUseV3Api>,
 
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub vector: Option<DatadogConfigurationVector>,
@@ -455,6 +464,7 @@ impl Default for DatadogConfiguration {
             provider_kind: Default::default(),
             proxy: Default::default(),
             serializer_compressor_kind: defaults::datadog_configuration_serializer_compressor_kind(),
+            serializer_experimental_use_v3_api: Default::default(),
             serializer_max_payload_size: defaults::default_u64::<i64, 2621440>(),
             serializer_max_series_payload_size: defaults::default_u64::<i64, 512000>(),
             serializer_max_series_points_per_payload: defaults::default_u64::<
@@ -483,6 +493,7 @@ impl Default for DatadogConfiguration {
             syslog_uri: Default::default(),
             use_proxy_for_cloud_metadata: Default::default(),
             use_v2_api: Default::default(),
+            use_v3_api: Default::default(),
             vector: Default::default(),
             vsock_addr: Default::default(),
         }
@@ -990,6 +1001,12 @@ pub struct DatadogConfigurationObservabilityPipelinesWorkerMetrics {
 
     #[serde(default)]
     pub url: String,
+
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    pub use_v3_api: Option<
+        DatadogConfigurationObservabilityPipelinesWorkerMetricsUseV3Api,
+
+    >,
 }
 
 impl Default for DatadogConfigurationObservabilityPipelinesWorkerMetrics {
@@ -997,7 +1014,20 @@ impl Default for DatadogConfigurationObservabilityPipelinesWorkerMetrics {
         Self {
             enabled: Default::default(),
             url: Default::default(),
+            use_v3_api: Default::default(),
         }
+    }
+}
+
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+pub struct DatadogConfigurationObservabilityPipelinesWorkerMetricsUseV3Api {
+    #[serde(default)]
+    pub series: bool,
+}
+
+impl Default for DatadogConfigurationObservabilityPipelinesWorkerMetricsUseV3Api {
+    fn default() -> Self {
+        Self { series: Default::default() }
     }
 }
 
@@ -1193,6 +1223,86 @@ impl Default for DatadogConfigurationProxy {
 }
 
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+pub struct DatadogConfigurationSerializerExperimentalUseV3Api {
+    #[serde(default)]
+    pub compression_level: i64,
+
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    pub series: Option<DatadogConfigurationSerializerExperimentalUseV3ApiSeries>,
+
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    pub sketches: Option<DatadogConfigurationSerializerExperimentalUseV3ApiSketches>,
+}
+
+impl Default for DatadogConfigurationSerializerExperimentalUseV3Api {
+    fn default() -> Self {
+        Self {
+            compression_level: Default::default(),
+            series: Default::default(),
+            sketches: Default::default(),
+        }
+    }
+}
+
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+pub struct DatadogConfigurationSerializerExperimentalUseV3ApiSeries {
+    #[serde(
+        default = "defaults::datadog_configuration_serializer_experimental_use_v3_api_series_beta_route"
+    )]
+    pub beta_route: String,
+
+    #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+    pub endpoints: Vec<String>,
+
+    #[serde(
+        default = "defaults::datadog_configuration_serializer_experimental_use_v3_api_series_shadow_sample_rate"
+    )]
+    pub shadow_sample_rate: f64,
+
+    #[serde(
+        default = "defaults::datadog_configuration_serializer_experimental_use_v3_api_series_shadow_sites"
+    )]
+    pub shadow_sites: Vec<String>,
+
+    #[serde(default)]
+    pub use_beta: bool,
+
+    #[serde(default)]
+    pub validate: bool,
+}
+
+impl Default for DatadogConfigurationSerializerExperimentalUseV3ApiSeries {
+    fn default() -> Self {
+        Self {
+            beta_route: defaults::datadog_configuration_serializer_experimental_use_v3_api_series_beta_route(),
+            endpoints: Default::default(),
+            shadow_sample_rate: defaults::datadog_configuration_serializer_experimental_use_v3_api_series_shadow_sample_rate(),
+            shadow_sites: defaults::datadog_configuration_serializer_experimental_use_v3_api_series_shadow_sites(),
+            use_beta: Default::default(),
+            validate: Default::default(),
+        }
+    }
+}
+
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+pub struct DatadogConfigurationSerializerExperimentalUseV3ApiSketches {
+    #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+    pub endpoints: Vec<String>,
+
+    #[serde(default)]
+    pub validate: bool,
+}
+
+impl Default for DatadogConfigurationSerializerExperimentalUseV3ApiSketches {
+    fn default() -> Self {
+        Self {
+            endpoints: Default::default(),
+            validate: Default::default(),
+        }
+    }
+}
+
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
 pub struct DatadogConfigurationUseV2Api {
     #[serde(default = "defaults::default_bool::<true>")]
     pub series: bool,
@@ -1202,6 +1312,36 @@ impl Default for DatadogConfigurationUseV2Api {
     fn default() -> Self {
         Self {
             series: defaults::default_bool::<true>(),
+        }
+    }
+}
+
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+pub struct DatadogConfigurationUseV3Api {
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    pub series: Option<DatadogConfigurationUseV3ApiSeries>,
+}
+
+impl Default for DatadogConfigurationUseV3Api {
+    fn default() -> Self {
+        Self { series: Default::default() }
+    }
+}
+
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+pub struct DatadogConfigurationUseV3ApiSeries {
+    #[serde(default = "defaults::datadog_configuration_use_v3_api_series_enabled")]
+    pub enabled: String,
+
+    #[serde(default, skip_serializing_if = "::serde_json::Map::is_empty")]
+    pub endpoints: ::serde_json::Map<String, ::serde_json::Value>,
+}
+
+impl Default for DatadogConfigurationUseV3ApiSeries {
+    fn default() -> Self {
+        Self {
+            enabled: defaults::datadog_configuration_use_v3_api_series_enabled(),
+            endpoints: Default::default(),
         }
     }
 }
@@ -1227,6 +1367,9 @@ pub struct DatadogConfigurationVectorMetrics {
 
     #[serde(default)]
     pub url: String,
+
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    pub use_v3_api: Option<DatadogConfigurationVectorMetricsUseV3Api>,
 }
 
 impl Default for DatadogConfigurationVectorMetrics {
@@ -1234,7 +1377,20 @@ impl Default for DatadogConfigurationVectorMetrics {
         Self {
             enabled: Default::default(),
             url: Default::default(),
+            use_v3_api: Default::default(),
         }
+    }
+}
+
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+pub struct DatadogConfigurationVectorMetricsUseV3Api {
+    #[serde(default)]
+    pub series: bool,
+}
+
+impl Default for DatadogConfigurationVectorMetricsUseV3Api {
+    fn default() -> Self {
+        Self { series: Default::default() }
     }
 }
 
@@ -1348,5 +1504,19 @@ pub mod defaults {
     }
     pub(super) fn datadog_configuration_otlp_config_traces_probabilistic_sampler_sampling_percentage() -> f64 {
         100_f64
+    }
+    pub(super) fn datadog_configuration_serializer_experimental_use_v3_api_series_beta_route() -> String {
+        "/api/intake/metrics/v3beta/series".to_string()
+    }
+    pub(super) fn datadog_configuration_serializer_experimental_use_v3_api_series_shadow_sample_rate() -> f64 {
+        0_f64
+    }
+    pub(super) fn datadog_configuration_serializer_experimental_use_v3_api_series_shadow_sites() -> Vec<
+        String,
+    > {
+        vec!["datadoghq.com".to_string()]
+    }
+    pub(super) fn datadog_configuration_use_v3_api_series_enabled() -> String {
+        "true".to_string()
     }
 }
