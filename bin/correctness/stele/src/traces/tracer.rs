@@ -201,11 +201,11 @@ impl Span {
         spans
     }
 
-    /// Gets all spans from the raw AgentPayload bytes by decoding the idx `idxTracerPayloads`
+    /// Gets all spans from the raw AgentPayload bytes by decoding the `idxTracerPayloads`
     /// field (proto field 11).
     ///
     /// The generated `AgentPayload` struct has the wrong Rust type for field 11 (it falls back
-    /// to the classic `TracerPayload` because the idx types were not in the same codegen
+    /// to the classic `TracerPayload` because the new types were not in the same codegen
     /// invocation), so this function reads field 11 directly from the raw wire bytes using
     /// `CodedInputStream` and decodes each message as the correct `idx::TracerPayload` type.
     pub fn get_spans_from_idx_bytes(payload: &proto::AgentPayload, body: &[u8]) -> Vec<Self> {
@@ -461,7 +461,7 @@ impl From<&proto::AttributeArrayValue> for AttributeArrayValue {
 // idx helpers
 // ---------------------------------------------------------------------------
 
-/// Split return type for [`split_idx_span_attributes`]: (meta, metrics, meta_struct).
+/// Split return type for [`split_idx_span_attributes`]: (meta, metrics, meta struct).
 type SpanAttributeSplit = (
     FastHashMap<MetaString, MetaString>,
     FastHashMap<MetaString, WrappedFloat>,
@@ -494,7 +494,7 @@ fn trace_id_low_from_bytes(bytes: &[u8]) -> u64 {
     trace_id_parts_from_bytes(bytes).0
 }
 
-/// Collects only the string-valued entries from an idx attribute map.
+/// Collects only the string-valued entries from a string interned attribute map.
 fn string_attrs_from_idx(
     attrs: &std::collections::HashMap<u32, idx_proto::AnyValue>, strings: &[String],
 ) -> FastHashMap<MetaString, MetaString> {
@@ -510,8 +510,8 @@ fn string_attrs_from_idx(
         .collect()
 }
 
-/// Splits an idx span attribute map into the three stele maps: meta (string), metrics (float),
-/// and meta_struct (bytes).
+/// Splits a string interned span attribute map into the three stele maps: meta (string), metrics (float),
+/// and `meta_struct` (bytes).
 fn split_idx_span_attributes(
     attrs: &std::collections::HashMap<u32, idx_proto::AnyValue>, strings: &[String],
 ) -> SpanAttributeSplit {
@@ -543,7 +543,7 @@ fn split_idx_span_attributes(
     (meta, metrics, meta_struct)
 }
 
-/// Converts an idx `AnyValue` to a stele `AttributeAnyValue` for use in span events.
+/// Converts an `AnyValue` to a stele `AttributeAnyValue` for use in span events.
 fn idx_anyvalue_to_event_attr(v: &idx_proto::AnyValue, strings: &[String]) -> Option<AttributeAnyValue> {
     match &v.value {
         Some(idx_proto::any_value::Value::StringValueRef(r)) => {
@@ -566,7 +566,7 @@ fn idx_anyvalue_to_event_attr(v: &idx_proto::AnyValue, strings: &[String]) -> Op
     }
 }
 
-/// Converts an idx `AnyValue` to a stele `AttributeArrayValue` for use inside array-typed
+/// Converts an `AnyValue` to a stele `AttributeArrayValue` for use inside array-typed
 /// span event attributes.
 fn idx_anyvalue_to_array_attr(v: &idx_proto::AnyValue, strings: &[String]) -> Option<AttributeArrayValue> {
     match &v.value {

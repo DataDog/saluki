@@ -37,7 +37,7 @@ impl TracesState {
 
     /// Merges the given agent payload into the current traces state.
     ///
-    /// Both the classic `tracerPayloads` (field 5) and the idx `idxTracerPayloads` (field 11)
+    /// Both the classic `tracerPayloads` (field 5) and the efficient trace payload format `idxTracerPayloads` (field 11)
     /// paths are decoded. `raw_body` must be the original protobuf-encoded bytes of the
     /// `AgentPayload` and is used to decode field 11 directly, bypassing the incorrectly typed
     /// generated field in the `AgentPayload` struct.
