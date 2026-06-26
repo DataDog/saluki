@@ -700,7 +700,13 @@ impl AggregationState {
             // This is useful for sparsely-updated counters.
             let should_expire_if_empty = match &am.values {
                 MetricValues::Counter(..) => {
-                    counter_expire_secs != 0 && am.last_seen + counter_expire_secs < current_time
+                    saluki_antithesis::always_le!(
+                        am.last_seen,
+                        u64::MAX - counter_expire_secs,
+                        "aggregate counter expiry add does not overflow",
+                        { "last_seen": am.last_seen, "counter_expire_secs": counter_expire_secs }
+                    );
+                    counter_expire_secs != 0 && am.last_seen.saturating_add(counter_expire_secs) < current_time
                 }
                 _ => true,
             };
@@ -711,7 +717,7 @@ impl AggregationState {
             // This is also safe to do even when there are real values in those buckets since adding zero to anything is
             // a no-op from the perspective of what we end up flushing, and it doesn't mess with the "last seen" time.
             if let MetricValues::Counter(..) = &mut am.values {
-                let expires_at = am.last_seen + counter_expire_secs;
+                let expires_at = am.last_seen.saturating_add(counter_expire_secs);
                 for (zv_bucket_start, zero_value) in &zero_value_buckets {
                     if expires_at > *zv_bucket_start {
                         am.values.merge(zero_value.clone());

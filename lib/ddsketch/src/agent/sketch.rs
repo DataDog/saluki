@@ -198,6 +198,8 @@ impl DDSketch {
             self.max = v;
         }
 
+        saluki_antithesis::always_le!(self.min, self.max, "DDSketch min does not exceed max after insert");
+
         self.count += n;
         // It's possible that self.sum will be INF after this multiplication, even though we've demonstrated that `v`
         // is finite. The Datadog Agent sketch sum behaves the same way, so we do not assert that self.sum is itself
