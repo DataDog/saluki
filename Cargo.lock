@@ -22,7 +22,6 @@ name = "agent-data-plane"
 version = "1.3.0"
 dependencies = [
  "antithesis-instrumentation",
- "antithesis_sdk",
  "argh",
  "async-trait",
  "bytesize",
@@ -45,6 +44,7 @@ dependencies = [
  "prost",
  "prost-types",
  "resource-accounting",
+ "saluki-antithesis",
  "saluki-api",
  "saluki-app",
  "saluki-common",
@@ -1208,7 +1208,6 @@ dependencies = [
 name = "ddsketch"
 version = "0.1.0"
 dependencies = [
- "antithesis_sdk",
  "criterion",
  "datadog-protos",
  "dhat",
@@ -1222,6 +1221,7 @@ dependencies = [
  "protobuf",
  "rand 0.10.1",
  "rand_distr",
+ "saluki-antithesis",
  "serde",
  "smallvec",
 ]
@@ -4179,6 +4179,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
 
 [[package]]
+name = "saluki-antithesis"
+version = "0.1.0"
+dependencies = [
+ "antithesis_sdk",
+ "serde_json",
+]
+
+[[package]]
 name = "saluki-api"
 version = "0.1.0"
 dependencies = [
@@ -4266,7 +4274,6 @@ dependencies = [
 name = "saluki-components"
 version = "0.1.0"
 dependencies = [
- "antithesis_sdk",
  "arc-swap",
  "async-trait",
  "axum",
@@ -4309,6 +4316,7 @@ dependencies = [
  "resource-accounting",
  "rmp-serde",
  "rustls",
+ "saluki-antithesis",
  "saluki-api",
  "saluki-common",
  "saluki-config",
@@ -4345,9 +4353,9 @@ dependencies = [
 name = "saluki-config"
 version = "0.1.0"
 dependencies = [
- "antithesis_sdk",
  "anyhow",
  "figment",
+ "saluki-antithesis",
  "saluki-error",
  "serde",
  "serde_json",
@@ -4362,13 +4370,13 @@ dependencies = [
 name = "saluki-context"
 version = "0.1.0"
 dependencies = [
- "antithesis_sdk",
  "criterion",
  "indexmap",
  "memchr",
  "metrics",
  "metrics-util",
  "proptest",
+ "saluki-antithesis",
  "saluki-common",
  "saluki-error",
  "saluki-metrics",
@@ -4383,7 +4391,6 @@ dependencies = [
 name = "saluki-core"
 version = "0.1.0"
 dependencies = [
- "antithesis_sdk",
  "async-trait",
  "bitmask-enum",
  "ddsketch",
@@ -4399,6 +4406,7 @@ dependencies = [
  "prometheus-exposition",
  "proptest",
  "resource-accounting",
+ "saluki-antithesis",
  "saluki-api",
  "saluki-common",
  "saluki-context",
@@ -4463,7 +4471,6 @@ dependencies = [
 name = "saluki-io"
 version = "0.1.0"
 dependencies = [
- "antithesis_sdk",
  "async-compression",
  "axum",
  "bytes",
@@ -4488,6 +4495,7 @@ dependencies = [
  "rand 0.10.1",
  "rand_distr",
  "rustls",
+ "saluki-antithesis",
  "saluki-common",
  "saluki-context",
  "saluki-core",
@@ -4993,11 +5001,11 @@ dependencies = [
 name = "stringtheory"
 version = "0.1.0"
 dependencies = [
- "antithesis_sdk",
  "foldhash 0.2.0",
  "loom",
  "proptest",
  "protobuf",
+ "saluki-antithesis",
  "serde",
 ]
 

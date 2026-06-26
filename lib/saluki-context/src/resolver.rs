@@ -349,8 +349,7 @@ impl ContextResolver {
                     // Heap spill: with `allow_context_heap_allocations` true (the default), a full interner silently
                     // falls back to the heap, so the bounded-memory guarantee no longer holds. Anchor that this path is
                     // reached so the unbounded-growth behavior is observable.
-                    #[cfg(feature = "antithesis")]
-                    antithesis_sdk::assert_sometimes!(
+                    saluki_antithesis::sometimes!(
                         true,
                         "context string interner spilled to the heap (unbounded under default config)"
                     );
@@ -738,8 +737,7 @@ impl TagsResolver {
                     // Heap spill: with `allow_context_heap_allocations` true (the default), a full interner silently
                     // falls back to the heap, so the bounded-memory guarantee no longer holds. Anchor that this path is
                     // reached so the unbounded-growth behavior is observable.
-                    #[cfg(feature = "antithesis")]
-                    antithesis_sdk::assert_sometimes!(
+                    saluki_antithesis::sometimes!(
                         true,
                         "tag string interner spilled to the heap (unbounded under default config)"
                     );

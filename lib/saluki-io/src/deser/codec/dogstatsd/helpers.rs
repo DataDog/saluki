@@ -90,8 +90,7 @@ pub fn ascii_alphanum_and_seps(input: &[u8]) -> IResult<&[u8], &str> {
     map(take_while1(valid_char), |b: &[u8]| {
         // SAFETY: We know the bytes in `b` can only be comprised of ASCII characters, which ensures that it's valid to
         // interpret the bytes directly as UTF-8.
-        #[cfg(feature = "antithesis")]
-        antithesis_sdk::assert_always!(
+        saluki_antithesis::always!(
             b.is_ascii(),
             "DogStatsD name bytes are ASCII before unchecked UTF-8 conversion"
         );
@@ -145,8 +144,7 @@ pub fn local_data(input: &[u8]) -> IResult<&[u8], &str> {
     map(take_while1(valid_char), |b: &[u8]| {
         // SAFETY: We know the bytes in `b` can only be comprised of ASCII characters, which ensures that it's valid to
         // interpret the bytes directly as UTF-8.
-        #[cfg(feature = "antithesis")]
-        antithesis_sdk::assert_always!(
+        saluki_antithesis::always!(
             b.is_ascii(),
             "DogStatsD local-data bytes are ASCII before unchecked UTF-8 conversion"
         );
@@ -172,8 +170,7 @@ pub fn external_data(input: &[u8]) -> IResult<&[u8], &str> {
     map(take_while1(valid_char), |b: &[u8]| {
         // SAFETY: We know the bytes in `b` can only be comprised of ASCII characters, which ensures that it's valid to
         // interpret the bytes directly as UTF-8.
-        #[cfg(feature = "antithesis")]
-        antithesis_sdk::assert_always!(
+        saluki_antithesis::always!(
             b.is_ascii(),
             "DogStatsD external-data bytes are ASCII before unchecked UTF-8 conversion"
         );

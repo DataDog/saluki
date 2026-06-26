@@ -628,11 +628,10 @@ async fn process_http_response(
         // there is a nominally functional system.
         //
         // No-op outside the `antithesis` feature build.
-        #[cfg(feature = "antithesis")]
-        antithesis_sdk::assert_sometimes!(
+        saluki_antithesis::sometimes!(
             true,
             "ADP forwarded a payload to the intake",
-            &serde_json::json!({ "domain": domain })
+            { "domain": domain }
         );
 
         telemetry.track_successful_transaction(&metadata, domain);

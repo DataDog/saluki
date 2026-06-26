@@ -572,22 +572,20 @@ impl AggregationState {
         // The context map is hard-capped at `context_limit` and no path grows it past the cap. This is the one
         // non-advisory runtime memory bound, so we assert it as an invariant under Antithesis. The numeric form hands
         // the search the margin to the limit as a gradient.
-        #[cfg(feature = "antithesis")]
-        antithesis_sdk::assert_always_less_than_or_equal_to!(
+        saluki_antithesis::always_le!(
             self.contexts.len(),
             self.context_limit,
             "aggregate context map within context_limit",
-            &serde_json::json!({ "len": self.contexts.len(), "limit": self.context_limit })
+            { "len": self.contexts.len(), "limit": self.context_limit }
         );
 
         // If we haven't seen this context yet, and it would put us over the limit to insert it, then return early.
         if !self.contexts.contains_key(metric.context()) && self.contexts.len() >= self.context_limit {
             // Anti-vacuity anchor: prove a run actually reaches the cap, else the invariant above passes trivially.
-            #[cfg(feature = "antithesis")]
-            antithesis_sdk::assert_sometimes!(
+            saluki_antithesis::sometimes!(
                 true,
                 "aggregate context limit breached",
-                &serde_json::json!({ "limit": self.context_limit })
+                { "limit": self.context_limit }
             );
 
             self.context_limit_breached = true;
@@ -655,27 +653,24 @@ impl AggregationState {
             // jump is not bounded by the flush interval. A backward jump empties the zero-value range (a silent counter
             // gap); a forward jump makes the loop below run once per bucket across the whole jumped span — O(jump) work
             // and allocation. Assert before the loop so a flood fails fast rather than after the damage is done.
-            #[cfg(feature = "antithesis")]
-            {
-                // Generous versus the normal cadence (default 15s flush over a 10s bucket yields 1-2 buckets); a bound
-                // this large trips only on a multi-hour wall-clock jump, never on a slow-but-sane flush.
-                const MAX_ZERO_VALUE_BUCKETS_PER_FLUSH: u64 = 10_000;
-                antithesis_sdk::assert_always!(
-                    current_time >= self.last_flush,
-                    "aggregate flush wall-clock did not move backward",
-                    &serde_json::json!({ "current_time": current_time, "last_flush": self.last_flush })
-                );
-                antithesis_sdk::assert_always_less_than_or_equal_to!(
-                    current_time.saturating_sub(self.last_flush) / bucket_width_secs.get(),
-                    MAX_ZERO_VALUE_BUCKETS_PER_FLUSH,
-                    "aggregate zero-value bucket span bounded across a flush",
-                    &serde_json::json!({
-                        "current_time": current_time,
-                        "last_flush": self.last_flush,
-                        "bucket_width_secs": bucket_width_secs.get()
-                    })
-                );
-            }
+            saluki_antithesis::always_ge!(
+                current_time,
+                self.last_flush,
+                "aggregate flush wall-clock did not move backward",
+                { "current_time": current_time, "last_flush": self.last_flush }
+            );
+            // The 10_000 bound is generous. A default 15s flush over a 10s bucket yields one or two buckets. The bound
+            // trips only on a multi-hour wall-clock jump, never on a slow-but-sane flush.
+            saluki_antithesis::always_le!(
+                current_time.saturating_sub(self.last_flush) / bucket_width_secs.get(),
+                10_000,
+                "aggregate zero-value bucket span bounded across a flush",
+                {
+                    "current_time": current_time,
+                    "last_flush": self.last_flush,
+                    "bucket_width_secs": bucket_width_secs.get()
+                }
+            );
 
             for bucket_start in (start..current_time).step_by(bucket_width_secs.get() as usize) {
                 if is_bucket_closed(current_time, bucket_start, bucket_width_secs, flush_open_buckets) {
@@ -684,11 +679,10 @@ impl AggregationState {
             }
 
             // Anti-vacuity anchor: prove the idle-counter zero-value path actually runs in some timeline.
-            #[cfg(feature = "antithesis")]
-            antithesis_sdk::assert_sometimes!(
+            saluki_antithesis::sometimes!(
                 !zero_value_buckets.is_empty(),
                 "aggregate flush generated zero-value counter buckets",
-                &serde_json::json!({ "count": zero_value_buckets.len() })
+                { "count": zero_value_buckets.len() }
             );
         }
 
