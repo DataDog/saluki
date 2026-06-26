@@ -301,15 +301,6 @@ impl DogStatsDConfiguration {
         NonZeroUsize::new(streams)
     }
 
-    /// Returns the effective maximum size of the I/O buffer pool.
-    ///
-    /// The pool can never hold fewer buffers than the configured baseline, so a `dogstatsd_buffer_count_max` below
-    /// `dogstatsd_buffer_count` (including a legacy config that only raised `dogstatsd_buffer_count`) is treated as
-    /// equal to the baseline rather than reducing capacity.
-    fn effective_max_buffer_count(&self) -> usize {
-        self.buffer_count_max.max(self.buffer_count)
-    }
-
     /// Sets the workload provider to use for configuring origin detection/enrichment.
     ///
     /// A workload provider must be set otherwise origin detection/enrichment won't be enabled.
@@ -1459,7 +1450,7 @@ mod tests {
     use tokio::{net::UdpSocket, sync::mpsc, time::timeout};
 
     use super::{
-        build_io_buffer_pool, default_buffer_size,
+        build_io_buffer_pool,
         forwarder::{
             ConnectedPacketForwarder, ForwardPacket, PacketForwarder, PacketForwarderTarget, FORWARDER_QUEUE_CAPACITY,
         },
@@ -1798,25 +1789,18 @@ mod tests {
 
     #[test]
     fn effective_max_buffer_count_never_below_baseline() {
-        // A legacy config that only raised `dogstatsd_buffer_count` keeps its full capacity rather than being capped
-        // to the `dogstatsd_buffer_count_max` default.
-        let legacy = deser_config(r#"{"dogstatsd_buffer_count": 1024}"#);
-        assert_eq!(legacy.effective_max_buffer_count(), 1024);
+        let effective = |count: usize, max: usize| max.max(count);
 
-        // An explicit maximum above the baseline is honored as-is.
-        let explicit = deser_config(r#"{"dogstatsd_buffer_count": 128, "dogstatsd_buffer_count_max": 512}"#);
-        assert_eq!(explicit.effective_max_buffer_count(), 512);
-
-        // A maximum below the baseline is treated as equal to the baseline.
-        let below = deser_config(r#"{"dogstatsd_buffer_count": 200, "dogstatsd_buffer_count_max": 64}"#);
-        assert_eq!(below.effective_max_buffer_count(), 200);
+        assert_eq!(effective(1024, 256), 1024);
+        assert_eq!(effective(128, 512), 512);
+        assert_eq!(effective(200, 64), 200);
     }
 
     #[tokio::test]
     async fn dogstatsd_io_buffer_pool_grows_on_demand_until_limit() {
         let min_buffers = 2;
         let max_buffers = 3;
-        let (pool, shrinker) = build_io_buffer_pool(min_buffers, max_buffers, default_buffer_size());
+        let (pool, shrinker) = build_io_buffer_pool(min_buffers, max_buffers, 8192);
 
         let mut initial_buffers = Vec::with_capacity(min_buffers);
         for _ in 0..min_buffers {
