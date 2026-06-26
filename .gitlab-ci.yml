@@ -8,6 +8,7 @@ stages:
   - benchmark
   - release
   - internal
+  - notify
 
 # Our workflow rules let us override specific variables, in a consistent way, depending on whether this is an "internal"
 # run (we consider all non-tagged pipeline triggers to be "internal") or a "release" run.
