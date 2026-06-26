@@ -236,7 +236,7 @@ crate::declare_annotations! {
         test_json: None,
         pipeline_affinity: PipelineAffinity::CrossCutting,
     };
-    /// `telemetry.dogstatsd.aggregator_channel_latency_buckets`-Histogram buckets: DSD aggregator channel lag
+    /// `telemetry.dogstatsd.aggregator_channel_latency_buckets`-Histogram buckets: DSD-to-aggregator channel lag
     TELEMETRY_DOGSTATSD_AGGREGATOR_CHANNEL_LATENCY_BUCKETS = SalukiAnnotation {
         schema: &schema::TELEMETRY_DOGSTATSD_AGGREGATOR_CHANNEL_LATENCY_BUCKETS,
         support_level: SupportLevel::Incompatible(Severity::Low),
@@ -245,9 +245,9 @@ crate::declare_annotations! {
         used_by: &[],
         value_type_override: None,
         test_json: None,
-        pipeline_affinity: PipelineAffinity::CrossCutting,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
-    /// `telemetry.dogstatsd.listeners_channel_latency_buckets`-Histogram buckets: listener channel latency
+    /// `telemetry.dogstatsd.listeners_channel_latency_buckets`-Histogram buckets: listener packet-channel latency
     TELEMETRY_DOGSTATSD_LISTENERS_CHANNEL_LATENCY_BUCKETS = SalukiAnnotation {
         schema: &schema::TELEMETRY_DOGSTATSD_LISTENERS_CHANNEL_LATENCY_BUCKETS,
         support_level: SupportLevel::Incompatible(Severity::Low),
@@ -256,9 +256,9 @@ crate::declare_annotations! {
         used_by: &[],
         value_type_override: None,
         test_json: None,
-        pipeline_affinity: PipelineAffinity::CrossCutting,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
-    /// `telemetry.dogstatsd.listeners_latency_buckets`-Histogram buckets: listener processing
+    /// `telemetry.dogstatsd.listeners_latency_buckets`-Histogram buckets: listener processing latency
     TELEMETRY_DOGSTATSD_LISTENERS_LATENCY_BUCKETS = SalukiAnnotation {
         schema: &schema::TELEMETRY_DOGSTATSD_LISTENERS_LATENCY_BUCKETS,
         support_level: SupportLevel::Incompatible(Severity::Low),
@@ -267,7 +267,7 @@ crate::declare_annotations! {
         used_by: &[],
         value_type_override: None,
         test_json: None,
-        pipeline_affinity: PipelineAffinity::CrossCutting,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
     /// `telemetry.dogstatsd_origin`-Per-origin processed-metrics telemetry
     TELEMETRY_DOGSTATSD_ORIGIN = SalukiAnnotation {
@@ -278,7 +278,7 @@ crate::declare_annotations! {
         used_by: &[],
         value_type_override: None,
         test_json: None,
-        pipeline_affinity: PipelineAffinity::CrossCutting,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
     /// `config_id`-Fleet Automation config ID tag
     CONFIG_ID = SalukiAnnotation {
