@@ -90,11 +90,10 @@ where
             self.metrics.events_discarded_total().increment(item_count);
             // Anchor the legitimate zero-sender discard. A wired edge never reaches this branch, so this stays a
             // disconnected-output signal — not a silent-loss-on-a-wired-edge violation.
-            #[cfg(feature = "antithesis")]
-            antithesis_sdk::assert_sometimes!(
+            saluki_antithesis::sometimes!(
                 true,
                 "events discarded on a zero-sender output",
-                &serde_json::json!({ "items": item_count })
+                { "items": item_count }
             );
             return Ok(());
         }
@@ -103,6 +102,7 @@ where
         let item_count = item.item_count();
 
         // Send the item to all senders except the last one by cloning the item.
+        saluki_antithesis::always_gt!(self.senders.len(), 0, "dispatcher fanout has at least one sender");
         let cloned_sends = self.senders.len() - 1;
         for sender in &self.senders[0..cloned_sends] {
             sender

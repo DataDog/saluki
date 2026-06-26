@@ -977,7 +977,9 @@ fn encode_series_v2_metric(
             .map(|interval| value / interval.as_secs_f64())
             .unwrap_or(value);
 
-        if !emittable(value) {
+        let dropped = !emittable(value);
+        saluki_antithesis::sometimes!(dropped, "non-finite series point dropped before wire");
+        if dropped {
             continue;
         }
 
@@ -1016,7 +1018,9 @@ fn encode_series_v1_metric(
             .map(|interval| value / interval.as_secs_f64())
             .unwrap_or(value);
 
-        if !emittable(value) {
+        let dropped = !emittable(value);
+        saluki_antithesis::sometimes!(dropped, "non-finite series point dropped before wire");
+        if dropped {
             continue;
         }
 

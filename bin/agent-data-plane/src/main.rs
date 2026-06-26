@@ -88,8 +88,7 @@ async fn main() -> Result<(), GenericError> {
 
     // Bootstrap-integration probe: proves the Antithesis SDK is linked, cataloging works, and the
     // instrumentation path is wired.
-    #[cfg(feature = "antithesis")]
-    antithesis_sdk::assert_reachable!("agent-data-plane completed bootstrap", &serde_json::json!({}));
+    saluki_antithesis::reachable!("agent-data-plane completed bootstrap");
 
     // Run the given subcommand. The bootstrap supervisor is forwarded by value; only the long-lived `run`
     // subcommand actually drives it (it is added as a child of the internal supervisor inside
@@ -118,7 +117,7 @@ async fn main() -> Result<(), GenericError> {
 /// ideally before any panics are possible.
 #[cfg(feature = "antithesis")]
 fn initialize_antithesis() {
-    antithesis_sdk::antithesis_init();
+    saluki_antithesis::init();
 
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -129,9 +128,9 @@ fn initialize_antithesis() {
             .map(|s| (*s).to_string())
             .or_else(|| payload.downcast_ref::<String>().cloned())
             .unwrap_or_else(|| "<non-string panic payload>".to_string());
-        antithesis_sdk::assert_unreachable!(
+        saluki_antithesis::unreachable!(
             "agent-data-plane panicked",
-            &serde_json::json!({ "message": message, "location": location })
+            { "message": message, "location": location }
         );
         default_hook(info);
     }));
@@ -151,11 +150,10 @@ fn load_bootstrap_config(bootstrap_config_path: &Path) -> Result<ConfigurationLo
                 .error_context("Environment variable prefix should not be empty.")
         });
     // A graceful config rejection exits 1 rather than crashing; classify that against a clean boot.
-    #[cfg(feature = "antithesis")]
-    antithesis_sdk::assert_always_or_unreachable!(
+    saluki_antithesis::always_or_unreachable!(
         loaded.is_ok(),
         "agent-data-plane boots under sampled config",
-        &serde_json::json!({ "phase": "config_load", "error": loaded.as_ref().err().map(|e| format!("{e:?}")) })
+        { "phase": "config_load", "error": loaded.as_ref().err().map(|e| format!("{e:?}")) }
     );
     loaded
 }
@@ -196,11 +194,10 @@ async fn run_inner(
                     Err(e) => {
                         error!("{:?}", e);
                         // Same boot property as the config-load gate, distinguished by `phase` in the details.
-                        #[cfg(feature = "antithesis")]
-                        antithesis_sdk::assert_always_or_unreachable!(
+                        saluki_antithesis::always_or_unreachable!(
                             false,
                             "agent-data-plane boots under sampled config",
-                            &serde_json::json!({ "phase": "run_setup", "error": format!("{e:?}") })
+                            { "phase": "run_setup", "error": format!("{e:?}") }
                         );
                         Some(1)
                     }
@@ -213,9 +210,7 @@ async fn run_inner(
                 }
             }
 
-            if let Some(exit_code) = exit_code {
-                return Ok(Some(exit_code));
-            }
+            return Ok(exit_code);
         }
         Action::Debug(cmd) => handle_debug_command(&bootstrap_config, cmd).await,
         Action::Config(_) => handle_config_command(&bootstrap_config).await,

@@ -59,10 +59,9 @@ impl FieldUpdateWatcher {
                 // Ignore other key changes.
                 Ok(_) => continue,
                 Err(broadcast::error::RecvError::Lagged(_)) => {
-                    #[cfg(feature = "antithesis")]
-                    antithesis_sdk::assert_unreachable!(
+                    saluki_antithesis::unreachable!(
                         "config filter update dropped (broadcast Lagged); live filtering may stay stale",
-                        &serde_json::json!({ "key": self.key.to_string() })
+                        { "key": self.key.to_string() }
                     );
                     warn!(
                         "FieldUpdateWatcher dropped events for key: {}. Continuing to wait for the next event.",

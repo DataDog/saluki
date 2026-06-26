@@ -2209,27 +2209,39 @@ inventory:
         config_registry_filename: get_typed.rs
 
   telemetry.dogstatsd.aggregator_channel_latency_buckets:
-    support: unknown
-    description: "Histogram buckets: DSD aggregator channel lag"
+    support: none
+    planned: false
+    pipelines: [dogstatsd]
+    description: "Histogram buckets: DSD-to-aggregator channel lag"
     severity: low
+    documentation: "ADP already tracks this latency with histogram buckets determined by logarithmic calculation, so pre-defined bucket configuration is not applicable."
     issue: "#1679"
 
   telemetry.dogstatsd.listeners_channel_latency_buckets:
-    support: unknown
-    description: "Histogram buckets: listener channel latency"
+    support: none
+    planned: false
+    pipelines: [dogstatsd]
+    description: "Histogram buckets: listener packet-channel latency"
     severity: low
+    documentation: "ADP already tracks this latency with histogram buckets determined by logarithmic calculation, so pre-defined bucket configuration is not applicable."
     issue: "#1679"
 
   telemetry.dogstatsd.listeners_latency_buckets:
-    support: unknown
-    description: "Histogram buckets: listener processing"
+    support: none
+    planned: false
+    pipelines: [dogstatsd]
+    description: "Histogram buckets: listener processing latency"
     severity: low
+    documentation: "ADP already tracks this latency with histogram buckets determined by logarithmic calculation, so pre-defined bucket configuration is not applicable."
     issue: "#1679"
 
   telemetry.dogstatsd_origin:
-    support: unknown
+    support: none
+    planned: true
+    pipelines: [dogstatsd]
     description: "Per-origin processed-metrics telemetry"
     severity: low
+    documentation: "Not currently supported because the `origin` label is derived from container identities and can create unbounded telemetry cardinality over time."
     issue: "#1679"
 
   tls_handshake_timeout:

@@ -670,7 +670,18 @@ impl DogStatsDConfiguration {
     fn effective_context_string_interner_bytes(&self) -> ByteSize {
         match self.context_string_interner_size_bytes {
             Some(explicit_bytes) => explicit_bytes,
-            None => ByteSize::b(self.context_string_interner_entry_count * INTERNER_BASELINE_BYTES_PER_ENTRY),
+            None => {
+                saluki_antithesis::always_le!(
+                    self.context_string_interner_entry_count,
+                    u64::MAX / INTERNER_BASELINE_BYTES_PER_ENTRY,
+                    "dogstatsd interner byte-size multiply does not overflow",
+                    { "entry_count": self.context_string_interner_entry_count }
+                );
+                ByteSize::b(
+                    self.context_string_interner_entry_count
+                        .saturating_mul(INTERNER_BASELINE_BYTES_PER_ENTRY),
+                )
+            }
         }
     }
 
@@ -1133,6 +1144,12 @@ async fn process_io_buffer_pool_shrinker(
 fn build_io_buffer_pool(
     min_buffers: usize, max_buffers: usize, buffer_size: usize,
 ) -> (ElasticObjectPool<BytesBuffer>, impl Future<Output = ()> + Send) {
+    saluki_antithesis::always_le!(
+        buffer_size,
+        usize::MAX - 4,
+        "dogstatsd buffer size add does not overflow",
+        { "buffer_size": buffer_size }
+    );
     let adjusted_buffer_size = get_adjusted_buffer_size(buffer_size);
     ElasticObjectPool::with_builder("dsd_packet_bufs", min_buffers, max_buffers, move || {
         FixedSizeVec::with_capacity(adjusted_buffer_size)
@@ -1781,9 +1798,8 @@ async fn dispatch_events(mut event_buffer: EventsBuffer, source_context: &Source
 
         // The `events` output is always wired in the DSD topology, so a missing output is an invariant violation that
         // crashes this component.
-        #[cfg(feature = "antithesis")]
         if events_output.is_err() {
-            antithesis_sdk::assert_unreachable!("dsd 'events' output missing at dispatch", &serde_json::json!({}));
+            saluki_antithesis::unreachable!("dsd 'events' output missing at dispatch");
         }
 
         if let Err(e) = events_output
@@ -1795,11 +1811,10 @@ async fn dispatch_events(mut event_buffer: EventsBuffer, source_context: &Source
 
             // Dispatch failure increments no counter, so this assertion is the only in-SUT signal that the failure
             // path ran.
-            #[cfg(feature = "antithesis")]
-            antithesis_sdk::assert_sometimes!(
+            saluki_antithesis::sometimes!(
                 true,
                 "dsd dispatch failed mid-buffer",
-                &serde_json::json!({ "stream": "events" })
+                { "stream": "events" }
             );
         }
     }
@@ -1809,12 +1824,8 @@ async fn dispatch_events(mut event_buffer: EventsBuffer, source_context: &Source
         let service_check_events = event_buffer.extract(Event::is_service_check);
         let service_checks_output = source_context.dispatcher().buffered_named("service_checks");
 
-        #[cfg(feature = "antithesis")]
         if service_checks_output.is_err() {
-            antithesis_sdk::assert_unreachable!(
-                "dsd 'service_checks' output missing at dispatch",
-                &serde_json::json!({})
-            );
+            saluki_antithesis::unreachable!("dsd 'service_checks' output missing at dispatch");
         }
 
         if let Err(e) = service_checks_output
@@ -1824,11 +1835,10 @@ async fn dispatch_events(mut event_buffer: EventsBuffer, source_context: &Source
         {
             error!(%listen_addr, error = %e, "Failed to dispatch service check events.");
 
-            #[cfg(feature = "antithesis")]
-            antithesis_sdk::assert_sometimes!(
+            saluki_antithesis::sometimes!(
                 true,
                 "dsd dispatch failed mid-buffer",
-                &serde_json::json!({ "stream": "service_checks" })
+                { "stream": "service_checks" }
             );
         }
     }
@@ -1842,11 +1852,10 @@ async fn dispatch_events(mut event_buffer: EventsBuffer, source_context: &Source
         {
             error!(%listen_addr, error = %e, "Failed to dispatch metric events.");
 
-            #[cfg(feature = "antithesis")]
-            antithesis_sdk::assert_sometimes!(
+            saluki_antithesis::sometimes!(
                 true,
                 "dsd dispatch failed mid-buffer",
-                &serde_json::json!({ "stream": "metrics" })
+                { "stream": "metrics" }
             );
         }
     }

@@ -9,16 +9,15 @@ repository = { workspace = true }
 workspace = true
 
 [features]
-antithesis = ["dep:antithesis_sdk", "antithesis_sdk/full"]
 ddsketch_extended = []
 serde = ["dep:serde", "smallvec/serde"]
 
 [dependencies]
-antithesis_sdk = { workspace = true, optional = true }
 datadog-protos = { workspace = true }
 float-cmp = { workspace = true, features = ["ratio"] }
 ordered-float = { workspace = true }
 protobuf = { workspace = true }
+saluki-antithesis = { workspace = true }
 serde = { workspace = true, optional = true }
 smallvec = { workspace = true, features = ["union"] }
 

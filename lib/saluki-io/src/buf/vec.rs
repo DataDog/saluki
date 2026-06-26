@@ -93,6 +93,7 @@ impl Buf for BytesBuffer {
 
     fn advance(&mut self, cnt: usize) {
         let data = self.data_mut();
+        saluki_antithesis::always_le!(data.read_idx + cnt, data.data.len(), "buffer advance within bounds");
         assert!(data.read_idx + cnt <= data.data.len());
         data.read_idx += cnt;
     }
@@ -193,6 +194,11 @@ impl Buf for FrozenBytesBuffer {
     }
 
     fn advance(&mut self, cnt: usize) {
+        saluki_antithesis::always_le!(
+            self.data.read_idx + cnt,
+            self.data.data.len(),
+            "buffer advance within bounds"
+        );
         assert!(self.data.read_idx + cnt <= self.data.data.len());
         self.data.read_idx += cnt;
     }

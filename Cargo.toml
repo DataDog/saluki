@@ -18,6 +18,7 @@ members = [
   "lib/protos/datadog",
   "lib/protos/otlp",
   "lib/resource-accounting",
+  "lib/saluki-antithesis",
   "lib/saluki-api",
   "lib/saluki-app",
   "lib/saluki-common",
@@ -54,6 +55,7 @@ ddsketch = { path = "lib/ddsketch" }
 resource-accounting = { path = "lib/resource-accounting" }
 process-memory = { path = "lib/process-memory" }
 prometheus-exposition = { path = "lib/prometheus-exposition" }
+saluki-antithesis = { path = "lib/saluki-antithesis" }
 saluki-api = { path = "lib/saluki-api" }
 saluki-app = { path = "lib/saluki-app" }
 saluki-common = { path = "lib/saluki-common" }

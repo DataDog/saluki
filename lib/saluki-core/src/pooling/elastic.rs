@@ -279,8 +279,7 @@ where
                     return Poll::Ready(T::from_data(strategy, data));
                 }
                 Poll::Ready(None) => {
-                    #[cfg(feature = "antithesis")]
-                    antithesis_sdk::assert_unreachable!("elastic object pool semaphore closed", &serde_json::json!({}));
+                    saluki_antithesis::unreachable!("elastic object pool semaphore closed");
                     unreachable!("semaphore should never be closed")
                 }
                 Poll::Pending => {

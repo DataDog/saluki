@@ -21,11 +21,10 @@ fn default_should_retry<B>(response: &Response<B>) -> bool {
         | http::StatusCode::PAYLOAD_TOO_LARGE => {
             // These statuses are permanent failures — the transaction is dropped, not retried (a data-loss path).
             // Anchor that the run reaches it.
-            #[cfg(feature = "antithesis")]
-            antithesis_sdk::assert_sometimes!(
+            saluki_antithesis::sometimes!(
                 true,
                 "transaction permanently dropped — non-retryable status",
-                &serde_json::json!({ "status": status.as_u16() })
+                { "status": status.as_u16() }
             );
             false
         }

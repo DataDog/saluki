@@ -94,7 +94,7 @@ pub(crate) async fn handle_series(State(state): State<AppState>, request: Reques
     let (observation, decode_ok) = SeriesObservation::decode(&body_bytes, decompression_applied);
 
     if let Some(observation) = observation.as_ref() {
-        observation.assert_payload_properties(now_secs, &state.hostname);
+        observation.assert_payload_properties(now_secs, &state.established_host);
         debug!(
             bytes = body_bytes.len(),
             series = observation.series_len(),
