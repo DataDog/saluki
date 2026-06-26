@@ -1,13 +1,11 @@
 //! Antithesis `first_` command: sample this timeline's `datadog.yaml` and release ADP.
 //!
 //! Runs once per execution path after `setup_complete`, so the sample (see
-//! [`config`], Antithesis SDK randomness) is a post-snapshot, per-timeline
+//! [`harness::config`], Antithesis SDK randomness) is a post-snapshot, per-timeline
 //! decision Antithesis branches. Writes the config to the shared `agent-config`
 //! volume then a `ready` sentinel the blocked ADP entrypoint waits on; running
 //! upstream of ADP's boot is what makes each timeline boot under its own config.
 //! Deployment fields come from the environment (see [`Cli`]).
-
-mod config;
 
 use std::fs;
 use std::path::PathBuf;
@@ -16,7 +14,7 @@ use antithesis_sdk::prelude::*;
 use antithesis_sdk::random::AntithesisRng;
 use anyhow::Context as _;
 use clap::Parser;
-use config::DatadogConfig;
+use harness::config::{ConfigProfile, DatadogConfig};
 use rand::rand_core::UnwrapErr;
 use serde_json::json;
 
@@ -28,6 +26,11 @@ struct Cli {
     /// `agent-config` volume; the ADP container reads it).
     #[arg(long, env = "CONFIG_DIR", default_value = "/agent-config")]
     config_dir: PathBuf,
+    /// Which `datadog.yaml` variation to sample. The differential scenario sets
+    /// `CONFIG_PROFILE=differential` so both targets share a config they can both
+    /// honor; ADP-only scenarios keep the default full feral surface.
+    #[arg(long, env = "CONFIG_PROFILE", value_enum, default_value_t = ConfigProfile::General)]
+    profile: ConfigProfile,
     /// Agent hostname written into the config. (`DD_HOSTNAME`, not the ambient
     /// `HOSTNAME`, so a container's own hostname does not leak in.)
     #[arg(long, env = "DD_HOSTNAME", default_value = "antithesis-adp")]
@@ -57,6 +60,7 @@ fn main() -> anyhow::Result<()> {
         &cli.api_key,
         &cli.dd_url,
         &cli.dogstatsd_socket,
+        cli.profile,
     );
 
     let yaml_path = cli.config_dir.join("datadog.yaml");
