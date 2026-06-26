@@ -393,9 +393,8 @@ impl InternerStorage {
         }
     }
 
-    fn mark_for_reclamation(&mut self, header_ptr: NonNull<EntryHeader>) {
-        // Get the offset of the header within the data buffer.
-        //
+    /// Returns the byte offset of the given entry header within the data buffer.
+    fn offset_of(&self, header_ptr: NonNull<EntryHeader>) -> usize {
         // SAFETY: The caller is responsible for ensuring the entry header reference belongs to this interner. If that
         // is upheld, then we know that entry header belongs to our data buffer, and that the pointer to the entry
         // header is not less than the base pointer of the data buffer, ensuring the offset is non-negative.
@@ -407,10 +406,16 @@ impl InternerStorage {
         };
         debug_assert!(entry_offset >= 0, "entry offset must be non-negative");
 
+        entry_offset as usize
+    }
+
+    fn mark_for_reclamation(&mut self, header_ptr: NonNull<EntryHeader>) {
+        let entry_offset = self.offset_of(header_ptr);
+
         let header = unsafe { header_ptr.as_ref() };
         let entry_len = header.entry_len();
 
-        let entry = ReclaimedEntry::new(entry_offset as usize, entry_len);
+        let entry = ReclaimedEntry::new(entry_offset, entry_len);
         self.len -= entry.capacity();
         self.add_reclaimed(entry);
     }
@@ -445,26 +450,38 @@ impl InternerState {
     }
 
     fn mark_for_reclamation(&mut self, header_ptr: NonNull<EntryHeader>) {
-        // See if the reference count is zero.
+        // Reclamation must happen exactly once per entry, even though more than one thread can legitimately observe the
+        // reference count drop to zero for the same slot.
         //
-        // Only interned string values (the frontend handle that wraps the pointer to a specific entry) can decrement
-        // the reference count for their specific entry when dropped, and only `InternerState` -- with its access
-        // mediated through a mutex -- can increment the reference count for entries. This means that if the reference
-        // count is zero, then we know that nobody else is holding a reference to this entry, and no concurrent call to
-        // `try_intern` could be updating the reference count, either... so it's safe to be marked as reclaimed.
+        // `StringState::drop` decrements the reference count _before_ taking this lock, so within that window the entry
+        // can still be found -- and resurrected (`refs` 0 -> 1) -- by a concurrent `try_intern`. If that resurrecting
+        // handle is then also dropped (`refs` 1 -> 0), two different droppers each saw a 1 -> 0 transition and will
+        // each reach this method observing `refs == 0`. A bare `is_active()` check is therefore not enough on its own
+        // to decide who reclaims: reclaiming on both would double-subtract `storage.len` and insert an overlapping
+        // reclaimed entry, corrupting the data buffer.
+        //
+        // We guard against that with two checks, both performed under this lock:
+        //
+        //   1. `is_active()`: if a resurrecting handle is still live (`refs > 0`), we must NOT reclaim. The reference
+        //      count cannot rise while we hold the lock -- cloning needs a live handle, and `try_intern` needs this
+        //      lock -- so observing zero here means it stays zero through the reclamation below (no use-after-free).
+        //   2. Map identity: reclaim only if the entries map still maps this entry's string to _this_ entry's offset.
+        //      The first dropper to reclaim removes that mapping, so any later dropper of the same slot sees the string
+        //      gone (or remapped to a newer entry) and skips -- making reclamation exactly-once.
         //
         // SAFETY: The caller is responsible for ensuring that `header_ptr` is well-aligned and points to an initialized
-        // `EntryHeader` value.
+        // `EntryHeader` value that was acquired from this interner.
         let header = unsafe { header_ptr.as_ref() };
-        if !header.is_active() {
+        if header.is_active() {
+            return;
+        }
+
+        let entry_str = unsafe { get_entry_string(header_ptr) };
+        let entry_offset = self.storage.offset_of(header_ptr);
+        if self.entries.get(entry_str) == Some(&entry_offset) {
             // Remove the entry from the entries map first before we reclaim the entry, since doing so overwrites the
             // entry data in the data buffer.
-            //
-            // SAFETY: The caller is responsible for ensuring that they've given us a pointer to an `EntryHeader` that
-            // was acquired from this interner.
-            let entry_str = unsafe { get_entry_string(header_ptr) };
             self.entries.remove(entry_str);
-
             self.storage.mark_for_reclamation(header_ptr);
         }
     }
@@ -1117,6 +1134,64 @@ mod loom_tests {
                     "reclaimed entry should not overlap with remaining interned string"
                 );
             }
+        });
+    }
+
+    #[test]
+    fn concurrent_resurrect_and_double_drop() {
+        // Regression test for a double-reclamation race.
+        //
+        // Unlike `concurrent_drop_and_intern` -- where the second thread keeps its handle alive -- here the second
+        // thread interns the string _and_ drops it within the race window. This models the dangerous interleaving:
+        //
+        //   1. T1 drops the last reference: `refs` 1 -> 0 (but T1 hasn't taken the interner lock yet).
+        //   2. T2 calls `try_intern`, finds the still-mapped entry, and resurrects it: `refs` 0 -> 1.
+        //   3. T2 drops its handle: `refs` 1 -> 0.
+        //   4. T1 and T2 each take the lock and observe `refs == 0`, so BOTH mark the same slot for reclamation.
+        //
+        // A double reclamation either underflows `storage.len` (a panic under overflow-checks, which the loom test
+        // profile enables) or inserts a spurious/overlapping reclaimed entry. After every handle to the single interned
+        // string has been dropped, the only correct end state is a fully empty interner.
+        const STRING_TO_INTERN: &str = "hello, world!";
+
+        loom::model(|| {
+            let interner = create_interner(1024);
+            let t2_interner = interner.clone();
+
+            // T1 interns the string and holds the only reference.
+            let t1_interned_s = interner
+                .try_intern(STRING_TO_INTERN)
+                .expect("should not fail to intern");
+
+            // T2 interns the same string and immediately drops it. The interesting orderings are those where this runs
+            // while T1's drop has decremented the refcount to zero but not yet taken the interner lock.
+            let t2 = loom::thread::spawn(move || {
+                let t2_interned_s = t2_interner
+                    .try_intern(STRING_TO_INTERN)
+                    .expect("should not fail to intern");
+                assert_eq!(t2_interned_s.deref(), STRING_TO_INTERN);
+                drop(t2_interned_s);
+            });
+
+            // T1 drops its (originally last) reference.
+            drop(t1_interned_s);
+
+            t2.join().expect("should not fail to join T2");
+
+            // Every handle has been dropped, so the slot must have been reclaimed exactly once: the interner is fully
+            // empty, with consistent accounting and no leftover reclaimed entries. A double reclaim breaks at least one
+            // of these (and typically panics first via the `storage.len` underflow).
+            let state = interner.state.lock().unwrap();
+            assert!(state.entries.is_empty(), "entries map should be empty");
+            assert_eq!(
+                state.storage.len, 0,
+                "storage.len should be zero (it is double-subtracted on a double reclaim)"
+            );
+            assert_eq!(state.storage.offset, 0, "offset should wind back to zero");
+            assert!(
+                state.storage.reclaimed.is_empty(),
+                "no reclaimed entries should remain (a double reclaim inserts a spurious/overlapping entry)"
+            );
         });
     }
 }
