@@ -41,6 +41,9 @@ pub struct DogStatsDSalukiOnly {
     /// Number of receive buffers (`dogstatsd_buffer_count`).
     pub buffer_count: Option<usize>,
 
+    /// Max receive buffers (`dogstatsd_buffer_count_max`).
+    pub buffer_count_max: Option<usize>,
+
     /// Max cached metric contexts (`dogstatsd_cached_contexts_limit`).
     pub cached_contexts_limit: Option<usize>,
 
@@ -78,6 +81,9 @@ impl SalukiOnlyConfiguration {
         }
         if let Some(v) = self.dogstatsd.buffer_count {
             dsd.buffer_count = v;
+        }
+        if let Some(v) = self.dogstatsd.buffer_count_max {
+            dsd.buffer_count_max = v;
         }
         if let Some(v) = self.dogstatsd.cached_contexts_limit {
             dsd.cached_contexts_limit = v;

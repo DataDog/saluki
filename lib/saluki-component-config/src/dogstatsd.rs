@@ -26,10 +26,16 @@ pub struct SourceConfig {
     /// Payloads larger than this are truncated, leading to discarded messages. Defaults to 8192.
     pub buffer_size: usize,
 
-    /// The number of message buffers to allocate overall.
+    /// The number of message buffers to allocate up front.
     ///
     /// Defaults to 128.
     pub buffer_count: usize,
+
+    /// The maximum number of message buffers to allocate overall.
+    ///
+    /// The pool grows on demand from `buffer_count` up to this limit. A value below `buffer_count`
+    /// is treated as equal to it. Defaults to 256.
+    pub buffer_count_max: usize,
 
     /// The UDP port to listen on. If set to `0`, UDP is not used.
     ///
@@ -170,6 +176,7 @@ impl Default for SourceConfig {
         Self {
             buffer_size: 8192,
             buffer_count: 128,
+            buffer_count_max: 256,
             port: 8125,
             socket_receive_buffer_size: 0,
             tcp_port: 0,
