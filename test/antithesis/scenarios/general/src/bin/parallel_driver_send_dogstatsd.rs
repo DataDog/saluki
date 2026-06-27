@@ -33,13 +33,17 @@ mod unix_driver {
         };
 
         let batch = Batch::sample();
-        let stats = driver::run(batch, vec![socket]);
+        let stats = driver::run(batch, vec![socket])?;
         let sent = stats.sent[0];
         let max_packed = stats.max_packed[0];
 
         assert_reachable!(
             "workload ran a dogstatsd batch",
-            &json!({ "sent": sent, "dogstatsd_socket": config.dogstatsd_socket.display().to_string() })
+            &json!({
+                "sent": sent,
+                "timed_out": stats.timed_out,
+                "dogstatsd_socket": config.dogstatsd_socket.display().to_string()
+            })
         );
         assert_sometimes!(sent > 0, "workload sent a dogstatsd line", &json!({ "sent": sent }));
         assert_sometimes!(
