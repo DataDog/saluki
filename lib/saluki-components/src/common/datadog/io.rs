@@ -715,6 +715,19 @@ fn generate_retry_queue_id(context: ComponentContext, endpoint: &ResolvedEndpoin
 }
 
 fn track_queue_drops(telemetry: &ComponentTelemetry, domain: &str, push_result: PushResult) {
+    if push_result.had_drops() {
+        saluki_antithesis::sometimes!(
+            true,
+            "ADP dropped transactions",
+            {
+                "domain": domain,
+                "items_dropped": push_result.items_dropped,
+                "events_dropped": push_result.events_dropped,
+                "data_points_dropped": push_result.data_points_dropped
+            }
+        );
+    }
+
     telemetry.track_dropped_items(push_result.items_dropped);
     telemetry.track_dropped_events(push_result.events_dropped);
     telemetry.track_data_points_dropped(domain, push_result.data_points_dropped);
