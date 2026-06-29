@@ -179,7 +179,7 @@ impl RemoteAgentWorkloadProvider {
         // With the aggregator configured, update the memory bounds before handing it off to the supervisor.
         provider_bounds.with_subcomponent("aggregator", &aggregator);
 
-        let api_worker = RemoteAgentWorkloadAPIWorker::from_state(tags_querier.clone(), eds_resolver);
+        let api_worker = RemoteAgentWorkloadAPIWorker::from_state(tags_querier.clone(), eds_resolver.clone());
 
         // Build the workload supervisor.
         let mut supervisor = Supervisor::new("workload")?

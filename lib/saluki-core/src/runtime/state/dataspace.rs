@@ -352,10 +352,29 @@ impl DataspaceRegistry {
         }
     }
 
+    /// This is a synchronous point-in-time read that locks the registry, collects matching values,
+    /// and returns immediately without creating any subscription or channel. Use this when you need
+    /// a snapshot of what is currently asserted rather than ongoing notifications of future changes.
+    ///
+    pub fn current_values<T>(&self, filter: IdentifierFilter) -> Vec<T>
+    where
+        T: Clone + Send + Sync + 'static,
+    {
+        let type_id = TypeId::of::<T>();
+        let state = self.inner.state.lock().unwrap();
+        state
+            .current_values
+            .iter()
+            .filter(|(key, _)| key.type_id == type_id && filter.matches(&key.identifier))
+            .filter_map(|(_, stored)| stored.value.downcast_ref::<T>().cloned())
+            .collect()
+    }
+
     /// Subscribes to assertion and retraction updates matching the given filter.
     ///
-    /// Returns a [`Subscription`] that can be used to asynchronously receive updates. Any assertions that match the
-    /// filter at the time of subscribing will be immediately yielded.
+    /// Returns a [`Subscription`] that can be used to asynchronously receive updates. Any
+    /// assertions that match the filter at the time of subscribing will be immediately replayed
+    /// into the subscription's pending queue.
     pub fn subscribe<T>(&self, filter: IdentifierFilter) -> Subscription<T>
     where
         T: Clone + Send + Sync + 'static,
