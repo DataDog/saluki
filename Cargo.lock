@@ -4420,6 +4420,7 @@ dependencies = [
  "futures",
  "http",
  "indexmap",
+ "loom",
  "metrics",
  "metrics-util",
  "ordered-float 5.3.0",

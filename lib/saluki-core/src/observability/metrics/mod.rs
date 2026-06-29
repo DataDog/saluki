@@ -496,11 +496,19 @@ fn flush_once(state: &State, context_resolver: &mut MetricsContextResolver, flus
 
         // Counters: a counter is never idle so long as it has a non-zero delta during a flush _or_ has
         // an active reference (strong count > 1).
+        //
+        // The strong-count check precedes `consume()`, with an Acquire fence on the orphaned path:
+        // observing `strong_count == 1` synchronizes-with the dropping thread's release, which
+        // guarantees the following `consume()` observes that thread's final increment.
         maps.counters.retain(|key, handle| {
-            let delta = handle.consume();
             let idle = handle.bump_idle();
+            let orphaned = Arc::strong_count(handle) == 1;
+            if orphaned {
+                std::sync::atomic::fence(Ordering::Acquire);
+            }
+            let delta = handle.consume();
 
-            if Arc::strong_count(handle) == 1 && delta == 0 && idle >= idle_threshold {
+            if orphaned && delta == 0 && idle >= idle_threshold {
                 evicted_keys.push(key.clone());
                 return false;
             }
@@ -535,13 +543,20 @@ fn flush_once(state: &State, context_resolver: &mut MetricsContextResolver, flus
 
         // Histograms: a histogram is never idle so long as it has recorded samples prior to a flush _or_
         // has an active reference (strong count > 1).
+        //
+        // The strong-count check precedes the drain, with an Acquire fence on the orphaned path, so the
+        // drain observes a dropping thread's final `record()`.
         maps.histograms.retain(|key, handle| {
+            let idle = handle.bump_idle();
+            let orphaned = Arc::strong_count(handle) == 1;
+            if orphaned {
+                std::sync::atomic::fence(Ordering::Acquire);
+            }
             let mut histogram_samples = Vec::new();
             handle.drain_into(&mut histogram_samples);
             let had_samples = !histogram_samples.is_empty();
-            let idle = handle.bump_idle();
 
-            if Arc::strong_count(handle) == 1 && !had_samples && idle >= idle_threshold {
+            if orphaned && !had_samples && idle >= idle_threshold {
                 evicted_keys.push(key.clone());
                 return false;
             }
@@ -912,5 +927,112 @@ mod tests {
         // The following interval (no write) finally evicts it.
         flush_once(&state, &mut resolver, &mut flush_state);
         assert!(!gauge_present(&state, "final_gauge"));
+    }
+}
+
+// Loom model of the counter eviction path in `flush_once`.
+//
+// In `flush_once`, the registry `maps` lock is held during the drain, but the increment/drop path
+// does not take that lock: `Counter::increment` writes straight through the `Arc<Handle>`, and
+// dropping a caller's `Counter` only decrements the Arc strong count. A component holding a cached
+// handle can therefore land a final increment and drop the handle while a flush is mid-pass over it.
+//
+// The model transcribes the counter branch with loom primitives instead of exercising the real types,
+// which loom cannot instrument here:
+//
+// - The strong count is an explicit `AtomicUsize`. loom's `Arc::strong_count` does not reflect a
+//   concurrent decrement from another thread (it models Arc's drop synchronization, not the observable
+//   count value), so a flush reading it never sees the orphaned (`== 1`) state mid-race. The explicit
+//   atomic matches `std`'s `Arc`: clone increments (Relaxed), drop decrements with `Release`,
+//   observation is a `Relaxed` load -- the same shape as how `flush_once` reads `Arc::strong_count`.
+// - The real `Handle` is wrapped by the `metrics` crate's `Counter`/`CounterFn`, which construct
+//   `std::sync::Arc` internally. loom only instruments atomics and `Arc`s swapped to `loom::sync::*`
+//   behind the `loom` cfg, not those inside a third-party crate.
+//
+// `flush_decision_consume_first` and `flush_decision_strong_count_first` mirror the two possible
+// orderings of `flush_once`'s counter branch and must stay in lockstep with it.
+#[cfg(all(test, feature = "loom"))]
+mod loom_tests {
+    use loom::sync::atomic::{fence, AtomicU64, AtomicUsize, Ordering};
+    use loom::sync::Arc;
+
+    /// The shared state behind a counter handle: the accumulator the flush loop drains, and the Arc
+    /// strong count it consults to decide whether the handle is orphaned.
+    struct Shared {
+        value: AtomicU64,
+        strong: AtomicUsize,
+    }
+
+    /// A component holding a cached handle lands one final increment, then drops the handle.
+    fn caller_increment_then_drop(shared: &Arc<Shared>, amount: u64) {
+        shared.value.fetch_add(amount, Ordering::Relaxed);
+        shared.strong.fetch_sub(1, Ordering::Release); // Arc clone drop
+    }
+
+    /// Consumes the value, then checks the strong count (value read before the liveness check).
+    fn flush_decision_consume_first(shared: &Arc<Shared>) -> (u64, bool) {
+        let delta = shared.value.swap(0, Ordering::Relaxed);
+        let orphaned = shared.strong.load(Ordering::Relaxed) == 1;
+        (delta, orphaned && delta == 0)
+    }
+
+    /// Checks the strong count first; if orphaned, Acquire-fences to synchronize with the dropping
+    /// thread's `Release`, then consumes the value.
+    fn flush_decision_strong_count_first(shared: &Arc<Shared>) -> (u64, bool) {
+        let orphaned = shared.strong.load(Ordering::Relaxed) == 1;
+        if orphaned {
+            fence(Ordering::Acquire);
+        }
+        let delta = shared.value.swap(0, Ordering::Relaxed);
+        (delta, orphaned && delta == 0)
+    }
+
+    fn model(decision: fn(&Arc<Shared>) -> (u64, bool)) {
+        loom::model(move || {
+            const FINAL: u64 = 7;
+
+            // strong count starts at 2: one ref in the registry map, one held by the caller.
+            let shared = Arc::new(Shared {
+                value: AtomicU64::new(0),
+                strong: AtomicUsize::new(2),
+            });
+            let caller_shared = Arc::clone(&shared);
+
+            let caller = loom::thread::spawn(move || {
+                caller_increment_then_drop(&caller_shared, FINAL);
+            });
+
+            // The flush task evaluates this counter while the component races.
+            let (delta, evicted) = decision(&shared);
+            caller.join().unwrap();
+
+            // Invariant: a counter may only be evicted once everything it accumulated has been
+            // emitted. If the flush evicts it, the delta it emitted downstream must already include
+            // the final increment -- otherwise those counts are silently discarded with the handle.
+            if evicted {
+                assert_eq!(
+                    delta,
+                    FINAL,
+                    "counter evicted while {} counts were never emitted -> permanently lost",
+                    FINAL - delta
+                );
+            }
+        });
+    }
+
+    // Consuming the value before checking the strong count is lossy: loom finds an interleaving where
+    // the handle is evicted while a final increment goes unemitted. `#[should_panic]` asserts loom
+    // reaches that interleaving.
+    #[test]
+    #[should_panic(expected = "permanently lost")]
+    fn consume_first_ordering_loses_a_final_increment() {
+        model(flush_decision_consume_first);
+    }
+
+    // Checking the strong count first (Acquire-fencing when orphaned) before consuming preserves every
+    // increment across all interleavings loom explores.
+    #[test]
+    fn strong_count_first_ordering_preserves_a_final_increment() {
+        model(flush_decision_strong_count_first);
     }
 }
