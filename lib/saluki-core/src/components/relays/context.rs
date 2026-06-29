@@ -94,7 +94,7 @@ impl RelayContext {
     /// Returns a handle to the supervisor that this component is spawned on.
     ///
     /// Dynamic child processes can be spawned via the supervisor handle and thus have their lifecycle
-    /// coupled to the component itself: if the component restarts, or the component's supervisor die,
+    /// coupled to the component itself: if the component restarts, or the component's supervisor dies,
     /// the dynamic child processes will also be terminated automatically as well.
     pub fn spawn_handle(&self) -> &SupervisorHandle {
         &self.inner.supervisor_handle
