@@ -3,22 +3,6 @@ Set-StrictMode -Version 3.0
 
 Import-Module (Join-Path $PSScriptRoot "windows-rust-env.psm1") -Force
 
-function Copy-WindowsRuntimeDlls {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$Destination
-    )
-
-    foreach ($DllName in @("vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll")) {
-        $Source = Join-Path "C:\Windows\System32" $DllName
-        if (Test-Path $Source) {
-            Copy-Item -Force $Source (Join-Path $Destination $DllName)
-        } else {
-            Write-Host "[*] Runtime DLL ${DllName} not found at ${Source}."
-        }
-    }
-}
-
 function Build-WindowsAdpImage {
     $AdpBinary = Join-Path $env:CARGO_TARGET_DIR "$env:BUILD_PROFILE\agent-data-plane.exe"
     if (-not (Test-Path $AdpBinary)) {
@@ -32,7 +16,7 @@ function Build-WindowsAdpImage {
     Remove-Item -Recurse -Force $ContextDir -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Force $ContextDir | Out-Null
     Copy-Item -Force $AdpBinary (Join-Path $ContextDir "agent-data-plane.exe")
-    Copy-WindowsRuntimeDlls -Destination $ContextDir
+    Assert-NoDynamicVCRuntimeImports -BinaryPath $AdpBinary
     Copy-Item -Force (Join-Path $RepoRoot "ci\tooling\windows-adp-entrypoint.ps1") (Join-Path $ContextDir "entrypoint.ps1")
     Copy-Item -Force (Join-Path $RepoRoot "test\smp\regression\adp\shared\cert.pem") (Join-Path $ContextDir "ipc_cert.pem")
     [System.IO.File]::WriteAllText((Join-Path $ContextDir "auth_token"), "windows-integration-test-token", [System.Text.Encoding]::ASCII)
@@ -42,7 +26,6 @@ function Build-WindowsAdpImage {
 FROM ${BaseImage}
 WORKDIR C:\adp
 RUN New-Item -ItemType Directory -Force C:\ProgramData\Datadog
-COPY *.dll C:\adp\
 COPY agent-data-plane.exe C:\adp\agent-data-plane.exe
 COPY entrypoint.ps1 C:\adp\entrypoint.ps1
 COPY auth_token C:\ProgramData\Datadog\auth_token
