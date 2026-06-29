@@ -1,6 +1,7 @@
 use resource_accounting::ComponentRegistry;
 
 use crate::health::Health;
+use crate::runtime::SupervisorHandle;
 use crate::{
     components::ComponentContext,
     topology::{PayloadsConsumer, TopologyContext},
@@ -13,6 +14,7 @@ pub struct ForwarderContext {
     component_registry: ComponentRegistry,
     health_handle: Option<Health>,
     consumer: PayloadsConsumer,
+    supervisor_handle: SupervisorHandle,
 }
 
 impl ForwarderContext {
@@ -20,6 +22,7 @@ impl ForwarderContext {
     pub fn new(
         topology_context: &TopologyContext, component_context: &ComponentContext,
         component_registry: ComponentRegistry, health_handle: Health, consumer: PayloadsConsumer,
+        supervisor_handle: SupervisorHandle,
     ) -> Self {
         Self {
             topology_context: topology_context.clone(),
@@ -27,6 +30,7 @@ impl ForwarderContext {
             component_registry,
             health_handle: Some(health_handle),
             consumer,
+            supervisor_handle,
         }
     }
 
@@ -57,5 +61,17 @@ impl ForwarderContext {
     /// Gets a mutable reference to the payloads consumer.
     pub fn payloads(&mut self) -> &mut PayloadsConsumer {
         &mut self.consumer
+    }
+
+    /// Returns a handle for spawning dynamic children under this component's dedicated supervisor.
+    ///
+    /// Spawned children are temporary -- they are never restarted, and they are torn down when the
+    /// component (and thus its supervisor) stops -- which suits structured, on-demand background work.
+    ///
+    /// > **Note:** a child's name becomes a process name and a resource-group identifier. Child names
+    /// > **MUST** be bounded and low-cardinality; never embed per-request or per-peer values, as doing
+    /// > so leaks unbounded process/metric identity.
+    pub fn spawn_handle(&self) -> &SupervisorHandle {
+        &self.supervisor_handle
     }
 }
