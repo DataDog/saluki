@@ -1,6 +1,7 @@
 use resource_accounting::ComponentRegistry;
 
 use crate::health::Health;
+use crate::runtime::SupervisorHandle;
 use crate::{
     components::ComponentContext,
     topology::{EventsDispatcher, PayloadsConsumer, TopologyContext},
@@ -14,6 +15,7 @@ pub struct DecoderContext {
     health_handle: Option<Health>,
     dispatcher: EventsDispatcher,
     consumer: PayloadsConsumer,
+    supervisor_handle: SupervisorHandle,
 }
 
 impl DecoderContext {
@@ -21,7 +23,7 @@ impl DecoderContext {
     pub fn new(
         topology_context: &TopologyContext, component_context: &ComponentContext,
         component_registry: ComponentRegistry, health_handle: Health, dispatcher: EventsDispatcher,
-        consumer: PayloadsConsumer,
+        consumer: PayloadsConsumer, supervisor_handle: SupervisorHandle,
     ) -> Self {
         Self {
             topology_context: topology_context.clone(),
@@ -30,6 +32,7 @@ impl DecoderContext {
             health_handle: Some(health_handle),
             dispatcher,
             consumer,
+            supervisor_handle,
         }
     }
 
@@ -65,5 +68,14 @@ impl DecoderContext {
     /// Gets a mutable reference to the payloads consumer.
     pub fn payloads(&mut self) -> &mut PayloadsConsumer {
         &mut self.consumer
+    }
+
+    /// Returns a handle to the supervisor that this component is spawned on.
+    ///
+    /// Dynamic child processes can be spawned via the supervisor handle and thus have their lifecycle
+    /// coupled to the component itself: if the component restarts, or the component's supervisor dies,
+    /// the dynamic child processes will also be terminated automatically as well.
+    pub fn spawn_handle(&self) -> &SupervisorHandle {
+        &self.supervisor_handle
     }
 }
