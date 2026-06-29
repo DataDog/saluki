@@ -23,7 +23,7 @@ use serde::Deserialize;
 use smallvec::SmallVec;
 use stringtheory::MetaString;
 use tokio::{
-    select,
+    pin, select,
     time::{interval, interval_at},
 };
 use tracing::{debug, error, info, trace, warn};
@@ -303,7 +303,7 @@ impl Transform for Aggregate {
         health.mark_ready();
         debug!("Aggregation transform started.");
 
-        tokio::pin!(passthrough_flush);
+        pin!(passthrough_flush);
 
         loop {
             select! {
@@ -569,8 +569,25 @@ impl AggregationState {
     }
 
     fn insert(&mut self, timestamp: u64, metric: Metric) -> bool {
+        // The context map is hard-capped at `context_limit` and no path grows it past the cap. This is the one
+        // non-advisory runtime memory bound, so we assert it as an invariant under Antithesis. The numeric form hands
+        // the search the margin to the limit as a gradient.
+        saluki_antithesis::always_le!(
+            self.contexts.len(),
+            self.context_limit,
+            "aggregate context map within context_limit",
+            { "len": self.contexts.len(), "limit": self.context_limit }
+        );
+
         // If we haven't seen this context yet, and it would put us over the limit to insert it, then return early.
         if !self.contexts.contains_key(metric.context()) && self.contexts.len() >= self.context_limit {
+            // Anti-vacuity anchor: prove a run actually reaches the cap, else the invariant above passes trivially.
+            saluki_antithesis::sometimes!(
+                true,
+                "aggregate context limit breached",
+                { "limit": self.context_limit }
+            );
+
             self.context_limit_breached = true;
             return false;
         }
@@ -632,11 +649,41 @@ impl AggregationState {
         if self.last_flush != 0 {
             let start = align_to_bucket_start(self.last_flush, bucket_width_secs);
 
+            // Clock-skew guards. Bucketing reads the wall clock while the flush cadence is monotonic, so a wall-clock
+            // jump is not bounded by the flush interval. A backward jump empties the zero-value range (a silent counter
+            // gap); a forward jump makes the loop below run once per bucket across the whole jumped span — O(jump) work
+            // and allocation. Assert before the loop so a flood fails fast rather than after the damage is done.
+            saluki_antithesis::always_ge!(
+                current_time,
+                self.last_flush,
+                "aggregate flush wall-clock did not move backward",
+                { "current_time": current_time, "last_flush": self.last_flush }
+            );
+            // The 10_000 bound is generous. A default 15s flush over a 10s bucket yields one or two buckets. The bound
+            // trips only on a multi-hour wall-clock jump, never on a slow-but-sane flush.
+            saluki_antithesis::always_le!(
+                current_time.saturating_sub(self.last_flush) / bucket_width_secs.get(),
+                10_000,
+                "aggregate zero-value bucket span bounded across a flush",
+                {
+                    "current_time": current_time,
+                    "last_flush": self.last_flush,
+                    "bucket_width_secs": bucket_width_secs.get()
+                }
+            );
+
             for bucket_start in (start..current_time).step_by(bucket_width_secs.get() as usize) {
                 if is_bucket_closed(current_time, bucket_start, bucket_width_secs, flush_open_buckets) {
                     zero_value_buckets.push((bucket_start, MetricValues::counter((bucket_start, 0.0))));
                 }
             }
+
+            // Anti-vacuity anchor: prove the idle-counter zero-value path actually runs in some timeline.
+            saluki_antithesis::sometimes!(
+                !zero_value_buckets.is_empty(),
+                "aggregate flush generated zero-value counter buckets",
+                { "count": zero_value_buckets.len() }
+            );
         }
 
         // Iterate over each context we're tracking, and flush any values that are in buckets which are now closed.
@@ -653,7 +700,13 @@ impl AggregationState {
             // This is useful for sparsely-updated counters.
             let should_expire_if_empty = match &am.values {
                 MetricValues::Counter(..) => {
-                    counter_expire_secs != 0 && am.last_seen + counter_expire_secs < current_time
+                    saluki_antithesis::always_le!(
+                        am.last_seen,
+                        u64::MAX - counter_expire_secs,
+                        "aggregate counter expiry add does not overflow",
+                        { "last_seen": am.last_seen, "counter_expire_secs": counter_expire_secs }
+                    );
+                    counter_expire_secs != 0 && am.last_seen.saturating_add(counter_expire_secs) < current_time
                 }
                 _ => true,
             };
@@ -664,7 +717,7 @@ impl AggregationState {
             // This is also safe to do even when there are real values in those buckets since adding zero to anything is
             // a no-op from the perspective of what we end up flushing, and it doesn't mess with the "last seen" time.
             if let MetricValues::Counter(..) = &mut am.values {
-                let expires_at = am.last_seen + counter_expire_secs;
+                let expires_at = am.last_seen.saturating_add(counter_expire_secs);
                 for (zv_bucket_start, zero_value) in &zero_value_buckets {
                     if expires_at > *zv_bucket_start {
                         am.values.merge(zero_value.clone());

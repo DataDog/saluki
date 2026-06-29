@@ -38,6 +38,7 @@ tracking.
 | `serializer_experimental_use_v3_api.series.validate`           | Dual-send v2+v3 series for validation           | [#1468] |
 | `serializer_experimental_use_v3_api.sketches.endpoints`        | Endpoints enabling v3 sketches API              | [#1468] |
 | `serializer_experimental_use_v3_api.sketches.validate`         | Dual-send v2+v3 sketches for validation         | [#1468] |
+| `telemetry.dogstatsd_origin`                                   | Per-origin processed-metrics telemetry          | [#1679] |
 | `tls_handshake_timeout`                                        | HTTP TLS handshake timeout                      | [#178]  |
 | `use_v3_api.series.enabled`                                    | Global default for series intake API version    | [#1468] |
 | `use_v3_api.series.endpoints`                                  | Per-URL override map for series intake version  | [#1468] |
@@ -49,45 +50,109 @@ tracking.
 The following settings exist in the core agent but are not planned for ADP, typically because ADP's
 architecture is fundamentally different or the feature is platform-specific.
 
-| Config Key                                                        | Description                                | Reason                                                                                                                                                                                                                                                                    |
-| ----------------------------------------------------------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `aggregator_buffer_size`                                          | Channel buffer depth for aggregator queues | Saluki topology uses fixed interconnect sizes and construction-time wiring; no per-component config knobs.                                                                                                                                                                |
-| `aggregator_flush_metrics_and_serialize_in_parallel_buffer_size`  | Parallel flush: series/sketch buffer size  | Saluki topology uses fixed interconnect sizes; no per-component config knobs.                                                                                                                                                                                             |
-| `aggregator_flush_metrics_and_serialize_in_parallel_chan_size`    | Parallel flush: channel size               | Saluki topology uses fixed interconnect sizes; no per-component config knobs.                                                                                                                                                                                             |
-| `aggregator_stop_timeout`                                         | Timeout (s) for aggregator flush on stop   | Saluki topology uses fixed interconnect sizes and construction-time wiring; no per-component config knobs.                                                                                                                                                                |
-| `aggregator_use_tags_store`                                       | Enable shared tag deduplication store      | Core agent concept with no ADP analog.                                                                                                                                                                                                                                    |
-| `config_id`                                                       | Fleet Automation config ID tag             | Core Agent uses this only on Agent HA telemetry metrics.                                                                                                                                                                                                                  |
-| `data_plane.telemetry_enabled`                                    | ADP telemetry toggle                       | See below                                                                                                                                                                                                                                                                 |
-| `data_plane.telemetry_listen_addr`                                | ADP telemetry listen address               | See below                                                                                                                                                                                                                                                                 |
-| `dogstatsd_disable_verbose_logs`                                  | Suppress noisy parse error logs            | ADP does not emit the verbose parse-error logs that this key filters in the core Agent, so there is nothing to suppress.                                                                                                                                                  |
-| `dogstatsd_host_socket_path`                                      | Host UDS socket dir for DSD                | Not read by DSD server; admission controller only.                                                                                                                                                                                                                        |
-| `dogstatsd_mem_based_rate_limiter.enabled`                        | Memory-based rate limiter toggle           | See below                                                                                                                                                                                                                                                                 |
-| `dogstatsd_mem_based_rate_limiter.go_gc`                          | Memory rate limiter GC percent             | Go GC-specific; ADP uses `memory_limit` instead.                                                                                                                                                                                                                          |
-| `dogstatsd_mem_based_rate_limiter.high_soft_limit`                | Memory rate limiter high soft limit        | Go GC-specific; ADP uses `memory_limit` instead.                                                                                                                                                                                                                          |
-| `dogstatsd_mem_based_rate_limiter.low_soft_limit`                 | Memory rate limiter low soft limit         | Go GC-specific; ADP uses `memory_limit` instead.                                                                                                                                                                                                                          |
-| `dogstatsd_mem_based_rate_limiter.memory_ballast`                 | Memory rate limiter heap ballast size      | Go GC-specific; ADP uses `memory_limit` instead.                                                                                                                                                                                                                          |
-| `dogstatsd_mem_based_rate_limiter.rate_check.factor`              | Memory rate limiter check factor           | Go GC-specific; ADP uses `memory_limit` instead.                                                                                                                                                                                                                          |
-| `dogstatsd_mem_based_rate_limiter.rate_check.max`                 | Memory rate limiter check max interval     | Go GC-specific; ADP uses `memory_limit` instead.                                                                                                                                                                                                                          |
-| `dogstatsd_mem_based_rate_limiter.rate_check.min`                 | Memory rate limiter check min interval     | Go GC-specific; ADP uses `memory_limit` instead.                                                                                                                                                                                                                          |
-| `dogstatsd_mem_based_rate_limiter.soft_limit_freeos_check.factor` | Memory rate limiter FreeOS check factor    | Go GC-specific; ADP uses `memory_limit` instead.                                                                                                                                                                                                                          |
-| `dogstatsd_mem_based_rate_limiter.soft_limit_freeos_check.max`    | Memory rate limiter FreeOS check max       | Go GC-specific; ADP uses `memory_limit` instead.                                                                                                                                                                                                                          |
-| `dogstatsd_mem_based_rate_limiter.soft_limit_freeos_check.min`    | Memory rate limiter FreeOS check min       | Go GC-specific; ADP uses `memory_limit` instead.                                                                                                                                                                                                                          |
-| `dogstatsd_no_aggregation_pipeline_batch_size`                    | No-aggregation pipeline batch size         | Fixed in ADP topology.                                                                                                                                                                                                                                                    |
-| `dogstatsd_packet_buffer_flush_timeout`                           | Packet buffer flush timeout                | ADP decodes inline.                                                                                                                                                                                                                                                       |
-| `dogstatsd_packet_buffer_size`                                    | Datagrams per packet buffer                | ADP decodes inline.                                                                                                                                                                                                                                                       |
-| `dogstatsd_pipeline_autoadjust`                                   | Auto-adjust pipeline workers               | ADP uses async tasks.                                                                                                                                                                                                                                                     |
-| `dogstatsd_pipeline_count`                                        | Parallel processing pipelines              | ADP uses async tasks.                                                                                                                                                                                                                                                     |
-| `dogstatsd_queue_size`                                            | Packet channel buffer size                 | ADP uses async tasks.                                                                                                                                                                                                                                                     |
-| `dogstatsd_stats_buffer`                                          | Internal stats buffer size                 | ADP does not expose the core agent's packet-per-second expvar endpoint, so there is no persistent stats endpoint buffer to configure.                                                                                                                                     |
-| `dogstatsd_stats_enable`                                          | Enable internal stats endpoint             | See below                                                                                                                                                                                                                                                                 |
-| `dogstatsd_stats_port`                                            | Internal stats endpoint port               | ADP does not expose the core agent's packet-per-second expvar endpoint, so `dogstatsd_stats_port` has no effect.                                                                                                                                                          |
-| `dogstatsd_telemetry_enabled_listener_id`                         | Per-listener telemetry tagging             | Not feasible to thread listener identity through ADP's async decode pipeline.                                                                                                                                                                                             |
-| `dogstatsd_workers_count`                                         | Number of DSD processing workers           | ADP uses async tasks.                                                                                                                                                                                                                                                     |
-| `enable_json_stream_shared_compressor_buffers`                    | Pre-allocate shared compressor buffers     | ADP does not use a shared compressor buffer pool; Rust request builders own fixed-capacity scratch and compression buffers.                                                                                                                                               |
-| `entity_id`                                                       | Agent pod entity ID                        | ADP internal DogStatsD telemetry uses OpenMetrics.                                                                                                                                                                                                                        |
-| `heroku_dyno`                                                     | Heroku dyno telemetry mode                 | See below                                                                                                                                                                                                                                                                 |
-| `logging_frequency`                                               | Transaction success log interval           | The core agent uses `logging_frequency` to throttle repetitive successful transaction logs. ADP logs successful forwarder operations below the default `info` level, so there is no matching info-level success-log stream to throttle. This key is intentionally unused. |
-| `use_dogstatsd`                                                   | Master DogStatsD enable toggle             | Core Agent evaluates and sets `data_plane.dogstatsd.enabled`.                                                                                                                                                                                                             |
+| Config Key                                                        | Description                                        | Reason                                                                                                                                                                                                                                                                    |
+| ----------------------------------------------------------------- | -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `aggregator_buffer_size`                                          | Channel buffer depth for aggregator queues         | See below                                                                                                                                                                                                                                                                 |
+| `aggregator_flush_metrics_and_serialize_in_parallel_buffer_size`  | Parallel flush: series/sketch buffer size          | See below                                                                                                                                                                                                                                                                 |
+| `aggregator_flush_metrics_and_serialize_in_parallel_chan_size`    | Parallel flush: channel size                       | See below                                                                                                                                                                                                                                                                 |
+| `aggregator_use_tags_store`                                       | Enable shared tag deduplication store              | See below                                                                                                                                                                                                                                                                 |
+| `config_id`                                                       | Fleet Automation config ID tag                     | Core Agent uses this only on Agent HA telemetry metrics.                                                                                                                                                                                                                  |
+| `data_plane.telemetry_enabled`                                    | ADP telemetry toggle                               | See below                                                                                                                                                                                                                                                                 |
+| `data_plane.telemetry_listen_addr`                                | ADP telemetry listen address                       | See below                                                                                                                                                                                                                                                                 |
+| `dogstatsd_host_socket_path`                                      | Host UDS socket dir for DSD                        | Not read by DSD server; admission controller only.                                                                                                                                                                                                                        |
+| `dogstatsd_mem_based_rate_limiter.enabled`                        | Memory-based rate limiter toggle                   | See below                                                                                                                                                                                                                                                                 |
+| `dogstatsd_mem_based_rate_limiter.go_gc`                          | Memory rate limiter GC percent                     | Go GC-specific; ADP uses `memory_limit` instead.                                                                                                                                                                                                                          |
+| `dogstatsd_mem_based_rate_limiter.high_soft_limit`                | Memory rate limiter high soft limit                | Go GC-specific; ADP uses `memory_limit` instead.                                                                                                                                                                                                                          |
+| `dogstatsd_mem_based_rate_limiter.low_soft_limit`                 | Memory rate limiter low soft limit                 | Go GC-specific; ADP uses `memory_limit` instead.                                                                                                                                                                                                                          |
+| `dogstatsd_mem_based_rate_limiter.memory_ballast`                 | Memory rate limiter heap ballast size              | Go GC-specific; ADP uses `memory_limit` instead.                                                                                                                                                                                                                          |
+| `dogstatsd_mem_based_rate_limiter.rate_check.factor`              | Memory rate limiter check factor                   | Go GC-specific; ADP uses `memory_limit` instead.                                                                                                                                                                                                                          |
+| `dogstatsd_mem_based_rate_limiter.rate_check.max`                 | Memory rate limiter check max interval             | Go GC-specific; ADP uses `memory_limit` instead.                                                                                                                                                                                                                          |
+| `dogstatsd_mem_based_rate_limiter.rate_check.min`                 | Memory rate limiter check min interval             | Go GC-specific; ADP uses `memory_limit` instead.                                                                                                                                                                                                                          |
+| `dogstatsd_mem_based_rate_limiter.soft_limit_freeos_check.factor` | Memory rate limiter FreeOS check factor            | Go GC-specific; ADP uses `memory_limit` instead.                                                                                                                                                                                                                          |
+| `dogstatsd_mem_based_rate_limiter.soft_limit_freeos_check.max`    | Memory rate limiter FreeOS check max               | Go GC-specific; ADP uses `memory_limit` instead.                                                                                                                                                                                                                          |
+| `dogstatsd_mem_based_rate_limiter.soft_limit_freeos_check.min`    | Memory rate limiter FreeOS check min               | Go GC-specific; ADP uses `memory_limit` instead.                                                                                                                                                                                                                          |
+| `dogstatsd_no_aggregation_pipeline_batch_size`                    | No-aggregation pipeline batch size                 | Fixed in ADP topology.                                                                                                                                                                                                                                                    |
+| `dogstatsd_packet_buffer_flush_timeout`                           | Packet buffer flush timeout                        | ADP decodes inline.                                                                                                                                                                                                                                                       |
+| `dogstatsd_packet_buffer_size`                                    | Datagrams per packet buffer                        | ADP decodes inline.                                                                                                                                                                                                                                                       |
+| `dogstatsd_pipeline_autoadjust`                                   | Auto-adjust pipeline workers                       | ADP uses async tasks.                                                                                                                                                                                                                                                     |
+| `dogstatsd_pipeline_count`                                        | Parallel processing pipelines                      | ADP uses async tasks.                                                                                                                                                                                                                                                     |
+| `dogstatsd_queue_size`                                            | Packet channel buffer size                         | ADP uses async tasks.                                                                                                                                                                                                                                                     |
+| `dogstatsd_stats_buffer`                                          | Internal stats buffer size                         | ADP does not expose the core agent's packet-per-second expvar endpoint, so there is no persistent stats endpoint buffer to configure.                                                                                                                                     |
+| `dogstatsd_stats_enable`                                          | Enable internal stats endpoint                     | See below                                                                                                                                                                                                                                                                 |
+| `dogstatsd_stats_port`                                            | Internal stats endpoint port                       | ADP does not expose the core agent's packet-per-second expvar endpoint, so `dogstatsd_stats_port` has no effect.                                                                                                                                                          |
+| `dogstatsd_telemetry_enabled_listener_id`                         | Per-listener telemetry tagging                     | Not feasible to thread listener identity through ADP's async decode pipeline.                                                                                                                                                                                             |
+| `dogstatsd_workers_count`                                         | Number of DSD processing workers                   | ADP uses async tasks.                                                                                                                                                                                                                                                     |
+| `enable_json_stream_shared_compressor_buffers`                    | Pre-allocate shared compressor buffers             | ADP does not use a shared compressor buffer pool; Rust request builders own fixed-capacity scratch and compression buffers.                                                                                                                                               |
+| `entity_id`                                                       | Agent pod entity ID                                | ADP internal DogStatsD telemetry uses OpenMetrics.                                                                                                                                                                                                                        |
+| `forwarder_requeue_buffer_size`                                   | In-memory re-queue buffer size                     | See below                                                                                                                                                                                                                                                                 |
+| `heroku_dyno`                                                     | Heroku dyno telemetry mode                         | See below                                                                                                                                                                                                                                                                 |
+| `logging_frequency`                                               | Transaction success log interval                   | The core agent uses `logging_frequency` to throttle repetitive successful transaction logs. ADP logs successful forwarder operations below the default `info` level, so there is no matching info-level success-log stream to throttle. This key is intentionally unused. |
+| `telemetry.dogstatsd.aggregator_channel_latency_buckets`          | Histogram buckets: DSD-to-aggregator channel lag   | ADP already tracks this latency with histogram buckets determined by logarithmic calculation, so pre-defined bucket configuration is not applicable.                                                                                                                      |
+| `telemetry.dogstatsd.listeners_channel_latency_buckets`           | Histogram buckets: listener packet-channel latency | ADP already tracks this latency with histogram buckets determined by logarithmic calculation, so pre-defined bucket configuration is not applicable.                                                                                                                      |
+| `telemetry.dogstatsd.listeners_latency_buckets`                   | Histogram buckets: listener processing latency     | ADP already tracks this latency with histogram buckets determined by logarithmic calculation, so pre-defined bucket configuration is not applicable.                                                                                                                      |
+| `use_dogstatsd`                                                   | Master DogStatsD enable toggle                     | Core Agent evaluates and sets `data_plane.dogstatsd.enabled`.                                                                                                                                                                                                             |
+
+### `aggregator_buffer_size`
+
+The core Agent uses `aggregator_buffer_size` to size bounded Go channels feeding the aggregator and
+DogStatsD time sampler workers.
+
+ADP has no equivalent operator-facing setting. Its aggregate transform receives data through the
+Saluki topology interconnects, which are configured at topology construction time rather than by
+per-component Agent config keys. The default event interconnect capacity is 128 buffers, and each
+event buffer can hold up to 1024 events.
+
+Setting `aggregator_buffer_size` has no effect in ADP.
+
+### `aggregator_flush_metrics_and_serialize_in_parallel_buffer_size`
+
+The core Agent uses `aggregator_flush_metrics_and_serialize_in_parallel_buffer_size` during
+aggregator flushes, not for the aggregator's input queues. It controls how many flushed
+series or sketch objects are grouped into each internal buffered-channel slice while one
+goroutine produces flushed metrics and another goroutine serializes them.
+
+ADP has no equivalent flush-and-serialize iterable pipeline. The aggregate transform emits
+aggregated `Metric` events into the Saluki topology through `EventsBuffer` batches, and
+downstream encoder components serialize those events independently of the aggregate transform.
+
+The closest internal ADP buffering is topology-wide: `EventsBuffer` can hold up to 1024 events,
+and event interconnects default to 128 buffers. These are not configured through
+`aggregator_flush_metrics_and_serialize_in_parallel_buffer_size`, and setting this key has no
+effect in ADP.
+
+### `aggregator_flush_metrics_and_serialize_in_parallel_chan_size`
+
+The core Agent uses `aggregator_flush_metrics_and_serialize_in_parallel_chan_size` during
+aggregator flushes, together with
+`aggregator_flush_metrics_and_serialize_in_parallel_buffer_size`. The buffer size controls how
+many flushed series or sketch objects are grouped into each internal slice, while the channel
+size controls how many of those slices can queue between the flush producer goroutine and the
+consumer goroutine that serializes them.
+
+ADP has no equivalent flush-and-serialize iterable pipeline. The aggregate transform emits
+aggregated `Metric` events into the Saluki topology through `EventsBuffer` batches, and
+downstream encoder components serialize those events independently of the aggregate transform.
+
+The closest internal ADP buffering is topology-wide: `EventsBuffer` can hold up to 1024 events,
+and event interconnects default to 128 buffers. These are not configured through
+`aggregator_flush_metrics_and_serialize_in_parallel_chan_size`, and setting this key has no
+effect in ADP.
+
+### `aggregator_use_tags_store`
+
+The core Agent uses `aggregator_use_tags_store` to enable an aggregator-local, ref-counted
+tag store. The store deduplicates repeated tag slices across aggregator contexts: contexts
+retain shared tag entries while active, release them when they expire, and periodic shrinking
+removes entries that are no longer referenced.
+
+ADP does not have an aggregator-local tag store and does not need this toggle. Metrics reach
+the aggregate transform with Saluki `Context` values that already carry ADP-native tag
+structures. Tag reuse is handled before aggregation by the context resolver, the tags resolver,
+and `SharedTagSet` structural sharing.
+
+Related ADP-specific tuning is exposed through context/tag-set resolver settings such as
+`dogstatsd_cached_tagsets_limit`, not through `aggregator_use_tags_store`. Setting
+`aggregator_use_tags_store` has no effect in ADP.
 
 ### `data_plane.telemetry_enabled`
 
@@ -139,6 +204,15 @@ DogStatsD statistics endpoint to scrape. You do not need to set up scraper confi
 per-metric data. The config keys `dogstatsd_stats_enable`, `dogstatsd_stats_buffer`, and
 `dogstatsd_stats_port` have no effect in ADP. See [#1352].
 
+### `forwarder_requeue_buffer_size`
+
+ADP does not implement `forwarder_requeue_buffer_size`. The core Agent uses this setting to size a separate
+count-bounded handoff channel from forwarder workers to the retry manager. ADP's endpoint I/O loop handles
+send failures that need to be retried and owns the retry queue, so ADP does not need a separate queue for
+worker-to-retry-manager communication. Those failures are re-enqueued into the low-priority retry queue, which
+is bounded by payload bytes via `forwarder_retry_queue_payloads_max_size` and optional disk persistence settings.
+See [#1755].
+
 ### `heroku_dyno`
 
 The `heroku_dyno` setting affects the core Agent's self-telemetry heartbeat. It changes the Agent
@@ -163,17 +237,37 @@ default values.
 
 | Config Key                             | Description                               |
 | -------------------------------------- | ----------------------------------------- |
+| `aggregator_stop_timeout`              | Timeout (s) for aggregator flush on stop  |
 | `dogstatsd_mapper_cache_size`          | Mapper result LRU cache size              |
 | `dogstatsd_metrics_stats_enable`       | Enable per-metric debug stats             |
 | `forwarder_apikey_validation_interval` | API key check interval (minutes)          |
 | `forwarder_high_prio_buffer_size`      | High-priority request queue size          |
 | `forwarder_num_workers`                | Concurrent forwarder workers              |
+| `forwarder_stop_timeout`               | Timeout (s) for forwarder graceful stop   |
 | `log_level`                            | Log verbosity directives                  |
 | `min_tls_version`                      | Minimum TLS version for HTTPS connections |
 | `multi_region_failover.enabled`        | Enable multi-region failover mode         |
 | `serializer_zstd_compressor_level`     | Zstd compression level                    |
 | `skip_ssl_validation`                  | Skip TLS cert validation                  |
 | `statsd_forward_host`                  | UDP packet forwarding destination host    |
+
+### `aggregator_stop_timeout`
+
+The core Agent uses `aggregator_stop_timeout` as the shutdown grace period for the aggregator's
+final flush. During shutdown, the core Agent tries to flush aggregated metrics, events, service
+checks, and related data to the forwarder before stopping. If `dogstatsd_flush_incomplete_buckets`
+is enabled, the same timeout also bounds draining in-flight DogStatsD time sampler batches before
+that final flush.
+
+ADP uses `aggregator_stop_timeout` together with `forwarder_stop_timeout` to configure its
+topology-wide graceful shutdown timeout. The default is `2 + 2 = 4` seconds. Set
+`data_plane.stop_timeout` to override the combined timeout directly.
+
+Support is partial because ADP does not apply this timeout only to an aggregator component.
+Shutdown is coordinated by the Saluki topology: sources stop first, downstream inputs close,
+and the aggregate transform performs its final flush when its input stream ends. Whether open
+aggregation windows are included is controlled by `aggregate_flush_open_windows`, also aliased
+as `dogstatsd_flush_incomplete_buckets`.
 
 ### `dogstatsd_mapper_cache_size`
 
@@ -219,6 +313,17 @@ value sizes ADP's per-endpoint high-priority pending queue.
 ADP uses `forwarder_max_concurrent_requests` to control endpoint concurrency.
 `forwarder_num_workers` is still read for HTTP connection pool sizing but no
 longer controls the maximum number of concurrent requests per endpoint.
+
+### `forwarder_stop_timeout`
+
+The core Agent uses `forwarder_stop_timeout` as the shutdown grace period for the forwarder.
+
+ADP uses `forwarder_stop_timeout` together with `aggregator_stop_timeout` to configure its
+topology-wide graceful shutdown timeout. The default is `2 + 2 = 4` seconds. Set
+`data_plane.stop_timeout` to override the combined timeout directly.
+
+Support is partial because ADP does not apply this timeout only to a forwarder component. It
+bounds graceful shutdown for the full Saluki topology.
 
 ### `log_level`
 
@@ -312,20 +417,9 @@ and tracks send failures through telemetry.
 The following settings need further investigation. ADP behavior may differ from the core agent in
 ways that are not yet fully characterized.
 
-| Config Key                                               | Description                                   | Issue   |
-| -------------------------------------------------------- | --------------------------------------------- | ------- |
-| `autoscaling.failover.enabled`                           | Enable autoscaling failover metric routing    | [#1684] |
-| `autoscaling.failover.metrics`                           | Metric names forwarded to DCA for failover    | [#1684] |
-| `cluster_agent.enabled`                                  | Enable Cluster Agent communication            | [#1684] |
-| `forwarder_flush_to_disk_mem_ratio`                      | Mem-to-disk flush threshold                   | [#1364] |
-| `forwarder_low_prio_buffer_size`                         | Low-priority request queue size               | [#1362] |
-| `forwarder_requeue_buffer_size`                          | In-memory re-queue buffer size                | [#1755] |
-| `forwarder_retry_queue_capacity_time_interval_sec`       | Retry queue time-based capacity               | [#1365] |
-| `forwarder_stop_timeout`                                 | Timeout (s) for forwarder graceful stop       | [#1754] |
-| `telemetry.dogstatsd.aggregator_channel_latency_buckets` | Histogram buckets: DSD aggregator channel lag | [#1679] |
-| `telemetry.dogstatsd.listeners_channel_latency_buckets`  | Histogram buckets: listener channel latency   | [#1679] |
-| `telemetry.dogstatsd.listeners_latency_buckets`          | Histogram buckets: listener processing        | [#1679] |
-| `telemetry.dogstatsd_origin`                             | Per-origin processed-metrics telemetry        | [#1679] |
+| Config Key                       | Description                     | Issue   |
+| -------------------------------- | ------------------------------- | ------- |
+| `forwarder_low_prio_buffer_size` | Low-priority request queue size | [#1362] |
 
 ## ADP-Only Settings
 
@@ -345,9 +439,11 @@ The following settings are specific to ADP and have no equivalent in the core ag
 | `apm_config.obfuscation.sql.replace_digits`                     | Replace digits in SQL obfuscation          |         |
 | `apm_config.obfuscation.sql.table_names`                        | Collect table names during obfuscation     |         |
 | `counter_expiry_seconds`                                        | Idle counter keep-alive duration           | 300     |
+| `data_plane.stop_timeout`                                       | ADP graceful shutdown timeout (s)          | derived |
 | `dogstatsd_allow_context_heap_allocs`                           | Allow heap allocations for contexts        |         |
 | `dogstatsd_autoscale_udp_listeners`                             | Bind multiple UDP sockets via SO_REUSEPORT |         |
-| `dogstatsd_buffer_count`                                        | Number of receive buffers                  |         |
+| `dogstatsd_buffer_count_max`                                    | Max receive buffers                        | 256     |
+| `dogstatsd_buffer_count`                                        | Baseline receive buffers                   | 128     |
 | `dogstatsd_cached_contexts_limit`                               | Max cached metric contexts                 |         |
 | `dogstatsd_cached_tagsets_limit`                                | Max cached tagsets                         |         |
 | `dogstatsd_mapper_string_interner_size`                         | Mapper string interner capacity            |         |
@@ -367,6 +463,10 @@ The following settings are specific to ADP and have no equivalent in the core ag
 | `otlp_config.traces.string_interner_size`                       | OTLP trace string interner capacity        |         |
 | `otlp_string_interner_size`                                     | OTLP context interner capacity             |         |
 | `serializer_max_metrics_per_payload`                            | Max metrics per payload                    |         |
+
+### `data_plane.stop_timeout`
+
+ADP uses `data_plane.stop_timeout` as the topology-wide graceful shutdown timeout. If this key is unset, ADP defaults to `aggregator_stop_timeout + forwarder_stop_timeout`.
 
 ### `dogstatsd_minimum_sample_rate`
 
@@ -469,8 +569,14 @@ compressed wire payload bytes.
 | `apm_config.obfuscation.redis.remove_all_args`                 | apm_config.obfuscation.redis.remove_all_args       |
 | `apm_config.obfuscation.valkey.enabled`                        | apm_config.obfuscation.valkey.enabled              |
 | `apm_config.obfuscation.valkey.remove_all_args`                | apm_config.obfuscation.valkey.remove_all_args      |
+| `autoscaling.failover.enabled`                                 | Enable autoscaling failover metric routing         |
+| `autoscaling.failover.metrics`                                 | Metric names forwarded to DCA for failover         |
 | `bind_host`                                                    | Global listen host fallback                        |
-| `cmd_port`                                                     | Datadog Agent IPC/CMD API port                     |
+| `cluster_agent.auth_token`                                     | Bearer token for Cluster Agent requests            |
+| `cluster_agent.enabled`                                        | Enable Cluster Agent communication                 |
+| `cluster_agent.kubernetes_service_name`                        | Cluster Agent Kubernetes service name              |
+| `cluster_agent.url`                                            | Cluster Agent HTTPS endpoint                       |
+| `cmd_port`                                                     | Core Agent CMD API port for ADP gRPC IPC           |
 | `cri_connection_timeout`                                       | CRI container runtime connection timeout (s)       |
 | `cri_query_timeout`                                            | CRI container runtime query timeout (s)            |
 | `data_plane.api_listen_address`                                | Unprivileged API listen address                    |
@@ -487,6 +593,7 @@ compressed wire payload bytes.
 | `dogstatsd_capture_depth`                                      | Traffic capture channel depth                      |
 | `dogstatsd_capture_path`                                       | Traffic capture file location                      |
 | `dogstatsd_context_expiry_seconds`                             | Context cache TTL (seconds)                        |
+| `dogstatsd_disable_verbose_logs`                               | Suppress noisy parse error logs                    |
 | `dogstatsd_entity_id_precedence`                               | Entity ID over auto-detection                      |
 | `dogstatsd_eol_required`                                       | Require newline-terminated messages                |
 | `dogstatsd_flush_incomplete_buckets`                           | Flush open buckets on shutdown                     |
@@ -517,11 +624,13 @@ compressed wire payload bytes.
 | `forwarder_backoff_factor`                                     | Retry backoff jitter factor                        |
 | `forwarder_backoff_max`                                        | Retry backoff ceiling (secs)                       |
 | `forwarder_connection_reset_interval`                          | HTTP conn reset interval (secs)                    |
+| `forwarder_flush_to_disk_mem_ratio`                            | Mem-to-disk flush ratio                            |
 | `forwarder_http_protocol`                                      | HTTP version selection (auto/http1/http2)          |
 | `forwarder_max_concurrent_requests`                            | Max concurrent HTTP requests                       |
 | `forwarder_outdated_file_in_days`                              | Days before retry files are deleted                |
 | `forwarder_recovery_interval`                                  | Backoff recovery decrease factor                   |
 | `forwarder_recovery_reset`                                     | Reset errors on success                            |
+| `forwarder_retry_queue_capacity_time_interval_sec`             | Retry queue time-based capacity                    |
 | `forwarder_retry_queue_max_size`                               | Retry queue max size (deprecated)                  |
 | `forwarder_retry_queue_payloads_max_size`                      | Retry queue max size (bytes)                       |
 | `forwarder_storage_max_disk_ratio`                             | Max disk usage ratio for retry                     |
@@ -587,7 +696,6 @@ compressed wire payload bytes.
 [#1361]: https://github.com/DataDog/saluki/issues/1361
 [#1362]: https://github.com/DataDog/saluki/issues/1362
 [#1363]: https://github.com/DataDog/saluki/issues/1363
-[#1364]: https://github.com/DataDog/saluki/issues/1364
 [#1365]: https://github.com/DataDog/saluki/issues/1365
 [#1381]: https://github.com/DataDog/saluki/issues/1381
 [#1466]: https://github.com/DataDog/saluki/issues/1466
@@ -595,7 +703,6 @@ compressed wire payload bytes.
 [#1679]: https://github.com/DataDog/saluki/issues/1679
 [#1681]: https://github.com/DataDog/saluki/issues/1681
 [#1682]: https://github.com/DataDog/saluki/issues/1682
-[#1684]: https://github.com/DataDog/saluki/issues/1684
 [#1687]: https://github.com/DataDog/saluki/issues/1687
 [#1749]: https://github.com/DataDog/saluki/issues/1749
 [#1753]: https://github.com/DataDog/saluki/issues/1753

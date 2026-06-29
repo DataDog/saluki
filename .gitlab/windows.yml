@@ -84,6 +84,20 @@ test-integration-windows-amd64:
     PANORAMIC_LOG_DIR: integration-logs
   script:
     - *windows-build-image-pull-script
+    - |
+      $WindowsAdpBaseImage = "registry.datadoghq.com/agent:7.80.2-ltsc2022"
+      if ($env:AGENT_NIGHTLY -eq "true") { # for nightly run, use latest Agent
+        if ($env:NIGHTLY_WINDOWS_AGENT_IMAGE) {
+          $WindowsAdpBaseImage = $env:NIGHTLY_WINDOWS_AGENT_IMAGE
+        } else {
+          $WindowsAdpBaseImage = "datadog/agent-dev:main-py3-jmx-win-servercore-ltsc2022"
+        }
+        docker pull $WindowsAdpBaseImage
+        docker run --rm $WindowsAdpBaseImage version
+        $WindowsAdpBaseImage = $(docker inspect --format='{{index .RepoDigests 0}}' $WindowsAdpBaseImage)
+        Write-Host "Pinned nightly Agent image to digest: $WindowsAdpBaseImage"
+      }
+      Write-Host "Using WINDOWS_ADP_BASE_IMAGE=$WindowsAdpBaseImage"
     - >
       docker run --rm
       -m 24576M
@@ -101,7 +115,7 @@ test-integration-windows-amd64:
       -e WINDOWS_CI_CARGO_HOME="c:\mnt\.ci-cache\cargo"
       -e RUSTUP_HOME="c:\mnt\.ci-cache\rustup"
       -e CARGO_TARGET_DIR="c:\mnt\target\windows-ci"
-      -e WINDOWS_ADP_BASE_IMAGE="registry.datadoghq.com/agent:7.78.0-ltsc2022"
+      -e WINDOWS_ADP_BASE_IMAGE="$WindowsAdpBaseImage"
       -e PROTOC_VERSION="${WINDOWS_PROTOC_VERSION}"
       -e PROTOC_SHA256="${WINDOWS_PROTOC_SHA256}"
       -e PANORAMIC_LOG_DIR="c:\mnt\integration-logs"
@@ -110,7 +124,7 @@ test-integration-windows-amd64:
       powershell.exe -NoProfile -NonInteractive -File c:\mnt\ci\tooling\windows-integration-tests.ps1
     - If ($lastExitCode -ne "0") { exit "$lastExitCode" }
 
-# Builds the Windows release zip (agent-data-plane.exe + LICENSE/NOTICE/LICENSE-3rdparty.csv +
+# Builds the Windows release zip (agent-data-plane.{exe,pdb} + LICENSE/NOTICE/LICENSE-3rdparty.csv +
 # LICENSES/THIRD-PARTY-*) inside the cached LTSC2022 build image and exposes it as a job
 # artifact. The release-stage `push-release-zip-windows-amd64*` jobs in .gitlab/release.yml
 # consume the artifact and `aws s3 cp` it to s3.
@@ -141,6 +155,9 @@ test-integration-windows-amd64:
       - .ci-cache/cargo/
       - .ci-cache/protoc/
       - .ci-cache/rustup/
+      # cargo-auditable is downloaded at job runtime by windows-build-adp.ps1; cache its install
+      # root so the cold-download cost is paid once per runner (matches the protoc pattern).
+      - .ci-cache/cargo-auditable/
   variables:
     TARGET_ARCH: "amd64"
     FIPS_SUFFIX: ""
@@ -195,6 +212,8 @@ build-release-zip-windows-amd64-fips:
       - .ci-cache/cargo/
       - .ci-cache/protoc/
       - .ci-cache/rustup/
+      # cargo-auditable is downloaded at job runtime by windows-build-adp.ps1; cache its install root.
+      - .ci-cache/cargo-auditable/
       # NASM and LLVM are installed at job runtime by Initialize-FipsBuildTools in
       # ci/tooling/windows-rust-env.psm1; cache the install roots so the cold-download cost
       # is paid once per runner. LLVM dominates (~1.5 GB extracted) since bindgen needs

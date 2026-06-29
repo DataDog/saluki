@@ -33,10 +33,18 @@ mod unix_check {
         adp_api_addr: String,
         #[arg(
             long = "dsd-socket",
-            env = "DSD_SOCKET",
+            env = "ADP_DOGSTATSD_SOCKET",
             default_value = "/var/run/datadog/dsd.socket"
         )]
         dsd_socket: PathBuf,
+        /// The sampled `datadog.yaml` ADP booted under. Lives on the shared `agent-config` volume the
+        /// workload mounts. Read into the failure details so triage shows the config that blocked boot.
+        #[arg(
+            long = "adp-config",
+            env = "ADP_CONFIG_FILE",
+            default_value = "/agent-config/datadog.yaml"
+        )]
+        adp_yaml: PathBuf,
     }
 
     pub(super) fn run() -> anyhow::Result<()> {
@@ -62,6 +70,11 @@ mod unix_check {
             sleep(Duration::from_secs(1));
         }
 
+        // Best-effort: surface the config ADP booted under. On a boot failure this is the offending
+        // `datadog.yaml`, co-located with the liveness counterexample so triage needs no cross-assertion join.
+        let adp_config = std::fs::read_to_string(&config.adp_yaml)
+            .unwrap_or_else(|e| format!("<unreadable {}: {e}>", config.adp_yaml.display()));
+
         assert_always!(
             api_reachable && socket_present,
             "ADP booted: API reachable and DogStatsD socket present",
@@ -70,6 +83,7 @@ mod unix_check {
                 "dsd_socket": config.dsd_socket.display().to_string(),
                 "api_reachable": api_reachable,
                 "socket_present": socket_present,
+                "adp_config": adp_config,
             })
         );
 

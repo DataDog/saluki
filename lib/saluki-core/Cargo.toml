@@ -23,6 +23,7 @@ pastey = { workspace = true }
 pin-project = { workspace = true }
 prometheus-exposition = { workspace = true }
 resource-accounting = { workspace = true }
+saluki-antithesis = { workspace = true }
 saluki-api = { workspace = true }
 saluki-common = { workspace = true }
 saluki-context = { workspace = true }

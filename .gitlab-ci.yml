@@ -8,6 +8,7 @@ stages:
   - benchmark
   - release
   - internal
+  - notify
 
 # Our workflow rules let us override specific variables, in a consistent way, depending on whether this is an "internal"
 # run (we consider all non-tagged pipeline triggers to be "internal") or a "release" run.
@@ -51,12 +52,12 @@ variables:
   SALUKI_GENERAL_CI_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/general-ci:latest"
   SALUKI_SMP_CI_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/smp-ci:latest"
   SALUKI_BUILDCACHE_CI_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/buildcache-ci:latest"
-  SALUKI_SPDX_LICENSES_CI_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/spdx-licenses-ci:latest"
+  SPDX_LICENSES_IMAGE: "registry.ddbuild.io/images/spdx-license-list-data:3.28.0"
 
   # Converged Datadog Agent-specific variables, which control how we build the converged Datadog Agent image that we
   # publicly publish.
-  PUBLIC_DSD_VERSION: "7.79.2"
-  PUBLIC_DD_AGENT_VERSION: "7.79.2-jmx"
+  PUBLIC_DSD_VERSION: "7.80.2"
+  PUBLIC_DD_AGENT_VERSION: "7.80.2-full"
 
   # Base images to copy Agent Data Plane into, depending on whether the image is meant for our internal environment or
   # public registries.
@@ -106,6 +107,13 @@ default:
   rules:
     if: $CI_COMMIT_BRANCH =~ /^mq-working-branch/
 
+# The nightly full-suite SMP run: a scheduled pipeline on main with SMP_NIGHTLY set. Create the
+# schedule in the GitLab UI with the variable SMP_NIGHTLY=true (mirrors the FUZZ_SCHEDULED /
+# BUILD_HELPER_IMAGES scheduled-pipeline pattern).
+.on_smp_nightly:
+  rules:
+    if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_BRANCH == "main" && $SMP_NIGHTLY == "true"
+
 # Common build-specific variables that need to be shared across stages.
 .build-common-variables:
   variables:
@@ -123,14 +131,8 @@ default:
   variables:
     BUILD_ARCH: arm64
     BUILD_TARGET: aarch64-unknown-linux-musl
-    # There's an issue with cross-compiling for ARM64 from the GNU toolchain
-    # due to MUSL's lack of support for `__getauxval`, which is needed for
-    # "outline atomics", which involves runtime detection of LSE instructions
-    # used for atomics.
-    #
-    # Without this, `jemalloc` fails to compile due to how it detects support
-    # for different atomic operations.
-    BUILD_CFLAGS: "-mno-outline-atomics"
+    # NOTE: aarch64 musl needs `-mno-outline-atomics` (otherwise jemalloc fails to build). That flag
+    # now lives with the target it applies to, in docker/scripts/build/targets/aarch64-unknown-linux-musl.sh.
 
 .linux-test-job:
   image: "${SALUKI_BUILD_CI_IMAGE}"

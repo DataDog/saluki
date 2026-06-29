@@ -5,7 +5,13 @@
 //! - Avoid breaking apart `TransactionForwarder` only to work around `#[allow(clippy::too_many_arguments)]`.
 //! - Avoid initializing the process-wide crypto provider from tests.
 
-use std::{collections::VecDeque, error::Error as _, path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    collections::VecDeque,
+    error::Error as _,
+    path::PathBuf,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use bytes::Buf;
 use futures::FutureExt as _;
@@ -38,6 +44,7 @@ use super::{
     config::ForwarderConfiguration,
     endpoints::{EndpointRoute, ResolvedEndpoint, RoutableEndpoint},
     middleware::{for_resolved_endpoint, with_allow_arbitrary_tags, with_version_info},
+    retry_capacity::{TrafficRateWindow, RETRY_QUEUE_CAPACITY_BUCKET_DURATION_SECS},
     telemetry::{ComponentTelemetry, SharedTransactionQueueTelemetry, TransactionQueueTelemetry},
     transaction::{Metadata, Transaction, TransactionBody},
     validation::ApiKeyValidator,
@@ -48,9 +55,6 @@ use super::{
 ///
 /// Used to influence the size of chunks in `ChunkedBytesBuffer`.
 pub const RB_BUFFER_CHUNK_SIZE: usize = 32 * 1024; // 32 KB
-
-const RETRY_QUEUE_CAPACITY_HISTORY_DURATION_SECS: u64 = 15 * 60;
-const RETRY_QUEUE_CAPACITY_BUCKET_DURATION_SECS: u64 = 10;
 
 /// A handle to the transaction forwarder.
 pub struct Handle<B>
@@ -101,7 +105,21 @@ pub struct TransactionForwarder<B> {
     metrics_builder: MetricsBuilder,
     client: HttpClient,
     endpoints: Vec<RoutableEndpoint>,
+    endpoint_request_mapper_factory: EndpointRequestMapperFactory<B>,
     _marker: std::marker::PhantomData<B>,
+}
+
+/// Builds request mappers for resolved endpoints.
+pub(crate) type EndpointRequestMapperFactory<B> =
+    Arc<dyn Fn(ResolvedEndpoint) -> EndpointRequestMapper<B> + Send + Sync>;
+
+/// Maps requests for a resolved endpoint before they are sent.
+pub(crate) type EndpointRequestMapper<B> =
+    Box<dyn FnMut(Request<TransactionBody<B>>) -> Request<TransactionBody<B>> + Send>;
+
+fn default_endpoint_request_mapper<B: 'static>(endpoint: ResolvedEndpoint) -> EndpointRequestMapper<B> {
+    let mapper = for_resolved_endpoint(endpoint);
+    Box::new(mapper)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -160,6 +178,26 @@ where
     where
         F: Fn(&Uri) -> Option<MetaString> + Send + Sync + 'static,
     {
+        Self::from_config_with_endpoint_request_mapper(
+            context,
+            config,
+            live_config,
+            endpoint_name,
+            telemetry,
+            metrics_builder,
+            Arc::new(default_endpoint_request_mapper::<B>),
+        )
+    }
+
+    /// Creates a new `TransactionForwarder` with a custom endpoint request mapper.
+    pub(crate) fn from_config_with_endpoint_request_mapper<F>(
+        context: ComponentContext, config: ForwarderConfiguration, live_config: Option<GenericConfiguration>,
+        endpoint_name: F, telemetry: ComponentTelemetry, metrics_builder: MetricsBuilder,
+        endpoint_request_mapper_factory: EndpointRequestMapperFactory<B>,
+    ) -> Result<Self, GenericError>
+    where
+        F: Fn(&Uri) -> Option<MetaString> + Send + Sync + 'static,
+    {
         let endpoints = config.build_routable_endpoints(live_config.clone())?;
         let mut client_builder = HttpClient::builder()
             .with_request_timeout(config.request_timeout())
@@ -191,6 +229,7 @@ where
             metrics_builder,
             client,
             endpoints,
+            endpoint_request_mapper_factory,
             _marker: std::marker::PhantomData,
         })
     }
@@ -212,6 +251,7 @@ where
             metrics_builder,
             client,
             endpoints,
+            endpoint_request_mapper_factory,
             _marker,
         } = self;
 
@@ -227,6 +267,7 @@ where
                 telemetry,
                 metrics_builder,
                 endpoints,
+                endpoint_request_mapper_factory,
             ),
         );
 
@@ -252,7 +293,7 @@ async fn run_io_loop<B>(
     mut transactions_rx: mpsc::Receiver<Transaction<B>>, io_shutdown_tx: oneshot::Sender<()>,
     context: ComponentContext, config: ForwarderConfiguration, live_config: Option<GenericConfiguration>,
     service: HttpClient, telemetry: ComponentTelemetry, metrics_builder: MetricsBuilder,
-    resolved_endpoints: Vec<RoutableEndpoint>,
+    resolved_endpoints: Vec<RoutableEndpoint>, endpoint_request_mapper_factory: EndpointRequestMapperFactory<B>,
 ) where
     B: Body + Buf + Clone + Send + Sync + 'static,
     B::Data: Send,
@@ -290,6 +331,7 @@ async fn run_io_loop<B>(
                 telemetry.clone(),
                 txnq_telemetry,
                 resolved_endpoint,
+                endpoint_request_mapper_factory.clone(),
             ),
         );
 
@@ -368,6 +410,7 @@ async fn run_endpoint_io_loop<B>(
     mut txns_rx: mpsc::Receiver<Transaction<B>>, task_barrier: Arc<Barrier>, context: ComponentContext,
     config: ForwarderConfiguration, live_config: Option<GenericConfiguration>, service: HttpClient,
     telemetry: ComponentTelemetry, txnq_telemetry: TransactionQueueTelemetry, endpoint: ResolvedEndpoint,
+    endpoint_request_mapper_factory: EndpointRequestMapperFactory<B>,
 ) where
     B: Body + Buf + Clone + Send + Sync + 'static,
     B::Data: Send,
@@ -381,6 +424,7 @@ async fn run_endpoint_io_loop<B>(
         endpoint_concurrency = config.endpoint_concurrency(),
         "Starting endpoint I/O task."
     );
+    let endpoint_request_mapper = Arc::new(Mutex::new((endpoint_request_mapper_factory)(endpoint)));
 
     // Build our endpoint service.
     //
@@ -391,8 +435,16 @@ async fn run_endpoint_io_loop<B>(
     // after the retry circuit breaker. This ensures that `RetryCircuitBreakerError::Open(req)` returns
     // the original `Request<TransactionBody<B>>` so we can reassemble it into a `Transaction<B>` for re-enqueuing.
     let mut service = ServiceBuilder::new()
-        // Set the request's URI to the endpoint's URI, and add the API key as a header.
-        .map_request(for_resolved_endpoint(endpoint))
+        // Set the request's URI and endpoint-specific headers.
+        .map_request({
+            let endpoint_request_mapper = Arc::clone(&endpoint_request_mapper);
+            move |request| {
+                let mut mapper = endpoint_request_mapper
+                    .lock()
+                    .expect("endpoint request mapper mutex poisoned");
+                mapper(request)
+            }
+        })
         // Signal backend support for arbitrary tag values when configured.
         .map_request(with_allow_arbitrary_tags(config.allow_arbitrary_tags()))
         // Set the User-Agent and DD-Agent-Version headers indicating the version of the data plane sending the request.
@@ -404,7 +456,8 @@ async fn run_endpoint_io_loop<B>(
         .map_request(|req: Request<TransactionBody<B>>| req.map(into_client_body))
         .service(service);
 
-    let mut retry_queue = RetryQueue::new(queue_id.clone(), config.retry().queue_max_size_bytes());
+    let mut retry_queue = RetryQueue::new(queue_id.clone(), config.retry().queue_max_size_bytes())
+        .with_flush_to_disk_mem_ratio(config.retry().flush_to_disk_mem_ratio());
 
     // If the storage size is set, enable disk persistence for the retry queue.
     if config.retry().storage_max_size_bytes() > 0 {
@@ -422,9 +475,16 @@ async fn run_endpoint_io_loop<B>(
             .unwrap_or_else(|e| {
                 error!(endpoint_url, error = %e, "Failed to initialize disk persistence for retry queue. Transactions will not be persisted.");
                 RetryQueue::new(queue_id, config.retry().queue_max_size_bytes())
+                    .with_flush_to_disk_mem_ratio(config.retry().flush_to_disk_mem_ratio())
             });
     }
-    let mut pending_txns = PendingTransactions::new(config.endpoint_buffer_size(), retry_queue, txnq_telemetry);
+    let mut pending_txns = PendingTransactions::new(
+        config.endpoint_buffer_size(),
+        retry_queue,
+        txnq_telemetry,
+        MetaString::from(endpoint_domain.as_str()),
+        config.retry().capacity_time_interval_secs(),
+    );
 
     let mut in_flight = JoinSet::new();
     let mut done = false;
@@ -568,11 +628,10 @@ async fn process_http_response(
         // there is a nominally functional system.
         //
         // No-op outside the `antithesis` feature build.
-        #[cfg(feature = "antithesis")]
-        antithesis_sdk::assert_sometimes!(
+        saluki_antithesis::sometimes!(
             true,
             "ADP forwarded a payload to the intake",
-            &serde_json::json!({ "domain": domain })
+            { "domain": domain }
         );
 
         telemetry.track_successful_transaction(&metadata, domain);
@@ -606,77 +665,8 @@ struct PendingTransactions<T> {
     high_priority: VecDeque<T>,
     low_priority: RetryQueue<T>,
     telemetry: TransactionQueueTelemetry,
-    incoming_bytes_per_sec: IncomingBytesPerSec,
-}
-
-// Mirrors the Datadog Agent retry queue duration traffic-rate input:
-// https://github.com/DataDog/datadog-agent/blob/main/comp/forwarder/defaultforwarder/internal/retry/queue_duration_capacity.go
-// https://github.com/DataDog/datadog-agent/blob/main/comp/forwarder/defaultforwarder/internal/retry/time_interval_accumulator.go
-struct IncomingBytesPerSec {
-    bucket_sum: Vec<u64>,
-    current_index: usize,
-    current_index_time_secs: Option<u64>,
-    start_index_time_secs: Option<u64>,
-    sum: u64,
-    bucket_duration_secs: u64,
-}
-
-impl IncomingBytesPerSec {
-    fn new(history_duration_secs: u64, bucket_duration_secs: u64) -> Self {
-        assert!(bucket_duration_secs > 0, "bucket duration must be at least one second");
-        assert!(
-            history_duration_secs >= bucket_duration_secs,
-            "history duration must be greater than or equal to bucket duration"
-        );
-
-        Self {
-            bucket_sum: vec![0; (history_duration_secs / bucket_duration_secs) as usize],
-            current_index: 0,
-            current_index_time_secs: None,
-            start_index_time_secs: None,
-            sum: 0,
-            bucket_duration_secs,
-        }
-    }
-
-    fn record(&mut self, now_secs: u64, bytes: u64) -> f64 {
-        if self.start_index_time_secs.is_none() {
-            self.start_index_time_secs = Some(now_secs);
-            self.current_index_time_secs = Some(now_secs);
-        }
-
-        while now_secs
-            >= self.current_index_time_secs.expect("current index time should be set") + self.bucket_duration_secs
-        {
-            self.current_index = (self.current_index + 1) % self.bucket_sum.len();
-            self.sum -= self.bucket_sum[self.current_index];
-            self.bucket_sum[self.current_index] = 0;
-
-            let current_index_time_secs =
-                self.current_index_time_secs.expect("current index time should be set") + self.bucket_duration_secs;
-            self.current_index_time_secs = Some(current_index_time_secs);
-
-            let start_index_time_secs = self.start_index_time_secs.expect("start index time should be set");
-            if current_index_time_secs
-                >= start_index_time_secs + self.bucket_sum.len() as u64 * self.bucket_duration_secs
-            {
-                self.start_index_time_secs = Some(start_index_time_secs + self.bucket_duration_secs);
-            }
-        }
-
-        self.bucket_sum[self.current_index] += bytes;
-        self.sum += bytes;
-        self.bytes_per_sec(now_secs)
-    }
-
-    fn bytes_per_sec(&self, now_secs: u64) -> f64 {
-        let Some(start_index_time_secs) = self.start_index_time_secs else {
-            return 0.0;
-        };
-
-        let duration_secs = now_secs.saturating_sub(start_index_time_secs) + 1;
-        self.sum as f64 / duration_secs as f64
-    }
+    domain: MetaString,
+    traffic_rate: TrafficRateWindow,
 }
 
 impl<T: Retryable> PendingTransactions<T> {
@@ -684,13 +674,17 @@ impl<T: Retryable> PendingTransactions<T> {
     ///
     /// The high-priority queue will have a maximum capacity of `max_enqueued`, and the retry queue will be used as the
     /// low-priority queue.
-    pub fn new(max_enqueued: usize, retry_queue: RetryQueue<T>, telemetry: TransactionQueueTelemetry) -> Self {
+    pub fn new(
+        max_enqueued: usize, retry_queue: RetryQueue<T>, telemetry: TransactionQueueTelemetry, domain: MetaString,
+        capacity_history_duration_secs: u64,
+    ) -> Self {
         Self {
             high_priority: VecDeque::with_capacity(max_enqueued),
             low_priority: retry_queue,
             telemetry,
-            incoming_bytes_per_sec: IncomingBytesPerSec::new(
-                RETRY_QUEUE_CAPACITY_HISTORY_DURATION_SECS,
+            domain,
+            traffic_rate: TrafficRateWindow::new(
+                capacity_history_duration_secs,
                 RETRY_QUEUE_CAPACITY_BUCKET_DURATION_SECS,
             ),
         }
@@ -707,7 +701,7 @@ impl<T: Retryable> PendingTransactions<T> {
     ///
     /// If the high-priority queue is full, the transaction will be pushed into the low-priority queue.
     pub async fn push_high_priority(&mut self, transaction: T) -> Result<PushResult, GenericError> {
-        self.record_incoming_transaction_size(transaction.size_bytes());
+        self.record_incoming_transaction_size(transaction.size_bytes()).await;
 
         if self.high_priority.len() < self.high_priority.capacity() {
             self.high_priority.push_back(transaction);
@@ -833,13 +827,29 @@ impl<T: Retryable> PendingTransactions<T> {
         self.telemetry.record_retry_queue_size(self.low_priority.len());
     }
 
-    fn record_incoming_transaction_size(&mut self, bytes: u64) {
-        self.record_incoming_transaction_size_at(bytes, get_unix_timestamp());
+    async fn record_incoming_transaction_size(&mut self, bytes: u64) {
+        self.record_incoming_transaction_size_at(bytes, get_unix_timestamp())
+            .await;
     }
 
-    fn record_incoming_transaction_size_at(&mut self, bytes: u64, now_secs: u64) {
-        let bytes_per_sec = self.incoming_bytes_per_sec.record(now_secs, bytes);
+    async fn record_incoming_transaction_size_at(&mut self, bytes: u64, now_secs: u64) {
+        let bytes_per_sec = self.traffic_rate.record(now_secs, bytes);
         self.telemetry.record_retry_queue_bytes_per_sec(bytes_per_sec);
+
+        let disk_available_capacity_bytes = match self.low_priority.available_on_disk_capacity_bytes().await {
+            Ok(available_capacity_bytes) => available_capacity_bytes,
+            Err(e) => {
+                warn!(error = %e, "Failed to calculate retry queue disk capacity for telemetry.");
+                0
+            }
+        };
+
+        self.telemetry.record_retry_queue_capacity_stats(
+            &self.domain,
+            bytes_per_sec,
+            self.low_priority.available_in_memory_capacity_bytes(),
+            disk_available_capacity_bytes,
+        );
     }
 }
 
@@ -863,6 +873,7 @@ mod tests {
     use saluki_config::ConfigurationLoader;
     use saluki_core::{observability::ComponentMetricsExt as _, topology::ComponentId};
     use saluki_io::net::client::http::TlsMinimumVersion;
+    use saluki_metrics::test::TestRecorder;
     use serde_json::json;
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
@@ -1064,50 +1075,103 @@ app.datadoghq.com: [key-a, key-b]
         (format!("https://127.0.0.1:{port}/"), request_rx)
     }
 
-    fn transaction_queue_telemetry() -> (SharedTransactionQueueTelemetry, TransactionQueueTelemetry) {
+    fn transaction_queue_telemetry() -> (TransactionQueueTelemetry, MetaString) {
         let builder = MetricsBuilder::default();
         let shared = SharedTransactionQueueTelemetry::from_builder(&builder);
         let telemetry = TransactionQueueTelemetry::from_builder(&builder, "https://example.com", shared.clone());
+        let domain = MetaString::from_static("https://example.com");
 
-        (shared, telemetry)
-    }
-
-    #[test]
-    fn incoming_bytes_per_sec_matches_agent_windowed_rate() {
-        let mut incoming_bytes_per_sec = IncomingBytesPerSec::new(10, 1);
-
-        assert_eq!(incoming_bytes_per_sec.record(1, 5), 5.0);
-        assert_eq!(incoming_bytes_per_sec.record(2, 15), 10.0);
+        (telemetry, domain)
     }
 
     #[tokio::test]
     async fn retry_queue_bytes_per_sec_tracks_incoming_transaction_payloads() {
-        let (shared, telemetry) = transaction_queue_telemetry();
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let (telemetry, domain) = transaction_queue_telemetry();
         let retry_queue = RetryQueue::new("test".to_string(), 1024);
-        let mut pending_txns = PendingTransactions::new(4, retry_queue, telemetry);
+        let mut pending_txns = PendingTransactions::new(4, retry_queue, telemetry, domain, 900);
 
         let push_result = pending_txns.push_high_priority("payload".to_string()).await.unwrap();
 
         assert!(!push_result.had_drops());
-        assert_eq!(shared.aggregate_snapshot(), (0, 7.0));
+        assert_eq!(recorder.gauge("network_http_retry_queue_bytes_per_sec"), Some(7.0));
+        assert_eq!(recorder.gauge("network_http_retry_queue_size"), Some(0.0));
+        assert_eq!(
+            recorder.gauge((
+                "network_http_retry_queue_bytes_per_sec",
+                &[("domain", "https://example.com")],
+            )),
+            Some(7.0)
+        );
+        assert_eq!(
+            recorder.gauge((
+                "network_http_retry_queue_capacity_secs",
+                &[("domain", "https://example.com")],
+            )),
+            Some(1024.0 / 7.0)
+        );
+        assert_eq!(
+            recorder.gauge((
+                "network_http_retry_queue_capacity_bytes",
+                &[("domain", "https://example.com")],
+            )),
+            Some(1024.0)
+        );
     }
 
     #[tokio::test]
     async fn retry_queue_bytes_per_sec_does_not_track_retry_drains_or_empty_queue() {
-        let (shared, telemetry) = transaction_queue_telemetry();
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let (telemetry, domain) = transaction_queue_telemetry();
         let retry_queue = RetryQueue::new("test".to_string(), 1024);
-        let mut pending_txns = PendingTransactions::new(4, retry_queue, telemetry);
+        let mut pending_txns = PendingTransactions::new(4, retry_queue, telemetry, domain, 900);
 
-        pending_txns.record_incoming_transaction_size_at(20, 1);
+        pending_txns.record_incoming_transaction_size_at(20, 1).await;
         let push_result = pending_txns.push_low_priority("retry".to_string()).await.unwrap();
 
         assert!(!push_result.had_drops());
-        assert_eq!(shared.aggregate_snapshot(), (1, 20.0));
+        assert_eq!(recorder.gauge("network_http_retry_queue_size"), Some(1.0));
+        assert_eq!(recorder.gauge("network_http_retry_queue_bytes_per_sec"), Some(20.0));
         assert_eq!(pending_txns.pop().await.as_deref(), Some("retry"));
-        assert_eq!(shared.aggregate_snapshot(), (0, 20.0));
+        assert_eq!(recorder.gauge("network_http_retry_queue_size"), Some(0.0));
+        assert_eq!(recorder.gauge("network_http_retry_queue_bytes_per_sec"), Some(20.0));
 
         assert!(pending_txns.pop().await.is_none());
-        assert_eq!(shared.aggregate_snapshot(), (0, 20.0));
+        assert_eq!(recorder.gauge("network_http_retry_queue_size"), Some(0.0));
+        assert_eq!(recorder.gauge("network_http_retry_queue_bytes_per_sec"), Some(20.0));
+    }
+
+    #[tokio::test]
+    async fn retry_queue_capacity_uses_remaining_in_memory_capacity() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let (telemetry, domain) = transaction_queue_telemetry();
+        let retry_queue = RetryQueue::new("test".to_string(), 1024);
+        let mut pending_txns = PendingTransactions::new(4, retry_queue, telemetry, domain, 900);
+
+        let push_result = pending_txns
+            .push_low_priority("retry".to_string())
+            .await
+            .expect("push should succeed");
+        assert!(!push_result.had_drops());
+        pending_txns.record_incoming_transaction_size_at(20, 1).await;
+
+        assert_eq!(
+            recorder.gauge((
+                "network_http_retry_queue_capacity_bytes",
+                &[("domain", "https://example.com")],
+            )),
+            Some(1019.0)
+        );
+        assert_eq!(
+            recorder.gauge((
+                "network_http_retry_queue_capacity_secs",
+                &[("domain", "https://example.com")],
+            )),
+            Some(1019.0 / 20.0)
+        );
     }
 
     #[test]

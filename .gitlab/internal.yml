@@ -72,12 +72,6 @@ generate-buildcache-ci-image:
     IMAGE_NAME: buildcache-ci
     DOCKERFILE: ci/images/definitions/buildcache/Dockerfile
 
-generate-spdx-licenses-ci-image:
-  extends: [.generate-ci-image-definition]
-  variables:
-    IMAGE_NAME: spdx-licenses-ci
-    DOCKERFILE: ci/images/definitions/spdx-licenses/Dockerfile
-
 promote-build-ci-image:
   extends: [.promote-ci-image-definition]
   variables:
@@ -101,9 +95,3 @@ promote-buildcache-ci-image:
   variables:
     IMAGE_NAME: buildcache-ci
   needs: [generate-buildcache-ci-image]
-
-promote-spdx-licenses-ci-image:
-  extends: [.promote-ci-image-definition]
-  variables:
-    IMAGE_NAME: spdx-licenses-ci
-  needs: [generate-spdx-licenses-ci-image]

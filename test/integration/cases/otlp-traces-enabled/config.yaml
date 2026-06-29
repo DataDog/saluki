@@ -18,21 +18,21 @@ container:
     - "54317/tcp"
     - "54318/tcp"
 
-assertions:
+procedure:
   # Make sure the process becomes healthy, and stays up without errors, listening for OTLP (HTTP and gRPC),
   # for ~10 seconds after.
   - parallel:
-      - type: process_stable_for
+      - assertion: process_stable_for
         duration: 10s
-      - type: port_listening
+      - assertion: port_listening
         port: 54317
         protocol: tcp
         timeout: 60s
-      - type: port_listening
+      - assertion: port_listening
         port: 54318
         protocol: tcp
         timeout: 60s
-      - type: log_not_contains
+      - assertion: log_not_contains
         pattern: "panic|PANIC"
         regex: true
         during: 10s

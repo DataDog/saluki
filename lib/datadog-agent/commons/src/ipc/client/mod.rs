@@ -44,7 +44,16 @@ impl RemoteAgentClient {
     /// authentication token is invalid, an error will be returned.
     pub async fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
         let config = RemoteAgentClientConfiguration::from_configuration(config)?;
+        Self::from_client_configuration(&config).await
+    }
 
+    /// Creates a new `RemoteAgentClient` from the given client configuration.
+    ///
+    /// # Errors
+    ///
+    /// If the Agent gRPC client can't be created (invalid API endpoint, missing authentication token, etc), or if the
+    /// authentication token is invalid, an error will be returned.
+    pub async fn from_client_configuration(config: &RemoteAgentClientConfiguration) -> Result<Self, GenericError> {
         // TODO: We need to write a Tower middleware service that allows applying a backoff between failed calls,
         // specifically so that we can throttle reconnection attempts.
         //
@@ -78,7 +87,7 @@ impl RemoteAgentClient {
         };
 
         let service = service_builder
-            .retry(&config)
+            .retry(config)
             .notify(|e, delay| {
                 warn!(error = %e, "Failed to create Datadog Agent API client. Retrying in {:?}...", delay);
             })

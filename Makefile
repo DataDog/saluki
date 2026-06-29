@@ -24,11 +24,21 @@ export ADP_APP_BUILD_TIME := $(APP_BUILD_TIME)
 # set of license texts as the linux Docker artifact; bump in lockstep with the Dockerfile.
 export ADP_SPDX_LICENSES_VERSION := 3.28.0
 
+# Cargo subcommand used to build ADP on the host. In CI we wrap the build with `cargo auditable`
+# so released binaries embed an SBOM (dependency tree); locally it stays plain `cargo build`.
+# GitLab sets CI=true. The Linux Docker build gates this independently via the USE_CARGO_AUDITABLE
+# build-arg (see docker/scripts/agent-data-plane/build/10-build-adp.sh); only the host build
+# (build-adp-host, used by the macOS release tarball jobs) reads this variable.
+ADP_CARGO_BUILD_SUBCMD := build
+ifeq ($(CI),true)
+override ADP_CARGO_BUILD_SUBCMD = auditable build
+endif
+
 # ADP-specific settings used when running.
 export ADP_STANDALONE_IPC_CERT_FILE := /tmp/adp-ipc-cert.pem
 
 # macOS integration-test settings.
-MACOS_TEST_AGENT_VERSION ?= 7.78.0
+MACOS_TEST_AGENT_VERSION ?= 7.80.2
 MACOS_TEST_AGENT_DMG_DIR ?= /tmp/saluki-dda-dmg-cache
 MACOS_TEST_AGENT_DMG_URL ?= https://s3.amazonaws.com/dd-agent/datadog-agent-$(MACOS_TEST_AGENT_VERSION)-1.$(shell uname -m).dmg
 MACOS_TEST_AGENT_INSTALL_DIR ?= /tmp/saluki-dda/datadog-agent
@@ -36,6 +46,14 @@ MACOS_TEST_AGENT_INSTALL_DIR ?= /tmp/saluki-dda/datadog-agent
 # General build settings used for tooling, etc.
 export GO_BUILD_IMAGE ?= golang:1.23-bullseye
 export GO_APP_IMAGE ?= ubuntu:24.04
+ifeq ($(BUILD_TARGET),armv7-unknown-linux-gnueabihf)
+	export ADP_BUILD_IMAGE ?= rust:1.96-bookworm
+	export ADP_DOCKER_PLATFORM ?= linux/arm/v7
+else
+	export ADP_BUILD_IMAGE ?= ubuntu:24.04
+	export ADP_DOCKER_PLATFORM ?=
+endif
+ADP_DOCKER_PLATFORM_ARG := $(if $(ADP_DOCKER_PLATFORM),--platform $(ADP_DOCKER_PLATFORM),)
 
 # Tool configuration.
 export AUTOINSTALL ?= true
@@ -55,6 +73,7 @@ export CARGO_TOOL_VERSION_cargo-sort ?= 1.0.9
 export CARGO_TOOL_VERSION_dummyhttp ?= 1.1.0
 export CARGO_TOOL_VERSION_cargo-machete ?= 0.9.1
 export CARGO_TOOL_VERSION_rustfilt ?= 0.2.1
+export CARGO_TOOL_VERSION_cargo-auditable ?= 0.7.4
 export DDPROF_VERSION ?= 0.20.0
 export LADING_VERSION ?= sha-d608ffbce8f8c77b147d6750b3bb6d6948af239a
 
@@ -64,7 +83,7 @@ export WINDOWS_CROSS_LLVM_BIN ?= /opt/homebrew/opt/llvm/bin
 export WINDOWS_CROSS_CARGO_ARGS ?= --package agent-data-plane
 
 # Version of source repositories (Git tag) for vendored Protocol Buffers definitions.
-export PROTOBUF_SRC_REPO_DD_AGENT ?= 7.73.x
+export PROTOBUF_SRC_REPO_DD_AGENT ?= 7.80.x
 export PROTOBUF_SRC_REPO_AGENT_PAYLOAD ?= v5.0.164
 export PROTOBUF_SRC_REPO_CONTAINERD ?= v2.2.0
 export PROTOBUF_SRC_REPO_SKETCHES_GO ?= v1.4.7
@@ -142,8 +161,10 @@ build-schema-overlay: ## Builds the config schema overlay packages
 build-adp-image-base:
 	@echo "[*] Building ADP image... (target: ${BUILD_TARGET}, profile: ${BUILD_PROFILE}, features: ${BUILD_FEATURES})"
 	@docker build \
+		$(ADP_DOCKER_PLATFORM_ARG) \
 		--tag saluki-images/agent-data-plane:$(IMAGE_TAG)-$(BUILD_PROFILE) \
 		--tag local.dev/saluki-images/agent-data-plane:$(IMAGE_TAG)-$(BUILD_PROFILE) \
+		--build-arg "BUILD_IMAGE=$(ADP_BUILD_IMAGE)" \
 		--build-arg "BUILD_TARGET=$(BUILD_TARGET)" \
 		--build-arg "BUILD_PROFILE=$(BUILD_PROFILE)" \
 		--build-arg "BUILD_FEATURES=$(BUILD_FEATURES)" \
@@ -617,6 +638,9 @@ list-integration-tests: ## Lists available ADP integration tests
 .PHONY: build-adp-host
 build-adp-host: BUILD_PROFILE ?= release
 build-adp-host: check-rust-build-tools
+# In CI, install cargo-auditable so the build below can embed an SBOM (ADP_CARGO_BUILD_SUBCMD
+# resolves to `auditable build`). Locally this prerequisite is absent and the build stays plain.
+build-adp-host: $(if $(filter true,$(CI)),cargo-install-cargo-auditable)
 build-adp-host: ## Builds the agent-data-plane binary for the current host (Cargo profile from $$BUILD_PROFILE, default: release)
 	@echo "[*] Building agent-data-plane ($(BUILD_PROFILE), host target)..."
 	@APP_FULL_NAME="$(ADP_APP_FULL_NAME)" \
@@ -625,7 +649,7 @@ build-adp-host: ## Builds the agent-data-plane binary for the current host (Carg
 		APP_GIT_HASH="$(ADP_APP_GIT_HASH)" \
 		APP_VERSION="$(ADP_APP_VERSION)" \
 		APP_BUILD_DATE="$(ADP_APP_BUILD_DATE)" \
-		cargo build --profile $(BUILD_PROFILE) --bin agent-data-plane
+		cargo $(ADP_CARGO_BUILD_SUBCMD) --profile $(BUILD_PROFILE) --bin agent-data-plane
 
 .PHONY: package-adp-host
 package-adp-host: BUILD_PROFILE ?= release
@@ -737,7 +761,7 @@ endif
 
 ##@ Antithesis
 
-ANTITHESIS_CONFIG_DIR := test/antithesis/deploy
+ANTITHESIS_CONFIG_DIR := test/antithesis/scenarios/general
 ANTITHESIS_COMPOSE_FILE := $(ANTITHESIS_CONFIG_DIR)/docker-compose.yaml
 
 .PHONY: check-antithesis-tools
@@ -793,12 +817,12 @@ check-smp-experiments: ## Verifies SMP experiment configs are up-to-date (CI)
 
 .PHONY: profile-run-smp-experiment
 profile-run-smp-experiment: ## Runs a specific SMP experiment for Saluki
-ifeq ($(shell test -f test/smp/regression/adp/cases/$(EXPERIMENT)/lading/lading.yaml || echo not-found), not-found)
-	$(error "Lading configuration for '$(EXPERIMENT)' not found. (test/smp/regression/adp/cases/$(EXPERIMENT)/lading/lading.yaml) ")
+ifeq ($(shell test -f test/smp/regression/adp/full/cases/$(EXPERIMENT)/lading/lading.yaml || echo not-found), not-found)
+	$(error "Lading configuration for '$(EXPERIMENT)' not found. (test/smp/regression/adp/full/cases/$(EXPERIMENT)/lading/lading.yaml) ")
 endif
 	@echo "[*] Running '$(EXPERIMENT)' experiment (15 minutes)..."
 	@docker run --rm --network host \
-	    --mount type=bind,source=./test/smp/regression/adp/cases/$(EXPERIMENT)/lading/lading.yaml,target=/tmp/lading.yaml \
+	    --mount type=bind,source=./test/smp/regression/adp/full/cases/$(EXPERIMENT)/lading/lading.yaml,target=/tmp/lading.yaml \
 		--mount type=bind,source=/tmp/adp-dogstatsd-dgram.sock,target=/tmp/adp-dogstatsd-dgram.sock \
 		--mount type=bind,source=/tmp/adp-dogstatsd-stream.sock,target=/tmp/adp-dogstatsd-stream.sock \
 		ghcr.io/datadog/lading:$(LADING_VERSION) \
@@ -932,6 +956,7 @@ setup-hooks: ## Configure Git to use the committed hooks in .githooks/
 cargo-preinstall: cargo-install-dd-rust-license-tool cargo-install-cargo-deny cargo-install-cargo-hack
 cargo-preinstall: cargo-install-cargo-nextest cargo-install-cargo-autoinherit cargo-install-cargo-sort
 cargo-preinstall: cargo-install-dummyhttp cargo-install-cargo-machete cargo-install-rustfilt
+cargo-preinstall: cargo-install-cargo-auditable
 cargo-preinstall: ## Pre-installs all necessary Cargo tools (used for CI)
 	@echo "[*] Pre-installed all necessary Cargo tools!"
 

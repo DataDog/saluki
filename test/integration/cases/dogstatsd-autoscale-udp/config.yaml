@@ -17,20 +17,20 @@ container:
   exposed_ports:
     - "58125/udp"
 
-assertions:
+procedure:
   # Make sure the process becomes healthy and stays up without errors when autoscale is enabled,
   # and that the UDP listener still binds to the configured port.
   - parallel:
-      - type: process_stable_for
+      - assertion: process_stable_for
         duration: 10s
-      - type: port_listening
+      - assertion: port_listening
         port: 58125
         protocol: udp
         timeout: 60s
-      - type: log_not_contains
+      - assertion: log_not_contains
         pattern: "panic|PANIC"
         regex: true
         during: 10s
-      - type: log_contains
+      - assertion: log_contains
         pattern: "DogStatsD listener started"
         timeout: 60s

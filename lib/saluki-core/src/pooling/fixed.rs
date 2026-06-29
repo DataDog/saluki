@@ -185,7 +185,10 @@ where
                 strategy.metrics.in_use().increment(1.0);
                 Poll::Ready(T::from_data(strategy, data))
             }
-            None => unreachable!("semaphore should never be closed"),
+            None => {
+                saluki_antithesis::unreachable!("fixed object pool semaphore closed");
+                unreachable!("semaphore should never be closed")
+            }
         }
     }
 }

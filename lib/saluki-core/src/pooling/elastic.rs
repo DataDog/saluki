@@ -16,7 +16,7 @@ use std::{
 use pin_project::pin_project;
 use resource_accounting::ResourceGroupToken;
 use tokio::{
-    sync::{OwnedSemaphorePermit, Semaphore},
+    sync::{futures::OwnedNotified, Notify, OwnedSemaphorePermit, Semaphore, SemaphorePermit},
     time::sleep,
 };
 use tokio_util::sync::PollSemaphore;
@@ -107,6 +107,7 @@ struct ElasticStrategy<T: Poolable> {
     items: Mutex<VecDeque<T::Data>>,
     builder: Box<dyn Fn() -> T::Data + Send + Sync>,
     available: Arc<Semaphore>,
+    active_decreased: Arc<Notify>,
     active: AtomicUsize,
     on_demand_allocs: AtomicUsize,
     min_capacity: usize,
@@ -136,6 +137,7 @@ impl<T: Poolable> ElasticStrategy<T> {
             items: Mutex::new(items),
             builder,
             available,
+            active_decreased: Arc::new(Notify::new()),
             active: AtomicUsize::new(min_capacity),
             on_demand_allocs: AtomicUsize::new(0),
             min_capacity,
@@ -184,15 +186,19 @@ pub struct ElasticAcquireFuture<T: Poolable> {
     strategy: Option<Arc<ElasticStrategy<T>>>,
     waiting_slow: bool,
     semaphore: PollSemaphore,
+    #[pin]
+    active_decreased: OwnedNotified,
 }
 
 impl<T: Poolable> ElasticAcquireFuture<T> {
     fn new(strategy: Arc<ElasticStrategy<T>>) -> Self {
         let semaphore = PollSemaphore::new(Arc::clone(&strategy.available));
+        let active_decreased = strategy.active_decreased.clone().notified_owned();
         Self {
             strategy: Some(strategy),
             waiting_slow: false,
             semaphore,
+            active_decreased,
         }
     }
 }
@@ -204,78 +210,98 @@ where
     type Output = T;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let this = self.project();
+        let mut this = self.project();
         let strategy = this.strategy.take().unwrap();
 
-        // If we're not waiting from previously going down the slow path, we'll try to acquire a permit in a non-polling
-        // fashion, which avoids scheduling a wakeup for this task if we end up trying to allocate an item on demand.
-        //
-        // If we _are_ waiting from previously going down the slow path, we'll always poll the semaphore to ensure we
-        // don't throw away a permit that was given to us while we were waiting.
-        while !*this.waiting_slow {
-            // Fast path: try to acquire a permit immediately.
+        loop {
+            // If we're not waiting from previously going down the slow path, we'll try to acquire a permit in a
+            // non-polling fashion, which avoids scheduling a wakeup for this task if we end up trying to allocate an
+            // item on demand.
             //
-            // If we get one, we can acquire an item from the pool. Otherwise, we'll attempt to do a burst allocation if
-            // the pool hasn't yet reached its maximum capacity.
-            if let Ok(permit) = strategy.available.clone().try_acquire_owned() {
-                trace!("Acquired permit on fast path. Acquiring item from pool.");
+            // If we are waiting from previously going down the slow path, we'll always poll the semaphore to ensure
+            // we don't throw away a permit that was given to us while we were waiting.
+            while !*this.waiting_slow {
+                // Fast path: try to acquire a permit immediately.
+                //
+                // If we get one, we can acquire an item from the pool. Otherwise, we'll attempt to do a burst
+                // allocation if the pool hasn't yet reached its maximum capacity.
+                if let Ok(permit) = strategy.available.clone().try_acquire_owned() {
+                    trace!("Acquired permit on fast path. Acquiring item from pool.");
 
-                let data = strategy.acquire_item(permit);
+                    let data = strategy.acquire_item(permit);
 
-                return Poll::Ready(T::from_data(strategy, data));
+                    return Poll::Ready(T::from_data(strategy, data));
+                }
+
+                trace!("No available permits. Attempting to allocate on demand.");
+
+                // If we're at capacity, we can't allocate any more items.
+                let active = strategy.active.load(Acquire);
+                if active == strategy.max_capacity {
+                    trace!("Pool at capacity. Falling back to waiting for next available permit.");
+
+                    *this.waiting_slow = true;
+                    break;
+                }
+
+                // Try to atomically increment `active` which signals that we still have capacity to allocate another
+                // item, and more importantly, that _we_ are authorized to do so.
+                if strategy
+                    .active
+                    .compare_exchange_weak(active, active + 1, AcqRel, Relaxed)
+                    .is_err()
+                {
+                    continue;
+                }
+
+                trace!("Updated active count. Allocating on demand.");
+
+                let new_item = {
+                    let _entered = strategy.resource_group.enter();
+                    (strategy.builder)()
+                };
+
+                strategy.on_demand_allocs.fetch_add(1, Relaxed);
+                strategy.metrics.created().increment(1);
+                strategy.metrics.capacity().increment(1.0);
+                strategy.metrics.in_use().increment(1.0);
+
+                return Poll::Ready(T::from_data(strategy, new_item));
             }
 
-            trace!("No available permits. Attempting to allocate on demand.");
+            trace!("Waiting for next available permit.");
+            match this.semaphore.poll_acquire(cx) {
+                Poll::Ready(Some(permit)) => {
+                    trace!("Acquired permit. Acquiring item from pool.");
 
-            // If we're at capacity, we can't allocate any more items.
-            let active = strategy.active.load(Acquire);
-            if active == strategy.max_capacity {
-                trace!("Pool at capacity. Falling back to waiting for next available permit.");
+                    let data = strategy.acquire_item(permit);
 
-                *this.waiting_slow = true;
-                break;
+                    return Poll::Ready(T::from_data(strategy, data));
+                }
+                Poll::Ready(None) => {
+                    saluki_antithesis::unreachable!("elastic object pool semaphore closed");
+                    unreachable!("semaphore should never be closed")
+                }
+                Poll::Pending => {
+                    trace!("Permit not yet available. Waiting for next available permit.");
+                }
             }
 
-            // Try to atomically increment `active` which signals that we still have capacity to allocate another
-            // item, and more importantly, that _we_ are authorized to do so.
-            if strategy
-                .active
-                .compare_exchange_weak(active, active + 1, AcqRel, Relaxed)
-                .is_err()
-            {
-                continue;
-            }
+            match this.active_decreased.as_mut().poll(cx) {
+                Poll::Ready(()) => {
+                    trace!("Active count decreased. Retrying acquisition.");
 
-            trace!("Updated active count. Allocating on demand.");
-
-            let new_item = {
-                let _entered = strategy.resource_group.enter();
-                (strategy.builder)()
-            };
-
-            strategy.on_demand_allocs.fetch_add(1, Relaxed);
-            strategy.metrics.created().increment(1);
-            strategy.metrics.capacity().increment(1.0);
-            strategy.metrics.in_use().increment(1.0);
-
-            return Poll::Ready(T::from_data(strategy, new_item));
-        }
-
-        trace!("Waiting for next available permit.");
-        match this.semaphore.poll_acquire(cx) {
-            Poll::Ready(Some(permit)) => {
-                trace!("Acquired permit. Acquiring item from pool.");
-
-                let data = strategy.acquire_item(permit);
-
-                Poll::Ready(T::from_data(strategy, data))
-            }
-            Poll::Ready(None) => unreachable!("semaphore should never be closed"),
-            Poll::Pending => {
-                trace!("Permit not yet available. Waiting for next available permit.");
-
-                this.strategy.replace(strategy);
-                Poll::Pending
+                    // Shrinking lowered `active`, so retry the fast/on-demand path where this waiter may claim the
+                    // newly available capacity and allocate a replacement item.
+                    this.active_decreased
+                        .set(strategy.active_decreased.clone().notified_owned());
+                    *this.semaphore = PollSemaphore::new(Arc::clone(&strategy.available));
+                    *this.waiting_slow = false;
+                }
+                Poll::Pending => {
+                    this.strategy.replace(strategy);
+                    return Poll::Pending;
+                }
             }
         }
     }
@@ -319,29 +345,7 @@ async fn run_background_shrinker<T: Poolable>(strategy: Arc<ElasticStrategy<T>>)
                 active, min_capacity, "Pool qualifies for shrinking. Attempting to remove single item..."
             );
 
-            // Try acquiring a permit from the pool, giving us permission to remove an item.
-            let permit = strategy
-                .available
-                .acquire()
-                .await
-                .expect("semaphore should never be closed");
-
-            // Lock the pool and remove an item, taking care to update the active count while holding the lock.
-            let item = {
-                let item = strategy.items.lock().unwrap().pop_back().unwrap();
-                strategy.active.fetch_sub(1, AcqRel);
-                item
-            };
-
-            // Drop the item itself, and update our metrics.
-            drop(item);
-            strategy.metrics.deleted().increment(1);
-            strategy.metrics.capacity().decrement(1.0);
-
-            // Forget the permit so that we shrink the overall number of permits attached to the semaphore.
-            permit.forget();
-
-            debug!("Shrinker successfully removed an item from the pool.");
+            try_shrink_one_available_item(&strategy);
         } else {
             debug!(
                 avg_demand = average_demand.value(),
@@ -349,6 +353,40 @@ async fn run_background_shrinker<T: Poolable>(strategy: Arc<ElasticStrategy<T>>)
             );
         }
     }
+}
+
+fn try_shrink_one_available_item<T: Poolable>(strategy: &ElasticStrategy<T>) -> bool {
+    // Only shrink idle pool capacity. Waiting here can let the shrinker consume the next returned item ahead of
+    // application waiters that are already blocked on the same semaphore.
+    let Ok(permit) = strategy.available.try_acquire() else {
+        debug!("Pool qualifies for shrinking, but no idle item is available.");
+        return false;
+    };
+
+    // Keep shrink completion separate so tests can reproduce interleavings after the shrinker takes a permit.
+    shrink_available_item(strategy, permit);
+    true
+}
+
+fn shrink_available_item<T: Poolable>(strategy: &ElasticStrategy<T>, permit: SemaphorePermit<'_>) {
+    // Lock the pool and remove an item, taking care to update the active count while holding the lock.
+    let item = {
+        let item = strategy.items.lock().unwrap().pop_back().unwrap();
+        strategy.active.fetch_sub(1, AcqRel);
+        item
+    };
+
+    // Drop the item itself, and update our metrics.
+    drop(item);
+    strategy.metrics.deleted().increment(1);
+    strategy.metrics.capacity().decrement(1.0);
+
+    // Forget the permit so that we shrink the overall number of permits attached to the semaphore.
+    permit.forget();
+
+    strategy.active_decreased.notify_waiters();
+
+    debug!("Shrinker successfully removed an item from the pool.");
 }
 
 struct Ewma {
@@ -372,9 +410,11 @@ impl Ewma {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::Ordering::Acquire;
+
     use tokio_test::{assert_pending, assert_ready, task::spawn};
 
-    use super::ElasticObjectPool;
+    use super::{shrink_available_item, try_shrink_one_available_item, ElasticObjectPool};
     use crate::{pooled, pooling::ObjectPool as _};
 
     pooled! {
@@ -438,5 +478,80 @@ mod tests {
 
         drop(third_item);
         assert_eq!(pool.strategy.available.available_permits(), 2);
+    }
+
+    #[test]
+    fn shrinker_does_not_wait_for_returned_items() {
+        let (pool, _) = ElasticObjectPool::<TestObject>::with_capacity("test", 1, 2);
+
+        let mut first_acquire = spawn(pool.acquire());
+        let first_item = assert_ready!(first_acquire.poll());
+
+        let mut second_acquire = spawn(pool.acquire());
+        let second_item = assert_ready!(second_acquire.poll());
+
+        let mut third_acquire = spawn(pool.acquire());
+        assert_pending!(third_acquire.poll());
+        assert!(!third_acquire.is_woken());
+
+        assert!(!try_shrink_one_available_item(&pool.strategy));
+
+        drop(first_item);
+        assert!(third_acquire.is_woken());
+
+        let third_item = assert_ready!(third_acquire.poll());
+        assert_eq!(pool.strategy.active.load(Acquire), 2);
+
+        drop(second_item);
+        drop(third_item);
+    }
+
+    #[test]
+    fn slow_waiter_retries_allocation_when_shrink_reduces_active() {
+        let (pool, _) = ElasticObjectPool::<TestObject>::with_capacity("test", 1, 2);
+
+        // Fill the pool to its maximum size: active = 2, permits = 0.
+        let mut first_acquire = spawn(pool.acquire());
+        let first_item = assert_ready!(first_acquire.poll());
+
+        let mut second_acquire = spawn(pool.acquire());
+        let second_item = assert_ready!(second_acquire.poll());
+
+        // Return one item while the pool is still at max capacity: active = 2, permits = 1.
+        drop(second_item);
+        assert_eq!(pool.strategy.active.load(Acquire), 2);
+        assert_eq!(pool.strategy.available.available_permits(), 1);
+
+        // Simulate the shrinker winning the race to the idle permit before a new acquire starts waiting:
+        // active = 2, permits = 0, shrinker holds the permit.
+        let permit = pool
+            .strategy
+            .available
+            .try_acquire()
+            .expect("returned item should leave one idle permit for the shrinker");
+        assert_eq!(pool.strategy.available.available_permits(), 0);
+
+        // The new acquire sees active == max_capacity and permits = 0, so it waits on the semaphore.
+        let mut third_acquire = spawn(pool.acquire());
+        assert_pending!(third_acquire.poll());
+        assert!(!third_acquire.is_woken());
+
+        // Shrinking removes the idle item and lowers active: active = 1, permits = 0.
+        shrink_available_item(&pool.strategy, permit);
+        assert_eq!(pool.strategy.active.load(Acquire), 1);
+        assert_eq!(pool.strategy.available.available_permits(), 0);
+
+        // The waiter must be woken by the active count change, otherwise it remains asleep even though
+        // active < max_capacity means it could allocate a replacement item.
+        assert!(
+            third_acquire.is_woken(),
+            "slow-path waiters must wake when shrinking creates on-demand allocation capacity"
+        );
+
+        let third_item = assert_ready!(third_acquire.poll());
+        assert_eq!(pool.strategy.active.load(Acquire), 2);
+
+        drop(first_item);
+        drop(third_item);
     }
 }

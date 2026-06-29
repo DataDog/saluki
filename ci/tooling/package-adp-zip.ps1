@@ -37,6 +37,15 @@ $Binary = Join-Path $CargoTargetDir "$env:BUILD_PROFILE\agent-data-plane.exe"
 if (-not (Test-Path $Binary)) {
     throw "package-adp-zip: expected binary at '$Binary' (run windows-build-adp.ps1 first)"
 }
+# We _specifically_ use the underscore-separated name here because Cargo will build ADP with the underscore-separated name,
+# due to hyphens not being valid in module names, which means the PDB is named that way, too... but then it will post-process
+# the executable by itself to rename it to `agent-data-plane.exe`, while the PDB stays as `agent_data_plane.pdb`.
+#
+# We keep it this way when copying it because the PDB path is hardcoded into the executable with the underscore-separated name.
+$BinaryPDB = Join-Path $CargoTargetDir "$env:BUILD_PROFILE\agent_data_plane.pdb"
+if (-not (Test-Path $BinaryPDB)) {
+    throw "package-adp-zip: expected PDB at '$BinaryPDB' (run windows-build-adp.ps1 first)"
+}
 foreach ($f in @("NOTICE", "LICENSE", "LICENSE-3rdparty.csv")) {
     if (-not (Test-Path $f)) {
         throw "package-adp-zip: missing '$f' in CWD ($RepoRoot)"
@@ -55,8 +64,33 @@ try {
     New-Item -ItemType Directory -Force (Join-Path $StageRoot "LICENSES") | Out-Null
 
     Copy-Item -Force $Binary (Join-Path $StageRoot "bin\agent-data-plane.exe")
+    Copy-Item -Force $BinaryPDB (Join-Path $StageRoot "bin\agent_data_plane.pdb")
     foreach ($f in @("NOTICE", "LICENSE", "LICENSE-3rdparty.csv")) {
         Copy-Item -Force $f (Join-Path $StageRoot $f)
+    }
+
+    # FIPS builds on Windows can only build aws-lc-fips-sys as a shared library (per
+    # upstream: https://aws.github.io/aws-lc-rs/resources.html), so agent-data-plane.exe has
+    # a runtime dependency on aws_lc_fips_<ver>_crypto.dll. The DLL is produced by
+    # aws-lc-fips-sys's CMake build under target/<profile>/build/aws-lc-fips-sys-*/out and
+    # cargo copies it into target/<profile>/deps/. Glob recursively to be resilient to the
+    # exact subpath, dedupe by filename, and ship each unique DLL alongside the .exe in the
+    # zip's bin/ so it loads from the same directory at runtime.
+    if ($env:BUILD_FEATURES -eq "fips") {
+        $TargetProfileDir = Join-Path $CargoTargetDir $env:BUILD_PROFILE
+        $FipsDllMatches = @(Get-ChildItem -Path $TargetProfileDir -Filter "aws_lc_fips_*.dll" -Recurse -File -ErrorAction SilentlyContinue)
+        if ($FipsDllMatches.Count -eq 0) {
+            Write-Host "[!] FIPS build but no aws_lc_fips_*.dll found under $TargetProfileDir."
+            Write-Host "    All .dll files in the target tree:"
+            Get-ChildItem -Path $TargetProfileDir -Filter "*.dll" -Recurse -File -ErrorAction SilentlyContinue |
+                ForEach-Object { Write-Host "      $($_.FullName)" }
+            throw "FIPS build expected aws_lc_fips_*.dll but none was produced; aws-lc-fips-sys output layout may have changed"
+        }
+        $UniqueFipsDlls = $FipsDllMatches | Group-Object -Property Name | ForEach-Object { $_.Group[0] }
+        foreach ($dll in $UniqueFipsDlls) {
+            Write-Host "[*] Bundling $($dll.Name) (from $($dll.FullName))"
+            Copy-Item -Force $dll.FullName (Join-Path $StageRoot "bin\$($dll.Name)")
+        }
     }
 
     # Replicate the `license-builder` stage from docker/Dockerfile.agent-data-plane on the host so

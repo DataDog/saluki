@@ -10,7 +10,7 @@ use saluki_config::GenericConfiguration;
 use saluki_core::health::Health;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use stringtheory::{interning::GenericMapInterner, MetaString};
-use tokio::{select, sync::mpsc};
+use tokio::{pin, select, sync::mpsc};
 use tracing::{debug, warn};
 
 use super::MetadataCollector;
@@ -77,7 +77,7 @@ impl MetadataCollector for CgroupsMetadataCollector {
         // ensuring we don't leak the blocking poller task if this collector is dropped before it completes.
         let (_shutdown_coordinator, shutdown_handle) = ShutdownHandle::paired();
         let poller_handle = tokio::task::spawn_blocking(move || cgroups_manager.poll(operations_tx, shutdown_handle));
-        tokio::pin!(poller_handle);
+        pin!(poller_handle);
 
         debug!("Spawned cgroups background poller task.");
 

@@ -93,7 +93,7 @@ deduplicates
 inlining
 cloneable
 callsite
-enqueue(s?)
+enqueue(s|d|ing)?
 hostname
 backpressure
 misconfiguration
@@ -113,6 +113,7 @@ runtime(s?)
 workloadmeta
 namespaces
 dispatchable
+emittable
 poolable
 goroutine(s?)
 quantile(s?)
@@ -190,6 +191,7 @@ swappable
 syslog
 teardown
 tracestate
+typestate
 uid(s?)
 unary
 unescape
@@ -234,3 +236,8 @@ launchd
 Wireshark
 testsupport
 callee
+Bazel
+trivy
+Erlang
+OTP
+respawn(s|ed|ing)?

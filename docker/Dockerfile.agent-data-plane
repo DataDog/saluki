@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1.24
+# syntax=docker/dockerfile:1.25
 # This Dockerfile is, generally speaking, tuned for CI builds.
 #
 # It is designed to work seamlessly in both local builds and CI environments, but as CI is invoked far more often,
@@ -11,39 +11,31 @@
 # to an image that was built outside of this Dockerfile.
 
 ARG BUILDCACHE_IMAGE=scratch
+ARG SPDX_LICENSES_IMAGE=scratch
 ARG BUILD_IMAGE=ubuntu:24.04
 ARG BUILD_BASE=build-clean
-ARG LICENSE_IMAGE=ubuntu:24.04
-ARG LICENSE_BASE=license-clean
-ARG PROFILING_IMAGE=ubuntu:24.04
 ARG APP_IMAGE=ubuntu:24.04
 
-# When `BUILDCACHE_IMAGE` is provided and points to an image that contains `/buildcache`, we copy it out into our actual
-# build layer, which then signals the build step to actually configure Cargo to use it as a rustc wrapper (`RUSTC_WRAPPER`),
-# allowing it to providing build caching in conjunction with any remote cache configuration passed in via the `BUILDCACHE_*`
-# build arguments.
+# Buildcache stage: declare the buildcache "source" image so we can refer to it later on.
 FROM ${BUILDCACHE_IMAGE} AS buildcache-src
 
+# SPDX licenses stage: declare the optional prebuilt SPDX license "source" image, consumed by the
+# final-prep stage. Defaults to `scratch`; when left as the default, the license harvest fetches the
+# SPDX texts from GitHub instead of reading them from this image.
+FROM ${SPDX_LICENSES_IMAGE} AS spdx-licenses-src
+
 # Build stage: base layer preparation.
-FROM ${BUILD_IMAGE} AS build-clean
-RUN apt-get update && \
-    apt-get install --no-install-recommends -y \
-    build-essential ca-certificates musl-dev musl-tools linux-libc-dev make cmake gcc g++ perl golang-go protobuf-compiler curl unzip rustup
-RUN rustup set profile minimal
+FROM --platform=$BUILDPLATFORM ${BUILD_IMAGE} AS build-clean
 ENV PATH="/root/.cargo/bin:${PATH}"
 
-# Pre-install the pinned Rust toolchain. We bind-mount only `rust-toolchain.toml` so this layer's
-# cache key is just that file's content -- code changes do not invalidate the toolchain install.
-RUN --mount=type=bind,source=rust-toolchain.toml,target=/tmp/rust-toolchain.toml \
-    cd /tmp && rustup show active-toolchain
+RUN --mount=type=bind,source=docker/scripts,target=/scripts \
+    --mount=type=bind,source=rust-toolchain.toml,target=/tmp/rust-toolchain.toml \
+    sh /scripts/run-stage.sh agent-data-plane build-prep
 
-FROM ${BUILD_IMAGE} AS build-prepped
+FROM --platform=$BUILDPLATFORM ${BUILD_IMAGE} AS build-prepped
 ENV PATH="/root/.cargo/bin:${PATH}"
 
 # Build stage: build Agent Data Plane.
-#
-# We still do a little prep work here, like setting the necessary metadata environment variables and getting some
-# kernel headers into place... but by and large, this stage is all about compiling ADP.
 FROM ${BUILD_BASE} AS adp-builder
 
 ARG TARGETARCH
@@ -52,6 +44,9 @@ ARG BUILD_PROFILE=release
 ARG BUILD_FEATURES=default
 ARG BUILD_TARGET
 ARG BUILD_CFLAGS=""
+# When "true", wrap the cargo build with `cargo auditable` so the binary embeds an SBOM (dependency
+# tree). CI sets this for published/internal builds; local `make build-adp-image` leaves it false.
+ARG USE_CARGO_AUDITABLE=false
 ARG APP_FULL_NAME=""
 ARG APP_SHORT_NAME=""
 ARG APP_IDENTIFIER=""
@@ -62,6 +57,7 @@ ARG INTERNAL_BUILD=""
 ARG BUILDCACHE_REMOTE=
 ARG BUILDCACHE_DEBUG=
 
+# Application metadata embedded into the binary by the build.
 ENV APP_FULL_NAME=${APP_FULL_NAME}
 ENV APP_SHORT_NAME=${APP_SHORT_NAME}
 ENV APP_IDENTIFIER=${APP_IDENTIFIER}
@@ -71,122 +67,68 @@ ENV APP_BUILD_TIME=${APP_BUILD_TIME}
 ENV BUILDCACHE_REMOTE=${BUILDCACHE_REMOTE}
 ENV BUILDCACHE_DEBUG=${BUILDCACHE_DEBUG}
 
-RUN if [ "${BUILD_TARGET}" = "armv7-unknown-linux-gnueabihf" ] && ! command -v arm-linux-gnueabihf-gcc >/dev/null 2>&1; then \
-        apt-get update && \
-        apt-get install --no-install-recommends -y \
-            gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf libc6-dev-armhf-cross && \
-        apt-get clean && rm -rf /var/lib/apt/lists/*; \
-    fi
-
-# Copy over required build headers for AWS-LC.
-COPY ./ci/tooling/copy-build-headers.sh /copy-build-headers.sh
-RUN chmod +x /copy-build-headers.sh && /copy-build-headers.sh
-
-# Copy over `buildcache` if an image was provided that contains it.
-#
-# This will gracefully degrace to a no-op if no image was provided.
-RUN --mount=type=bind,from=buildcache-src,source=/,target=/mnt/bcsrc \
-    if [ -f /mnt/bcsrc/buildcache ]; then \
-        install -m 0755 /mnt/bcsrc/buildcache /usr/local/bin/buildcache && \
-        /usr/local/bin/buildcache --version; \
-    fi
+# Build parameters consumed by the actual build commands.
+ENV BUILD_TARGET=${BUILD_TARGET}
+ENV BUILD_PROFILE=${BUILD_PROFILE}
+ENV BUILD_FEATURES=${BUILD_FEATURES}
+ENV BUILD_CFLAGS=${BUILD_CFLAGS}
+ENV USE_CARGO_AUDITABLE=${USE_CARGO_AUDITABLE}
 
 # Build Agent Data Plane.
 WORKDIR /adp
 COPY . /adp
 
-# We optimize local workflows by mounting a cache at cargo home and the target dir. This allows local development
-# workflows to take advantage of incremental builds. We copy the ADP binary out of the build cache to /out after
-# building it.
+# We mount a number of caches that should also for shared/incremental Cargo builds across separate _Docker_ builds,
+# so long as the build target/profile are the same.
 #
-# COPY . /adp above will retrigger this layer on code changes but the builds should be incremental.
-RUN --mount=type=secret,id=aws-creds,target=/run/secrets/aws-creds.sh,required=false \
+# When the source (COPY . /adp) layer changes, this will invalidate this layer but it won't invalidate the caches
+# themselves, which should still allow for reusing previously cached build artifacts, if they exist.
+RUN --mount=type=bind,source=docker/scripts,target=/scripts \
+    --mount=type=bind,from=buildcache-src,source=/,target=/mnt/bcsrc \
+    --mount=type=secret,id=aws-creds,target=/run/secrets/aws-creds.sh,required=false \
     --mount=type=cache,target=/adp/target,id=adp-target-${BUILD_TARGET}-${BUILD_PROFILE} \
     --mount=type=cache,target=/root/.cargo/registry,id=cargo-registry \
     --mount=type=cache,target=/root/.cargo/git,id=cargo-git \
-    mkdir -p /out && \
-    if [ -f /run/secrets/aws-creds.sh ]; then . /run/secrets/aws-creds.sh; fi && \
-    if command -v buildcache >/dev/null 2>&1; then \
-        export RUSTC_WRAPPER=buildcache && buildcache --zero-stats; \
-    fi && \
-    if [ "${BUILD_TARGET}" = "default" ]; then \
-        CFLAGS="${BUILD_CFLAGS}" \
-        cargo build --profile ${BUILD_PROFILE} --package agent-data-plane --features ${BUILD_FEATURES} && \
-        cp /adp/target/${BUILD_PROFILE}/agent-data-plane /out/agent-data-plane; \
-    else \
-        rustup target add ${BUILD_TARGET} && \
-        if [ "${BUILD_TARGET}" = "armv7-unknown-linux-gnueabihf" ]; then \
-            export CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER=arm-linux-gnueabihf-gcc; \
-            export CC_armv7_unknown_linux_gnueabihf=arm-linux-gnueabihf-gcc; \
-            export CXX_armv7_unknown_linux_gnueabihf=arm-linux-gnueabihf-g++; \
-            export AR_armv7_unknown_linux_gnueabihf=arm-linux-gnueabihf-ar; \
-        fi && \
-        CFLAGS="${BUILD_CFLAGS}" \
-        cargo build --profile ${BUILD_PROFILE} --package agent-data-plane --features ${BUILD_FEATURES} --target ${BUILD_TARGET} && \
-        cp /adp/target/${BUILD_TARGET}/${BUILD_PROFILE}/agent-data-plane /out/agent-data-plane; \
-    fi && \
-    if command -v buildcache >/dev/null 2>&1; then \
-        buildcache --show-stats; \
-    fi
+    sh /scripts/run-stage.sh agent-data-plane build
 
-# Include helpers (including `ddprof` itself) if this build is for internal benchmarking.
+# Final preparation stage: assemble everything the final image needs into a mirrored directory tree under `/rootfs`.
 #
-# We do a small song-and-dance routine to place the files in a way that lets us conditionally copy them later on
-# without failing because they don't exist in this image if it _isn't_ an internal build.
-
-# Profiling stage: download `ddprof` if this is an internal build, and pull in our profiling wrapper used for
-# running ADP via `ddprof` when in SMP.
-FROM ${PROFILING_IMAGE} AS profiling-builder
+# Each artifact lands at the path it will occupy in the running image, so the `final` stage can drop the whole tree in
+# with a single COPY. This serves as a layer for adding in additional outputs, such as license files, profiling helpers,
+# and so on.
+FROM --platform=$BUILDPLATFORM ${BUILD_IMAGE} AS final-prep
 
 ARG TARGETARCH
 ARG INTERNAL_BUILD=""
+ARG SPDX_LICENSES_VERSION=3.28.0
+ENV BUILD_ROOT=/rootfs
+ENV TARGETARCH=${TARGETARCH}
+ENV INTERNAL_BUILD=${INTERNAL_BUILD}
+ENV SPDX_LICENSES_VERSION=${SPDX_LICENSES_VERSION}
 
-RUN mkdir -p /tmp/profiling
-COPY ./ci/tooling/maybe-profile.sh /tmp/maybe-profile.sh
-RUN if [ "${INTERNAL_BUILD}" = "true" ]; then \
-        apt-get update && \
-        apt-get install --no-install-recommends -y ca-certificates curl && \
-        curl -s -L -o /tmp/profiling/ddprof https://github.com/DataDog/ddprof/releases/download/v0.22.1/ddprof-${TARGETARCH} && \
-        mv /tmp/maybe-profile.sh /tmp/profiling/maybe-profile.sh; \
-    fi
+RUN --mount=type=bind,source=docker/scripts,target=/scripts \
+    --mount=type=bind,source=ci/tooling,target=/tooling \
+    --mount=type=bind,source=LICENSE-3rdparty.csv,target=/tmp/LICENSE-3rdparty.csv \
+    --mount=type=bind,from=spdx-licenses-src,source=/,target=/mnt/spdx \
+    sh /scripts/run-stage.sh agent-data-plane final-prep
 
-# License stage: base layer preparation.
-FROM ${LICENSE_IMAGE} AS license-clean
-RUN apt-get update && \
-    apt-get install --no-install-recommends -y ca-certificates curl && \
-    curl -s -L -o /tmp/spdx.tar.gz https://github.com/spdx/license-list-data/archive/refs/tags/v3.28.0.tar.gz && \
-    tar -C /tmp -xzf /tmp/spdx.tar.gz && \
-    mv /tmp/license-list-data-3.28.0 /tmp/spdx-licenses
+# Copy over a number of static outputs from either the build context or the build stage. We do these last as they're the
+# most likely to change across builds, and we want to maximize caching for all of the pre-built layers above.
+COPY NOTICE LICENSE LICENSE-3rdparty.csv /rootfs/opt/datadog/agent-data-plane/
+COPY --chmod=755 docker/entrypoint.sh /rootfs/entrypoint.sh
+COPY --from=adp-builder /out/agent-data-plane /rootfs/usr/local/bin/agent-data-plane
 
-FROM ${LICENSE_IMAGE} AS license-prepped
-
-# License stage: collect all licenses based on LICENSE-3rdparty.csv.
-FROM ${LICENSE_BASE} AS license-builder
-COPY LICENSE-3rdparty.csv /tmp/LICENSE-3rdparty.csv
-RUN mkdir /licenses && \
-    tail -n +2 /tmp/LICENSE-3rdparty.csv | awk -F ',' '{print $3}' | awk -F' ' '{for(i=1;i<=NF;i++) print $i}' | \
-    grep -v -E "(OR|AND|WITH|Custom|LLVM-exception)" | sed s/[\(\)]// | sort | uniq | \
-    xargs -I {} cp /tmp/spdx-licenses/text/{}.txt /licenses/THIRD-PARTY-{}
-
-# Final stage: copy the binary, licenses, and other optional files, on top of the configured application base image.
+# Final stage: lay the assembled tree on top of the configured application base image.
 FROM ${APP_IMAGE} AS final
 
-# Only install ca-certificates if the directory doesn't exist.
-#
-# We do this because we don't want to set the user to `root` in the application image, but we need `root` to use
-# `apt-get`... so if we're building in CI where CA certificates are already present, and the base image doesn't use the
-# `root` user, we skip this step.
-#
-# For local builds, the regular Ubuntu application image needs to have the CA certificates installed, but it also uses
-# the `root` user, so we can install them without issue.
+# We don't want to set the user to `root` in the application image, but `apt-get` needs it -- so we switch to `root`
+# and let 00-install-ca-certs.sh decide whether an install is actually necessary (it's a no-op when CA certificates
+# are already present, as they are in CI base images).
 USER root
-RUN test -d /usr/share/ca-certificates || (apt-get update && \
-    apt-get install --no-install-recommends -y ca-certificates=20240203 && \
-    apt-get clean && rm -rf /var/lib/apt/lists)
-COPY --from=adp-builder /out/agent-data-plane /usr/local/bin/agent-data-plane
-COPY NOTICE LICENSE LICENSE-3rdparty.csv /opt/datadog/agent-data-plane/
-COPY --from=license-builder /licenses /opt/datadog/agent-data-plane/LICENSES
-COPY --chmod=755 docker/entrypoint.sh /entrypoint.sh
-COPY --from=profiling-builder --chmod=755 /tmp/profiling/* /
+RUN --mount=type=bind,source=docker/scripts,target=/scripts \
+    sh /scripts/run-stage.sh agent-data-plane app
+
+# Everything else was assembled into the mirrored tree, so a single copy drops it all into place.
+COPY --from=final-prep /rootfs/ /
 
 ENTRYPOINT [ "/usr/local/bin/agent-data-plane" ]

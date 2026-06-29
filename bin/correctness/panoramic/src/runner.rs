@@ -17,6 +17,7 @@ use airlock::driver::{ContainerOs, Driver, DriverConfig, DriverDetails};
 use bollard::{container::LogOutput, errors::Error as DockerError};
 use futures::stream::{self, StreamExt as _};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
+use tokio::pin;
 use tokio::sync::{mpsc, Semaphore};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
@@ -94,6 +95,18 @@ fn normalize_env_for_runtime(mut env: HashMap<String, String>, runtime: &str) ->
             if let Some(value) = env.get(*source).cloned() {
                 env.entry((*target).to_string()).or_insert(value);
             }
+        }
+
+        // As of Agent 7.80, the Core Agent only honors `data_plane.enabled` on Linux (and later
+        // macOS); on every other platform `sanitizeDataPlaneConfig` installs an authoritative
+        // `data_plane.enabled=false` override unless `DD_DATA_PLANE_FORCE_ENABLE=true` is set. The
+        // Core Agent runs inside the Windows target container (started by the ADP entrypoint) and
+        // reads this flat env var, so without it the Agent streams `data_plane.enabled=false` to ADP
+        // and ADP exits with "Agent Data Plane is not enabled." Mirror the macOS host-process path
+        // (see `unix_runner::build_core_agent_forced_env`) and force-enable when ADP is requested.
+        if env.get("DD_DATA_PLANE_ENABLED").is_some_and(|value| value == "true") {
+            env.entry("DD_DATA_PLANE_FORCE_ENABLE".to_string())
+                .or_insert_with(|| "true".to_string());
         }
     }
 
@@ -375,7 +388,7 @@ impl Runner {
         }
 
         let run_fut = test.run(tctx);
-        tokio::pin!(run_fut);
+        pin!(run_fut);
 
         // Run the test for the duration of 'timeout', then send a cancel request if it times out and wait GRACE_TIME
         // for teardown.
@@ -928,6 +941,7 @@ impl IntegrationRunner {
             is_host_process: false,
             host_process_exit_code: None,
             docker_container_exit_code: Some(docker_exit_code),
+            core_agent_auth_token_path: None,
         };
         crate::assertions::run_assertion_steps(&self.test_case, &ctx).await
     }
@@ -1139,5 +1153,47 @@ mod tests {
         let normalized = normalize_env_for_runtime(env, crate::config::LINUX_RUNTIME);
 
         assert!(!normalized.contains_key("DD_DATA_PLANE__ENABLED"));
+    }
+
+    #[test]
+    fn windows_runtime_force_enables_adp_when_enabled() {
+        let env = HashMap::from([("DD_DATA_PLANE_ENABLED".to_string(), "true".to_string())]);
+
+        let normalized = normalize_env_for_runtime(env, crate::config::WINDOWS_RUNTIME);
+
+        // The Core Agent in the Windows target container needs DD_DATA_PLANE_FORCE_ENABLE on
+        // non-Linux platforms (Agent 7.80+ `sanitizeDataPlaneConfig`), otherwise it streams
+        // data_plane.enabled=false to ADP and ADP exits.
+        assert_eq!(normalized.get("DD_DATA_PLANE_FORCE_ENABLE"), Some(&"true".to_string()));
+    }
+
+    #[test]
+    fn windows_runtime_does_not_force_enable_adp_when_disabled() {
+        let env = HashMap::from([("DD_DATA_PLANE_ENABLED".to_string(), "false".to_string())]);
+
+        let normalized = normalize_env_for_runtime(env, crate::config::WINDOWS_RUNTIME);
+
+        assert!(!normalized.contains_key("DD_DATA_PLANE_FORCE_ENABLE"));
+    }
+
+    #[test]
+    fn windows_runtime_preserves_explicit_force_enable_value() {
+        let env = HashMap::from([
+            ("DD_DATA_PLANE_ENABLED".to_string(), "true".to_string()),
+            ("DD_DATA_PLANE_FORCE_ENABLE".to_string(), "false".to_string()),
+        ]);
+
+        let normalized = normalize_env_for_runtime(env, crate::config::WINDOWS_RUNTIME);
+
+        assert_eq!(normalized.get("DD_DATA_PLANE_FORCE_ENABLE"), Some(&"false".to_string()));
+    }
+
+    #[test]
+    fn linux_runtime_does_not_force_enable_adp() {
+        let env = HashMap::from([("DD_DATA_PLANE_ENABLED".to_string(), "true".to_string())]);
+
+        let normalized = normalize_env_for_runtime(env, crate::config::LINUX_RUNTIME);
+
+        assert!(!normalized.contains_key("DD_DATA_PLANE_FORCE_ENABLE"));
     }
 }

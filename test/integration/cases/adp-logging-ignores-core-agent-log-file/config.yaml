@@ -16,18 +16,18 @@ container:
   exposed_ports:
     - "58125/udp"
 
-assertions:
+procedure:
   # Wait for ADP to receive its initial configuration from the Core Agent and reload logging.
-  - type: log_contains
+  - assertion: log_contains
     pattern: "Initial configuration received."
     timeout: 30s
   # The Core Agent honored DD_LOG_FILE; its own log file has CORE entries.
-  - type: file_contains
+  - assertion: file_contains
     path: "/tmp/coreagent-only.log"
     pattern: "CORE"
     timeout: 30s
   # ADP did NOT honor DD_LOG_FILE; it still wrote to its per-subagent default path.
-  - type: file_contains
+  - assertion: file_contains
     path: "/var/log/datadog/agent-data-plane.log"
     pattern: "DATAPLANE"
     timeout: 30s

@@ -64,7 +64,11 @@ impl HistogramStatistic {
             HistogramStatistic::Maximum => summary.max().unwrap_or(0.0),
             HistogramStatistic::Average => summary.avg(),
             HistogramStatistic::Median => summary.median().unwrap_or(0.0),
-            HistogramStatistic::Percentile { q, .. } => summary.quantile(*q).unwrap_or(0.0),
+            HistogramStatistic::Percentile { q, .. } => {
+                saluki_antithesis::always_ge!(*q, 0.0, "histogram percentile quantile at or above zero");
+                saluki_antithesis::always_le!(*q, 1.0, "histogram percentile quantile at or below one");
+                summary.quantile(*q).unwrap_or(0.0)
+            }
         }
     }
 }

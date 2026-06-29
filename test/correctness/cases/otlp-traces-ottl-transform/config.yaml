@@ -14,7 +14,7 @@ additional_span_ignore_fields:
   - metrics.http.status_code
   - meta.error.msg
 baseline:
-  image: registry.datadoghq.com/agent:7.75.4-full
+  image: saluki-images/datadog-agent:testing-release
   files:
     - collector.yaml:/etc/datadog-agent/otel-config.yaml
     - datadog_agent.yaml:/etc/datadog-agent/datadog.yaml
@@ -31,5 +31,3 @@ comparison:
     - DD_DATA_PLANE_ENABLED=true
     - DD_DATA_PLANE_STANDALONE_MODE=true
     - DD_DATA_PLANE_OTLP_ENABLED=true
-    # TODO: remove when we have Agent v7.80 https://github.com/DataDog/saluki/issues/1577
-    - DD_DATA_PLANE_DOGSTATSD_ENABLED=false

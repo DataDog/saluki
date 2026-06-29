@@ -5,6 +5,17 @@ use super::schema;
 use super::*;
 
 crate::declare_annotations! {
+    /// `aggregator_stop_timeout`-Timeout (s) for aggregator flush on stop
+    AGGREGATOR_STOP_TIMEOUT = SalukiAnnotation {
+        schema: &schema::AGGREGATOR_STOP_TIMEOUT,
+        support_level: SupportLevel::Partial,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::GET_TYPED],
+        value_type_override: Some(ValueType::Integer),
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::CrossCutting,
+    };
     /// `vsock_addr`-vsock address for Agent IPC endpoint
     VSOCK_ADDR = SalukiAnnotation {
         schema: &schema::VSOCK_ADDR,
@@ -16,7 +27,7 @@ crate::declare_annotations! {
         test_json: Some(r#""host""#),
         pipeline_affinity: PipelineAffinity::CrossCutting,
     };
-    /// `cmd_port`-Datadog Agent IPC/CMD API port
+    /// `cmd_port`-Core Agent CMD API port for ADP gRPC IPC
     CMD_PORT = SalukiAnnotation {
         schema: &schema::CMD_PORT,
         support_level: SupportLevel::Full,
@@ -60,6 +71,17 @@ crate::declare_annotations! {
         test_json: None,
         pipeline_affinity: PipelineAffinity::CrossCutting,
     };
+    /// `forwarder_stop_timeout`-Timeout (s) for forwarder graceful stop
+    FORWARDER_STOP_TIMEOUT = SalukiAnnotation {
+        schema: &schema::FORWARDER_STOP_TIMEOUT,
+        support_level: SupportLevel::Partial,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::GET_TYPED],
+        value_type_override: Some(ValueType::Integer),
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::CrossCutting,
+    };
     /// `agent_ipc.grpc_max_message_size`-Max inbound gRPC message size for IPC client
     AGENT_IPC_GRPC_MAX_MESSAGE_SIZE = SalukiAnnotation {
         schema: &schema::AGENT_IPC_GRPC_MAX_MESSAGE_SIZE,
@@ -70,6 +92,72 @@ crate::declare_annotations! {
         value_type_override: None,
         test_json: Some("4194304"),
         pipeline_affinity: PipelineAffinity::CrossCutting,
+    };
+    /// `autoscaling.failover.enabled`-Enable autoscaling failover metric routing
+    AUTOSCALING_FAILOVER_ENABLED = SalukiAnnotation {
+        schema: &schema::AUTOSCALING_FAILOVER_ENABLED,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::GET_TYPED],
+        value_type_override: None,
+        test_json: Some("true"),
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Checks, Pipeline::DogStatsD, Pipeline::Otlp]),
+    };
+    /// `autoscaling.failover.metrics`-Metric names forwarded to DCA for failover
+    AUTOSCALING_FAILOVER_METRICS = SalukiAnnotation {
+        schema: &schema::AUTOSCALING_FAILOVER_METRICS,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::GET_TYPED],
+        value_type_override: None,
+        test_json: Some(r#"["container.memory.usage"]"#),
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Checks, Pipeline::DogStatsD, Pipeline::Otlp]),
+    };
+    /// `cluster_agent.auth_token`-Bearer token for Cluster Agent requests
+    CLUSTER_AGENT_AUTH_TOKEN = SalukiAnnotation {
+        schema: &schema::CLUSTER_AGENT_AUTH_TOKEN,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::GET_TYPED],
+        value_type_override: None,
+        test_json: Some(r#""cluster-agent-token""#),
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Checks, Pipeline::DogStatsD, Pipeline::Otlp]),
+    };
+    /// `cluster_agent.enabled`-Enable Cluster Agent communication
+    CLUSTER_AGENT_ENABLED = SalukiAnnotation {
+        schema: &schema::CLUSTER_AGENT_ENABLED,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::GET_TYPED],
+        value_type_override: None,
+        test_json: Some("true"),
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Checks, Pipeline::DogStatsD, Pipeline::Otlp]),
+    };
+    /// `cluster_agent.kubernetes_service_name`-Cluster Agent Kubernetes service name
+    CLUSTER_AGENT_KUBERNETES_SERVICE_NAME = SalukiAnnotation {
+        schema: &schema::CLUSTER_AGENT_KUBERNETES_SERVICE_NAME,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::GET_TYPED],
+        value_type_override: None,
+        test_json: Some(r#""datadog-cluster-agent""#),
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Checks, Pipeline::DogStatsD, Pipeline::Otlp]),
+    };
+    /// `cluster_agent.url`-Cluster Agent HTTPS endpoint
+    CLUSTER_AGENT_URL = SalukiAnnotation {
+        schema: &schema::CLUSTER_AGENT_URL,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::GET_TYPED],
+        value_type_override: None,
+        test_json: Some(r#""https://cluster-agent.example.com""#),
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Checks, Pipeline::DogStatsD, Pipeline::Otlp]),
     };
     /// `log_level`-Log verbosity directives
     LOG_LEVEL = SalukiAnnotation {

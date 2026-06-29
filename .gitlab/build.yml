@@ -22,17 +22,15 @@
       --metadata-file ./build-metadata.${BUILD_ARCH}
       --tag ${ADP_IMAGE_REPO_BASE}
       --build-arg BUILDCACHE_IMAGE=${SALUKI_BUILDCACHE_CI_IMAGE}
+      --build-arg SPDX_LICENSES_IMAGE=${SPDX_LICENSES_IMAGE}
       --build-arg BUILDCACHE_REMOTE=s3://s3.${BUILDCACHE_S3_REGION}.amazonaws.com/${BUILDCACHE_S3_BUCKET}
       --build-arg BUILD_IMAGE=${ADP_BUILD_IMAGE}
       --build-arg BUILD_BASE=build-prepped
-      --build-arg LICENSE_IMAGE=${SALUKI_SPDX_LICENSES_CI_IMAGE}
-      --build-arg LICENSE_BASE=license-prepped
-      --build-arg PROFILING_IMAGE=${APP_IMAGE}
       --build-arg APP_IMAGE=${APP_IMAGE}
       --build-arg BUILD_PROFILE=${BUILD_PROFILE}
       --build-arg BUILD_FEATURES=${BUILD_FEATURES}
       --build-arg BUILD_TARGET=${BUILD_TARGET}
-      --build-arg BUILD_CFLAGS=${BUILD_CFLAGS}
+      --build-arg USE_CARGO_AUDITABLE=true
       --build-arg APP_FULL_NAME="${APP_FULL_NAME}"
       --build-arg APP_SHORT_NAME=${APP_SHORT_NAME}
       --build-arg APP_IDENTIFIER=${APP_IDENTIFIER}
@@ -222,14 +220,13 @@ publish-adp-image-internal:
     strategy: depend
   variables:
     IMAGE_NAME: agent-data-plane
-    IMAGE_VERSION: tmpl-v5
+    IMAGE_VERSION: tmpl-v6
     TMPL_SRC_REPO: ${ADP_IMAGE_REPO_NAME}
     TMPL_SRC_IMAGE: ${ADP_IMAGE_VERSION}-internal
     RELEASE_TAG: ${ADP_IMAGE_VERSION}
     BUILD_TAG: "${ADP_IMAGE_VERSION}-build"
     RELEASE_STAGING: "true"
     RELEASE_PROD: "true"
-    ENABLE_NYDUS_PREVIEW: "true"
 
 publish-adp-image-internal-fips:
   stage: build
@@ -246,14 +243,13 @@ publish-adp-image-internal-fips:
     strategy: depend
   variables:
     IMAGE_NAME: agent-data-plane
-    IMAGE_VERSION: tmpl-v5
+    IMAGE_VERSION: tmpl-v6
     TMPL_SRC_REPO: ${ADP_IMAGE_REPO_NAME}
     TMPL_SRC_IMAGE: ${ADP_IMAGE_VERSION_FIPS}-internal
     RELEASE_TAG: ${ADP_IMAGE_VERSION_FIPS}
     BUILD_TAG: "${ADP_IMAGE_VERSION_FIPS}-build"
     RELEASE_STAGING: "true"
     RELEASE_PROD: "true"
-    ENABLE_NYDUS_PREVIEW: "true"
 
 display-image-tags:
   extends: [.build-common-variables]
@@ -272,13 +268,9 @@ display-image-tags:
       cat <<EOF
       # Image Tags
 
-      ## Agent Data Plane (suitable for internal deployments, GBI-based)
+      ## Agent Data Plane (suitable for internal deployments, GBI-based, Nydus-compatible)
       Non-FIPS: ${IMAGE_REGISTRY}/${ADP_IMAGE_TAG}
       FIPS:     ${IMAGE_REGISTRY}/${ADP_IMAGE_TAG_FIPS}
-
-      ## Agent Data Plane (suitable for internal deployments, GBI-based, Nydus-compatible)
-      Non-FIPS: ${IMAGE_REGISTRY}/${ADP_IMAGE_TAG}-nydus
-      FIPS:     ${IMAGE_REGISTRY}/${ADP_IMAGE_TAG_FIPS}-nydus
       EOF
 
 # Builds the darwin release tarball natively on a macOS runner and exposes it as a GitLab job

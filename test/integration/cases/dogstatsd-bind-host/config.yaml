@@ -33,14 +33,14 @@ env:
   DD_BIND_HOST: "{{PANORAMIC_DYNAMIC_CONTAINER_IP}}"
 
 
-assertions:
-  - type: log_contains
+procedure:
+  - assertion: log_contains
     pattern: 'listen_addr:"udp://{{PANORAMIC_DYNAMIC_CONTAINER_IP}}:58125"'
     timeout: 60s
   - parallel:
-      - type: process_stable_for
+      - assertion: process_stable_for
         duration: 10s
-      - type: log_not_contains
+      - assertion: log_not_contains
         pattern: "panic|PANIC"
         regex: true
         during: 10s

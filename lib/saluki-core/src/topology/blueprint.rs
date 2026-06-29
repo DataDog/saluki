@@ -5,7 +5,7 @@ use resource_accounting::{ComponentRegistry, MemoryLimiter, Track as _, UsageExp
 use saluki_common::sync::shutdown::ShutdownHandle;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use snafu::Snafu;
-use tokio::{runtime::Handle, select, sync::oneshot};
+use tokio::{pin, runtime::Handle, select, sync::oneshot};
 use tracing::{error, info};
 
 use super::{
@@ -24,6 +24,8 @@ use crate::{
     runtime::{state::DataspaceRegistry, InitializationError, ShutdownStrategy, Supervisable, SupervisorFuture},
     topology::{ids::AsComponentIds, EventsBuffer, DEFAULT_EVENTS_BUFFER_CAPACITY},
 };
+
+const DEFAULT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// A topology blueprint error.
 #[derive(Debug, Snafu)]
@@ -73,6 +75,7 @@ struct TopologyBuildState {
     forwarders: HashMap<ComponentId, RegisteredComponent<Box<dyn ForwarderBuilder + Send>>>,
     component_registry: ComponentRegistry,
     interconnect_capacity: NonZeroUsize,
+    shutdown_timeout: Duration,
     worker_pool_config: WorkerPoolConfiguration,
     environment_ready: Option<Pin<Box<dyn Future<Output = ()> + Send>>>,
     ready_signal: Option<oneshot::Sender<()>>,
@@ -95,6 +98,7 @@ impl TopologyBlueprint {
             forwarders: HashMap::new(),
             component_registry,
             interconnect_capacity: super::DEFAULT_INTERCONNECT_CAPACITY,
+            shutdown_timeout: DEFAULT_SHUTDOWN_TIMEOUT,
             worker_pool_config: WorkerPoolConfiguration::Dedicated,
             environment_ready: None,
             ready_signal: None,
@@ -130,6 +134,14 @@ impl TopologyBlueprint {
     /// Defaults to 128.
     pub fn with_interconnect_capacity(&mut self, capacity: NonZeroUsize) -> &mut Self {
         self.state_mut().set_interconnect_capacity(capacity);
+        self
+    }
+
+    /// Sets how long the topology waits for components to stop during graceful shutdown.
+    ///
+    /// Defaults to 30 seconds.
+    pub fn with_shutdown_timeout(&mut self, timeout: Duration) -> &mut Self {
+        self.state_mut().shutdown_timeout = timeout;
         self
     }
 
@@ -871,17 +883,18 @@ impl Supervisable for TopologyBlueprint {
         // time, but maybe change in the future.
         let environment_ready = build_state.environment_ready.take();
         let ready_signal = build_state.ready_signal.take();
+        let shutdown_timeout = build_state.shutdown_timeout;
         let built = build_state.build(self.name.clone()).await?;
 
         Ok(Box::pin(async move {
-            tokio::pin!(shutdown);
+            pin!(shutdown);
 
             // If a readiness signal was provided, wait for it before spawning the components, but remain responsive to
             // shutdown so we exit promptly if asked to stop before we've started.
             if let Some(environment_ready) = environment_ready {
                 select! {
-                    _ = environment_ready => {},
                     _ = &mut shutdown => return Ok(()),
+                    _ = environment_ready => {},
                 }
             }
 
@@ -896,22 +909,20 @@ impl Supervisable for TopologyBlueprint {
 
             let mut topology_failed = false;
             select! {
+                // The supervisor requested shutdown.
+                _ = &mut shutdown => {
+                    info!("Topology received shutdown signal. Shutting down...");
+                },
+
                 // A component finished before shutdown was requested, which we treat as a failure of the topology.
                 _ = running.wait_for_unexpected_finish() => {
                     error!("Topology component unexpectedly finished. Shutting down...");
                     topology_failed = true;
                 },
-
-                // The supervisor requested shutdown.
-                _ = &mut shutdown => {
-                    info!("Topology received shutdown signal. Shutting down...");
-                },
             }
 
-            // Trigger graceful shutdown and wait up to 30 seconds for all components to stop.
-            //
-            // TODO: Make the graceful shutdown duration configurable.
-            let shutdown_result = running.shutdown_with_timeout(Duration::from_secs(30)).await;
+            // Trigger graceful shutdown and wait for all components to stop.
+            let shutdown_result = running.shutdown_with_timeout(shutdown_timeout).await;
             match (shutdown_result, topology_failed) {
                 (Ok(()), false) => Ok(()),
                 (Ok(()), true) => Err(generic_error!(

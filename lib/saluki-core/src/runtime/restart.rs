@@ -74,6 +74,50 @@ impl Default for RestartStrategy {
     }
 }
 
+/// Restart policy for an individual child process.
+///
+/// While [`RestartStrategy`] governs supervisor-wide behavior (which children are restarted together, and how often
+/// before the supervisor gives up), [`RestartType`] governs whether an _individual_ child is eligible for restart at
+/// all, based on how it exited.
+///
+/// Defaults to [`Permanent`][Self::Permanent], which marks a child process to always be restarted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum RestartType {
+    /// The child is always restarted, whether it exits normally or abnormally.
+    ///
+    /// This suits long-lived processes that are always expected to be running.
+    #[default]
+    Permanent,
+
+    /// The child is restarted only if it exits abnormally.
+    ///
+    /// An abnormal exit is an error, panic, or forced abort. A normal exit (the child's future resolves with `Ok(())`)
+    /// is treated as intentional, and the child is not restarted. This governs the child's _own_ exit; a transient
+    /// child is still restarted when a sibling triggers a [`RestartMode::OneForAll`] group restart, matching
+    /// Erlang/OTP.
+    Transient,
+
+    /// The child is never restarted, regardless of how it exits.
+    ///
+    /// This suits short-lived, on-demand children -- for example, one task per network connection -- whose termination
+    /// is a normal part of operation. A temporary child is never restarted even when a sibling triggers a
+    /// [`RestartMode::OneForAll`] group restart: it is shut down with the group but not brought back.
+    Temporary,
+}
+
+impl RestartType {
+    /// Returns `true` if a child with this restart policy should be restarted, given how it exited.
+    ///
+    /// `abnormal` indicates the child exited due to an error, panic, or forced abort, rather than completing normally.
+    pub(super) fn should_restart(self, abnormal: bool) -> bool {
+        match self {
+            Self::Permanent => true,
+            Self::Transient => abnormal,
+            Self::Temporary => false,
+        }
+    }
+}
+
 pub(super) enum RestartAction {
     /// Execute a restart with the given mode.
     Restart(RestartMode),

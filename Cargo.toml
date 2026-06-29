@@ -18,6 +18,7 @@ members = [
   "lib/protos/datadog",
   "lib/protos/otlp",
   "lib/resource-accounting",
+  "lib/saluki-antithesis",
   "lib/saluki-api",
   "lib/saluki-app",
   "lib/saluki-common",
@@ -33,6 +34,8 @@ members = [
   "lib/saluki-tls",
   "lib/stringtheory",
   "test/antithesis/harness",
+  "test/antithesis/intake",
+  "test/antithesis/scenarios/general",
 ]
 resolver = "2"
 
@@ -52,6 +55,7 @@ ddsketch = { path = "lib/ddsketch" }
 resource-accounting = { path = "lib/resource-accounting" }
 process-memory = { path = "lib/process-memory" }
 prometheus-exposition = { path = "lib/prometheus-exposition" }
+saluki-antithesis = { path = "lib/saluki-antithesis" }
 saluki-api = { path = "lib/saluki-api" }
 saluki-app = { path = "lib/saluki-app" }
 saluki-common = { path = "lib/saluki-common" }
@@ -234,7 +238,8 @@ logos = { version = "0.16", default-features = false }
 lru-slab = { version = "0.1.2", default-features = false }
 hickory-resolver = { version = "0.26", default-features = false }
 antithesis-instrumentation = { version = "0.1" }
-antithesis_sdk = { git = "https://github.com/antithesishq/antithesis-sdk-rust", rev = "6829a946e7e970cc743ffe17c3cee7d2bc25425a", default-features = false } # 0.2.8 is pinned to rand 0.8, rev version allows us to select workspace rand
+antithesis_sdk = { git = "https://github.com/antithesishq/antithesis-sdk-rust", rev = "78c9db56771f0f6b01cb5404765c5a96852c159c", default-features = false } # 0.2.8 is pinned to rand 0.8, rev version allows us to select workspace rand
+mime = "0.3"
 
 [patch.crates-io]
 # Forked version of `hyper-http-proxy` that removes an unused dependency on `rustls-native-certs`, which transitively depends

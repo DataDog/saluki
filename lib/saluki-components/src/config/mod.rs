@@ -1,5 +1,7 @@
 //! Datadog-specific configuration providers and remappers.
 
+pub mod autoscaling_failover;
+pub mod cluster_agent;
 pub mod mrf;
 use figment::{
     providers::Serialized,
@@ -7,6 +9,8 @@ use figment::{
     Error, Metadata, Profile, Provider,
 };
 
+pub use self::autoscaling_failover::AutoscalingFailoverConfiguration;
+pub use self::cluster_agent::ClusterAgentConfiguration;
 pub use self::mrf::MrfConfiguration;
 
 /// Key aliases to pass to [`ConfigurationLoader::with_key_aliases`][saluki_config::ConfigurationLoader::with_key_aliases].

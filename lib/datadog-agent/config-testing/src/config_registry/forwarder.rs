@@ -324,9 +324,31 @@ crate::declare_annotations! {
         test_json: None,
         pipeline_affinity: PipelineAffinity::CrossCutting,
     };
+    /// `forwarder_flush_to_disk_mem_ratio`-Mem-to-disk flush ratio
+    FORWARDER_FLUSH_TO_DISK_MEM_RATIO = SalukiAnnotation {
+        schema: &schema::FORWARDER_FLUSH_TO_DISK_MEM_RATIO,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::FORWARDER_CONFIGURATION],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::CrossCutting,
+    };
     /// `forwarder_max_concurrent_requests`-Max concurrent HTTP requests
     FORWARDER_MAX_CONCURRENT_REQUESTS = SalukiAnnotation {
         schema: &schema::FORWARDER_MAX_CONCURRENT_REQUESTS,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::FORWARDER_CONFIGURATION],
+        value_type_override: Some(ValueType::Integer),
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::CrossCutting,
+    };
+    /// `forwarder_retry_queue_capacity_time_interval_sec`-Retry queue time-based capacity
+    FORWARDER_RETRY_QUEUE_CAPACITY_TIME_INTERVAL_SEC = SalukiAnnotation {
+        schema: &schema::FORWARDER_RETRY_QUEUE_CAPACITY_TIME_INTERVAL_SEC,
         support_level: SupportLevel::Full,
         additional_yaml_paths: &[],
         env_var_override: None,

@@ -16,6 +16,7 @@ use crate::runner::Runner;
 mod kind;
 use self::kind::KindLifecycle;
 
+mod actions;
 mod assertions;
 mod cli;
 mod correctness;

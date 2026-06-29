@@ -87,5 +87,39 @@
         "**Cargo major update** — Before merging, verify the workspace compiles and check upstream release notes for removed features or API changes."
       ]
     }
+  ],
+
+  // Custom managers for Datadog Agent version pins that Renovate's built-in managers don't see.
+  //
+  // The `dockerfile` manager already bumps docker/Dockerfile.datadog-agent (the
+  // `registry.datadoghq.com/agent` FROM/ARG). But a couple of other pins for the same Agent are
+  // hand-maintained in files no default manager parses -- the macOS test Agent version (Makefile)
+  // and the Windows LTSC base image (.gitlab/windows.yml) -- so they were silently left behind on
+  // past bumps (see the 7.80.1 -> 7.80.2 update). Manage them here, tied to the same depName
+  // (`registry.datadoghq.com/agent`) so they bump in lockstep with -- and in the same PR as -- the
+  // main Agent image.
+  //
+  // `currentValue` captures only the numeric version; any image-tag suffix (-ltsc2022, -jmx, -full)
+  // is matched but left out of the group, so Renovate rewrites just the number and preserves the
+  // suffix in place. Because the suffixed tags are published together with the bare release, every
+  // pin tracks the same single Agent version rather than drifting onto separate per-suffix streams.
+  "customManagers": [
+    {
+      "customType": "regex",
+      "fileMatch": [
+        "(^|/)Makefile$",
+        "^\\.gitlab/windows\\.yml$"
+      ],
+      "matchStrings": [
+        // Bare version, e.g. `MACOS_TEST_AGENT_VERSION ?= 7.80.2` (Makefile).
+        "MACOS_TEST_AGENT_VERSION \\?= (?<currentValue>[\\d.]+)",
+        // Image pin, e.g. `registry.datadoghq.com/agent:7.80.2-ltsc2022` (.gitlab/windows.yml).
+        // The `-suffix` is matched but not captured, so only the number is rewritten.
+        "registry\\.datadoghq\\.com/agent:(?<currentValue>[\\d.]+)(?:-[a-z0-9]+)?"
+      ],
+      "datasourceTemplate": "docker",
+      "depNameTemplate": "registry.datadoghq.com/agent",
+      "versioningTemplate": "docker"
+    }
   ]
 }
