@@ -31,10 +31,6 @@ build-bundled-agent-adp-image:
       DD_AGENT_IMAGE="registry.datadoghq.com/agent:${PUBLIC_DD_AGENT_VERSION}"
       if [ "${AGENT_NIGHTLY}" = "true" ]; then # for nightly run, use latest Agent
         DD_AGENT_IMAGE="${NIGHTLY_AGENT_IMAGE:-datadog/agent-dev:master-py3-full}"
-        # `docker pull`/`run`/`inspect` need a local Docker daemon, which the `arch:amd64`
-        # runners don't provide. `docker buildx imagetools inspect` queries the registry via
-        # BuildKit, so it works here while still letting us pin the digest and record the
-        # Agent version (via image labels) for debugging.
         AGENT_IMAGE_REPO="${DD_AGENT_IMAGE%:*}"
         echo "Nightly Agent image config/labels (for debugging):"
         docker buildx imagetools inspect "$DD_AGENT_IMAGE" --format '{{json .Image}}'
