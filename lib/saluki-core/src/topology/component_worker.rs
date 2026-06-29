@@ -50,7 +50,7 @@ pub(super) trait RunnableComponent: Send + 'static {
 /// [`shutdown_strategy`][Supervisable::shutdown_strategy], which carries the shutdown timeout configured
 /// for the topology.
 pub(super) struct ComponentWorker<C> {
-    name: String,
+    name: &'static str,
     shutdown_timeout: Duration,
     inner: Mutex<Option<C>>,
 }
@@ -60,7 +60,7 @@ impl<C: RunnableComponent> ComponentWorker<C> {
     ///
     /// `name` is the worker's process name; `shutdown_timeout` bounds how long the supervisor waits for
     /// the component to stop gracefully before aborting it.
-    pub(super) fn new(name: String, shutdown_timeout: Duration, runnable: C) -> Self {
+    pub(super) fn new(name: &'static str, shutdown_timeout: Duration, runnable: C) -> Self {
         Self {
             name,
             shutdown_timeout,
@@ -72,7 +72,7 @@ impl<C: RunnableComponent> ComponentWorker<C> {
 #[async_trait]
 impl<C: RunnableComponent> Supervisable for ComponentWorker<C> {
     fn name(&self) -> &str {
-        &self.name
+        self.name
     }
 
     fn shutdown_strategy(&self) -> ShutdownStrategy {
