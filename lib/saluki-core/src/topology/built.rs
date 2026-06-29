@@ -1,15 +1,14 @@
-use std::{collections::HashMap, num::NonZeroUsize, time::Duration};
+use std::{collections::HashMap, future::Future, num::NonZeroUsize};
 
 use resource_accounting::{MemoryLimiter, ResourceGroupToken, Tracked};
+use saluki_common::{sync::shutdown::ShutdownCoordinator, task::JoinSetExt as _};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
-use tokio::{runtime::Handle, sync::mpsc};
-use tracing::debug;
-
-/// Period over which the topology supervisor's restart intensity is measured.
-///
-/// The topology supervisor uses a restart intensity of 0, so any component failure shuts the topology
-/// down on the first occurrence; the period only needs to be a sane non-zero value.
-const TOPOLOGY_RESTART_PERIOD: Duration = Duration::from_secs(5);
+use tokio::{
+    runtime::Handle,
+    sync::mpsc,
+    task::{AbortHandle, JoinSet},
+};
+use tracing::{debug, error_span};
 
 /// Configuration for the worker pool used by the topology.
 ///
@@ -35,20 +34,12 @@ pub enum WorkerPoolConfiguration {
     Explicit(Handle),
 }
 
-use super::component_worker::{
-    ComponentWorker, DecoderRunnable, DestinationRunnable, EncoderRunnable, ForwarderRunnable, RelayRunnable,
-    RunnableComponent, SourceRunnable, TransformRunnable,
-};
 use super::{
-    graph::Graph, ComponentId, EventsBuffer, EventsConsumer, OutputName, PayloadsConsumer, RegisteredComponent,
-    TypedComponentId,
+    graph::Graph, running::RunningTopology, ComponentId, EventsBuffer, EventsConsumer, OutputName, PayloadsConsumer,
+    RegisteredComponent, TypedComponentId,
 };
-use crate::health::{Health, HealthRegistry};
+use crate::health::HealthRegistry;
 use crate::runtime::state::DataspaceRegistry;
-use crate::runtime::{
-    AutoShutdown, ChildSpecification, RestartMode, RestartStrategy, RestartType, ShutdownMode, Supervisor,
-    SupervisorHandle,
-};
 use crate::{
     components::{
         decoders::{Decoder, DecoderContext},
@@ -138,44 +129,36 @@ impl BuiltTopology {
 
     /// Spawns the topology.
     ///
-    /// Each component runs as the sole, significant child of its own dedicated [`Supervisor`], and all of
-    /// those per-component supervisors are children of a single topology supervisor, which is returned
-    /// (configured but not yet running). The caller runs it to start the topology.
-    ///
     /// The worker pool used by components to spawn compute-heavy subtasks is determined by the
     /// [`WorkerPoolConfiguration`] carried over from the blueprint (defaulting to a dedicated,
     /// multi-threaded Tokio runtime with 8 threads).
     ///
-    /// `shutdown_timeout` bounds how long each component is given to stop gracefully before it is aborted.
+    /// A [`RunningTopology`] is returned that can be used to monitor and trigger shutdown of the topology.
     ///
     /// ## Errors
     ///
-    /// If an error occurs while building the topology supervisor, an error is returned.
+    /// If an error occurs while spawning the topology, an error is returned.
     pub(crate) async fn spawn_inner(
         self, health_registry: &HealthRegistry, memory_limiter: MemoryLimiter, dataspace: DataspaceRegistry,
-        shutdown_timeout: Duration,
-    ) -> Result<Supervisor, GenericError> {
+    ) -> Result<RunningTopology, GenericError> {
+        let root_component_name = super::health_component_root(&self.name);
+
         let _guard = self.component_token.enter();
 
         let thread_pool_handle = self.resolve_worker_pool_handle()?;
         let topology_context =
             TopologyContext::new(memory_limiter, health_registry.clone(), thread_pool_handle, dataspace);
 
-        // Build our interconnects, which we'll grab from piecemeal as we build our components.
+        let mut component_tasks = JoinSet::new();
+        let mut component_task_map = HashMap::new();
+
+        // Build our interconnects, which we'll grab from piecemeal as we spawn our components.
         let mut interconnects = ComponentInterconnects::from_graph(self.interconnect_capacity, &self.graph)
             .error_context("Failed to build component interconnects.")?;
 
-        // The topology supervisor parents one dedicated supervisor per component. `Concurrent` shutdown
-        // signals every component at once, so sources stop immediately and the downstream cascade drains in
-        // parallel (bounded by `shutdown_timeout`) rather than one component at a time. A `OneForOne`
-        // strategy with intensity 0 turns any single component failure into a supervisor shutdown on the
-        // first occurrence, which fails the topology as a whole -- preserving the previous behavior where a
-        // component finishing unexpectedly brings the topology down.
-        let mut topology_sup = Supervisor::new(format!("topology-{}", self.name))?
-            .with_shutdown_mode(ShutdownMode::Concurrent)
-            .with_restart_strategy(RestartStrategy::new(RestartMode::OneForOne, 0, TOPOLOGY_RESTART_PERIOD));
+        let mut shutdown_coordinator = ShutdownCoordinator::default();
 
-        // Build our sources.
+        // Spawn our sources.
         for (component_id, source) in self.sources {
             let (source, component_registry) = source.into_parts();
 
@@ -183,27 +166,32 @@ impl BuiltTopology {
                 .take_source_dispatcher(&component_id)
                 .ok_or_else(|| generic_error!("No events dispatcher found for source component '{}'", component_id))?;
 
-            let component_context = ComponentContext::source(component_id.clone());
-            let health_handle = build_health_handle(health_registry, &self.name, &component_context)?;
-            let (alloc_group, component) = source.into_parts();
+            let shutdown_handle = shutdown_coordinator.register();
+            let health_handle = health_registry
+                .register_component(format!("{}.sources.{}", root_component_name, component_id))
+                .expect("duplicate source component ID in health registry");
 
-            let component_sup =
-                build_component_supervisor(&component_context, shutdown_timeout, |handle| SourceRunnable {
-                    component,
-                    context: SourceContext::new(
-                        &topology_context,
-                        &component_context,
-                        component_registry,
-                        health_handle,
-                        dispatcher,
-                        handle,
-                    ),
-                    alloc_group,
-                })?;
-            topology_sup.add_worker(component_sup);
+            let component_context = ComponentContext::source(component_id.clone());
+            let context = SourceContext::new(
+                &topology_context,
+                &component_context,
+                component_registry,
+                shutdown_handle,
+                health_handle,
+                dispatcher,
+            );
+
+            let (alloc_group, source) = source.into_parts();
+            let task_handle = spawn_component(
+                &mut component_tasks,
+                component_context,
+                alloc_group,
+                source.run(context),
+            );
+            component_task_map.insert(task_handle.id(), component_id);
         }
 
-        // Build our relays.
+        // Spawn our relays.
         for (component_id, relay) in self.relays {
             let (relay, component_registry) = relay.into_parts();
 
@@ -211,27 +199,27 @@ impl BuiltTopology {
                 .take_relay_dispatcher(&component_id)
                 .ok_or_else(|| generic_error!("No payloads dispatcher found for relay component '{}'", component_id))?;
 
-            let component_context = ComponentContext::relay(component_id.clone());
-            let health_handle = build_health_handle(health_registry, &self.name, &component_context)?;
-            let (alloc_group, component) = relay.into_parts();
+            let shutdown_handle = shutdown_coordinator.register();
+            let health_handle = health_registry
+                .register_component(format!("{}.relays.{}", root_component_name, component_id))
+                .expect("duplicate relay component ID in health registry");
 
-            let component_sup =
-                build_component_supervisor(&component_context, shutdown_timeout, |handle| RelayRunnable {
-                    component,
-                    context: RelayContext::new(
-                        &topology_context,
-                        &component_context,
-                        component_registry,
-                        health_handle,
-                        dispatcher,
-                        handle,
-                    ),
-                    alloc_group,
-                })?;
-            topology_sup.add_worker(component_sup);
+            let component_context = ComponentContext::relay(component_id.clone());
+            let context = RelayContext::new(
+                &topology_context,
+                &component_context,
+                component_registry,
+                shutdown_handle,
+                health_handle,
+                dispatcher,
+            );
+
+            let (alloc_group, relay) = relay.into_parts();
+            let task_handle = spawn_component(&mut component_tasks, component_context, alloc_group, relay.run(context));
+            component_task_map.insert(task_handle.id(), component_id);
         }
 
-        // Build our decoders.
+        // Spawn our decoders.
         for (component_id, decoder) in self.decoders {
             let (decoder, component_registry) = decoder.into_parts();
 
@@ -243,28 +231,31 @@ impl BuiltTopology {
                 .take_decoder_consumer(&component_id)
                 .ok_or_else(|| generic_error!("No payloads consumer found for decoder component '{}'", component_id))?;
 
-            let component_context = ComponentContext::decoder(component_id.clone());
-            let health_handle = build_health_handle(health_registry, &self.name, &component_context)?;
-            let (alloc_group, component) = decoder.into_parts();
+            let health_handle = health_registry
+                .register_component(format!("{}.decoders.{}", root_component_name, component_id))
+                .expect("duplicate decoder component ID in health registry");
 
-            let component_sup =
-                build_component_supervisor(&component_context, shutdown_timeout, |handle| DecoderRunnable {
-                    component,
-                    context: DecoderContext::new(
-                        &topology_context,
-                        &component_context,
-                        component_registry,
-                        health_handle,
-                        dispatcher,
-                        consumer,
-                        handle,
-                    ),
-                    alloc_group,
-                })?;
-            topology_sup.add_worker(component_sup);
+            let component_context = ComponentContext::decoder(component_id.clone());
+            let context = DecoderContext::new(
+                &topology_context,
+                &component_context,
+                component_registry,
+                health_handle,
+                dispatcher,
+                consumer,
+            );
+
+            let (alloc_group, decoder) = decoder.into_parts();
+            let task_handle = spawn_component(
+                &mut component_tasks,
+                component_context,
+                alloc_group,
+                decoder.run(context),
+            );
+            component_task_map.insert(task_handle.id(), component_id);
         }
 
-        // Build our transforms.
+        // Spawn our transforms.
         for (component_id, transform) in self.transforms {
             let (transform, component_registry) = transform.into_parts();
 
@@ -276,28 +267,31 @@ impl BuiltTopology {
                 .take_transform_consumer(&component_id)
                 .ok_or_else(|| generic_error!("No events consumer found for transform component '{}'", component_id))?;
 
-            let component_context = ComponentContext::transform(component_id.clone());
-            let health_handle = build_health_handle(health_registry, &self.name, &component_context)?;
-            let (alloc_group, component) = transform.into_parts();
+            let health_handle = health_registry
+                .register_component(format!("{}.transforms.{}", root_component_name, component_id))
+                .expect("duplicate transform component ID in health registry");
 
-            let component_sup =
-                build_component_supervisor(&component_context, shutdown_timeout, |handle| TransformRunnable {
-                    component,
-                    context: TransformContext::new(
-                        &topology_context,
-                        &component_context,
-                        component_registry,
-                        health_handle,
-                        dispatcher,
-                        consumer,
-                        handle,
-                    ),
-                    alloc_group,
-                })?;
-            topology_sup.add_worker(component_sup);
+            let component_context = ComponentContext::transform(component_id.clone());
+            let context = TransformContext::new(
+                &topology_context,
+                &component_context,
+                component_registry,
+                health_handle,
+                dispatcher,
+                consumer,
+            );
+
+            let (alloc_group, transform) = transform.into_parts();
+            let task_handle = spawn_component(
+                &mut component_tasks,
+                component_context,
+                alloc_group,
+                transform.run(context),
+            );
+            component_task_map.insert(task_handle.id(), component_id);
         }
 
-        // Build our destinations.
+        // Spawn our destinations.
         for (component_id, destination) in self.destinations {
             let (destination, component_registry) = destination.into_parts();
 
@@ -305,27 +299,30 @@ impl BuiltTopology {
                 generic_error!("No events consumer found for destination component '{}'", component_id)
             })?;
 
-            let component_context = ComponentContext::destination(component_id.clone());
-            let health_handle = build_health_handle(health_registry, &self.name, &component_context)?;
-            let (alloc_group, component) = destination.into_parts();
+            let health_handle = health_registry
+                .register_component(format!("{}.destinations.{}", root_component_name, component_id))
+                .expect("duplicate destination component ID in health registry");
 
-            let component_sup =
-                build_component_supervisor(&component_context, shutdown_timeout, |handle| DestinationRunnable {
-                    component,
-                    context: DestinationContext::new(
-                        &topology_context,
-                        &component_context,
-                        component_registry,
-                        health_handle,
-                        consumer,
-                        handle,
-                    ),
-                    alloc_group,
-                })?;
-            topology_sup.add_worker(component_sup);
+            let component_context = ComponentContext::destination(component_id.clone());
+            let context = DestinationContext::new(
+                &topology_context,
+                &component_context,
+                component_registry,
+                health_handle,
+                consumer,
+            );
+
+            let (alloc_group, destination) = destination.into_parts();
+            let task_handle = spawn_component(
+                &mut component_tasks,
+                component_context,
+                alloc_group,
+                destination.run(context),
+            );
+            component_task_map.insert(task_handle.id(), component_id);
         }
 
-        // Build our encoders.
+        // Spawn our encoders.
         for (component_id, encoder) in self.encoders {
             let (encoder, component_registry) = encoder.into_parts();
 
@@ -337,28 +334,31 @@ impl BuiltTopology {
                 .take_encoder_consumer(&component_id)
                 .ok_or_else(|| generic_error!("No events consumer found for encoder component '{}'", component_id))?;
 
-            let component_context = ComponentContext::encoder(component_id.clone());
-            let health_handle = build_health_handle(health_registry, &self.name, &component_context)?;
-            let (alloc_group, component) = encoder.into_parts();
+            let health_handle = health_registry
+                .register_component(format!("{}.encoders.{}", root_component_name, component_id))
+                .expect("duplicate encoder component ID in health registry");
 
-            let component_sup =
-                build_component_supervisor(&component_context, shutdown_timeout, |handle| EncoderRunnable {
-                    component,
-                    context: EncoderContext::new(
-                        &topology_context,
-                        &component_context,
-                        component_registry,
-                        health_handle,
-                        dispatcher,
-                        consumer,
-                        handle,
-                    ),
-                    alloc_group,
-                })?;
-            topology_sup.add_worker(component_sup);
+            let component_context = ComponentContext::encoder(component_id.clone());
+            let context = EncoderContext::new(
+                &topology_context,
+                &component_context,
+                component_registry,
+                health_handle,
+                dispatcher,
+                consumer,
+            );
+
+            let (alloc_group, encoder) = encoder.into_parts();
+            let task_handle = spawn_component(
+                &mut component_tasks,
+                component_context,
+                alloc_group,
+                encoder.run(context),
+            );
+            component_task_map.insert(task_handle.id(), component_id);
         }
 
-        // Build our forwarders.
+        // Spawn our forwarders.
         for (component_id, forwarder) in self.forwarders {
             let (forwarder, component_registry) = forwarder.into_parts();
 
@@ -366,27 +366,34 @@ impl BuiltTopology {
                 generic_error!("No payloads consumer found for forwarder component '{}'", component_id)
             })?;
 
-            let component_context = ComponentContext::forwarder(component_id.clone());
-            let health_handle = build_health_handle(health_registry, &self.name, &component_context)?;
-            let (alloc_group, component) = forwarder.into_parts();
+            let health_handle = health_registry
+                .register_component(format!("{}.forwarders.{}", root_component_name, component_id))
+                .expect("duplicate forwarder component ID in health registry");
 
-            let component_sup =
-                build_component_supervisor(&component_context, shutdown_timeout, |handle| ForwarderRunnable {
-                    component,
-                    context: ForwarderContext::new(
-                        &topology_context,
-                        &component_context,
-                        component_registry,
-                        health_handle,
-                        consumer,
-                        handle,
-                    ),
-                    alloc_group,
-                })?;
-            topology_sup.add_worker(component_sup);
+            let component_context = ComponentContext::forwarder(component_id.clone());
+            let context = ForwarderContext::new(
+                &topology_context,
+                &component_context,
+                component_registry,
+                health_handle,
+                consumer,
+            );
+
+            let (alloc_group, forwarder) = forwarder.into_parts();
+            let task_handle = spawn_component(
+                &mut component_tasks,
+                component_context,
+                alloc_group,
+                forwarder.run(context),
+            );
+            component_task_map.insert(task_handle.id(), component_id);
         }
 
-        Ok(topology_sup)
+        Ok(RunningTopology::from_parts(
+            shutdown_coordinator,
+            component_tasks,
+            component_task_map,
+        ))
     }
 }
 
@@ -640,56 +647,28 @@ fn build_payloads_consumer_pair(
     (sender, consumer)
 }
 
-/// Builds a dedicated supervisor for a single component.
-///
-/// For every component, we follow the pattern of creating a dedicated supervisor where the component task itself is the
-/// sole (initial) child process, set as a significant child such that when it terminates, the supervisor shuts down as
-/// well. This provides us with a decent approximation of structured concurrency for components and their subtasks.
-fn build_component_supervisor<C, F>(
-    component_context: &ComponentContext, shutdown_timeout: Duration, make_runnable: F,
-) -> Result<Supervisor, GenericError>
+fn spawn_component<F>(
+    join_set: &mut JoinSet<Result<(), GenericError>>, context: ComponentContext,
+    resource_group_token: ResourceGroupToken, component_future: F,
+) -> AbortHandle
 where
-    C: RunnableComponent,
-    F: FnOnce(SupervisorHandle) -> C,
+    F: Future<Output = Result<(), GenericError>> + Send + 'static,
 {
-    // The per-component supervisor is named by the component ID; its single worker, by the component kind. Scoped under
-    // the topology supervisor, this yields process names like `topology_<name>.<id>.<kind>`.
-    let mut component_sup = Supervisor::new(component_context.component_id().to_string())?
-        .with_auto_shutdown(AutoShutdown::AnySignificant)
-        .with_shutdown_mode(ShutdownMode::Concurrent);
-
-    let runnable = make_runnable(component_sup.handle());
-    component_sup.add_worker(
-        ChildSpecification::worker(ComponentWorker::new(
-            component_context.component_type().as_str(),
-            shutdown_timeout,
-            runnable,
-        ))
-        .with_restart_type(RestartType::Temporary)
-        .with_significant(true),
+    let component_span = error_span!(
+        "component",
+        "type" = context.component_type().as_str(),
+        id = %context.component_id(),
     );
 
-    Ok(component_sup)
-}
+    let _span = component_span.enter();
+    let _guard = resource_group_token.enter();
 
-fn build_health_handle(
-    health_registry: &HealthRegistry, topology_name: &str, component_context: &ComponentContext,
-) -> Result<Health, GenericError> {
-    let maybe_handle = health_registry.register_component(format!(
-        "topology.{}.{}s.{}",
-        topology_name,
-        component_context.component_type().as_str(),
-        component_context.component_id()
-    ));
-
-    match maybe_handle {
-        Some(handle) => Ok(handle),
-        None => Err(generic_error!(
-            "duplicate {} component ID in health registry: {}",
-            component_context.component_type().as_str(),
-            component_context.component_id()
-        )),
-    }
+    let component_task_name = format!(
+        "topology-{}-{}",
+        context.component_type().as_str(),
+        context.component_id()
+    );
+    join_set.spawn_traced_named(component_task_name, component_future)
 }
 
 #[cfg(test)]

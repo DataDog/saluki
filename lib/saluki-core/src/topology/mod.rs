@@ -12,8 +12,6 @@ pub use self::blueprint::{BlueprintError, TopologyBlueprint, TopologyReady};
 
 mod built;
 
-mod component_worker;
-
 mod context;
 pub use self::context::TopologyContext;
 
@@ -26,6 +24,8 @@ pub use self::ids::{
 
 pub mod interconnect;
 use self::interconnect::{Consumer, Dispatcher};
+
+mod running;
 
 #[cfg(test)]
 pub(super) mod test_util;
