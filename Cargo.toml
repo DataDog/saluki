@@ -134,7 +134,7 @@ quanta = { version = "0.12", default-features = false }
 crossterm = { version = "0.29", default-features = false }
 rand = { version = "0.10", default-features = false }
 rand_distr = { version = "0.6", default-features = false }
-k8s-openapi = { version = "0.27", default-features = false, features = ["v1_33"] }
+k8s-openapi = { version = "0.28", default-features = false, features = ["v1_33"] }
 kube = { version = "3.1", default-features = false }
 regex = { version = "1.12", default-features = false }
 rustls = { version = "0.23", default-features = false, features = [
@@ -143,7 +143,7 @@ rustls = { version = "0.23", default-features = false, features = [
   "std",
   "tls12",
 ] }
-schemars = { version = "0.8", default-features = false }
+schemars = { version = "0.9", default-features = false }
 similar-asserts = { version = "2.0", default-features = false }
 slab = { version = "0.4.12", default-features = false }
 syn = { version = "2", default-features = false, features = ["full", "parsing", "visit-mut"] }
@@ -198,7 +198,7 @@ crossbeam-queue = { version = "0.3", default-features = false, features = [
   "alloc",
 ] }
 float-cmp = { version = "0.10", default-features = false }
-tower-http = { version = "0.6", default-features = false }
+tower-http = { version = "0.7", default-features = false }
 bollard = { version = "0.21", default-features = false }
 home = { version = "0.5", default-features = false }
 reqwest = { version = "0.13", default-features = false }
