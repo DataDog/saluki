@@ -120,9 +120,7 @@ mod tests {
 
     #[test]
     fn size_of_interned_string() {
-        // We're asserting that `InternedString` itself is 24 bytes: an enum over possible interner implementations,
-        // each of which should be 16 bytes in size... making `InternedString` itself 24 bytes in size due to the additional
-        // discriminant field.
-        assert_eq!(std::mem::size_of::<InternedString>(), 24);
+        // `InternedString` is a three-machine-word enum over possible interner implementations.
+        assert_eq!(std::mem::size_of::<InternedString>(), std::mem::size_of::<usize>() * 3);
     }
 }

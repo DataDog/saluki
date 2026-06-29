@@ -765,7 +765,7 @@ mod tests {
     #[test]
     fn try_intern_without_capacity() {
         // Big enough to fit a single "hello world!" string, but not big enough to fit two.
-        let interner = create_interner(48);
+        let interner = create_interner(entry_len("hello world!"));
 
         let s1 = interner.try_intern("hello world!");
         assert!(s1.is_some());
@@ -801,9 +801,6 @@ mod tests {
         //
         // The point is to demonstrate that our reclamation logic is sound in terms of allowing reclaimed entries to be
         // split while the search/insertion logic is operating.
-        let capacity = 256;
-        let interner = create_interner(capacity);
-
         // We craft four strings such that the first two (`s_large` and `s_medium1`) will take up enough capacity that
         // `s_small` can't possibly be interned in the available capacity. We'll also craft `s_medium2` so it can fit
         // within the reclaimed entry for `s_large` but takes enough capacity that `s_small` cannot fit in the leftover
@@ -811,7 +808,9 @@ mod tests {
         let s_large = "99 bottles of beer on the wall, 99 bottles of beer! take one down, pass it around, 98 bottles of beer on the wall!";
         let s_medium1 = "no act of kindness, no matter how small, is ever wasted";
         let s_medium2 = "if you want to go fast, go alone; if you want to go far, go together";
-        let s_small = "are you there god? it's me, margaret";
+        let s_small = "are you there god? it's me, margaret, writing with one more question about capacity";
+        let capacity = entry_len(s_large) + entry_len(s_medium1) + entry_len(s_small) - 1;
+        let interner = create_interner(capacity);
 
         let phase1_available_capacity = capacity - entry_len(s_large) - entry_len(s_medium1);
         assert!(phase1_available_capacity < entry_len(s_small));
@@ -860,7 +859,7 @@ mod tests {
         const S2_VALUE: &str = "hello, world";
         const S3_VALUE: &str = "hello--world";
 
-        let interner = create_interner(80);
+        let interner = create_interner(entry_len(S1_VALUE) + entry_len(S2_VALUE));
 
         // Intern the first two strings, which should fit without issue.
         let s1 = interner.try_intern(S1_VALUE).expect("should not fail to intern");
