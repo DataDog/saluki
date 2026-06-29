@@ -70,14 +70,11 @@ impl EncoderContext {
         &mut self.consumer
     }
 
-    /// Returns a handle for spawning dynamic children under this component's dedicated supervisor.
+    /// Returns a handle to the supervisor that this component is spawned on.
     ///
-    /// Spawned children are temporary -- they are never restarted, and they are torn down when the
-    /// component (and thus its supervisor) stops -- which suits structured, on-demand background work.
-    ///
-    /// > **Note:** a child's name becomes a process name and a resource-group identifier. Child names
-    /// > **MUST** be bounded and low-cardinality; never embed per-request or per-peer values, as doing
-    /// > so leaks unbounded process/metric identity.
+    /// Dynamic child processes can be spawned via the supervisor handle and thus have their lifecycle
+    /// coupled to the component itself: if the component restarts, or the component's supervisor die,
+    /// the dynamic child processes will also be terminated automatically as well.
     pub fn spawn_handle(&self) -> &SupervisorHandle {
         &self.supervisor_handle
     }
