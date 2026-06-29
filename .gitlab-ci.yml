@@ -1,5 +1,8 @@
 include:
   - .gitlab/*.yml
+  - project: 'DataDog/slack-notifier'
+    ref: '43ce84dc9b68c1560842672bc444bcb9ef4acf84'
+    file: 'gitlab-pipeline-templates/v3-sdm/template.yml'
 
 stages:
   - test
