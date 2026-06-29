@@ -6,13 +6,10 @@
 use protobuf::CodedOutputStream;
 use saluki_error::GenericError;
 
-use super::constants::*;
-use super::interner::Interner;
-use super::telemetry::V3ValueEncodingStats;
-use super::types::{value_type_for_values, V3MetricType, V3ValueType};
+use datadog_metrics_v3::{Interner, V3MetricType, V3ValueType, FLAG_HAS_UNIT, FLAG_NO_INDEX};
 
-const FLAG_NO_INDEX: u64 = 0x100;
-const FLAG_HAS_UNIT: u64 = 0x200;
+use super::constants::*;
+use super::telemetry::V3ValueEncodingStats;
 
 /// Encoded V3 payload data ready for protobuf serialization.
 ///
@@ -755,6 +752,77 @@ impl<'a> V3MetricBuilder<'a> {
             }
         }
     }
+}
+
+/// Intermediate point classification for value type compaction.
+///
+/// Distinguishes small integers (that fit losslessly in f32) from large integers
+/// (that don't), so that mixing a large integer with a Float32 value correctly
+/// escalates to Float64 rather than silently truncating the integer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[repr(u8)]
+enum PointKind {
+    Zero = 0,
+    /// Integer with |v| <= 2^24, fits losslessly in both sint64 and f32.
+    Int24 = 1,
+    /// Integer with |v| > 2^24, fits in sint64 but NOT losslessly in f32.
+    Int48 = 2,
+    /// Fractional value exactly representable as f32.
+    Float32 = 3,
+    /// Everything else - requires full f64 precision.
+    Float64 = 4,
+}
+
+const F32_INT_MAX: i64 = 1 << 24;
+
+impl PointKind {
+    fn for_value(v: f64) -> Self {
+        if v == 0.0 {
+            return Self::Zero;
+        }
+
+        const VARINT_WIDTH: i32 = 7 * 7 - 1;
+        const MAX_INT: i64 = 1 << VARINT_WIDTH;
+        const MIN_INT: i64 = -MAX_INT;
+
+        let i = v as i64;
+        if (MIN_INT..MAX_INT).contains(&i) && (i as f64) == v {
+            if (-F32_INT_MAX..=F32_INT_MAX).contains(&i) {
+                return Self::Int24;
+            }
+            return Self::Int48;
+        }
+
+        if (v as f32 as f64) == v {
+            return Self::Float32;
+        }
+
+        Self::Float64
+    }
+
+    fn union(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Int48, Self::Float32) | (Self::Float32, Self::Int48) => Self::Float64,
+            _ => self.max(other),
+        }
+    }
+
+    fn to_value_type(self) -> V3ValueType {
+        match self {
+            Self::Zero => V3ValueType::Zero,
+            Self::Int24 | Self::Int48 => V3ValueType::Sint64,
+            Self::Float32 => V3ValueType::Float32,
+            Self::Float64 => V3ValueType::Float64,
+        }
+    }
+}
+
+fn value_type_for_values(values: impl Iterator<Item = f64>) -> V3ValueType {
+    let mut kind = PointKind::Zero;
+    for v in values {
+        kind = kind.union(PointKind::for_value(v));
+    }
+    kind.to_value_type()
 }
 
 fn write_bytes_column(

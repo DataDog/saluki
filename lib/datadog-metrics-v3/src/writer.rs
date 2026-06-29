@@ -4,7 +4,7 @@
 //! then produces [`V3EncodedData`] ready for protobuf serialization.
 
 use super::interner::Interner;
-use super::types::{V3MetricType, V3ValueType};
+use super::types::{FLAG_HAS_UNIT, FLAG_NO_INDEX, V3MetricType, V3ValueType};
 
 /// Appends a varint-length-prefixed string to the destination buffer.
 fn append_len_str(dst: &mut Vec<u8>, s: &str) {
@@ -58,6 +58,7 @@ pub struct V3EncodedData {
     pub dict_resource_name: Vec<i64>,
     pub dict_source_type_bytes: Vec<u8>,
     pub dict_origin_info: Vec<i32>,
+    pub dict_unit_bytes: Vec<u8>,
 
     // Per-metric columns (one entry per metric)
     pub types: Vec<u64>,
@@ -68,6 +69,8 @@ pub struct V3EncodedData {
     pub num_points: Vec<u64>,
     pub source_type_names: Vec<i64>,
     pub origin_infos: Vec<i64>,
+    /// Unit ref per metric. Only present (non-empty) for metrics with `FLAG_HAS_UNIT` set.
+    pub unit_refs: Vec<i64>,
 
     // Point data (varies per metric based on num_points)
     pub timestamps: Vec<i64>,
@@ -96,6 +99,7 @@ pub struct V3Writer {
     resource_interner: Interner<Vec<(i64, i64)>>,
     source_type_interner: Interner<String>,
     origin_interner: Interner<(i32, i32, i32)>,
+    unit_interner: Interner<String>,
 
     // Dictionary encoded bytes
     dict_name_bytes: Vec<u8>,
@@ -107,6 +111,7 @@ pub struct V3Writer {
     dict_resource_name: Vec<i64>,
     dict_source_type_bytes: Vec<u8>,
     dict_origin_info: Vec<i32>,
+    dict_unit_bytes: Vec<u8>,
 
     // Per-metric columns
     types: Vec<u64>,
@@ -117,6 +122,7 @@ pub struct V3Writer {
     num_points: Vec<u64>,
     source_type_names: Vec<i64>,
     origin_infos: Vec<i64>,
+    unit_refs: Vec<i64>,
 
     // Point data
     timestamps: Vec<i64>,
@@ -154,6 +160,8 @@ impl V3Writer {
         self.num_points.push(0);
         self.source_type_names.push(0);
         self.origin_infos.push(0);
+        // unit_refs is sparse: only written for metrics that have FLAG_HAS_UNIT set.
+        // We track whether any metric in this payload has a unit.
 
         V3MetricBuilder {
             writer: self,
@@ -174,6 +182,7 @@ impl V3Writer {
         delta_encode(&mut self.source_type_names);
         delta_encode(&mut self.origin_infos);
         delta_encode(&mut self.timestamps);
+        delta_encode(&mut self.unit_refs);
 
         V3EncodedData {
             dict_name_bytes: self.dict_name_bytes,
@@ -185,6 +194,7 @@ impl V3Writer {
             dict_resource_name: self.dict_resource_name,
             dict_source_type_bytes: self.dict_source_type_bytes,
             dict_origin_info: self.dict_origin_info,
+            dict_unit_bytes: self.dict_unit_bytes,
             types: self.types,
             names: self.names,
             tags: self.tags,
@@ -193,6 +203,7 @@ impl V3Writer {
             num_points: self.num_points,
             source_type_names: self.source_type_names,
             origin_infos: self.origin_infos,
+            unit_refs: self.unit_refs,
             timestamps: self.timestamps,
             vals_sint64: self.vals_sint64,
             vals_float32: self.vals_float32,
@@ -209,7 +220,7 @@ impl V3Writer {
         if name.is_empty() {
             return 0;
         }
-        let (id, is_new) = self.name_interner.get_or_insert(name.to_string());
+        let (id, is_new) = self.name_interner.get_or_insert(name);
         if is_new {
             append_len_str(&mut self.dict_name_bytes, name);
         }
@@ -220,7 +231,7 @@ impl V3Writer {
         if tag.is_empty() {
             return 0;
         }
-        let (id, is_new) = self.tag_interner.get_or_insert(tag.to_string());
+        let (id, is_new) = self.tag_interner.get_or_insert(tag);
         if is_new {
             append_len_str(&mut self.dict_tags_bytes, tag);
         }
@@ -231,7 +242,7 @@ impl V3Writer {
         if tag_ids.is_empty() {
             return 0;
         }
-        let (id, is_new) = self.tagset_interner.get_or_insert(tag_ids.clone());
+        let (id, is_new) = self.tagset_interner.get_or_insert(tag_ids.as_slice());
         if is_new {
             self.encode_tagset(&tag_ids);
         }
@@ -256,7 +267,7 @@ impl V3Writer {
         if s.is_empty() {
             return 0;
         }
-        let (id, is_new) = self.resource_str_interner.get_or_insert(s.to_string());
+        let (id, is_new) = self.resource_str_interner.get_or_insert(s);
         if is_new {
             append_len_str(&mut self.dict_resource_str_bytes, s);
         }
@@ -274,7 +285,7 @@ impl V3Writer {
             .map(|(t, n)| (self.intern_resource_str(t), self.intern_resource_str(n)))
             .collect();
 
-        let (id, is_new) = self.resource_interner.get_or_insert(id_pairs.clone());
+        let (id, is_new) = self.resource_interner.get_or_insert(id_pairs.as_slice());
         if is_new {
             self.encode_resources(&id_pairs);
         }
@@ -300,7 +311,7 @@ impl V3Writer {
         if s.is_empty() {
             return 0;
         }
-        let (id, is_new) = self.source_type_interner.get_or_insert(s.to_string());
+        let (id, is_new) = self.source_type_interner.get_or_insert(s);
         if is_new {
             append_len_str(&mut self.dict_source_type_bytes, s);
         }
@@ -311,11 +322,22 @@ impl V3Writer {
         if product == 0 && category == 0 && service == 0 {
             return 0;
         }
-        let (id, is_new) = self.origin_interner.get_or_insert((product, category, service));
+        let (id, is_new) = self.origin_interner.get_or_insert(&(product, category, service));
         if is_new {
             self.dict_origin_info.push(product);
             self.dict_origin_info.push(category);
             self.dict_origin_info.push(service);
+        }
+        id
+    }
+
+    fn intern_unit(&mut self, unit: &str) -> i64 {
+        if unit.is_empty() {
+            return 0;
+        }
+        let (id, is_new) = self.unit_interner.get_or_insert(unit);
+        if is_new {
+            append_len_str(&mut self.dict_unit_bytes, unit);
         }
         id
     }
@@ -380,6 +402,25 @@ impl<'a> V3MetricBuilder<'a> {
         }
         let id = self.writer.intern_source_type(source_type);
         self.writer.source_type_names[self.metric_idx] = id;
+    }
+
+    /// Sets the unit for this metric (e.g. "millisecond", "byte").
+    ///
+    /// Sets `FLAG_HAS_UNIT` in the types column and records the unit ref.
+    pub fn set_unit(&mut self, unit: &str) {
+        if unit.is_empty() {
+            return;
+        }
+        let id = self.writer.intern_unit(unit);
+        self.writer.types[self.metric_idx] |= FLAG_HAS_UNIT;
+        self.writer.unit_refs.push(id);
+    }
+
+    /// Marks this metric as agent-hidden (not indexed by the backend).
+    ///
+    /// Sets `FLAG_NO_INDEX` in the types column.
+    pub fn set_no_index(&mut self) {
+        self.writer.types[self.metric_idx] |= FLAG_NO_INDEX;
     }
 
     /// Sets the origin metadata for this metric.

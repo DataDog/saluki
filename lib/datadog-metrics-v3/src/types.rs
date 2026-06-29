@@ -1,5 +1,11 @@
 //! V3 payload type definitions.
 
+/// Metric should not be indexed by the backend (agent_hidden metrics).
+pub const FLAG_NO_INDEX: u64 = 0x100;
+
+/// Metric carries a unit; the `unit_refs` column is populated for this metric.
+pub const FLAG_HAS_UNIT: u64 = 0x200;
+
 /// V3 metric type values.
 ///
 /// These match the `metricType` enum in `payload_v3.proto`.
@@ -79,6 +85,91 @@ impl V3ValueType {
             self
         }
     }
+}
+
+/// Intermediate point classification for value type compaction.
+///
+/// Provides finer-grained classification than [`V3ValueType`] to avoid precision
+/// loss when combining different value types. In particular, it distinguishes small
+/// integers (that fit losslessly in f32) from large integers (that don't), so that
+/// mixing a large integer with a Float32 value correctly escalates to Float64 rather
+/// than silently truncating the integer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[repr(u8)]
+enum PointKind {
+    /// Value is zero.
+    Zero = 0,
+    /// Integer with |v| <= 2^24, fits losslessly in both sint64 and f32.
+    Int24 = 1,
+    /// Integer with |v| > 2^24, fits in sint64 varint but NOT losslessly in f32.
+    Int48 = 2,
+    /// Fractional value exactly representable as f32.
+    Float32 = 3,
+    /// Everything else — requires full f64 precision.
+    Float64 = 4,
+}
+
+/// Maximum integer magnitude that fits losslessly in f32 (2^24).
+const F32_INT_MAX: i64 = 1 << 24;
+
+impl PointKind {
+    fn for_value(v: f64) -> Self {
+        if v == 0.0 {
+            return Self::Zero;
+        }
+
+        const VARINT_WIDTH: i32 = 7 * 7 - 1;
+        const MAX_INT: i64 = 1 << VARINT_WIDTH;
+        const MIN_INT: i64 = -MAX_INT;
+
+        let i = v as i64;
+        if (MIN_INT..MAX_INT).contains(&i) && (i as f64) == v {
+            if (-F32_INT_MAX..=F32_INT_MAX).contains(&i) {
+                return Self::Int24;
+            }
+            return Self::Int48;
+        }
+
+        if (v as f32 as f64) == v {
+            return Self::Float32;
+        }
+
+        Self::Float64
+    }
+
+    /// Combines two point kinds into the smallest kind that can represent both.
+    ///
+    /// `Int48 + Float32 = Float64` (and vice versa), because large integers lose
+    /// precision in f32 and fractional values can't be stored as sint64. All other
+    /// combinations are `max(self, other)`.
+    fn union(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Int48, Self::Float32) | (Self::Float32, Self::Int48) => Self::Float64,
+            _ => self.max(other),
+        }
+    }
+
+    fn to_value_type(self) -> V3ValueType {
+        match self {
+            Self::Zero => V3ValueType::Zero,
+            Self::Int24 | Self::Int48 => V3ValueType::Sint64,
+            Self::Float32 => V3ValueType::Float32,
+            Self::Float64 => V3ValueType::Float64,
+        }
+    }
+}
+
+/// Determines the best [`V3ValueType`] for a set of f64 values.
+///
+/// Uses [`PointKind`] internally to avoid precision loss when mixing large integers
+/// with fractional float32 values — a case where the simpler per-value approach
+/// would silently truncate the integer.
+pub fn value_type_for_values(values: impl Iterator<Item = f64>) -> V3ValueType {
+    let mut kind = PointKind::Zero;
+    for v in values {
+        kind = kind.union(PointKind::for_value(v));
+    }
+    kind.to_value_type()
 }
 
 #[cfg(test)]

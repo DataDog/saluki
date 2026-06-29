@@ -1,11 +1,14 @@
 //! Generic interning for dictionary deduplication.
 
-use std::{collections::HashMap, hash::Hash};
+use std::{borrow::Borrow, collections::HashMap, hash::Hash};
 
 /// Generic interning structure for dictionary deduplication.
 ///
 /// Assigns unique 1-based IDs to values, returning the same ID for duplicate values.
 /// ID 0 is reserved for "empty/none" in the V3 format.
+///
+/// The `Borrow` trait bound on [`get_or_insert`] means callers can pass a borrow
+/// (e.g. `&str` when `K = String`) to look up an existing ID without cloning.
 #[derive(Debug)]
 pub struct Interner<K: Eq + Hash> {
     index: HashMap<K, i64>,
@@ -31,12 +34,19 @@ impl<K: Eq + Hash> Interner<K> {
     ///
     /// Returns `(id, is_new)` where `is_new` is true if the key was newly inserted.
     /// IDs are 1-based (0 is reserved for empty/none values).
-    pub fn get_or_insert(&mut self, key: K) -> (i64, bool) {
-        if let Some(&id) = self.index.get(&key) {
+    ///
+    /// The `Q` parameter allows borrowing: pass `&str` when `K = String` to avoid
+    /// a clone on cache hits.
+    pub fn get_or_insert<Q>(&mut self, key: &Q) -> (i64, bool)
+    where
+        K: Borrow<Q>,
+        Q: ToOwned<Owned = K> + Hash + Eq + ?Sized,
+    {
+        if let Some(&id) = self.index.get(key) {
             (id, false)
         } else {
             self.last_id += 1;
-            self.index.insert(key, self.last_id);
+            self.index.insert(key.to_owned(), self.last_id);
             (self.last_id, true)
         }
     }
@@ -63,17 +73,17 @@ mod tests {
         let mut interner: Interner<String> = Interner::new();
 
         // First insertion returns ID 1 and is_new=true
-        let (id1, is_new1) = interner.get_or_insert("hello".to_string());
+        let (id1, is_new1) = interner.get_or_insert("hello");
         assert_eq!(id1, 1);
         assert!(is_new1);
 
         // Second insertion of same value returns same ID and is_new=false
-        let (id2, is_new2) = interner.get_or_insert("hello".to_string());
+        let (id2, is_new2) = interner.get_or_insert("hello");
         assert_eq!(id2, 1);
         assert!(!is_new2);
 
-        // New value gets next ID
-        let (id3, is_new3) = interner.get_or_insert("world".to_string());
+        // No clone needed on hit — pass &str for String interner
+        let (id3, is_new3) = interner.get_or_insert("world");
         assert_eq!(id3, 2);
         assert!(is_new3);
 
@@ -81,12 +91,23 @@ mod tests {
     }
 
     #[test]
+    fn test_interner_borrow_avoids_clone() {
+        // Verify that a &str key lookup on a String interner works without ToOwned
+        let mut interner: Interner<String> = Interner::new();
+        interner.get_or_insert("a");
+        // Re-look up with a &str (not a String clone)
+        let (id, is_new) = interner.get_or_insert("a");
+        assert_eq!(id, 1);
+        assert!(!is_new);
+    }
+
+    #[test]
     fn test_interner_tuples() {
         let mut interner: Interner<(i32, i32, i32)> = Interner::new();
 
-        let (id1, _) = interner.get_or_insert((1, 2, 3));
-        let (id2, _) = interner.get_or_insert((1, 2, 3));
-        let (id3, _) = interner.get_or_insert((4, 5, 6));
+        let (id1, _) = interner.get_or_insert(&(1, 2, 3));
+        let (id2, _) = interner.get_or_insert(&(1, 2, 3));
+        let (id3, _) = interner.get_or_insert(&(4, 5, 6));
 
         assert_eq!(id1, id2);
         assert_ne!(id1, id3);

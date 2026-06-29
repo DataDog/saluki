@@ -36,6 +36,10 @@ mod field {
     pub const SKETCH_BIN_CNTS: u32 = 22;
     pub const SOURCE_TYPE_NAME: u32 = 23;
     pub const ORIGIN_INFO: u32 = 24;
+    /// Unit string dictionary (varint-length-prefixed strings).
+    pub const DICT_UNIT_STR: u32 = 25;
+    /// Per-metric unit refs (packed sint64, delta-encoded; only present when FLAG_HAS_UNIT set).
+    pub const UNIT_REF: u32 = 26;
 }
 
 // ── Varint primitives ────────────────────────────────────────────────────────
@@ -229,6 +233,9 @@ pub fn serialize_v3_payload(data: &V3EncodedData, output: &mut Vec<u8>) {
     // Additional per-metric columns (higher field numbers, written after point data)
     write_packed_sint64(output, field::SOURCE_TYPE_NAME, &data.source_type_names);
     write_packed_sint64(output, field::ORIGIN_INFO, &data.origin_infos);
+    // Unit fields (field 25/26) — only written when at least one metric has a unit.
+    write_bytes_field(output, field::DICT_UNIT_STR, &data.dict_unit_bytes);
+    write_packed_sint64(output, field::UNIT_REF, &data.unit_refs);
 }
 
 #[cfg(test)]
