@@ -169,15 +169,20 @@ mod tests {
 
     use super::super::aggregated::AggregatedMetricsProcessor;
     use super::super::reflector::Processor as _;
+    use super::super::MetricsSnapshot;
     use super::*;
     use crate::data_model::event::{metric::Metric, Event};
 
     fn process_all(metrics: Vec<Event>) -> AggregatedMetricsState {
         let processor = AggregatedMetricsProcessor;
         let state = processor.build_initial_state();
-        for metric in metrics {
-            processor.process(metric, &state);
-        }
+        processor.process(
+            MetricsSnapshot {
+                upserts: metrics,
+                evictions: Vec::new(),
+            },
+            &state,
+        );
         state
     }
 
