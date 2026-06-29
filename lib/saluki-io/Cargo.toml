@@ -11,7 +11,6 @@ workspace = true
 [features]
 default = []
 fips = ["saluki-tls/fips"]
-cng-fips = ["saluki-tls/cng-fips"]
 
 [dependencies]
 async-compression = { workspace = true, features = ["gzip", "tokio", "zlib"] }

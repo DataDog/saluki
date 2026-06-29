@@ -10,7 +10,6 @@ workspace = true
 
 [features]
 tls-fips = ["saluki-io/fips", "saluki-tls/fips"]
-tls-cng-fips = ["saluki-io/cng-fips", "saluki-tls/cng-fips"]
 
 [dependencies]
 arc-swap = { workspace = true }

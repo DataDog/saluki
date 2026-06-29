@@ -5,7 +5,7 @@
 # All inputs come from the environment so the GitLab job can pass them via `docker run -e`:
 #
 #   BUILD_PROFILE     Cargo profile (release on dev pipelines, optimized-release on tagged).
-#   BUILD_FEATURES    Build flavor (default | fips). The Windows FIPS flavor maps to the Cargo `cng-fips` feature.
+#   BUILD_FEATURES    Cargo features list (default | fips).
 #   ADP_VERSION       Version slug for the zip filename (CI sets to ${ADP_IMAGE_VERSION}).
 #   TARGET_ARCH       amd64 (only Windows arch in scope today).
 #   OUTPUT_DIR        Directory under c:\mnt where the final zip lands so GitLab `artifacts:`
@@ -63,10 +63,8 @@ if (-not $env:APP_GIT_HASH) {
     }
 }
 
-$CargoFeatures = if ($env:BUILD_FEATURES -eq "fips") { "cng-fips" } else { $env:BUILD_FEATURES }
-
-Write-Host "[*] Building agent-data-plane (profile=$env:BUILD_PROFILE flavor=$env:BUILD_FEATURES cargo-features=$CargoFeatures)..."
-Invoke-Native cargo auditable build --profile $env:BUILD_PROFILE --bin agent-data-plane --features $CargoFeatures
+Write-Host "[*] Building agent-data-plane (profile=$env:BUILD_PROFILE features=$env:BUILD_FEATURES)..."
+Invoke-Native cargo auditable build --profile $env:BUILD_PROFILE --bin agent-data-plane --features $env:BUILD_FEATURES
 Assert-NoDynamicVCRuntimeImports -BinaryPath (Join-Path $env:CARGO_TARGET_DIR "$env:BUILD_PROFILE\agent-data-plane.exe")
 
 Write-Host "[*] Packaging Windows release zip..."

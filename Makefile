@@ -532,11 +532,10 @@ check-licenses: ## Check that the third-party license file is up to date
 check-features: check-rust-build-tools cargo-install-cargo-hack
 check-features: ## Checks that all packages with feature flags can be built with different flag combinations
 	@echo "[*] Checking feature flag compatibility matrix..."
-	@# `cng-fips` is only valid on Windows; Linux feature-powerset checks cover the cross-platform FIPS feature.
 	@find . -name Cargo.toml -not -path './target/*' | grep -v '^./Cargo.toml' | \
 	xargs -I {} -- cargo read-manifest --manifest-path {} | \
 	jq -r "select(.features | del(.default) | length > 0) | .name" | \
-	xargs -I {} -- cargo hack --feature-powerset --exclude-features cng-fips --package {} check --tests --quiet
+	xargs -I {} -- cargo hack --feature-powerset --package {} check --tests --quiet
 
 .PHONY: check-unused-deps
 check-unused-deps: check-rust-build-tools cargo-install-cargo-machete

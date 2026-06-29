@@ -10,8 +10,7 @@ workspace = true
 
 [features]
 default = []
-fips = ["rustls/fips"]
-cng-fips = ["rustls-cng-crypto/fips"]
+fips = ["aws-lc-rs/fips", "rustls-cng-crypto/fips"]
 
 [dependencies]
 rustls = { workspace = true, features = ["std"] }
@@ -21,6 +20,7 @@ saluki-error = { workspace = true }
 tracing = { workspace = true }
 
 [target.'cfg(not(windows))'.dependencies]
+aws-lc-rs = { workspace = true, optional = true }
 rustls = { workspace = true, features = ["aws_lc_rs"] }
 
 [target.'cfg(windows)'.dependencies]
