@@ -241,3 +241,4 @@ trivy
 Erlang
 OTP
 respawn(s|ed|ing)?
+validator

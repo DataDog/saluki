@@ -77,7 +77,10 @@ pub fn generate(overlay: &SchemaOverlay, schema_map: &IndexMap<String, FieldInfo
     writeln!(out, "];").unwrap();
 
     let path = manifest_dir.join("src/classifier/classifier_data.rs");
-    std::fs::write(&path, out).unwrap_or_else(|e| panic!("cannot write {}: {}", path.display(), e));
+    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    if existing != out {
+        std::fs::write(&path, out).unwrap_or_else(|e| panic!("cannot write {}: {}", path.display(), e));
+    }
 }
 
 fn alias_literal(paths: &[String]) -> String {
