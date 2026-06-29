@@ -95,7 +95,7 @@
   // `registry.datadoghq.com/agent` FROM/ARG). But a couple of other pins for the same Agent are
   // hand-maintained in files no default manager parses -- the macOS test Agent version (Makefile)
   // and the Windows LTSC base image (.gitlab/windows.yml) -- so they were silently left behind on
-  // past bumps (see the 7.80.1 -> 7.80.3 update). Manage them here, tied to the same depName
+  // past bumps (see the 7.80.1 -> 7.80.2 update). Manage them here, tied to the same depName
   // (`registry.datadoghq.com/agent`) so they bump in lockstep with -- and in the same PR as -- the
   // main Agent image.
   //

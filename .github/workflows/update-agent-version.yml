@@ -75,7 +75,13 @@ jobs:
           echo "Updating all references from $OLD_VERSION to $NEW_VERSION"
 
           # Find all files containing the old version and update them
-          # Exclude common directories that shouldn't be modified
+          # Exclude common directories that shouldn't be modified.
+          #
+          # The version is matched literally: dots are escaped so they are not treated as regex
+          # wildcards by grep/sed (otherwise e.g. "7.80.2" would also match "7980 2" elsewhere in a
+          # file, such as a credit-card test fixture, and corrupt unrelated content).
+          OLD_VERSION_ESCAPED=$(printf '%s' "$OLD_VERSION" | sed 's/[.]/\\./g')
+
           find . -type f \
             -not -path "./.git/*" \
             -not -path "./node_modules/*" \
@@ -83,9 +89,9 @@ jobs:
             -not -path "./bun.lock" \
             -not -path "./Cargo.lock" \
             -not -path "./.github/workflows/update-agent-version.yml" \
-            -exec grep -l "$OLD_VERSION" {} \; 2>/dev/null | while read -r file; do
+            -exec grep -lF "$OLD_VERSION" {} \; 2>/dev/null | while read -r file; do
               echo "Updating: $file"
-              sed -i "s/$OLD_VERSION/$NEW_VERSION/g" "$file"
+              sed -i "s/$OLD_VERSION_ESCAPED/$NEW_VERSION/g" "$file"
           done
 
           # Update the version tracking file
