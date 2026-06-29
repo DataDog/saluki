@@ -397,6 +397,8 @@ impl SchemaOverlay {
     /// Validate per-entry constraints: description length, `used_by` non-empty, no duplicate
     /// `additional_yaml_paths`, and planned+issue consistency for unsupported entries.
     fn validate_entries(&self) -> Result<(), Error> {
+        let canonical_keys: HashSet<&str> = self.inventory.keys().map(String::as_str).collect();
+
         for (key, entry) in &self.inventory {
             match entry {
                 KnownEntry::Full(f) => {
@@ -413,15 +415,7 @@ impl SchemaOverlay {
                             f.description.len()
                         )));
                     }
-                    let mut seen: HashSet<&str> = HashSet::new();
-                    for path in &f.test_support.additional_yaml_paths {
-                        if !seen.insert(path.as_str()) {
-                            return Err(Error::Validation(format!(
-                                "full key '{}': duplicate additional_yaml_path '{}'",
-                                key, path
-                            )));
-                        }
-                    }
+                    Self::validate_additional_yaml_paths(key, &f.test_support.additional_yaml_paths, &canonical_keys)?;
                 }
                 KnownEntry::Partial(p) => {
                     if p.test_support.used_by.is_empty() {
@@ -437,15 +431,7 @@ impl SchemaOverlay {
                             p.description.len()
                         )));
                     }
-                    let mut seen: HashSet<&str> = HashSet::new();
-                    for path in &p.test_support.additional_yaml_paths {
-                        if !seen.insert(path.as_str()) {
-                            return Err(Error::Validation(format!(
-                                "partial key '{}': duplicate additional_yaml_path '{}'",
-                                key, path
-                            )));
-                        }
-                    }
+                    Self::validate_additional_yaml_paths(key, &p.test_support.additional_yaml_paths, &canonical_keys)?;
                 }
                 KnownEntry::Unsupported(u) => {
                     if u.description.len() > 50 {
@@ -477,6 +463,38 @@ impl SchemaOverlay {
         }
         Ok(())
     }
+
+    fn validate_additional_yaml_paths(
+        key: &str, paths: &[String], canonical_keys: &HashSet<&str>,
+    ) -> Result<(), Error> {
+        let mut seen: HashSet<&str> = HashSet::new();
+        for path in paths {
+            if !seen.insert(path.as_str()) {
+                return Err(Error::Validation(format!(
+                    "key '{}': duplicate additional_yaml_path '{}'",
+                    key, path
+                )));
+            }
+            if path.contains('.') {
+                return Err(Error::Validation(format!(
+                    "key '{}': additional_yaml_path '{}' contains a dot. \
+                     Dotted aliases land at a different nesting depth in the YAML tree, \
+                     which cannot be represented as a serde field alias on the generated \
+                     struct. Supporting dotted aliases requires a post-deserialization \
+                     merge step or custom Deserialize impl.",
+                    key, path
+                )));
+            }
+            if canonical_keys.contains(path.as_str()) {
+                return Err(Error::Validation(format!(
+                    "key '{}': additional_yaml_path '{}' collides with a canonical \
+                     overlay key. Two fields would deserialize from the same YAML key.",
+                    key, path
+                )));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Read a YAML file into a [`serde_yaml::Value`], mapping failures onto [`Error`].
@@ -496,7 +514,7 @@ fn read_yaml(path: &Path) -> Result<serde_yaml::Value, Error> {
 ///
 /// Returns [`Error::Io`] if `schema_path` or any referenced file cannot be read, and
 /// [`Error::Yaml`] if any file fails to parse. The offending path is carried in the error.
-pub(crate) fn load_resolved_schema(schema_path: &Path) -> Result<serde_yaml::Value, Error> {
+pub fn load_resolved_schema(schema_path: &Path) -> Result<serde_yaml::Value, Error> {
     let schema_dir = schema_path.parent().unwrap_or_else(|| Path::new("."));
     let mut doc = read_yaml(schema_path)?;
     resolve_refs(&mut doc, schema_dir)?;
@@ -532,7 +550,7 @@ const VALIDATION_RULES: &str = "\n\
     - partial entries: pipelines non-empty, used_by non-empty, description <= 50 chars, documentation required.\n\
     - unsupported entries: pipelines non-empty, description <= 50 chars, planned+issue consistent.\n\
     - unknown entries: description <= 50 chars (when present).\n\
-    - additional_yaml_paths: no duplicates within a single entry.\n\
+    - additional_yaml_paths: no duplicates within a single entry, no dots, no collisions with canonical keys.\n\
     Fix: edit lib/datadog-agent/config/schema/schema_overlay.yaml.";
 
 /// Errors that can occur when loading a schema overlay.
