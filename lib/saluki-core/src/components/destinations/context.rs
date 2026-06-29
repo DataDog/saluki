@@ -1,6 +1,7 @@
 use resource_accounting::ComponentRegistry;
 
 use crate::health::Health;
+use crate::runtime::SupervisorHandle;
 use crate::{
     components::ComponentContext,
     topology::{EventsConsumer, TopologyContext},
@@ -13,6 +14,7 @@ pub struct DestinationContext {
     component_registry: ComponentRegistry,
     health_handle: Option<Health>,
     consumer: EventsConsumer,
+    supervisor_handle: SupervisorHandle,
 }
 
 impl DestinationContext {
@@ -20,6 +22,7 @@ impl DestinationContext {
     pub fn new(
         topology_context: &TopologyContext, component_context: &ComponentContext,
         component_registry: ComponentRegistry, health_handle: Health, consumer: EventsConsumer,
+        supervisor_handle: SupervisorHandle,
     ) -> Self {
         Self {
             topology_context: topology_context.clone(),
@@ -27,6 +30,7 @@ impl DestinationContext {
             component_registry,
             health_handle: Some(health_handle),
             consumer,
+            supervisor_handle,
         }
     }
 
@@ -57,5 +61,14 @@ impl DestinationContext {
     /// Gets a mutable reference to the events consumer.
     pub fn events(&mut self) -> &mut EventsConsumer {
         &mut self.consumer
+    }
+
+    /// Returns a handle to the supervisor that this component is spawned on.
+    ///
+    /// Dynamic child processes can be spawned via the supervisor handle and thus have their lifecycle
+    /// coupled to the component itself: if the component restarts, or the component's supervisor dies,
+    /// the dynamic child processes will also be terminated automatically as well.
+    pub fn spawn_handle(&self) -> &SupervisorHandle {
+        &self.supervisor_handle
     }
 }
