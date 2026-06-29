@@ -13,8 +13,8 @@ use tokio::sync::OnceCell;
 
 use super::histogram::AggregatedHistogram;
 use super::reflector::{Processor, Reflector};
-use super::MetricsStream;
-use crate::data_model::event::{metric::MetricValues, Event};
+use super::{MetricsSnapshot, MetricsStream};
+use crate::data_model::event::metric::MetricValues;
 
 /// Aggregated metric value.
 #[derive(Clone, Debug)]
@@ -226,7 +226,7 @@ impl AggregatedMetricsState {
 pub struct AggregatedMetricsProcessor;
 
 impl Processor for AggregatedMetricsProcessor {
-    type Input = Event;
+    type Input = MetricsSnapshot;
     type State = AggregatedMetricsState;
 
     fn build_initial_state(&self) -> Self::State {
@@ -238,15 +238,26 @@ impl Processor for AggregatedMetricsProcessor {
     }
 
     fn process(&self, input: Self::Input, state: &Self::State) {
-        if let Some(metric) = input.try_into_metric() {
-            let (context, values, _) = metric.into_parts();
-            if let Some(agg_metric) = metric_values_to_aggregated(context.name(), values) {
-                state.inner.metrics.pin().update_or_insert_with(
-                    context,
-                    |existing| existing.merge(agg_metric.clone()),
-                    || agg_metric.clone(),
-                );
+        let metrics = state.inner.metrics.pin();
+
+        // Record (or merge) the metric values produced this flush.
+        for event in input.upserts {
+            if let Some(metric) = event.try_into_metric() {
+                let (context, values, _) = metric.into_parts();
+                if let Some(agg_metric) = metric_values_to_aggregated(context.name(), values) {
+                    metrics.update_or_insert_with(
+                        context,
+                        |existing| existing.merge(agg_metric.clone()),
+                        || agg_metric.clone(),
+                    );
+                }
             }
+        }
+
+        // Remove any "evicted" metrics: they were idle long enough without anyone holding a handle to them,
+        // so they're considered dead and should be be removed to avoid unbounded growth.
+        for context in input.evictions {
+            metrics.remove(&context);
         }
     }
 }
@@ -287,7 +298,7 @@ pub async fn get_shared_metrics_state() -> Reflector<AggregatedMetricsProcessor>
     static REFLECTOR: OnceCell<Reflector<AggregatedMetricsProcessor>> = OnceCell::const_new();
     REFLECTOR
         .get_or_init(|| async {
-            let metrics_stream = MetricsStream::register().map(Arc::unwrap_or_clone);
+            let metrics_stream = MetricsStream::register().map(Arc::unwrap_or_clone).map(std::iter::once);
             Reflector::new(metrics_stream, AggregatedMetricsProcessor).await
         })
         .await
@@ -296,16 +307,22 @@ pub async fn get_shared_metrics_state() -> Reflector<AggregatedMetricsProcessor>
 
 #[cfg(test)]
 mod tests {
+    use saluki_context::Context;
+
     use super::*;
-    use crate::data_model::event::metric::Metric;
+    use crate::data_model::event::{metric::Metric, Event};
 
     fn process_metrics(metrics: Vec<Event>) -> Vec<(String, AggregatedMetricValue)> {
         let processor = AggregatedMetricsProcessor;
         let state = processor.build_initial_state();
 
-        for metric in metrics {
-            processor.process(metric, &state);
-        }
+        processor.process(
+            MetricsSnapshot {
+                upserts: metrics,
+                evictions: Vec::new(),
+            },
+            &state,
+        );
 
         let mut result = Vec::new();
         state.visit_metrics(|context, value| {
@@ -420,5 +437,43 @@ mod tests {
             assert_eq!(hist.count(), 5);
             assert_eq!(hist.sum(), 15.0);
         });
+    }
+
+    #[test]
+    fn test_evict_removes_metric() {
+        let processor = AggregatedMetricsProcessor;
+        let state = processor.build_initial_state();
+
+        let context = Context::from_static_parts("counter", &[]);
+        processor.process(
+            MetricsSnapshot {
+                upserts: vec![Event::Metric(Metric::counter(context.clone(), 14.0))],
+                evictions: Vec::new(),
+            },
+            &state,
+        );
+
+        let count_named = |name: &str| {
+            let mut count = 0;
+            state.visit_metrics(|ctx, _| {
+                if ctx.name() == name {
+                    count += 1;
+                }
+            });
+            count
+        };
+
+        // The metric is present after the upsert.
+        assert_eq!(count_named("counter"), 1);
+
+        // Evicting its context removes it from the aggregated state.
+        processor.process(
+            MetricsSnapshot {
+                upserts: Vec::new(),
+                evictions: vec![context],
+            },
+            &state,
+        );
+        assert_eq!(count_named("counter"), 0);
     }
 }
