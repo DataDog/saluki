@@ -1,10 +1,40 @@
 //! V3 columnar metrics writer.
 //!
 //! The [`V3Writer`] accumulates metrics in columnar format with dictionary deduplication,
-//! then produces [`V3EncodedData`] ready for protobuf serialization.
+//! then serializes the batch to protobuf wire format when [`V3Writer::close`] is called.
+
+use protobuf::CodedOutputStream;
 
 use super::interner::Interner;
 use super::types::{FLAG_HAS_UNIT, FLAG_NO_INDEX, V3MetricType, V3ValueType};
+
+// ── Field numbers (from intake_v3.proto) ─────────────────────────────────────
+const DICT_NAME_STR: u32 = 1;
+const DICT_TAGS_STR: u32 = 2;
+const DICT_TAGSETS: u32 = 3;
+const DICT_RESOURCE_STR: u32 = 4;
+const DICT_RESOURCE_LEN: u32 = 5;
+const DICT_RESOURCE_TYPE: u32 = 6;
+const DICT_RESOURCE_NAME: u32 = 7;
+const DICT_SOURCE_TYPE_NAME: u32 = 8;
+const DICT_ORIGIN_INFO: u32 = 9;
+const TYPES: u32 = 10;
+const NAMES: u32 = 11;
+const TAGS: u32 = 12;
+const RESOURCES: u32 = 13;
+const INTERVALS: u32 = 14;
+const NUM_POINTS: u32 = 15;
+const TIMESTAMPS: u32 = 16;
+const VALS_SINT64: u32 = 17;
+const VALS_FLOAT32: u32 = 18;
+const VALS_FLOAT64: u32 = 19;
+const SKETCH_NUM_BINS: u32 = 20;
+const SKETCH_BIN_KEYS: u32 = 21;
+const SKETCH_BIN_CNTS: u32 = 22;
+const SOURCE_TYPE_NAME: u32 = 23;
+const ORIGIN_INFO: u32 = 24;
+const DICT_UNIT_STR: u32 = 25;
+const UNIT_REFS: u32 = 26;
 
 /// Appends a varint-length-prefixed string to the destination buffer.
 fn append_len_str(dst: &mut Vec<u8>, s: &str) {
@@ -171,11 +201,20 @@ impl V3Writer {
         }
     }
 
-    /// Finalizes the writer and returns the encoded data.
+    /// Finalizes the writer, serializes the columnar payload to protobuf wire format,
+    /// and returns the encoded bytes.
     ///
-    /// This performs delta encoding on all index arrays.
-    pub fn close(mut self) -> V3EncodedData {
-        // Delta-encode all the index arrays
+    /// This is the primary public API. For testing internal columnar state, use
+    /// [`finalize_inner`](Self::finalize_inner).
+    pub fn close(self) -> Vec<u8> {
+        let data = self.finalize_inner();
+        serialize_to_proto(&data)
+    }
+
+    /// Finalizes the writer and returns the raw columnar data before serialization.
+    ///
+    /// Primarily for testing. Production code should call [`close`](Self::close).
+    pub(crate) fn finalize_inner(mut self) -> V3EncodedData {
         delta_encode(&mut self.names);
         delta_encode(&mut self.tags);
         delta_encode(&mut self.resources);
@@ -529,6 +568,108 @@ impl<'a> V3MetricBuilder<'a> {
     }
 }
 
+// ── Protobuf serialization ────────────────────────────────────────────────────
+
+fn serialize_to_proto(data: &V3EncodedData) -> Vec<u8> {
+    let mut output = Vec::new();
+    {
+        let mut os = CodedOutputStream::vec(&mut output);
+
+        // Dictionaries
+        if !data.dict_name_bytes.is_empty() {
+            os.write_bytes(DICT_NAME_STR, &data.dict_name_bytes).unwrap();
+        }
+        if !data.dict_tags_bytes.is_empty() {
+            os.write_bytes(DICT_TAGS_STR, &data.dict_tags_bytes).unwrap();
+        }
+        if !data.dict_tagsets.is_empty() {
+            os.write_repeated_packed_sint64(DICT_TAGSETS, &data.dict_tagsets).unwrap();
+        }
+        if !data.dict_resource_str_bytes.is_empty() {
+            os.write_bytes(DICT_RESOURCE_STR, &data.dict_resource_str_bytes).unwrap();
+        }
+        if !data.dict_resource_len.is_empty() {
+            os.write_repeated_packed_int64(DICT_RESOURCE_LEN, &data.dict_resource_len).unwrap();
+        }
+        if !data.dict_resource_type.is_empty() {
+            os.write_repeated_packed_sint64(DICT_RESOURCE_TYPE, &data.dict_resource_type).unwrap();
+        }
+        if !data.dict_resource_name.is_empty() {
+            os.write_repeated_packed_sint64(DICT_RESOURCE_NAME, &data.dict_resource_name).unwrap();
+        }
+        if !data.dict_source_type_bytes.is_empty() {
+            os.write_bytes(DICT_SOURCE_TYPE_NAME, &data.dict_source_type_bytes).unwrap();
+        }
+        if !data.dict_origin_info.is_empty() {
+            os.write_repeated_packed_int32(DICT_ORIGIN_INFO, &data.dict_origin_info).unwrap();
+        }
+
+        // Per-metric columns
+        if !data.types.is_empty() {
+            os.write_repeated_packed_uint64(TYPES, &data.types).unwrap();
+        }
+        if !data.names.is_empty() {
+            os.write_repeated_packed_sint64(NAMES, &data.names).unwrap();
+        }
+        if !data.tags.is_empty() {
+            os.write_repeated_packed_sint64(TAGS, &data.tags).unwrap();
+        }
+        if !data.resources.is_empty() {
+            os.write_repeated_packed_sint64(RESOURCES, &data.resources).unwrap();
+        }
+        if !data.intervals.is_empty() {
+            os.write_repeated_packed_uint64(INTERVALS, &data.intervals).unwrap();
+        }
+        if !data.num_points.is_empty() {
+            os.write_repeated_packed_uint64(NUM_POINTS, &data.num_points).unwrap();
+        }
+
+        // Point data
+        if !data.timestamps.is_empty() {
+            os.write_repeated_packed_sint64(TIMESTAMPS, &data.timestamps).unwrap();
+        }
+        if !data.vals_sint64.is_empty() {
+            os.write_repeated_packed_sint64(VALS_SINT64, &data.vals_sint64).unwrap();
+        }
+        if !data.vals_float32.is_empty() {
+            os.write_repeated_packed_float(VALS_FLOAT32, &data.vals_float32).unwrap();
+        }
+        if !data.vals_float64.is_empty() {
+            os.write_repeated_packed_double(VALS_FLOAT64, &data.vals_float64).unwrap();
+        }
+
+        // Sketch data
+        if !data.sketch_num_bins.is_empty() {
+            os.write_repeated_packed_uint64(SKETCH_NUM_BINS, &data.sketch_num_bins).unwrap();
+        }
+        if !data.sketch_bin_keys.is_empty() {
+            os.write_repeated_packed_sint32(SKETCH_BIN_KEYS, &data.sketch_bin_keys).unwrap();
+        }
+        if !data.sketch_bin_cnts.is_empty() {
+            os.write_repeated_packed_uint32(SKETCH_BIN_CNTS, &data.sketch_bin_cnts).unwrap();
+        }
+
+        // Higher-numbered per-metric columns
+        if !data.source_type_names.is_empty() {
+            os.write_repeated_packed_sint64(SOURCE_TYPE_NAME, &data.source_type_names).unwrap();
+        }
+        if !data.origin_infos.is_empty() {
+            os.write_repeated_packed_sint64(ORIGIN_INFO, &data.origin_infos).unwrap();
+        }
+
+        // Unit fields (only present when at least one metric has a unit)
+        if !data.dict_unit_bytes.is_empty() {
+            os.write_bytes(DICT_UNIT_STR, &data.dict_unit_bytes).unwrap();
+        }
+        if !data.unit_refs.is_empty() {
+            os.write_repeated_packed_sint64(UNIT_REFS, &data.unit_refs).unwrap();
+        }
+
+        os.flush().unwrap();
+    }
+    output
+}
+
 impl Drop for V3MetricBuilder<'_> {
     fn drop(&mut self) {
         debug_assert!(
@@ -583,7 +724,7 @@ mod tests {
             metric.close();
         }
 
-        let data = writer.close();
+        let data = writer.finalize_inner();
 
         assert_eq!(data.types.len(), 1);
         assert_eq!(data.names.len(), 1);
@@ -607,7 +748,7 @@ mod tests {
             m2.close();
         }
 
-        let data = writer.close();
+        let data = writer.finalize_inner();
 
         assert_eq!(data.types.len(), 2);
         assert_eq!(data.names.len(), 2);
@@ -627,7 +768,7 @@ mod tests {
             metric.close();
         }
 
-        let data = writer.close();
+        let data = writer.finalize_inner();
 
         // Values should be compacted - zero values don't need storage
         assert!(data.vals_float64.is_empty());
@@ -646,7 +787,7 @@ mod tests {
             metric.close();
         }
 
-        let data = writer.close();
+        let data = writer.finalize_inner();
 
         // Integer values should be stored in sint64
         assert!(data.vals_float64.is_empty());
@@ -664,7 +805,7 @@ mod tests {
             metric.close();
         }
 
-        let data = writer.close();
+        let data = writer.finalize_inner();
 
         assert!(!data.vals_float64.is_empty(), "sketch sum/min/max must stay in vals_float64");
         assert!(!data.vals_sint64.is_empty(), "sketch count must be in vals_sint64");
