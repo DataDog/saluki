@@ -85,7 +85,7 @@ test-integration-windows-amd64:
   script:
     - *windows-build-image-pull-script
     - |
-      $WindowsAdpBaseImage = "registry.datadoghq.com/agent:7.80.2-ltsc2022"
+      $WindowsAdpBaseImage = "registry.datadoghq.com/agent:7.80.3-ltsc2022"
       if ($env:AGENT_NIGHTLY -eq "true") { # for nightly run, use latest Agent
         if ($env:NIGHTLY_WINDOWS_AGENT_IMAGE) {
           $WindowsAdpBaseImage = $env:NIGHTLY_WINDOWS_AGENT_IMAGE
