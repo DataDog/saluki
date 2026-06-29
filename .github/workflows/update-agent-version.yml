@@ -71,11 +71,13 @@ jobs:
         run: |
           OLD_VERSION="${{ steps.current-version.outputs.current_version }}"
           NEW_VERSION="${{ steps.fetch-latest.outputs.latest_version }}"
+          OLD_VERSION_ESCAPED=$(printf '%s' "$OLD_VERSION" | sed 's/[.]/\\./g')
 
           echo "Updating all references from $OLD_VERSION to $NEW_VERSION"
 
           # Find all files containing the old version and update them
-          # Exclude common directories that shouldn't be modified
+          # Exclude common directories that shouldn't be modified.
+
           find . -type f \
             -not -path "./.git/*" \
             -not -path "./node_modules/*" \
@@ -83,9 +85,9 @@ jobs:
             -not -path "./bun.lock" \
             -not -path "./Cargo.lock" \
             -not -path "./.github/workflows/update-agent-version.yml" \
-            -exec grep -l "$OLD_VERSION" {} \; 2>/dev/null | while read -r file; do
+            -exec grep -lF "$OLD_VERSION_ESCAPED" {} \; 2>/dev/null | while read -r file; do
               echo "Updating: $file"
-              sed -i "s/$OLD_VERSION/$NEW_VERSION/g" "$file"
+              sed -i "s/$OLD_VERSION_ESCAPED/$NEW_VERSION/g" "$file"
           done
 
           # Update the version tracking file

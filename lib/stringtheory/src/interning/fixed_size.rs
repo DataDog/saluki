@@ -219,6 +219,16 @@ impl EntryHeader {
     fn decrement_active_refs(&self) -> bool {
         self.refs.fetch_sub(1, AcqRel) == 1
     }
+
+    /// Attempts to increment the active reference count, but only if it is currently non-zero.
+    ///
+    /// Returns `true` if the reference count was incremented. A return value of `false` means the entry has already
+    /// been released -- its reference count reached zero -- and is pending reclamation, so it must not be reused.
+    fn try_increment_active_refs(&self) -> bool {
+        self.refs
+            .fetch_update(AcqRel, Acquire, |refs| (refs != 0).then_some(refs + 1))
+            .is_ok()
+    }
 }
 
 #[derive(Debug)]
@@ -307,10 +317,16 @@ impl InternerShardState {
                 // SAFETY: We know that our header is valid and initialized.
                 let s_entry = unsafe { get_entry_string(header_ptr) };
                 if s_entry == s {
-                    // Increment the reference count for this entry so it's not prematurely reclaimed.
-                    header.increment_active_refs();
-
-                    return Some(header_ptr);
+                    // Reuse this entry, but only if it's still live. The `is_active()` check above is not enough on its
+                    // own: a concurrent `StringState::drop` decrements the reference count _before_ taking this lock, so
+                    // it can drop the count to zero in the window between that check and here. Resurrecting a
+                    // zero-refcount entry would let two droppers each observe a 1 -> 0 transition and each reclaim the
+                    // same slot -- a double reclaim that corrupts the data buffer. If the conditional increment fails,
+                    // the entry is already pending reclamation by its dropper, so we skip it and let the caller intern a
+                    // fresh entry instead.
+                    if header.try_increment_active_refs() {
+                        return Some(header_ptr);
+                    }
                 }
             }
 
@@ -414,13 +430,18 @@ impl InternerShardState {
     }
 
     fn mark_for_reclamation(&mut self, header_ptr: NonNull<EntryHeader>) {
-        // See if the reference count is zero.
+        // Reclaim the entry only if its reference count is zero, and rely on `find_entry` to never resurrect it.
         //
-        // Only interned string values (the frontend handle that wraps the pointer to a specific entry) can decrement
-        // the reference count for their specific entry when dropped, and only `InternerShardState` -- with its access
-        // mediated through a mutex -- can increment the reference count for entries. This means that if the reference
-        // count is zero, then we know that nobody else is holding a reference to this entry, and no concurrent call to
-        // `try_intern` could be updating the reference count, either... so it's safe to be marked as reclaimed.
+        // `StringState::drop` decrements the reference count _before_ taking this lock, so a concurrent `try_intern`
+        // can observe this entry during that window. But the only reuse path, `find_entry`, increments via
+        // `try_increment_active_refs`, which refuses to increment a zero reference count -- so once the count reaches
+        // zero it stays zero, and exactly one dropper (the one that transitioned it 1 -> 0) reaches this method. That
+        // makes reclamation exactly-once: no second thread can resurrect the entry and then drop it again, which would
+        // otherwise double-reclaim the same slot and corrupt the data buffer.
+        //
+        // The reference count also cannot rise while we hold this lock (cloning needs a live handle, and `try_intern`
+        // needs this lock), so observing zero here means it stays zero through the reclamation below -- no
+        // use-after-free.
         //
         // SAFETY: The caller is responsible for ensuring that `header_ptr` is well-aligned and points to an initialized
         // `EntryHeader` value.
@@ -1138,6 +1159,63 @@ mod loom_tests {
                     "reclaimed entry should not overlap with remaining interned string"
                 );
             }
+        });
+    }
+
+    #[test]
+    fn concurrent_resurrect_and_double_drop() {
+        // Regression test for a double-reclamation race, mirroring the `GenericMapInterner` test of the same name.
+        //
+        // Unlike `concurrent_drop_and_intern` -- where the second thread keeps its handle alive -- here the second
+        // thread interns the string _and_ drops it within the race window. This models the dangerous interleaving:
+        //
+        //   1. T1 drops the last reference: `refs` 1 -> 0 (but T1 hasn't taken the shard lock yet).
+        //   2. T2 calls `try_intern`; `find_entry` observes the entry as active and resurrects it: `refs` 0 -> 1.
+        //   3. T2 drops its handle: `refs` 1 -> 0.
+        //   4. T1 and T2 each take the lock and observe `refs == 0`, so BOTH mark the same slot for reclamation.
+        //
+        // A double reclamation either underflows `entries`/`len` (a panic under overflow-checks, which the loom test
+        // profile enables) or inserts a spurious/overlapping reclaimed entry. After every handle to the single interned
+        // string has been dropped, the only correct end state is a fully empty shard.
+        const STRING_TO_INTERN: &str = "hello, world!";
+
+        loom::model(|| {
+            let shard = create_shard(NonZeroUsize::new(1024).unwrap());
+            let t2_shard = Arc::clone(&shard);
+
+            // T1 interns the string and holds the only reference.
+            let t1_interned_s = intern_for_shard(&shard, STRING_TO_INTERN).expect("should not fail to intern");
+
+            // T2 interns the same string and immediately drops it. The interesting orderings are those where this runs
+            // while T1's drop has decremented the refcount to zero but not yet taken the shard lock.
+            let t2 = loom::thread::spawn(move || {
+                let t2_interned_s = intern_for_shard(&t2_shard, STRING_TO_INTERN).expect("should not fail to intern");
+                assert_eq!(t2_interned_s.deref(), STRING_TO_INTERN);
+                drop(t2_interned_s);
+            });
+
+            // T1 drops its (originally last) reference.
+            drop(t1_interned_s);
+
+            t2.join().expect("should not fail to join T2");
+
+            // Every handle has been dropped, so the slot must have been reclaimed exactly once: the shard is fully
+            // empty, with consistent accounting and no leftover reclaimed entries. A double reclaim breaks at least one
+            // of these (and typically panics first via the `entries`/`len` underflow).
+            let shard = shard.lock().unwrap();
+            assert_eq!(
+                shard.entries, 0,
+                "entries should be zero (it is double-subtracted on a double reclaim)"
+            );
+            assert_eq!(
+                shard.len, 0,
+                "len should be zero (it is double-subtracted on a double reclaim)"
+            );
+            assert_eq!(shard.offset, 0, "offset should wind back to zero");
+            assert!(
+                shard.reclaimed.is_empty(),
+                "no reclaimed entries should remain (a double reclaim inserts a spurious/overlapping entry)"
+            );
         });
     }
 }

@@ -214,6 +214,27 @@ function Install-CachedZipTool {
     Add-PathEntry (Join-Path $InstallRoot $BinSubdir)
 }
 
+function Assert-NoDynamicVCRuntimeImports {
+    # Checks a PE binary for dynamic imports of the Visual C++ runtime DLLs that ADP
+    # builds are expected to statically link through Rust's `+crt-static` target feature.
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$BinaryPath
+    )
+
+    if (-not (Test-Path $BinaryPath)) {
+        throw "Binary not found: $BinaryPath"
+    }
+
+    $BinaryText = [System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes($BinaryPath))
+    $ImportNames = @("vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll")
+    foreach ($ImportName in $ImportNames) {
+        if ($BinaryText.IndexOf($ImportName, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
+            throw "${BinaryPath} references ${ImportName}; Windows ADP builds must statically link the VC runtime"
+        }
+    }
+}
+
 function Initialize-FipsBuildTools {
     # Wires up the native build environment that aws-lc-fips-sys requires on x86_64-windows.
     # See https://aws.github.io/aws-lc-rs/requirements/windows.html for the upstream list.
@@ -373,4 +394,4 @@ function New-VsBuildToolsJunction {
     }
 }
 
-Export-ModuleMember -Function Invoke-Native, Add-PathEntry, Ensure-Protoc, Initialize-RustEnvironment, Install-CachedZipTool, Initialize-FipsBuildTools, New-VsBuildToolsJunction
+Export-ModuleMember -Function Invoke-Native, Add-PathEntry, Ensure-Protoc, Initialize-RustEnvironment, Install-CachedZipTool, Assert-NoDynamicVCRuntimeImports, Initialize-FipsBuildTools, New-VsBuildToolsJunction

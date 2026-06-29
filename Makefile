@@ -38,7 +38,7 @@ endif
 export ADP_STANDALONE_IPC_CERT_FILE := /tmp/adp-ipc-cert.pem
 
 # macOS integration-test settings.
-MACOS_TEST_AGENT_VERSION ?= 7.80.2
+MACOS_TEST_AGENT_VERSION ?= 7.80.3
 MACOS_TEST_AGENT_DMG_DIR ?= /tmp/saluki-dda-dmg-cache
 MACOS_TEST_AGENT_DMG_URL ?= https://s3.amazonaws.com/dd-agent/datadog-agent-$(MACOS_TEST_AGENT_VERSION)-1.$(shell uname -m).dmg
 MACOS_TEST_AGENT_INSTALL_DIR ?= /tmp/saluki-dda/datadog-agent
@@ -547,7 +547,7 @@ check-unused-deps: ## Checks for any imported dependencies that are not used in 
 check-docs: check-lint-tools
 check-docs: ## Checks prose/code documentation against our style guide
 	@echo "[*] Checking prose/code documentation against our style guide..."
-	@vale --minAlertLevel=error --glob='!{lib/*/target/*,docs/.vitepress/*}' docs lib bin
+	@vale --minAlertLevel=error --glob='!{lib/*/target/*,docs/.vitepress/*,*datadog_configuration*}' docs lib bin
 
 .PHONY: sync-docs-config
 sync-docs-config: check-lint-tools

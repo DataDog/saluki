@@ -67,6 +67,7 @@ $CargoFeatures = if ($env:BUILD_FEATURES -eq "fips") { "cng-fips" } else { $env:
 
 Write-Host "[*] Building agent-data-plane (profile=$env:BUILD_PROFILE flavor=$env:BUILD_FEATURES cargo-features=$CargoFeatures)..."
 Invoke-Native cargo auditable build --profile $env:BUILD_PROFILE --bin agent-data-plane --features $CargoFeatures
+Assert-NoDynamicVCRuntimeImports -BinaryPath (Join-Path $env:CARGO_TARGET_DIR "$env:BUILD_PROFILE\agent-data-plane.exe")
 
 Write-Host "[*] Packaging Windows release zip..."
 & (Join-Path $PSScriptRoot "package-adp-zip.ps1")
