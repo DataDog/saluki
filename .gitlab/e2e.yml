@@ -34,7 +34,7 @@ build-bundled-agent-adp-image:
         AGENT_IMAGE_REPO="${DD_AGENT_IMAGE%:*}"
         echo "Nightly Agent image config/labels (for debugging):"
         docker buildx imagetools inspect "$DD_AGENT_IMAGE" --format '{{json .Image}}'
-        AGENT_IMAGE_DIGEST=$(docker buildx imagetools inspect "$DD_AGENT_IMAGE" --format '{{.Manifest.Digest}}')
+        AGENT_IMAGE_DIGEST=$(docker buildx imagetools inspect "$DD_AGENT_IMAGE" --format '{{json .Manifest}}' | jq -r '.digest')
         DD_AGENT_IMAGE="${AGENT_IMAGE_REPO}@${AGENT_IMAGE_DIGEST}"
         echo "Pinned nightly Agent image to digest: $DD_AGENT_IMAGE"
       fi
