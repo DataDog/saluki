@@ -1264,6 +1264,11 @@ async fn exec_write_file(
             )
         })?;
 
+    // `join()` drops the status receiver before awaiting the task, so the background loop fails with
+    // `SendStatus` ("failed to send status object") if we don't keep the receiver alive. Take the
+    // status future here both to hold the receiver and to inspect the command's exit status.
+    let status = proc.take_status();
+
     let mut stdin = proc
         .stdin()
         .ok_or_else(|| generic_error!("Exec stdin not available for container '{}'", container))?;
@@ -1277,6 +1282,18 @@ async fn exec_write_file(
     proc.join()
         .await
         .map_err(|e| generic_error!("Exec command failed: {}", e))?;
+
+    if let Some(status) = status {
+        if let Some(status) = status.await {
+            if status.status.as_deref() != Some("Success") {
+                return Err(generic_error!(
+                    "Exec command to write '{}' failed: {}",
+                    path,
+                    status.message.unwrap_or_else(|| "unknown error".to_string())
+                ));
+            }
+        }
+    }
 
     Ok(())
 }
