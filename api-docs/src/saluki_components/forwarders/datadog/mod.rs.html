@@ -28,7 +28,7 @@
 <a href=#28 id=28 data-nosnippet>28</a>/// Forwards Datadog-specific payloads to the Datadog platform. Handles the standard Datadog Agent configuration,
 <a href=#29 id=29 data-nosnippet>29</a>/// in terms of specifying additional endpoints, adding the necessary HTTP request headers for authentication,
 <a href=#30 id=30 data-nosnippet>30</a>/// identification, and more.
-<a href=#31 id=31 data-nosnippet>31</a></span><span class="kw">pub struct </span>DatadogConfiguration {
+<a href=#31 id=31 data-nosnippet>31</a></span><span class="kw">pub struct </span>DatadogForwarderConfiguration {
 <a href=#32 id=32 data-nosnippet>32</a>    <span class="doccomment">/// Forwarder configuration settings.
 <a href=#33 id=33 data-nosnippet>33</a>    ///
 <a href=#34 id=34 data-nosnippet>34</a>    /// See [`ForwarderConfiguration`] for more information about the available settings.
@@ -37,8 +37,8 @@
 <a href=#37 id=37 data-nosnippet>37</a>    configuration: <span class="prelude-ty">Option</span>&lt;GenericConfiguration&gt;,
 <a href=#38 id=38 data-nosnippet>38</a>}
 <a href=#39 id=39 data-nosnippet>39</a>
-<a href=#40 id=40 data-nosnippet>40</a><span class="kw">impl </span>DatadogConfiguration {
-<a href=#41 id=41 data-nosnippet>41</a>    <span class="doccomment">/// Creates a new `DatadogConfiguration` from the given configuration.
+<a href=#40 id=40 data-nosnippet>40</a><span class="kw">impl </span>DatadogForwarderConfiguration {
+<a href=#41 id=41 data-nosnippet>41</a>    <span class="doccomment">/// Creates a new `DatadogForwarderConfiguration` from the given configuration.
 <a href=#42 id=42 data-nosnippet>42</a>    </span><span class="kw">pub fn </span>from_configuration(config: <span class="kw-2">&amp;</span>GenericConfiguration) -&gt; <span class="prelude-ty">Result</span>&lt;<span class="self">Self</span>, GenericError&gt; {
 <a href=#43 id=43 data-nosnippet>43</a>        <span class="kw">let </span>forwarder_config = ForwarderConfiguration::from_configuration(config)<span class="question-mark">?</span>;
 <a href=#44 id=44 data-nosnippet>44</a>        <span class="prelude-val">Ok</span>(<span class="self">Self </span>{
@@ -73,7 +73,7 @@
 <a href=#73 id=73 data-nosnippet>73</a>}
 <a href=#74 id=74 data-nosnippet>74</a>
 <a href=#75 id=75 data-nosnippet>75</a><span class="attr">#[async_trait]
-<a href=#76 id=76 data-nosnippet>76</a></span><span class="kw">impl </span>ForwarderBuilder <span class="kw">for </span>DatadogConfiguration {
+<a href=#76 id=76 data-nosnippet>76</a></span><span class="kw">impl </span>ForwarderBuilder <span class="kw">for </span>DatadogForwarderConfiguration {
 <a href=#77 id=77 data-nosnippet>77</a>    <span class="kw">fn </span>input_payload_type(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; PayloadType {
 <a href=#78 id=78 data-nosnippet>78</a>        PayloadType::Http
 <a href=#79 id=79 data-nosnippet>79</a>    }
@@ -94,7 +94,7 @@
 <a href=#94 id=94 data-nosnippet>94</a>    }
 <a href=#95 id=95 data-nosnippet>95</a>}
 <a href=#96 id=96 data-nosnippet>96</a>
-<a href=#97 id=97 data-nosnippet>97</a><span class="kw">impl </span>MemoryBounds <span class="kw">for </span>DatadogConfiguration {
+<a href=#97 id=97 data-nosnippet>97</a><span class="kw">impl </span>MemoryBounds <span class="kw">for </span>DatadogForwarderConfiguration {
 <a href=#98 id=98 data-nosnippet>98</a>    <span class="kw">fn </span>specify_bounds(<span class="kw-2">&amp;</span><span class="self">self</span>, builder: <span class="kw-2">&amp;mut </span>MemoryBoundsBuilder) {
 <a href=#99 id=99 data-nosnippet>99</a>        builder
 <a href=#100 id=100 data-nosnippet>100</a>            .minimum()
@@ -220,8 +220,8 @@
 <a href=#220 id=220 data-nosnippet>220</a>            </span>.expect(<span class="string">"initial dynamic snapshot should be sent"</span>);
 <a href=#221 id=221 data-nosnippet>221</a>        generic_config.ready().<span class="kw">await</span>;
 <a href=#222 id=222 data-nosnippet>222</a>
-<a href=#223 id=223 data-nosnippet>223</a>        <span class="kw">let </span>config = DatadogConfiguration::from_configuration(<span class="kw-2">&amp;</span>generic_config)
-<a href=#224 id=224 data-nosnippet>224</a>            .expect(<span class="string">"DatadogConfiguration should parse"</span>)
+<a href=#223 id=223 data-nosnippet>223</a>        <span class="kw">let </span>config = DatadogForwarderConfiguration::from_configuration(<span class="kw-2">&amp;</span>generic_config)
+<a href=#224 id=224 data-nosnippet>224</a>            .expect(<span class="string">"DatadogForwarderConfiguration should parse"</span>)
 <a href=#225 id=225 data-nosnippet>225</a>            .with_endpoint_override_and_api_key_refresh_config_path(
 <a href=#226 id=226 data-nosnippet>226</a>                <span class="string">"http://mrf.example.test"</span>.to_string(),
 <a href=#227 id=227 data-nosnippet>227</a>                <span class="string">"mrf-api-key"</span>.to_string(),

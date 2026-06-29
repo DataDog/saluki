@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"mod":["classifier"]};
+window.SIDEBAR_ITEMS = {"mod":["classifier","generated"]};
