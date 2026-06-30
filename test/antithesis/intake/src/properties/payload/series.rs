@@ -5,7 +5,7 @@ use datadog_protos::metrics::metric_payload::MetricSeries;
 use datadog_protos::metrics::MetricType;
 use serde_json::json;
 
-use super::constants::MAX_POINTS_PER_PAYLOAD;
+use super::constants::{MAX_POINTS_PER_PAYLOAD, MAX_TAG_LENGTH_BYTES, MAX_TAG_SET_SIZE_BYTES};
 use crate::capture::Target;
 
 /// `MaxTags(orgID)` default (Pyld13).
@@ -132,5 +132,31 @@ pub(crate) fn origin(target: Target, ms: &MetricSeries) {
         out.is_none(),
         "Pyld16.origin_in_domain",
         &json!({ "lane": target, "metric": ms.metric(), "out_of_domain": out })
+    );
+}
+
+/// Pyld23 -- each tag at most `MAX_TAG_LENGTH_BYTES` bytes.
+pub(crate) fn tag_length(target: Target, ms: &MetricSeries) {
+    let over = ms
+        .tags
+        .iter()
+        .map(String::len)
+        .max()
+        .filter(|&len| len > MAX_TAG_LENGTH_BYTES);
+    assert_always!(
+        over.is_none(),
+        "Pyld23.tag_length",
+        &json!({ "lane": target, "metric": ms.metric(), "max_tag_bytes": MAX_TAG_LENGTH_BYTES, "observed": over })
+    );
+}
+
+/// Pyld24 -- total tag-set bytes per series at most `MAX_TAG_SET_SIZE_BYTES`.
+pub(crate) fn tag_set_size(target: Target, ms: &MetricSeries) {
+    let total: usize = ms.tags.iter().map(String::len).sum();
+    let over = (total > MAX_TAG_SET_SIZE_BYTES).then_some(total);
+    assert_always!(
+        over.is_none(),
+        "Pyld24.tag_set_size",
+        &json!({ "lane": target, "metric": ms.metric(), "max_set_bytes": MAX_TAG_SET_SIZE_BYTES, "observed": over })
     );
 }
