@@ -22,6 +22,12 @@ if [ "${INTERNAL_BUILD:-}" = "true" ]; then
             chmod +x /rootfs/maybe-profile.sh
             ;;
         arm)
+            cat > /rootfs/maybe-profile.sh <<'EOF'
+#!/usr/bin/env sh
+set -eu
+exec "$@"
+EOF
+            chmod +x /rootfs/maybe-profile.sh
             ;;
         *)
             echo "ERROR: unsupported ddprof architecture '${TARGETARCH}'." >&2

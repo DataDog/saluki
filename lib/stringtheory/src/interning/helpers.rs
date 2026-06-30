@@ -1,20 +1,29 @@
 use std::{alloc::Layout, collections::BTreeSet, hash::BuildHasher as _, num::NonZeroUsize, sync::LazyLock};
 
+#[cfg(target_pointer_width = "64")]
 const PACKED_CAP_MASK: usize = usize::MAX << (usize::BITS / 2);
+#[cfg(target_pointer_width = "64")]
 const PACKED_CAP_SHIFT: u32 = usize::BITS / 2;
+#[cfg(target_pointer_width = "64")]
 const PACKED_LEN_MASK: usize = usize::MAX >> (usize::BITS / 2);
 
-/// A packed length/capacity representation in a single `usize`.
+/// A length/capacity representation for interner entry headers.
 ///
-/// The upper half of the `usize` contains the capacity, while the lower half contains the length. This is useful for
-/// tracking both the capacity and length of a value in a more efficient way, when the known upper bound on the size of
-/// the values can be represented in half of the bits of `usize`, which on 64-bit platforms means being less than or
-/// equal to 4 GB.
+/// On 64-bit platforms, the upper half of a single `usize` contains the capacity and the lower half contains the
+/// length, supporting values up to 4 GiB without increasing the entry header size. On 32-bit platforms, each value is
+/// stored in its own `u32`, preserving the full practical 32-bit allocation range instead of truncating values to 16
+/// bits.
+#[cfg(target_pointer_width = "64")]
 pub struct PackedLengthCapacity(usize);
 
+#[cfg(target_pointer_width = "64")]
 impl PackedLengthCapacity {
     /// Creates a new packed length/capacity value.
     pub const fn new(capacity: usize, len: usize) -> Self {
+        if capacity > Self::maximum_value() || len > Self::maximum_value() {
+            panic!("length or capacity exceeds packed representation limit");
+        }
+
         Self((capacity << PACKED_CAP_SHIFT) | len)
     }
 
@@ -31,6 +40,43 @@ impl PackedLengthCapacity {
     /// Returns the maximum capacity or length that can be stored in the packed representation.
     pub const fn maximum_value() -> usize {
         (usize::MAX & PACKED_CAP_MASK) >> PACKED_CAP_SHIFT
+    }
+}
+
+/// A length/capacity representation for interner entry headers.
+#[cfg(target_pointer_width = "32")]
+pub struct PackedLengthCapacity {
+    capacity: u32,
+    len: u32,
+}
+
+#[cfg(target_pointer_width = "32")]
+impl PackedLengthCapacity {
+    /// Creates a new packed length/capacity value.
+    pub const fn new(capacity: usize, len: usize) -> Self {
+        if capacity > Self::maximum_value() || len > Self::maximum_value() {
+            panic!("length or capacity exceeds packed representation limit");
+        }
+
+        Self {
+            capacity: capacity as u32,
+            len: len as u32,
+        }
+    }
+
+    /// Returns the capacity from the packed value.
+    pub const fn capacity(&self) -> usize {
+        self.capacity as usize
+    }
+
+    /// Returns the length from the packed value.
+    pub const fn len(&self) -> usize {
+        self.len as usize
+    }
+
+    /// Returns the maximum capacity or length that can be stored in the packed representation.
+    pub const fn maximum_value() -> usize {
+        u32::MAX as usize
     }
 }
 

@@ -116,11 +116,19 @@ impl Deref for InternedString {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{helpers::PackedLengthCapacity, *};
 
     #[test]
     fn size_of_interned_string() {
         // `InternedString` is a three-machine-word enum over possible interner implementations.
         assert_eq!(std::mem::size_of::<InternedString>(), std::mem::size_of::<usize>() * 3);
+    }
+
+    #[test]
+    fn packed_length_capacity_preserves_large_values() {
+        let packed = PackedLengthCapacity::new(2 * 1024 * 1024, 1024 * 1024);
+
+        assert_eq!(packed.capacity(), 2 * 1024 * 1024);
+        assert_eq!(packed.len(), 1024 * 1024);
     }
 }
