@@ -70,6 +70,22 @@ while syslog logging is enabled, ADP uses the platform default local syslog sock
 `unixgram:///dev/log` on Linux and `unixgram:///var/run/syslog` on macOS. Set `syslog_rfc: true`
 when the receiving syslog daemon expects the Agent's RFC-style header.
 
+### UDS origin detection on macOS
+
+ADP supports PID-based UDS origin detection on Linux. On macOS and other non-Linux platforms,
+Unix socket credentials do not expose the sender PID: `LOCAL_PEERCRED` and `getpeereid()` provide
+UID and GID only. ADP still accepts DogStatsD traffic over UDS on those platforms, but it cannot
+derive a process ID from the socket and therefore cannot use that path for origin enrichment.
+
+When `dogstatsd_origin_detection` is enabled with a UDS listener on a non-Linux platform, ADP logs a
+startup warning and treats the missing PID as a static platform limitation rather than a per-packet
+origin detection error.
+
+The on-demand PID resolver is also Linux-only because it reads procfs and cgroups. Containerd
+metadata can still populate `ContainerPid` aliases in the tag store on Unix platforms, which covers
+steady-state tagging when another source provides a PID, but macOS UDS origin detection cannot
+obtain that PID from the socket.
+
 ### DogStatsD metric debug log
 
 ADP supports the core agent's DogStatsD metric debug log. To write this file, set
