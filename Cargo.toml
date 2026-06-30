@@ -6,6 +6,8 @@ members = [
   "bin/correctness/millstone",
   "bin/correctness/panoramic",
   "bin/correctness/stele",
+  "lib/agent-data-plane-config",
+  "lib/agent-data-plane-config-system",
   "lib/datadog-agent/commons",
   "lib/datadog-agent/config",
   "lib/datadog-agent/config-overlay-model",
@@ -45,6 +47,8 @@ license = "Apache-2.0"
 repository = "https://github.com/DataDog/saluki"
 
 [workspace.dependencies]
+agent-data-plane-config = { path = "lib/agent-data-plane-config" }
+agent-data-plane-config-system = { path = "lib/agent-data-plane-config-system" }
 datadog-agent-commons = { path = "lib/datadog-agent/commons" }
 datadog-agent-config = { path = "lib/datadog-agent/config" }
 datadog-agent-config-overlay-model = { path = "lib/datadog-agent/config-overlay-model" }

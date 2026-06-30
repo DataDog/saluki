@@ -1,0 +1,9 @@
+[package]
+name = "agent-data-plane-config"
+version = "0.1.0"
+edition = { workspace = true }
+license = { workspace = true }
+repository = { workspace = true }
+
+[lints]
+workspace = true
