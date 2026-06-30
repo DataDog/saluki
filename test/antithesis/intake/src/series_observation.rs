@@ -79,6 +79,8 @@ fn evaluate_series(target: Target, ms: &MetricSeries, now_secs: i64) {
     series::metric_length(target, ms);
     series::metric_alphabetic(target, ms);
     series::tag_count(target, ms);
+    series::tag_length(target, ms);
+    series::tag_set_size(target, ms);
     point::value_not_nan(target, ms);
     point::future_bound(target, ms, now_secs);
 }
