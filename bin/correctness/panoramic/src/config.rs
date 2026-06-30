@@ -251,6 +251,18 @@ pub enum ActionConfig {
         #[serde(default = "default_action_timeout")]
         timeout: HumanDuration,
     },
+
+    /// Send one DogStatsD payload to a Windows named pipe from inside the target container.
+    #[serde(rename = "dogstatsd_named_pipe_send")]
+    DogStatsDNamedPipeSend {
+        /// Named pipe name without the `\\.\pipe\` prefix.
+        pipe_name: String,
+        /// Payload bytes to write as UTF-8.
+        payload: String,
+        /// Timeout for waiting for the pipe connection and write to succeed.
+        #[serde(default = "default_action_timeout")]
+        timeout: HumanDuration,
+    },
 }
 
 fn default_action_timeout() -> HumanDuration {
@@ -405,6 +417,10 @@ impl ActionConfig {
                     crate::dynamic_vars::resolve_placeholders(s, vars);
                 }
             }
+            ActionConfig::DogStatsDNamedPipeSend { pipe_name, payload, .. } => {
+                crate::dynamic_vars::resolve_placeholders(pipe_name, vars);
+                crate::dynamic_vars::resolve_placeholders(payload, vars);
+            }
         }
     }
 
@@ -420,6 +436,10 @@ impl ActionConfig {
                 if let serde_json::Value::String(s) = value {
                     crate::dynamic_vars::find_unresolved(s, &mut out);
                 }
+            }
+            ActionConfig::DogStatsDNamedPipeSend { pipe_name, payload, .. } => {
+                crate::dynamic_vars::find_unresolved(pipe_name, &mut out);
+                crate::dynamic_vars::find_unresolved(payload, &mut out);
             }
         }
         out

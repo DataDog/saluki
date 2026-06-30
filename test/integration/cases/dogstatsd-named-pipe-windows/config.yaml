@@ -1,0 +1,34 @@
+type: integration
+name: "dogstatsd-named-pipe-windows"
+description: "Verifies Windows DogStatsD named-pipe intake accepts client writes and decodes frames"
+timeout: 120s
+runtimes: [windows]
+
+env:
+  DD_API_KEY: "00000000000000000000000000000000"
+  DD_HOSTNAME: "integration-test-dsd-named-pipe"
+  DD_DATA_PLANE_ENABLED: "true"
+  DD_DATA_PLANE_STANDALONE_MODE: "false"
+  DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+  DD_DOGSTATSD_PORT: "0"
+  DD_DOGSTATSD_PIPE_NAME: "datadog-dogstatsd-integration"
+  DD_DOGSTATSD_EOL_REQUIRED: "named_pipe"
+
+procedure:
+  - assertion: log_contains
+    pattern: 'listen_addr:"npipe://datadog-dogstatsd-integration"'
+    timeout: 30s
+  - action: dogstatsd_named_pipe_send
+    pipe_name: "datadog-dogstatsd-integration"
+    payload: "integration.named_pipe.invalid\n"
+    timeout: 30s
+  - assertion: log_contains
+    pattern: "integration.named_pipe.invalid"
+    timeout: 30s
+  - parallel:
+      - assertion: process_stable_for
+        duration: 10s
+      - assertion: log_not_contains
+        pattern: "panic|PANIC"
+        regex: true
+        during: 10s
