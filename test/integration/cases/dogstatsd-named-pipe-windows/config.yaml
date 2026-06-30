@@ -16,7 +16,7 @@ env:
 
 procedure:
   - assertion: log_contains
-    pattern: 'listen_addr:"named_pipe://datadog-dogstatsd-integration"'
+    pattern: 'listen_addr:"npipe://datadog-dogstatsd-integration"'
     timeout: 30s
   - action: dogstatsd_named_pipe_send
     pipe_name: "datadog-dogstatsd-integration"
