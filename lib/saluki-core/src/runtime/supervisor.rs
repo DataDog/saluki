@@ -802,26 +802,7 @@ impl Supervisor {
             let id = self.id_counter.fetch_add(1, Ordering::Relaxed);
             worker_state.add_worker(id, &entry.spec)?;
             children.insert(id, entry.clone());
-        debug!(supervisor_id = %self.supervisor_id, "Restarting all eligible static child processes.");
-        for entry in &self.child_specs {
-            // Temporary children are never restarted by a group restart (matching OTP): they are shut down with the
-            // group but not brought back.
-            if entry.config.restart == RestartType::Temporary {
-                continue;
-            }
-            let id = self.id_counter.fetch_add(1, Ordering::Relaxed);
-            worker_state.add_worker(id, &entry.spec)?;
-            children.insert(id, entry.clone());
         }
-
-        Ok(())
-    }
-
-    async fn run_inner(&self, process: Process, process_shutdown: ShutdownHandle) -> Result<(), SupervisorError> {
-        if self.child_specs.is_empty() {
-            return Err(SupervisorError::NoChildren);
-        }
-    }
 
         Ok(())
     }
@@ -962,35 +943,6 @@ impl Supervisor {
                                 break Err(SupervisorError::SignificantChildExited);
                             }
                         }
-
-                    // Initialization failures are not eligible for restart -- they propagate immediately.
-                    if let Err(WorkerError::Initialization { child_name: inner, source }) = worker_result {
-                        // If the error came from a nested supervisor, include the original child name to make the error
-                        // chain more informative (e.g., "ctrl-pln/privileged-api").
-                        let full_name = match inner {
-                            Some(inner) => format!("{}/{}", child_name, inner),
-                            None => child_name.clone(),
-                        };
-
-                        error!(supervisor_id = %self.supervisor_id, worker_name = full_name, "Child process failed to initialize: {}", source);
-                        break Err(SupervisorError::FailedToInitialize { child_name: full_name, source });
-                    }
-
-                    // A worker exited abnormally if it returned an error, panicked, or was aborted; a clean exit is
-                    // `Ok(())`. Together with the worker's restart policy, this determines whether we restart it.
-                    let abnormal = worker_result.is_err();
-                    let worker_result = worker_result.map_err(|e| match e {
-                        WorkerError::Runtime(e) => ProcessError::Terminated { source: e },
-                        WorkerError::Initialization { .. } => unreachable!("handled above"),
-                    });
-
-                    if !restart_type.should_restart(abnormal) {
-                        // The worker isn't eligible for restart given how it exited. It has already been removed from the
-                        // worker map by `wait_for_next_worker`, so we simply continue supervising the rest. Crucially, we
-                        // do NOT consult `evaluate_restart` here: non-restarts must not consume the restart-intensity
-                        // budget, otherwise a steady stream of terminating temporary/transient children would eventually
-                        // trip the supervisor's restart limit and tear it (and its siblings) down.
-                        debug!(supervisor_id = %self.supervisor_id, worker_name = child_spec.name(), ?restart_type, ?worker_result, "Child process exited and is not eligible for restart.");
                     } else {
                         match restart_state.evaluate_restart() {
                             RestartAction::Restart(mode) => match mode {
@@ -1226,54 +1178,6 @@ mod tests {
                 name,
                 init_behavior: InitBehavior::Instant,
                 run_behavior: RunBehavior::FailAfter(delay, "worker failed"),
-                start_count: Arc::new(AtomicUsize::new(0)),
-                brutal_shutdown: false,
-                graceful_timeout: Duration::from_millis(500),
-            }
-        }
-
-        /// Creates a worker that completes successfully after the given delay.
-        fn completing(name: &'static str, delay: Duration) -> Self {
-            Self {
-                name,
-                init_behavior: InitBehavior::Instant,
-                run_behavior: RunBehavior::CompleteAfter(delay),
-                start_count: Arc::new(AtomicUsize::new(0)),
-                brutal_shutdown: false,
-                graceful_timeout: Duration::from_millis(500),
-            }
-        }
-
-        /// Creates a worker that sleeps for `delay` after observing shutdown before exiting.
-        fn slow_shutdown(name: &'static str, delay: Duration) -> Self {
-            Self {
-                name,
-                init_behavior: InitBehavior::Instant,
-                run_behavior: RunBehavior::SlowShutdown(delay),
-                start_count: Arc::new(AtomicUsize::new(0)),
-                brutal_shutdown: false,
-                graceful_timeout: Duration::from_millis(500),
-            }
-        }
-
-        /// Creates a worker that never reacts to shutdown.
-        fn ignore_shutdown(name: &'static str) -> Self {
-            Self {
-                name,
-                init_behavior: InitBehavior::Instant,
-                run_behavior: RunBehavior::IgnoreShutdown,
-                start_count: Arc::new(AtomicUsize::new(0)),
-                brutal_shutdown: false,
-                graceful_timeout: Duration::from_millis(500),
-            }
-        }
-
-        /// Creates a worker that panics after the given delay.
-        fn panicking(name: &'static str, delay: Duration) -> Self {
-            Self {
-                name,
-                init_behavior: InitBehavior::Instant,
-                run_behavior: RunBehavior::PanicAfter(delay),
                 start_count: Arc::new(AtomicUsize::new(0)),
                 brutal_shutdown: false,
                 graceful_timeout: Duration::from_millis(500),
