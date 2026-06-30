@@ -4665,6 +4665,7 @@ dependencies = [
  "rustls",
  "rustls-cng-crypto",
  "rustls-native-certs",
+ "rustls-webpki",
  "saluki-common",
  "saluki-error",
  "tempfile",

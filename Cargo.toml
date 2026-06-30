@@ -145,6 +145,7 @@ rustls = { version = "0.23", default-features = false, features = [
 rustls-cng-crypto = { version = "0.2.0", git = "https://github.com/DataDog/rustls-cng-crypto", rev = "2498c870c949335cb70dc79ed558917b96e4ff72", default-features = false, features = [
   "tls12",
 ] }
+rustls-webpki = { version = "0.103", default-features = false }
 schemars = { version = "0.8", default-features = false }
 similar-asserts = { version = "2.0", default-features = false }
 slab = { version = "0.4.12", default-features = false }

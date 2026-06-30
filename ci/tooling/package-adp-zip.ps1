@@ -69,29 +69,7 @@ try {
         Copy-Item -Force $f (Join-Path $StageRoot $f)
     }
 
-    # FIPS builds on Windows can only build aws-lc-fips-sys as a shared library (per
-    # upstream: https://aws.github.io/aws-lc-rs/resources.html), so agent-data-plane.exe has
-    # a runtime dependency on aws_lc_fips_<ver>_crypto.dll. The DLL is produced by
-    # aws-lc-fips-sys's CMake build under target/<profile>/build/aws-lc-fips-sys-*/out and
-    # cargo copies it into target/<profile>/deps/. Glob recursively to be resilient to the
-    # exact subpath, dedupe by filename, and ship each unique DLL alongside the .exe in the
-    # zip's bin/ so it loads from the same directory at runtime.
-    if ($env:BUILD_FEATURES -eq "fips") {
-        $TargetProfileDir = Join-Path $CargoTargetDir $env:BUILD_PROFILE
-        $FipsDllMatches = @(Get-ChildItem -Path $TargetProfileDir -Filter "aws_lc_fips_*.dll" -Recurse -File -ErrorAction SilentlyContinue)
-        if ($FipsDllMatches.Count -eq 0) {
-            Write-Host "[!] FIPS build but no aws_lc_fips_*.dll found under $TargetProfileDir."
-            Write-Host "    All .dll files in the target tree:"
-            Get-ChildItem -Path $TargetProfileDir -Filter "*.dll" -Recurse -File -ErrorAction SilentlyContinue |
-                ForEach-Object { Write-Host "      $($_.FullName)" }
-            throw "FIPS build expected aws_lc_fips_*.dll but none was produced; aws-lc-fips-sys output layout may have changed"
-        }
-        $UniqueFipsDlls = $FipsDllMatches | Group-Object -Property Name | ForEach-Object { $_.Group[0] }
-        foreach ($dll in $UniqueFipsDlls) {
-            Write-Host "[*] Bundling $($dll.Name) (from $($dll.FullName))"
-            Copy-Item -Force $dll.FullName (Join-Path $StageRoot "bin\$($dll.Name)")
-        }
-    }
+    # Windows FIPS builds use the CNG-backed Rustls provider, so no AWS-LC FIPS runtime DLLs are produced or bundled.
 
     # Replicate the `license-builder` stage from docker/Dockerfile.agent-data-plane on the host so
     # the zip ships the same per-license THIRD-PARTY-* files as the linux/darwin artifacts. The

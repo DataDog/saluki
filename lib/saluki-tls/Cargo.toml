@@ -10,7 +10,7 @@ workspace = true
 
 [features]
 default = []
-fips = ["aws-lc-rs/fips", "rustls-cng-crypto/fips"]
+fips = ["aws-lc-rs/fips", "rustls-cng-crypto/fips", "rustls-webpki/aws-lc-rs-fips"]
 
 [dependencies]
 rustls = { workspace = true, features = ["std"] }
@@ -22,6 +22,7 @@ tracing = { workspace = true }
 [target.'cfg(not(windows))'.dependencies]
 aws-lc-rs = { workspace = true, optional = true }
 rustls = { workspace = true, features = ["aws_lc_rs"] }
+rustls-webpki = { workspace = true, optional = true }
 
 [target.'cfg(windows)'.dependencies]
 rustls-cng-crypto = { workspace = true }
