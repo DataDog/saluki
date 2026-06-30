@@ -374,321 +374,347 @@
 <a href=#374 id=374 data-nosnippet>374</a>
 <a href=#375 id=375 data-nosnippet>375</a><span class="doccomment">/// Initializes the default TLS cryptography provider used by `rustls`.
 <a href=#376 id=376 data-nosnippet>376</a>///
-<a href=#377 id=377 data-nosnippet>377</a>/// This explicitly sets the [AWS-LC][aws_lc] provider as the default provider for all future TLS configurations, which
-<a href=#378 id=378 data-nosnippet>378</a>/// provides the ability to run in FIPS mode for FIPS-compliant builds.
+<a href=#377 id=377 data-nosnippet>377</a>/// This explicitly sets the platform default provider for all future TLS configurations: CNG on Windows and AWS-LC on
+<a href=#378 id=378 data-nosnippet>378</a>/// other platforms. FIPS builds configure the selected platform provider for FIPS mode.
 <a href=#379 id=379 data-nosnippet>379</a>///
-<a href=#380 id=380 data-nosnippet>380</a>/// This is the only supported cryptography provider in Saluki.
+<a href=#380 id=380 data-nosnippet>380</a>/// # Errors
 <a href=#381 id=381 data-nosnippet>381</a>///
-<a href=#382 id=382 data-nosnippet>382</a>/// # Errors
-<a href=#383 id=383 data-nosnippet>383</a>///
-<a href=#384 id=384 data-nosnippet>384</a>/// If the default cryptography provider has already been set, an error will be returned.
-<a href=#385 id=385 data-nosnippet>385</a>///
-<a href=#386 id=386 data-nosnippet>386</a>/// [aws_lc]: https://github.com/aws/aws-lc-rs
-<a href=#387 id=387 data-nosnippet>387</a></span><span class="kw">pub fn </span>initialize_default_crypto_provider() -&gt; <span class="prelude-ty">Result</span>&lt;(), GenericError&gt; {
-<a href=#388 id=388 data-nosnippet>388</a>    <span class="kw">if </span>DEFAULT_CRYPTO_PROVIDER_SET.get().is_some() {
-<a href=#389 id=389 data-nosnippet>389</a>        <span class="kw">return </span><span class="prelude-val">Err</span>(<span class="macro">generic_error!</span>(<span class="string">"Default TLS cryptography provider already initialized."</span>));
-<a href=#390 id=390 data-nosnippet>390</a>    }
-<a href=#391 id=391 data-nosnippet>391</a>
-<a href=#392 id=392 data-nosnippet>392</a>    <span class="comment">// Set the process-wide default `CryptoProvider` to AWS-LC.
-<a href=#393 id=393 data-nosnippet>393</a>    //
-<a href=#394 id=394 data-nosnippet>394</a>    // This locks in AWS-LC as the default provider for all future TLS configurations, regardless of whether they use
-<a href=#395 id=395 data-nosnippet>395</a>    // the configuration builders here or not. (The main caveat is that it's only relevant if `rustls` is being used.)
-<a href=#396 id=396 data-nosnippet>396</a>    </span>rustls::crypto::aws_lc_rs::default_provider()
-<a href=#397 id=397 data-nosnippet>397</a>        .install_default()
-<a href=#398 id=398 data-nosnippet>398</a>        .map_err(|<span class="kw">_</span>| <span class="macro">generic_error!</span>(<span class="string">"Failed to install AWS-LC as default cryptography provider. This is likely due to a conflicting provider already being installed."</span>))<span class="question-mark">?</span>;
-<a href=#399 id=399 data-nosnippet>399</a>
-<a href=#400 id=400 data-nosnippet>400</a>    <span class="comment">// With the process-wide default having been set, mark it as having been set.
-<a href=#401 id=401 data-nosnippet>401</a>    </span>DEFAULT_CRYPTO_PROVIDER_SET
-<a href=#402 id=402 data-nosnippet>402</a>        .set(())
-<a href=#403 id=403 data-nosnippet>403</a>        .expect(<span class="string">"should be impossible for DEFAULT_CRYPTO_PROVIDER_SET to be initialized twice"</span>);
-<a href=#404 id=404 data-nosnippet>404</a>
-<a href=#405 id=405 data-nosnippet>405</a>    <span class="prelude-val">Ok</span>(())
-<a href=#406 id=406 data-nosnippet>406</a>}
-<a href=#407 id=407 data-nosnippet>407</a>
-<a href=#408 id=408 data-nosnippet>408</a><span class="doccomment">/// Initializes the default root certificate store from the platform's native certificate store.
-<a href=#409 id=409 data-nosnippet>409</a>///
-<a href=#410 id=410 data-nosnippet>410</a>/// ## Environment Variables
-<a href=#411 id=411 data-nosnippet>411</a>///
-<a href=#412 id=412 data-nosnippet>412</a>/// | Environment Variable | Description                                                                           |
-<a href=#413 id=413 data-nosnippet>413</a>/// |----------------------|---------------------------------------------------------------------------------------|
-<a href=#414 id=414 data-nosnippet>414</a>/// | SSL_CERT_FILE        | File containing an arbitrary number of certificates in PEM format.                    |
-<a href=#415 id=415 data-nosnippet>415</a>/// | SSL_CERT_DIR         | Directory utilizing the hierarchy and naming convention used by OpenSSL's `c_rehash`. |
-<a href=#416 id=416 data-nosnippet>416</a>///
-<a href=#417 id=417 data-nosnippet>417</a>/// If **either** (or **both**) are set, certificates are only loaded from the locations specified via environment
-<a href=#418 id=418 data-nosnippet>418</a>/// variables and not the platform- native certificate store.
-<a href=#419 id=419 data-nosnippet>419</a>///
-<a href=#420 id=420 data-nosnippet>420</a>/// ## Certificate Validity
-<a href=#421 id=421 data-nosnippet>421</a>///
-<a href=#422 id=422 data-nosnippet>422</a>/// All certificates are expected to be in PEM format. A file may contain multiple certificates.
-<a href=#423 id=423 data-nosnippet>423</a>///
-<a href=#424 id=424 data-nosnippet>424</a>/// Example:
-<a href=#425 id=425 data-nosnippet>425</a>///
-<a href=#426 id=426 data-nosnippet>426</a>/// ```text
-<a href=#427 id=427 data-nosnippet>427</a>/// -----BEGIN CERTIFICATE-----
-<a href=#428 id=428 data-nosnippet>428</a>/// MIICGzCCAaGgAwIBAgIQQdKd0XLq7qeAwSxs6S+HUjAKBggqhkjOPQQDAzBPMQsw
-<a href=#429 id=429 data-nosnippet>429</a>/// CQYDVQQGEwJVUzEpMCcGA1UEChMgSW50ZXJuZXQgU2VjdXJpdHkgUmVzZWFyY2gg
-<a href=#430 id=430 data-nosnippet>430</a>/// R3JvdXAxFTATBgNVBAMTDElTUkcgUm9vdCBYMjAeFw0yMDA5MDQwMDAwMDBaFw00
-<a href=#431 id=431 data-nosnippet>431</a>/// MDA5MTcxNjAwMDBaME8xCzAJBgNVBAYTAlVTMSkwJwYDVQQKEyBJbnRlcm5ldCBT
-<a href=#432 id=432 data-nosnippet>432</a>/// ZWN1cml0eSBSZXNlYXJjaCBHcm91cDEVMBMGA1UEAxMMSVNSRyBSb290IFgyMHYw
-<a href=#433 id=433 data-nosnippet>433</a>/// EAYHKoZIzj0CAQYFK4EEACIDYgAEzZvVn4CDCuwJSvMWSj5cz3es3mcFDR0HttwW
-<a href=#434 id=434 data-nosnippet>434</a>/// +1qLFNvicWDEukWVEYmO6gbf9yoWHKS5xcUy4APgHoIYOIvXRdgKam7mAHf7AlF9
-<a href=#435 id=435 data-nosnippet>435</a>/// ItgKbppbd9/w+kHsOdx1ymgHDB/qo0IwQDAOBgNVHQ8BAf8EBAMCAQYwDwYDVR0T
-<a href=#436 id=436 data-nosnippet>436</a>/// AQH/BAUwAwEB/zAdBgNVHQ4EFgQUfEKWrt5LSDv6kviejM9ti6lyN5UwCgYIKoZI
-<a href=#437 id=437 data-nosnippet>437</a>/// zj0EAwMDaAAwZQIwe3lORlCEwkSHRhtFcP9Ymd70/aTSVaYgLXTWNLxBo1BfASdW
-<a href=#438 id=438 data-nosnippet>438</a>/// tL4ndQavEi51mI38AjEAi/V3bNTIZargCyzuFJ0nN6T5U6VR5CmD1/iQMVtCnwr1
-<a href=#439 id=439 data-nosnippet>439</a>/// /q4AaOeMSQ+2b1tbFfLn
-<a href=#440 id=440 data-nosnippet>440</a>/// -----END CERTIFICATE-----
-<a href=#441 id=441 data-nosnippet>441</a>/// -----BEGIN CERTIFICATE-----
-<a href=#442 id=442 data-nosnippet>442</a>/// MIIBtjCCAVugAwIBAgITBmyf1XSXNmY/Owua2eiedgPySjAKBggqhkjOPQQDAjA5
-<a href=#443 id=443 data-nosnippet>443</a>/// MQswCQYDVQQGEwJVUzEPMA0GA1UEChMGQW1hem9uMRkwFwYDVQQDExBBbWF6b24g
-<a href=#444 id=444 data-nosnippet>444</a>/// Um9vdCBDQSAzMB4XDTE1MDUyNjAwMDAwMFoXDTQwMDUyNjAwMDAwMFowOTELMAkG
-<a href=#445 id=445 data-nosnippet>445</a>/// A1UEBhMCVVMxDzANBgNVBAoTBkFtYXpvbjEZMBcGA1UEAxMQQW1hem9uIFJvb3Qg
-<a href=#446 id=446 data-nosnippet>446</a>/// Q0EgMzBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABCmXp8ZBf8ANm+gBG1bG8lKl
-<a href=#447 id=447 data-nosnippet>447</a>/// ui2yEujSLtf6ycXYqm0fc4E7O5hrOXwzpcVOho6AF2hiRVd9RFgdszflZwjrZt6j
-<a href=#448 id=448 data-nosnippet>448</a>/// QjBAMA8GA1UdEwEB/wQFMAMBAf8wDgYDVR0PAQH/BAQDAgGGMB0GA1UdDgQWBBSr
-<a href=#449 id=449 data-nosnippet>449</a>/// ttvXBp43rDCGB5Fwx5zEGbF4wDAKBggqhkjOPQQDAgNJADBGAiEA4IWSoxe3jfkr
-<a href=#450 id=450 data-nosnippet>450</a>/// BqWTrBqYaGFy+uGh0PsceGCmQ5nFuMQCIQCcAu/xlJyzlvnrxir4tiz+OpAUFteM
-<a href=#451 id=451 data-nosnippet>451</a>/// YyRIHN8wfdVoOw==
-<a href=#452 id=452 data-nosnippet>452</a>/// -----END CERTIFICATE-----
-<a href=#453 id=453 data-nosnippet>453</a>///
-<a href=#454 id=454 data-nosnippet>454</a>/// ```
-<a href=#455 id=455 data-nosnippet>455</a>///
-<a href=#456 id=456 data-nosnippet>456</a>/// For reasons of compatibility, an attempt is made to skip invalid sections of a certificate file but this means it's
-<a href=#457 id=457 data-nosnippet>457</a>/// also possible for a malformed certificate to be skipped.
-<a href=#458 id=458 data-nosnippet>458</a>///
-<a href=#459 id=459 data-nosnippet>459</a>/// If a certificate isn't loaded, and no error is reported, check if:
-<a href=#460 id=460 data-nosnippet>460</a>///
-<a href=#461 id=461 data-nosnippet>461</a>/// 1. the certificate is in PEM format (see example above)
-<a href=#462 id=462 data-nosnippet>462</a>/// 2. *BEGIN CERTIFICATE* line starts with exactly five hyphens (`'-'`)
-<a href=#463 id=463 data-nosnippet>463</a>/// 3. *END CERTIFICATE* line ends with exactly five hyphens (`'-'`)
-<a href=#464 id=464 data-nosnippet>464</a>/// 4. there is a line break after the certificate.
-<a href=#465 id=465 data-nosnippet>465</a>///
-<a href=#466 id=466 data-nosnippet>466</a>/// ## Errors
-<a href=#467 id=467 data-nosnippet>467</a>///
-<a href=#468 id=468 data-nosnippet>468</a>/// If errors occur during certificate loading and no certificates were ultimately added to the store, an error is
-<a href=#469 id=469 data-nosnippet>469</a>/// returned. Missing files or directories referenced by `SSL_CERT_FILE`/`SSL_CERT_DIR` are tolerated and treated as
-<a href=#470 id=470 data-nosnippet>470</a>/// "no certificates available" rather than as a load failure.
-<a href=#471 id=471 data-nosnippet>471</a>///
-<a href=#472 id=472 data-nosnippet>472</a>/// [c_rehash]: https://www.openssl.org/docs/manmaster/man1/c_rehash.html
-<a href=#473 id=473 data-nosnippet>473</a></span><span class="kw">pub fn </span>load_platform_root_certificates() -&gt; <span class="prelude-ty">Result</span>&lt;(), GenericError&gt; {
-<a href=#474 id=474 data-nosnippet>474</a>    <span class="kw">let </span>_guard = DEFAULT_ROOT_CERT_STORE_MUTEX
-<a href=#475 id=475 data-nosnippet>475</a>        .lock()
-<a href=#476 id=476 data-nosnippet>476</a>        .map_err(|<span class="kw">_</span>| <span class="macro">generic_error!</span>(<span class="string">"Default TLS root certificate store update lock poisoned."</span>))<span class="question-mark">?</span>;
-<a href=#477 id=477 data-nosnippet>477</a>    <span class="kw">if </span>DEFAULT_ROOT_CERT_STORE.get().is_some() {
-<a href=#478 id=478 data-nosnippet>478</a>        <span class="kw">return </span><span class="prelude-val">Err</span>(<span class="macro">generic_error!</span>(
-<a href=#479 id=479 data-nosnippet>479</a>            <span class="string">"Default TLS root certificate store already initialized."
-<a href=#480 id=480 data-nosnippet>480</a>        </span>));
-<a href=#481 id=481 data-nosnippet>481</a>    }
-<a href=#482 id=482 data-nosnippet>482</a>
-<a href=#483 id=483 data-nosnippet>483</a>    <span class="kw">let </span>root_cert_store = load_platform_root_certificates_inner()<span class="question-mark">?</span>;
-<a href=#484 id=484 data-nosnippet>484</a>
-<a href=#485 id=485 data-nosnippet>485</a>    <span class="comment">// The reason it should be impossible is that we intentionally only set it _here_, and we do so after acquiring the
-<a href=#486 id=486 data-nosnippet>486</a>    // mutex, and only then do we make sure that it hasn't been set before proceeding to try to set it.
-<a href=#487 id=487 data-nosnippet>487</a>    </span>DEFAULT_ROOT_CERT_STORE
-<a href=#488 id=488 data-nosnippet>488</a>        .set(Arc::new(root_cert_store))
-<a href=#489 id=489 data-nosnippet>489</a>        .expect(<span class="string">"should be impossible for DEFAULT_ROOT_CERT_STORE to be initialized twice"</span>);
-<a href=#490 id=490 data-nosnippet>490</a>
-<a href=#491 id=491 data-nosnippet>491</a>    <span class="prelude-val">Ok</span>(())
-<a href=#492 id=492 data-nosnippet>492</a>}
-<a href=#493 id=493 data-nosnippet>493</a>
-<a href=#494 id=494 data-nosnippet>494</a><span class="doccomment">/// Builds a `RootCertStore` from the platform's native certificate store.
-<a href=#495 id=495 data-nosnippet>495</a>///
-<a href=#496 id=496 data-nosnippet>496</a>/// Behaves identically to [`load_platform_root_certificates`] with respect to which certificates are loaded, but
-<a href=#497 id=497 data-nosnippet>497</a>/// returns the constructed store instead of writing it into the process-wide default.
-<a href=#498 id=498 data-nosnippet>498</a>///
-<a href=#499 id=499 data-nosnippet>499</a>/// # Errors
-<a href=#500 id=500 data-nosnippet>500</a>///
-<a href=#501 id=501 data-nosnippet>501</a>/// If errors occur during certificate loading and no certificates were ultimately added to the store, an error is
-<a href=#502 id=502 data-nosnippet>502</a>/// returned. Otherwise, even if some certificates failed to parse, the store is returned with whatever certificates were
-<a href=#503 id=503 data-nosnippet>503</a>/// successfully added. Missing files or directories referenced by `SSL_CERT_FILE`/`SSL_CERT_DIR` are tolerated and do
-<a href=#504 id=504 data-nosnippet>504</a>/// not produce an error.
-<a href=#505 id=505 data-nosnippet>505</a></span><span class="kw">pub fn </span>load_platform_root_certificates_inner() -&gt; <span class="prelude-ty">Result</span>&lt;RootCertStore, GenericError&gt; {
-<a href=#506 id=506 data-nosnippet>506</a>    <span class="kw">let </span><span class="kw-2">mut </span>root_cert_store = RootCertStore::empty();
-<a href=#507 id=507 data-nosnippet>507</a>
-<a href=#508 id=508 data-nosnippet>508</a>    <span class="kw">let </span><span class="kw-2">mut </span>result = rustls_native_certs::load_native_certs();
-<a href=#509 id=509 data-nosnippet>509</a>
-<a href=#510 id=510 data-nosnippet>510</a>    <span class="comment">// Drop "not found" IO errors before evaluating success or failure: a missing `SSL_CERT_FILE` or `SSL_CERT_DIR`
-<a href=#511 id=511 data-nosnippet>511</a>    // should look like "no certificates available" rather than a load failure, since callers may simply not have set
-<a href=#512 id=512 data-nosnippet>512</a>    // those env vars on this host.
-<a href=#513 id=513 data-nosnippet>513</a>    </span>result.errors.retain(|err| {
-<a href=#514 id=514 data-nosnippet>514</a>        !<span class="macro">matches!</span>(
-<a href=#515 id=515 data-nosnippet>515</a>            <span class="kw-2">&amp;</span>err.kind,
-<a href=#516 id=516 data-nosnippet>516</a>            rustls_native_certs::ErrorKind::Io { inner, .. } <span class="kw">if </span>inner.kind() == std::io::ErrorKind::NotFound,
-<a href=#517 id=517 data-nosnippet>517</a>        )
-<a href=#518 id=518 data-nosnippet>518</a>    });
-<a href=#519 id=519 data-nosnippet>519</a>
-<a href=#520 id=520 data-nosnippet>520</a>    <span class="comment">// For whatever certificates we _did_ get back, try and add them to the root certificate store.
-<a href=#521 id=521 data-nosnippet>521</a>    </span><span class="kw">let </span>(added, failed) = root_cert_store.add_parsable_certificates(result.certs);
-<a href=#522 id=522 data-nosnippet>522</a>    <span class="kw">if </span>failed == <span class="number">0 </span>&amp;&amp; added &gt; <span class="number">0 </span>{
-<a href=#523 id=523 data-nosnippet>523</a>        <span class="macro">debug!</span>(
-<a href=#524 id=524 data-nosnippet>524</a>            <span class="string">"Added {} certificates from environment to the default root certificate store."</span>,
-<a href=#525 id=525 data-nosnippet>525</a>            added
-<a href=#526 id=526 data-nosnippet>526</a>        );
-<a href=#527 id=527 data-nosnippet>527</a>    } <span class="kw">else if </span>failed &gt; <span class="number">0 </span>&amp;&amp; added &gt; <span class="number">0 </span>{
-<a href=#528 id=528 data-nosnippet>528</a>        <span class="macro">debug!</span>(<span class="string">"Added {} certificates from environment to the default root certificate store, but failed to add {} certificates."</span>, added, failed);
-<a href=#529 id=529 data-nosnippet>529</a>    } <span class="kw">else </span>{
-<a href=#530 id=530 data-nosnippet>530</a>        <span class="comment">// When we don't manage to add any certificates, it either means that:
-<a href=#531 id=531 data-nosnippet>531</a>        // - we found no certificates to add
-<a href=#532 id=532 data-nosnippet>532</a>        // - we hit an error when loading the certificates
-<a href=#533 id=533 data-nosnippet>533</a>        // - we hit an error when trying to add the certificates to our root certificate store
-<a href=#534 id=534 data-nosnippet>534</a>        //
-<a href=#535 id=535 data-nosnippet>535</a>        // We only consider this operation to have truly failed if there were errors during the initial loading of the
-<a href=#536 id=536 data-nosnippet>536</a>        // certificates.
-<a href=#537 id=537 data-nosnippet>537</a>        </span><span class="kw">if </span>!result.errors.is_empty() {
-<a href=#538 id=538 data-nosnippet>538</a>            <span class="kw">let </span>joined_errors = result
-<a href=#539 id=539 data-nosnippet>539</a>                .errors
-<a href=#540 id=540 data-nosnippet>540</a>                .iter()
-<a href=#541 id=541 data-nosnippet>541</a>                .map(|e| e.to_string())
-<a href=#542 id=542 data-nosnippet>542</a>                .collect::&lt;Vec&lt;<span class="kw">_</span>&gt;&gt;()
-<a href=#543 id=543 data-nosnippet>543</a>                .join(<span class="string">", "</span>);
-<a href=#544 id=544 data-nosnippet>544</a>
-<a href=#545 id=545 data-nosnippet>545</a>            <span class="kw">return </span><span class="prelude-val">Err</span>(<span class="macro">generic_error!</span>(
-<a href=#546 id=546 data-nosnippet>546</a>                <span class="string">"Failed to load certificates from platform's native certificate store: {}"</span>,
-<a href=#547 id=547 data-nosnippet>547</a>                joined_errors
-<a href=#548 id=548 data-nosnippet>548</a>            ));
-<a href=#549 id=549 data-nosnippet>549</a>        }
-<a href=#550 id=550 data-nosnippet>550</a>    }
-<a href=#551 id=551 data-nosnippet>551</a>
-<a href=#552 id=552 data-nosnippet>552</a>    <span class="prelude-val">Ok</span>(root_cert_store)
-<a href=#553 id=553 data-nosnippet>553</a>}
-<a href=#554 id=554 data-nosnippet>554</a>
-<a href=#555 id=555 data-nosnippet>555</a><span class="attr">#[cfg(test)]
-<a href=#556 id=556 data-nosnippet>556</a></span><span class="kw">mod </span>tests {
-<a href=#557 id=557 data-nosnippet>557</a>    <span class="attr">#[cfg(not(feature = <span class="string">"fips"</span>))]
-<a href=#558 id=558 data-nosnippet>558</a>    </span><span class="kw">use </span>std::fs;
-<a href=#559 id=559 data-nosnippet>559</a>    <span class="attr">#[cfg(all(unix, not(feature = <span class="string">"fips"</span>)))]
-<a href=#560 id=560 data-nosnippet>560</a>    </span><span class="kw">use </span>std::os::unix::fs::PermissionsExt;
-<a href=#561 id=561 data-nosnippet>561</a>
-<a href=#562 id=562 data-nosnippet>562</a>    <span class="kw">use </span>rustls::{ProtocolVersion, RootCertStore};
-<a href=#563 id=563 data-nosnippet>563</a>
-<a href=#564 id=564 data-nosnippet>564</a>    <span class="attr">#[cfg(not(feature = <span class="string">"fips"</span>))]
-<a href=#565 id=565 data-nosnippet>565</a>    </span><span class="kw">use super</span>::{build_nss_key_log_line, open_key_log_file};
-<a href=#566 id=566 data-nosnippet>566</a>    <span class="kw">use super</span>::{ClientTLSConfigBuilder, TlsMinimumVersion};
-<a href=#567 id=567 data-nosnippet>567</a>
-<a href=#568 id=568 data-nosnippet>568</a>    <span class="attr">#[test]
-<a href=#569 id=569 data-nosnippet>569</a>    </span><span class="kw">fn </span>tls12_minimum_enables_tls12_and_tls13() {
-<a href=#570 id=570 data-nosnippet>570</a>        <span class="kw">let </span>versions = TlsMinimumVersion::Tls12.protocol_versions();
-<a href=#571 id=571 data-nosnippet>571</a>
-<a href=#572 id=572 data-nosnippet>572</a>        <span class="macro">assert_eq!</span>(versions.len(), <span class="number">2</span>);
-<a href=#573 id=573 data-nosnippet>573</a>        <span class="macro">assert_eq!</span>(versions[<span class="number">0</span>].version, ProtocolVersion::TLSv1_3);
-<a href=#574 id=574 data-nosnippet>574</a>        <span class="macro">assert_eq!</span>(versions[<span class="number">1</span>].version, ProtocolVersion::TLSv1_2);
-<a href=#575 id=575 data-nosnippet>575</a>    }
+<a href=#382 id=382 data-nosnippet>382</a>/// If the default cryptography provider has already been set, an error will be returned.
+<a href=#383 id=383 data-nosnippet>383</a></span><span class="kw">pub fn </span>initialize_default_crypto_provider() -&gt; <span class="prelude-ty">Result</span>&lt;(), GenericError&gt; {
+<a href=#384 id=384 data-nosnippet>384</a>    <span class="kw">if </span>DEFAULT_CRYPTO_PROVIDER_SET.get().is_some() {
+<a href=#385 id=385 data-nosnippet>385</a>        <span class="kw">return </span><span class="prelude-val">Err</span>(<span class="macro">generic_error!</span>(<span class="string">"Default TLS cryptography provider already initialized."</span>));
+<a href=#386 id=386 data-nosnippet>386</a>    }
+<a href=#387 id=387 data-nosnippet>387</a>
+<a href=#388 id=388 data-nosnippet>388</a>    default_crypto_provider().install_default().map_err(|<span class="kw">_</span>| {
+<a href=#389 id=389 data-nosnippet>389</a>        <span class="macro">generic_error!</span>(
+<a href=#390 id=390 data-nosnippet>390</a>            <span class="string">"Failed to install the default TLS cryptography provider. This is likely due to a conflicting provider already being installed."
+<a href=#391 id=391 data-nosnippet>391</a>        </span>)
+<a href=#392 id=392 data-nosnippet>392</a>    })<span class="question-mark">?</span>;
+<a href=#393 id=393 data-nosnippet>393</a>
+<a href=#394 id=394 data-nosnippet>394</a>    <span class="comment">// With the process-wide default having been set, mark it as having been set.
+<a href=#395 id=395 data-nosnippet>395</a>    </span>DEFAULT_CRYPTO_PROVIDER_SET
+<a href=#396 id=396 data-nosnippet>396</a>        .set(())
+<a href=#397 id=397 data-nosnippet>397</a>        .expect(<span class="string">"should be impossible for DEFAULT_CRYPTO_PROVIDER_SET to be initialized twice"</span>);
+<a href=#398 id=398 data-nosnippet>398</a>
+<a href=#399 id=399 data-nosnippet>399</a>    <span class="prelude-val">Ok</span>(())
+<a href=#400 id=400 data-nosnippet>400</a>}
+<a href=#401 id=401 data-nosnippet>401</a>
+<a href=#402 id=402 data-nosnippet>402</a><span class="attr">#[cfg(not(windows))]
+<a href=#403 id=403 data-nosnippet>403</a></span><span class="kw">fn </span>default_crypto_provider() -&gt; CryptoProvider {
+<a href=#404 id=404 data-nosnippet>404</a>    <span class="kw">let </span>provider = rustls::crypto::aws_lc_rs::default_provider();
+<a href=#405 id=405 data-nosnippet>405</a>
+<a href=#406 id=406 data-nosnippet>406</a>    <span class="attr">#[cfg(feature = <span class="string">"fips"</span>)]
+<a href=#407 id=407 data-nosnippet>407</a>    </span>{
+<a href=#408 id=408 data-nosnippet>408</a>        <span class="kw">let </span><span class="kw-2">mut </span>provider = provider;
+<a href=#409 id=409 data-nosnippet>409</a>        provider.cipher_suites.retain(|suite| suite.fips());
+<a href=#410 id=410 data-nosnippet>410</a>        provider.kx_groups.retain(|group| group.fips());
+<a href=#411 id=411 data-nosnippet>411</a>        provider
+<a href=#412 id=412 data-nosnippet>412</a>    }
+<a href=#413 id=413 data-nosnippet>413</a>
+<a href=#414 id=414 data-nosnippet>414</a>    <span class="attr">#[cfg(not(feature = <span class="string">"fips"</span>))]
+<a href=#415 id=415 data-nosnippet>415</a>    </span>provider
+<a href=#416 id=416 data-nosnippet>416</a>}
+<a href=#417 id=417 data-nosnippet>417</a>
+<a href=#418 id=418 data-nosnippet>418</a><span class="attr">#[cfg(windows)]
+<a href=#419 id=419 data-nosnippet>419</a></span><span class="kw">fn </span>default_crypto_provider() -&gt; CryptoProvider {
+<a href=#420 id=420 data-nosnippet>420</a>    rustls_cng_crypto::default_provider()
+<a href=#421 id=421 data-nosnippet>421</a>}
+<a href=#422 id=422 data-nosnippet>422</a>
+<a href=#423 id=423 data-nosnippet>423</a><span class="doccomment">/// Initializes the default root certificate store from the platform's native certificate store.
+<a href=#424 id=424 data-nosnippet>424</a>///
+<a href=#425 id=425 data-nosnippet>425</a>/// ## Environment Variables
+<a href=#426 id=426 data-nosnippet>426</a>///
+<a href=#427 id=427 data-nosnippet>427</a>/// | Environment Variable | Description                                                                           |
+<a href=#428 id=428 data-nosnippet>428</a>/// |----------------------|---------------------------------------------------------------------------------------|
+<a href=#429 id=429 data-nosnippet>429</a>/// | SSL_CERT_FILE        | File containing an arbitrary number of certificates in PEM format.                    |
+<a href=#430 id=430 data-nosnippet>430</a>/// | SSL_CERT_DIR         | Directory utilizing the hierarchy and naming convention used by OpenSSL's `c_rehash`. |
+<a href=#431 id=431 data-nosnippet>431</a>///
+<a href=#432 id=432 data-nosnippet>432</a>/// If **either** (or **both**) are set, certificates are only loaded from the locations specified via environment
+<a href=#433 id=433 data-nosnippet>433</a>/// variables and not the platform- native certificate store.
+<a href=#434 id=434 data-nosnippet>434</a>///
+<a href=#435 id=435 data-nosnippet>435</a>/// ## Certificate Validity
+<a href=#436 id=436 data-nosnippet>436</a>///
+<a href=#437 id=437 data-nosnippet>437</a>/// All certificates are expected to be in PEM format. A file may contain multiple certificates.
+<a href=#438 id=438 data-nosnippet>438</a>///
+<a href=#439 id=439 data-nosnippet>439</a>/// Example:
+<a href=#440 id=440 data-nosnippet>440</a>///
+<a href=#441 id=441 data-nosnippet>441</a>/// ```text
+<a href=#442 id=442 data-nosnippet>442</a>/// -----BEGIN CERTIFICATE-----
+<a href=#443 id=443 data-nosnippet>443</a>/// MIICGzCCAaGgAwIBAgIQQdKd0XLq7qeAwSxs6S+HUjAKBggqhkjOPQQDAzBPMQsw
+<a href=#444 id=444 data-nosnippet>444</a>/// CQYDVQQGEwJVUzEpMCcGA1UEChMgSW50ZXJuZXQgU2VjdXJpdHkgUmVzZWFyY2gg
+<a href=#445 id=445 data-nosnippet>445</a>/// R3JvdXAxFTATBgNVBAMTDElTUkcgUm9vdCBYMjAeFw0yMDA5MDQwMDAwMDBaFw00
+<a href=#446 id=446 data-nosnippet>446</a>/// MDA5MTcxNjAwMDBaME8xCzAJBgNVBAYTAlVTMSkwJwYDVQQKEyBJbnRlcm5ldCBT
+<a href=#447 id=447 data-nosnippet>447</a>/// ZWN1cml0eSBSZXNlYXJjaCBHcm91cDEVMBMGA1UEAxMMSVNSRyBSb290IFgyMHYw
+<a href=#448 id=448 data-nosnippet>448</a>/// EAYHKoZIzj0CAQYFK4EEACIDYgAEzZvVn4CDCuwJSvMWSj5cz3es3mcFDR0HttwW
+<a href=#449 id=449 data-nosnippet>449</a>/// +1qLFNvicWDEukWVEYmO6gbf9yoWHKS5xcUy4APgHoIYOIvXRdgKam7mAHf7AlF9
+<a href=#450 id=450 data-nosnippet>450</a>/// ItgKbppbd9/w+kHsOdx1ymgHDB/qo0IwQDAOBgNVHQ8BAf8EBAMCAQYwDwYDVR0T
+<a href=#451 id=451 data-nosnippet>451</a>/// AQH/BAUwAwEB/zAdBgNVHQ4EFgQUfEKWrt5LSDv6kviejM9ti6lyN5UwCgYIKoZI
+<a href=#452 id=452 data-nosnippet>452</a>/// zj0EAwMDaAAwZQIwe3lORlCEwkSHRhtFcP9Ymd70/aTSVaYgLXTWNLxBo1BfASdW
+<a href=#453 id=453 data-nosnippet>453</a>/// tL4ndQavEi51mI38AjEAi/V3bNTIZargCyzuFJ0nN6T5U6VR5CmD1/iQMVtCnwr1
+<a href=#454 id=454 data-nosnippet>454</a>/// /q4AaOeMSQ+2b1tbFfLn
+<a href=#455 id=455 data-nosnippet>455</a>/// -----END CERTIFICATE-----
+<a href=#456 id=456 data-nosnippet>456</a>/// -----BEGIN CERTIFICATE-----
+<a href=#457 id=457 data-nosnippet>457</a>/// MIIBtjCCAVugAwIBAgITBmyf1XSXNmY/Owua2eiedgPySjAKBggqhkjOPQQDAjA5
+<a href=#458 id=458 data-nosnippet>458</a>/// MQswCQYDVQQGEwJVUzEPMA0GA1UEChMGQW1hem9uMRkwFwYDVQQDExBBbWF6b24g
+<a href=#459 id=459 data-nosnippet>459</a>/// Um9vdCBDQSAzMB4XDTE1MDUyNjAwMDAwMFoXDTQwMDUyNjAwMDAwMFowOTELMAkG
+<a href=#460 id=460 data-nosnippet>460</a>/// A1UEBhMCVVMxDzANBgNVBAoTBkFtYXpvbjEZMBcGA1UEAxMQQW1hem9uIFJvb3Qg
+<a href=#461 id=461 data-nosnippet>461</a>/// Q0EgMzBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABCmXp8ZBf8ANm+gBG1bG8lKl
+<a href=#462 id=462 data-nosnippet>462</a>/// ui2yEujSLtf6ycXYqm0fc4E7O5hrOXwzpcVOho6AF2hiRVd9RFgdszflZwjrZt6j
+<a href=#463 id=463 data-nosnippet>463</a>/// QjBAMA8GA1UdEwEB/wQFMAMBAf8wDgYDVR0PAQH/BAQDAgGGMB0GA1UdDgQWBBSr
+<a href=#464 id=464 data-nosnippet>464</a>/// ttvXBp43rDCGB5Fwx5zEGbF4wDAKBggqhkjOPQQDAgNJADBGAiEA4IWSoxe3jfkr
+<a href=#465 id=465 data-nosnippet>465</a>/// BqWTrBqYaGFy+uGh0PsceGCmQ5nFuMQCIQCcAu/xlJyzlvnrxir4tiz+OpAUFteM
+<a href=#466 id=466 data-nosnippet>466</a>/// YyRIHN8wfdVoOw==
+<a href=#467 id=467 data-nosnippet>467</a>/// -----END CERTIFICATE-----
+<a href=#468 id=468 data-nosnippet>468</a>///
+<a href=#469 id=469 data-nosnippet>469</a>/// ```
+<a href=#470 id=470 data-nosnippet>470</a>///
+<a href=#471 id=471 data-nosnippet>471</a>/// For reasons of compatibility, an attempt is made to skip invalid sections of a certificate file but this means it's
+<a href=#472 id=472 data-nosnippet>472</a>/// also possible for a malformed certificate to be skipped.
+<a href=#473 id=473 data-nosnippet>473</a>///
+<a href=#474 id=474 data-nosnippet>474</a>/// If a certificate isn't loaded, and no error is reported, check if:
+<a href=#475 id=475 data-nosnippet>475</a>///
+<a href=#476 id=476 data-nosnippet>476</a>/// 1. the certificate is in PEM format (see example above)
+<a href=#477 id=477 data-nosnippet>477</a>/// 2. *BEGIN CERTIFICATE* line starts with exactly five hyphens (`'-'`)
+<a href=#478 id=478 data-nosnippet>478</a>/// 3. *END CERTIFICATE* line ends with exactly five hyphens (`'-'`)
+<a href=#479 id=479 data-nosnippet>479</a>/// 4. there is a line break after the certificate.
+<a href=#480 id=480 data-nosnippet>480</a>///
+<a href=#481 id=481 data-nosnippet>481</a>/// ## Errors
+<a href=#482 id=482 data-nosnippet>482</a>///
+<a href=#483 id=483 data-nosnippet>483</a>/// If errors occur during certificate loading and no certificates were ultimately added to the store, an error is
+<a href=#484 id=484 data-nosnippet>484</a>/// returned. Missing files or directories referenced by `SSL_CERT_FILE`/`SSL_CERT_DIR` are tolerated and treated as
+<a href=#485 id=485 data-nosnippet>485</a>/// "no certificates available" rather than as a load failure.
+<a href=#486 id=486 data-nosnippet>486</a>///
+<a href=#487 id=487 data-nosnippet>487</a>/// [c_rehash]: https://www.openssl.org/docs/manmaster/man1/c_rehash.html
+<a href=#488 id=488 data-nosnippet>488</a></span><span class="kw">pub fn </span>load_platform_root_certificates() -&gt; <span class="prelude-ty">Result</span>&lt;(), GenericError&gt; {
+<a href=#489 id=489 data-nosnippet>489</a>    <span class="kw">let </span>_guard = DEFAULT_ROOT_CERT_STORE_MUTEX
+<a href=#490 id=490 data-nosnippet>490</a>        .lock()
+<a href=#491 id=491 data-nosnippet>491</a>        .map_err(|<span class="kw">_</span>| <span class="macro">generic_error!</span>(<span class="string">"Default TLS root certificate store update lock poisoned."</span>))<span class="question-mark">?</span>;
+<a href=#492 id=492 data-nosnippet>492</a>    <span class="kw">if </span>DEFAULT_ROOT_CERT_STORE.get().is_some() {
+<a href=#493 id=493 data-nosnippet>493</a>        <span class="kw">return </span><span class="prelude-val">Err</span>(<span class="macro">generic_error!</span>(
+<a href=#494 id=494 data-nosnippet>494</a>            <span class="string">"Default TLS root certificate store already initialized."
+<a href=#495 id=495 data-nosnippet>495</a>        </span>));
+<a href=#496 id=496 data-nosnippet>496</a>    }
+<a href=#497 id=497 data-nosnippet>497</a>
+<a href=#498 id=498 data-nosnippet>498</a>    <span class="kw">let </span>root_cert_store = load_platform_root_certificates_inner()<span class="question-mark">?</span>;
+<a href=#499 id=499 data-nosnippet>499</a>
+<a href=#500 id=500 data-nosnippet>500</a>    <span class="comment">// The reason it should be impossible is that we intentionally only set it _here_, and we do so after acquiring the
+<a href=#501 id=501 data-nosnippet>501</a>    // mutex, and only then do we make sure that it hasn't been set before proceeding to try to set it.
+<a href=#502 id=502 data-nosnippet>502</a>    </span>DEFAULT_ROOT_CERT_STORE
+<a href=#503 id=503 data-nosnippet>503</a>        .set(Arc::new(root_cert_store))
+<a href=#504 id=504 data-nosnippet>504</a>        .expect(<span class="string">"should be impossible for DEFAULT_ROOT_CERT_STORE to be initialized twice"</span>);
+<a href=#505 id=505 data-nosnippet>505</a>
+<a href=#506 id=506 data-nosnippet>506</a>    <span class="prelude-val">Ok</span>(())
+<a href=#507 id=507 data-nosnippet>507</a>}
+<a href=#508 id=508 data-nosnippet>508</a>
+<a href=#509 id=509 data-nosnippet>509</a><span class="doccomment">/// Builds a `RootCertStore` from the platform's native certificate store.
+<a href=#510 id=510 data-nosnippet>510</a>///
+<a href=#511 id=511 data-nosnippet>511</a>/// Behaves identically to [`load_platform_root_certificates`] with respect to which certificates are loaded, but
+<a href=#512 id=512 data-nosnippet>512</a>/// returns the constructed store instead of writing it into the process-wide default.
+<a href=#513 id=513 data-nosnippet>513</a>///
+<a href=#514 id=514 data-nosnippet>514</a>/// # Errors
+<a href=#515 id=515 data-nosnippet>515</a>///
+<a href=#516 id=516 data-nosnippet>516</a>/// If errors occur during certificate loading and no certificates were ultimately added to the store, an error is
+<a href=#517 id=517 data-nosnippet>517</a>/// returned. Otherwise, even if some certificates failed to parse, the store is returned with whatever certificates were
+<a href=#518 id=518 data-nosnippet>518</a>/// successfully added. Missing files or directories referenced by `SSL_CERT_FILE`/`SSL_CERT_DIR` are tolerated and do
+<a href=#519 id=519 data-nosnippet>519</a>/// not produce an error.
+<a href=#520 id=520 data-nosnippet>520</a></span><span class="kw">pub fn </span>load_platform_root_certificates_inner() -&gt; <span class="prelude-ty">Result</span>&lt;RootCertStore, GenericError&gt; {
+<a href=#521 id=521 data-nosnippet>521</a>    <span class="kw">let </span><span class="kw-2">mut </span>root_cert_store = RootCertStore::empty();
+<a href=#522 id=522 data-nosnippet>522</a>
+<a href=#523 id=523 data-nosnippet>523</a>    <span class="kw">let </span><span class="kw-2">mut </span>result = rustls_native_certs::load_native_certs();
+<a href=#524 id=524 data-nosnippet>524</a>
+<a href=#525 id=525 data-nosnippet>525</a>    <span class="comment">// Drop "not found" IO errors before evaluating success or failure: a missing `SSL_CERT_FILE` or `SSL_CERT_DIR`
+<a href=#526 id=526 data-nosnippet>526</a>    // should look like "no certificates available" rather than a load failure, since callers may simply not have set
+<a href=#527 id=527 data-nosnippet>527</a>    // those env vars on this host.
+<a href=#528 id=528 data-nosnippet>528</a>    </span>result.errors.retain(|err| {
+<a href=#529 id=529 data-nosnippet>529</a>        !<span class="macro">matches!</span>(
+<a href=#530 id=530 data-nosnippet>530</a>            <span class="kw-2">&amp;</span>err.kind,
+<a href=#531 id=531 data-nosnippet>531</a>            rustls_native_certs::ErrorKind::Io { inner, .. } <span class="kw">if </span>inner.kind() == std::io::ErrorKind::NotFound,
+<a href=#532 id=532 data-nosnippet>532</a>        )
+<a href=#533 id=533 data-nosnippet>533</a>    });
+<a href=#534 id=534 data-nosnippet>534</a>
+<a href=#535 id=535 data-nosnippet>535</a>    <span class="comment">// For whatever certificates we _did_ get back, try and add them to the root certificate store.
+<a href=#536 id=536 data-nosnippet>536</a>    </span><span class="kw">let </span>(added, failed) = root_cert_store.add_parsable_certificates(result.certs);
+<a href=#537 id=537 data-nosnippet>537</a>    <span class="kw">if </span>failed == <span class="number">0 </span>&amp;&amp; added &gt; <span class="number">0 </span>{
+<a href=#538 id=538 data-nosnippet>538</a>        <span class="macro">debug!</span>(
+<a href=#539 id=539 data-nosnippet>539</a>            <span class="string">"Added {} certificates from environment to the default root certificate store."</span>,
+<a href=#540 id=540 data-nosnippet>540</a>            added
+<a href=#541 id=541 data-nosnippet>541</a>        );
+<a href=#542 id=542 data-nosnippet>542</a>    } <span class="kw">else if </span>failed &gt; <span class="number">0 </span>&amp;&amp; added &gt; <span class="number">0 </span>{
+<a href=#543 id=543 data-nosnippet>543</a>        <span class="macro">debug!</span>(<span class="string">"Added {} certificates from environment to the default root certificate store, but failed to add {} certificates."</span>, added, failed);
+<a href=#544 id=544 data-nosnippet>544</a>    } <span class="kw">else </span>{
+<a href=#545 id=545 data-nosnippet>545</a>        <span class="comment">// When we don't manage to add any certificates, it either means that:
+<a href=#546 id=546 data-nosnippet>546</a>        // - we found no certificates to add
+<a href=#547 id=547 data-nosnippet>547</a>        // - we hit an error when loading the certificates
+<a href=#548 id=548 data-nosnippet>548</a>        // - we hit an error when trying to add the certificates to our root certificate store
+<a href=#549 id=549 data-nosnippet>549</a>        //
+<a href=#550 id=550 data-nosnippet>550</a>        // We only consider this operation to have truly failed if there were errors during the initial loading of the
+<a href=#551 id=551 data-nosnippet>551</a>        // certificates.
+<a href=#552 id=552 data-nosnippet>552</a>        </span><span class="kw">if </span>!result.errors.is_empty() {
+<a href=#553 id=553 data-nosnippet>553</a>            <span class="kw">let </span>joined_errors = result
+<a href=#554 id=554 data-nosnippet>554</a>                .errors
+<a href=#555 id=555 data-nosnippet>555</a>                .iter()
+<a href=#556 id=556 data-nosnippet>556</a>                .map(|e| e.to_string())
+<a href=#557 id=557 data-nosnippet>557</a>                .collect::&lt;Vec&lt;<span class="kw">_</span>&gt;&gt;()
+<a href=#558 id=558 data-nosnippet>558</a>                .join(<span class="string">", "</span>);
+<a href=#559 id=559 data-nosnippet>559</a>
+<a href=#560 id=560 data-nosnippet>560</a>            <span class="kw">return </span><span class="prelude-val">Err</span>(<span class="macro">generic_error!</span>(
+<a href=#561 id=561 data-nosnippet>561</a>                <span class="string">"Failed to load certificates from platform's native certificate store: {}"</span>,
+<a href=#562 id=562 data-nosnippet>562</a>                joined_errors
+<a href=#563 id=563 data-nosnippet>563</a>            ));
+<a href=#564 id=564 data-nosnippet>564</a>        }
+<a href=#565 id=565 data-nosnippet>565</a>    }
+<a href=#566 id=566 data-nosnippet>566</a>
+<a href=#567 id=567 data-nosnippet>567</a>    <span class="prelude-val">Ok</span>(root_cert_store)
+<a href=#568 id=568 data-nosnippet>568</a>}
+<a href=#569 id=569 data-nosnippet>569</a>
+<a href=#570 id=570 data-nosnippet>570</a><span class="attr">#[cfg(test)]
+<a href=#571 id=571 data-nosnippet>571</a></span><span class="kw">mod </span>tests {
+<a href=#572 id=572 data-nosnippet>572</a>    <span class="attr">#[cfg(not(feature = <span class="string">"fips"</span>))]
+<a href=#573 id=573 data-nosnippet>573</a>    </span><span class="kw">use </span>std::fs;
+<a href=#574 id=574 data-nosnippet>574</a>    <span class="attr">#[cfg(all(unix, not(feature = <span class="string">"fips"</span>)))]
+<a href=#575 id=575 data-nosnippet>575</a>    </span><span class="kw">use </span>std::os::unix::fs::PermissionsExt;
 <a href=#576 id=576 data-nosnippet>576</a>
-<a href=#577 id=577 data-nosnippet>577</a>    <span class="attr">#[test]
-<a href=#578 id=578 data-nosnippet>578</a>    </span><span class="kw">fn </span>tls13_minimum_enables_tls13_only() {
-<a href=#579 id=579 data-nosnippet>579</a>        <span class="kw">let </span>versions = TlsMinimumVersion::Tls13.protocol_versions();
-<a href=#580 id=580 data-nosnippet>580</a>
-<a href=#581 id=581 data-nosnippet>581</a>        <span class="macro">assert_eq!</span>(versions.len(), <span class="number">1</span>);
-<a href=#582 id=582 data-nosnippet>582</a>        <span class="macro">assert_eq!</span>(versions[<span class="number">0</span>].version, ProtocolVersion::TLSv1_3);
-<a href=#583 id=583 data-nosnippet>583</a>    }
-<a href=#584 id=584 data-nosnippet>584</a>
-<a href=#585 id=585 data-nosnippet>585</a>    <span class="attr">#[test]
-<a href=#586 id=586 data-nosnippet>586</a>    #[cfg(not(feature = <span class="string">"fips"</span>))]
-<a href=#587 id=587 data-nosnippet>587</a>    </span><span class="kw">fn </span>nss_key_log_lines_are_written_in_hex_format() {
-<a href=#588 id=588 data-nosnippet>588</a>        <span class="kw">let </span>output =
-<a href=#589 id=589 data-nosnippet>589</a>            build_nss_key_log_line(<span class="string">"CLIENT_RANDOM"</span>, <span class="kw-2">&amp;</span>[<span class="number">0xab</span>, <span class="number">0xcd</span>], <span class="kw-2">&amp;</span>[<span class="number">0x01</span>, <span class="number">0x23</span>]).expect(<span class="string">"key log line should build"</span>);
-<a href=#590 id=590 data-nosnippet>590</a>
-<a href=#591 id=591 data-nosnippet>591</a>        <span class="macro">assert_eq!</span>(output, <span class="string">b"CLIENT_RANDOM abcd 0123\n"</span>);
-<a href=#592 id=592 data-nosnippet>592</a>    }
-<a href=#593 id=593 data-nosnippet>593</a>
-<a href=#594 id=594 data-nosnippet>594</a>    <span class="attr">#[test]
-<a href=#595 id=595 data-nosnippet>595</a>    #[cfg(not(feature = <span class="string">"fips"</span>))]
-<a href=#596 id=596 data-nosnippet>596</a>    </span><span class="kw">fn </span>client_config_uses_configured_key_log_file() {
-<a href=#597 id=597 data-nosnippet>597</a>        <span class="kw">let _ </span>= <span class="kw">super</span>::initialize_default_crypto_provider();
-<a href=#598 id=598 data-nosnippet>598</a>        <span class="kw">let </span>tempdir = tempfile::tempdir().expect(<span class="string">"temporary directory should be created"</span>);
-<a href=#599 id=599 data-nosnippet>599</a>        <span class="kw">let </span>key_log_path = tempdir.path().join(<span class="string">"sslkeylogfile"</span>);
-<a href=#600 id=600 data-nosnippet>600</a>
-<a href=#601 id=601 data-nosnippet>601</a>        <span class="kw">let </span>config = ClientTLSConfigBuilder::new()
-<a href=#602 id=602 data-nosnippet>602</a>            .with_root_cert_store(RootCertStore::empty())
-<a href=#603 id=603 data-nosnippet>603</a>            .with_key_log_file(<span class="kw-2">&amp;</span>key_log_path)
-<a href=#604 id=604 data-nosnippet>604</a>            .build()
-<a href=#605 id=605 data-nosnippet>605</a>            .expect(<span class="string">"client TLS config should build"</span>);
-<a href=#606 id=606 data-nosnippet>606</a>
-<a href=#607 id=607 data-nosnippet>607</a>        config.key_log.log(<span class="string">"CLIENT_RANDOM"</span>, <span class="kw-2">&amp;</span>[<span class="number">0xab</span>, <span class="number">0xcd</span>], <span class="kw-2">&amp;</span>[<span class="number">0x01</span>, <span class="number">0x23</span>]);
+<a href=#577 id=577 data-nosnippet>577</a>    <span class="kw">use </span>rustls::{ProtocolVersion, RootCertStore};
+<a href=#578 id=578 data-nosnippet>578</a>
+<a href=#579 id=579 data-nosnippet>579</a>    <span class="attr">#[cfg(not(feature = <span class="string">"fips"</span>))]
+<a href=#580 id=580 data-nosnippet>580</a>    </span><span class="kw">use super</span>::{build_nss_key_log_line, open_key_log_file};
+<a href=#581 id=581 data-nosnippet>581</a>    <span class="kw">use super</span>::{ClientTLSConfigBuilder, TlsMinimumVersion};
+<a href=#582 id=582 data-nosnippet>582</a>
+<a href=#583 id=583 data-nosnippet>583</a>    <span class="attr">#[test]
+<a href=#584 id=584 data-nosnippet>584</a>    </span><span class="kw">fn </span>tls12_minimum_enables_tls12_and_tls13() {
+<a href=#585 id=585 data-nosnippet>585</a>        <span class="kw">let </span>versions = TlsMinimumVersion::Tls12.protocol_versions();
+<a href=#586 id=586 data-nosnippet>586</a>
+<a href=#587 id=587 data-nosnippet>587</a>        <span class="macro">assert_eq!</span>(versions.len(), <span class="number">2</span>);
+<a href=#588 id=588 data-nosnippet>588</a>        <span class="macro">assert_eq!</span>(versions[<span class="number">0</span>].version, ProtocolVersion::TLSv1_3);
+<a href=#589 id=589 data-nosnippet>589</a>        <span class="macro">assert_eq!</span>(versions[<span class="number">1</span>].version, ProtocolVersion::TLSv1_2);
+<a href=#590 id=590 data-nosnippet>590</a>    }
+<a href=#591 id=591 data-nosnippet>591</a>
+<a href=#592 id=592 data-nosnippet>592</a>    <span class="attr">#[test]
+<a href=#593 id=593 data-nosnippet>593</a>    </span><span class="kw">fn </span>tls13_minimum_enables_tls13_only() {
+<a href=#594 id=594 data-nosnippet>594</a>        <span class="kw">let </span>versions = TlsMinimumVersion::Tls13.protocol_versions();
+<a href=#595 id=595 data-nosnippet>595</a>
+<a href=#596 id=596 data-nosnippet>596</a>        <span class="macro">assert_eq!</span>(versions.len(), <span class="number">1</span>);
+<a href=#597 id=597 data-nosnippet>597</a>        <span class="macro">assert_eq!</span>(versions[<span class="number">0</span>].version, ProtocolVersion::TLSv1_3);
+<a href=#598 id=598 data-nosnippet>598</a>    }
+<a href=#599 id=599 data-nosnippet>599</a>
+<a href=#600 id=600 data-nosnippet>600</a>    <span class="attr">#[test]
+<a href=#601 id=601 data-nosnippet>601</a>    #[cfg(not(feature = <span class="string">"fips"</span>))]
+<a href=#602 id=602 data-nosnippet>602</a>    </span><span class="kw">fn </span>nss_key_log_lines_are_written_in_hex_format() {
+<a href=#603 id=603 data-nosnippet>603</a>        <span class="kw">let </span>output =
+<a href=#604 id=604 data-nosnippet>604</a>            build_nss_key_log_line(<span class="string">"CLIENT_RANDOM"</span>, <span class="kw-2">&amp;</span>[<span class="number">0xab</span>, <span class="number">0xcd</span>], <span class="kw-2">&amp;</span>[<span class="number">0x01</span>, <span class="number">0x23</span>]).expect(<span class="string">"key log line should build"</span>);
+<a href=#605 id=605 data-nosnippet>605</a>
+<a href=#606 id=606 data-nosnippet>606</a>        <span class="macro">assert_eq!</span>(output, <span class="string">b"CLIENT_RANDOM abcd 0123\n"</span>);
+<a href=#607 id=607 data-nosnippet>607</a>    }
 <a href=#608 id=608 data-nosnippet>608</a>
-<a href=#609 id=609 data-nosnippet>609</a>        <span class="kw">let </span>contents = fs::read_to_string(<span class="kw-2">&amp;</span>key_log_path).expect(<span class="string">"key log file should be readable"</span>);
-<a href=#610 id=610 data-nosnippet>610</a>        <span class="macro">assert_eq!</span>(contents, <span class="string">"CLIENT_RANDOM abcd 0123\n"</span>);
-<a href=#611 id=611 data-nosnippet>611</a>    }
-<a href=#612 id=612 data-nosnippet>612</a>
-<a href=#613 id=613 data-nosnippet>613</a>    <span class="attr">#[test]
-<a href=#614 id=614 data-nosnippet>614</a>    #[cfg(not(feature = <span class="string">"fips"</span>))]
-<a href=#615 id=615 data-nosnippet>615</a>    </span><span class="kw">fn </span>client_config_ignores_unwritable_key_log_file() {
-<a href=#616 id=616 data-nosnippet>616</a>        <span class="kw">let _ </span>= <span class="kw">super</span>::initialize_default_crypto_provider();
-<a href=#617 id=617 data-nosnippet>617</a>        <span class="kw">let </span>tempdir = tempfile::tempdir().expect(<span class="string">"temporary directory should be created"</span>);
-<a href=#618 id=618 data-nosnippet>618</a>        <span class="kw">let </span>key_log_path = tempdir.path().join(<span class="string">"missing"</span>).join(<span class="string">"sslkeylogfile"</span>);
-<a href=#619 id=619 data-nosnippet>619</a>
-<a href=#620 id=620 data-nosnippet>620</a>        <span class="kw">let </span>config = ClientTLSConfigBuilder::new()
-<a href=#621 id=621 data-nosnippet>621</a>            .with_root_cert_store(RootCertStore::empty())
-<a href=#622 id=622 data-nosnippet>622</a>            .with_key_log_file(<span class="kw-2">&amp;</span>key_log_path)
-<a href=#623 id=623 data-nosnippet>623</a>            .build()
-<a href=#624 id=624 data-nosnippet>624</a>            .expect(<span class="string">"client TLS config should build even when the key log file cannot be opened"</span>);
-<a href=#625 id=625 data-nosnippet>625</a>
-<a href=#626 id=626 data-nosnippet>626</a>        config.key_log.log(<span class="string">"CLIENT_RANDOM"</span>, <span class="kw-2">&amp;</span>[<span class="number">0xab</span>, <span class="number">0xcd</span>], <span class="kw-2">&amp;</span>[<span class="number">0x01</span>, <span class="number">0x23</span>]);
+<a href=#609 id=609 data-nosnippet>609</a>    <span class="attr">#[test]
+<a href=#610 id=610 data-nosnippet>610</a>    #[cfg(not(feature = <span class="string">"fips"</span>))]
+<a href=#611 id=611 data-nosnippet>611</a>    </span><span class="kw">fn </span>client_config_uses_configured_key_log_file() {
+<a href=#612 id=612 data-nosnippet>612</a>        <span class="kw">let _ </span>= <span class="kw">super</span>::initialize_default_crypto_provider();
+<a href=#613 id=613 data-nosnippet>613</a>        <span class="kw">let </span>tempdir = tempfile::tempdir().expect(<span class="string">"temporary directory should be created"</span>);
+<a href=#614 id=614 data-nosnippet>614</a>        <span class="kw">let </span>key_log_path = tempdir.path().join(<span class="string">"sslkeylogfile"</span>);
+<a href=#615 id=615 data-nosnippet>615</a>
+<a href=#616 id=616 data-nosnippet>616</a>        <span class="kw">let </span>config = ClientTLSConfigBuilder::new()
+<a href=#617 id=617 data-nosnippet>617</a>            .with_root_cert_store(RootCertStore::empty())
+<a href=#618 id=618 data-nosnippet>618</a>            .with_key_log_file(<span class="kw-2">&amp;</span>key_log_path)
+<a href=#619 id=619 data-nosnippet>619</a>            .build()
+<a href=#620 id=620 data-nosnippet>620</a>            .expect(<span class="string">"client TLS config should build"</span>);
+<a href=#621 id=621 data-nosnippet>621</a>
+<a href=#622 id=622 data-nosnippet>622</a>        config.key_log.log(<span class="string">"CLIENT_RANDOM"</span>, <span class="kw-2">&amp;</span>[<span class="number">0xab</span>, <span class="number">0xcd</span>], <span class="kw-2">&amp;</span>[<span class="number">0x01</span>, <span class="number">0x23</span>]);
+<a href=#623 id=623 data-nosnippet>623</a>
+<a href=#624 id=624 data-nosnippet>624</a>        <span class="kw">let </span>contents = fs::read_to_string(<span class="kw-2">&amp;</span>key_log_path).expect(<span class="string">"key log file should be readable"</span>);
+<a href=#625 id=625 data-nosnippet>625</a>        <span class="macro">assert_eq!</span>(contents, <span class="string">"CLIENT_RANDOM abcd 0123\n"</span>);
+<a href=#626 id=626 data-nosnippet>626</a>    }
 <a href=#627 id=627 data-nosnippet>627</a>
-<a href=#628 id=628 data-nosnippet>628</a>        <span class="macro">assert!</span>(!key_log_path.exists());
-<a href=#629 id=629 data-nosnippet>629</a>    }
-<a href=#630 id=630 data-nosnippet>630</a>
-<a href=#631 id=631 data-nosnippet>631</a>    <span class="attr">#[test]
-<a href=#632 id=632 data-nosnippet>632</a>    #[cfg(not(feature = <span class="string">"fips"</span>))]
-<a href=#633 id=633 data-nosnippet>633</a>    </span><span class="kw">fn </span>client_configs_append_to_shared_key_log_file() {
-<a href=#634 id=634 data-nosnippet>634</a>        <span class="kw">let _ </span>= <span class="kw">super</span>::initialize_default_crypto_provider();
-<a href=#635 id=635 data-nosnippet>635</a>        <span class="kw">let </span>tempdir = tempfile::tempdir().expect(<span class="string">"temporary directory should be created"</span>);
-<a href=#636 id=636 data-nosnippet>636</a>        <span class="kw">let </span>key_log_path = tempdir.path().join(<span class="string">"shared-sslkeylogfile"</span>);
-<a href=#637 id=637 data-nosnippet>637</a>
-<a href=#638 id=638 data-nosnippet>638</a>        <span class="kw">let </span>first_config = ClientTLSConfigBuilder::new()
-<a href=#639 id=639 data-nosnippet>639</a>            .with_root_cert_store(RootCertStore::empty())
-<a href=#640 id=640 data-nosnippet>640</a>            .with_key_log_file(<span class="kw-2">&amp;</span>key_log_path)
-<a href=#641 id=641 data-nosnippet>641</a>            .build()
-<a href=#642 id=642 data-nosnippet>642</a>            .expect(<span class="string">"first client TLS config should build"</span>);
-<a href=#643 id=643 data-nosnippet>643</a>        <span class="kw">let </span>second_config = ClientTLSConfigBuilder::new()
-<a href=#644 id=644 data-nosnippet>644</a>            .with_root_cert_store(RootCertStore::empty())
-<a href=#645 id=645 data-nosnippet>645</a>            .with_key_log_file(<span class="kw-2">&amp;</span>key_log_path)
-<a href=#646 id=646 data-nosnippet>646</a>            .build()
-<a href=#647 id=647 data-nosnippet>647</a>            .expect(<span class="string">"second client TLS config should build"</span>);
-<a href=#648 id=648 data-nosnippet>648</a>
-<a href=#649 id=649 data-nosnippet>649</a>        first_config.key_log.log(<span class="string">"CLIENT_RANDOM"</span>, <span class="kw-2">&amp;</span>[<span class="number">0xab</span>, <span class="number">0xcd</span>], <span class="kw-2">&amp;</span>[<span class="number">0x01</span>, <span class="number">0x23</span>]);
-<a href=#650 id=650 data-nosnippet>650</a>        second_config.key_log.log(<span class="string">"CLIENT_RANDOM"</span>, <span class="kw-2">&amp;</span>[<span class="number">0xef</span>, <span class="number">0x01</span>], <span class="kw-2">&amp;</span>[<span class="number">0x45</span>, <span class="number">0x67</span>]);
-<a href=#651 id=651 data-nosnippet>651</a>
-<a href=#652 id=652 data-nosnippet>652</a>        <span class="kw">let </span>contents = fs::read_to_string(<span class="kw-2">&amp;</span>key_log_path).expect(<span class="string">"key log file should be readable"</span>);
-<a href=#653 id=653 data-nosnippet>653</a>        <span class="macro">assert_eq!</span>(contents, <span class="string">"CLIENT_RANDOM abcd 0123\nCLIENT_RANDOM ef01 4567\n"</span>);
-<a href=#654 id=654 data-nosnippet>654</a>    }
-<a href=#655 id=655 data-nosnippet>655</a>
-<a href=#656 id=656 data-nosnippet>656</a>    <span class="attr">#[cfg(all(unix, not(feature = <span class="string">"fips"</span>)))]
-<a href=#657 id=657 data-nosnippet>657</a>    #[test]
-<a href=#658 id=658 data-nosnippet>658</a>    </span><span class="kw">fn </span>key_log_file_is_created_with_owner_only_permissions() {
-<a href=#659 id=659 data-nosnippet>659</a>        <span class="kw">let </span>tempdir = tempfile::tempdir().expect(<span class="string">"temporary directory should be created"</span>);
-<a href=#660 id=660 data-nosnippet>660</a>        <span class="kw">let </span>key_log_path = tempdir.path().join(<span class="string">"sslkeylogfile"</span>);
-<a href=#661 id=661 data-nosnippet>661</a>
-<a href=#662 id=662 data-nosnippet>662</a>        <span class="kw">let </span>file = open_key_log_file(<span class="kw-2">&amp;</span>key_log_path).expect(<span class="string">"key log file should open"</span>);
-<a href=#663 id=663 data-nosnippet>663</a>        drop(file);
-<a href=#664 id=664 data-nosnippet>664</a>
-<a href=#665 id=665 data-nosnippet>665</a>        <span class="kw">let </span>mode = fs::metadata(<span class="kw-2">&amp;</span>key_log_path)
-<a href=#666 id=666 data-nosnippet>666</a>            .expect(<span class="string">"key log file metadata should be readable"</span>)
-<a href=#667 id=667 data-nosnippet>667</a>            .permissions()
-<a href=#668 id=668 data-nosnippet>668</a>            .mode()
-<a href=#669 id=669 data-nosnippet>669</a>            &amp; <span class="number">0o777</span>;
-<a href=#670 id=670 data-nosnippet>670</a>        <span class="macro">assert_eq!</span>(mode, <span class="number">0o600</span>);
-<a href=#671 id=671 data-nosnippet>671</a>    }
-<a href=#672 id=672 data-nosnippet>672</a>
-<a href=#673 id=673 data-nosnippet>673</a>    <span class="attr">#[test]
-<a href=#674 id=674 data-nosnippet>674</a>    #[cfg(feature = <span class="string">"fips"</span>)]
-<a href=#675 id=675 data-nosnippet>675</a>    </span><span class="kw">fn </span>key_log_file_ignored_in_fips_mode() {
-<a href=#676 id=676 data-nosnippet>676</a>        <span class="kw">let _ </span>= <span class="kw">super</span>::initialize_default_crypto_provider();
-<a href=#677 id=677 data-nosnippet>677</a>        <span class="kw">let </span>tempdir = tempfile::tempdir().expect(<span class="string">"temporary directory should be created"</span>);
-<a href=#678 id=678 data-nosnippet>678</a>        <span class="kw">let </span>key_log_path = tempdir.path().join(<span class="string">"fips-sslkeylogfile"</span>);
+<a href=#628 id=628 data-nosnippet>628</a>    <span class="attr">#[test]
+<a href=#629 id=629 data-nosnippet>629</a>    #[cfg(not(feature = <span class="string">"fips"</span>))]
+<a href=#630 id=630 data-nosnippet>630</a>    </span><span class="kw">fn </span>client_config_ignores_unwritable_key_log_file() {
+<a href=#631 id=631 data-nosnippet>631</a>        <span class="kw">let _ </span>= <span class="kw">super</span>::initialize_default_crypto_provider();
+<a href=#632 id=632 data-nosnippet>632</a>        <span class="kw">let </span>tempdir = tempfile::tempdir().expect(<span class="string">"temporary directory should be created"</span>);
+<a href=#633 id=633 data-nosnippet>633</a>        <span class="kw">let </span>key_log_path = tempdir.path().join(<span class="string">"missing"</span>).join(<span class="string">"sslkeylogfile"</span>);
+<a href=#634 id=634 data-nosnippet>634</a>
+<a href=#635 id=635 data-nosnippet>635</a>        <span class="kw">let </span>config = ClientTLSConfigBuilder::new()
+<a href=#636 id=636 data-nosnippet>636</a>            .with_root_cert_store(RootCertStore::empty())
+<a href=#637 id=637 data-nosnippet>637</a>            .with_key_log_file(<span class="kw-2">&amp;</span>key_log_path)
+<a href=#638 id=638 data-nosnippet>638</a>            .build()
+<a href=#639 id=639 data-nosnippet>639</a>            .expect(<span class="string">"client TLS config should build even when the key log file cannot be opened"</span>);
+<a href=#640 id=640 data-nosnippet>640</a>
+<a href=#641 id=641 data-nosnippet>641</a>        config.key_log.log(<span class="string">"CLIENT_RANDOM"</span>, <span class="kw-2">&amp;</span>[<span class="number">0xab</span>, <span class="number">0xcd</span>], <span class="kw-2">&amp;</span>[<span class="number">0x01</span>, <span class="number">0x23</span>]);
+<a href=#642 id=642 data-nosnippet>642</a>
+<a href=#643 id=643 data-nosnippet>643</a>        <span class="macro">assert!</span>(!key_log_path.exists());
+<a href=#644 id=644 data-nosnippet>644</a>    }
+<a href=#645 id=645 data-nosnippet>645</a>
+<a href=#646 id=646 data-nosnippet>646</a>    <span class="attr">#[test]
+<a href=#647 id=647 data-nosnippet>647</a>    #[cfg(not(feature = <span class="string">"fips"</span>))]
+<a href=#648 id=648 data-nosnippet>648</a>    </span><span class="kw">fn </span>client_configs_append_to_shared_key_log_file() {
+<a href=#649 id=649 data-nosnippet>649</a>        <span class="kw">let _ </span>= <span class="kw">super</span>::initialize_default_crypto_provider();
+<a href=#650 id=650 data-nosnippet>650</a>        <span class="kw">let </span>tempdir = tempfile::tempdir().expect(<span class="string">"temporary directory should be created"</span>);
+<a href=#651 id=651 data-nosnippet>651</a>        <span class="kw">let </span>key_log_path = tempdir.path().join(<span class="string">"shared-sslkeylogfile"</span>);
+<a href=#652 id=652 data-nosnippet>652</a>
+<a href=#653 id=653 data-nosnippet>653</a>        <span class="kw">let </span>first_config = ClientTLSConfigBuilder::new()
+<a href=#654 id=654 data-nosnippet>654</a>            .with_root_cert_store(RootCertStore::empty())
+<a href=#655 id=655 data-nosnippet>655</a>            .with_key_log_file(<span class="kw-2">&amp;</span>key_log_path)
+<a href=#656 id=656 data-nosnippet>656</a>            .build()
+<a href=#657 id=657 data-nosnippet>657</a>            .expect(<span class="string">"first client TLS config should build"</span>);
+<a href=#658 id=658 data-nosnippet>658</a>        <span class="kw">let </span>second_config = ClientTLSConfigBuilder::new()
+<a href=#659 id=659 data-nosnippet>659</a>            .with_root_cert_store(RootCertStore::empty())
+<a href=#660 id=660 data-nosnippet>660</a>            .with_key_log_file(<span class="kw-2">&amp;</span>key_log_path)
+<a href=#661 id=661 data-nosnippet>661</a>            .build()
+<a href=#662 id=662 data-nosnippet>662</a>            .expect(<span class="string">"second client TLS config should build"</span>);
+<a href=#663 id=663 data-nosnippet>663</a>
+<a href=#664 id=664 data-nosnippet>664</a>        first_config.key_log.log(<span class="string">"CLIENT_RANDOM"</span>, <span class="kw-2">&amp;</span>[<span class="number">0xab</span>, <span class="number">0xcd</span>], <span class="kw-2">&amp;</span>[<span class="number">0x01</span>, <span class="number">0x23</span>]);
+<a href=#665 id=665 data-nosnippet>665</a>        second_config.key_log.log(<span class="string">"CLIENT_RANDOM"</span>, <span class="kw-2">&amp;</span>[<span class="number">0xef</span>, <span class="number">0x01</span>], <span class="kw-2">&amp;</span>[<span class="number">0x45</span>, <span class="number">0x67</span>]);
+<a href=#666 id=666 data-nosnippet>666</a>
+<a href=#667 id=667 data-nosnippet>667</a>        <span class="kw">let </span>contents = fs::read_to_string(<span class="kw-2">&amp;</span>key_log_path).expect(<span class="string">"key log file should be readable"</span>);
+<a href=#668 id=668 data-nosnippet>668</a>        <span class="macro">assert_eq!</span>(contents, <span class="string">"CLIENT_RANDOM abcd 0123\nCLIENT_RANDOM ef01 4567\n"</span>);
+<a href=#669 id=669 data-nosnippet>669</a>    }
+<a href=#670 id=670 data-nosnippet>670</a>
+<a href=#671 id=671 data-nosnippet>671</a>    <span class="attr">#[cfg(all(unix, not(feature = <span class="string">"fips"</span>)))]
+<a href=#672 id=672 data-nosnippet>672</a>    #[test]
+<a href=#673 id=673 data-nosnippet>673</a>    </span><span class="kw">fn </span>key_log_file_is_created_with_owner_only_permissions() {
+<a href=#674 id=674 data-nosnippet>674</a>        <span class="kw">let </span>tempdir = tempfile::tempdir().expect(<span class="string">"temporary directory should be created"</span>);
+<a href=#675 id=675 data-nosnippet>675</a>        <span class="kw">let </span>key_log_path = tempdir.path().join(<span class="string">"sslkeylogfile"</span>);
+<a href=#676 id=676 data-nosnippet>676</a>
+<a href=#677 id=677 data-nosnippet>677</a>        <span class="kw">let </span>file = open_key_log_file(<span class="kw-2">&amp;</span>key_log_path).expect(<span class="string">"key log file should open"</span>);
+<a href=#678 id=678 data-nosnippet>678</a>        drop(file);
 <a href=#679 id=679 data-nosnippet>679</a>
-<a href=#680 id=680 data-nosnippet>680</a>        <span class="comment">// FIPS builds soft-skip TLS key logging instead of failing, so a leftover key log file path does not
-<a href=#681 id=681 data-nosnippet>681</a>        // prevent TLS client construction.
-<a href=#682 id=682 data-nosnippet>682</a>        </span><span class="kw">let </span>config = ClientTLSConfigBuilder::new()
-<a href=#683 id=683 data-nosnippet>683</a>            .with_root_cert_store(RootCertStore::empty())
-<a href=#684 id=684 data-nosnippet>684</a>            .with_key_log_file(<span class="kw-2">&amp;</span>key_log_path)
-<a href=#685 id=685 data-nosnippet>685</a>            .build()
-<a href=#686 id=686 data-nosnippet>686</a>            .expect(<span class="string">"TLS config should build in FIPS mode even when a key log file is configured"</span>);
+<a href=#680 id=680 data-nosnippet>680</a>        <span class="kw">let </span>mode = fs::metadata(<span class="kw-2">&amp;</span>key_log_path)
+<a href=#681 id=681 data-nosnippet>681</a>            .expect(<span class="string">"key log file metadata should be readable"</span>)
+<a href=#682 id=682 data-nosnippet>682</a>            .permissions()
+<a href=#683 id=683 data-nosnippet>683</a>            .mode()
+<a href=#684 id=684 data-nosnippet>684</a>            &amp; <span class="number">0o777</span>;
+<a href=#685 id=685 data-nosnippet>685</a>        <span class="macro">assert_eq!</span>(mode, <span class="number">0o600</span>);
+<a href=#686 id=686 data-nosnippet>686</a>    }
 <a href=#687 id=687 data-nosnippet>687</a>
-<a href=#688 id=688 data-nosnippet>688</a>        <span class="comment">// The default no-op `KeyLog` remains in place: invoking it must not panic and must not produce a file.
-<a href=#689 id=689 data-nosnippet>689</a>        </span>config.key_log.log(<span class="string">"CLIENT_RANDOM"</span>, <span class="kw-2">&amp;</span>[<span class="number">0xab</span>, <span class="number">0xcd</span>], <span class="kw-2">&amp;</span>[<span class="number">0x01</span>, <span class="number">0x23</span>]);
-<a href=#690 id=690 data-nosnippet>690</a>
-<a href=#691 id=691 data-nosnippet>691</a>        <span class="macro">assert!</span>(!key_log_path.exists(), <span class="string">"FIPS builds must not create a TLS key log file"</span>);
-<a href=#692 id=692 data-nosnippet>692</a>    }
-<a href=#693 id=693 data-nosnippet>693</a>}
+<a href=#688 id=688 data-nosnippet>688</a>    <span class="attr">#[cfg(windows)]
+<a href=#689 id=689 data-nosnippet>689</a>    #[test]
+<a href=#690 id=690 data-nosnippet>690</a>    </span><span class="kw">fn </span>windows_default_crypto_provider_builds_client_config() {
+<a href=#691 id=691 data-nosnippet>691</a>        <span class="kw">let _ </span>= <span class="kw">super</span>::initialize_default_crypto_provider();
+<a href=#692 id=692 data-nosnippet>692</a>
+<a href=#693 id=693 data-nosnippet>693</a>        ClientTLSConfigBuilder::new()
+<a href=#694 id=694 data-nosnippet>694</a>            .with_root_cert_store(RootCertStore::empty())
+<a href=#695 id=695 data-nosnippet>695</a>            .build()
+<a href=#696 id=696 data-nosnippet>696</a>            .expect(<span class="string">"Windows CNG-backed TLS config should build"</span>);
+<a href=#697 id=697 data-nosnippet>697</a>    }
+<a href=#698 id=698 data-nosnippet>698</a>
+<a href=#699 id=699 data-nosnippet>699</a>    <span class="attr">#[test]
+<a href=#700 id=700 data-nosnippet>700</a>    #[cfg(feature = <span class="string">"fips"</span>)]
+<a href=#701 id=701 data-nosnippet>701</a>    </span><span class="kw">fn </span>key_log_file_ignored_in_fips_mode() {
+<a href=#702 id=702 data-nosnippet>702</a>        <span class="kw">let _ </span>= <span class="kw">super</span>::initialize_default_crypto_provider();
+<a href=#703 id=703 data-nosnippet>703</a>        <span class="kw">let </span>tempdir = tempfile::tempdir().expect(<span class="string">"temporary directory should be created"</span>);
+<a href=#704 id=704 data-nosnippet>704</a>        <span class="kw">let </span>key_log_path = tempdir.path().join(<span class="string">"fips-sslkeylogfile"</span>);
+<a href=#705 id=705 data-nosnippet>705</a>
+<a href=#706 id=706 data-nosnippet>706</a>        <span class="comment">// FIPS builds soft-skip TLS key logging instead of failing, so a leftover key log file path does not
+<a href=#707 id=707 data-nosnippet>707</a>        // prevent TLS client construction.
+<a href=#708 id=708 data-nosnippet>708</a>        </span><span class="kw">let </span>config = ClientTLSConfigBuilder::new()
+<a href=#709 id=709 data-nosnippet>709</a>            .with_root_cert_store(RootCertStore::empty())
+<a href=#710 id=710 data-nosnippet>710</a>            .with_key_log_file(<span class="kw-2">&amp;</span>key_log_path)
+<a href=#711 id=711 data-nosnippet>711</a>            .build()
+<a href=#712 id=712 data-nosnippet>712</a>            .expect(<span class="string">"TLS config should build in FIPS mode even when a key log file is configured"</span>);
+<a href=#713 id=713 data-nosnippet>713</a>
+<a href=#714 id=714 data-nosnippet>714</a>        <span class="comment">// The default no-op `KeyLog` remains in place: invoking it must not panic and must not produce a file.
+<a href=#715 id=715 data-nosnippet>715</a>        </span>config.key_log.log(<span class="string">"CLIENT_RANDOM"</span>, <span class="kw-2">&amp;</span>[<span class="number">0xab</span>, <span class="number">0xcd</span>], <span class="kw-2">&amp;</span>[<span class="number">0x01</span>, <span class="number">0x23</span>]);
+<a href=#716 id=716 data-nosnippet>716</a>
+<a href=#717 id=717 data-nosnippet>717</a>        <span class="macro">assert!</span>(!key_log_path.exists(), <span class="string">"FIPS builds must not create a TLS key log file"</span>);
+<a href=#718 id=718 data-nosnippet>718</a>    }
+<a href=#719 id=719 data-nosnippet>719</a>}
 </code></pre></div></section></main></body></html>
