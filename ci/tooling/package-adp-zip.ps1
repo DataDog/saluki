@@ -69,8 +69,6 @@ try {
         Copy-Item -Force $f (Join-Path $StageRoot $f)
     }
 
-    # Windows FIPS builds use the CNG-backed Rustls provider, so no AWS-LC FIPS runtime DLLs are produced or bundled.
-
     # Replicate the `license-builder` stage from docker/Dockerfile.agent-data-plane on the host so
     # the zip ships the same per-license THIRD-PARTY-* files as the linux/darwin artifacts. The
     # SPDX-id filter mirrors the awk/grep/sed pipeline in package-adp-tarball.sh.
