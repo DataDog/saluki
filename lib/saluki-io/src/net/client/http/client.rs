@@ -160,9 +160,7 @@ where
 /// - non-infinite timeouts for various stages of the request lifecycle (30 second connect timeout, 60 second per-request timeout)
 /// - connection pool for reusing connections (45 second idle connection timeout, and a maximum of 5 idle connections
 ///   per host)
-/// - support for FIPS-compliant cryptography (if the `fips` feature is enabled in the `saluki-tls` crate) via [AWS-LC][aws-lc]
-///
-/// [aws-lc]: https://github.com/aws/aws-lc-rs
+/// - support for FIPS-compliant cryptography if the `fips` feature is enabled in the `saluki-tls` crate
 pub struct HttpClientBuilder {
     connector_builder: HttpsCapableConnectorBuilder,
     hyper_builder: Builder,

@@ -91,7 +91,7 @@ zstd = { workspace = true }
 datadog-agent-config-testing = { workspace = true }
 derive-where = { workspace = true }
 proptest = { workspace = true }
-rcgen = { workspace = true, features = ["crypto", "aws_lc_rs", "pem"] }
+rcgen = { workspace = true, features = ["crypto", "pem"] }
 rustls = { workspace = true }
 saluki-metrics = { workspace = true, features = ["test"] }
 saluki-tls = { workspace = true }
@@ -99,3 +99,9 @@ tempfile = { workspace = true }
 test-strategy = { workspace = true }
 tokio = { workspace = true, features = ["time"] }
 tokio-rustls = { workspace = true }
+
+[target.'cfg(not(windows))'.dev-dependencies]
+rcgen = { workspace = true, features = ["aws_lc_rs"] }
+
+[target.'cfg(windows)'.dev-dependencies]
+rcgen = { workspace = true, features = ["ring"] }
