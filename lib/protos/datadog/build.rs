@@ -107,7 +107,7 @@ fn main() {
         .customize_callback(SerdeCapableStructs)
         .run_from_script();
 
-    // Separate invocation for idx proto types to avoid filename collision with
+    // Separate invocation for efficient trace payload (ETP, aka idx) proto types to avoid filename collision with
     // `trace_protos/tracer_payload.rs` — both directories have a file named
     // `tracer_payload.proto` so they cannot share an output directory.
     protobuf_codegen::Codegen::new()
