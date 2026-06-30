@@ -6,7 +6,7 @@ mod tests {
     use saluki_context::Context;
     use saluki_core::data_model::event::{metric::Metric, Event};
     use saluki_core::observability::metrics::{
-        AggregatedMetricsProcessor, Processor as _, RemapperRule, TelemetryProcessor,
+        AggregatedMetricsProcessor, MetricsSnapshot, Processor as _, RemapperRule, TelemetryProcessor,
     };
 
     use super::*;
@@ -14,9 +14,13 @@ mod tests {
     fn render_with(rules: Vec<RemapperRule>, metrics: Vec<Event>) -> String {
         let processor = AggregatedMetricsProcessor;
         let state = processor.build_initial_state();
-        for metric in metrics {
-            processor.process(metric, &state);
-        }
+        processor.process(
+            MetricsSnapshot {
+                upserts: metrics,
+                evictions: Vec::new(),
+            },
+            &state,
+        );
         TelemetryProcessor::new().with_remapper_rules(rules).process(&state)
     }
 
