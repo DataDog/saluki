@@ -211,8 +211,7 @@ impl Supervisable for RemoteAgentWorkloadAPIWorker {
         let workload_route = DynamicRoute::http(EndpointType::Privileged, &self.handler);
 
         let state = self.handler.state.clone();
-        let tags_handle =
-            DiagnosticHandle::new("workload-tags-dump.json", move || state.tags_dump_json().into_bytes());
+        let tags_handle = DiagnosticHandle::new("workload-tags-dump.json", move || state.tags_dump_json().into_bytes());
 
         let state = self.handler.state.clone();
         let eds_handle = DiagnosticHandle::new("workload-external-data-dump.json", move || {

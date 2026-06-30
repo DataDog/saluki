@@ -36,8 +36,7 @@ impl Supervisable for HealthRegistryWorker {
         let health_routes = DynamicRoute::http(EndpointType::Unprivileged, self.health_registry.api_handler());
 
         let health_registry = self.health_registry.clone();
-        let flare_handle =
-            DiagnosticHandle::new("health.json", move || health_registry.snapshot_json().into_bytes());
+        let flare_handle = DiagnosticHandle::new("health.json", move || health_registry.snapshot_json().into_bytes());
 
         Ok(Box::pin(async move {
             let dataspace =
