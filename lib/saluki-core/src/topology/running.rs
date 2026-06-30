@@ -3,6 +3,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use saluki_common::sync::shutdown::ShutdownCoordinator;
 use saluki_error::{generic_error, GenericError};
 use tokio::{
     pin, select,
@@ -11,11 +12,11 @@ use tokio::{
 };
 use tracing::{debug, error, info, warn};
 
-use super::{shutdown::ComponentShutdownCoordinator, ComponentId};
+use super::ComponentId;
 
 /// A running topology.
 pub struct RunningTopology {
-    shutdown_coordinator: ComponentShutdownCoordinator,
+    shutdown_coordinator: ShutdownCoordinator,
     component_tasks: JoinSet<Result<(), GenericError>>,
     component_task_map: HashMap<Id, ComponentId>,
 }
@@ -23,7 +24,7 @@ pub struct RunningTopology {
 impl RunningTopology {
     /// Creates a new `RunningTopology`.
     pub(super) fn from_parts(
-        shutdown_coordinator: ComponentShutdownCoordinator, component_tasks: JoinSet<Result<(), GenericError>>,
+        shutdown_coordinator: ShutdownCoordinator, component_tasks: JoinSet<Result<(), GenericError>>,
         component_task_map: HashMap<Id, ComponentId>,
     ) -> Self {
         Self {
@@ -48,18 +49,6 @@ impl RunningTopology {
         // with an "unexpected" flag to indicate that this should be considered an unexpected finish if it did happen to
         // finish "successfully", which adjusts the logging accordingly.
         handle_task_result(&mut self.component_task_map, task_result, true);
-    }
-
-    /// Triggers the topology to shutdown, waiting until all components have stopped.
-    ///
-    /// This will wait indefinitely for all components to stop. If graceful shutdown with an upper bound is desired, use
-    /// [`shutdown_with_timeout`][Self::shutdown_with_timeout] instead.
-    ///
-    /// # Errors
-    ///
-    /// If the topology fails to shutdown cleanly due to an error in a component, an error will be returned.
-    pub async fn shutdown(self) -> Result<(), GenericError> {
-        self.shutdown_with_timeout(Duration::MAX).await
     }
 
     /// Triggers the topology to shutdown, waiting until all components have stopped or the timeout has elapsed.

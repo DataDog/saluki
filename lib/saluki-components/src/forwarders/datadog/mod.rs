@@ -5,7 +5,7 @@ use saluki_common::buf::FrozenChunkedBytesBuffer;
 use saluki_config::GenericConfiguration;
 use saluki_core::{
     components::{forwarders::*, ComponentContext},
-    data_model::payload::PayloadType,
+    data_model::payload::{PayloadMetadata, PayloadType},
     observability::ComponentMetricsExt as _,
 };
 use saluki_error::GenericError;
@@ -17,9 +17,12 @@ use tracing::debug;
 use crate::common::datadog::{
     config::ForwarderConfiguration,
     io::TransactionForwarder,
+    protocol::MetricsPayloadInfo,
     telemetry::ComponentTelemetry,
     transaction::{Metadata, Transaction},
-    DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT,
+    validation::ValidationReadiness,
+    DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT, METRICS_SERIES_V3_BETA_PATH, METRICS_SERIES_V3_PATH,
+    METRICS_SKETCHES_V3_PATH,
 };
 
 /// Datadog forwarder.
@@ -27,7 +30,7 @@ use crate::common::datadog::{
 /// Forwards Datadog-specific payloads to the Datadog platform. Handles the standard Datadog Agent configuration,
 /// in terms of specifying additional endpoints, adding the necessary HTTP request headers for authentication,
 /// identification, and more.
-pub struct DatadogConfiguration {
+pub struct DatadogForwarderConfiguration {
     /// Forwarder configuration settings.
     ///
     /// See [`ForwarderConfiguration`] for more information about the available settings.
@@ -36,8 +39,8 @@ pub struct DatadogConfiguration {
     configuration: Option<GenericConfiguration>,
 }
 
-impl DatadogConfiguration {
-    /// Creates a new `DatadogConfiguration` from the given configuration.
+impl DatadogForwarderConfiguration {
+    /// Creates a new `DatadogForwarderConfiguration` from the given configuration.
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
         let forwarder_config = ForwarderConfiguration::from_configuration(config)?;
         Ok(Self {
@@ -46,18 +49,19 @@ impl DatadogConfiguration {
         })
     }
 
-    /// Overrides the default endpoint that payloads are sent to.
+    /// Overrides the default endpoint and refreshes its API key from the given config path.
     ///
-    /// This overrides any existing endpoint configuration, and manually sets the base endpoint (for example,
-    /// `https://api.datad0g.com`) to be used for all payloads.
-    ///
-    /// This can be used to preserve other configuration settings (forwarder settings, retry, etc) while still allowing
-    /// for overriding _where_ payloads are sent to.
-    ///
-    /// # Errors
-    ///
-    /// If the given request path isn't valid, an error is returned.
-    pub fn with_endpoint_override(mut self, dd_url: String, api_key: String) -> Self {
+    /// This is for override endpoints whose API key does not refresh from the top-level `api_key`
+    /// config path, such as Multi-Region Failover.
+    pub fn with_endpoint_override_and_api_key_refresh_config_path(
+        mut self, dd_url: String, api_key: String, api_key_refresh_config_path: &'static str,
+    ) -> Self {
+        self.apply_endpoint_override(dd_url, api_key, api_key_refresh_config_path);
+
+        self
+    }
+
+    fn apply_endpoint_override(&mut self, dd_url: String, api_key: String, api_key_refresh_config_path: &'static str) {
         // Clear any existing additional endpoints, and set the new DD URL and API key.
         //
         // This ensures that the only endpoint we'll send to is this one.
@@ -65,14 +69,13 @@ impl DatadogConfiguration {
         endpoint.clear_additional_endpoints();
         endpoint.set_dd_url(dd_url);
         endpoint.set_api_key(api_key);
+        endpoint.set_api_key_refresh_config_path(api_key_refresh_config_path);
         self.forwarder_config.clear_opw_metrics_endpoint();
-
-        self
     }
 }
 
 #[async_trait]
-impl ForwarderBuilder for DatadogConfiguration {
+impl ForwarderBuilder for DatadogForwarderConfiguration {
     fn input_payload_type(&self) -> PayloadType {
         PayloadType::Http
     }
@@ -93,7 +96,7 @@ impl ForwarderBuilder for DatadogConfiguration {
     }
 }
 
-impl MemoryBounds for DatadogConfiguration {
+impl MemoryBounds for DatadogForwarderConfiguration {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
         builder
             .minimum()
@@ -139,22 +142,24 @@ impl Forwarder for Datadog {
 
         let mut health = context.take_health_handle();
 
+        let mut validation = forwarder.api_key_validator().spawn();
+
         // Spawn our forwarder task to handle sending requests.
         let forwarder = forwarder.spawn().await;
 
-        health.mark_ready();
         debug!("Datadog forwarder started.");
 
         loop {
             select! {
                 _ = health.live() => continue,
+                readiness = validation.wait_for_change() => match readiness {
+                    ValidationReadiness::Ready => health.mark_ready(),
+                    ValidationReadiness::NotReady => health.mark_not_ready(),
+                },
                 maybe_payload = context.payloads().next() => match maybe_payload {
                     Some(payload) => if let Some(http_payload) = payload.try_into_http_payload() {
                         let (payload_meta, request) = http_payload.into_parts();
-                        let transaction_meta = Metadata::from_event_and_data_point_count(
-                            payload_meta.event_count(),
-                            payload_meta.data_point_count(),
-                        );
+                        let transaction_meta = transaction_metadata_from_payload_metadata(&payload_meta);
                         let transaction = Transaction::from_original(transaction_meta, request);
 
                         forwarder.send_transaction(transaction).await?;
@@ -165,6 +170,7 @@ impl Forwarder for Datadog {
         }
 
         // Shutdown the forwarder gracefully.
+        validation.abort();
         forwarder.shutdown().await;
 
         debug!("Datadog forwarder stopped.");
@@ -173,15 +179,100 @@ impl Forwarder for Datadog {
     }
 }
 
+fn transaction_metadata_from_payload_metadata(payload_meta: &PayloadMetadata) -> Metadata {
+    let mut transaction_meta =
+        Metadata::from_event_and_data_point_count(payload_meta.event_count(), payload_meta.data_point_count());
+    transaction_meta.payload_info = payload_meta.get::<MetricsPayloadInfo>().copied();
+    transaction_meta
+}
+
 fn get_dd_endpoint_name(uri: &Uri) -> Option<MetaString> {
     match uri.path() {
         "/api/v2/logs" => Some(MetaString::from_static("logs_v2")),
         "/api/v1/series" => Some(MetaString::from_static("series_v1")),
         "/api/v2/series" => Some(MetaString::from_static("series_v2")),
+        METRICS_SERIES_V3_PATH => Some(MetaString::from_static("series_v3")),
+        METRICS_SERIES_V3_BETA_PATH => Some(MetaString::from_static("series_v3beta")),
         "/api/beta/sketches" => Some(MetaString::from_static("sketches_v2")),
+        METRICS_SKETCHES_V3_PATH => Some(MetaString::from_static("sketches_v3")),
         "/api/v1/check_run" => Some(MetaString::from_static("check_run_v1")),
         "/api/v1/events_batch" => Some(MetaString::from_static("events_batch_v1")),
         "/api/v0.2/traces" => Some(MetaString::from_static("traces_v0.2")),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use saluki_config::ConfigurationLoader;
+    use serde_json::json;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn endpoint_override_refreshes_from_mrf_api_key() {
+        let (generic_config, sender) = ConfigurationLoader::for_tests(
+            Some(json!({
+                "api_key": "primary-api-key",
+                "multi_region_failover": {
+                    "api_key": "mrf-api-key"
+                }
+            })),
+            None,
+            true,
+        )
+        .await;
+        let sender = sender.expect("dynamic sender should exist");
+        sender
+            .send(saluki_config::dynamic::ConfigUpdate::Snapshot(json!({})))
+            .await
+            .expect("initial dynamic snapshot should be sent");
+        generic_config.ready().await;
+
+        let config = DatadogForwarderConfiguration::from_configuration(&generic_config)
+            .expect("DatadogForwarderConfiguration should parse")
+            .with_endpoint_override_and_api_key_refresh_config_path(
+                "http://mrf.example.test".to_string(),
+                "mrf-api-key".to_string(),
+                "multi_region_failover.api_key",
+            );
+
+        let mut endpoints = config
+            .forwarder_config
+            .build_routable_endpoints(config.configuration.clone())
+            .expect("endpoint should resolve");
+
+        assert_eq!(endpoints.len(), 1);
+        let (_, mut endpoint) = endpoints.pop().unwrap().into_parts();
+        assert_eq!(endpoint.cached_api_key(), "mrf-api-key");
+        assert!(endpoint.has_configuration());
+        assert_eq!(endpoint.api_key(), "mrf-api-key");
+
+        sender
+            .send(saluki_config::dynamic::ConfigUpdate::Partial {
+                key: "api_key".to_string(),
+                value: json!("rotated-primary-api-key"),
+            })
+            .await
+            .expect("primary API key update should be sent");
+        sender
+            .send(saluki_config::dynamic::ConfigUpdate::Partial {
+                key: "multi_region_failover.api_key".to_string(),
+                value: json!("rotated-mrf-api-key"),
+            })
+            .await
+            .expect("MRF API key update should be sent");
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            if endpoint.api_key() == "rotated-mrf-api-key" {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out waiting for endpoint override to refresh from MRF API key"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
     }
 }

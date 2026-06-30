@@ -12,8 +12,10 @@ use tokio::{
     net::{TcpStream, UdpSocket},
 };
 
+use super::addr::ConnectionAddress;
+#[cfg(unix)]
 use super::{
-    addr::{ConnectionAddress, ProcessIdentity},
+    addr::ProcessIdentity,
     unix::{unix_recvmsg, unixgram_recvmsg},
 };
 

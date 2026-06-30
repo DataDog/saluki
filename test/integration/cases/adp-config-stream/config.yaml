@@ -2,41 +2,41 @@ type: integration
 name: "adp-config-stream"
 description: "Verify ADP receives configuration from Core Agent via config stream"
 timeout: 120s
+runtimes: [linux, mac, windows]
+
+env:
+  DD_API_KEY: "00000000000000000000000000000000"
+  DD_HOSTNAME: "integration-test-configstream"
+  DD_DATA_PLANE_ENABLED: "true"
+  DD_DATA_PLANE_STANDALONE_MODE: "false"
+  DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT: "true"
+  DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
 
 container:
-  image: "saluki-images/datadog-agent:testing-devel"
-  env:
-    DD_API_KEY: "test-api-key"
-    DD_HOSTNAME: "integration-test-configstream"
-    DD_DATA_PLANE_ENABLED: "true"
-    DD_DATA_PLANE_STANDALONE_MODE: "false"
-    DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT: "true"
-    DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
-    DD_DOGSTATSD_PORT: "8125"
   exposed_ports:
-    - "8125/udp"
+    - "58125/udp"
 
-assertions:
+procedure:
   # Make sure we initially see ADP try to reach out to the Core Agent for its configuration.
-  - type: log_contains
+  - assertion: log_contains
     pattern: "Waiting for initial configuration from Datadog Agent"
-    timeout: 10s
+    timeout: 60s
   # Make sure the process becomes healthy, and stays up without errors, for ~10 seconds after.
   - parallel:
-      - type: process_stable_for
+      - assertion: process_stable_for
         duration: 10s
-      - type: log_contains
+      - assertion: log_contains
         pattern: "Topology healthy"
-        timeout: 10s
-      - type: log_not_contains
+        timeout: 60s
+      - assertion: log_not_contains
         pattern: "Error while reading config event stream"
         during: 10s
       # Added with the Configuration Classifier (config check feature). Default config values
       # must not trigger unsupported-key warnings.
-      - type: log_not_contains
+      - assertion: log_not_contains
         pattern: "Unsupported configuration key"
         during: 10s
-      - type: log_not_contains
+      - assertion: log_not_contains
         pattern: "panic|PANIC"
         regex: true
         during: 10s

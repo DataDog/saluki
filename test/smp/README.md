@@ -16,15 +16,41 @@ SMP tests measure ADP's performance characteristics under various workloads. Eac
 ```
 test/smp/regression/adp/
 ├── experiments.yaml          # Experiment definitions (source of truth)
-├── generate_experiments.py   # Script to generate case directories
-└── cases/                    # Generated experiment configurations
-    └── <experiment_name>/
-        ├── experiment.yaml
-        ├── lading/
-        │   └── lading.yaml
-        └── agent-data-plane/
-            └── ...
+├── config.yaml               # Shared SMP config (copied into each suite below)
+├── generate_experiments.py   # Script to generate the per-suite case directories
+├── shared/                   # Files copied into experiments at generation time (e.g. cert.pem)
+├── quality-gates/            # PR gating suite (experiments with `checks:`)
+│   ├── config.yaml
+│   └── cases/
+│       └── <experiment_name>/
+│           ├── experiment.yaml
+│           ├── lading/lading.yaml
+│           └── agent-data-plane/...
+└── full/                     # Nightly / on-demand suite (all experiments; a superset)
+    ├── config.yaml
+    └── cases/
+        └── <experiment_name>/...
 ```
+
+> [!NOTE]
+> `quality-gates/` and `full/` are generated; never edit them by hand. Edit `experiments.yaml`
+> and run `make generate-smp-experiments`.
+
+## Suites
+
+Experiments are generated into two suites, each a self-contained SMP target-config directory:
+
+- **`quality-gates/`** — the PR gate. Contains only experiments that declare `checks:` (those
+  whose bounds define whether a PR is suitable to merge). CI runs this suite on every PR and
+  fails the pipeline if a bound is breached.
+- **`full/`** — the superset of *all* experiments (including the quality gates). CI runs this
+  suite nightly on `main` (summarizing to Slack) for long-term trend analysis, and on-demand as
+  a manual job on a PR (reporting to the PR). The full suite never gates a PR.
+
+An experiment's membership is derived automatically: it joins `quality-gates/` if and only if it
+declares `checks:`. There is no separate flag to maintain — the bound *is* the gate. Define each
+experiment once in `experiments.yaml`; the generator writes the gating experiments, identically,
+into both suite directories.
 
 ## Defining Experiments
 

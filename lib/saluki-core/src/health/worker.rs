@@ -1,9 +1,10 @@
 use async_trait::async_trait;
 use saluki_api::{DynamicRoute, EndpointType};
+use saluki_common::sync::shutdown::ShutdownHandle;
 use saluki_error::generic_error;
 
 use super::HealthRegistry;
-use crate::runtime::{state::DataspaceRegistry, InitializationError, ProcessShutdown, Supervisable, SupervisorFuture};
+use crate::runtime::{state::DataspaceRegistry, InitializationError, Supervisable, SupervisorFuture};
 
 /// A worker that runs the health registry.
 ///
@@ -26,7 +27,7 @@ impl Supervisable for HealthRegistryWorker {
         "health-registry"
     }
 
-    async fn initialize(&self, process_shutdown: ProcessShutdown) -> Result<SupervisorFuture, InitializationError> {
+    async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
         let runner = self.health_registry.clone().into_runner()?;
 
         let health_routes = DynamicRoute::http(EndpointType::Unprivileged, self.health_registry.api_handler());
@@ -37,6 +38,14 @@ impl Supervisable for HealthRegistryWorker {
                 .ok_or_else(|| generic_error!("Dataspace not available."))?
                 .assert(health_routes, "health-registry-api");
 
+            // We pass the shutdown handle into the runner here, instead of our usual `select! { shutdown => ...,
+            // main_loop_future => ... }` pattern because we try to ensure that we give back the liveness receiver
+            // before the runner completes.
+            //
+            // TODO: We should actually use something like a proper mutex guard so that returning the receiver happens
+            // automatically when the runner future goes out of scope and is dropped, since right now we wouldn't be
+            // able to ensure the current behavior (returning the receiver before the runner completes) happens in the
+            // face of an exceptional error.
             runner.run(process_shutdown).await;
 
             Ok(())

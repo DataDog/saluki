@@ -21,6 +21,7 @@ of software projects, in addition to making them harder to maintain and debug ov
 
 - `bin/agent-data-plane`: the primary artifact of this project. A binary that runs alongside the
   DataDog Agent.
+- `lib/datadog-agent/`: Core Agent configuration and IPC communication protocols.
 - `bin/correctness`: the framework for integration tests.
 - `lib/`: the production frameworks and common code supporting `agent-data-plane`
 - `docs/`: Human-oriented documentation.
@@ -32,6 +33,10 @@ of software projects, in addition to making them harder to maintain and debug ov
   not for production use and supporting it need not be a blocker during feature development.
 - We have customized our use of `cargo fmt` and `clippy`. The `Makefile` is authoritative.
 - Our Rust code wraps at 120 characters.
+- Datadog configuration inventory is managed by YAML files in `lib/datadog-agent/config/schema/`
+  - `schema_overlay.yaml` is a hand-edited file for our inventory of supported Datadog config
+  - The Datadog config schema is vendored under `lib/datadog-agent/config/schema/core`
+  - See `.claude/skills/config-management/SKILL.md`
 
 ## Building and Testing
 
@@ -112,6 +117,21 @@ When writing or updating documentation, follow these guidelines. For full detail
 - **Admonitions**: Use `> [!WARNING]`, `> [!NOTE]`, `> [!TIP]` for callouts
 - **Links**: Descriptive text (not "click here"); relative paths for internal docs
 - **Code blocks**: Always specify language; keep examples minimal and focused
+
+#### Audience and scope
+
+Generic saluki crates (`lib/saluki-*`, `lib/saluki-io`) are general-purpose infrastructure.
+Their documentation and code comments **SHOULD NOT** reference:
+
+- The Datadog Agent by name (use "the server process", "the remote endpoint", or the specific
+  protocol instead)
+- Internal Datadog codenames or project names ("Nitro Enclaves" is fine as a well-known AWS
+  product, but internal Datadog project names are not)
+- Datadog-specific deployment topologies (use generic terms like "guest VM", "host process", etc.)
+
+This rule does NOT apply to `bin/agent-data-plane`, `lib/datadog-agent-commons`, configuration
+registry annotations, or known-configs documentation — all of which are explicitly
+Datadog Agent-specific.
 
 #### Rustdoc (code documentation)
 

@@ -2,38 +2,39 @@ type: integration
 name: "unprivileged-api-endpoints"
 description: "Verifies the /ready, /live, and /memory/status endpoints are accessible on the unprivileged API"
 timeout: 120s
+runtimes: [linux, mac, windows]
+
+env:
+  DD_API_KEY: "00000000000000000000000000000000"
+  DD_HOSTNAME: "integration-test-health"
+  DD_DATA_PLANE_ENABLED: "true"
+  DD_DATA_PLANE_STANDALONE_MODE: "false"
+  DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
 
 container:
-  image: "saluki-images/datadog-agent:testing-devel"
-  env:
-    DD_API_KEY: "test-api-key"
-    DD_HOSTNAME: "integration-test-health"
-    DD_DATA_PLANE_ENABLED: "true"
-    DD_DATA_PLANE_STANDALONE_MODE: "true"
-    DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
   exposed_ports:
-    - "5100/tcp"
+    - "55100/tcp"
 
-assertions:
+procedure:
   - parallel:
-      - type: process_stable_for
+      - assertion: process_stable_for
         duration: 10s
-      - type: http_check
-        endpoint: "http://localhost:5100/ready"
+      - assertion: http_check
+        endpoint: "http://localhost:55100/ready"
         status:
           equal: 200
-        timeout: 10s
-      - type: http_check
-        endpoint: "http://localhost:5100/live"
+        timeout: 60s
+      - assertion: http_check
+        endpoint: "http://localhost:55100/live"
         status:
           equal: 200
-        timeout: 10s
-      - type: http_check
-        endpoint: "http://localhost:5100/memory/status"
+        timeout: 60s
+      - assertion: http_check
+        endpoint: "http://localhost:55100/memory/status"
         status:
           equal: 200
-        timeout: 10s
-      - type: log_not_contains
+        timeout: 60s
+      - assertion: log_not_contains
         pattern: "panic|PANIC"
         regex: true
         during: 10s

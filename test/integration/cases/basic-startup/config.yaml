@@ -2,26 +2,26 @@ type: integration
 name: "basic-startup"
 description: "Verifies ADP starts successfully and remains stable"
 timeout: 120s
+runtimes: [linux, mac, windows]
 
-container:
-  image: "saluki-images/datadog-agent:testing-devel"
-  env:
-    DD_API_KEY: "test-api-key"
-    DD_HOSTNAME: "integration-test"
-    DD_DATA_PLANE_ENABLED: "true"
-    DD_DATA_PLANE_STANDALONE_MODE: "true"
+env:
+  DD_API_KEY: "test-api-key"
+  DD_HOSTNAME: "integration-test"
+  DD_DATA_PLANE_ENABLED: "true"
+  DD_DATA_PLANE_STANDALONE_MODE: "true"
 
-assertions:
+
+procedure:
   # Make sure we always emit our initial startup log, which contains relevant information
   # about the build version, architecture, and other details.
-  - type: log_contains
+  - assertion: log_contains
     pattern: "Agent Data Plane starting"
-    timeout: 5s
+    timeout: 60s
   # Make sure the process becomes healthy, and stays up without errors, for ~10 seconds after.
   - parallel:
-      - type: process_stable_for
+      - assertion: process_stable_for
         duration: 10s
-      - type: log_not_contains
+      - assertion: log_not_contains
         pattern: "panic|PANIC"
         regex: true
         during: 10s

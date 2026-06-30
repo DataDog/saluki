@@ -1,11 +1,12 @@
 use std::sync::Arc;
 
 use resource_accounting::ComponentRegistry;
+use saluki_common::sync::shutdown::ShutdownHandle;
 
 use crate::health::Health;
 use crate::{
     components::ComponentContext,
-    topology::{shutdown::ComponentShutdownHandle, PayloadsDispatcher, TopologyContext},
+    topology::{PayloadsDispatcher, TopologyContext},
 };
 
 struct RelayContextInner {
@@ -17,7 +18,7 @@ struct RelayContextInner {
 
 /// Relay context.
 pub struct RelayContext {
-    shutdown_handle: Option<ComponentShutdownHandle>,
+    shutdown_handle: Option<ShutdownHandle>,
     health_handle: Option<Health>,
     inner: Arc<RelayContextInner>,
 }
@@ -26,7 +27,7 @@ impl RelayContext {
     /// Creates a new `RelayContext`.
     pub fn new(
         topology_context: &TopologyContext, component_context: &ComponentContext,
-        component_registry: ComponentRegistry, shutdown_handle: ComponentShutdownHandle, health_handle: Health,
+        component_registry: ComponentRegistry, shutdown_handle: ShutdownHandle, health_handle: Health,
         dispatcher: PayloadsDispatcher,
     ) -> Self {
         Self {
@@ -46,7 +47,7 @@ impl RelayContext {
     /// # Panics
     ///
     /// Panics if the shutdown handle has already been taken.
-    pub fn take_shutdown_handle(&mut self) -> ComponentShutdownHandle {
+    pub fn take_shutdown_handle(&mut self) -> ShutdownHandle {
         self.shutdown_handle.take().expect("shutdown handle already taken")
     }
 

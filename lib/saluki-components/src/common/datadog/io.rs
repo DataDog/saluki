@@ -2,9 +2,16 @@
 //!
 //! # Missing
 //!
+//! - Avoid breaking apart `TransactionForwarder` only to work around `#[allow(clippy::too_many_arguments)]`.
 //! - Avoid initializing the process-wide crypto provider from tests.
 
-use std::{collections::VecDeque, error::Error as _, path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    collections::VecDeque,
+    error::Error as _,
+    path::PathBuf,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use bytes::Buf;
 use futures::FutureExt as _;
@@ -20,7 +27,7 @@ use saluki_io::net::{
     client::http::{into_client_body, HttpClient, HttpClientBuilder},
     util::{
         middleware::{RetryCircuitBreakerError, RetryCircuitBreakerLayer},
-        retry::{DiskUsageRetrieverImpl, PushResult, RetryQueue, Retryable},
+        retry::{DiskUsageRetrieverImpl, PersistedQueueArgs, PushResult, RetryQueue, Retryable},
     },
 };
 use saluki_metrics::MetricsBuilder;
@@ -35,20 +42,21 @@ use tracing::{debug, error, warn};
 
 use super::{
     config::ForwarderConfiguration,
-    endpoints::{EndpointRoute, ResolvedEndpoint, RoutableEndpoint},
+    endpoints::{EndpointRoute, EndpointV3Settings, ResolvedEndpoint, RoutableEndpoint, V3EndpointConfig},
     middleware::{for_resolved_endpoint, with_allow_arbitrary_tags, with_version_info},
+    retry_capacity::{TrafficRateWindow, RETRY_QUEUE_CAPACITY_BUCKET_DURATION_SECS},
     telemetry::{ComponentTelemetry, SharedTransactionQueueTelemetry, TransactionQueueTelemetry},
     transaction::{Metadata, Transaction, TransactionBody},
+    validation::ApiKeyValidator,
     METRIC_INTAKE_PATHS,
 };
+
+type EndpointNameFn = dyn Fn(&Uri) -> Option<MetaString> + Send + Sync;
 
 /// Size of buffer chunks for request builder buffers.
 ///
 /// Used to influence the size of chunks in `ChunkedBytesBuffer`.
 pub const RB_BUFFER_CHUNK_SIZE: usize = 32 * 1024; // 32 KB
-
-const RETRY_QUEUE_CAPACITY_HISTORY_DURATION_SECS: u64 = 15 * 60;
-const RETRY_QUEUE_CAPACITY_BUCKET_DURATION_SECS: u64 = 10;
 
 /// A handle to the transaction forwarder.
 pub struct Handle<B>
@@ -98,8 +106,23 @@ pub struct TransactionForwarder<B> {
     telemetry: ComponentTelemetry,
     metrics_builder: MetricsBuilder,
     client: HttpClient,
+    endpoint_name: Arc<EndpointNameFn>,
     endpoints: Vec<RoutableEndpoint>,
+    endpoint_request_mapper_factory: EndpointRequestMapperFactory<B>,
     _marker: std::marker::PhantomData<B>,
+}
+
+/// Builds request mappers for resolved endpoints.
+pub(crate) type EndpointRequestMapperFactory<B> =
+    Arc<dyn Fn(ResolvedEndpoint) -> EndpointRequestMapper<B> + Send + Sync>;
+
+/// Maps requests for a resolved endpoint before they are sent.
+pub(crate) type EndpointRequestMapper<B> =
+    Box<dyn FnMut(Request<TransactionBody<B>>) -> Request<TransactionBody<B>> + Send>;
+
+fn default_endpoint_request_mapper<B: 'static>(endpoint: ResolvedEndpoint) -> EndpointRequestMapper<B> {
+    let mapper = for_resolved_endpoint(endpoint);
+    Box::new(mapper)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -158,13 +181,42 @@ where
     where
         F: Fn(&Uri) -> Option<MetaString> + Send + Sync + 'static,
     {
+        Self::from_config_with_endpoint_request_mapper(
+            context,
+            config,
+            live_config,
+            endpoint_name,
+            telemetry,
+            metrics_builder,
+            Arc::new(default_endpoint_request_mapper::<B>),
+        )
+    }
+
+    /// Creates a new `TransactionForwarder` with a custom endpoint request mapper.
+    pub(crate) fn from_config_with_endpoint_request_mapper<F>(
+        context: ComponentContext, config: ForwarderConfiguration, live_config: Option<GenericConfiguration>,
+        endpoint_name: F, telemetry: ComponentTelemetry, metrics_builder: MetricsBuilder,
+        endpoint_request_mapper_factory: EndpointRequestMapperFactory<B>,
+    ) -> Result<Self, GenericError>
+    where
+        F: Fn(&Uri) -> Option<MetaString> + Send + Sync + 'static,
+    {
         let endpoints = config.build_routable_endpoints(live_config.clone())?;
+        let endpoint_name: Arc<EndpointNameFn> = Arc::new(endpoint_name);
+        let endpoint_name_for_client = Arc::clone(&endpoint_name);
         let mut client_builder = HttpClient::builder()
             .with_request_timeout(config.request_timeout())
+            .with_max_idle_conns_per_host(config.max_idle_connections_per_host())
             .with_min_tls_version(config.min_tls_version())
             .with_http_protocol(config.http_protocol())
             .with_bytes_sent_counter(telemetry.bytes_sent().clone())
-            .with_endpoint_telemetry(metrics_builder.clone(), Some(endpoint_name));
+            .with_endpoint_telemetry(
+                metrics_builder.clone(),
+                Some(move |uri: &Uri| endpoint_name_for_client(uri)),
+            );
+        if let Some(path) = config.ssl_key_log_file_path() {
+            client_builder = client_builder.with_tls_config(|builder| builder.with_key_log_file(path));
+        }
         if let Some(proxy) = config.proxy() {
             client_builder = client_builder.with_proxies(proxy.build()?);
         }
@@ -184,7 +236,9 @@ where
             telemetry,
             metrics_builder,
             client,
+            endpoint_name,
             endpoints,
+            endpoint_request_mapper_factory,
             _marker: std::marker::PhantomData,
         })
     }
@@ -205,7 +259,9 @@ where
             telemetry,
             metrics_builder,
             client,
+            endpoint_name,
             endpoints,
+            endpoint_request_mapper_factory,
             _marker,
         } = self;
 
@@ -220,7 +276,9 @@ where
                 client,
                 telemetry,
                 metrics_builder,
+                endpoint_name,
                 endpoints,
+                endpoint_request_mapper_factory,
             ),
         );
 
@@ -229,6 +287,16 @@ where
             io_shutdown_rx,
         }
     }
+
+    /// Returns API key validation for the startup endpoint set.
+    pub(crate) fn api_key_validator(&self) -> ApiKeyValidator {
+        ApiKeyValidator::new(
+            self.endpoints.clone(),
+            self.client.clone(),
+            self.live_config.clone(),
+            self.config.api_key_validation_interval(),
+        )
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -236,7 +304,8 @@ async fn run_io_loop<B>(
     mut transactions_rx: mpsc::Receiver<Transaction<B>>, io_shutdown_tx: oneshot::Sender<()>,
     context: ComponentContext, config: ForwarderConfiguration, live_config: Option<GenericConfiguration>,
     service: HttpClient, telemetry: ComponentTelemetry, metrics_builder: MetricsBuilder,
-    resolved_endpoints: Vec<RoutableEndpoint>,
+    endpoint_name: Arc<EndpointNameFn>, resolved_endpoints: Vec<RoutableEndpoint>,
+    endpoint_request_mapper_factory: EndpointRequestMapperFactory<B>,
 ) where
     B: Body + Buf + Clone + Send + Sync + 'static,
     B::Data: Send,
@@ -273,7 +342,10 @@ async fn run_io_loop<B>(
                 service.clone(),
                 telemetry.clone(),
                 txnq_telemetry,
+                Arc::clone(&endpoint_name),
+                route,
                 resolved_endpoint,
+                endpoint_request_mapper_factory.clone(),
             ),
         );
 
@@ -287,7 +359,8 @@ async fn run_io_loop<B>(
 
     // Listen for transactions to forward, and send a copy of each one to the matching endpoint I/O tasks.
     while let Some(transaction) = transactions_rx.recv().await {
-        let is_metrics_request = is_metrics_request_uri(transaction.request_uri());
+        let is_metrics_request =
+            is_metrics_request_uri(transaction.request_uri(), config.v3_api().series.beta_route.as_str());
         for endpoint_sender in &endpoint_txs {
             if !should_route_to_endpoint(is_metrics_request, has_metrics_primary, endpoint_sender.route) {
                 continue;
@@ -331,8 +404,8 @@ where
     tx: mpsc::Sender<Transaction<B>>,
 }
 
-fn is_metrics_request_uri(uri: &Uri) -> bool {
-    METRIC_INTAKE_PATHS.contains(&uri.path())
+fn is_metrics_request_uri(uri: &Uri, v3_beta_series_route: &str) -> bool {
+    METRIC_INTAKE_PATHS.contains(&uri.path()) || uri.path() == v3_beta_series_route
 }
 
 fn should_route_to_endpoint(is_metrics_request: bool, has_metrics_primary: bool, route: EndpointRoute) -> bool {
@@ -351,7 +424,8 @@ fn should_route_to_endpoint(is_metrics_request: bool, has_metrics_primary: bool,
 async fn run_endpoint_io_loop<B>(
     mut txns_rx: mpsc::Receiver<Transaction<B>>, task_barrier: Arc<Barrier>, context: ComponentContext,
     config: ForwarderConfiguration, live_config: Option<GenericConfiguration>, service: HttpClient,
-    telemetry: ComponentTelemetry, txnq_telemetry: TransactionQueueTelemetry, endpoint: ResolvedEndpoint,
+    telemetry: ComponentTelemetry, txnq_telemetry: TransactionQueueTelemetry, endpoint_name: Arc<EndpointNameFn>,
+    route: EndpointRoute, endpoint: ResolvedEndpoint, endpoint_request_mapper_factory: EndpointRequestMapperFactory<B>,
 ) where
     B: Body + Buf + Clone + Send + Sync + 'static,
     B::Data: Send,
@@ -359,12 +433,41 @@ async fn run_endpoint_io_loop<B>(
 {
     let queue_id = generate_retry_queue_id(context, &endpoint);
     let endpoint_url = endpoint.endpoint().to_string();
+    let configured_endpoint = endpoint.configured_endpoint().to_string();
     let endpoint_domain = endpoint.endpoint().origin().ascii_serialization();
+
+    // Match against the endpoint string from configuration, not the version-prefixed URL used for requests.
+    let v3_api = config.v3_api();
+    let metrics_primary_v3_override = (route == EndpointRoute::MetricsPrimary)
+        .then(|| config.opw_metrics_v3_series_override())
+        .flatten();
+    let serializer_v3_configured_endpoint =
+        (route == EndpointRoute::MetricsPrimary).then(|| config.primary_configured_endpoint());
+    let endpoint_v3_settings = if config.compressor_disables_metrics_v3() {
+        EndpointV3Settings::disabled()
+    } else {
+        EndpointV3Settings::from_v3_config(V3EndpointConfig {
+            configured_endpoint: &configured_endpoint,
+            resolved_endpoint: endpoint.endpoint(),
+            serializer_v3_configured_endpoint: serializer_v3_configured_endpoint.as_deref(),
+            data_plane_v3_series_enabled: config.data_plane_metrics_v3_series_enabled(),
+            series_config: config.use_v3_api_series(),
+            metrics_primary_v3_override,
+            serializer_v3_series_endpoints: &v3_api.series.endpoints,
+            serializer_v3_sketches_endpoints: &v3_api.sketches.endpoints,
+            series_validate: v3_api.series.validate,
+            sketches_validate: v3_api.sketches.validate,
+            series_shadow_sites: &v3_api.series.shadow_sites,
+        })
+    };
     debug!(
         endpoint_url,
-        num_workers = config.endpoint_concurrency(),
+        endpoint_concurrency = config.endpoint_concurrency(),
+        configured_endpoint,
+        ?endpoint_v3_settings,
         "Starting endpoint I/O task."
     );
+    let endpoint_request_mapper = Arc::new(Mutex::new((endpoint_request_mapper_factory)(endpoint)));
 
     // Build our endpoint service.
     //
@@ -375,8 +478,16 @@ async fn run_endpoint_io_loop<B>(
     // after the retry circuit breaker. This ensures that `RetryCircuitBreakerError::Open(req)` returns
     // the original `Request<TransactionBody<B>>` so we can reassemble it into a `Transaction<B>` for re-enqueuing.
     let mut service = ServiceBuilder::new()
-        // Set the request's URI to the endpoint's URI, and add the API key as a header.
-        .map_request(for_resolved_endpoint(endpoint))
+        // Set the request's URI and endpoint-specific headers.
+        .map_request({
+            let endpoint_request_mapper = Arc::clone(&endpoint_request_mapper);
+            move |request| {
+                let mut mapper = endpoint_request_mapper
+                    .lock()
+                    .expect("endpoint request mapper mutex poisoned");
+                mapper(request)
+            }
+        })
         // Signal backend support for arbitrary tag values when configured.
         .map_request(with_allow_arbitrary_tags(config.allow_arbitrary_tags()))
         // Set the User-Agent and DD-Agent-Version headers indicating the version of the data plane sending the request.
@@ -388,26 +499,35 @@ async fn run_endpoint_io_loop<B>(
         .map_request(|req: Request<TransactionBody<B>>| req.map(into_client_body))
         .service(service);
 
-    let mut retry_queue = RetryQueue::new(queue_id.clone(), config.retry().queue_max_size_bytes());
+    let mut retry_queue = RetryQueue::new(queue_id.clone(), config.retry().queue_max_size_bytes())
+        .with_flush_to_disk_mem_ratio(config.retry().flush_to_disk_mem_ratio());
 
     // If the storage size is set, enable disk persistence for the retry queue.
     if config.retry().storage_max_size_bytes() > 0 {
         retry_queue = retry_queue
-            .with_disk_persistence(
-                PathBuf::from(config.retry().storage_path()),
-                config.retry().storage_max_size_bytes(),
-                config.retry().storage_max_disk_ratio(),
-                Arc::new(DiskUsageRetrieverImpl::new(PathBuf::from(
+            .with_disk_persistence(PersistedQueueArgs {
+                root_path: PathBuf::from(config.retry().storage_path()),
+                max_on_disk_bytes: config.retry().storage_max_size_bytes(),
+                storage_max_disk_ratio: config.retry().storage_max_disk_ratio(),
+                disk_usage_retriever: Arc::new(DiskUsageRetrieverImpl::new(PathBuf::from(
                     config.retry().storage_path(),
                 ))),
-            )
+                max_age_days: config.retry().outdated_file_in_days(),
+            })
             .await
             .unwrap_or_else(|e| {
                 error!(endpoint_url, error = %e, "Failed to initialize disk persistence for retry queue. Transactions will not be persisted.");
                 RetryQueue::new(queue_id, config.retry().queue_max_size_bytes())
+                    .with_flush_to_disk_mem_ratio(config.retry().flush_to_disk_mem_ratio())
             });
     }
-    let mut pending_txns = PendingTransactions::new(config.endpoint_buffer_size(), retry_queue, txnq_telemetry);
+    let mut pending_txns = PendingTransactions::new(
+        config.endpoint_buffer_size(),
+        retry_queue,
+        txnq_telemetry,
+        MetaString::from(endpoint_domain.as_str()),
+        config.retry().capacity_time_interval_secs(),
+    );
 
     let mut in_flight = JoinSet::new();
     let mut done = false;
@@ -416,9 +536,35 @@ async fn run_endpoint_io_loop<B>(
         select! {
             // Try and drain the next transaction from our channel, and push it into the pending transactions queue.
             maybe_txn = txns_rx.recv(), if !done => match maybe_txn {
-                Some(txn) => match pending_txns.push_high_priority(txn).await {
-                    Ok(push_result) => track_queue_drops(&telemetry, &endpoint_domain, push_result),
-                    Err(e) => error!(endpoint_url, error = %e, "Failed to enqueue transaction. Events may be permanently lost."),
+                Some(txn) => {
+                    // Filter transactions based on endpoint's V3 settings and the transaction's payload info.
+                    let payload_info = txn.metadata().payload_info;
+                    if !endpoint_v3_settings.should_receive_payload(payload_info) {
+                        debug!(
+                            endpoint_url,
+                            ?payload_info,
+                            "Filtering out transaction based on endpoint V3 settings."
+                        );
+                        continue;
+                    }
+                    let txn = if endpoint_v3_settings.should_receive_validation_headers(payload_info) {
+                        txn
+                    } else {
+                        strip_metrics_validation_headers(txn)
+                    };
+                    let transaction_size = txn.size_bytes();
+                    let transaction_endpoint_name = endpoint_name(txn.request_uri())
+                        .unwrap_or_else(|| MetaString::from(txn.request_uri().path()));
+                    telemetry.track_transaction_input(
+                        &endpoint_domain,
+                        &transaction_endpoint_name,
+                        transaction_size,
+                    );
+
+                    match pending_txns.push_high_priority(txn).await {
+                        Ok(push_result) => track_queue_drops(&telemetry, &endpoint_domain, push_result),
+                        Err(e) => error!(endpoint_url, error = %e, "Failed to enqueue transaction. Events may be permanently lost."),
+                    }
                 },
                 None => {
                     // Our transactions channel has been closed, so mark ourselves as done which will stop any further
@@ -511,6 +657,18 @@ async fn run_endpoint_io_loop<B>(
     task_barrier.wait().await;
 }
 
+fn strip_metrics_validation_headers<B>(txn: Transaction<B>) -> Transaction<B>
+where
+    B: Buf + Clone,
+{
+    let (metadata, mut request) = txn.into_parts();
+    let headers = request.headers_mut();
+    headers.remove("X-Metrics-Request-ID");
+    headers.remove("X-Metrics-Request-Seq");
+    headers.remove("X-Metrics-Request-Len");
+    Transaction::reassemble(metadata, request)
+}
+
 fn generate_retry_queue_id(context: ComponentContext, endpoint: &ResolvedEndpoint) -> String {
     // For additional endpoints we hash over the api_key_index (the stable position of this key in
     // the additional_endpoints config list) rather than the raw API key value. This means the queue
@@ -545,6 +703,18 @@ async fn process_http_response(
     if status.is_success() {
         debug!(endpoint_url, %status, "Request completed.");
 
+        // Reaching a successful intake response means the whole pipeline
+        // ran. This is a useful signal for process health but also
+        // acts as a checkpoint anchor for Antithesis replay: at this point
+        // there is a nominally functional system.
+        //
+        // No-op outside the `antithesis` feature build.
+        saluki_antithesis::sometimes!(
+            true,
+            "ADP forwarded a payload to the intake",
+            { "domain": domain }
+        );
+
         telemetry.track_successful_transaction(&metadata, domain);
     } else {
         telemetry.track_permanently_failed_transaction(&metadata, Some(status), domain);
@@ -576,77 +746,8 @@ struct PendingTransactions<T> {
     high_priority: VecDeque<T>,
     low_priority: RetryQueue<T>,
     telemetry: TransactionQueueTelemetry,
-    incoming_bytes_per_sec: IncomingBytesPerSec,
-}
-
-// Mirrors the Datadog Agent retry queue duration traffic-rate input:
-// https://github.com/DataDog/datadog-agent/blob/main/comp/forwarder/defaultforwarder/internal/retry/queue_duration_capacity.go
-// https://github.com/DataDog/datadog-agent/blob/main/comp/forwarder/defaultforwarder/internal/retry/time_interval_accumulator.go
-struct IncomingBytesPerSec {
-    bucket_sum: Vec<u64>,
-    current_index: usize,
-    current_index_time_secs: Option<u64>,
-    start_index_time_secs: Option<u64>,
-    sum: u64,
-    bucket_duration_secs: u64,
-}
-
-impl IncomingBytesPerSec {
-    fn new(history_duration_secs: u64, bucket_duration_secs: u64) -> Self {
-        assert!(bucket_duration_secs > 0, "bucket duration must be at least one second");
-        assert!(
-            history_duration_secs >= bucket_duration_secs,
-            "history duration must be greater than or equal to bucket duration"
-        );
-
-        Self {
-            bucket_sum: vec![0; (history_duration_secs / bucket_duration_secs) as usize],
-            current_index: 0,
-            current_index_time_secs: None,
-            start_index_time_secs: None,
-            sum: 0,
-            bucket_duration_secs,
-        }
-    }
-
-    fn record(&mut self, now_secs: u64, bytes: u64) -> f64 {
-        if self.start_index_time_secs.is_none() {
-            self.start_index_time_secs = Some(now_secs);
-            self.current_index_time_secs = Some(now_secs);
-        }
-
-        while now_secs
-            >= self.current_index_time_secs.expect("current index time should be set") + self.bucket_duration_secs
-        {
-            self.current_index = (self.current_index + 1) % self.bucket_sum.len();
-            self.sum -= self.bucket_sum[self.current_index];
-            self.bucket_sum[self.current_index] = 0;
-
-            let current_index_time_secs =
-                self.current_index_time_secs.expect("current index time should be set") + self.bucket_duration_secs;
-            self.current_index_time_secs = Some(current_index_time_secs);
-
-            let start_index_time_secs = self.start_index_time_secs.expect("start index time should be set");
-            if current_index_time_secs
-                >= start_index_time_secs + self.bucket_sum.len() as u64 * self.bucket_duration_secs
-            {
-                self.start_index_time_secs = Some(start_index_time_secs + self.bucket_duration_secs);
-            }
-        }
-
-        self.bucket_sum[self.current_index] += bytes;
-        self.sum += bytes;
-        self.bytes_per_sec(now_secs)
-    }
-
-    fn bytes_per_sec(&self, now_secs: u64) -> f64 {
-        let Some(start_index_time_secs) = self.start_index_time_secs else {
-            return 0.0;
-        };
-
-        let duration_secs = now_secs.saturating_sub(start_index_time_secs) + 1;
-        self.sum as f64 / duration_secs as f64
-    }
+    domain: MetaString,
+    traffic_rate: TrafficRateWindow,
 }
 
 impl<T: Retryable> PendingTransactions<T> {
@@ -654,13 +755,17 @@ impl<T: Retryable> PendingTransactions<T> {
     ///
     /// The high-priority queue will have a maximum capacity of `max_enqueued`, and the retry queue will be used as the
     /// low-priority queue.
-    pub fn new(max_enqueued: usize, retry_queue: RetryQueue<T>, telemetry: TransactionQueueTelemetry) -> Self {
+    pub fn new(
+        max_enqueued: usize, retry_queue: RetryQueue<T>, telemetry: TransactionQueueTelemetry, domain: MetaString,
+        capacity_history_duration_secs: u64,
+    ) -> Self {
         Self {
             high_priority: VecDeque::with_capacity(max_enqueued),
             low_priority: retry_queue,
             telemetry,
-            incoming_bytes_per_sec: IncomingBytesPerSec::new(
-                RETRY_QUEUE_CAPACITY_HISTORY_DURATION_SECS,
+            domain,
+            traffic_rate: TrafficRateWindow::new(
+                capacity_history_duration_secs,
                 RETRY_QUEUE_CAPACITY_BUCKET_DURATION_SECS,
             ),
         }
@@ -677,7 +782,7 @@ impl<T: Retryable> PendingTransactions<T> {
     ///
     /// If the high-priority queue is full, the transaction will be pushed into the low-priority queue.
     pub async fn push_high_priority(&mut self, transaction: T) -> Result<PushResult, GenericError> {
-        self.record_incoming_transaction_size(transaction.size_bytes());
+        self.record_incoming_transaction_size(transaction.size_bytes()).await;
 
         if self.high_priority.len() < self.high_priority.capacity() {
             self.high_priority.push_back(transaction);
@@ -803,13 +908,29 @@ impl<T: Retryable> PendingTransactions<T> {
         self.telemetry.record_retry_queue_size(self.low_priority.len());
     }
 
-    fn record_incoming_transaction_size(&mut self, bytes: u64) {
-        self.record_incoming_transaction_size_at(bytes, get_unix_timestamp());
+    async fn record_incoming_transaction_size(&mut self, bytes: u64) {
+        self.record_incoming_transaction_size_at(bytes, get_unix_timestamp())
+            .await;
     }
 
-    fn record_incoming_transaction_size_at(&mut self, bytes: u64, now_secs: u64) {
-        let bytes_per_sec = self.incoming_bytes_per_sec.record(now_secs, bytes);
+    async fn record_incoming_transaction_size_at(&mut self, bytes: u64, now_secs: u64) {
+        let bytes_per_sec = self.traffic_rate.record(now_secs, bytes);
         self.telemetry.record_retry_queue_bytes_per_sec(bytes_per_sec);
+
+        let disk_available_capacity_bytes = match self.low_priority.available_on_disk_capacity_bytes().await {
+            Ok(available_capacity_bytes) => available_capacity_bytes,
+            Err(e) => {
+                warn!(error = %e, "Failed to calculate retry queue disk capacity for telemetry.");
+                0
+            }
+        };
+
+        self.telemetry.record_retry_queue_capacity_stats(
+            &self.domain,
+            bytes_per_sec,
+            self.low_priority.available_in_memory_capacity_bytes(),
+            disk_available_capacity_bytes,
+        );
     }
 }
 
@@ -833,6 +954,7 @@ mod tests {
     use saluki_config::ConfigurationLoader;
     use saluki_core::{observability::ComponentMetricsExt as _, topology::ComponentId};
     use saluki_io::net::client::http::TlsMinimumVersion;
+    use saluki_metrics::test::TestRecorder;
     use serde_json::json;
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
@@ -845,10 +967,17 @@ mod tests {
     use super::*;
     use crate::common::datadog::endpoints::AdditionalEndpoints;
     use crate::common::datadog::transaction::{Metadata as TxnMetadata, Transaction};
-    use crate::common::datadog::{METRICS_SERIES_V1_PATH, METRICS_SERIES_V2_PATH, METRICS_SKETCHES_PATH};
+    use crate::common::datadog::{
+        METRICS_SERIES_V1_PATH, METRICS_SERIES_V2_PATH, METRICS_SERIES_V3_BETA_PATH, METRICS_SERIES_V3_PATH,
+        METRICS_SKETCHES_PATH, METRICS_SKETCHES_V3_PATH,
+    };
 
     fn uri(path: &'static str) -> Uri {
         Uri::from_static(path)
+    }
+
+    fn is_metrics_request_path(path: &'static str) -> bool {
+        is_metrics_request_uri(&uri(path), METRICS_SERIES_V3_BETA_PATH)
     }
 
     fn forwarder_config_from_value(value: serde_json::Value) -> ForwarderConfiguration {
@@ -857,11 +986,26 @@ mod tests {
 
     #[test]
     fn identifies_metrics_request_paths() {
-        assert!(is_metrics_request_uri(&uri(METRICS_SERIES_V1_PATH)));
-        assert!(is_metrics_request_uri(&uri(METRICS_SERIES_V2_PATH)));
-        assert!(is_metrics_request_uri(&uri(METRICS_SKETCHES_PATH)));
-        assert!(!is_metrics_request_uri(&uri("/api/v2/logs")));
-        assert!(!is_metrics_request_uri(&uri("/api/v0.2/traces")));
+        assert!(is_metrics_request_path(METRICS_SERIES_V1_PATH));
+        assert!(is_metrics_request_path(METRICS_SERIES_V2_PATH));
+        assert!(is_metrics_request_path(METRICS_SERIES_V3_PATH));
+        assert!(is_metrics_request_path(METRICS_SERIES_V3_BETA_PATH));
+        assert!(is_metrics_request_path(METRICS_SKETCHES_PATH));
+        assert!(is_metrics_request_path(METRICS_SKETCHES_V3_PATH));
+        assert!(!is_metrics_request_path("/api/v2/logs"));
+        assert!(!is_metrics_request_path("/api/v0.2/traces"));
+    }
+
+    #[test]
+    fn identifies_configured_v3_beta_series_route_as_metrics_path() {
+        assert!(is_metrics_request_uri(
+            &uri("/custom/v3beta/series"),
+            "/custom/v3beta/series"
+        ));
+        assert!(!is_metrics_request_uri(
+            &uri("/custom/v3beta/series"),
+            METRICS_SERIES_V3_BETA_PATH
+        ));
     }
 
     #[test]
@@ -1034,50 +1178,103 @@ app.datadoghq.com: [key-a, key-b]
         (format!("https://127.0.0.1:{port}/"), request_rx)
     }
 
-    fn transaction_queue_telemetry() -> (SharedTransactionQueueTelemetry, TransactionQueueTelemetry) {
+    fn transaction_queue_telemetry() -> (TransactionQueueTelemetry, MetaString) {
         let builder = MetricsBuilder::default();
         let shared = SharedTransactionQueueTelemetry::from_builder(&builder);
         let telemetry = TransactionQueueTelemetry::from_builder(&builder, "https://example.com", shared.clone());
+        let domain = MetaString::from_static("https://example.com");
 
-        (shared, telemetry)
-    }
-
-    #[test]
-    fn incoming_bytes_per_sec_matches_agent_windowed_rate() {
-        let mut incoming_bytes_per_sec = IncomingBytesPerSec::new(10, 1);
-
-        assert_eq!(incoming_bytes_per_sec.record(1, 5), 5.0);
-        assert_eq!(incoming_bytes_per_sec.record(2, 15), 10.0);
+        (telemetry, domain)
     }
 
     #[tokio::test]
     async fn retry_queue_bytes_per_sec_tracks_incoming_transaction_payloads() {
-        let (shared, telemetry) = transaction_queue_telemetry();
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let (telemetry, domain) = transaction_queue_telemetry();
         let retry_queue = RetryQueue::new("test".to_string(), 1024);
-        let mut pending_txns = PendingTransactions::new(4, retry_queue, telemetry);
+        let mut pending_txns = PendingTransactions::new(4, retry_queue, telemetry, domain, 900);
 
         let push_result = pending_txns.push_high_priority("payload".to_string()).await.unwrap();
 
         assert!(!push_result.had_drops());
-        assert_eq!(shared.aggregate_snapshot(), (0, 7.0));
+        assert_eq!(recorder.gauge("network_http_retry_queue_bytes_per_sec"), Some(7.0));
+        assert_eq!(recorder.gauge("network_http_retry_queue_size"), Some(0.0));
+        assert_eq!(
+            recorder.gauge((
+                "network_http_retry_queue_bytes_per_sec",
+                &[("domain", "https://example.com")],
+            )),
+            Some(7.0)
+        );
+        assert_eq!(
+            recorder.gauge((
+                "network_http_retry_queue_capacity_secs",
+                &[("domain", "https://example.com")],
+            )),
+            Some(1024.0 / 7.0)
+        );
+        assert_eq!(
+            recorder.gauge((
+                "network_http_retry_queue_capacity_bytes",
+                &[("domain", "https://example.com")],
+            )),
+            Some(1024.0)
+        );
     }
 
     #[tokio::test]
     async fn retry_queue_bytes_per_sec_does_not_track_retry_drains_or_empty_queue() {
-        let (shared, telemetry) = transaction_queue_telemetry();
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let (telemetry, domain) = transaction_queue_telemetry();
         let retry_queue = RetryQueue::new("test".to_string(), 1024);
-        let mut pending_txns = PendingTransactions::new(4, retry_queue, telemetry);
+        let mut pending_txns = PendingTransactions::new(4, retry_queue, telemetry, domain, 900);
 
-        pending_txns.record_incoming_transaction_size_at(20, 1);
+        pending_txns.record_incoming_transaction_size_at(20, 1).await;
         let push_result = pending_txns.push_low_priority("retry".to_string()).await.unwrap();
 
         assert!(!push_result.had_drops());
-        assert_eq!(shared.aggregate_snapshot(), (1, 20.0));
+        assert_eq!(recorder.gauge("network_http_retry_queue_size"), Some(1.0));
+        assert_eq!(recorder.gauge("network_http_retry_queue_bytes_per_sec"), Some(20.0));
         assert_eq!(pending_txns.pop().await.as_deref(), Some("retry"));
-        assert_eq!(shared.aggregate_snapshot(), (0, 20.0));
+        assert_eq!(recorder.gauge("network_http_retry_queue_size"), Some(0.0));
+        assert_eq!(recorder.gauge("network_http_retry_queue_bytes_per_sec"), Some(20.0));
 
         assert!(pending_txns.pop().await.is_none());
-        assert_eq!(shared.aggregate_snapshot(), (0, 20.0));
+        assert_eq!(recorder.gauge("network_http_retry_queue_size"), Some(0.0));
+        assert_eq!(recorder.gauge("network_http_retry_queue_bytes_per_sec"), Some(20.0));
+    }
+
+    #[tokio::test]
+    async fn retry_queue_capacity_uses_remaining_in_memory_capacity() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let (telemetry, domain) = transaction_queue_telemetry();
+        let retry_queue = RetryQueue::new("test".to_string(), 1024);
+        let mut pending_txns = PendingTransactions::new(4, retry_queue, telemetry, domain, 900);
+
+        let push_result = pending_txns
+            .push_low_priority("retry".to_string())
+            .await
+            .expect("push should succeed");
+        assert!(!push_result.had_drops());
+        pending_txns.record_incoming_transaction_size_at(20, 1).await;
+
+        assert_eq!(
+            recorder.gauge((
+                "network_http_retry_queue_capacity_bytes",
+                &[("domain", "https://example.com")],
+            )),
+            Some(1019.0)
+        );
+        assert_eq!(
+            recorder.gauge((
+                "network_http_retry_queue_capacity_secs",
+                &[("domain", "https://example.com")],
+            )),
+            Some(1019.0 / 20.0)
+        );
     }
 
     #[test]
@@ -1285,7 +1482,7 @@ app.datadoghq.com: [key-a, key-b]
             "api_key": "test-api-key",
             "dd_url": forwarder_url,
             "forwarder_timeout": 1u64,
-            "forwarder_num_workers": 1usize,
+            "forwarder_max_concurrent_requests": 1usize,
             "forwarder_high_prio_buffer_size": 4usize,
             "forwarder_backoff_base": 0.001,
             "forwarder_backoff_max": 0.01,

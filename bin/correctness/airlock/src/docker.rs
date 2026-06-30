@@ -1,31 +1,42 @@
-//! Docker daemon connection with non-standard socket discovery.
+//! Docker daemon connection helpers.
 
+#[cfg(unix)]
 use std::{env, path::PathBuf};
 
-use bollard::{Docker, API_DEFAULT_VERSION};
+use bollard::Docker;
+#[cfg(unix)]
+use bollard::API_DEFAULT_VERSION;
+#[cfg(unix)]
 use home::home_dir;
-use saluki_error::{ErrorContext as _, GenericError};
+#[cfg(unix)]
+use saluki_error::ErrorContext as _;
+use saluki_error::GenericError;
+#[cfg(unix)]
 use tracing::debug;
 
 /// Default connection timeout, in seconds, matching bollard.
+#[cfg(unix)]
 const DEFAULT_TIMEOUT: u64 = 120;
 
 /// The standard Docker socket path on Linux.
+#[cfg(unix)]
 const STANDARD_SOCKET: &str = "/var/run/docker.sock";
 
-/// Connect to the Docker daemon, searching non-standard socket locations on macOS.
+/// Connects to the Docker daemon.
 ///
+/// On Windows, this uses Bollard's platform default connection logic.
+///
+/// On Unix hosts, this searches non-standard socket locations before falling back to Bollard's default connection logic.
 /// Resolution order:
 ///
-/// 1. If `DOCKER_HOST` is set **or** `/var/run/docker.sock` exists on disk, defer to bollard's
-///    default connection logic: no extra work needed.
+/// 1. If `DOCKER_HOST` is set **or** `/var/run/docker.sock` exists on disk, defer to Bollard's default connection
+///    logic.
 /// 2. Otherwise, try each candidate socket path in order and use the first that exists.
-/// 3. If no candidate is found, fall back to `Docker::connect_with_defaults()` so the error
-///    message comes from bollard rather than from us.
+/// 3. If no candidate is found, fall back to `Docker::connect_with_defaults()` so the error message comes from Bollard.
 ///
-/// # Candidate paths
+/// # Unix candidate paths
 ///
-/// These are checked (in order) when the standard socket is absent:
+/// These are checked in order when the standard socket is absent:
 ///
 /// | Path | Environment |
 /// |------|-------------|
@@ -40,9 +51,19 @@ const STANDARD_SOCKET: &str = "/var/run/docker.sock";
 ///
 /// # Errors
 ///
-/// Returns an error if no reachable Docker daemon can be found. When connecting through a
-/// discovered non-standard path, the error includes the path that was attempted.
+/// Returns an error if no reachable Docker daemon can be found. When connecting through a discovered non-standard Unix
+/// socket path, the error includes the path that was attempted.
 pub fn connect() -> Result<Docker, GenericError> {
+    connect_inner()
+}
+
+#[cfg(windows)]
+fn connect_inner() -> Result<Docker, GenericError> {
+    Ok(Docker::connect_with_defaults()?)
+}
+
+#[cfg(unix)]
+fn connect_inner() -> Result<Docker, GenericError> {
     // Fast path: DOCKER_HOST is explicitly configured, or the standard socket exists.
     if env::var("DOCKER_HOST").is_ok() || PathBuf::from(STANDARD_SOCKET).exists() {
         return Ok(Docker::connect_with_defaults()?);

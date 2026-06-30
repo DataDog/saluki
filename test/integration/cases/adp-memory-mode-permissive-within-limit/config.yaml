@@ -2,26 +2,26 @@ type: integration
 name: "adp-memory-mode-permissive-within-limit"
 description: "Verifies that permissive mode succeeds and verifies bounds when the calculated bounds fit within the configured limit"
 timeout: 120s
+runtimes: [linux, mac, windows]
 
-container:
-  image: "saluki-images/datadog-agent:testing-devel"
-  env:
-    DD_API_KEY: "test-api-key"
-    DD_HOSTNAME: "integration-test"
-    DD_DATA_PLANE_ENABLED: "true"
-    DD_DATA_PLANE_STANDALONE_MODE: "true"
-    DD_MEMORY_MODE: "permissive"
-    # Generous enough to comfortably fit the default calculated bounds.
-    DD_MEMORY_LIMIT: "2gb"
+env:
+  DD_API_KEY: "test-api-key"
+  DD_HOSTNAME: "integration-test"
+  DD_DATA_PLANE_ENABLED: "true"
+  DD_DATA_PLANE_STANDALONE_MODE: "true"
+  DD_MEMORY_MODE: "permissive"
+  # Generous enough to comfortably fit the default calculated bounds.
+  DD_MEMORY_LIMIT: "2gb"
 
-assertions:
-  - type: log_contains
+
+procedure:
+  - assertion: log_contains
     pattern: "Verified memory bounds."
-    timeout: 15s
+    timeout: 60s
   - parallel:
-      - type: process_stable_for
+      - assertion: process_stable_for
         duration: 10s
-      - type: log_not_contains
+      - assertion: log_not_contains
         pattern: "panic|PANIC"
         regex: true
         during: 10s

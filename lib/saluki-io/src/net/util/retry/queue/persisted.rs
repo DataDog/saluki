@@ -85,6 +85,23 @@ impl DiskUsageRetrieverWrapper {
     }
 }
 
+/// Arguments for constructing a persisted retry queue.
+pub struct PersistedQueueArgs {
+    /// Root path under which the queue directory is created.
+    pub root_path: PathBuf,
+    /// Maximum total bytes the queue may occupy on disk.
+    pub max_on_disk_bytes: u64,
+    /// Maximum fraction of the disk that may be used before writes stop.
+    pub storage_max_disk_ratio: f64,
+    /// Provider for total- and available-disk-space queries.
+    pub disk_usage_retriever: Arc<dyn DiskUsageRetriever + Send + Sync>,
+    /// Maximum age of retry files in days; files older than this are removed on startup.
+    ///
+    /// Setting this to `0` removes all retry files (cutoff = now), matching the behavior of the
+    /// core Agent's `FileRemovalPolicy` with `outdatedFileDayCount = 0`.
+    pub max_age_days: u32,
+}
+
 pub struct PersistedQueue<T> {
     root_path: PathBuf,
     entries: Vec<PersistedEntry>,
@@ -92,6 +109,7 @@ pub struct PersistedQueue<T> {
     max_on_disk_bytes: u64,
     storage_max_disk_ratio: f64,
     disk_usage_retriever: DiskUsageRetrieverWrapper,
+    max_age_days: u32,
     entries_dropped: u64,
     _entry: PhantomData<T>,
 }
@@ -100,19 +118,26 @@ impl<T> PersistedQueue<T>
 where
     T: EventContainer + DeserializeOwned + Serialize,
 {
-    /// Creates a new `PersistedQueue` instance from the given root path and maximum size.
+    /// Creates a new `PersistedQueue` instance from the given arguments.
     ///
     /// The root path is created if it doesn't already exist, and is scanned for existing persisted entries. Entries
     /// are removed (oldest first) until the total size of all scanned entries is within the given maximum size.
+    ///
+    /// To remove stale retry files on startup, call [`remove_stale_files`][Self::remove_stale_files] after construction.
     ///
     /// # Errors
     ///
     /// If there is an error creating the root directory, or scanning it for existing entries, or deleting entries to
     /// shrink the directory to fit the given maximum size, an error is returned.
-    pub async fn from_root_path(
-        root_path: PathBuf, max_on_disk_bytes: u64, storage_max_disk_ratio: f64,
-        disk_usage_retriever: DiskUsageRetrieverWrapper,
-    ) -> Result<Self, GenericError> {
+    pub async fn from_root_path(args: PersistedQueueArgs) -> Result<Self, GenericError> {
+        let PersistedQueueArgs {
+            root_path,
+            max_on_disk_bytes,
+            storage_max_disk_ratio,
+            disk_usage_retriever,
+            max_age_days,
+        } = args;
+
         // Make sure the directory exists first.
         create_directory_recursive(root_path.clone())
             .await
@@ -124,7 +149,8 @@ where
             total_on_disk_bytes: 0,
             max_on_disk_bytes,
             storage_max_disk_ratio,
-            disk_usage_retriever,
+            disk_usage_retriever: DiskUsageRetrieverWrapper::new(disk_usage_retriever),
+            max_age_days,
             entries_dropped: 0,
             _entry: PhantomData,
         };
@@ -149,10 +175,45 @@ where
         self.entries.len()
     }
 
+    /// Returns the available on-disk capacity, in bytes.
+    ///
+    /// This reflects the lower of the configured queue limit and disk-usage-ratio limit, minus the bytes currently used
+    /// by persisted entries.
+    ///
+    /// # Errors
+    ///
+    /// If there is an error while retrieving the total or available space of the underlying volume, an error is returned.
+    pub async fn available_capacity_bytes(&self) -> Result<u64, GenericError> {
+        let disk_usage_retriever = self.disk_usage_retriever.clone();
+        let storage_max_disk_ratio = self.storage_max_disk_ratio;
+        let max_on_disk_bytes = self.max_on_disk_bytes;
+
+        let limit = tokio::task::spawn_blocking(move || {
+            on_disk_bytes_limit(disk_usage_retriever, storage_max_disk_ratio, max_on_disk_bytes)
+        })
+        .await
+        .error_context("Failed to run disk size limit check to completion.")??;
+
+        Ok(limit.saturating_sub(self.total_on_disk_bytes))
+    }
+
     /// Returns the number of entries that have been permanently dropped due to errors since the last call to this
     /// method, resetting the counter.
     pub fn take_entries_dropped(&mut self) -> u64 {
         std::mem::take(&mut self.entries_dropped)
+    }
+
+    /// Removes retry files older than `max_age_days` (from [`PersistedQueueArgs`]) from the queue directory and
+    /// reloads entry state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the queue directory cannot be opened or scanned. Individual file removal failures are
+    /// logged as warnings and do not stop the cleanup.
+    pub async fn remove_stale_files(&mut self) -> Result<u32, GenericError> {
+        let removed = remove_outdated_retry_files(&self.root_path, self.max_age_days).await?;
+        self.refresh_entry_state().await.map_err(GenericError::from)?;
+        Ok(removed)
     }
 
     /// Enqueues an entry and persists it to disk.
@@ -192,6 +253,14 @@ where
             serialized.len() as u64,
         ));
         self.total_on_disk_bytes += serialized.len() as u64;
+
+        // The eviction above keeps us within the on-disk byte cap. Assert the invariant.
+        saluki_antithesis::always_le!(
+            self.total_on_disk_bytes,
+            self.max_on_disk_bytes,
+            "retry queue on-disk bytes within cap",
+            { "bytes": self.total_on_disk_bytes, "cap": self.max_on_disk_bytes }
+        );
 
         debug!(entry.len = serialized.len(), "Enqueued persisted entry.");
 
@@ -236,6 +305,11 @@ where
 
                     self.total_on_disk_bytes -= entry.size_bytes;
                     self.entries_dropped += 1;
+
+                    // Poison-drop: a corrupt/torn on-disk entry is dropped so it can't wedge recovery forever. Anchor
+                    // that recovery continues past it rather than aborting.
+                    saluki_antithesis::sometimes!(true, "corrupt persisted retry entry dropped, recovery continues");
+
                     continue;
                 }
             }
@@ -319,6 +393,11 @@ where
 
                     self.total_on_disk_bytes -= entry.size_bytes;
                     self.entries_dropped += 1;
+
+                    // Poison-drop: a corrupt/torn on-disk entry is dropped so it can't wedge recovery forever. Anchor
+                    // that recovery continues past it rather than aborting.
+                    saluki_antithesis::sometimes!(true, "corrupt persisted retry entry dropped, recovery continues");
+
                     continue;
                 }
             };
@@ -454,6 +533,62 @@ async fn create_directory_recursive(path: PathBuf) -> Result<(), GenericError> {
     .error_context("Failed to spawn directory creation blocking task.")?
 }
 
+/// Deletes files in `queue_path` whose filename-embedded creation timestamp is older than
+/// `max_age_days`. Does nothing if the directory does not exist.
+///
+/// Setting `max_age_days` to `0` deletes all retry files (cutoff = now), matching the behavior
+/// of the core Agent's `FileRemovalPolicy` with `outdatedFileDayCount = 0`.
+async fn remove_outdated_retry_files(queue_path: &Path, max_age_days: u32) -> Result<u32, GenericError> {
+    let mut dir = match tokio::fs::read_dir(queue_path).await {
+        Ok(d) => d,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(e) => {
+            return Err(e).with_error_context(|| {
+                format!(
+                    "Failed to open retry queue directory '{}' for age-based cleanup.",
+                    queue_path.display()
+                )
+            });
+        }
+    };
+    let now_ns = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default() // clock before epoch: treat cutoff as 0, skipping all deletions
+        .as_nanos();
+    let cutoff_ns = now_ns.saturating_sub(max_age_days as u128 * 24 * 3600 * 1_000_000_000);
+    let mut removed = 0u32;
+    loop {
+        let entry = match dir.next_entry().await {
+            Ok(Some(e)) => e,
+            Ok(None) => break,
+            Err(e) => {
+                return Err(e).with_error_context(|| "Error reading retry queue directory during age-based cleanup.");
+            }
+        };
+        let file_ts = match decode_timestamped_filename(&entry.path()) {
+            Some(ts) => ts,
+            None => continue,
+        };
+        if file_ts < cutoff_ns {
+            let name_str = entry.file_name();
+            let name = name_str.to_string_lossy();
+            match tokio::fs::remove_file(entry.path()).await {
+                Ok(()) => {
+                    debug!(file = %name, "Removed outdated retry file.");
+                    removed += 1;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    debug!(file = %name, "Retry file already removed by concurrent cleanup.");
+                }
+                Err(e) => {
+                    warn!(file = %name, error = %e, "Failed to remove outdated retry file.");
+                }
+            }
+        }
+    }
+    Ok(removed)
+}
+
 #[cfg(test)]
 mod tests {
     use rand::RngExt as _;
@@ -513,12 +648,13 @@ mod tests {
         let temp_dir = tempfile::tempdir().expect("should not fail to create temporary directory");
         let root_path = temp_dir.path().to_path_buf();
 
-        let mut persisted_queue = PersistedQueue::<FakeData>::from_root_path(
-            root_path.clone(),
-            1024,
-            0.8,
-            DiskUsageRetrieverWrapper::new(Arc::new(DiskUsageRetrieverImpl::new(root_path.clone()))),
-        )
+        let mut persisted_queue = PersistedQueue::<FakeData>::from_root_path(PersistedQueueArgs {
+            root_path: root_path.clone(),
+            max_on_disk_bytes: 1024,
+            storage_max_disk_ratio: 0.8,
+            disk_usage_retriever: Arc::new(DiskUsageRetrieverImpl::new(root_path.clone())),
+            max_age_days: 10,
+        })
         .await
         .expect("should not fail to create persisted queue");
 
@@ -552,12 +688,13 @@ mod tests {
         let temp_dir = tempfile::tempdir().expect("should not fail to create temporary directory");
         let root_path = temp_dir.path().to_path_buf();
 
-        let mut persisted_queue = PersistedQueue::<FakeData>::from_root_path(
-            root_path.clone(),
-            1,
-            0.8,
-            DiskUsageRetrieverWrapper::new(Arc::new(DiskUsageRetrieverImpl::new(root_path.clone()))),
-        )
+        let mut persisted_queue = PersistedQueue::<FakeData>::from_root_path(PersistedQueueArgs {
+            root_path: root_path.clone(),
+            max_on_disk_bytes: 1,
+            storage_max_disk_ratio: 0.8,
+            disk_usage_retriever: Arc::new(DiskUsageRetrieverImpl::new(root_path.clone())),
+            max_age_days: 10,
+        })
         .await
         .expect("should not fail to create persisted queue");
 
@@ -582,12 +719,13 @@ mod tests {
         let temp_dir = tempfile::tempdir().expect("should not fail to create temporary directory");
         let root_path = temp_dir.path().to_path_buf();
 
-        let mut persisted_queue = PersistedQueue::<FakeData>::from_root_path(
-            root_path.clone(),
-            32,
-            0.8,
-            DiskUsageRetrieverWrapper::new(Arc::new(DiskUsageRetrieverImpl::new(root_path.clone()))),
-        )
+        let mut persisted_queue = PersistedQueue::<FakeData>::from_root_path(PersistedQueueArgs {
+            root_path: root_path.clone(),
+            max_on_disk_bytes: 32,
+            storage_max_disk_ratio: 0.8,
+            disk_usage_retriever: Arc::new(DiskUsageRetrieverImpl::new(root_path.clone())),
+            max_age_days: 10,
+        })
         .await
         .expect("should not fail to create persisted queue");
 
@@ -631,12 +769,13 @@ mod tests {
         let temp_dir = tempfile::tempdir().expect("should not fail to create temporary directory");
         let root_path = temp_dir.path().to_path_buf();
 
-        let mut persisted_queue = PersistedQueue::<FakeData>::from_root_path(
-            root_path.clone(),
-            80,
-            0.35,
-            DiskUsageRetrieverWrapper::new(Arc::new(MockDiskUsageRetriever {})),
-        )
+        let mut persisted_queue = PersistedQueue::<FakeData>::from_root_path(PersistedQueueArgs {
+            root_path: root_path.clone(),
+            max_on_disk_bytes: 80,
+            storage_max_disk_ratio: 0.35,
+            disk_usage_retriever: Arc::new(MockDiskUsageRetriever {}),
+            max_age_days: 10,
+        })
         .await
         .expect("should not fail to create persisted queue");
 
@@ -689,12 +828,13 @@ mod tests {
         let temp_dir = tempfile::tempdir().expect("should not fail to create temporary directory");
         let root_path = temp_dir.path().to_path_buf();
 
-        let mut persisted_queue = PersistedQueue::<FakeData>::from_root_path(
-            root_path.clone(),
-            1024,
-            0.8,
-            DiskUsageRetrieverWrapper::new(Arc::new(MockDiskUsageRetriever {})),
-        )
+        let mut persisted_queue = PersistedQueue::<FakeData>::from_root_path(PersistedQueueArgs {
+            root_path: root_path.clone(),
+            max_on_disk_bytes: 1024,
+            storage_max_disk_ratio: 0.8,
+            disk_usage_retriever: Arc::new(MockDiskUsageRetriever {}),
+            max_age_days: 10,
+        })
         .await
         .expect("should not fail to create persisted queue");
 
@@ -737,12 +877,13 @@ mod tests {
         let root_path = temp_dir.path().to_path_buf();
 
         // Use MockDiskUsageRetriever to avoid disk space ratio causing eviction during push.
-        let mut persisted_queue = PersistedQueue::<FakeData>::from_root_path(
-            root_path.clone(),
-            1024,
-            0.8,
-            DiskUsageRetrieverWrapper::new(Arc::new(MockDiskUsageRetriever {})),
-        )
+        let mut persisted_queue = PersistedQueue::<FakeData>::from_root_path(PersistedQueueArgs {
+            root_path: root_path.clone(),
+            max_on_disk_bytes: 1024,
+            storage_max_disk_ratio: 0.8,
+            disk_usage_retriever: Arc::new(MockDiskUsageRetriever {}),
+            max_age_days: 10,
+        })
         .await
         .expect("should not fail to create persisted queue");
 
@@ -775,12 +916,13 @@ mod tests {
         let temp_dir = tempfile::tempdir().expect("should not fail to create temporary directory");
         let root_path = temp_dir.path().to_path_buf();
 
-        let mut persisted_queue = PersistedQueue::<FakeData>::from_root_path(
-            root_path.clone(),
-            1024,
-            0.8,
-            DiskUsageRetrieverWrapper::new(Arc::new(MockDiskUsageRetriever {})),
-        )
+        let mut persisted_queue = PersistedQueue::<FakeData>::from_root_path(PersistedQueueArgs {
+            root_path: root_path.clone(),
+            max_on_disk_bytes: 1024,
+            storage_max_disk_ratio: 0.8,
+            disk_usage_retriever: Arc::new(MockDiskUsageRetriever {}),
+            max_age_days: 10,
+        })
         .await
         .expect("should not fail to create persisted queue");
 
@@ -804,12 +946,13 @@ mod tests {
         let root_path = temp_dir.path().to_path_buf();
 
         // Queue sized to hold only one entry.
-        let mut persisted_queue = PersistedQueue::<FakeData>::from_root_path(
-            root_path.clone(),
-            32,
-            0.8,
-            DiskUsageRetrieverWrapper::new(Arc::new(MockDiskUsageRetriever {})),
-        )
+        let mut persisted_queue = PersistedQueue::<FakeData>::from_root_path(PersistedQueueArgs {
+            root_path: root_path.clone(),
+            max_on_disk_bytes: 32,
+            storage_max_disk_ratio: 0.8,
+            disk_usage_retriever: Arc::new(MockDiskUsageRetriever {}),
+            max_age_days: 10,
+        })
         .await
         .expect("should not fail to create persisted queue");
 
@@ -839,5 +982,84 @@ mod tests {
             .expect("should have a valid entry");
         assert_eq!(data, actual);
         assert_eq!(0, files_in_dir(&root_path).await);
+    }
+
+    #[tokio::test]
+    async fn persisted_queue_removes_outdated_files_on_initialization() {
+        let data = FakeData::random();
+
+        let temp_dir = tempfile::tempdir().expect("should not fail to create temporary directory");
+        let root_path = temp_dir.path().to_path_buf();
+
+        // Pre-seed a year-2000 retry file containing valid data that would be loaded as an entry
+        // if it were not cleaned up first.
+        let stale_content = serde_json::to_vec(&data).unwrap();
+        tokio::fs::write(
+            root_path.join("retry-20000101000000000000000-100000000.json"),
+            &stale_content,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(1, files_in_dir(&root_path).await);
+
+        // Initialize the queue and remove stale files with a 10-day age limit.
+        let mut queue = PersistedQueue::<FakeData>::from_root_path(PersistedQueueArgs {
+            root_path: root_path.clone(),
+            max_on_disk_bytes: 1024 * 1024,
+            storage_max_disk_ratio: 0.8,
+            disk_usage_retriever: Arc::new(DiskUsageRetrieverImpl::new(root_path.clone())),
+            max_age_days: 10,
+        })
+        .await
+        .expect("should not fail to create persisted queue");
+        queue
+            .remove_stale_files()
+            .await
+            .expect("should not fail to remove stale files");
+
+        assert_eq!(0, files_in_dir(&root_path).await);
+        assert!(queue.is_empty());
+    }
+
+    #[tokio::test]
+    async fn persisted_queue_zero_age_removes_all_retry_files_on_initialization() {
+        // max_age_days=0 sets cutoff=now, matching the core Agent's FileRemovalPolicy behavior
+        // with outdatedFileDayCount=0 — all retry files are removed on startup.
+        let data = FakeData::random();
+
+        let temp_dir = tempfile::tempdir().expect("should not fail to create temporary directory");
+        let root_path = temp_dir.path().to_path_buf();
+
+        // Seed with a freshly-written entry via a normal queue.
+        let mut seeding_queue = PersistedQueue::<FakeData>::from_root_path(PersistedQueueArgs {
+            root_path: root_path.clone(),
+            max_on_disk_bytes: 1024 * 1024,
+            storage_max_disk_ratio: 0.8,
+            disk_usage_retriever: Arc::new(DiskUsageRetrieverImpl::new(root_path.clone())),
+            max_age_days: 10,
+        })
+        .await
+        .expect("should not fail to create persisted queue");
+        let _ = seeding_queue.push(data).await.expect("should not fail to push data");
+        assert_eq!(1, files_in_dir(&root_path).await);
+
+        // Re-open and remove stale files with max_age_days=0: the just-written file must also be deleted.
+        let mut queue = PersistedQueue::<FakeData>::from_root_path(PersistedQueueArgs {
+            root_path: root_path.clone(),
+            max_on_disk_bytes: 1024 * 1024,
+            storage_max_disk_ratio: 0.8,
+            disk_usage_retriever: Arc::new(DiskUsageRetrieverImpl::new(root_path.clone())),
+            max_age_days: 0,
+        })
+        .await
+        .expect("should not fail to create persisted queue");
+        queue
+            .remove_stale_files()
+            .await
+            .expect("should not fail to remove stale files");
+
+        assert_eq!(0, files_in_dir(&root_path).await);
+        assert!(queue.is_empty());
     }
 }

@@ -31,6 +31,7 @@ use saluki_io::compression::CompressionScheme;
 use saluki_metrics::MetricsBuilder;
 use serde::Deserialize;
 use stringtheory::MetaString;
+use tokio::pin;
 use tokio::{
     select,
     sync::mpsc::{self, Receiver, Sender},
@@ -343,7 +344,7 @@ async fn run_request_builder(
 ) -> Result<(), GenericError> {
     let mut pending_flush = false;
     let pending_flush_timeout = sleep(flush_timeout);
-    tokio::pin!(pending_flush_timeout);
+    pin!(pending_flush_timeout);
 
     loop {
         select! {
@@ -1157,18 +1158,26 @@ mod tests {
 
 #[cfg(test)]
 mod config_smoke {
+    use datadog_agent_config_testing::config_registry::structs;
+    use datadog_agent_config_testing::run_config_smoke_tests;
     use serde_json::json;
 
     use super::DatadogTraceConfiguration;
-    use crate::config_registry::structs;
-    use crate::config_registry::test_support::run_config_smoke_tests;
+    use crate::config::{DatadogRemapper, KEY_ALIASES};
 
     #[tokio::test]
     async fn smoke_test() {
-        run_config_smoke_tests(structs::DATADOG_TRACE_CONFIGURATION, &[], json!({}), |cfg| {
-            cfg.as_typed::<DatadogTraceConfiguration>()
-                .expect("DatadogTraceConfiguration should deserialize")
-        })
+        run_config_smoke_tests(
+            structs::DATADOG_TRACE_CONFIGURATION,
+            &[],
+            json!({}),
+            |cfg| {
+                cfg.as_typed::<DatadogTraceConfiguration>()
+                    .expect("DatadogTraceConfiguration should deserialize")
+            },
+            KEY_ALIASES,
+            DatadogRemapper::new,
+        )
         .await
     }
 }

@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc, sync::Mutex};
+use std::sync::{Arc, Mutex};
 
 use http::StatusCode;
 use metrics::{Counter, Gauge, Histogram};
@@ -6,11 +6,16 @@ use saluki_common::collections::FastHashMap;
 use saluki_metrics::MetricsBuilder;
 use stringtheory::MetaString;
 
-use super::transaction::Metadata;
+use super::{retry_capacity::RetryQueueCapacityAggregator, transaction::Metadata};
 
 const NETWORK_HTTP_REQUESTS_ERRORS_TOTAL: &str = "network_http_requests_errors_total";
 const ERROR_TYPE_SENT_REQUEST: &str = "sent_request_error";
 const ERROR_SCOPE_TRANSACTION: &str = "transaction";
+
+struct TransactionInputTelemetry {
+    count: Counter,
+    bytes: Counter,
+}
 
 /// Component-specific telemetry.
 ///
@@ -22,15 +27,16 @@ pub struct ComponentTelemetry {
     events_sent: Counter,
     events_sent_batch_size: Histogram,
     bytes_sent: Counter,
-    data_points_sent_by_domain: Arc<Mutex<HashMap<String, Gauge>>>,
-    data_points_dropped_by_domain: Arc<Mutex<HashMap<String, Gauge>>>,
+    transaction_input_by_endpoint: Arc<Mutex<FastHashMap<(String, String), TransactionInputTelemetry>>>,
+    data_points_sent_by_domain: Arc<Mutex<FastHashMap<String, Gauge>>>,
+    data_points_dropped_by_domain: Arc<Mutex<FastHashMap<String, Gauge>>>,
     events_dropped_http: Counter,
     events_dropped_encoder: Counter,
     events_dropped_queue: Counter,
     items_dropped_total: Counter,
     http_failed_send: Counter,
     sent_request_errors: Counter,
-    http_errors_by_code: Arc<Mutex<HashMap<StatusCode, Counter>>>,
+    http_errors_by_code: Arc<Mutex<FastHashMap<StatusCode, Counter>>>,
 }
 
 impl ComponentTelemetry {
@@ -41,8 +47,9 @@ impl ComponentTelemetry {
             events_sent: builder.register_counter("component_events_sent_total"),
             events_sent_batch_size: builder.register_trace_histogram("component_events_sent_batch_size"),
             bytes_sent: builder.register_counter("component_bytes_sent_total"),
-            data_points_sent_by_domain: Arc::new(Mutex::new(HashMap::new())),
-            data_points_dropped_by_domain: Arc::new(Mutex::new(HashMap::new())),
+            transaction_input_by_endpoint: Arc::new(Mutex::new(FastHashMap::default())),
+            data_points_sent_by_domain: Arc::new(Mutex::new(FastHashMap::default())),
+            data_points_dropped_by_domain: Arc::new(Mutex::new(FastHashMap::default())),
             events_dropped_http: builder.register_counter_with_tags(
                 "component_events_dropped_total",
                 ["intentional:false", "drop_reason:http_failure"],
@@ -64,13 +71,36 @@ impl ComponentTelemetry {
                     ("error_scope", ERROR_SCOPE_TRANSACTION),
                 ],
             ),
-            http_errors_by_code: Arc::new(Mutex::new(HashMap::new())),
+            http_errors_by_code: Arc::new(Mutex::new(FastHashMap::default())),
         }
     }
 
     /// Returns a reference to the "bytes sent" counter.
     pub fn bytes_sent(&self) -> &Counter {
         &self.bytes_sent
+    }
+
+    /// Tracks a transaction entering the forwarder queue.
+    pub fn track_transaction_input(&self, domain: &str, endpoint: &str, bytes: u64) {
+        let mut telemetry = self.transaction_input_by_endpoint.lock().unwrap();
+        let per_endpoint = telemetry
+            // TODO: Avoid allocating key strings on every transaction if we can make the telemetry registry lookup
+            // support borrowed endpoint/domain keys.
+            .entry((domain.to_string(), endpoint.to_string()))
+            .or_insert_with(|| {
+                let tags = [("domain", domain.to_string()), ("endpoint", endpoint.to_string())];
+                TransactionInputTelemetry {
+                    count: self
+                        .builder
+                        .register_counter_with_tags("network_http_requests_input_total", tags.clone()),
+                    bytes: self
+                        .builder
+                        .register_counter_with_tags("network_http_requests_input_bytes_total", tags),
+                }
+            });
+
+        per_endpoint.count.increment(1);
+        per_endpoint.bytes.increment(bytes);
     }
 
     /// Returns a reference to the "events dropped (encoder)" counter.
@@ -180,9 +210,14 @@ pub struct SharedTransactionQueueTelemetry {
 }
 
 struct SharedTransactionQueueTelemetryInner {
+    builder: MetricsBuilder,
     per_endpoint: FastHashMap<MetaString, RetryQueueStats>,
+    capacity: RetryQueueCapacityAggregator,
     retry_queue_size: Gauge,
     retry_queue_bytes_per_sec: Gauge,
+    retry_queue_bytes_per_sec_by_domain: FastHashMap<String, Gauge>,
+    retry_queue_capacity_secs_by_domain: FastHashMap<String, Gauge>,
+    retry_queue_capacity_bytes_by_domain: FastHashMap<String, Gauge>,
 }
 
 #[derive(Default)]
@@ -191,48 +226,122 @@ struct RetryQueueStats {
     bytes_per_sec: f64,
 }
 
+impl SharedTransactionQueueTelemetryInner {
+    fn from_builder(builder: &MetricsBuilder) -> Self {
+        Self {
+            builder: builder.clone(),
+            per_endpoint: FastHashMap::default(),
+            capacity: RetryQueueCapacityAggregator::new(),
+            retry_queue_size: builder.register_gauge("network_http_retry_queue_size"),
+            retry_queue_bytes_per_sec: builder.register_gauge("network_http_retry_queue_bytes_per_sec"),
+            retry_queue_bytes_per_sec_by_domain: FastHashMap::default(),
+            retry_queue_capacity_secs_by_domain: FastHashMap::default(),
+            retry_queue_capacity_bytes_by_domain: FastHashMap::default(),
+        }
+    }
+
+    fn record_size(&mut self, endpoint_id: &MetaString, len: usize) {
+        self.per_endpoint.entry(endpoint_id.clone()).or_default().size = len;
+
+        let total_size = self.per_endpoint.values().map(|stats| stats.size).sum::<usize>();
+        self.retry_queue_size.set(total_size as f64);
+    }
+
+    fn record_bytes_per_sec(&mut self, endpoint_id: &MetaString, bytes_per_sec: f64) {
+        self.per_endpoint.entry(endpoint_id.clone()).or_default().bytes_per_sec = bytes_per_sec;
+
+        let total_bytes_per_sec = self.per_endpoint.values().map(|stats| stats.bytes_per_sec).sum::<f64>();
+        self.retry_queue_bytes_per_sec.set(total_bytes_per_sec);
+    }
+
+    fn record_capacity_stats(
+        &mut self, endpoint_id: &MetaString, domain: &MetaString, bytes_per_sec: f64, in_memory_capacity_bytes: u64,
+        disk_available_capacity_bytes: u64,
+    ) {
+        self.capacity.update_endpoint(
+            endpoint_id.clone(),
+            domain.clone(),
+            bytes_per_sec,
+            in_memory_capacity_bytes,
+            disk_available_capacity_bytes,
+        );
+        self.retry_queue_bytes_per_sec.set(self.capacity.total_bytes_per_sec());
+
+        let domain_stats = self
+            .capacity
+            .domain_stats()
+            .map(|(domain, stats)| (domain.to_string(), stats))
+            .collect::<Vec<_>>();
+
+        for (domain, stats) in domain_stats {
+            let bytes_per_sec = stats.bytes_per_sec;
+            let capacity_secs = stats.capacity_secs;
+            let capacity_bytes = stats.capacity_bytes;
+
+            let bytes_per_sec_gauge = self
+                .retry_queue_bytes_per_sec_by_domain
+                .entry(domain.clone())
+                .or_insert_with(|| {
+                    self.builder.register_gauge_with_tags(
+                        "network_http_retry_queue_bytes_per_sec",
+                        [("domain", domain.clone())],
+                    )
+                });
+            bytes_per_sec_gauge.set(bytes_per_sec);
+
+            let capacity_secs_gauge = self
+                .retry_queue_capacity_secs_by_domain
+                .entry(domain.clone())
+                .or_insert_with(|| {
+                    self.builder.register_gauge_with_tags(
+                        "network_http_retry_queue_capacity_secs",
+                        [("domain", domain.clone())],
+                    )
+                });
+            capacity_secs_gauge.set(capacity_secs);
+
+            let capacity_bytes_gauge = self
+                .retry_queue_capacity_bytes_by_domain
+                .entry(domain.clone())
+                .or_insert_with(|| {
+                    self.builder
+                        .register_gauge_with_tags("network_http_retry_queue_capacity_bytes", [("domain", domain)])
+                });
+            capacity_bytes_gauge.set(capacity_bytes);
+        }
+    }
+}
+
 impl SharedTransactionQueueTelemetry {
     /// Creates a new `SharedTransactionQueueTelemetry` instance.
     pub fn from_builder(builder: &MetricsBuilder) -> Self {
         Self {
-            inner: Arc::new(Mutex::new(SharedTransactionQueueTelemetryInner {
-                per_endpoint: FastHashMap::default(),
-                retry_queue_size: builder.register_gauge("network_http_retry_queue_size"),
-                retry_queue_bytes_per_sec: builder.register_gauge("network_http_retry_queue_bytes_per_sec"),
-            })),
+            inner: Arc::new(Mutex::new(SharedTransactionQueueTelemetryInner::from_builder(builder))),
         }
     }
 
     fn record_retry_queue_size(&self, endpoint_id: &MetaString, len: usize) {
-        let mut inner = self.inner.lock().unwrap();
-        inner.per_endpoint.entry(endpoint_id.clone()).or_default().size = len;
-
-        let total_size = inner.per_endpoint.values().map(|stats| stats.size).sum::<usize>();
-        inner.retry_queue_size.set(total_size as f64);
+        self.inner.lock().unwrap().record_size(endpoint_id, len);
     }
 
     fn record_retry_queue_bytes_per_sec(&self, endpoint_id: &MetaString, bytes_per_sec: f64) {
-        let mut inner = self.inner.lock().unwrap();
-        inner.per_endpoint.entry(endpoint_id.clone()).or_default().bytes_per_sec = bytes_per_sec;
-
-        let total_bytes_per_sec = inner
-            .per_endpoint
-            .values()
-            .map(|stats| stats.bytes_per_sec)
-            .sum::<f64>();
-        inner.retry_queue_bytes_per_sec.set(total_bytes_per_sec);
+        self.inner
+            .lock()
+            .unwrap()
+            .record_bytes_per_sec(endpoint_id, bytes_per_sec);
     }
 
-    #[cfg(test)]
-    pub(crate) fn aggregate_snapshot(&self) -> (usize, f64) {
-        let inner = self.inner.lock().unwrap();
-        let total_size = inner.per_endpoint.values().map(|stats| stats.size).sum::<usize>();
-        let total_bytes_per_sec = inner
-            .per_endpoint
-            .values()
-            .map(|stats| stats.bytes_per_sec)
-            .sum::<f64>();
-        (total_size, total_bytes_per_sec)
+    fn record_retry_queue_capacity_stats(
+        &self, endpoint_id: &MetaString, domain: &MetaString, bytes_per_sec: f64, in_memory_capacity_bytes: u64,
+        disk_available_capacity_bytes: u64,
+    ) {
+        self.inner.lock().unwrap().record_capacity_stats(
+            endpoint_id,
+            domain,
+            bytes_per_sec,
+            in_memory_capacity_bytes,
+            disk_available_capacity_bytes,
+        );
     }
 }
 
@@ -282,11 +391,46 @@ impl TransactionQueueTelemetry {
         self.shared
             .record_retry_queue_bytes_per_sec(&self.endpoint_id, bytes_per_sec);
     }
+
+    pub fn record_retry_queue_capacity_stats(
+        &self, domain: &MetaString, bytes_per_sec: f64, in_memory_capacity_bytes: u64,
+        disk_available_capacity_bytes: u64,
+    ) {
+        self.shared.record_retry_queue_capacity_stats(
+            &self.endpoint_id,
+            domain,
+            bytes_per_sec,
+            in_memory_capacity_bytes,
+            disk_available_capacity_bytes,
+        );
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn aggregate_snapshot(shared: &SharedTransactionQueueTelemetry) -> (usize, f64) {
+        let inner = shared.inner.lock().unwrap();
+        let total_size = inner.per_endpoint.values().map(|stats| stats.size).sum::<usize>();
+        let total_bytes_per_sec = inner
+            .per_endpoint
+            .values()
+            .map(|stats| stats.bytes_per_sec)
+            .sum::<f64>();
+
+        (total_size, total_bytes_per_sec)
+    }
+
+    fn domain_capacity_snapshot(shared: &SharedTransactionQueueTelemetry, domain: &str) -> Option<(f64, f64, f64)> {
+        let inner = shared.inner.lock().unwrap();
+        let snapshot = inner
+            .capacity
+            .domain_stats()
+            .find_map(|(stats_domain, stats)| (stats_domain == domain).then_some(stats))?;
+
+        Some((snapshot.bytes_per_sec, snapshot.capacity_secs, snapshot.capacity_bytes))
+    }
 
     #[test]
     fn shared_transaction_queue_telemetry_aggregates_endpoint_snapshots() {
@@ -300,11 +444,22 @@ mod tests {
         second.record_retry_queue_size(5);
         second.record_retry_queue_bytes_per_sec(2.5);
 
-        assert_eq!(shared.aggregate_snapshot(), (8, 12.5));
+        assert_eq!(aggregate_snapshot(&shared), (8, 12.5));
 
         first.record_retry_queue_size(1);
         first.record_retry_queue_bytes_per_sec(4.0);
 
-        assert_eq!(shared.aggregate_snapshot(), (6, 6.5));
+        assert_eq!(aggregate_snapshot(&shared), (6, 6.5));
+    }
+
+    #[test]
+    fn shared_transaction_queue_telemetry_records_domain_capacity_snapshot() {
+        let builder = MetricsBuilder::default();
+        let shared = SharedTransactionQueueTelemetry::from_builder(&builder);
+        let telemetry = TransactionQueueTelemetry::from_builder(&builder, "https://example.com", shared.clone());
+
+        telemetry.record_retry_queue_capacity_stats(&MetaString::from_static("domain"), 10.0, 20, 50);
+
+        assert_eq!(domain_capacity_snapshot(&shared, "domain"), Some((10.0, 7.0, 70.0)));
     }
 }

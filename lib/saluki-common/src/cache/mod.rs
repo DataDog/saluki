@@ -1,6 +1,7 @@
 use std::{marker::PhantomData, num::NonZeroUsize, sync::Arc, time::Duration};
 
 use saluki_error::GenericError;
+use saluki_metrics::reexport::metrics::Counter;
 use saluki_metrics::static_metrics;
 use tokio::time::sleep;
 use tokio_util::sync::{CancellationToken, DropGuard};
@@ -26,6 +27,7 @@ static_metrics! {
         gauge(weight_limit),
         counter(hits_total),
         counter(misses_total),
+        counter(items_evicted_total),
         debug_counter(items_inserted_total),
         debug_counter(items_removed_total),
         debug_counter(items_expired_total),
@@ -224,7 +226,12 @@ where
         telemetry.weight_limit().set(capacity as f64);
 
         // Configure expiration if enabled.
-        let mut expiration_builder = ExpirationBuilder::new();
+        let eviction_counter = if self.telemetry_enabled {
+            telemetry.items_evicted_total().clone()
+        } else {
+            Counter::noop()
+        };
+        let mut expiration_builder = ExpirationBuilder::new(eviction_counter);
         if let Some(time_to_idle) = self.idle_period {
             expiration_builder = expiration_builder.with_time_to_idle(time_to_idle);
         }

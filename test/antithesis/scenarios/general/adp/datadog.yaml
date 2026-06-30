@@ -1,0 +1,14 @@
+# Minimal Agent Data Plane configuration for the Antithesis harness.
+#
+# /etc/datadog-agent/datadog.yaml is baked into the `adp` image. DD_*
+# environment variables are in docker-compose.yaml.
+
+hostname: "antithesis-adp"
+dd_url: "http://intake:2049"
+
+dogstatsd_port: 0
+dogstatsd_socket: "/var/run/datadog/dsd.socket"
+dogstatsd_non_local_traffic: false
+dogstatsd_origin_detection: false
+
+dogstatsd_workers_count: 1

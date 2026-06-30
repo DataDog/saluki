@@ -8,12 +8,18 @@ use serde::Deserialize;
 use tracing::warn;
 
 use super::{
+    default_serializer_compressor_kind,
     endpoints::{EndpointConfiguration, EndpointRoute, RoutableEndpoint},
+    protocol::{UseV3ApiSeriesConfig, V3ApiConfig},
     proxy::ProxyConfiguration,
     retry::RetryConfiguration,
 };
 
 const fn default_endpoint_concurrency() -> usize {
+    10
+}
+
+const fn default_endpoint_concurrency_multiplier() -> usize {
     1
 }
 
@@ -22,11 +28,19 @@ const fn default_request_timeout_secs() -> u64 {
 }
 
 const fn default_endpoint_buffer_size() -> usize {
-    16
+    100
 }
 
 const fn default_forwarder_connection_reset_interval() -> u64 {
     0
+}
+
+const fn default_api_key_validation_interval_mins() -> u64 {
+    60
+}
+
+const fn default_api_key_validation_interval_config_mins() -> i64 {
+    default_api_key_validation_interval_mins() as i64
 }
 
 const MIN_TLS_VERSION_TLS10: &str = "tlsv1.0";
@@ -101,6 +115,12 @@ pub(crate) struct OpwMetricsConfiguration {
     #[serde(default, rename = "observability_pipelines_worker_metrics_url")]
     observability_pipelines_worker_url: String,
 
+    /// Enables V3 series metrics when routing to Observability Pipelines Worker.
+    ///
+    /// Defaults to `false`.
+    #[serde(default, rename = "observability_pipelines_worker_metrics_use_v3_api_series")]
+    observability_pipelines_worker_use_v3_api_series: bool,
+
     /// Enables routing all metrics to Vector.
     ///
     /// Deprecated in favor of `observability_pipelines_worker.metrics.enabled`.
@@ -116,12 +136,21 @@ pub(crate) struct OpwMetricsConfiguration {
     /// Defaults to unset.
     #[serde(default, rename = "vector_metrics_url")]
     vector_url: String,
+
+    /// Enables V3 series metrics when routing to Vector.
+    ///
+    /// Deprecated in favor of `observability_pipelines_worker.metrics.use_v3_api.series`.
+    ///
+    /// Defaults to `false`.
+    #[serde(default, rename = "vector_metrics_use_v3_api_series")]
+    vector_use_v3_api_series: bool,
 }
 
 struct SelectedOpwMetricsEndpoint<'a> {
     enabled_key: &'static str,
     url_key: &'static str,
     url: &'a str,
+    use_v3_series: bool,
 }
 
 impl OpwMetricsConfiguration {
@@ -131,6 +160,7 @@ impl OpwMetricsConfiguration {
                 enabled_key: "observability_pipelines_worker.metrics.enabled",
                 url_key: "observability_pipelines_worker.metrics.url",
                 url: &self.observability_pipelines_worker_url,
+                use_v3_series: self.observability_pipelines_worker_use_v3_api_series,
             });
         }
 
@@ -139,6 +169,7 @@ impl OpwMetricsConfiguration {
                 enabled_key: "vector.metrics.enabled",
                 url_key: "vector.metrics.url",
                 url: &self.vector_url,
+                use_v3_series: self.vector_use_v3_api_series,
             });
         }
 
@@ -156,9 +187,22 @@ impl OpwMetricsConfiguration {
 pub struct ForwarderConfiguration {
     /// Maximum number of concurrent requests for an individual endpoint.
     ///
-    /// Defaults to 1.
-    #[serde(default = "default_endpoint_concurrency", rename = "forwarder_num_workers")]
+    /// Defaults to 10. If set to 0, request concurrency is clamped to 1.
+    #[serde(
+        default = "default_endpoint_concurrency",
+        rename = "forwarder_max_concurrent_requests"
+    )]
     endpoint_concurrency: usize,
+
+    /// Multiplier for endpoint request concurrency.
+    ///
+    /// Defaults to 1. This value also sizes the HTTP idle connection pool. If set to 0, idle connection retention is
+    /// disabled and the concurrency multiplier is treated as 1. This setting does not create worker tasks.
+    #[serde(
+        default = "default_endpoint_concurrency_multiplier",
+        rename = "forwarder_num_workers"
+    )]
+    endpoint_concurrency_multiplier: usize,
 
     /// Request timeout, in seconds.
     ///
@@ -168,7 +212,7 @@ pub struct ForwarderConfiguration {
 
     /// Maximum number of pending requests for an individual endpoint.
     ///
-    /// Defaults to 16.
+    /// Defaults to 100.
     #[serde(default = "default_endpoint_buffer_size", rename = "forwarder_high_prio_buffer_size")]
     endpoint_buffer_size: usize,
 
@@ -203,6 +247,34 @@ pub struct ForwarderConfiguration {
     )]
     connection_reset_interval_secs: u64,
 
+    /// V3 API configuration for per-endpoint V3 support.
+    ///
+    /// This is read from the encoder configuration and used by the I/O layer to filter payloads
+    /// based on endpoint URL matching.
+    #[serde(rename = "serializer_experimental_use_v3_api", default)]
+    v3_api: V3ApiConfig,
+
+    /// Agent-compatible V3 API configuration for series metrics.
+    #[serde(flatten)]
+    use_v3_api_series: UseV3ApiSeriesConfig,
+
+    /// ADP safety gate for authoritative V3 series metrics.
+    ///
+    /// Defaults to `false`. This keeps ADP on V2 unless both Agent-compatible V3 config and this ADP-specific flag
+    /// enable V3.
+    #[serde(default, rename = "data_plane_metrics_v3_series_enabled")]
+    data_plane_metrics_v3_series_enabled: bool,
+
+    /// Payload compressor kind used by the metrics serializer.
+    ///
+    /// V3 metrics intake is incompatible with zlib/deflate, so the forwarder needs this setting to keep endpoint
+    /// filtering aligned with the encoder when zlib forces metrics back to V2.
+    #[serde(
+        rename = "serializer_compressor_kind",
+        default = "default_serializer_compressor_kind"
+    )]
+    serializer_compressor_kind: String,
+
     /// Whether to disable TLS certificate validation for Datadog intake forwarding.
     ///
     /// Defaults to `false`. If set to `true`, HTTPS clients built for the shared Datadog forwarder accept invalid
@@ -210,6 +282,19 @@ pub struct ForwarderConfiguration {
     /// invalid or self-signed certificates should enable this.
     #[serde(default)]
     skip_ssl_validation: bool,
+
+    /// File path to write TLS key material to for all HTTPS connections to the
+    /// Datadog backend.
+    ///
+    /// When non-empty, enables the logging of TLS key material to the given file path,
+    /// in the [NSS Key Log][nss_key_log] format, which can be used for debugging TLS
+    /// issues, as well as decrypting captured TLS traffic in tools such as Wireshark.
+    ///
+    /// Defaults to empty.
+    ///
+    /// [nss_key_log]: https://nss-crypto.org/reference/security/nss/legacy/key_log_format/index.html
+    #[serde(default)]
+    sslkeylogfile: String,
 
     /// Minimum TLS protocol version for Datadog intake forwarding.
     ///
@@ -229,6 +314,18 @@ pub struct ForwarderConfiguration {
     /// outbound intake request. The data plane does not perform local tag validation based on this setting.
     #[serde(default)]
     allow_arbitrary_tags: bool,
+
+    /// API key validation interval, in minutes.
+    ///
+    /// All values that are less than or equal to zero will be ignored, and the default
+    /// value will be used.
+    ///
+    /// Defaults to 60 minutes.
+    #[serde(
+        default = "default_api_key_validation_interval_config_mins",
+        rename = "forwarder_apikey_validation_interval"
+    )]
+    api_key_validation_interval_mins: i64,
 }
 
 impl ForwarderConfiguration {
@@ -236,6 +333,15 @@ impl ForwarderConfiguration {
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
         let mut forwarder_config = config.as_typed::<Self>()?;
         forwarder_config.parsed_min_tls_version = min_tls_version_from_config_value(&forwarder_config.min_tls_version);
+
+        if forwarder_config.api_key_validation_interval_mins <= 0 {
+            warn!(
+                config_key = "forwarder_apikey_validation_interval",
+                fallback_minutes = default_api_key_validation_interval_mins(),
+                "Configured API key validation interval is invalid; using default."
+            );
+            forwarder_config.api_key_validation_interval_mins = default_api_key_validation_interval_mins() as i64;
+        }
 
         // Handle fixing up the forwarder storage path if it's empty.
         forwarder_config.retry.fix_empty_storage_path(config);
@@ -245,7 +351,23 @@ impl ForwarderConfiguration {
 
     /// Returns the maximum number of concurrent requests for an individual endpoint.
     pub const fn endpoint_concurrency(&self) -> usize {
-        self.endpoint_concurrency
+        let endpoint_concurrency = if self.endpoint_concurrency == 0 {
+            1
+        } else {
+            self.endpoint_concurrency
+        };
+        let endpoint_concurrency_multiplier = if self.endpoint_concurrency_multiplier == 0 {
+            1
+        } else {
+            self.endpoint_concurrency_multiplier
+        };
+
+        endpoint_concurrency.saturating_mul(endpoint_concurrency_multiplier)
+    }
+
+    /// Returns the maximum number of idle HTTP connections per host.
+    pub const fn max_idle_connections_per_host(&self) -> usize {
+        self.endpoint_concurrency_multiplier
     }
 
     /// Returns the request timeout.
@@ -341,9 +463,47 @@ impl ForwarderConfiguration {
         Duration::from_secs(self.connection_reset_interval_secs)
     }
 
+    /// Returns a reference to the V3 API configuration.
+    pub fn v3_api(&self) -> &V3ApiConfig {
+        &self.v3_api
+    }
+
+    /// Returns the Agent-compatible V3 series configuration.
+    pub(crate) const fn use_v3_api_series(&self) -> &UseV3ApiSeriesConfig {
+        &self.use_v3_api_series
+    }
+
+    /// Returns true when the ADP V3 series safety gate is enabled.
+    pub(crate) const fn data_plane_metrics_v3_series_enabled(&self) -> bool {
+        self.data_plane_metrics_v3_series_enabled
+    }
+
+    /// Returns the OPW/Vector V3 series override for metrics-primary routing, if configured.
+    pub(crate) fn opw_metrics_v3_series_override(&self) -> Option<bool> {
+        self.opw_metrics
+            .selected_endpoint()
+            .map(|selected| selected.use_v3_series)
+    }
+
+    /// Returns the configured primary endpoint string without resolving or version-prefixing it.
+    pub(crate) fn primary_configured_endpoint(&self) -> String {
+        self.endpoint.configured_primary_endpoint()
+    }
+
+    /// Returns whether the configured metrics compressor is incompatible with Metrics V3.
+    pub(crate) fn compressor_disables_metrics_v3(&self) -> bool {
+        self.serializer_compressor_kind.trim().eq_ignore_ascii_case("zlib")
+    }
+
     /// Returns whether TLS certificate validation is disabled for Datadog intake forwarding.
     pub const fn skip_ssl_validation(&self) -> bool {
         self.skip_ssl_validation
+    }
+
+    /// Returns the TLS key log file path, if configured.
+    pub fn ssl_key_log_file_path(&self) -> Option<&str> {
+        let trimmed = self.sslkeylogfile.trim();
+        (!trimmed.is_empty()).then_some(trimmed)
     }
 
     /// Returns the minimum TLS protocol version for Datadog intake forwarding.
@@ -354,6 +514,17 @@ impl ForwarderConfiguration {
     /// Returns whether outbound intake requests should allow arbitrary tag values.
     pub const fn allow_arbitrary_tags(&self) -> bool {
         self.allow_arbitrary_tags
+    }
+
+    /// Overrides whether outbound requests should signal support for arbitrary tag values.
+    pub fn with_allow_arbitrary_tags(mut self, allow_arbitrary_tags: bool) -> Self {
+        self.allow_arbitrary_tags = allow_arbitrary_tags;
+        self
+    }
+
+    /// Returns the API key validation interval.
+    pub const fn api_key_validation_interval(&self) -> Duration {
+        Duration::from_mins(self.api_key_validation_interval_mins as u64)
     }
 }
 
@@ -376,6 +547,7 @@ mod tests {
     const VECTOR_URL: &str = "http://vector.example.com:8080";
     const VECTOR_URI: &str = "http://vector.example.com:8080/";
     const ADDITIONAL_URI: &str = "http://additional.example.com/";
+    const SSL_KEY_LOG_FILE_PATH: &str = "/tmp/saluki-sslkeylogfile";
 
     fn base_config() -> serde_json::Value {
         serde_json::json!({ "api_key": "test-api-key" })
@@ -517,6 +689,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn endpoint_concurrency_uses_configured_multiplier() {
+        let config = forwarder_config_from(
+            config_with(serde_json::json!({
+                "forwarder_max_concurrent_requests": 3usize,
+                "forwarder_num_workers": 4usize,
+            })),
+            None,
+        )
+        .await;
+
+        assert_eq!(config.endpoint_concurrency(), 12);
+    }
+
+    #[tokio::test]
+    async fn api_key_validation_interval_parsing() {
+        let cases = [
+            ("missing", serde_json::json!({}), Duration::from_mins(60)),
+            (
+                "positive",
+                serde_json::json!({ "forwarder_apikey_validation_interval": 5i64 }),
+                Duration::from_mins(5),
+            ),
+            (
+                "zero",
+                serde_json::json!({ "forwarder_apikey_validation_interval": 0i64 }),
+                Duration::from_mins(60),
+            ),
+            (
+                "negative",
+                serde_json::json!({ "forwarder_apikey_validation_interval": -1i64 }),
+                Duration::from_mins(60),
+            ),
+        ];
+
+        for (case_name, extra_config, expected_interval) in cases {
+            let config = forwarder_config_from(config_with(extra_config), None).await;
+            assert_eq!(config.api_key_validation_interval(), expected_interval, "{case_name}");
+        }
+    }
+    #[tokio::test]
     async fn skip_ssl_validation_defaults_to_false() {
         let config = forwarder_config_from(base_config(), None).await;
 
@@ -563,6 +775,27 @@ mod tests {
         let config = forwarder_config_from(base_config(), Some(&env_vars)).await;
 
         assert!(config.skip_ssl_validation());
+    }
+
+    #[tokio::test]
+    async fn sslkeylogfile_set_via_yaml() {
+        let config = forwarder_config_from(
+            config_with(serde_json::json!({ "sslkeylogfile": SSL_KEY_LOG_FILE_PATH })),
+            None,
+        )
+        .await;
+
+        assert_eq!(config.ssl_key_log_file_path(), Some(SSL_KEY_LOG_FILE_PATH));
+    }
+
+    #[tokio::test]
+    async fn sslkeylogfile_set_via_env_var() {
+        // SSLKEYLOGFILE simulates DD_SSLKEYLOGFILE: the test helper sets TEST_SSLKEYLOGFILE, which
+        // from_environment("TEST") reads as sslkeylogfile.
+        let env_vars = vec![("SSLKEYLOGFILE".to_string(), SSL_KEY_LOG_FILE_PATH.to_string())];
+        let config = forwarder_config_from(base_config(), Some(&env_vars)).await;
+
+        assert_eq!(config.ssl_key_log_file_path(), Some(SSL_KEY_LOG_FILE_PATH));
     }
 
     #[tokio::test]
@@ -725,6 +958,84 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn use_v3_api_series_config_loads_agent_nested_yaml_shape() {
+        let config = forwarder_config_from(
+            config_with(serde_json::json!({
+                "use_v3_api": {
+                    "series": {
+                        "enabled": "datadog_only",
+                        "endpoints": {
+                            "http://datadog.example.com": false
+                        }
+                    }
+                },
+                "data_plane": {
+                    "metrics": {
+                        "v3": {
+                            "series": {
+                                "enabled": true
+                            }
+                        }
+                    }
+                }
+            })),
+            None,
+        )
+        .await;
+
+        assert!(config.data_plane_metrics_v3_series_enabled());
+        assert_eq!(config.use_v3_api_series().enabled, "datadog_only");
+        assert_eq!(
+            config.use_v3_api_series().endpoints.get(DATADOG_URL),
+            Some(&"false".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn serializer_compressor_kind_zlib_disables_metrics_v3() {
+        let config = forwarder_config_from(
+            config_with(serde_json::json!({
+                "serializer_compressor_kind": "zlib",
+            })),
+            None,
+        )
+        .await;
+
+        assert!(config.compressor_disables_metrics_v3());
+
+        let config = forwarder_config_from(
+            config_with(serde_json::json!({
+                "serializer_compressor_kind": "zstd",
+            })),
+            None,
+        )
+        .await;
+
+        assert!(!config.compressor_disables_metrics_v3());
+    }
+
+    #[tokio::test]
+    async fn opw_metrics_v3_series_override_loads_agent_nested_yaml_shape() {
+        let config = forwarder_config_from(
+            config_with(serde_json::json!({
+                "observability_pipelines_worker": {
+                    "metrics": {
+                        "enabled": true,
+                        "url": OPW_URL,
+                        "use_v3_api": {
+                            "series": true
+                        }
+                    }
+                }
+            })),
+            None,
+        )
+        .await;
+
+        assert_eq!(config.opw_metrics_v3_series_override(), Some(true));
+    }
+
+    #[tokio::test]
     async fn opw_metrics_endpoint_does_not_fallback_to_vector_when_opw_url_empty() {
         let config = forwarder_config_from(
             config_with(serde_json::json!({
@@ -862,11 +1173,12 @@ mod tests {
 
 #[cfg(test)]
 mod config_smoke {
+    use datadog_agent_config_testing::config_registry::structs;
+    use datadog_agent_config_testing::run_config_smoke_tests;
     use serde_json::json;
 
     use super::ForwarderConfiguration;
-    use crate::config_registry::structs;
-    use crate::config_registry::test_support::run_config_smoke_tests;
+    use crate::config::{DatadogRemapper, KEY_ALIASES};
 
     #[tokio::test]
     async fn smoke_test() {
@@ -875,9 +1187,16 @@ mod config_smoke {
         // config load in the smoke test has a valid starting point.
         run_config_smoke_tests(
             structs::FORWARDER_CONFIGURATION,
-            &[],
+            &[
+                "serializer_experimental_use_v3_api.sketches.beta_route",
+                "serializer_experimental_use_v3_api.sketches.shadow_sample_rate",
+                "serializer_experimental_use_v3_api.sketches.shadow_sites",
+                "serializer_experimental_use_v3_api.sketches.use_beta",
+            ],
             json!({ "api_key": "smoke-test-api-key" }),
             |cfg| ForwarderConfiguration::from_configuration(&cfg).expect("ForwarderConfiguration should deserialize"),
+            KEY_ALIASES,
+            DatadogRemapper::new,
         )
         .await
     }

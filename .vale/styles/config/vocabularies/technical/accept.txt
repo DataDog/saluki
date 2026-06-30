@@ -4,6 +4,8 @@ codec
 protobuf
 tokio
 grpc
+vsock
+nameservers
 fsync
 healthcheck
 chmod
@@ -91,7 +93,7 @@ deduplicates
 inlining
 cloneable
 callsite
-enqueue(s?)
+enqueue(s|d|ing)?
 hostname
 backpressure
 misconfiguration
@@ -111,6 +113,7 @@ runtime(s?)
 workloadmeta
 namespaces
 dispatchable
+emittable
 poolable
 goroutine(s?)
 quantile(s?)
@@ -188,6 +191,7 @@ swappable
 syslog
 teardown
 tracestate
+typestate
 uid(s?)
 unary
 unescape
@@ -228,3 +232,15 @@ libtest
 mpmc
 dhat
 profiler
+launchd
+Wireshark
+testsupport
+callee
+Bazel
+trivy
+Erlang
+OTP
+respawn(s|ed|ing)?
+validator
+varint
+serializer

@@ -20,6 +20,7 @@ COMPONENT_TYPES=(decoders destinations encoders forwarders relays sources transf
 
 # Fixed scopes that aren't derived from the codebase.
 FIXED_SCOPES=(
+    antithesis
     ci
     correctness
     deps

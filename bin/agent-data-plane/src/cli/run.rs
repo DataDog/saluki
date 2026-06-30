@@ -6,15 +6,17 @@ use std::{
 
 use argh::FromArgs;
 use datadog_agent_commons::platform::PlatformSettings;
+use datadog_agent_config::classifier::{ConfigClassifier, Pipeline, PipelineAffinity, Severity, SupportLevel};
 use resource_accounting::{ComponentBounds, ComponentRegistry};
 use saluki_app::{
     accounting::{initialize_memory_bounds, MemoryBoundsConfiguration},
     bootstrap::BootstrapGuard,
     metrics::emit_startup_metrics,
 };
-use saluki_components::config_registry::{ConfigClassifier, Pipeline, PipelineAffinity, Severity, SupportLevel};
 use saluki_components::{
-    config::{DatadogRemapper, KEY_ALIASES},
+    config::{
+        AutoscalingFailoverConfiguration, ClusterAgentConfiguration, DatadogRemapper, MrfConfiguration, KEY_ALIASES,
+    },
     decoders::otlp::OtlpDecoderConfiguration,
     destinations::{DogStatsDDebugLogConfiguration, DogStatsDStatisticsConfiguration},
     encoders::{
@@ -22,24 +24,21 @@ use saluki_components::{
         DatadogLogsConfiguration, DatadogMetricsConfiguration, DatadogServiceChecksConfiguration,
         DatadogTraceConfiguration,
     },
-    forwarders::{DatadogConfiguration, OtlpForwarderConfiguration},
+    forwarders::{ClusterAgentForwarderConfiguration, DatadogForwarderConfiguration, OtlpForwarderConfiguration},
     relays::otlp::OtlpRelayConfiguration,
-    sources::{
-        ChecksIPCConfiguration, DogStatsDCaptureAPIHandler, DogStatsDConfiguration, DogStatsDReplayAPIHandler,
-        OtlpConfiguration,
-    },
+    sources::{ChecksIPCConfiguration, DogStatsDConfiguration, OtlpConfiguration},
     transforms::{
-        AggregateConfiguration, ApmStatsTransformConfiguration, ChainedConfiguration, DogStatsDMapperConfiguration,
-        HostEnrichmentConfiguration, TraceObfuscationConfiguration, TraceSamplerConfiguration,
+        AggregateConfiguration, ApmStatsTransformConfiguration, AutoscalingFailoverGatewayConfiguration,
+        ChainedConfiguration, DogStatsDMapperConfiguration, HostEnrichmentConfiguration,
+        MrfMetricsGatewayConfiguration, TraceObfuscationConfiguration, TraceSamplerConfiguration,
     },
 };
 use saluki_config::{ConfigurationLoader, GenericConfiguration};
 use saluki_core::health::HealthRegistry;
-use saluki_core::runtime::{Supervisor, SupervisorError};
+use saluki_core::runtime::{RestartMode, RestartStrategy, Supervisor};
 use saluki_core::topology::TopologyBlueprint;
 use saluki_env::EnvironmentProvider as _;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
-use tokio::{select, sync::oneshot};
 use tracing::{debug, error, info, trace, warn};
 
 use crate::{
@@ -52,7 +51,7 @@ use crate::{
     },
     internal::{
         create_internal_supervisor, logging::LoggingConfigurationTranslator, remote_agent::RemoteAgentBootstrap,
-        DogStatsDControlPlaneConfiguration,
+        DogStatsDControlSurface, TopologyControlSurfaces,
     },
 };
 use crate::{config::DataPlaneConfiguration, internal::env::ADPEnvironmentProvider};
@@ -161,27 +160,12 @@ pub async fn handle_run_command(
     // Set up all of the building blocks for building our topologies and launching internal processes.
     let component_registry = ComponentRegistry::default();
     let health_registry = HealthRegistry::new();
-    let (env_provider, env_supervisor) =
+    let (env_provider, maybe_env_supervisor) =
         ADPEnvironmentProvider::from_configuration(&config, &dp_config, &component_registry, &health_registry).await?;
 
-    let dsd_stats_config = DogStatsDStatisticsConfiguration::new();
-
     // Create the blueprint for our primary topology.
-    let (blueprint, control_surfaces) = create_topology(
-        &config,
-        &dp_config,
-        &env_provider,
-        &component_registry,
-        dsd_stats_config.clone(),
-    )
-    .await?;
-    let (dsd_capture_api_handler, dsd_replay_api_handler) = match control_surfaces.dogstatsd {
-        Some(DogStatsDControlSurface {
-            capture_api_handler,
-            replay_api_handler,
-        }) => (Some(capture_api_handler), Some(replay_api_handler)),
-        None => (None, None),
-    };
+    let (mut blueprint, control_surfaces) =
+        create_topology(&config, &dp_config, &env_provider, &component_registry).await?;
 
     // Create the internal supervisor which drives our control plane and internal observability.
     let mut internal_supervisor = create_internal_supervisor(
@@ -189,19 +173,12 @@ pub async fn handle_run_command(
         &dp_config,
         &component_registry,
         health_registry.clone(),
-        DogStatsDControlPlaneConfiguration::new(dsd_stats_config, dsd_capture_api_handler, dsd_replay_api_handler),
+        control_surfaces,
         ra_bootstrap,
         bootstrap_guard.logging().controller(),
     )
     .await
     .error_context("Failed to create internal supervisor.")?;
-
-    // Assemble our supervision tree.
-    internal_supervisor.add_worker(bootstrap_supervisor);
-
-    if let Some(env_supervisor) = env_supervisor {
-        internal_supervisor.add_worker(env_supervisor);
-    }
 
     // Run memory bounds validation to ensure that we can launch the topology with our configured memory limit, if any.
     let bounds_config = MemoryBoundsConfiguration::try_from_config(&config)?;
@@ -217,104 +194,59 @@ pub async fn handle_run_command(
         }
     }
 
-    // Spawn the internal supervisor and wait for it to become ready before spawning the topology.
-    let (internal_supervisor_shutdown_tx, internal_supervisor_shutdown_rx) = oneshot::channel();
-    let internal_supervisor_handle = tokio::spawn(async move {
-        internal_supervisor
-            .run_with_shutdown(internal_supervisor_shutdown_rx)
-            .await
-    });
-    tokio::pin!(internal_supervisor_handle);
-
-    info!("Waiting for internal supervisor to become healthy...");
-    select! {
-        _ = health_registry.all_ready() => {
-            info!(sup_ready_ms = started.elapsed().as_millis(), "Internal supervisor healthy.");
-        },
-        early_result = &mut internal_supervisor_handle => {
-            return Err(generic_error!("Internal supervisor completed unexpectedly: {:?}", early_result))
-        }
-    }
-
-    // Now that all of our dependencies are ready, we can build and spawn the topology.
-    let built_topology = blueprint.build().await?;
-    let mut running_topology = built_topology.spawn(&health_registry, memory_limiter).await?;
-
-    info!("Waiting for topology to become healthy...");
-    tokio::spawn(async move {
-        health_registry.all_ready().await;
-        info!(
-            topology_ready_ms = started.elapsed().as_millis(),
-            "Topology healthy. Waiting for interrupt..."
-        );
-
-        // Emit our startup metrics now that everything is running.
-        emit_startup_metrics();
-    });
-
-    let mut topology_failed = false;
-    let mut internal_supervisor_failed = false;
-    select! {
-        result = &mut internal_supervisor_handle => match result {
-            Ok(Err(e)) => match e {
-                SupervisorError::FailedToInitialize { child_name, source } => {
-                    error!(child_name, "Internal supervisor failed to initialize: {}. Shutting down...", source);
-                    internal_supervisor_failed = true;
-                },
-
-                // If we haven't hit an initialization error -- which implies an error we can't really recover from --
-                // then just log for now, until we fully migrate everything over to the supervisor-based approach and
-                // can dial in our supervisor configuration.
-                //
-                // For right now, this matches the previous behavior where the process would exit if we couldn't
-                // configure/spawn the control plane or internal observability pipeline, but the process is unaffected
-                // if either of those components fail at _runtime_.
-                e => warn!("Internal supervisor exited: {}", e),
-            },
-            Ok(Ok(())) => {
-                warn!("Internal supervisor exited unexpectedly.");
-            },
-            Err(join_err) => {
-                error!(error = %join_err, "Internal supervisor task panicked or was cancelled. Shutting down...");
-                internal_supervisor_failed = true;
-            },
-        },
-        _ = running_topology.wait_for_unexpected_finish() => {
-            error!("Topology component unexpectedly finished. Shutting down...");
-            topology_failed = true;
-        },
-        _ = tokio::signal::ctrl_c() => {
-            info!("Received SIGINT, shutting down...");
-        }
-    }
-
-    // Trigger shutdown on the primary topology and wait up to 30 seconds for it to complete.
-    let topology_result = running_topology.shutdown_with_timeout(Duration::from_secs(30)).await;
-
-    // Trigger the internal supervisor to shutdown and wait for it to complete.
-    let _ = internal_supervisor_shutdown_tx.send(());
-    let _ = internal_supervisor_handle.await;
-
-    // Figure out the final "result" of this run: did something fail? did we stop cleanly?
+    // Assemble the full supervision tree and run it.
     //
-    // We prefer to return errors from the topology failing over the internal supervisor failing, since that matters
-    // more in terms of understanding the state of the process when it exited.
-    match topology_result {
-        Ok(()) => {
-            if topology_failed {
-                warn!("Topology shutdown complete despite error(s).");
-            } else {
-                info!("Topology shutdown successfully.");
-            }
+    // We run our internal supervisor (control plane, environment provider, etc) and our topology supervisor
+    // side-by-side, which means everyone has access to the same dataspace. This is crucial for allowing processes
+    // in the topology supervisor to (eventually) interact with components in the control plane, and vise versa.
+    blueprint
+        .with_health_registry(health_registry.clone())
+        .with_memory_limiter(memory_limiter)
+        .with_environment_readiness(env_provider.wait_for_ready());
 
-            if internal_supervisor_failed {
-                Err(generic_error!("Internal supervisor failed to initialize."))
-            } else {
-                Ok(())
-            }
-        }
-        Err(e) => Err(e),
+    // Acquire a readiness handle before handing the blueprint off to the supervisor. This waits until the topology has
+    // registered its components in the health registry and they've all reported ready, rather than racing the supervisor
+    // and potentially observing an empty/already-ready registry before the topology's components even exist.
+    let topology_ready = blueprint.topology_ready();
+
+    let root_restart_strategy = RestartStrategy::new(RestartMode::OneForOne, 0, Duration::from_secs(5));
+    let mut root_supervisor = Supervisor::new("adp-root")?.with_restart_strategy(root_restart_strategy);
+
+    root_supervisor.add_worker(bootstrap_supervisor);
+    if let Some(env_supervisor) = maybe_env_supervisor {
+        internal_supervisor.add_worker(env_supervisor);
     }
+    root_supervisor.add_worker(internal_supervisor);
+    root_supervisor.add_worker(blueprint);
+
+    // Once the topology is healthy, log readiness and emit our startup metrics.
+    tokio::spawn(async move {
+        // If the topology is torn down before it ever becomes ready (for example, shutdown during startup), `wait`
+        // returns `false` and we skip reporting readiness.
+        if topology_ready.wait().await {
+            info!(
+                topology_ready_ms = started.elapsed().as_millis(),
+                "Topology healthy. Waiting for interrupt..."
+            );
+
+            emit_startup_metrics();
+        }
+    });
+
+    info!("Agent Data Plane running.");
+    match root_supervisor.run_with_shutdown(wait_for_sigint()).await {
+        Ok(()) => {
+            info!("Agent Data Plane shut down successfully.");
+            Ok(())
+        }
+        Err(e) => Err(e.into()),
+    }
+}
+
+async fn wait_for_sigint() {
+    let _ = tokio::signal::ctrl_c().await;
+
+    info!("Received SIGINT, shutting down...");
 }
 
 /// Returns the set of [`Pipeline`] variants that are active based on our configuration.
@@ -380,9 +312,6 @@ fn check_and_warn_config(
         }
 
         match classification.support_level {
-            SupportLevel::Full => {
-                trace!(key = %key, "Fully supported key with non-default value detected. Proceeding.")
-            }
             SupportLevel::Incompatible(Severity::Low) => debug!("Low-severity incompatible key detected. Proceeding."),
             SupportLevel::Partial => {
                 warn!(key = %key, "Partially supported configuration key. See documentation for details. Proceeding.")
@@ -428,21 +357,13 @@ fn is_a_pipeline_affected(active_pipelines: &HashSet<Pipeline>, pipeline_affinit
     }
 }
 
-#[derive(Default)]
-struct TopologyControlSurfaces {
-    dogstatsd: Option<DogStatsDControlSurface>,
-}
-
-struct DogStatsDControlSurface {
-    capture_api_handler: DogStatsDCaptureAPIHandler,
-    replay_api_handler: DogStatsDReplayAPIHandler,
-}
-
 async fn create_topology(
     config: &GenericConfiguration, dp_config: &DataPlaneConfiguration, env_provider: &ADPEnvironmentProvider,
-    component_registry: &ComponentRegistry, dsd_stats_config: DogStatsDStatisticsConfiguration,
+    component_registry: &ComponentRegistry,
 ) -> Result<(TopologyBlueprint, TopologyControlSurfaces), GenericError> {
     let mut blueprint = TopologyBlueprint::new("primary", component_registry);
+    blueprint.with_shutdown_timeout(dp_config.stop_timeout());
+
     let mut control_surfaces = TopologyControlSurfaces::default();
 
     // If no data pipelines are enabled, then there's nothing for us to do.
@@ -465,8 +386,8 @@ async fn create_topology(
         || dp_config.service_checks_pipeline_required()
         || dp_config.traces_pipeline_required()
     {
-        let dd_forwarder_config =
-            DatadogConfiguration::from_configuration(config).error_context("Failed to configure Datadog forwarder.")?;
+        let dd_forwarder_config = DatadogForwarderConfiguration::from_configuration(config)
+            .error_context("Failed to configure Datadog forwarder.")?;
         blueprint.add_forwarder("dd_out", dd_forwarder_config)?;
     }
 
@@ -496,8 +417,8 @@ async fn create_topology(
     }
 
     if dp_config.dogstatsd().enabled() {
-        control_surfaces.dogstatsd =
-            Some(add_dsd_pipeline_to_blueprint(&mut blueprint, config, env_provider, dsd_stats_config).await?);
+        let dsd_control_surface = add_dsd_pipeline_to_blueprint(&mut blueprint, config, env_provider).await?;
+        control_surfaces.attach_dogstatsd(dsd_control_surface);
     }
 
     if dp_config.otlp().enabled() {
@@ -514,10 +435,10 @@ async fn add_checks_pipeline_to_blueprint(
 
     blueprint
         .add_source("checks_ipc_in", checks_config)?
-        .connect_component("metrics_enrich", ["checks_ipc_in.metrics"])?
-        .connect_component("dd_logs_encode", ["checks_ipc_in.logs"])?
-        .connect_component("dd_events_encode", ["checks_ipc_in.events"])?
-        .connect_component("dd_service_checks_encode", ["checks_ipc_in.service_checks"])?;
+        .connect_components("checks_ipc_in.metrics", "metrics_enrich")?
+        .connect_components("checks_ipc_in.logs", "dd_logs_encode")?
+        .connect_components("checks_ipc_in.events", "dd_events_encode")?
+        .connect_components("checks_ipc_in.service_checks", "dd_service_checks_encode")?;
 
     Ok(())
 }
@@ -532,8 +453,10 @@ async fn add_baseline_metrics_pipeline_to_blueprint(
         ChainedConfiguration::default().with_transform_builder("host_enrichment", host_enrichment_config);
 
     if !dp_config.standalone_mode() {
-        let host_tags_config = HostTagsConfiguration::from_configuration(config).await?;
-        metrics_enrich_config = metrics_enrich_config.with_transform_builder("host_tags", host_tags_config);
+        let host_tags_config = HostTagsConfiguration::from_configuration(config)?;
+        if host_tags_config.enabled() {
+            metrics_enrich_config = metrics_enrich_config.with_transform_builder("host_tags", host_tags_config);
+        }
     }
 
     let dd_metrics_config = DatadogMetricsConfiguration::from_configuration(config)
@@ -543,10 +466,104 @@ async fn add_baseline_metrics_pipeline_to_blueprint(
         // Components.
         .add_transform("metrics_enrich", metrics_enrich_config)?
         .add_encoder("dd_metrics_encode", dd_metrics_config)?
-        // Metrics.
-        .connect_component("dd_metrics_encode", ["metrics_enrich"])?
-        // Forwarding.
-        .connect_component("dd_out", ["dd_metrics_encode"])?;
+        // Metrics, then forwarding.
+        .connect_components_in_order(["metrics_enrich", "dd_metrics_encode", "dd_out"])?;
+
+    add_mrf_metrics_pipeline_to_blueprint(blueprint, config)?;
+    add_autoscaling_failover_metrics_pipeline_to_blueprint(blueprint, config)?;
+
+    Ok(())
+}
+
+fn add_mrf_metrics_pipeline_to_blueprint(
+    blueprint: &mut TopologyBlueprint, config: &GenericConfiguration,
+) -> Result<(), GenericError> {
+    let mrf_config = MrfConfiguration::from_configuration(config)
+        .error_context("Failed to configure Multi-Region Failover metrics pipeline.")?;
+
+    let Some((mrf_dd_url, mrf_api_key)) = mrf_config.metrics_endpoint_override() else {
+        if mrf_config.is_enabled() {
+            warn!(
+                "Multi-Region Failover is enabled, but multi_region_failover.api_key and one of \
+                 multi_region_failover.dd_url or multi_region_failover.site are required for metrics forwarding. The \
+                 MRF metrics branch will not be wired, and primary forwarding will continue. Restart ADP after \
+                 configuring the static MRF endpoint settings."
+            );
+        }
+
+        return Ok(());
+    };
+
+    let mrf_gateway_config = MrfMetricsGatewayConfiguration::new(mrf_config.clone(), config.clone());
+    let mrf_metrics_config = DatadogMetricsConfiguration::from_configuration(config)
+        .error_context("Failed to configure Multi-Region Failover Datadog Metrics encoder.")?;
+
+    let mrf_forwarder_config = DatadogForwarderConfiguration::from_configuration(config)
+        .map(|config| {
+            config.with_endpoint_override_and_api_key_refresh_config_path(
+                mrf_dd_url,
+                mrf_api_key,
+                "multi_region_failover.api_key",
+            )
+        })
+        .error_context("Failed to configure Multi-Region Failover Datadog forwarder.")?;
+
+    blueprint
+        .add_transform("mrf_metrics_gateway", mrf_gateway_config)?
+        .add_encoder("mrf_metrics_encode", mrf_metrics_config)?
+        .add_forwarder("mrf_dd_out", mrf_forwarder_config)?
+        .connect_components_in_order([
+            "metrics_enrich",
+            "mrf_metrics_gateway",
+            "mrf_metrics_encode",
+            "mrf_dd_out",
+        ])?;
+
+    Ok(())
+}
+
+fn add_autoscaling_failover_metrics_pipeline_to_blueprint(
+    blueprint: &mut TopologyBlueprint, config: &GenericConfiguration,
+) -> Result<(), GenericError> {
+    let af_config = AutoscalingFailoverConfiguration::from_configuration(config)
+        .error_context("Failed to configure autoscaling failover metrics pipeline.")?;
+    let ca_config = ClusterAgentConfiguration::from_configuration(config)
+        .error_context("Failed to configure Cluster Agent metrics forwarding.")?;
+
+    let Some((ca_url, ca_token)) = ca_config.endpoint_and_token() else {
+        if af_config.is_branch_requested() {
+            warn!(
+                "autoscaling.failover is enabled, but cluster_agent.enabled, cluster_agent.auth_token, and a resolvable \
+                 Cluster Agent endpoint are required. Set cluster_agent.url or provide Kubernetes service env vars for \
+                 cluster_agent.kubernetes_service_name. The autoscaling failover metrics branch will not be wired, and \
+                 primary forwarding will continue."
+            );
+        }
+
+        return Ok(());
+    };
+
+    if !af_config.is_branch_requested() {
+        return Ok(());
+    }
+
+    let af_gateway_config = AutoscalingFailoverGatewayConfiguration::new(af_config);
+    let af_metrics_config = DatadogMetricsConfiguration::from_configuration(config)
+        .error_context("Failed to configure autoscaling failover metrics encoder.")?;
+    let cluster_agent_forwarder_config =
+        ClusterAgentForwarderConfiguration::from_configuration(config, ca_url, ca_token)
+            .error_context("Failed to configure Cluster Agent forwarder.")?;
+
+    blueprint
+        .add_transform("af_metrics_gateway", af_gateway_config)?
+        .add_encoder("af_metrics_encode", af_metrics_config)?
+        .add_forwarder("cluster_agent_out", cluster_agent_forwarder_config)?
+        .connect_components_in_order([
+            "metrics_enrich",
+            "af_metrics_gateway",
+            "af_metrics_encode",
+            "cluster_agent_out",
+        ])?;
 
     Ok(())
 }
@@ -563,7 +580,7 @@ async fn add_baseline_logs_pipeline_to_blueprint(
         // Components.
         .add_encoder("dd_logs_encode", dd_logs_config)?
         // Logs.
-        .connect_component("dd_out", ["dd_logs_encode"])?;
+        .connect_components("dd_logs_encode", "dd_out")?;
 
     Ok(())
 }
@@ -577,7 +594,7 @@ async fn add_baseline_events_pipeline_to_blueprint(
 
     blueprint
         .add_encoder("dd_events_encode", dd_events_config)?
-        .connect_component("dd_out", ["dd_events_encode"])?;
+        .connect_components("dd_events_encode", "dd_out")?;
 
     Ok(())
 }
@@ -591,7 +608,7 @@ async fn add_baseline_service_checks_pipeline_to_blueprint(
 
     blueprint
         .add_encoder("dd_service_checks_encode", dd_service_checks_config)?
-        .connect_component("dd_out", ["dd_service_checks_encode"])?;
+        .connect_components("dd_service_checks_encode", "dd_out")?;
 
     Ok(())
 }
@@ -630,17 +647,15 @@ async fn add_baseline_traces_pipeline_to_blueprint(
         .add_transform("dd_apm_stats", apm_stats_transform_config)?
         .add_encoder("dd_stats_encode", dd_apm_stats_encoder)?
         .add_encoder("dd_traces_encode", dd_traces_config)?
-        .connect_component("dd_apm_stats", ["traces_enrich"])?
-        .connect_component("dd_traces_encode", ["traces_enrich"])?
-        .connect_component("dd_stats_encode", ["dd_apm_stats"])?
-        .connect_component("dd_out", ["dd_traces_encode", "dd_stats_encode"])?;
+        .connect_components("traces_enrich", ["dd_apm_stats", "dd_traces_encode"])?
+        .connect_components("dd_apm_stats", "dd_stats_encode")?
+        .connect_components(["dd_traces_encode", "dd_stats_encode"], "dd_out")?;
 
     Ok(())
 }
 
 async fn add_dsd_pipeline_to_blueprint(
     blueprint: &mut TopologyBlueprint, config: &GenericConfiguration, env_provider: &ADPEnvironmentProvider,
-    dsd_stats_config: DogStatsDStatisticsConfiguration,
 ) -> Result<DogStatsDControlSurface, GenericError> {
     // We're creating the "front half" of the DogStatsD pipeline, which deals solely with accepting DogStatsD payloads,
     // and enriching/processing them in DSD-specific ways, relevant to how the Datadog Agent is expected to behave.
@@ -681,8 +696,6 @@ async fn add_dsd_pipeline_to_blueprint(
         .error_context("Failed to configure DogStatsD source.")?
         .with_workload_provider(env_provider.workload().clone())
         .with_capture_entity_resolver(env_provider.workload().clone());
-    let dsd_capture_api_handler = dsd_config.capture_api_handler();
-    let dsd_replay_api_handler = dsd_config.replay_api_handler();
     let dsd_prefix_filter_configuration = DogStatsDPrefixFilterConfiguration::from_configuration(config)?;
     let dsd_mapper_config = DogStatsDMapperConfiguration::from_configuration(config)?;
     let dsd_enrich_config =
@@ -706,6 +719,11 @@ async fn add_dsd_pipeline_to_blueprint(
         PlatformSettings::get_default_dogstatsd_log_file_path(),
     )
     .error_context("Failed to configure DogStatsD debug log destination.")?;
+    let dsd_stats_config = DogStatsDStatisticsConfiguration::new();
+
+    let stats_api_handler = dsd_stats_config.api_handler();
+    let capture_api_handler = dsd_config.capture_api_handler();
+    let replay_api_handler = dsd_config.replay_api_handler();
 
     blueprint
         // Components.
@@ -719,29 +737,36 @@ async fn add_dsd_pipeline_to_blueprint(
         .add_transform("service_checks_enrich", service_checks_enrich_config)?
         .add_destination("dsd_stats_out", dsd_stats_config)?
         // Metrics.
-        .connect_component("dsd_enrich", ["dsd_in.metrics"])?
-        .connect_component("dsd_prefix_filter", ["dsd_enrich"])?
-        .connect_component("dsd_tag_filterlist", ["dsd_prefix_filter"])?
-        .connect_component("dsd_agg", ["dsd_tag_filterlist"])?
-        .connect_component("dsd_post_agg_filter", ["dsd_agg"])?
-        .connect_component("metrics_enrich", ["dsd_post_agg_filter"])?
+        .connect_components_in_order([
+            "dsd_in.metrics",
+            "dsd_enrich",
+            "dsd_prefix_filter",
+            "dsd_tag_filterlist",
+            "dsd_agg",
+            "dsd_post_agg_filter",
+            "metrics_enrich",
+        ])?
         // Events.
-        .connect_component("events_enrich", ["dsd_in.events"])?
-        .connect_component("dd_events_encode", ["events_enrich"])?
-        .connect_component("service_checks_enrich", ["dsd_in.service_checks"])?
-        .connect_component("dd_service_checks_encode", ["service_checks_enrich"])?
+        .connect_components_in_order(["dsd_in.events", "events_enrich", "dd_events_encode"])?
+        // Service checks.
+        .connect_components_in_order([
+            "dsd_in.service_checks",
+            "service_checks_enrich",
+            "dd_service_checks_encode",
+        ])?
         // DogStatsD Stats.
-        .connect_component("dsd_stats_out", ["dsd_in.metrics"])?;
+        .connect_components("dsd_in.metrics", "dsd_stats_out")?;
 
     if dsd_debug_log_config.enabled() {
         blueprint
             // DogStatsD debug log.
             .add_destination("dsd_debug_log_out", dsd_debug_log_config)?
-            .connect_component("dsd_debug_log_out", ["dsd_in.metrics"])?;
+            .connect_components("dsd_in.metrics", "dsd_debug_log_out")?;
     }
     Ok(DogStatsDControlSurface {
-        capture_api_handler: dsd_capture_api_handler,
-        replay_api_handler: dsd_replay_api_handler,
+        stats_api_handler,
+        capture_api_handler,
+        replay_api_handler,
     })
 }
 
@@ -774,16 +799,15 @@ fn add_otlp_pipeline_to_blueprint(
             .add_relay("otlp_relay_in", otlp_relay_config)?
             .add_forwarder("local_agent_otlp_out", local_agent_otlp_forwarder_config)?
             // Metrics and logs directly to the forwarders.
-            .connect_component("local_agent_otlp_out", ["otlp_relay_in.metrics", "otlp_relay_in.logs"])?;
+            .connect_components(["otlp_relay_in.metrics", "otlp_relay_in.logs"], "local_agent_otlp_out")?;
 
         if dp_config.otlp().proxy().proxy_traces() {
-            blueprint.connect_component("local_agent_otlp_out", ["otlp_relay_in.traces"])?;
+            blueprint.connect_components("otlp_relay_in.traces", "local_agent_otlp_out")?;
         } else {
             blueprint
                 .add_decoder("otlp_traces_decode", otlp_decoder_config)?
                 // Traces to decoder, then to the trace pipeline: obfuscation, enrichment, encoding, stats, forwarding.
-                .connect_component("otlp_traces_decode", ["otlp_relay_in.traces"])?
-                .connect_component("traces_enrich", ["otlp_traces_decode"])?;
+                .connect_components_in_order(["otlp_relay_in.traces", "otlp_traces_decode", "traces_enrich"])?;
         }
     } else {
         info!("OTLP proxy mode disabled. OTLP signals will be handled natively.");
@@ -798,9 +822,9 @@ fn add_otlp_pipeline_to_blueprint(
             //
             // We send OTLP metrics directly to the enrichment stage of the metrics pipeline, skipping aggregation,
             // to avoid transforming counters into rates.
-            .connect_component("metrics_enrich", ["otlp_in.metrics"])?
-            .connect_component("dd_logs_encode", ["otlp_in.logs"])?
-            .connect_component("traces_enrich", ["otlp_in.traces"])?;
+            .connect_components("otlp_in.metrics", "metrics_enrich")?
+            .connect_components("otlp_in.logs", "dd_logs_encode")?
+            .connect_components("otlp_in.traces", "traces_enrich")?;
     }
     Ok(())
 }

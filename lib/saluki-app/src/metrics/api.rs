@@ -8,14 +8,15 @@ use saluki_api::{
     routing::{post, Router},
     APIHandler, DynamicRoute, EndpointType, StatusCode,
 };
+use saluki_common::sync::shutdown::ShutdownHandle;
 use saluki_core::{
     observability::metrics::FilterHandle,
-    runtime::{state::DataspaceRegistry, InitializationError, ProcessShutdown, Supervisable, SupervisorFuture},
+    runtime::{state::DataspaceRegistry, InitializationError, Supervisable, SupervisorFuture},
 };
 use saluki_error::generic_error;
 use serde::Deserialize;
 use tokio::{
-    select,
+    pin, select,
     sync::{mpsc, Mutex},
     time::sleep,
 };
@@ -139,7 +140,7 @@ impl Supervisable for MetricsOverrideWorker {
         "dynamic-metrics-override-processor"
     }
 
-    async fn initialize(&self, process_shutdown: ProcessShutdown) -> Result<SupervisorFuture, InitializationError> {
+    async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
         let mut state = self.state.clone().lock_owned().await;
         let metrics_route = DynamicRoute::http(EndpointType::Privileged, &self.handler);
 
@@ -149,23 +150,21 @@ impl Supervisable for MetricsOverrideWorker {
                 .assert(metrics_route, "metrics-api");
 
             process_override_requests(&mut state, process_shutdown).await;
+
             Ok(())
         }))
     }
 }
 
-async fn process_override_requests(state: &mut MetricsOverrideWorkerState, mut process_shutdown: ProcessShutdown) {
+async fn process_override_requests(state: &mut MetricsOverrideWorkerState, process_shutdown: ShutdownHandle) {
     let mut override_active = false;
     let override_timeout = sleep(Duration::MAX);
 
-    tokio::pin!(override_timeout);
-
-    let shutdown = process_shutdown.wait_for_shutdown();
-    tokio::pin!(shutdown);
+    pin!(override_timeout, process_shutdown);
 
     loop {
         select! {
-            _ = &mut shutdown => break,
+            _ = &mut process_shutdown => break,
             maybe_override = state.override_rx.recv() => match maybe_override {
                 Some(Some((duration, new_level))) => {
                     // TODO: Using the `Debug` representation of `Level` is noisy, and we should add a method upstream to

@@ -59,6 +59,10 @@ impl FieldUpdateWatcher {
                 // Ignore other key changes.
                 Ok(_) => continue,
                 Err(broadcast::error::RecvError::Lagged(_)) => {
+                    saluki_antithesis::unreachable!(
+                        "config filter update dropped (broadcast Lagged); live filtering may stay stale",
+                        { "key": self.key.to_string() }
+                    );
                     warn!(
                         "FieldUpdateWatcher dropped events for key: {}. Continuing to wait for the next event.",
                         self.key

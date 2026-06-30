@@ -2,33 +2,40 @@ type: integration
 name: "adp-rar-disabled"
 description: "Verify ADP gracefully handles RAR being disabled on the Core Agent"
 timeout: 120s
+runtimes: [linux]
+# Docker-only: the assertion is that ADP stays up (handles failure gracefully via retry). In
+# the converged image, s6 restarts ADP on every exit, so 'process stable for 10s' really
+# means 'container stable for 10s'. There is no equivalent supervisor on the mac
+# runtime, so this assertion does not translate; re-enable once the Unix runner grows a
+# supervisor or the test is rewritten to assert on retry behavior directly.
+
+env:
+  DD_API_KEY: "00000000000000000000000000000000"
+  DD_HOSTNAME: "integration-test-rar-disabled"
+  # Core Agent setting to disable RAR
+  DD_REMOTE_AGENT_REGISTRY_ENABLED: "false"
+  # ADP settings - enable RAR integration (which will fail gracefully)
+  DD_DATA_PLANE_ENABLED: "true"
+  DD_DATA_PLANE_STANDALONE_MODE: "false"
+  DD_DATA_PLANE_REMOTE_AGENT_ENABLED: "true"
+  DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
 
 container:
-  image: "saluki-images/datadog-agent:testing-devel"
-  env:
-    DD_API_KEY: "test-api-key"
-    DD_HOSTNAME: "integration-test-rar-disabled"
-    # Core Agent setting to disable RAR
-    DD_REMOTE_AGENT_REGISTRY_ENABLED: "false"
-    # ADP settings - enable RAR integration (which will fail gracefully)
-    DD_DATA_PLANE_ENABLED: "true"
-    DD_DATA_PLANE_STANDALONE_MODE: "false"
-    DD_DATA_PLANE_REMOTE_AGENT_ENABLED: "true"
-    DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
-    DD_DOGSTATSD_PORT: "8125"
   exposed_ports:
-    - "8125/udp"
+    - "58125/udp"
 
-assertions:
-  # ADP should report registration failure (Core Agent returns error when RAR disabled).
-  - type: log_contains
+procedure:
+  # ADP should report registration failure (Core Agent returns error when RAR disabled). Allow 15s
+  # (matching adp-cmd-port): the failure is only reported once the Core Agent's CMD/IPC API server is
+  # reachable, which can take ~10s to come up on slower hosts.
+  - assertion: log_contains
     pattern: "Failed to register with the Datadog Agent. Registration will be retried periodically in the background."
-    timeout: 10s
+    timeout: 15s
   # Make sure the process becomes healthy, and stays up without errors, for ~10 seconds after.
   - parallel:
-      - type: process_stable_for
+      - assertion: process_stable_for
         duration: 10s
-      - type: log_not_contains
+      - assertion: log_not_contains
         pattern: "panic|PANIC"
         regex: true
         during: 10s

@@ -1,0 +1,7 @@
+notify-nightly-failure:
+  extends: .slack-notifier-channel.on-failure
+  rules:
+    - if: $AGENT_NIGHTLY == "true"
+      when: on_failure
+  variables:
+    CHANNEL: "#agent-data-plane"

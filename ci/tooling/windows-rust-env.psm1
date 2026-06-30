@@ -1,0 +1,397 @@
+# Shared PowerShell helpers used by every Windows CI script that needs to drive cargo:
+# windows-unit-tests.ps1, windows-integration-tests.ps1, and windows-build-adp.ps1.
+#
+# The functions here are intentionally narrow and free of saluki-specific knowledge so each
+# script can layer its own build/test/package logic on top. Import via:
+#
+#   Import-Module (Join-Path $PSScriptRoot "windows-rust-env.psm1") -Force
+#
+# `-Force` matters: GitLab caches the docker layer with this module embedded, and a stale
+# already-loaded module would otherwise mask edits during iteration.
+
+Set-StrictMode -Version 3.0
+
+function Invoke-Native {
+    # Invokes a native executable and throws if the exit code is non-zero.
+    #
+    # GOTCHA: this is implicitly an advanced function (any function with [Parameter()]
+    # attributes is). PowerShell auto-injects common parameters including `-Verbose` and
+    # `-Confirm`, which can be shortened to `-v` and `-C` (or any unique prefix). Single-
+    # letter native flags that collide with those prefixes (e.g. `nasm -v`, `tar -C`) get
+    # eaten by PS parameter binding before reaching the executable. For those calls, use
+    # the call operator `&` directly (e.g. `& nasm -v`) instead of Invoke-Native; `&`
+    # doesn't apply PS parameter binding. Multi-character flags like `--version` are safe.
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$FilePath,
+
+        [Parameter(ValueFromRemainingArguments = $true)]
+        [string[]]$Arguments
+    )
+
+    & $FilePath @Arguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "Command failed with exit code ${LASTEXITCODE}: ${FilePath} $($Arguments -join ' ')"
+    }
+}
+
+function Add-PathEntry {
+    # Adds $Path to $env:Path. Prepends by default (so a newly-installed tool wins over
+    # any system version); pass -Append to add at the tail instead, which is the right
+    # choice when the install dir contains many binaries that would shadow Windows tooling
+    # (e.g. MSYS2's c:\tools\msys64\usr\bin\ ships unix-style find/sort/cmd that conflict
+    # with the Windows defaults).
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+
+        [switch]$Append
+    )
+
+    if ((Test-Path $Path) -and (-not ($env:Path -split ';' | Where-Object { $_ -eq $Path }))) {
+        if ($Append) {
+            $env:Path = "${env:Path};${Path}"
+        } else {
+            $env:Path = "${Path};${env:Path}"
+        }
+    }
+}
+
+function Ensure-Protoc {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Version,
+
+        [Parameter(Mandatory = $true)]
+        [string]$ExpectedSha256,
+
+        [Parameter(Mandatory = $true)]
+        [string]$InstallRoot
+    )
+
+    $ProtocBin = Join-Path $InstallRoot "bin\protoc.exe"
+    if (-not (Test-Path $ProtocBin)) {
+        Write-Host "[*] protoc not found; installing protoc ${Version}..."
+        $Archive = Join-Path $env:TEMP "protoc-${Version}-win64.zip"
+        $ExtractRoot = Join-Path $env:TEMP "protoc-${Version}-win64"
+        Remove-Item -Recurse -Force $ExtractRoot -ErrorAction SilentlyContinue
+        New-Item -ItemType Directory -Force $InstallRoot | Out-Null
+        Invoke-WebRequest -UseBasicParsing -Uri "https://github.com/protocolbuffers/protobuf/releases/download/v${Version}/protoc-${Version}-win64.zip" -OutFile $Archive
+
+        $ActualSha256 = (Get-FileHash -Algorithm SHA256 -Path $Archive).Hash.ToLowerInvariant()
+        if ($ActualSha256 -ne $ExpectedSha256.ToLowerInvariant()) {
+            throw "protoc archive checksum mismatch: expected ${ExpectedSha256}, got ${ActualSha256}"
+        }
+
+        Expand-Archive -Path $Archive -DestinationPath $ExtractRoot -Force
+        Copy-Item -Recurse -Force (Join-Path $ExtractRoot "*") $InstallRoot
+    }
+
+    $env:PROTOC = $ProtocBin
+    Add-PathEntry (Join-Path $InstallRoot "bin")
+    Invoke-Native $ProtocBin --version
+}
+
+function Initialize-RustEnvironment {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$RepoRoot
+    )
+
+    $OriginalCargoHome = $env:CARGO_HOME
+    if (-not $env:WINDOWS_CI_CARGO_HOME) {
+        $env:WINDOWS_CI_CARGO_HOME = Join-Path $RepoRoot ".ci-cache\cargo"
+    }
+    if (-not $env:RUSTUP_HOME) {
+        $env:RUSTUP_HOME = Join-Path $RepoRoot ".ci-cache\rustup"
+    }
+    if (-not $env:CARGO_TARGET_DIR) {
+        $env:CARGO_TARGET_DIR = Join-Path $RepoRoot "target\windows-ci"
+    }
+    if (-not $env:PROTOC_VERSION) {
+        $env:PROTOC_VERSION = "29.3"
+    }
+    if (-not $env:PROTOC_SHA256) {
+        $env:PROTOC_SHA256 = "57ea59e9f551ad8d71ffaa9b5cfbe0ca1f4e720972a1db7ec2d12ab44bff9383"
+    }
+    if (-not $env:WINDOWS_CI_PROTOC_HOME) {
+        $env:WINDOWS_CI_PROTOC_HOME = Join-Path $RepoRoot ".ci-cache\protoc\$env:PROTOC_VERSION"
+    }
+
+    New-Item -ItemType Directory -Force $env:WINDOWS_CI_CARGO_HOME | Out-Null
+    New-Item -ItemType Directory -Force $env:WINDOWS_CI_PROTOC_HOME | Out-Null
+    New-Item -ItemType Directory -Force $env:RUSTUP_HOME | Out-Null
+    New-Item -ItemType Directory -Force $env:CARGO_TARGET_DIR | Out-Null
+
+    if ($OriginalCargoHome) {
+        Add-PathEntry (Join-Path $OriginalCargoHome "bin")
+    }
+    Add-PathEntry (Join-Path $env:USERPROFILE ".cargo\bin")
+
+    if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
+        throw "Rust toolchain not found in Windows build image. Install Rust in the image instead of downloading rustup at job runtime."
+    }
+    if (-not (Get-Command rustup -ErrorAction SilentlyContinue)) {
+        throw "rustup not found in Windows build image. Install rustup in the image instead of downloading it at job runtime."
+    }
+
+    $ToolchainMatch = Select-String -Path (Join-Path $RepoRoot "rust-toolchain.toml") -Pattern 'channel\s*=\s*"([^"]+)"' | Select-Object -First 1
+    if (-not $ToolchainMatch) {
+        throw "Unable to determine Rust toolchain from rust-toolchain.toml"
+    }
+    $Toolchain = $ToolchainMatch.Matches[0].Groups[1].Value
+
+    Write-Host "[*] Ensuring Rust toolchain ${Toolchain} is installed..."
+    Invoke-Native rustup toolchain install --profile minimal $Toolchain
+    Invoke-Native rustup default $Toolchain
+    Invoke-Native rustup show
+    Invoke-Native cargo --version
+
+    $env:CARGO_HOME = $env:WINDOWS_CI_CARGO_HOME
+    Add-PathEntry (Join-Path $env:CARGO_HOME "bin")
+    Ensure-Protoc -Version $env:PROTOC_VERSION -ExpectedSha256 $env:PROTOC_SHA256 -InstallRoot $env:WINDOWS_CI_PROTOC_HOME
+}
+
+function Install-CachedZipTool {
+    # Downloads $Url to a temp archive, verifies its SHA256, extracts into $InstallRoot, and
+    # prepends $BinSubdir to PATH. Skips the download/extract entirely if $BinaryName already
+    # resolves on PATH (e.g. the Datadog buildimage installs go and ninja globally).
+    #
+    # $BinaryName doubles as both the cache-hit probe (we look for it under $InstallRoot to
+    # decide whether to download) and the on-PATH skip check.
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Url,
+
+        [Parameter(Mandatory = $true)]
+        [string]$ExpectedSha256,
+
+        [Parameter(Mandatory = $true)]
+        [string]$InstallRoot,
+
+        # Subdirectory inside the extracted archive that holds the binary (e.g. "go\bin" for
+        # the Go zip, "nasm-2.16.03" for the NASM zip). Empty string means the binary is at
+        # the archive root (e.g. ninja-win.zip extracts ninja.exe flat). [AllowEmptyString()]
+        # is required because [Parameter(Mandatory)] + [string] rejects empty strings.
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [string]$BinSubdir,
+
+        # Filename including extension, e.g. "nasm.exe". Stripped of its extension for the
+        # Get-Command check (Get-Command resolves both `nasm` and `nasm.exe` on Windows but
+        # the trim keeps log messages tidy).
+        [Parameter(Mandatory = $true)]
+        [string]$BinaryName
+    )
+
+    $CommandName = $BinaryName -replace '\.exe$', ''
+    if (Get-Command $CommandName -ErrorAction SilentlyContinue) {
+        $Existing = (Get-Command $CommandName).Source
+        Write-Host "[*] $CommandName already on PATH at $Existing; skipping install"
+        return
+    }
+
+    $Probe = Join-Path (Join-Path $InstallRoot $BinSubdir) $BinaryName
+    if (-not (Test-Path $Probe)) {
+        Write-Host "[*] $CommandName not found at $Probe; downloading..."
+        $Archive = Join-Path $env:TEMP ("$CommandName-" + [System.Guid]::NewGuid().ToString("N") + ".zip")
+        Invoke-WebRequest -UseBasicParsing -Uri $Url -OutFile $Archive
+
+        $ActualSha256 = (Get-FileHash -Algorithm SHA256 -Path $Archive).Hash.ToLowerInvariant()
+        if ($ActualSha256 -ne $ExpectedSha256.ToLowerInvariant()) {
+            throw "$CommandName archive checksum mismatch: expected $ExpectedSha256, got $ActualSha256"
+        }
+
+        New-Item -ItemType Directory -Force $InstallRoot | Out-Null
+        Expand-Archive -Path $Archive -DestinationPath $InstallRoot -Force
+        Remove-Item -Force $Archive
+
+        if (-not (Test-Path $Probe)) {
+            throw "$CommandName install layout unexpected: $Probe still missing after extract"
+        }
+    }
+
+    Add-PathEntry (Join-Path $InstallRoot $BinSubdir)
+}
+
+function Assert-NoDynamicVCRuntimeImports {
+    # Checks a PE binary for dynamic imports of the Visual C++ runtime DLLs that ADP
+    # builds are expected to statically link through Rust's `+crt-static` target feature.
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$BinaryPath
+    )
+
+    if (-not (Test-Path $BinaryPath)) {
+        throw "Binary not found: $BinaryPath"
+    }
+
+    $BinaryText = [System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes($BinaryPath))
+    $ImportNames = @("vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll")
+    foreach ($ImportName in $ImportNames) {
+        if ($BinaryText.IndexOf($ImportName, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
+            throw "${BinaryPath} references ${ImportName}; Windows ADP builds must statically link the VC runtime"
+        }
+    }
+}
+
+function Initialize-FipsBuildTools {
+    # Wires up the native build environment that aws-lc-fips-sys requires on x86_64-windows.
+    # See https://aws.github.io/aws-lc-rs/requirements/windows.html for the upstream list.
+    #
+    # The Datadog LTSC2022 buildimage already provides:
+    #   - Go on PATH (phase3 install_go.ps1, c:\go\<ver>\go\bin)
+    #   - Ninja on PATH (phase3 install_ninja.ps1, c:\ninja-build)
+    #   - perl in MSYS2 (phase2 install_msys.ps1, c:\tools\msys64\usr\bin\perl.exe but NOT
+    #     on PATH)
+    #   - 7-Zip on PATH (phase1 install_7zip.ps1, used here to decompress LLVM tar.xz)
+    #
+    # We need to install: NASM (no prebuilt-asm shortcut for FIPS) and LLVM/libclang (bindgen
+    # runs against aws-lc-fips-sys headers because no pre-generated bindings ship for
+    # x86_64-pc-windows-msvc). Both are cached under $RepoRoot\.ci-cache\<tool>\<ver>\ via
+    # the FIPS build job's `cache:paths` so the cold-download cost is paid once per runner.
+    #
+    # We also need to expose perl on PATH (the buildimage installs it but doesn't path it).
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$RepoRoot
+    )
+
+    # Sanity-check the buildimage-provided dependencies. If any of these go missing in a
+    # future buildimage version we want a clear error here rather than a confusing CMake
+    # failure deep into the build.
+    foreach ($cmd in @("go", "ninja", "7z")) {
+        if (-not (Get-Command $cmd -ErrorAction SilentlyContinue)) {
+            throw "Expected '$cmd' on PATH from the LTSC2022 buildimage but it's missing; image layout changed?"
+        }
+    }
+
+    # Pinned versions and SHA256s. Bump together when refreshing; checksums are mandatory so
+    # a tampered or upstream-deleted release fails fast.
+    $NasmVersion = "2.16.03"
+    $NasmSha256  = "3ee4782247bcb874378d02f7eab4e294a84d3d15f3f6ee2de2f47a46aa7226e6"
+    $LlvmVersion = "19.1.7"
+    $LlvmSha256  = "b4557b4f012161f56a2f5d9e877ab9635cafd7a08f7affe14829bd60c9d357f0"
+
+    Install-CachedZipTool `
+        -Url "https://www.nasm.us/pub/nasm/releasebuilds/$NasmVersion/win64/nasm-$NasmVersion-win64.zip" `
+        -ExpectedSha256 $NasmSha256 `
+        -InstallRoot (Join-Path $RepoRoot ".ci-cache\nasm\$NasmVersion") `
+        -BinSubdir "nasm-$NasmVersion" `
+        -BinaryName "nasm.exe"
+
+    # LLVM ships only as tar.xz on Windows (no zip). tar.exe (bsdtar) on LTSC2022 can't
+    # decompress xz internally -- it shells out to an `xz -d` binary that isn't installed --
+    # so use 7-Zip in two passes (.tar.xz -> .tar -> tree). The toolchain-only archive
+    # (~845 MB compressed) is the smallest official LLVM Windows distribution that ships
+    # libclang.dll; the alternative is a 1.3 GB NSIS installer that's awkward to extract
+    # non-interactively.
+    $LlvmExtractedDir = "clang+llvm-$LlvmVersion-x86_64-pc-windows-msvc"
+    $LlvmInstallRoot  = Join-Path $RepoRoot ".ci-cache\llvm\$LlvmVersion"
+    $LlvmBin          = Join-Path $LlvmInstallRoot "$LlvmExtractedDir\bin"
+    $LibClangProbe    = Join-Path $LlvmBin "libclang.dll"
+    if (-not (Test-Path $LibClangProbe)) {
+        Write-Host "[*] libclang not found at $LibClangProbe; downloading LLVM $LlvmVersion (~845MB)..."
+        $XzWork = Join-Path $env:TEMP ("llvm-xz-" + [System.Guid]::NewGuid().ToString("N"))
+        New-Item -ItemType Directory -Force $XzWork | Out-Null
+        try {
+            $XzArchive = Join-Path $XzWork "src.tar.xz"
+            Invoke-WebRequest -UseBasicParsing `
+                -Uri "https://github.com/llvm/llvm-project/releases/download/llvmorg-$LlvmVersion/$LlvmExtractedDir.tar.xz" `
+                -OutFile $XzArchive
+
+            $ActualSha256 = (Get-FileHash -Algorithm SHA256 -Path $XzArchive).Hash.ToLowerInvariant()
+            if ($ActualSha256 -ne $LlvmSha256.ToLowerInvariant()) {
+                throw "LLVM archive checksum mismatch: expected $LlvmSha256, got $ActualSha256"
+            }
+
+            New-Item -ItemType Directory -Force $LlvmInstallRoot | Out-Null
+            # `&` instead of Invoke-Native because some 7z short flags (-y, -bd) would
+            # collide with PS common parameter prefixes.
+            & 7z x -bd -y "-o$XzWork" $XzArchive
+            if ($LASTEXITCODE -ne 0) { throw "7z xz decompress failed (exit $LASTEXITCODE)" }
+            $InnerTar = Join-Path $XzWork "src.tar"
+            if (-not (Test-Path $InnerTar)) {
+                throw "Expected $InnerTar after xz decompress, but it's missing"
+            }
+            & 7z x -bd -y "-o$LlvmInstallRoot" $InnerTar
+            if ($LASTEXITCODE -ne 0) { throw "7z tar extract failed (exit $LASTEXITCODE)" }
+        } finally {
+            Remove-Item -Recurse -Force $XzWork -ErrorAction SilentlyContinue
+        }
+
+        if (-not (Test-Path $LibClangProbe)) {
+            throw "LLVM install layout unexpected: $LibClangProbe still missing after extract"
+        }
+    }
+    # bindgen finds libclang via LIBCLANG_PATH; setting it (rather than adding LlvmBin to
+    # PATH) is the documented bindgen contract and avoids broadening PATH unnecessarily.
+    $env:LIBCLANG_PATH = $LlvmBin
+
+    # aws-lc-fips-sys's CMakeLists.txt does find_package(Perl) which fails on the buildimage
+    # by default because perl isn't on PATH. MSYS2 ships perl at c:\tools\msys64\usr\bin\;
+    # add that directory to PATH (appended, not prepended, because the same dir ships many
+    # unix-style binaries -- find, sort, cmd-with-no-extension -- that would otherwise
+    # shadow Windows tooling).
+    $MsysPerlBin = "c:\tools\msys64\usr\bin"
+    if (Test-Path (Join-Path $MsysPerlBin "perl.exe")) {
+        Add-PathEntry -Path $MsysPerlBin -Append
+    } else {
+        throw "Expected MSYS2 perl at $MsysPerlBin\perl.exe but it's missing; image layout changed?"
+    }
+
+    # Smoke-test each tool we depend on (whether installed by us, by the buildimage, or just
+    # path-wired here). `&` instead of Invoke-Native because some short flags (`nasm -v`)
+    # collide with PS common parameter prefixes; see the Invoke-Native gotcha block.
+    & nasm -v
+    if ($LASTEXITCODE -ne 0) { throw "nasm smoke test failed (exit $LASTEXITCODE)" }
+    & go version
+    if ($LASTEXITCODE -ne 0) { throw "go smoke test failed (exit $LASTEXITCODE)" }
+    & ninja --version
+    if ($LASTEXITCODE -ne 0) { throw "ninja smoke test failed (exit $LASTEXITCODE)" }
+    & "$LlvmBin\clang.exe" --version
+    if ($LASTEXITCODE -ne 0) { throw "clang smoke test failed (exit $LASTEXITCODE)" }
+    & perl --version
+    if ($LASTEXITCODE -ne 0) { throw "perl smoke test failed (exit $LASTEXITCODE)" }
+}
+
+function New-VsBuildToolsJunction {
+    # aws-lc-fips-sys's builder/printenv.bat (called from cmake_builder.rs) hard-codes its VS
+    # search to vswhere at "%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+    # and a recursive vcvarsall.bat search rooted at "%ProgramFiles(x86)%\Microsoft Visual
+    # Studio". Neither path resolves to the LTSC2022 buildimage's VS install, which lives at
+    # c:\devtools\vstudio (per the buildimage's install_vstudio.ps1). Create a directory
+    # junction so the recursive vcvarsall.bat search finds it.
+    #
+    # Junctions (mklink /J) work for non-admin too and don't require Developer Mode. The
+    # function is idempotent so re-runs (cache hits) don't fail.
+    $VsDefaultRoot   = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio"
+    $JunctionTarget  = Join-Path $VsDefaultRoot "BuildTools"
+    $BuildimageVsDir = "C:\devtools\vstudio"
+
+    if (-not (Test-Path $BuildimageVsDir)) {
+        throw "Buildimage VS BuildTools not found at $BuildimageVsDir; image layout changed?"
+    }
+    if (-not (Test-Path $VsDefaultRoot)) {
+        New-Item -ItemType Directory -Force $VsDefaultRoot | Out-Null
+    }
+    if (-not (Test-Path $JunctionTarget)) {
+        Write-Host "[*] Creating junction $JunctionTarget -> $BuildimageVsDir"
+        # Use the full path to cmd.exe rather than relying on PATH lookup. MSYS2's bin (which
+        # we add to PATH for perl) ships a unix-style `cmd` script (no .exe) that PowerShell
+        # would otherwise resolve before Windows cmd.exe.
+        & "$env:WINDIR\System32\cmd.exe" /c mklink /J "$JunctionTarget" "$BuildimageVsDir" | Out-Host
+        if ($LASTEXITCODE -ne 0) {
+            throw "mklink /J failed (exit $LASTEXITCODE)"
+        }
+    } else {
+        Write-Host "[*] VS BuildTools junction already present at $JunctionTarget"
+    }
+
+    $Probe = Join-Path $JunctionTarget "VC\Auxiliary\Build\vcvarsall.bat"
+    if (-not (Test-Path $Probe)) {
+        throw "vcvarsall.bat not visible through junction at $Probe"
+    }
+}
+
+Export-ModuleMember -Function Invoke-Native, Add-PathEntry, Ensure-Protoc, Initialize-RustEnvironment, Install-CachedZipTool, Assert-NoDynamicVCRuntimeImports, Initialize-FipsBuildTools, New-VsBuildToolsJunction

@@ -1,6 +1,6 @@
 .setup-smp-env: &setup-smp-env
   - export AWS_NAMED_PROFILE=single-machine-performance
-  - export SMP_VERSION=0.26.1
+  - export SMP_VERSION=0.27.0
   - export RUST_LOG=info,aws_config::profile::credentials=error
   - export SMP_ACCOUNT_ID=$(aws ssm get-parameter --region us-east-1 --name ci.saluki.smp-account-id --with-decryption --query "Parameter.Value" --out text)
   - export SMP_TEAM_ID=$(aws ssm get-parameter --region us-east-1 --name ci.saluki.smp-team-id --with-decryption --query "Parameter.Value" --out text)
@@ -14,10 +14,11 @@ build-adp-baseline-image:
   extends: .build-common-variables
   stage: benchmark
   tags: ["docker-in-docker:amd64"]
-  # Don't run benchmarks unless it's a PR, basically.
+  # Build on PRs (development branches) and on the nightly schedule; never on MQ branches.
   rules:
     - if: !reference [.on_mq_branch, rules, if]
       when: never
+    - if: !reference [.on_smp_nightly, rules, if]
     - if: !reference [.on_development_branch, rules, if]
   image: "${SALUKI_SMP_CI_IMAGE}"
   needs: []
@@ -28,11 +29,13 @@ build-adp-baseline-image:
   script:
     # Initialize our AWS credentials.
     - ./ci/tooling/configure-smp-aws-credentials.sh
-    # Checkout the baseline commit and define the relevant variables
+    # Resolve the baseline commit and define the relevant variables.
     #
-    # We use the merge base of the current branch, relative to `main`. This means that for stacked PRs, we won't be
-    # benchmarking against the mid-stack PR, but that's an acceptable tradeoff for the moment.
-    - export BASELINE_ADP_SHA=$(git merge-base origin/main origin/${CI_COMMIT_BRANCH})
+    # On PRs this is the merge base of the current branch, relative to `main` (so for stacked PRs
+    # we benchmark against the base of the stack, not a mid-stack PR — an acceptable tradeoff).
+    # On the nightly schedule it is the date-anchored "previous nightly". See
+    # ci/tooling/compute-smp-sha.sh.
+    - export BASELINE_ADP_SHA=$(./ci/tooling/compute-smp-sha.sh baseline)
     - export BASELINE_ADP_IMG="${ADP_IMG_BASE}-${BASELINE_ADP_SHA}"
     - git switch --detach ${BASELINE_ADP_SHA}
     # Actually build.
@@ -44,6 +47,7 @@ build-adp-baseline-image:
       --build-arg BUILD_PROFILE=release
       --build-arg BUILD_TARGET=x86_64-unknown-linux-musl
       --build-arg BUILD_IMAGE=${ADP_PUBLIC_BASE_IMAGE}
+      --build-arg SPDX_LICENSES_IMAGE=${SPDX_LICENSES_IMAGE}
       --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
       --build-arg APP_GIT_HASH=${BASELINE_ADP_SHA}
       --build-arg INTERNAL_BUILD=true
@@ -65,10 +69,11 @@ build-adp-comparison-image:
   extends: .build-common-variables
   stage: benchmark
   tags: ["docker-in-docker:amd64"]
-  # Don't run benchmarks unless it's a PR, basically.
+  # Build on PRs (development branches) and on the nightly schedule; never on MQ branches.
   rules:
     - if: !reference [.on_mq_branch, rules, if]
       when: never
+    - if: !reference [.on_smp_nightly, rules, if]
     - if: !reference [.on_development_branch, rules, if]
   image: "${SALUKI_SMP_CI_IMAGE}"
   needs: []
@@ -79,8 +84,10 @@ build-adp-comparison-image:
   script:
     # Initialize our AWS credentials.
     - ./ci/tooling/configure-smp-aws-credentials.sh
-    # Checkout the comparison commit and define the relevant variables.
-    - export COMPARISON_ADP_SHA=${CI_COMMIT_SHA}
+    # Resolve the comparison commit and define the relevant variables: the current commit on
+    # PRs, or the date-anchored "current nightly" on the schedule. See
+    # ci/tooling/compute-smp-sha.sh.
+    - export COMPARISON_ADP_SHA=$(./ci/tooling/compute-smp-sha.sh comparison)
     - export COMPARISON_ADP_IMG="${ADP_IMG_BASE}-${COMPARISON_ADP_SHA}"
     - git switch --detach ${COMPARISON_ADP_SHA}
     # Actually build.
@@ -92,6 +99,7 @@ build-adp-comparison-image:
       --build-arg BUILD_PROFILE=release
       --build-arg BUILD_TARGET=x86_64-unknown-linux-musl
       --build-arg BUILD_IMAGE=${ADP_PUBLIC_BASE_IMAGE}
+      --build-arg SPDX_LICENSES_IMAGE=${SPDX_LICENSES_IMAGE}
       --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
       --build-arg APP_GIT_HASH=${COMPARISON_ADP_SHA}
       --build-arg INTERNAL_BUILD=true
@@ -111,7 +119,8 @@ build-adp-comparison-image:
 
 run-benchmarks-adp:
   stage: benchmark
-  # Don't run benchmarks unless it's a PR, basically.
+  # PR gate: run only the quality-gates suite (the experiments with bounds). Runs on PRs
+  # (development branches); never on MQ branches. The full suite runs nightly / on-demand below.
   rules:
     - if: !reference [.on_mq_branch, rules, if]
       when: never
@@ -144,7 +153,7 @@ run-benchmarks-adp:
       --comparison-image ${COMPARISON_ADP_IMG}
       --baseline-sha ${BASELINE_ADP_SHA}
       --comparison-sha ${COMPARISON_ADP_SHA}
-      --target-config-dir ./test/smp/regression/adp/
+      --target-config-dir ./test/smp/regression/adp/quality-gates/
       --submission-metadata submission_metadata
     # Wait for job to complete.
     - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
@@ -192,6 +201,77 @@ report-benchmarks-adp:
       --report-json outputs/report.json
       --output-report outputs/condensed-report.md
     - cat outputs/condensed-report.md | /usr/local/bin/pr-commenter --for-pr="$CI_COMMIT_REF_NAME" --header="Regression Detector (Agent Data Plane)"
+
+run-benchmarks-adp-full:
+  stage: benchmark
+  # The full SMP suite (superset of all experiments). Runs automatically on the nightly schedule
+  # for long-term trend analysis, and on-demand as a manual job on a PR. This is NOT a PR gate:
+  # it does not run `smp job result`, so it never fails the pipeline on a regression. It builds
+  # and delivers its own report inline (Slack on the nightly, PR comment on-demand).
+  rules:
+    - if: !reference [.on_mq_branch, rules, if]
+      when: never
+    - if: !reference [.on_smp_nightly, rules, if]
+    - if: !reference [.on_development_branch, rules, if]
+      when: manual
+      allow_failure: true
+  timeout: 2h
+  needs:
+    - build-adp-baseline-image
+    - build-adp-comparison-image
+  image: "${SALUKI_SMP_CI_IMAGE}"
+  before_script:
+    - *setup-smp-env
+  artifacts:
+    expire_in: 1 weeks
+    paths:
+      - submission_metadata # for provenance, debugging
+      - outputs/report.md # for debugging, also on S3
+      - outputs/report.json # for debugging, also on S3
+      - outputs/condensed-report.md # the posted report, for debugging
+    when: always
+  script:
+    # Do some pre-flight steps like creating directories, installing helper utilities, setting credentials, and so on.
+    - mkdir outputs && touch outputs/report.md outputs/report.html
+    - ./ci/tooling/configure-smp-aws-credentials.sh
+    # Download the SMP binary.
+    - aws --profile ${AWS_NAMED_PROFILE} s3 cp s3://smp-cli-releases/v${SMP_VERSION}/x86_64-unknown-linux-musl/smp smp && chmod +x smp
+    - echo "Running full suite -- baseline ${BASELINE_ADP_SHA}, comparison ${COMPARISON_ADP_SHA}."
+    # Trigger the SMP job run against the full suite.
+    - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
+      job submit
+      --warmup-seconds 0
+      --baseline-image ${BASELINE_ADP_IMG}
+      --comparison-image ${COMPARISON_ADP_IMG}
+      --baseline-sha ${BASELINE_ADP_SHA}
+      --comparison-sha ${COMPARISON_ADP_SHA}
+      --target-config-dir ./test/smp/regression/adp/full/
+      --submission-metadata submission_metadata
+    # Wait for job to complete.
+    - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
+      job status
+      --wait
+      --wait-delay-seconds 60
+      --submission-metadata submission_metadata
+    # Pull the analysis report, then build and deliver the condensed report. We intentionally do
+    # NOT run `job result` here: the full suite is for trend analysis, not gating.
+    - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
+      job sync
+      --submission-metadata submission_metadata
+      --output-path outputs
+    # Condense the report and deliver it. Reporting lives in this job (rather than a separate
+    # one) because the on-demand run is an optional manual job: a separate `needs`-based report
+    # job would run even when the manual job is not triggered, since GitLab does not block
+    # dependents on an un-triggered `allow_failure` manual job.
+    - python3 ./ci/tooling/build-smp-report.py
+      --report-json outputs/report.json
+      --output-report outputs/condensed-report.md
+    - |
+      if [ "$CI_PIPELINE_SOURCE" = "schedule" ]; then
+        ./ci/tooling/report-smp-to-slack.sh outputs/condensed-report.md
+      else
+        cat outputs/condensed-report.md | /usr/local/bin/pr-commenter --for-pr="$CI_COMMIT_REF_NAME" --header="Regression Detector (Agent Data Plane, full suite)"
+      fi
 
 binary-size-analysis:
   stage: benchmark

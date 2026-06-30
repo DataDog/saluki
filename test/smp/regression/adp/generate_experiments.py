@@ -2,8 +2,9 @@
 """
 Generate SMP experiment configuration files from experiments.yaml.
 
-This script reads the experiment definitions from experiments.yaml and generates
-the corresponding directory structure under cases/.
+This script reads the experiment definitions from experiments.yaml and generates one
+target-config directory per suite (see SUITES): the full superset under full/ and the PR
+gating subset under quality-gates/, each holding a copy of config.yaml and a cases/ tree.
 
 Usage:
     python generate_experiments.py          # Generate experiment files
@@ -23,7 +24,23 @@ import yaml
 
 SCRIPT_DIR = Path(__file__).parent
 EXPERIMENTS_FILE = SCRIPT_DIR / "experiments.yaml"
-CASES_DIR = SCRIPT_DIR / "cases"
+CONFIG_FILE = SCRIPT_DIR / "config.yaml"
+
+# Legacy single-suite output directory (used before the split into per-suite directories
+# below). It is removed when regenerating and flagged by --check so it can't silently linger.
+LEGACY_CASES_DIR = SCRIPT_DIR / "cases"
+
+# Experiments are materialized into one or more "suites", each of which is a self-contained SMP
+# target-config directory (a copied config.yaml plus a cases/ tree). A suite's predicate decides,
+# from the raw experiment definition, whether the experiment belongs to that suite:
+#   - "full": every experiment. This is the nightly / on-demand superset.
+#   - "quality-gates": only experiments that declare `checks:`. This is the PR gating subset; an
+#     experiment's bound *is* its gate, so the presence of `checks` is the classifier.
+# A gating experiment is written, byte-for-byte identically, into both suites.
+SUITES = {
+    "full": lambda experiment: True,
+    "quality-gates": lambda experiment: "checks" in experiment,
+}
 
 # Mapping from optimization goal to directory name suffix
 GOAL_SUFFIXES = {
@@ -406,25 +423,42 @@ def write_experiment(
     write_target_files(target_dir, files_config, base_path)
 
 
-def generate_experiments(config: dict, output_dir: Path, base_path: Path) -> list[str]:
-    """Generate all experiment files and return list of experiment names."""
+def generate_experiments(
+    config: dict, base_dir: Path, base_path: Path
+) -> dict[str, list[str]]:
+    """Generate all experiment files into per-suite directories under base_dir.
+
+    For each suite, writes a cases/ tree plus a copy of config.yaml into base_dir/<suite>/, and
+    returns a mapping of suite name to the list of experiment (variant) names written into it.
+    base_path is the source root used to resolve `source:` files and the shared config.yaml.
+    """
     global_config = config.get("global", {})
     templates = config.get("templates", {})
     experiments = config.get("experiments", [])
 
-    generated = []
+    generated = {suite: [] for suite in SUITES}
 
     for experiment in experiments:
-        # Resolve the base experiment config (without optimization goal)
+        # Resolve the base experiment config (without optimization goal).
         resolved_base = resolve_experiment(experiment, global_config, templates)
 
-        # Expand optimization goals into variants
+        # Determine which suites this experiment belongs to.
+        suites = [suite for suite, in_suite in SUITES.items() if in_suite(experiment)]
+
+        # Expand optimization goals into variants, writing each into every matching suite.
         for name, goal in expand_optimization_goals(experiment):
             resolved = copy.deepcopy(resolved_base)
             if goal is not None:
                 resolved["optimization_goal"] = goal
-            write_experiment(name, resolved, output_dir, base_path)
-            generated.append(name)
+            for suite in suites:
+                write_experiment(name, resolved, base_dir / suite / "cases", base_path)
+                generated[suite].append(name)
+
+    # Copy the shared SMP config.yaml into each suite's target-config directory.
+    for suite in SUITES:
+        suite_dir = base_dir / suite
+        suite_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(base_path / CONFIG_FILE.name, suite_dir / "config.yaml")
 
     return generated
 
@@ -467,24 +501,31 @@ def check_experiments(config: dict) -> bool:
         generated = generate_experiments(config, tmp_path, SCRIPT_DIR)
 
         differences = []
-        for name in generated:
-            exp_dir = CASES_DIR / name
-            tmp_exp_dir = tmp_path / name
+        total = 0
+        for suite, names in generated.items():
+            total += len(names)
+            suite_existing = SCRIPT_DIR / suite
+            suite_tmp = tmp_path / suite
 
-            if not exp_dir.exists():
-                differences.append(f"Missing directory: {exp_dir}")
+            if not suite_existing.exists():
+                differences.append(f"Missing directory: {suite_existing}")
                 continue
 
-            differences.extend(compare_experiment_files(tmp_exp_dir, exp_dir))
+            # Compare every generated file under the suite (config.yaml + the cases/ tree).
+            differences.extend(compare_experiment_files(suite_tmp, suite_existing))
 
-        # Check for extra directories in cases/
-        if CASES_DIR.exists():
-            existing_dirs = {d.name for d in CASES_DIR.iterdir() if d.is_dir()}
-            extra_dirs = existing_dirs - set(generated)
-            for extra in extra_dirs:
-                differences.append(
-                    f"Extra directory not in config: {CASES_DIR / extra}"
-                )
+            # Flag any case directories on disk that the config no longer generates.
+            existing_cases = suite_existing / "cases"
+            if existing_cases.exists():
+                existing_dirs = {d.name for d in existing_cases.iterdir() if d.is_dir()}
+                for extra in existing_dirs - set(names):
+                    differences.append(
+                        f"Extra directory not in config: {existing_cases / extra}"
+                    )
+
+        # The pre-split cases/ directory must not linger after regeneration.
+        if LEGACY_CASES_DIR.exists():
+            differences.append(f"Legacy directory should be removed: {LEGACY_CASES_DIR}")
 
         if differences:
             print("SMP experiment files are out of date:", file=sys.stderr)
@@ -496,7 +537,10 @@ def check_experiments(config: dict) -> bool:
             )
             return False
 
-        print(f"All {len(generated)} experiment configurations are up-to-date.")
+        print(
+            f"All {total} experiment configurations across {len(generated)} suites "
+            "are up-to-date."
+        )
         return True
 
 
@@ -515,22 +559,31 @@ def main():
         print(f"Error: {EXPERIMENTS_FILE} not found", file=sys.stderr)
         sys.exit(1)
 
+    if not CONFIG_FILE.exists():
+        print(f"Error: {CONFIG_FILE} not found", file=sys.stderr)
+        sys.exit(1)
+
     config = load_config(EXPERIMENTS_FILE)
 
     if args.check:
         if not check_experiments(config):
             sys.exit(1)
     else:
-        # Clear existing cases directory and regenerate
-        if CASES_DIR.exists():
-            shutil.rmtree(CASES_DIR)
+        # Clear existing suite directories (and the pre-split cases/ dir) and regenerate.
+        for suite in SUITES:
+            suite_dir = SCRIPT_DIR / suite
+            if suite_dir.exists():
+                shutil.rmtree(suite_dir)
+        if LEGACY_CASES_DIR.exists():
+            shutil.rmtree(LEGACY_CASES_DIR)
 
-        CASES_DIR.mkdir(parents=True, exist_ok=True)
-
-        generated = generate_experiments(config, CASES_DIR, SCRIPT_DIR)
-        print(f"Generated {len(generated)} experiment configurations:")
-        for name in sorted(generated):
-            print(f"  - {name}")
+        generated = generate_experiments(config, SCRIPT_DIR, SCRIPT_DIR)
+        total = sum(len(names) for names in generated.values())
+        print(f"Generated {total} experiment configurations:")
+        for suite in sorted(generated):
+            print(f"  {suite}/ ({len(generated[suite])}):")
+            for name in sorted(generated[suite]):
+                print(f"    - {name}")
 
 
 if __name__ == "__main__":

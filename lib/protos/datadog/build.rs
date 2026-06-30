@@ -49,10 +49,10 @@ fn get_field_serde_annotation(field: &FieldDescriptor, serde_custom_fn_suffix: O
 
     match serde_custom_fn_suffix {
         Some(suffix) => format!(
-            "#[serde(rename = \"{}\", serialize_with = \"crate::serde::serialize_proto_{}\", deserialize_with = \"crate::serde::deserialize_proto_{}\")]",
+            "#[serde(rename = \"{}\", default, serialize_with = \"crate::serde::serialize_proto_{}\", deserialize_with = \"crate::serde::deserialize_proto_{}\")]",
             field_name, suffix, suffix
         ),
-        None => format!("#[serde(rename = \"{}\")]", field_name),
+        None => format!("#[serde(rename = \"{}\", default)]", field_name),
     }
 }
 
@@ -88,7 +88,10 @@ fn main() {
     protobuf_codegen::Codegen::new()
         .protoc()
         .includes(["proto", "proto/datadog-agent"])
-        .inputs(["proto/agent-payload/agent_payload.proto"])
+        .inputs([
+            "proto/agent-payload/agent_payload.proto",
+            "proto/agent-payload/intake_v3.proto",
+        ])
         .cargo_out_dir("protos")
         .customize(codegen_customize.clone())
         .run_from_script();

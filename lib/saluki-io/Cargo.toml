@@ -42,6 +42,7 @@ pin-project = { workspace = true }
 pin-project-lite = { workspace = true }
 rand = { workspace = true, features = ["std", "std_rng", "thread_rng"] }
 rustls = { workspace = true }
+saluki-antithesis = { workspace = true }
 saluki-common = { workspace = true }
 saluki-context = { workspace = true }
 saluki-core = { workspace = true }
@@ -71,6 +72,12 @@ tracing = { workspace = true }
 # Adds support for `Arc::into_unique` to recover `UniqueArc` instances.
 triomphe = { workspace = true }
 url = { workspace = true, features = ["std"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+tokio-vsock = { workspace = true }
+
+[target.'cfg(windows)'.dev-dependencies]
+rustls-cng-crypto = { workspace = true }
 
 [dev-dependencies]
 http-body-util = { workspace = true }

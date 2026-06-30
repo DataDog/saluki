@@ -12,6 +12,7 @@ workspace = true
 indexmap = { workspace = true }
 memchr = { workspace = true }
 metrics = { workspace = true }
+saluki-antithesis = { workspace = true }
 saluki-common = { workspace = true }
 saluki-error = { workspace = true }
 saluki-metrics = { workspace = true }

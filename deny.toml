@@ -2,10 +2,8 @@
 version = 2
 db-path = "~/.cargo/advisory-db"
 db-urls = ["https://github.com/rustsec/advisory-db"]
-yanked = "warn"
-ignore = [
-  { id = "RUSTSEC-2024-0436", reason = "paste is a stable crate and we do not consider it being unmaintained as a security risk" },
-]
+yanked = "deny"
+ignore = []
 
 [bans]
 multiple-versions = "allow"
@@ -33,6 +31,10 @@ allow-git = [
   # Git dependency for `lading_payload`, which isn't published on crates.io. We use a tagged version, though, so this
   # is reasonable from our perspective... especially considering the fact that we're the ones who own the repository.
   "https://github.com/DataDog/lading",
+
+  # Datadog-maintained Windows CNG cryptography provider for Rustls. This is pinned to a specific revision in Cargo.toml
+  # while the crate is consumed from GitHub directly.
+  "https://github.com/DataDog/rustls-cng-crypto",
 
   # Forked version of `hyper-http-proxy` that removes an unused dependency on `rustls-native-certs`, which transitively depends
   # on a version of `rustls-pemfile` that is no longer maintained and triggers a hit when running `cargo deny`.

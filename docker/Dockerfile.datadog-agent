@@ -1,4 +1,4 @@
-ARG DD_AGENT_VERSION=7.79.0-jmx
+ARG DD_AGENT_VERSION=7.80.3-full
 ARG DD_AGENT_IMAGE=registry.datadoghq.com/agent:${DD_AGENT_VERSION}
 ARG ADP_IMAGE=saluki-images/agent-data-plane:testing-devel
 
@@ -12,9 +12,10 @@ FROM ${DD_AGENT_IMAGE}
 COPY --from=adp /usr/local/bin/agent-data-plane /opt/datadog-agent/embedded/bin/agent-data-plane
 COPY --from=adp /opt/datadog/agent-data-plane /opt/datadog/agent-data-plane
 
-# Add the s6 service files for Agent Data Plane.
-#
-# ADP will only run when the `DD_DATA_PLANE_ENABLED` environment variable is set to `true`.
+# Add the cont-init.d script for Agent Data Plane environment setup, and
+# s6-service overrides that source /run/{agent,adp}/env/ via s6-envdir so that
+# env vars written by cont-init.d scripts (e.g. resolved PANORAMIC_DYNAMIC_*
+# values) are visible to both the Core Agent and ADP processes.
 COPY docker/cont-init.d /etc/cont-init.d/
 COPY docker/s6-services /etc/services.d/
 

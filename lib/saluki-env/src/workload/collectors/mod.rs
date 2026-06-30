@@ -3,7 +3,8 @@
 use std::{sync::Arc, time::Duration};
 
 use async_trait::async_trait;
-use saluki_core::runtime::{InitializationError, ProcessShutdown, Supervisable, SupervisorFuture};
+use saluki_common::sync::shutdown::ShutdownHandle;
+use saluki_core::runtime::{InitializationError, Supervisable, SupervisorFuture};
 use saluki_error::GenericError;
 use tokio::{
     select,
@@ -19,7 +20,9 @@ mod cgroups;
 #[cfg(target_os = "linux")]
 pub use self::cgroups::CgroupsMetadataCollector;
 
+#[cfg(unix)]
 mod containerd;
+#[cfg(unix)]
 pub use self::containerd::ContainerdMetadataCollector;
 
 /// A metadata collector.
@@ -70,7 +73,7 @@ impl Supervisable for MetadataCollectorWorker {
         self.name
     }
 
-    async fn initialize(&self, process_shutdown: ProcessShutdown) -> Result<SupervisorFuture, InitializationError> {
+    async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
         let state = Arc::clone(&self.state);
 
         Ok(Box::pin(async move {

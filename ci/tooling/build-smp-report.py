@@ -429,6 +429,11 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    # Ensure the output directory exists so every write below — including the
+    # failure-placeholder paths — can't fail with FileNotFoundError when the caller hasn't
+    # created it.
+    args.output_report.parent.mkdir(parents=True, exist_ok=True)
+
     if not args.report_json.exists():
         args.output_report.write_text(
             build_failure_report(f"`{args.report_json}` is missing")

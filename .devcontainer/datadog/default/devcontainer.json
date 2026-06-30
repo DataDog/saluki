@@ -1,5 +1,5 @@
 // This devcontainer directs workspaces to use a pre-built image.  To make
 // configuration changes, edit prebuild-devcontainer.json in this folder instead
 {
-    "image": "registry.ddbuild.io/workspaces/prebuilt/saluki@sha256:43216c685453a9175e5d7968250c0f623e6a3bb979890efae99bc2c83b404493"
+    "image": "registry.ddbuild.io/workspaces/prebuilt/datadog/saluki@sha256:402457e3da6562fb97f69b93dbb23e6f34ced8479f223b6cb198b3e34a21582e"
 }

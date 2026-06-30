@@ -106,6 +106,41 @@ impl Default for Scrubber {
             repl_func: None,
         };
 
+        // Bearer token in the canonical 64-hex form (for example, an IPC/Cluster Agent auth token in an
+        // `Authorization: Bearer <token>` header): mask the first 59 hex characters and keep the last 5 for
+        // correlation. Runs before `bearer_catchall_replacer` so the masked output is left untouched by it.
+        let bearer_hex_replacer_upper = Replacer {
+            regex: Some(Regex::new(r"\bBearer [a-fA-F0-9]{59}([a-fA-F0-9]{5})\b").unwrap()),
+            repl: Some(b"Bearer ***********************************************************$1".to_vec()),
+            hints: Some(vec!["Bearer".to_string()]),
+            repl_func: None,
+        };
+
+        let bearer_hex_replacer_lower = Replacer {
+            regex: Some(Regex::new(r"\bbearer [a-fA-F0-9]{59}([a-fA-F0-9]{5})\b").unwrap()),
+            repl: Some(b"bearer ***********************************************************$1".to_vec()),
+            hints: Some(vec!["bearer".to_string()]),
+            repl_func: None,
+        };
+
+        // Any other `Bearer <token>` value (arbitrary, non-hex). The token character class excludes `*`,
+        // whitespace, and `"` so the match stops at the JSON string boundary and cannot span into adjacent
+        // fields, keeping scrubbed JSON valid (and the `*` exclusion avoids re-matching the output of
+        // `bearer_hex_replacer`). This is the JSON-safe equivalent of the upstream `\bBearer\s+[^*]+\b`.
+        let bearer_catchall_replacer_upper = Replacer {
+            regex: Some(Regex::new(r#"\bBearer\s+[^*\s"]+"#).unwrap()),
+            repl: Some(b"Bearer ********".to_vec()),
+            hints: Some(vec!["Bearer".to_string()]),
+            repl_func: None,
+        };
+
+        let bearer_catchall_replacer_lower = Replacer {
+            regex: Some(Regex::new(r#"\bbearer\s+[^*\s"]+"#).unwrap()),
+            repl: Some(b"bearer ********".to_vec()),
+            hints: Some(vec!["bearer".to_string()]),
+            repl_func: None,
+        };
+
         // Replacer for URI passwords (for example, protocol://user:password@host)
         let uri_password_replacer = Replacer {
             regex: Some(Regex::new(r#"(?i)([a-z][a-z0-9+-.]+://|\b)([^:\s]+):([^\s|"]+)@"#).unwrap()),
@@ -124,6 +159,19 @@ impl Default for Scrubber {
             repl_func: None,
         };
 
+        // Redacts the value of any key ending in `token` or `jwt` (for example, `auth_token`,
+        // `cluster_agent.auth_token`, `refresh_token`). Mirrors `password_replacer`: the trailing `"` in the
+        // key group plus the `$4` closing-quote capture keep compact JSON (`"auth_token":"x"`) valid, and the
+        // optional leading `"` lets the match start mid-key (so dotted keys like `cluster_agent.auth_token`
+        // match after the `.`). `hints` is intentionally `None`: the hint check is case-sensitive, so a
+        // `"token"` hint would skip an uppercase `AUTH_TOKEN` key that `(?i)` would otherwise match.
+        let token_replacer = Replacer {
+            regex: Some(Regex::new(r#"(?i)(\"?(?:[\w-]*(?:token|jwt))\"?)((?:=| = |:[ ]?)\"?)([0-9A-Za-z#!$%&'()*+,\-./:;<=>?@\[\\\]^_{|}~]+)(\"?)"#).unwrap()),
+            repl: Some(b"$1$2********$4".to_vec()),
+            hints: None,
+            repl_func: None,
+        };
+
         Self {
             replacers: vec![
                 hinted_api_key_replacer,
@@ -133,8 +181,13 @@ impl Default for Scrubber {
                 api_key_replacer,
                 app_key_replacer,
                 rc_app_key_replacer,
+                bearer_hex_replacer_upper,
+                bearer_hex_replacer_lower,
+                bearer_catchall_replacer_upper,
+                bearer_catchall_replacer_lower,
                 uri_password_replacer,
                 password_replacer,
+                token_replacer,
             ],
         }
     }
@@ -439,6 +492,88 @@ mod tests {
         assert_clean(
             "appKeyReplacer: http://dog.tld/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabbbb",
             "appKeyReplacer: http://dog.tld/***********************************abbbb",
+        );
+    }
+
+    #[test]
+    fn test_config_strip_auth_token() {
+        assert_clean("auth_token: secret", "auth_token: ********");
+        assert_clean("auth_token=secret", "auth_token=********");
+        assert_clean("   auth_token: cluster-agent-token", "   auth_token: ********");
+        // Flat dotted key: the prefix before the final `.` is preserved, only the value is masked.
+        assert_clean(
+            "cluster_agent.auth_token: cluster-agent-token",
+            "cluster_agent.auth_token: ********",
+        );
+        // Any key ending in `token`/`jwt`, quoted or not.
+        assert_clean("refresh_token: abc123", "refresh_token: ********");
+        assert_clean("jwt: eyJhbGci.payload", "jwt: ********");
+        assert_clean("auth_token: \"secret\"", "auth_token: \"********\"");
+    }
+
+    #[test]
+    fn test_json_auth_token_scrubs_to_valid_json() {
+        // The reported scenario: `cluster_agent.auth_token` in the JSON the `config` CLI re-parses.
+        let scrubber = default_scrubber();
+        let input = r#"{"cluster_agent.auth_token":"cluster-agent-token"}"#;
+        let cleaned = String::from_utf8(scrubber.scrub_bytes(input.as_bytes())).unwrap();
+        serde_json::from_str::<serde_json::Value>(&cleaned).expect("scrubbed JSON must parse");
+        assert!(cleaned.contains("********"), "auth_token must be masked: {cleaned}");
+        assert!(
+            !cleaned.contains("cluster-agent-token"),
+            "raw token must not remain: {cleaned}"
+        );
+    }
+
+    #[test]
+    fn test_token_replacer_no_false_positive() {
+        // Keys that merely contain `token` but do not end in `token`/`jwt` are left untouched.
+        assert_clean("tokenizer: enabled", "tokenizer: enabled");
+        assert_clean("max_tokens: 100", "max_tokens: 100");
+        assert_clean("token_expiry: 3600", "token_expiry: 3600");
+    }
+
+    #[test]
+    fn test_strip_bearer_token() {
+        // Canonical 64-hex bearer token: first 59 characters masked, last 5 kept for correlation.
+        let token = format!("{}bcdef", "a".repeat(59));
+        let masked = format!("{}bcdef", "*".repeat(59));
+        assert_clean(
+            &format!("Authorization: Bearer {token}"),
+            &format!("Authorization: Bearer {masked}"),
+        );
+
+        // Arbitrary (non-hex) bearer token: fully masked.
+        assert_clean(
+            "Authorization: Bearer my-arbitrary-token-value",
+            "Authorization: Bearer ********",
+        );
+
+        // Now in lowercase for case insensitivity.
+        assert_clean(
+            &format!("Authorization: bearer {token}"),
+            &format!("Authorization: bearer {masked}"),
+        );
+        assert_clean(
+            "Authorization: bearer my-arbitrary-token-value",
+            "Authorization: bearer ********",
+        );
+    }
+
+    #[test]
+    fn test_bearer_token_in_json_stays_valid() {
+        // A `Bearer <token>` embedded in compact JSON must mask only the token, not span into adjacent fields.
+        let scrubber = default_scrubber();
+        let input = r#"{"authorization":"Bearer my-arbitrary-token-value","keep":"value"}"#;
+        let cleaned = String::from_utf8(scrubber.scrub_bytes(input.as_bytes())).unwrap();
+        serde_json::from_str::<serde_json::Value>(&cleaned).expect("scrubbed JSON must parse");
+        assert!(
+            cleaned.contains("Bearer ********"),
+            "bearer token must be masked: {cleaned}"
+        );
+        assert!(
+            cleaned.contains(r#""keep":"value""#),
+            "adjacent field must survive: {cleaned}"
         );
     }
 }

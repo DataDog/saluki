@@ -168,6 +168,19 @@ pub fn get_compat_remappings() -> Vec<RemapperRule> {
             "adp.network_http_retry_queue_bytes_per_sec",
             "retry_queue_duration_bytes_per_sec",
         )
+        .with_original_tags(["domain"])
+        .with_additional_tags([SOURCE_TAG]),
+        RemapperRule::by_name(
+            "adp.network_http_retry_queue_capacity_secs",
+            "retry_queue_duration_capacity_secs",
+        )
+        .with_original_tags(["domain"])
+        .with_additional_tags([SOURCE_TAG]),
+        RemapperRule::by_name(
+            "adp.network_http_retry_queue_capacity_bytes",
+            "retry_queue_duration_capacity_bytes",
+        )
+        .with_original_tags(["domain"])
         .with_additional_tags([SOURCE_TAG]),
     ]
 }

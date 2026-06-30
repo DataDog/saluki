@@ -14,8 +14,8 @@ use saluki_error::{ErrorContext as _, GenericError};
 use saluki_io::net::ListenAddress;
 use serde::Deserialize;
 use stringtheory::MetaString;
-use tokio::select;
 use tokio::sync::mpsc;
+use tokio::{pin, select};
 use tracing::{debug, error};
 
 use crate::common::otlp::config::Receiver;
@@ -112,7 +112,9 @@ impl Relay for OtlpRelay {
             metrics,
         } = *self;
 
-        let mut global_shutdown = context.take_shutdown_handle();
+        let global_shutdown = context.take_shutdown_handle();
+        pin!(global_shutdown);
+
         let mut health = context.take_health_handle();
         let global_thread_pool = context.topology_context().global_thread_pool().clone();
         let memory_limiter = context.topology_context().memory_limiter().clone();
@@ -264,18 +266,26 @@ impl OtlpHandler for RelayHandler {
 
 #[cfg(test)]
 mod config_smoke {
+    use datadog_agent_config_testing::config_registry::structs;
+    use datadog_agent_config_testing::run_config_smoke_tests;
     use serde_json::json;
 
     use super::OtlpRelayConfiguration;
-    use crate::config_registry::structs;
-    use crate::config_registry::test_support::run_config_smoke_tests;
+    use crate::config::{DatadogRemapper, KEY_ALIASES};
 
     #[tokio::test]
     async fn smoke_test() {
-        run_config_smoke_tests(structs::OTLP_RELAY_CONFIGURATION, &[], json!({}), |cfg| {
-            cfg.as_typed::<OtlpRelayConfiguration>()
-                .expect("OtlpRelayConfiguration should deserialize")
-        })
+        run_config_smoke_tests(
+            structs::OTLP_RELAY_CONFIGURATION,
+            &[],
+            json!({}),
+            |cfg| {
+                cfg.as_typed::<OtlpRelayConfiguration>()
+                    .expect("OtlpRelayConfiguration should deserialize")
+            },
+            KEY_ALIASES,
+            DatadogRemapper::new,
+        )
         .await
     }
 }

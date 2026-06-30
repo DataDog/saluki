@@ -8,10 +8,10 @@ use tracing::trace;
 
 /// An ergonomic wrapper around fairly utilizing I/O buffers from an object pool.
 ///
-/// As I/O buffer pools are fixed-size for the DogStatsD source, this presents an issue when looking to handle more
-/// connections than there are I/O buffers. If each new connection was simply to acquire a buffer from the pool and then
-/// reuse it until the connection closed, all new connections made after the buffer pool was exhausted would be blocked
-/// on acquiring an I/O buffer, potentially indefinitely. This would occur even if the existing connections were idle.
+/// DogStatsD uses a bounded elastic I/O buffer pool, which can allocate additional buffers on demand until it reaches
+/// its configured cap. Once the pool reaches that cap, new connections must wait for existing connections to release
+/// buffers. If each connection simply acquired a buffer and reused it until the connection closed, waiters could be
+/// blocked indefinitely even when existing connections were idle.
 ///
 /// `IoBufferManager` provides a simple, ergonomic wrapper over a basic pattern of treating the current buffer as
 /// optional, which allows the wrapper to release the current buffer back to the pool, and acquire a new one, all before

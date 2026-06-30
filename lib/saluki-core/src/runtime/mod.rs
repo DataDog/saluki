@@ -63,12 +63,13 @@ mod dedicated;
 pub use self::dedicated::{RuntimeConfiguration, RuntimeMode};
 
 mod restart;
-pub use self::restart::{RestartMode, RestartStrategy};
+pub use self::restart::{RestartMode, RestartStrategy, RestartType};
 
 mod supervisor;
 pub use self::supervisor::{
-    InitializationError, ShutdownStrategy, Supervisable, Supervisor, SupervisorError, SupervisorFuture,
+    AutoShutdown, ChildId, ChildSpecification, ChildState, InitializationError, ShutdownMode, ShutdownStrategy,
+    SpawnError, Supervisable, Supervisor, SupervisorError, SupervisorFuture, SupervisorHandle, SupervisorSpec,
+    WorkerSpec,
 };
 
-mod shutdown;
-pub use self::shutdown::{ProcessShutdown, ShutdownHandle};
+mod worker_state;

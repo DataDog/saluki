@@ -8,9 +8,9 @@ use async_trait::async_trait;
 use bytesize::ByteSize;
 use datadog_agent_commons::platform::PlatformSettings;
 use saluki_app::logging::{LogLevel, LoggingConfiguration, LoggingOverrideController};
-use saluki_common::deser::PermissiveBool;
+use saluki_common::{deser::PermissiveBool, sync::shutdown::ShutdownHandle};
 use saluki_config::GenericConfiguration;
-use saluki_core::runtime::{InitializationError, ProcessShutdown, Supervisable, SupervisorFuture};
+use saluki_core::runtime::{InitializationError, Supervisable, SupervisorFuture};
 use saluki_error::{ErrorContext as _, GenericError};
 use serde::Deserialize;
 use serde_with::serde_as;
@@ -73,6 +73,10 @@ impl LoggingConfigurationTranslator {
 
         if let Some(format_json) = read_permissive_bool(config, "log_format_json")? {
             logging.log_format_json = format_json;
+        }
+
+        if let Some(format_rfc3339) = read_permissive_bool(config, "log_format_rfc3339")? {
+            logging.log_format_rfc3339 = format_rfc3339;
         }
 
         if let Some(to_console) = read_permissive_bool(config, "log_to_console")? {
@@ -208,7 +212,7 @@ impl Supervisable for DynamicLogLevelWorker {
         "dynamic-log-level"
     }
 
-    async fn initialize(&self, process_shutdown: ProcessShutdown) -> Result<SupervisorFuture, InitializationError> {
+    async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
         let mut watcher = self.config.watch_for_updates("log_level");
         let controller = self.controller.clone();
 

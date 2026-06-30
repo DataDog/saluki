@@ -7,13 +7,12 @@ use saluki_api::{
     routing::{post, Router},
     APIHandler, DynamicRoute, EndpointType, StatusCode,
 };
-use saluki_core::runtime::{
-    state::DataspaceRegistry, InitializationError, ProcessShutdown, Supervisable, SupervisorFuture,
-};
+use saluki_common::sync::shutdown::ShutdownHandle;
+use saluki_core::runtime::{state::DataspaceRegistry, InitializationError, Supervisable, SupervisorFuture};
 use saluki_error::{generic_error, GenericError};
 use serde::Deserialize;
 use tokio::{
-    select,
+    pin, select,
     sync::{mpsc, Mutex},
     time::sleep,
 };
@@ -200,7 +199,7 @@ impl Supervisable for LoggingOverrideWorker {
         "dynamic-logging-override-processor"
     }
 
-    async fn initialize(&self, process_shutdown: ProcessShutdown) -> Result<SupervisorFuture, InitializationError> {
+    async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
         let mut state = self.state.clone().lock_owned().await;
         let logging_route = DynamicRoute::http(EndpointType::Privileged, &self.handler);
 
@@ -215,7 +214,7 @@ impl Supervisable for LoggingOverrideWorker {
     }
 }
 
-async fn process_override_actions(state: &mut LoggingOverrideWorkerState, mut process_shutdown: ProcessShutdown) {
+async fn process_override_actions(state: &mut LoggingOverrideWorkerState, process_shutdown: ShutdownHandle) {
     // Seed the canonical base filter from the reload handle. If the underlying reload layer has been dropped, we
     // cannot perform overrides or resets meaningfully: just emit an error and wait for shutdown so that we don't
     // exit prematurely and drive the supervisor into an infinite restart loop.
@@ -224,7 +223,7 @@ async fn process_override_actions(state: &mut LoggingOverrideWorkerState, mut pr
         None => {
             error!("Logging subsystem is in an indeterminate state; dynamic log filtering will not be available.");
 
-            process_shutdown.wait_for_shutdown().await;
+            process_shutdown.await;
             return;
         }
     };
@@ -232,14 +231,11 @@ async fn process_override_actions(state: &mut LoggingOverrideWorkerState, mut pr
     let mut override_active = false;
     let override_timeout = sleep(Duration::from_secs(3600));
 
-    tokio::pin!(override_timeout);
-
-    let shutdown = process_shutdown.wait_for_shutdown();
-    tokio::pin!(shutdown);
+    pin!(override_timeout, process_shutdown);
 
     loop {
         select! {
-            _ = &mut shutdown => break,
+            _ = &mut process_shutdown => break,
             maybe_action = state.rx.recv() => match maybe_action {
                 Some(LoggingOverrideAction::Override { duration, filter }) => {
                     info!(directives = %filter, "Overriding existing log filtering directives for {} seconds...", duration.as_secs());
@@ -370,7 +366,7 @@ mod tests {
             rx,
         };
         let processor = tokio::spawn(async move {
-            process_override_actions(&mut state, ProcessShutdown::noop()).await;
+            process_override_actions(&mut state, ShutdownHandle::noop()).await;
         });
 
         // The reload layer must outlive the handles -- callers should bind it (e.g., `let _layer = ...`) to keep

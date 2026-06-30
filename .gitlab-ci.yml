@@ -1,5 +1,6 @@
 include:
   - .gitlab/*.yml
+  - 'https://gitlab-templates.ddbuild.io/slack-notifier/v3-sdm/template.yml'
 
 stages:
   - test
@@ -8,12 +9,22 @@ stages:
   - benchmark
   - release
   - internal
+  - notify
 
 # Our workflow rules let us override specific variables, in a consistent way, depending on whether this is an "internal"
 # run (we consider all non-tagged pipeline triggers to be "internal") or a "release" run.
 #
 # This mostly controls how we tag our ADP container images and set various bits of metadata.
 workflow:
+  # Auto-cancel any interruptible jobs from a previous pipeline when a new commit lands on the
+  # same ref. The default ('conservative') only cancels the pipeline if no non-interruptible
+  # job has started yet — since our Linux jobs are non-interruptible and start immediately,
+  # that mode effectively never cancels anything. 'interruptible' cancels just the jobs marked
+  # interruptible: true (currently the macOS unit + integration jobs, which run on scarce
+  # bare-metal runner capacity); non-interruptible jobs continue to completion as before.
+  # https://docs.gitlab.com/ci/yaml/#workflowauto_cancelon_new_commit
+  auto_cancel:
+    on_new_commit: interruptible
   rules:
     - if: $CI_COMMIT_TAG == null
       variables:
@@ -42,12 +53,12 @@ variables:
   SALUKI_GENERAL_CI_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/general-ci:latest"
   SALUKI_SMP_CI_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/smp-ci:latest"
   SALUKI_BUILDCACHE_CI_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/buildcache-ci:latest"
-  SALUKI_SPDX_LICENSES_CI_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/spdx-licenses-ci:latest"
+  SPDX_LICENSES_IMAGE: "registry.ddbuild.io/images/spdx-license-list-data:3.28.0"
 
   # Converged Datadog Agent-specific variables, which control how we build the converged Datadog Agent image that we
   # publicly publish.
-  PUBLIC_DSD_VERSION: "7.79.0"
-  PUBLIC_DD_AGENT_VERSION: "7.79.0-jmx"
+  PUBLIC_DSD_VERSION: "7.80.3"
+  PUBLIC_DD_AGENT_VERSION: "7.80.3-full"
 
   # Base images to copy Agent Data Plane into, depending on whether the image is meant for our internal environment or
   # public registries.
@@ -97,6 +108,13 @@ default:
   rules:
     if: $CI_COMMIT_BRANCH =~ /^mq-working-branch/
 
+# The nightly full-suite SMP run: a scheduled pipeline on main with SMP_NIGHTLY set. Create the
+# schedule in the GitLab UI with the variable SMP_NIGHTLY=true (mirrors the FUZZ_SCHEDULED /
+# BUILD_HELPER_IMAGES scheduled-pipeline pattern).
+.on_smp_nightly:
+  rules:
+    if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_BRANCH == "main" && $SMP_NIGHTLY == "true"
+
 # Common build-specific variables that need to be shared across stages.
 .build-common-variables:
   variables:
@@ -114,14 +132,8 @@ default:
   variables:
     BUILD_ARCH: arm64
     BUILD_TARGET: aarch64-unknown-linux-musl
-    # There's an issue with cross-compiling for ARM64 from the GNU toolchain
-    # due to MUSL's lack of support for `__getauxval`, which is needed for
-    # "outline atomics", which involves runtime detection of LSE instructions
-    # used for atomics.
-    #
-    # Without this, `jemalloc` fails to compile due to how it detects support
-    # for different atomic operations.
-    BUILD_CFLAGS: "-mno-outline-atomics"
+    # NOTE: aarch64 musl needs `-mno-outline-atomics` (otherwise jemalloc fails to build). That flag
+    # now lives with the target it applies to, in docker/scripts/build/targets/aarch64-unknown-linux-musl.sh.
 
 .linux-test-job:
   image: "${SALUKI_BUILD_CI_IMAGE}"
@@ -151,8 +163,23 @@ default:
     KUBERNETES_MEMORY_REQUEST: "8Gi"
     KUBERNETES_MEMORY_LIMIT: "12Gi"
 
+# Shared mixins for macOS runner jobs.
+#
+# arm64 jobs use the shared virtualized macOS Tart runner pool (`macos:tart`). Each job runs
+# in a fresh VM, which gives clean isolation between pipelines, decouples the host toolchain,
+# and lets two jobs share a single `mac2.metal` host. amd64 still uses the dedicated bare-metal
+# pool (`macos:sonoma-amd64`); migrating it requires equivalent infra that isn't yet in place.
+#
+# `interruptible: true` is set here so every macOS job inherits it. macOS runner capacity in
+# the GitLab fleet is finite; auto-cancelling superseded pipelines (for example, after a quick
+# fixup push to an open PR) frees the runner immediately instead of holding the slot for the
+# duration of the now-stale run. See:
+# https://docs.gitlab.com/ci/yaml/#interruptible
 .macos-amd64-test-job:
   tags: ["macos:sonoma-amd64", "specific:true"]
+  interruptible: true
 
 .macos-arm64-test-job:
-  tags: ["macos:sonoma-arm64", "specific:true"]
+  tags: ["macos:tart"]
+  image: 486234852809.dkr.ecr.us-east-1.amazonaws.com/ci/ci-platform-machine-images/tart-vm:saluki-sonoma-latest
+  interruptible: true

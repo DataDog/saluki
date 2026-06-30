@@ -2,31 +2,31 @@ type: integration
 name: "dogstatsd-enabled"
 description: "Verifies DogStatsD pipeline starts and listens on UDP port"
 timeout: 120s
+runtimes: [linux, mac, windows]
+
+env:
+  DD_API_KEY: "00000000000000000000000000000000"
+  DD_HOSTNAME: "integration-test-dsd"
+  DD_DATA_PLANE_ENABLED: "true"
+  DD_DATA_PLANE_STANDALONE_MODE: "false"
+  DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+  DD_DOGSTATSD_NON_LOCAL_TRAFFIC: "true"
 
 container:
-  image: "saluki-images/datadog-agent:testing-devel"
-  env:
-    DD_API_KEY: "test-api-key"
-    DD_HOSTNAME: "integration-test-dsd"
-    DD_DATA_PLANE_ENABLED: "true"
-    DD_DATA_PLANE_STANDALONE_MODE: "true"
-    DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
-    DD_DOGSTATSD_PORT: "8125"
-    DD_DOGSTATSD_NON_LOCAL_TRAFFIC: "true"
   exposed_ports:
-    - "8125/udp"
+    - "58125/udp"
 
-assertions:
+procedure:
   # Make sure the process becomes healthy, and stays up without errors, listening for DSD (UDP),
   # for ~10 seconds after.
   - parallel:
-      - type: process_stable_for
+      - assertion: process_stable_for
         duration: 10s
-      - type: port_listening
-        port: 8125
+      - assertion: port_listening
+        port: 58125
         protocol: udp
-        timeout: 10s
-      - type: log_not_contains
+        timeout: 60s
+      - assertion: log_not_contains
         pattern: "panic|PANIC"
         regex: true
         during: 10s

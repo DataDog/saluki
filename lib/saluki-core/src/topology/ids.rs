@@ -1,3 +1,4 @@
+//! Component and component output identifiers.
 use core::fmt;
 use std::{borrow::Cow, ops::Deref};
 
@@ -289,6 +290,44 @@ impl TypedComponentOutputId {
     /// Returns the output data type.
     pub fn output_ty(&self) -> DataType {
         self.output_ty
+    }
+}
+
+/// Disambiguation marker for [`AsComponentIds`] when a single component ID is given.
+pub struct Single;
+
+/// Disambiguation marker for [`AsComponentIds`] when multiple component IDs are given.
+pub struct Multiple;
+
+/// Conversion into an iterator of component IDs.
+///
+/// Intended for use in methods that accept component IDs as string references, where a single or multiple IDs may be
+/// passed within a single parameter. This allows being generic over those possibilities such that callers can use more
+/// natural values rather than contrived values (such as always having to wrap a single string in a slice, etc).
+pub trait AsComponentIds<Marker> {
+    /// Converts `self` into an iterator of component output IDs.
+    ///
+    /// This borrows `self` -- rather than consuming it as the `into_` prefix would normally imply -- so that the
+    /// iterator can be built multiple times from the same value, which is necessary for connecting every upstream ID
+    /// to every downstream ID when making many-to-many connections.
+    fn as_component_ids(&self) -> impl Iterator<Item: AsRef<str>>;
+}
+
+impl<T> AsComponentIds<Single> for T
+where
+    T: AsRef<str>,
+{
+    fn as_component_ids(&self) -> impl Iterator<Item: AsRef<str>> {
+        std::iter::once(self)
+    }
+}
+
+impl<I> AsComponentIds<Multiple> for I
+where
+    for<'a> &'a I: IntoIterator<Item: AsRef<str>>,
+{
+    fn as_component_ids(&self) -> impl Iterator<Item: AsRef<str>> {
+        self.into_iter()
     }
 }
 

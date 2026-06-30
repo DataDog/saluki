@@ -6,7 +6,7 @@
 
 #[doc(hidden)]
 pub mod reexport {
-    pub use paste::paste;
+    pub use pastey::paste;
 }
 
 pub mod components;

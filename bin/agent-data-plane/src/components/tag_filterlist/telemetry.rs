@@ -1,4 +1,4 @@
-use metrics::Counter;
+use metrics::{Counter, Gauge};
 use saluki_metrics::MetricsBuilder;
 
 use super::FilterMetricTagsOutcome;
@@ -10,16 +10,20 @@ pub struct Telemetry {
     noop_hits: Counter,
     metrics_modified: Counter,
     tags_filtered: Counter,
+    size: Gauge,
+    updates: Counter,
 }
 
 impl Telemetry {
     pub fn new(builder: &MetricsBuilder) -> Self {
         Self {
-            rule_hits: builder.register_debug_counter("tag_filterlist_rule_hits_total"),
-            rule_misses: builder.register_debug_counter("tag_filterlist_rule_misses_total"),
-            noop_hits: builder.register_debug_counter("tag_filterlist_noop_hits_total"),
-            metrics_modified: builder.register_debug_counter("tag_filterlist_metrics_modified_total"),
-            tags_filtered: builder.register_debug_counter("tag_filterlist_tags_filtered_total"),
+            rule_hits: builder.register_counter("tag_filterlist_rule_hits_total"),
+            rule_misses: builder.register_counter("tag_filterlist_rule_misses_total"),
+            noop_hits: builder.register_counter("tag_filterlist_noop_hits_total"),
+            metrics_modified: builder.register_counter("tag_filterlist_metrics_modified_total"),
+            tags_filtered: builder.register_counter("tag_filterlist_tags_filtered_total"),
+            size: builder.register_gauge("tag_filterlist_size"),
+            updates: builder.register_counter("tag_filterlist_updates_total"),
         }
     }
 
@@ -38,5 +42,13 @@ impl Telemetry {
                 self.tags_filtered.increment(removed_tags as u64);
             }
         }
+    }
+
+    pub fn set_size(&self, count: usize) {
+        self.size.set(count as f64);
+    }
+
+    pub fn increment_updates(&self) {
+        self.updates.increment(1);
     }
 }

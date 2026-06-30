@@ -1,0 +1,34 @@
+[package]
+name = "datadog-agent-commons"
+version = "0.1.0"
+edition = { workspace = true }
+license = { workspace = true }
+repository = { workspace = true }
+
+[dependencies]
+backon = { workspace = true, features = ["tokio-sleep"] }
+datadog-protos = { workspace = true }
+futures = { workspace = true }
+pin-project-lite = { workspace = true }
+rustls = { workspace = true }
+rustls-pki-types = { workspace = true }
+saluki-config = { workspace = true }
+saluki-error = { workspace = true }
+saluki-io = { workspace = true }
+saluki-metadata = { workspace = true }
+serde = { workspace = true }
+tokio = { workspace = true }
+tonic = { workspace = true, features = ["transport"] }
+tracing = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-registry = "0.6.1"
+
+[dev-dependencies]
+serde_json = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+tokio-vsock = { workspace = true }
+
+[lints]
+workspace = true

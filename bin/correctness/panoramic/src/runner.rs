@@ -4,6 +4,7 @@
 //! is used regardless of output mode (TUI or plain). Events are emitted to a channel
 //! and consumed by either a TUI renderer or logging consumer.
 
+use std::sync::RwLock;
 use std::{
     collections::HashMap,
     io::Write as _,
@@ -12,21 +13,19 @@ use std::{
     time::{Duration, Instant},
 };
 
-use airlock::driver::{Driver, DriverConfig, DriverDetails};
-use bollard::container::LogOutput;
-use futures::{
-    future,
-    stream::{self, StreamExt as _},
-};
+use airlock::driver::{ContainerOs, Driver, DriverConfig, DriverDetails};
+use bollard::{container::LogOutput, errors::Error as DockerError};
+use futures::stream::{self, StreamExt as _};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
-use tokio::sync::{mpsc, RwLock, Semaphore};
+use tokio::pin;
+use tokio::sync::{mpsc, Semaphore};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 use crate::test::{Test, TestContext};
 use crate::{
-    assertions::{create_assertion, AssertionContext, AssertionResult, LogBuffer},
-    config::{parse_file_spec, parse_port_spec, AssertionStep, IntegrationConfig},
+    assertions::{AssertionContext, AssertionResult, LogBuffer},
+    config::{parse_file_spec, parse_port_spec, IntegrationConfig},
     events::TestEvent,
     reporter::{PhaseTiming, TestResult},
 };
@@ -39,6 +38,80 @@ pub(crate) type EventSender = mpsc::UnboundedSender<TestEvent>;
 
 /// The amount of time a test has to clean up after cancellation or timing out.
 const GRACE_TIME: Duration = Duration::from_secs(30);
+
+/// Maps shared `DD_DATA_PLANE_*` test env keys to their Windows-image-native nested form.
+///
+/// ADP reads its own configuration as a nested object: a key like `data_plane.enabled` maps to
+/// the env var `DD_DATA_PLANE__ENABLED` (single underscore between path levels, double
+/// underscore separating the `data_plane` prefix from the inner path). The Core Agent's config
+/// loader uses single underscores throughout and exposes the same setting as
+/// `DD_DATA_PLANE_ENABLED`.
+///
+/// On the `linux` runtime the test target is the converged Datadog Agent image, where
+/// an s6 init script reads each `DD_DATA_PLANE_*` env var and re-exports it under the nested
+/// name before launching ADP. Tests therefore write the flat shape (`DD_DATA_PLANE_ENABLED`)
+/// in their YAML, which works on `linux` and `mac` (the Unix runner has its own translator).
+///
+/// On the Windows runtime the test target is an ADP-only image we build in this repository. There is
+/// no s6 entrypoint and ADP only reads the nested form, so we replay the same translation here
+/// before the env vars cross into the container. Keeping the table in the harness lets test
+/// YAML files stay portable across all three runtimes; only entries that are actually used
+/// today are listed, and any new shared `DD_DATA_PLANE_*` key needs a one-line addition here.
+const WINDOWS_ENV_ALIASES: &[(&str, &str)] = &[
+    ("DD_DATA_PLANE_ENABLED", "DD_DATA_PLANE__ENABLED"),
+    ("DD_DATA_PLANE_STANDALONE_MODE", "DD_DATA_PLANE__STANDALONE_MODE"),
+    (
+        "DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT",
+        "DD_DATA_PLANE__USE_NEW_CONFIG_STREAM_ENDPOINT",
+    ),
+    (
+        "DD_DATA_PLANE_REMOTE_AGENT_ENABLED",
+        "DD_DATA_PLANE__REMOTE_AGENT_ENABLED",
+    ),
+    ("DD_DATA_PLANE_DOGSTATSD_ENABLED", "DD_DATA_PLANE__DOGSTATSD__ENABLED"),
+    ("DD_DATA_PLANE_OTLP_ENABLED", "DD_DATA_PLANE__OTLP__ENABLED"),
+    (
+        "DD_DATA_PLANE_OTLP_PROXY_ENABLED",
+        "DD_DATA_PLANE__OTLP__PROXY__ENABLED",
+    ),
+    (
+        "DD_DATA_PLANE_OTLP_PROXY_TRACES_ENABLED",
+        "DD_DATA_PLANE__OTLP__PROXY__TRACES__ENABLED",
+    ),
+    (
+        "DD_DATA_PLANE_OTLP_PROXY_METRICS_ENABLED",
+        "DD_DATA_PLANE__OTLP__PROXY__METRICS__ENABLED",
+    ),
+    (
+        "DD_DATA_PLANE_OTLP_PROXY_LOGS_ENABLED",
+        "DD_DATA_PLANE__OTLP__PROXY__LOGS__ENABLED",
+    ),
+    ("DD_DATA_PLANE_LOG_FILE", "DD_DATA_PLANE__LOG_FILE"),
+];
+
+fn normalize_env_for_runtime(mut env: HashMap<String, String>, runtime: &str) -> HashMap<String, String> {
+    if runtime == crate::config::WINDOWS_RUNTIME {
+        for (source, target) in WINDOWS_ENV_ALIASES {
+            if let Some(value) = env.get(*source).cloned() {
+                env.entry((*target).to_string()).or_insert(value);
+            }
+        }
+
+        // As of Agent 7.80, the Core Agent only honors `data_plane.enabled` on Linux (and later
+        // macOS); on every other platform `sanitizeDataPlaneConfig` installs an authoritative
+        // `data_plane.enabled=false` override unless `DD_DATA_PLANE_FORCE_ENABLE=true` is set. The
+        // Core Agent runs inside the Windows target container (started by the ADP entrypoint) and
+        // reads this flat env var, so without it the Agent streams `data_plane.enabled=false` to ADP
+        // and ADP exits with "Agent Data Plane is not enabled." Mirror the macOS host-process path
+        // (see `unix_runner::build_core_agent_forced_env`) and force-enable when ADP is requested.
+        if env.get("DD_DATA_PLANE_ENABLED").is_some_and(|value| value == "true") {
+            env.entry("DD_DATA_PLANE_FORCE_ENABLE".to_string())
+                .or_insert_with(|| "true".to_string());
+        }
+    }
+
+    env
+}
 
 pub(crate) struct RunArgs {
     /// The number of tests to run in parallel.
@@ -315,7 +388,7 @@ impl Runner {
         }
 
         let run_fut = test.run(tctx);
-        tokio::pin!(run_fut);
+        pin!(run_fut);
 
         // Run the test for the duration of 'timeout', then send a cancel request if it times out and wait GRACE_TIME
         // for teardown.
@@ -495,6 +568,8 @@ impl IntegrationRunner {
         // container exit does not trigger the external cancel path.
         let exit_token = CancellationToken::new();
         let exit_signal = exit_token.clone();
+        let docker_exit_code: crate::assertions::DockerExitCodeCell = Arc::new(std::sync::OnceLock::new());
+        let docker_exit_code_for_exit = docker_exit_code.clone();
         let container_name = details.container_name().to_string();
         let container_name_for_exit = container_name.clone();
         let exit_handle = tokio::spawn(async move {
@@ -507,7 +582,15 @@ impl IntegrationRunner {
                 &container_name_for_exit,
                 None::<bollard::query_parameters::WaitContainerOptions>,
             );
-            if wait_stream.next().await.is_some() {
+            if let Some(result) = wait_stream.next().await {
+                let exit_code = match result {
+                    Ok(response) => Some(response.status_code),
+                    Err(DockerError::DockerContainerWaitError { code, .. }) => Some(code),
+                    Err(_) => None,
+                };
+                if let Some(code) = exit_code {
+                    let _ = docker_exit_code_for_exit.set(code);
+                }
                 exit_signal.cancel();
             }
         });
@@ -520,7 +603,13 @@ impl IntegrationRunner {
             let phase_start = Instant::now();
             debug!(test = %test_name, "Resolving dynamic variables...");
 
-            match crate::dynamic_vars::read_resolved_vars(&driver).await {
+            let resolved_vars = if self.test_case.active_runtime == crate::config::WINDOWS_RUNTIME {
+                crate::dynamic_vars::resolve_windows_vars(&self.test_case, details.container_ip()).await
+            } else {
+                crate::dynamic_vars::read_resolved_vars(&driver).await
+            };
+
+            match resolved_vars {
                 Ok(vars) => {
                     // Fail on empty values — indicates the init script command failed.
                     for (key, value) in &vars {
@@ -616,7 +705,7 @@ impl IntegrationRunner {
 
         // If we are canceled while running our assertions, we return early to respect cancellation.
         let assertion_results = tokio::select! {
-            results = self.run_assertions(&port_mappings, &container_name, &exit_token) => results,
+            results = self.run_assertions(&port_mappings, details.container_ip(), &container_name, &exit_token, docker_exit_code) => results,
             _ = test_cancel.cancelled() => vec![AssertionResult {
                 name: "cancelled".to_string(),
                 passed: false,
@@ -696,21 +785,49 @@ impl IntegrationRunner {
     async fn build_driver_config(&self) -> Result<DriverConfig, GenericError> {
         let container = &self.test_case.container;
 
-        // Convert env vars to the format expected by airlock.
-        let env_vars: Vec<String> = container.env.iter().map(|(k, v)| format!("{}={}", k, v)).collect();
+        // Merge framework-level port-isolation env vars with the test's own env. Framework
+        // defaults are applied first so the test's `env` block takes precedence. Keeps the test
+        // surface consistent across the linux and `mac` runtimes — both see the same shifted
+        // port table.
+        let mut merged_env = crate::test_env::port_isolation_env();
+        for (k, v) in &self.test_case.env {
+            merged_env.insert(k.clone(), v.clone());
+        }
+        let merged_env = normalize_env_for_runtime(merged_env, &self.test_case.active_runtime);
+        let env_vars: Vec<String> = merged_env.iter().map(|(k, v)| format!("{}={}", k, v)).collect();
 
         // Build the target config.
+        let container_os = if self.test_case.active_runtime == crate::config::WINDOWS_RUNTIME {
+            ContainerOs::Windows
+        } else {
+            ContainerOs::Linux
+        };
+
+        let image = crate::config::target_image_for_runtime(&self.test_case.active_runtime)
+            .ok_or_else(|| {
+                generic_error!(
+                    "Runtime '{}' has no associated container image; integration tests are unsupported.",
+                    self.test_case.active_runtime
+                )
+            })?
+            .to_string();
+
         let target_config = airlock::config::TargetConfig {
-            image: container.image.clone(),
+            image,
             entrypoint: container.entrypoint.clone(),
             command: container.command.clone(),
             additional_env_vars: env_vars,
+            container_os,
         };
 
         let mut config = DriverConfig::target("target", target_config).await?;
 
-        // Apply panoramic's read-only file overlays before any test-specific bind mounts.
-        config = crate::mounts::apply_target_mounts(config, self.tctx.mounts_dir())?;
+        // Apply panoramic's read-only file overlays before any test-specific bind mounts. The
+        // overlays target Linux paths (such as /var/log/datadog) and don't apply to Windows
+        // containers, which use their own platform paths.
+        if self.test_case.active_runtime != crate::config::WINDOWS_RUNTIME {
+            config = crate::mounts::apply_target_mounts(config, self.tctx.mounts_dir())?;
+        }
 
         // Add file mounts.
         for file_spec in &container.files {
@@ -775,7 +892,7 @@ impl IntegrationRunner {
             while let Some(log_result) = log_stream.next().await {
                 match log_result {
                     Ok(log) => {
-                        let mut buffer = log_buffer.write().await;
+                        let mut buffer = log_buffer.write().unwrap();
                         match log {
                             LogOutput::StdOut { message } => {
                                 if let Ok(line) = String::from_utf8(message.to_vec()) {
@@ -806,126 +923,27 @@ impl IntegrationRunner {
     }
 
     async fn run_assertions(
-        &self, port_mappings: &HashMap<String, u16>, container_name: &str, exit_token: &CancellationToken,
+        &self, port_mappings: &HashMap<String, u16>, container_ip: Option<&str>, container_name: &str,
+        exit_token: &CancellationToken, docker_exit_code: crate::assertions::DockerExitCodeCell,
     ) -> Vec<AssertionResult> {
-        let mut results = Vec::new();
-        let total_steps = self.test_case.assertions.len();
-
         let ctx = AssertionContext {
             log_buffer: self.log_buffer.clone(),
             container_exit_token: exit_token.clone(),
             cancel_token: self.tctx.test_cancel_token(),
             port_mappings: port_mappings.clone(),
+            container_ip: container_ip.map(str::to_string),
+            target_os: Some(if self.test_case.active_runtime == crate::config::WINDOWS_RUNTIME {
+                ContainerOs::Windows
+            } else {
+                ContainerOs::Linux
+            }),
             container_name: container_name.to_string(),
+            is_host_process: false,
+            host_process_exit_code: None,
+            docker_container_exit_code: Some(docker_exit_code),
+            core_agent_auth_token_path: None,
         };
-
-        for (step_index, step) in self.test_case.assertions.iter().enumerate() {
-            match step {
-                AssertionStep::Single(assertion_config) => {
-                    let assertion = match create_assertion(assertion_config) {
-                        Ok(a) => a,
-                        Err(e) => {
-                            error!(error = %e, "Failed to create assertion from configuration.");
-                            results.push(AssertionResult {
-                                name: "config_error".to_string(),
-                                passed: false,
-                                message: format!("Failed to create assertion: {}.", e),
-                                duration: Duration::ZERO,
-                            });
-                            break;
-                        }
-                    };
-
-                    debug!(
-                        step = step_index + 1,
-                        step_total = total_steps,
-                        assertion_type = assertion.name(),
-                        description = %assertion.description(),
-                        "Running assertion..."
-                    );
-
-                    let result = assertion.check(&ctx).await;
-
-                    if result.passed {
-                        debug!(
-                            assertion_type = assertion.name(),
-                            duration = ?result.duration,
-                            "Assertion passed."
-                        );
-                    } else {
-                        debug!(
-                            assertion_type = assertion.name(),
-                            duration = ?result.duration,
-                            message = %result.message,
-                            "Assertion failed."
-                        );
-                    }
-
-                    let failed = !result.passed;
-                    results.push(result);
-
-                    if failed {
-                        debug!("Stopping assertion execution due to failure (fail-fast).");
-                        break;
-                    }
-                }
-
-                AssertionStep::Parallel { parallel } => {
-                    let mut assertions = Vec::new();
-                    let mut config_error = false;
-
-                    for assertion_config in parallel {
-                        match create_assertion(assertion_config) {
-                            Ok(a) => assertions.push(a),
-                            Err(e) => {
-                                error!(error = %e, "Failed to create assertion from configuration.");
-                                results.push(AssertionResult {
-                                    name: "config_error".to_string(),
-                                    passed: false,
-                                    message: format!("Failed to create assertion: {}.", e),
-                                    duration: Duration::ZERO,
-                                });
-                                config_error = true;
-                                break;
-                            }
-                        }
-                    }
-
-                    if config_error {
-                        break;
-                    }
-
-                    debug!(
-                        step = step_index + 1,
-                        step_total = total_steps,
-                        assertion_count = assertions.len(),
-                        "Running parallel assertion block..."
-                    );
-
-                    let futures: Vec<_> = assertions.iter().map(|a| a.check(&ctx)).collect();
-                    let parallel_results = future::join_all(futures).await;
-
-                    let any_failed = parallel_results.iter().any(|r| !r.passed);
-
-                    for result in parallel_results {
-                        debug!(
-                            assertion_type = %result.name,
-                            passed = result.passed,
-                            duration = ?result.duration,
-                            "Parallel assertion completed."
-                        );
-                        results.push(result);
-                    }
-
-                    if any_failed {
-                        debug!("Stopping assertion execution due to failure in parallel block (fail-fast).");
-                        break;
-                    }
-                }
-            }
-        }
-
-        results
+        crate::assertions::run_assertion_steps(&self.test_case, &ctx).await
     }
 
     async fn cleanup(&self, _driver: &Driver) -> Result<(), GenericError> {
@@ -947,7 +965,7 @@ impl IntegrationRunner {
         let log_dir = self.tctx.log_dir();
 
         // Get the log buffer contents.
-        let buffer = self.log_buffer.read().await;
+        let buffer = self.log_buffer.read().unwrap();
 
         // Write stdout.
         let stdout_path = log_dir.join("stdout.log");
@@ -1067,5 +1085,115 @@ impl TestResult {
             phase_timings: vec![],
             assertion_details: vec![],
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn windows_runtime_adds_adp_native_env_aliases() {
+        let env = HashMap::from([
+            ("DD_DATA_PLANE_ENABLED".to_string(), "true".to_string()),
+            ("DD_DATA_PLANE_STANDALONE_MODE".to_string(), "true".to_string()),
+            ("DD_DATA_PLANE_DOGSTATSD_ENABLED".to_string(), "false".to_string()),
+            ("DD_DATA_PLANE_OTLP_ENABLED".to_string(), "true".to_string()),
+            ("DD_DATA_PLANE_OTLP_PROXY_ENABLED".to_string(), "false".to_string()),
+            (
+                "DD_DATA_PLANE_OTLP_PROXY_TRACES_ENABLED".to_string(),
+                "false".to_string(),
+            ),
+        ]);
+
+        let normalized = normalize_env_for_runtime(env, crate::config::WINDOWS_RUNTIME);
+
+        assert_eq!(normalized.get("DD_DATA_PLANE__ENABLED"), Some(&"true".to_string()));
+        assert_eq!(
+            normalized.get("DD_DATA_PLANE__STANDALONE_MODE"),
+            Some(&"true".to_string())
+        );
+        assert_eq!(
+            normalized.get("DD_DATA_PLANE__DOGSTATSD__ENABLED"),
+            Some(&"false".to_string())
+        );
+        assert_eq!(
+            normalized.get("DD_DATA_PLANE__OTLP__ENABLED"),
+            Some(&"true".to_string())
+        );
+        assert_eq!(
+            normalized.get("DD_DATA_PLANE__OTLP__PROXY__ENABLED"),
+            Some(&"false".to_string())
+        );
+        assert_eq!(
+            normalized.get("DD_DATA_PLANE__OTLP__PROXY__TRACES__ENABLED"),
+            Some(&"false".to_string())
+        );
+        // Without an explicit DD_DATA_PLANE_REMOTE_AGENT_ENABLED in the input, the normalized
+        // env should not contain a synthesized nested key either.
+        assert!(!normalized.contains_key("DD_DATA_PLANE__REMOTE_AGENT_ENABLED"));
+    }
+
+    #[test]
+    fn windows_runtime_preserves_explicit_adp_native_env_values() {
+        let env = HashMap::from([
+            ("DD_DATA_PLANE_ENABLED".to_string(), "true".to_string()),
+            ("DD_DATA_PLANE__ENABLED".to_string(), "false".to_string()),
+        ]);
+
+        let normalized = normalize_env_for_runtime(env, crate::config::WINDOWS_RUNTIME);
+
+        assert_eq!(normalized.get("DD_DATA_PLANE__ENABLED"), Some(&"false".to_string()));
+    }
+
+    #[test]
+    fn linux_runtime_does_not_add_adp_native_env_aliases() {
+        let env = HashMap::from([("DD_DATA_PLANE_ENABLED".to_string(), "true".to_string())]);
+
+        let normalized = normalize_env_for_runtime(env, crate::config::LINUX_RUNTIME);
+
+        assert!(!normalized.contains_key("DD_DATA_PLANE__ENABLED"));
+    }
+
+    #[test]
+    fn windows_runtime_force_enables_adp_when_enabled() {
+        let env = HashMap::from([("DD_DATA_PLANE_ENABLED".to_string(), "true".to_string())]);
+
+        let normalized = normalize_env_for_runtime(env, crate::config::WINDOWS_RUNTIME);
+
+        // The Core Agent in the Windows target container needs DD_DATA_PLANE_FORCE_ENABLE on
+        // non-Linux platforms (Agent 7.80+ `sanitizeDataPlaneConfig`), otherwise it streams
+        // data_plane.enabled=false to ADP and ADP exits.
+        assert_eq!(normalized.get("DD_DATA_PLANE_FORCE_ENABLE"), Some(&"true".to_string()));
+    }
+
+    #[test]
+    fn windows_runtime_does_not_force_enable_adp_when_disabled() {
+        let env = HashMap::from([("DD_DATA_PLANE_ENABLED".to_string(), "false".to_string())]);
+
+        let normalized = normalize_env_for_runtime(env, crate::config::WINDOWS_RUNTIME);
+
+        assert!(!normalized.contains_key("DD_DATA_PLANE_FORCE_ENABLE"));
+    }
+
+    #[test]
+    fn windows_runtime_preserves_explicit_force_enable_value() {
+        let env = HashMap::from([
+            ("DD_DATA_PLANE_ENABLED".to_string(), "true".to_string()),
+            ("DD_DATA_PLANE_FORCE_ENABLE".to_string(), "false".to_string()),
+        ]);
+
+        let normalized = normalize_env_for_runtime(env, crate::config::WINDOWS_RUNTIME);
+
+        assert_eq!(normalized.get("DD_DATA_PLANE_FORCE_ENABLE"), Some(&"false".to_string()));
+    }
+
+    #[test]
+    fn linux_runtime_does_not_force_enable_adp() {
+        let env = HashMap::from([("DD_DATA_PLANE_ENABLED".to_string(), "true".to_string())]);
+
+        let normalized = normalize_env_for_runtime(env, crate::config::LINUX_RUNTIME);
+
+        assert!(!normalized.contains_key("DD_DATA_PLANE_FORCE_ENABLE"));
     }
 }

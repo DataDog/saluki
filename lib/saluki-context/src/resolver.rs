@@ -346,6 +346,13 @@ impl ContextResolver {
             .or_else(|| self.interner.try_intern(s.as_ref()).map(MetaString::from))
             .or_else(|| {
                 self.allow_heap_allocations.then(|| {
+                    // Heap spill: with `allow_context_heap_allocations` true (the default), a full interner silently
+                    // falls back to the heap, so the bounded-memory guarantee no longer holds. Anchor that this path is
+                    // reached so the unbounded-growth behavior is observable.
+                    saluki_antithesis::sometimes!(
+                        true,
+                        "context string interner spilled to the heap (unbounded under default config)"
+                    );
                     self.telemetry.intern_fallback_total().increment(1);
                     MetaString::from(s.as_ref())
                 })
@@ -727,6 +734,13 @@ impl TagsResolver {
             .or_else(|| self.interner.try_intern(s.as_ref()).map(MetaString::from))
             .or_else(|| {
                 self.allow_heap_allocations.then(|| {
+                    // Heap spill: with `allow_context_heap_allocations` true (the default), a full interner silently
+                    // falls back to the heap, so the bounded-memory guarantee no longer holds. Anchor that this path is
+                    // reached so the unbounded-growth behavior is observable.
+                    saluki_antithesis::sometimes!(
+                        true,
+                        "tag string interner spilled to the heap (unbounded under default config)"
+                    );
                     self.telemetry.intern_fallback_total().increment(1);
                     MetaString::from(s.as_ref())
                 })

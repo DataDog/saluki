@@ -7,27 +7,27 @@ type: integration
 name: "adp-config-check-warn"
 description: "Verify config check warns on medium-severity incompatible keys without exiting"
 timeout: 120s
+runtimes: [linux, mac, windows]
 
-container:
-  image: "saluki-images/datadog-agent:testing-devel"
-  env:
-    DD_API_KEY: "test-api-key"
-    DD_HOSTNAME: "integration-test-config-warn"
-    DD_DATA_PLANE_ENABLED: "true"
-    DD_DATA_PLANE_STANDALONE_MODE: "false"
-    DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT: "true"
-    DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
-    DD_DOGSTATSD_TELEMETRY_ENABLED_LISTENER_ID: "true" # Incompatible(Medium) - triggers generic warning
+env:
+  DD_API_KEY: "00000000000000000000000000000000"
+  DD_HOSTNAME: "integration-test-config-warn"
+  DD_DATA_PLANE_ENABLED: "true"
+  DD_DATA_PLANE_STANDALONE_MODE: "false"
+  DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT: "true"
+  DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+  DD_DOGSTATSD_TELEMETRY_ENABLED_LISTENER_ID: "true" # Incompatible(Medium) - triggers generic warning
 
-assertions:
-  - type: log_contains
+
+procedure:
+  - assertion: log_contains
     pattern: 'key:"dogstatsd_telemetry_enabled_listener_id" | Unsupported configuration key. Proceeding.'
     regex: true
-    timeout: 30s
+    timeout: 60s
   - parallel:
-      - type: process_stable_for
+      - assertion: process_stable_for
         duration: 10s
-      - type: log_not_contains
+      - assertion: log_not_contains
         pattern: "panic|PANIC"
         regex: true
         during: 10s

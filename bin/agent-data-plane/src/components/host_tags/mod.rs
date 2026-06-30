@@ -4,7 +4,7 @@ use std::{
 };
 
 use async_trait::async_trait;
-use datadog_agent_commons::ipc::client::RemoteAgentClient;
+use datadog_agent_commons::ipc::{client::RemoteAgentClient, config::RemoteAgentClientConfiguration};
 use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::{DurationString, GenericConfiguration};
 use saluki_context::tags::{SharedTagSet, Tag};
@@ -18,7 +18,7 @@ use stringtheory::MetaString;
 /// Temporarily adds host tags to metrics to compensate for backend delays when a new host comes online,
 /// preventing gaps in queryability until the backend starts adding these tags automatically.
 pub struct HostTagsConfiguration {
-    client: RemoteAgentClient,
+    client_config: RemoteAgentClientConfiguration,
     expected_tags_duration: Duration,
 }
 
@@ -26,39 +26,54 @@ const DEFAULT_EXPECTED_TAGS_DURATION: Duration = Duration::ZERO;
 
 impl HostTagsConfiguration {
     /// Creates a new `HostTagsConfiguration` from the given configuration.
-    pub async fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        let client = RemoteAgentClient::from_configuration(config).await?;
+    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
+        let client_config = RemoteAgentClientConfiguration::from_configuration(config)?;
         let expected_tags_duration = config
             .try_get_typed::<DurationString>("expected_tags_duration")?
             .map(|ds| ds.as_duration())
             .unwrap_or(DEFAULT_EXPECTED_TAGS_DURATION);
 
         Ok(Self {
-            client,
+            client_config,
             expected_tags_duration,
         })
+    }
+
+    /// Returns `true` if host tags enrichment is enabled.
+    ///
+    /// Enrichment is enabled when `expected_tags_duration` is non-zero. At the default of zero, host tags are never
+    /// fetched and the transform does nothing.
+    pub fn enabled(&self) -> bool {
+        !self.expected_tags_duration.is_zero()
     }
 }
 
 #[async_trait]
 impl SynchronousTransformBuilder for HostTagsConfiguration {
     async fn build(&self, _context: ComponentContext) -> Result<Box<dyn SynchronousTransform + Send>, GenericError> {
-        // Make an initial request of the host tags from the Datadog Agent.
-        //
-        // We only pay attention to the "system" tags, as the "google_cloud_platform" tags are not relevant here.
-        let host_tags_reply = self.client.get_host_tags().await?.into_inner();
-        let host_tags = host_tags_reply
-            .system
-            .into_iter()
-            .map(|s| Arc::from(s.as_str()))
-            .map(MetaString::from)
-            .map(Tag::from)
-            .collect::<SharedTagSet>();
+        // Only fetch host tags when enrichment is enabled (`expected_tags_duration > 0`), matching the Core
+        // Agent; at the default of 0 the tags are discarded immediately. Fetching always would block `build()`
+        // on the Core Agent's slow `GetHostTags` RPC, delaying DogStatsD draining and starving origin detection.
+        let host_tags = if self.enabled() {
+            // We only pay attention to the "system" tags, as the "google_cloud_platform" tags are not relevant here.
+            let client = RemoteAgentClient::from_client_configuration(&self.client_config).await?;
+            let host_tags_reply = client.get_host_tags().await?.into_inner();
+            let host_tags = host_tags_reply
+                .system
+                .into_iter()
+                .map(|s| Arc::from(s.as_str()))
+                .map(MetaString::from)
+                .map(Tag::from)
+                .collect::<SharedTagSet>();
+            Some(host_tags)
+        } else {
+            None
+        };
 
         Ok(Box::new(HostTagsEnrichment {
             start: Instant::now(),
             expected_tags_duration: self.expected_tags_duration,
-            host_tags: Some(host_tags),
+            host_tags,
         }))
     }
 }

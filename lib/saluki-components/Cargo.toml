@@ -10,7 +10,6 @@ workspace = true
 
 [features]
 default = []
-config-test-support = []
 fips = ["saluki-io/fips"]
 
 [dependencies]
@@ -51,6 +50,7 @@ rand = { workspace = true, features = ["std", "std_rng"] }
 regex = { workspace = true, features = ["unicode-perl"] }
 resource-accounting = { workspace = true }
 rmp-serde = { workspace = true }
+saluki-antithesis = { workspace = true }
 saluki-api = { workspace = true }
 saluki-common = { workspace = true }
 saluki-config = { workspace = true }
@@ -84,12 +84,14 @@ tracing = { workspace = true }
 tracing-appender = { workspace = true }
 tracing-rolling-file = { workspace = true }
 url = { workspace = true }
+uuid = { workspace = true, features = ["std", "v7"] }
 zstd = { workspace = true }
 
 [dev-dependencies]
+datadog-agent-config-testing = { workspace = true }
 derive-where = { workspace = true }
 proptest = { workspace = true }
-rcgen = { workspace = true, features = ["crypto", "aws_lc_rs", "pem"] }
+rcgen = { workspace = true, features = ["crypto", "pem"] }
 rustls = { workspace = true }
 saluki-metrics = { workspace = true, features = ["test"] }
 saluki-tls = { workspace = true }
@@ -98,5 +100,8 @@ test-strategy = { workspace = true }
 tokio = { workspace = true, features = ["time"] }
 tokio-rustls = { workspace = true }
 
-[build-dependencies]
-serde_yaml = { workspace = true }
+[target.'cfg(not(windows))'.dev-dependencies]
+rcgen = { workspace = true, features = ["aws_lc_rs"] }
+
+[target.'cfg(windows)'.dev-dependencies]
+rcgen = { workspace = true, features = ["ring"] }

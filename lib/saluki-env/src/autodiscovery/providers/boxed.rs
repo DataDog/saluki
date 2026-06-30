@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use tokio::sync::broadcast::Receiver;
+use tokio::sync::mpsc::Receiver;
 
 use crate::autodiscovery::{AutodiscoveryEvent, AutodiscoveryProvider};
 

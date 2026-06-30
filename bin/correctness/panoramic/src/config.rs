@@ -8,6 +8,7 @@ use std::{
 use async_trait::async_trait;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use serde::Deserialize;
+use serde_json::Value;
 
 use crate::correctness::analysis::AnalysisMode;
 use crate::correctness::config::{
@@ -108,23 +109,97 @@ pub struct IntegrationConfig {
     /// Overall timeout for the test case.
     pub timeout: HumanDuration,
 
-    /// Container configuration.
+    /// Container configuration. Optional; defaults to an empty configuration. The container
+    /// image is selected by the active runtime, not the test case.
+    #[serde(default)]
     pub container: ContainerConfig,
 
-    /// List of assertion steps to run.
-    pub assertions: Vec<AssertionStep>,
+    /// Environment variables to set on the target process(es).
+    ///
+    /// Top-level (not under `container`) because both the linux and `mac` runtimes apply
+    /// these the same way: docker injects them as container env, the Unix runner passes them
+    /// to the spawned ADP / Core Agent processes.
+    #[serde(default)]
+    pub env: HashMap<String, String>,
+
+    /// Ordered list of steps (assertions and actions) to execute.
+    pub procedure: Vec<AssertionStep>,
+
+    /// Runtimes under which this test is eligible to run.
+    ///
+    /// Each value must be `"linux"` (the default), `"mac"`, or `"windows"`. The active
+    /// runtime for any given panoramic invocation is chosen at the CLI level (`--runtime`,
+    /// defaulting to the host's native runtime); a test discovers only when this list contains
+    /// that active runtime. Tests with multiple entries are portable across runtimes, but still
+    /// execute only once per invocation, in the active runtime.
+    #[serde(default = "default_integration_runtimes")]
+    pub runtimes: Vec<String>,
+
+    /// Active runtime for this test instance.
+    ///
+    /// Empty at parse time; the discovery layer sets it to whichever runtime the CLI is scoped
+    /// to (after confirming that runtime is listed in `runtimes`). Used by `Test::run` to
+    /// dispatch to the right runner and by `Test::runtime` / `Test::images` to report the
+    /// effective runtime to the CI pipeline generator.
+    #[serde(skip)]
+    pub active_runtime: String,
 
     /// Base path for resolving relative file paths.
     #[serde(skip)]
     pub base_path: PathBuf,
 }
 
-/// Container configuration for a test case.
-#[derive(Clone, Debug, Deserialize)]
-pub struct ContainerConfig {
-    /// Container image to use.
-    pub image: String,
+fn default_integration_runtimes() -> Vec<String> {
+    vec![default_host_runtime().to_string()]
+}
 
+/// Runtime identifier for integration tests that run as host processes on macOS (no Docker, no
+/// virtualization). Validated on macOS only today; future host-process runtimes for other Unix
+/// platforms will get their own identifiers.
+pub const MAC_RUNTIME: &str = "mac";
+
+/// Runtime identifier for integration tests that run inside a Linux container.
+pub const LINUX_RUNTIME: &str = "linux";
+
+/// Runtime identifier for integration tests that run inside a Windows container.
+pub const WINDOWS_RUNTIME: &str = "windows";
+
+/// Default container image used by `linux`-runtime integration tests.
+pub const DEFAULT_LINUX_TARGET_IMAGE: &str = "saluki-images/datadog-agent:testing-devel";
+
+/// Default container image used by `windows`-runtime integration tests.
+pub const DEFAULT_WINDOWS_TARGET_IMAGE: &str = "saluki-images/agent-data-plane:testing-windows";
+
+/// Returns the integration-test target image for the given runtime, if the runtime uses one.
+///
+/// `mac` runs ADP as a host process and has no target image. All other runtimes resolve to a
+/// fixed, harness-owned image; tests do not select images per case.
+pub fn target_image_for_runtime(runtime: &str) -> Option<&'static str> {
+    match runtime {
+        LINUX_RUNTIME => Some(DEFAULT_LINUX_TARGET_IMAGE),
+        WINDOWS_RUNTIME => Some(DEFAULT_WINDOWS_TARGET_IMAGE),
+        _ => None,
+    }
+}
+
+/// Returns the integration-test runtime that is native to the host OS.
+///
+/// `mac` on macOS hosts, `windows` on Windows hosts, and `linux` everywhere else. Used as the default when a panoramic
+/// subcommand is invoked without an explicit `--runtime` flag, so that callers on the most
+/// common host get the most common runtime without having to spell it out.
+pub fn default_host_runtime() -> &'static str {
+    if cfg!(target_os = "macos") {
+        MAC_RUNTIME
+    } else if cfg!(target_os = "windows") {
+        WINDOWS_RUNTIME
+    } else {
+        LINUX_RUNTIME
+    }
+}
+
+/// Container configuration for a test case.
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct ContainerConfig {
     /// Optional entrypoint override.
     #[serde(default)]
     pub entrypoint: Vec<String>,
@@ -132,10 +207,6 @@ pub struct ContainerConfig {
     /// Optional command override.
     #[serde(default)]
     pub command: Vec<String>,
-
-    /// Environment variables to set.
-    #[serde(default)]
-    pub env: HashMap<String, String>,
 
     /// Files to mount (host_path:container_path format).
     #[serde(default)]
@@ -148,8 +219,7 @@ pub struct ContainerConfig {
 
 /// A single step in the assertion pipeline.
 ///
-/// Each step is either a single assertion or a parallel block of assertions
-/// that run concurrently.
+/// Each step is either a single assertion, a parallel block of assertions, or a sequential action.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(untagged)]
 pub enum AssertionStep {
@@ -158,13 +228,38 @@ pub enum AssertionStep {
         /// The assertions to run in parallel.
         parallel: Vec<AssertionConfig>,
     },
+    /// A single action that runs on its own.
+    Action(ActionConfig),
     /// A single assertion that runs on its own.
     Single(AssertionConfig),
 }
 
+/// Configuration for a single action.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+pub enum ActionConfig {
+    /// Set a runtime configuration value through the Core Agent command API.
+    CoreAgentConfigSet {
+        /// Runtime configuration key to set.
+        key: String,
+        /// Value to set. Strings are sent without JSON quoting; other values are serialized as JSON.
+        value: Value,
+        /// Core Agent runtime config endpoint template. `{key}` is replaced with `key`.
+        #[serde(default = "crate::actions::default_core_agent_config_endpoint_template")]
+        endpoint: String,
+        /// Timeout for waiting for the Core Agent API to accept the mutation.
+        #[serde(default = "default_action_timeout")]
+        timeout: HumanDuration,
+    },
+}
+
+fn default_action_timeout() -> HumanDuration {
+    HumanDuration(Duration::from_secs(30))
+}
+
 /// Configuration for a single assertion.
 #[derive(Clone, Debug, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "assertion", rename_all = "snake_case")]
 pub enum AssertionConfig {
     /// Check that the process doesn't exit for a specified duration.
     ProcessStableFor {
@@ -172,11 +267,18 @@ pub enum AssertionConfig {
         duration: HumanDuration,
     },
 
-    /// Check that the process exits with a specific exit code.
-    ProcessExitsWith {
+    /// Check that ADP itself exits with a specific exit code, abstracting over the runtime's
+    /// observation mechanism.
+    ///
+    /// On the `linux` runtime the converged image wraps ADP under s6, which keeps the
+    /// container alive across ADP restarts and logs `agent-data-plane exited with code N` from
+    /// `docker/s6-services/agent-data-plane/finish`. This assertion greps the log buffer for
+    /// that line. On the `mac` runtime ADP is spawned directly; the assertion reads
+    /// the exit code recorded by the Unix runner when ADP's child process exited.
+    AdpExitsWith {
         /// The expected exit code.
         expected_code: i64,
-        /// Timeout for waiting for the process to exit.
+        /// Timeout for waiting for the exit to be observed.
         timeout: HumanDuration,
     },
 
@@ -252,6 +354,19 @@ pub enum AssertionConfig {
         /// Timeout for waiting for the file (and pattern, if any) to appear.
         timeout: HumanDuration,
     },
+
+    /// Poll ADP's `/config` endpoint until one key equals the expected value.
+    AdpConfigKeyEquals {
+        /// Configuration key to compare. Dotted paths address nested objects.
+        key: String,
+        /// Expected value.
+        value: Value,
+        /// ADP `/config` endpoint.
+        #[serde(default = "crate::assertions::default_adp_config_endpoint")]
+        endpoint: String,
+        /// Timeout for waiting for the value to appear.
+        timeout: HumanDuration,
+    },
 }
 
 /// Which log streams to check.
@@ -277,6 +392,40 @@ pub enum HttpStatusMatcher {
     NotEqual(u16),
 }
 
+impl ActionConfig {
+    /// Replaces `{{PANORAMIC_DYNAMIC_*}}` placeholders in string fields with resolved values.
+    pub fn resolve_dynamic_vars(&mut self, vars: &HashMap<String, String>) {
+        match self {
+            ActionConfig::CoreAgentConfigSet {
+                key, endpoint, value, ..
+            } => {
+                crate::dynamic_vars::resolve_placeholders(key, vars);
+                crate::dynamic_vars::resolve_placeholders(endpoint, vars);
+                if let serde_json::Value::String(s) = value {
+                    crate::dynamic_vars::resolve_placeholders(s, vars);
+                }
+            }
+        }
+    }
+
+    /// Returns any unresolved `{{PANORAMIC_DYNAMIC_*}}` placeholders in string fields.
+    pub fn unresolved_placeholders(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        match self {
+            ActionConfig::CoreAgentConfigSet {
+                key, endpoint, value, ..
+            } => {
+                crate::dynamic_vars::find_unresolved(key, &mut out);
+                crate::dynamic_vars::find_unresolved(endpoint, &mut out);
+                if let serde_json::Value::String(s) = value {
+                    crate::dynamic_vars::find_unresolved(s, &mut out);
+                }
+            }
+        }
+        out
+    }
+}
+
 impl AssertionConfig {
     /// Replaces `{{PANORAMIC_DYNAMIC_*}}` placeholders in string fields with resolved values.
     pub fn resolve_dynamic_vars(&mut self, vars: &HashMap<String, String>) {
@@ -296,7 +445,11 @@ impl AssertionConfig {
                     crate::dynamic_vars::resolve_placeholders(p, vars);
                 }
             }
-            AssertionConfig::ProcessStableFor { .. } | AssertionConfig::ProcessExitsWith { .. } => {}
+            AssertionConfig::AdpConfigKeyEquals { key, endpoint, .. } => {
+                crate::dynamic_vars::resolve_placeholders(key, vars);
+                crate::dynamic_vars::resolve_placeholders(endpoint, vars);
+            }
+            AssertionConfig::ProcessStableFor { .. } | AssertionConfig::AdpExitsWith { .. } => {}
         }
     }
 
@@ -319,7 +472,11 @@ impl AssertionConfig {
                     crate::dynamic_vars::find_unresolved(p, &mut out);
                 }
             }
-            AssertionConfig::ProcessStableFor { .. } | AssertionConfig::ProcessExitsWith { .. } => {}
+            AssertionConfig::AdpConfigKeyEquals { key, endpoint, .. } => {
+                crate::dynamic_vars::find_unresolved(key, &mut out);
+                crate::dynamic_vars::find_unresolved(endpoint, &mut out);
+            }
+            AssertionConfig::ProcessStableFor { .. } | AssertionConfig::AdpExitsWith { .. } => {}
         }
         out
     }
@@ -330,6 +487,7 @@ impl AssertionStep {
     pub fn resolve_dynamic_vars(&mut self, vars: &HashMap<String, String>) {
         match self {
             AssertionStep::Single(config) => config.resolve_dynamic_vars(vars),
+            AssertionStep::Action(config) => config.resolve_dynamic_vars(vars),
             AssertionStep::Parallel { parallel } => {
                 for config in parallel {
                     config.resolve_dynamic_vars(vars);
@@ -342,6 +500,7 @@ impl AssertionStep {
     pub fn unresolved_placeholders(&self) -> Vec<String> {
         match self {
             AssertionStep::Single(config) => config.unresolved_placeholders(),
+            AssertionStep::Action(config) => config.unresolved_placeholders(),
             AssertionStep::Parallel { parallel } => parallel.iter().flat_map(|c| c.unresolved_placeholders()).collect(),
         }
     }
@@ -367,27 +526,46 @@ impl Test for IntegrationConfig {
 
     fn images(&self) -> BTreeMap<&str, String> {
         let mut m = BTreeMap::new();
-        m.insert("container", self.container.image.clone());
+        if let Some(image) = target_image_for_runtime(&self.active_runtime) {
+            m.insert("container", image.to_string());
+        }
         m
     }
 
+    fn runtime(&self) -> String {
+        if self.active_runtime.is_empty() {
+            LINUX_RUNTIME.to_string()
+        } else {
+            self.active_runtime.clone()
+        }
+    }
+
     async fn run(&self, tctx: TestContext) -> TestResult {
-        let mut runner = crate::runner::IntegrationRunner::new(self.clone(), tctx);
-        runner.run().await
+        match self.active_runtime.as_str() {
+            MAC_RUNTIME => {
+                let mut runner = crate::unix_runner::UnixIntegrationRunner::new(self.clone(), tctx);
+                runner.run().await
+            }
+            // Default to the Linux container path for "linux" or unset.
+            _ => {
+                let mut runner = crate::runner::IntegrationRunner::new(self.clone(), tctx);
+                runner.run().await
+            }
+        }
     }
 }
 
 impl IntegrationConfig {
     /// Replaces `{{PANORAMIC_DYNAMIC_*}}` placeholders in all assertion steps.
     pub fn resolve_dynamic_vars(&mut self, vars: &HashMap<String, String>) {
-        for step in &mut self.assertions {
+        for step in &mut self.procedure {
             step.resolve_dynamic_vars(vars);
         }
     }
 
     /// Returns any unresolved `{{PANORAMIC_DYNAMIC_*}}` placeholders across all assertion steps.
     pub fn unresolved_placeholders(&self) -> Vec<String> {
-        self.assertions
+        self.procedure
             .iter()
             .flat_map(|s| s.unresolved_placeholders())
             .collect()
@@ -395,10 +573,10 @@ impl IntegrationConfig {
 
     /// Count total individual assertions across all steps.
     pub fn total_assertion_count(&self) -> usize {
-        self.assertions
+        self.procedure
             .iter()
             .map(|step| match step {
-                AssertionStep::Single(_) => 1,
+                AssertionStep::Single(_) | AssertionStep::Action(_) => 1,
                 AssertionStep::Parallel { parallel } => parallel.len(),
             })
             .sum()
@@ -626,7 +804,11 @@ fn canonicalize_file_entry(entry: &str, base_path: &Path) -> String {
 /// Each `config.yaml` found in a direct subdirectory must have a top-level `type` field set to
 /// `"integration"`, `"correctness"`, or `"correctness_matrix"`. Files with a missing or unknown
 /// `type` cause a panic. Multiple test types may coexist freely within the same directory.
-pub fn discover_tests(dirs: &[PathBuf]) -> Result<Vec<Box<dyn Test>>, GenericError> {
+///
+/// `integration_runtime` scopes integration-test discovery to a single runtime: an integration
+/// test is included if and only if its `runtimes:` list contains this value. Correctness tests
+/// are unaffected; they always discover.
+pub fn discover_tests(dirs: &[PathBuf], integration_runtime: &str) -> Result<Vec<Box<dyn Test>>, GenericError> {
     let mut tests: Vec<Box<dyn Test>> = Vec::new();
 
     for base_path in dirs {
@@ -644,7 +826,7 @@ pub fn discover_tests(dirs: &[PathBuf]) -> Result<Vec<Box<dyn Test>>, GenericErr
             if path.is_dir() {
                 let config_path = path.join("config.yaml");
                 if config_path.exists() {
-                    match try_load_test(&config_path, &path) {
+                    match try_load_test(&config_path, &path, integration_runtime) {
                         Ok(loaded) => tests.extend(loaded),
                         Err(e) => {
                             // Previously we had a warning here that cannot be seen in TUI-mode. It is better to fail
@@ -667,9 +849,12 @@ pub fn discover_tests(dirs: &[PathBuf]) -> Result<Vec<Box<dyn Test>>, GenericErr
 /// Load one or more test cases from a config file, dispatching on the top-level `type` field.
 ///
 /// Returns a `Vec` because a `correctness_matrix` config expands into multiple independent test
-/// cases—one per variant—while `integration` and `correctness` configs each produce exactly
-/// one test case.
-fn try_load_test(config_path: &Path, dir_path: &Path) -> Result<Vec<Box<dyn Test>>, GenericError> {
+/// cases—one per variant. `integration` configs produce zero or one test case depending on
+/// whether the active `integration_runtime` is in the test's `runtimes:` list. `correctness`
+/// configs produce exactly one test case.
+fn try_load_test(
+    config_path: &Path, dir_path: &Path, integration_runtime: &str,
+) -> Result<Vec<Box<dyn Test>>, GenericError> {
     let content = std::fs::read_to_string(config_path)
         .error_context(format!("Failed to read config file: {}", config_path.display()))?;
 
@@ -685,7 +870,33 @@ fn try_load_test(config_path: &Path, dir_path: &Path) -> Result<Vec<Box<dyn Test
     match test_type {
         "integration" => {
             let config = IntegrationConfig::from_yaml(config_path)?;
-            Ok(vec![Box::new(config)])
+            if config.runtimes.is_empty() {
+                return Err(generic_error!(
+                    "integration test '{}' has empty runtimes list",
+                    config.name
+                ));
+            }
+            // Validate every declared runtime up front so a typo in any list surfaces at discovery
+            // time, even on hosts that wouldn't actually run that runtime.
+            for runtime in &config.runtimes {
+                if runtime != LINUX_RUNTIME && runtime != MAC_RUNTIME && runtime != WINDOWS_RUNTIME {
+                    return Err(generic_error!(
+                        "integration test '{}' declares unknown runtime '{}' (expected '{}', '{}', or '{}')",
+                        config.name,
+                        runtime,
+                        LINUX_RUNTIME,
+                        MAC_RUNTIME,
+                        WINDOWS_RUNTIME
+                    ));
+                }
+            }
+            // Scope to the active runtime: skip tests that don't opt in to it.
+            if !config.runtimes.iter().any(|r| r == integration_runtime) {
+                return Ok(Vec::new());
+            }
+            let mut variant = config.clone();
+            variant.active_runtime = integration_runtime.to_string();
+            Ok(vec![Box::new(variant)])
         }
         "correctness" => {
             let config_path_str = config_path
@@ -802,5 +1013,96 @@ mod tests {
         assert_eq!(container, "/etc/config.yaml");
 
         assert!(parse_file_spec("nocolon").is_err());
+    }
+
+    #[test]
+    fn test_windows_runtime_is_valid_for_integration_discovery() {
+        let base_dir = create_test_case_dir(
+            "windows-smoke",
+            r#"
+type: integration
+name: windows-smoke
+timeout: 10s
+runtimes: [windows]
+procedure: []
+"#,
+        );
+
+        let tests = discover_tests(&[base_dir.path().to_path_buf()], "windows").unwrap();
+
+        assert_eq!(tests.len(), 1);
+        assert_eq!(tests[0].name(), "windows-smoke");
+        assert_eq!(tests[0].runtime(), "windows");
+    }
+
+    #[test]
+    fn test_windows_runtime_reports_harness_owned_container_image() {
+        let base_dir = create_test_case_dir(
+            "windows-smoke",
+            r#"
+type: integration
+name: windows-smoke
+timeout: 10s
+runtimes: [windows]
+procedure: []
+"#,
+        );
+
+        let tests = discover_tests(&[base_dir.path().to_path_buf()], "windows").unwrap();
+        let images = tests[0].images();
+
+        assert_eq!(images.get("container"), Some(&DEFAULT_WINDOWS_TARGET_IMAGE.to_string()));
+    }
+
+    #[test]
+    fn test_linux_runtime_reports_harness_owned_container_image() {
+        let base_dir = create_test_case_dir(
+            "linux-smoke",
+            r#"
+type: integration
+name: linux-smoke
+timeout: 10s
+runtimes: [linux]
+procedure: []
+"#,
+        );
+
+        let tests = discover_tests(&[base_dir.path().to_path_buf()], "linux").unwrap();
+        let images = tests[0].images();
+
+        assert_eq!(images.get("container"), Some(&DEFAULT_LINUX_TARGET_IMAGE.to_string()));
+    }
+
+    struct TestCaseDir {
+        path: PathBuf,
+    }
+
+    impl TestCaseDir {
+        fn path(&self) -> &Path {
+            &self.path
+        }
+    }
+
+    impl Drop for TestCaseDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+
+    fn create_test_case_dir(case_name: &str, config: &str) -> TestCaseDir {
+        let unique = format!(
+            "panoramic-config-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let base_dir = std::env::temp_dir().join(unique);
+        let case_dir = base_dir.join(case_name);
+        std::fs::create_dir_all(&case_dir).unwrap();
+        std::fs::write(case_dir.join("config.yaml"), config).unwrap();
+
+        TestCaseDir { path: base_dir }
     }
 }

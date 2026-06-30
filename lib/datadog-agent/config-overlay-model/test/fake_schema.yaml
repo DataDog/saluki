@@ -1,0 +1,44 @@
+# PLACEHOLDER: for model testing, do not use!
+properties:
+  additional_endpoints:
+    type: object
+  api_key:
+    type: string
+  api_key_validation_period:
+    type: integer
+  apm_enabled:
+    type: boolean
+  check_runners:
+    type: integer
+  cluster_agent.url:
+    type: string
+  context_expiry_seconds:
+    type: integer
+  dd_url:
+    type: string
+  dogstatsd_entity_id_precedence:
+    type: boolean
+  dogstatsd_port:
+    type: integer
+  log_format_json:
+    type: boolean
+  log_level:
+    type: string
+  log_to_console:
+    type: boolean
+  min_tls_version:
+    type: string
+  no_proxy:
+    type: array
+    items:
+      type: string
+  otlp_flare:
+    type: boolean
+  runtime_security_enabled:
+    type: boolean
+  site:
+    type: string
+  tls_handshake_timeout:
+    type: string
+  tls_skip_verify:
+    type: boolean

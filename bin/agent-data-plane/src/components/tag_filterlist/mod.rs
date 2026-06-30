@@ -37,9 +37,12 @@ use tracing::{debug, error, warn};
 
 use crate::components::dogstatsd_filterlist::METRIC_TAG_FILTERLIST_CONFIG_KEY;
 
-const CONTEXT_CACHE_CAPACITY: usize = 100_000;
 const CONTEXT_CACHE_TTI: Duration = Duration::from_secs(30);
 const CONTEXT_CACHE_EXPIRATION_INTERVAL: Duration = Duration::from_secs(1);
+
+fn default_context_cache_capacity() -> usize {
+    100_000
+}
 
 use self::telemetry::Telemetry;
 
@@ -148,6 +151,16 @@ pub struct TagFilterlistConfiguration {
     #[serde(default, rename = "metric_tag_filterlist")]
     entries: Vec<MetricTagFilterEntry>,
 
+    /// Maximum number of entries in the per-context deduplication cache used by the tag filter.
+    ///
+    /// Configured via `data_plane.dogstatsd.aggregator_tag_filter_cache_capacity` in the agent config
+    /// stream. High-throughput deployments with many unique metric contexts may benefit from
+    /// increasing this value to reduce cache churn.
+    ///
+    /// Defaults to 100,000.
+    #[serde(skip)]
+    context_cache_capacity: usize,
+
     #[serde(skip)]
     configuration: Option<GenericConfiguration>,
 }
@@ -156,6 +169,9 @@ impl TagFilterlistConfiguration {
     /// Creates a new `TagFilterlistConfiguration` from the given configuration.
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
         let mut typed: Self = config.as_typed()?;
+        typed.context_cache_capacity = config
+            .try_get_typed("data_plane.dogstatsd.aggregator_tag_filter_cache_capacity")?
+            .unwrap_or_else(default_context_cache_capacity);
         typed.configuration = Some(config.clone());
         Ok(typed)
     }
@@ -174,15 +190,19 @@ impl TransformBuilder for TagFilterlistConfiguration {
 
     async fn build(&self, context: ComponentContext) -> Result<Box<dyn Transform + Send>, GenericError> {
         let metrics_builder = MetricsBuilder::from_component_context(&context);
+        let telemetry = Telemetry::new(&metrics_builder);
+        let filters = compile_filters(&self.entries);
+        telemetry.set_size(filters.len());
 
         Ok(Box::new(TagFilterlist {
-            filters: compile_filters(&self.entries),
+            filters,
             configuration: self
                 .configuration
                 .clone()
                 .expect("configuration must be set via from_configuration"),
-            telemetry: Telemetry::new(&metrics_builder),
-            context_cache: build_context_cache(),
+            telemetry,
+            context_cache: build_context_cache(self.context_cache_capacity),
+            context_cache_capacity: self.context_cache_capacity,
         }))
     }
 }
@@ -193,7 +213,7 @@ impl MemoryBounds for TagFilterlistConfiguration {
 
         builder
             .firm()
-            .with_fixed_amount("context cache", CONTEXT_CACHE_CAPACITY * 64);
+            .with_fixed_amount("context cache", self.context_cache_capacity * 64);
     }
 }
 
@@ -202,12 +222,14 @@ struct TagFilterlist {
     configuration: GenericConfiguration,
     telemetry: Telemetry,
     context_cache: Cache<Context, Option<(Context, usize)>>,
+    context_cache_capacity: usize,
 }
 
-fn build_context_cache() -> Cache<Context, Option<(Context, usize)>> {
+fn build_context_cache(capacity: usize) -> Cache<Context, Option<(Context, usize)>> {
+    let capacity = NonZeroUsize::new(capacity).unwrap_or(NonZeroUsize::MIN);
     CacheBuilder::from_identifier("tag_filterlist/context_cache")
         .expect("identifier cannot be empty")
-        .with_capacity(NonZeroUsize::new(CONTEXT_CACHE_CAPACITY).unwrap())
+        .with_capacity(capacity)
         .with_time_to_idle(Some(CONTEXT_CACHE_TTI))
         .with_expiration_interval(CONTEXT_CACHE_EXPIRATION_INTERVAL)
         .build()
@@ -273,8 +295,10 @@ impl Transform for TagFilterlist {
                 },
                 (_, new_entries) = watcher.changed::<Vec<MetricTagFilterEntry>>() => {
                     self.filters = compile_filters(new_entries.as_deref().unwrap_or(&[]));
-                    self.context_cache = build_context_cache();
-                    debug!("Updated metric tag filterlist.");
+                    self.context_cache = build_context_cache(self.context_cache_capacity);
+                    self.telemetry.set_size(self.filters.len());
+                    self.telemetry.increment_updates();
+                    debug!(rules_loaded = self.filters.len(), "Updated metric tag filterlist.");
                 },
             }
         }
@@ -806,6 +830,41 @@ mod tests {
         assert_eq!(recorder.counter("tag_filterlist_noop_hits_total"), Some(1));
         assert_eq!(recorder.counter("tag_filterlist_metrics_modified_total"), Some(1));
         assert_eq!(recorder.counter("tag_filterlist_tags_filtered_total"), Some(3));
+    }
+
+    #[test]
+    fn telemetry_records_size() {
+        let recorder = TestRecorder::default();
+        let _local = metrics::set_default_local_recorder(&recorder);
+
+        let builder = MetricsBuilder::default();
+        let telemetry = Telemetry::new(&builder);
+
+        telemetry.set_size(5);
+        assert_eq!(recorder.gauge("tag_filterlist_size"), Some(5.0));
+
+        telemetry.set_size(3);
+        assert_eq!(recorder.gauge("tag_filterlist_size"), Some(3.0));
+
+        telemetry.set_size(0);
+        assert_eq!(recorder.gauge("tag_filterlist_size"), Some(0.0));
+    }
+
+    #[test]
+    fn telemetry_records_updates() {
+        let recorder = TestRecorder::default();
+        let _local = metrics::set_default_local_recorder(&recorder);
+
+        let builder = MetricsBuilder::default();
+        let telemetry = Telemetry::new(&builder);
+
+        assert_eq!(recorder.counter("tag_filterlist_updates_total"), Some(0));
+
+        telemetry.increment_updates();
+        assert_eq!(recorder.counter("tag_filterlist_updates_total"), Some(1));
+
+        telemetry.increment_updates();
+        assert_eq!(recorder.counter("tag_filterlist_updates_total"), Some(2));
     }
 
     #[tokio::test]

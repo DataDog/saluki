@@ -5,10 +5,6 @@ use saluki_app::{
     accounting::ResourceTelemetryWorker, config::ConfigWorker, dynamic_api::DynamicAPIBuilder,
     logging::LoggingOverrideController,
 };
-use saluki_components::{
-    destinations::DogStatsDStatisticsConfiguration,
-    sources::{DogStatsDCaptureAPIHandler, DogStatsDReplayAPIHandler},
-};
 use saluki_config::GenericConfiguration;
 use saluki_core::{
     health::HealthRegistry,
@@ -20,30 +16,9 @@ use crate::{
     config::DataPlaneConfiguration,
     internal::{
         logging::DynamicLogLevelWorker, remote_agent::RemoteAgentBootstrap, telemetry::InternalTelemetryAPIWorker,
+        TopologyControlSurfaces,
     },
 };
-
-/// DogStatsD-specific control plane integrations.
-#[derive(Clone)]
-pub struct DogStatsDControlPlaneConfiguration {
-    stats_config: DogStatsDStatisticsConfiguration,
-    capture_api_handler: Option<DogStatsDCaptureAPIHandler>,
-    replay_api_handler: Option<DogStatsDReplayAPIHandler>,
-}
-
-impl DogStatsDControlPlaneConfiguration {
-    /// Creates a new `DogStatsDControlPlaneConfiguration`.
-    pub fn new(
-        stats_config: DogStatsDStatisticsConfiguration, capture_api_handler: Option<DogStatsDCaptureAPIHandler>,
-        replay_api_handler: Option<DogStatsDReplayAPIHandler>,
-    ) -> Self {
-        Self {
-            stats_config,
-            capture_api_handler,
-            replay_api_handler,
-        }
-    }
-}
 
 /// Creates the control plane supervisor.
 ///
@@ -57,7 +32,7 @@ impl DogStatsDControlPlaneConfiguration {
 /// If the supervisor can't be created, an error is returned.
 pub async fn create_control_plane_supervisor(
     config: &GenericConfiguration, dp_config: &DataPlaneConfiguration, component_registry: &ComponentRegistry,
-    health_registry: HealthRegistry, dsd_config: DogStatsDControlPlaneConfiguration,
+    health_registry: HealthRegistry, control_surfaces: TopologyControlSurfaces,
     ra_bootstrap: Option<RemoteAgentBootstrap>, logging_controller: LoggingOverrideController,
 ) -> Result<Supervisor, GenericError> {
     let mut supervisor = Supervisor::new("ctrl-pln")?
@@ -76,18 +51,12 @@ pub async fn create_control_plane_supervisor(
     ));
     let ipc_config = IpcAuthConfiguration::from_configuration(config)?;
     let tls_config = build_ipc_server_tls_config(ipc_config.ipc_cert_file_path()).await?;
-    let DogStatsDControlPlaneConfiguration {
-        stats_config,
-        capture_api_handler,
-        replay_api_handler,
-    } = dsd_config;
 
     let mut privileged_api =
         DynamicAPIBuilder::new(EndpointType::Privileged, dp_config.secure_api_listen_address().clone())
-            .with_tls_config(tls_config)
-            .with_handler(stats_config.api_handler())
-            .with_optional_handler(capture_api_handler)
-            .with_optional_handler(replay_api_handler);
+            .with_tls_config(tls_config);
+
+    privileged_api = control_surfaces.register_control_surfaces(privileged_api);
 
     // If we bootstrapped ourselves as a remote agent, add the necessary gRPC services to the API.
     if let Some(ra_bootstrap) = &ra_bootstrap {

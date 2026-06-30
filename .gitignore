@@ -1,10 +1,12 @@
 target/
+.ci-cache/
 .vscode/
 test/k8s/charts/
 test/build/
 test/ddprof
 test/lading
 test/one-off/__pycache__
+test/antithesis/scratchbook/
 dhat-heap.json
 .DS_Store
 dist/

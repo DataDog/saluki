@@ -21,8 +21,11 @@ use saluki_error::GenericError;
 use serde::{Deserialize, Serialize, Serializer};
 use serde_json;
 use stringtheory::MetaString;
-use tokio::sync::{Mutex, OwnedMutexGuard};
-use tokio::time::{Duration, Instant};
+use tokio::time::{sleep, Duration, Instant};
+use tokio::{
+    pin,
+    sync::{Mutex, OwnedMutexGuard},
+};
 use tokio::{select, sync::mpsc, sync::oneshot};
 
 type StatsRequestReceiver = mpsc::Receiver<(oneshot::Sender<StatsResponse>, u64)>;
@@ -82,19 +85,19 @@ impl Serialize for FlattenedStats {
 /// Configuration for DogStatsD statistics destination and API handler.
 #[derive(Clone)]
 pub struct DogStatsDStatisticsConfiguration {
-    api_handler: DogStatsDAPIHandler,
+    api_handler: DogStatsDStatsAPIHandler,
     rx: Arc<Mutex<StatsRequestReceiver>>,
 }
 /// State for the DogStatsD API handler.
 #[derive(Clone)]
-pub struct DogStatsDAPIHandlerState {
+pub struct DogStatsDStatsAPIHandlerState {
     tx: Arc<mpsc::Sender<(oneshot::Sender<StatsResponse>, u64)>>,
 }
 
 /// API handler for DogStatsD statistics endpoint.
 #[derive(Clone)]
-pub struct DogStatsDAPIHandler {
-    state: DogStatsDAPIHandlerState,
+pub struct DogStatsDStatsAPIHandler {
+    state: DogStatsDStatsAPIHandlerState,
 }
 
 /// DogStatsD destination that collects metrics and processes statistics.
@@ -111,8 +114,8 @@ impl Destination for DogStatsDStats {
         let mut current_stats: Option<HashMap<ContextNoOrigin, MetricSample>> = None;
         let mut stats_collection_start_time = 0;
         let mut stats_collection_end_time = 0;
-        let collection_done = tokio::time::sleep(std::time::Duration::ZERO);
-        tokio::pin!(collection_done);
+        let collection_done = sleep(std::time::Duration::ZERO);
+        pin!(collection_done);
 
         health.mark_ready();
 
@@ -202,9 +205,9 @@ struct StatsQueryParams {
     collection_duration_secs: u64,
 }
 
-impl DogStatsDAPIHandler {
+impl DogStatsDStatsAPIHandler {
     async fn stats_handler(
-        State(state): State<DogStatsDAPIHandlerState>, Query(query): Query<StatsQueryParams>,
+        State(state): State<DogStatsDStatsAPIHandlerState>, Query(query): Query<StatsQueryParams>,
     ) -> (StatusCode, String) {
         const MAXIMUM_COLLECTION_DURATION_SECS: u64 = 600;
         if query.collection_duration_secs > MAXIMUM_COLLECTION_DURATION_SECS {
@@ -250,8 +253,8 @@ impl DogStatsDAPIHandler {
     }
 }
 
-impl APIHandler for DogStatsDAPIHandler {
-    type State = DogStatsDAPIHandlerState;
+impl APIHandler for DogStatsDStatsAPIHandler {
+    type State = DogStatsDStatsAPIHandlerState;
 
     fn generate_initial_state(&self) -> Self::State {
         self.state.clone()
@@ -266,8 +269,8 @@ impl DogStatsDStatisticsConfiguration {
     /// Creates a new `DogStatsDStatisticsConfiguration`.
     pub fn new() -> Self {
         let (tx, rx) = mpsc::channel(4);
-        let state = DogStatsDAPIHandlerState { tx: Arc::new(tx) };
-        let handler = DogStatsDAPIHandler { state };
+        let state = DogStatsDStatsAPIHandlerState { tx: Arc::new(tx) };
+        let handler = DogStatsDStatsAPIHandler { state };
 
         Self {
             api_handler: handler,
@@ -276,7 +279,7 @@ impl DogStatsDStatisticsConfiguration {
     }
 
     /// Returns an API handler for DogStatsD API.
-    pub fn api_handler(&self) -> DogStatsDAPIHandler {
+    pub fn api_handler(&self) -> DogStatsDStatsAPIHandler {
         self.api_handler.clone()
     }
 }

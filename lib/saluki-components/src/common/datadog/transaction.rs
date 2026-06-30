@@ -10,6 +10,8 @@ use pin_project::pin_project;
 use saluki_io::net::util::retry::{EventContainer, Retryable};
 use serde::{ser::SerializeSeq as _, Deserialize, Serialize, Serializer};
 
+use super::protocol::MetricsPayloadInfo;
+
 /// Data type for the body of `TransactionBody<B>`.
 pub enum TransactionBodyData<B>
 where
@@ -178,6 +180,12 @@ pub struct Metadata {
     /// Number of metric data points represented by this transaction.
     #[serde(default)]
     pub data_point_count: usize,
+
+    /// Payload info containing protocol version and metric type, if applicable.
+    ///
+    /// This is `Some` for metrics payloads and `None` for non-metrics payloads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payload_info: Option<MetricsPayloadInfo>,
 }
 
 impl Metadata {
@@ -186,6 +194,7 @@ impl Metadata {
         Self {
             event_count,
             data_point_count,
+            payload_info: None,
         }
     }
 }

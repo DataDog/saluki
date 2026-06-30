@@ -8,8 +8,10 @@
 
 use std::{
     collections::VecDeque,
+    future::Future,
     num::NonZeroUsize,
     path::PathBuf,
+    pin::Pin,
     sync::{Arc, LazyLock},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -18,7 +20,10 @@ use async_trait::async_trait;
 use bytes::{Buf, BufMut};
 use bytesize::ByteSize;
 use resource_accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
-use saluki_common::task::spawn_traced_named;
+use saluki_common::{
+    sync::shutdown::{ShutdownCoordinator, ShutdownHandle},
+    task::spawn_traced_named,
+};
 use saluki_config::{deserialize_space_separated_or_seq, GenericConfiguration};
 use saluki_context::{
     origin::RawOrigin,
@@ -33,12 +38,8 @@ use saluki_core::data_model::event::{
 };
 use saluki_core::{
     components::{sources::*, ComponentContext},
-    pooling::FixedSizeObjectPool,
-    topology::{
-        interconnect::EventBufferManager,
-        shutdown::{DynamicShutdownCoordinator, DynamicShutdownHandle},
-        EventsBuffer, OutputDefinition,
-    },
+    pooling::ElasticObjectPool,
+    topology::{interconnect::EventBufferManager, EventsBuffer, OutputDefinition},
 };
 use saluki_env::{workload::CaptureEntityResolver, WorkloadProvider};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
@@ -58,7 +59,7 @@ use serde_with::{serde_as, NoneAsEmptyString};
 use snafu::{ResultExt as _, Snafu};
 use stringtheory::MetaString;
 use tokio::{
-    select,
+    pin, select,
     time::{interval, MissedTickBehavior},
 };
 use tracing::{debug, error, info, trace, warn};
@@ -128,6 +129,10 @@ const fn default_buffer_size() -> usize {
 
 const fn default_buffer_count() -> usize {
     128
+}
+
+const fn default_buffer_count_max() -> usize {
+    256
 }
 
 const fn default_port() -> u16 {
@@ -254,15 +259,29 @@ pub struct DogStatsDConfiguration {
     #[serde(rename = "dogstatsd_buffer_size", default = "default_buffer_size")]
     buffer_size: usize,
 
-    /// The number of message buffers to allocate overall.
+    /// The number of message buffers to allocate up front.
     ///
-    /// This represents the maximum number of message buffers available for processing incoming metrics, which loosely
-    /// correlates with how many messages can be received per second. The default value should be suitable for the
-    /// majority of workloads, but high-throughput workloads may consider increasing this value.
+    /// This is the baseline pool size allocated at startup. The pool then grows on demand up to
+    /// `dogstatsd_buffer_count_max` as active stream connections need additional buffers. The default value should be
+    /// suitable for the majority of workloads.
     ///
     /// Defaults to 128.
     #[serde(rename = "dogstatsd_buffer_count", default = "default_buffer_count")]
     buffer_count: usize,
+
+    /// The maximum number of message buffers to allocate overall.
+    ///
+    /// The pool starts at `dogstatsd_buffer_count` buffers and grows on demand up to this limit as active stream
+    /// connections need them, which loosely correlates with how many messages can be received per second. This caps
+    /// memory growth. The default value should be suitable for the majority of workloads, but high-throughput or
+    /// high-fan-in workloads may consider increasing this value.
+    ///
+    /// The pool never holds fewer buffers than `dogstatsd_buffer_count`, so a value below the baseline is treated as
+    /// equal to it.
+    ///
+    /// Defaults to 256, or `dogstatsd_buffer_count` if that is larger.
+    #[serde(rename = "dogstatsd_buffer_count_max", default = "default_buffer_count_max")]
+    buffer_count_max: usize,
 
     /// The port to listen on in UDP mode.
     ///
@@ -337,6 +356,16 @@ pub struct DogStatsDConfiguration {
     /// Defaults to `false`.
     #[serde(rename = "dogstatsd_stream_log_too_big", default)]
     stream_log_too_big: bool,
+
+    /// Whether ADP lowers DogStatsD parse-failure logs to debug level.
+    ///
+    /// When set to `true`, invalid metrics, events, and service checks still increment decode-failure telemetry, but
+    /// their parse-failure logs are emitted at debug level instead of warning level. Enable this to suppress noisy
+    /// parse-error logs from misbehaving clients.
+    ///
+    /// Defaults to `false`.
+    #[serde(rename = "dogstatsd_disable_verbose_logs", default)]
+    disable_verbose_logs: bool,
 
     /// Listener types that require DogStatsD messages to be newline-terminated.
     ///
@@ -589,7 +618,6 @@ impl EolRequired {
         match listen_addr {
             ListenAddress::Udp(_) => self.udp,
             ListenAddress::Tcp(_) => false,
-            #[cfg(unix)]
             ListenAddress::Unixgram(_) | ListenAddress::Unix(_) => self.uds,
         }
     }
@@ -642,7 +670,18 @@ impl DogStatsDConfiguration {
     fn effective_context_string_interner_bytes(&self) -> ByteSize {
         match self.context_string_interner_size_bytes {
             Some(explicit_bytes) => explicit_bytes,
-            None => ByteSize::b(self.context_string_interner_entry_count * INTERNER_BASELINE_BYTES_PER_ENTRY),
+            None => {
+                saluki_antithesis::always_le!(
+                    self.context_string_interner_entry_count,
+                    u64::MAX / INTERNER_BASELINE_BYTES_PER_ENTRY,
+                    "dogstatsd interner byte-size multiply does not overflow",
+                    { "entry_count": self.context_string_interner_entry_count }
+                );
+                ByteSize::b(
+                    self.context_string_interner_entry_count
+                        .saturating_mul(INTERNER_BASELINE_BYTES_PER_ENTRY),
+                )
+            }
         }
     }
 
@@ -683,6 +722,15 @@ impl DogStatsDConfiguration {
         let vcpus = std::thread::available_parallelism().map(NonZeroUsize::get).unwrap_or(1);
         let streams = (1 + vcpus / 8).min(4);
         NonZeroUsize::new(streams)
+    }
+
+    /// Returns the effective maximum size of the I/O buffer pool.
+    ///
+    /// The pool can never hold fewer buffers than the configured baseline, so a `dogstatsd_buffer_count_max` below
+    /// `dogstatsd_buffer_count` (including a legacy config that only raised `dogstatsd_buffer_count`) is treated as
+    /// equal to the baseline rather than reducing capacity.
+    fn effective_max_buffer_count(&self) -> usize {
+        self.buffer_count_max.max(self.buffer_count)
     }
 
     /// Sets the workload provider to use for configuring origin detection/enrichment.
@@ -844,11 +892,12 @@ impl SourceBuilder for DogStatsDConfiguration {
         // deadlocking any of the others. Connectionless listeners retain their buffer for the lifetime of the stream,
         // so multi-socket UDP listeners require one buffer per yielded socket.
         let min_buffers: usize = listeners.iter().map(Listener::min_buffer_reservation).sum();
-        if self.buffer_count < min_buffers {
+        let max_buffers = self.effective_max_buffer_count();
+        if max_buffers < min_buffers {
             return Err(generic_error!(
-                "Must have a minimum of {} I/O buffers to service all configured listeners (have {}).",
+                "The maximum I/O buffer count ({}) must be at least {} to service all configured listeners.",
+                max_buffers,
                 min_buffers,
-                self.buffer_count,
             ));
         }
 
@@ -887,16 +936,22 @@ impl SourceBuilder for DogStatsDConfiguration {
 
         self.replay_control.bind(captured_tagger);
 
+        // The pool allocates `buffer_count` buffers up front and may grow on demand up to `max_buffers`. The effective
+        // maximum is never below the baseline, so configs that only raise `dogstatsd_buffer_count` keep their full
+        // capacity instead of being silently reduced to the `dogstatsd_buffer_count_max` default.
+        let (io_buffer_pool, io_buffer_pool_shrinker) =
+            build_io_buffer_pool(self.buffer_count, max_buffers, self.buffer_size);
+
         Ok(Box::new(DogStatsD {
             listeners,
-            io_buffer_pool: FixedSizeObjectPool::with_builder("dsd_packet_bufs", self.buffer_count, || {
-                FixedSizeVec::with_capacity(get_adjusted_buffer_size(self.buffer_size))
-            }),
+            io_buffer_pool,
+            io_buffer_pool_shrinker: Box::pin(io_buffer_pool_shrinker),
             codec,
             context_resolvers,
             enabled_filter: enable_payloads_filter,
             origin_detection_enabled,
             stream_log_too_big: self.stream_log_too_big,
+            disable_verbose_logs: self.disable_verbose_logs,
             eol_required,
             additional_tags: self.additional_tags().into(),
             capture_entity_resolver: self.capture_entity_resolver.clone(),
@@ -919,15 +974,18 @@ impl SourceBuilder for DogStatsDConfiguration {
 
 impl MemoryBounds for DogStatsDConfiguration {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
+        let additional_buffers = self.effective_max_buffer_count().saturating_sub(self.buffer_count);
+        let adjusted_buffer_size = get_adjusted_buffer_size(self.buffer_size);
+
         builder
             .minimum()
             // Capture the size of the heap allocation when the component is built.
             .with_single_value::<DogStatsD>("source struct")
-            // We allocate our I/O buffers entirely up front.
+            // We allocate the baseline buffer pool up front.
             .with_expr(UsageExpr::product(
                 "buffers",
                 UsageExpr::config("dogstatsd_buffer_count", self.buffer_count),
-                UsageExpr::config("dogstatsd_buffer_size", get_adjusted_buffer_size(self.buffer_size)),
+                UsageExpr::config("dogstatsd_buffer_size", adjusted_buffer_size),
             ))
             // We also allocate the backing storage for the string interner up front, which is used by our context
             // resolver.
@@ -935,18 +993,27 @@ impl MemoryBounds for DogStatsDConfiguration {
                 "dogstatsd_string_interner_size_bytes",
                 self.effective_context_string_interner_bytes().as_u64() as usize,
             ));
+
+        // The pool can grow on demand up to its maximum, so account for the additional headroom as firm usage.
+        builder.firm().with_expr(UsageExpr::product(
+            "elastic buffers",
+            UsageExpr::constant("dogstatsd_buffer_count_max_extra", additional_buffers),
+            UsageExpr::config("dogstatsd_buffer_size", adjusted_buffer_size),
+        ));
     }
 }
 
 /// DogStatsD source.
 pub struct DogStatsD {
     listeners: Vec<Listener>,
-    io_buffer_pool: FixedSizeObjectPool<BytesBuffer>,
+    io_buffer_pool: ElasticObjectPool<BytesBuffer>,
+    io_buffer_pool_shrinker: Pin<Box<dyn Future<Output = ()> + Send>>,
     codec: DogStatsDCodec,
     context_resolvers: ContextResolvers,
     enabled_filter: EnablePayloadsFilter,
     origin_detection_enabled: bool,
     stream_log_too_big: bool,
+    disable_verbose_logs: bool,
     eol_required: EolRequired,
     additional_tags: Arc<[String]>,
     capture_entity_resolver: Option<Arc<dyn CaptureEntityResolver + Send + Sync>>,
@@ -955,13 +1022,14 @@ pub struct DogStatsD {
 }
 
 struct ListenerContext {
-    shutdown_handle: DynamicShutdownHandle,
+    shutdown_handle: ShutdownHandle,
     listener: Listener,
-    io_buffer_pool: FixedSizeObjectPool<BytesBuffer>,
+    io_buffer_pool: ElasticObjectPool<BytesBuffer>,
     codec: DogStatsDCodec,
     context_resolvers: ContextResolvers,
     origin_detection_enabled: bool,
     stream_log_too_big: bool,
+    disable_verbose_logs: bool,
     eol_required: EolRequired,
     additional_tags: Arc<[String]>,
     capture_entity_resolver: Option<Arc<dyn CaptureEntityResolver + Send + Sync>>,
@@ -973,11 +1041,12 @@ struct HandlerContext {
     listen_addr: ListenAddress,
     framer: DsdFramer,
     codec: DogStatsDCodec,
-    io_buffer_pool: FixedSizeObjectPool<BytesBuffer>,
+    io_buffer_pool: ElasticObjectPool<BytesBuffer>,
     metrics: Metrics,
     context_resolvers: ContextResolvers,
     origin_detection_enabled: bool,
     stream_log_too_big: bool,
+    disable_verbose_logs: bool,
     additional_tags: Arc<[String]>,
     capture_entity_resolver: Option<Arc<dyn CaptureEntityResolver + Send + Sync>>,
     traffic_capture: TrafficCapture,
@@ -987,10 +1056,16 @@ struct HandlerContext {
 #[async_trait]
 impl Source for DogStatsD {
     async fn run(mut self: Box<Self>, mut context: SourceContext) -> Result<(), GenericError> {
-        let mut global_shutdown = context.take_shutdown_handle();
+        let global_shutdown = context.take_shutdown_handle();
+        pin!(global_shutdown);
+
         let mut health = context.take_health_handle();
 
-        let mut listener_shutdown_coordinator = DynamicShutdownCoordinator::default();
+        let mut listener_shutdown_coordinator = ShutdownCoordinator::default();
+        spawn_traced_named(
+            "dogstatsd-io-buffer-pool-shrinker",
+            process_io_buffer_pool_shrinker(self.io_buffer_pool_shrinker, listener_shutdown_coordinator.register()),
+        );
 
         // For each listener, spawn a dedicated task to run it.
         for listener in self.listeners {
@@ -1010,6 +1085,7 @@ impl Source for DogStatsD {
                 context_resolvers: self.context_resolvers.clone(),
                 origin_detection_enabled: self.origin_detection_enabled,
                 stream_log_too_big: self.stream_log_too_big,
+                disable_verbose_logs: self.disable_verbose_logs,
                 eol_required: self.eol_required,
                 additional_tags: self.additional_tags.clone(),
                 capture_entity_resolver: self.capture_entity_resolver.clone(),
@@ -1042,12 +1118,42 @@ impl Source for DogStatsD {
 
         debug!("Stopping DogStatsD source...");
 
-        listener_shutdown_coordinator.shutdown().await;
+        listener_shutdown_coordinator.shutdown_and_wait().await;
 
         debug!("DogStatsD source stopped.");
 
         Ok(())
     }
+}
+
+async fn process_io_buffer_pool_shrinker(
+    io_buffer_pool_shrinker: Pin<Box<dyn Future<Output = ()> + Send>>, shutdown_handle: ShutdownHandle,
+) {
+    pin!(shutdown_handle);
+
+    select! {
+        _ = &mut shutdown_handle => {
+            debug!("I/O buffer pool shrinker received shutdown signal.");
+        },
+        _ = io_buffer_pool_shrinker => {
+            debug!("I/O buffer pool shrinker stopped.");
+        },
+    }
+}
+
+fn build_io_buffer_pool(
+    min_buffers: usize, max_buffers: usize, buffer_size: usize,
+) -> (ElasticObjectPool<BytesBuffer>, impl Future<Output = ()> + Send) {
+    saluki_antithesis::always_le!(
+        buffer_size,
+        usize::MAX - 4,
+        "dogstatsd buffer size add does not overflow",
+        { "buffer_size": buffer_size }
+    );
+    let adjusted_buffer_size = get_adjusted_buffer_size(buffer_size);
+    ElasticObjectPool::with_builder("dsd_packet_bufs", min_buffers, max_buffers, move || {
+        FixedSizeVec::with_capacity(adjusted_buffer_size)
+    })
 }
 
 async fn process_listener(
@@ -1061,13 +1167,15 @@ async fn process_listener(
         context_resolvers,
         origin_detection_enabled,
         stream_log_too_big,
+        disable_verbose_logs,
         eol_required,
         additional_tags,
         capture_entity_resolver,
         traffic_capture,
         packet_forwarder_target,
     } = listener_context;
-    tokio::pin!(shutdown_handle);
+
+    pin!(shutdown_handle);
 
     let listen_addr = listener.listen_address().clone();
     let metrics = build_metrics(&listen_addr, source_context.component_context());
@@ -1078,8 +1186,7 @@ async fn process_listener(
         packet_forwarder.spawn_connect();
     }
 
-    let mut stream_shutdown_coordinator = DynamicShutdownCoordinator::default();
-    let mut stream_idx: u32 = 0;
+    let mut stream_shutdown_coordinator = ShutdownCoordinator::default();
 
     info!(%listen_addr, "DogStatsD listener started.");
 
@@ -1102,6 +1209,7 @@ async fn process_listener(
                         context_resolvers: context_resolvers.clone(),
                         origin_detection_enabled,
                         stream_log_too_big,
+                        disable_verbose_logs,
                         additional_tags: additional_tags.clone(),
                         capture_entity_resolver: capture_entity_resolver.clone(),
                         traffic_capture: traffic_capture.clone(),
@@ -1109,11 +1217,9 @@ async fn process_listener(
                     };
 
                     let task_name = format!(
-                        "dogstatsd-stream-handler-{}-{}",
+                        "dogstatsd-stream-handler-{}",
                         listen_addr.listener_type(),
-                        stream_idx,
                     );
-                    stream_idx = stream_idx.wrapping_add(1);
                     spawn_traced_named(task_name, process_stream(stream, source_context.clone(), handler_context, stream_shutdown_coordinator.register(), enabled_filter));
                 }
                 Err(e) => {
@@ -1124,19 +1230,17 @@ async fn process_listener(
         }
     }
 
-    stream_shutdown_coordinator.shutdown().await;
+    stream_shutdown_coordinator.shutdown_and_wait().await;
 
     info!(%listen_addr, "DogStatsD listener stopped.");
 }
 
 async fn process_stream(
-    stream: Stream, source_context: SourceContext, handler_context: HandlerContext,
-    shutdown_handle: DynamicShutdownHandle, enabled_filter: EnablePayloadsFilter,
+    stream: Stream, source_context: SourceContext, handler_context: HandlerContext, shutdown_handle: ShutdownHandle,
+    enabled_filter: EnablePayloadsFilter,
 ) {
-    tokio::pin!(shutdown_handle);
-
     select! {
-        _ = &mut shutdown_handle => {
+        _ = shutdown_handle => {
             debug!("Stream handler received shutdown signal.");
         },
         _ = drive_stream(stream, source_context, handler_context, enabled_filter) => {},
@@ -1156,6 +1260,7 @@ async fn drive_stream(
         mut context_resolvers,
         origin_detection_enabled,
         stream_log_too_big,
+        disable_verbose_logs,
         additional_tags,
         capture_entity_resolver,
         traffic_capture,
@@ -1264,8 +1369,7 @@ async fn drive_stream(
                                         continue
                                     },
                                     Err(e) => {
-                                        let frame_lossy_str = String::from_utf8_lossy(&frame);
-                                        warn!(%listen_addr, %peer_addr, frame = %frame_lossy_str, error = %e, "Failed to parse frame.");
+                                        log_parse_failure(disable_verbose_logs, &listen_addr, &peer_addr, &frame, &e);
                                     },
                                 }
                             }
@@ -1340,6 +1444,18 @@ fn should_warn_stream_log_too_big(listen_addr: &ListenAddress, error: &FramingEr
     stream_log_too_big
         && matches!(listen_addr, ListenAddress::Unix(_))
         && matches!(error, FramingError::InvalidFrame { .. })
+}
+
+fn log_parse_failure(
+    disable_verbose_logs: bool, listen_addr: &ListenAddress, peer_addr: &ConnectionAddress, frame: &[u8],
+    error: &ParseError,
+) {
+    let frame = String::from_utf8_lossy(frame);
+    if disable_verbose_logs {
+        debug!(%listen_addr, %peer_addr, %frame, %error, "Failed to parse frame.");
+    } else {
+        warn!(%listen_addr, %peer_addr, %frame, %error, "Failed to parse frame.");
+    }
 }
 
 fn capture_uds_traffic(
@@ -1678,28 +1794,52 @@ async fn dispatch_events(mut event_buffer: EventsBuffer, source_context: &Source
     // Dispatch any eventd events, if present.
     if event_buffer.has_event_type(EventType::EventD) {
         let eventd_events = event_buffer.extract(Event::is_eventd);
-        if let Err(e) = source_context
-            .dispatcher()
-            .buffered_named("events")
+        let events_output = source_context.dispatcher().buffered_named("events");
+
+        // The `events` output is always wired in the DSD topology, so a missing output is an invariant violation that
+        // crashes this component.
+        if events_output.is_err() {
+            saluki_antithesis::unreachable!("dsd 'events' output missing at dispatch");
+        }
+
+        if let Err(e) = events_output
             .expect("events output should always exist")
             .send_all(eventd_events)
             .await
         {
             error!(%listen_addr, error = %e, "Failed to dispatch eventd events.");
+
+            // Dispatch failure increments no counter, so this assertion is the only in-SUT signal that the failure
+            // path ran.
+            saluki_antithesis::sometimes!(
+                true,
+                "dsd dispatch failed mid-buffer",
+                { "stream": "events" }
+            );
         }
     }
 
     // Dispatch any service check events, if present.
     if event_buffer.has_event_type(EventType::ServiceCheck) {
         let service_check_events = event_buffer.extract(Event::is_service_check);
-        if let Err(e) = source_context
-            .dispatcher()
-            .buffered_named("service_checks")
+        let service_checks_output = source_context.dispatcher().buffered_named("service_checks");
+
+        if service_checks_output.is_err() {
+            saluki_antithesis::unreachable!("dsd 'service_checks' output missing at dispatch");
+        }
+
+        if let Err(e) = service_checks_output
             .expect("service checks output should always exist")
             .send_all(service_check_events)
             .await
         {
             error!(%listen_addr, error = %e, "Failed to dispatch service check events.");
+
+            saluki_antithesis::sometimes!(
+                true,
+                "dsd dispatch failed mid-buffer",
+                { "stream": "service_checks" }
+            );
         }
     }
 
@@ -1711,6 +1851,12 @@ async fn dispatch_events(mut event_buffer: EventsBuffer, source_context: &Source
             .await
         {
             error!(%listen_addr, error = %e, "Failed to dispatch metric events.");
+
+            saluki_antithesis::sometimes!(
+                true,
+                "dsd dispatch failed mid-buffer",
+                { "stream": "metrics" }
+            );
         }
     }
 }
@@ -1748,7 +1894,7 @@ mod tests {
     use bytesize::ByteSize;
     use saluki_config::ConfigurationLoader;
     use saluki_context::{origin::RawOrigin, ContextResolverBuilder, TagsResolverBuilder};
-    use saluki_core::{components::ComponentContext, topology::ComponentId};
+    use saluki_core::{components::ComponentContext, pooling::ObjectPool as _, topology::ComponentId};
     use saluki_env::workload::{CaptureEntityResolver, EntityId};
     use saluki_io::{
         deser::codec::dogstatsd::{DogStatsDCodec, DogStatsDCodecConfiguration, ParsedPacket},
@@ -1760,6 +1906,7 @@ mod tests {
     use tokio::{net::UdpSocket, sync::mpsc, time::timeout};
 
     use super::{
+        build_io_buffer_pool, default_buffer_size,
         forwarder::{
             ConnectedPacketForwarder, ForwardPacket, PacketForwarder, PacketForwarderTarget, FORWARDER_QUEUE_CAPACITY,
         },
@@ -1912,6 +2059,18 @@ mod tests {
     fn stream_log_too_big_from_config() {
         let config = deser_config(r#"{"dogstatsd_stream_log_too_big": true}"#);
         assert!(config.stream_log_too_big);
+    }
+
+    #[test]
+    fn disable_verbose_logs_defaults_to_false() {
+        let config = deser_config("{}");
+        assert!(!config.disable_verbose_logs);
+    }
+
+    #[test]
+    fn disable_verbose_logs_from_config() {
+        let config = deser_config(r#"{"dogstatsd_disable_verbose_logs": true}"#);
+        assert!(config.disable_verbose_logs);
     }
 
     #[test]
@@ -2109,6 +2268,52 @@ mod tests {
         let config = deser_config("{}");
         assert!(!config.autoscale_udp_listeners);
         assert!(config.udp_streams_to_yield().is_none());
+    }
+
+    #[test]
+    fn effective_max_buffer_count_never_below_baseline() {
+        // A legacy config that only raised `dogstatsd_buffer_count` keeps its full capacity rather than being capped
+        // to the `dogstatsd_buffer_count_max` default.
+        let legacy = deser_config(r#"{"dogstatsd_buffer_count": 1024}"#);
+        assert_eq!(legacy.effective_max_buffer_count(), 1024);
+
+        // An explicit maximum above the baseline is honored as-is.
+        let explicit = deser_config(r#"{"dogstatsd_buffer_count": 128, "dogstatsd_buffer_count_max": 512}"#);
+        assert_eq!(explicit.effective_max_buffer_count(), 512);
+
+        // A maximum below the baseline is treated as equal to the baseline.
+        let below = deser_config(r#"{"dogstatsd_buffer_count": 200, "dogstatsd_buffer_count_max": 64}"#);
+        assert_eq!(below.effective_max_buffer_count(), 200);
+    }
+
+    #[tokio::test]
+    async fn dogstatsd_io_buffer_pool_grows_on_demand_until_limit() {
+        let min_buffers = 2;
+        let max_buffers = 3;
+        let (pool, shrinker) = build_io_buffer_pool(min_buffers, max_buffers, default_buffer_size());
+
+        let mut initial_buffers = Vec::with_capacity(min_buffers);
+        for _ in 0..min_buffers {
+            initial_buffers.push(
+                timeout(Duration::from_secs(1), pool.acquire())
+                    .await
+                    .expect("initial buffer should be available"),
+            );
+        }
+        let on_demand_buffer = timeout(Duration::from_secs(1), pool.acquire())
+            .await
+            .expect("pool should grow on demand before hitting the limit");
+
+        let capped_acquire = timeout(Duration::from_millis(25), pool.acquire()).await;
+        assert!(capped_acquire.is_err(), "pool should wait once it reaches the limit");
+
+        drop(initial_buffers.pop().expect("initial buffer should still be held"));
+        timeout(Duration::from_secs(1), pool.acquire())
+            .await
+            .expect("returned buffer should unblock acquisition");
+
+        drop(on_demand_buffer);
+        drop(shrinker);
     }
 
     #[test]
@@ -2605,18 +2810,26 @@ mod tests {
 
 #[cfg(test)]
 mod config_smoke {
+    use datadog_agent_config_testing::config_registry::structs;
+    use datadog_agent_config_testing::run_config_smoke_tests;
     use serde_json::json;
 
     use super::DogStatsDConfiguration;
-    use crate::config_registry::structs;
-    use crate::config_registry::test_support::run_config_smoke_tests;
+    use crate::config::{DatadogRemapper, KEY_ALIASES};
 
     #[tokio::test]
     async fn smoke_test() {
-        run_config_smoke_tests(structs::DOGSTATSD_CONFIGURATION, &[], json!({}), |cfg| {
-            cfg.as_typed::<DogStatsDConfiguration>()
-                .expect("DogStatsDConfiguration should deserialize")
-        })
+        run_config_smoke_tests(
+            structs::DOGSTATSD_CONFIGURATION,
+            &[],
+            json!({}),
+            |cfg| {
+                cfg.as_typed::<DogStatsDConfiguration>()
+                    .expect("DogStatsDConfiguration should deserialize")
+            },
+            KEY_ALIASES,
+            DatadogRemapper::new,
+        )
         .await
     }
 }

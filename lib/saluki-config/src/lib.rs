@@ -631,18 +631,22 @@ async fn run_dynamic_config_updater(
         let new_config: figment::value::Value = new_figment.clone().extract().unwrap();
 
         if current_config != new_config {
-            for change in dynamic::diff_config(&current_config, &new_config) {
+            let changes = dynamic::diff_config(&current_config, &new_config);
+
+            {
+                let mut figment_guard = inner.figment.write().unwrap_or_else(|e| {
+                    error!("Failed to acquire write lock for dynamic configuration: {}", e);
+                    e.into_inner()
+                });
+                *figment_guard = new_figment;
+            }
+
+            for change in changes {
                 // Send the change event to any receivers of the dynamic handler.
                 // If there are no receivers, `send` will fail. This is expected and fine,
                 // so we can ignore the error to avoid log spam.
                 let _ = sender.send(change);
             }
-
-            let mut figment_guard = inner.figment.write().unwrap_or_else(|e| {
-                error!("Failed to acquire write lock for dynamic configuration: {}", e);
-                e.into_inner()
-            });
-            *figment_guard = new_figment;
 
             // Update our "current" state for the next iteration.
             current_config = new_config;
@@ -697,8 +701,20 @@ impl GenericConfiguration {
         let mut maybe_ready_rx = self.inner.ready_signal.lock().await;
         if let Some(ready_rx) = maybe_ready_rx.take() {
             // We're the first caller to wait for readiness.
-            if ready_rx.await.is_err() {
+            //
+            // There is no timeout on this await by design: if the Core Agent never sends the first snapshot, startup
+            // blocks here forever.
+            saluki_antithesis::reachable!("config readiness wait entered");
+
+            let ready_result = ready_rx.await;
+
+            if ready_result.is_err() {
+                saluki_antithesis::unreachable!(
+                    "config readiness sender dropped before signalling — updater task may have panicked"
+                );
                 error!("Failed to receive configuration readiness signal; updater task may have panicked.");
+            } else {
+                saluki_antithesis::sometimes!(true, "config readiness signal received");
             }
         }
     }
@@ -970,6 +986,73 @@ mod tests {
 
         assert!(cfg.get_typed::<bool>("foobar.a").unwrap());
         assert_eq!(cfg.get_typed::<String>("foobar.b").unwrap(), "c");
+    }
+
+    #[test]
+    fn update_events_are_sent_after_the_figment_map_is_updated() {
+        fn recv_with_timeout(
+            rx: &mut tokio::sync::broadcast::Receiver<ConfigChangeEvent>, timeout: std::time::Duration,
+        ) -> Option<ConfigChangeEvent> {
+            let deadline = std::time::Instant::now() + timeout;
+            loop {
+                match rx.try_recv() {
+                    Ok(event) => return Some(event),
+                    Err(tokio::sync::broadcast::error::TryRecvError::Empty) if std::time::Instant::now() < deadline => {
+                        std::thread::sleep(std::time::Duration::from_millis(1));
+                    }
+                    Err(tokio::sync::broadcast::error::TryRecvError::Empty) => return None,
+                    Err(e) => panic!("updates channel failed: {e}"),
+                }
+            }
+        }
+
+        let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        let (cfg, sender) = runtime.block_on(async {
+            let (cfg, sender) = ConfigurationLoader::for_tests(None, None, true).await;
+            let sender = sender.expect("sender should exist");
+            sender
+                .send(ConfigUpdate::Snapshot(serde_json::json!({ "observed": "old" })))
+                .await
+                .unwrap();
+            cfg.ready().await;
+            (cfg, sender)
+        });
+
+        let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let runtime_thread = std::thread::spawn(move || {
+            runtime.block_on(async {
+                started_tx.send(()).unwrap();
+                let _ = stop_rx.await;
+            });
+        });
+        started_rx.recv().unwrap();
+
+        let mut rx = cfg.subscribe_for_updates().expect("dynamic updates should be enabled");
+        let figment_guard = cfg.inner.figment.read().unwrap();
+
+        sender
+            .blocking_send(ConfigUpdate::Partial {
+                key: "observed".to_string(),
+                value: serde_json::json!("new"),
+            })
+            .unwrap();
+
+        let early_event = recv_with_timeout(&mut rx, std::time::Duration::from_millis(100));
+        assert!(
+            early_event.is_none(),
+            "update event arrived before the figment map changed"
+        );
+
+        drop(figment_guard);
+
+        let event = recv_with_timeout(&mut rx, std::time::Duration::from_secs(2))
+            .expect("timed out waiting for observed update");
+        assert_eq!(event.key, "observed");
+        assert_eq!(cfg.get_typed::<String>("observed").unwrap(), "new");
+
+        let _ = stop_tx.send(());
+        runtime_thread.join().unwrap();
     }
 
     #[tokio::test]

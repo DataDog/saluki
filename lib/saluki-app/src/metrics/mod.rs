@@ -1,12 +1,13 @@
 //! Metrics.
 
-use std::time::Duration;
+use std::{sync::OnceLock, time::Duration};
 
 use async_trait::async_trait;
-use metrics::{gauge, Level};
+use metrics::{gauge, Gauge, Level};
+use saluki_common::sync::shutdown::ShutdownHandle;
 use saluki_core::{
     observability::metrics::MetricsFlusherWorker,
-    runtime::{InitializationError, ProcessShutdown, Supervisable, SupervisorFuture},
+    runtime::{InitializationError, Supervisable, SupervisorFuture},
 };
 use saluki_error::GenericError;
 use saluki_metrics::static_metrics;
@@ -70,6 +71,9 @@ pub(crate) async fn initialize_metrics(
 ///
 /// Must be called after the metrics subsystem has been initialized.
 pub fn emit_startup_metrics() {
+    // We hold the handle for the life of the process so it doesn't get idle reaped.
+    static RUNNING: OnceLock<Gauge> = OnceLock::new();
+
     let app_details = saluki_metadata::get_app_details();
     let app_version = if app_details.is_dev_build() {
         format!("{}-dev-{}", app_details.version().raw(), app_details.git_hash(),)
@@ -78,7 +82,8 @@ pub fn emit_startup_metrics() {
     };
 
     // Emit a "running" metric to indicate that the application is running.
-    gauge!("running", "version" => app_version).set(1.0);
+    let running = RUNNING.get_or_init(|| gauge!("running", "version" => app_version));
+    running.set(1.0);
 }
 
 /// Collects Tokio runtime metrics from the given runtime handle.
@@ -123,15 +128,16 @@ impl Supervisable for RuntimeMetricsWorker {
         "tokio-runtime-metrics-collector"
     }
 
-    async fn initialize(&self, mut process_shutdown: ProcessShutdown) -> Result<SupervisorFuture, InitializationError> {
+    async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
         let runtime_id = self.runtime_id.clone();
         let handle = self.handle.clone();
 
         Ok(Box::pin(async move {
             select! {
+                _ = process_shutdown => {},
                 _ = collect_runtime_metrics(&runtime_id, handle) => {},
-                _ = process_shutdown.wait_for_shutdown() => {},
             }
+
             Ok(())
         }))
     }

@@ -95,7 +95,12 @@ impl Assertion for FileContainsAssertion {
                 };
             }
 
-            match read_file_in_container(&ctx.container_name, &self.path).await {
+            let read_result = if ctx.is_host_process {
+                read_file_local(&self.path).await
+            } else {
+                read_file_in_container(&ctx.container_name, &self.path, ctx.target_is_windows()).await
+            };
+            match read_result {
                 Ok(Some(content)) => {
                     let matches = match &self.pattern {
                         None => true,
@@ -131,18 +136,56 @@ impl Assertion for FileContainsAssertion {
     }
 }
 
-/// Reads a file from inside the container via `docker exec cat <path>`.
+/// Reads a file from the host filesystem.
 ///
-/// Returns `Ok(Some(contents))` when the file exists and is readable, `Ok(None)` when the file is missing or
-/// unreadable (`cat` exits non-zero), and `Err` for any other failure (for example, loss of Docker connectivity).
-async fn read_file_in_container(container_name: &str, path: &str) -> Result<Option<String>, String> {
+/// Used by the `mac` runtime (and any future host-process runtime) where ADP runs as a local
+/// process and writes log files to real host paths. Returns the same shape as
+/// [`read_file_in_container`]: `Ok(Some(contents))` when readable, `Ok(None)` when missing
+/// or unreadable, `Err` for unexpected I/O failures.
+async fn read_file_local(path: &str) -> Result<Option<String>, String> {
+    match tokio::fs::read_to_string(path).await {
+        Ok(contents) => Ok(Some(contents)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => Ok(None),
+        Err(e) => Err(format!("Failed to read '{}': {}", path, e)),
+    }
+}
+
+/// Reads a file from inside the container via `docker exec`.
+///
+/// Linux containers run `cat <path>`. Windows containers run a PowerShell snippet that uses
+/// `Get-Content -Raw` and exits non-zero when the file is missing, so the failure modes line up.
+/// Returns `Ok(Some(contents))` when the file exists and is readable, `Ok(None)` when the file
+/// is missing or unreadable (the exec exits non-zero), and `Err` for any other failure (for
+/// example, loss of Docker connectivity).
+async fn read_file_in_container(container_name: &str, path: &str, is_windows: bool) -> Result<Option<String>, String> {
     let docker = docker::connect().map_err(|e| format!("Failed to connect to Docker: {}", e))?;
+
+    let cmd = if is_windows {
+        // PowerShell on Windows containers: print the file's contents on stdout, or exit 1 when
+        // the path is absent. -LiteralPath disables wildcard expansion so paths with `[`, `]`,
+        // and similar characters work as written.
+        let escaped = path.replace('"', "`\"");
+        let command = format!(
+            "if (Test-Path -LiteralPath '{0}') {{ Get-Content -Raw -LiteralPath '{0}' }} else {{ exit 1 }}",
+            escaped
+        );
+        vec![
+            "pwsh".to_string(),
+            "-NoProfile".to_string(),
+            "-NonInteractive".to_string(),
+            "-Command".to_string(),
+            command,
+        ]
+    } else {
+        vec!["cat".to_string(), path.to_string()]
+    };
 
     let exec = docker
         .create_exec(
             container_name,
             CreateExecOptions::<String> {
-                cmd: Some(vec!["cat".into(), path.into()]),
+                cmd: Some(cmd),
                 attach_stdout: Some(true),
                 attach_stderr: Some(false),
                 ..Default::default()
@@ -152,7 +195,6 @@ async fn read_file_in_container(container_name: &str, path: &str) -> Result<Opti
         .map_err(|e| format!("Failed to create exec: {}", e))?;
 
     let exec_id = exec.id.clone();
-
     let result = docker
         .start_exec(&exec_id, None)
         .await

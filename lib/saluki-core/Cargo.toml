@@ -8,21 +8,27 @@ repository = { workspace = true }
 [lints]
 workspace = true
 
+[features]
+loom = ["dep:loom"]
+
 [dependencies]
+anymap3 = { workspace = true }
 async-trait = { workspace = true }
 bitmask-enum = { workspace = true }
 ddsketch = { workspace = true }
 futures = { workspace = true }
 http = { workspace = true }
 indexmap = { workspace = true, features = ["std"] }
+loom = { workspace = true, optional = true }
 metrics = { workspace = true }
 metrics-util = { workspace = true, features = ["recency", "registry"] }
 ordered-float = { workspace = true }
 papaya = { workspace = true }
-paste = { workspace = true }
+pastey = { workspace = true }
 pin-project = { workspace = true }
 prometheus-exposition = { workspace = true }
 resource-accounting = { workspace = true }
+saluki-antithesis = { workspace = true }
 saluki-api = { workspace = true }
 saluki-common = { workspace = true }
 saluki-context = { workspace = true }
@@ -30,7 +36,6 @@ saluki-error = { workspace = true }
 saluki-metrics = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
-slab = { workspace = true }
 smallvec = { workspace = true }
 snafu = { workspace = true }
 stringtheory = { workspace = true }

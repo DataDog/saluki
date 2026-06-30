@@ -2,30 +2,32 @@ type: integration
 name: "adp-rar-registration"
 description: "Verify ADP successfully registers with Remote Agent Registry"
 timeout: 120s
+runtimes: [linux, mac, windows]
+
+env:
+  DD_API_KEY: "00000000000000000000000000000000"
+  DD_HOSTNAME: "integration-test-rar"
+  DD_DATA_PLANE_ENABLED: "true"
+  DD_DATA_PLANE_STANDALONE_MODE: "false"
+  DD_DATA_PLANE_REMOTE_AGENT_ENABLED: "true"
+  DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
 
 container:
-  image: "saluki-images/datadog-agent:testing-devel"
-  env:
-    DD_API_KEY: "test-api-key"
-    DD_HOSTNAME: "integration-test-rar"
-    DD_DATA_PLANE_ENABLED: "true"
-    DD_DATA_PLANE_STANDALONE_MODE: "false"
-    DD_DATA_PLANE_REMOTE_AGENT_ENABLED: "true"
-    DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
-    DD_DOGSTATSD_PORT: "8125"
   exposed_ports:
-    - "8125/udp"
+    - "58125/udp"
 
-assertions:
-  # ADP should report registration success.
-  - type: log_contains
+procedure:
+  # ADP should report registration success. Allow 15s (matching adp-cmd-port): registration can only
+  # succeed once the Core Agent's CMD/IPC API server is listening, which can take ~10s to come up on
+  # slower hosts.
+  - assertion: log_contains
     pattern: "Successfully registered with the Datadog Agent."
-    timeout: 10s
+    timeout: 60s
   # Make sure the process becomes healthy, and stays up without errors, for ~10 seconds after.
   - parallel:
-      - type: process_stable_for
+      - assertion: process_stable_for
         duration: 10s
-      - type: log_not_contains
+      - assertion: log_not_contains
         pattern: "panic|PANIC"
         regex: true
         during: 10s

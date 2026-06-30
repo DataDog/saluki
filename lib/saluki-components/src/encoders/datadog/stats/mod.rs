@@ -31,7 +31,7 @@ use saluki_metrics::MetricsBuilder;
 use serde::Deserialize;
 use stringtheory::MetaString;
 use tokio::{
-    select,
+    pin, select,
     sync::mpsc::{self, Receiver, Sender},
     time::sleep,
 };
@@ -235,7 +235,7 @@ async fn run_request_builder(
 ) -> Result<(), GenericError> {
     let mut pending_flush = false;
     let pending_flush_timeout = sleep(flush_timeout);
-    tokio::pin!(pending_flush_timeout);
+    pin!(pending_flush_timeout);
 
     loop {
         select! {
@@ -469,11 +469,12 @@ impl EndpointEncoder for StatsEndpointEncoder {
 
 #[cfg(test)]
 mod config_smoke {
+    use datadog_agent_config_testing::config_registry::structs;
+    use datadog_agent_config_testing::run_config_smoke_tests;
     use serde_json::json;
 
     use super::DatadogApmStatsEncoderConfiguration;
-    use crate::config_registry::structs;
-    use crate::config_registry::test_support::run_config_smoke_tests;
+    use crate::config::{DatadogRemapper, KEY_ALIASES};
 
     #[tokio::test]
     async fn smoke_test() {
@@ -485,6 +486,8 @@ mod config_smoke {
                 cfg.as_typed::<DatadogApmStatsEncoderConfiguration>()
                     .expect("DatadogApmStatsEncoderConfiguration should deserialize")
             },
+            KEY_ALIASES,
+            DatadogRemapper::new,
         )
         .await
     }

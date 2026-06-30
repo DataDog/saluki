@@ -6,27 +6,63 @@ pub fn get_dogstatsd_remappings() -> Vec<RemapperRule> {
         RemapperRule::by_name_and_tags(
             "adp.metric_filterlist_size",
             &["component_id:dsd_prefix_filter"],
-            "datadog.agent.filterlist.size",
+            "filterlist.size",
         )
         .with_help_text("Metric filter list size"),
         RemapperRule::by_name_and_tags(
             "adp.metric_filterlist_updates_total",
             &["component_id:dsd_prefix_filter"],
-            "datadog.agent.filterlist.updates",
+            "filterlist.updates",
         )
         .with_help_text("Incremented when a reconfiguration of the metric filterlist happened"),
         RemapperRule::by_name_and_tags(
             "adp.dogstatsd_listener_filtered_points_total",
             &["component_id:dsd_prefix_filter"],
-            "datadog.agent.dogstatsd.listener_filtered_points",
+            "dogstatsd.listener_filtered_points",
         )
         .with_help_text("How many points were filtered out"),
         RemapperRule::by_name_and_tags(
             "adp.dogstatsd_post_aggregate_filtered_metrics_total",
             &["component_id:dsd_post_agg_filter"],
-            "datadog.agent.aggregator.dogstatsd_filtered_metrics",
+            "aggregator.dogstatsd_filtered_metrics",
         )
         .with_help_text("How many metrics were filtered in the time samplers"),
+        RemapperRule::by_name_and_tags(
+            "adp.tag_filterlist_size",
+            &["component_id:dsd_tag_filterlist"],
+            "tag_filterlist.size",
+        )
+        .with_help_text("Tag filter list size"),
+        RemapperRule::by_name_and_tags(
+            "adp.tag_filterlist_updates_total",
+            &["component_id:dsd_tag_filterlist"],
+            "tag_filterlist.updates",
+        )
+        .with_help_text("Incremented when a reconfiguration of the tag filterlist happened"),
+        RemapperRule::by_name_and_tags(
+            "adp.tag_filterlist_tags_filtered_total",
+            &["component_id:dsd_tag_filterlist"],
+            "aggregator.filtered_tags",
+        )
+        .with_help_text("How many tags were filtered from a metric sample"),
+        RemapperRule::by_name_and_tags(
+            "adp.cache_hits_total",
+            &["cache_id:tag_filterlist/context_cache"],
+            "aggregator.filtered_tags_cache_hit",
+        )
+        .with_help_text("How many times we hit the cache on filtering tags"),
+        RemapperRule::by_name_and_tags(
+            "adp.cache_misses_total",
+            &["cache_id:tag_filterlist/context_cache"],
+            "aggregator.filtered_tags_cache_miss",
+        )
+        .with_help_text("How many times we missed the cache on filtering tags"),
+        RemapperRule::by_name_and_tags(
+            "adp.cache_items_evicted_total",
+            &["cache_id:tag_filterlist/context_cache"],
+            "aggregator.filtered_tags_cache_evict",
+        )
+        .with_help_text("How many times an entry was evicted from the tag filter cache"),
         RemapperRule::by_name_and_tags(
             "adp.object_pool_acquired",
             &["pool_name:dsd_packet_bufs"],
