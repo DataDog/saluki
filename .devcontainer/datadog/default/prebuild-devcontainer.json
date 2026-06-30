@@ -28,7 +28,11 @@
   "waitFor": "postStartCommand",
   "customizations": {
     "vscode": {
-      "extensions": ["rust-lang.rust-analyzer", "vadimcn.vscode-lldb", "tamasfe.even-better-toml"],
+      "extensions": [
+        "rust-lang.rust-analyzer",
+        "vadimcn.vscode-lldb",
+        "tamasfe.even-better-toml"
+      ],
       "settings": {
         "rust-analyzer.check.command": "clippy"
       }
