@@ -65,7 +65,7 @@ pub fn generate(overlay: &SchemaOverlay, schema_path: &Path, manifest_dir: &Path
     out.push_str("#![allow(missing_docs)]\n\n");
     out.push_str(&body);
 
-    let path = manifest_dir.join("src/generated.rs");
+    let path = manifest_dir.join("src/generated/datadog_configuration.rs");
     let existing = std::fs::read_to_string(&path).unwrap_or_default();
     if existing != out {
         std::fs::write(&path, out).unwrap_or_else(|e| panic!("cannot write {}: {}", path.display(), e));
