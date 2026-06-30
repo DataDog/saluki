@@ -338,7 +338,7 @@ impl Supervisable for ResourceTelemetryWorker {
             let dataspace =
                 DataspaceRegistry::try_current().ok_or_else(|| generic_error!("Dataspace not available."))?;
 
-            // Register our API routes and flare diagnostic handle before we actually start running.
+            // Register our API routes and diagnostic handle before we actually start running.
             dataspace.assert(memory_routes, "resource-telemetry-api");
             dataspace.assert(flare_handle, "diag-memory");
 

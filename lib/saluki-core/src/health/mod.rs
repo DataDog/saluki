@@ -402,7 +402,7 @@ impl HealthRegistry {
     /// Each component appears as a key in the returned JSON object, with its `live` and `ready` boolean fields
     /// reflecting the state at the time of the call. This is the same data exposed by the `/health/ready` and
     /// `/health/live` HTTP endpoints, but collected in a single pass for use outside of the HTTP handler path (for
-    /// example, when building a flare artifact).
+    /// example, when building a diagnostic artifact).
     pub fn snapshot_json(&self) -> String {
         #[derive(serde::Serialize)]
         struct ComponentSnapshot {

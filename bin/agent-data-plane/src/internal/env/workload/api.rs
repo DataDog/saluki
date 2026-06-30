@@ -61,8 +61,8 @@ impl RemoteAgentWorkloadState {
     /// Returns a JSON snapshot of the current tag store state.
     ///
     /// Lists every active entity with its tags at each cardinality level. This is the same data served by
-    /// `/workload/remote_agent/tags/dump`, collected directly from the in-process store for use in flare
-    /// artifacts.
+    /// `/workload/remote_agent/tags/dump`, collected directly from the in-process store for use as a
+    /// diagnostic artifact.
     fn tags_dump_json(&self) -> String {
         self.get_tags_dump_response()
     }
@@ -70,8 +70,8 @@ impl RemoteAgentWorkloadState {
     /// Returns a JSON snapshot of the current external data store state.
     ///
     /// Lists every pod/container identity mapping tracked by the external data store. This is the same data served
-    /// by `/workload/remote_agent/external_data/dump`, collected directly from the in-process store for use in
-    /// flare artifacts.
+    /// by `/workload/remote_agent/external_data/dump`, collected directly from the in-process store for use as a
+    /// diagnostic artifact.
     fn eds_dump_json(&self) -> String {
         self.get_eds_dump_response()
     }

@@ -258,7 +258,7 @@ impl ComponentRegistryHandle {
     /// Each component appears as a key in the returned JSON object with `minimum_required_bytes`,
     /// `firm_limit_bytes`, and `actual_live_bytes` fields. This produces the same data as the `/memory/status`
     /// HTTP endpoint but is collected directly from the in-process registry for use outside of the HTTP handler
-    /// path (for example, when building a flare artifact).
+    /// path (for example, when building a diagnostic artifact).
     pub fn memory_snapshot_json(&self) -> String {
         use std::collections::BTreeMap;
 

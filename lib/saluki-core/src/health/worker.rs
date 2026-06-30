@@ -42,7 +42,7 @@ impl Supervisable for HealthRegistryWorker {
             let dataspace =
                 DataspaceRegistry::try_current().ok_or_else(|| generic_error!("Dataspace not available."))?;
 
-            // Register our API routes and flare diagnostic handle before we actually start running.
+            // Register our API routes and diagnostic artifact handle before we actually start running.
             dataspace.assert(health_routes, "health-registry-api");
             dataspace.assert(flare_handle, "diag-health");
 

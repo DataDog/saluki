@@ -132,11 +132,11 @@ impl RemoteAgentBootstrap {
     }
 
     /// Creates a worker that captures the dataspace from the supervisor context and makes it
-    /// available to the flare service.
+    /// available to the diagnostic artifact collection service.
     ///
     /// This worker must be added to the control plane supervisor. When it initializes, it runs
     /// inside the supervisor process where the dataspace task-local is set, and fills the shared
-    /// [`OnceLock`] so that `get_flare_files` can subscribe to flare handles at request time.
+    /// [`OnceLock`] so that `get_flare_files` can collect diagnostic artifacts at request time.
     /// Without this, the gRPC handler tasks spawned by tonic would not have access to the
     /// dataspace since tonic's `tokio::spawn` does not propagate task-locals.
     pub fn create_dataspace_anchor(&self) -> DataspaceAnchorWorker {
@@ -500,34 +500,33 @@ impl TelemetryProvider for RemoteAgentImpl {
 /// Timeout for the tokio task dump step within [`FlareProvider::get_flare_files`].
 ///
 /// `Handle::dump()` may never resolve if a runtime worker is blocked for more than 250 ms. We use
-/// a conservative 5-second budget so that a hung runtime still allows the other flare artifacts
-/// to be returned to the Core Agent.
+/// a conservative 5-second budget so that a hung runtime still allows the other diagnostic artifacts
+/// to be collected and returned.
 #[cfg(target_os = "linux")]
 const TASK_DUMP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// Timeout for collecting a single component-owned flare artifact via [`DiagnosticHandle::collect`].
+/// Timeout for collecting all component-owned diagnostic artifacts.
 ///
-/// Each `collect()` closure is run on a blocking thread via `spawn_blocking`. If it does not
-/// complete within this budget, the artifact is replaced with an error message and collection
-/// continues with the remaining handles. This ensures that a slow or deadlocked component cannot
-/// stall the entire flare response.
-const FLARE_COLLECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(4);
+/// Each `collect()` closure is run on a blocking thread via `spawn_blocking`. If the overall
+/// budget is exhausted, collection stops and whatever artifacts were gathered are returned.
+/// This ensures that a slow or deadlocked component cannot stall the entire response.
+const DIAGNOSTIC_COLLECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(4);
 
-/// Maximum size in bytes for a single flare artifact.
+/// Maximum size in bytes for a single diagnostic artifact.
 ///
 /// Artifacts that exceed this limit are truncated and a truncation marker is appended so that
 /// readers know the content is incomplete. High-cardinality hosts can produce very large workload
-/// tag dumps; this cap keeps the overall flare archive size predictable.
-const FLARE_ARTIFACT_MAX_BYTES: usize = 5 * 1024 * 1024; // 5 MiB
+/// tag dumps; this cap keeps the overall archive size predictable.
+const DIAGNOSTIC_ARTIFACT_MAX_BYTES: usize = 5 * 1024 * 1024; // 5 MiB
 
-/// Truncation marker appended to artifacts that exceed [`FLARE_ARTIFACT_MAX_BYTES`].
-const FLARE_TRUNCATION_MARKER: &[u8] = b"\n\n[... truncated: artifact exceeded the 5 MiB per-file limit ...]\n";
+/// Truncation marker appended to diagnostic artifacts that exceed [`DIAGNOSTIC_ARTIFACT_MAX_BYTES`] in size.
+const DIAGNOSTIC_TRUNCATION_MARKER: &[u8] = b"\n\n[... truncated: artifact exceeded the 5 MiB per-file limit ...]\n";
 
-/// Caps `bytes` to [`FLARE_ARTIFACT_MAX_BYTES`], appending [`FLARE_TRUNCATION_MARKER`] if truncated.
+/// Caps `bytes` to [`DIAGNOSTIC_ARTIFACT_MAX_BYTES`], appending [`DIAGNOSTIC_TRUNCATION_MARKER`] if truncated.
 fn cap_artifact(mut bytes: Vec<u8>) -> Vec<u8> {
-    if bytes.len() > FLARE_ARTIFACT_MAX_BYTES {
-        bytes.truncate(FLARE_ARTIFACT_MAX_BYTES);
-        bytes.extend_from_slice(FLARE_TRUNCATION_MARKER);
+    if bytes.len() > DIAGNOSTIC_ARTIFACT_MAX_BYTES {
+        bytes.truncate(DIAGNOSTIC_ARTIFACT_MAX_BYTES);
+        bytes.extend_from_slice(DIAGNOSTIC_TRUNCATION_MARKER);
     }
     bytes
 }
@@ -580,7 +579,7 @@ impl FlareProvider for RemoteAgentImpl {
                 // Grab and collect all asserted diagnostic handles 
                 if let Some(dataspace) = self.dataspace.get() {
                     let handles = dataspace.current_values::<DiagnosticHandle>(IdentifierFilter::all());
-                    let deadline = tokio::time::Instant::now() + FLARE_COLLECT_TIMEOUT;
+                    let deadline = tokio::time::Instant::now() + DIAGNOSTIC_COLLECT_TIMEOUT;
 
                     for handle in handles {
                         if tokio::time::Instant::now() >= deadline {
@@ -631,8 +630,7 @@ impl FlareProvider for RemoteAgentImpl {
                 //
                 // Wrapped in an explicit timeout because `Handle::dump()` 
                 // may never resolve if a runtime worker is blocked for
-                // more than 250ms — without the timeout a hung runtime would prevent all other
-                // artifacts from being returned to the Core Agent.
+                // more than 250ms
                 #[cfg(target_os = "linux")]
                 {
                     let task_dump = match tokio::time::timeout(
@@ -663,9 +661,9 @@ impl FlareProvider for RemoteAgentImpl {
 }
 
 /// A worker that captures the dataspace from the supervisor context and stores it in a shared
-/// [`OnceLock`] for use by the flare service.
+/// [`OnceLock`] for use by the diagnostic artifact collection service.
 ///
-/// The flare gRPC handler runs in tasks spawned by tonic, which do not inherit tokio task-locals.
+/// The gRPC handler runs in tasks spawned by tonic, which do not inherit tokio task-locals.
 /// This worker bridges that gap by capturing the dataspace during its own `initialize()` call,
 /// which runs inside the supervisor process where the dataspace is available.
 pub struct DataspaceAnchorWorker {
@@ -755,22 +753,25 @@ mod tests {
 
     #[test]
     fn cap_artifact_truncates_at_limit_and_appends_marker() {
-        let input = vec![b'x'; FLARE_ARTIFACT_MAX_BYTES + 1024];
+        let input = vec![b'x'; DIAGNOSTIC_ARTIFACT_MAX_BYTES + 1024];
         let output = cap_artifact(input);
 
         // Total length is capped at the limit plus the marker.
-        assert_eq!(output.len(), FLARE_ARTIFACT_MAX_BYTES + FLARE_TRUNCATION_MARKER.len());
+        assert_eq!(
+            output.len(),
+            DIAGNOSTIC_ARTIFACT_MAX_BYTES + DIAGNOSTIC_TRUNCATION_MARKER.len()
+        );
 
-        // The first FLARE_ARTIFACT_MAX_BYTES bytes are all 'x'.
-        assert!(output[..FLARE_ARTIFACT_MAX_BYTES].iter().all(|&b| b == b'x'));
+        // The first DIAGNOSTIC_ARTIFACT_MAX_BYTES bytes are all 'x'.
+        assert!(output[..DIAGNOSTIC_ARTIFACT_MAX_BYTES].iter().all(|&b| b == b'x'));
 
         // The marker is appended at the end.
-        assert!(output.ends_with(FLARE_TRUNCATION_MARKER));
+        assert!(output.ends_with(DIAGNOSTIC_TRUNCATION_MARKER));
     }
 
     #[test]
     fn cap_artifact_at_exact_limit_is_not_truncated() {
-        let input = vec![b'y'; FLARE_ARTIFACT_MAX_BYTES];
+        let input = vec![b'y'; DIAGNOSTIC_ARTIFACT_MAX_BYTES];
         let output = cap_artifact(input.clone());
         assert_eq!(output, input);
     }
