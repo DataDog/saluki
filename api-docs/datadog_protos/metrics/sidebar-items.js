@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"enum":["MetricType"],"mod":["events_payload","metric_payload","sketch_payload"],"struct":["CommonMetadata","Distribution","Dogsketch","EventsPayload","Metadata","MetricPayload","MetricPoint","MetricSeries","Origin","Resource","Sketch","SketchPayload"]};
+window.SIDEBAR_ITEMS = {"enum":["MetricType"],"mod":["events_payload","metric_payload","sketch_payload","v3"],"struct":["CommonMetadata","Distribution","Dogsketch","EventsPayload","Metadata","MetricPayload","MetricPoint","MetricSeries","Origin","Resource","Sketch","SketchPayload"]};

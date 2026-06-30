@@ -1,0 +1,1 @@
+rd_("CoDatadogConfigurationObservabilityPipelinesWorkerMetricsUseV3Api")
