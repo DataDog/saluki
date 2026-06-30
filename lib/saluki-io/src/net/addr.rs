@@ -56,7 +56,7 @@ impl ListenAddress {
     /// Creates a Windows named pipe listen address.
     pub fn named_pipe(name: impl Into<String>, security_descriptor: impl Into<String>) -> Self {
         Self::NamedPipe {
-            name: name.into(),
+            name: normalize_windows_named_pipe_name(name.into()),
             security_descriptor: security_descriptor.into(),
         }
     }
@@ -131,6 +131,13 @@ impl ListenAddress {
             _ => None,
         }
     }
+}
+
+fn normalize_windows_named_pipe_name(name: String) -> String {
+    name.strip_prefix(r"\\.\pipe\")
+        .or_else(|| name.strip_prefix(r"//./pipe/"))
+        .unwrap_or(&name)
+        .to_string()
 }
 
 impl fmt::Display for ListenAddress {
@@ -421,6 +428,21 @@ mod tests {
 
         assert_eq!(address.listener_type(), "named_pipe");
         assert_eq!(address.to_string(), r"named_pipe://datadog-dogstatsd");
+        assert_eq!(
+            address.as_windows_named_pipe_path().as_deref(),
+            Some(r"\\.\pipe\datadog-dogstatsd")
+        );
+    }
+
+    #[test]
+    fn named_pipe_listen_address_accepts_full_windows_pipe_path() {
+        let address = ListenAddress::named_pipe(r"\\.\pipe\datadog-dogstatsd", "D:AI(A;;GA;;;WD)");
+
+        assert_eq!(address.to_string(), r"named_pipe://datadog-dogstatsd");
+        assert_eq!(
+            address.as_windows_named_pipe_path().as_deref(),
+            Some(r"\\.\pipe\datadog-dogstatsd")
+        );
     }
 
     #[test]

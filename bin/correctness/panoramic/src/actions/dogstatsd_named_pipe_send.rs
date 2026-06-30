@@ -80,16 +80,24 @@ async fn send_payload_in_windows_container(
 ) -> Result<(), GenericError> {
     let command = build_windows_named_pipe_send_command(pipe_name, payload, timeout);
     let deadline = Instant::now() + timeout;
+    let mut last_error = None;
 
     loop {
         if cancel_token.is_cancelled() || exit_token.is_cancelled() {
             return Err(generic_error!("Action cancelled because the target exited."));
         }
         if Instant::now() > deadline {
-            return Err(generic_error!(
-                "Timed out sending DogStatsD payload to named pipe '{}'.",
-                pipe_name
-            ));
+            return Err(match last_error {
+                Some(error) => generic_error!(
+                    "Timed out sending DogStatsD payload to named pipe '{}'. Last attempt failed: {}.",
+                    pipe_name,
+                    error
+                ),
+                None => generic_error!(
+                    "Timed out sending DogStatsD payload to named pipe '{}'. No send attempt completed before the deadline.",
+                    pipe_name
+                ),
+            });
         }
 
         match exec_collect(
@@ -105,7 +113,10 @@ async fn send_payload_in_windows_container(
         .await
         {
             Ok(_) => return Ok(()),
-            Err(_) => tokio::time::sleep(Duration::from_millis(500)).await,
+            Err(error) => {
+                last_error = Some(error);
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
         }
     }
 }

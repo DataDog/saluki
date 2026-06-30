@@ -1391,6 +1391,9 @@ async fn drive_stream(
 
                         match frame_result {
                             Ok(Some(frame)) => {
+                                if matches!(listen_addr, ListenAddress::NamedPipe { .. }) {
+                                    metrics.packet_receive_success().increment(1);
+                                }
                                 trace!(%listen_addr, %peer_addr, ?frame, "Decoded frame.");
                                 if let Some(forwarder) = &packet_forwarder {
                                     forwarder.forward(frame.clone()).await;
