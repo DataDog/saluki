@@ -1002,13 +1002,13 @@ inventory:
     documentation: "ADP decodes inline."
 
   dogstatsd_pipe_name:
-    support: none
-    severity: medium
-    planned: true
+    support: full
     pipelines: [dogstatsd]
     description: "Windows named pipe path"
-    documentation: "ADP targets Linux for initial GA; Windows support will follow."
-    issue: "#1466"
+    test_support:
+      used_by: [DogStatsDConfiguration]
+      additional_attributes:
+        config_registry_filename: dogstatsd.rs
 
   dogstatsd_pipeline_autoadjust:
     support: none
@@ -1174,13 +1174,13 @@ inventory:
     documentation: "Not feasible to thread listener identity through ADP's async decode pipeline."
 
   dogstatsd_windows_pipe_security_descriptor:
-    support: none
-    severity: medium
-    planned: true
+    support: full
     pipelines: [dogstatsd]
     description: "Windows named pipe ACL descriptor"
-    documentation: "Windows support is deferred but planned."
-    issue: "#1466"
+    test_support:
+      used_by: [DogStatsDConfiguration]
+      additional_attributes:
+        config_registry_filename: dogstatsd.rs
 
   dogstatsd_workers_count:
     support: none
