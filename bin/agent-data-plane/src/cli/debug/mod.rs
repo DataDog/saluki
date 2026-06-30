@@ -7,6 +7,9 @@ use crate::cli::utils::DataPlaneAPIClient;
 mod workload;
 use self::workload::{handle_workload_command, WorkloadCommand};
 
+mod topology;
+use self::topology::{handle_topology_command, TopologyCommand};
+
 /// General debugging commands.
 #[derive(FromArgs, Debug)]
 #[argh(subcommand, name = "debug")]
@@ -22,6 +25,7 @@ enum DebugSubcommand {
     SetLogLevel(SetLogLevelCommand),
     ResetMetricLevel(ResetMetricLevelCommand),
     SetMetricLevel(SetMetricLevelCommand),
+    Topology(TopologyCommand),
     Workload(WorkloadCommand),
 }
 
@@ -63,6 +67,15 @@ pub struct SetMetricLevelCommand {
 
 /// Entrypoint for the `debug` commands.
 pub async fn handle_debug_command(bootstrap_config: &GenericConfiguration, cmd: DebugCommand) {
+    let cmd = match handle_debug_topology_command_if_requested(bootstrap_config, cmd).await {
+        Ok(Some(cmd)) => cmd,
+        Ok(None) => return,
+        Err(e) => {
+            error!("Failed to export topology: {:#}", e);
+            std::process::exit(1);
+        }
+    };
+
     let mut api_client = match DataPlaneAPIClient::from_config(bootstrap_config) {
         Ok(client) => client,
         Err(e) => {
@@ -76,7 +89,24 @@ pub async fn handle_debug_command(bootstrap_config: &GenericConfiguration, cmd: 
         DebugSubcommand::SetLogLevel(cmd) => set_log_level(&mut api_client, cmd).await,
         DebugSubcommand::ResetMetricLevel(_) => reset_metric_level(&mut api_client).await,
         DebugSubcommand::SetMetricLevel(cmd) => set_metric_level(&mut api_client, cmd).await,
+        DebugSubcommand::Topology(_) => unreachable!("handled before creating the API client"),
         DebugSubcommand::Workload(cmd) => handle_workload_command(&mut api_client, cmd).await,
+    }
+}
+
+/// Handles `debug topology` if the given debug command is the topology export command.
+///
+/// Returns `Ok(None)` when the command was handled. Returns `Ok(Some(_))` with the original command when another debug
+/// subcommand should continue through the regular debug path.
+pub async fn handle_debug_topology_command_if_requested(
+    bootstrap_config: &GenericConfiguration, cmd: DebugCommand,
+) -> Result<Option<DebugCommand>, saluki_error::GenericError> {
+    match cmd.subcommand {
+        DebugSubcommand::Topology(cmd) => {
+            handle_topology_command(bootstrap_config, cmd).await?;
+            Ok(None)
+        }
+        subcommand => Ok(Some(DebugCommand { subcommand })),
     }
 }
 

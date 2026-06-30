@@ -7,7 +7,10 @@ use std::{
 use indexmap::IndexSet;
 use snafu::Snafu;
 
-use super::{ComponentId, ComponentOutputId, OutputDefinition, OutputName, TypedComponentId, TypedComponentOutputId};
+use super::{
+    ComponentId, ComponentOutputId, OutputDefinition, OutputName, TopologyComponentSnapshot, TopologyDataTypeSnapshot,
+    TopologyEdgeSnapshot, TopologyOutputSnapshot, TopologySnapshot, TypedComponentId, TypedComponentOutputId,
+};
 use crate::{
     components::{
         decoders::DecoderBuilder, destinations::DestinationBuilder, encoders::EncoderBuilder,
@@ -105,27 +108,34 @@ impl fmt::Display for DataType {
 #[derive(Debug, Clone)]
 enum Node {
     Source {
+        rust_type: &'static str,
         outputs: Vec<TypedComponentOutputId>,
     },
     Relay {
+        rust_type: &'static str,
         outputs: Vec<TypedComponentOutputId>,
     },
     Decoder {
+        rust_type: &'static str,
         input_ty: PayloadType,
         output_ty: EventType,
     },
     Transform {
+        rust_type: &'static str,
         input_ty: EventType,
         outputs: Vec<TypedComponentOutputId>,
     },
     Encoder {
+        rust_type: &'static str,
         input_ty: EventType,
         output_ty: PayloadType,
     },
     Forwarder {
+        rust_type: &'static str,
         input_ty: PayloadType,
     },
     Destination {
+        rust_type: &'static str,
         input_ty: EventType,
     },
 }
@@ -164,7 +174,13 @@ impl Graph {
         }
 
         let outputs = construct_typed_output_ids(&component_id, builder.outputs())?;
-        self.nodes.insert(component_id.clone(), Node::Source { outputs });
+        self.nodes.insert(
+            component_id.clone(),
+            Node::Source {
+                rust_type: builder.rust_type(),
+                outputs,
+            },
+        );
 
         Ok(component_id)
     }
@@ -185,7 +201,13 @@ impl Graph {
         }
 
         let outputs = construct_typed_output_ids(&component_id, builder.outputs())?;
-        self.nodes.insert(component_id.clone(), Node::Relay { outputs });
+        self.nodes.insert(
+            component_id.clone(),
+            Node::Relay {
+                rust_type: builder.rust_type(),
+                outputs,
+            },
+        );
 
         Ok(component_id)
     }
@@ -208,6 +230,7 @@ impl Graph {
         self.nodes.insert(
             component_id.clone(),
             Node::Decoder {
+                rust_type: builder.rust_type(),
                 input_ty: builder.input_payload_type(),
                 output_ty: builder.output_event_type(),
             },
@@ -237,6 +260,7 @@ impl Graph {
         self.nodes.insert(
             component_id.clone(),
             Node::Transform {
+                rust_type: builder.rust_type(),
                 input_ty: builder.input_event_type(),
                 outputs,
             },
@@ -262,6 +286,7 @@ impl Graph {
         self.nodes.insert(
             component_id.clone(),
             Node::Encoder {
+                rust_type: builder.rust_type(),
                 input_ty: builder.input_event_type(),
                 output_ty: builder.output_payload_type(),
             },
@@ -289,6 +314,7 @@ impl Graph {
         self.nodes.insert(
             component_id.clone(),
             Node::Forwarder {
+                rust_type: builder.rust_type(),
                 input_ty: builder.input_payload_type(),
             },
         );
@@ -315,6 +341,7 @@ impl Graph {
         self.nodes.insert(
             component_id.clone(),
             Node::Destination {
+                rust_type: builder.rust_type(),
                 input_ty: builder.input_event_type(),
             },
         );
@@ -344,7 +371,7 @@ impl Graph {
             Some(node) => match node {
                 // Sources, relays, and transforms support named outputs, so we have to dig into their outputs to make
                 // sure the given output ID exists.
-                Node::Source { outputs } | Node::Relay { outputs } | Node::Transform { outputs, .. } => {
+                Node::Source { outputs, .. } | Node::Relay { outputs, .. } | Node::Transform { outputs, .. } => {
                     if !outputs
                         .iter()
                         .any(|output| output.component_output() == &component_output_id)
@@ -384,14 +411,14 @@ impl Graph {
             Node::Decoder { input_ty, .. } => DataType::Payload(input_ty),
             Node::Transform { input_ty, .. } => DataType::Event(input_ty),
             Node::Encoder { input_ty, .. } => DataType::Event(input_ty),
-            Node::Forwarder { input_ty } => DataType::Payload(input_ty),
-            Node::Destination { input_ty } => DataType::Event(input_ty),
+            Node::Forwarder { input_ty, .. } => DataType::Payload(input_ty),
+            Node::Destination { input_ty, .. } => DataType::Event(input_ty),
         }
     }
 
     fn get_output_type(&self, id: &ComponentOutputId) -> DataType {
         match &self.nodes[&id.component_id()] {
-            Node::Source { outputs } | Node::Relay { outputs } | Node::Transform { outputs, .. } => outputs
+            Node::Source { outputs, .. } | Node::Relay { outputs, .. } | Node::Transform { outputs, .. } => outputs
                 .iter()
                 .find(|output| output.component_output().output() == id.output())
                 .map(|output| output.output_ty())
@@ -563,7 +590,7 @@ impl Graph {
             let typed_component_id = TypedComponentId::new(component_id.clone(), component_type);
 
             match node {
-                Node::Source { outputs } | Node::Relay { outputs } | Node::Transform { outputs, .. } => {
+                Node::Source { outputs, .. } | Node::Relay { outputs, .. } | Node::Transform { outputs, .. } => {
                     let per_component = mappings.entry(typed_component_id).or_default();
                     for output in outputs {
                         per_component.insert(output.component_output().output(), Vec::new());
@@ -594,6 +621,95 @@ impl Graph {
         }
 
         mappings
+    }
+
+    pub(super) fn snapshot(&self) -> TopologySnapshot {
+        let mut components = self
+            .nodes
+            .iter()
+            .map(|(component_id, node)| self.snapshot_component(component_id, node))
+            .collect::<Vec<_>>();
+        components.sort_by(|left, right| left.id().cmp(right.id()));
+
+        let mut edges = self
+            .edges
+            .iter()
+            .map(|edge| TopologyEdgeSnapshot::new(edge.from.to_string(), edge.to.to_string()))
+            .collect::<Vec<_>>();
+        edges.sort_by(|left, right| left.from().cmp(right.from()).then_with(|| left.to().cmp(right.to())));
+
+        TopologySnapshot::new(components, edges)
+    }
+
+    fn snapshot_component(&self, component_id: &ComponentId, node: &Node) -> TopologyComponentSnapshot {
+        let component_type = self
+            .get_component_type(component_id)
+            .expect("component should exist in graph");
+        let rust_type = match node {
+            Node::Source { rust_type, .. }
+            | Node::Relay { rust_type, .. }
+            | Node::Decoder { rust_type, .. }
+            | Node::Transform { rust_type, .. }
+            | Node::Encoder { rust_type, .. }
+            | Node::Forwarder { rust_type, .. }
+            | Node::Destination { rust_type, .. } => *rust_type,
+        };
+        let input = match node {
+            Node::Source { .. } | Node::Relay { .. } => None,
+            Node::Decoder { input_ty, .. } => Some(data_type_snapshot((*input_ty).into())),
+            Node::Transform { input_ty, .. } => Some(data_type_snapshot((*input_ty).into())),
+            Node::Encoder { input_ty, .. } => Some(data_type_snapshot((*input_ty).into())),
+            Node::Forwarder { input_ty, .. } => Some(data_type_snapshot((*input_ty).into())),
+            Node::Destination { input_ty, .. } => Some(data_type_snapshot((*input_ty).into())),
+        };
+        let mut outputs = match node {
+            Node::Source { outputs, .. } | Node::Relay { outputs, .. } | Node::Transform { outputs, .. } => outputs
+                .iter()
+                .map(|output| {
+                    let component_output = output.component_output();
+                    output_snapshot(
+                        component_output.to_string(),
+                        component_output.output().to_string(),
+                        output.output_ty(),
+                    )
+                })
+                .collect::<Vec<_>>(),
+            Node::Decoder { output_ty, .. } => vec![output_snapshot(
+                component_id.to_string(),
+                OutputName::Default.to_string(),
+                (*output_ty).into(),
+            )],
+            Node::Encoder { output_ty, .. } => vec![output_snapshot(
+                component_id.to_string(),
+                OutputName::Default.to_string(),
+                (*output_ty).into(),
+            )],
+            Node::Forwarder { .. } | Node::Destination { .. } => Vec::new(),
+        };
+        outputs.sort_by(|left, right| left.id().cmp(right.id()));
+
+        TopologyComponentSnapshot::new(
+            component_id.to_string(),
+            component_type.as_str().to_string(),
+            rust_type.to_string(),
+            input,
+            outputs,
+        )
+    }
+}
+
+fn output_snapshot(id: String, name: String, data_type: DataType) -> TopologyOutputSnapshot {
+    TopologyOutputSnapshot::new(id, name, data_type_snapshot(data_type))
+}
+
+fn data_type_snapshot(data_type: DataType) -> TopologyDataTypeSnapshot {
+    match data_type {
+        DataType::Event(event_type) => {
+            TopologyDataTypeSnapshot::new("event", event_type.signal_names(), event_type.to_string())
+        }
+        DataType::Payload(payload_type) => {
+            TopologyDataTypeSnapshot::new("payload", payload_type.kind_names(), payload_type.to_string())
+        }
     }
 }
 
@@ -1342,6 +1458,123 @@ mod test {
             decoder_connections.len(),
             1,
             "decoder default output should have 1 connection"
+        );
+    }
+
+    #[test]
+    fn snapshot_includes_components_outputs_data_types_and_edges() {
+        let mut graph = Graph::default();
+        graph
+            .with_relay_multiple_outputs(
+                "relay_in",
+                &[(None, PayloadType::Raw), (Some("grpc"), PayloadType::Grpc)],
+            )
+            .with_decoder("decoder", PayloadType::Raw, EventType::Metric)
+            .with_transform_multiple_outputs(
+                "fanout",
+                EventType::Metric,
+                &[(None, EventType::Metric), (Some("errors"), EventType::EventD)],
+            )
+            .with_encoder("encode", EventType::Metric, PayloadType::Http)
+            .with_forwarder("forward", PayloadType::Http)
+            .with_destination("error_out", EventType::EventD)
+            .with_edge("relay_in", "decoder")
+            .with_edge("decoder", "fanout")
+            .with_edge("fanout", "encode")
+            .with_edge("fanout.errors", "error_out")
+            .with_edge("encode", "forward");
+
+        let snapshot = serde_json::to_value(graph.snapshot()).expect("snapshot should serialize");
+
+        assert_eq!(
+            snapshot,
+            serde_json::json!({
+                "components": [
+                    {
+                        "id": "decoder",
+                        "kind": "decoder",
+                        "rust_type": "saluki_core::topology::test_util::TestDecoderBuilder",
+                        "input": { "category": "payload", "signals": ["raw"], "label": "Raw" },
+                        "outputs": [
+                            {
+                                "id": "decoder",
+                                "name": "_default",
+                                "data_type": { "category": "event", "signals": ["metrics"], "label": "Metric" }
+                            }
+                        ]
+                    },
+                    {
+                        "id": "encode",
+                        "kind": "encoder",
+                        "rust_type": "saluki_core::topology::test_util::TestEncoderBuilder",
+                        "input": { "category": "event", "signals": ["metrics"], "label": "Metric" },
+                        "outputs": [
+                            {
+                                "id": "encode",
+                                "name": "_default",
+                                "data_type": { "category": "payload", "signals": ["http"], "label": "HTTP" }
+                            }
+                        ]
+                    },
+                    {
+                        "id": "error_out",
+                        "kind": "destination",
+                        "rust_type": "saluki_core::topology::test_util::TestDestinationBuilder",
+                        "input": { "category": "event", "signals": ["events"], "label": "DatadogEvent" },
+                        "outputs": []
+                    },
+                    {
+                        "id": "fanout",
+                        "kind": "transform",
+                        "rust_type": "saluki_core::topology::test_util::TestTransformBuilder",
+                        "input": { "category": "event", "signals": ["metrics"], "label": "Metric" },
+                        "outputs": [
+                            {
+                                "id": "fanout",
+                                "name": "_default",
+                                "data_type": { "category": "event", "signals": ["metrics"], "label": "Metric" }
+                            },
+                            {
+                                "id": "fanout.errors",
+                                "name": "errors",
+                                "data_type": { "category": "event", "signals": ["events"], "label": "DatadogEvent" }
+                            }
+                        ]
+                    },
+                    {
+                        "id": "forward",
+                        "kind": "forwarder",
+                        "rust_type": "saluki_core::topology::test_util::TestForwarderBuilder",
+                        "input": { "category": "payload", "signals": ["http"], "label": "HTTP" },
+                        "outputs": []
+                    },
+                    {
+                        "id": "relay_in",
+                        "kind": "relay",
+                        "rust_type": "saluki_core::topology::test_util::TestRelayBuilder",
+                        "input": null,
+                        "outputs": [
+                            {
+                                "id": "relay_in",
+                                "name": "_default",
+                                "data_type": { "category": "payload", "signals": ["raw"], "label": "Raw" }
+                            },
+                            {
+                                "id": "relay_in.grpc",
+                                "name": "grpc",
+                                "data_type": { "category": "payload", "signals": ["grpc"], "label": "gRPC" }
+                            }
+                        ]
+                    }
+                ],
+                "edges": [
+                    { "from": "decoder", "to": "fanout" },
+                    { "from": "encode", "to": "forward" },
+                    { "from": "fanout", "to": "encode" },
+                    { "from": "fanout.errors", "to": "error_out" },
+                    { "from": "relay_in", "to": "decoder" }
+                ]
+            })
         );
     }
 }
