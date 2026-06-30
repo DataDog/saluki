@@ -845,6 +845,23 @@ impl DogStatsDConfiguration {
         addresses
     }
 
+    fn uds_origin_detection_unsupported_on_platform(&self, addresses: &[ListenAddress]) -> bool {
+        self.origin_enrichment.enabled()
+            && cfg!(not(target_os = "linux"))
+            && addresses
+                .iter()
+                .any(|address| matches!(address, ListenAddress::Unixgram(_) | ListenAddress::Unix(_)))
+    }
+
+    fn warn_if_uds_origin_detection_unsupported(&self, addresses: &[ListenAddress]) {
+        if self.uds_origin_detection_unsupported_on_platform(addresses) {
+            warn!(
+                "DogStatsD UDS origin detection is enabled, but PID-based Unix socket credentials are unsupported on \
+                 this platform. Metrics are accepted without PID-based origin enrichment."
+            );
+        }
+    }
+
     /// Builds the appropriate `Listener` objects.
     async fn build_listeners(&self) -> Result<Vec<Listener>, Error> {
         // Resolve `bind_host` to an IP (via DNS if needed). Skip the lookup when
@@ -860,6 +877,7 @@ impl DogStatsDConfiguration {
         };
 
         let addresses = self.build_addresses(bind_host);
+        self.warn_if_uds_origin_detection_unsupported(&addresses);
         let mut listeners = Vec::new();
         let socket_receive_buffer_size =
             (self.socket_receive_buffer_size != 0).then_some(self.socket_receive_buffer_size);
@@ -1247,6 +1265,12 @@ async fn process_stream(
     }
 }
 
+fn origin_detection_failed_for_telemetry(
+    origin_detection_enabled: bool, bytes_read: usize, peer_addr: &ConnectionAddress,
+) -> bool {
+    origin_detection_enabled && bytes_read > 0 && peer_addr.has_process_credential_telemetry_error()
+}
+
 async fn drive_stream(
     mut stream: Stream, source_context: SourceContext, handler_context: HandlerContext,
     enabled_filter: EnablePayloadsFilter,
@@ -1316,7 +1340,7 @@ async fn drive_stream(
                     metrics.bytes_received().increment(bytes_read as u64);
                     metrics.bytes_received_size().record(bytes_read as f64);
                     let origin_detection_failed =
-                        origin_detection_enabled && bytes_read > 0 && peer_addr.has_process_credential_error();
+                        origin_detection_failed_for_telemetry(origin_detection_enabled, bytes_read, &peer_addr);
                     if origin_detection_failed && is_connectionless {
                         metrics.origin_detection_errors().increment(1);
                     }
@@ -1912,8 +1936,8 @@ mod tests {
         },
         handle_metric_packet,
         metrics::build_metrics,
-        resolve_capture_container_id, ContextResolvers, DogStatsDConfiguration, DOGSTATSD_CAPTURE_DIR,
-        MIN_CAPTURE_DEPTH,
+        origin_detection_failed_for_telemetry, resolve_capture_container_id, ContextResolvers, DogStatsDConfiguration,
+        DOGSTATSD_CAPTURE_DIR, MIN_CAPTURE_DEPTH,
     };
 
     const LINUX_EAFNOSUPPORT: i32 = 97;
@@ -2264,6 +2288,24 @@ mod tests {
     }
 
     #[test]
+    fn unsupported_platform_process_credentials_do_not_count_as_origin_detection_telemetry_errors() {
+        let peer_addr = ConnectionAddress::ProcessLike(ProcessIdentity::Error(
+            saluki_io::net::ProcessCredentialsError::UnsupportedPlatform,
+        ));
+
+        assert!(!origin_detection_failed_for_telemetry(true, 1, &peer_addr));
+    }
+
+    #[test]
+    fn invalid_process_credentials_count_as_origin_detection_telemetry_errors() {
+        let peer_addr = ConnectionAddress::ProcessLike(ProcessIdentity::Error(
+            saluki_io::net::ProcessCredentialsError::InvalidCredentials,
+        ));
+
+        assert!(origin_detection_failed_for_telemetry(true, 1, &peer_addr));
+    }
+
+    #[test]
     fn autoscale_udp_listeners_defaults_to_false() {
         let config = deser_config("{}");
         assert!(!config.autoscale_udp_listeners);
@@ -2330,6 +2372,30 @@ mod tests {
             (1..=4).contains(&n),
             "expected 1..=4 streams from vCPU formula, got {n}"
         );
+    }
+
+    #[test]
+    #[cfg(not(target_os = "linux"))]
+    fn warns_for_uds_origin_detection_on_non_linux() {
+        let config = deser_config(
+            r#"{
+                "dogstatsd_origin_detection": true,
+                "dogstatsd_port": 0,
+                "dogstatsd_socket": "/tmp/dsd.sock"
+            }"#,
+        );
+        let addresses = config.build_addresses(None);
+
+        assert!(config.uds_origin_detection_unsupported_on_platform(&addresses));
+    }
+
+    #[test]
+    #[cfg(not(target_os = "linux"))]
+    fn does_not_warn_for_udp_origin_detection_on_non_linux() {
+        let config = deser_config(r#"{"dogstatsd_origin_detection": true}"#);
+        let addresses = config.build_addresses(None);
+
+        assert!(!config.uds_origin_detection_unsupported_on_platform(&addresses));
     }
 
     #[test]
