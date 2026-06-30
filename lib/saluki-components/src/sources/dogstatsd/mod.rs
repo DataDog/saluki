@@ -187,6 +187,14 @@ const fn default_true() -> bool {
     true
 }
 
+const fn default_windows_pipe_security_descriptor() -> &'static str {
+    "D:AI(A;;GA;;;WD)"
+}
+
+fn default_windows_pipe_security_descriptor_string() -> String {
+    default_windows_pipe_security_descriptor().to_string()
+}
+
 /// Controls which payload types are forwarded to the backend.
 #[derive(Deserialize)]
 #[cfg_attr(test, derive(PartialEq, serde::Serialize))]
@@ -356,6 +364,27 @@ pub struct DogStatsDConfiguration {
     /// Defaults to `false`.
     #[serde(rename = "dogstatsd_stream_log_too_big", default)]
     stream_log_too_big: bool,
+
+    /// The Windows named pipe name to listen on.
+    ///
+    /// If set, ADP listens for DogStatsD stream traffic on `\\.\pipe\<name>` on Windows.
+    /// The listener is unsupported on non-Windows platforms.
+    ///
+    /// Defaults to unset.
+    #[serde(rename = "dogstatsd_pipe_name", default)]
+    #[serde_as(as = "NoneAsEmptyString")]
+    pipe_name: Option<String>,
+
+    /// Windows named pipe security descriptor.
+    ///
+    /// This SDDL descriptor is applied when creating the named pipe listener.
+    ///
+    /// Defaults to `D:AI(A;;GA;;;WD)`.
+    #[serde(
+        rename = "dogstatsd_windows_pipe_security_descriptor",
+        default = "default_windows_pipe_security_descriptor_string"
+    )]
+    windows_pipe_security_descriptor: String,
 
     /// Whether ADP lowers DogStatsD parse-failure logs to debug level.
     ///
@@ -593,6 +622,7 @@ pub struct DogStatsDConfiguration {
 struct EolRequired {
     udp: bool,
     uds: bool,
+    named_pipe: bool,
 }
 
 impl EolRequired {
@@ -603,7 +633,7 @@ impl EolRequired {
             match value.as_str() {
                 "udp" => eol_required.udp = true,
                 "uds" => eol_required.uds = true,
-                "named_pipe" => {}
+                "named_pipe" => eol_required.named_pipe = true,
                 _ => warn!(
                     value,
                     "Invalid dogstatsd_eol_required value. Expected 'udp', 'uds', or 'named_pipe'."
@@ -619,6 +649,7 @@ impl EolRequired {
             ListenAddress::Udp(_) => self.udp,
             ListenAddress::Tcp(_) => false,
             ListenAddress::Unixgram(_) | ListenAddress::Unix(_) => self.uds,
+            ListenAddress::NamedPipe { .. } => self.named_pipe,
         }
     }
 }
@@ -840,6 +871,13 @@ impl DogStatsDConfiguration {
 
         if let Some(socket_stream_path) = &self.socket_stream_path {
             addresses.push(ListenAddress::Unix(socket_stream_path.into()));
+        }
+
+        if let Some(pipe_name) = &self.pipe_name {
+            addresses.push(ListenAddress::named_pipe(
+                pipe_name,
+                &self.windows_pipe_security_descriptor,
+            ));
         }
 
         addresses
@@ -1906,7 +1944,7 @@ mod tests {
     use tokio::{net::UdpSocket, sync::mpsc, time::timeout};
 
     use super::{
-        build_io_buffer_pool, default_buffer_size,
+        build_io_buffer_pool, default_buffer_size, default_windows_pipe_security_descriptor,
         forwarder::{
             ConnectedPacketForwarder, ForwardPacket, PacketForwarder, PacketForwarderTarget, FORWARDER_QUEUE_CAPACITY,
         },
@@ -2029,6 +2067,34 @@ mod tests {
 
     fn tcp_listen_address() -> ListenAddress {
         ListenAddress::Tcp(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 8125)))
+    }
+
+    fn named_pipe_listen_address() -> ListenAddress {
+        ListenAddress::named_pipe("datadog-dogstatsd", default_windows_pipe_security_descriptor())
+    }
+
+    #[test]
+    fn build_addresses_includes_named_pipe_when_configured() {
+        let config = deser_config(
+            r#"{
+                "dogstatsd_port": 0,
+                "dogstatsd_pipe_name": "datadog-dogstatsd"
+            }"#,
+        );
+
+        let addresses = config.build_addresses(None);
+
+        assert_eq!(addresses, vec![named_pipe_listen_address()]);
+    }
+
+    #[test]
+    fn eol_required_matches_named_pipe_listener_type() {
+        let config = deser_config(r#"{"dogstatsd_eol_required": ["named_pipe"]}"#);
+        let eol_required = config.eol_required();
+
+        assert!(eol_required.for_listener(&named_pipe_listen_address()));
+        assert!(!eol_required.for_listener(&udp_listen_address()));
+        assert!(!eol_required.for_listener(&tcp_listen_address()));
     }
 
     #[test]

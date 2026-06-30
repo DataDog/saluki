@@ -35,7 +35,9 @@ pub fn get_framer(listen_address: &ListenAddress, eol_required: bool) -> DsdFram
         ListenAddress::Tcp(_) => DsdFramer::Stream(NestedFramer::new(newline_framer, LengthDelimitedFramer)),
         ListenAddress::Udp(_) => DsdFramer::NonStream(newline_framer),
         ListenAddress::Unixgram(_) => DsdFramer::NonStream(newline_framer),
-        ListenAddress::Unix(_) => DsdFramer::Stream(NestedFramer::new(newline_framer, LengthDelimitedFramer)),
+        ListenAddress::Unix(_) | ListenAddress::NamedPipe { .. } => {
+            DsdFramer::Stream(NestedFramer::new(newline_framer, LengthDelimitedFramer))
+        }
     }
 }
 

@@ -104,6 +104,7 @@ pub(super) fn build_metrics(listen_addr: &ListenAddress, component_context: &Com
         ListenAddress::Udp(_) => "udp",
         ListenAddress::Unix(_) => "unix",
         ListenAddress::Unixgram(_) => "unixgram",
+        ListenAddress::NamedPipe { .. } => "named_pipe",
     };
 
     Metrics {

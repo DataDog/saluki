@@ -204,6 +204,11 @@ impl Listener {
                     reason: "Unix listen addresses are not supported on this platform",
                 });
             }
+            ListenAddress::NamedPipe { .. } => {
+                return Err(ListenerError::InvalidConfiguration {
+                    reason: "Named pipe listen addresses are not supported on this platform",
+                });
+            }
         };
 
         Ok(Self {
