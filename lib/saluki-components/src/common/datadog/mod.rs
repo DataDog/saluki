@@ -4,6 +4,7 @@ pub mod endpoints;
 pub mod io;
 pub mod middleware;
 pub mod obfuscation;
+pub mod protocol;
 mod proxy;
 pub mod request_builder;
 mod retry;
@@ -30,6 +31,14 @@ pub const DEFAULT_SERIALIZER_COMPRESSED_SIZE_LIMIT: usize = 2_621_440; // 2.5 Mi
 /// Datadog Agent default uncompressed size limit for generic payloads.
 pub const DEFAULT_SERIALIZER_UNCOMPRESSED_SIZE_LIMIT: usize = 4_194_304; // 4 MiB
 
+/// Datadog Agent default serializer compressor.
+pub(crate) const DEFAULT_SERIALIZER_COMPRESSOR_KIND: &str = "zstd";
+
+/// Returns the Datadog Agent default serializer compressor.
+pub(crate) fn default_serializer_compressor_kind() -> String {
+    DEFAULT_SERIALIZER_COMPRESSOR_KIND.to_owned()
+}
+
 /// Returns payload limits capped to the provided upper bounds.
 pub fn clamp_payload_limits(
     uncompressed_len_limit: usize, compressed_len_limit: usize, max_uncompressed_len_limit: usize,
@@ -47,14 +56,29 @@ pub(crate) const METRICS_SERIES_V1_PATH: &str = "/api/v1/series";
 /// V2 metric series intake path.
 pub(crate) const METRICS_SERIES_V2_PATH: &str = "/api/v2/series";
 
+/// V3 metric series intake path.
+pub(crate) const METRICS_SERIES_V3_PATH: &str = "/api/intake/metrics/v3/series";
+
+/// V3 beta metric series intake path.
+pub(crate) const METRICS_SERIES_V3_BETA_PATH: &str = "/api/intake/metrics/v3beta/series";
+
 /// Metric sketches intake path.
 pub(crate) const METRICS_SKETCHES_PATH: &str = "/api/beta/sketches";
+
+/// V3 metric sketches intake path.
+pub(crate) const METRICS_SKETCHES_V3_PATH: &str = "/api/intake/metrics/v3/sketches";
 
 /// Metric intake paths emitted by the encoder and matched by OPW routing.
 ///
 /// Keep these paths in one place so metric encoding and OPW routing don't drift.
-pub(crate) const METRIC_INTAKE_PATHS: [&str; 3] =
-    [METRICS_SERIES_V1_PATH, METRICS_SERIES_V2_PATH, METRICS_SKETCHES_PATH];
+pub(crate) const METRIC_INTAKE_PATHS: [&str; 6] = [
+    METRICS_SERIES_V1_PATH,
+    METRICS_SERIES_V2_PATH,
+    METRICS_SERIES_V3_PATH,
+    METRICS_SERIES_V3_BETA_PATH,
+    METRICS_SKETCHES_PATH,
+    METRICS_SKETCHES_V3_PATH,
+];
 
 /// Metadata tag used to store the sampling decision maker (`_dd.p.dm`).
 pub const TAG_DECISION_MAKER: &str = "_dd.p.dm";

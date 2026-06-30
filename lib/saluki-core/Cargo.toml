@@ -12,6 +12,7 @@ workspace = true
 loom = ["dep:loom"]
 
 [dependencies]
+anymap3 = { workspace = true }
 async-trait = { workspace = true }
 bitmask-enum = { workspace = true }
 ddsketch = { workspace = true }

@@ -24,25 +24,14 @@ If you find an error on this page, please [open an issue].
 The following settings are not yet supported in ADP but are planned with GitHub issue links for
 tracking.
 
-| Config Key                                                     | Description                                     | Issue   |
-| -------------------------------------------------------------- | ----------------------------------------------- | ------- |
-| `dogstatsd_experimental_http.enabled`                          | Enable experimental HTTP/H2C DSD listener       | [#1682] |
-| `dogstatsd_experimental_http.listen_address`                   | Bind address for experimental HTTP DSD listener | [#1682] |
-| `dogstatsd_pipe_name`                                          | Windows named pipe path                         | [#1466] |
-| `dogstatsd_windows_pipe_security_descriptor`                   | Windows named pipe ACL descriptor               | [#1466] |
-| `observability_pipelines_worker.metrics.use_v3_api.series`     | OPW metrics v3 series API opt-in                | [#1468] |
-| `serializer_experimental_use_v3_api.compression_level`         | V3 API zstd compression level                   | [#1468] |
-| `serializer_experimental_use_v3_api.series.endpoints`          | Endpoints enabled for V3 series API             | [#1468] |
-| `serializer_experimental_use_v3_api.series.shadow_sample_rate` | V3 series shadow mode sample rate               | [#1468] |
-| `serializer_experimental_use_v3_api.series.shadow_sites`       | V3 series shadow mode enabled sites             | [#1468] |
-| `serializer_experimental_use_v3_api.series.validate`           | Dual-send v2+v3 series for validation           | [#1468] |
-| `serializer_experimental_use_v3_api.sketches.endpoints`        | Endpoints enabling v3 sketches API              | [#1468] |
-| `serializer_experimental_use_v3_api.sketches.validate`         | Dual-send v2+v3 sketches for validation         | [#1468] |
-| `telemetry.dogstatsd_origin`                                   | Per-origin processed-metrics telemetry          | [#1679] |
-| `tls_handshake_timeout`                                        | HTTP TLS handshake timeout                      | [#178]  |
-| `use_v3_api.series.enabled`                                    | Global default for series intake API version    | [#1468] |
-| `use_v3_api.series.endpoints`                                  | Per-URL override map for series intake version  | [#1468] |
-| `vector.metrics.use_v3_api.series`                             | OPW metrics v3 series API opt-in (legacy alias) | [#1468] |
+| Config Key                                   | Description                                     | Issue   |
+| -------------------------------------------- | ----------------------------------------------- | ------- |
+| `dogstatsd_experimental_http.enabled`        | Enable experimental HTTP/H2C DSD listener       | [#1682] |
+| `dogstatsd_experimental_http.listen_address` | Bind address for experimental HTTP DSD listener | [#1682] |
+| `dogstatsd_pipe_name`                        | Windows named pipe path                         | [#1466] |
+| `dogstatsd_windows_pipe_security_descriptor` | Windows named pipe ACL descriptor               | [#1466] |
+| `telemetry.dogstatsd_origin`                 | Per-origin processed-metrics telemetry          | [#1679] |
+| `tls_handshake_timeout`                      | HTTP TLS handshake timeout                      | [#178]  |
 
 <!-- section:unsupported-not-planned -->
 ### Not Planned
@@ -439,6 +428,7 @@ The following settings are specific to ADP and have no equivalent in the core ag
 | `apm_config.obfuscation.sql.replace_digits`                     | Replace digits in SQL obfuscation          |         |
 | `apm_config.obfuscation.sql.table_names`                        | Collect table names during obfuscation     |         |
 | `counter_expiry_seconds`                                        | Idle counter keep-alive duration           | 300     |
+| `data_plane.metrics.v3.series.enabled`                          | Enable ADP V3 series                       | false   |
 | `data_plane.stop_timeout`                                       | ADP graceful shutdown timeout (s)          | derived |
 | `dogstatsd_allow_context_heap_allocs`                           | Allow heap allocations for contexts        |         |
 | `dogstatsd_autoscale_udp_listeners`                             | Bind multiple UDP sockets via SO_REUSEPORT |         |
@@ -463,6 +453,10 @@ The following settings are specific to ADP and have no equivalent in the core ag
 | `otlp_config.traces.string_interner_size`                       | OTLP trace string interner capacity        |         |
 | `otlp_string_interner_size`                                     | OTLP context interner capacity             |         |
 | `serializer_max_metrics_per_payload`                            | Max metrics per payload                    |         |
+
+### `data_plane.metrics.v3.series.enabled`
+
+ADP requires this flag before it generates or forwards authoritative V3 series payloads. This is separate from `use_v3_api.series.*`, which matches the Core Agent V3 routing configuration.
 
 ### `data_plane.stop_timeout`
 
@@ -652,6 +646,7 @@ compressed wire payload bytes.
 | `no_proxy_nonexact_match`                                      | Domain/CIDR `no_proxy` matching                    |
 | `observability_pipelines_worker.metrics.enabled`               | Route metrics to OPW instance                      |
 | `observability_pipelines_worker.metrics.url`                   | OPW metrics intake URL                             |
+| `observability_pipelines_worker.metrics.use_v3_api.series`     | Use V3 series for OPW                              |
 | `origin_detection_unified`                                     | Unified origin detection mode                      |
 | `otlp_config.logs.enabled`                                     | otlp_config.logs.enabled                           |
 | `otlp_config.metrics.enabled`                                  | otlp_config.metrics.enabled                        |
@@ -667,6 +662,15 @@ compressed wire payload bytes.
 | `proxy.https`                                                  | HTTPS proxy URL                                    |
 | `proxy.no_proxy`                                               | Hosts bypassing proxy                              |
 | `serializer_compressor_kind`                                   | Payload compression algorithm                      |
+| `serializer_experimental_use_v3_api.compression_level`         | V3 API zstd compression level                      |
+| `serializer_experimental_use_v3_api.series.beta_route`         | Beta V3 series API route                           |
+| `serializer_experimental_use_v3_api.series.endpoints`          | Endpoints enabled for V3 series API                |
+| `serializer_experimental_use_v3_api.series.shadow_sample_rate` | V3 series shadow mode sample rate                  |
+| `serializer_experimental_use_v3_api.series.shadow_sites`       | V3 series shadow mode enabled sites                |
+| `serializer_experimental_use_v3_api.series.use_beta`           | Use the beta V3 series API route                   |
+| `serializer_experimental_use_v3_api.series.validate`           | Dual-send v2+v3 series for validation              |
+| `serializer_experimental_use_v3_api.sketches.endpoints`        | Endpoints enabling v3 sketches API                 |
+| `serializer_experimental_use_v3_api.sketches.validate`         | Dual-send v2+v3 sketches for validation            |
 | `serializer_max_payload_size`                                  | Max compressed payload size (generic)              |
 | `serializer_max_series_payload_size`                           | Max compressed V2 series payload size              |
 | `serializer_max_series_points_per_payload`                     | Max data points per series payload                 |
@@ -683,8 +687,11 @@ compressed wire payload bytes.
 | `syslog_uri`                                                   | Syslog destination URI                             |
 | `use_proxy_for_cloud_metadata`                                 | Proxy cloud metadata endpoints                     |
 | `use_v2_api.series`                                            | Send series via V2 protobuf endpoint               |
+| `use_v3_api.series.enabled`                                    | Global V3 series mode                              |
+| `use_v3_api.series.endpoints`                                  | Per-endpoint V3 series modes                       |
 | `vector.metrics.enabled`                                       | Route metrics to OPW (legacy alias)                |
 | `vector.metrics.url`                                           | OPW metrics intake URL (legacy alias)              |
+| `vector.metrics.use_v3_api.series`                             | Use V3 series for Vector                           |
 | `vsock_addr`                                                   | vsock address for Agent IPC endpoint               |
 
 
@@ -699,7 +706,6 @@ compressed wire payload bytes.
 [#1365]: https://github.com/DataDog/saluki/issues/1365
 [#1381]: https://github.com/DataDog/saluki/issues/1381
 [#1466]: https://github.com/DataDog/saluki/issues/1466
-[#1468]: https://github.com/DataDog/saluki/issues/1468
 [#1679]: https://github.com/DataDog/saluki/issues/1679
 [#1681]: https://github.com/DataDog/saluki/issues/1681
 [#1682]: https://github.com/DataDog/saluki/issues/1682

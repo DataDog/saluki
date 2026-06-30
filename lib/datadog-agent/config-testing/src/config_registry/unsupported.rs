@@ -82,61 +82,6 @@ crate::declare_annotations! {
         test_json: None,
         pipeline_affinity: PipelineAffinity::CrossCutting,
     };
-    /// `serializer_experimental_use_v3_api.compression_level`-V3 API zstd compression level
-    SERIALIZER_EXPERIMENTAL_USE_V3_API_COMPRESSION_LEVEL = SalukiAnnotation {
-        schema: &schema::SERIALIZER_EXPERIMENTAL_USE_V3_API_COMPRESSION_LEVEL,
-        support_level: SupportLevel::Incompatible(Severity::Low),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD, Pipeline::Checks, Pipeline::Traces]),
-    };
-    /// `serializer_experimental_use_v3_api.series.endpoints`-Endpoints enabled for V3 series API
-    SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_ENDPOINTS = SalukiAnnotation {
-        schema: &schema::SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_ENDPOINTS,
-        support_level: SupportLevel::Incompatible(Severity::Low),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD, Pipeline::Checks, Pipeline::Traces]),
-    };
-    /// `serializer_experimental_use_v3_api.series.validate`-Dual-send v2+v3 series for validation
-    SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_VALIDATE = SalukiAnnotation {
-        schema: &schema::SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_VALIDATE,
-        support_level: SupportLevel::Incompatible(Severity::Low),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD, Pipeline::Checks, Pipeline::Traces]),
-    };
-    /// `serializer_experimental_use_v3_api.sketches.endpoints`-Endpoints enabling v3 sketches API
-    SERIALIZER_EXPERIMENTAL_USE_V3_API_SKETCHES_ENDPOINTS = SalukiAnnotation {
-        schema: &schema::SERIALIZER_EXPERIMENTAL_USE_V3_API_SKETCHES_ENDPOINTS,
-        support_level: SupportLevel::Incompatible(Severity::Low),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD, Pipeline::Checks, Pipeline::Traces]),
-    };
-    /// `serializer_experimental_use_v3_api.sketches.validate`-Dual-send v2+v3 sketches for validation
-    SERIALIZER_EXPERIMENTAL_USE_V3_API_SKETCHES_VALIDATE = SalukiAnnotation {
-        schema: &schema::SERIALIZER_EXPERIMENTAL_USE_V3_API_SKETCHES_VALIDATE,
-        support_level: SupportLevel::Incompatible(Severity::Low),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD, Pipeline::Checks, Pipeline::Traces]),
-    };
     /// `tls_handshake_timeout`-HTTP TLS handshake timeout
     TLS_HANDSHAKE_TIMEOUT = SalukiAnnotation {
         schema: &schema::TLS_HANDSHAKE_TIMEOUT,
@@ -555,39 +500,6 @@ crate::declare_annotations! {
         test_json: None,
         pipeline_affinity: PipelineAffinity::CrossCutting,
     };
-    /// `observability_pipelines_worker.metrics.use_v3_api.series`-OPW metrics v3 series API opt-in
-    OBSERVABILITY_PIPELINES_WORKER_METRICS_USE_V3_API_SERIES = SalukiAnnotation {
-        schema: &schema::OBSERVABILITY_PIPELINES_WORKER_METRICS_USE_V3_API_SERIES,
-        support_level: SupportLevel::Incompatible(Severity::Low),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-        pipeline_affinity: PipelineAffinity::CrossCutting,
-    };
-    /// `serializer_experimental_use_v3_api.series.shadow_sample_rate`-V3 series shadow mode sample rate
-    SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_SHADOW_SAMPLE_RATE = SalukiAnnotation {
-        schema: &schema::SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_SHADOW_SAMPLE_RATE,
-        support_level: SupportLevel::Incompatible(Severity::Low),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD, Pipeline::Checks, Pipeline::Traces]),
-    };
-    /// `serializer_experimental_use_v3_api.series.shadow_sites`-V3 series shadow mode enabled sites
-    SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_SHADOW_SITES = SalukiAnnotation {
-        schema: &schema::SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_SHADOW_SITES,
-        support_level: SupportLevel::Incompatible(Severity::Low),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD, Pipeline::Checks, Pipeline::Traces]),
-    };
     /// `use_dogstatsd`-Master DogStatsD enable toggle
     USE_DOGSTATSD = SalukiAnnotation {
         schema: &schema::USE_DOGSTATSD,
@@ -598,38 +510,5 @@ crate::declare_annotations! {
         value_type_override: None,
         test_json: None,
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
-    };
-    /// `use_v3_api.series.enabled`-Global default for series intake API version
-    USE_V3_API_SERIES_ENABLED = SalukiAnnotation {
-        schema: &schema::USE_V3_API_SERIES_ENABLED,
-        support_level: SupportLevel::Incompatible(Severity::Low),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD, Pipeline::Checks, Pipeline::Traces]),
-    };
-    /// `use_v3_api.series.endpoints`-Per-URL override map for series intake version
-    USE_V3_API_SERIES_ENDPOINTS = SalukiAnnotation {
-        schema: &schema::USE_V3_API_SERIES_ENDPOINTS,
-        support_level: SupportLevel::Incompatible(Severity::Low),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD, Pipeline::Checks, Pipeline::Traces]),
-    };
-    /// `vector.metrics.use_v3_api.series`-OPW metrics v3 series API opt-in (legacy alias)
-    VECTOR_METRICS_USE_V3_API_SERIES = SalukiAnnotation {
-        schema: &schema::VECTOR_METRICS_USE_V3_API_SERIES,
-        support_level: SupportLevel::Incompatible(Severity::Low),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-        pipeline_affinity: PipelineAffinity::CrossCutting,
     };
 }

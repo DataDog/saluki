@@ -12,6 +12,11 @@ const NETWORK_HTTP_REQUESTS_ERRORS_TOTAL: &str = "network_http_requests_errors_t
 const ERROR_TYPE_SENT_REQUEST: &str = "sent_request_error";
 const ERROR_SCOPE_TRANSACTION: &str = "transaction";
 
+struct TransactionInputTelemetry {
+    count: Counter,
+    bytes: Counter,
+}
+
 /// Component-specific telemetry.
 ///
 /// This type covers high-level component telemetry, such as events/bytes sent, tailored to the Datadog destinations and
@@ -22,6 +27,7 @@ pub struct ComponentTelemetry {
     events_sent: Counter,
     events_sent_batch_size: Histogram,
     bytes_sent: Counter,
+    transaction_input_by_endpoint: Arc<Mutex<FastHashMap<(String, String), TransactionInputTelemetry>>>,
     data_points_sent_by_domain: Arc<Mutex<FastHashMap<String, Gauge>>>,
     data_points_dropped_by_domain: Arc<Mutex<FastHashMap<String, Gauge>>>,
     events_dropped_http: Counter,
@@ -41,6 +47,7 @@ impl ComponentTelemetry {
             events_sent: builder.register_counter("component_events_sent_total"),
             events_sent_batch_size: builder.register_trace_histogram("component_events_sent_batch_size"),
             bytes_sent: builder.register_counter("component_bytes_sent_total"),
+            transaction_input_by_endpoint: Arc::new(Mutex::new(FastHashMap::default())),
             data_points_sent_by_domain: Arc::new(Mutex::new(FastHashMap::default())),
             data_points_dropped_by_domain: Arc::new(Mutex::new(FastHashMap::default())),
             events_dropped_http: builder.register_counter_with_tags(
@@ -71,6 +78,29 @@ impl ComponentTelemetry {
     /// Returns a reference to the "bytes sent" counter.
     pub fn bytes_sent(&self) -> &Counter {
         &self.bytes_sent
+    }
+
+    /// Tracks a transaction entering the forwarder queue.
+    pub fn track_transaction_input(&self, domain: &str, endpoint: &str, bytes: u64) {
+        let mut telemetry = self.transaction_input_by_endpoint.lock().unwrap();
+        let per_endpoint = telemetry
+            // TODO: Avoid allocating key strings on every transaction if we can make the telemetry registry lookup
+            // support borrowed endpoint/domain keys.
+            .entry((domain.to_string(), endpoint.to_string()))
+            .or_insert_with(|| {
+                let tags = [("domain", domain.to_string()), ("endpoint", endpoint.to_string())];
+                TransactionInputTelemetry {
+                    count: self
+                        .builder
+                        .register_counter_with_tags("network_http_requests_input_total", tags.clone()),
+                    bytes: self
+                        .builder
+                        .register_counter_with_tags("network_http_requests_input_bytes_total", tags),
+                }
+            });
+
+        per_endpoint.count.increment(1);
+        per_endpoint.bytes.increment(bytes);
     }
 
     /// Returns a reference to the "events dropped (encoder)" counter.

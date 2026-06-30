@@ -5,7 +5,7 @@ use saluki_common::buf::FrozenChunkedBytesBuffer;
 use saluki_config::GenericConfiguration;
 use saluki_core::{
     components::{forwarders::*, ComponentContext},
-    data_model::payload::PayloadType,
+    data_model::payload::{PayloadMetadata, PayloadType},
     observability::ComponentMetricsExt as _,
 };
 use saluki_error::GenericError;
@@ -17,10 +17,12 @@ use tracing::debug;
 use crate::common::datadog::{
     config::ForwarderConfiguration,
     io::TransactionForwarder,
+    protocol::MetricsPayloadInfo,
     telemetry::ComponentTelemetry,
     transaction::{Metadata, Transaction},
     validation::ValidationReadiness,
-    DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT,
+    DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT, METRICS_SERIES_V3_BETA_PATH, METRICS_SERIES_V3_PATH,
+    METRICS_SKETCHES_V3_PATH,
 };
 
 /// Datadog forwarder.
@@ -157,10 +159,7 @@ impl Forwarder for Datadog {
                 maybe_payload = context.payloads().next() => match maybe_payload {
                     Some(payload) => if let Some(http_payload) = payload.try_into_http_payload() {
                         let (payload_meta, request) = http_payload.into_parts();
-                        let transaction_meta = Metadata::from_event_and_data_point_count(
-                            payload_meta.event_count(),
-                            payload_meta.data_point_count(),
-                        );
+                        let transaction_meta = transaction_metadata_from_payload_metadata(&payload_meta);
                         let transaction = Transaction::from_original(transaction_meta, request);
 
                         forwarder.send_transaction(transaction).await?;
@@ -180,12 +179,22 @@ impl Forwarder for Datadog {
     }
 }
 
+fn transaction_metadata_from_payload_metadata(payload_meta: &PayloadMetadata) -> Metadata {
+    let mut transaction_meta =
+        Metadata::from_event_and_data_point_count(payload_meta.event_count(), payload_meta.data_point_count());
+    transaction_meta.payload_info = payload_meta.get::<MetricsPayloadInfo>().copied();
+    transaction_meta
+}
+
 fn get_dd_endpoint_name(uri: &Uri) -> Option<MetaString> {
     match uri.path() {
         "/api/v2/logs" => Some(MetaString::from_static("logs_v2")),
         "/api/v1/series" => Some(MetaString::from_static("series_v1")),
         "/api/v2/series" => Some(MetaString::from_static("series_v2")),
+        METRICS_SERIES_V3_PATH => Some(MetaString::from_static("series_v3")),
+        METRICS_SERIES_V3_BETA_PATH => Some(MetaString::from_static("series_v3beta")),
         "/api/beta/sketches" => Some(MetaString::from_static("sketches_v2")),
+        METRICS_SKETCHES_V3_PATH => Some(MetaString::from_static("sketches_v3")),
         "/api/v1/check_run" => Some(MetaString::from_static("check_run_v1")),
         "/api/v1/events_batch" => Some(MetaString::from_static("events_batch_v1")),
         "/api/v0.2/traces" => Some(MetaString::from_static("traces_v0.2")),

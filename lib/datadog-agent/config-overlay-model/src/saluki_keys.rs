@@ -24,6 +24,24 @@ pub struct SalukiKey {
 pub static SALUKI_KEYS: &[SalukiKey] = &[
     // ── data_plane.rs ────────────────────────────────────────────────────────
     SalukiKey {
+        yaml_path: "data_plane.metrics.v3.series.enabled",
+        description: "Enable ADP V3 series",
+        default: "false",
+        documentation: Some(
+            "ADP requires this flag before it generates or forwards authoritative V3 series payloads. \
+             This is separate from `use_v3_api.series.*`, which matches the Core Agent V3 routing configuration.",
+        ),
+        value_type: "ValueType::Bool",
+        schema_default: Some("false"),
+        env_vars: &[],
+        env_var_override: None,
+        additional_yaml_paths: &[],
+        used_by: &["DATADOG_METRICS_CONFIGURATION", "FORWARDER_CONFIGURATION"],
+        test_json: None,
+        pipeline_affinity: "PipelineAffinity::Pipelines(&[Pipeline::DogStatsD])",
+        filename: "data_plane.rs",
+    },
+    SalukiKey {
         yaml_path: "data_plane.stop_timeout",
         description: "ADP graceful shutdown timeout (s)",
         default: "derived",

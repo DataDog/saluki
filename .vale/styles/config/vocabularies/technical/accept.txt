@@ -242,3 +242,5 @@ Erlang
 OTP
 respawn(s|ed|ing)?
 validator
+varint
+serializer

@@ -3,6 +3,7 @@ use saluki_core::observability::metrics::RemapperRule;
 mod aggregation;
 mod compat;
 mod dogstatsd;
+mod serializer;
 mod transaction;
 
 /// Returns the list of remapper rules relevant to metrics we send to the Datadog Agent via Remote Agent Registry (RAR).
@@ -14,6 +15,7 @@ pub fn get_datadog_agent_remappings() -> Vec<RemapperRule> {
     rules.extend(self::dogstatsd::get_dogstatsd_remappings());
     rules.extend(self::aggregation::get_aggregation_remappings());
     rules.extend(self::transaction::get_transaction_remappings());
+    rules.extend(self::serializer::get_serializer_remappings());
     rules
 }
 
