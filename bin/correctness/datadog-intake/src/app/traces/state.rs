@@ -36,8 +36,14 @@ impl TracesState {
     }
 
     /// Merges the given agent payload into the current traces state.
-    pub fn merge_agent_payload(&self, payload: AgentPayload) -> Result<(), GenericError> {
-        let new_spans = Span::get_spans_from_agent_payload(&payload);
+    ///
+    /// Both the classic `tracerPayloads` (field 5) and the efficient trace payload format `idxTracerPayloads` (field 11)
+    /// paths are decoded. `raw_body` must be the original protobuf-encoded bytes of the
+    /// `AgentPayload` and is used to decode field 11 directly, bypassing the incorrectly typed
+    /// generated field in the `AgentPayload` struct.
+    pub fn merge_agent_payload(&self, payload: AgentPayload, raw_body: &[u8]) -> Result<(), GenericError> {
+        let mut new_spans = Span::get_spans_from_agent_payload(&payload);
+        new_spans.extend(Span::get_spans_from_idx_bytes(&payload, raw_body));
         let mut inner = self.inner.lock().unwrap();
         inner.spans.extend(new_spans);
 

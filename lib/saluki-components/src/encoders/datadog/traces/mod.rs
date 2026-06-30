@@ -3,15 +3,12 @@
 use std::{fmt::Write, time::Duration};
 
 use async_trait::async_trait;
-use datadog_protos::traces::builders::{
-    attribute_any_value::AttributeAnyValueType, attribute_array_value::AttributeArrayValueType, AgentPayloadBuilder,
-    AttributeAnyValueBuilder, AttributeArrayValueBuilder,
-};
+use datadog_protos::traces::builders::{idx::SpanKind, AgentPayloadBuilder};
 use facet::Facet;
 use http::{uri::PathAndQuery, HeaderName, HeaderValue, Method, Uri};
 use piecemeal::{ScratchBuffer, ScratchWriter};
 use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
-use saluki_common::collections::FastHashMap;
+use saluki_common::collections::{FastHashMap, FastIndexSet};
 use saluki_common::strings::StringBuilder;
 use saluki_common::task::HandleExt as _;
 use saluki_config::GenericConfiguration;
@@ -62,6 +59,50 @@ static CONTENT_TYPE_PROTOBUF: HeaderValue = HeaderValue::from_static("applicatio
 // Sampling metadata keys / values.
 const TAG_OTLP_SAMPLING_RATE: &str = "_dd.otlp_sr";
 const DEFAULT_CHUNK_PRIORITY: i32 = 1; // PRIORITY_AUTO_KEEP
+
+// ETS chunk-level attribute keys / values.
+const TAG_ETS_STANDALONE_ERROR_KEY: &str = "_dd.error_tracking_standalone.error";
+const TAG_ETS_STANDALONE_ERROR_VALUE: &str = "true";
+
+/// String interning table for the `idx` tracer payload format.
+///
+/// Index 0 is always the empty string. All other strings are assigned indices in insertion order.
+#[derive(Debug)]
+struct StringTable {
+    indices: FastIndexSet<MetaString>,
+}
+
+impl Default for StringTable {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl StringTable {
+    fn new() -> Self {
+        let mut t = Self {
+            indices: FastIndexSet::default(),
+        };
+        t.intern("");
+        t
+    }
+
+    fn clear(&mut self) {
+        self.indices.clear();
+        self.intern("");
+    }
+
+    /// Interns `s`, returning its index. If `s` was already interned, returns the existing index.
+    fn intern(&mut self, s: &str) -> u32 {
+        // We use get_index_of to check if the string is already interned to avoid reconstructing a new meta string if it's already interned.
+        if let Some(idx) = self.indices.get_index_of(s) {
+            idx as u32
+        } else {
+            let (idx, _) = self.indices.insert_full(MetaString::from(s));
+            idx as u32
+        }
+    }
+}
 
 fn default_serializer_compressor_kind() -> String {
     "zstd".to_string()
@@ -411,6 +452,7 @@ struct TraceEndpointEncoder {
     apm_config: ApmConfig,
     otlp_traces: TracesConfig,
     string_builder: StringBuilder,
+    string_table: StringTable,
     error_tracking_standalone: bool,
     extra_headers: Vec<(HeaderName, HeaderValue)>,
 }
@@ -437,6 +479,7 @@ impl TraceEndpointEncoder {
             apm_config,
             otlp_traces,
             string_builder: StringBuilder::new(),
+            string_table: StringTable::new(),
             error_tracking_standalone,
             extra_headers,
         }
@@ -446,49 +489,44 @@ impl TraceEndpointEncoder {
         let sampling_rate = self.sampling_rate();
         let source = attributes_to_source(&trace.attributes);
 
-        // Resolve metadata from payload fields and attributes.
-        let container_id = if !trace.payload.container_id.is_empty() {
-            Some(trace.payload.container_id.as_ref())
-        } else {
-            None
-        };
-        let lang = if !trace.payload.language_name.is_empty() {
-            Some(trace.payload.language_name.as_ref())
-        } else {
-            None
-        };
-        let tracer_version = format!("otlp-{}", trace.payload.tracer_version.as_ref());
+        // Resolve computed metadata strings (may produce strings not directly present on trace fields).
+        let tracer_version = format!("otlp-{}", &trace.payload.tracer_version);
         let container_tags = resolve_container_tags_from_attrs(
             &trace.attributes,
             source.as_ref(),
             self.otlp_traces.ignore_missing_datadog_fields,
         );
-        let env = if !trace.payload.env.is_empty() {
-            Some(trace.payload.env.as_ref())
+        let env_str: Option<&str> = if !trace.payload.env.is_empty() {
+            Some(&trace.payload.env)
         } else if self.otlp_traces.ignore_missing_datadog_fields {
             Some("")
         } else {
             None
         };
-        let hostname = resolve_hostname_from_payload(
-            trace.payload.hostname.as_ref(),
+        // Clone to avoid a lifetime conflict: hostname_str borrows from this copy, and
+        // self.string_table is mutably borrowed inside the encoding closure below.
+        let default_hostname_copy = self.default_hostname.as_ref().to_string();
+        let hostname_str: Option<&str> = resolve_hostname_from_payload(
+            &trace.payload.hostname,
             source.as_ref(),
-            Some(self.default_hostname.as_ref()),
+            Some(default_hostname_copy.as_str()),
             self.otlp_traces.ignore_missing_datadog_fields,
         );
-        let app_version = if !trace.payload.app_version.is_empty() {
-            Some(trace.payload.app_version.as_ref())
-        } else {
-            None
-        };
-
-        // Resolve sampling metadata from flat trace fields.
+        let decision_maker = trace.decision_maker.as_deref();
         let priority = trace.priority.unwrap_or(DEFAULT_CHUNK_PRIORITY);
         let dropped_trace = trace.dropped_trace;
-        let decision_maker = trace.decision_maker.as_deref();
         let otlp_sr = trace.otlp_sampling_rate.unwrap_or(sampling_rate);
+        self.string_builder.clear();
+        write!(&mut self.string_builder, "{:.2}", otlp_sr).expect("should never fail to format sampling rate");
 
-        // Now incrementally build the payload.
+        // Build 128-bit big-endian trace ID bytes for the chunk.
+        let mut trace_id_bytes = [0u8; 16];
+        trace_id_bytes[..8].copy_from_slice(&trace.trace_id_high.to_be_bytes());
+        trace_id_bytes[8..].copy_from_slice(&trace.trace_id_low.to_be_bytes());
+
+        // Reset the string table; strings are interned on the fly during encoding below.
+        self.string_table.clear();
+
         let mut ap_builder = AgentPayloadBuilder::new(&mut self.scratch);
 
         ap_builder
@@ -498,99 +536,139 @@ impl TraceEndpointEncoder {
             .target_tps(self.apm_config.target_traces_per_second())?
             .error_tps(self.apm_config.errors_per_second())?;
 
-        ap_builder.add_tracer_payloads(|tp| {
-            if let Some(cid) = container_id {
-                tp.container_id(cid)?;
+        ap_builder.add_idx_tracer_payloads(|tp| {
+            // Tracer payload metadata refs (skip default/empty values).
+            // Strings are interned on the fly; the string table is written at the end of this
+            // closure so it is complete by the time tp.strings() is called.
+            if !trace.payload.container_id.is_empty() {
+                tp.container_id_ref(self.string_table.intern(&trace.payload.container_id))?;
             }
-            if let Some(l) = lang {
-                tp.language_name(l)?;
+            if !trace.payload.language_name.is_empty() {
+                tp.language_name_ref(self.string_table.intern(&trace.payload.language_name))?;
             }
-            tp.tracer_version(&tracer_version)?;
+            if !trace.payload.language_version.is_empty() {
+                tp.language_version_ref(self.string_table.intern(&trace.payload.language_version))?;
+            }
+            tp.tracer_version_ref(self.string_table.intern(tracer_version.as_str()))?;
+            if !trace.payload.runtime_id.is_empty() {
+                tp.runtime_id_ref(self.string_table.intern(&trace.payload.runtime_id))?;
+            }
+            if let Some(e) = env_str {
+                tp.env_ref(self.string_table.intern(e))?;
+            }
+            if let Some(h) = hostname_str {
+                tp.hostname_ref(self.string_table.intern(h))?;
+            }
+            if !trace.payload.app_version.is_empty() {
+                tp.app_version_ref(self.string_table.intern(&trace.payload.app_version))?;
+            }
 
-            // Encode the single TraceChunk containing all spans.
+            // Container tags go in the payload-level attributes map.
+            if let Some(ct) = &container_tags {
+                let k_ref = self.string_table.intern(CONTAINER_TAGS_META_KEY);
+                let v_ref = self.string_table.intern(ct);
+                tp.attributes().write_entry(k_ref, |av: &mut _| {
+                    av.value(|vo| vo.string_value_ref(v_ref)).map(|_| ())
+                })?;
+            }
+
+            // Single TraceChunk containing all spans.
             tp.add_chunks(|chunk| {
                 chunk.priority(priority)?;
 
+                if !trace.origin.is_empty() {
+                    chunk.origin_ref(self.string_table.intern(&trace.origin))?;
+                }
+
+                // Write 128-bit trace ID.
+                chunk.trace_id(&trace_id_bytes)?;
+
+                // Sampling mechanism (only write when non-zero).
+                if trace.sampling_mechanism != 0 {
+                    chunk.sampling_mechanism(trace.sampling_mechanism)?;
+                }
+
+                // Spans.
                 for span in trace.spans() {
+                    let service_ref = self.string_table.intern(span.service());
+                    let name_ref = self.string_table.intern(span.name());
+                    let resource_ref = self.string_table.intern(span.resource());
+                    let type_ref = self.string_table.intern(span.span_type());
+                    let env_ref = (!span.env.is_empty()).then(|| self.string_table.intern(&span.env));
+                    let version_ref = (!span.version.is_empty()).then(|| self.string_table.intern(&span.version));
+                    let component_ref = (!span.component.is_empty()).then(|| self.string_table.intern(&span.component));
+
                     chunk.add_spans(|s| {
-                        s.service(span.service())?
-                            .name(span.name())?
-                            .resource(span.resource())?
-                            .trace_id(trace.trace_id_low)?
+                        s.service_ref(service_ref)?
+                            .name_ref(name_ref)?
+                            .resource_ref(resource_ref)?
                             .span_id(span.span_id())?
                             .parent_id(span.parent_id())?
-                            .start(span.start() as i64)?
-                            .duration(span.duration() as i64)?
-                            .error(span.error())?;
+                            .start(span.start())?
+                            .duration(span.duration())?
+                            .error(span.error() != 0)?;
 
+                        // Unified attribute map (replaces separate meta/metrics/meta_struct).
                         {
-                            let mut meta = s.meta();
+                            let mut attrs = s.attributes();
                             for (k, v) in &span.attributes {
-                                match v {
-                                    AttributeValue::String(str_val) => {
-                                        meta.write_entry(k.as_ref(), str_val.as_ref())?;
-                                    }
-                                    AttributeValue::Bool(b) => {
-                                        meta.write_entry(k.as_ref(), if *b { "true" } else { "false" })?;
-                                    }
-                                    _ => {}
-                                }
+                                let k_ref = self.string_table.intern(k);
+                                attrs.write_entry(k_ref, |av: &mut _| {
+                                    encode_idx_attribute_value(av, v, &mut self.string_table)
+                                })?;
                             }
                         }
 
-                        {
-                            let mut metrics = s.metrics();
-                            for (k, v) in &span.attributes {
-                                match v {
-                                    AttributeValue::Float(f) => metrics.write_entry(k.as_ref(), *f)?,
-                                    AttributeValue::Int(i) => metrics.write_entry(k.as_ref(), *i as f64)?,
-                                    _ => {}
-                                }
-                            }
+                        s.type_ref(type_ref)?;
+
+                        if let Some(er) = env_ref {
+                            s.env_ref(er)?;
+                        }
+                        if let Some(vr) = version_ref {
+                            s.version_ref(vr)?;
+                        }
+                        if let Some(cr) = component_ref {
+                            s.component_ref(cr)?;
+                        }
+                        if span.kind != 0 {
+                            s.kind(SpanKind::from(span.kind as i32))?;
                         }
 
-                        s.type_(span.span_type())?;
-
-                        {
-                            let mut ms = s.meta_struct();
-                            for (k, v) in &span.attributes {
-                                // TODO: Array and KeyValueList could be JSON-serialized into meta_struct;
-                                // skipped until a caller needs them for span-level attributes.
-                                if let AttributeValue::Bytes(bytes) = v {
-                                    ms.write_entry(k.as_ref(), bytes.as_slice())?;
-                                }
-                            }
-                        }
-
+                        // Span links.
                         for link in span.span_links() {
-                            s.add_span_links(|sl| {
-                                sl.trace_id(link.trace_id())?
-                                    .trace_id_high(link.trace_id_high())?
-                                    .span_id(link.span_id())?;
+                            let mut link_trace_id_bytes = [0u8; 16];
+                            link_trace_id_bytes[..8].copy_from_slice(&link.trace_id_high().to_be_bytes());
+                            link_trace_id_bytes[8..].copy_from_slice(&link.trace_id().to_be_bytes());
+                            let tracestate_ref = self.string_table.intern(link.tracestate());
+
+                            s.add_links(|sl| {
+                                sl.trace_id(&link_trace_id_bytes)?.span_id(link.span_id())?;
                                 {
-                                    // TODO: investigate whether non-String attribute values can be
-                                    // serialized directly into the link attributes proto field rather
-                                    // than being silently dropped here.
-                                    let mut attrs = sl.attributes();
+                                    let mut lattrs = sl.attributes();
                                     for (k, v) in link.attributes() {
-                                        if let AttributeValue::String(str_val) = v {
-                                            attrs.write_entry(k.as_ref(), str_val.as_ref())?;
-                                        }
+                                        let k_ref = self.string_table.intern(k);
+                                        lattrs.write_entry(k_ref, |av: &mut _| {
+                                            encode_idx_attribute_value(av, v, &mut self.string_table)
+                                        })?;
                                     }
                                 }
-                                let tracestate = link.tracestate().to_string();
-                                sl.tracestate(tracestate.as_str())?.flags(link.flags())?;
+                                sl.tracestate_ref(tracestate_ref)?.flags(link.flags())?;
                                 Ok(())
                             })?;
                         }
 
+                        // Span events.
                         for event in span.span_events() {
-                            s.add_span_events(|se| {
-                                se.time_unix_nano(event.time_unix_nano())?.name(event.name())?;
+                            let name_ref = self.string_table.intern(event.name());
+                            s.add_events(|se| {
+                                se.time(event.time_unix_nano())?.name_ref(name_ref)?;
                                 {
-                                    let mut attrs = se.attributes();
+                                    let mut eattrs = se.attributes();
                                     for (k, v) in event.attributes() {
-                                        attrs.write_entry(&**k, |av| encode_attribute_value(av, v))?;
+                                        let k_ref = self.string_table.intern(k);
+                                        eattrs.write_entry(k_ref, |av: &mut _| {
+                                            encode_idx_attribute_value(av, v, &mut self.string_table)
+                                        })?;
                                     }
                                 }
                                 Ok(())
@@ -601,11 +679,15 @@ impl TraceEndpointEncoder {
                     })?;
                 }
 
-                // Chunk tags.
+                // Chunk attributes: decision maker, ETS tag, OTLP sampling rate.
                 {
-                    let mut tags = chunk.tags();
+                    let mut cattrs = chunk.attributes();
                     if let Some(dm) = decision_maker {
-                        tags.write_entry(TAG_DECISION_MAKER, dm)?;
+                        let k_ref = self.string_table.intern(TAG_DECISION_MAKER);
+                        let v_ref = self.string_table.intern(dm);
+                        cattrs.write_entry(k_ref, |av: &mut _| {
+                            av.value(|vo| vo.string_value_ref(v_ref)).map(|_| ())
+                        })?;
                     }
                     if self.error_tracking_standalone {
                         let trace_has_error = trace.spans().iter().any(|span| {
@@ -617,14 +699,20 @@ impl TraceEndpointEncoder {
                                     .is_some_and(|v| v == "true")
                         });
                         if trace_has_error {
-                            tags.write_entry("_dd.error_tracking_standalone.error", "true")?;
+                            let k_ref = self.string_table.intern(TAG_ETS_STANDALONE_ERROR_KEY);
+                            let v_ref = self.string_table.intern(TAG_ETS_STANDALONE_ERROR_VALUE);
+                            cattrs.write_entry(k_ref, |av: &mut _| {
+                                av.value(|vo| vo.string_value_ref(v_ref)).map(|_| ())
+                            })?;
                         }
                     }
-
-                    self.string_builder.clear();
-                    write!(&mut self.string_builder, "{:.2}", otlp_sr)
-                        .expect("should never fail to format sampling rate");
-                    tags.write_entry(TAG_OTLP_SAMPLING_RATE, self.string_builder.as_str())?;
+                    {
+                        let k_ref = self.string_table.intern(TAG_OTLP_SAMPLING_RATE);
+                        let v_ref = self.string_table.intern(self.string_builder.as_str());
+                        cattrs.write_entry(k_ref, |av: &mut _| {
+                            av.value(|vo| vo.string_value_ref(v_ref)).map(|_| ())
+                        })?;
+                    }
                 }
 
                 if dropped_trace {
@@ -634,21 +722,15 @@ impl TraceEndpointEncoder {
                 Ok(())
             })?;
 
-            // Tracer payload tags.
-            if let Some(ct) = container_tags {
-                let mut tags = tp.tags();
-                tags.write_entry(CONTAINER_TAGS_META_KEY, &*ct)?;
-            }
-
-            if let Some(e) = env {
-                tp.env(e)?;
-            }
-            if let Some(h) = hostname {
-                tp.hostname(h)?;
-            }
-            if let Some(av) = app_version {
-                tp.app_version(av)?;
-            }
+            // Write the string table after all refs so the table is complete.
+            // Protobuf allows fields in any order; decoders that do a full parse before
+            // resolving refs handle strings-after-refs correctly.
+            tp.strings(|sb| {
+                for s in self.string_table.indices.iter() {
+                    sb.add(s.as_ref())?;
+                }
+                Ok(())
+            })?;
 
             Ok(())
         })?;
@@ -703,61 +785,37 @@ impl EndpointEncoder for TraceEndpointEncoder {
     }
 }
 
-fn encode_attribute_value<S: ScratchBuffer>(
-    builder: &mut AttributeAnyValueBuilder<'_, S>, value: &AttributeValue,
+/// Encodes an [`AttributeValue`] into an idx-format `AnyValue` builder, interning any
+/// string values into `st` on the fly.
+fn encode_idx_attribute_value<S: ScratchBuffer>(
+    builder: &mut datadog_protos::traces::builders::idx::AnyValueBuilder<'_, S>, value: &AttributeValue,
+    st: &mut StringTable,
 ) -> std::io::Result<()> {
-    match value {
-        AttributeValue::String(v) => {
-            builder.type_(AttributeAnyValueType::STRING_VALUE)?.string_value(v)?;
-        }
-        AttributeValue::Bool(v) => {
-            builder.type_(AttributeAnyValueType::BOOL_VALUE)?.bool_value(*v)?;
-        }
-        AttributeValue::Int(v) => {
-            builder.type_(AttributeAnyValueType::INT_VALUE)?.int_value(*v)?;
-        }
-        AttributeValue::Float(v) => {
-            builder.type_(AttributeAnyValueType::DOUBLE_VALUE)?.double_value(*v)?;
-        }
-        AttributeValue::Bytes(_) => {
-            // Bytes are not directly representable in OTLP AnyValue; skip.
-        }
-        AttributeValue::Array(values) => {
-            builder.type_(AttributeAnyValueType::ARRAY_VALUE)?.array_value(|arr| {
-                for val in values {
-                    arr.add_values(|av| encode_attribute_array_value(av, val))?;
+    builder
+        .value(|vo| match value {
+            AttributeValue::String(s) => vo.string_value_ref(st.intern(s)),
+            AttributeValue::Bool(b) => vo.bool_value(*b),
+            AttributeValue::Int(i) => vo.int_value(*i),
+            AttributeValue::Float(f) => vo.double_value(*f),
+            AttributeValue::Bytes(b) => vo.bytes_value(b),
+            AttributeValue::Array(values) => vo.array_value(|arr| {
+                for v in values {
+                    arr.add_values(|av| encode_idx_attribute_value(av, v, st))?;
                 }
                 Ok(())
-            })?;
-        }
-        AttributeValue::KeyValueList(_) => {
-            // KVList encoding not needed for this encoder path; skip.
-        }
-    }
-    Ok(())
-}
-
-fn encode_attribute_array_value<S: ScratchBuffer>(
-    builder: &mut AttributeArrayValueBuilder<'_, S>, value: &AttributeValue,
-) -> std::io::Result<()> {
-    match value {
-        AttributeValue::String(v) => {
-            builder.type_(AttributeArrayValueType::STRING_VALUE)?.string_value(v)?;
-        }
-        AttributeValue::Bool(v) => {
-            builder.type_(AttributeArrayValueType::BOOL_VALUE)?.bool_value(*v)?;
-        }
-        AttributeValue::Int(v) => {
-            builder.type_(AttributeArrayValueType::INT_VALUE)?.int_value(*v)?;
-        }
-        AttributeValue::Float(v) => {
-            builder.type_(AttributeArrayValueType::DOUBLE_VALUE)?.double_value(*v)?;
-        }
-        AttributeValue::Bytes(_) | AttributeValue::Array(_) | AttributeValue::KeyValueList(_) => {
-            // Nested complex values not representable in OTLP array; skip.
-        }
-    }
-    Ok(())
+            }),
+            AttributeValue::KeyValueList(kvs) => vo.key_value_list(|kvl| {
+                for (k, v) in kvs {
+                    kvl.add_key_values(|kv| {
+                        kv.key(st.intern(k))?
+                            .value(|av| encode_idx_attribute_value(av, v, st))?;
+                        Ok(())
+                    })?;
+                }
+                Ok(())
+            }),
+        })
+        .map(|_| ())
 }
 
 fn resolve_hostname_from_payload<'a>(
@@ -835,8 +893,9 @@ fn append_tags(target: &mut String, tags: &str) {
 
 #[cfg(test)]
 mod tests {
-    use datadog_protos::traces::AgentPayload;
-    use protobuf::Message as _;
+    use std::collections::HashMap;
+
+    use protobuf::CodedInputStream;
     use saluki_config::ConfigurationLoader;
     use saluki_core::data_model::event::trace::{Span as DdSpan, Trace};
     use stringtheory::MetaString;
@@ -845,6 +904,136 @@ mod tests {
     use crate::common::datadog::apm::ApmConfig;
     use crate::common::otlp::config::TracesConfig;
     use crate::config::{DatadogRemapper, KEY_ALIASES};
+
+    // ---------------------------------------------------------------------------
+    // Decode helper: reads the idx AgentPayload wire format and returns the
+    // resolved string-valued chunk attributes from all idx tracer payloads.
+    //
+    // Wire format notes (all tags = field_number << 3 | wire_type):
+    //   AgentPayload.idxTracerPayloads  field 11, LEN  → tag 90
+    //   idx TracerPayload.strings       field  1, LEN  → tag 10 (repeated)
+    //   idx TracerPayload.chunks        field 11, LEN  → tag 90 (repeated)
+    //   idx TraceChunk.attributes       field  3, LEN  → tag 26 (map)
+    //   map-entry key   (Varint<u32>)   field  1, VARINT → tag 8
+    //   map-entry value (AnyValue LEN)  field  2, LEN    → tag 18
+    //   AnyValue.string_value_ref       field  1, VARINT → tag 8
+    //
+    // Note: the encoder writes string refs before the string table (strings appear
+    // after chunks in the wire format). The helpers below collect all raw chunk bytes
+    // first, then resolve string refs once the string table is fully read.
+    // ---------------------------------------------------------------------------
+
+    /// Decodes the chunk-level string attributes from an encoded AgentPayload.
+    ///
+    /// Returns one `HashMap<String, String>` per chunk, containing only string-valued
+    /// attributes (resolved through the string table). Handles the case where the
+    /// string table (field 1) appears after chunks (field 11) in the wire format.
+    fn decode_idx_chunk_attributes(buf: &[u8]) -> Vec<HashMap<String, String>> {
+        let mut result = Vec::new();
+        let mut is = CodedInputStream::from_bytes(buf);
+        while let Some(tag) = is.read_raw_tag_or_eof().unwrap() {
+            if tag == 90 {
+                // AgentPayload.idxTracerPayloads (field 11, LEN)
+                let len = is.read_raw_varint32().unwrap();
+                let old = is.push_limit(len as u64).unwrap();
+                result.extend(decode_idx_tracer_payload_chunks(&mut is));
+                is.pop_limit(old);
+            } else {
+                protobuf::rt::skip_field_for_tag(tag, &mut is).unwrap();
+            }
+        }
+        result
+    }
+
+    fn decode_idx_tracer_payload_chunks(is: &mut CodedInputStream<'_>) -> Vec<HashMap<String, String>> {
+        let mut strings: Vec<String> = Vec::new();
+        // Buffer raw chunk bytes; string table may appear after chunks in the wire format.
+        let mut raw_chunks: Vec<Vec<u8>> = Vec::new();
+        while let Some(tag) = is.read_raw_tag_or_eof().unwrap() {
+            match tag {
+                10 => {
+                    // idx TracerPayload.strings (field 1, LEN) - repeated string
+                    strings.push(is.read_string().unwrap());
+                }
+                90 => {
+                    // idx TracerPayload.chunks (field 11, LEN) - buffer raw bytes
+                    let len = is.read_raw_varint32().unwrap();
+                    raw_chunks.push(is.read_raw_bytes(len).unwrap());
+                }
+                _ => {
+                    protobuf::rt::skip_field_for_tag(tag, is).unwrap();
+                }
+            }
+        }
+        // Resolve chunk string refs now that the string table is complete.
+        raw_chunks
+            .iter()
+            .map(|bytes| {
+                let mut chunk_is = CodedInputStream::from_bytes(bytes);
+                decode_idx_chunk_string_attrs(&mut chunk_is, &strings)
+            })
+            .collect()
+    }
+
+    fn decode_idx_chunk_string_attrs(is: &mut CodedInputStream<'_>, strings: &[String]) -> HashMap<String, String> {
+        let mut attrs = HashMap::new();
+        while let Some(tag) = is.read_raw_tag_or_eof().unwrap() {
+            if tag == 26 {
+                // idx TraceChunk.attributes map entry (field 3, LEN)
+                let len = is.read_raw_varint32().unwrap();
+                let old = is.push_limit(len as u64).unwrap();
+                let (k_ref, v_str_ref) = decode_string_map_entry(is);
+                is.pop_limit(old);
+                if let Some(v_ref) = v_str_ref {
+                    let k = strings.get(k_ref as usize).cloned().unwrap_or_default();
+                    let v = strings.get(v_ref as usize).cloned().unwrap_or_default();
+                    if !k.is_empty() {
+                        attrs.insert(k, v);
+                    }
+                }
+            } else {
+                protobuf::rt::skip_field_for_tag(tag, is).unwrap();
+            }
+        }
+        attrs
+    }
+
+    /// Reads a single map entry (`key: u32 varint`, `value: AnyValue`).
+    /// Returns `(key_ref, Some(string_value_ref))` when the `AnyValue` is a string ref.
+    fn decode_string_map_entry(is: &mut CodedInputStream<'_>) -> (u32, Option<u32>) {
+        let mut k_ref: u32 = 0;
+        let mut v_str_ref: Option<u32> = None;
+        while let Some(tag) = is.read_raw_tag_or_eof().unwrap() {
+            match tag {
+                8 => {
+                    // map-entry key, field 1, VARINT
+                    k_ref = is.read_raw_varint32().unwrap();
+                }
+                18 => {
+                    // map-entry value AnyValue, field 2, LEN
+                    let len = is.read_raw_varint32().unwrap();
+                    let old = is.push_limit(len as u64).unwrap();
+                    while let Some(av_tag) = is.read_raw_tag_or_eof().unwrap() {
+                        if av_tag == 8 {
+                            // AnyValue.string_value_ref, field 1, VARINT
+                            v_str_ref = Some(is.read_raw_varint32().unwrap());
+                        } else {
+                            protobuf::rt::skip_field_for_tag(av_tag, is).unwrap();
+                        }
+                    }
+                    is.pop_limit(old);
+                }
+                _ => {
+                    protobuf::rt::skip_field_for_tag(tag, is).unwrap();
+                }
+            }
+        }
+        (k_ref, v_str_ref)
+    }
+
+    // ---------------------------------------------------------------------------
+    // Test fixtures
+    // ---------------------------------------------------------------------------
 
     async fn make_encoder(ets_enabled: bool) -> TraceEndpointEncoder {
         let env_vars: Vec<(String, String)> = if ets_enabled {
@@ -904,6 +1093,10 @@ mod tests {
         trace
     }
 
+    // ---------------------------------------------------------------------------
+    // Tests
+    // ---------------------------------------------------------------------------
+
     #[tokio::test]
     async fn ets_header_present_when_enabled() {
         let encoder = make_encoder(true).await;
@@ -925,17 +1118,10 @@ mod tests {
         let trace = make_error_trace();
         let mut buf = Vec::new();
         encoder.encode(&trace, &mut buf).expect("encode should succeed");
-        let payload = AgentPayload::parse_from_bytes(&buf).expect("should parse AgentPayload");
-        let tag_value = payload
-            .tracerPayloads
+        let chunk_attrs = decode_idx_chunk_attributes(&buf);
+        let tag_value = chunk_attrs
             .iter()
-            .flat_map(|tp| tp.chunks.iter())
-            .find_map(|chunk| {
-                chunk
-                    .tags
-                    .get("_dd.error_tracking_standalone.error")
-                    .map(|v| v.as_str())
-            });
+            .find_map(|attrs| attrs.get("_dd.error_tracking_standalone.error").map(|v| v.as_str()));
         assert_eq!(
             tag_value,
             Some("true"),
@@ -946,15 +1132,13 @@ mod tests {
     #[tokio::test]
     async fn ets_chunk_tag_absent_for_non_error_trace() {
         let mut encoder = make_encoder(true).await;
-        let trace = make_trace(); // no error
+        let trace = make_trace();
         let mut buf = Vec::new();
         encoder.encode(&trace, &mut buf).expect("encode should succeed");
-        let payload = AgentPayload::parse_from_bytes(&buf).expect("should parse AgentPayload");
-        let has_tag = payload
-            .tracerPayloads
+        let chunk_attrs = decode_idx_chunk_attributes(&buf);
+        let has_tag = chunk_attrs
             .iter()
-            .flat_map(|tp| tp.chunks.iter())
-            .any(|chunk| chunk.tags.contains_key("_dd.error_tracking_standalone.error"));
+            .any(|attrs| attrs.contains_key("_dd.error_tracking_standalone.error"));
         assert!(!has_tag, "ETS chunk tag should be absent for non-error traces");
     }
 
@@ -964,12 +1148,10 @@ mod tests {
         let trace = make_trace();
         let mut buf = Vec::new();
         encoder.encode(&trace, &mut buf).expect("encode should succeed");
-        let payload = AgentPayload::parse_from_bytes(&buf).expect("should parse AgentPayload");
-        let has_tag = payload
-            .tracerPayloads
+        let chunk_attrs = decode_idx_chunk_attributes(&buf);
+        let has_tag = chunk_attrs
             .iter()
-            .flat_map(|tp| tp.chunks.iter())
-            .any(|chunk| chunk.tags.contains_key("_dd.error_tracking_standalone.error"));
+            .any(|attrs| attrs.contains_key("_dd.error_tracking_standalone.error"));
         assert!(!has_tag, "ETS chunk tag should be absent when ETS is disabled");
     }
 }
