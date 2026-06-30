@@ -14,7 +14,7 @@ pub fn generate(overlay: &SchemaOverlay, schema_map: &IndexMap<String, FieldInfo
     .unwrap();
     writeln!(out, "// Regenerate by running `cargo build -p datadog-agent-config`.").unwrap();
     writeln!(out).unwrap();
-    writeln!(out, "use super::*;").unwrap();
+    writeln!(out, "use crate::classifier::*;").unwrap();
     writeln!(out).unwrap();
     writeln!(out, "pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[").unwrap();
 
@@ -76,7 +76,7 @@ pub fn generate(overlay: &SchemaOverlay, schema_map: &IndexMap<String, FieldInfo
 
     writeln!(out, "];").unwrap();
 
-    let path = manifest_dir.join("src/classifier/classifier_data.rs");
+    let path = manifest_dir.join("src/generated/classifier_data.rs");
     let existing = std::fs::read_to_string(&path).unwrap_or_default();
     if existing != out {
         std::fs::write(&path, out).unwrap_or_else(|e| panic!("cannot write {}: {}", path.display(), e));

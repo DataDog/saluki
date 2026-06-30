@@ -39,6 +39,14 @@ pub enum ConfigurationStruct {
     /// Keys read via `get_typed` / `try_get_typed` rather than struct deserialization.
     #[serde(rename = "get_typed")]
     GetTyped,
+
+    /// Sentinel for supported keys that are being promoted during the transition to
+    /// typed-configuration access. These were missing from our inventory when config smoke
+    /// testing was introduced and for various reasons may not be legitimate targets for that
+    /// testing modality. Regardless, these fields will be part of the typed translation system
+    /// and this sentinel can be removed when our testing model moves over to that system.
+    #[serde(rename = "NO_SMOKE")]
+    NoSmoke,
 }
 
 impl ConfigurationStruct {
@@ -68,6 +76,7 @@ impl ConfigurationStruct {
             ConfigurationStruct::TagFilterlistConfiguration => "TAG_FILTERLIST_CONFIGURATION",
             ConfigurationStruct::TraceObfuscationConfiguration => "TRACE_OBFUSCATION_CONFIGURATION",
             ConfigurationStruct::GetTyped => "GET_TYPED",
+            ConfigurationStruct::NoSmoke => "NO_SMOKE",
         }
     }
 }
