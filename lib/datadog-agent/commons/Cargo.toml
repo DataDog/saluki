@@ -16,6 +16,7 @@ saluki-config = { workspace = true }
 saluki-error = { workspace = true }
 saluki-io = { workspace = true }
 saluki-metadata = { workspace = true }
+saluki-tls = { workspace = true }
 serde = { workspace = true }
 tokio = { workspace = true }
 tonic = { workspace = true, features = ["transport"] }

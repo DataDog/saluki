@@ -1154,6 +1154,7 @@ dependencies = [
  "saluki-error",
  "saluki-io",
  "saluki-metadata",
+ "saluki-tls",
  "serde",
  "serde_json",
  "tokio",

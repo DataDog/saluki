@@ -35,6 +35,7 @@ use saluki_io::net::{
     util::hyper::TowerToHyperService,
     ListenAddress,
 };
+use saluki_tls::ensure_server_config_fips_compliant;
 use tokio::select;
 use tonic::{body::Body as GrpcBody, server::NamedService, service::RoutesBuilder};
 use tower::Service;
@@ -145,16 +146,28 @@ impl DynamicAPIBuilder {
 
     /// Sets the TLS configuration for the server based on a dynamically generated, self-signed certificate.
     pub fn with_self_signed_tls(self) -> Self {
-        let CertifiedKey { cert, signing_key } = generate_simple_self_signed(["localhost".to_owned()]).unwrap();
+        self.try_with_self_signed_tls()
+            .expect("self-signed server TLS configuration should build and pass FIPS validation")
+    }
+
+    /// Sets the TLS configuration for the server based on a dynamically generated, self-signed certificate.
+    ///
+    /// # Errors
+    ///
+    /// If the certificate cannot be generated, the TLS configuration cannot be built, or the resulting TLS
+    /// configuration is not FIPS compliant, an error is returned.
+    pub fn try_with_self_signed_tls(self) -> Result<Self, GenericError> {
+        let CertifiedKey { cert, signing_key } = generate_simple_self_signed(["localhost".to_owned()])?;
         let cert_chain = vec![cert.der().clone()];
         let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(signing_key.serialize_der()));
 
         let config = ServerConfig::builder()
             .with_no_client_auth()
-            .with_single_cert(cert_chain, key)
-            .unwrap();
+            .with_single_cert(cert_chain, key)?;
 
-        self.with_tls_config(config)
+        ensure_server_config_fips_compliant(&config)?;
+
+        Ok(self.with_tls_config(config))
     }
 }
 

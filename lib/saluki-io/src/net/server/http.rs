@@ -20,6 +20,7 @@ use saluki_common::{
     task::{spawn_traced_named, HandleExt as _},
 };
 use saluki_error::GenericError;
+use saluki_tls::ensure_server_config_fips_compliant;
 use tokio::{pin, runtime::Handle, select, sync::oneshot};
 use tokio_rustls::TlsAcceptor;
 use tracing::{debug, error, info};
@@ -100,13 +101,22 @@ where
         } = self;
 
         spawn_traced_named("http-server-acceptor", async move {
-            let tls_enabled = tls_config.is_some();
-            let maybe_tls_acceptor = tls_config.map(|mut config| {
-                // Allow for HTTP/1.1 and HTTP/2.
-                config.alpn_protocols.push(b"h2".to_vec());
-                config.alpn_protocols.push(b"http/1.1".to_vec());
-                TlsAcceptor::from(Arc::new(config))
-            });
+            let maybe_tls_acceptor = match tls_config {
+                Some(mut config) => {
+                    // Allow for HTTP/1.1 and HTTP/2.
+                    config.alpn_protocols.push(b"h2".to_vec());
+                    config.alpn_protocols.push(b"http/1.1".to_vec());
+
+                    if let Err(e) = ensure_server_config_fips_compliant(&config) {
+                        let _ = error_tx.send(e);
+                        return;
+                    }
+
+                    Some(TlsAcceptor::from(Arc::new(config)))
+                }
+                None => None,
+            };
+            let tls_enabled = maybe_tls_acceptor.is_some();
 
             info!(listen_addr = %listener.listen_address(), tls_enabled, "HTTP server started.");
 

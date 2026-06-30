@@ -24,7 +24,7 @@ use rustls::{
     crypto::CryptoProvider,
     pki_types::{CertificateDer, ServerName, UnixTime},
     version::{TLS12, TLS13},
-    ClientConfig, DigitallySignedStruct, RootCertStore, SignatureScheme, SupportedProtocolVersion,
+    ClientConfig, DigitallySignedStruct, RootCertStore, ServerConfig, SignatureScheme, SupportedProtocolVersion,
 };
 #[cfg(not(feature = "fips"))]
 use saluki_common::collections::FastHashMap;
@@ -362,14 +362,48 @@ impl ClientTLSConfigBuilder {
         // away.
         config.resumption = Resumption::in_memory_sessions(max_tls12_resumption_sessions);
 
-        // Do our final check that this configuration is FIPS compliant.
-        #[cfg(feature = "fips")]
-        if !config.fips() {
-            return Err(generic_error!("Client TLS configuration is not FIPS compliant."));
-        }
+        ensure_client_config_fips_compliant(&config)?;
 
         Ok(config)
     }
+}
+
+/// Ensures that a client TLS configuration is FIPS compliant.
+///
+/// In FIPS builds, this checks the Rustls FIPS marker on the configuration. In non-FIPS builds, this is a no-op.
+///
+/// # Errors
+///
+/// If FIPS support is enabled and the configuration is not FIPS compliant, an error is returned.
+pub fn ensure_client_config_fips_compliant(config: &ClientConfig) -> Result<(), GenericError> {
+    #[cfg(feature = "fips")]
+    if !config.fips() {
+        return Err(generic_error!("Client TLS configuration is not FIPS compliant."));
+    }
+
+    #[cfg(not(feature = "fips"))]
+    let _ = config;
+
+    Ok(())
+}
+
+/// Ensures that a server TLS configuration is FIPS compliant.
+///
+/// In FIPS builds, this checks the Rustls FIPS marker on the configuration. In non-FIPS builds, this is a no-op.
+///
+/// # Errors
+///
+/// If FIPS support is enabled and the configuration is not FIPS compliant, an error is returned.
+pub fn ensure_server_config_fips_compliant(config: &ServerConfig) -> Result<(), GenericError> {
+    #[cfg(feature = "fips")]
+    if !config.fips() {
+        return Err(generic_error!("Server TLS configuration is not FIPS compliant."));
+    }
+
+    #[cfg(not(feature = "fips"))]
+    let _ = config;
+
+    Ok(())
 }
 
 /// Initializes the default TLS cryptography provider used by `rustls`.
@@ -559,11 +593,18 @@ mod tests {
     #[cfg(all(unix, not(feature = "fips")))]
     use std::os::unix::fs::PermissionsExt;
 
-    use rustls::{ProtocolVersion, RootCertStore};
+    use rcgen::{generate_simple_self_signed, CertifiedKey};
+    use rustls::{
+        pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer},
+        ProtocolVersion, RootCertStore, ServerConfig,
+    };
 
     #[cfg(not(feature = "fips"))]
     use super::{build_nss_key_log_line, open_key_log_file};
-    use super::{ClientTLSConfigBuilder, TlsMinimumVersion};
+    use super::{
+        ensure_client_config_fips_compliant, ensure_server_config_fips_compliant, ClientTLSConfigBuilder,
+        TlsMinimumVersion,
+    };
 
     #[test]
     fn tls12_minimum_enables_tls12_and_tls13() {
@@ -580,6 +621,33 @@ mod tests {
 
         assert_eq!(versions.len(), 1);
         assert_eq!(versions[0].version, ProtocolVersion::TLSv1_3);
+    }
+
+    #[test]
+    fn client_config_fips_validation_accepts_builder_config() {
+        let _ = super::initialize_default_crypto_provider();
+
+        let config = ClientTLSConfigBuilder::new()
+            .with_root_cert_store(RootCertStore::empty())
+            .build()
+            .expect("client TLS config should build");
+
+        ensure_client_config_fips_compliant(&config).expect("client TLS config should pass FIPS validation");
+    }
+
+    #[test]
+    fn server_config_fips_validation_accepts_basic_server_config() {
+        let _ = super::initialize_default_crypto_provider();
+        let CertifiedKey { cert, signing_key } =
+            generate_simple_self_signed(["localhost".to_owned()]).expect("self-signed cert should be generated");
+        let cert_chain = vec![cert.der().clone()];
+        let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(signing_key.serialize_der()));
+        let config = ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(cert_chain, key)
+            .expect("server TLS config should build");
+
+        ensure_server_config_fips_compliant(&config).expect("server TLS config should pass FIPS validation");
     }
 
     #[test]
