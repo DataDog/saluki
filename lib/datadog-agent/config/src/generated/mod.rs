@@ -9,4 +9,8 @@ pub(crate) mod classifier_data;
 /// inventoried as `support: full` or `support: partial`.
 pub mod datadog_configuration;
 
+/// Witness trait and fallible driver over the supported Datadog configuration keys.
+pub mod witness;
+
 pub use datadog_configuration::DatadogConfiguration;
+pub use witness::{drive, DatadogConfigWitness};

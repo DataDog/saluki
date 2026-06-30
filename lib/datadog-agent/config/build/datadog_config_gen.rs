@@ -176,6 +176,8 @@ fn render(pruned_schema: Value, aliases: &HashMap<String, Vec<String>>) -> Strin
     let mut shortener = PathShortener::default();
     shortener.visit_file_mut(&mut file);
 
+    materialize_sections(&mut file);
+
     let rendered = blank_lines_between_fields(&prettyplease::unparse(&file));
     let rendered = blank_lines_between_items(&rendered);
 
@@ -185,6 +187,63 @@ fn render(pruned_schema: Value, aliases: &HashMap<String, Vec<String>>) -> Strin
     }
     body.push_str(&rendered);
     body
+}
+
+/// Make nested-section fields non-optional with `#[serde(default)]`.
+///
+/// typify renders each non-required object property as `Option<SectionStruct>`. Every section
+/// struct derives `Default`, so dropping the `Option` and defaulting an absent section materializes
+/// it (recursively applying leaf defaults). This lets the witness driver navigate sections directly
+/// (`config.a.b.leaf`) without unwrapping or synthesizing defaults at the call site; defaults live
+/// here, in the data model. Optional scalar leaves (`Option<String>`, etc.) are left untouched.
+fn materialize_sections(file: &mut syn::File) {
+    for item in &mut file.items {
+        let Item::Struct(s) = item else { continue };
+        let syn::Fields::Named(fields) = &mut s.fields else {
+            continue;
+        };
+        for field in &mut fields.named {
+            let Some(inner) = option_section_inner(&field.ty) else {
+                continue;
+            };
+            field.ty = inner;
+            // Replace the field's serde attributes: the original carried
+            // `skip_serializing_if = "Option::is_none"`, invalid once the field is no longer an
+            // `Option`. A bare `#[serde(default)]` is all a section field needs.
+            field.attrs.retain(|attr| !attr.path().is_ident("serde"));
+            field.attrs.push(parse_quote!(#[serde(default)]));
+        }
+    }
+}
+
+/// If `ty` is `Option<DatadogConfiguration...>` (a nested section), return the inner section type.
+fn option_section_inner(ty: &syn::Type) -> Option<syn::Type> {
+    let syn::Type::Path(tp) = ty else { return None };
+    let last = tp.path.segments.last()?;
+    if last.ident != "Option" {
+        return None;
+    }
+    let syn::PathArguments::AngleBracketed(args) = &last.arguments else {
+        return None;
+    };
+    let syn::GenericArgument::Type(inner) = args.args.first()? else {
+        return None;
+    };
+    let syn::Type::Path(inner_path) = inner else {
+        return None;
+    };
+    if inner_path
+        .path
+        .segments
+        .last()?
+        .ident
+        .to_string()
+        .starts_with("DatadogConfiguration")
+    {
+        Some(inner.clone())
+    } else {
+        None
+    }
 }
 
 /// Add `#[serde(alias = "...")]` attributes to fields that have `additional_yaml_paths` in the
