@@ -140,7 +140,7 @@ impl fmt::Display for ListenAddress {
             Self::Udp(addr) => write!(f, "udp://{}", addr),
             Self::Unixgram(path) => write!(f, "unixgram://{}", path.display()),
             Self::Unix(path) => write!(f, "unix://{}", path.display()),
-            Self::NamedPipe { name, .. } => write!(f, "npipe://{}", name),
+            Self::NamedPipe { name, .. } => write!(f, "named_pipe://{}", name),
         }
     }
 }
@@ -210,7 +210,7 @@ impl<'a> TryFrom<&'a str> for ListenAddress {
 
                 Ok(Self::Unix(path_buf))
             }
-            "npipe" => {
+            "named_pipe" => {
                 let name = url.host_str().unwrap_or_else(|| url.path().trim_start_matches('/'));
                 if name.is_empty() {
                     return Err("named pipe name cannot be empty".to_string());
@@ -420,7 +420,7 @@ mod tests {
         let address = ListenAddress::named_pipe("datadog-dogstatsd", "D:AI(A;;GA;;;WD)");
 
         assert_eq!(address.listener_type(), "named_pipe");
-        assert_eq!(address.to_string(), r"npipe://datadog-dogstatsd");
+        assert_eq!(address.to_string(), r"named_pipe://datadog-dogstatsd");
     }
 
     #[test]

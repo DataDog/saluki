@@ -187,6 +187,7 @@ const fn default_true() -> bool {
     true
 }
 
+/// Returns the core Agent default SDDL applied to DogStatsD Windows named pipes.
 const fn default_windows_pipe_security_descriptor() -> &'static str {
     "D:AI(A;;GA;;;WD)"
 }
@@ -398,8 +399,7 @@ pub struct DogStatsDConfiguration {
 
     /// Listener types that require DogStatsD messages to be newline-terminated.
     ///
-    /// Valid values are `udp`, `uds`, and `named_pipe`. ADP accepts `named_pipe` for compatibility, but it has no effect
-    /// until named pipe listeners are supported. Invalid values are ignored.
+    /// Valid values are `udp`, `uds`, and `named_pipe`. Invalid values are ignored.
     ///
     /// Enable this when DogStatsD clients must reject packets or stream frames that don't end with a newline.
     ///
@@ -622,6 +622,9 @@ pub struct DogStatsDConfiguration {
 struct EolRequired {
     udp: bool,
     uds: bool,
+    // The core Agent exposes `named_pipe` as a separate `dogstatsd_eol_required` target.
+    // Named pipes use raw newline framing like UDP datagrams, but they have their own switch
+    // so Windows clients can require newline-terminated pipe frames without affecting UDS.
     named_pipe: bool,
 }
 
