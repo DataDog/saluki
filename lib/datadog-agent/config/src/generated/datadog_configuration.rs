@@ -44,8 +44,8 @@ pub struct DatadogConfiguration {
     #[serde(default, skip_serializing_if = ":: std :: collections :: HashMap::is_empty")]
     pub additional_endpoints: HashMap<String, Vec<String>>,
 
-    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-    pub agent_ipc: Option<DatadogConfigurationAgentIpc>,
+    #[serde(default)]
+    pub agent_ipc: AgentIpc,
 
     #[serde(default = "defaults::default_u64::<i64, 2>")]
     pub aggregator_stop_timeout: i64,
@@ -56,17 +56,17 @@ pub struct DatadogConfiguration {
     #[serde(default)]
     pub api_key: String,
 
-    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-    pub apm_config: Option<DatadogConfigurationApmConfig>,
+    #[serde(default)]
+    pub apm_config: ApmConfig,
 
-    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-    pub autoscaling: Option<DatadogConfigurationAutoscaling>,
+    #[serde(default)]
+    pub autoscaling: Autoscaling,
 
     #[serde(default)]
     pub bind_host: String,
 
-    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-    pub cluster_agent: Option<DatadogConfigurationClusterAgent>,
+    #[serde(default)]
+    pub cluster_agent: ClusterAgent,
 
     #[serde(default = "defaults::default_u64::<i64, 5001>")]
     pub cmd_port: i64,
@@ -77,11 +77,14 @@ pub struct DatadogConfiguration {
     #[serde(default = "defaults::default_u64::<i64, 5>")]
     pub cri_query_timeout: i64,
 
-    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-    pub data_plane: Option<DatadogConfigurationDataPlane>,
+    #[serde(default)]
+    pub data_plane: DataPlane,
 
     #[serde(default = "defaults::datadog_configuration_dd_url")]
     pub dd_url: String,
+
+    #[serde(default)]
+    pub disable_file_logging: bool,
 
     #[serde(default = "defaults::default_u64::<i64, 8192>")]
     pub dogstatsd_buffer_size: i64,
@@ -103,6 +106,9 @@ pub struct DatadogConfiguration {
 
     #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
     pub dogstatsd_eol_required: Vec<String>,
+
+    #[serde(default = "defaults::default_u64::<i64, 300>")]
+    pub dogstatsd_expiry_seconds: i64,
 
     #[serde(default)]
     /// Alias defined in schema overlay.
@@ -177,11 +183,18 @@ pub struct DatadogConfiguration {
     )]
     pub dogstatsd_windows_pipe_security_descriptor: String,
 
-    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-    pub enable_payloads: Option<DatadogConfigurationEnablePayloads>,
+    #[serde(default)]
+    pub enable_payloads: EnablePayloads,
 
     #[serde(default)]
     pub env: String,
+
+    #[serde(
+        default = "duration_defaults::expected_tags_duration",
+
+        deserialize_with = "crate::duration_de::deserialize_go_duration"
+    )]
+    pub expected_tags_duration: std::time::Duration,
 
     #[serde(default = "defaults::default_u64::<i64, 60>")]
     pub forwarder_apikey_validation_interval: i64,
@@ -259,6 +272,18 @@ pub struct DatadogConfiguration {
     #[serde(default)]
     pub histogram_copy_to_distribution_prefix: String,
 
+    #[serde(default = "defaults::datadog_configuration_histogram_percentiles")]
+    pub histogram_percentiles: Vec<String>,
+
+    #[serde(default = "defaults::default_u64::<i64, 1>")]
+    pub log_file_max_rolls: i64,
+
+    #[serde(default = "defaults::datadog_configuration_log_file_max_size")]
+    pub log_file_max_size: String,
+
+    #[serde(default)]
+    pub log_format_json: bool,
+
     #[serde(default)]
     pub log_format_rfc3339: bool,
 
@@ -268,47 +293,50 @@ pub struct DatadogConfiguration {
     #[serde(default)]
     pub log_payloads: bool,
 
+    #[serde(default = "defaults::default_bool::<true>")]
+    pub log_to_console: bool,
+
+    #[serde(default)]
+    pub log_to_syslog: bool,
+
     #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
     pub metric_filterlist: Vec<String>,
 
     #[serde(default)]
     pub metric_filterlist_match_prefix: bool,
 
+    #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+    pub metric_tag_filterlist: Vec<::serde_json::Value>,
+
     #[serde(default = "defaults::datadog_configuration_min_tls_version")]
     pub min_tls_version: String,
 
-    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-    pub multi_region_failover: Option<DatadogConfigurationMultiRegionFailover>,
+    #[serde(default)]
+    pub multi_region_failover: MultiRegionFailover,
 
     #[serde(default)]
     pub no_proxy_nonexact_match: bool,
 
-    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-    pub observability_pipelines_worker: Option<
-        DatadogConfigurationObservabilityPipelinesWorker,
-
-    >,
+    #[serde(default)]
+    pub observability_pipelines_worker: ObservabilityPipelinesWorker,
 
     #[serde(default)]
     pub origin_detection_unified: bool,
 
-    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-    pub otlp_config: Option<DatadogConfigurationOtlpConfig>,
+    #[serde(default)]
+    pub otlp_config: OtlpConfig,
 
     #[serde(default)]
     pub provider_kind: String,
 
-    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-    pub proxy: Option<DatadogConfigurationProxy>,
+    #[serde(default)]
+    pub proxy: Proxy,
 
     #[serde(default = "defaults::datadog_configuration_serializer_compressor_kind")]
     pub serializer_compressor_kind: String,
 
-    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-    pub serializer_experimental_use_v3_api: Option<
-        DatadogConfigurationSerializerExperimentalUseV3Api,
-
-    >,
+    #[serde(default)]
+    pub serializer_experimental_use_v3_api: SerializerExperimentalUseV3Api,
 
     #[serde(default = "defaults::default_u64::<i64, 2621440>")]
     pub serializer_max_payload_size: i64,
@@ -365,20 +393,20 @@ pub struct DatadogConfiguration {
     #[serde(default)]
     pub syslog_uri: String,
 
-    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-    pub telemetry: Option<DatadogConfigurationTelemetry>,
+    #[serde(default)]
+    pub telemetry: Telemetry,
 
     #[serde(default)]
     pub use_proxy_for_cloud_metadata: bool,
 
-    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-    pub use_v2_api: Option<DatadogConfigurationUseV2Api>,
+    #[serde(default)]
+    pub use_v2_api: UseV2Api,
 
-    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-    pub use_v3_api: Option<DatadogConfigurationUseV3Api>,
+    #[serde(default)]
+    pub use_v3_api: UseV3Api,
 
-    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-    pub vector: Option<DatadogConfigurationVector>,
+    #[serde(default)]
+    pub vector: Vector,
 
     #[serde(default)]
     pub vsock_addr: String,
@@ -401,6 +429,7 @@ impl Default for DatadogConfiguration {
             cri_query_timeout: defaults::default_u64::<i64, 5>(),
             data_plane: Default::default(),
             dd_url: defaults::datadog_configuration_dd_url(),
+            disable_file_logging: Default::default(),
             dogstatsd_buffer_size: defaults::default_u64::<i64, 8192>(),
             dogstatsd_capture_depth: Default::default(),
             dogstatsd_capture_path: Default::default(),
@@ -408,6 +437,7 @@ impl Default for DatadogConfiguration {
             dogstatsd_disable_verbose_logs: Default::default(),
             dogstatsd_entity_id_precedence: Default::default(),
             dogstatsd_eol_required: Default::default(),
+            dogstatsd_expiry_seconds: defaults::default_u64::<i64, 300>(),
             dogstatsd_flush_incomplete_buckets: Default::default(),
             dogstatsd_log_file: Default::default(),
             dogstatsd_log_file_max_rolls: defaults::default_u64::<i64, 3>(),
@@ -433,6 +463,7 @@ impl Default for DatadogConfiguration {
             dogstatsd_windows_pipe_security_descriptor: defaults::datadog_configuration_dogstatsd_windows_pipe_security_descriptor(),
             enable_payloads: Default::default(),
             env: Default::default(),
+            expected_tags_duration: duration_defaults::expected_tags_duration(),
             forwarder_apikey_validation_interval: defaults::default_u64::<i64, 60>(),
             forwarder_backoff_base: defaults::default_u64::<i64, 2>(),
             forwarder_backoff_factor: defaults::default_u64::<i64, 2>(),
@@ -463,11 +494,18 @@ impl Default for DatadogConfiguration {
             histogram_aggregates: defaults::datadog_configuration_histogram_aggregates(),
             histogram_copy_to_distribution: Default::default(),
             histogram_copy_to_distribution_prefix: Default::default(),
+            histogram_percentiles: defaults::datadog_configuration_histogram_percentiles(),
+            log_file_max_rolls: defaults::default_u64::<i64, 1>(),
+            log_file_max_size: defaults::datadog_configuration_log_file_max_size(),
+            log_format_json: Default::default(),
             log_format_rfc3339: Default::default(),
             log_level: defaults::datadog_configuration_log_level(),
             log_payloads: Default::default(),
+            log_to_console: defaults::default_bool::<true>(),
+            log_to_syslog: Default::default(),
             metric_filterlist: Default::default(),
             metric_filterlist_match_prefix: Default::default(),
+            metric_tag_filterlist: Default::default(),
             min_tls_version: defaults::datadog_configuration_min_tls_version(),
             multi_region_failover: Default::default(),
             no_proxy_nonexact_match: Default::default(),
@@ -515,12 +553,12 @@ impl Default for DatadogConfiguration {
 }
 
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
-pub struct DatadogConfigurationAgentIpc {
+pub struct AgentIpc {
     #[serde(default = "defaults::default_u64::<i64, 134217728>")]
     pub grpc_max_message_size: i64,
 }
 
-impl Default for DatadogConfigurationAgentIpc {
+impl Default for AgentIpc {
     fn default() -> Self {
         Self {
             grpc_max_message_size: defaults::default_u64::<i64, 134217728>(),
@@ -529,47 +567,95 @@ impl Default for DatadogConfigurationAgentIpc {
 }
 
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
-pub struct DatadogConfigurationApmConfig {
-    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-    pub obfuscation: Option<DatadogConfigurationApmConfigObfuscation>,
+pub struct ApmConfig {
+    #[serde(default = "defaults::default_bool::<true>")]
+    pub compute_stats_by_span_kind: bool,
+
+    #[serde(default)]
+    pub enable_rare_sampler: bool,
+
+    #[serde(default)]
+    pub error_tracking_standalone: ApmConfigErrorTrackingStandalone,
+
+    #[serde(default = "defaults::datadog_configuration_apm_config_errors_per_second")]
+    pub errors_per_second: f64,
+
+    #[serde(default)]
+    pub obfuscation: ApmConfigObfuscation,
+
+    #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+    pub peer_tags: Vec<String>,
+
+    #[serde(default = "defaults::default_bool::<true>")]
+    pub peer_tags_aggregation: bool,
+
+    #[serde(default)]
+    pub probabilistic_sampler: ApmConfigProbabilisticSampler,
+
+    #[serde(
+        default = "defaults::datadog_configuration_apm_config_target_traces_per_second"
+    )]
+    pub target_traces_per_second: f64,
 }
 
-impl Default for DatadogConfigurationApmConfig {
+impl Default for ApmConfig {
     fn default() -> Self {
         Self {
+            compute_stats_by_span_kind: defaults::default_bool::<true>(),
+            enable_rare_sampler: Default::default(),
+            error_tracking_standalone: Default::default(),
+            errors_per_second: defaults::datadog_configuration_apm_config_errors_per_second(),
             obfuscation: Default::default(),
+            peer_tags: Default::default(),
+            peer_tags_aggregation: defaults::default_bool::<true>(),
+            probabilistic_sampler: Default::default(),
+            target_traces_per_second: defaults::datadog_configuration_apm_config_target_traces_per_second(),
         }
     }
 }
 
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
-pub struct DatadogConfigurationApmConfigObfuscation {
-    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-    pub credit_cards: Option<DatadogConfigurationApmConfigObfuscationCreditCards>,
-
-    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-    pub elasticsearch: Option<DatadogConfigurationApmConfigObfuscationElasticsearch>,
-
-    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-    pub http: Option<DatadogConfigurationApmConfigObfuscationHttp>,
-
-    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-    pub memcached: Option<DatadogConfigurationApmConfigObfuscationMemcached>,
-
-    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-    pub mongodb: Option<DatadogConfigurationApmConfigObfuscationMongodb>,
-
-    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-    pub opensearch: Option<DatadogConfigurationApmConfigObfuscationOpensearch>,
-
-    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-    pub redis: Option<DatadogConfigurationApmConfigObfuscationRedis>,
-
-    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-    pub valkey: Option<DatadogConfigurationApmConfigObfuscationValkey>,
+pub struct ApmConfigErrorTrackingStandalone {
+    #[serde(default)]
+    pub enabled: bool,
 }
 
-impl Default for DatadogConfigurationApmConfigObfuscation {
+impl Default for ApmConfigErrorTrackingStandalone {
+    fn default() -> Self {
+        Self {
+            enabled: Default::default(),
+        }
+    }
+}
+
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+pub struct ApmConfigObfuscation {
+    #[serde(default)]
+    pub credit_cards: ApmConfigObfuscationCreditCards,
+
+    #[serde(default)]
+    pub elasticsearch: ApmConfigObfuscationElasticsearch,
+
+    #[serde(default)]
+    pub http: ApmConfigObfuscationHttp,
+
+    #[serde(default)]
+    pub memcached: ApmConfigObfuscationMemcached,
+
+    #[serde(default)]
+    pub mongodb: ApmConfigObfuscationMongodb,
+
+    #[serde(default)]
+    pub opensearch: ApmConfigObfuscationOpensearch,
+
+    #[serde(default)]
+    pub redis: ApmConfigObfuscationRedis,
+
+    #[serde(default)]
+    pub valkey: ApmConfigObfuscationValkey,
+}
+
+impl Default for ApmConfigObfuscation {
     fn default() -> Self {
         Self {
             credit_cards: Default::default(),
@@ -585,7 +671,7 @@ impl Default for DatadogConfigurationApmConfigObfuscation {
 }
 
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
-pub struct DatadogConfigurationApmConfigObfuscationCreditCards {
+pub struct ApmConfigObfuscationCreditCards {
     #[serde(default = "defaults::default_bool::<true>")]
     pub enabled: bool,
 
@@ -596,7 +682,7 @@ pub struct DatadogConfigurationApmConfigObfuscationCreditCards {
     pub luhn: bool,
 }
 
-impl Default for DatadogConfigurationApmConfigObfuscationCreditCards {
+impl Default for ApmConfigObfuscationCreditCards {
     fn default() -> Self {
         Self {
             enabled: defaults::default_bool::<true>(),
@@ -607,7 +693,7 @@ impl Default for DatadogConfigurationApmConfigObfuscationCreditCards {
 }
 
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
-pub struct DatadogConfigurationApmConfigObfuscationElasticsearch {
+pub struct ApmConfigObfuscationElasticsearch {
     #[serde(default = "defaults::default_bool::<true>")]
     pub enabled: bool,
 
@@ -618,7 +704,7 @@ pub struct DatadogConfigurationApmConfigObfuscationElasticsearch {
     pub obfuscate_sql_values: Vec<String>,
 }
 
-impl Default for DatadogConfigurationApmConfigObfuscationElasticsearch {
+impl Default for ApmConfigObfuscationElasticsearch {
     fn default() -> Self {
         Self {
             enabled: defaults::default_bool::<true>(),
@@ -629,7 +715,7 @@ impl Default for DatadogConfigurationApmConfigObfuscationElasticsearch {
 }
 
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
-pub struct DatadogConfigurationApmConfigObfuscationHttp {
+pub struct ApmConfigObfuscationHttp {
     #[serde(default)]
     pub remove_paths_with_digits: bool,
 
@@ -637,7 +723,7 @@ pub struct DatadogConfigurationApmConfigObfuscationHttp {
     pub remove_query_string: bool,
 }
 
-impl Default for DatadogConfigurationApmConfigObfuscationHttp {
+impl Default for ApmConfigObfuscationHttp {
     fn default() -> Self {
         Self {
             remove_paths_with_digits: Default::default(),
@@ -647,7 +733,7 @@ impl Default for DatadogConfigurationApmConfigObfuscationHttp {
 }
 
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
-pub struct DatadogConfigurationApmConfigObfuscationMemcached {
+pub struct ApmConfigObfuscationMemcached {
     #[serde(default = "defaults::default_bool::<true>")]
     pub enabled: bool,
 
@@ -655,7 +741,7 @@ pub struct DatadogConfigurationApmConfigObfuscationMemcached {
     pub keep_command: bool,
 }
 
-impl Default for DatadogConfigurationApmConfigObfuscationMemcached {
+impl Default for ApmConfigObfuscationMemcached {
     fn default() -> Self {
         Self {
             enabled: defaults::default_bool::<true>(),
@@ -665,7 +751,7 @@ impl Default for DatadogConfigurationApmConfigObfuscationMemcached {
 }
 
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
-pub struct DatadogConfigurationApmConfigObfuscationMongodb {
+pub struct ApmConfigObfuscationMongodb {
     #[serde(default = "defaults::default_bool::<true>")]
     pub enabled: bool,
 
@@ -676,7 +762,7 @@ pub struct DatadogConfigurationApmConfigObfuscationMongodb {
     pub obfuscate_sql_values: Vec<String>,
 }
 
-impl Default for DatadogConfigurationApmConfigObfuscationMongodb {
+impl Default for ApmConfigObfuscationMongodb {
     fn default() -> Self {
         Self {
             enabled: defaults::default_bool::<true>(),
@@ -687,7 +773,7 @@ impl Default for DatadogConfigurationApmConfigObfuscationMongodb {
 }
 
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
-pub struct DatadogConfigurationApmConfigObfuscationOpensearch {
+pub struct ApmConfigObfuscationOpensearch {
     #[serde(default = "defaults::default_bool::<true>")]
     pub enabled: bool,
 
@@ -698,7 +784,7 @@ pub struct DatadogConfigurationApmConfigObfuscationOpensearch {
     pub obfuscate_sql_values: Vec<String>,
 }
 
-impl Default for DatadogConfigurationApmConfigObfuscationOpensearch {
+impl Default for ApmConfigObfuscationOpensearch {
     fn default() -> Self {
         Self {
             enabled: defaults::default_bool::<true>(),
@@ -709,7 +795,7 @@ impl Default for DatadogConfigurationApmConfigObfuscationOpensearch {
 }
 
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
-pub struct DatadogConfigurationApmConfigObfuscationRedis {
+pub struct ApmConfigObfuscationRedis {
     #[serde(default = "defaults::default_bool::<true>")]
     pub enabled: bool,
 
@@ -717,7 +803,7 @@ pub struct DatadogConfigurationApmConfigObfuscationRedis {
     pub remove_all_args: bool,
 }
 
-impl Default for DatadogConfigurationApmConfigObfuscationRedis {
+impl Default for ApmConfigObfuscationRedis {
     fn default() -> Self {
         Self {
             enabled: defaults::default_bool::<true>(),
@@ -727,7 +813,7 @@ impl Default for DatadogConfigurationApmConfigObfuscationRedis {
 }
 
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
-pub struct DatadogConfigurationApmConfigObfuscationValkey {
+pub struct ApmConfigObfuscationValkey {
     #[serde(default = "defaults::default_bool::<true>")]
     pub enabled: bool,
 
@@ -735,7 +821,7 @@ pub struct DatadogConfigurationApmConfigObfuscationValkey {
     pub remove_all_args: bool,
 }
 
-impl Default for DatadogConfigurationApmConfigObfuscationValkey {
+impl Default for ApmConfigObfuscationValkey {
     fn default() -> Self {
         Self {
             enabled: defaults::default_bool::<true>(),
@@ -745,12 +831,32 @@ impl Default for DatadogConfigurationApmConfigObfuscationValkey {
 }
 
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
-pub struct DatadogConfigurationAutoscaling {
-    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-    pub failover: Option<DatadogConfigurationAutoscalingFailover>,
+pub struct ApmConfigProbabilisticSampler {
+    #[serde(default)]
+    pub enabled: bool,
+
+    #[serde(
+        default = "defaults::datadog_configuration_apm_config_probabilistic_sampler_sampling_percentage"
+    )]
+    pub sampling_percentage: f64,
 }
 
-impl Default for DatadogConfigurationAutoscaling {
+impl Default for ApmConfigProbabilisticSampler {
+    fn default() -> Self {
+        Self {
+            enabled: Default::default(),
+            sampling_percentage: defaults::datadog_configuration_apm_config_probabilistic_sampler_sampling_percentage(),
+        }
+    }
+}
+
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+pub struct Autoscaling {
+    #[serde(default)]
+    pub failover: AutoscalingFailover,
+}
+
+impl Default for Autoscaling {
     fn default() -> Self {
         Self {
             failover: Default::default(),
@@ -759,7 +865,7 @@ impl Default for DatadogConfigurationAutoscaling {
 }
 
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
-pub struct DatadogConfigurationAutoscalingFailover {
+pub struct AutoscalingFailover {
     #[serde(default)]
     pub enabled: bool,
 
@@ -767,7 +873,7 @@ pub struct DatadogConfigurationAutoscalingFailover {
     pub metrics: Vec<String>,
 }
 
-impl Default for DatadogConfigurationAutoscalingFailover {
+impl Default for AutoscalingFailover {
     fn default() -> Self {
         Self {
             enabled: Default::default(),
@@ -777,7 +883,7 @@ impl Default for DatadogConfigurationAutoscalingFailover {
 }
 
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
-pub struct DatadogConfigurationClusterAgent {
+pub struct ClusterAgent {
     #[serde(default)]
     pub auth_token: String,
 
@@ -793,7 +899,7 @@ pub struct DatadogConfigurationClusterAgent {
     pub url: String,
 }
 
-impl Default for DatadogConfigurationClusterAgent {
+impl Default for ClusterAgent {
     fn default() -> Self {
         Self {
             auth_token: Default::default(),
@@ -805,18 +911,21 @@ impl Default for DatadogConfigurationClusterAgent {
 }
 
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
-pub struct DatadogConfigurationDataPlane {
+pub struct DataPlane {
     #[serde(default = "defaults::datadog_configuration_data_plane_api_listen_address")]
     pub api_listen_address: String,
 
-    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-    pub dogstatsd: Option<DatadogConfigurationDataPlaneDogstatsd>,
+    #[serde(default)]
+    pub dogstatsd: DataPlaneDogstatsd,
+
+    #[serde(default)]
+    pub enabled: bool,
 
     #[serde(default = "defaults::datadog_configuration_data_plane_log_file")]
     pub log_file: String,
 
-    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-    pub otlp: Option<DatadogConfigurationDataPlaneOtlp>,
+    #[serde(default)]
+    pub otlp: DataPlaneOtlp,
 
     #[serde(default = "defaults::default_bool::<true>")]
     pub remote_agent_enabled: bool,
@@ -830,11 +939,12 @@ pub struct DatadogConfigurationDataPlane {
     pub use_new_config_stream_endpoint: bool,
 }
 
-impl Default for DatadogConfigurationDataPlane {
+impl Default for DataPlane {
     fn default() -> Self {
         Self {
             api_listen_address: defaults::datadog_configuration_data_plane_api_listen_address(),
             dogstatsd: Default::default(),
+            enabled: Default::default(),
             log_file: defaults::datadog_configuration_data_plane_log_file(),
             otlp: Default::default(),
             remote_agent_enabled: defaults::default_bool::<true>(),
@@ -845,60 +955,78 @@ impl Default for DatadogConfigurationDataPlane {
 }
 
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
-pub struct DatadogConfigurationDataPlaneDogstatsd {
+pub struct DataPlaneDogstatsd {
     #[serde(default = "defaults::default_u64::<i64, 100000>")]
     pub aggregator_tag_filter_cache_capacity: i64,
+
+    #[serde(default = "defaults::default_bool::<true>")]
+    pub enabled: bool,
 }
 
-impl Default for DatadogConfigurationDataPlaneDogstatsd {
+impl Default for DataPlaneDogstatsd {
     fn default() -> Self {
         Self {
             aggregator_tag_filter_cache_capacity: defaults::default_u64::<i64, 100000>(),
+            enabled: defaults::default_bool::<true>(),
         }
     }
 }
 
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
-pub struct DatadogConfigurationDataPlaneOtlp {
-    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-    pub proxy: Option<DatadogConfigurationDataPlaneOtlpProxy>,
+pub struct DataPlaneOtlp {
+    #[serde(default)]
+    pub enabled: bool,
+
+    #[serde(default)]
+    pub proxy: DataPlaneOtlpProxy,
 }
 
-impl Default for DatadogConfigurationDataPlaneOtlp {
+impl Default for DataPlaneOtlp {
     fn default() -> Self {
-        Self { proxy: Default::default() }
+        Self {
+            enabled: Default::default(),
+            proxy: Default::default(),
+        }
     }
 }
 
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
-pub struct DatadogConfigurationDataPlaneOtlpProxy {
-    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-    pub logs: Option<DatadogConfigurationDataPlaneOtlpProxyLogs>,
+pub struct DataPlaneOtlpProxy {
+    #[serde(default)]
+    pub enabled: bool,
 
-    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-    pub metrics: Option<DatadogConfigurationDataPlaneOtlpProxyMetrics>,
+    #[serde(default)]
+    pub logs: DataPlaneOtlpProxyLogs,
 
-    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-    pub traces: Option<DatadogConfigurationDataPlaneOtlpProxyTraces>,
+    #[serde(default)]
+    pub metrics: DataPlaneOtlpProxyMetrics,
+
+    #[serde(default)]
+    pub receiver: DataPlaneOtlpProxyReceiver,
+
+    #[serde(default)]
+    pub traces: DataPlaneOtlpProxyTraces,
 }
 
-impl Default for DatadogConfigurationDataPlaneOtlpProxy {
+impl Default for DataPlaneOtlpProxy {
     fn default() -> Self {
         Self {
+            enabled: Default::default(),
             logs: Default::default(),
             metrics: Default::default(),
+            receiver: Default::default(),
             traces: Default::default(),
         }
     }
 }
 
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
-pub struct DatadogConfigurationDataPlaneOtlpProxyLogs {
+pub struct DataPlaneOtlpProxyLogs {
     #[serde(default = "defaults::default_bool::<true>")]
     pub enabled: bool,
 }
 
-impl Default for DatadogConfigurationDataPlaneOtlpProxyLogs {
+impl Default for DataPlaneOtlpProxyLogs {
     fn default() -> Self {
         Self {
             enabled: defaults::default_bool::<true>(),
@@ -907,12 +1035,12 @@ impl Default for DatadogConfigurationDataPlaneOtlpProxyLogs {
 }
 
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
-pub struct DatadogConfigurationDataPlaneOtlpProxyMetrics {
+pub struct DataPlaneOtlpProxyMetrics {
     #[serde(default = "defaults::default_bool::<true>")]
     pub enabled: bool,
 }
 
-impl Default for DatadogConfigurationDataPlaneOtlpProxyMetrics {
+impl Default for DataPlaneOtlpProxyMetrics {
     fn default() -> Self {
         Self {
             enabled: defaults::default_bool::<true>(),
@@ -921,12 +1049,54 @@ impl Default for DatadogConfigurationDataPlaneOtlpProxyMetrics {
 }
 
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
-pub struct DatadogConfigurationDataPlaneOtlpProxyTraces {
+pub struct DataPlaneOtlpProxyReceiver {
+    #[serde(default)]
+    pub protocols: DataPlaneOtlpProxyReceiverProtocols,
+}
+
+impl Default for DataPlaneOtlpProxyReceiver {
+    fn default() -> Self {
+        Self {
+            protocols: Default::default(),
+        }
+    }
+}
+
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+pub struct DataPlaneOtlpProxyReceiverProtocols {
+    #[serde(default)]
+    pub grpc: DataPlaneOtlpProxyReceiverProtocolsGrpc,
+}
+
+impl Default for DataPlaneOtlpProxyReceiverProtocols {
+    fn default() -> Self {
+        Self { grpc: Default::default() }
+    }
+}
+
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+pub struct DataPlaneOtlpProxyReceiverProtocolsGrpc {
+    #[serde(
+        default = "defaults::datadog_configuration_data_plane_otlp_proxy_receiver_protocols_grpc_endpoint"
+    )]
+    pub endpoint: String,
+}
+
+impl Default for DataPlaneOtlpProxyReceiverProtocolsGrpc {
+    fn default() -> Self {
+        Self {
+            endpoint: defaults::datadog_configuration_data_plane_otlp_proxy_receiver_protocols_grpc_endpoint(),
+        }
+    }
+}
+
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+pub struct DataPlaneOtlpProxyTraces {
     #[serde(default = "defaults::default_bool::<true>")]
     pub enabled: bool,
 }
 
-impl Default for DatadogConfigurationDataPlaneOtlpProxyTraces {
+impl Default for DataPlaneOtlpProxyTraces {
     fn default() -> Self {
         Self {
             enabled: defaults::default_bool::<true>(),
@@ -935,7 +1105,7 @@ impl Default for DatadogConfigurationDataPlaneOtlpProxyTraces {
 }
 
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
-pub struct DatadogConfigurationEnablePayloads {
+pub struct EnablePayloads {
     #[serde(default = "defaults::default_bool::<true>")]
     pub events: bool,
 
@@ -949,7 +1119,7 @@ pub struct DatadogConfigurationEnablePayloads {
     pub sketches: bool,
 }
 
-impl Default for DatadogConfigurationEnablePayloads {
+impl Default for EnablePayloads {
     fn default() -> Self {
         Self {
             events: defaults::default_bool::<true>(),
@@ -961,7 +1131,7 @@ impl Default for DatadogConfigurationEnablePayloads {
 }
 
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
-pub struct DatadogConfigurationMultiRegionFailover {
+pub struct MultiRegionFailover {
     #[serde(default)]
     pub api_key: String,
 
@@ -981,7 +1151,7 @@ pub struct DatadogConfigurationMultiRegionFailover {
     pub site: String,
 }
 
-impl Default for DatadogConfigurationMultiRegionFailover {
+impl Default for MultiRegionFailover {
     fn default() -> Self {
         Self {
             api_key: Default::default(),
@@ -995,12 +1165,12 @@ impl Default for DatadogConfigurationMultiRegionFailover {
 }
 
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
-pub struct DatadogConfigurationObservabilityPipelinesWorker {
-    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-    pub metrics: Option<DatadogConfigurationObservabilityPipelinesWorkerMetrics>,
+pub struct ObservabilityPipelinesWorker {
+    #[serde(default)]
+    pub metrics: ObservabilityPipelinesWorkerMetrics,
 }
 
-impl Default for DatadogConfigurationObservabilityPipelinesWorker {
+impl Default for ObservabilityPipelinesWorker {
     fn default() -> Self {
         Self {
             metrics: Default::default(),
@@ -1009,21 +1179,18 @@ impl Default for DatadogConfigurationObservabilityPipelinesWorker {
 }
 
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
-pub struct DatadogConfigurationObservabilityPipelinesWorkerMetrics {
+pub struct ObservabilityPipelinesWorkerMetrics {
     #[serde(default)]
     pub enabled: bool,
 
     #[serde(default)]
     pub url: String,
 
-    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-    pub use_v3_api: Option<
-        DatadogConfigurationObservabilityPipelinesWorkerMetricsUseV3Api,
-
-    >,
+    #[serde(default)]
+    pub use_v3_api: ObservabilityPipelinesWorkerMetricsUseV3Api,
 }
 
-impl Default for DatadogConfigurationObservabilityPipelinesWorkerMetrics {
+impl Default for ObservabilityPipelinesWorkerMetrics {
     fn default() -> Self {
         Self {
             enabled: Default::default(),
@@ -1034,33 +1201,33 @@ impl Default for DatadogConfigurationObservabilityPipelinesWorkerMetrics {
 }
 
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
-pub struct DatadogConfigurationObservabilityPipelinesWorkerMetricsUseV3Api {
+pub struct ObservabilityPipelinesWorkerMetricsUseV3Api {
     #[serde(default)]
     pub series: bool,
 }
 
-impl Default for DatadogConfigurationObservabilityPipelinesWorkerMetricsUseV3Api {
+impl Default for ObservabilityPipelinesWorkerMetricsUseV3Api {
     fn default() -> Self {
         Self { series: Default::default() }
     }
 }
 
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
-pub struct DatadogConfigurationOtlpConfig {
-    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-    pub logs: Option<DatadogConfigurationOtlpConfigLogs>,
+pub struct OtlpConfig {
+    #[serde(default)]
+    pub logs: OtlpConfigLogs,
 
-    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-    pub metrics: Option<DatadogConfigurationOtlpConfigMetrics>,
+    #[serde(default)]
+    pub metrics: OtlpConfigMetrics,
 
-    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-    pub receiver: Option<DatadogConfigurationOtlpConfigReceiver>,
+    #[serde(default)]
+    pub receiver: OtlpConfigReceiver,
 
-    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-    pub traces: Option<DatadogConfigurationOtlpConfigTraces>,
+    #[serde(default)]
+    pub traces: OtlpConfigTraces,
 }
 
-impl Default for DatadogConfigurationOtlpConfig {
+impl Default for OtlpConfig {
     fn default() -> Self {
         Self {
             logs: Default::default(),
@@ -1072,12 +1239,12 @@ impl Default for DatadogConfigurationOtlpConfig {
 }
 
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
-pub struct DatadogConfigurationOtlpConfigLogs {
+pub struct OtlpConfigLogs {
     #[serde(default)]
     pub enabled: bool,
 }
 
-impl Default for DatadogConfigurationOtlpConfigLogs {
+impl Default for OtlpConfigLogs {
     fn default() -> Self {
         Self {
             enabled: Default::default(),
@@ -1086,12 +1253,12 @@ impl Default for DatadogConfigurationOtlpConfigLogs {
 }
 
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
-pub struct DatadogConfigurationOtlpConfigMetrics {
+pub struct OtlpConfigMetrics {
     #[serde(default = "defaults::default_bool::<true>")]
     pub enabled: bool,
 }
 
-impl Default for DatadogConfigurationOtlpConfigMetrics {
+impl Default for OtlpConfigMetrics {
     fn default() -> Self {
         Self {
             enabled: defaults::default_bool::<true>(),
@@ -1100,12 +1267,12 @@ impl Default for DatadogConfigurationOtlpConfigMetrics {
 }
 
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
-pub struct DatadogConfigurationOtlpConfigReceiver {
-    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-    pub protocols: Option<DatadogConfigurationOtlpConfigReceiverProtocols>,
+pub struct OtlpConfigReceiver {
+    #[serde(default)]
+    pub protocols: OtlpConfigReceiverProtocols,
 }
 
-impl Default for DatadogConfigurationOtlpConfigReceiver {
+impl Default for OtlpConfigReceiver {
     fn default() -> Self {
         Self {
             protocols: Default::default(),
@@ -1114,15 +1281,15 @@ impl Default for DatadogConfigurationOtlpConfigReceiver {
 }
 
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
-pub struct DatadogConfigurationOtlpConfigReceiverProtocols {
-    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-    pub grpc: Option<DatadogConfigurationOtlpConfigReceiverProtocolsGrpc>,
+pub struct OtlpConfigReceiverProtocols {
+    #[serde(default)]
+    pub grpc: OtlpConfigReceiverProtocolsGrpc,
 
-    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-    pub http: Option<DatadogConfigurationOtlpConfigReceiverProtocolsHttp>,
+    #[serde(default)]
+    pub http: OtlpConfigReceiverProtocolsHttp,
 }
 
-impl Default for DatadogConfigurationOtlpConfigReceiverProtocols {
+impl Default for OtlpConfigReceiverProtocols {
     fn default() -> Self {
         Self {
             grpc: Default::default(),
@@ -1132,7 +1299,7 @@ impl Default for DatadogConfigurationOtlpConfigReceiverProtocols {
 }
 
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
-pub struct DatadogConfigurationOtlpConfigReceiverProtocolsGrpc {
+pub struct OtlpConfigReceiverProtocolsGrpc {
     #[serde(
         default = "defaults::datadog_configuration_otlp_config_receiver_protocols_grpc_endpoint"
     )]
@@ -1147,7 +1314,7 @@ pub struct DatadogConfigurationOtlpConfigReceiverProtocolsGrpc {
     pub transport: String,
 }
 
-impl Default for DatadogConfigurationOtlpConfigReceiverProtocolsGrpc {
+impl Default for OtlpConfigReceiverProtocolsGrpc {
     fn default() -> Self {
         Self {
             endpoint: defaults::datadog_configuration_otlp_config_receiver_protocols_grpc_endpoint(),
@@ -1158,14 +1325,14 @@ impl Default for DatadogConfigurationOtlpConfigReceiverProtocolsGrpc {
 }
 
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
-pub struct DatadogConfigurationOtlpConfigReceiverProtocolsHttp {
+pub struct OtlpConfigReceiverProtocolsHttp {
     #[serde(
         default = "defaults::datadog_configuration_otlp_config_receiver_protocols_http_endpoint"
     )]
     pub endpoint: String,
 }
 
-impl Default for DatadogConfigurationOtlpConfigReceiverProtocolsHttp {
+impl Default for OtlpConfigReceiverProtocolsHttp {
     fn default() -> Self {
         Self {
             endpoint: defaults::datadog_configuration_otlp_config_receiver_protocols_http_endpoint(),
@@ -1174,21 +1341,18 @@ impl Default for DatadogConfigurationOtlpConfigReceiverProtocolsHttp {
 }
 
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
-pub struct DatadogConfigurationOtlpConfigTraces {
+pub struct OtlpConfigTraces {
     #[serde(default = "defaults::default_bool::<true>")]
     pub enabled: bool,
 
     #[serde(default = "defaults::default_u64::<i64, 5003>")]
     pub internal_port: i64,
 
-    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-    pub probabilistic_sampler: Option<
-        DatadogConfigurationOtlpConfigTracesProbabilisticSampler,
-
-    >,
+    #[serde(default)]
+    pub probabilistic_sampler: OtlpConfigTracesProbabilisticSampler,
 }
 
-impl Default for DatadogConfigurationOtlpConfigTraces {
+impl Default for OtlpConfigTraces {
     fn default() -> Self {
         Self {
             enabled: defaults::default_bool::<true>(),
@@ -1199,14 +1363,14 @@ impl Default for DatadogConfigurationOtlpConfigTraces {
 }
 
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
-pub struct DatadogConfigurationOtlpConfigTracesProbabilisticSampler {
+pub struct OtlpConfigTracesProbabilisticSampler {
     #[serde(
         default = "defaults::datadog_configuration_otlp_config_traces_probabilistic_sampler_sampling_percentage"
     )]
     pub sampling_percentage: f64,
 }
 
-impl Default for DatadogConfigurationOtlpConfigTracesProbabilisticSampler {
+impl Default for OtlpConfigTracesProbabilisticSampler {
     fn default() -> Self {
         Self {
             sampling_percentage: defaults::datadog_configuration_otlp_config_traces_probabilistic_sampler_sampling_percentage(),
@@ -1215,7 +1379,7 @@ impl Default for DatadogConfigurationOtlpConfigTracesProbabilisticSampler {
 }
 
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
-pub struct DatadogConfigurationProxy {
+pub struct Proxy {
     #[serde(default)]
     pub http: String,
 
@@ -1226,7 +1390,7 @@ pub struct DatadogConfigurationProxy {
     pub no_proxy: Vec<String>,
 }
 
-impl Default for DatadogConfigurationProxy {
+impl Default for Proxy {
     fn default() -> Self {
         Self {
             http: Default::default(),
@@ -1237,18 +1401,18 @@ impl Default for DatadogConfigurationProxy {
 }
 
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
-pub struct DatadogConfigurationSerializerExperimentalUseV3Api {
+pub struct SerializerExperimentalUseV3Api {
     #[serde(default)]
     pub compression_level: i64,
 
-    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-    pub series: Option<DatadogConfigurationSerializerExperimentalUseV3ApiSeries>,
+    #[serde(default)]
+    pub series: SerializerExperimentalUseV3ApiSeries,
 
-    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-    pub sketches: Option<DatadogConfigurationSerializerExperimentalUseV3ApiSketches>,
+    #[serde(default)]
+    pub sketches: SerializerExperimentalUseV3ApiSketches,
 }
 
-impl Default for DatadogConfigurationSerializerExperimentalUseV3Api {
+impl Default for SerializerExperimentalUseV3Api {
     fn default() -> Self {
         Self {
             compression_level: Default::default(),
@@ -1259,7 +1423,7 @@ impl Default for DatadogConfigurationSerializerExperimentalUseV3Api {
 }
 
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
-pub struct DatadogConfigurationSerializerExperimentalUseV3ApiSeries {
+pub struct SerializerExperimentalUseV3ApiSeries {
     #[serde(
         default = "defaults::datadog_configuration_serializer_experimental_use_v3_api_series_beta_route"
     )]
@@ -1285,7 +1449,7 @@ pub struct DatadogConfigurationSerializerExperimentalUseV3ApiSeries {
     pub validate: bool,
 }
 
-impl Default for DatadogConfigurationSerializerExperimentalUseV3ApiSeries {
+impl Default for SerializerExperimentalUseV3ApiSeries {
     fn default() -> Self {
         Self {
             beta_route: defaults::datadog_configuration_serializer_experimental_use_v3_api_series_beta_route(),
@@ -1299,7 +1463,7 @@ impl Default for DatadogConfigurationSerializerExperimentalUseV3ApiSeries {
 }
 
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
-pub struct DatadogConfigurationSerializerExperimentalUseV3ApiSketches {
+pub struct SerializerExperimentalUseV3ApiSketches {
     #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
     pub endpoints: Vec<String>,
 
@@ -1307,7 +1471,7 @@ pub struct DatadogConfigurationSerializerExperimentalUseV3ApiSketches {
     pub validate: bool,
 }
 
-impl Default for DatadogConfigurationSerializerExperimentalUseV3ApiSketches {
+impl Default for SerializerExperimentalUseV3ApiSketches {
     fn default() -> Self {
         Self {
             endpoints: Default::default(),
@@ -1317,12 +1481,12 @@ impl Default for DatadogConfigurationSerializerExperimentalUseV3ApiSketches {
 }
 
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
-pub struct DatadogConfigurationTelemetry {
+pub struct Telemetry {
     #[serde(default)]
     pub dogstatsd_origin: bool,
 }
 
-impl Default for DatadogConfigurationTelemetry {
+impl Default for Telemetry {
     fn default() -> Self {
         Self {
             dogstatsd_origin: Default::default(),
@@ -1331,12 +1495,12 @@ impl Default for DatadogConfigurationTelemetry {
 }
 
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
-pub struct DatadogConfigurationUseV2Api {
+pub struct UseV2Api {
     #[serde(default = "defaults::default_bool::<true>")]
     pub series: bool,
 }
 
-impl Default for DatadogConfigurationUseV2Api {
+impl Default for UseV2Api {
     fn default() -> Self {
         Self {
             series: defaults::default_bool::<true>(),
@@ -1345,19 +1509,19 @@ impl Default for DatadogConfigurationUseV2Api {
 }
 
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
-pub struct DatadogConfigurationUseV3Api {
-    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-    pub series: Option<DatadogConfigurationUseV3ApiSeries>,
+pub struct UseV3Api {
+    #[serde(default)]
+    pub series: UseV3ApiSeries,
 }
 
-impl Default for DatadogConfigurationUseV3Api {
+impl Default for UseV3Api {
     fn default() -> Self {
         Self { series: Default::default() }
     }
 }
 
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
-pub struct DatadogConfigurationUseV3ApiSeries {
+pub struct UseV3ApiSeries {
     #[serde(default = "defaults::datadog_configuration_use_v3_api_series_enabled")]
     pub enabled: String,
 
@@ -1365,7 +1529,7 @@ pub struct DatadogConfigurationUseV3ApiSeries {
     pub endpoints: ::serde_json::Map<String, ::serde_json::Value>,
 }
 
-impl Default for DatadogConfigurationUseV3ApiSeries {
+impl Default for UseV3ApiSeries {
     fn default() -> Self {
         Self {
             enabled: defaults::datadog_configuration_use_v3_api_series_enabled(),
@@ -1375,12 +1539,12 @@ impl Default for DatadogConfigurationUseV3ApiSeries {
 }
 
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
-pub struct DatadogConfigurationVector {
-    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-    pub metrics: Option<DatadogConfigurationVectorMetrics>,
+pub struct Vector {
+    #[serde(default)]
+    pub metrics: VectorMetrics,
 }
 
-impl Default for DatadogConfigurationVector {
+impl Default for Vector {
     fn default() -> Self {
         Self {
             metrics: Default::default(),
@@ -1389,18 +1553,18 @@ impl Default for DatadogConfigurationVector {
 }
 
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
-pub struct DatadogConfigurationVectorMetrics {
+pub struct VectorMetrics {
     #[serde(default)]
     pub enabled: bool,
 
     #[serde(default)]
     pub url: String,
 
-    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-    pub use_v3_api: Option<DatadogConfigurationVectorMetricsUseV3Api>,
+    #[serde(default)]
+    pub use_v3_api: VectorMetricsUseV3Api,
 }
 
-impl Default for DatadogConfigurationVectorMetrics {
+impl Default for VectorMetrics {
     fn default() -> Self {
         Self {
             enabled: Default::default(),
@@ -1411,12 +1575,12 @@ impl Default for DatadogConfigurationVectorMetrics {
 }
 
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
-pub struct DatadogConfigurationVectorMetricsUseV3Api {
+pub struct VectorMetricsUseV3Api {
     #[serde(default)]
     pub series: bool,
 }
 
-impl Default for DatadogConfigurationVectorMetricsUseV3Api {
+impl Default for VectorMetricsUseV3Api {
     fn default() -> Self {
         Self { series: Default::default() }
     }
@@ -1470,6 +1634,12 @@ pub mod defaults {
             "count".to_string(),
         ]
     }
+    pub(super) fn datadog_configuration_histogram_percentiles() -> Vec<String> {
+        vec!["0.95".to_string()]
+    }
+    pub(super) fn datadog_configuration_log_file_max_size() -> String {
+        "10Mb".to_string()
+    }
     pub(super) fn datadog_configuration_log_level() -> String {
         "info".to_string()
     }
@@ -1509,6 +1679,15 @@ pub mod defaults {
             "runtime".to_string(),
         ]
     }
+    pub(super) fn datadog_configuration_apm_config_errors_per_second() -> f64 {
+        10_f64
+    }
+    pub(super) fn datadog_configuration_apm_config_target_traces_per_second() -> f64 {
+        10_f64
+    }
+    pub(super) fn datadog_configuration_apm_config_probabilistic_sampler_sampling_percentage() -> f64 {
+        0_f64
+    }
     pub(super) fn datadog_configuration_autoscaling_failover_metrics() -> Vec<String> {
         vec!["container.memory.usage".to_string(), "container.cpu.usage".to_string()]
     }
@@ -1523,6 +1702,9 @@ pub mod defaults {
     }
     pub(super) fn datadog_configuration_data_plane_secure_api_listen_address() -> String {
         "tcp://0.0.0.0:5101".to_string()
+    }
+    pub(super) fn datadog_configuration_data_plane_otlp_proxy_receiver_protocols_grpc_endpoint() -> String {
+        "127.0.0.1:4319".to_string()
     }
     pub(super) fn datadog_configuration_otlp_config_receiver_protocols_grpc_endpoint() -> String {
         "localhost:4317".to_string()
@@ -1549,5 +1731,11 @@ pub mod defaults {
     }
     pub(super) fn datadog_configuration_use_v3_api_series_enabled() -> String {
         "true".to_string()
+    }
+}
+
+mod duration_defaults {
+    pub(super) fn expected_tags_duration() -> std::time::Duration {
+        std::time::Duration::from_nanos(0)
     }
 }

@@ -4,6 +4,5 @@ use_field_init_shorthand = true
 max_width = 120
 fn_params_layout = "Compressed"
 ignore = [
-    "lib/datadog-agent/config/src/classifier/classifier_data.rs",
-    "lib/datadog-agent/config/src/generated.rs",
+    "lib/datadog-agent/config/src/generated/",
 ]

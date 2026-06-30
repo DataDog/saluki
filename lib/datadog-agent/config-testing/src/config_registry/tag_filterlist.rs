@@ -16,4 +16,15 @@ crate::declare_annotations! {
         test_json: None,
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
+    /// `metric_tag_filterlist`-Per-metric tag allow/deny filter list
+    METRIC_TAG_FILTERLIST = SalukiAnnotation {
+        schema: &schema::METRIC_TAG_FILTERLIST,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::TAG_FILTERLIST_CONFIGURATION],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
+    };
 }
