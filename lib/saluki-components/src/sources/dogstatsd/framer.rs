@@ -35,9 +35,8 @@ pub fn get_framer(listen_address: &ListenAddress, eol_required: bool) -> DsdFram
         ListenAddress::Tcp(_) => DsdFramer::Stream(NestedFramer::new(newline_framer, LengthDelimitedFramer)),
         ListenAddress::Udp(_) => DsdFramer::NonStream(newline_framer),
         ListenAddress::Unixgram(_) => DsdFramer::NonStream(newline_framer),
-        ListenAddress::Unix(_) | ListenAddress::NamedPipe { .. } => {
-            DsdFramer::Stream(NestedFramer::new(newline_framer, LengthDelimitedFramer))
-        }
+        ListenAddress::Unix(_) => DsdFramer::Stream(NestedFramer::new(newline_framer, LengthDelimitedFramer)),
+        ListenAddress::NamedPipe { .. } => DsdFramer::NonStream(newline_framer),
     }
 }
 
@@ -98,5 +97,23 @@ mod tests {
             framer.next_frame(&mut buf, true),
             Err(FramingError::InvalidFrame { .. })
         ));
+    }
+
+    #[test]
+    fn named_pipe_uses_raw_newline_framing() {
+        let payload = b"test.metric:1|c\n";
+        let mut buf = VecDeque::from(payload.to_vec());
+        let mut framer = get_framer(
+            &ListenAddress::named_pipe("datadog-dogstatsd", "D:AI(A;;GA;;;WD)"),
+            true,
+        );
+
+        let frame = framer
+            .next_frame(&mut buf, false)
+            .expect("framing should not fail")
+            .expect("named pipe newline frame should be available before EOF");
+
+        assert_eq!(&frame[..], b"test.metric:1|c");
+        assert!(buf.is_empty());
     }
 }

@@ -1480,7 +1480,7 @@ async fn drive_stream(
 
 fn should_warn_stream_log_too_big(listen_addr: &ListenAddress, error: &FramingError, stream_log_too_big: bool) -> bool {
     stream_log_too_big
-        && matches!(listen_addr, ListenAddress::Unix(_) | ListenAddress::NamedPipe { .. })
+        && matches!(listen_addr, ListenAddress::Unix(_))
         && matches!(error, FramingError::InvalidFrame { .. })
 }
 
@@ -2440,7 +2440,7 @@ mod tests {
     }
 
     #[test]
-    fn stream_log_too_big_warns_for_enabled_stream_invalid_frames() {
+    fn stream_log_too_big_warns_for_enabled_length_delimited_stream_invalid_frames() {
         let uds_stream = ListenAddress::Unix("/tmp/dsd-stream.sock".into());
         let named_pipe_stream = named_pipe_listen_address();
         let tcp_stream = ListenAddress::Tcp(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 8125)));
@@ -2450,13 +2450,8 @@ mod tests {
         };
 
         assert!(super::should_warn_stream_log_too_big(&uds_stream, &error, true));
-        assert!(super::should_warn_stream_log_too_big(&named_pipe_stream, &error, true));
         assert!(!super::should_warn_stream_log_too_big(&uds_stream, &error, false));
-        assert!(!super::should_warn_stream_log_too_big(
-            &named_pipe_stream,
-            &error,
-            false
-        ));
+        assert!(!super::should_warn_stream_log_too_big(&named_pipe_stream, &error, true));
         assert!(!super::should_warn_stream_log_too_big(&tcp_stream, &error, true));
     }
 
