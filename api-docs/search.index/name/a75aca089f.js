@@ -1,0 +1,1 @@
+rd_("CjDatadogConfigurationSerializerExperimentalUseV3ApiSketchesCoDatadogConfigurationObservabilityPipelinesWorkerMetricsUseV3Api")
