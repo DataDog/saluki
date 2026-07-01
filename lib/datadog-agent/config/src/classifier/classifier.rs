@@ -117,9 +117,30 @@ mod tests {
     }
 
     #[test]
+    fn duration_default_as_nanoseconds_is_default() {
+        let c = classifier();
+        // tls_handshake_timeout's default ("10s") is generated as integer nanoseconds, matching the
+        // form the Agent transmits over the config stream.
+        let result = c
+            .classify("tls_handshake_timeout", &Value::Number(10_000_000_000i64.into()))
+            .unwrap();
+        assert!(result.is_default);
+    }
+
+    #[test]
+    fn duration_non_default_nanoseconds_is_not_default() {
+        let c = classifier();
+        // 5s in nanoseconds is not the 10s default.
+        let result = c
+            .classify("tls_handshake_timeout", &Value::Number(5_000_000_000i64.into()))
+            .unwrap();
+        assert!(!result.is_default);
+    }
+
+    #[test]
     fn duration_default_null_is_not_default() {
         let c = classifier();
-        // tls_handshake_timeout now has default "10s" (a duration string); null != "10s"
+        // tls_handshake_timeout has a numeric nanosecond default; null does not match.
         let result = c.classify("tls_handshake_timeout", &Value::Null).unwrap();
         assert!(!result.is_default);
     }

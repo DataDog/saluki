@@ -32,6 +32,10 @@ pub struct FieldInfo {
     /// `no-env` tag.
     pub env_vars: Vec<String>,
     /// Default value serialised as a JSON literal, or `None` if the schema omits one.
+    ///
+    /// For `format: duration` fields the literal is normalized to an integer number of
+    /// nanoseconds (rather than the schema's Go duration string) so it matches the form the
+    /// Datadog Agent transmits over the config stream.
     pub default: Option<String>,
 }
 
@@ -107,7 +111,19 @@ fn parse_setting(path_parts: &[&str], value: &Value) -> (String, FieldInfo) {
     };
 
     let value_type = parse_value_type(value);
-    let default = value.get("default").and_then(yaml_value_to_json_str);
+    let is_duration = value.get("format").and_then(|v| v.as_str()) == Some("duration");
+    let default = value.get("default").and_then(|d| {
+        // Durations: the schema default is a Go duration string (for example, `10s`), but the
+        // Datadog Agent transmits durations over the config stream as integer nanoseconds. Emit the
+        // default in nanoseconds so the classifier's exact-equality check matches the Agent-supplied
+        // value. Fall back to the string form if the default isn't a parseable duration.
+        if is_duration {
+            if let Some(nanos) = d.as_str().and_then(parse_go_duration_nanos) {
+                return Some(nanos.to_string());
+            }
+        }
+        yaml_value_to_json_str(d)
+    });
 
     (
         yaml_path,
@@ -117,6 +133,101 @@ fn parse_setting(path_parts: &[&str], value: &Value) -> (String, FieldInfo) {
             default,
         },
     )
+}
+
+/// Parses a Go `time.Duration` string (for example, `"10s"`, `"500ms"`, `"1h30m0s"`) into
+/// nanoseconds.
+///
+/// Supports the unit suffixes Go's `time.ParseDuration` accepts (`ns`, `us`/`µs`/`μs`, `ms`, `s`,
+/// `m`, `h`), an optional leading sign, and fractional components. Returns `None` if the string is
+/// not a well-formed duration.
+fn parse_go_duration_nanos(input: &str) -> Option<i128> {
+    let mut s = input.trim();
+    if s.is_empty() {
+        return None;
+    }
+
+    let negative = match s.as_bytes()[0] {
+        b'-' => {
+            s = &s[1..];
+            true
+        }
+        b'+' => {
+            s = &s[1..];
+            false
+        }
+        _ => false,
+    };
+
+    // Go accepts a bare "0" (no unit) as a special case.
+    if s == "0" {
+        return Some(0);
+    }
+
+    let mut total_nanos: f64 = 0.0;
+    let mut chars = s.char_indices().peekable();
+    let mut consumed_any = false;
+
+    while chars.peek().is_some() {
+        // Parse the numeric portion (digits with an optional single decimal point).
+        let start = chars.peek().map(|&(idx, _)| idx)?;
+        let mut end = start;
+        let mut seen_digit = false;
+        let mut seen_dot = false;
+        while let Some(&(idx, c)) = chars.peek() {
+            if c.is_ascii_digit() {
+                seen_digit = true;
+                end = idx + c.len_utf8();
+                chars.next();
+            } else if c == '.' && !seen_dot {
+                seen_dot = true;
+                end = idx + c.len_utf8();
+                chars.next();
+            } else {
+                break;
+            }
+        }
+        if !seen_digit {
+            return None;
+        }
+        let number: f64 = s[start..end].parse().ok()?;
+
+        // Parse the unit portion (letters, including the micro sign variants).
+        let unit_start = end;
+        let mut unit_end = end;
+        while let Some(&(idx, c)) = chars.peek() {
+            if c.is_ascii_alphabetic() || c == 'µ' || c == 'μ' {
+                unit_end = idx + c.len_utf8();
+                chars.next();
+            } else {
+                break;
+            }
+        }
+        let unit = &s[unit_start..unit_end];
+        let unit_nanos = match unit {
+            "ns" => 1.0,
+            "us" | "µs" | "μs" => 1_000.0,
+            "ms" => 1_000_000.0,
+            "s" => 1_000_000_000.0,
+            "m" => 60.0 * 1_000_000_000.0,
+            "h" => 3_600.0 * 1_000_000_000.0,
+            _ => return None,
+        };
+
+        total_nanos += number * unit_nanos;
+        consumed_any = true;
+    }
+
+    if !consumed_any {
+        return None;
+    }
+
+    let total_nanos = total_nanos.round();
+    Some(if negative {
+        -(total_nanos as i128)
+    } else {
+        total_nanos as i128
+    })
 }
 
 fn parse_value_type(value: &Value) -> FieldType {
@@ -242,4 +353,26 @@ pub fn yaml_path_to_const(yaml_path: &str) -> String {
         .map(|c| if c == '.' || c == '-' { '_' } else { c })
         .collect::<String>()
         .to_uppercase()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_go_duration_nanos;
+
+    #[test]
+    fn parse_go_duration_nanos_handles_common_forms() {
+        assert_eq!(parse_go_duration_nanos("10s"), Some(10_000_000_000));
+        assert_eq!(parse_go_duration_nanos("500ms"), Some(500_000_000));
+        assert_eq!(parse_go_duration_nanos("1m0s"), Some(60_000_000_000));
+        assert_eq!(parse_go_duration_nanos("1h30m0s"), Some(5_400_000_000_000));
+        assert_eq!(parse_go_duration_nanos("24h0m0s"), Some(86_400_000_000_000));
+        assert_eq!(parse_go_duration_nanos("0s"), Some(0));
+        assert_eq!(parse_go_duration_nanos("0"), Some(0));
+        assert_eq!(parse_go_duration_nanos("1.5h"), Some(5_400_000_000_000));
+        assert_eq!(parse_go_duration_nanos("250µs"), Some(250_000));
+        assert_eq!(parse_go_duration_nanos("-5s"), Some(-5_000_000_000));
+        assert_eq!(parse_go_duration_nanos("nonsense"), None);
+        assert_eq!(parse_go_duration_nanos("10"), None);
+        assert_eq!(parse_go_duration_nanos(""), None);
+    }
 }

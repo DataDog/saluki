@@ -184,7 +184,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         aliases: &[],
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
-        default: Some("\"100ms\""),
+        default: Some("100000000"),
     },
     ClassifierEntry {
         yaml_path: "dogstatsd_packet_buffer_size",
@@ -331,7 +331,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         aliases: &[],
         support_level: SupportLevel::Incompatible(Severity::Medium),
         pipeline_affinity: PipelineAffinity::CrossCutting,
-        default: Some("\"10s\""),
+        default: Some("10000000000"),
     },
     ClassifierEntry {
         yaml_path: "use_dogstatsd",
