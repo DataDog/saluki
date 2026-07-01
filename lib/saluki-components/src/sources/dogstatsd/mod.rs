@@ -622,9 +622,6 @@ pub struct DogStatsDConfiguration {
 struct EolRequired {
     udp: bool,
     uds: bool,
-    // The core Agent exposes `named_pipe` as a separate `dogstatsd_eol_required` target.
-    // Named pipes use raw newline framing like UDP datagrams, but they have their own switch
-    // so Windows clients can require newline-terminated pipe frames without affecting UDS.
     named_pipe: bool,
 }
 
