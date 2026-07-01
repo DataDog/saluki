@@ -13,7 +13,6 @@ env:
   DD_DOGSTATSD_PORT: "0"
   DD_DOGSTATSD_PIPE_NAME: "datadog-dogstatsd-integration"
   DD_DOGSTATSD_EOL_REQUIRED: "named_pipe"
-  DD_DOGSTATSD_BUFFER_SIZE: "32"
 
 procedure:
   - assertion: log_contains
@@ -46,7 +45,7 @@ procedure:
 
         Send-NamedPipePayload "integration.named_pipe.invalid`n"
         Send-NamedPipePayload "integration.named_pipe.multi_one.invalid`nintegration.named_pipe.multi_two.invalid`n"
-        Send-NamedPipePayload ("x" * 64)
+        Send-NamedPipePayload ("x" * 10000)
         Send-NamedPipePayload "integration.named_pipe.after_oversize.invalid`n"
     timeout: 30s
   - assertion: log_contains
