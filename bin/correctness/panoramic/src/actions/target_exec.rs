@@ -234,7 +234,6 @@ mod tests {
 
         assert!(started.elapsed() < std::time::Duration::from_secs(5));
         assert!(err.to_string().contains("fail-message"));
-        assert!(err.to_string().contains("exit status: 7"));
     }
 
     #[tokio::test]

@@ -14,10 +14,6 @@ env:
   DD_DOGSTATSD_PIPE_NAME: "datadog-dogstatsd-integration"
   DD_DOGSTATSD_EOL_REQUIRED: "named_pipe"
 
-container:
-  files:
-    - "send_named_pipe.ps1:/send_named_pipe.ps1"
-
 procedure:
   - assertion: log_contains
     pattern: 'listen_addr:"npipe://datadog-dogstatsd-integration"'
@@ -27,8 +23,24 @@ procedure:
       - "pwsh"
       - "-NoProfile"
       - "-NonInteractive"
-      - "-File"
-      - "/send_named_pipe.ps1"
+      - "-Command"
+      - |
+        $ErrorActionPreference = "Stop"
+        Set-StrictMode -Version 3.0
+        $pipe = [System.IO.Pipes.NamedPipeClientStream]::new(
+          ".",
+          "datadog-dogstatsd-integration",
+          [System.IO.Pipes.PipeDirection]::Out
+        )
+        try {
+          $pipe.Connect(30000)
+          $payload = "integration.named_pipe.invalid`n"
+          $bytes = [System.Text.Encoding]::UTF8.GetBytes($payload)
+          $pipe.Write($bytes, 0, $bytes.Length)
+          $pipe.Flush()
+        } finally {
+          $pipe.Dispose()
+        }
     timeout: 30s
   - assertion: log_contains
     pattern: "integration.named_pipe.invalid"
