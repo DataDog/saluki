@@ -51,12 +51,20 @@ if (-not $env:BUILD_PROFILE) {
 
 Initialize-RustEnvironment -RepoRoot $RepoRoot
 
+if (-not $env:BUILD_FEATURES) {
+    $env:BUILD_FEATURES = "default"
+}
+if ($env:BUILD_FEATURES -eq "fips") {
+    Initialize-FipsBuildTools -RepoRoot $RepoRoot
+    New-VsBuildToolsJunction
+}
+
 if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
     throw "Docker CLI not found in Windows build image. The integration job requires Docker CLI access to the host Docker daemon."
 }
 Invoke-Native docker version
 
-Write-Host "[*] Building Panoramic and Agent Data Plane for Windows..."
+Write-Host "[*] Building Panoramic and Agent Data Plane for Windows (features=$env:BUILD_FEATURES)..."
 # saluki-metadata reads these at build time. They must match the values that
 # the Linux Makefile passes through, otherwise ADP's log subagent prefix
 # renders as "UNKNOWN" instead of "DATAPLANE".
@@ -74,7 +82,7 @@ if (-not $env:APP_GIT_HASH) {
 # (BUILD_PROFILE=optimized-release in .gitlab-ci.yml) tests the same binary it ships, mirroring
 # the linux/darwin flows.
 Invoke-Native cargo build --release --package panoramic
-Invoke-Native cargo build --profile $env:BUILD_PROFILE --package agent-data-plane
+Invoke-Native cargo build --profile $env:BUILD_PROFILE --package agent-data-plane --features $env:BUILD_FEATURES
 
 Build-WindowsAdpImage
 

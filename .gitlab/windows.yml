@@ -70,17 +70,20 @@ test-integration-windows-amd64:
   stage: e2e
   needs: []
   cache:
-    key: windows-amd64-integration-cargo
+    key: windows-amd64-integration-cargo-fips
     paths:
       - .ci-cache/cargo/
       - .ci-cache/protoc/
       - .ci-cache/rustup/
+      - .ci-cache/nasm/
+      - .ci-cache/llvm/
   artifacts:
     expire_in: 1 week
     paths:
       - integration-logs/
     when: always
   variables:
+    BUILD_FEATURES: "fips"
     PANORAMIC_LOG_DIR: integration-logs
   script:
     - *windows-build-image-pull-script
@@ -120,6 +123,7 @@ test-integration-windows-amd64:
       -e PROTOC_SHA256="${WINDOWS_PROTOC_SHA256}"
       -e PANORAMIC_LOG_DIR="c:\mnt\integration-logs"
       -e BUILD_PROFILE
+      -e BUILD_FEATURES
       ${WINBUILDIMAGE}
       powershell.exe -NoProfile -NonInteractive -File c:\mnt\ci\tooling\windows-integration-tests.ps1
     - If ($lastExitCode -ne "0") { exit "$lastExitCode" }

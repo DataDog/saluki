@@ -23,7 +23,7 @@ build-bundled-agent-adp-image:
   stage: e2e
   image: ${DOCKER_BUILD_IMAGE}
   needs:
-    - build-adp-image
+    - build-adp-image-fips
   retry: 2
   timeout: 10m
   script:
@@ -38,13 +38,13 @@ build-bundled-agent-adp-image:
         DD_AGENT_IMAGE="${AGENT_IMAGE_REPO}@${AGENT_IMAGE_DIGEST}"
         echo "Pinned nightly Agent image to digest: $DD_AGENT_IMAGE"
       fi
-      echo "Building converged image on DD_AGENT_IMAGE=${DD_AGENT_IMAGE}"
+      echo "Building converged FIPS image on DD_AGENT_IMAGE=${DD_AGENT_IMAGE}"
     - docker buildx build
       --platform linux/amd64
       --file ./docker/Dockerfile.datadog-agent
       --tag ${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}
       --build-arg DD_AGENT_IMAGE="${DD_AGENT_IMAGE}"
-      --build-arg ADP_IMAGE=${ADP_FULL_IMAGE_TAG}
+      --build-arg ADP_IMAGE=${ADP_FULL_IMAGE_TAG_FIPS}
       --build-arg BUILD_PROFILE=release
       --label git.repository=${CI_PROJECT_NAME}
       --label git.branch=${CI_COMMIT_REF_NAME}
@@ -123,7 +123,7 @@ test-integration:
     PANORAMIC_ALPINE_IMAGE: registry.ddbuild.io/alpine:latest
     PANORAMIC_LOG_DIR: integration-logs
   script:
-    # Copy the bundled Agent/ADP image we built to the local Docker instance so we can share the integration
+    # Copy the bundled Agent/FIPS ADP image we built to the local Docker instance so we can share the integration
     # test configurations between CI and local test runs.
     - docker pull ${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}
     - docker tag ${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA} saluki-images/datadog-agent:testing-devel
