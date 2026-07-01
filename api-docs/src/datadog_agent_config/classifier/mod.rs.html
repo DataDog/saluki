@@ -154,8 +154,12 @@
 <a href=#154 id=154 data-nosnippet>154</a>    </span><span class="kw">pub </span>pipeline_affinity: PipelineAffinity,
 <a href=#155 id=155 data-nosnippet>155</a>    <span class="doccomment">/// JSON-encoded default value from the Agent schema, if present.
 <a href=#156 id=156 data-nosnippet>156</a>    </span><span class="kw">pub </span>default: <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span><span class="lifetime">'static </span>str&gt;,
-<a href=#157 id=157 data-nosnippet>157</a>}
-<a href=#158 id=158 data-nosnippet>158</a>
-<a href=#159 id=159 data-nosnippet>159</a><span class="kw">mod </span>classifier_data;
-<a href=#160 id=160 data-nosnippet>160</a><span class="kw">use </span>classifier_data::CLASSIFIER_ENTRIES;
+<a href=#157 id=157 data-nosnippet>157</a>    <span class="doccomment">/// Whether this key holds a `format: duration` value. The Agent sends durations as integer
+<a href=#158 id=158 data-nosnippet>158</a>    /// nanoseconds while `default` is a Go duration string, so the default check normalizes both
+<a href=#159 id=159 data-nosnippet>159</a>    /// sides before comparing.
+<a href=#160 id=160 data-nosnippet>160</a>    </span><span class="kw">pub </span>is_duration: bool,
+<a href=#161 id=161 data-nosnippet>161</a>}
+<a href=#162 id=162 data-nosnippet>162</a>
+<a href=#163 id=163 data-nosnippet>163</a><span class="kw">mod </span>classifier_data;
+<a href=#164 id=164 data-nosnippet>164</a><span class="kw">use </span>classifier_data::CLASSIFIER_ENTRIES;
 </code></pre></div></section></main></body></html>
