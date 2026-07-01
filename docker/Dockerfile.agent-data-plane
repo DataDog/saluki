@@ -12,9 +12,9 @@
 
 ARG BUILDCACHE_IMAGE=scratch
 ARG SPDX_LICENSES_IMAGE=scratch
-ARG BUILD_IMAGE=ubuntu:24.04
+ARG BUILD_IMAGE=ubuntu:26.04
 ARG BUILD_BASE=build-clean
-ARG APP_IMAGE=ubuntu:24.04
+ARG APP_IMAGE=ubuntu:26.04
 
 # Buildcache stage: declare the buildcache "source" image so we can refer to it later on.
 FROM ${BUILDCACHE_IMAGE} AS buildcache-src

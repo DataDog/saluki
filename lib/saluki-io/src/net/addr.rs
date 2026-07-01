@@ -322,6 +322,14 @@ impl ProcessIdentity {
     pub const fn is_error(&self) -> bool {
         matches!(self, Self::Error(_))
     }
+
+    /// Returns `true` if process credential detection failed for a per-message reason.
+    pub const fn is_telemetry_error(&self) -> bool {
+        matches!(
+            self,
+            Self::Error(ProcessCredentialsError::InvalidCredentials | ProcessCredentialsError::ZeroPid)
+        )
+    }
 }
 
 /// Connection address.
@@ -365,6 +373,14 @@ impl ConnectionAddress {
     pub const fn has_process_credential_error(&self) -> bool {
         match self {
             Self::ProcessLike(identity) => identity.is_error(),
+            Self::SocketLike(_) => false,
+        }
+    }
+
+    /// Returns `true` if Unix domain socket process credential detection failed for a per-message reason.
+    pub const fn has_process_credential_telemetry_error(&self) -> bool {
+        match self {
+            Self::ProcessLike(identity) => identity.is_telemetry_error(),
             Self::SocketLike(_) => false,
         }
     }
@@ -466,6 +482,32 @@ mod tests {
             address.as_windows_named_pipe_path().as_deref(),
             Some(r"\\.\pipe\datadog-dogstatsd")
         );
+    }
+
+    #[test]
+    fn unsupported_platform_process_identity_is_not_a_telemetry_error() {
+        let peer_addr =
+            ConnectionAddress::ProcessLike(ProcessIdentity::Error(ProcessCredentialsError::UnsupportedPlatform));
+
+        assert!(peer_addr.has_process_credential_error());
+        assert!(!peer_addr.has_process_credential_telemetry_error());
+    }
+
+    #[test]
+    fn invalid_process_credentials_are_telemetry_errors() {
+        let peer_addr =
+            ConnectionAddress::ProcessLike(ProcessIdentity::Error(ProcessCredentialsError::InvalidCredentials));
+
+        assert!(peer_addr.has_process_credential_error());
+        assert!(peer_addr.has_process_credential_telemetry_error());
+    }
+
+    #[test]
+    fn zero_pid_process_credentials_are_telemetry_errors() {
+        let peer_addr = ConnectionAddress::ProcessLike(ProcessIdentity::Error(ProcessCredentialsError::ZeroPid));
+
+        assert!(peer_addr.has_process_credential_error());
+        assert!(peer_addr.has_process_credential_telemetry_error());
     }
 
     #[test]
