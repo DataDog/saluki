@@ -252,14 +252,11 @@ pub enum ActionConfig {
         timeout: HumanDuration,
     },
 
-    /// Send one DogStatsD payload to a Windows named pipe from inside the target container.
-    #[serde(rename = "dogstatsd_named_pipe_send")]
-    DogStatsDNamedPipeSend {
-        /// Named pipe name without the `\\.\pipe\` prefix.
-        pipe_name: String,
-        /// Payload bytes to write as UTF-8.
-        payload: String,
-        /// Timeout for waiting for the pipe connection and write to succeed.
+    /// Run a command inside the target container.
+    ContainerExec {
+        /// Command and arguments to run through Docker exec.
+        command: Vec<String>,
+        /// Timeout for waiting for the command to succeed.
         #[serde(default = "default_action_timeout")]
         timeout: HumanDuration,
     },
@@ -417,9 +414,10 @@ impl ActionConfig {
                     crate::dynamic_vars::resolve_placeholders(s, vars);
                 }
             }
-            ActionConfig::DogStatsDNamedPipeSend { pipe_name, payload, .. } => {
-                crate::dynamic_vars::resolve_placeholders(pipe_name, vars);
-                crate::dynamic_vars::resolve_placeholders(payload, vars);
+            ActionConfig::ContainerExec { command, .. } => {
+                for arg in command {
+                    crate::dynamic_vars::resolve_placeholders(arg, vars);
+                }
             }
         }
     }
@@ -437,9 +435,10 @@ impl ActionConfig {
                     crate::dynamic_vars::find_unresolved(s, &mut out);
                 }
             }
-            ActionConfig::DogStatsDNamedPipeSend { pipe_name, payload, .. } => {
-                crate::dynamic_vars::find_unresolved(pipe_name, &mut out);
-                crate::dynamic_vars::find_unresolved(payload, &mut out);
+            ActionConfig::ContainerExec { command, .. } => {
+                for arg in command {
+                    crate::dynamic_vars::find_unresolved(arg, &mut out);
+                }
             }
         }
         out
@@ -1033,6 +1032,24 @@ mod tests {
         assert_eq!(container, "/etc/config.yaml");
 
         assert!(parse_file_spec("nocolon").is_err());
+    }
+
+    #[test]
+    fn test_container_exec_action_deserializes_command() {
+        let action: ActionConfig = serde_yaml::from_str(
+            r#"
+action: container_exec
+command: ["pwsh", "-File", "C:\\test\\send.ps1"]
+timeout: 12s
+"#,
+        )
+        .unwrap();
+
+        let ActionConfig::ContainerExec { command, timeout } = action else {
+            panic!("expected container_exec action");
+        };
+        assert_eq!(command, vec!["pwsh", "-File", "C:\\test\\send.ps1"]);
+        assert_eq!(timeout.0, Duration::from_secs(12));
     }
 
     #[test]

@@ -3,8 +3,8 @@ use saluki_error::GenericError;
 use crate::assertions::{AssertionContext, AssertionResult};
 use crate::config::ActionConfig;
 
+mod container_exec;
 mod core_agent_config_set;
-mod dogstatsd_named_pipe_send;
 
 const DEFAULT_CORE_AGENT_CONFIG_ENDPOINT_TEMPLATE: &str = "https://localhost:55001/agent/config/{key}";
 
@@ -35,13 +35,8 @@ pub fn create_action(config: &ActionConfig) -> Result<Box<dyn Action>, GenericEr
             endpoint.clone(),
             timeout.0,
         ))),
-        ActionConfig::DogStatsDNamedPipeSend {
-            pipe_name,
-            payload,
-            timeout,
-        } => Ok(Box::new(dogstatsd_named_pipe_send::DogStatsDNamedPipeSendAction::new(
-            pipe_name.clone(),
-            payload.clone(),
+        ActionConfig::ContainerExec { command, timeout } => Ok(Box::new(container_exec::ContainerExecAction::new(
+            command.clone(),
             timeout.0,
         ))),
     }

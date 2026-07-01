@@ -1,7 +1,6 @@
 use std::time::{Duration, Instant};
 
 use airlock::docker;
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use bollard::{
     container::LogOutput,
     exec::{CreateExecOptions, StartExecResults},
@@ -13,43 +12,37 @@ use tokio_util::sync::CancellationToken;
 use super::Action;
 use crate::assertions::{AssertionContext, AssertionResult};
 
-pub(super) struct DogStatsDNamedPipeSendAction {
-    pipe_name: String,
-    payload: String,
+pub(super) struct ContainerExecAction {
+    command: Vec<String>,
     timeout: Duration,
 }
 
-impl DogStatsDNamedPipeSendAction {
-    pub(super) fn new(pipe_name: String, payload: String, timeout: Duration) -> Self {
-        Self {
-            pipe_name,
-            payload,
-            timeout,
-        }
+impl ContainerExecAction {
+    pub(super) fn new(command: Vec<String>, timeout: Duration) -> Self {
+        Self { command, timeout }
     }
 }
 
 #[async_trait::async_trait]
-impl Action for DogStatsDNamedPipeSendAction {
+impl Action for ContainerExecAction {
     fn name(&self) -> &'static str {
-        "dogstatsd_named_pipe_send"
+        "container_exec"
     }
 
     fn description(&self) -> String {
-        format!("Send DogStatsD payload to Windows named pipe '{}'.", self.pipe_name)
+        format!("Run command in target container: {}", self.command.join(" "))
     }
 
     async fn execute(&self, ctx: &AssertionContext) -> AssertionResult {
         let started = Instant::now();
-        let result = if ctx.is_host_process || !ctx.target_is_windows() {
+        let result = if ctx.is_host_process {
             Err(generic_error!(
-                "dogstatsd_named_pipe_send is only supported for Windows container runtimes."
+                "container_exec is only supported for container runtimes."
             ))
         } else {
-            send_payload_in_windows_container(
+            exec_with_timeout(
                 &ctx.container_name,
-                &self.pipe_name,
-                &self.payload,
+                &self.command,
                 self.timeout,
                 &ctx.cancel_token,
                 &ctx.container_exit_token,
@@ -58,10 +51,14 @@ impl Action for DogStatsDNamedPipeSendAction {
         };
 
         match result {
-            Ok(()) => AssertionResult {
+            Ok(output) => AssertionResult {
                 name: self.name().to_string(),
                 passed: true,
-                message: self.description(),
+                message: if output.trim().is_empty() {
+                    self.description()
+                } else {
+                    format!("{} Output: {}", self.description(), output.trim())
+                },
                 duration: started.elapsed(),
             },
             Err(e) => AssertionResult {
@@ -74,11 +71,10 @@ impl Action for DogStatsDNamedPipeSendAction {
     }
 }
 
-async fn send_payload_in_windows_container(
-    container_name: &str, pipe_name: &str, payload: &str, timeout: Duration, cancel_token: &CancellationToken,
+async fn exec_with_timeout(
+    container_name: &str, command: &[String], timeout: Duration, cancel_token: &CancellationToken,
     exit_token: &CancellationToken,
-) -> Result<(), GenericError> {
-    let command = build_windows_named_pipe_send_command(pipe_name, payload, timeout);
+) -> Result<String, GenericError> {
     let deadline = Instant::now() + timeout;
     let mut last_error = None;
 
@@ -89,53 +85,25 @@ async fn send_payload_in_windows_container(
         if Instant::now() > deadline {
             return Err(match last_error {
                 Some(error) => generic_error!(
-                    "Timed out sending DogStatsD payload to named pipe '{}'. Last attempt failed: {}.",
-                    pipe_name,
+                    "Timed out running command in container '{}'. Last attempt failed: {}.",
+                    container_name,
                     error
                 ),
                 None => generic_error!(
-                    "Timed out sending DogStatsD payload to named pipe '{}'. No send attempt completed before the deadline.",
-                    pipe_name
+                    "Timed out running command in container '{}'. No exec attempt completed before the deadline.",
+                    container_name
                 ),
             });
         }
 
-        match exec_collect(
-            container_name,
-            vec![
-                "pwsh".to_string(),
-                "-NoProfile".to_string(),
-                "-NonInteractive".to_string(),
-                "-Command".to_string(),
-                command.clone(),
-            ],
-        )
-        .await
-        {
-            Ok(_) => return Ok(()),
+        match exec_collect(container_name, command.to_vec()).await {
+            Ok(output) => return Ok(output),
             Err(error) => {
                 last_error = Some(error);
                 tokio::time::sleep(Duration::from_millis(500)).await;
             }
         }
     }
-}
-
-fn build_windows_named_pipe_send_command(pipe_name: &str, payload: &str, timeout: Duration) -> String {
-    let timeout_ms = timeout.as_millis().min(u128::from(u32::MAX)) as u32;
-    let payload_base64 = BASE64.encode(payload.as_bytes());
-    format!(
-        "$pipe = [System.IO.Pipes.NamedPipeClientStream]::new('.', '{}', [System.IO.Pipes.PipeDirection]::Out); \
-         $pipe.Connect({}); \
-         $payload = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('{}')); \
-         $bytes = [System.Text.Encoding]::UTF8.GetBytes($payload); \
-         $pipe.Write($bytes, 0, $bytes.Length); \
-         $pipe.Flush(); \
-         $pipe.Dispose();",
-        powershell_single_quote(pipe_name),
-        timeout_ms,
-        payload_base64
-    )
 }
 
 async fn exec_collect(container_name: &str, cmd: Vec<String>) -> Result<String, GenericError> {
@@ -181,27 +149,21 @@ async fn exec_collect(container_name: &str, cmd: Vec<String>) -> Result<String, 
     Ok(output_text)
 }
 
-fn powershell_single_quote(value: &str) -> String {
-    value.replace('`', "``").replace('\'', "''")
-}
-
 #[cfg(test)]
 mod tests {
-    use super::build_windows_named_pipe_send_command;
+    use super::ContainerExecAction;
+    use crate::actions::Action as _;
 
     #[test]
-    fn windows_named_pipe_send_command_uses_dot_server_and_writes_utf8_payload() {
-        let command = build_windows_named_pipe_send_command(
-            "datadog-dogstatsd",
-            "integration.named_pipe.invalid\n",
+    fn description_includes_command() {
+        let action = ContainerExecAction::new(
+            vec!["pwsh".to_string(), "-File".to_string(), "/send.ps1".to_string()],
             std::time::Duration::from_secs(5),
         );
 
-        assert!(command.contains("NamedPipeClientStream"));
-        assert!(command.contains("'.'"));
-        assert!(command.contains("'datadog-dogstatsd'"));
-        assert!(command.contains("FromBase64String('aW50ZWdyYXRpb24ubmFtZWRfcGlwZS5pbnZhbGlkCg==')"));
-        assert!(command.contains("[System.Text.Encoding]::UTF8.GetBytes"));
-        assert!(command.contains("$pipe.Connect(5000)"));
+        assert_eq!(
+            action.description(),
+            "Run command in target container: pwsh -File /send.ps1"
+        );
     }
 }

@@ -14,13 +14,21 @@ env:
   DD_DOGSTATSD_PIPE_NAME: "datadog-dogstatsd-integration"
   DD_DOGSTATSD_EOL_REQUIRED: "named_pipe"
 
+container:
+  files:
+    - "send_named_pipe.ps1:/send_named_pipe.ps1"
+
 procedure:
   - assertion: log_contains
     pattern: 'listen_addr:"npipe://datadog-dogstatsd-integration"'
     timeout: 30s
-  - action: dogstatsd_named_pipe_send
-    pipe_name: "datadog-dogstatsd-integration"
-    payload: "integration.named_pipe.invalid\n"
+  - action: container_exec
+    command:
+      - "pwsh"
+      - "-NoProfile"
+      - "-NonInteractive"
+      - "-File"
+      - "/send_named_pipe.ps1"
     timeout: 30s
   - assertion: log_contains
     pattern: "integration.named_pipe.invalid"
