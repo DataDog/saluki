@@ -1,5 +1,6 @@
 use std::collections::HashMap;
-use std::{collections::hash_map::Entry, time::Duration};
+use std::sync::OnceLock;
+use std::{collections::hash_map::Entry, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -13,11 +14,18 @@ use datadog_protos::agent::{
     ConfigSnapshot,
 };
 use futures::StreamExt;
+use process_memory::Querier as MemoryQuerier;
 use prost_types::value::Kind;
+use saluki_common::sync::shutdown::ShutdownHandle;
 use saluki_common::task::spawn_traced_named;
 use saluki_config::{dynamic::ConfigUpdate, upsert, GenericConfiguration};
-use saluki_core::observability::metrics::{
-    get_shared_metrics_state, AggregatedMetricsProcessor, Reflector, TelemetryProcessor,
+use saluki_core::{
+    diagnostic::DiagnosticHandle,
+    observability::metrics::{get_shared_metrics_state, AggregatedMetricsProcessor, Reflector, TelemetryProcessor},
+    runtime::{
+        state::{DataspaceRegistry, IdentifierFilter},
+        InitializationError, Supervisable, SupervisorFuture,
+    },
 };
 use saluki_error::{generic_error, GenericError};
 use saluki_io::net::GrpcTargetAddress;
@@ -58,6 +66,7 @@ pub struct RemoteAgentBootstrap {
     client: RemoteAgentClient,
     session_id: SessionIdHandle,
     internal_metrics: Reflector<AggregatedMetricsProcessor>,
+    dataspace: Arc<OnceLock<DataspaceRegistry>>,
 }
 
 impl RemoteAgentBootstrap {
@@ -108,6 +117,7 @@ impl RemoteAgentBootstrap {
             client,
             session_id,
             internal_metrics: get_shared_metrics_state().await,
+            dataspace: Arc::new(OnceLock::new()),
         })
     }
 
@@ -117,6 +127,21 @@ impl RemoteAgentBootstrap {
             internal_metrics: self.internal_metrics.clone(),
             processor: Mutex::new(TelemetryProcessor::new().with_remapper_rules(get_datadog_agent_remappings())),
             session_id: self.session_id.clone(),
+            dataspace: Arc::clone(&self.dataspace),
+        }
+    }
+
+    /// Creates a worker that captures the dataspace from the supervisor context and makes it
+    /// available to the diagnostic artifact collection service.
+    ///
+    /// This worker must be added to the control plane supervisor. When it initializes, it runs
+    /// inside the supervisor process where the dataspace task-local is set, and fills the shared
+    /// [`OnceLock`] so that `get_flare_files` can collect diagnostic artifacts at request time.
+    /// Without this, the gRPC handler tasks spawned by tonic would not have access to the
+    /// dataspace since tonic's `tokio::spawn` does not propagate task-locals.
+    pub fn create_dataspace_anchor(&self) -> DataspaceAnchorWorker {
+        DataspaceAnchorWorker {
+            dataspace: Arc::clone(&self.dataspace),
         }
     }
 
@@ -356,6 +381,7 @@ pub struct RemoteAgentImpl {
     internal_metrics: Reflector<AggregatedMetricsProcessor>,
     processor: Mutex<TelemetryProcessor>,
     session_id: SessionIdHandle,
+    dataspace: Arc<OnceLock<DataspaceRegistry>>,
 }
 
 impl RemoteAgentImpl {
@@ -471,6 +497,76 @@ impl TelemetryProvider for RemoteAgentImpl {
     }
 }
 
+/// Timeout for the tokio task dump step within [`FlareProvider::get_flare_files`].
+///
+/// `Handle::dump()` may never resolve if a runtime worker is blocked for more than 250 ms. We use
+/// a conservative 5-second budget so that a hung runtime still allows the other diagnostic artifacts
+/// to be collected and returned.
+#[cfg(target_os = "linux")]
+const TASK_DUMP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Timeout for collecting all component-owned diagnostic artifacts.
+///
+/// Each `collect()` closure is run on a blocking thread via `spawn_blocking`. If the overall
+/// budget is exhausted, collection stops and whatever artifacts were gathered are returned.
+/// This ensures that a slow or deadlocked component cannot stall the entire response.
+const DIAGNOSTIC_COLLECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(4);
+
+/// Maximum size in bytes for a single diagnostic artifact.
+///
+/// Artifacts that exceed this limit are truncated and a truncation marker is appended so that
+/// readers know the content is incomplete. High-cardinality hosts can produce very large workload
+/// tag dumps; this cap keeps the overall archive size predictable.
+const DIAGNOSTIC_ARTIFACT_MAX_BYTES: usize = 5 * 1024 * 1024; // 5 MiB
+
+/// Truncation marker appended to diagnostic artifacts that exceed [`DIAGNOSTIC_ARTIFACT_MAX_BYTES`] in size.
+const DIAGNOSTIC_TRUNCATION_MARKER: &[u8] = b"\n\n[... truncated: artifact exceeded the 5 MiB per-file limit ...]\n";
+
+/// Caps `bytes` to [`DIAGNOSTIC_ARTIFACT_MAX_BYTES`], appending [`DIAGNOSTIC_TRUNCATION_MARKER`] if truncated.
+fn cap_artifact(mut bytes: Vec<u8>) -> Vec<u8> {
+    if bytes.len() > DIAGNOSTIC_ARTIFACT_MAX_BYTES {
+        bytes.truncate(DIAGNOSTIC_ARTIFACT_MAX_BYTES);
+        bytes.extend_from_slice(DIAGNOSTIC_TRUNCATION_MARKER);
+    }
+    bytes
+}
+
+/// Returns the number of open file descriptors for the current process.
+///
+/// Reads from `/proc/self/fd` on Linux. Returns `"unavailable"` on other platforms.
+#[cfg(target_os = "linux")]
+fn fd_count() -> String {
+    std::fs::read_dir("/proc/self/fd")
+        .map(|entries| entries.count().to_string())
+        .unwrap_or_else(|_| "unavailable".to_string())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn fd_count() -> String {
+    "unavailable".to_string()
+}
+
+/// Returns the number of threads in the current process.
+///
+/// Reads the `Threads:` field from `/proc/self/status` on Linux. Returns `"unavailable"` on other
+/// platforms.
+#[cfg(target_os = "linux")]
+fn thread_count() -> String {
+    std::fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|s| {
+            s.lines()
+                .find(|l| l.starts_with("Threads:"))
+                .and_then(|l| l.split_whitespace().nth(1).map(str::to_string))
+        })
+        .unwrap_or_else(|| "unavailable".to_string())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn thread_count() -> String {
+    "unavailable".to_string()
+}
+
 #[async_trait]
 impl FlareProvider for RemoteAgentImpl {
     async fn get_flare_files(
@@ -478,12 +574,122 @@ impl FlareProvider for RemoteAgentImpl {
     ) -> Result<tonic::Response<GetFlareFilesResponse>, Status> {
         return self
             .session_id_middleware(async || {
-                let response = GetFlareFilesResponse {
-                    files: HashMap::default(),
-                };
-                Ok(tonic::Response::new(response))
+                let mut files: HashMap<String, Vec<u8>> = HashMap::new();
+
+                // Grab and collect all asserted diagnostic handles 
+                if let Some(dataspace) = self.dataspace.get() {
+                    let handles = dataspace.current_values::<DiagnosticHandle>(IdentifierFilter::all());
+                    let total_handles = handles.len();
+                    let deadline = tokio::time::Instant::now() + DIAGNOSTIC_COLLECT_TIMEOUT;
+
+                    for handle in handles {
+                        if tokio::time::Instant::now() >= deadline {
+                            break;
+                        }
+
+                        let artifact_name = handle.artifact_name().to_string();
+                        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+
+                        let bytes = match tokio::time::timeout(
+                            remaining,
+                            tokio::task::spawn_blocking(move || handle.collect()),
+                        )
+                        .await
+                        {
+                            Ok(Ok(bytes)) => bytes,
+                            Ok(Err(e)) => format!("collection panicked for '{artifact_name}': {e}").into_bytes(),
+                            Err(_) => format!("collection timed out for '{artifact_name}'").into_bytes(),
+                        };
+
+                        files.insert(artifact_name, cap_artifact(bytes));
+                    }
+
+                    if files.len() < total_handles {
+                        warn!("Diagnostic artifact collection timed out; collected {}/{total_handles} artifacts.", files.len());
+                    }
+                }
+
+                // Process-level artifacts.
+                //
+                // These don't belong to any individual component — they describe the ADP process
+                // itself. They stay hardwired here since there is no natural component owner to
+                // assert a handle for them.
+
+                // Process info: pid, uptime, RSS, args, fd count, thread count.
+                let pid = std::process::id();
+                let uptime = Utc::now().signed_duration_since(self.started);
+                let args: Vec<String> = std::env::args().collect();
+                let rss_display = MemoryQuerier::default()
+                    .resident_set_size()
+                    .map(|b| b.to_string())
+                    .unwrap_or_else(|| "unavailable".to_string());
+                let process_info = format!(
+                    "pid: {pid}\nuptime_seconds: {uptime}\nrss_bytes: {rss_display}\nargs: {args:?}\nfd_count: {fd_count}\nthread_count: {thread_count}\n",
+                    uptime = uptime.num_seconds(),
+                    fd_count = fd_count(),
+                    thread_count = thread_count(),
+                );
+                files.insert("runtime_debug_info.log".to_string(), cap_artifact(process_info.into_bytes()));
+
+                // Tokio task dump (Linux-only).
+                //
+                // Wrapped in an explicit timeout because `Handle::dump()` 
+                // may never resolve if a runtime worker is blocked for
+                // more than 250ms
+                #[cfg(target_os = "linux")]
+                {
+                    let task_dump = match tokio::time::timeout(
+                        TASK_DUMP_TIMEOUT,
+                        tokio::runtime::Handle::current().dump(),
+                    )
+                    .await
+                    {
+                        Ok(dump) => {
+                            let mut output = String::new();
+                            for (i, task) in dump.tasks().iter().enumerate() {
+                                output.push_str(&format!("task {i}:\n{}\n", task.trace()));
+                            }
+                            output
+                        }
+                        Err(_) => format!(
+                            "task dump timed out after {}ms — a runtime worker may be blocked",
+                            TASK_DUMP_TIMEOUT.as_millis()
+                        ),
+                    };
+                    files.insert("runtime-dump.txt".to_string(), cap_artifact(task_dump.into_bytes()));
+                }
+
+                Ok(tonic::Response::new(GetFlareFilesResponse { files }))
             })
             .await;
+    }
+}
+
+/// A worker that captures the dataspace from the supervisor context and stores it in a shared
+/// [`OnceLock`] for use by the diagnostic artifact collection service.
+///
+/// The gRPC handler runs in tasks spawned by tonic, which do not inherit tokio task-locals.
+/// This worker bridges that gap by capturing the dataspace during its own `initialize()` call,
+/// which runs inside the supervisor process where the dataspace is available.
+pub struct DataspaceAnchorWorker {
+    dataspace: Arc<OnceLock<DataspaceRegistry>>,
+}
+
+#[async_trait]
+impl Supervisable for DataspaceAnchorWorker {
+    fn name(&self) -> &str {
+        "flare-dataspace-anchor"
+    }
+
+    async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
+        if let Some(ds) = DataspaceRegistry::try_current() {
+            let _ = self.dataspace.set(ds);
+        }
+
+        Ok(Box::pin(async move {
+            process_shutdown.await;
+            Ok(())
+        }))
     }
 }
 
@@ -536,5 +742,42 @@ impl StatusSectionWriter<'_> {
             .fields
             .insert(name.as_ref().to_string(), value.as_ref().to_string());
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cap_artifact_leaves_small_payloads_unchanged() {
+        let input = b"hello world".to_vec();
+        let output = cap_artifact(input.clone());
+        assert_eq!(output, input);
+    }
+
+    #[test]
+    fn cap_artifact_truncates_at_limit_and_appends_marker() {
+        let input = vec![b'x'; DIAGNOSTIC_ARTIFACT_MAX_BYTES + 1024];
+        let output = cap_artifact(input);
+
+        // Total length is capped at the limit plus the marker.
+        assert_eq!(
+            output.len(),
+            DIAGNOSTIC_ARTIFACT_MAX_BYTES + DIAGNOSTIC_TRUNCATION_MARKER.len()
+        );
+
+        // The first DIAGNOSTIC_ARTIFACT_MAX_BYTES bytes are all 'x'.
+        assert!(output[..DIAGNOSTIC_ARTIFACT_MAX_BYTES].iter().all(|&b| b == b'x'));
+
+        // The marker is appended at the end.
+        assert!(output.ends_with(DIAGNOSTIC_TRUNCATION_MARKER));
+    }
+
+    #[test]
+    fn cap_artifact_at_exact_limit_is_not_truncated() {
+        let input = vec![b'y'; DIAGNOSTIC_ARTIFACT_MAX_BYTES];
+        let output = cap_artifact(input.clone());
+        assert_eq!(output, input);
     }
 }

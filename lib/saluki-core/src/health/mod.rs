@@ -397,6 +397,33 @@ impl HealthRegistry {
             .all(|component| component.is_ready())
     }
 
+    /// Returns a JSON snapshot of the current readiness and liveness state of all registered components.
+    ///
+    /// Each component appears as a key in the returned JSON object, with its `live` and `ready` boolean fields
+    /// reflecting the state at the time of the call. This is the same data exposed by the `/health/ready` and
+    /// `/health/live` HTTP endpoints, but collected in a single pass for use outside of the HTTP handler path (for
+    /// example, when building a diagnostic artifact).
+    pub fn snapshot_json(&self) -> String {
+        #[derive(serde::Serialize)]
+        struct ComponentSnapshot {
+            live: bool,
+            ready: bool,
+        }
+
+        let inner = self.inner.lock().unwrap();
+        let mut state: std::collections::HashMap<String, ComponentSnapshot> = std::collections::HashMap::new();
+        for component in &inner.component_state {
+            state.insert(
+                component.name.to_string(),
+                ComponentSnapshot {
+                    live: component.is_live(),
+                    ready: component.is_ready(),
+                },
+            );
+        }
+        serde_json::to_string_pretty(&state).unwrap_or_else(|e| format!("{{\"error\": \"{e}\"}}"))
+    }
+
     /// Creates a [`HealthRegistryWorker`] that can be added to a supervisor to run the health registry.
     ///
     /// The worker handles the lifecycle of the health registry runner, including registering the health API routes

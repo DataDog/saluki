@@ -12,6 +12,7 @@ pub mod reexport {
 pub mod components;
 pub mod constants;
 pub mod data_model;
+pub mod diagnostic;
 pub mod health;
 pub mod observability;
 pub mod pooling;
