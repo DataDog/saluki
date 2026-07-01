@@ -22,7 +22,7 @@ procedure:
   - assertion: log_contains
     pattern: 'listen_addr:"npipe://datadog-dogstatsd-integration"'
     timeout: 30s
-  - action: container_exec
+  - action: target_exec
     command:
       - "pwsh"
       - "-NoProfile"

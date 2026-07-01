@@ -1,4 +1,7 @@
-use std::time::{Duration, Instant};
+use std::{
+    process::Stdio,
+    time::{Duration, Instant},
+};
 
 use airlock::docker;
 use bollard::{
@@ -7,40 +10,45 @@ use bollard::{
 };
 use futures::TryStreamExt as _;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
+use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
 
 use super::Action;
 use crate::assertions::{AssertionContext, AssertionResult};
 
-pub(super) struct ContainerExecAction {
+pub(super) struct TargetExecAction {
     command: Vec<String>,
     timeout: Duration,
 }
 
-impl ContainerExecAction {
+impl TargetExecAction {
     pub(super) fn new(command: Vec<String>, timeout: Duration) -> Self {
         Self { command, timeout }
     }
 }
 
 #[async_trait::async_trait]
-impl Action for ContainerExecAction {
+impl Action for TargetExecAction {
     fn name(&self) -> &'static str {
-        "container_exec"
+        "target_exec"
     }
 
     fn description(&self) -> String {
-        format!("Run command in target container: {}", self.command.join(" "))
+        format!("Run command in target environment: {}", self.command.join(" "))
     }
 
     async fn execute(&self, ctx: &AssertionContext) -> AssertionResult {
         let started = Instant::now();
         let result = if ctx.is_host_process {
-            Err(generic_error!(
-                "container_exec is only supported for container runtimes."
-            ))
+            exec_on_host_with_timeout(
+                &self.command,
+                self.timeout,
+                &ctx.cancel_token,
+                &ctx.container_exit_token,
+            )
+            .await
         } else {
-            exec_with_timeout(
+            exec_in_container_with_timeout(
                 &ctx.container_name,
                 &self.command,
                 self.timeout,
@@ -71,7 +79,7 @@ impl Action for ContainerExecAction {
     }
 }
 
-async fn exec_with_timeout(
+async fn exec_in_container_with_timeout(
     container_name: &str, command: &[String], timeout: Duration, cancel_token: &CancellationToken,
     exit_token: &CancellationToken,
 ) -> Result<String, GenericError> {
@@ -96,7 +104,7 @@ async fn exec_with_timeout(
             });
         }
 
-        match exec_collect(container_name, command.to_vec()).await {
+        match exec_in_container_collect(container_name, command.to_vec()).await {
             Ok(output) => return Ok(output),
             Err(error) => {
                 last_error = Some(error);
@@ -106,7 +114,28 @@ async fn exec_with_timeout(
     }
 }
 
-async fn exec_collect(container_name: &str, cmd: Vec<String>) -> Result<String, GenericError> {
+async fn exec_on_host_with_timeout(
+    command: &[String], timeout: Duration, cancel_token: &CancellationToken, exit_token: &CancellationToken,
+) -> Result<String, GenericError> {
+    if command.is_empty() {
+        return Err(generic_error!("target_exec command must not be empty."));
+    }
+
+    tokio::select! {
+        _ = cancel_token.cancelled() => Err(generic_error!("Action cancelled.")),
+        _ = exit_token.cancelled() => Err(generic_error!("Action cancelled because the target exited.")),
+        result = tokio::time::timeout(timeout, exec_on_host_collect(command.to_vec())) => match result {
+            Ok(result) => result,
+            Err(_) => Err(generic_error!("Timed out running host command '{}'.", command.join(" "))),
+        }
+    }
+}
+
+async fn exec_in_container_collect(container_name: &str, cmd: Vec<String>) -> Result<String, GenericError> {
+    if cmd.is_empty() {
+        return Err(generic_error!("target_exec command must not be empty."));
+    }
+
     let docker = docker::connect().error_context("Failed to connect to Docker.")?;
     let exec = docker
         .create_exec(
@@ -149,21 +178,57 @@ async fn exec_collect(container_name: &str, cmd: Vec<String>) -> Result<String, 
     Ok(output_text)
 }
 
+async fn exec_on_host_collect(cmd: Vec<String>) -> Result<String, GenericError> {
+    let (program, args) = cmd
+        .split_first()
+        .ok_or_else(|| generic_error!("target_exec command must not be empty."))?;
+
+    let output = Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .output()
+        .await
+        .with_error_context(|| format!("Failed to run host command '{}'.", cmd.join(" ")))?;
+
+    let mut output_text = String::new();
+    output_text.push_str(&String::from_utf8_lossy(&output.stdout));
+    output_text.push_str(&String::from_utf8_lossy(&output.stderr));
+
+    if !output.status.success() {
+        return Err(generic_error!("host command exited {}: {}", output.status, output_text));
+    }
+
+    Ok(output_text)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::ContainerExecAction;
+    use super::{exec_on_host_collect, TargetExecAction};
     use crate::actions::Action as _;
 
     #[test]
     fn description_includes_command() {
-        let action = ContainerExecAction::new(
+        let action = TargetExecAction::new(
             vec!["pwsh".to_string(), "-File".to_string(), "/send.ps1".to_string()],
             std::time::Duration::from_secs(5),
         );
 
         assert_eq!(
             action.description(),
-            "Run command in target container: pwsh -File /send.ps1"
+            "Run command in target environment: pwsh -File /send.ps1"
         );
+    }
+
+    #[tokio::test]
+    async fn host_exec_collects_stdout() {
+        let output = exec_on_host_collect(vec![
+            "sh".to_string(),
+            "-c".to_string(),
+            "printf target-exec".to_string(),
+        ])
+        .await
+        .expect("host command should succeed");
+
+        assert_eq!(output, "target-exec");
     }
 }

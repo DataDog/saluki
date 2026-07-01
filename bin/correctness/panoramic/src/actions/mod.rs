@@ -3,8 +3,8 @@ use saluki_error::GenericError;
 use crate::assertions::{AssertionContext, AssertionResult};
 use crate::config::ActionConfig;
 
-mod container_exec;
 mod core_agent_config_set;
+mod target_exec;
 
 const DEFAULT_CORE_AGENT_CONFIG_ENDPOINT_TEMPLATE: &str = "https://localhost:55001/agent/config/{key}";
 
@@ -35,10 +35,9 @@ pub fn create_action(config: &ActionConfig) -> Result<Box<dyn Action>, GenericEr
             endpoint.clone(),
             timeout.0,
         ))),
-        ActionConfig::ContainerExec { command, timeout } => Ok(Box::new(container_exec::ContainerExecAction::new(
-            command.clone(),
-            timeout.0,
-        ))),
+        ActionConfig::TargetExec { command, timeout } => {
+            Ok(Box::new(target_exec::TargetExecAction::new(command.clone(), timeout.0)))
+        }
     }
 }
 

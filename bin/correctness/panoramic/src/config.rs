@@ -253,8 +253,8 @@ pub enum ActionConfig {
     },
 
     /// Run a command inside the target container.
-    ContainerExec {
-        /// Command and arguments to run through Docker exec.
+    TargetExec {
+        /// Command and arguments to run in the target environment.
         command: Vec<String>,
         /// Timeout for waiting for the command to succeed.
         #[serde(default = "default_action_timeout")]
@@ -414,7 +414,7 @@ impl ActionConfig {
                     crate::dynamic_vars::resolve_placeholders(s, vars);
                 }
             }
-            ActionConfig::ContainerExec { command, .. } => {
+            ActionConfig::TargetExec { command, .. } => {
                 for arg in command {
                     crate::dynamic_vars::resolve_placeholders(arg, vars);
                 }
@@ -435,7 +435,7 @@ impl ActionConfig {
                     crate::dynamic_vars::find_unresolved(s, &mut out);
                 }
             }
-            ActionConfig::ContainerExec { command, .. } => {
+            ActionConfig::TargetExec { command, .. } => {
                 for arg in command {
                     crate::dynamic_vars::find_unresolved(arg, &mut out);
                 }
@@ -1035,18 +1035,18 @@ mod tests {
     }
 
     #[test]
-    fn test_container_exec_action_deserializes_command() {
+    fn test_target_exec_action_deserializes_command() {
         let action: ActionConfig = serde_yaml::from_str(
             r#"
-action: container_exec
+action: target_exec
 command: ["pwsh", "-File", "C:\\test\\send.ps1"]
 timeout: 12s
 "#,
         )
         .unwrap();
 
-        let ActionConfig::ContainerExec { command, timeout } = action else {
-            panic!("expected container_exec action");
+        let ActionConfig::TargetExec { command, timeout } = action else {
+            panic!("expected target_exec action");
         };
         assert_eq!(command, vec!["pwsh", "-File", "C:\\test\\send.ps1"]);
         assert_eq!(timeout.0, Duration::from_secs(12));
