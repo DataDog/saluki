@@ -280,6 +280,30 @@ mod tests {
     }
 
     #[test]
+    fn test_match_context_preserves_dogstatsd_origin() {
+        let rules = get_datadog_agent_remappings();
+
+        let context = Context::from_static_parts(
+            "adp.component_events_received_total",
+            &[
+                "component_id:dsd_in",
+                "message_type:metrics",
+                "origin:container_id://test-container",
+            ],
+        );
+
+        let matched = rules.iter().find_map(|r| r.try_match_no_context(&context));
+        let remapped = matched.expect("should have matched");
+        assert_eq!(remapped.name, "dogstatsd.processed");
+        assert!(remapped.tags.iter().any(|t| t.as_ref() == "message_type:metrics"));
+        assert!(remapped
+            .tags
+            .iter()
+            .any(|t| t.as_ref() == "origin:container_id://test-container"));
+        assert!(remapped.tags.iter().any(|t| t.as_ref() == "state:ok"));
+    }
+
+    #[test]
     fn test_rar_telemetry_deduplicates_remapped_metrics() {
         // Two source metrics with different source tags that remap to the same (name, tags) identity
         // should be deduplicated (counters summed) in the RAR output.

@@ -192,17 +192,6 @@ crate::declare_annotations! {
         test_json: None,
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
-    /// `telemetry.dogstatsd_origin`-Per-origin processed-metrics telemetry
-    TELEMETRY_DOGSTATSD_ORIGIN = SalukiAnnotation {
-        schema: &schema::TELEMETRY_DOGSTATSD_ORIGIN,
-        support_level: SupportLevel::Incompatible(Severity::Low),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
-    };
     /// `config_id`-Fleet Automation config ID tag
     CONFIG_ID = SalukiAnnotation {
         schema: &schema::CONFIG_ID,
