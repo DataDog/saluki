@@ -64,6 +64,8 @@ pub enum ValueType {
     Float,
     /// A list of strings (YAML sequence or space-separated env var string).
     StringList,
+    /// A duration, expressed as a Go duration string (for example, `10s`) or integer nanoseconds.
+    Duration,
 }
 
 /// Which schema source of truth defined the `SchemaEntry`

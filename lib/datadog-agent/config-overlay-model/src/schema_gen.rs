@@ -21,6 +21,11 @@ pub enum FieldType {
     Integer,
     Float,
     StringList,
+    /// A `format: duration` field. Modeled as its own effective type because the Datadog Agent
+    /// transmits durations as integer nanoseconds, while the schema default is a Go duration string
+    /// (for example, `10s`) — so downstream codegen, smoke tests, and classification all need to
+    /// treat it differently from a plain number.
+    Duration,
     Unknown,
 }
 
@@ -33,10 +38,6 @@ pub struct FieldInfo {
     pub env_vars: Vec<String>,
     /// Default value serialised as a JSON literal, or `None` if the schema omits one.
     pub default: Option<String>,
-    /// Whether the schema marks this field as `format: duration`. Duration values are transmitted
-    /// by the Datadog Agent as integer nanoseconds, while the schema default is a Go duration
-    /// string (for example, `10s`), so equality checks must normalize both sides.
-    pub is_duration: bool,
 }
 
 /// Load and flatten the schema at `schema_path` into a `yaml_path → FieldInfo` map.
@@ -112,7 +113,6 @@ fn parse_setting(path_parts: &[&str], value: &Value) -> (String, FieldInfo) {
 
     let value_type = parse_value_type(value);
     let default = value.get("default").and_then(yaml_value_to_json_str);
-    let is_duration = value.get("format").and_then(|v| v.as_str()) == Some("duration");
 
     (
         yaml_path,
@@ -120,13 +120,29 @@ fn parse_setting(path_parts: &[&str], value: &Value) -> (String, FieldInfo) {
             value_type,
             env_vars,
             default,
-            is_duration,
         },
     )
 }
 
 fn parse_value_type(value: &Value) -> FieldType {
-    match value.get("type").and_then(|v| v.as_str()) {
+    let ty = value.get("type").and_then(|v| v.as_str());
+    let format = value.get("format").and_then(|v| v.as_str());
+
+    // `format: duration` folds into a single effective `Duration` type regardless of the declared
+    // base type. The vendored Agent schema currently declares these as `type: number` (nanoseconds
+    // on the wire) but has also used `type: string` (Go duration text); both are durations to us.
+    if format == Some("duration") {
+        return match ty {
+            Some("string") | Some("number") | Some("integer") => FieldType::Duration,
+            other => panic!(
+                "config schema field has `format: duration` with unsupported base type {:?}; \
+                 expected string, number, or integer",
+                other
+            ),
+        };
+    }
+
+    match ty {
         Some("string") => FieldType::String,
         Some("boolean") => FieldType::Bool,
         Some("integer") => FieldType::Integer,
@@ -169,6 +185,7 @@ pub fn field_type_as_rust(ft: &FieldType) -> &'static str {
         FieldType::Integer => "ValueType::Integer",
         FieldType::Float => "ValueType::Float",
         FieldType::StringList => "ValueType::StringList",
+        FieldType::Duration => "ValueType::Duration",
     }
 }
 

@@ -19,6 +19,7 @@ fn test_json_value(value_type: ValueType) -> serde_json::Value {
         ValueType::StringList => json!(TEST_STRING_LIST_VALUE),
         ValueType::Integer => json!(42i64),
         ValueType::Float => json!(1.5f64),
+        ValueType::Duration => json!("42s"),
     }
 }
 
@@ -56,6 +57,7 @@ fn json_value_to_env_string(value: &serde_json::Value, value_type: ValueType) ->
             .as_array()
             .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(" "))
             .unwrap_or_else(|| TEST_STRING_LIST_VALUE.join(" ")),
+        ValueType::Duration => value.as_str().unwrap_or("42s").to_string(),
     }
 }
 
