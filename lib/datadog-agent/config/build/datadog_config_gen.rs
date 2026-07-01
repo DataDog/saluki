@@ -140,11 +140,34 @@ fn prune(properties: &Map<String, Value>, prefix: &str, supported: &HashSet<Stri
                     leaf.insert((*keyword).to_string(), value.clone());
                 }
             }
+            fix_invalid_default(&path, &mut leaf);
             out.insert(name.clone(), Value::Object(leaf));
         }
     }
 
     out
+}
+
+/// Repairs individual leaves whose vendored schema `default` is invalid for its declared `type`.
+///
+/// The Datadog schema is occasionally self-inconsistent: it declares a key `type: number` but writes
+/// the default as a Go-duration string (for example `0s`). YAML parses `0s` as a string, and typify
+/// refuses to coerce a string into a number, so codegen panics. Downstream we treat these keys as
+/// numbers (the model stores a `Duration` built from a seconds value), so we rewrite the bad default
+/// to its numeric equivalent.
+///
+/// Each rule matches on the dotted key, its declared `type`, and the exact broken default literal,
+/// and only fires when all three agree. Keep this list tiny and explicit: if upstream fixes or
+/// changes one of these keys, the rule stops matching and codegen fails loudly rather than silently
+/// mis-defaulting.
+fn fix_invalid_default(path: &str, leaf: &mut Map<String, Value>) {
+    let ty = leaf.get("type").and_then(Value::as_str);
+    let default = leaf.get("default").and_then(Value::as_str);
+    // `expected_tags_duration` is a duration; `0s` is zero, i.e. 0 seconds. Add an arm here (and
+    // switch to a `match`) if another key needs the same treatment.
+    if let ("expected_tags_duration", Some("number"), Some("0s")) = (path, ty, default) {
+        leaf.insert("default".into(), Value::from(0.0));
+    }
 }
 
 /// Run typify over the pruned schema and pretty-print the generated module body.
