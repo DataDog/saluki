@@ -877,9 +877,10 @@ impl DogStatsDConfiguration {
         }
 
         if let Some(pipe_name) = &self.pipe_name {
-            addresses.push(ListenAddress::named_pipe(
+            addresses.push(ListenAddress::named_pipe_with_input_buffer_size(
                 pipe_name,
                 &self.windows_pipe_security_descriptor,
+                self.buffer_size as u32,
             ));
         }
 
@@ -2076,7 +2077,11 @@ mod tests {
     }
 
     fn named_pipe_listen_address() -> ListenAddress {
-        ListenAddress::named_pipe("datadog-dogstatsd", default_windows_pipe_security_descriptor())
+        ListenAddress::named_pipe_with_input_buffer_size(
+            "datadog-dogstatsd",
+            default_windows_pipe_security_descriptor(),
+            default_buffer_size() as u32,
+        )
     }
 
     #[test]
@@ -2091,6 +2096,24 @@ mod tests {
         let addresses = config.build_addresses(None);
 
         assert_eq!(addresses, vec![named_pipe_listen_address()]);
+    }
+
+    #[test]
+    fn build_addresses_uses_dogstatsd_buffer_size_for_named_pipe_input_buffer() {
+        let config = deser_config(
+            r#"{
+                "dogstatsd_port": 0,
+                "dogstatsd_pipe_name": "datadog-dogstatsd",
+                "dogstatsd_buffer_size": 16384
+            }"#,
+        );
+
+        let addresses = config.build_addresses(None);
+
+        let [ListenAddress::NamedPipe { input_buffer_size, .. }] = addresses.as_slice() else {
+            panic!("expected only a named pipe listen address, got {addresses:?}");
+        };
+        assert_eq!(*input_buffer_size, Some(16_384));
     }
 
     #[test]

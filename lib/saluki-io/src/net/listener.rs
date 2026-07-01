@@ -104,6 +104,7 @@ enum ListenerInner {
         server: NamedPipeServer,
         path: String,
         security_descriptor: String,
+        input_buffer_size: Option<u32>,
     },
 }
 
@@ -226,15 +227,17 @@ impl Listener {
             ListenAddress::NamedPipe {
                 name: _,
                 security_descriptor,
+                input_buffer_size,
             } => {
                 let path = listen_address
                     .as_windows_named_pipe_path()
                     .expect("named pipe address should produce a named pipe path");
-                create_named_pipe_server(&path, security_descriptor, true)
+                create_named_pipe_server(&path, security_descriptor, *input_buffer_size, true)
                     .map(|server| ListenerInner::NamedPipe {
                         server,
                         path,
                         security_descriptor: security_descriptor.clone(),
+                        input_buffer_size: *input_buffer_size,
                     })
                     .context(FailedToBind {
                         address: listen_address.clone(),
@@ -347,15 +350,18 @@ impl Listener {
                 server,
                 path,
                 security_descriptor,
+                input_buffer_size,
             } => {
                 server.connect().await.context(FailedToAccept {
                     address: self.listen_address.clone(),
                 })?;
                 let connected = mem::replace(
                     server,
-                    create_named_pipe_server(path, security_descriptor, false).context(FailedToBind {
-                        address: self.listen_address.clone(),
-                    })?,
+                    create_named_pipe_server(path, security_descriptor, *input_buffer_size, false).context(
+                        FailedToBind {
+                            address: self.listen_address.clone(),
+                        },
+                    )?,
                 );
                 Ok(connected.into())
             }
@@ -365,10 +371,13 @@ impl Listener {
 
 #[cfg(windows)]
 fn create_named_pipe_server(
-    path: &str, security_descriptor: &str, first_instance: bool,
+    path: &str, security_descriptor: &str, input_buffer_size: Option<u32>, first_instance: bool,
 ) -> io::Result<NamedPipeServer> {
     let mut options = ServerOptions::new();
-    options.first_pipe_instance(first_instance);
+    options.first_pipe_instance(first_instance).out_buffer_size(0);
+    if let Some(input_buffer_size) = input_buffer_size {
+        options.in_buffer_size(input_buffer_size);
+    }
 
     let mut security_attributes = NamedPipeSecurityAttributes::from_sddl(security_descriptor)?;
     unsafe { options.create_with_security_attributes_raw(path, security_attributes.as_mut_ptr()) }

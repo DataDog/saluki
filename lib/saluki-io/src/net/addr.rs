@@ -44,6 +44,9 @@ pub enum ListenAddress {
 
         /// Security descriptor string applied when creating the pipe.
         security_descriptor: String,
+
+        /// Input buffer size to request from Windows when creating the pipe.
+        input_buffer_size: Option<u32>,
     },
 }
 
@@ -55,9 +58,17 @@ impl ListenAddress {
 
     /// Creates a Windows named pipe listen address.
     pub fn named_pipe(name: impl Into<String>, security_descriptor: impl Into<String>) -> Self {
+        Self::named_pipe_with_input_buffer_size(name, security_descriptor, None)
+    }
+
+    /// Creates a Windows named pipe listen address with a requested input buffer size.
+    pub fn named_pipe_with_input_buffer_size(
+        name: impl Into<String>, security_descriptor: impl Into<String>, input_buffer_size: impl Into<Option<u32>>,
+    ) -> Self {
         Self::NamedPipe {
             name: normalize_windows_named_pipe_name(name.into()),
             security_descriptor: security_descriptor.into(),
+            input_buffer_size: input_buffer_size.into(),
         }
     }
 
