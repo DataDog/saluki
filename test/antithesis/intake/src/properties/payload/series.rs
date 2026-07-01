@@ -160,3 +160,14 @@ pub(crate) fn tag_set_size(target: Target, ms: &MetricSeries) {
         &json!({ "lane": target, "metric": ms.metric(), "max_set_bytes": MAX_TAG_SET_SIZE_BYTES, "observed": over })
     );
 }
+
+/// Pyld25 -- a flushed COUNT or GAUGE series carries at least one point.
+pub(crate) fn points_non_empty(target: Target, ms: &MetricSeries) {
+    let materialized = matches!(ms.type_.enum_value(), Ok(MetricType::COUNT | MetricType::GAUGE));
+    let empty = (materialized && ms.points.is_empty()).then(|| ms.type_.value());
+    assert_always!(
+        empty.is_none(),
+        "Pyld25.series_points_non_empty",
+        &json!({ "lane": target, "metric": ms.metric(), "type": ms.type_.value() })
+    );
+}
