@@ -49,14 +49,6 @@ testing. Antithesis will not run any test commands until it receives this event.
   with `make antithesis-build-differential` and `make
   antithesis-validate-differential`.
 
-**scratchbook**
-
-This directory is the Antithesis scratchbook for the codebase. It contains
-documents such as system analysis, property catalogs, topology plans,
-per-property evidence files (in `scratchbook/properties/`), property
-relationship maps, and other persistent integration notes. Keep it up to date as
-Antithesis-related decisions change.
-
 **test templates** (`scenarios/general/workload/test/`)
 
 This directory contains test templates. A test template is a directory
