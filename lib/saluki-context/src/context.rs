@@ -5,7 +5,7 @@ use saluki_common::collections::{ContiguousBitSet, PrehashedHashSet};
 use stringtheory::MetaString;
 
 use crate::{
-    hash::{hash_context, hash_context_with_seen, ContextKey},
+    hash::{hash_context, hash_context_with_host_and_seen, ContextKey},
     tags::{Tag, TagSet},
 };
 
@@ -27,6 +27,7 @@ impl Context {
         Self {
             inner: Arc::new(ContextInner {
                 name: MetaString::from_static(name),
+                host: MetaString::empty(),
                 tags,
                 origin_tags,
                 key,
@@ -48,6 +49,7 @@ impl Context {
         Self {
             inner: Arc::new(ContextInner {
                 name: MetaString::from_static(name),
+                host: MetaString::empty(),
                 tags: tag_set,
                 origin_tags,
                 key,
@@ -65,6 +67,7 @@ impl Context {
         Self {
             inner: Arc::new(ContextInner {
                 name,
+                host: MetaString::empty(),
                 tags,
                 origin_tags,
                 key,
@@ -77,13 +80,15 @@ impl Context {
     pub fn with_name<S: Into<MetaString>>(&self, name: S) -> Self {
         // Regenerate the context key to account for the new name.
         let name = name.into();
+        let host = self.inner.host.clone();
         let tags = self.inner.tags.clone();
         let origin_tags = self.inner.origin_tags.clone();
-        let (key, _) = hash_context(&name, &tags, &origin_tags);
+        let key = ContextInner::calculate_key(&name, &host, &tags, &origin_tags);
 
         Self {
             inner: Arc::new(ContextInner {
                 name,
+                host,
                 tags,
                 origin_tags,
                 key,
@@ -97,13 +102,15 @@ impl Context {
     /// The name and origin tags of this context are preserved.
     pub fn with_tags(&self, tags: impl Into<TagSet>) -> Self {
         let name = self.inner.name.clone();
+        let host = self.inner.host.clone();
         let tags = tags.into();
         let origin_tags = self.inner.origin_tags.clone();
-        let (key, _) = hash_context(&name, &tags, &origin_tags);
+        let key = ContextInner::calculate_key(&name, &host, &tags, &origin_tags);
 
         Self {
             inner: Arc::new(ContextInner {
                 name,
+                host,
                 tags,
                 origin_tags,
                 key,
@@ -117,13 +124,15 @@ impl Context {
     /// The name and instrumented tags of this context are preserved.
     pub fn with_origin_tags(&self, origin_tags: impl Into<TagSet>) -> Self {
         let name = self.inner.name.clone();
+        let host = self.inner.host.clone();
         let tags = self.inner.tags.clone();
         let origin_tags = origin_tags.into();
-        let (key, _) = hash_context(&name, &tags, &origin_tags);
+        let key = ContextInner::calculate_key(&name, &host, &tags, &origin_tags);
 
         Self {
             inner: Arc::new(ContextInner {
                 name,
+                host,
                 tags,
                 origin_tags,
                 key,
@@ -138,13 +147,15 @@ impl Context {
     /// be replaced, as it halves the number of `Arc` allocations.
     pub fn with_tags_and_origin_tags(&self, tags: impl Into<TagSet>, origin_tags: impl Into<TagSet>) -> Self {
         let name = self.inner.name.clone();
+        let host = self.inner.host.clone();
         let tags = tags.into();
         let origin_tags = origin_tags.into();
-        let (key, _) = hash_context(&name, &tags, &origin_tags);
+        let key = ContextInner::calculate_key(&name, &host, &tags, &origin_tags);
 
         Self {
             inner: Arc::new(ContextInner {
                 name,
+                host,
                 tags,
                 origin_tags,
                 key,
@@ -165,6 +176,11 @@ impl Context {
     /// Returns the name of this context.
     pub fn name(&self) -> &MetaString {
         &self.inner.name
+    }
+
+    /// Returns the host of this context.
+    pub fn host(&self) -> &MetaString {
+        &self.inner.host
     }
 
     /// Returns the instrumented tags of this context.
@@ -217,8 +233,7 @@ impl Context {
     fn mutate_inner(&mut self, f: impl FnOnce(&mut ContextInner)) {
         let inner = Arc::make_mut(&mut self.inner);
         f(inner);
-        let (key, _) = hash_context(&inner.name, &inner.tags, &inner.origin_tags);
-        inner.key = key;
+        inner.recalculate_key();
     }
 
     /// Creates a lazy copy-on-write mutable view over this context's tag sets.
@@ -239,7 +254,7 @@ impl Context {
     /// A context's size is the sum of the sizes of its fields and the size of the `Context` struct itself, and
     /// includes:
     /// - the context name
-    /// - the context tags (both instrumented and origin)
+    /// - the context host and tags (both instrumented and origin)
     ///
     /// Since origin tags can potentially be expensive to calculate, this method will cache the size of the origin tags
     /// when this method is first called.
@@ -250,10 +265,11 @@ impl Context {
     /// estimate.
     pub fn size_of(&self) -> usize {
         let name_size = self.inner.name.len();
+        let host_size = self.inner.host.len();
         let tags_size = self.inner.tags.size_of();
         let origin_tags_size = self.inner.origin_tags.size_of();
 
-        BASE_CONTEXT_SIZE + name_size + tags_size + origin_tags_size
+        BASE_CONTEXT_SIZE + name_size + host_size + tags_size + origin_tags_size
     }
 }
 
@@ -384,8 +400,7 @@ impl<'a, 'b> TagSetMutView<'a, 'b> {
                 .apply_removals(&self.state.origin_base_removals, &self.state.origin_addition_removals);
         }
 
-        let (key, _) = hash_context_with_seen(&inner.name, &inner.tags, &inner.origin_tags, &mut self.state.hash_seen);
-        inner.key = key;
+        inner.recalculate_key_with_seen(&mut self.state.hash_seen);
 
         total
     }
@@ -400,6 +415,7 @@ impl Drop for TagSetMutView<'_, '_> {
 pub(super) struct ContextInner {
     key: ContextKey,
     name: MetaString,
+    host: MetaString,
     tags: TagSet,
     origin_tags: TagSet,
     active_count: Gauge,
@@ -407,15 +423,31 @@ pub(super) struct ContextInner {
 
 impl ContextInner {
     pub fn from_parts(
-        key: ContextKey, name: MetaString, tags: TagSet, origin_tags: TagSet, active_count: Gauge,
+        key: ContextKey, name: MetaString, host: MetaString, tags: TagSet, origin_tags: TagSet, active_count: Gauge,
     ) -> Self {
         Self {
             key,
             name,
+            host,
             tags,
             origin_tags,
             active_count,
         }
+    }
+
+    fn calculate_key(name: &str, host: &str, tags: &TagSet, origin_tags: &TagSet) -> ContextKey {
+        let mut seen = PrehashedHashSet::default();
+        let (key, _) = hash_context_with_host_and_seen(name, host, tags, origin_tags, &mut seen);
+        key
+    }
+
+    fn recalculate_key(&mut self) {
+        self.key = Self::calculate_key(&self.name, &self.host, &self.tags, &self.origin_tags);
+    }
+
+    fn recalculate_key_with_seen(&mut self, seen: &mut PrehashedHashSet<u64>) {
+        let (key, _) = hash_context_with_host_and_seen(&self.name, &self.host, &self.tags, &self.origin_tags, seen);
+        self.key = key;
     }
 }
 
@@ -424,6 +456,7 @@ impl Clone for ContextInner {
         Self {
             key: self.key,
             name: self.name.clone(),
+            host: self.host.clone(),
             tags: self.tags.clone(),
             origin_tags: self.origin_tags.clone(),
 
@@ -460,6 +493,7 @@ impl fmt::Debug for ContextInner {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ContextInner")
             .field("name", &self.name)
+            .field("host", &self.host)
             .field("tags", &self.tags)
             .field("key", &self.key)
             .finish()
@@ -537,6 +571,7 @@ mod tests {
         let context = Context::from_inner(ContextInner {
             key,
             name: MetaString::from_static(SIZE_OF_CONTEXT_NAME),
+            host: MetaString::empty(),
             tags: tags.clone(),
             origin_tags: origin_tags.clone(),
             active_count: Gauge::noop(),
@@ -631,6 +666,7 @@ mod tests {
         Context::from_inner(ContextInner {
             key,
             name: MetaString::from_static(name),
+            host: MetaString::empty(),
             tags: tag_set(tags),
             origin_tags: tag_set(origin_tags),
             active_count: Gauge::noop(),

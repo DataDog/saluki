@@ -16,7 +16,7 @@ use tracing::debug;
 
 use crate::{
     context::{Context, ContextInner},
-    hash::{hash_context_with_extra_context_tags_and_seen, ContextKey, TagSetKey},
+    hash::{hash_context_with_host_and_seen, ContextKey, TagSetKey},
     origin::{OriginTagsResolver, RawOrigin},
     tags::{SharedTagSet, TagSet},
 };
@@ -359,35 +359,36 @@ impl ContextResolver {
             })
     }
 
-    fn create_context_key_with_extra_tags<N, I, I2, I3, T, T2, T3>(
-        &mut self, name: N, tags: I, origin_tags: I2, extra_context_tags: I3,
+    fn create_context_key_with_host<N, H, I, I2, T, T2>(
+        &mut self, name: N, host: H, tags: I, origin_tags: I2,
     ) -> (ContextKey, TagSetKey)
     where
         N: AsRef<str>,
+        H: AsRef<str>,
         I: IntoIterator<Item = T>,
         T: AsRef<str>,
         I2: IntoIterator<Item = T2>,
         T2: AsRef<str>,
-        I3: IntoIterator<Item = T3>,
-        T3: AsRef<str>,
     {
-        hash_context_with_extra_context_tags_and_seen(
+        hash_context_with_host_and_seen(
             name.as_ref(),
+            host.as_ref(),
             tags,
-            extra_context_tags,
             origin_tags,
             &mut self.hash_seen_buffer,
         )
     }
 
-    fn create_context<N>(
-        &self, key: ContextKey, name: N, context_tags: SharedTagSet, origin_tags: SharedTagSet,
+    fn create_context<N, H>(
+        &self, key: ContextKey, name: N, host: H, context_tags: SharedTagSet, origin_tags: SharedTagSet,
     ) -> Option<Context>
     where
         N: AsRef<str> + CheapMetaString,
+        H: AsRef<str> + CheapMetaString,
     {
-        // Intern the name and tags of the context.
+        // Intern the name, host, and tags of the context.
         let context_name = self.intern(name)?;
+        let context_host = self.intern(host)?;
 
         self.telemetry.resolved_new_context_total().increment(1);
         self.telemetry.active_contexts().increment(1);
@@ -395,6 +396,7 @@ impl ContextResolver {
         Some(Context::from_inner(ContextInner::from_parts(
             key,
             context_name,
+            context_host,
             context_tags.into(),
             origin_tags.into(),
             self.telemetry.active_contexts().clone(),
@@ -450,24 +452,34 @@ impl ContextResolver {
         self.resolve_inner(name, tags, origin_tags.into())
     }
 
-    /// Resolves the given context with extra tags used only for context identity.
-    ///
-    /// Extra context tags are included in the context cache key but are not interned into the returned context's visible
-    /// tag set. Use this when another metric dimension is encoded outside the tag list but still affects aggregation
-    /// identity.
-    pub fn resolve_with_extra_context_tags<N, I, I2, T, T2>(
-        &mut self, name: N, tags: I, maybe_origin: Option<RawOrigin<'_>>, extra_context_tags: I2,
+    /// Resolves the given context using the provided host and origin tags.
+    pub fn resolve_with_host_and_origin_tags<N, H, I, T>(
+        &mut self, name: N, host: H, tags: I, origin_tags: impl Into<SharedTagSet>,
     ) -> Option<Context>
     where
         N: AsRef<str> + CheapMetaString,
+        H: AsRef<str> + CheapMetaString,
         I: IntoIterator<Item = T> + Clone,
         T: AsRef<str> + CheapMetaString,
-        I2: IntoIterator<Item = T2> + Clone,
-        T2: AsRef<str>,
+    {
+        self.resolve_inner_with_host(name, host, tags, origin_tags.into())
+    }
+
+    /// Resolves the given context with an explicit host dimension.
+    ///
+    /// The host participates in context identity but is not part of the visible tag set.
+    pub fn resolve_with_host<N, H, I, T>(
+        &mut self, name: N, host: H, tags: I, maybe_origin: Option<RawOrigin<'_>>,
+    ) -> Option<Context>
+    where
+        N: AsRef<str> + CheapMetaString,
+        H: AsRef<str> + CheapMetaString,
+        I: IntoIterator<Item = T> + Clone,
+        T: AsRef<str> + CheapMetaString,
     {
         let origin_tags = self.tags_resolver.resolve_origin_tags(maybe_origin);
 
-        self.resolve_inner_with_extra_context_tags(name, tags, origin_tags, extra_context_tags)
+        self.resolve_inner_with_host(name, host, tags, origin_tags)
     }
 
     fn resolve_inner<N, I, T>(&mut self, name: N, tags: I, origin_tags: SharedTagSet) -> Option<Context>
@@ -476,27 +488,25 @@ impl ContextResolver {
         I: IntoIterator<Item = T> + Clone,
         T: AsRef<str> + CheapMetaString,
     {
-        self.resolve_inner_with_extra_context_tags(name, tags, origin_tags, std::iter::empty::<&str>())
+        self.resolve_inner_with_host(name, "", tags, origin_tags)
     }
 
-    fn resolve_inner_with_extra_context_tags<N, I, I2, T, T2>(
-        &mut self, name: N, tags: I, origin_tags: SharedTagSet, extra_context_tags: I2,
+    fn resolve_inner_with_host<N, H, I, T>(
+        &mut self, name: N, host: H, tags: I, origin_tags: SharedTagSet,
     ) -> Option<Context>
     where
         N: AsRef<str> + CheapMetaString,
+        H: AsRef<str> + CheapMetaString,
         I: IntoIterator<Item = T> + Clone,
         T: AsRef<str> + CheapMetaString,
-        I2: IntoIterator<Item = T2> + Clone,
-        T2: AsRef<str>,
     {
-        let (context_key, tagset_key) =
-            self.create_context_key_with_extra_tags(&name, tags.clone(), &origin_tags, extra_context_tags.clone());
+        let (context_key, tagset_key) = self.create_context_key_with_host(&name, &host, tags.clone(), &origin_tags);
 
         // Fast path to avoid looking up the context in the cache if caching is disabled.
         if !self.caching_enabled {
             let tag_set = self.tags_resolver.create_tag_set(tags).unwrap_or_default();
 
-            let context = self.create_context(context_key, name, tag_set, origin_tags)?;
+            let context = self.create_context(context_key, name, host, tag_set, origin_tags)?;
 
             debug!(?context_key, ?context, "Resolved new non-cached context.");
             return Some(context);
@@ -524,7 +534,7 @@ impl ContextResolver {
                     }
                 };
 
-                let context = self.create_context(context_key, name, tag_set, origin_tags)?;
+                let context = self.create_context(context_key, name, host, tag_set, origin_tags)?;
                 self.context_cache.insert(context_key, context.clone());
 
                 debug!(?context_key, ?context, "Resolved new context.");
@@ -855,6 +865,7 @@ mod tests {
     use saluki_common::hash::hash_single_fast;
 
     use super::*;
+    use crate::tags::Tag;
 
     fn get_gauge_value(metrics: &[(CompositeKey, Option<Unit>, Option<SharedString>, DebugValue)], key: &str) -> f64 {
         metrics
@@ -939,6 +950,81 @@ mod tests {
         // state:
         assert_eq!(context1, context2);
         assert!(context1.ptr_eq(&context2));
+    }
+
+    #[test]
+    fn host_affects_identity_but_not_visible_tags() {
+        let mut resolver = ContextResolverBuilder::for_tests().build();
+
+        let context1 = resolver
+            .resolve_with_host("metric_name", "host-a", &[] as &[&str], None)
+            .expect("should not fail to resolve");
+        let context2 = resolver
+            .resolve_with_host("metric_name", "host-b", &[] as &[&str], None)
+            .expect("should not fail to resolve");
+        let context1_redo = resolver
+            .resolve_with_host("metric_name", "host-a", &[] as &[&str], None)
+            .expect("should not fail to resolve");
+
+        assert_ne!(context1, context2);
+        assert_eq!(context1, context1_redo);
+        assert!(context1.ptr_eq(&context1_redo));
+        assert_eq!(context1.host(), "host-a");
+        assert_eq!(context2.host(), "host-b");
+        assert!(context1.tags().is_empty());
+        assert!(context2.tags().is_empty());
+
+        let mut uncached_resolver = ContextResolverBuilder::for_tests().without_caching().build();
+        let uncached1 = uncached_resolver
+            .resolve_with_host("metric_name", "host-a", &[] as &[&str], None)
+            .expect("should not fail to resolve");
+        let uncached2 = uncached_resolver
+            .resolve_with_host("metric_name", "host-b", &[] as &[&str], None)
+            .expect("should not fail to resolve");
+
+        assert_ne!(uncached1, uncached2);
+        assert!(!uncached1.ptr_eq(&uncached2));
+    }
+
+    #[test]
+    fn host_survives_rewrites() {
+        let mut resolver = ContextResolverBuilder::for_tests().build();
+
+        let context1 = resolver
+            .resolve_with_host("metric_name", "host-a", &["env:prod"][..], None)
+            .expect("should not fail to resolve");
+        let context2 = resolver
+            .resolve_with_host("metric_name", "host-b", &["env:prod"][..], None)
+            .expect("should not fail to resolve");
+
+        assert_ne!(context1, context2);
+        let service_tag_set = TagSet::from_iter([Tag::from("service:api")]);
+        assert_ne!(context1.with_name("renamed"), context2.with_name("renamed"));
+        assert_ne!(
+            context1.with_tags(service_tag_set.clone()),
+            context2.with_tags(service_tag_set)
+        );
+
+        let mut context1_filtered = context1.clone();
+        let mut context2_filtered = context2.clone();
+        let mut state1 = crate::context::TagSetMutViewState::new();
+        let mut state2 = crate::context::TagSetMutViewState::new();
+        {
+            let mut view = context1_filtered.tags_mut_view(&mut state1);
+            view.retain_tags(|_| false);
+            view.finish();
+        }
+        {
+            let mut view = context2_filtered.tags_mut_view(&mut state2);
+            view.retain_tags(|_| false);
+            view.finish();
+        }
+
+        assert_ne!(context1_filtered, context2_filtered);
+        assert!(context1_filtered.tags().is_empty());
+        assert!(context2_filtered.tags().is_empty());
+        assert_eq!(context1_filtered.host(), "host-a");
+        assert_eq!(context2_filtered.host(), "host-b");
     }
 
     #[test]

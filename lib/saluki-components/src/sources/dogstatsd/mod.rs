@@ -38,7 +38,6 @@ use saluki_core::data_model::event::{
 };
 use saluki_core::{
     components::{sources::*, ComponentContext},
-    constants::datadog::HOST_TAG_KEY_SUFFIXED,
     pooling::ElasticObjectPool,
     topology::{interconnect::EventBufferManager, EventsBuffer, OutputDefinition},
 };
@@ -1750,20 +1749,10 @@ fn handle_metric_packet(
 
     let tags = get_filtered_tags_iterator(packet.tags, additional_tags);
 
-    let host_context_tag = well_known_tags
-        .hostname
-        .map(|hostname| format!("{}{}", HOST_TAG_KEY_SUFFIXED, hostname));
-
     // Try to resolve the context for this metric.
-    let maybe_context = if let Some(host_tag) = host_context_tag.as_deref() {
-        context_resolver.resolve_with_extra_context_tags(
-            packet.metric_name,
-            tags,
-            Some(origin),
-            std::iter::once(host_tag),
-        )
-    } else {
-        context_resolver.resolve(packet.metric_name, tags, Some(origin))
+    let maybe_context = match well_known_tags.hostname {
+        Some(hostname) => context_resolver.resolve_with_host(packet.metric_name, hostname, tags, Some(origin)),
+        None => context_resolver.resolve(packet.metric_name, tags, Some(origin)),
     };
 
     match maybe_context {
@@ -2191,6 +2180,8 @@ mod tests {
             handle_metric_packet(packet_b, &mut context_resolvers, &peer_addr, &[]).expect("metric should resolve");
 
         assert_ne!(metric_a.context(), metric_b.context());
+        assert_eq!(metric_a.context().host(), "host-a");
+        assert_eq!(metric_b.context().host(), "host-b");
         assert!(!metric_a.context().tags().has_tag("host:host-a"));
         assert!(!metric_b.context().tags().has_tag("host:host-b"));
         assert_eq!(metric_a.metadata().hostname(), Some("host-a"));
