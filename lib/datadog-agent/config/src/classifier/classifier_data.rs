@@ -10,6 +10,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Partial,
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: Some("false"),
+        is_duration: false,
     },
     ClassifierEntry {
         yaml_path: "forwarder_num_workers",
@@ -17,6 +18,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Partial,
         pipeline_affinity: PipelineAffinity::CrossCutting,
         default: Some("1"),
+        is_duration: false,
     },
     ClassifierEntry {
         yaml_path: "min_tls_version",
@@ -24,6 +26,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Partial,
         pipeline_affinity: PipelineAffinity::CrossCutting,
         default: Some("\"tlsv1.2\""),
+        is_duration: false,
     },
     ClassifierEntry {
         yaml_path: "aggregator_buffer_size",
@@ -31,6 +34,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: Some("100"),
+        is_duration: false,
     },
     ClassifierEntry {
         yaml_path: "aggregator_flush_metrics_and_serialize_in_parallel_buffer_size",
@@ -38,6 +42,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: Some("4000"),
+        is_duration: false,
     },
     ClassifierEntry {
         yaml_path: "aggregator_flush_metrics_and_serialize_in_parallel_chan_size",
@@ -45,6 +50,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: Some("200"),
+        is_duration: false,
     },
     ClassifierEntry {
         yaml_path: "aggregator_use_tags_store",
@@ -52,6 +58,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: Some("true"),
+        is_duration: false,
     },
     ClassifierEntry {
         yaml_path: "config_id",
@@ -59,6 +66,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::CrossCutting,
         default: Some("\"\""),
+        is_duration: false,
     },
     ClassifierEntry {
         yaml_path: "data_plane.telemetry_enabled",
@@ -66,6 +74,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::CrossCutting,
         default: Some("false"),
+        is_duration: false,
     },
     ClassifierEntry {
         yaml_path: "data_plane.telemetry_listen_addr",
@@ -73,6 +82,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::CrossCutting,
         default: Some("\"tcp://0.0.0.0:5102\""),
+        is_duration: false,
     },
     ClassifierEntry {
         yaml_path: "dogstatsd_experimental_http.enabled",
@@ -80,6 +90,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::High),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: Some("false"),
+        is_duration: false,
     },
     ClassifierEntry {
         yaml_path: "dogstatsd_experimental_http.listen_address",
@@ -87,6 +98,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::High),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: Some("\"127.0.0.1:8125\""),
+        is_duration: false,
     },
     ClassifierEntry {
         yaml_path: "dogstatsd_host_socket_path",
@@ -94,6 +106,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: Some("\"/var/run/datadog\""),
+        is_duration: false,
     },
     ClassifierEntry {
         yaml_path: "dogstatsd_mem_based_rate_limiter.enabled",
@@ -101,6 +114,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: Some("false"),
+        is_duration: false,
     },
     ClassifierEntry {
         yaml_path: "dogstatsd_mem_based_rate_limiter.go_gc",
@@ -108,6 +122,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: Some("1"),
+        is_duration: false,
     },
     ClassifierEntry {
         yaml_path: "dogstatsd_mem_based_rate_limiter.high_soft_limit",
@@ -115,6 +130,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: Some("0.8"),
+        is_duration: false,
     },
     ClassifierEntry {
         yaml_path: "dogstatsd_mem_based_rate_limiter.low_soft_limit",
@@ -122,6 +138,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: Some("0.7"),
+        is_duration: false,
     },
     ClassifierEntry {
         yaml_path: "dogstatsd_mem_based_rate_limiter.memory_ballast",
@@ -129,6 +146,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: Some("8589934592"),
+        is_duration: false,
     },
     ClassifierEntry {
         yaml_path: "dogstatsd_mem_based_rate_limiter.rate_check.factor",
@@ -136,6 +154,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: Some("2"),
+        is_duration: false,
     },
     ClassifierEntry {
         yaml_path: "dogstatsd_mem_based_rate_limiter.rate_check.max",
@@ -143,6 +162,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: Some("1"),
+        is_duration: false,
     },
     ClassifierEntry {
         yaml_path: "dogstatsd_mem_based_rate_limiter.rate_check.min",
@@ -150,6 +170,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: Some("0.01"),
+        is_duration: false,
     },
     ClassifierEntry {
         yaml_path: "dogstatsd_mem_based_rate_limiter.soft_limit_freeos_check.factor",
@@ -157,6 +178,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: Some("1.5"),
+        is_duration: false,
     },
     ClassifierEntry {
         yaml_path: "dogstatsd_mem_based_rate_limiter.soft_limit_freeos_check.max",
@@ -164,6 +186,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: Some("0.1"),
+        is_duration: false,
     },
     ClassifierEntry {
         yaml_path: "dogstatsd_mem_based_rate_limiter.soft_limit_freeos_check.min",
@@ -171,6 +194,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: Some("0.01"),
+        is_duration: false,
     },
     ClassifierEntry {
         yaml_path: "dogstatsd_no_aggregation_pipeline_batch_size",
@@ -178,6 +202,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: Some("2048"),
+        is_duration: false,
     },
     ClassifierEntry {
         yaml_path: "dogstatsd_packet_buffer_flush_timeout",
@@ -185,6 +210,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: Some("\"100ms\""),
+        is_duration: true,
     },
     ClassifierEntry {
         yaml_path: "dogstatsd_packet_buffer_size",
@@ -192,6 +218,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: Some("32"),
+        is_duration: false,
     },
     ClassifierEntry {
         yaml_path: "dogstatsd_pipe_name",
@@ -199,6 +226,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Medium),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: Some("\"\""),
+        is_duration: false,
     },
     ClassifierEntry {
         yaml_path: "dogstatsd_pipeline_autoadjust",
@@ -206,6 +234,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: Some("false"),
+        is_duration: false,
     },
     ClassifierEntry {
         yaml_path: "dogstatsd_pipeline_count",
@@ -213,6 +242,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: Some("1"),
+        is_duration: false,
     },
     ClassifierEntry {
         yaml_path: "dogstatsd_queue_size",
@@ -220,6 +250,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: Some("1024"),
+        is_duration: false,
     },
     ClassifierEntry {
         yaml_path: "dogstatsd_stats_buffer",
@@ -227,6 +258,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Medium),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: Some("10"),
+        is_duration: false,
     },
     ClassifierEntry {
         yaml_path: "dogstatsd_stats_enable",
@@ -234,6 +266,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Medium),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: Some("false"),
+        is_duration: false,
     },
     ClassifierEntry {
         yaml_path: "dogstatsd_stats_port",
@@ -241,6 +274,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Medium),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: Some("5000"),
+        is_duration: false,
     },
     ClassifierEntry {
         yaml_path: "dogstatsd_telemetry_enabled_listener_id",
@@ -248,6 +282,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Medium),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: Some("false"),
+        is_duration: false,
     },
     ClassifierEntry {
         yaml_path: "dogstatsd_windows_pipe_security_descriptor",
@@ -255,6 +290,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Medium),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: Some("\"D:AI(A;;GA;;;WD)\""),
+        is_duration: false,
     },
     ClassifierEntry {
         yaml_path: "dogstatsd_workers_count",
@@ -262,6 +298,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: Some("0"),
+        is_duration: false,
     },
     ClassifierEntry {
         yaml_path: "enable_json_stream_shared_compressor_buffers",
@@ -269,6 +306,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD, Pipeline::Checks, Pipeline::Traces]),
         default: Some("true"),
+        is_duration: false,
     },
     ClassifierEntry {
         yaml_path: "entity_id",
@@ -276,6 +314,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: Some("\"\""),
+        is_duration: false,
     },
     ClassifierEntry {
         yaml_path: "forwarder_requeue_buffer_size",
@@ -283,6 +322,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::CrossCutting,
         default: Some("100"),
+        is_duration: false,
     },
     ClassifierEntry {
         yaml_path: "heroku_dyno",
@@ -290,6 +330,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::High),
         pipeline_affinity: PipelineAffinity::CrossCutting,
         default: Some("false"),
+        is_duration: false,
     },
     ClassifierEntry {
         yaml_path: "logging_frequency",
@@ -297,6 +338,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::CrossCutting,
         default: Some("500"),
+        is_duration: false,
     },
     ClassifierEntry {
         yaml_path: "telemetry.dogstatsd.aggregator_channel_latency_buckets",
@@ -304,6 +346,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: Some("[]"),
+        is_duration: false,
     },
     ClassifierEntry {
         yaml_path: "telemetry.dogstatsd.listeners_channel_latency_buckets",
@@ -311,6 +354,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: Some("[]"),
+        is_duration: false,
     },
     ClassifierEntry {
         yaml_path: "telemetry.dogstatsd.listeners_latency_buckets",
@@ -318,6 +362,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: Some("[]"),
+        is_duration: false,
     },
     ClassifierEntry {
         yaml_path: "telemetry.dogstatsd_origin",
@@ -325,6 +370,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: Some("false"),
+        is_duration: false,
     },
     ClassifierEntry {
         yaml_path: "tls_handshake_timeout",
@@ -332,6 +378,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Medium),
         pipeline_affinity: PipelineAffinity::CrossCutting,
         default: Some("\"10s\""),
+        is_duration: true,
     },
     ClassifierEntry {
         yaml_path: "use_dogstatsd",
@@ -339,6 +386,7 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: Some("true"),
+        is_duration: false,
     },
     ClassifierEntry {
         yaml_path: "forwarder_low_prio_buffer_size",
@@ -346,5 +394,6 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Medium),
         pipeline_affinity: PipelineAffinity::CrossCutting,
         default: Some("100"),
+        is_duration: false,
     },
 ];
