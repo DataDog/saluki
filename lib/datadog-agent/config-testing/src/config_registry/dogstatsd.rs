@@ -558,4 +558,15 @@ crate::declare_annotations! {
         test_json: None,
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
+    /// `telemetry.dogstatsd_origin`-Per-origin processed-metrics telemetry
+    TELEMETRY_DOGSTATSD_ORIGIN = SalukiAnnotation {
+        schema: &schema::TELEMETRY_DOGSTATSD_ORIGIN,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::DOGSTATSD_CONFIGURATION],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
+    };
 }

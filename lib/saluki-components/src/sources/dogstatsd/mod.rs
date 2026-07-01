@@ -243,6 +243,19 @@ where
     Ok(value.filter(|host| !host.is_empty()))
 }
 
+#[derive(Deserialize, Default)]
+#[cfg_attr(test, derive(PartialEq, serde::Serialize))]
+struct DogStatsDTelemetryConfiguration {
+    /// Whether to break down DogStatsD processed-metric telemetry by UDS origin.
+    ///
+    /// When enabled, metric-message `dogstatsd.processed` telemetry includes an `origin` label derived from the
+    /// sender's UDS origin. This can add one telemetry series per origin and should primarily be used for diagnostics.
+    ///
+    /// Defaults to `false`.
+    #[serde(default)]
+    dogstatsd_origin: bool,
+}
+
 /// DogStatsD source.
 ///
 /// Accepts metrics over TCP, UDP, or Unix Domain Sockets in the StatsD/DogStatsD format.
@@ -536,6 +549,10 @@ pub struct DogStatsDConfiguration {
     /// Configuration related to origin detection and enrichment.
     #[serde(flatten, default)]
     origin_enrichment: OriginEnrichmentConfiguration,
+
+    /// Configuration related to DogStatsD telemetry.
+    #[serde(default)]
+    telemetry: DogStatsDTelemetryConfiguration,
 
     /// Workload provider to utilize for origin detection/enrichment.
     #[serde(skip)]
@@ -968,6 +985,7 @@ impl SourceBuilder for DogStatsDConfiguration {
             context_resolvers,
             enabled_filter: enable_payloads_filter,
             origin_detection_enabled,
+            origin_telemetry_enabled: self.telemetry.dogstatsd_origin,
             stream_log_too_big: self.stream_log_too_big,
             disable_verbose_logs: self.disable_verbose_logs,
             eol_required,
@@ -1030,6 +1048,7 @@ pub struct DogStatsD {
     context_resolvers: ContextResolvers,
     enabled_filter: EnablePayloadsFilter,
     origin_detection_enabled: bool,
+    origin_telemetry_enabled: bool,
     stream_log_too_big: bool,
     disable_verbose_logs: bool,
     eol_required: EolRequired,
@@ -1046,6 +1065,7 @@ struct ListenerContext {
     codec: DogStatsDCodec,
     context_resolvers: ContextResolvers,
     origin_detection_enabled: bool,
+    origin_telemetry_enabled: bool,
     stream_log_too_big: bool,
     disable_verbose_logs: bool,
     eol_required: EolRequired,
@@ -1102,6 +1122,7 @@ impl Source for DogStatsD {
                 codec: self.codec.clone(),
                 context_resolvers: self.context_resolvers.clone(),
                 origin_detection_enabled: self.origin_detection_enabled,
+                origin_telemetry_enabled: self.origin_telemetry_enabled,
                 stream_log_too_big: self.stream_log_too_big,
                 disable_verbose_logs: self.disable_verbose_logs,
                 eol_required: self.eol_required,
@@ -1184,6 +1205,7 @@ async fn process_listener(
         codec,
         context_resolvers,
         origin_detection_enabled,
+        origin_telemetry_enabled,
         stream_log_too_big,
         disable_verbose_logs,
         eol_required,
@@ -1196,7 +1218,11 @@ async fn process_listener(
     pin!(shutdown_handle);
 
     let listen_addr = listener.listen_address().clone();
-    let metrics = build_metrics(&listen_addr, source_context.component_context());
+    let metrics = build_metrics(
+        &listen_addr,
+        source_context.component_context(),
+        origin_telemetry_enabled,
+    );
     let packet_forwarder = packet_forwarder_target
         .as_ref()
         .map(|target| target.to_forwarder(metrics.clone()));
@@ -1378,7 +1404,17 @@ async fn drive_stream(
                                 if let Some(forwarder) = &packet_forwarder {
                                     forwarder.forward(frame.clone()).await;
                                 }
-                                match handle_frame(&frame[..], &codec, &mut context_resolvers, &metrics, &peer_addr, enabled_filter, &additional_tags) {
+                                match handle_frame(
+                                    &frame[..],
+                                    &codec,
+                                    &mut context_resolvers,
+                                    &metrics,
+                                    capture_entity_resolver.as_deref(),
+                                    origin_detection_enabled,
+                                    &peer_addr,
+                                    enabled_filter,
+                                    &additional_tags,
+                                ) {
                                     Ok(Some(event)) => {
                                         if let Some(event_buffer) = event_buffer_manager.try_push(event) {
                                             debug!(%listen_addr, %peer_addr, "Event buffer is full. Forwarding events.");
@@ -1595,16 +1631,28 @@ fn capture_timestamp_ns() -> i64 {
         .unwrap_or_default()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle_frame(
     frame: &[u8], codec: &DogStatsDCodec, context_resolvers: &mut ContextResolvers, source_metrics: &Metrics,
+    capture_entity_resolver: Option<&(dyn CaptureEntityResolver + Send + Sync)>, origin_detection_enabled: bool,
     peer_addr: &ConnectionAddress, enabled_filter: EnablePayloadsFilter, additional_tags: &[String],
 ) -> Result<Option<Event>, ParseError> {
+    // Resolving the origin requires a (potentially uncached) PID-to-container lookup, so only do it for metric frames,
+    // which are the only frames that record per-origin telemetry.
+    let resolve_telemetry_origin = || {
+        (source_metrics.origin_telemetry_enabled() && origin_detection_enabled)
+            .then(|| resolve_capture_container_id(capture_entity_resolver, process_id_from_peer_addr(peer_addr)))
+            .flatten()
+    };
+
     let parsed = match codec.decode_packet(frame) {
         Ok(parsed) => parsed,
         Err(e) => {
             // Try and determine what the message type was, if possible, to increment the correct error counter.
             match parse_message_type(frame) {
-                MessageType::MetricSample => source_metrics.metric_decode_failed().increment(1),
+                MessageType::MetricSample => {
+                    source_metrics.record_metric_parse_failed(resolve_telemetry_origin().as_deref())
+                }
                 MessageType::Event => source_metrics.event_decode_failed().increment(1),
                 MessageType::ServiceCheck => source_metrics.service_check_decode_failed().increment(1),
             }
@@ -1629,7 +1677,7 @@ fn handle_frame(
 
             match handle_metric_packet(metric_packet, context_resolvers, peer_addr, additional_tags) {
                 Some(metric) => {
-                    source_metrics.metrics_received().increment(events_len);
+                    source_metrics.record_metrics_received(events_len, resolve_telemetry_origin().as_deref());
                     Event::Metric(metric)
                 }
                 None => {
@@ -1916,6 +1964,7 @@ mod tests {
 
     use bytes::Bytes;
     use bytesize::ByteSize;
+    use metrics::{Key, Label};
     use saluki_config::ConfigurationLoader;
     use saluki_context::{origin::RawOrigin, ContextResolverBuilder, TagsResolverBuilder};
     use saluki_core::{components::ComponentContext, pooling::ObjectPool as _, topology::ComponentId};
@@ -1931,10 +1980,11 @@ mod tests {
 
     use super::{
         build_io_buffer_pool, default_buffer_size,
+        filters::EnablePayloadsFilter,
         forwarder::{
             ConnectedPacketForwarder, ForwardPacket, PacketForwarder, PacketForwarderTarget, FORWARDER_QUEUE_CAPACITY,
         },
-        handle_metric_packet,
+        handle_frame, handle_metric_packet,
         metrics::build_metrics,
         origin_detection_failed_for_telemetry, resolve_capture_container_id, ContextResolvers, DogStatsDConfiguration,
         DOGSTATSD_CAPTURE_DIR, MIN_CAPTURE_DEPTH,
@@ -1974,6 +2024,108 @@ mod tests {
             PacketForwarderTarget::new(MetaString::from_static("127.0.0.1"), target_port).to_forwarder(metrics);
         forwarder.connected = Arc::new(OnceLock::from(packets_tx));
         forwarder
+    }
+
+    fn processed_metric_key(listener_type: &'static str, origin: Option<&str>) -> Key {
+        let mut labels = vec![
+            Label::from_static_parts("component_id", "dogstatsd_test"),
+            Label::from_static_parts("component_type", "source"),
+            Label::from_static_parts("listener_type", listener_type),
+            Label::from_static_parts("message_type", "metrics"),
+        ];
+        if let Some(origin) = origin {
+            labels.push(Label::new("origin", origin.to_string()));
+        }
+
+        Key::from_parts("component_events_received_total", labels)
+    }
+
+    fn test_context_resolvers() -> ContextResolvers {
+        let tags_resolver = TagsResolverBuilder::for_tests().build();
+        let context_resolver = ContextResolverBuilder::for_tests()
+            .with_tags_resolver(Some(tags_resolver.clone()))
+            .build();
+        ContextResolvers::manual(context_resolver.clone(), context_resolver, tags_resolver)
+    }
+
+    #[test]
+    fn origin_telemetry_does_not_resolve_origin_when_origin_detection_is_disabled() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let listen_addr = ListenAddress::Unixgram("/tmp/dsd.sock".into());
+        let context = ComponentContext::source(ComponentId::try_from("dogstatsd_test").expect("valid component ID"));
+        let metrics = build_metrics(&listen_addr, &context, true);
+        let codec = DogStatsDCodec::from_configuration(DogStatsDCodecConfiguration::default());
+        let mut context_resolvers = test_context_resolvers();
+        let capture_entity_resolver = CaptureTestEntityResolver::with_pid_mapping(
+            42,
+            EntityId::from_local_data("ci-pid-container").expect("container entity"),
+        );
+        let peer_addr = ConnectionAddress::ProcessLike(ProcessIdentity::Credentials(ProcessCredentials {
+            pid: 42,
+            uid: 0,
+            gid: 0,
+        }));
+
+        let event = handle_frame(
+            b"test_metric:1|c",
+            &codec,
+            &mut context_resolvers,
+            &metrics,
+            Some(&capture_entity_resolver),
+            false,
+            &peer_addr,
+            EnablePayloadsFilter::default(),
+            &[],
+        )
+        .expect("frame should parse");
+
+        assert!(event.is_some());
+        assert_eq!(
+            recorder.counter(processed_metric_key("unixgram", Some("container_id://pid-container"))),
+            None
+        );
+        assert_eq!(recorder.counter(processed_metric_key("unixgram", Some(""))), Some(1));
+    }
+
+    #[test]
+    fn origin_telemetry_records_resolved_origin_when_origin_detection_is_enabled() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let listen_addr = ListenAddress::Unixgram("/tmp/dsd.sock".into());
+        let context = ComponentContext::source(ComponentId::try_from("dogstatsd_test").expect("valid component ID"));
+        let metrics = build_metrics(&listen_addr, &context, true);
+        let codec = DogStatsDCodec::from_configuration(DogStatsDCodecConfiguration::default());
+        let mut context_resolvers = test_context_resolvers();
+        let capture_entity_resolver = CaptureTestEntityResolver::with_pid_mapping(
+            42,
+            EntityId::from_local_data("ci-pid-container").expect("container entity"),
+        );
+        let peer_addr = ConnectionAddress::ProcessLike(ProcessIdentity::Credentials(ProcessCredentials {
+            pid: 42,
+            uid: 0,
+            gid: 0,
+        }));
+
+        let event = handle_frame(
+            b"test_metric:1|c",
+            &codec,
+            &mut context_resolvers,
+            &metrics,
+            Some(&capture_entity_resolver),
+            true,
+            &peer_addr,
+            EnablePayloadsFilter::default(),
+            &[],
+        )
+        .expect("frame should parse");
+
+        assert!(event.is_some());
+        assert_eq!(
+            recorder.counter(processed_metric_key("unixgram", Some("container_id://pid-container"))),
+            Some(1)
+        );
+        assert_eq!(recorder.counter(processed_metric_key("unixgram", Some(""))), Some(0));
     }
 
     #[test]
@@ -2146,7 +2298,7 @@ mod tests {
         let _recorder_guard = metrics::set_default_local_recorder(&recorder);
         let listen_addr = ListenAddress::Udp(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 8125)));
         let context = ComponentContext::source(ComponentId::try_from("dogstatsd_test").expect("valid component ID"));
-        let metrics = build_metrics(&listen_addr, &context);
+        let metrics = build_metrics(&listen_addr, &context, false);
         let (packets_tx, packets_rx) = mpsc::channel(1);
         let worker = tokio::spawn(forwarder.run(packets_rx, metrics.clone()));
         let packet_forwarder = packet_forwarder_from_sender(receiver_addr.port(), packets_tx, metrics);
@@ -2203,7 +2355,7 @@ mod tests {
         let _recorder_guard = metrics::set_default_local_recorder(&recorder);
         let listen_addr = ListenAddress::Udp(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 8125)));
         let context = ComponentContext::source(ComponentId::try_from("dogstatsd_test").expect("valid component ID"));
-        let metrics = build_metrics(&listen_addr, &context);
+        let metrics = build_metrics(&listen_addr, &context, false);
         let (packets_tx, packets_rx) = mpsc::channel(1);
         let worker = tokio::spawn(forwarder.run(packets_rx, metrics.clone()));
         let packet_forwarder = packet_forwarder_from_sender(receiver_addr.port(), packets_tx, metrics);
@@ -2226,7 +2378,7 @@ mod tests {
         let _recorder_guard = metrics::set_default_local_recorder(&recorder);
         let listen_addr = ListenAddress::Udp(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 8125)));
         let context = ComponentContext::source(ComponentId::try_from("dogstatsd_test").expect("valid component ID"));
-        let metrics = build_metrics(&listen_addr, &context);
+        let metrics = build_metrics(&listen_addr, &context, false);
         let (packets_tx, _packets_rx) = mpsc::channel(FORWARDER_QUEUE_CAPACITY);
         let packet_forwarder = packet_forwarder_from_sender(9125, packets_tx, metrics);
 
@@ -2251,7 +2403,7 @@ mod tests {
         let _recorder_guard = metrics::set_default_local_recorder(&recorder);
         let listen_addr = ListenAddress::Udp(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 8125)));
         let context = ComponentContext::source(ComponentId::try_from("dogstatsd_test").expect("valid component ID"));
-        let metrics = build_metrics(&listen_addr, &context);
+        let metrics = build_metrics(&listen_addr, &context, false);
         let socket = UdpSocket::bind("127.0.0.1:0").await.expect("socket should bind");
         let forwarder = ConnectedPacketForwarder {
             socket,

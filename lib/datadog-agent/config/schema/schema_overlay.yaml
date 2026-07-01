@@ -2256,13 +2256,13 @@ inventory:
     issue: "#1679"
 
   telemetry.dogstatsd_origin:
-    support: none
-    planned: true
+    support: full
     pipelines: [dogstatsd]
     description: "Per-origin processed-metrics telemetry"
-    severity: low
-    documentation: "Not currently supported because the `origin` label is derived from container identities and can create unbounded telemetry cardinality over time."
-    issue: "#1679"
+    test_support:
+      used_by: [DogStatsDConfiguration]
+      additional_attributes:
+        config_registry_filename: dogstatsd.rs
 
   tls_handshake_timeout:
     support: none
