@@ -65,7 +65,7 @@ tonic = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
 
-[target.'cfg(target_os = "linux")'.dependencies]
+[target.'cfg(all(target_os = "linux", not(target_arch = "arm")))'.dependencies]
 tikv-jemallocator = { workspace = true, features = [
   "background_threads",
   "unprefixed_malloc_on_supported_platforms",

@@ -6,7 +6,8 @@
 //! efficiently intern strings when possible.
 #![deny(warnings)]
 #![deny(missing_docs)]
-// We only support 64-bit little-endian platforms anyways, so there's no risk of our enum variants having their values truncated.
+// We only use tag values that fit in the supported little-endian pointer widths, so there's no risk of our enum
+// variants having their values truncated.
 #![allow(clippy::enum_clike_unportable_variant)]
 
 use std::{
@@ -38,7 +39,7 @@ const fn get_offset_tag_value(tag: u8) -> u8 {
     const UNION_TYPE_TAG_VALUE_BASE: u8 = INLINED_STR_MAX_LEN as u8 + 1;
 
     if tag > (u8::MAX - INLINED_STR_MAX_LEN as u8) {
-        panic!("Union type tag value must be less than 232 to fit.");
+        panic!("Union type tag value does not fit in the discriminant byte.");
     }
 
     tag + UNION_TYPE_TAG_VALUE_BASE
@@ -52,9 +53,12 @@ const fn get_scaled_union_tag(tag: u8) -> usize {
 }
 
 // High-level invariant checks to ensure `stringtheory` isn't being used on an unsupported platform.
-#[cfg(not(all(target_pointer_width = "64", target_endian = "little")))]
+#[cfg(not(all(
+    any(target_pointer_width = "32", target_pointer_width = "64"),
+    target_endian = "little"
+)))]
 const _INVARIANTS_CHECK: () = {
-    compile_error!("`stringtheory` is only supported on 64-bit little-endian platforms.");
+    compile_error!("`stringtheory` is only supported on 32-bit or 64-bit little-endian platforms.");
 };
 
 const fn is_tagged(cap: u8) -> bool {
@@ -204,7 +208,7 @@ impl SharedUnion {
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct InlinedUnion {
-    // Data is arranged as 23 bytes for string data, and the remaining 1 byte for the string length.
+    // Data is arranged as `INLINED_STR_MAX_LEN` bytes for string data, and the remaining 1 byte for the string length.
     data: [u8; INLINED_STR_DATA_BUF_LEN], // Fields one, two, and three.
 }
 
@@ -256,8 +260,8 @@ impl DiscriminantUnion {
         //   value would never be used for a valid allocation.
         // - In turn, the length of a string can also only ever be as large as `isize::MAX`, which means that the
         //   top-most bit of the length byte for any string type would never be used
-        // - Inlined strings can only ever be up to 23 bytes long, which means that the top-most bit of the length byte
-        //   for an inlined string would never be used.
+        // - Inlined strings can only ever be up to `INLINED_STR_MAX_LEN` bytes long, which means that the top-most bit
+        //   of the length byte for an inlined string would never be used.
         // - Static strings and interned strings only occupy the first two fields, which means their capacity should not
         //   be used.
         //
@@ -265,19 +269,20 @@ impl DiscriminantUnion {
         //
         // - when all fields are zero, we have an empty string
         // - when the last byte does have the top-bit set, we have an owned string
-        // - when the last byte does _not_ have the top-bit set, and the value is less than or equal to 23, we have an
-        //   inlined string
-        // - when the last byte does _not_ have the top-bit set, and the value is greater than 23, we interpret the
-        //   specific value of the last byte as a discriminant for the remaining string types (static, interned, etc)
+        // - when the last byte does _not_ have the top-bit set, and the value is less than or equal to
+        //   `INLINED_STR_MAX_LEN`, we have an inlined string
+        // - when the last byte does _not_ have the top-bit set, and the value is greater than `INLINED_STR_MAX_LEN`,
+        //   we interpret the specific value of the last byte as a discriminant for the remaining string types (static,
+        //   interned, etc)
         //
         // We abuse the layout of little endian integers here to ensure that the upper-most bits of the capacity
         // field overlaps with the last byte of an inlined string, and the unused field of a static/interned string.
         //
-        // In an inlined string, its length byte is situated as the very last byte (data[23]) in its layout. In an
-        // owned string, we instead have a pointer, length, and capacity, in that order. This means that the length
+        // In an inlined string, its length byte is situated as the very last byte in its layout. In an owned string, we
+        // instead have a pointer, length, and capacity, in that order. This means that the length
         // byte of the inlined string and the capacity field of the owned string overlap, as seen below:
         //
-        //                ~ an inlined string, "hello, world", with a length of 12 (0C) ~
+        //                ~ a 64-bit inlined string, "hello, world", with a length of 12 (0C) ~
         //      ┌───────────────────────────────────────────────────────────────────────────────┐
         //      │ 68 65 6C 6C 6F 20 77 6F    72 6C 64 21 ?? ?? ?? ??    ?? ?? ?? ?? ?? ?? ?? 0C │
         //      └───────────────────────────────────────────────────────────────────────────────┘
@@ -298,7 +303,7 @@ impl DiscriminantUnion {
         //                       owned last byte (0x80)    [1 0 0 0 0 0 0 0] ◀────────────────┤
         //                                                                                    │
         //                       inlined last byte                                            │
-        //                       maximum of 23 (0x17)      [0 0 0 1 0 1 1 1] ◀────────────────┤
+        //                       64-bit maximum of 23      [0 0 0 1 0 1 1 1] ◀────────────────┤
         //                                                                                    │
         //                       "owned" discriminant                                         │
         //                       bitmask (any X bit)       [X X X ? ? ? ? ?] ◀────────────────┘
@@ -308,8 +313,8 @@ impl DiscriminantUnion {
         // capacity field -- the eight highest bits -- is actually written in the same location as the length byte
         // of an inlined string.
         //
-        // Given that we know an inlined string cannot be any longer than 23 bytes, we know that the top-most bit in
-        // the last byte (data[23]) can never be set, as it would imply a length of _at least_ 128. With that, we
+        // Given that we know an inlined string cannot be any longer than `INLINED_STR_MAX_LEN` bytes, we know that the
+        // top-most bit in the last byte can never be set, as it would imply a length of _at least_ 128. With that, we
         // utilize invariant #3 of `Inner` -- allocations can never be larger than `isize::MAX` -- which lets us
         // safely "tag" an owned string's capacity -- setting the upper most bit to 1 -- to indicate that it's an
         // owned string.
@@ -329,10 +334,10 @@ impl DiscriminantUnion {
             // Empty string. Easy.
             0 => UnionType::Empty,
 
-            // Anything between 1 and INLINED_STR_MAX_LEN (23, inclusive) is an inlined string.
+            // Anything between 1 and `INLINED_STR_MAX_LEN` is an inlined string.
             1..=INLINED_STR_MAX_LEN_U8 => UnionType::Inlined,
 
-            // These are fixed values between 24 and 128, so we just match them directly.
+            // These are fixed values between `INLINED_STR_MAX_LEN` and 128, so we just match them directly.
             UNION_TYPE_TAG_VALUE_STATIC => UnionType::Static,
             UNION_TYPE_TAG_VALUE_INTERNED_FIXED_SIZE => UnionType::InternedFixedSize,
             UNION_TYPE_TAG_VALUE_INTERNED_GENERIC_MAP => UnionType::InternedGenericMap,
@@ -356,13 +361,14 @@ impl DiscriminantUnion {
 ///
 /// This code depends on a number of invariants in order to work correctly:
 ///
-/// 1. Only used on 64-bit little-endian platforms. (checked at compile-time via _INVARIANTS_CHECK)
+/// 1. Only used on 32-bit or 64-bit little-endian platforms. (checked at compile-time via _INVARIANTS_CHECK)
 /// 2. The data pointers for `String` and `&'static str` can't ever be null when the strings are non-empty.
 /// 3. Allocations can never be larger than `isize::MAX` (see [here][rust_isize_alloc_limit]), meaning that any
 ///    length/capacity field for a string can't ever be larger than `isize::MAX`, implying the highest bit for
 ///    length/capacity should always be 0.
-/// 4. An inlined string can only hold up to 23 bytes of data, meaning that the length byte for that string can never
-///    have a value greater than 23. (_We_ have to provide this invariant, which is handled in `Inner::try_inlined`.)
+/// 4. An inlined string can only hold up to `INLINED_STR_MAX_LEN` bytes of data, meaning that the length byte for that
+///    string can never have a value greater than `INLINED_STR_MAX_LEN`. (_We_ have to provide this invariant, which is
+///    handled in `Inner::try_inlined`.)
 ///
 /// [rust_isize_alloc_limit]: https://doc.rust-lang.org/stable/std/alloc/struct.Layout.html#method.from_size_align
 union Inner {
@@ -467,7 +473,8 @@ impl Inner {
 
                 let mut data = [0; INLINED_STR_DATA_BUF_LEN];
 
-                // SAFETY: We know it fits because we just checked that the string length is 23 or less.
+                // SAFETY: We know it fits because we just checked that the string length is `INLINED_STR_MAX_LEN` or
+                // less.
                 data[INLINED_STR_MAX_LEN] = len as u8;
 
                 let buf = value.as_bytes();
@@ -668,7 +675,7 @@ unsafe impl Sync for Inner {}
 /// - static (`&'static str`)
 /// - interned (`InternedString`)
 /// - shared (`Arc<str>`)
-/// - inlined (up to 23 bytes)
+/// - inlined (up to three machine words minus one byte)
 ///
 /// ### Owned and borrowed strings
 ///
@@ -701,8 +708,8 @@ unsafe impl Sync for Inner {}
 /// any backing allocation. "Small string optimization" is a common optimization for string types where small strings
 /// can be stored directly in a string type itself by utilizing a "union"-style layout.
 ///
-/// As `MetaString` utilizes such a layout, we can provide a small string optimization that allows for strings up to 23
-/// bytes in length.
+/// As `MetaString` utilizes such a layout, we can provide a small string optimization that allows for strings up to
+/// three machine words minus one byte in length: 23 bytes on 64-bit platforms and 11 bytes on 32-bit platforms.
 ///
 /// ## Conversion methods
 ///
@@ -950,6 +957,7 @@ mod tests {
         // We also expect all of inlined union variant to be the exact size of `Inner`, which means we're properly
         // maximizing the available space for inlining.
         assert_eq!(std::mem::size_of::<InlinedUnion>(), std::mem::size_of::<Inner>());
+        assert_eq!(super::INLINED_STR_MAX_LEN, std::mem::size_of::<usize>() * 3 - 1);
     }
 
     #[test]
@@ -1155,7 +1163,9 @@ mod tests {
     }
 
     fn arb_unicode_str_max_len(max_len: usize) -> impl Strategy<Value = String> {
-        ".{0,23}".prop_filter("resulting string is too longer", move |s| s.len() <= max_len)
+        ".{0,23}".prop_filter("resulting string is within the requested byte length", move |s| {
+            s.len() <= max_len
+        })
     }
 
     proptest! {
@@ -1164,9 +1174,9 @@ mod tests {
         #[test]
         #[cfg_attr(miri, ignore)]
         fn property_test_inlined_string(
-            input in arb_unicode_str_max_len(23),
+            input in arb_unicode_str_max_len(super::INLINED_STR_MAX_LEN),
         ) {
-            assert!(input.len() <= 23, "input should be 23 bytes or less");
+            assert!(input.len() <= super::INLINED_STR_MAX_LEN, "input should fit inline");
             let meta = MetaString::try_inline(&input).expect("input should fit");
 
             if input.is_empty() {

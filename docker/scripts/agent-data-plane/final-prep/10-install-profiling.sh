@@ -11,11 +11,27 @@ set -eu
 ddprof_version="v0.22.1"
 
 if [ "${INTERNAL_BUILD:-}" = "true" ]; then
-    apt-get update
-    apt-get install --no-install-recommends -y ca-certificates curl
-    curl -s -L -o /rootfs/ddprof \
-        "https://github.com/DataDog/ddprof/releases/download/${ddprof_version}/ddprof-${TARGETARCH}"
-    chmod +x /rootfs/ddprof
-    cp /tooling/maybe-profile.sh /rootfs/maybe-profile.sh
-    chmod +x /rootfs/maybe-profile.sh
+    case "${TARGETARCH}" in
+        amd64|arm64)
+            apt-get update
+            apt-get install --no-install-recommends -y ca-certificates curl
+            curl -fsSL -o /rootfs/ddprof \
+                "https://github.com/DataDog/ddprof/releases/download/${ddprof_version}/ddprof-${TARGETARCH}"
+            chmod +x /rootfs/ddprof
+            cp /tooling/maybe-profile.sh /rootfs/maybe-profile.sh
+            chmod +x /rootfs/maybe-profile.sh
+            ;;
+        arm)
+            cat > /rootfs/maybe-profile.sh <<'EOF'
+#!/usr/bin/env sh
+set -eu
+exec "$@"
+EOF
+            chmod +x /rootfs/maybe-profile.sh
+            ;;
+        *)
+            echo "ERROR: unsupported ddprof architecture '${TARGETARCH}'." >&2
+            exit 1
+            ;;
+    esac
 fi

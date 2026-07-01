@@ -25,14 +25,14 @@ FROM ${BUILDCACHE_IMAGE} AS buildcache-src
 FROM ${SPDX_LICENSES_IMAGE} AS spdx-licenses-src
 
 # Build stage: base layer preparation.
-FROM ${BUILD_IMAGE} AS build-clean
+FROM --platform=$BUILDPLATFORM ${BUILD_IMAGE} AS build-clean
 ENV PATH="/root/.cargo/bin:${PATH}"
 
 RUN --mount=type=bind,source=docker/scripts,target=/scripts \
     --mount=type=bind,source=rust-toolchain.toml,target=/tmp/rust-toolchain.toml \
     sh /scripts/run-stage.sh agent-data-plane build-prep
 
-FROM ${BUILD_IMAGE} AS build-prepped
+FROM --platform=$BUILDPLATFORM ${BUILD_IMAGE} AS build-prepped
 ENV PATH="/root/.cargo/bin:${PATH}"
 
 # Build stage: build Agent Data Plane.
@@ -96,7 +96,7 @@ RUN --mount=type=bind,source=docker/scripts,target=/scripts \
 # Each artifact lands at the path it will occupy in the running image, so the `final` stage can drop the whole tree in
 # with a single COPY. This serves as a layer for adding in additional outputs, such as license files, profiling helpers,
 # and so on.
-FROM ${BUILD_IMAGE} AS final-prep
+FROM --platform=$BUILDPLATFORM ${BUILD_IMAGE} AS final-prep
 
 ARG TARGETARCH
 ARG INTERNAL_BUILD=""

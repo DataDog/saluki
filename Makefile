@@ -46,6 +46,14 @@ MACOS_TEST_AGENT_INSTALL_DIR ?= /tmp/saluki-dda/datadog-agent
 # General build settings used for tooling, etc.
 export GO_BUILD_IMAGE ?= golang:1.23-bullseye
 export GO_APP_IMAGE ?= ubuntu:24.04
+ifeq ($(BUILD_TARGET),armv7-unknown-linux-gnueabihf)
+	export ADP_BUILD_IMAGE ?= rust:1.96-bookworm
+	export ADP_DOCKER_PLATFORM ?= linux/arm/v7
+else
+	export ADP_BUILD_IMAGE ?= ubuntu:24.04
+	export ADP_DOCKER_PLATFORM ?=
+endif
+ADP_DOCKER_PLATFORM_ARG := $(if $(ADP_DOCKER_PLATFORM),--platform $(ADP_DOCKER_PLATFORM),)
 
 # Tool configuration.
 export AUTOINSTALL ?= true
@@ -153,8 +161,10 @@ build-schema-overlay: ## Builds the config schema overlay packages
 build-adp-image-base:
 	@echo "[*] Building ADP image... (target: ${BUILD_TARGET}, profile: ${BUILD_PROFILE}, features: ${BUILD_FEATURES})"
 	@docker build \
+		$(ADP_DOCKER_PLATFORM_ARG) \
 		--tag saluki-images/agent-data-plane:$(IMAGE_TAG)-$(BUILD_PROFILE) \
 		--tag local.dev/saluki-images/agent-data-plane:$(IMAGE_TAG)-$(BUILD_PROFILE) \
+		--build-arg "BUILD_IMAGE=$(ADP_BUILD_IMAGE)" \
 		--build-arg "BUILD_TARGET=$(BUILD_TARGET)" \
 		--build-arg "BUILD_PROFILE=$(BUILD_PROFILE)" \
 		--build-arg "BUILD_FEATURES=$(BUILD_FEATURES)" \

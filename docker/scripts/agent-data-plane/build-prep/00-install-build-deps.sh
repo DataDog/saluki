@@ -23,7 +23,10 @@ apt-get install --no-install-recommends -y \
     golang-go \
     protobuf-compiler \
     curl \
-    unzip \
-    rustup
+    unzip
+
+if ! command -v rustup >/dev/null 2>&1; then
+    apt-get install --no-install-recommends -y rustup
+fi
 
 rustup set profile minimal

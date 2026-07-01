@@ -32,12 +32,12 @@ mod internal;
 
 pub(crate) mod state;
 
-#[cfg(all(target_os = "linux", not(system_allocator)))]
+#[cfg(all(target_os = "linux", not(target_arch = "arm"), not(system_allocator)))]
 #[global_allocator]
 static ALLOC: resource_accounting::TrackingAllocator<tikv_jemallocator::Jemalloc> =
     resource_accounting::TrackingAllocator::new(tikv_jemallocator::Jemalloc);
 
-#[cfg(any(not(target_os = "linux"), system_allocator))]
+#[cfg(any(not(target_os = "linux"), target_arch = "arm", system_allocator))]
 #[global_allocator]
 static ALLOC: resource_accounting::TrackingAllocator<std::alloc::System> =
     resource_accounting::TrackingAllocator::new(std::alloc::System);

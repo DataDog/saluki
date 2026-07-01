@@ -417,6 +417,10 @@ mod tests {
         }
     }
 
+    fn fake_data_size() -> u64 {
+        FakeData::random().size_bytes()
+    }
+
     fn file_count_recursive<P: AsRef<Path>>(path: P) -> u64 {
         let mut count = 0;
         let entries = std::fs::read_dir(path).expect("should not fail to read directory");
@@ -458,7 +462,8 @@ mod tests {
     async fn capacity_accessors_report_memory_and_disk_capacity() {
         let temp_dir = tempfile::tempdir().expect("should not fail to create temporary directory");
         let root_path = temp_dir.path().to_path_buf();
-        let mut retry_queue = RetryQueue::<FakeData>::new("test".to_string(), 36)
+        let item_size = fake_data_size();
+        let mut retry_queue = RetryQueue::<FakeData>::new("test".to_string(), item_size)
             .with_disk_persistence(PersistedQueueArgs {
                 root_path: root_path.clone(),
                 max_on_disk_bytes: 1024,
@@ -469,8 +474,8 @@ mod tests {
             .await
             .expect("should not fail to create retry queue with disk persistence");
 
-        assert_eq!(retry_queue.max_in_memory_bytes(), 36);
-        assert_eq!(retry_queue.available_in_memory_capacity_bytes(), 36);
+        assert_eq!(retry_queue.max_in_memory_bytes(), item_size);
+        assert_eq!(retry_queue.available_in_memory_capacity_bytes(), item_size);
         assert_eq!(
             retry_queue
                 .available_on_disk_capacity_bytes()
@@ -501,7 +506,7 @@ mod tests {
         );
 
         let _ = retry_queue.pop().await.expect("pop should succeed");
-        assert_eq!(retry_queue.available_in_memory_capacity_bytes(), 36);
+        assert_eq!(retry_queue.available_in_memory_capacity_bytes(), item_size);
     }
 
     #[tokio::test]
@@ -520,7 +525,7 @@ mod tests {
         let data2 = FakeData::random();
 
         // Create our retry queue such that it is sized to only fit one entry at a time.
-        let mut retry_queue = RetryQueue::<FakeData>::new("test".to_string(), 36);
+        let mut retry_queue = RetryQueue::<FakeData>::new("test".to_string(), fake_data_size());
 
         // Push our data to the queue.
         let push_result = retry_queue.push(data1).await.expect("should not fail to push data");
@@ -616,8 +621,9 @@ mod tests {
 
         let temp_dir = tempfile::tempdir().expect("should not fail to create temporary directory");
         let root_path = temp_dir.path().to_path_buf();
+        let item_size = fake_data_size();
 
-        let mut retry_queue = RetryQueue::<FakeData>::new("test".to_string(), 120)
+        let mut retry_queue = RetryQueue::<FakeData>::new("test".to_string(), item_size * 3 + item_size / 3)
             .with_flush_to_disk_mem_ratio(0.5)
             .with_disk_persistence(PersistedQueueArgs {
                 root_path: root_path.clone(),
@@ -696,7 +702,7 @@ mod tests {
         let temp_dir = tempfile::tempdir().expect("should not fail to create temporary directory");
         let root_path = temp_dir.path().to_path_buf();
 
-        let mut retry_queue = RetryQueue::<FakeData>::new("test".to_string(), 72)
+        let mut retry_queue = RetryQueue::<FakeData>::new("test".to_string(), fake_data_size() * 2)
             .with_flush_to_disk_mem_ratio(0.0)
             .with_disk_persistence(PersistedQueueArgs {
                 root_path: root_path.clone(),
