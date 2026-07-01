@@ -19,7 +19,9 @@ use http::{Request, Uri};
 use http_body::Body;
 use http_body_util::BodyExt as _;
 use hyper::{body::Incoming, Response};
-use saluki_common::{hash::hash_single_stable, task::spawn_traced_named, time::get_unix_timestamp};
+use saluki_common::{
+    collections::FastHashMap, hash::hash_single_stable, task::spawn_traced_named, time::get_unix_timestamp,
+};
 use saluki_config::GenericConfiguration;
 use saluki_core::components::ComponentContext;
 use saluki_error::{generic_error, GenericError};
@@ -45,7 +47,9 @@ use super::{
     endpoints::{EndpointRoute, EndpointV3Settings, ResolvedEndpoint, RoutableEndpoint, V3EndpointConfig},
     middleware::{for_resolved_endpoint, with_allow_arbitrary_tags, with_version_info},
     retry_capacity::{TrafficRateWindow, RETRY_QUEUE_CAPACITY_BUCKET_DURATION_SECS},
-    telemetry::{ComponentTelemetry, SharedTransactionQueueTelemetry, TransactionQueueTelemetry},
+    telemetry::{
+        ComponentTelemetry, SharedTransactionQueueTelemetry, TransactionInputTelemetry, TransactionQueueTelemetry,
+    },
     transaction::{Metadata, Transaction, TransactionBody},
     validation::ApiKeyValidator,
     METRIC_INTAKE_PATHS,
@@ -420,6 +424,21 @@ fn should_route_to_endpoint(is_metrics_request: bool, has_metrics_primary: bool,
     }
 }
 
+fn track_transaction_input_for_endpoint(
+    telemetry_by_endpoint: &mut FastHashMap<MetaString, TransactionInputTelemetry>, telemetry: &ComponentTelemetry,
+    endpoint_domain: &str, endpoint_name: &str, transaction_size: u64,
+) {
+    if let Some(transaction_input_telemetry) = telemetry_by_endpoint.get(endpoint_name) {
+        transaction_input_telemetry.track(transaction_size);
+        return;
+    }
+
+    let endpoint_name = MetaString::from(endpoint_name);
+    let transaction_input_telemetry = telemetry.register_transaction_input_telemetry(endpoint_domain, &endpoint_name);
+    transaction_input_telemetry.track(transaction_size);
+    telemetry_by_endpoint.insert(endpoint_name, transaction_input_telemetry);
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_endpoint_io_loop<B>(
     mut txns_rx: mpsc::Receiver<Transaction<B>>, task_barrier: Arc<Barrier>, context: ComponentContext,
@@ -530,6 +549,7 @@ async fn run_endpoint_io_loop<B>(
     );
 
     let mut in_flight = JoinSet::new();
+    let mut transaction_input_telemetry_by_endpoint = FastHashMap::<MetaString, TransactionInputTelemetry>::default();
     let mut done = false;
 
     loop {
@@ -553,11 +573,15 @@ async fn run_endpoint_io_loop<B>(
                         strip_metrics_validation_headers(txn)
                     };
                     let transaction_size = txn.size_bytes();
-                    let transaction_endpoint_name = endpoint_name(txn.request_uri())
-                        .unwrap_or_else(|| MetaString::from(txn.request_uri().path()));
-                    telemetry.track_transaction_input(
+                    let transaction_endpoint_name = endpoint_name(txn.request_uri());
+                    let transaction_endpoint_name = transaction_endpoint_name
+                        .as_deref()
+                        .unwrap_or_else(|| txn.request_uri().path());
+                    track_transaction_input_for_endpoint(
+                        &mut transaction_input_telemetry_by_endpoint,
+                        &telemetry,
                         &endpoint_domain,
-                        &transaction_endpoint_name,
+                        transaction_endpoint_name,
                         transaction_size,
                     );
 
