@@ -25,7 +25,6 @@ impl RawTagsFilterPredicate for WellKnownTagsFilterPredicate {
 /// about the source of the metric, event, or service check.
 pub struct WellKnownTags<'a> {
     pub hostname: Option<&'a str>,
-    pub hostname_raw: Option<&'a str>,
     pub pod_uid: Option<&'a str>,
     pub jmx_check_name: Option<&'a str>,
     pub cardinality: Option<OriginTagCardinality>,
@@ -38,7 +37,6 @@ impl<'a> WellKnownTags<'a> {
     pub fn from_raw_tags(tags: RawTags<'a>) -> Self {
         let mut well_known_tags = Self {
             hostname: None,
-            hostname_raw: None,
             pod_uid: None,
             jmx_check_name: None,
             cardinality: None,
@@ -46,12 +44,10 @@ impl<'a> WellKnownTags<'a> {
 
         let filtered_tags = RawTagsFilter::include(tags, WellKnownTagsFilterPredicate);
         for tag in filtered_tags {
-            let raw_tag = tag;
-            let tag = BorrowedTag::from(raw_tag);
+            let tag = BorrowedTag::from(tag);
             match tag.name_and_value() {
                 (HOST_TAG_KEY, Some(hostname)) => {
                     well_known_tags.hostname = Some(hostname);
-                    well_known_tags.hostname_raw = Some(raw_tag);
                 }
                 (ENTITY_ID_TAG_KEY, Some(entity_id)) if entity_id != ENTITY_ID_IGNORE_VALUE => {
                     well_known_tags.pod_uid = Some(entity_id);
@@ -85,7 +81,6 @@ mod tests {
 
         assert_eq!(wkt.cardinality, None);
         assert_eq!(wkt.hostname, None);
-        assert_eq!(wkt.hostname_raw, None);
         assert_eq!(wkt.jmx_check_name, None);
         assert_eq!(wkt.pod_uid, None);
     }
@@ -126,7 +121,6 @@ mod tests {
             let wkt = WellKnownTags::from_raw_tags(tags);
 
             assert_eq!(wkt.hostname, expected);
-            assert_eq!(wkt.hostname_raw, Some(host_tag.as_str()));
         }
     }
 
