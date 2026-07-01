@@ -5,5 +5,9 @@ edition = { workspace = true }
 license = { workspace = true }
 repository = { workspace = true }
 
+# This crate is a pure data model, avoid adding any workspace dependencies.
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
+
 [lints]
 workspace = true
