@@ -26,6 +26,7 @@ pub fn generate(overlay: &SchemaOverlay, schema_map: &IndexMap<String, FieldInfo
         let alias_lit = alias_literal(&p.test_support.additional_yaml_paths);
         let pipeline_affinity = overlay_pipeline_affinity_expr(&p.pipelines);
         let default_lit = schema_default_literal(yaml_path, schema_map);
+        let is_duration = schema_is_duration(yaml_path, schema_map);
 
         writeln!(out, "    ClassifierEntry {{").unwrap();
         writeln!(out, "        yaml_path: \"{}\",", yaml_path).unwrap();
@@ -33,6 +34,7 @@ pub fn generate(overlay: &SchemaOverlay, schema_map: &IndexMap<String, FieldInfo
         writeln!(out, "        support_level: SupportLevel::Partial,").unwrap();
         writeln!(out, "        pipeline_affinity: {},", pipeline_affinity).unwrap();
         writeln!(out, "        default: {},", default_lit).unwrap();
+        writeln!(out, "        is_duration: {},", is_duration).unwrap();
         writeln!(out, "    }},").unwrap();
     }
 
@@ -45,6 +47,7 @@ pub fn generate(overlay: &SchemaOverlay, schema_map: &IndexMap<String, FieldInfo
         };
         let pipeline_affinity = overlay_pipeline_affinity_expr(&u.pipelines);
         let default_lit = schema_default_literal(yaml_path, schema_map);
+        let is_duration = schema_is_duration(yaml_path, schema_map);
 
         writeln!(out, "    ClassifierEntry {{").unwrap();
         writeln!(out, "        yaml_path: \"{}\",", yaml_path).unwrap();
@@ -52,6 +55,7 @@ pub fn generate(overlay: &SchemaOverlay, schema_map: &IndexMap<String, FieldInfo
         writeln!(out, "        support_level: SupportLevel::Incompatible({}),", severity).unwrap();
         writeln!(out, "        pipeline_affinity: {},", pipeline_affinity).unwrap();
         writeln!(out, "        default: {},", default_lit).unwrap();
+        writeln!(out, "        is_duration: {},", is_duration).unwrap();
         writeln!(out, "    }},").unwrap();
     }
 
@@ -64,6 +68,7 @@ pub fn generate(overlay: &SchemaOverlay, schema_map: &IndexMap<String, FieldInfo
             None => continue,
         };
         let default_lit = schema_default_literal(yaml_path, schema_map);
+        let is_duration = schema_is_duration(yaml_path, schema_map);
 
         writeln!(out, "    ClassifierEntry {{").unwrap();
         writeln!(out, "        yaml_path: \"{}\",", yaml_path).unwrap();
@@ -71,6 +76,7 @@ pub fn generate(overlay: &SchemaOverlay, schema_map: &IndexMap<String, FieldInfo
         writeln!(out, "        support_level: SupportLevel::Incompatible({}),", severity).unwrap();
         writeln!(out, "        pipeline_affinity: PipelineAffinity::CrossCutting,").unwrap();
         writeln!(out, "        default: {},", default_lit).unwrap();
+        writeln!(out, "        is_duration: {},", is_duration).unwrap();
         writeln!(out, "    }},").unwrap();
     }
 
@@ -90,6 +96,10 @@ fn alias_literal(paths: &[String]) -> String {
         let items: Vec<String> = paths.iter().map(|p| format!("\"{}\"", p)).collect();
         format!("&[{}]", items.join(", "))
     }
+}
+
+fn schema_is_duration(yaml_path: &str, schema_map: &IndexMap<String, FieldInfo>) -> bool {
+    schema_map.get(yaml_path).map(|info| info.is_duration).unwrap_or(false)
 }
 
 fn schema_default_literal(yaml_path: &str, schema_map: &IndexMap<String, FieldInfo>) -> String {

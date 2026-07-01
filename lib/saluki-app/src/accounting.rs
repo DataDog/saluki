@@ -11,7 +11,10 @@ use resource_accounting::{
 use saluki_api::{DynamicRoute, EndpointType};
 use saluki_common::{collections::FastHashMap, sync::shutdown::ShutdownHandle};
 use saluki_config::GenericConfiguration;
-use saluki_core::runtime::{state::DataspaceRegistry, InitializationError, Supervisable, SupervisorFuture};
+use saluki_core::{
+    diagnostic::DiagnosticHandle,
+    runtime::{state::DataspaceRegistry, InitializationError, Supervisable, SupervisorFuture},
+};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use serde::Deserialize;
 use tokio::{select, time::sleep};
@@ -326,11 +329,18 @@ impl Supervisable for ResourceTelemetryWorker {
 
         let memory_routes = DynamicRoute::http(EndpointType::Unprivileged, self.component_registry.api_handler());
 
+        let component_registry = self.component_registry.clone();
+        let flare_handle = DiagnosticHandle::new("memory_status.json", move || {
+            component_registry.memory_snapshot_json().into_bytes()
+        });
+
         Ok(Box::pin(async move {
-            // Register our API routes before we actually start running.
-            DataspaceRegistry::try_current()
-                .ok_or_else(|| generic_error!("Dataspace not available."))?
-                .assert(memory_routes, "resource-telemetry-api");
+            let dataspace =
+                DataspaceRegistry::try_current().ok_or_else(|| generic_error!("Dataspace not available."))?;
+
+            // Register our API routes and diagnostic handle before we actually start running.
+            dataspace.assert(memory_routes, "resource-telemetry-api");
+            dataspace.assert(flare_handle, "diag-memory");
 
             select! {
                 _ = process_shutdown => {},
