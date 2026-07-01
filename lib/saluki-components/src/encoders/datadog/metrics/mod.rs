@@ -1602,6 +1602,9 @@ fn write_metric_to_v3(
     match metric.values() {
         MetricValues::Counter(points) | MetricValues::Gauge(points) => {
             for (ts, val) in points {
+                if !emittable_scalar_point(val) {
+                    continue;
+                }
                 let timestamp = ts.map(|t| t.get() as i64).unwrap_or(0);
                 builder.add_point(timestamp, val);
             }
@@ -1609,15 +1612,21 @@ fn write_metric_to_v3(
         MetricValues::Rate(points, interval) => {
             builder.set_interval(interval.as_secs());
             for (ts, val) in points {
-                let timestamp = ts.map(|t| t.get() as i64).unwrap_or(0);
                 // Scale by interval as done in V2
                 let scaled = val / interval.as_secs_f64();
+                if !emittable_scalar_point(scaled) {
+                    continue;
+                }
+                let timestamp = ts.map(|t| t.get() as i64).unwrap_or(0);
                 builder.add_point(timestamp, scaled);
             }
         }
         MetricValues::Set(points) => {
             // Set values are already converted to count in the iterator
             for (ts, count) in points {
+                if !emittable_scalar_point(count) {
+                    continue;
+                }
                 let timestamp = ts.map(|t| t.get() as i64).unwrap_or(0);
                 builder.add_point(timestamp, count);
             }
@@ -1666,6 +1675,11 @@ fn write_metric_to_v3(
     }
 
     builder.close();
+}
+
+#[inline]
+fn emittable_scalar_point(point: f64) -> bool {
+    point.is_finite()
 }
 
 fn is_v3_series_device_tag(tag: &Tag) -> bool {
@@ -1954,6 +1968,50 @@ serializer_experimental_use_v3_api:
         let decoded_body = zstd::stream::decode_all(Cursor::new(request.request.into_body().into_bytes()))
             .expect("compressed V3 body should decode");
         assert_eq!(decoded_body, expected_body);
+    }
+
+    #[test]
+    fn v3_drops_non_finite_scalar_points() {
+        const NUM_POINTS_FIELD_NUMBER: u32 = 15;
+        const VALUE_SINT64_FIELD_NUMBER: u32 = 17;
+
+        let metrics = vec![
+            Metric::from_parts(
+                Context::from_static_parts("v3.finite.counter", &[]),
+                MetricValues::counter([(1, 1.0_f64), (2, f64::NAN), (3, f64::INFINITY), (4, 2.0)]),
+                MetricMetadata::default(),
+            ),
+            Metric::from_parts(
+                Context::from_static_parts("v3.finite.gauge", &[]),
+                MetricValues::gauge([(1, 3.0_f64), (2, f64::NAN), (3, 4.0)]),
+                MetricMetadata::default(),
+            ),
+            Metric::from_parts(
+                Context::from_static_parts("v3.finite.rate", &[]),
+                MetricValues::rate(
+                    [(1, 30.0_f64), (2, f64::INFINITY), (3, f64::NAN)],
+                    Duration::from_secs(10),
+                ),
+                MetricMetadata::default(),
+            ),
+            Metric::set("v3.finite.set", "alpha"),
+        ];
+
+        let encoded = encode_v3_metrics_batch(&metrics, &SharedTagSet::default()).expect("metrics should encode to V3");
+        let column = |field_number| {
+            encoded
+                .stats
+                .columns
+                .iter()
+                .find(|column| column.field_number == field_number)
+                .map(|column| column.bytes.as_slice())
+        };
+
+        assert_eq!(column(NUM_POINTS_FIELD_NUMBER), Some(&[2, 2, 1, 1][..]));
+        // Values are 1, 2, 3, 4, 3 (rate scaled by 10s), and 1 (set cardinality), encoded as sint64.
+        assert_eq!(column(VALUE_SINT64_FIELD_NUMBER), Some(&[2, 4, 6, 8, 6, 2][..]));
+        assert_eq!(encoded.stats.value_encoding_stats.sint64, 6);
+        assert_eq!(encoded.stats.value_encoding_stats.float64, 0);
     }
 
     #[tokio::test]
