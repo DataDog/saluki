@@ -1,0 +1,49 @@
+syntax = "proto3";
+
+package datadog.checks.v1.histogram_bucket;
+
+// HistogramBucket carries a pre-aggregated histogram bucket produced
+// by an OpenMetrics / Prometheus-style integration. It is the wire
+// shape for both the agent's `Sender.HistogramBucket` and
+// `Sender.OpenmetricsBucket` upcalls (see
+// pkg/aggregator/sender/sender.go on the receiving side); the two
+// differ only in whether the producer is emitting many buckets per
+// (name, tags) context (`HistogramBucket`, multiple_buckets=true) or
+// exactly one (`OpenmetricsBucket`, multiple_buckets=false, the
+// default for Python `aggregator.submit_histogram_bucket`).
+message HistogramBucket {
+    // Metric name (e.g. "http.request.duration.count").
+    string name = 1;
+
+    // Number of observations counted by this bucket.
+    int64 value = 2;
+
+    // Bucket bounds. For point observations (single-value buckets),
+    // both bounds carry the same value.
+    double lower_bound = 3;
+    double upper_bound = 4;
+
+    // True when value increases monotonically across calls and the
+    // receiver should compute per-bucket deltas client-side. False
+    // when the producer already emits deltas.
+    bool monotonic = 5;
+
+    // Hostname this bucket was produced on. Empty means "use the
+    // receiving agent's default hostname".
+    string hostname = 6;
+
+    // Tags in `key:value` form.
+    repeated string tags = 7;
+
+    // When `monotonic=true`, indicates the receiver should emit the
+    // first observed value rather than wait for a second to compute a
+    // delta. Producers set this when they know the bucket started from
+    // zero recently (e.g. a freshly-scraped target).
+    bool flush_first_value = 8;
+
+    // Distinguishes the two sender upcalls. False (the default)
+    // routes to `Sender.OpenmetricsBucket`; true routes to
+    // `Sender.HistogramBucket`. Python `submit_histogram_bucket`
+    // always lands as false.
+    bool multiple_buckets = 9;
+}

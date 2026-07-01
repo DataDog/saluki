@@ -12,7 +12,37 @@ enum LogLevel {
     LOG_LEVEL_CRITICAL = 50;
 }
 
+// Log carries a single log record produced by an integration check.
+//
+// Fields 1 and 2 mirror the original minimal shape and stay for backward
+// compatibility. Fields 3-8 are additive: proto3 default-empty values are
+// wire-compatible with peers that don't populate them.
 message Log {
     string message = 1;
     LogLevel level = 2;
+
+    // Integration source name (e.g. "mysql", "http_check"). Used by the
+    // logs intake to route and tag.
+    string source = 3;
+
+    // Hostname the log was produced on. Empty means "use the receiving
+    // agent's default hostname".
+    string hostname = 4;
+
+    // Service the log relates to. Surfaces as `service` in the intake.
+    string service = 5;
+
+    // Log-level tags, in `key:value` form (matches the agent's wire
+    // format used elsewhere). Combined with host / integration tags
+    // downstream.
+    repeated string tags = 6;
+
+    // Unix-nanosecond timestamp at which the producer believes the log
+    // event happened. Zero means "stamp at receive time".
+    int64 timestamp = 7;
+
+    // Free-form additional structured fields. Each value is a JSON-encoded
+    // string so producers can convey arbitrary scalar / array / object
+    // shapes through a stable wire type.
+    map<string, string> additional_properties = 8;
 }
