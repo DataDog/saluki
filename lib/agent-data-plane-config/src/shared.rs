@@ -1,5 +1,6 @@
 //! Cross-cutting values consumed by more than one domain.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -79,6 +80,10 @@ pub struct AltMetricsIntake {
 
     /// URL of the alternate metrics intake.
     pub url: String,
+
+    /// Whether metrics ship to this intake over the V3 series protocol
+    /// (`observability_pipelines_worker.metrics.use_v3_api.series` / `vector.metrics.use_v3_api.series`).
+    pub use_v3_series: bool,
 }
 
 /// Outbound HTTP proxy settings.
@@ -239,6 +244,85 @@ pub struct MetricsEncoding {
 
     /// Histogram aggregation and encoding settings.
     pub histogram: HistogramEncoding,
+
+    /// V3 metrics-intake protocol settings (`serializer_experimental_use_v3_api.*`).
+    pub v3_api: V3ApiEncoding,
+
+    /// Global and per-endpoint V3 series routing mode (`use_v3_api.series.*`).
+    pub v3_series_mode: V3SeriesMode,
+
+    /// ADP-only safety gate that authorizes V3 series (`data_plane.metrics.v3.series.enabled`, not
+    /// in the Datadog Agent config schema).
+    pub v3_series_enabled: bool,
+}
+
+/// V3 metrics-intake protocol settings for the series and sketches payloads
+/// (`serializer_experimental_use_v3_api.*`).
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct V3ApiEncoding {
+    /// V3 series intake settings.
+    pub series: V3ApiSettings,
+
+    /// V3 sketches intake settings (the series-only fields stay at their defaults).
+    pub sketches: V3ApiSettings,
+
+    /// zstd compression level for V3 payloads.
+    pub compression_level: i32,
+}
+
+/// Per-payload V3 intake settings, reused for both series and sketches. Sketches read only
+/// `endpoints` and `validate`; the remaining series-only fields stay at their defaults.
+#[derive(Clone, Debug, Serialize)]
+pub struct V3ApiSettings {
+    /// Endpoints enabled for the V3 intake.
+    pub endpoints: Vec<String>,
+
+    /// Whether payloads are dual-sent to v2 and v3 for validation.
+    pub validate: bool,
+
+    /// Whether the beta V3 route is used instead of the stable one (series only).
+    pub use_beta: bool,
+
+    /// Route for the beta V3 series API (series only).
+    pub beta_route: String,
+
+    /// Shadow-mode sample rate (series only).
+    pub shadow_sample_rate: f64,
+
+    /// Sites for which shadow mode is enabled (series only).
+    pub shadow_sites: Vec<String>,
+}
+
+impl Default for V3ApiSettings {
+    fn default() -> Self {
+        Self {
+            endpoints: Vec::new(),
+            validate: false,
+            use_beta: false,
+            beta_route: "/api/intake/metrics/v3beta/series".to_string(),
+            shadow_sample_rate: 0.0,
+            shadow_sites: vec!["datadoghq.com".to_string()],
+        }
+    }
+}
+
+/// Global and per-endpoint V3 series routing mode (`use_v3_api.series.*`).
+#[derive(Clone, Debug, Serialize)]
+pub struct V3SeriesMode {
+    /// Global V3 series mode. TODO: consider modeling as an enum.
+    pub mode: String,
+
+    /// Per-endpoint V3 series mode overrides, keyed by endpoint URL.
+    pub endpoint_modes: HashMap<String, String>,
+}
+
+impl Default for V3SeriesMode {
+    fn default() -> Self {
+        Self {
+            mode: "true".to_string(),
+            endpoint_modes: HashMap::new(),
+        }
+    }
 }
 
 /// Histogram aggregation/encoding settings, shared by the DogStatsD and checks metrics pipelines.
