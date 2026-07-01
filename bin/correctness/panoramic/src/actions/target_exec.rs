@@ -83,33 +83,16 @@ async fn exec_in_container_with_timeout(
     container_name: &str, command: &[String], timeout: Duration, cancel_token: &CancellationToken,
     exit_token: &CancellationToken,
 ) -> Result<String, GenericError> {
-    let deadline = Instant::now() + timeout;
-    let mut last_error = None;
+    if command.is_empty() {
+        return Err(generic_error!("target_exec command must not be empty."));
+    }
 
-    loop {
-        if cancel_token.is_cancelled() || exit_token.is_cancelled() {
-            return Err(generic_error!("Action cancelled because the target exited."));
-        }
-        if Instant::now() > deadline {
-            return Err(match last_error {
-                Some(error) => generic_error!(
-                    "Timed out running command in container '{}'. Last attempt failed: {}.",
-                    container_name,
-                    error
-                ),
-                None => generic_error!(
-                    "Timed out running command in container '{}'. No exec attempt completed before the deadline.",
-                    container_name
-                ),
-            });
-        }
-
-        match exec_in_container_collect(container_name, command.to_vec()).await {
-            Ok(output) => return Ok(output),
-            Err(error) => {
-                last_error = Some(error);
-                tokio::time::sleep(Duration::from_millis(500)).await;
-            }
+    tokio::select! {
+        _ = cancel_token.cancelled() => Err(generic_error!("Action cancelled.")),
+        _ = exit_token.cancelled() => Err(generic_error!("Action cancelled because the target exited.")),
+        result = tokio::time::timeout(timeout, exec_in_container_collect(container_name, command.to_vec())) => match result {
+            Ok(result) => result,
+            Err(_) => Err(generic_error!("Timed out running command in container '{}': {}.", container_name, command.join(" "))),
         }
     }
 }
@@ -186,6 +169,7 @@ async fn exec_on_host_collect(cmd: Vec<String>) -> Result<String, GenericError> 
     let output = Command::new(program)
         .args(args)
         .stdin(Stdio::null())
+        .kill_on_drop(true)
         .output()
         .await
         .with_error_context(|| format!("Failed to run host command '{}'.", cmd.join(" ")))?;
@@ -203,7 +187,7 @@ async fn exec_on_host_collect(cmd: Vec<String>) -> Result<String, GenericError> 
 
 #[cfg(test)]
 mod tests {
-    use super::{exec_on_host_collect, TargetExecAction};
+    use super::{exec_on_host_collect, exec_on_host_with_timeout, TargetExecAction};
     use crate::actions::Action as _;
 
     #[test]
@@ -230,5 +214,40 @@ mod tests {
         .expect("host command should succeed");
 
         assert_eq!(output, "target-exec");
+    }
+
+    #[tokio::test]
+    async fn host_exec_reports_nonzero_exit_immediately() {
+        let started = std::time::Instant::now();
+        let err = exec_on_host_with_timeout(
+            &[
+                "sh".to_string(),
+                "-c".to_string(),
+                "printf fail-message >&2; exit 7".to_string(),
+            ],
+            std::time::Duration::from_secs(30),
+            &tokio_util::sync::CancellationToken::new(),
+            &tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        .expect_err("host command should fail");
+
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        assert!(err.to_string().contains("fail-message"));
+        assert!(err.to_string().contains("exit status: 7"));
+    }
+
+    #[tokio::test]
+    async fn host_exec_times_out() {
+        let err = exec_on_host_with_timeout(
+            &["sh".to_string(), "-c".to_string(), "sleep 5".to_string()],
+            std::time::Duration::from_millis(50),
+            &tokio_util::sync::CancellationToken::new(),
+            &tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        .expect_err("host command should time out");
+
+        assert!(err.to_string().contains("Timed out running host command"));
     }
 }

@@ -252,7 +252,7 @@ pub enum ActionConfig {
         timeout: HumanDuration,
     },
 
-    /// Run a command inside the target container.
+    /// Run a command inside the target environment.
     TargetExec {
         /// Command and arguments to run in the target environment.
         command: Vec<String>,
