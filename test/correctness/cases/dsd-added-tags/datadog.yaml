@@ -47,3 +47,11 @@ dogstatsd_tags:
 # arbitrary long duration that outlasts the test run, so every metric in the test contains those tags. Has no effect on
 # `dogstatsd_tags`, which the DSD source applies per-packet regardless of duration.
 expected_tags_duration: 1000m
+
+# The Datadog Agent defaults to the v3 series API since 7.81.0 (commit 68ede29f685), but the
+# correctness intake's v3 parser is incomplete and drops most of the baseline metrics, causing
+# false failures. Force v2 so both sides use the same serialization path until the intake's v3
+# parser is fixed and ADP's v3 support is enabled.
+use_v3_api:
+  series:
+    enabled: false
