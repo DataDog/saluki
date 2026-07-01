@@ -15,10 +15,12 @@ use std::collections::HashMap;
 /// 5001 -> 55001, etc.). The GUI is disabled outright since we don't exercise it.
 ///
 /// Note on env-var nesting: saluki-config (and figment) split env-var names on `__` to map to
-/// nested config keys. Single-underscore env vars like `DD_DATA_PLANE_API_LISTEN_ADDRESS` map
-/// to the flat key `data_plane_api_listen_address` and are silently ignored; we use double
-/// underscores at every dot boundary for the deep ADP / OTLP keys below. The top-level Agent
-/// env vars (`DD_CMD_PORT` etc.) are explicitly queried by the Agent so they don't need it.
+/// nested config keys. The ADP listen-address fields accept both the single-underscore Agent
+/// viper form (e.g. `DD_DATA_PLANE_API_LISTEN_ADDRESS`, which the Core Agent propagates to ADP
+/// via the config stream in converged mode, and ADP falls back to directly in standalone mode)
+/// and the double-underscore figment form (e.g. `DD_DATA_PLANE__API_LISTEN_ADDRESS`). Other
+/// deep ADP / OTLP keys still require `__` at every dot boundary. The top-level Agent env vars
+/// (`DD_CMD_PORT` etc.) are explicitly queried by the Agent so they don't need it.
 pub fn port_isolation_env() -> HashMap<String, String> {
     HashMap::from([
         // ----- Core Agent ports -----
@@ -38,16 +40,21 @@ pub fn port_isolation_env() -> HashMap<String, String> {
         // bootstrap-mode Agent.
         ("DD_DOGSTATSD_PORT".to_string(), "58125".to_string()),
         // ----- ADP listen addresses ----- (URI-style; ListenAddress accepts `tcp://host:port`)
+        //
+        // Single-underscore viper form: the Core Agent reads these as data_plane.* config and
+        // propagates them to ADP via the config stream in converged mode. ADP's config.rs also
+        // accepts the flat key produced by these vars (data_plane_api_listen_address etc.) as a
+        // fallback when the nested key isn't present (standalone mode, no config stream).
         (
-            "DD_DATA_PLANE__API_LISTEN_ADDRESS".to_string(),
+            "DD_DATA_PLANE_API_LISTEN_ADDRESS".to_string(),
             "tcp://0.0.0.0:55100".to_string(),
         ),
         (
-            "DD_DATA_PLANE__SECURE_API_LISTEN_ADDRESS".to_string(),
+            "DD_DATA_PLANE_SECURE_API_LISTEN_ADDRESS".to_string(),
             "tcp://0.0.0.0:55101".to_string(),
         ),
         (
-            "DD_DATA_PLANE__TELEMETRY_LISTEN_ADDR".to_string(),
+            "DD_DATA_PLANE_TELEMETRY_LISTEN_ADDR".to_string(),
             "tcp://0.0.0.0:55102".to_string(),
         ),
         // ----- OTLP receiver endpoints ----- (same shape as the Datadog Agent's OTLP env vars)
