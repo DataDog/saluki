@@ -1401,6 +1401,13 @@ async fn drive_stream(
                         bytes_read
                     );
 
+                    if should_drop_oversized_named_pipe_frame(&listen_addr, io_buffer) {
+                        metrics.framing_errors().increment(1);
+                        debug!(%listen_addr, %peer_addr, "DogStatsD named pipe frame exceeded the configured buffer size. Dropping frame.");
+                        io_buffer.clear();
+                        continue 'read;
+                    }
+
                     'frame: loop {
                         let frame_result = framer.next_frame(io_buffer, reached_eof);
                         let completed_outer_frames = framer.take_completed_outer_frames();
@@ -1504,6 +1511,12 @@ async fn drive_stream(
     metrics.connections_active().decrement(1);
 
     debug!(%listen_addr, "Stream handler stopped.");
+}
+
+fn should_drop_oversized_named_pipe_frame(listen_addr: &ListenAddress, buffer: &BytesBuffer) -> bool {
+    matches!(listen_addr, ListenAddress::NamedPipe { .. })
+        && buffer.remaining_mut() == 0
+        && !buffer.chunk().contains(&b'\n')
 }
 
 fn should_warn_stream_log_too_big(listen_addr: &ListenAddress, error: &FramingError, stream_log_too_big: bool) -> bool {
@@ -1956,13 +1969,18 @@ mod tests {
         time::Duration,
     };
 
-    use bytes::Bytes;
+    use bytes::{BufMut as _, Bytes};
     use bytesize::ByteSize;
     use saluki_config::ConfigurationLoader;
     use saluki_context::{origin::RawOrigin, ContextResolverBuilder, TagsResolverBuilder};
-    use saluki_core::{components::ComponentContext, pooling::ObjectPool as _, topology::ComponentId};
+    use saluki_core::{
+        components::ComponentContext,
+        pooling::{helpers::get_pooled_object_via_builder, ObjectPool as _},
+        topology::ComponentId,
+    };
     use saluki_env::workload::{CaptureEntityResolver, EntityId};
     use saluki_io::{
+        buf::{BytesBuffer, FixedSizeVec},
         deser::codec::dogstatsd::{DogStatsDCodec, DogStatsDCodecConfiguration, ParsedPacket},
         net::{ConnectionAddress, ListenAddress, ProcessCredentials, ProcessIdentity},
     };
@@ -2529,6 +2547,42 @@ mod tests {
         let eol_required = config.eol_required();
 
         assert!(eol_required.for_listener(&udp_listen_address()));
+    }
+
+    #[test]
+    fn drops_full_named_pipe_buffer_without_newline() {
+        let named_pipe_stream = named_pipe_listen_address();
+        let mut buffer = get_pooled_object_via_builder::<_, BytesBuffer>(|| FixedSizeVec::with_capacity(8));
+        buffer.put_slice(b"12345678");
+
+        assert!(super::should_drop_oversized_named_pipe_frame(
+            &named_pipe_stream,
+            &buffer
+        ));
+    }
+
+    #[test]
+    fn keeps_named_pipe_partial_frame_when_buffer_has_capacity() {
+        let named_pipe_stream = named_pipe_listen_address();
+        let mut buffer = get_pooled_object_via_builder::<_, BytesBuffer>(|| FixedSizeVec::with_capacity(9));
+        buffer.put_slice(b"12345678");
+
+        assert!(!super::should_drop_oversized_named_pipe_frame(
+            &named_pipe_stream,
+            &buffer
+        ));
+    }
+
+    #[test]
+    fn keeps_full_named_pipe_buffer_with_newline() {
+        let named_pipe_stream = named_pipe_listen_address();
+        let mut buffer = get_pooled_object_via_builder::<_, BytesBuffer>(|| FixedSizeVec::with_capacity(8));
+        buffer.put_slice(b"1234567\n");
+
+        assert!(!super::should_drop_oversized_named_pipe_frame(
+            &named_pipe_stream,
+            &buffer
+        ));
     }
 
     #[test]

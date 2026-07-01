@@ -116,4 +116,20 @@ mod tests {
         assert_eq!(&frame[..], b"test.metric:1|c");
         assert!(buf.is_empty());
     }
+
+    #[test]
+    fn named_pipe_waits_for_newline_when_partial_frame_has_capacity() {
+        let payload = b"test.metric:1|c";
+        let mut buf = VecDeque::with_capacity(payload.len() + 1);
+        buf.extend(payload);
+        let mut framer = get_framer(
+            &ListenAddress::named_pipe("datadog-dogstatsd", "D:AI(A;;GA;;;WD)"),
+            true,
+        );
+
+        let frame = framer.next_frame(&mut buf, false).expect("framing should not fail");
+
+        assert!(frame.is_none());
+        assert_eq!(buf.len(), payload.len());
+    }
 }
