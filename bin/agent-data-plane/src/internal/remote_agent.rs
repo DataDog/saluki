@@ -579,6 +579,7 @@ impl FlareProvider for RemoteAgentImpl {
                 // Grab and collect all asserted diagnostic handles 
                 if let Some(dataspace) = self.dataspace.get() {
                     let handles = dataspace.current_values::<DiagnosticHandle>(IdentifierFilter::all());
+                    let total_handles = handles.len();
                     let deadline = tokio::time::Instant::now() + DIAGNOSTIC_COLLECT_TIMEOUT;
 
                     for handle in handles {
@@ -601,6 +602,10 @@ impl FlareProvider for RemoteAgentImpl {
                         };
 
                         files.insert(artifact_name, cap_artifact(bytes));
+                    }
+
+                    if files.len() < total_handles {
+                        warn!("Diagnostic artifact collection timed out; collected {}/{total_handles} artifacts.", files.len());
                     }
                 }
 
