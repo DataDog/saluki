@@ -4425,6 +4425,7 @@ dependencies = [
  "hyper",
  "hyper-http-proxy",
  "lru-slab",
+ "memchr",
  "metrics",
  "opentelemetry-semantic-conventions",
  "otlp-protos",
