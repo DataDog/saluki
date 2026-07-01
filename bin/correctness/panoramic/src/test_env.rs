@@ -16,11 +16,12 @@ use std::collections::HashMap;
 ///
 /// Note on env-var nesting: saluki-config (and figment) split env-var names on `__` to map to
 /// nested config keys. The ADP listen-address fields accept both the single-underscore Agent
-/// viper form (e.g. `DD_DATA_PLANE_API_LISTEN_ADDRESS`, which the Core Agent propagates to ADP
-/// via the config stream in converged mode, and ADP falls back to directly in standalone mode)
-/// and the double-underscore figment form (e.g. `DD_DATA_PLANE__API_LISTEN_ADDRESS`). Other
-/// deep ADP / OTLP keys still require `__` at every dot boundary. The top-level Agent env vars
-/// (`DD_CMD_PORT` etc.) are explicitly queried by the Agent so they don't need it.
+/// viper form (for example, `DD_DATA_PLANE_API_LISTEN_ADDRESS`, which the Core Agent propagates
+/// to ADP via the config stream in converged mode, and ADP falls back to directly in standalone
+/// mode) and the double-underscore figment form (for example,
+/// `DD_DATA_PLANE__API_LISTEN_ADDRESS`). Other deep ADP / OTLP keys still require `__` at every
+/// dot boundary. The top-level Agent env vars (`DD_CMD_PORT` etc.) are explicitly queried by the
+/// Agent so they don't need it.
 pub fn port_isolation_env() -> HashMap<String, String> {
     HashMap::from([
         // ----- Core Agent ports -----
