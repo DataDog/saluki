@@ -365,14 +365,6 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         is_duration: false,
     },
     ClassifierEntry {
-        yaml_path: "telemetry.dogstatsd_origin",
-        aliases: &[],
-        support_level: SupportLevel::Incompatible(Severity::Low),
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
-        default: Some("false"),
-        is_duration: false,
-    },
-    ClassifierEntry {
         yaml_path: "tls_handshake_timeout",
         aliases: &[],
         support_level: SupportLevel::Incompatible(Severity::Medium),
