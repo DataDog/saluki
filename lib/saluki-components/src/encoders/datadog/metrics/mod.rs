@@ -1462,15 +1462,13 @@ fn split_v3_metric_ranges_by_point_limit(
 /// Converts a `Uuid` to a `HeaderValue`.
 fn uuid_to_header_value(uuid: &Uuid) -> HeaderValue {
     let s = uuid.as_hyphenated().to_string();
-    // SAFETY: UUID hyphenated format only contains [0-9a-f-], all valid ASCII header chars.
-    unsafe { HeaderValue::from_maybe_shared_unchecked(s) }
+    HeaderValue::try_from(s).expect("hyphenated UUID should be a valid header value")
 }
 
 /// Converts a `usize` to a `HeaderValue`.
 fn usize_to_header_value(value: usize) -> HeaderValue {
     let s = value.to_string();
-    // SAFETY: Integer strings only contain ASCII digits [0-9], all valid header chars.
-    unsafe { HeaderValue::from_maybe_shared_unchecked(s) }
+    HeaderValue::try_from(s).expect("usize should be a valid header value")
 }
 
 async fn flush_payload(
