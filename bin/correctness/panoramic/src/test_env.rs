@@ -38,13 +38,36 @@ pub fn port_isolation_env() -> HashMap<String, String> {
         // bootstrap-mode Agent.
         ("DD_DOGSTATSD_PORT".to_string(), "58125".to_string()),
         // ----- ADP listen addresses ----- (URI-style; ListenAddress accepts `tcp://host:port`)
+        //
+        // These are set in two forms to cover both execution modes:
+        //
+        //  • Single-underscore (`DD_DATA_PLANE_*`): viper env-var form read by the Core Agent. In
+        //    converged tests the Core Agent propagates the shifted address to ADP via the config
+        //    stream, which is the authoritative config source for ADP in that mode. Without this
+        //    form the Agent would push its own default (5100/5101) and override the values below.
+        //
+        //  • Double-underscore (`DD_DATA_PLANE__*`): figment env-var form (split on `__`) read
+        //    directly by ADP via `from_environment`. In standalone tests there is no config stream
+        //    so ADP must read its listen addresses from its own env.
+        (
+            "DD_DATA_PLANE_API_LISTEN_ADDRESS".to_string(),
+            "tcp://0.0.0.0:55100".to_string(),
+        ),
         (
             "DD_DATA_PLANE__API_LISTEN_ADDRESS".to_string(),
             "tcp://0.0.0.0:55100".to_string(),
         ),
         (
+            "DD_DATA_PLANE_SECURE_API_LISTEN_ADDRESS".to_string(),
+            "tcp://0.0.0.0:55101".to_string(),
+        ),
+        (
             "DD_DATA_PLANE__SECURE_API_LISTEN_ADDRESS".to_string(),
             "tcp://0.0.0.0:55101".to_string(),
+        ),
+        (
+            "DD_DATA_PLANE_TELEMETRY_LISTEN_ADDR".to_string(),
+            "tcp://0.0.0.0:55102".to_string(),
         ),
         (
             "DD_DATA_PLANE__TELEMETRY_LISTEN_ADDR".to_string(),
