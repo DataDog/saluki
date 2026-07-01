@@ -154,6 +154,10 @@ pub struct ClassifierEntry {
     pub pipeline_affinity: PipelineAffinity,
     /// JSON-encoded default value from the Agent schema, if present.
     pub default: Option<&'static str>,
+    /// Whether this key holds a `format: duration` value. The Agent sends durations as integer
+    /// nanoseconds while `default` is a Go duration string, so the default check normalizes both
+    /// sides before comparing.
+    pub is_duration: bool,
 }
 
 mod classifier_data;
