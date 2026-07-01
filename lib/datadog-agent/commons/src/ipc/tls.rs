@@ -126,7 +126,7 @@ pub async fn build_ipc_server_tls_config<P: AsRef<Path>>(cert_path: P) -> Result
     )
     .await?;
 
-    let config = ServerConfig::builder()
+    let mut config = ServerConfig::builder()
         .with_no_client_auth()
         .with_single_cert(vec![parsed_cert], parsed_key)
         .with_error_context(|| {
@@ -136,7 +136,7 @@ pub async fn build_ipc_server_tls_config<P: AsRef<Path>>(cert_path: P) -> Result
             )
         })?;
 
-    ensure_server_config_fips_compliant(&config)?;
+    ensure_server_config_fips_compliant(&mut config)?;
 
     Ok(config)
 }

@@ -161,11 +161,11 @@ impl DynamicAPIBuilder {
         let cert_chain = vec![cert.der().clone()];
         let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(signing_key.serialize_der()));
 
-        let config = ServerConfig::builder()
+        let mut config = ServerConfig::builder()
             .with_no_client_auth()
             .with_single_cert(cert_chain, key)?;
 
-        ensure_server_config_fips_compliant(&config)?;
+        ensure_server_config_fips_compliant(&mut config)?;
 
         Ok(self.with_tls_config(config))
     }

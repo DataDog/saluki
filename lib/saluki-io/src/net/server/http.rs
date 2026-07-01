@@ -107,7 +107,7 @@ where
                     config.alpn_protocols.push(b"h2".to_vec());
                     config.alpn_protocols.push(b"http/1.1".to_vec());
 
-                    if let Err(e) = ensure_server_config_fips_compliant(&config) {
+                    if let Err(e) = ensure_server_config_fips_compliant(&mut config) {
                         let _ = error_tx.send(e);
                         return;
                     }
