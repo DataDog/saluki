@@ -16,7 +16,7 @@ use tracing::debug;
 
 use crate::{
     context::{Context, ContextInner},
-    hash::{hash_context_with_seen, ContextKey, TagSetKey},
+    hash::{hash_context_with_extra_context_tags_and_seen, ContextKey, TagSetKey},
     origin::{OriginTagsResolver, RawOrigin},
     tags::{SharedTagSet, TagSet},
 };
@@ -359,15 +359,25 @@ impl ContextResolver {
             })
     }
 
-    fn create_context_key<N, I, I2, T, T2>(&mut self, name: N, tags: I, origin_tags: I2) -> (ContextKey, TagSetKey)
+    fn create_context_key_with_extra_tags<N, I, I2, I3, T, T2, T3>(
+        &mut self, name: N, tags: I, origin_tags: I2, extra_context_tags: I3,
+    ) -> (ContextKey, TagSetKey)
     where
         N: AsRef<str>,
         I: IntoIterator<Item = T>,
         T: AsRef<str>,
         I2: IntoIterator<Item = T2>,
         T2: AsRef<str>,
+        I3: IntoIterator<Item = T3>,
+        T3: AsRef<str>,
     {
-        hash_context_with_seen(name.as_ref(), tags, origin_tags, &mut self.hash_seen_buffer)
+        hash_context_with_extra_context_tags_and_seen(
+            name.as_ref(),
+            tags,
+            extra_context_tags,
+            origin_tags,
+            &mut self.hash_seen_buffer,
+        )
     }
 
     fn create_context<N>(
@@ -440,13 +450,47 @@ impl ContextResolver {
         self.resolve_inner(name, tags, origin_tags.into())
     }
 
+    /// Resolves the given context with extra tags used only for context identity.
+    ///
+    /// Extra context tags are included in the context cache key but are not interned into the returned context's visible
+    /// tag set. Use this when another metric dimension is encoded outside the tag list but still affects aggregation
+    /// identity.
+    pub fn resolve_with_extra_context_tags<N, I, I2, T, T2>(
+        &mut self, name: N, tags: I, maybe_origin: Option<RawOrigin<'_>>, extra_context_tags: I2,
+    ) -> Option<Context>
+    where
+        N: AsRef<str> + CheapMetaString,
+        I: IntoIterator<Item = T> + Clone,
+        T: AsRef<str> + CheapMetaString,
+        I2: IntoIterator<Item = T2> + Clone,
+        T2: AsRef<str>,
+    {
+        let origin_tags = self.tags_resolver.resolve_origin_tags(maybe_origin);
+
+        self.resolve_inner_with_extra_context_tags(name, tags, origin_tags, extra_context_tags)
+    }
+
     fn resolve_inner<N, I, T>(&mut self, name: N, tags: I, origin_tags: SharedTagSet) -> Option<Context>
     where
         N: AsRef<str> + CheapMetaString,
         I: IntoIterator<Item = T> + Clone,
         T: AsRef<str> + CheapMetaString,
     {
-        let (context_key, tagset_key) = self.create_context_key(&name, tags.clone(), &origin_tags);
+        self.resolve_inner_with_extra_context_tags(name, tags, origin_tags, std::iter::empty::<&str>())
+    }
+
+    fn resolve_inner_with_extra_context_tags<N, I, I2, T, T2>(
+        &mut self, name: N, tags: I, origin_tags: SharedTagSet, extra_context_tags: I2,
+    ) -> Option<Context>
+    where
+        N: AsRef<str> + CheapMetaString,
+        I: IntoIterator<Item = T> + Clone,
+        T: AsRef<str> + CheapMetaString,
+        I2: IntoIterator<Item = T2> + Clone,
+        T2: AsRef<str>,
+    {
+        let (context_key, tagset_key) =
+            self.create_context_key_with_extra_tags(&name, tags.clone(), &origin_tags, extra_context_tags.clone());
 
         // Fast path to avoid looking up the context in the cache if caching is disabled.
         if !self.caching_enabled {

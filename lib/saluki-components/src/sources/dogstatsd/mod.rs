@@ -38,6 +38,7 @@ use saluki_core::data_model::event::{
 };
 use saluki_core::{
     components::{sources::*, ComponentContext},
+    constants::datadog::HOST_TAG_KEY_SUFFIXED,
     pooling::ElasticObjectPool,
     topology::{interconnect::EventBufferManager, EventsBuffer, OutputDefinition},
 };
@@ -1749,8 +1750,23 @@ fn handle_metric_packet(
 
     let tags = get_filtered_tags_iterator(packet.tags, additional_tags);
 
+    let host_context_tag = well_known_tags
+        .hostname
+        .map(|hostname| format!("{}{}", HOST_TAG_KEY_SUFFIXED, hostname));
+
     // Try to resolve the context for this metric.
-    match context_resolver.resolve(packet.metric_name, tags, Some(origin)) {
+    let maybe_context = if let Some(host_tag) = host_context_tag.as_deref() {
+        context_resolver.resolve_with_extra_context_tags(
+            packet.metric_name,
+            tags,
+            Some(origin),
+            std::iter::once(host_tag),
+        )
+    } else {
+        context_resolver.resolve(packet.metric_name, tags, Some(origin))
+    };
+
+    match maybe_context {
         Some(context) => {
             let metric_origin = well_known_tags
                 .jmx_check_name
@@ -2154,6 +2170,31 @@ mod tests {
 
         let maybe_metric = handle_metric_packet(packet, &mut context_resolvers, &peer_addr, &[]);
         assert!(maybe_metric.is_none());
+    }
+
+    #[test]
+    fn metric_host_tag_disambiguates_contexts_without_remaining_tag() {
+        let codec = DogStatsDCodec::from_configuration(DogStatsDCodecConfiguration::default());
+        let mut context_resolvers = test_context_resolvers();
+        let peer_addr = ConnectionAddress::from("1.1.1.1:1234".parse::<SocketAddr>().unwrap());
+
+        let Ok(ParsedPacket::Metric(packet_a)) = codec.decode_packet(b"test_metric_name:1|g|#host:host-a") else {
+            panic!("Failed to parse packet.");
+        };
+        let Ok(ParsedPacket::Metric(packet_b)) = codec.decode_packet(b"test_metric_name:2|g|#host:host-b") else {
+            panic!("Failed to parse packet.");
+        };
+
+        let metric_a =
+            handle_metric_packet(packet_a, &mut context_resolvers, &peer_addr, &[]).expect("metric should resolve");
+        let metric_b =
+            handle_metric_packet(packet_b, &mut context_resolvers, &peer_addr, &[]).expect("metric should resolve");
+
+        assert_ne!(metric_a.context(), metric_b.context());
+        assert!(!metric_a.context().tags().has_tag("host:host-a"));
+        assert!(!metric_b.context().tags().has_tag("host:host-b"));
+        assert_eq!(metric_a.metadata().hostname(), Some("host-a"));
+        assert_eq!(metric_b.metadata().hostname(), Some("host-b"));
     }
 
     #[test]

@@ -54,6 +54,20 @@ where
     I2: IntoIterator<Item = T2>,
     T2: AsRef<str>,
 {
+    hash_context_with_extra_context_tags_and_seen(name, tags, std::iter::empty::<&str>(), origin_tags, seen)
+}
+
+pub(super) fn hash_context_with_extra_context_tags_and_seen<I, I2, I3, T, T2, T3>(
+    name: &str, tags: I, extra_context_tags: I3, origin_tags: I2, seen: &mut PrehashedHashSet<u64>,
+) -> (ContextKey, TagSetKey)
+where
+    I: IntoIterator<Item = T>,
+    T: AsRef<str>,
+    I2: IntoIterator<Item = T2>,
+    T2: AsRef<str>,
+    I3: IntoIterator<Item = T3>,
+    T3: AsRef<str>,
+{
     seen.clear();
 
     let mut hasher = get_fast_hasher();
@@ -61,8 +75,9 @@ where
     // Hash the metric name.
     name.hash(&mut hasher);
 
-    // Hash the metric tags individually and XOR their hashes together, which allows us to be order-oblivious:
+    // Hash the metric tags individually and XOR their hashes together, which allows us to be order-oblivious.
     let mut combined_tags_hash = 0;
+    let mut combined_context_tags_hash = 0;
 
     for tag in tags {
         let tag_hash = hash_single_fast(tag.as_ref());
@@ -73,9 +88,21 @@ where
         }
 
         combined_tags_hash ^= tag_hash;
+        combined_context_tags_hash ^= tag_hash;
     }
 
-    hasher.write_u64(combined_tags_hash);
+    for tag in extra_context_tags {
+        let tag_hash = hash_single_fast(tag.as_ref());
+
+        // If the extra context tag is already present in the visible tags, it should not perturb the context hash.
+        if !seen.insert(tag_hash) {
+            continue;
+        }
+
+        combined_context_tags_hash ^= tag_hash;
+    }
+
+    hasher.write_u64(combined_context_tags_hash);
 
     // Finally, hash the origin tags.
     //
