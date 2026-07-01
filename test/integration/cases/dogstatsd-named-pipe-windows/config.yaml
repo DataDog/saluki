@@ -13,6 +13,7 @@ env:
   DD_DOGSTATSD_PORT: "0"
   DD_DOGSTATSD_PIPE_NAME: "datadog-dogstatsd-integration"
   DD_DOGSTATSD_EOL_REQUIRED: "named_pipe"
+  DD_DOGSTATSD_BUFFER_SIZE: "32"
 
 procedure:
   - assertion: log_contains
@@ -27,23 +28,38 @@ procedure:
       - |
         $ErrorActionPreference = "Stop"
         Set-StrictMode -Version 3.0
-        $pipe = [System.IO.Pipes.NamedPipeClientStream]::new(
-          ".",
-          "datadog-dogstatsd-integration",
-          [System.IO.Pipes.PipeDirection]::Out
-        )
-        try {
-          $pipe.Connect(30000)
-          $payload = "integration.named_pipe.invalid`n"
-          $bytes = [System.Text.Encoding]::UTF8.GetBytes($payload)
-          $pipe.Write($bytes, 0, $bytes.Length)
-          $pipe.Flush()
-        } finally {
-          $pipe.Dispose()
+        function Send-NamedPipePayload([string] $Payload) {
+          $pipe = [System.IO.Pipes.NamedPipeClientStream]::new(
+            ".",
+            "datadog-dogstatsd-integration",
+            [System.IO.Pipes.PipeDirection]::Out
+          )
+          try {
+            $pipe.Connect(30000)
+            $bytes = [System.Text.Encoding]::UTF8.GetBytes($Payload)
+            $pipe.Write($bytes, 0, $bytes.Length)
+            $pipe.Flush()
+          } finally {
+            $pipe.Dispose()
+          }
         }
+
+        Send-NamedPipePayload "integration.named_pipe.invalid`n"
+        Send-NamedPipePayload "integration.named_pipe.multi_one.invalid`nintegration.named_pipe.multi_two.invalid`n"
+        Send-NamedPipePayload ("x" * 64)
+        Send-NamedPipePayload "integration.named_pipe.after_oversize.invalid`n"
     timeout: 30s
   - assertion: log_contains
     pattern: "integration.named_pipe.invalid"
+    timeout: 30s
+  - assertion: log_contains
+    pattern: "integration.named_pipe.multi_one.invalid"
+    timeout: 30s
+  - assertion: log_contains
+    pattern: "integration.named_pipe.multi_two.invalid"
+    timeout: 30s
+  - assertion: log_contains
+    pattern: "integration.named_pipe.after_oversize.invalid"
     timeout: 30s
   - parallel:
       - assertion: process_stable_for
