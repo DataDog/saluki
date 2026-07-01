@@ -2,9 +2,9 @@
 //!
 //! A small, dependency-free primitive that parses duration strings in the exact format accepted by Go's
 //! [`time.ParseDuration`][go-duration]. The Datadog Agent (via [spf13/viper][viper] and [spf13/cast][cast]) coerces
-//! configuration values into Go durations, and several places in Saluki need to interpret those same strings — the
-//! runtime configuration layer and build-time config-schema codegen among them. This crate is the single owner of that
-//! algorithm so it isn't reimplemented in each of those places.
+//! configuration values into Go durations, and several places in Saluki need to interpret those same strings,
+//! including the runtime configuration layer and build-time config-schema codegen. This crate is the single owner of
+//! that algorithm so it isn't duplicated in each of those places.
 //!
 //! Only the parsing primitive lives here. Higher-level coercion (for example, viper's "a bare integer is nanoseconds"
 //! fallback) is intentionally left to callers.

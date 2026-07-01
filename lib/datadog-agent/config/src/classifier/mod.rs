@@ -141,7 +141,7 @@ pub enum SupportLevel {
 
 /// The default value for a config key, as resolved at build time from the Agent schema.
 ///
-/// Durations are canonicalized to nanoseconds during codegen (the build fails if a `format:
+/// Durations are normalized to nanoseconds during codegen (the build fails if a `format:
 /// duration` default isn't a valid Go duration), so the runtime default check never has to parse a
 /// schema default. Other keys keep their JSON-literal default and are compared structurally.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -168,7 +168,7 @@ pub struct ClassifierEntry {
     pub support_level: SupportLevel,
     /// Which pipelines this key affects.
     pub pipeline_affinity: PipelineAffinity,
-    /// Default value from the Agent schema (canonicalized at build time).
+    /// Default value from the Agent schema (normalized at build time).
     pub default: DefaultValue,
 }
 

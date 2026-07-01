@@ -94,8 +94,8 @@ fn alias_literal(paths: &[String]) -> String {
 
 /// Builds the `DefaultValue` expression for a key's generated classifier entry.
 ///
-/// Duration defaults are parsed and canonicalized to nanoseconds here, at build time, so the
-/// runtime never reparses a schema default. An invalid duration default fails the build.
+/// Duration defaults are parsed and normalized to nanoseconds here, at build time, so the
+/// runtime never has to parse a schema default. An invalid duration default fails the build.
 fn schema_default_expr(yaml_path: &str, schema_map: &IndexMap<String, FieldInfo>) -> String {
     let Some(info) = schema_map.get(yaml_path) else {
         return "DefaultValue::Missing".to_string();
