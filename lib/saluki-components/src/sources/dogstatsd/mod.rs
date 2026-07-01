@@ -1552,7 +1552,7 @@ async fn drive_stream(
 fn should_drop_oversized_named_pipe_frame(listen_addr: &ListenAddress, buffer: &BytesBuffer) -> bool {
     matches!(listen_addr, ListenAddress::NamedPipe { .. })
         && buffer.remaining_mut() == 0
-        && !buffer.chunk().contains(&b'\n')
+        && memchr::memchr(b'\n', buffer.chunk()).is_none()
 }
 
 fn should_warn_stream_log_too_big(listen_addr: &ListenAddress, error: &FramingError, stream_log_too_big: bool) -> bool {
