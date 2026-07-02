@@ -9,11 +9,10 @@ use saluki_env::{EnvironmentProvider, HostProvider};
 use saluki_error::GenericError;
 use stringtheory::MetaString;
 
-/// Host Enrichment synchronous transform.
+/// Host enrichment synchronous transform.
 ///
-/// Enriches metrics with a hostname if one isn't already present. Calculates the hostname to use based on the
-/// configured environment provider, allowing for a high degree of accuracy around what qualifies as a hostname, and how
-/// to query it.
+/// Enriches events and service checks with a hostname if one isn't already present. Metrics must carry their hostname
+/// in their context before this transform so metric identity is stable before fanout/encoding.
 pub struct HostEnrichmentConfiguration<E> {
     env_provider: E,
 }
@@ -76,14 +75,14 @@ impl HostEnrichment {
     fn enrich_eventd(&self, eventd: &mut EventD) {
         // Only add the hostname if it's not already present.
         if eventd.hostname().is_none() {
-            eventd.set_hostname(Some(self.hostname.as_ref().into()));
+            eventd.set_hostname(Some(self.hostname.clone()));
         }
     }
 
     fn enrich_service_check(&self, service_check: &mut ServiceCheck) {
         // Only add the hostname if it's not already present.
         if service_check.hostname().is_none() {
-            service_check.set_hostname(Some(self.hostname.as_ref().into()));
+            service_check.set_hostname(Some(self.hostname.clone()));
         }
     }
 }
