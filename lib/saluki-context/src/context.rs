@@ -673,6 +673,105 @@ mod tests {
         })
     }
 
+    fn context_with_host(
+        name: &'static str, host: &'static str, tags: &[&'static str], origin_tags: &[&'static str],
+    ) -> Context {
+        let tags = tag_set(tags);
+        let origin_tags = tag_set(origin_tags);
+        let key = ContextInner::calculate_key(name, host, &tags, &origin_tags);
+        Context::from_inner(ContextInner {
+            key,
+            name: MetaString::from_static(name),
+            host: MetaString::from_static(host),
+            tags,
+            origin_tags,
+            active_count: Gauge::noop(),
+        })
+    }
+
+    #[test]
+    fn host_participates_in_context_identity() {
+        let host_a = context_with_host("metric", "host-a", &["env:prod"], &["origin:a"]);
+        let host_b = context_with_host("metric", "host-b", &["env:prod"], &["origin:a"]);
+        let host_a_again = context_with_host("metric", "host-a", &["env:prod"], &["origin:a"]);
+        let no_host = context_with_origin("metric", &["env:prod"], &["origin:a"]);
+
+        assert_ne!(host_a, host_b);
+        assert_ne!(host_a, no_host);
+        assert_eq!(host_a, host_a_again);
+        assert_eq!(host_a.host(), "host-a");
+        assert_eq!(no_host.host(), "");
+    }
+
+    #[test]
+    fn host_is_preserved_when_context_is_copied_with_new_parts() {
+        let base = context_with_host("metric", "host-a", &["env:prod"], &["origin:a"]);
+
+        let renamed = base.with_name("renamed");
+        assert_eq!(
+            renamed,
+            context_with_host("renamed", "host-a", &["env:prod"], &["origin:a"])
+        );
+        assert_ne!(renamed, context_with_origin("renamed", &["env:prod"], &["origin:a"]));
+
+        let retagged = base.with_tags(tag_set(&["service:web"]));
+        assert_eq!(
+            retagged,
+            context_with_host("metric", "host-a", &["service:web"], &["origin:a"])
+        );
+        assert_ne!(retagged, context_with_origin("metric", &["service:web"], &["origin:a"]));
+
+        let reorigined = base.with_origin_tags(tag_set(&["origin:b"]));
+        assert_eq!(
+            reorigined,
+            context_with_host("metric", "host-a", &["env:prod"], &["origin:b"])
+        );
+        assert_ne!(reorigined, context_with_origin("metric", &["env:prod"], &["origin:b"]));
+
+        let replaced = base.with_tags_and_origin_tags(tag_set(&["service:web"]), tag_set(&["origin:b"]));
+        assert_eq!(
+            replaced,
+            context_with_host("metric", "host-a", &["service:web"], &["origin:b"])
+        );
+        assert_ne!(replaced, context_with_origin("metric", &["service:web"], &["origin:b"]));
+    }
+
+    #[test]
+    fn host_is_preserved_when_context_tags_are_mutated() {
+        let expected_with_tag = context_with_host("metric", "host-a", &["env:prod", "service:web"], &["origin:a"]);
+        let expected_with_origin = context_with_host("metric", "host-a", &["env:prod"], &["origin:a", "origin:b"]);
+
+        let mut tag_mutated = context_with_host("metric", "host-a", &["env:prod"], &["origin:a"]);
+        tag_mutated.mutate_tags(|tags| tags.insert_tag(Tag::from("service:web")));
+        assert_eq!(tag_mutated, expected_with_tag);
+        assert_eq!(tag_mutated.host(), "host-a");
+
+        let mut origin_mutated = context_with_host("metric", "host-a", &["env:prod"], &["origin:a"]);
+        origin_mutated.mutate_origin_tags(|tags| tags.insert_tag(Tag::from("origin:b")));
+        assert_eq!(origin_mutated, expected_with_origin);
+        assert_eq!(origin_mutated.host(), "host-a");
+    }
+
+    #[test]
+    fn host_is_preserved_when_tag_mut_view_rekeys_context() {
+        let mut ctx = context_with_host(
+            "metric",
+            "host-a",
+            &["env:prod", "service:web"],
+            &["origin:a", "origin:b"],
+        );
+        let mut state = TagSetMutViewState::new();
+
+        let mut view = ctx.tags_mut_view(&mut state);
+        view.retain_tags(|tag| tag.name() == "env");
+        view.retain_origin_tags(|tag| tag.as_str() == "origin:a");
+        assert_eq!(view.finish(), 2);
+
+        assert_eq!(ctx, context_with_host("metric", "host-a", &["env:prod"], &["origin:a"]));
+        assert_ne!(ctx, context_with_origin("metric", &["env:prod"], &["origin:a"]));
+        assert_eq!(ctx.host(), "host-a");
+    }
+
     // --- TagSetMutView ---
 
     #[test]
