@@ -25,6 +25,7 @@ use saluki_context::{ContextResolver, ContextResolverBuilder};
 use saluki_core::data_model::event::metric::{Metric, MetricMetadata, MetricValues};
 use saluki_core::data_model::event::Event;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
+use stringtheory::MetaString;
 use tracing::{debug, trace, warn};
 
 use super::cache::PointsCache;
@@ -74,6 +75,7 @@ struct TranslationContext<'a> {
 /// A translator for converting OTLP metrics into Saluki `Event::Metric`s.
 pub struct OtlpMetricsTranslator {
     config: OtlpMetricsTranslatorConfig,
+    default_hostname: MetaString,
     context_resolver: ContextResolver,
     prev_pts: PointsCache,
     process_start_time_ns: u64, // Used for initial value consumption.
@@ -386,7 +388,9 @@ fn convert_ddsketch_into_sketch(
 
 impl OtlpMetricsTranslator {
     /// Creates a new, empty `OtlpMetricsTranslator`.
-    pub fn new(config: OtlpMetricsTranslatorConfig, context_resolver: ContextResolver) -> Result<Self, GenericError> {
+    pub fn new(
+        config: OtlpMetricsTranslatorConfig, default_hostname: MetaString, context_resolver: ContextResolver,
+    ) -> Result<Self, GenericError> {
         config
             .validate()
             .error_context("Failed to validate OTLP metrics translator configuration.")?;
@@ -395,6 +399,7 @@ impl OtlpMetricsTranslator {
 
         Ok(Self {
             config,
+            default_hostname,
             context_resolver,
             prev_pts: PointsCache::from_config(config),
             process_start_time_ns,
@@ -419,9 +424,9 @@ impl OtlpMetricsTranslator {
             identifier,
         }) = &source
         {
-            Some(identifier.clone())
+            identifier.clone()
         } else {
-            None
+            self.default_hostname.to_string()
         };
 
         for scope_metrics in resource_metrics.scope_metrics {
@@ -488,13 +493,13 @@ impl OtlpMetricsTranslator {
                 }
 
                 let mut translated_events =
-                    self.map_to_dd_format(metric, &tags, host.as_deref(), &resource.attributes, metrics);
+                    self.map_to_dd_format(metric, &tags, Some(host.as_ref()), &resource.attributes, metrics);
                 events.append(&mut translated_events);
             }
 
             for metric in new_metrics {
                 let mut translated_events =
-                    self.map_to_dd_format(metric, &tags, host.as_deref(), &resource.attributes, metrics);
+                    self.map_to_dd_format(metric, &tags, Some(host.as_ref()), &resource.attributes, metrics);
                 events.append(&mut translated_events);
             }
         }
@@ -522,6 +527,7 @@ impl OtlpMetricsTranslator {
 
         OtlpMetricsTranslator {
             config: Default::default(),
+            default_hostname: MetaString::from_static("default-host"),
             context_resolver: ContextResolverBuilder::for_tests().build(),
             prev_pts: PointsCache::for_tests(),
             process_start_time_ns,
@@ -632,7 +638,12 @@ impl OtlpMetricsTranslator {
         context.metrics.metrics_received().increment(1);
 
         let raw_origin = raw_origin_from_attributes(context.resource_attributes);
-        match self.context_resolver.resolve(&dims.name, &dims.tags, Some(raw_origin)) {
+        match self.context_resolver.resolve_with_optional_host(
+            &dims.name,
+            dims.host.as_deref(),
+            &dims.tags,
+            Some(raw_origin),
+        ) {
             Some(resolved_context) => {
                 let timestamp_s = timestamp_ns / 1_000_000_000;
                 let values = match data_type {
@@ -936,7 +947,12 @@ impl OtlpMetricsTranslator {
     ) {
         context.metrics.metrics_received().increment(1);
         let raw_origin = raw_origin_from_attributes(context.resource_attributes);
-        match self.context_resolver.resolve(&dims.name, &dims.tags, Some(raw_origin)) {
+        match self.context_resolver.resolve_with_optional_host(
+            &dims.name,
+            dims.host.as_deref(),
+            &dims.tags,
+            Some(raw_origin),
+        ) {
             Some(resolved_context) => {
                 if interval != 0 {
                     trace!(
@@ -1442,6 +1458,69 @@ mod tests {
             });
         }
         slice
+    }
+
+    fn single_gauge_resource_metrics(resource_host: Option<&str>) -> OtlpResourceMetrics {
+        let resource = resource_host.map(|host| otlp_protos::opentelemetry::proto::resource::v1::Resource {
+            attributes: vec![OtlpKeyValue {
+                key: "host.name".to_string(),
+                value: Some(otlp_protos::opentelemetry::proto::common::v1::AnyValue {
+                    value: Some(
+                        otlp_protos::opentelemetry::proto::common::v1::any_value::Value::StringValue(host.to_string()),
+                    ),
+                }),
+            }],
+            ..Default::default()
+        });
+
+        OtlpResourceMetrics {
+            resource,
+            scope_metrics: vec![otlp_protos::opentelemetry::proto::metrics::v1::ScopeMetrics {
+                metrics: vec![OtlpMetric {
+                    name: "otlp.host.metric".to_string(),
+                    data: Some(OtlpMetricData::Gauge(
+                        otlp_protos::opentelemetry::proto::metrics::v1::Gauge {
+                            data_points: vec![OtlpNumberDataPoint {
+                                value: Some(OtlpNumberDataPointValue::AsDouble(1.0)),
+                                time_unix_nano: nanos_from_seconds(1),
+                                ..Default::default()
+                            }],
+                        },
+                    )),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn translate_metrics_uses_default_host_when_resource_host_is_unset() {
+        let metrics = Metrics::for_tests();
+        let mut translator = OtlpMetricsTranslator::for_tests();
+
+        let events = translator
+            .translate_metrics(single_gauge_resource_metrics(None), &metrics)
+            .expect("translation should succeed")
+            .collect::<Vec<_>>();
+
+        let metric = events[0].try_as_metric().expect("metric event");
+        assert_eq!(metric.context().host(), Some("default-host"));
+    }
+
+    #[test]
+    fn translate_metrics_preserves_resource_host() {
+        let metrics = Metrics::for_tests();
+        let mut translator = OtlpMetricsTranslator::for_tests();
+
+        let events = translator
+            .translate_metrics(single_gauge_resource_metrics(Some("resource-host")), &metrics)
+            .expect("translation should succeed")
+            .collect::<Vec<_>>();
+
+        let metric = events[0].try_as_metric().expect("metric event");
+        assert_eq!(metric.context().host(), Some("resource-host"));
     }
 
     fn build_test_cumulative_monotonic_double_points(

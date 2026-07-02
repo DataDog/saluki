@@ -43,6 +43,9 @@ const fn default_grpc_endpoint() -> ListenAddress {
 /// Checks IPC source.
 #[derive(Debug, Deserialize)]
 pub struct ChecksIPCConfiguration {
+    #[serde(skip)]
+    default_hostname: MetaString,
+
     #[serde(rename = "checks_ipc_endpoint", default = "default_grpc_endpoint")]
     grpc_endpoint: ListenAddress,
 }
@@ -51,6 +54,12 @@ impl ChecksIPCConfiguration {
     /// Creates a new `ChecksIPCConfiguration` from the given configuration.
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
         Ok(config.as_typed()?)
+    }
+
+    /// Sets the default hostname used when check metrics do not carry an explicit hostname.
+    pub fn with_default_hostname(mut self, hostname: impl Into<MetaString>) -> Self {
+        self.default_hostname = hostname.into();
+        self
     }
 }
 
@@ -72,6 +81,7 @@ impl SourceBuilder for ChecksIPCConfiguration {
     async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Source + Send>, GenericError> {
         Ok(Box::new(ChecksIPC {
             grpc_endpoint: self.grpc_endpoint.clone(),
+            default_hostname: self.default_hostname.clone(),
         }))
     }
 }
@@ -85,6 +95,7 @@ impl MemoryBounds for ChecksIPCConfiguration {
 
 struct ChecksIPC {
     grpc_endpoint: ListenAddress,
+    default_hostname: MetaString,
 }
 
 #[async_trait]
@@ -97,7 +108,10 @@ impl Source for ChecksIPC {
 
         let (events_tx, mut events_rx) = mpsc::channel(16);
 
-        let grpc_server = Server::builder().add_service(ChecksServer::new(ChecksService { events_tx }));
+        let grpc_server = Server::builder().add_service(ChecksServer::new(ChecksService {
+            events_tx,
+            default_hostname: self.default_hostname,
+        }));
 
         let grpc_socket_addr = match self.grpc_endpoint {
             ListenAddress::Tcp(addr) => addr,
@@ -141,6 +155,7 @@ impl Source for ChecksIPC {
 
 struct ChecksService {
     events_tx: mpsc::Sender<Event>,
+    default_hostname: MetaString,
 }
 
 #[async_trait]
@@ -152,7 +167,7 @@ impl Checks for ChecksService {
 
         let payload = request.into_inner();
         for check_data in payload.data.into_iter().filter_map(|data| data.data) {
-            let Some(event) = check_data_to_event(check_data) else {
+            let Some(event) = check_data_to_event(check_data, &self.default_hostname) else {
                 continue;
             };
 
@@ -165,7 +180,7 @@ impl Checks for ChecksService {
     }
 }
 
-fn check_data_to_event(check_data: Data) -> Option<Event> {
+fn check_data_to_event(check_data: Data, default_hostname: &MetaString) -> Option<Event> {
     // Each arm exhaustively destructures its proto message (no `..`) so adding a new field
     // upstream becomes a compile error here until it's mapped or explicitly ignored.
     match check_data {
@@ -184,9 +199,12 @@ fn check_data_to_event(check_data: Data) -> Option<Event> {
 
             let tags = tags.into_iter().map(Tag::from).collect::<TagSet>();
             let mut context = Context::from_parts(name, tags.into_shared());
-            if !hostname.is_empty() {
-                context = context.with_host(Some(hostname.into()));
-            }
+            let hostname = if hostname.is_empty() {
+                default_hostname.as_ref()
+            } else {
+                &hostname
+            };
+            context = context.with_host(Some(MetaString::from(hostname)));
             let metric = match metric_type {
                 MetricType::Counter => Metric::counter(context, (timestamp, value)),
                 MetricType::Gauge => Metric::gauge(context, (timestamp, value)),
@@ -383,9 +401,13 @@ mod tests {
         })
     }
 
+    fn check_data_to_event_for_tests(check_data: Data) -> Option<Event> {
+        check_data_to_event(check_data, &MetaString::from_static("default-host"))
+    }
+
     #[test]
     fn metric_counter_conversion() {
-        let event = check_data_to_event(metric_data(
+        let event = check_data_to_event_for_tests(metric_data(
             ProtoMetricType::Counter as i32,
             "my_counter",
             1.0,
@@ -407,7 +429,7 @@ mod tests {
 
     #[test]
     fn metric_gauge_conversion() {
-        let event = check_data_to_event(metric_data(
+        let event = check_data_to_event_for_tests(metric_data(
             ProtoMetricType::Gauge as i32,
             "my_gauge",
             42.0,
@@ -425,7 +447,7 @@ mod tests {
 
     #[test]
     fn metric_histogram_conversion() {
-        let event = check_data_to_event(metric_data(
+        let event = check_data_to_event_for_tests(metric_data(
             ProtoMetricType::Histogram as i32,
             "my_hist",
             1.0,
@@ -443,7 +465,7 @@ mod tests {
 
     #[test]
     fn metric_rate_conversion_uses_interval() {
-        let event = check_data_to_event(metric_data(
+        let event = check_data_to_event_for_tests(metric_data(
             ProtoMetricType::Rate as i32,
             "my_rate",
             10.0,
@@ -464,7 +486,7 @@ mod tests {
 
     #[test]
     fn metric_rate_with_zero_interval_is_skipped() {
-        let event = check_data_to_event(metric_data(
+        let event = check_data_to_event_for_tests(metric_data(
             ProtoMetricType::Rate as i32,
             "my_rate",
             10.0,
@@ -478,7 +500,7 @@ mod tests {
 
     #[test]
     fn metric_unspecified_type_is_skipped() {
-        let event = check_data_to_event(metric_data(
+        let event = check_data_to_event_for_tests(metric_data(
             ProtoMetricType::Unspecified as i32,
             "x",
             1.0,
@@ -493,20 +515,20 @@ mod tests {
     #[test]
     fn metric_unknown_type_is_skipped() {
         // Any i32 outside the proto enum range fails MetricType::try_from.
-        let event = check_data_to_event(metric_data(99, "x", 1.0, 1234, 0, &[], ""));
+        let event = check_data_to_event_for_tests(metric_data(99, "x", 1.0, 1234, 0, &[], ""));
         assert!(event.is_none(), "unknown metric type must be skipped");
     }
 
     #[test]
     fn log_unknown_level_is_skipped() {
         // 99 is not part of the LogLevel proto enum, so try_from returns Err.
-        let event = check_data_to_event(log_data(99, "hello"));
+        let event = check_data_to_event_for_tests(log_data(99, "hello"));
         assert!(event.is_none(), "unknown log level must be skipped");
     }
 
     #[test]
     fn event_conversion_preserves_fields() {
-        let event = check_data_to_event(event_data("title", "body", 1234, &["env:prod", "team:foo"], ""))
+        let event = check_data_to_event_for_tests(event_data("title", "body", 1234, &["env:prod", "team:foo"], ""))
             .expect("event should convert");
         let Event::EventD(ev) = event else {
             panic!("expected EventD event");
@@ -528,7 +550,7 @@ mod tests {
         ];
 
         for (proto_status, expected) in cases {
-            let event = check_data_to_event(service_check_data(proto_status as i32, "n", "m", &[], ""))
+            let event = check_data_to_event_for_tests(service_check_data(proto_status as i32, "n", "m", &[], ""))
                 .unwrap_or_else(|| panic!("status {proto_status:?} should convert"));
             let Event::ServiceCheck(sc) = event else {
                 panic!("expected ServiceCheck event for {proto_status:?}");
@@ -539,7 +561,7 @@ mod tests {
 
     #[test]
     fn service_check_unspecified_status_is_skipped() {
-        let event = check_data_to_event(service_check_data(
+        let event = check_data_to_event_for_tests(service_check_data(
             ProtoServiceCheckStatus::Unspecified as i32,
             "n",
             "m",
@@ -552,7 +574,7 @@ mod tests {
     #[test]
     fn service_check_unknown_status_value_is_skipped() {
         // 99 is outside the proto Status enum, so try_from returns Err.
-        let event = check_data_to_event(service_check_data(99, "n", "m", &[], ""));
+        let event = check_data_to_event_for_tests(service_check_data(99, "n", "m", &[], ""));
         assert!(
             event.is_none(),
             "service check with out-of-range status must be skipped"
@@ -561,7 +583,7 @@ mod tests {
 
     #[test]
     fn service_check_preserves_name_message_and_tags() {
-        let event = check_data_to_event(service_check_data(
+        let event = check_data_to_event_for_tests(service_check_data(
             ProtoServiceCheckStatus::Ok as i32,
             "my.check",
             "all good",
@@ -580,7 +602,7 @@ mod tests {
 
     #[test]
     fn metric_hostname_propagates() {
-        let event = check_data_to_event(metric_data(
+        let event = check_data_to_event_for_tests(metric_data(
             ProtoMetricType::Counter as i32,
             "n",
             1.0,
@@ -597,18 +619,20 @@ mod tests {
     }
 
     #[test]
-    fn metric_empty_hostname_stays_unset() {
-        let event = check_data_to_event(metric_data(ProtoMetricType::Counter as i32, "n", 1.0, 0, 0, &[], ""))
-            .expect("metric should convert");
+    fn metric_empty_hostname_uses_default_host() {
+        let event =
+            check_data_to_event_for_tests(metric_data(ProtoMetricType::Counter as i32, "n", 1.0, 0, 0, &[], ""))
+                .expect("metric should convert");
         let Event::Metric(m) = event else {
             panic!("expected Metric event");
         };
-        assert_eq!(m.context().host(), None);
+        assert_eq!(m.context().host(), Some("default-host"));
     }
 
     #[test]
     fn eventd_hostname_propagates() {
-        let event = check_data_to_event(event_data("title", "body", 0, &[], "host-b")).expect("event should convert");
+        let event =
+            check_data_to_event_for_tests(event_data("title", "body", 0, &[], "host-b")).expect("event should convert");
         let Event::EventD(ev) = event else {
             panic!("expected EventD event");
         };
@@ -617,7 +641,8 @@ mod tests {
 
     #[test]
     fn eventd_empty_hostname_stays_unset() {
-        let event = check_data_to_event(event_data("title", "body", 0, &[], "")).expect("event should convert");
+        let event =
+            check_data_to_event_for_tests(event_data("title", "body", 0, &[], "")).expect("event should convert");
         let Event::EventD(ev) = event else {
             panic!("expected EventD event");
         };
@@ -626,7 +651,7 @@ mod tests {
 
     #[test]
     fn service_check_hostname_propagates() {
-        let event = check_data_to_event(service_check_data(
+        let event = check_data_to_event_for_tests(service_check_data(
             ProtoServiceCheckStatus::Ok as i32,
             "n",
             "m",
@@ -642,7 +667,7 @@ mod tests {
 
     #[test]
     fn service_check_empty_hostname_stays_unset() {
-        let event = check_data_to_event(service_check_data(
+        let event = check_data_to_event_for_tests(service_check_data(
             ProtoServiceCheckStatus::Ok as i32,
             "n",
             "m",
@@ -658,7 +683,7 @@ mod tests {
 
     #[test]
     fn eventd_priority_propagates() {
-        let event = check_data_to_event(Data::Event(ProtoEvent {
+        let event = check_data_to_event_for_tests(Data::Event(ProtoEvent {
             priority: ProtoPriority::Low as i32,
             ..Default::default()
         }))
@@ -671,7 +696,7 @@ mod tests {
 
     #[test]
     fn eventd_alert_type_propagates() {
-        let event = check_data_to_event(Data::Event(ProtoEvent {
+        let event = check_data_to_event_for_tests(Data::Event(ProtoEvent {
             alert_type: ProtoAlertType::Warning as i32,
             ..Default::default()
         }))
@@ -684,7 +709,7 @@ mod tests {
 
     #[test]
     fn eventd_aggregation_key_propagates() {
-        let event = check_data_to_event(Data::Event(ProtoEvent {
+        let event = check_data_to_event_for_tests(Data::Event(ProtoEvent {
             aggregation_key: "agg-key-1".to_string(),
             ..Default::default()
         }))
@@ -697,7 +722,7 @@ mod tests {
 
     #[test]
     fn eventd_source_type_name_propagates() {
-        let event = check_data_to_event(Data::Event(ProtoEvent {
+        let event = check_data_to_event_for_tests(Data::Event(ProtoEvent {
             source_type_name: "my-source".to_string(),
             ..Default::default()
         }))
@@ -714,7 +739,7 @@ mod tests {
         // and all strings empty. Our mapping treats Unspecified as "source did not set it", so
         // `EventD::new`'s defaults (priority=Normal, alert_type=Info) survive, while the empty
         // string fields stay unset.
-        let event = check_data_to_event(Data::Event(ProtoEvent::default())).expect("event should convert");
+        let event = check_data_to_event_for_tests(Data::Event(ProtoEvent::default())).expect("event should convert");
         let Event::EventD(ev) = event else {
             panic!("expected EventD event");
         };
