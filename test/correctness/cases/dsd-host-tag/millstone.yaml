@@ -6,7 +6,7 @@ corpus:
   size: 1
   payload:
     static: |
-      hosttag.unset:1|g
-      hosttag.empty:2|g|#host:
-      hosttag.default:3|g|#host:correctness-testing
-      hosttag.custom:4|g|#host:custom
+      hosttag.metric:1|g
+      hosttag.metric:2|g|#host:
+      hosttag.metric:3|g|#host:correctness-testing
+      hosttag.metric:4|g|#host:custom
