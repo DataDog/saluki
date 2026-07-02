@@ -108,3 +108,44 @@ impl SynchronousTransform for HostEnrichment {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use saluki_context::Context;
+    use saluki_core::data_model::event::metric::Metric;
+    use stringtheory::MetaString;
+
+    use super::HostEnrichment;
+
+    fn host_enrichment() -> HostEnrichment {
+        HostEnrichment {
+            hostname: MetaString::from_static("default-host"),
+        }
+    }
+
+    #[test]
+    fn enrich_metric_sets_default_host_when_context_host_is_unset() {
+        let mut metric = Metric::gauge(Context::from_static_name("metric"), 1.0);
+
+        host_enrichment().enrich_metric(&mut metric);
+
+        assert_eq!(metric.context().host(), Some("default-host"));
+    }
+
+    #[test]
+    fn enrich_metric_preserves_existing_context_host() {
+        let cases = [
+            (Some(MetaString::empty()), Some("")),
+            (Some(MetaString::from_static("custom-host")), Some("custom-host")),
+        ];
+
+        for (host, expected) in cases {
+            let context = Context::from_static_name("metric").with_host(host);
+            let mut metric = Metric::gauge(context, 1.0);
+
+            host_enrichment().enrich_metric(&mut metric);
+
+            assert_eq!(metric.context().host(), expected);
+        }
+    }
+}
