@@ -424,9 +424,9 @@ impl OtlpMetricsTranslator {
             identifier,
         }) = &source
         {
-            identifier.clone()
+            MetaString::from(identifier.as_str())
         } else {
-            self.default_hostname.to_string()
+            self.default_hostname.clone()
         };
 
         for scope_metrics in resource_metrics.scope_metrics {
@@ -493,13 +493,13 @@ impl OtlpMetricsTranslator {
                 }
 
                 let mut translated_events =
-                    self.map_to_dd_format(metric, &tags, Some(host.as_ref()), &resource.attributes, metrics);
+                    self.map_to_dd_format(metric, &tags, Some(host.clone()), &resource.attributes, metrics);
                 events.append(&mut translated_events);
             }
 
             for metric in new_metrics {
                 let mut translated_events =
-                    self.map_to_dd_format(metric, &tags, Some(host.as_ref()), &resource.attributes, metrics);
+                    self.map_to_dd_format(metric, &tags, Some(host.clone()), &resource.attributes, metrics);
                 events.append(&mut translated_events);
             }
         }
@@ -537,14 +537,14 @@ impl OtlpMetricsTranslator {
 
     /// Translates a single OTLP `Metric` into a collection of Saluki `Event`s.
     fn map_to_dd_format(
-        &mut self, metric: OtlpMetric, attribute_tags: &SharedTagSet, host: Option<&str>,
+        &mut self, metric: OtlpMetric, attribute_tags: &SharedTagSet, host: Option<MetaString>,
         resource_attributes: &[OtlpKeyValue], metrics: &Metrics,
     ) -> Vec<Event> {
         let origin_id = self.attribute_translator.origin_id_from_attributes(resource_attributes);
         let base_dims = Dimensions {
             name: metric.name,
             tags: attribute_tags.clone(),
-            host: host.map(|h| h.to_string()),
+            host,
             origin_id,
         };
 
