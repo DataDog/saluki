@@ -145,6 +145,9 @@ pub struct DatadogConfiguration {
     #[serde(default = "defaults::default_bool::<true>")]
     pub dogstatsd_origin_optout_enabled: bool,
 
+    #[serde(default)]
+    pub dogstatsd_pipe_name: String,
+
     #[serde(default = "defaults::default_u64::<i64, 8125>")]
     pub dogstatsd_port: i64,
 
@@ -168,6 +171,11 @@ pub struct DatadogConfiguration {
 
     #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
     pub dogstatsd_tags: Vec<String>,
+
+    #[serde(
+        default = "defaults::datadog_configuration_dogstatsd_windows_pipe_security_descriptor"
+    )]
+    pub dogstatsd_windows_pipe_security_descriptor: String,
 
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub enable_payloads: Option<DatadogConfigurationEnablePayloads>,
@@ -413,6 +421,7 @@ impl Default for DatadogConfiguration {
             dogstatsd_origin_detection: Default::default(),
             dogstatsd_origin_detection_client: Default::default(),
             dogstatsd_origin_optout_enabled: defaults::default_bool::<true>(),
+            dogstatsd_pipe_name: Default::default(),
             dogstatsd_port: defaults::default_u64::<i64, 8125>(),
             dogstatsd_so_rcvbuf: Default::default(),
             dogstatsd_socket: Default::default(),
@@ -421,6 +430,7 @@ impl Default for DatadogConfiguration {
             dogstatsd_string_interner_size: defaults::default_u64::<i64, 4096>(),
             dogstatsd_tag_cardinality: defaults::datadog_configuration_dogstatsd_tag_cardinality(),
             dogstatsd_tags: Default::default(),
+            dogstatsd_windows_pipe_security_descriptor: defaults::datadog_configuration_dogstatsd_windows_pipe_security_descriptor(),
             enable_payloads: Default::default(),
             env: Default::default(),
             forwarder_apikey_validation_interval: defaults::default_u64::<i64, 60>(),
@@ -1439,6 +1449,9 @@ pub mod defaults {
     }
     pub(super) fn datadog_configuration_dogstatsd_tag_cardinality() -> String {
         "low".to_string()
+    }
+    pub(super) fn datadog_configuration_dogstatsd_windows_pipe_security_descriptor() -> String {
+        "D:AI(A;;GA;;;WD)".to_string()
     }
     pub(super) fn datadog_configuration_forwarder_flush_to_disk_mem_ratio() -> f64 {
         0.5_f64

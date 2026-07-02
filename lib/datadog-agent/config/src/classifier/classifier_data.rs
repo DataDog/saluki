@@ -221,14 +221,6 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         is_duration: false,
     },
     ClassifierEntry {
-        yaml_path: "dogstatsd_pipe_name",
-        aliases: &[],
-        support_level: SupportLevel::Incompatible(Severity::Medium),
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
-        default: Some("\"\""),
-        is_duration: false,
-    },
-    ClassifierEntry {
         yaml_path: "dogstatsd_pipeline_autoadjust",
         aliases: &[],
         support_level: SupportLevel::Incompatible(Severity::Low),
@@ -282,14 +274,6 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Medium),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: Some("false"),
-        is_duration: false,
-    },
-    ClassifierEntry {
-        yaml_path: "dogstatsd_windows_pipe_security_descriptor",
-        aliases: &[],
-        support_level: SupportLevel::Incompatible(Severity::Medium),
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
-        default: Some("\"D:AI(A;;GA;;;WD)\""),
         is_duration: false,
     },
     ClassifierEntry {
