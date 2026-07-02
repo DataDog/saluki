@@ -1572,11 +1572,7 @@ fn write_metric_to_v3(
             resources.insert(device_idx, ("device", device));
         }
     }
-    builder.set_resources(
-        resources
-            .into_iter()
-            .map(|(rtype, rname)| (rtype.to_string(), rname.to_string())),
-    );
+    builder.set_resources(&resources);
 
     // Origin metadata
     if let Some(origin) = metric.metadata().origin() {

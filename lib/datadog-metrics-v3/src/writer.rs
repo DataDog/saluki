@@ -673,7 +673,7 @@ impl V3Writer {
         id
     }
 
-    fn intern_resources(&mut self, resources: &[(String, String)]) -> i64 {
+    fn intern_resources(&mut self, resources: &[(&str, &str)]) -> i64 {
         if resources.is_empty() {
             return 0;
         }
@@ -775,16 +775,8 @@ impl<'a> V3MetricBuilder<'a> {
     /// Sets the resources for this metric.
     ///
     /// Resources are (type, name) pairs, e.g., ("host", "server1").
-    pub fn set_resources<I>(&mut self, resources: I)
-    where
-        I: Iterator<Item = (String, String)>,
-    {
-        let resources: Vec<(String, String)> = resources.collect();
-        if resources.is_empty() {
-            self.writer.resources[self.metric_idx] = 0;
-            return;
-        }
-        let res_id = self.writer.intern_resources(&resources);
+    pub fn set_resources(&mut self, resources: &[(&str, &str)]) {
+        let res_id = self.writer.intern_resources(resources);
         self.writer.resources[self.metric_idx] = res_id;
     }
 
