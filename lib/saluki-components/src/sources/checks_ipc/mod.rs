@@ -100,7 +100,12 @@ struct ChecksIPC {
 
 #[async_trait]
 impl Source for ChecksIPC {
-    async fn run(mut self: Box<Self>, mut context: SourceContext) -> Result<(), GenericError> {
+    async fn run(self: Box<Self>, mut context: SourceContext) -> Result<(), GenericError> {
+        let ChecksIPC {
+            grpc_endpoint,
+            default_hostname,
+        } = *self;
+
         let global_shutdown = context.take_shutdown_handle();
         pin!(global_shutdown);
 
@@ -110,10 +115,10 @@ impl Source for ChecksIPC {
 
         let grpc_server = Server::builder().add_service(ChecksServer::new(ChecksService {
             events_tx,
-            default_hostname: self.default_hostname,
+            default_hostname,
         }));
 
-        let grpc_socket_addr = match self.grpc_endpoint {
+        let grpc_socket_addr = match grpc_endpoint {
             ListenAddress::Tcp(addr) => addr,
             _ => return Err(generic_error!("OTLP gRPC endpoint must be a TCP address.")),
         };

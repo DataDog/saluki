@@ -276,7 +276,7 @@ impl MetricMapper {
 
                         self.context_resolver.resolve_with_optional_host_and_origin_tags(
                             result.name.clone(),
-                            context.host(),
+                            context.host_meta(),
                             merged_tags,
                             origin_tags.clone(),
                         )
@@ -317,7 +317,7 @@ impl MetricMapper {
 
                     let resolved = self.context_resolver.resolve_with_optional_host_and_origin_tags(
                         new_name.as_str(),
-                        context.host(),
+                        context.host_meta(),
                         merged_tags,
                         origin_tags.clone(),
                     )?;

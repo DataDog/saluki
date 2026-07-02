@@ -183,6 +183,11 @@ impl Context {
         self.inner.host.as_deref()
     }
 
+    /// Returns the underlying host metadata string of this context, if one has been set.
+    pub fn host_meta(&self) -> Option<&MetaString> {
+        self.inner.host.as_ref()
+    }
+
     /// Clones this context, and uses the given host for the cloned context.
     pub fn with_host<S: Into<Option<MetaString>>>(&self, host: S) -> Self {
         let name = self.inner.name.clone();
