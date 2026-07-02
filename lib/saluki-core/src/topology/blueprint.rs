@@ -913,8 +913,10 @@ impl Supervisable for TopologyBlueprint {
 
             // Run the topology supervisor, forwarding our own shutdown signal into it. We use the internal variant so we
             // can pass down the inherited dataspace (the public `run_with_shutdown` would create a fresh, empty one). The
-            // topology supervisor returns `Ok(())` on an intentional shutdown, and an error if any component exits on its
-            // own -- which is how a component failure fails the topology.
+            // topology supervisor returns `Ok(())` on an intentional shutdown that drained cleanly, and an error if any
+            // component exits on its own (how a component failure fails the topology) or if a component had to be
+            // forcefully aborted after ignoring graceful shutdown (`SupervisorError::ShutdownTimedOut`). That error is
+            // preserved here as a `GenericError` so the root supervisor can still recover the aborted-worker count.
             let (topology_shutdown_trigger, topology_shutdown) = ShutdownHandle::paired();
             let run = topology_sup.run_with_shutdown_inner(topology_shutdown, Some(dataspace));
             pin!(run);
