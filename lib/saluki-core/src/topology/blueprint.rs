@@ -6,7 +6,7 @@ use saluki_common::sync::shutdown::ShutdownHandle;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use snafu::Snafu;
 use tokio::{pin, runtime::Handle, select, sync::oneshot};
-use tracing::{error, info};
+use tracing::info;
 
 use super::{
     built::{BuiltTopology, WorkerPoolConfiguration},
@@ -889,7 +889,7 @@ impl Supervisable for TopologyBlueprint {
         Ok(Box::pin(async move {
             pin!(shutdown);
 
-            // If a readiness signal was provided, wait for it before spawning the components, but remain responsive to
+            // If a readiness signal was provided, wait for it before building the components, but remain responsive to
             // shutdown so we exit promptly if asked to stop before we've started.
             if let Some(environment_ready) = environment_ready {
                 select! {
@@ -898,37 +898,38 @@ impl Supervisable for TopologyBlueprint {
                 }
             }
 
-            let mut running = built.spawn_inner(&health_registry, memory_limiter, dataspace).await?;
+            // Build the topology supervisor: one dedicated supervisor per component, parented under a single topology
+            // supervisor that owns failure detection and graceful shutdown.
+            let mut topology_sup = built
+                .spawn_inner(&health_registry, memory_limiter, dataspace.clone(), shutdown_timeout)
+                .await?;
 
             // Signal that the topology has registered all of its components in the health registry, so any readiness
-            // handle can begin waiting on those components. We send this only after `spawn_inner` so readiness can't be
-            // observed before the topology's components exist.
+            // handle can begin waiting on those components. `spawn_inner` registers every component before returning, so
+            // readiness can't be observed before the topology's components exist.
             if let Some(ready_signal) = ready_signal {
                 let _ = ready_signal.send(());
             }
 
-            let mut topology_failed = false;
-            select! {
-                // The supervisor requested shutdown.
-                _ = &mut shutdown => {
-                    info!("Topology received shutdown signal. Shutting down...");
-                },
+            // Run the topology supervisor, forwarding our own shutdown signal into it. We use the internal variant so we
+            // can pass down the inherited dataspace (the public `run_with_shutdown` would create a fresh, empty one). The
+            // topology supervisor returns `Ok(())` on an intentional shutdown that drained cleanly, and an error if any
+            // component exits on its own (how a component failure fails the topology) or if a component had to be
+            // forcefully aborted after ignoring graceful shutdown (`SupervisorError::ShutdownTimedOut`). That error is
+            // preserved here as a `GenericError` so the root supervisor can still recover the aborted-worker count.
+            let (topology_shutdown_trigger, topology_shutdown) = ShutdownHandle::paired();
+            let run = topology_sup.run_with_shutdown_inner(topology_shutdown, Some(dataspace));
+            pin!(run);
 
-                // A component finished before shutdown was requested, which we treat as a failure of the topology.
-                _ = running.wait_for_unexpected_finish() => {
-                    error!("Topology component unexpectedly finished. Shutting down...");
-                    topology_failed = true;
-                },
-            }
-
-            // Trigger graceful shutdown and wait for all components to stop.
-            let shutdown_result = running.shutdown_with_timeout(shutdown_timeout).await;
-            match (shutdown_result, topology_failed) {
-                (Ok(()), false) => Ok(()),
-                (Ok(()), true) => Err(generic_error!(
-                    "Topology shut down after a component unexpectedly finished."
-                )),
-                (Err(e), _) => Err(e),
+            let mut topology_shutdown_trigger = Some(topology_shutdown_trigger);
+            loop {
+                select! {
+                    result = &mut run => return result.map_err(Into::into),
+                    _ = &mut shutdown, if topology_shutdown_trigger.is_some() => {
+                        info!("Topology received shutdown signal. Shutting down...");
+                        topology_shutdown_trigger.take().expect("present per select guard").shutdown();
+                    }
+                }
             }
         }))
     }
@@ -936,18 +937,224 @@ impl Supervisable for TopologyBlueprint {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
 
-    use resource_accounting::{ComponentRegistry, MemoryLimiter};
+    use async_trait::async_trait;
+    use resource_accounting::{ComponentRegistry, MemoryBounds, MemoryBoundsBuilder, MemoryLimiter};
+    use saluki_common::sync::shutdown::ShutdownHandle;
+    use saluki_error::GenericError;
     use tokio::sync::oneshot;
 
     use super::{TopologyBlueprint, TopologyReady};
     use crate::{
+        components::{
+            destinations::{Destination, DestinationBuilder, DestinationContext},
+            sources::{Source, SourceBuilder, SourceContext},
+            ComponentContext,
+        },
         data_model::event::EventType,
         health::HealthRegistry,
-        runtime::{RestartMode, RestartStrategy, Supervisor, SupervisorError},
-        topology::test_util::{TestDestinationBuilder, TestSourceBuilder, TestTransformBuilder},
+        runtime::{
+            InitializationError, RestartMode, RestartStrategy, Supervisable, Supervisor, SupervisorError,
+            SupervisorFuture,
+        },
+        topology::{
+            test_util::{TestDestinationBuilder, TestSourceBuilder, TestTransformBuilder},
+            OutputDefinition,
+        },
     };
+
+    /// A dynamic child worker for exercising [`SourceContext::spawn_handle`].
+    ///
+    /// Records that it started, then runs until its supervisor shuts it down.
+    struct CountingChild {
+        started: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl Supervisable for CountingChild {
+        fn name(&self) -> &str {
+            "child"
+        }
+
+        async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
+            let started = Arc::clone(&self.started);
+            Ok(Box::pin(async move {
+                started.fetch_add(1, Ordering::SeqCst);
+                // Run until torn down, so the test can observe structured teardown of dynamic children.
+                process_shutdown.await;
+                Ok(())
+            }))
+        }
+    }
+
+    /// A source that runs until shutdown, optionally spawning a dynamic child through its spawn handle first.
+    struct ControlSource {
+        spawned_child: Option<Arc<AtomicUsize>>,
+    }
+
+    #[async_trait]
+    impl Source for ControlSource {
+        async fn run(self: Box<Self>, mut context: SourceContext) -> Result<(), GenericError> {
+            let shutdown = context.take_shutdown_handle();
+            if let Some(started) = self.spawned_child {
+                context
+                    .spawn_handle()
+                    .spawn(CountingChild { started })
+                    .await
+                    .expect("should spawn dynamic child");
+            }
+            shutdown.await;
+            Ok(())
+        }
+    }
+
+    struct ControlSourceBuilder {
+        outputs: Vec<OutputDefinition<EventType>>,
+        spawned_child: Option<Arc<AtomicUsize>>,
+    }
+
+    impl ControlSourceBuilder {
+        fn new(spawned_child: Option<Arc<AtomicUsize>>) -> Self {
+            Self {
+                outputs: vec![OutputDefinition::default_output(EventType::EventD)],
+                spawned_child,
+            }
+        }
+    }
+
+    #[async_trait]
+    impl SourceBuilder for ControlSourceBuilder {
+        fn outputs(&self) -> &[OutputDefinition<EventType>] {
+            &self.outputs
+        }
+
+        async fn build(&self, _: ComponentContext) -> Result<Box<dyn Source + Send>, GenericError> {
+            Ok(Box::new(ControlSource {
+                spawned_child: self.spawned_child.clone(),
+            }))
+        }
+    }
+
+    impl MemoryBounds for ControlSourceBuilder {
+        fn specify_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
+    }
+
+    /// A destination that drains its input until the upstream closes (which happens when the source stops).
+    struct DrainingDestination;
+
+    #[async_trait]
+    impl Destination for DrainingDestination {
+        async fn run(self: Box<Self>, mut context: DestinationContext) -> Result<(), GenericError> {
+            while context.events().next().await.is_some() {}
+            Ok(())
+        }
+    }
+
+    struct DrainingDestinationBuilder {
+        input_event_ty: EventType,
+    }
+
+    #[async_trait]
+    impl DestinationBuilder for DrainingDestinationBuilder {
+        fn input_event_type(&self) -> EventType {
+            self.input_event_ty
+        }
+
+        async fn build(&self, _: ComponentContext) -> Result<Box<dyn Destination + Send>, GenericError> {
+            Ok(Box::new(DrainingDestination))
+        }
+    }
+
+    impl MemoryBounds for DrainingDestinationBuilder {
+        fn specify_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
+    }
+
+    /// A destination that ignores both its input and shutdown, running forever until it is forcefully aborted.
+    struct StuckDestination;
+
+    #[async_trait]
+    impl Destination for StuckDestination {
+        async fn run(self: Box<Self>, _context: DestinationContext) -> Result<(), GenericError> {
+            std::future::pending::<()>().await;
+            Ok(())
+        }
+    }
+
+    struct StuckDestinationBuilder {
+        input_event_ty: EventType,
+    }
+
+    #[async_trait]
+    impl DestinationBuilder for StuckDestinationBuilder {
+        fn input_event_type(&self) -> EventType {
+            self.input_event_ty
+        }
+
+        async fn build(&self, _: ComponentContext) -> Result<Box<dyn Destination + Send>, GenericError> {
+            Ok(Box::new(StuckDestination))
+        }
+    }
+
+    impl MemoryBounds for StuckDestinationBuilder {
+        fn specify_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
+    }
+
+    /// Builds a connected `source` -> `destination` blueprint of long-running components.
+    ///
+    /// The source runs until shutdown; the destination drains until its upstream closes. If `spawned_child` is
+    /// provided, the source spawns a dynamic child through its spawn handle that records when it starts.
+    fn long_running_blueprint(spawned_child: Option<Arc<AtomicUsize>>) -> TopologyBlueprint {
+        let component_registry = ComponentRegistry::default();
+        let mut blueprint = TopologyBlueprint::new("test", &component_registry);
+        blueprint
+            .add_source("source", ControlSourceBuilder::new(spawned_child))
+            .expect("should not fail to add source")
+            .add_destination(
+                "destination",
+                DrainingDestinationBuilder {
+                    input_event_ty: EventType::EventD,
+                },
+            )
+            .expect("should not fail to add destination");
+        blueprint
+            .connect_components_in_order(["source", "destination"])
+            .expect("should not fail to connect components");
+        blueprint
+            .with_health_registry(HealthRegistry::new())
+            .with_memory_limiter(MemoryLimiter::noop());
+        blueprint
+    }
+
+    /// Builds a connected `source` -> `destination` blueprint whose destination must be forcefully aborted on shutdown.
+    ///
+    /// The source stops cleanly when shutdown is signalled; the destination ignores shutdown and runs forever, so its
+    /// per-component supervisor aborts it after `shutdown_timeout`. Exactly one component (the destination) is
+    /// force-aborted, which lets a test assert a precise abort count.
+    fn stuck_destination_blueprint(shutdown_timeout: Duration) -> TopologyBlueprint {
+        let component_registry = ComponentRegistry::default();
+        let mut blueprint = TopologyBlueprint::new("test", &component_registry);
+        blueprint
+            .add_source("source", ControlSourceBuilder::new(None))
+            .expect("should not fail to add source")
+            .add_destination(
+                "destination",
+                StuckDestinationBuilder {
+                    input_event_ty: EventType::EventD,
+                },
+            )
+            .expect("should not fail to add destination");
+        blueprint
+            .connect_components_in_order(["source", "destination"])
+            .expect("should not fail to connect components");
+        blueprint
+            .with_health_registry(HealthRegistry::new())
+            .with_memory_limiter(MemoryLimiter::noop())
+            .with_shutdown_timeout(shutdown_timeout);
+        blueprint
+    }
 
     /// Builds a blueprint pre-populated with a source, transform, and destination, all dealing in event-D events.
     ///
@@ -1255,5 +1462,101 @@ mod tests {
         drop(registered_tx);
 
         assert!(!topology_ready.wait().await);
+    }
+
+    #[tokio::test]
+    async fn topology_clean_shutdown_returns_ok() {
+        // A source that runs until shutdown feeds a destination that drains until its upstream closes. On shutdown,
+        // the source stops (it observes its supervisor's shutdown signal), the destination drains and stops, and the
+        // topology supervisor returns cleanly -- which is the intentional-shutdown path, distinct from a component
+        // unexpectedly finishing.
+        let blueprint = long_running_blueprint(None);
+
+        let mut supervisor = Supervisor::new("test-topology").expect("should not fail to create supervisor");
+        supervisor.add_worker(blueprint);
+
+        let (tx, rx) = oneshot::channel::<()>();
+        let handle = tokio::spawn(async move { supervisor.run_with_shutdown(rx).await });
+
+        // Give the components a moment to start, then request shutdown.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        tx.send(()).expect("should send shutdown signal");
+
+        let result = tokio::time::timeout(Duration::from_secs(5), handle)
+            .await
+            .expect("supervisor should exit promptly")
+            .expect("supervisor task should not panic");
+
+        assert!(result.is_ok(), "topology should shut down cleanly, got: {:?}", result);
+    }
+
+    #[tokio::test]
+    async fn component_can_spawn_dynamic_child_via_spawn_handle() {
+        // The source spawns a dynamic child through its context's spawn handle. The child records that it started and
+        // then runs until torn down. We verify the child actually ran, then shut the topology down cleanly. The clean
+        // shutdown also tears the (still-running) dynamic child down with its component's supervisor -- if it didn't,
+        // draining would hang and the test would time out.
+        let started = Arc::new(AtomicUsize::new(0));
+        let blueprint = long_running_blueprint(Some(Arc::clone(&started)));
+
+        let mut supervisor = Supervisor::new("test-topology").expect("should not fail to create supervisor");
+        supervisor.add_worker(blueprint);
+
+        let (tx, rx) = oneshot::channel::<()>();
+        let handle = tokio::spawn(async move { supervisor.run_with_shutdown(rx).await });
+
+        // Wait until the dynamic child has started.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while started.load(Ordering::SeqCst) == 0 {
+            assert!(Instant::now() < deadline, "dynamic child never started");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(
+            started.load(Ordering::SeqCst),
+            1,
+            "dynamic child should have started exactly once"
+        );
+
+        tx.send(()).expect("should send shutdown signal");
+        let result = tokio::time::timeout(Duration::from_secs(5), handle)
+            .await
+            .expect("supervisor should exit promptly")
+            .expect("supervisor task should not panic");
+
+        assert!(result.is_ok(), "topology should shut down cleanly, got: {:?}", result);
+    }
+
+    #[tokio::test]
+    async fn forced_abort_count_survives_topology_boundary_to_root() {
+        // A component that ignores graceful shutdown is forcefully aborted, and that abort count must survive the
+        // `TopologyBlueprint` boundary -- where the topology supervisor's `SupervisorError` is flattened into a
+        // `GenericError` -- and be recovered by the root supervisor as `ShutdownTimedOut`. This exercises the
+        // `downcast` recovery path in `reported_abort_count`, which the production topology depends on but the direct
+        // nested-supervisor tests in `supervisor.rs` do not cover: those hit the structured `WorkerError` variant,
+        // never the flattened-`GenericError` path taken here.
+        //
+        // The source stops cleanly on shutdown; the destination ignores shutdown and runs forever, so exactly one
+        // component (the destination) is force-aborted after the (short) shutdown timeout.
+        let blueprint = stuck_destination_blueprint(Duration::from_millis(100));
+
+        let mut supervisor = Supervisor::new("test-topology").expect("should not fail to create supervisor");
+        supervisor.add_worker(blueprint);
+
+        let (tx, rx) = oneshot::channel::<()>();
+        let handle = tokio::spawn(async move { supervisor.run_with_shutdown(rx).await });
+
+        // Give the components a moment to start, then request shutdown.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        tx.send(()).expect("should send shutdown signal");
+
+        let result = tokio::time::timeout(Duration::from_secs(5), handle)
+            .await
+            .expect("supervisor should exit promptly")
+            .expect("supervisor task should not panic");
+
+        assert!(
+            matches!(result, Err(SupervisorError::ShutdownTimedOut { aborted: 1 })),
+            "a component that ignored shutdown must surface as an unclean shutdown with a count of 1, got {result:?}"
+        );
     }
 }

@@ -35,7 +35,7 @@ use saluki_components::{
 };
 use saluki_config::{ConfigurationLoader, GenericConfiguration};
 use saluki_core::health::HealthRegistry;
-use saluki_core::runtime::{RestartMode, RestartStrategy, Supervisor};
+use saluki_core::runtime::{RestartMode, RestartStrategy, Supervisor, SupervisorError};
 use saluki_core::topology::TopologyBlueprint;
 use saluki_env::EnvironmentProvider as _;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
@@ -237,6 +237,18 @@ pub async fn handle_run_command(
     match root_supervisor.run_with_shutdown(wait_for_sigint()).await {
         Ok(()) => {
             info!("Agent Data Plane shut down successfully.");
+            Ok(())
+        }
+        // The shutdown ran to completion, but one or more components ignored graceful shutdown and had to be forcefully
+        // aborted after exceeding the shutdown timeout. Surface that plainly instead of reporting success -- but don't
+        // treat it as a fatal error: the process did stop, and mapping it through the error path would mislabel it as a
+        // boot/setup failure (and trip the boot assertion in `run_inner`).
+        Err(SupervisorError::ShutdownTimedOut { aborted }) => {
+            warn!(
+                aborted,
+                "Agent Data Plane shut down uncleanly: {aborted} component(s) had to be forcefully stopped after \
+                 exceeding the shutdown timeout. Check the preceding warnings for which components were affected."
+            );
             Ok(())
         }
         Err(e) => Err(e.into()),
