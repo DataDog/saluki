@@ -1,6 +1,9 @@
 //! Generic interning for dictionary deduplication.
 
-use std::{borrow::Borrow, collections::HashMap, hash::Hash};
+use std::{borrow::Borrow, hash::Hash};
+
+pub type FastBuildHasher = foldhash::quality::RandomState;
+pub type FastHashMap<K, V> = std::collections::HashMap<K, V, FastBuildHasher>;
 
 /// Generic interning structure for dictionary deduplication.
 ///
@@ -11,7 +14,7 @@ use std::{borrow::Borrow, collections::HashMap, hash::Hash};
 /// (e.g. `&str` when `K = String`) to look up an existing ID without cloning.
 #[derive(Debug)]
 pub struct Interner<K: Eq + Hash> {
-    index: HashMap<K, i64>,
+    index: FastHashMap<K, i64>,
     last_id: i64,
 }
 
@@ -25,7 +28,7 @@ impl<K: Eq + Hash> Interner<K> {
     /// Creates a new empty interner.
     pub fn new() -> Self {
         Self {
-            index: HashMap::new(),
+            index: FastHashMap::default(),
             last_id: 0,
         }
     }
@@ -52,13 +55,11 @@ impl<K: Eq + Hash> Interner<K> {
     }
 
     /// Returns the number of interned values.
-    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.index.len()
     }
 
     /// Returns true if no values have been interned.
-    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.index.is_empty()
     }

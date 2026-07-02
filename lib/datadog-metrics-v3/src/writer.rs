@@ -1,7 +1,7 @@
 //! V3 columnar metrics writer.
 //!
 //! The [`V3Writer`] accumulates metrics in columnar format with dictionary deduplication,
-//! then serializes the batch to protobuf wire format when [`V3Writer::close`] is called.
+//! then serializes the batch to protobuf wire format when [`V3Writer::finalize`] is called.
 
 use std::fmt;
 
@@ -339,22 +339,13 @@ impl V3Writer {
             point_start_idx,
             metric_idx,
             closed: false,
+            unit_ref_idx: None,
         }
-    }
-
-    /// Finalizes the writer, serializes the columnar payload to protobuf wire format,
-    /// and returns the encoded bytes.
-    ///
-    /// This is the primary public API. For testing internal columnar state, use
-    /// [`finalize_inner`](Self::finalize_inner).
-    pub fn close(self) -> Vec<u8> {
-        let data = self.finalize_inner();
-        serialize_to_proto(&data)
     }
 
     /// Finalizes the writer and returns the raw columnar data before serialization.
     ///
-    /// Primarily for testing. Production code should call [`close`](Self::close).
+    /// Primarily for testing. Production code should call [`finalize`](Self::finalize).
     pub fn finalize_inner(mut self) -> V3EncodedData {
         delta_encode(&mut self.names);
         delta_encode(&mut self.tags);
@@ -756,6 +747,10 @@ pub struct V3MetricBuilder<'a> {
     point_start_idx: usize,
     metric_idx: usize,
     closed: bool,
+    /// Index into `writer.unit_refs` for this metric's entry, if [`set_unit`](Self::set_unit)
+    /// has pushed one. Lets repeated calls update or remove the existing entry instead of
+    /// appending a new one, which would desync the sparse `unit_refs` column.
+    unit_ref_idx: Option<usize>,
 }
 
 impl<'a> V3MetricBuilder<'a> {
@@ -800,11 +795,21 @@ impl<'a> V3MetricBuilder<'a> {
     /// Sets `FLAG_HAS_UNIT` in the types column and records the unit ref.
     pub fn set_unit(&mut self, unit: &str) {
         if unit.is_empty() {
+            self.writer.types[self.metric_idx] &= !FLAG_HAS_UNIT;
+            if let Some(unit_ref_idx) = self.unit_ref_idx.take() {
+                self.writer.unit_refs.remove(unit_ref_idx);
+            }
             return;
         }
+
         let id = self.writer.intern_unit(unit);
+        if let Some(unit_ref_idx) = self.unit_ref_idx {
+            self.writer.unit_refs[unit_ref_idx] = id;
+        } else {
+            self.unit_ref_idx = Some(self.writer.unit_refs.len());
+            self.writer.unit_refs.push(id);
+        }
         self.writer.types[self.metric_idx] |= FLAG_HAS_UNIT;
-        self.writer.unit_refs.push(id);
     }
 
     /// Marks this metric as agent-hidden (not indexed by the backend).
@@ -926,122 +931,6 @@ impl<'a> V3MetricBuilder<'a> {
             }
         }
     }
-}
-
-// ── Protobuf serialization ────────────────────────────────────────────────────
-
-fn serialize_to_proto(data: &V3EncodedData) -> Vec<u8> {
-    let mut output = Vec::new();
-    {
-        let mut os = CodedOutputStream::vec(&mut output);
-
-        // Dictionaries
-        if !data.dict_name_bytes.is_empty() {
-            os.write_bytes(DICT_NAME_STR, &data.dict_name_bytes).unwrap();
-        }
-        if !data.dict_tags_bytes.is_empty() {
-            os.write_bytes(DICT_TAGS_STR, &data.dict_tags_bytes).unwrap();
-        }
-        if !data.dict_tagsets.is_empty() {
-            os.write_repeated_packed_sint64(DICT_TAGSETS, &data.dict_tagsets)
-                .unwrap();
-        }
-        if !data.dict_resource_str_bytes.is_empty() {
-            os.write_bytes(DICT_RESOURCE_STR, &data.dict_resource_str_bytes)
-                .unwrap();
-        }
-        if !data.dict_resource_len.is_empty() {
-            os.write_repeated_packed_int64(DICT_RESOURCE_LEN, &data.dict_resource_len)
-                .unwrap();
-        }
-        if !data.dict_resource_type.is_empty() {
-            os.write_repeated_packed_sint64(DICT_RESOURCE_TYPE, &data.dict_resource_type)
-                .unwrap();
-        }
-        if !data.dict_resource_name.is_empty() {
-            os.write_repeated_packed_sint64(DICT_RESOURCE_NAME, &data.dict_resource_name)
-                .unwrap();
-        }
-        if !data.dict_source_type_bytes.is_empty() {
-            os.write_bytes(DICT_SOURCE_TYPE_NAME, &data.dict_source_type_bytes)
-                .unwrap();
-        }
-        if !data.dict_origin_info.is_empty() {
-            os.write_repeated_packed_int32(DICT_ORIGIN_INFO, &data.dict_origin_info)
-                .unwrap();
-        }
-
-        // Per-metric columns
-        if !data.types.is_empty() {
-            os.write_repeated_packed_uint64(TYPES, &data.types).unwrap();
-        }
-        if !data.names.is_empty() {
-            os.write_repeated_packed_sint64(NAMES, &data.names).unwrap();
-        }
-        if !data.tags.is_empty() {
-            os.write_repeated_packed_sint64(TAGS, &data.tags).unwrap();
-        }
-        if !data.resources.is_empty() {
-            os.write_repeated_packed_sint64(RESOURCES, &data.resources).unwrap();
-        }
-        if !data.intervals.is_empty() {
-            os.write_repeated_packed_uint64(INTERVALS, &data.intervals).unwrap();
-        }
-        if !data.num_points.is_empty() {
-            os.write_repeated_packed_uint64(NUM_POINTS, &data.num_points).unwrap();
-        }
-
-        // Point data
-        if !data.timestamps.is_empty() {
-            os.write_repeated_packed_sint64(TIMESTAMPS, &data.timestamps).unwrap();
-        }
-        if !data.vals_sint64.is_empty() {
-            os.write_repeated_packed_sint64(VALS_SINT64, &data.vals_sint64).unwrap();
-        }
-        if !data.vals_float32.is_empty() {
-            os.write_repeated_packed_float(VALS_FLOAT32, &data.vals_float32)
-                .unwrap();
-        }
-        if !data.vals_float64.is_empty() {
-            os.write_repeated_packed_double(VALS_FLOAT64, &data.vals_float64)
-                .unwrap();
-        }
-
-        // Sketch data
-        if !data.sketch_num_bins.is_empty() {
-            os.write_repeated_packed_uint64(SKETCH_NUM_BINS, &data.sketch_num_bins)
-                .unwrap();
-        }
-        if !data.sketch_bin_keys.is_empty() {
-            os.write_repeated_packed_sint32(SKETCH_BIN_KEYS, &data.sketch_bin_keys)
-                .unwrap();
-        }
-        if !data.sketch_bin_cnts.is_empty() {
-            os.write_repeated_packed_uint32(SKETCH_BIN_CNTS, &data.sketch_bin_cnts)
-                .unwrap();
-        }
-
-        // Higher-numbered per-metric columns
-        if !data.source_type_names.is_empty() {
-            os.write_repeated_packed_sint64(SOURCE_TYPE_NAME, &data.source_type_names)
-                .unwrap();
-        }
-        if !data.origin_infos.is_empty() {
-            os.write_repeated_packed_sint64(ORIGIN_INFO, &data.origin_infos)
-                .unwrap();
-        }
-
-        // Unit fields (only present when at least one metric has a unit)
-        if !data.dict_unit_bytes.is_empty() {
-            os.write_bytes(DICT_UNIT_STR, &data.dict_unit_bytes).unwrap();
-        }
-        if !data.unit_refs.is_empty() {
-            os.write_repeated_packed_sint64(UNIT_REFS, &data.unit_refs).unwrap();
-        }
-
-        os.flush().unwrap();
-    }
-    output
 }
 
 impl Drop for V3MetricBuilder<'_> {
@@ -1221,6 +1110,43 @@ mod tests {
         assert_eq!(data.types[0] & FLAG_HAS_UNIT, FLAG_HAS_UNIT);
         assert_eq!(data.types[1] & FLAG_HAS_UNIT, 0);
         assert_eq!(data.types[2] & FLAG_HAS_UNIT, FLAG_HAS_UNIT);
+    }
+
+    #[test]
+    fn test_set_unit_called_twice_updates_in_place() {
+        let mut writer = V3Writer::new();
+
+        {
+            let mut metric = writer.write(V3MetricType::Gauge, "changed.unit");
+            metric.set_unit("millisecond");
+            metric.set_unit("byte");
+            metric.add_point(1000, 42.0);
+            metric.close();
+        }
+
+        let data = writer.finalize_inner();
+
+        // Only one entry should exist for this metric's unit, not two.
+        assert_eq!(data.unit_refs.len(), 1);
+        assert_eq!(data.types[0] & FLAG_HAS_UNIT, FLAG_HAS_UNIT);
+    }
+
+    #[test]
+    fn test_set_unit_empty_after_non_empty_unsets() {
+        let mut writer = V3Writer::new();
+
+        {
+            let mut metric = writer.write(V3MetricType::Gauge, "unset.unit");
+            metric.set_unit("millisecond");
+            metric.set_unit("");
+            metric.add_point(1000, 42.0);
+            metric.close();
+        }
+
+        let data = writer.finalize_inner();
+
+        assert!(data.unit_refs.is_empty());
+        assert_eq!(data.types[0] & FLAG_HAS_UNIT, 0);
     }
 
     #[test]

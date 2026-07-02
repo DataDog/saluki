@@ -47,44 +47,6 @@ impl V3ValueType {
     pub fn as_u64(self) -> u64 {
         self as u64
     }
-
-    /// Determines the best value type for a given f64 value.
-    ///
-    /// Prefers smaller representations when lossless:
-    /// - Zero for 0.0
-    /// - Sint64 for integers that fit in 49 bits
-    /// - Float32 for values representable as f32
-    /// - Float64 otherwise
-    pub fn for_value(v: f64) -> Self {
-        if v == 0.0 {
-            return Self::Zero;
-        }
-
-        // Varint range that fits in 7 bytes or less (49 bits)
-        const VARINT_WIDTH: i32 = 7 * 7 - 1;
-        const MAX_INT: i64 = 1 << VARINT_WIDTH;
-        const MIN_INT: i64 = -MAX_INT;
-
-        let i = v as i64;
-        if (MIN_INT..MAX_INT).contains(&i) && (i as f64) == v {
-            return Self::Sint64;
-        }
-
-        if (v as f32 as f64) == v {
-            return Self::Float32;
-        }
-
-        Self::Float64
-    }
-
-    /// Returns the maximum (largest encoding) of two value types.
-    pub fn max(self, other: Self) -> Self {
-        if (other as u8) > (self as u8) {
-            other
-        } else {
-            self
-        }
-    }
 }
 
 /// Intermediate point classification for value type compaction.
@@ -177,31 +139,74 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_value_type_for_value() {
-        assert_eq!(V3ValueType::for_value(0.0), V3ValueType::Zero);
-        assert_eq!(V3ValueType::for_value(100.0), V3ValueType::Sint64);
-        assert_eq!(V3ValueType::for_value(-100.0), V3ValueType::Sint64);
-        assert_eq!(V3ValueType::for_value(1.5), V3ValueType::Float32);
-        assert_eq!(V3ValueType::for_value(2.75), V3ValueType::Float32);
+    fn test_point_kind_classification() {
+        // Zero
+        assert_eq!(PointKind::for_value(0.0), PointKind::Zero);
 
-        // Large integers that don't fit in 49 bits AND can't be exactly represented in f32
-        // Powers of 2 like (1 << 50) can be exactly represented in f32, so we add 1
-        // to make it an odd number that requires more precision than f32 provides
+        // Small integers (fit in f32)
+        assert_eq!(PointKind::for_value(100.0), PointKind::Int24);
+        assert_eq!(PointKind::for_value(-100.0), PointKind::Int24);
+        assert_eq!(PointKind::for_value((1 << 24) as f64), PointKind::Int24);
+        assert_eq!(PointKind::for_value(-((1 << 24) as f64)), PointKind::Int24);
+
+        // Large integers (don't fit losslessly in f32)
+        assert_eq!(PointKind::for_value(((1 << 24) + 1) as f64), PointKind::Int48);
+        assert_eq!(PointKind::for_value((1i64 << 30) as f64), PointKind::Int48);
+
+        // Float32
+        assert_eq!(PointKind::for_value(1.5), PointKind::Float32);
+        assert_eq!(PointKind::for_value(2.75), PointKind::Float32);
+
+        // Float64
+        assert_eq!(PointKind::for_value(std::f64::consts::PI), PointKind::Float64);
         let large = ((1i64 << 50) + 1) as f64;
-        assert_eq!(V3ValueType::for_value(large), V3ValueType::Float64);
-
-        // Values that require f64 precision - use PI which has more precision than f32 can hold
-        // and isn't an integer, so it won't be stored as Sint64
-        let pi = std::f64::consts::PI;
-        // PI requires full f64 precision to store exactly
-        assert_eq!(V3ValueType::for_value(pi), V3ValueType::Float64);
+        assert_eq!(PointKind::for_value(large), PointKind::Float64);
     }
 
     #[test]
-    fn test_value_type_max() {
-        assert_eq!(V3ValueType::Zero.max(V3ValueType::Sint64), V3ValueType::Sint64);
-        assert_eq!(V3ValueType::Sint64.max(V3ValueType::Float32), V3ValueType::Float32);
-        assert_eq!(V3ValueType::Float32.max(V3ValueType::Float64), V3ValueType::Float64);
-        assert_eq!(V3ValueType::Float64.max(V3ValueType::Zero), V3ValueType::Float64);
+    fn test_point_kind_union() {
+        // Standard widening (max)
+        assert_eq!(PointKind::Zero.union(PointKind::Int24), PointKind::Int24);
+        assert_eq!(PointKind::Int24.union(PointKind::Int48), PointKind::Int48);
+        assert_eq!(PointKind::Int24.union(PointKind::Float32), PointKind::Float32);
+        assert_eq!(PointKind::Float32.union(PointKind::Float64), PointKind::Float64);
+        assert_eq!(PointKind::Float64.union(PointKind::Zero), PointKind::Float64);
+
+        // The critical case: large integer + float32 must escalate to float64
+        assert_eq!(PointKind::Int48.union(PointKind::Float32), PointKind::Float64);
+        assert_eq!(PointKind::Float32.union(PointKind::Int48), PointKind::Float64);
+    }
+
+    #[test]
+    fn test_value_type_for_values() {
+        // All zeros
+        assert_eq!(value_type_for_values([0.0, 0.0].into_iter()), V3ValueType::Zero);
+
+        // Small integers
+        assert_eq!(value_type_for_values([100.0, 200.0].into_iter()), V3ValueType::Sint64);
+
+        // Large integers
+        assert_eq!(
+            value_type_for_values([(1i64 << 30) as f64, 200.0].into_iter()),
+            V3ValueType::Sint64
+        );
+
+        // Small integer + float32 → Float32 (safe, small int fits in f32)
+        assert_eq!(value_type_for_values([100.0, 1.5].into_iter()), V3ValueType::Float32);
+
+        // Large integer + float32 → Float64 (the bug fix!)
+        assert_eq!(
+            value_type_for_values([(1i64 << 30) as f64, 1.5].into_iter()),
+            V3ValueType::Float64
+        );
+
+        // Float64 value forces Float64
+        assert_eq!(
+            value_type_for_values([100.0, std::f64::consts::PI].into_iter()),
+            V3ValueType::Float64
+        );
+
+        // Empty iterator
+        assert_eq!(value_type_for_values(std::iter::empty()), V3ValueType::Zero);
     }
 }
