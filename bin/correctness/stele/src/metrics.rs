@@ -689,9 +689,9 @@ fn parse_dict_strings(data: &[u8]) -> Result<Vec<String>, GenericError> {
 /// entries. Each decoded entry is one of:
 ///
 /// - A positive value: a 1-based index into the tag-string dictionary.
-/// - A negative value `-N`: a prefix reference to the previously interned tagset with 1-based ID
+/// - A negative value `-N`: a backreference to the previously interned tagset with 1-based ID
 ///   `N`, whose (already fully resolved) tags are included in this one. The Agent emits these when
-///   it splits a metric's composite tags into two groups and prefix-compresses the second group
+///   it splits a metric's composite tags into two groups and encodes the second group
 ///   against the first (see `internTags` in the Agent's `iterable_series_v3.go`). Because the
 ///   referenced tagset is always interned before the tagset that references it, a single forward
 ///   pass can resolve the reference against the tagsets parsed so far.
