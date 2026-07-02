@@ -37,7 +37,7 @@ use saluki_config::{ConfigurationLoader, GenericConfiguration};
 use saluki_core::health::HealthRegistry;
 use saluki_core::runtime::{RestartMode, RestartStrategy, Supervisor};
 use saluki_core::topology::TopologyBlueprint;
-use saluki_env::EnvironmentProvider as _;
+use saluki_env::{EnvironmentProvider as _, HostProvider as _};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use tracing::{debug, error, info, trace, warn};
 
@@ -692,8 +692,14 @@ async fn add_dsd_pipeline_to_blueprint(
     //    │    (destination)    │    │                       (Datadog Platform)                        │
     //    └─────────────────────┘    └ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┘
 
+    let default_hostname = env_provider
+        .host()
+        .get_hostname()
+        .await
+        .error_context("Failed to get default hostname for DogStatsD source.")?;
     let dsd_config = DogStatsDConfiguration::from_configuration(config)
         .error_context("Failed to configure DogStatsD source.")?
+        .with_default_hostname(default_hostname)
         .with_workload_provider(env_provider.workload().clone())
         .with_capture_entity_resolver(env_provider.workload().clone());
     let dsd_prefix_filter_configuration = DogStatsDPrefixFilterConfiguration::from_configuration(config)?;

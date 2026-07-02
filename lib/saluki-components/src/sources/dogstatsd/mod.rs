@@ -264,6 +264,10 @@ struct DogStatsDTelemetryConfiguration {
 #[cfg_attr(test, derive(derive_where::DeriveWhere, serde::Serialize))]
 #[cfg_attr(test, derive_where(PartialEq))]
 pub struct DogStatsDConfiguration {
+    /// Hostname used when DogStatsD metrics do not carry an explicit `host:` tag.
+    #[serde(skip)]
+    default_hostname: MetaString,
+
     /// The size of the buffer used to receive messages into, in bytes.
     ///
     /// Payloads can't exceed this size, or they will be truncated, leading to discarded messages.
@@ -750,6 +754,12 @@ impl DogStatsDConfiguration {
         self.buffer_count_max.max(self.buffer_count)
     }
 
+    /// Sets the default hostname used when DogStatsD metrics do not carry an explicit `host:` tag.
+    pub fn with_default_hostname(mut self, hostname: impl Into<MetaString>) -> Self {
+        self.default_hostname = hostname.into();
+        self
+    }
+
     /// Sets the workload provider to use for configuring origin detection/enrichment.
     ///
     /// A workload provider must be set otherwise origin detection/enrichment won't be enabled.
@@ -983,6 +993,7 @@ impl SourceBuilder for DogStatsDConfiguration {
             io_buffer_pool_shrinker: Box::pin(io_buffer_pool_shrinker),
             codec,
             context_resolvers,
+            default_hostname: self.default_hostname.clone(),
             enabled_filter: enable_payloads_filter,
             origin_detection_enabled,
             origin_telemetry_enabled: self.telemetry.dogstatsd_origin,
@@ -1046,6 +1057,7 @@ pub struct DogStatsD {
     io_buffer_pool_shrinker: Pin<Box<dyn Future<Output = ()> + Send>>,
     codec: DogStatsDCodec,
     context_resolvers: ContextResolvers,
+    default_hostname: MetaString,
     enabled_filter: EnablePayloadsFilter,
     origin_detection_enabled: bool,
     origin_telemetry_enabled: bool,
@@ -1064,6 +1076,7 @@ struct ListenerContext {
     io_buffer_pool: ElasticObjectPool<BytesBuffer>,
     codec: DogStatsDCodec,
     context_resolvers: ContextResolvers,
+    default_hostname: MetaString,
     origin_detection_enabled: bool,
     origin_telemetry_enabled: bool,
     stream_log_too_big: bool,
@@ -1082,6 +1095,7 @@ struct HandlerContext {
     io_buffer_pool: ElasticObjectPool<BytesBuffer>,
     metrics: Metrics,
     context_resolvers: ContextResolvers,
+    default_hostname: MetaString,
     origin_detection_enabled: bool,
     stream_log_too_big: bool,
     disable_verbose_logs: bool,
@@ -1121,6 +1135,7 @@ impl Source for DogStatsD {
                 io_buffer_pool: self.io_buffer_pool.clone(),
                 codec: self.codec.clone(),
                 context_resolvers: self.context_resolvers.clone(),
+                default_hostname: self.default_hostname.clone(),
                 origin_detection_enabled: self.origin_detection_enabled,
                 origin_telemetry_enabled: self.origin_telemetry_enabled,
                 stream_log_too_big: self.stream_log_too_big,
@@ -1204,6 +1219,7 @@ async fn process_listener(
         io_buffer_pool,
         codec,
         context_resolvers,
+        default_hostname,
         origin_detection_enabled,
         origin_telemetry_enabled,
         stream_log_too_big,
@@ -1251,6 +1267,7 @@ async fn process_listener(
                         io_buffer_pool: io_buffer_pool.clone(),
                         metrics: metrics.clone(),
                         context_resolvers: context_resolvers.clone(),
+                        default_hostname: default_hostname.clone(),
                         origin_detection_enabled,
                         stream_log_too_big,
                         disable_verbose_logs,
@@ -1308,6 +1325,7 @@ async fn drive_stream(
         io_buffer_pool,
         metrics,
         mut context_resolvers,
+        default_hostname,
         origin_detection_enabled,
         stream_log_too_big,
         disable_verbose_logs,
@@ -1414,6 +1432,7 @@ async fn drive_stream(
                                     &peer_addr,
                                     enabled_filter,
                                     &additional_tags,
+                                    &default_hostname,
                                 ) {
                                     Ok(Some(event)) => {
                                         if let Some(event_buffer) = event_buffer_manager.try_push(event) {
@@ -1636,6 +1655,7 @@ fn handle_frame(
     frame: &[u8], codec: &DogStatsDCodec, context_resolvers: &mut ContextResolvers, source_metrics: &Metrics,
     capture_entity_resolver: Option<&(dyn CaptureEntityResolver + Send + Sync)>, origin_detection_enabled: bool,
     peer_addr: &ConnectionAddress, enabled_filter: EnablePayloadsFilter, additional_tags: &[String],
+    default_hostname: &MetaString,
 ) -> Result<Option<Event>, ParseError> {
     // Resolving the origin requires a (potentially uncached) PID-to-container lookup, so only do it for metric frames,
     // which are the only frames that record per-origin telemetry.
@@ -1675,7 +1695,13 @@ fn handle_frame(
                 return Ok(None);
             }
 
-            match handle_metric_packet(metric_packet, context_resolvers, peer_addr, additional_tags) {
+            match handle_metric_packet(
+                metric_packet,
+                context_resolvers,
+                peer_addr,
+                additional_tags,
+                default_hostname,
+            ) {
                 Some(metric) => {
                     source_metrics.record_metrics_received(events_len, resolve_telemetry_origin().as_deref());
                     Event::Metric(metric)
@@ -1731,7 +1757,7 @@ fn handle_frame(
 
 fn handle_metric_packet(
     packet: MetricPacket, context_resolvers: &mut ContextResolvers, peer_addr: &ConnectionAddress,
-    additional_tags: &[String],
+    additional_tags: &[String], default_hostname: &MetaString,
 ) -> Option<Metric> {
     let well_known_tags = WellKnownTags::from_raw_tags(packet.tags.clone());
 
@@ -1749,11 +1775,10 @@ fn handle_metric_packet(
 
     let tags = get_filtered_tags_iterator(packet.tags, additional_tags);
 
+    let hostname = well_known_tags.hostname.unwrap_or(default_hostname);
+
     // Try to resolve the context for this metric.
-    let maybe_context = match well_known_tags.hostname {
-        Some(hostname) => context_resolver.resolve_with_host(packet.metric_name, hostname, tags, Some(origin)),
-        None => context_resolver.resolve(packet.metric_name, tags, Some(origin)),
-    };
+    let maybe_context = context_resolver.resolve_with_host(packet.metric_name, hostname, tags, Some(origin));
 
     match maybe_context {
         Some(context) => {
@@ -1763,7 +1788,7 @@ fn handle_metric_packet(
                 .unwrap_or_else(MetricOrigin::dogstatsd);
             let metadata = MetricMetadata::default()
                 .with_origin(metric_origin)
-                .with_hostname(well_known_tags.hostname.map(Arc::from))
+                .with_hostname(Some(Arc::from(hostname)))
                 .with_unit(packet.unit.map_or_else(MetaString::empty, MetaString::from_static));
 
             Some(Metric::from_parts(context, packet.values, metadata))
@@ -2082,6 +2107,7 @@ mod tests {
             &peer_addr,
             EnablePayloadsFilter::default(),
             &[],
+            &MetaString::from_static("default-host"),
         )
         .expect("frame should parse");
 
@@ -2122,6 +2148,7 @@ mod tests {
             &peer_addr,
             EnablePayloadsFilter::default(),
             &[],
+            &MetaString::from_static("default-host"),
         )
         .expect("frame should parse");
 
@@ -2157,7 +2184,13 @@ mod tests {
             panic!("Failed to parse packet.");
         };
 
-        let maybe_metric = handle_metric_packet(packet, &mut context_resolvers, &peer_addr, &[]);
+        let maybe_metric = handle_metric_packet(
+            packet,
+            &mut context_resolvers,
+            &peer_addr,
+            &[],
+            &MetaString::from_static("default-host"),
+        );
         assert!(maybe_metric.is_none());
     }
 
@@ -2166,26 +2199,45 @@ mod tests {
         let codec = DogStatsDCodec::from_configuration(DogStatsDCodecConfiguration::default());
         let mut context_resolvers = test_context_resolvers();
         let peer_addr = ConnectionAddress::from("1.1.1.1:1234".parse::<SocketAddr>().unwrap());
+        let default_hostname = MetaString::from_static("default-host");
 
-        let Ok(ParsedPacket::Metric(packet_a)) = codec.decode_packet(b"test_metric_name:1|g|#host:host-a") else {
-            panic!("Failed to parse packet.");
-        };
-        let Ok(ParsedPacket::Metric(packet_b)) = codec.decode_packet(b"test_metric_name:2|g|#host:host-b") else {
-            panic!("Failed to parse packet.");
-        };
+        let packets = [
+            ("unset", b"test_metric_name:1|g".as_slice(), "default-host"),
+            ("empty", b"test_metric_name:2|g|#host:".as_slice(), ""),
+            (
+                "explicit_default",
+                b"test_metric_name:3|g|#host:default-host".as_slice(),
+                "default-host",
+            ),
+            (
+                "custom",
+                b"test_metric_name:4|g|#host:custom-host".as_slice(),
+                "custom-host",
+            ),
+        ];
 
-        let metric_a =
-            handle_metric_packet(packet_a, &mut context_resolvers, &peer_addr, &[]).expect("metric should resolve");
-        let metric_b =
-            handle_metric_packet(packet_b, &mut context_resolvers, &peer_addr, &[]).expect("metric should resolve");
+        let mut metrics = Vec::new();
+        for (case, raw, expected_host) in packets {
+            let Ok(ParsedPacket::Metric(packet)) = codec.decode_packet(raw) else {
+                panic!("Failed to parse {case} packet.");
+            };
+            let metric = handle_metric_packet(packet, &mut context_resolvers, &peer_addr, &[], &default_hostname)
+                .unwrap_or_else(|| panic!("{case} metric should resolve"));
 
-        assert_ne!(metric_a.context(), metric_b.context());
-        assert_eq!(metric_a.context().host(), "host-a");
-        assert_eq!(metric_b.context().host(), "host-b");
-        assert!(!metric_a.context().tags().has_tag("host:host-a"));
-        assert!(!metric_b.context().tags().has_tag("host:host-b"));
-        assert_eq!(metric_a.metadata().hostname(), Some("host-a"));
-        assert_eq!(metric_b.metadata().hostname(), Some("host-b"));
+            assert_eq!(metric.context().host(), expected_host, "{case} context host");
+            assert_eq!(
+                metric.metadata().hostname(),
+                Some(expected_host),
+                "{case} metadata host"
+            );
+            assert!(metric.context().tags().into_iter().all(|tag| tag.name() != "host"));
+            metrics.push(metric);
+        }
+
+        assert_eq!(metrics[0].context(), metrics[2].context());
+        assert_ne!(metrics[0].context(), metrics[1].context());
+        assert_ne!(metrics[0].context(), metrics[3].context());
+        assert_ne!(metrics[1].context(), metrics[3].context());
     }
 
     #[test]
@@ -2212,7 +2264,13 @@ mod tests {
         let Ok(ParsedPacket::Metric(packet)) = codec.decode_packet(input.as_bytes()) else {
             panic!("Failed to parse packet.");
         };
-        let maybe_metric = handle_metric_packet(packet, &mut context_resolvers, &peer_addr, &additional_tags);
+        let maybe_metric = handle_metric_packet(
+            packet,
+            &mut context_resolvers,
+            &peer_addr,
+            &additional_tags,
+            &MetaString::from_static("default-host"),
+        );
         assert!(maybe_metric.is_some());
 
         let metric = maybe_metric.unwrap();
