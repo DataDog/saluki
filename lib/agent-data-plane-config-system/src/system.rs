@@ -8,6 +8,7 @@ use arc_swap::ArcSwap;
 use datadog_agent_config::{DatadogConfiguration, TranslateError};
 use saluki_config::dynamic::ConfigChangeEvent;
 use saluki_config::{ConfigurationError, GenericConfiguration};
+use serde::Deserialize;
 use snafu::Snafu;
 use tokio::sync::broadcast;
 use tracing::{debug, warn};
@@ -30,14 +31,34 @@ fn translate(
     (config, error)
 }
 
+/// Deserializes both source models from one merged configuration value.
+///
+/// EXPERIMENT (reduce binary size): figment still merges every provider into a single value, but we
+/// deserialize the source models from that value through serde_json's `Value` deserializer instead
+/// of figment's per-type `extract`. Our source models use no figment magic types (path fields are
+/// plain strings), so nothing is lost, and the giant generated `DatadogConfiguration` visitor is
+/// instantiated once for serde_json rather than repeatedly through figment's deserializer.
+fn sources_from_value(merged: &serde_json::Value) -> Result<(DatadogConfiguration, SalukiOnly), serde_json::Error> {
+    let datadog = DatadogConfiguration::deserialize(merged)?;
+    let saluki_only = SalukiOnly::deserialize(merged)?;
+    Ok((datadog, saluki_only))
+}
+
 /// An error building the translated configuration from the raw source map.
 #[derive(Debug, Snafu)]
 pub enum ConfigurationSystemError {
-    /// A source model could not be deserialized from the raw configuration map.
+    /// The merged configuration value could not be read from the raw configuration map.
     #[snafu(context(false), display("{source}"))]
     Source {
-        /// The underlying deserialization error.
+        /// The underlying configuration error.
         source: ConfigurationError,
+    },
+
+    /// A source model could not be deserialized from the merged configuration value.
+    #[snafu(context(false), display("{source}"))]
+    Deserialize {
+        /// The underlying deserialization error.
+        source: serde_json::Error,
     },
 }
 
@@ -63,8 +84,8 @@ impl ConfigurationSystem {
     ///
     /// Returns an error if the raw map cannot be deserialized into the source models.
     pub fn load(raw_map: GenericConfiguration) -> Result<Self, ConfigurationSystemError> {
-        let datadog = raw_map.as_typed::<DatadogConfiguration>()?;
-        let saluki_only = raw_map.as_typed::<SalukiOnly>()?;
+        let merged = raw_map.as_typed::<serde_json::Value>()?;
+        let (datadog, saluki_only) = sources_from_value(&merged)?;
         let (config, error) = translate(&datadog, &saluki_only);
         if let Some(error) = error {
             warn!(%error, "Configuration translation reported errors at startup; invalid values kept their defaults.");
@@ -146,17 +167,17 @@ async fn router_loop(
 /// and the result is stored so that every valid value -- including later updates -- still takes
 /// effect. A single invalid value therefore never wedges subsequent updates.
 pub(crate) fn apply(current: &ArcSwap<SalukiConfiguration>, raw_map: &GenericConfiguration) {
-    let datadog = match raw_map.as_typed::<DatadogConfiguration>() {
-        Ok(c) => c,
+    let merged = match raw_map.as_typed::<serde_json::Value>() {
+        Ok(v) => v,
         Err(e) => {
-            warn!(error = %e, "Rejecting configuration update: the Datadog source could not be deserialized. Retaining current configuration.");
+            warn!(error = %e, "Rejecting configuration update: the merged configuration could not be read. Retaining current configuration.");
             return;
         }
     };
-    let saluki_only = match raw_map.as_typed::<SalukiOnly>() {
-        Ok(c) => c,
+    let (datadog, saluki_only) = match sources_from_value(&merged) {
+        Ok(sources) => sources,
         Err(e) => {
-            warn!(error = %e, "Rejecting configuration update: the Saluki-only source could not be deserialized. Retaining current configuration.");
+            warn!(error = %e, "Rejecting configuration update: a source model could not be deserialized. Retaining current configuration.");
             return;
         }
     };
