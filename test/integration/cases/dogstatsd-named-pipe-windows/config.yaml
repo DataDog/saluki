@@ -44,6 +44,8 @@ procedure:
         }
 
         Send-NamedPipePayload "integration.named_pipe.invalid`n"
+        Send-NamedPipePayload "integration.named_pipe.with_eol.invalid`n"
+        Send-NamedPipePayload "integration.named_pipe.no_eol.invalid"
         Send-NamedPipePayload "integration.named_pipe.multi_one.invalid`nintegration.named_pipe.multi_two.invalid`n"
         Send-NamedPipePayload ("x" * 10000)
         Send-NamedPipePayload "integration.named_pipe.after_oversize.invalid`n"
@@ -51,6 +53,12 @@ procedure:
   - assertion: log_contains
     pattern: "integration.named_pipe.invalid"
     timeout: 30s
+  - assertion: log_contains
+    pattern: "integration.named_pipe.with_eol.invalid"
+    timeout: 30s
+  - assertion: log_not_contains
+    pattern: "integration.named_pipe.no_eol.invalid"
+    during: 10s
   - assertion: log_contains
     pattern: "integration.named_pipe.multi_one.invalid"
     timeout: 30s
