@@ -7,11 +7,18 @@ repository = { workspace = true }
 
 [dependencies]
 agent-data-plane-config = { workspace = true }
+arc-swap = { workspace = true }
 bytesize = { workspace = true }
 datadog-agent-config = { workspace = true }
+saluki-config = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 snafu = { workspace = true }
+tokio = { workspace = true, features = ["rt", "sync"] }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt", "time"] }
 
 [lints]
 workspace = true

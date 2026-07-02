@@ -82,11 +82,15 @@ name = "agent-data-plane-config-system"
 version = "0.1.0"
 dependencies = [
  "agent-data-plane-config",
+ "arc-swap",
  "bytesize",
  "datadog-agent-config",
+ "saluki-config",
  "serde",
  "serde_json",
  "snafu",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

@@ -61,10 +61,12 @@ impl<'a> DatadogTranslator<'a> {
 }
 
 impl ConfigTranslator for DatadogTranslator<'_> {
-    fn translate(mut self) -> Result<SalukiConfiguration, TranslateError> {
+    fn translate(mut self) -> (SalukiConfiguration, Option<TranslateError>) {
         let datadog = self.datadog;
-        drive(datadog, &mut self)?;
-        Ok(self.config)
+        // `drive` consumes every key before surfacing the first recorded error, so `self.config` is
+        // fully populated whether or not a conversion failed; keep it and return the error beside it.
+        let error = drive(datadog, &mut self).err();
+        (self.config, error)
     }
 }
 
