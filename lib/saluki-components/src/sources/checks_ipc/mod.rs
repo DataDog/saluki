@@ -200,11 +200,11 @@ fn check_data_to_event(check_data: Data, default_hostname: &MetaString) -> Optio
             let tags = tags.into_iter().map(Tag::from).collect::<TagSet>();
             let mut context = Context::from_parts(name, tags.into_shared());
             let hostname = if hostname.is_empty() {
-                default_hostname.as_ref()
+                default_hostname.clone()
             } else {
-                &hostname
+                MetaString::from(hostname)
             };
-            context = context.with_host(Some(MetaString::from(hostname)));
+            context = context.with_host(Some(hostname));
             let metric = match metric_type {
                 MetricType::Counter => Metric::counter(context, (timestamp, value)),
                 MetricType::Gauge => Metric::gauge(context, (timestamp, value)),
