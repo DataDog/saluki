@@ -1,5 +1,6 @@
 use std::num::NonZeroUsize;
 
+use base64::Engine as _;
 use bytes::{BufMut as _, Bytes, BytesMut};
 use bytesize::ByteSize;
 use lading_payload::{opentelemetry::metric::OpentelemetryMetrics, DogStatsD, OpentelemetryTraces};
@@ -57,7 +58,10 @@ fn get_finalized_corpus_blueprint(config: &Config) -> Result<CorpusBlueprint, Ge
                 dsd_config.length_prefix_framed = true;
             }
         }
-        Payload::Static(_) | Payload::OpenTelemetryMetrics(_) | Payload::OpenTelemetryTraces(_) => {}
+        Payload::Static(_)
+        | Payload::StaticBase64(_)
+        | Payload::OpenTelemetryMetrics(_)
+        | Payload::OpenTelemetryTraces(_) => {}
     }
 
     // Validate that the blueprint is valid from a payload generation standpoint.
@@ -78,6 +82,7 @@ fn generate_payloads(mut rng: StdRng, blueprint: CorpusBlueprint) -> Result<(Vec
             generate_payloads_inner(&mut generator, rng, &mut payloads, blueprint.size, 8192)?
         }
         Payload::Static(payload) => generate_static_payloads(&payload, &mut payloads, blueprint.size),
+        Payload::StaticBase64(payload) => generate_static_base64_payloads(&payload, &mut payloads, blueprint.size)?,
         Payload::OpenTelemetryMetrics(config) => {
             let mut generator = OpentelemetryMetrics::new(config, usize::MAX, &mut rng)?;
             generate_payloads_inner(&mut generator, rng, &mut payloads, blueprint.size, 8192)?
@@ -98,7 +103,20 @@ fn generate_payloads(mut rng: StdRng, blueprint: CorpusBlueprint) -> Result<(Vec
 }
 
 fn generate_static_payloads(payload: &str, payloads: &mut Vec<Bytes>, size: NonZeroUsize) {
-    let payload = Bytes::copy_from_slice(payload.as_bytes());
+    generate_static_bytes_payloads(Bytes::copy_from_slice(payload.as_bytes()), payloads, size);
+}
+
+fn generate_static_base64_payloads(
+    payload: &str, payloads: &mut Vec<Bytes>, size: NonZeroUsize,
+) -> Result<(), GenericError> {
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(payload.trim())
+        .map_err(|e| generic_error!("Failed to decode static_base64 payload: {}", e))?;
+    generate_static_bytes_payloads(Bytes::from(decoded), payloads, size);
+    Ok(())
+}
+
+fn generate_static_bytes_payloads(payload: Bytes, payloads: &mut Vec<Bytes>, size: NonZeroUsize) {
     for _ in 0..size.get() {
         payloads.push(payload.clone());
     }
