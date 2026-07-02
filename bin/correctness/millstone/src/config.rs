@@ -3,6 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use base64::Engine as _;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use serde::Deserialize;
 
@@ -119,11 +120,23 @@ impl CorpusBlueprint {
             Payload::DogStatsD(config) => config
                 .valid()
                 .map_err(|e| generic_error!("Invalid DogStatsD payload configuration: {}", e)),
-            Payload::Static(payload) | Payload::StaticBase64(payload) => {
+            Payload::Static(payload) => {
                 if payload.is_empty() {
                     Err(generic_error!("Invalid static payload: payload must not be empty"))
                 } else {
                     Ok(())
+                }
+            }
+            Payload::StaticBase64(payload) => {
+                if payload.is_empty() {
+                    Err(generic_error!(
+                        "Invalid static_base64 payload: payload must not be empty"
+                    ))
+                } else {
+                    base64::engine::general_purpose::STANDARD
+                        .decode(payload.trim())
+                        .map(|_| ())
+                        .map_err(|e| generic_error!("Invalid static_base64 payload: {}", e))
                 }
             }
             Payload::OpenTelemetryMetrics(config) => config

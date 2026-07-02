@@ -360,7 +360,7 @@ impl ContextResolver {
     }
 
     fn create_context_key_with_host<N, H, I, I2, T, T2>(
-        &mut self, name: N, host: Option<H>, tags: I, origin_tags: I2,
+        &mut self, name: N, host: Option<&H>, tags: I, origin_tags: I2,
     ) -> (ContextKey, TagSetKey)
     where
         N: AsRef<str>,
@@ -372,7 +372,7 @@ impl ContextResolver {
     {
         hash_context_with_host_and_seen(
             name.as_ref(),
-            host.as_ref().map(AsRef::as_ref),
+            host.map(AsRef::as_ref),
             tags,
             origin_tags,
             &mut self.hash_seen_buffer,
@@ -461,7 +461,7 @@ impl ContextResolver {
     ) -> Option<Context>
     where
         N: AsRef<str> + CheapMetaString,
-        H: AsRef<str> + CheapMetaString + Clone,
+        H: AsRef<str> + CheapMetaString,
         I: IntoIterator<Item = T> + Clone,
         T: AsRef<str> + CheapMetaString,
     {
@@ -474,7 +474,7 @@ impl ContextResolver {
     ) -> Option<Context>
     where
         N: AsRef<str> + CheapMetaString,
-        H: AsRef<str> + CheapMetaString + Clone,
+        H: AsRef<str> + CheapMetaString,
         I: IntoIterator<Item = T> + Clone,
         T: AsRef<str> + CheapMetaString,
     {
@@ -489,7 +489,7 @@ impl ContextResolver {
     ) -> Option<Context>
     where
         N: AsRef<str> + CheapMetaString,
-        H: AsRef<str> + CheapMetaString + Clone,
+        H: AsRef<str> + CheapMetaString,
         I: IntoIterator<Item = T> + Clone,
         T: AsRef<str> + CheapMetaString,
     {
@@ -502,7 +502,7 @@ impl ContextResolver {
     ) -> Option<Context>
     where
         N: AsRef<str> + CheapMetaString,
-        H: AsRef<str> + CheapMetaString + Clone,
+        H: AsRef<str> + CheapMetaString,
         I: IntoIterator<Item = T> + Clone,
         T: AsRef<str> + CheapMetaString,
     {
@@ -525,12 +525,12 @@ impl ContextResolver {
     ) -> Option<Context>
     where
         N: AsRef<str> + CheapMetaString,
-        H: AsRef<str> + CheapMetaString + Clone,
+        H: AsRef<str> + CheapMetaString,
         I: IntoIterator<Item = T> + Clone,
         T: AsRef<str> + CheapMetaString,
     {
         let (context_key, tagset_key) =
-            self.create_context_key_with_host(&name, host.clone(), tags.clone(), &origin_tags);
+            self.create_context_key_with_host(&name, host.as_ref(), tags.clone(), &origin_tags);
 
         // Fast path to avoid looking up the context in the cache if caching is disabled.
         if !self.caching_enabled {
