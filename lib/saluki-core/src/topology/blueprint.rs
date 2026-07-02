@@ -1072,6 +1072,36 @@ mod tests {
         fn specify_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
     }
 
+    /// A destination that ignores both its input and shutdown, running forever until it is forcefully aborted.
+    struct StuckDestination;
+
+    #[async_trait]
+    impl Destination for StuckDestination {
+        async fn run(self: Box<Self>, _context: DestinationContext) -> Result<(), GenericError> {
+            std::future::pending::<()>().await;
+            Ok(())
+        }
+    }
+
+    struct StuckDestinationBuilder {
+        input_event_ty: EventType,
+    }
+
+    #[async_trait]
+    impl DestinationBuilder for StuckDestinationBuilder {
+        fn input_event_type(&self) -> EventType {
+            self.input_event_ty
+        }
+
+        async fn build(&self, _: ComponentContext) -> Result<Box<dyn Destination + Send>, GenericError> {
+            Ok(Box::new(StuckDestination))
+        }
+    }
+
+    impl MemoryBounds for StuckDestinationBuilder {
+        fn specify_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
+    }
+
     /// Builds a connected `source` -> `destination` blueprint of long-running components.
     ///
     /// The source runs until shutdown; the destination drains until its upstream closes. If `spawned_child` is
@@ -1095,6 +1125,34 @@ mod tests {
         blueprint
             .with_health_registry(HealthRegistry::new())
             .with_memory_limiter(MemoryLimiter::noop());
+        blueprint
+    }
+
+    /// Builds a connected `source` -> `destination` blueprint whose destination must be forcefully aborted on shutdown.
+    ///
+    /// The source stops cleanly when shutdown is signalled; the destination ignores shutdown and runs forever, so its
+    /// per-component supervisor aborts it after `shutdown_timeout`. Exactly one component (the destination) is
+    /// force-aborted, which lets a test assert a precise abort count.
+    fn stuck_destination_blueprint(shutdown_timeout: Duration) -> TopologyBlueprint {
+        let component_registry = ComponentRegistry::default();
+        let mut blueprint = TopologyBlueprint::new("test", &component_registry);
+        blueprint
+            .add_source("source", ControlSourceBuilder::new(None))
+            .expect("should not fail to add source")
+            .add_destination(
+                "destination",
+                StuckDestinationBuilder {
+                    input_event_ty: EventType::EventD,
+                },
+            )
+            .expect("should not fail to add destination");
+        blueprint
+            .connect_components_in_order(["source", "destination"])
+            .expect("should not fail to connect components");
+        blueprint
+            .with_health_registry(HealthRegistry::new())
+            .with_memory_limiter(MemoryLimiter::noop())
+            .with_shutdown_timeout(shutdown_timeout);
         blueprint
     }
 
@@ -1466,5 +1524,39 @@ mod tests {
             .expect("supervisor task should not panic");
 
         assert!(result.is_ok(), "topology should shut down cleanly, got: {:?}", result);
+    }
+
+    #[tokio::test]
+    async fn forced_abort_count_survives_topology_boundary_to_root() {
+        // A component that ignores graceful shutdown is forcefully aborted, and that abort count must survive the
+        // `TopologyBlueprint` boundary -- where the topology supervisor's `SupervisorError` is flattened into a
+        // `GenericError` -- and be recovered by the root supervisor as `ShutdownTimedOut`. This exercises the
+        // `downcast` recovery path in `reported_abort_count`, which the production topology depends on but the direct
+        // nested-supervisor tests in `supervisor.rs` do not cover: those hit the structured `WorkerError` variant,
+        // never the flattened-`GenericError` path taken here.
+        //
+        // The source stops cleanly on shutdown; the destination ignores shutdown and runs forever, so exactly one
+        // component (the destination) is force-aborted after the (short) shutdown timeout.
+        let blueprint = stuck_destination_blueprint(Duration::from_millis(100));
+
+        let mut supervisor = Supervisor::new("test-topology").expect("should not fail to create supervisor");
+        supervisor.add_worker(blueprint);
+
+        let (tx, rx) = oneshot::channel::<()>();
+        let handle = tokio::spawn(async move { supervisor.run_with_shutdown(rx).await });
+
+        // Give the components a moment to start, then request shutdown.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        tx.send(()).expect("should send shutdown signal");
+
+        let result = tokio::time::timeout(Duration::from_secs(5), handle)
+            .await
+            .expect("supervisor should exit promptly")
+            .expect("supervisor task should not panic");
+
+        assert!(
+            matches!(result, Err(SupervisorError::ShutdownTimedOut { aborted: 1 })),
+            "a component that ignored shutdown must surface as an unclean shutdown with a count of 1, got {result:?}"
+        );
     }
 }
