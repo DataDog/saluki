@@ -21,10 +21,6 @@ pub enum FieldType {
     Integer,
     Float,
     StringList,
-    /// A `format: duration` field. Modeled as its own effective type because the Datadog Agent
-    /// transmits durations as integer nanoseconds, while the schema default is a Go duration string
-    /// (for example, `10s`). Downstream codegen, smoke tests, and classification all need to treat
-    /// it differently from a plain number.
     Duration,
     Unknown,
 }
