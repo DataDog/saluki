@@ -689,8 +689,8 @@ fn parse_dict_strings(data: &[u8]) -> Result<Vec<String>, GenericError> {
 /// entries. Each decoded entry is one of:
 ///
 /// - A positive value: a 1-based index into the tag-string dictionary.
-/// - A negative value `-N`: a prefix reference to the previously-interned tagset with 1-based ID
-///   `N`, whose (already fully-resolved) tags are included in this one. The Agent emits these when
+/// - A negative value `-N`: a prefix reference to the previously interned tagset with 1-based ID
+///   `N`, whose (already fully resolved) tags are included in this one. The Agent emits these when
 ///   it splits a metric's composite tags into two groups and prefix-compresses the second group
 ///   against the first (see `internTags` in the Agent's `iterable_series_v3.go`). Because the
 ///   referenced tagset is always interned before the tagset that references it, a single forward
@@ -713,7 +713,7 @@ fn parse_tagsets(dict_tagsets: &[i64], tags_dict: &[String]) -> Result<Vec<Vec<S
         for &entry in &entries {
             match entry.cmp(&0) {
                 std::cmp::Ordering::Less => {
-                    // Prefix reference to a previously-interned tagset (1-based ID = -entry).
+                    // Prefix reference to a previously interned tagset (1-based ID = -entry).
                     let prefix_id = i64_to_usize(-entry, "tagset prefix reference")?;
                     let prefix_idx = prefix_id
                         .checked_sub(1)
