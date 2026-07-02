@@ -1776,7 +1776,6 @@ fn handle_metric_packet(
     let tags = get_filtered_tags_iterator(packet.tags, additional_tags);
 
     let hostname = well_known_tags.hostname.unwrap_or(default_hostname);
-    let metadata_hostname = well_known_tags.hostname.map(Arc::from);
 
     // Try to resolve the context for this metric.
     let maybe_context = context_resolver.resolve_with_host(packet.metric_name, hostname, tags, Some(origin));
@@ -1789,7 +1788,6 @@ fn handle_metric_packet(
                 .unwrap_or_else(MetricOrigin::dogstatsd);
             let metadata = MetricMetadata::default()
                 .with_origin(metric_origin)
-                .with_hostname(metadata_hostname)
                 .with_unit(packet.unit.map_or_else(MetaString::empty, MetaString::from_static));
 
             Some(Metric::from_parts(context, packet.values, metadata))
@@ -2203,36 +2201,29 @@ mod tests {
         let default_hostname = MetaString::from_static("default-host");
 
         let packets = [
-            ("unset", b"test_metric_name:1|g".as_slice(), "default-host", None),
-            ("empty", b"test_metric_name:2|g|#host:".as_slice(), "", Some("")),
+            ("unset", b"test_metric_name:1|g".as_slice(), "default-host"),
+            ("empty", b"test_metric_name:2|g|#host:".as_slice(), ""),
             (
                 "explicit_default",
                 b"test_metric_name:3|g|#host:default-host".as_slice(),
                 "default-host",
-                Some("default-host"),
             ),
             (
                 "custom",
                 b"test_metric_name:4|g|#host:custom-host".as_slice(),
                 "custom-host",
-                Some("custom-host"),
             ),
         ];
 
         let mut metrics = Vec::new();
-        for (case, raw, expected_host, expected_metadata_host) in packets {
+        for (case, raw, expected_host) in packets {
             let Ok(ParsedPacket::Metric(packet)) = codec.decode_packet(raw) else {
                 panic!("Failed to parse {case} packet.");
             };
             let metric = handle_metric_packet(packet, &mut context_resolvers, &peer_addr, &[], &default_hostname)
                 .unwrap_or_else(|| panic!("{case} metric should resolve"));
 
-            assert_eq!(metric.context().host(), expected_host, "{case} context host");
-            assert_eq!(
-                metric.metadata().hostname(),
-                expected_metadata_host,
-                "{case} metadata host"
-            );
+            assert_eq!(metric.context().host(), Some(expected_host), "{case} context host");
             assert!(metric.context().tags().into_iter().all(|tag| tag.name() != "host"));
             metrics.push(metric);
         }

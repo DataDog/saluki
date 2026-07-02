@@ -9,6 +9,7 @@ repository = { workspace = true }
 workspace = true
 
 [dependencies]
+base64 = { workspace = true }
 bytes = { workspace = true }
 bytesize = { workspace = true, features = ["serde"] }
 lading-payload = { workspace = true }
