@@ -76,7 +76,7 @@ pub(super) fn encode_series_metric(
 
     obj.insert(
         "host".into(),
-        JsonValue::String(metric.metadata().hostname().unwrap_or_default().to_string()),
+        JsonValue::String(metric.context().host().unwrap_or_default().to_string()),
     );
 
     if let Some(device) = device.filter(|device| !device.is_empty()) {
@@ -203,10 +203,9 @@ mod tests {
 
     #[test]
     fn unit_and_hostname_emitted() {
-        let context = Context::from_static_parts("my.timer.avg", &[]);
-        let metadata = MetricMetadata::default()
-            .with_unit(MetaString::from_static("millisecond"))
-            .with_hostname(Some(Arc::from("host-1")));
+        let context =
+            Context::from_static_parts("my.timer.avg", &[]).with_host(Some(MetaString::from_static("host-1")));
+        let metadata = MetricMetadata::default().with_unit(MetaString::from_static("millisecond"));
         let gauge = Metric::from_parts(context, MetricValues::gauge([1.0_f64]), metadata);
 
         let json = encode_one(&gauge);

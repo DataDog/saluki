@@ -360,7 +360,7 @@ impl ContextResolver {
     }
 
     fn create_context_key_with_host<N, H, I, I2, T, T2>(
-        &mut self, name: N, host: H, tags: I, origin_tags: I2,
+        &mut self, name: N, host: Option<H>, tags: I, origin_tags: I2,
     ) -> (ContextKey, TagSetKey)
     where
         N: AsRef<str>,
@@ -372,7 +372,7 @@ impl ContextResolver {
     {
         hash_context_with_host_and_seen(
             name.as_ref(),
-            host.as_ref(),
+            host.as_ref().map(AsRef::as_ref),
             tags,
             origin_tags,
             &mut self.hash_seen_buffer,
@@ -380,7 +380,7 @@ impl ContextResolver {
     }
 
     fn create_context<N, H>(
-        &self, key: ContextKey, name: N, host: H, context_tags: SharedTagSet, origin_tags: SharedTagSet,
+        &self, key: ContextKey, name: N, host: Option<H>, context_tags: SharedTagSet, origin_tags: SharedTagSet,
     ) -> Option<Context>
     where
         N: AsRef<str> + CheapMetaString,
@@ -388,7 +388,10 @@ impl ContextResolver {
     {
         // Intern the name, host, and tags of the context.
         let context_name = self.intern(name)?;
-        let context_host = self.intern(host)?;
+        let context_host = match host {
+            Some(host) => Some(self.intern(host)?),
+            None => None,
+        };
 
         self.telemetry.resolved_new_context_total().increment(1);
         self.telemetry.active_contexts().increment(1);
@@ -458,7 +461,20 @@ impl ContextResolver {
     ) -> Option<Context>
     where
         N: AsRef<str> + CheapMetaString,
-        H: AsRef<str> + CheapMetaString,
+        H: AsRef<str> + CheapMetaString + Clone,
+        I: IntoIterator<Item = T> + Clone,
+        T: AsRef<str> + CheapMetaString,
+    {
+        self.resolve_inner_with_host(name, Some(host), tags, origin_tags.into())
+    }
+
+    /// Resolves the given context using the provided optional host and origin tags.
+    pub fn resolve_with_optional_host_and_origin_tags<N, H, I, T>(
+        &mut self, name: N, host: Option<H>, tags: I, origin_tags: impl Into<SharedTagSet>,
+    ) -> Option<Context>
+    where
+        N: AsRef<str> + CheapMetaString,
+        H: AsRef<str> + CheapMetaString + Clone,
         I: IntoIterator<Item = T> + Clone,
         T: AsRef<str> + CheapMetaString,
     {
@@ -473,13 +489,13 @@ impl ContextResolver {
     ) -> Option<Context>
     where
         N: AsRef<str> + CheapMetaString,
-        H: AsRef<str> + CheapMetaString,
+        H: AsRef<str> + CheapMetaString + Clone,
         I: IntoIterator<Item = T> + Clone,
         T: AsRef<str> + CheapMetaString,
     {
         let origin_tags = self.tags_resolver.resolve_origin_tags(maybe_origin);
 
-        self.resolve_inner_with_host(name, host, tags, origin_tags)
+        self.resolve_inner_with_host(name, Some(host), tags, origin_tags)
     }
 
     fn resolve_inner<N, I, T>(&mut self, name: N, tags: I, origin_tags: SharedTagSet) -> Option<Context>
@@ -488,19 +504,20 @@ impl ContextResolver {
         I: IntoIterator<Item = T> + Clone,
         T: AsRef<str> + CheapMetaString,
     {
-        self.resolve_inner_with_host(name, "", tags, origin_tags)
+        self.resolve_inner_with_host(name, None::<&str>, tags, origin_tags)
     }
 
     fn resolve_inner_with_host<N, H, I, T>(
-        &mut self, name: N, host: H, tags: I, origin_tags: SharedTagSet,
+        &mut self, name: N, host: Option<H>, tags: I, origin_tags: SharedTagSet,
     ) -> Option<Context>
     where
         N: AsRef<str> + CheapMetaString,
-        H: AsRef<str> + CheapMetaString,
+        H: AsRef<str> + CheapMetaString + Clone,
         I: IntoIterator<Item = T> + Clone,
         T: AsRef<str> + CheapMetaString,
     {
-        let (context_key, tagset_key) = self.create_context_key_with_host(&name, &host, tags.clone(), &origin_tags);
+        let (context_key, tagset_key) =
+            self.create_context_key_with_host(&name, host.clone(), tags.clone(), &origin_tags);
 
         // Fast path to avoid looking up the context in the cache if caching is disabled.
         if !self.caching_enabled {
@@ -969,8 +986,8 @@ mod tests {
         assert_ne!(context1, context2);
         assert_eq!(context1, context1_redo);
         assert!(context1.ptr_eq(&context1_redo));
-        assert_eq!(context1.host(), "host-a");
-        assert_eq!(context2.host(), "host-b");
+        assert_eq!(context1.host(), Some("host-a"));
+        assert_eq!(context2.host(), Some("host-b"));
         assert!(context1.tags().is_empty());
         assert!(context2.tags().is_empty());
 
@@ -1023,8 +1040,8 @@ mod tests {
         assert_ne!(context1_filtered, context2_filtered);
         assert!(context1_filtered.tags().is_empty());
         assert!(context2_filtered.tags().is_empty());
-        assert_eq!(context1_filtered.host(), "host-a");
-        assert_eq!(context2_filtered.host(), "host-b");
+        assert_eq!(context1_filtered.host(), Some("host-a"));
+        assert_eq!(context2_filtered.host(), Some("host-b"));
     }
 
     #[test]

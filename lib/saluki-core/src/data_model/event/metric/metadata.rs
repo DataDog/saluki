@@ -14,16 +14,6 @@ const ORIGIN_PRODUCT_DETAIL_NONE: u32 = 0;
 #[must_use]
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct MetricMetadata {
-    /// The hostname where the metric originated from.
-    // TODO: We made this `Arc<str>` because it's 16 bytes vs 24 bytes for `MetaString`, but one problem is that it means that
-    // we have to allocate a new `Arc<str>` for every hostname override (or empty hostname to disable the host tag) which is
-    // suboptimal.
-    //
-    // A main part of the problem is that we want to determine if a hostname was set at all -- whether empty or not -- so that
-    // when we get to host enrichment, we can determine if we should be overriding the hostname or not. This means we can't
-    // simply drop the `Option` and check if the string is empty or not.
-    pub hostname: Option<Arc<str>>,
-
     /// The metric origin.
     // TODO: only optional so we can default? seems like we always have one
     pub origin: Option<MetricOrigin>,
@@ -36,33 +26,9 @@ pub struct MetricMetadata {
 }
 
 impl MetricMetadata {
-    /// Returns the hostname.
-    pub fn hostname(&self) -> Option<&str> {
-        self.hostname.as_deref()
-    }
-
     /// Returns the metric origin.
     pub fn origin(&self) -> Option<&MetricOrigin> {
         self.origin.as_ref()
-    }
-
-    /// Set the hostname where the metric originated from.
-    ///
-    /// This could be specified as part of a metric payload that was received from a client, or set internally to the
-    /// hostname where this process is running.
-    ///
-    /// This variant is specifically for use in builder-style APIs.
-    pub fn with_hostname(mut self, hostname: impl Into<Option<Arc<str>>>) -> Self {
-        self.hostname = hostname.into();
-        self
-    }
-
-    /// Set the hostname where the metric originated from.
-    ///
-    /// This could be specified as part of a metric payload that was received from a client, or set internally to the
-    /// hostname where this process is running.
-    pub fn set_hostname(&mut self, hostname: impl Into<Option<Arc<str>>>) {
-        self.hostname = hostname.into();
     }
 
     /// Set the metric origin to the given source type.
