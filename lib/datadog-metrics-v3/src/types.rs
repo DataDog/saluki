@@ -96,7 +96,7 @@ impl V3ValueType {
 /// than silently truncating the integer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(u8)]
-enum PointKind {
+pub enum PointKind {
     /// Value is zero.
     Zero = 0,
     /// Integer with |v| <= 2^24, fits losslessly in both sint64 and f32.

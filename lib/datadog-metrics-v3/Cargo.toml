@@ -7,3 +7,4 @@ license = "Apache-2.0"
 
 [dependencies]
 protobuf = { workspace = true }
+saluki-error = { workspace = true }
