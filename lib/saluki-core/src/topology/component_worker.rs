@@ -17,6 +17,7 @@ use async_trait::async_trait;
 use resource_accounting::{ResourceGroupToken, Track as _};
 use saluki_common::sync::shutdown::ShutdownHandle;
 use saluki_error::generic_error;
+use tracing::{error_span, Instrument as _};
 
 use crate::components::{
     decoders::{Decoder, DecoderContext},
@@ -26,6 +27,7 @@ use crate::components::{
     relays::{Relay, RelayContext},
     sources::{Source, SourceContext},
     transforms::{Transform, TransformContext},
+    ComponentContext,
 };
 use crate::runtime::{InitializationError, ShutdownStrategy, Supervisable, SupervisorFuture};
 
@@ -50,7 +52,7 @@ pub(super) trait RunnableComponent: Send + 'static {
 /// [`shutdown_strategy`][Supervisable::shutdown_strategy], which carries the shutdown timeout configured
 /// for the topology.
 pub(super) struct ComponentWorker<C> {
-    name: &'static str,
+    component_context: ComponentContext,
     shutdown_timeout: Duration,
     inner: Mutex<Option<C>>,
 }
@@ -58,11 +60,11 @@ pub(super) struct ComponentWorker<C> {
 impl<C: RunnableComponent> ComponentWorker<C> {
     /// Creates a new `ComponentWorker` for the given runnable component.
     ///
-    /// `name` is the worker's process name; `shutdown_timeout` bounds how long the supervisor waits for
-    /// the component to stop gracefully before aborting it.
-    pub(super) fn new(name: &'static str, shutdown_timeout: Duration, runnable: C) -> Self {
+    /// `component_context` identifies the component (its kind and id); `shutdown_timeout` bounds how long
+    /// the supervisor waits for the component to stop gracefully before aborting it.
+    pub(super) fn new(component_context: ComponentContext, shutdown_timeout: Duration, runnable: C) -> Self {
         Self {
-            name,
+            component_context,
             shutdown_timeout,
             inner: Mutex::new(Some(runnable)),
         }
@@ -72,7 +74,7 @@ impl<C: RunnableComponent> ComponentWorker<C> {
 #[async_trait]
 impl<C: RunnableComponent> Supervisable for ComponentWorker<C> {
     fn name(&self) -> &str {
-        self.name
+        self.component_context.component_type().as_str()
     }
 
     fn shutdown_strategy(&self) -> ShutdownStrategy {
@@ -90,11 +92,16 @@ impl<C: RunnableComponent> Supervisable for ComponentWorker<C> {
             .ok_or_else(|| {
                 InitializationError::from(generic_error!(
                     "component worker '{}' was already initialized",
-                    self.name
+                    self.component_context
                 ))
             })?;
 
-        Ok(runnable.run_with_shutdown(process_shutdown))
+        let span = error_span!(
+            "component",
+            "type" = self.component_context.component_type().as_str(),
+            id = %self.component_context.component_id(),
+        );
+        Ok(Box::pin(runnable.run_with_shutdown(process_shutdown).instrument(span)))
     }
 }
 
