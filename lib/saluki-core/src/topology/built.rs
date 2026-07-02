@@ -661,7 +661,7 @@ where
     let runnable = make_runnable(component_sup.handle());
     component_sup.add_worker(
         ChildSpecification::worker(ComponentWorker::new(
-            component_context.component_type().as_str(),
+            component_context.clone(),
             shutdown_timeout,
             runnable,
         ))
