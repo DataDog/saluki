@@ -16,10 +16,12 @@ use serde::Serialize;
 
 pub mod control;
 pub mod domains;
+pub mod live;
 pub mod shared;
 
 pub use control::{ControlConfiguration, ListenAddress, Logging};
 pub use domains::DomainConfiguration;
+pub use live::Live;
 pub use shared::SharedConfiguration;
 
 /// The complete ADP-native runtime configuration after translation.
