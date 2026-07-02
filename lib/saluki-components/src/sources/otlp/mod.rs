@@ -32,6 +32,7 @@ use saluki_error::ErrorContext as _;
 use saluki_error::{generic_error, GenericError};
 use saluki_io::net::ListenAddress;
 use serde::Deserialize;
+use stringtheory::MetaString;
 use tokio::pin;
 use tokio::select;
 use tokio::sync::mpsc;
@@ -71,6 +72,9 @@ const fn default_allow_context_heap_allocations() -> bool {
 #[cfg_attr(test, derive(derive_where::DeriveWhere, serde::Serialize))]
 #[cfg_attr(test, derive_where(PartialEq))]
 pub struct OtlpConfiguration {
+    #[serde(skip)]
+    default_hostname: MetaString,
+
     otlp_config: OtlpConfig,
 
     /// Total size of the string interner used for contexts.
@@ -131,6 +135,12 @@ impl OtlpConfiguration {
         let mut cfg: Self = config.as_typed()?;
         cfg.otlp_config.traces.apply_env_overrides(config)?;
         Ok(cfg)
+    }
+
+    /// Sets the default hostname used when OTLP metrics do not carry a resource hostname.
+    pub fn with_default_hostname(mut self, hostname: impl Into<MetaString>) -> Self {
+        self.default_hostname = hostname.into();
+        self
     }
 
     /// Sets the workload provider to use for configuring origin detection/enrichment.
@@ -208,6 +218,7 @@ impl SourceBuilder for OtlpConfiguration {
             http_endpoint: ListenAddress::Tcp(http_socket_addr),
             grpc_max_recv_msg_size_bytes,
             metrics_translator_config,
+            default_hostname: self.default_hostname.clone(),
             traces_translator,
             metrics,
         }))
@@ -230,6 +241,7 @@ pub struct Otlp {
     http_endpoint: ListenAddress,
     grpc_max_recv_msg_size_bytes: usize,
     metrics_translator_config: metrics::config::OtlpMetricsTranslatorConfig,
+    default_hostname: MetaString,
     traces_translator: OtlpTracesTranslator,
     metrics: Metrics, // Telemetry metrics, not DD native metrics.
 }
@@ -244,6 +256,7 @@ impl Source for Otlp {
             http_endpoint,
             grpc_max_recv_msg_size_bytes,
             metrics_translator_config,
+            default_hostname,
             traces_translator,
             metrics,
         } = *self;
@@ -259,7 +272,8 @@ impl Source for Otlp {
 
         let mut converter_shutdown_coordinator = ShutdownCoordinator::default();
 
-        let metrics_translator = OtlpMetricsTranslator::new(metrics_translator_config, context_resolver)?;
+        let metrics_translator =
+            OtlpMetricsTranslator::new(metrics_translator_config, default_hostname, context_resolver)?;
 
         let thread_pool_handle = context.topology_context().global_thread_pool().clone();
 

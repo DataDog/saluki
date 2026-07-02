@@ -413,7 +413,7 @@ async fn create_topology(
 
     // Now we move on to our actual data pipelines.
     if dp_config.checks().enabled() {
-        add_checks_pipeline_to_blueprint(&mut blueprint, config).await?;
+        add_checks_pipeline_to_blueprint(&mut blueprint, config, env_provider).await?;
     }
 
     if dp_config.dogstatsd().enabled() {
@@ -422,16 +422,21 @@ async fn create_topology(
     }
 
     if dp_config.otlp().enabled() {
-        add_otlp_pipeline_to_blueprint(&mut blueprint, config, dp_config, env_provider)?;
+        add_otlp_pipeline_to_blueprint(&mut blueprint, config, dp_config, env_provider).await?;
     }
 
     Ok((blueprint, control_surfaces))
 }
 
 async fn add_checks_pipeline_to_blueprint(
-    blueprint: &mut TopologyBlueprint, config: &GenericConfiguration,
+    blueprint: &mut TopologyBlueprint, config: &GenericConfiguration, env_provider: &ADPEnvironmentProvider,
 ) -> Result<(), GenericError> {
-    let checks_config = ChecksIPCConfiguration::from_configuration(config)?;
+    let default_hostname = env_provider
+        .host()
+        .get_hostname()
+        .await
+        .error_context("Failed to get default hostname for Checks IPC source.")?;
+    let checks_config = ChecksIPCConfiguration::from_configuration(config)?.with_default_hostname(default_hostname);
 
     blueprint
         .add_source("checks_ipc_in", checks_config)?
@@ -776,7 +781,7 @@ async fn add_dsd_pipeline_to_blueprint(
     })
 }
 
-fn add_otlp_pipeline_to_blueprint(
+async fn add_otlp_pipeline_to_blueprint(
     blueprint: &mut TopologyBlueprint, config: &GenericConfiguration, dp_config: &DataPlaneConfiguration,
     env_provider: &ADPEnvironmentProvider,
 ) -> Result<(), GenericError> {
@@ -818,8 +823,14 @@ fn add_otlp_pipeline_to_blueprint(
     } else {
         info!("OTLP proxy mode disabled. OTLP signals will be handled natively.");
 
-        let otlp_config =
-            OtlpConfiguration::from_configuration(config)?.with_workload_provider(env_provider.workload().clone());
+        let default_hostname = env_provider
+            .host()
+            .get_hostname()
+            .await
+            .error_context("Failed to get default hostname for OTLP source.")?;
+        let otlp_config = OtlpConfiguration::from_configuration(config)?
+            .with_default_hostname(default_hostname)
+            .with_workload_provider(env_provider.workload().clone());
 
         blueprint
             // Components.

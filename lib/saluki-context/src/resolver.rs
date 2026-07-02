@@ -493,9 +493,22 @@ impl ContextResolver {
         I: IntoIterator<Item = T> + Clone,
         T: AsRef<str> + CheapMetaString,
     {
+        self.resolve_with_optional_host(name, Some(host), tags, maybe_origin)
+    }
+
+    /// Resolves the given context with an optional host dimension.
+    pub fn resolve_with_optional_host<N, H, I, T>(
+        &mut self, name: N, host: Option<H>, tags: I, maybe_origin: Option<RawOrigin<'_>>,
+    ) -> Option<Context>
+    where
+        N: AsRef<str> + CheapMetaString,
+        H: AsRef<str> + CheapMetaString + Clone,
+        I: IntoIterator<Item = T> + Clone,
+        T: AsRef<str> + CheapMetaString,
+    {
         let origin_tags = self.tags_resolver.resolve_origin_tags(maybe_origin);
 
-        self.resolve_inner_with_host(name, Some(host), tags, origin_tags)
+        self.resolve_inner_with_host(name, host, tags, origin_tags)
     }
 
     fn resolve_inner<N, I, T>(&mut self, name: N, tags: I, origin_tags: SharedTagSet) -> Option<Context>

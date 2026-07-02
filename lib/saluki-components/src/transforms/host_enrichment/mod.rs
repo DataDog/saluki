@@ -3,7 +3,7 @@ use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{components::transforms::*, topology::EventsBuffer};
 use saluki_core::{
     components::ComponentContext,
-    data_model::event::{eventd::EventD, metric::Metric, service_check::ServiceCheck},
+    data_model::event::{eventd::EventD, service_check::ServiceCheck},
 };
 use saluki_env::{EnvironmentProvider, HostProvider};
 use saluki_error::GenericError;
@@ -73,13 +73,6 @@ impl HostEnrichment {
         })
     }
 
-    fn enrich_metric(&self, metric: &mut Metric) {
-        // Only add the hostname if it's not already present.
-        if metric.context().host().is_none() {
-            *metric.context_mut() = metric.context().with_host(Some(self.hostname.clone()));
-        }
-    }
-
     fn enrich_eventd(&self, eventd: &mut EventD) {
         // Only add the hostname if it's not already present.
         if eventd.hostname().is_none() {
@@ -98,9 +91,7 @@ impl HostEnrichment {
 impl SynchronousTransform for HostEnrichment {
     fn transform_buffer(&mut self, event_buffer: &mut EventsBuffer) {
         for event in event_buffer {
-            if let Some(metric) = event.try_as_metric_mut() {
-                self.enrich_metric(metric);
-            } else if let Some(eventd) = event.try_as_eventd_mut() {
+            if let Some(eventd) = event.try_as_eventd_mut() {
                 self.enrich_eventd(eventd);
             } else if let Some(service_check) = event.try_as_service_check_mut() {
                 self.enrich_service_check(service_check);
@@ -112,7 +103,9 @@ impl SynchronousTransform for HostEnrichment {
 #[cfg(test)]
 mod tests {
     use saluki_context::Context;
-    use saluki_core::data_model::event::metric::Metric;
+    use saluki_core::components::transforms::SynchronousTransform;
+    use saluki_core::data_model::event::{metric::Metric, Event};
+    use saluki_core::topology::EventsBuffer;
     use stringtheory::MetaString;
 
     use super::HostEnrichment;
@@ -124,28 +117,25 @@ mod tests {
     }
 
     #[test]
-    fn enrich_metric_sets_default_host_when_context_host_is_unset() {
-        let mut metric = Metric::gauge(Context::from_static_name("metric"), 1.0);
-
-        host_enrichment().enrich_metric(&mut metric);
-
-        assert_eq!(metric.context().host(), Some("default-host"));
-    }
-
-    #[test]
-    fn enrich_metric_preserves_existing_context_host() {
+    fn transform_leaves_metric_context_host_unchanged() {
         let cases = [
-            (Some(MetaString::empty()), Some("")),
-            (Some(MetaString::from_static("custom-host")), Some("custom-host")),
+            None,
+            Some(MetaString::empty()),
+            Some(MetaString::from_static("custom-host")),
         ];
 
-        for (host, expected) in cases {
-            let context = Context::from_static_name("metric").with_host(host);
-            let mut metric = Metric::gauge(context, 1.0);
+        for host in cases {
+            let context = Context::from_static_name("metric").with_host(host.clone());
+            let metric = Metric::gauge(context, 1.0);
+            let mut events = EventsBuffer::default();
+            assert!(events.try_push(Event::Metric(metric)).is_none());
 
-            host_enrichment().enrich_metric(&mut metric);
+            host_enrichment().transform_buffer(&mut events);
 
-            assert_eq!(metric.context().host(), expected);
+            let Event::Metric(metric) = events.into_iter().next().expect("metric event") else {
+                panic!("expected metric event");
+            };
+            assert_eq!(metric.context().host(), host.as_deref());
         }
     }
 }
