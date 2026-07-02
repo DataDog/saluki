@@ -12,11 +12,13 @@ pub(crate) use datadog_translator::DatadogTranslator;
 
 /// Consumes a configuration source and produces a [`SalukiConfiguration`].
 pub trait ConfigTranslator {
-    /// Translates the source into a [`SalukiConfiguration`].
+    /// Translates the source into a [`SalukiConfiguration`], returning any error recorded while
+    /// converting an individual value.
     ///
-    /// # Errors
-    ///
-    /// Returns the first [`TranslateError`] recorded while translating a source value (for example,
-    /// an enum or byte-size string that cannot be parsed).
-    fn translate(self) -> Result<SalukiConfiguration, TranslateError>;
+    /// Every supported key is consumed regardless of individual conversion failures: a value that
+    /// cannot be converted (for example, an enum or byte-size string that cannot be parsed) leaves
+    /// its field at the model default and records an error. The returned configuration is therefore
+    /// always complete, and the returned [`TranslateError`], when present, reports the first such
+    /// failure.
+    fn translate(self) -> (SalukiConfiguration, Option<TranslateError>);
 }

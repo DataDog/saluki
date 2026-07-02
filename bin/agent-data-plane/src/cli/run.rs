@@ -4,6 +4,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use agent_data_plane_config_system::ConfigurationSystem;
 use argh::FromArgs;
 use datadog_agent_commons::platform::PlatformSettings;
 use datadog_agent_config::classifier::{ConfigClassifier, Pipeline, PipelineAffinity, Severity, SupportLevel};
@@ -167,6 +168,10 @@ pub async fn handle_run_command(
     let (mut blueprint, control_surfaces) =
         create_topology(&config, &dp_config, &env_provider, &component_registry).await?;
 
+    // Translate the resolved configuration into the ADP-native model and keep it current as the
+    // Datadog Agent streams updates. The privileged `/config/internal` endpoint serves it.
+    let config_system = ConfigurationSystem::load(config.clone()).error_context("Failed to load configuration.")?;
+
     // Create the internal supervisor which drives our control plane and internal observability.
     let mut internal_supervisor = create_internal_supervisor(
         &config,
@@ -176,6 +181,7 @@ pub async fn handle_run_command(
         control_surfaces,
         ra_bootstrap,
         bootstrap_guard.logging().controller(),
+        config_system.current_handle(),
     )
     .await
     .error_context("Failed to create internal supervisor.")?;
