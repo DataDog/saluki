@@ -24,6 +24,7 @@ mime = { workspace = true }
 protobuf = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+stele = { workspace = true }
 tokio = { workspace = true, features = [
   "macros",
   "net",
@@ -48,3 +49,6 @@ tracing-subscriber = { workspace = true, features = [
   "std",
   "tracing-log",
 ] }
+
+[dev-dependencies]
+proptest = { workspace = true }

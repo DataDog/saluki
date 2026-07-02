@@ -2,9 +2,10 @@
 //!
 //! This module owns the public routes that Datadog Agent and ADP send to:
 //!
-//! - `POST /api/v2/series`: accepts metric series payloads and records payload
-//!   shape assertions.
-//! - `POST /api/beta/sketches`: accepts distribution sketch payloads.
+//! - `POST /api/v2/series`: accepts metric series payloads, records payload
+//!   shape assertions, and captures scalar metric contexts.
+//! - `POST /api/beta/sketches`: accepts distribution sketch payloads and
+//!   captures sketch contexts.
 //! - `POST /api/v1/events_batch`: accepts protobuf event batches.
 //! - `POST /api/v1/events`: accepts JSON event intake payloads and rejects
 //!   malformed bodies.
@@ -12,6 +13,10 @@
 //!   non-event bodies.
 //! - `POST /api/v1/check_run`: accepts service check payloads.
 //! - `GET /api/v1/validate`: accepts Datadog Agent connectivity validation.
+
+mod events;
+mod metrics;
+mod service_checks;
 
 use axum::{
     extract::DefaultBodyLimit,
@@ -23,16 +28,9 @@ use axum::{
 use tower::ServiceBuilder;
 use tower_http::{decompression::RequestDecompressionLayer, limit::RequestBodyLimitLayer};
 
-use super::middleware::measure_compressed_size;
-use super::state::AppState;
-use super::MAX_COMPRESSED_BODY_BYTES;
+use super::{middleware::measure_compressed_size, state::AppState, MAX_COMPRESSED_BODY_BYTES};
 
-mod events;
-mod metrics;
-mod service_checks;
-
-/// Build Datadog-compatible intake routes.
-pub(crate) fn routes() -> Router<AppState> {
+pub(super) fn routes() -> Router<AppState> {
     Router::new()
         .merge(series_route())
         .merge(decoded_payload_routes())

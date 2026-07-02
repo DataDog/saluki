@@ -239,7 +239,7 @@ const MAX_STRING_INTERNER_ENTRIES: u64 = 8_388_608;
 /// usually realistic but rarely tiny or wild to probe the truncation edge. A
 /// sampled `0` leaves ADP no room past the 4-byte length prefix, so it drops
 /// every packet before decode — useful when ADP runs alone, but it would make
-/// the differential targets diverge for a reason the oracle is not testing.
+/// the differential targets diverge for a reason the scenario is not testing.
 fn sample_buffer_size<R: Rng + ?Sized>(rng: &mut R, profile: ConfigProfile) -> u64 {
     if profile.is_general() && rng.random_ratio(1, 16) {
         Probe::new(0, 536_870_912).sample(rng)

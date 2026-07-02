@@ -35,6 +35,7 @@ members = [
   "lib/stringtheory",
   "test/antithesis/harness",
   "test/antithesis/intake",
+  "test/antithesis/scenarios/differential",
   "test/antithesis/scenarios/general",
 ]
 resolver = "2"

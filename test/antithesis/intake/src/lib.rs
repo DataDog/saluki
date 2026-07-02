@@ -1,9 +1,7 @@
 //! A mock Datadog intake for the Antithesis harness.
 //!
-//! Simulates the real `/api/v2/series` intake and, on every payload the Agent
-//! Data Plane delivers, fires Antithesis SDK assertions for the Pyld01-Pyld22
-//! properties catalogued in the crate `README.md`. These observe whether the
-//! Agent honoured its wire contract.
+//! Simulates the real `/api/v2/series` intake, fires payload-shape assertions,
+//! and exposes the raw metric context lists used by the differential scenario.
 
 #![deny(clippy::all)]
 #![deny(clippy::pedantic)]
@@ -35,6 +33,7 @@
 #![deny(missing_docs)]
 #![deny(warnings)]
 
+pub mod capture;
 pub mod http;
 
 mod properties;

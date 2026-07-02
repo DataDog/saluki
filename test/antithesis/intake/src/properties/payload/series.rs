@@ -6,6 +6,7 @@ use datadog_protos::metrics::MetricType;
 use serde_json::json;
 
 use super::constants::MAX_POINTS_PER_PAYLOAD;
+use crate::capture::Target;
 
 /// `MaxTags(orgID)` default (Pyld13).
 const MAX_TAGS_PER_SERIES: usize = 100;
@@ -32,33 +33,37 @@ const ORIGIN_SERVICE_RESERVED: [u32; 8] = [8, 31, 32, 33, 46, 88, 123, 159];
 const RESERVED_TAG_PREFIXES: [&str; 2] = ["device:", "dd.internal.resource:"];
 
 /// Pyld09 -- metric name non-empty.
-pub(crate) fn metric_non_empty(ms: &MetricSeries) {
+pub(crate) fn metric_non_empty(target: Target, ms: &MetricSeries) {
     let ok = !ms.metric().is_empty();
-    assert_always!(ok, "Pyld09.metric_non_empty", &json!({ "metric": ms.metric() }));
+    assert_always!(
+        ok,
+        "Pyld09.metric_non_empty",
+        &json!({ "lane": target, "metric": ms.metric() })
+    );
 }
 
 /// Pyld10 -- metric name at most 350 bytes.
-pub(crate) fn metric_length(ms: &MetricSeries) {
+pub(crate) fn metric_length(target: Target, ms: &MetricSeries) {
     let over = (ms.metric().len() > MAX_METRIC_NAME_BYTES).then_some(ms.metric().len());
     assert_always!(
         over.is_none(),
         "Pyld10.metric_name_length",
-        &json!({ "metric": ms.metric(), "observed_len": over })
+        &json!({ "lane": target, "metric": ms.metric(), "observed_len": over })
     );
 }
 
 /// Pyld11 -- metric name carries at least one ASCII alphabetic byte.
-pub(crate) fn metric_alphabetic(ms: &MetricSeries) {
+pub(crate) fn metric_alphabetic(target: Target, ms: &MetricSeries) {
     let no_alpha = !ms.metric().bytes().any(|b| b.is_ascii_alphabetic());
     assert_always!(
         !no_alpha,
         "Pyld11.metric_name_alphabetic",
-        &json!({ "metric": ms.metric() })
+        &json!({ "lane": target, "metric": ms.metric() })
     );
 }
 
 /// Pyld12 -- metric type in {COUNT, RATE, GAUGE}.
-pub(crate) fn type_in_domain(ms: &MetricSeries) {
+pub(crate) fn type_in_domain(target: Target, ms: &MetricSeries) {
     let in_domain = matches!(
         ms.type_.enum_value(),
         Ok(MetricType::COUNT | MetricType::RATE | MetricType::GAUGE)
@@ -67,22 +72,22 @@ pub(crate) fn type_in_domain(ms: &MetricSeries) {
     assert_always!(
         out.is_none(),
         "Pyld12.type_in_domain",
-        &json!({ "metric": ms.metric(), "out_of_domain_type": out })
+        &json!({ "lane": target, "metric": ms.metric(), "out_of_domain_type": out })
     );
 }
 
 /// Pyld13 -- tag count at most MaxTags(orgID).
-pub(crate) fn tag_count(ms: &MetricSeries) {
+pub(crate) fn tag_count(target: Target, ms: &MetricSeries) {
     let over = (ms.tags.len() > MAX_TAGS_PER_SERIES).then_some(ms.tags.len());
     assert_always!(
         over.is_none(),
         "Pyld13.tag_count",
-        &json!({ "metric": ms.metric(), "max_tags": MAX_TAGS_PER_SERIES, "observed": over })
+        &json!({ "lane": target, "metric": ms.metric(), "max_tags": MAX_TAGS_PER_SERIES, "observed": over })
     );
 }
 
 /// Pyld14 -- no tag starts with a reserved prefix.
-pub(crate) fn tag_prefix(ms: &MetricSeries) {
+pub(crate) fn tag_prefix(target: Target, ms: &MetricSeries) {
     let offending = ms
         .tags
         .iter()
@@ -91,17 +96,17 @@ pub(crate) fn tag_prefix(ms: &MetricSeries) {
     assert_always!(
         offending.is_none(),
         "Pyld14.reserved_tag_prefix",
-        &json!({ "metric": ms.metric(), "offending": offending })
+        &json!({ "lane": target, "metric": ms.metric(), "offending": offending })
     );
 }
 
 /// Pyld15 -- per-series point count within the cap.
-pub(crate) fn series_point_count(ms: &MetricSeries) {
+pub(crate) fn series_point_count(target: Target, ms: &MetricSeries) {
     let over = (ms.points.len() > MAX_POINTS_PER_PAYLOAD).then_some(ms.points.len());
     assert_always!(
         over.is_none(),
         "Pyld15.series_point_count",
-        &json!({ "metric": ms.metric(), "observed": over })
+        &json!({ "lane": target, "metric": ms.metric(), "observed": over })
     );
 }
 
@@ -111,7 +116,7 @@ fn origin_field_in_domain(value: u32, max: u32, reserved: &[u32]) -> bool {
 }
 
 /// Pyld16 -- each populated origin field is a defined enum member.
-pub(crate) fn origin(ms: &MetricSeries) {
+pub(crate) fn origin(target: Target, ms: &MetricSeries) {
     let out = ms.metadata.as_ref().and_then(|m| m.origin.as_ref()).and_then(|o| {
         if !origin_field_in_domain(o.origin_product, ORIGIN_PRODUCT_MAX, &[]) {
             Some(("origin_product", o.origin_product))
@@ -126,6 +131,6 @@ pub(crate) fn origin(ms: &MetricSeries) {
     assert_always!(
         out.is_none(),
         "Pyld16.origin_in_domain",
-        &json!({ "metric": ms.metric(), "out_of_domain": out })
+        &json!({ "lane": target, "metric": ms.metric(), "out_of_domain": out })
     );
 }
