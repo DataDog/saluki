@@ -32,7 +32,7 @@ mod unix_driver {
             return Ok(());
         };
 
-        let batch = Batch::sample();
+        let batch = driver::sample();
         let stats = driver::run(batch, vec![socket])?;
         let sent = stats.sent[0];
         let max_packed = stats.max_packed[0];

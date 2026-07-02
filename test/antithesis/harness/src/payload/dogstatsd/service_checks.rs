@@ -1,7 +1,7 @@
 //! Feral `DogStatsD` service-check generation.
 
-use antithesis_sdk::random::random_choice;
 use rand::distr::Distribution;
+use rand::seq::IndexedRandom;
 use rand::Rng;
 
 use super::common::{self, Vibe};
@@ -23,13 +23,15 @@ pub(crate) fn write<R: Rng + ?Sized>(rng: &mut R, buf: &mut Vec<u8>, vibe: Vibe)
     buf.extend_from_slice(b"_sc|");
     common::write_words(rng, buf, vibe);
     buf.push(b'|');
-    common::extend_choice(buf, vibe, COMPLIANT_STATUS, common::ABERRANT_VALUES);
+    // Status grammar is exactly [0-3] with zero slack — any aberrant status rejects
+    // the whole check, so feral strangeness lives in the name and options, not here.
+    common::extend_choice(rng, buf, vibe, COMPLIANT_STATUS, COMPLIANT_STATUS);
 
     let count = Boundary::<u8>::new().sample(rng);
     for _ in 0..count {
-        match random_choice(&[Opt::Timestamp, Opt::Hostname, Opt::Message]) {
+        match [Opt::Timestamp, Opt::Hostname, Opt::Message].choose(rng) {
             Some(Opt::Timestamp) => {
-                common::write_field(buf, vibe, b"d:", common::COMPLIANT_TS, common::ABERRANT_VALUES);
+                common::write_field(rng, buf, vibe, b"d:", common::COMPLIANT_TS, common::ABERRANT_TS);
             }
             Some(Opt::Hostname) => {
                 buf.extend_from_slice(b"|h:");
