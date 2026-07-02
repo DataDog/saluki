@@ -1185,6 +1185,7 @@ dependencies = [
  "saluki-error",
  "saluki-io",
  "saluki-metadata",
+ "saluki-tls",
  "serde",
  "serde_json",
  "tokio",
@@ -4431,6 +4432,7 @@ dependencies = [
  "hyper",
  "hyper-http-proxy",
  "lru-slab",
+ "memchr",
  "metrics",
  "opentelemetry-semantic-conventions",
  "otlp-protos",
@@ -4653,6 +4655,7 @@ dependencies = [
  "tracing",
  "triomphe",
  "url",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

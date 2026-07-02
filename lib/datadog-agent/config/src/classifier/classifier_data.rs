@@ -194,13 +194,6 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         default: DefaultValue::Json("32"),
     },
     ClassifierEntry {
-        yaml_path: "dogstatsd_pipe_name",
-        aliases: &[],
-        support_level: SupportLevel::Incompatible(Severity::Medium),
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
-        default: DefaultValue::Json("\"\""),
-    },
-    ClassifierEntry {
         yaml_path: "dogstatsd_pipeline_autoadjust",
         aliases: &[],
         support_level: SupportLevel::Incompatible(Severity::Low),
@@ -248,13 +241,6 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Medium),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: DefaultValue::Json("false"),
-    },
-    ClassifierEntry {
-        yaml_path: "dogstatsd_windows_pipe_security_descriptor",
-        aliases: &[],
-        support_level: SupportLevel::Incompatible(Severity::Medium),
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
-        default: DefaultValue::Json("\"D:AI(A;;GA;;;WD)\""),
     },
     ClassifierEntry {
         yaml_path: "dogstatsd_workers_count",

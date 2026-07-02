@@ -7,17 +7,16 @@ use std::{
 
 use bytes::BufMut;
 use pin_project::pin_project;
+#[cfg(windows)]
+use tokio::net::windows::named_pipe::NamedPipeServer;
 use tokio::{
     io::{AsyncRead, AsyncReadExt as _, AsyncWrite, ReadBuf},
     net::{TcpStream, UdpSocket},
 };
 
-use super::addr::ConnectionAddress;
+use super::addr::{ConnectionAddress, ProcessIdentity};
 #[cfg(unix)]
-use super::{
-    addr::ProcessIdentity,
-    unix::{unix_recvmsg, unixgram_recvmsg},
-};
+use super::unix::{unix_recvmsg, unixgram_recvmsg};
 
 /// A connection-oriented socket.
 ///
@@ -31,6 +30,10 @@ pub enum Connection {
     /// A Unix domain socket in stream mode (SOCK_STREAM).
     #[cfg(unix)]
     Unix(#[pin] tokio::net::UnixStream),
+
+    /// A Windows named pipe in byte stream mode.
+    #[cfg(windows)]
+    NamedPipe(#[pin] NamedPipeServer),
 }
 
 impl Connection {
@@ -39,6 +42,11 @@ impl Connection {
             Self::Tcp(inner, addr) => inner.read_buf(buf).await.map(|n| (n, (*addr).into())),
             #[cfg(unix)]
             Self::Unix(inner) => unix_recvmsg(inner, buf).await,
+            #[cfg(windows)]
+            Self::NamedPipe(inner) => inner
+                .read_buf(buf)
+                .await
+                .map(|n| (n, ConnectionAddress::ProcessLike(ProcessIdentity::Unavailable))),
         }
     }
 
@@ -47,6 +55,8 @@ impl Connection {
             Self::Tcp(_, addr) => ConnectionAddress::SocketLike(*addr),
             #[cfg(unix)]
             Self::Unix(_) => ConnectionAddress::ProcessLike(ProcessIdentity::Unavailable),
+            #[cfg(windows)]
+            Self::NamedPipe(_) => ConnectionAddress::ProcessLike(ProcessIdentity::Unavailable),
         }
     }
 }
@@ -57,6 +67,8 @@ impl AsyncRead for Connection {
             ConnectionProjected::Tcp(inner, _) => inner.poll_read(cx, buf),
             #[cfg(unix)]
             ConnectionProjected::Unix(inner) => inner.poll_read(cx, buf),
+            #[cfg(windows)]
+            ConnectionProjected::NamedPipe(inner) => inner.poll_read(cx, buf),
         }
     }
 }
@@ -67,6 +79,8 @@ impl AsyncWrite for Connection {
             ConnectionProjected::Tcp(inner, _) => inner.poll_write(cx, buf),
             #[cfg(unix)]
             ConnectionProjected::Unix(inner) => inner.poll_write(cx, buf),
+            #[cfg(windows)]
+            ConnectionProjected::NamedPipe(inner) => inner.poll_write(cx, buf),
         }
     }
 
@@ -75,6 +89,8 @@ impl AsyncWrite for Connection {
             ConnectionProjected::Tcp(inner, _) => inner.poll_flush(cx),
             #[cfg(unix)]
             ConnectionProjected::Unix(inner) => inner.poll_flush(cx),
+            #[cfg(windows)]
+            ConnectionProjected::NamedPipe(inner) => inner.poll_flush(cx),
         }
     }
 
@@ -83,6 +99,8 @@ impl AsyncWrite for Connection {
             ConnectionProjected::Tcp(inner, _) => inner.poll_shutdown(cx),
             #[cfg(unix)]
             ConnectionProjected::Unix(inner) => inner.poll_shutdown(cx),
+            #[cfg(windows)]
+            ConnectionProjected::NamedPipe(inner) => inner.poll_shutdown(cx),
         }
     }
 }
@@ -165,6 +183,8 @@ impl Stream {
                 Connection::Tcp(inner, _) => socket2::SockRef::from(inner).recv_buffer_size(),
                 #[cfg(unix)]
                 Connection::Unix(inner) => socket2::SockRef::from(inner).recv_buffer_size(),
+                #[cfg(windows)]
+                Connection::NamedPipe(_) => Ok(0),
             },
             StreamInner::Connectionless { socket } => match socket {
                 Connectionless::Udp(inner) => socket2::SockRef::from(inner).recv_buffer_size(),
@@ -212,6 +232,17 @@ impl From<tokio::net::UnixStream> for Stream {
         Self {
             inner: StreamInner::Connection {
                 socket: Connection::Unix(stream),
+            },
+        }
+    }
+}
+
+#[cfg(windows)]
+impl From<NamedPipeServer> for Stream {
+    fn from(stream: NamedPipeServer) -> Self {
+        Self {
+            inner: StreamInner::Connection {
+                socket: Connection::NamedPipe(stream),
             },
         }
     }
