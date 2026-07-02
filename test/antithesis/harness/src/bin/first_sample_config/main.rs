@@ -67,6 +67,12 @@ fn main() -> anyhow::Result<()> {
     fs::write(&yaml_path, config.to_yaml()?.as_bytes())
         .with_context(|| format!("write agent config {}", yaml_path.display()))?;
 
+    // Load-generator view of the same sample, so a generator caps its datagrams
+    // to the SUT's receive buffer without reading the Agent config.
+    let driver_path = cli.config_dir.join("driver.yaml");
+    fs::write(&driver_path, config.driver_config(&mut rng).to_yaml()?.as_bytes())
+        .with_context(|| format!("write driver config {}", driver_path.display()))?;
+
     // Per-timeline anchor: counting these in triage tells us how many distinct
     // configs the run sampled.
     let details = serde_json::to_value(&config).unwrap_or_else(|e| json!({ "serialize_error": e.to_string() }));

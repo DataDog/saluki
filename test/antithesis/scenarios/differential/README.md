@@ -16,20 +16,29 @@ The Datadog Agent and ADP are the systems under test. They are driven from the
 same, equivalently applicable configuration. That is, a configuration option
 that only affects ADP will not be present, as an example.
 
-The drivers emit into both SUTs. We take as 'transmitted' that the send
-has reached kernel buffers and is 'durable'. This is the pattern we advertise to
+The drivers emit into both SUTs. We take as 'transmitted' that the send has
+reached kernel buffers and is 'durable'. This is the pattern we advertise to
 customers. If a driver is able to write to one SUT but not another, the scenario
 run is failed: all writes reach both SUTs or no conclusion can be
 drawn. Contexts are created on-demand by drivers. We allow Antithesis randomness
-to drive choices around total contexts per scenario.
+to drive choices around total contexts per scenario. We intentionally craft
+strange-but-valid dogstatsd metric lines -- called 'feral' -- in order to find
+differences between the SUTs. The judgement criteria are:
 
-Equivalence is checked thusly. The `intake` registers writes from the two SUTs
-based on their socket, which we call a 'lane'. When `intake` receives a context
-on a lane the timestamp is also recorded. Within `intake` we compute a set of
-contexts. These sets we call `C_ADP` and `C_DA` for 'cumulative ADP' etc. Our
-goal is to determine if `C_ADP` and `C_DA` differ. Dogstatsd is eventually
-consistent, that is, a context sent should _eventually_ be emitted and our claim
-in this scenario is that this emission must occur within
+* If Agent _rejects_ a line, ADP must _reject_ the line.
+* If Agent _accepts_ a line, ADP must _accept_ the line.
+* If ADP _rejects_ a line but Agent does not, ADP is deviated.
+* If ADP _accepts_ a line but Agent does not, ADP is deviated.
+
+The last two points are the negation of the first two, stated explicitly because
+there is some ambiguity about symmetric relations. The consequence of this is
+that equivalence is checked thusly. The `intake` registers writes from the two
+SUTs based on their socket, which we call a 'lane'. When `intake` receives a
+context on a lane the timestamp is also recorded. Within `intake` we compute a
+set of contexts. These sets we call `C_ADP` and `C_DA` for 'cumulative ADP'
+etc. Our goal is to determine if `C_ADP` and `C_DA` differ. Dogstatsd is
+eventually consistent, that is, a context sent should _eventually_ be emitted
+and our claim in this scenario is that this emission must occur within
 `acceptable_flush_delay` seconds. Both SUTs flush on regular intervals but
 without a guarantee of timeliness or of a reference 0-time. We sidestep this by
 making assertions on the symmetric difference of `C_ADP` and `C_DA` and elements

@@ -10,6 +10,7 @@
 //! identically, over value ranges both accept, so the A/B scenario compares two
 //! targets that were actually asked to behave the same way.
 
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -17,8 +18,9 @@ use anyhow::Context as _;
 use clap::ValueEnum;
 use rand::distr::{Distribution, StandardUniform};
 use rand::{Rng, RngExt};
-use serde::{Serialize, Serializer};
+use serde::{Deserialize, Serialize, Serializer};
 
+use crate::payload::dogstatsd::PAYLOAD_BYTE_LIMIT;
 use crate::rand::Probe;
 
 /// Which `datadog.yaml` variation to sample.
@@ -234,12 +236,15 @@ const MAX_STRING_INTERNER_ENTRIES: u64 = 8_388_608;
 
 /// Receive-buffer size in bytes.
 ///
-/// For [`ConfigProfile::Differential`] the value stays in a realistic range so
-/// lines actually arrive on both targets. For [`ConfigProfile::General`] it is
-/// usually realistic but rarely tiny or wild to probe the truncation edge. A
-/// sampled `0` leaves ADP no room past the 4-byte length prefix, so it drops
-/// every packet before decode — useful when ADP runs alone, but it would make
-/// the differential targets diverge for a reason the scenario is not testing.
+/// A generator caps its datagrams to this through [`DriverConfig`], so a small
+/// buffer exercises small-payload handling rather than truncation. For
+/// [`ConfigProfile::Differential`] the
+/// value stays in a realistic range. For [`ConfigProfile::General`] it is
+/// usually realistic but rarely tiny or wild to stress the buffer sizing
+/// itself. A sampled `0` leaves ADP no room past the 4-byte length prefix, so
+/// it drops every packet before decode — useful when ADP runs alone, but it
+/// would make the differential targets diverge for a reason the scenario is not
+/// testing.
 fn sample_buffer_size<R: Rng + ?Sized>(rng: &mut R, profile: ConfigProfile) -> u64 {
     if profile.is_general() && rng.random_ratio(1, 16) {
         Probe::new(0, 536_870_912).sample(rng)
@@ -304,6 +309,14 @@ impl DatadogConfig {
         yaml.push_str(STATIC_YAML_TAIL);
         Ok(yaml)
     }
+
+    /// Derive the [`DriverConfig`] a load generator reads to match this timeline's
+    /// SUT, sampling its knobs from `rng` so they land with the SUT config and the
+    /// two cannot disagree.
+    #[must_use]
+    pub fn driver_config<R: Rng + ?Sized>(&self, rng: &mut R) -> DriverConfig {
+        DriverConfig::sample(rng, self.dogstatsd.dogstatsd_buffer_size)
+    }
 }
 
 /// Yaml flags the Agent reads at boot that never vary.
@@ -313,6 +326,60 @@ inventories_enabled: false
 enable_metadata_collection: false
 cloud_provider_metadata: []
 ";
+
+/// Upper bound on datagrams one driver invocation ships in a timeline.
+const MAX_DATAGRAMS: usize = 10_000;
+
+/// Config a load generator reads to shape its output to this timeline's SUT.
+/// `first_sample_config` samples it beside `datadog.yaml` from one draw, so the
+/// generator and the SUT are driven together.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct DriverConfig {
+    /// Max bytes a generator packs into one datagram, the smaller of the SUT's
+    /// sampled receive buffer and [`PAYLOAD_BYTE_LIMIT`]. A datagram this size
+    /// fits one read, so the SUT never truncates a line mid-token.
+    pub payload_byte_limit: usize,
+    /// Datagrams a driver invocation ships this timeline.
+    pub datagram_count: usize,
+}
+
+impl DriverConfig {
+    /// Sample the driver knobs for a SUT whose receive buffer is `buffer_size`.
+    fn sample<R: Rng + ?Sized>(rng: &mut R, buffer_size: u64) -> Self {
+        // The min is at most PAYLOAD_BYTE_LIMIT, so a buffer wider than usize
+        // caps to the ceiling like any other oversized buffer.
+        let payload_byte_limit = match usize::try_from(buffer_size.min(PAYLOAD_BYTE_LIMIT as u64)) {
+            Ok(bytes) => bytes,
+            Err(_) => PAYLOAD_BYTE_LIMIT,
+        };
+        Self {
+            payload_byte_limit,
+            datagram_count: rng.random_range(0..=MAX_DATAGRAMS),
+        }
+    }
+
+    /// Render `self` as a `driver.yaml` string.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if serialization fails.
+    pub fn to_yaml(&self) -> anyhow::Result<String> {
+        serde_yaml::to_string(self).context("serialize driver.yaml")
+    }
+
+    /// Read the driver config from the `driver.yaml` that `first_sample_config`
+    /// wrote to `config_dir`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the config is unreadable or is not valid YAML with an
+    /// integer `payload_byte_limit`.
+    pub fn read(config_dir: &Path) -> anyhow::Result<Self> {
+        let path = config_dir.join("driver.yaml");
+        let yaml = fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
+        serde_yaml::from_str(&yaml).with_context(|| format!("parse driver config from {}", path.display()))
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -378,6 +445,16 @@ mod tests {
         DatadogConfig::sample(&mut rng, "h", "k", "http://intake:2049", Path::new("/s.sock"), profile)
             .to_yaml()
             .expect("render yaml")
+    }
+
+    #[test]
+    fn driver_config_caps_payload_to_the_smaller_bound() {
+        assert_eq!(DriverConfig::sample(&mut SeqRng(0), 512).payload_byte_limit, 512);
+        assert_eq!(
+            DriverConfig::sample(&mut SeqRng(0), 1 << 30).payload_byte_limit,
+            PAYLOAD_BYTE_LIMIT
+        );
+        assert_eq!(DriverConfig::sample(&mut SeqRng(0), 0).payload_byte_limit, 0);
     }
 
     #[test]
