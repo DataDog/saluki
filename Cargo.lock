@@ -1258,7 +1258,6 @@ name = "datadog-metrics-v3"
 version = "0.1.0"
 dependencies = [
  "protobuf",
- "saluki-error",
 ]
 
 [[package]]

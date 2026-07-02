@@ -3,11 +3,34 @@
 //! The [`V3Writer`] accumulates metrics in columnar format with dictionary deduplication,
 //! then serializes the batch to protobuf wire format when [`V3Writer::close`] is called.
 
+use std::fmt;
+
 use protobuf::CodedOutputStream;
-use saluki_error::GenericError;
 
 use super::interner::Interner;
 use super::types::{value_type_for_values, V3MetricType, V3ValueType, FLAG_HAS_UNIT, FLAG_NO_INDEX};
+
+/// Error encountered while encoding a V3 payload.
+#[derive(Debug)]
+pub struct V3EncodeError(protobuf::Error);
+
+impl fmt::Display for V3EncodeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "failed to encode V3 payload: {}", self.0)
+    }
+}
+
+impl std::error::Error for V3EncodeError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.0)
+    }
+}
+
+impl From<protobuf::Error> for V3EncodeError {
+    fn from(e: protobuf::Error) -> Self {
+        Self(e)
+    }
+}
 
 /// Encoded V3 metrics payload with telemetry data.
 pub struct V3EncodedMetrics {
@@ -41,7 +64,7 @@ pub struct V3ColumnBytes {
 
 fn write_bytes_column(
     output: &mut Vec<u8>, columns: &mut Vec<V3ColumnBytes>, field_number: u32, bytes: &[u8],
-) -> Result<(), GenericError> {
+) -> Result<(), V3EncodeError> {
     let start = output.len();
     {
         let mut os = CodedOutputStream::vec(output);
@@ -62,7 +85,7 @@ fn write_bytes_column(
 
 fn write_packed_column<F, R>(
     output: &mut Vec<u8>, columns: &mut Vec<V3ColumnBytes>, field_number: u32, write_framed: F, write_raw: R,
-) -> Result<(), GenericError>
+) -> Result<(), V3EncodeError>
 where
     F: FnOnce(&mut CodedOutputStream<'_>) -> protobuf::Result<()>,
     R: FnOnce(&mut CodedOutputStream<'_>) -> protobuf::Result<()>,
@@ -375,7 +398,7 @@ impl V3Writer {
     /// Finalizes the writer and serializes the data to the given output buffer.
     ///
     /// This performs delta encoding on all index arrays.
-    pub fn finalize(self) -> Result<V3EncodedMetrics, GenericError> {
+    pub fn finalize(self) -> Result<V3EncodedMetrics, V3EncodeError> {
         let data = self.finalize_inner();
         let mut output = Vec::new();
         let mut columns = Vec::new();
