@@ -32,6 +32,13 @@ impl From<protobuf::Error> for V3EncodeError {
     }
 }
 
+impl V3EncodeError {
+    /// Returns the underlying `protobuf` error.
+    pub fn into_inner(self) -> protobuf::Error {
+        self.0
+    }
+}
+
 /// Encoded V3 metrics payload with telemetry data.
 pub struct V3EncodedMetrics {
     /// Serialized `MetricData` protobuf payload.
@@ -255,7 +262,7 @@ pub struct V3EncodedData {
 /// V3 columnar metrics writer.
 ///
 /// Accumulates metrics in columnar format with dictionary deduplication.
-/// Call [`V3Writer::write`] for each metric, then [`V3Writer::close`] to finalize
+/// Call [`V3Writer::write`] for each metric, then [`V3Writer::finalize`] to finalize
 /// and get the encoded data.
 #[derive(Debug, Default)]
 pub struct V3Writer {
