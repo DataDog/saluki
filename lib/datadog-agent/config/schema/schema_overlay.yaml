@@ -693,18 +693,20 @@ inventory:
   dogstatsd_experimental_http.enabled:
     support: none
     severity: high
-    planned: false
+    planned: true
     pipelines: [dogstatsd]
     description: "Enable experimental HTTP/H2C DSD listener"
-    documentation: "Experimental HTTP path for pre-aggregated DogStatsD metrics; not implemented by ADP. Revisit if it leaves experimental status in the core agent or an ADP user needs it."
+    documentation: "Experimental HTTP path for pre-aggregated DogStatsD metrics; planned when the DogStatsD-over-HTTP work resumes."
+    issue: "#1682"
 
   dogstatsd_experimental_http.listen_address:
     support: none
     severity: high
-    planned: false
+    planned: true
     pipelines: [dogstatsd]
     description: "Bind address for experimental HTTP DSD listener"
-    documentation: "Experimental HTTP path for pre-aggregated DogStatsD metrics; not implemented by ADP. Revisit if it leaves experimental status in the core agent or an ADP user needs it."
+    documentation: "Experimental HTTP path for pre-aggregated DogStatsD metrics; planned when the DogStatsD-over-HTTP work resumes."
+    issue: "#1682"
 
   dogstatsd_flush_incomplete_buckets:
     support: full
