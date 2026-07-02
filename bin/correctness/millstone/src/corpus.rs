@@ -98,8 +98,9 @@ fn generate_payloads(mut rng: StdRng, blueprint: CorpusBlueprint) -> Result<(Vec
 }
 
 fn generate_static_payloads(payload: &str, payloads: &mut Vec<Bytes>, size: NonZeroUsize) {
+    let payload = Bytes::copy_from_slice(payload.as_bytes());
     for _ in 0..size.get() {
-        payloads.push(Bytes::copy_from_slice(payload.as_bytes()));
+        payloads.push(payload.clone());
     }
 }
 
