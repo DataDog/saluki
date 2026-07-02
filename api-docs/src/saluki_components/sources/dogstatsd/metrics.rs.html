@@ -270,128 +270,129 @@
 <a href=#270 id=270 data-nosnippet>270</a>        ListenAddress::Udp(<span class="kw">_</span>) =&gt; <span class="string">"udp"</span>,
 <a href=#271 id=271 data-nosnippet>271</a>        ListenAddress::Unix(<span class="kw">_</span>) =&gt; <span class="string">"unix"</span>,
 <a href=#272 id=272 data-nosnippet>272</a>        ListenAddress::Unixgram(<span class="kw">_</span>) =&gt; <span class="string">"unixgram"</span>,
-<a href=#273 id=273 data-nosnippet>273</a>    };
-<a href=#274 id=274 data-nosnippet>274</a>
-<a href=#275 id=275 data-nosnippet>275</a>    Metrics {
-<a href=#276 id=276 data-nosnippet>276</a>        metrics_received: builder.register_counter_with_tags(
-<a href=#277 id=277 data-nosnippet>277</a>            METRIC_EVENTS_RECEIVED_TOTAL,
-<a href=#278 id=278 data-nosnippet>278</a>            event_tags(MESSAGE_TYPE_METRICS, listener_type, origin_telemetry_enabled),
-<a href=#279 id=279 data-nosnippet>279</a>        ),
-<a href=#280 id=280 data-nosnippet>280</a>        events_received: builder.register_counter_with_tags(
-<a href=#281 id=281 data-nosnippet>281</a>            METRIC_EVENTS_RECEIVED_TOTAL,
-<a href=#282 id=282 data-nosnippet>282</a>            event_tags(MESSAGE_TYPE_EVENTS, listener_type, origin_telemetry_enabled),
-<a href=#283 id=283 data-nosnippet>283</a>        ),
-<a href=#284 id=284 data-nosnippet>284</a>        service_checks_received: builder.register_counter_with_tags(
-<a href=#285 id=285 data-nosnippet>285</a>            METRIC_EVENTS_RECEIVED_TOTAL,
-<a href=#286 id=286 data-nosnippet>286</a>            event_tags(MESSAGE_TYPE_SERVICE_CHECKS, listener_type, origin_telemetry_enabled),
-<a href=#287 id=287 data-nosnippet>287</a>        ),
-<a href=#288 id=288 data-nosnippet>288</a>        bytes_received: builder
-<a href=#289 id=289 data-nosnippet>289</a>            .register_counter_with_tags(<span class="string">"component_bytes_received_total"</span>, [(<span class="string">"listener_type"</span>, listener_type)]),
-<a href=#290 id=290 data-nosnippet>290</a>        bytes_received_size: builder
-<a href=#291 id=291 data-nosnippet>291</a>            .register_trace_histogram_with_tags(<span class="string">"component_bytes_received_size"</span>, [(<span class="string">"listener_type"</span>, listener_type)]),
-<a href=#292 id=292 data-nosnippet>292</a>        framing_errors: builder.register_counter_with_tags(
-<a href=#293 id=293 data-nosnippet>293</a>            <span class="string">"component_errors_total"</span>,
-<a href=#294 id=294 data-nosnippet>294</a>            [(<span class="string">"listener_type"</span>, listener_type), (<span class="string">"error_type"</span>, <span class="string">"framing"</span>)],
-<a href=#295 id=295 data-nosnippet>295</a>        ),
-<a href=#296 id=296 data-nosnippet>296</a>        metric_decoder_errors: builder.register_counter_with_tags(
-<a href=#297 id=297 data-nosnippet>297</a>            METRIC_ERRORS_TOTAL,
-<a href=#298 id=298 data-nosnippet>298</a>            error_tags(MESSAGE_TYPE_METRICS, listener_type, origin_telemetry_enabled),
-<a href=#299 id=299 data-nosnippet>299</a>        ),
-<a href=#300 id=300 data-nosnippet>300</a>        event_decoder_errors: builder.register_counter_with_tags(
-<a href=#301 id=301 data-nosnippet>301</a>            METRIC_ERRORS_TOTAL,
-<a href=#302 id=302 data-nosnippet>302</a>            error_tags(MESSAGE_TYPE_EVENTS, listener_type, origin_telemetry_enabled),
-<a href=#303 id=303 data-nosnippet>303</a>        ),
-<a href=#304 id=304 data-nosnippet>304</a>        service_check_decoder_errors: builder.register_counter_with_tags(
-<a href=#305 id=305 data-nosnippet>305</a>            METRIC_ERRORS_TOTAL,
-<a href=#306 id=306 data-nosnippet>306</a>            error_tags(MESSAGE_TYPE_SERVICE_CHECKS, listener_type, origin_telemetry_enabled),
-<a href=#307 id=307 data-nosnippet>307</a>        ),
-<a href=#308 id=308 data-nosnippet>308</a>        origin_detection_errors: builder
-<a href=#309 id=309 data-nosnippet>309</a>            .register_counter_with_tags(METRIC_ERRORS_TOTAL, [(<span class="string">"error_type"</span>, ERROR_TYPE_ORIGIN_DETECTION)]),
-<a href=#310 id=310 data-nosnippet>310</a>        connections_active: builder
-<a href=#311 id=311 data-nosnippet>311</a>            .register_gauge_with_tags(<span class="string">"component_connections_active"</span>, [(<span class="string">"listener_type"</span>, listener_type)]),
-<a href=#312 id=312 data-nosnippet>312</a>        packet_receive_success: builder.register_counter_with_tags(
-<a href=#313 id=313 data-nosnippet>313</a>            <span class="string">"component_packets_received_total"</span>,
-<a href=#314 id=314 data-nosnippet>314</a>            [(<span class="string">"listener_type"</span>, listener_type), (<span class="string">"state"</span>, <span class="string">"ok"</span>)],
-<a href=#315 id=315 data-nosnippet>315</a>        ),
-<a href=#316 id=316 data-nosnippet>316</a>        packet_receive_failure: builder.register_counter_with_tags(
-<a href=#317 id=317 data-nosnippet>317</a>            <span class="string">"component_packets_received_total"</span>,
-<a href=#318 id=318 data-nosnippet>318</a>            [(<span class="string">"listener_type"</span>, listener_type), (<span class="string">"state"</span>, <span class="string">"error"</span>)],
-<a href=#319 id=319 data-nosnippet>319</a>        ),
-<a href=#320 id=320 data-nosnippet>320</a>        packets_forwarded: builder.register_counter_with_tags(
-<a href=#321 id=321 data-nosnippet>321</a>            <span class="string">"component_packets_forwarded_total"</span>,
-<a href=#322 id=322 data-nosnippet>322</a>            [(<span class="string">"listener_type"</span>, listener_type), (<span class="string">"state"</span>, <span class="string">"ok"</span>)],
-<a href=#323 id=323 data-nosnippet>323</a>        ),
-<a href=#324 id=324 data-nosnippet>324</a>        bytes_forwarded: builder
-<a href=#325 id=325 data-nosnippet>325</a>            .register_counter_with_tags(<span class="string">"component_bytes_forwarded_total"</span>, [(<span class="string">"listener_type"</span>, listener_type)]),
-<a href=#326 id=326 data-nosnippet>326</a>        packet_forwarding_errors: builder.register_counter_with_tags(
-<a href=#327 id=327 data-nosnippet>327</a>            <span class="string">"component_packets_forwarded_total"</span>,
-<a href=#328 id=328 data-nosnippet>328</a>            [(<span class="string">"listener_type"</span>, listener_type), (<span class="string">"state"</span>, <span class="string">"error"</span>)],
-<a href=#329 id=329 data-nosnippet>329</a>        ),
-<a href=#330 id=330 data-nosnippet>330</a>        failed_context_resolve_total: builder.register_counter(<span class="string">"component_failed_context_resolve_total"</span>),
-<a href=#331 id=331 data-nosnippet>331</a>        origin_metric_recorder: origin_telemetry_enabled
-<a href=#332 id=332 data-nosnippet>332</a>            .then(|| OriginMetricRecorder::new(builder, component_context, listener_type)),
-<a href=#333 id=333 data-nosnippet>333</a>    }
-<a href=#334 id=334 data-nosnippet>334</a>}
-<a href=#335 id=335 data-nosnippet>335</a>
-<a href=#336 id=336 data-nosnippet>336</a><span class="kw">fn </span>event_tags(
-<a href=#337 id=337 data-nosnippet>337</a>    message_type: <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str, listener_type: <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str, origin_telemetry_enabled: bool,
-<a href=#338 id=338 data-nosnippet>338</a>) -&gt; Vec&lt;(<span class="kw-2">&amp;</span><span class="lifetime">'static </span>str, <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str)&gt; {
-<a href=#339 id=339 data-nosnippet>339</a>    <span class="kw">let </span><span class="kw-2">mut </span>tags = <span class="macro">vec!</span>[(<span class="string">"message_type"</span>, message_type), (<span class="string">"listener_type"</span>, listener_type)];
-<a href=#340 id=340 data-nosnippet>340</a>    <span class="kw">if </span>origin_telemetry_enabled {
-<a href=#341 id=341 data-nosnippet>341</a>        tags.push((<span class="string">"origin"</span>, <span class="string">""</span>));
-<a href=#342 id=342 data-nosnippet>342</a>    }
-<a href=#343 id=343 data-nosnippet>343</a>    tags
-<a href=#344 id=344 data-nosnippet>344</a>}
-<a href=#345 id=345 data-nosnippet>345</a>
-<a href=#346 id=346 data-nosnippet>346</a><span class="kw">fn </span>error_tags(
-<a href=#347 id=347 data-nosnippet>347</a>    message_type: <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str, listener_type: <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str, origin_telemetry_enabled: bool,
-<a href=#348 id=348 data-nosnippet>348</a>) -&gt; Vec&lt;(<span class="kw-2">&amp;</span><span class="lifetime">'static </span>str, <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str)&gt; {
-<a href=#349 id=349 data-nosnippet>349</a>    <span class="kw">let </span><span class="kw-2">mut </span>tags = <span class="macro">vec!</span>[
-<a href=#350 id=350 data-nosnippet>350</a>        (<span class="string">"listener_type"</span>, listener_type),
-<a href=#351 id=351 data-nosnippet>351</a>        (<span class="string">"error_type"</span>, <span class="string">"decode"</span>),
-<a href=#352 id=352 data-nosnippet>352</a>        (<span class="string">"message_type"</span>, message_type),
-<a href=#353 id=353 data-nosnippet>353</a>    ];
-<a href=#354 id=354 data-nosnippet>354</a>    <span class="kw">if </span>origin_telemetry_enabled {
-<a href=#355 id=355 data-nosnippet>355</a>        tags.push((<span class="string">"origin"</span>, <span class="string">""</span>));
-<a href=#356 id=356 data-nosnippet>356</a>    }
-<a href=#357 id=357 data-nosnippet>357</a>    tags
-<a href=#358 id=358 data-nosnippet>358</a>}
-<a href=#359 id=359 data-nosnippet>359</a>
-<a href=#360 id=360 data-nosnippet>360</a><span class="attr">#[cfg(test)]
-<a href=#361 id=361 data-nosnippet>361</a></span><span class="kw">mod </span>tests {
-<a href=#362 id=362 data-nosnippet>362</a>    <span class="kw">use </span>std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
-<a href=#363 id=363 data-nosnippet>363</a>
-<a href=#364 id=364 data-nosnippet>364</a>    <span class="kw">use </span>saluki_core::{components::ComponentContext, topology::ComponentId};
-<a href=#365 id=365 data-nosnippet>365</a>    <span class="kw">use </span>saluki_metrics::test::TestRecorder;
-<a href=#366 id=366 data-nosnippet>366</a>
-<a href=#367 id=367 data-nosnippet>367</a>    <span class="kw">use super</span>::<span class="kw-2">*</span>;
-<a href=#368 id=368 data-nosnippet>368</a>
-<a href=#369 id=369 data-nosnippet>369</a>    <span class="kw">fn </span>test_context() -&gt; ComponentContext {
-<a href=#370 id=370 data-nosnippet>370</a>        ComponentContext::source(ComponentId::try_from(<span class="string">"dogstatsd_test"</span>).expect(<span class="string">"valid component ID"</span>))
-<a href=#371 id=371 data-nosnippet>371</a>    }
-<a href=#372 id=372 data-nosnippet>372</a>
-<a href=#373 id=373 data-nosnippet>373</a>    <span class="kw">fn </span>udp_listen_addr() -&gt; ListenAddress {
-<a href=#374 id=374 data-nosnippet>374</a>        ListenAddress::Udp(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, <span class="number">8125</span>)))
-<a href=#375 id=375 data-nosnippet>375</a>    }
-<a href=#376 id=376 data-nosnippet>376</a>
-<a href=#377 id=377 data-nosnippet>377</a>    <span class="attr">#[test]
-<a href=#378 id=378 data-nosnippet>378</a>    </span><span class="kw">fn </span>origin_metric_recorder_evicts_oldest_origin_when_cache_is_full() {
-<a href=#379 id=379 data-nosnippet>379</a>        <span class="kw">let </span>recorder = TestRecorder::default();
-<a href=#380 id=380 data-nosnippet>380</a>        <span class="kw">let </span>_recorder_guard = metrics::set_default_local_recorder(<span class="kw-2">&amp;</span>recorder);
-<a href=#381 id=381 data-nosnippet>381</a>        <span class="kw">let </span>metrics = build_metrics(<span class="kw-2">&amp;</span>udp_listen_addr(), <span class="kw-2">&amp;</span>test_context(), <span class="bool-val">true</span>);
-<a href=#382 id=382 data-nosnippet>382</a>
-<a href=#383 id=383 data-nosnippet>383</a>        <span class="kw">for </span>index <span class="kw">in </span><span class="number">0</span>..=MAX_ORIGIN_COUNTERS {
-<a href=#384 id=384 data-nosnippet>384</a>            metrics.record_metrics_received(<span class="number">1</span>, <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span><span class="macro">format!</span>(<span class="string">"container_id://test-container-{index}"</span>)));
-<a href=#385 id=385 data-nosnippet>385</a>        }
-<a href=#386 id=386 data-nosnippet>386</a>
-<a href=#387 id=387 data-nosnippet>387</a>        <span class="kw">let </span>origin_recorder = metrics
-<a href=#388 id=388 data-nosnippet>388</a>            .origin_metric_recorder
-<a href=#389 id=389 data-nosnippet>389</a>            .as_ref()
-<a href=#390 id=390 data-nosnippet>390</a>            .expect(<span class="string">"origin metric recorder should be enabled"</span>);
-<a href=#391 id=391 data-nosnippet>391</a>        <span class="macro">assert_eq!</span>(origin_recorder.cached_origin_count(), MAX_ORIGIN_COUNTERS);
-<a href=#392 id=392 data-nosnippet>392</a>        <span class="macro">assert!</span>(!origin_recorder.has_cached_origin(<span class="string">"container_id://test-container-0"</span>));
-<a href=#393 id=393 data-nosnippet>393</a>        <span class="macro">assert!</span>(origin_recorder.has_cached_origin(<span class="string">"container_id://test-container-1"</span>));
-<a href=#394 id=394 data-nosnippet>394</a>        <span class="macro">assert!</span>(origin_recorder.has_cached_origin(<span class="string">"container_id://test-container-200"</span>));
-<a href=#395 id=395 data-nosnippet>395</a>    }
-<a href=#396 id=396 data-nosnippet>396</a>}
+<a href=#273 id=273 data-nosnippet>273</a>        ListenAddress::NamedPipe { .. } =&gt; <span class="string">"named_pipe"</span>,
+<a href=#274 id=274 data-nosnippet>274</a>    };
+<a href=#275 id=275 data-nosnippet>275</a>
+<a href=#276 id=276 data-nosnippet>276</a>    Metrics {
+<a href=#277 id=277 data-nosnippet>277</a>        metrics_received: builder.register_counter_with_tags(
+<a href=#278 id=278 data-nosnippet>278</a>            METRIC_EVENTS_RECEIVED_TOTAL,
+<a href=#279 id=279 data-nosnippet>279</a>            event_tags(MESSAGE_TYPE_METRICS, listener_type, origin_telemetry_enabled),
+<a href=#280 id=280 data-nosnippet>280</a>        ),
+<a href=#281 id=281 data-nosnippet>281</a>        events_received: builder.register_counter_with_tags(
+<a href=#282 id=282 data-nosnippet>282</a>            METRIC_EVENTS_RECEIVED_TOTAL,
+<a href=#283 id=283 data-nosnippet>283</a>            event_tags(MESSAGE_TYPE_EVENTS, listener_type, origin_telemetry_enabled),
+<a href=#284 id=284 data-nosnippet>284</a>        ),
+<a href=#285 id=285 data-nosnippet>285</a>        service_checks_received: builder.register_counter_with_tags(
+<a href=#286 id=286 data-nosnippet>286</a>            METRIC_EVENTS_RECEIVED_TOTAL,
+<a href=#287 id=287 data-nosnippet>287</a>            event_tags(MESSAGE_TYPE_SERVICE_CHECKS, listener_type, origin_telemetry_enabled),
+<a href=#288 id=288 data-nosnippet>288</a>        ),
+<a href=#289 id=289 data-nosnippet>289</a>        bytes_received: builder
+<a href=#290 id=290 data-nosnippet>290</a>            .register_counter_with_tags(<span class="string">"component_bytes_received_total"</span>, [(<span class="string">"listener_type"</span>, listener_type)]),
+<a href=#291 id=291 data-nosnippet>291</a>        bytes_received_size: builder
+<a href=#292 id=292 data-nosnippet>292</a>            .register_trace_histogram_with_tags(<span class="string">"component_bytes_received_size"</span>, [(<span class="string">"listener_type"</span>, listener_type)]),
+<a href=#293 id=293 data-nosnippet>293</a>        framing_errors: builder.register_counter_with_tags(
+<a href=#294 id=294 data-nosnippet>294</a>            <span class="string">"component_errors_total"</span>,
+<a href=#295 id=295 data-nosnippet>295</a>            [(<span class="string">"listener_type"</span>, listener_type), (<span class="string">"error_type"</span>, <span class="string">"framing"</span>)],
+<a href=#296 id=296 data-nosnippet>296</a>        ),
+<a href=#297 id=297 data-nosnippet>297</a>        metric_decoder_errors: builder.register_counter_with_tags(
+<a href=#298 id=298 data-nosnippet>298</a>            METRIC_ERRORS_TOTAL,
+<a href=#299 id=299 data-nosnippet>299</a>            error_tags(MESSAGE_TYPE_METRICS, listener_type, origin_telemetry_enabled),
+<a href=#300 id=300 data-nosnippet>300</a>        ),
+<a href=#301 id=301 data-nosnippet>301</a>        event_decoder_errors: builder.register_counter_with_tags(
+<a href=#302 id=302 data-nosnippet>302</a>            METRIC_ERRORS_TOTAL,
+<a href=#303 id=303 data-nosnippet>303</a>            error_tags(MESSAGE_TYPE_EVENTS, listener_type, origin_telemetry_enabled),
+<a href=#304 id=304 data-nosnippet>304</a>        ),
+<a href=#305 id=305 data-nosnippet>305</a>        service_check_decoder_errors: builder.register_counter_with_tags(
+<a href=#306 id=306 data-nosnippet>306</a>            METRIC_ERRORS_TOTAL,
+<a href=#307 id=307 data-nosnippet>307</a>            error_tags(MESSAGE_TYPE_SERVICE_CHECKS, listener_type, origin_telemetry_enabled),
+<a href=#308 id=308 data-nosnippet>308</a>        ),
+<a href=#309 id=309 data-nosnippet>309</a>        origin_detection_errors: builder
+<a href=#310 id=310 data-nosnippet>310</a>            .register_counter_with_tags(METRIC_ERRORS_TOTAL, [(<span class="string">"error_type"</span>, ERROR_TYPE_ORIGIN_DETECTION)]),
+<a href=#311 id=311 data-nosnippet>311</a>        connections_active: builder
+<a href=#312 id=312 data-nosnippet>312</a>            .register_gauge_with_tags(<span class="string">"component_connections_active"</span>, [(<span class="string">"listener_type"</span>, listener_type)]),
+<a href=#313 id=313 data-nosnippet>313</a>        packet_receive_success: builder.register_counter_with_tags(
+<a href=#314 id=314 data-nosnippet>314</a>            <span class="string">"component_packets_received_total"</span>,
+<a href=#315 id=315 data-nosnippet>315</a>            [(<span class="string">"listener_type"</span>, listener_type), (<span class="string">"state"</span>, <span class="string">"ok"</span>)],
+<a href=#316 id=316 data-nosnippet>316</a>        ),
+<a href=#317 id=317 data-nosnippet>317</a>        packet_receive_failure: builder.register_counter_with_tags(
+<a href=#318 id=318 data-nosnippet>318</a>            <span class="string">"component_packets_received_total"</span>,
+<a href=#319 id=319 data-nosnippet>319</a>            [(<span class="string">"listener_type"</span>, listener_type), (<span class="string">"state"</span>, <span class="string">"error"</span>)],
+<a href=#320 id=320 data-nosnippet>320</a>        ),
+<a href=#321 id=321 data-nosnippet>321</a>        packets_forwarded: builder.register_counter_with_tags(
+<a href=#322 id=322 data-nosnippet>322</a>            <span class="string">"component_packets_forwarded_total"</span>,
+<a href=#323 id=323 data-nosnippet>323</a>            [(<span class="string">"listener_type"</span>, listener_type), (<span class="string">"state"</span>, <span class="string">"ok"</span>)],
+<a href=#324 id=324 data-nosnippet>324</a>        ),
+<a href=#325 id=325 data-nosnippet>325</a>        bytes_forwarded: builder
+<a href=#326 id=326 data-nosnippet>326</a>            .register_counter_with_tags(<span class="string">"component_bytes_forwarded_total"</span>, [(<span class="string">"listener_type"</span>, listener_type)]),
+<a href=#327 id=327 data-nosnippet>327</a>        packet_forwarding_errors: builder.register_counter_with_tags(
+<a href=#328 id=328 data-nosnippet>328</a>            <span class="string">"component_packets_forwarded_total"</span>,
+<a href=#329 id=329 data-nosnippet>329</a>            [(<span class="string">"listener_type"</span>, listener_type), (<span class="string">"state"</span>, <span class="string">"error"</span>)],
+<a href=#330 id=330 data-nosnippet>330</a>        ),
+<a href=#331 id=331 data-nosnippet>331</a>        failed_context_resolve_total: builder.register_counter(<span class="string">"component_failed_context_resolve_total"</span>),
+<a href=#332 id=332 data-nosnippet>332</a>        origin_metric_recorder: origin_telemetry_enabled
+<a href=#333 id=333 data-nosnippet>333</a>            .then(|| OriginMetricRecorder::new(builder, component_context, listener_type)),
+<a href=#334 id=334 data-nosnippet>334</a>    }
+<a href=#335 id=335 data-nosnippet>335</a>}
+<a href=#336 id=336 data-nosnippet>336</a>
+<a href=#337 id=337 data-nosnippet>337</a><span class="kw">fn </span>event_tags(
+<a href=#338 id=338 data-nosnippet>338</a>    message_type: <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str, listener_type: <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str, origin_telemetry_enabled: bool,
+<a href=#339 id=339 data-nosnippet>339</a>) -&gt; Vec&lt;(<span class="kw-2">&amp;</span><span class="lifetime">'static </span>str, <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str)&gt; {
+<a href=#340 id=340 data-nosnippet>340</a>    <span class="kw">let </span><span class="kw-2">mut </span>tags = <span class="macro">vec!</span>[(<span class="string">"message_type"</span>, message_type), (<span class="string">"listener_type"</span>, listener_type)];
+<a href=#341 id=341 data-nosnippet>341</a>    <span class="kw">if </span>origin_telemetry_enabled {
+<a href=#342 id=342 data-nosnippet>342</a>        tags.push((<span class="string">"origin"</span>, <span class="string">""</span>));
+<a href=#343 id=343 data-nosnippet>343</a>    }
+<a href=#344 id=344 data-nosnippet>344</a>    tags
+<a href=#345 id=345 data-nosnippet>345</a>}
+<a href=#346 id=346 data-nosnippet>346</a>
+<a href=#347 id=347 data-nosnippet>347</a><span class="kw">fn </span>error_tags(
+<a href=#348 id=348 data-nosnippet>348</a>    message_type: <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str, listener_type: <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str, origin_telemetry_enabled: bool,
+<a href=#349 id=349 data-nosnippet>349</a>) -&gt; Vec&lt;(<span class="kw-2">&amp;</span><span class="lifetime">'static </span>str, <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str)&gt; {
+<a href=#350 id=350 data-nosnippet>350</a>    <span class="kw">let </span><span class="kw-2">mut </span>tags = <span class="macro">vec!</span>[
+<a href=#351 id=351 data-nosnippet>351</a>        (<span class="string">"listener_type"</span>, listener_type),
+<a href=#352 id=352 data-nosnippet>352</a>        (<span class="string">"error_type"</span>, <span class="string">"decode"</span>),
+<a href=#353 id=353 data-nosnippet>353</a>        (<span class="string">"message_type"</span>, message_type),
+<a href=#354 id=354 data-nosnippet>354</a>    ];
+<a href=#355 id=355 data-nosnippet>355</a>    <span class="kw">if </span>origin_telemetry_enabled {
+<a href=#356 id=356 data-nosnippet>356</a>        tags.push((<span class="string">"origin"</span>, <span class="string">""</span>));
+<a href=#357 id=357 data-nosnippet>357</a>    }
+<a href=#358 id=358 data-nosnippet>358</a>    tags
+<a href=#359 id=359 data-nosnippet>359</a>}
+<a href=#360 id=360 data-nosnippet>360</a>
+<a href=#361 id=361 data-nosnippet>361</a><span class="attr">#[cfg(test)]
+<a href=#362 id=362 data-nosnippet>362</a></span><span class="kw">mod </span>tests {
+<a href=#363 id=363 data-nosnippet>363</a>    <span class="kw">use </span>std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
+<a href=#364 id=364 data-nosnippet>364</a>
+<a href=#365 id=365 data-nosnippet>365</a>    <span class="kw">use </span>saluki_core::{components::ComponentContext, topology::ComponentId};
+<a href=#366 id=366 data-nosnippet>366</a>    <span class="kw">use </span>saluki_metrics::test::TestRecorder;
+<a href=#367 id=367 data-nosnippet>367</a>
+<a href=#368 id=368 data-nosnippet>368</a>    <span class="kw">use super</span>::<span class="kw-2">*</span>;
+<a href=#369 id=369 data-nosnippet>369</a>
+<a href=#370 id=370 data-nosnippet>370</a>    <span class="kw">fn </span>test_context() -&gt; ComponentContext {
+<a href=#371 id=371 data-nosnippet>371</a>        ComponentContext::source(ComponentId::try_from(<span class="string">"dogstatsd_test"</span>).expect(<span class="string">"valid component ID"</span>))
+<a href=#372 id=372 data-nosnippet>372</a>    }
+<a href=#373 id=373 data-nosnippet>373</a>
+<a href=#374 id=374 data-nosnippet>374</a>    <span class="kw">fn </span>udp_listen_addr() -&gt; ListenAddress {
+<a href=#375 id=375 data-nosnippet>375</a>        ListenAddress::Udp(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, <span class="number">8125</span>)))
+<a href=#376 id=376 data-nosnippet>376</a>    }
+<a href=#377 id=377 data-nosnippet>377</a>
+<a href=#378 id=378 data-nosnippet>378</a>    <span class="attr">#[test]
+<a href=#379 id=379 data-nosnippet>379</a>    </span><span class="kw">fn </span>origin_metric_recorder_evicts_oldest_origin_when_cache_is_full() {
+<a href=#380 id=380 data-nosnippet>380</a>        <span class="kw">let </span>recorder = TestRecorder::default();
+<a href=#381 id=381 data-nosnippet>381</a>        <span class="kw">let </span>_recorder_guard = metrics::set_default_local_recorder(<span class="kw-2">&amp;</span>recorder);
+<a href=#382 id=382 data-nosnippet>382</a>        <span class="kw">let </span>metrics = build_metrics(<span class="kw-2">&amp;</span>udp_listen_addr(), <span class="kw-2">&amp;</span>test_context(), <span class="bool-val">true</span>);
+<a href=#383 id=383 data-nosnippet>383</a>
+<a href=#384 id=384 data-nosnippet>384</a>        <span class="kw">for </span>index <span class="kw">in </span><span class="number">0</span>..=MAX_ORIGIN_COUNTERS {
+<a href=#385 id=385 data-nosnippet>385</a>            metrics.record_metrics_received(<span class="number">1</span>, <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span><span class="macro">format!</span>(<span class="string">"container_id://test-container-{index}"</span>)));
+<a href=#386 id=386 data-nosnippet>386</a>        }
+<a href=#387 id=387 data-nosnippet>387</a>
+<a href=#388 id=388 data-nosnippet>388</a>        <span class="kw">let </span>origin_recorder = metrics
+<a href=#389 id=389 data-nosnippet>389</a>            .origin_metric_recorder
+<a href=#390 id=390 data-nosnippet>390</a>            .as_ref()
+<a href=#391 id=391 data-nosnippet>391</a>            .expect(<span class="string">"origin metric recorder should be enabled"</span>);
+<a href=#392 id=392 data-nosnippet>392</a>        <span class="macro">assert_eq!</span>(origin_recorder.cached_origin_count(), MAX_ORIGIN_COUNTERS);
+<a href=#393 id=393 data-nosnippet>393</a>        <span class="macro">assert!</span>(!origin_recorder.has_cached_origin(<span class="string">"container_id://test-container-0"</span>));
+<a href=#394 id=394 data-nosnippet>394</a>        <span class="macro">assert!</span>(origin_recorder.has_cached_origin(<span class="string">"container_id://test-container-1"</span>));
+<a href=#395 id=395 data-nosnippet>395</a>        <span class="macro">assert!</span>(origin_recorder.has_cached_origin(<span class="string">"container_id://test-container-200"</span>));
+<a href=#396 id=396 data-nosnippet>396</a>    }
+<a href=#397 id=397 data-nosnippet>397</a>}
 </code></pre></div></section></main></body></html>
