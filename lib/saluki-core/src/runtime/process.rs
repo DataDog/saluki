@@ -153,6 +153,11 @@ impl Process {
         &self.id
     }
 
+    /// Returns the fully qualified process name (scoped under its parent, for example `topology_primary.dsd_in.source`).
+    pub(crate) fn name(&self) -> &str {
+        &self.name
+    }
+
     /// Returns the dataspace registry associated with this process.
     pub(crate) fn dataspace(&self) -> &DataspaceRegistry {
         &self.dataspace

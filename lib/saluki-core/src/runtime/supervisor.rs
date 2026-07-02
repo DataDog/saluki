@@ -57,6 +57,17 @@ pub(super) enum WorkerError {
 
     /// The worker failed during runtime execution.
     Runtime(GenericError),
+
+    /// The worker was a nested supervisor that completed a requested shutdown after forcefully aborting one or more of
+    /// its own workers.
+    ///
+    /// Carried as a distinct variant (rather than collapsed into [`Runtime`][WorkerError::Runtime]) so the parent's
+    /// shutdown drain can recover the structured count and merge it into its own tally, aggregating forced aborts up
+    /// the supervision tree.
+    ShutdownTimedOut {
+        /// The number of workers the nested supervisor forcefully aborted, summed across its own supervision tree.
+        aborted: usize,
+    },
 }
 
 impl From<SupervisorError> for WorkerError {
@@ -68,6 +79,8 @@ impl From<SupervisorError> for WorkerError {
                 child_name: Some(child_name),
                 source,
             },
+            // Preserve the structured abort count so the parent can merge it into its own shutdown tally.
+            SupervisorError::ShutdownTimedOut { aborted } => WorkerError::ShutdownTimedOut { aborted },
             // All other supervisor errors (shutdown, no children, invalid name) are runtime-level.
             other => WorkerError::Runtime(other.into()),
         }
@@ -221,6 +234,23 @@ pub enum SupervisorError {
     /// children, because a child marked significant terminated without being restarted.
     #[snafu(display("Supervisor shut down after a significant child terminated."))]
     SignificantChildExited,
+
+    /// The supervisor completed a requested shutdown, but one or more workers ignored graceful shutdown and had to be
+    /// forcefully aborted after exceeding their shutdown timeout.
+    ///
+    /// The shutdown itself was requested and otherwise orderly; this variant exists so that having to forcefully stop a
+    /// worker is surfaced as a failure rather than reported as a clean shutdown. The count aggregates forced aborts
+    /// across the entire supervision tree: a parent merges in the counts reported by any child supervisors that also
+    /// timed out, so the value observed at the root supervisor is the total number of workers that had to be
+    /// force-stopped tree-wide.
+    #[snafu(display(
+        "Shutdown completed uncleanly: {} worker(s) were forcefully aborted after exceeding their shutdown timeout.",
+        aborted
+    ))]
+    ShutdownTimedOut {
+        /// The number of workers that had to be forcefully aborted.
+        aborted: usize,
+    },
 }
 
 /// A specification for a process to be added to a [`Supervisor`].
@@ -915,6 +945,13 @@ impl Supervisor {
                     let worker_result = worker_result.map_err(|e| match e {
                         WorkerError::Runtime(e) => ProcessError::Terminated { source: e },
                         WorkerError::Initialization { .. } => unreachable!("handled above"),
+                        // A nested supervisor only reports `ShutdownTimedOut` while draining, which is driven by its own
+                        // `process_shutdown` -- and that fires only when *this* supervisor is itself draining it, i.e.
+                        // from `shutdown_workers` below, never from this main-loop arm. Treat it as a runtime
+                        // termination defensively rather than asserting unreachable.
+                        WorkerError::ShutdownTimedOut { aborted } => ProcessError::Terminated {
+                            source: SupervisorError::ShutdownTimedOut { aborted }.into(),
+                        },
                     });
 
                     if !config.restart.should_restart(abnormal) {
@@ -955,7 +992,10 @@ impl Supervisor {
                                 }
                                 RestartMode::OneForAll => {
                                     warn!(supervisor_id = %self.supervisor_id, worker_name = %child_name, ?worker_result, "Child process terminated, restarting all processes.");
-                                    worker_state.shutdown_workers().await;
+                                    // This drain is part of a restart, not a shutdown: any forced aborts here are
+                                    // already logged per-worker, and the supervisor keeps running, so the count does
+                                    // not feed the unclean-shutdown signal.
+                                    let _ = worker_state.shutdown_workers().await;
                                     // A one-for-all restart resets to the static roster; dynamic children are not
                                     // restored (they're lost on a supervisor-level restart, matching Erlang/OTP), and
                                     // temporary children are not restarted.
@@ -989,9 +1029,19 @@ impl Supervisor {
         while let Ok(spawn) = cmd_rx.try_recv() {
             let _ = spawn.ack.send(Err(SpawnError::SupervisorGone));
         }
-        worker_state.shutdown_workers().await;
+        let aborted = worker_state.shutdown_workers().await;
 
-        outcome
+        // A requested shutdown that nonetheless had to forcefully abort one or more workers (here or anywhere in the
+        // subtree below us) is surfaced as an unclean shutdown so it propagates up the tree rather than being reported
+        // as success. An outcome that already carries an error (initialization, restart limit, significant child)
+        // takes precedence -- that's the root cause -- and the forced aborts are left to the per-worker warnings.
+        match outcome {
+            Ok(()) if aborted > 0 => {
+                warn!(supervisor_id = %self.supervisor_id, aborted, "Shutdown completed uncleanly; workers were forcefully aborted.");
+                Err(SupervisorError::ShutdownTimedOut { aborted })
+            }
+            outcome => outcome,
+        }
     }
 
     fn as_nested_process(&self, process: Process, process_shutdown: ShutdownHandle) -> WorkerFuture {
@@ -2225,7 +2275,11 @@ mod tests {
         let result = timeout(Duration::from_secs(2), run).await.unwrap().unwrap();
         let elapsed = start.elapsed();
 
-        assert!(result.is_ok());
+        // Forcefully aborting an unresponsive child is surfaced as an unclean shutdown rather than reported as success.
+        assert!(
+            matches!(result, Err(SupervisorError::ShutdownTimedOut { aborted: 1 })),
+            "aborting a stuck child must surface as an unclean shutdown, got {result:?}"
+        );
         assert_eq!(handle.active_children(), 0);
         assert!(
             elapsed < Duration::from_secs(1),
@@ -2263,7 +2317,11 @@ mod tests {
         let result = timeout(Duration::from_secs(2), run).await.unwrap().unwrap();
         let elapsed = start.elapsed();
 
-        assert!(result.is_ok());
+        // Only the stuck child is aborted (the responsive one exits cleanly), so the unclean-shutdown tally is exactly 1.
+        assert!(
+            matches!(result, Err(SupervisorError::ShutdownTimedOut { aborted: 1 })),
+            "aborting the stuck child must surface as an unclean shutdown with a count of 1, got {result:?}"
+        );
         assert_eq!(handle.active_children(), 0);
         assert!(
             elapsed < Duration::from_secs(1),
@@ -2285,7 +2343,10 @@ mod tests {
         let result = timeout(Duration::from_secs(2), handle).await.unwrap().unwrap();
         let elapsed = start.elapsed();
 
-        assert!(result.is_ok());
+        assert!(
+            matches!(result, Err(SupervisorError::ShutdownTimedOut { aborted: 1 })),
+            "aborting a stuck child under ordered shutdown must surface as an unclean shutdown, got {result:?}"
+        );
         assert!(
             elapsed < Duration::from_secs(1),
             "unresponsive child must be aborted at its deadline under ordered shutdown (took {elapsed:?})"
@@ -2306,10 +2367,41 @@ mod tests {
         let result = timeout(Duration::from_secs(2), handle).await.unwrap().unwrap();
         let elapsed = start.elapsed();
 
+        // A brutal abort is the configured, expected way to stop this child -- not a graceful-timeout overrun -- so it
+        // is NOT counted toward the unclean-shutdown tally, and the shutdown reports success.
         assert!(result.is_ok());
         assert!(
             elapsed < Duration::from_millis(200),
             "brutal-shutdown child must be aborted immediately, not after a graceful wait (took {elapsed:?})"
+        );
+    }
+
+    #[tokio::test]
+    async fn shutdown_timeout_aborts_aggregate_to_root() {
+        // Forced aborts must surface as an unclean shutdown and aggregate up the tree: a supervisor adds the workers it
+        // aborts directly to the counts reported by any child supervisors that also timed out. Here the parent aborts
+        // one direct child and a nested supervisor aborts one of its own, so the root observes a total of 2.
+        let mut child_sup = Supervisor::new("child-sup")
+            .unwrap()
+            .with_shutdown_mode(ShutdownMode::Concurrent);
+        child_sup
+            .add_worker(MockWorker::ignore_shutdown("child-stuck").with_graceful_timeout(Duration::from_millis(200)));
+
+        let mut parent_sup = Supervisor::new("parent-sup")
+            .unwrap()
+            .with_shutdown_mode(ShutdownMode::Concurrent);
+        parent_sup
+            .add_worker(MockWorker::ignore_shutdown("parent-stuck").with_graceful_timeout(Duration::from_millis(200)));
+        parent_sup.add_worker(MockWorker::long_running("parent-clean"));
+        parent_sup.add_worker(child_sup);
+
+        let (tx, handle) = run_supervisor_with_trigger(parent_sup).await;
+        tx.send(()).unwrap();
+
+        let result = timeout(Duration::from_secs(2), handle).await.unwrap().unwrap();
+        assert!(
+            matches!(result, Err(SupervisorError::ShutdownTimedOut { aborted: 2 })),
+            "forced aborts must aggregate across the tree (1 direct + 1 nested), got {result:?}"
         );
     }
 }
