@@ -24,14 +24,12 @@ If you find an error on this page, please [open an issue].
 The following settings are not yet supported in ADP but are planned with GitHub issue links for
 tracking.
 
-| Config Key                                   | Description                                     | Issue   |
-| -------------------------------------------- | ----------------------------------------------- | ------- |
-| `dogstatsd_experimental_http.enabled`        | Enable experimental HTTP/H2C DSD listener       | [#1682] |
-| `dogstatsd_experimental_http.listen_address` | Bind address for experimental HTTP DSD listener | [#1682] |
-| `dogstatsd_pipe_name`                        | Windows named pipe path                         | [#1466] |
-| `dogstatsd_windows_pipe_security_descriptor` | Windows named pipe ACL descriptor               | [#1466] |
-| `telemetry.dogstatsd_origin`                 | Per-origin processed-metrics telemetry          | [#1679] |
-| `tls_handshake_timeout`                      | HTTP TLS handshake timeout                      | [#178]  |
+| Config Key                                   | Description                            | Issue   |
+| -------------------------------------------- | -------------------------------------- | ------- |
+| `dogstatsd_pipe_name`                        | Windows named pipe path                | [#1466] |
+| `dogstatsd_windows_pipe_security_descriptor` | Windows named pipe ACL descriptor      | [#1466] |
+| `telemetry.dogstatsd_origin`                 | Per-origin processed-metrics telemetry | [#1679] |
+| `tls_handshake_timeout`                      | HTTP TLS handshake timeout             | [#178]  |
 
 <!-- section:unsupported-not-planned -->
 ### Not Planned
@@ -48,6 +46,8 @@ architecture is fundamentally different or the feature is platform-specific.
 | `config_id`                                                       | Fleet Automation config ID tag                     | Core Agent uses this only on Agent HA telemetry metrics.                                                                                                                                                                                                                  |
 | `data_plane.telemetry_enabled`                                    | ADP telemetry toggle                               | See below                                                                                                                                                                                                                                                                 |
 | `data_plane.telemetry_listen_addr`                                | ADP telemetry listen address                       | See below                                                                                                                                                                                                                                                                 |
+| `dogstatsd_experimental_http.enabled`                             | Enable experimental HTTP/H2C DSD listener          | Experimental HTTP/protobuf ingestion path for client-side aggregated DogStatsD metrics; not implemented by ADP.                                                                                                                                                           |
+| `dogstatsd_experimental_http.listen_address`                      | Bind address for experimental HTTP DSD listener    | Experimental HTTP/protobuf ingestion path for client-side aggregated DogStatsD metrics; not implemented by ADP.                                                                                                                                                           |
 | `dogstatsd_host_socket_path`                                      | Host UDS socket dir for DSD                        | Not read by DSD server; admission controller only.                                                                                                                                                                                                                        |
 | `dogstatsd_mem_based_rate_limiter.enabled`                        | Memory-based rate limiter toggle                   | See below                                                                                                                                                                                                                                                                 |
 | `dogstatsd_mem_based_rate_limiter.go_gc`                          | Memory rate limiter GC percent                     | Go GC-specific; ADP uses `memory_limit` instead.                                                                                                                                                                                                                          |
@@ -724,7 +724,6 @@ compressed wire payload bytes.
 [#1466]: https://github.com/DataDog/saluki/issues/1466
 [#1679]: https://github.com/DataDog/saluki/issues/1679
 [#1681]: https://github.com/DataDog/saluki/issues/1681
-[#1682]: https://github.com/DataDog/saluki/issues/1682
 [#1687]: https://github.com/DataDog/saluki/issues/1687
 [#1749]: https://github.com/DataDog/saluki/issues/1749
 [#1753]: https://github.com/DataDog/saluki/issues/1753
