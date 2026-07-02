@@ -1,17 +1,10 @@
 use std::sync::Arc;
 
+use datadog_metrics_v3::V3ValueEncodingStats;
 use metrics::Counter;
 use saluki_metrics::MetricsBuilder;
 
 use super::constants::COLUMN_NAMES;
-
-#[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct V3ValueEncodingStats {
-    pub(crate) zero: u64,
-    pub(crate) sint64: u64,
-    pub(crate) float32: u64,
-    pub(crate) float64: u64,
-}
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum V3PayloadSplitReason {

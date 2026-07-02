@@ -2,12 +2,16 @@
 
 use std::{borrow::Borrow, hash::Hash};
 
-use saluki_common::collections::FastHashMap;
+pub type FastBuildHasher = foldhash::quality::RandomState;
+pub type FastHashMap<K, V> = std::collections::HashMap<K, V, FastBuildHasher>;
 
 /// Generic interning structure for dictionary deduplication.
 ///
 /// Assigns unique 1-based IDs to values, returning the same ID for duplicate values.
 /// ID 0 is reserved for "empty/none" in the V3 format.
+///
+/// The `Borrow` trait bound on [`get_or_insert`] means callers can pass a borrow
+/// (e.g. `&str` when `K = String`) to look up an existing ID without cloning.
 #[derive(Debug)]
 pub struct Interner<K: Eq + Hash> {
     index: FastHashMap<K, i64>,
@@ -33,6 +37,9 @@ impl<K: Eq + Hash> Interner<K> {
     ///
     /// Returns `(id, is_new)` where `is_new` is true if the key was newly inserted.
     /// IDs are 1-based (0 is reserved for empty/none values).
+    ///
+    /// The `Q` parameter allows borrowing: pass `&str` when `K = String` to avoid
+    /// a clone on cache hits.
     pub fn get_or_insert<Q>(&mut self, key: &Q) -> (i64, bool)
     where
         K: Borrow<Q>,
@@ -48,9 +55,13 @@ impl<K: Eq + Hash> Interner<K> {
     }
 
     /// Returns the number of interned values.
-    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.index.len()
+    }
+
+    /// Returns true if no values have been interned.
+    pub fn is_empty(&self) -> bool {
+        self.index.is_empty()
     }
 }
 
@@ -72,12 +83,23 @@ mod tests {
         assert_eq!(id2, 1);
         assert!(!is_new2);
 
-        // New value gets next ID
+        // No clone needed on hit — pass &str for String interner
         let (id3, is_new3) = interner.get_or_insert("world");
         assert_eq!(id3, 2);
         assert!(is_new3);
 
         assert_eq!(interner.len(), 2);
+    }
+
+    #[test]
+    fn test_interner_borrow_avoids_clone() {
+        // Verify that a &str key lookup on a String interner works without ToOwned
+        let mut interner: Interner<String> = Interner::new();
+        interner.get_or_insert("a");
+        // Re-look up with a &str (not a String clone)
+        let (id, is_new) = interner.get_or_insert("a");
+        assert_eq!(id, 1);
+        assert!(!is_new);
     }
 
     #[test]

@@ -1,0 +1,10 @@
+[package]
+name = "datadog-metrics-v3"
+version = "0.1.0"
+edition = "2021"
+description = "V3 columnar protobuf codec for Datadog metrics"
+license = "Apache-2.0"
+
+[dependencies]
+protobuf = { workspace = true }
+foldhash = { workspace = true }
