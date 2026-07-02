@@ -1,7 +1,7 @@
 //! Feral `DogStatsD` metric-line generation.
 
-use antithesis_sdk::random::random_choice;
 use rand::distr::Distribution;
+use rand::seq::IndexedRandom;
 use rand::{Rng, RngExt};
 
 use super::common::{self, Vibe};
@@ -11,6 +11,10 @@ const METRIC_TYPES: &[&[u8]] = &[b"c", b"g", b"ms", b"h", b"s", b"d"];
 
 /// Sample-rate payloads (the `@` field).
 const COMPLIANT_RATE: &[&[u8]] = &[b"1", b"0.5", b"0.25", b"0.1", b"0.001"];
+
+const ABERRANT_RATE: &[&[u8]] = &[
+    b"+0.5", b"1.", b".5", b"0x1p-1", b"1_000", b"2", b"inf", b"+inf", b"-inf", b"nan",
+];
 
 /// Container-id payloads (the `c:` field).
 const COMPLIANT_CONTAINER: &[&[u8]] = &[b"ci-0a1b2c3d4e5f", b"cid-deadbeef", b"in-4026531840"];
@@ -56,7 +60,7 @@ pub(crate) fn write<R: Rng + ?Sized>(rng: &mut R, buf: &mut Vec<u8>, vibe: Vibe)
     buf.push(b':');
     let packed = write_value(rng, buf, vibe);
     buf.push(b'|');
-    if let Some(&t) = random_choice(METRIC_TYPES) {
+    if let Some(&t) = METRIC_TYPES.choose(rng) {
         buf.extend_from_slice(t);
     }
     common::write_tags(rng, buf, vibe);
@@ -91,9 +95,9 @@ fn write_value<R: Rng + ?Sized>(rng: &mut R, buf: &mut Vec<u8>, vibe: Vibe) -> O
             let v: f64 = Wide.sample(rng);
             buf.extend_from_slice(ryu.format(v).as_bytes());
         }
-        Vibe::Feral => match random_choice(&[ValueKind::Aberrant, ValueKind::Int, ValueKind::Wide]) {
+        Vibe::Feral => match [ValueKind::Aberrant, ValueKind::Int, ValueKind::Wide].choose(rng) {
             Some(ValueKind::Aberrant) => {
-                if let Some(&v) = random_choice(common::ABERRANT_VALUES) {
+                if let Some(&v) = common::ABERRANT_VALUE.choose(rng) {
                     buf.extend_from_slice(v);
                 }
             }
@@ -116,21 +120,27 @@ fn write_value<R: Rng + ?Sized>(rng: &mut R, buf: &mut Vec<u8>, vibe: Vibe) -> O
 fn write_extensions<R: Rng + ?Sized>(rng: &mut R, buf: &mut Vec<u8>, vibe: Vibe) {
     let count = Boundary::<u8>::new().sample(rng);
     for _ in 0..count {
-        match random_choice(&[
+        match [
             Ext::Rate,
             Ext::Container,
             Ext::Timestamp,
             Ext::External,
             Ext::Cardinality,
-        ]) {
-            Some(Ext::Rate) => common::write_field(buf, vibe, b"@", COMPLIANT_RATE, common::ABERRANT_VALUES),
-            Some(Ext::Container) => common::write_field(buf, vibe, b"c:", COMPLIANT_CONTAINER, common::ABERRANT_WORD),
-            Some(Ext::Timestamp) => common::write_field(buf, vibe, b"T", common::COMPLIANT_TS, common::ABERRANT_VALUES),
+        ]
+        .choose(rng)
+        {
+            Some(Ext::Rate) => common::write_field(rng, buf, vibe, b"@", COMPLIANT_RATE, ABERRANT_RATE),
+            Some(Ext::Container) => {
+                common::write_field(rng, buf, vibe, b"c:", COMPLIANT_CONTAINER, common::ABERRANT_WORD);
+            }
+            Some(Ext::Timestamp) => {
+                common::write_field(rng, buf, vibe, b"T", common::COMPLIANT_TS, common::ABERRANT_TS);
+            }
             Some(Ext::External) => {
                 buf.extend_from_slice(b"|e:");
                 common::write_segments(rng, buf, vibe, COMPLIANT_EXT, common::ABERRANT_WORD, EXT_SEPARATORS);
             }
-            _ => common::write_field(buf, vibe, b"card:", COMPLIANT_CARD, common::ABERRANT_WORD),
+            _ => common::write_field(rng, buf, vibe, b"card:", COMPLIANT_CARD, common::ABERRANT_WORD),
         }
     }
 }

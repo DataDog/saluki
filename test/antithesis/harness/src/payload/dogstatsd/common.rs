@@ -1,7 +1,7 @@
 //! Shared `DogStatsD` payload sampling: vibe, segment and number builders, tags.
 
-use antithesis_sdk::random::random_choice;
 use rand::distr::Distribution;
+use rand::seq::IndexedRandom;
 use rand::{Rng, RngExt};
 
 use crate::rand::Boundary;
@@ -15,10 +15,9 @@ pub enum Vibe {
     Feral,
 }
 
-/// Sample a per-line vibe, evenly.
-#[must_use]
-pub fn sample_vibe() -> Vibe {
-    match random_choice(&[Vibe::Clean, Vibe::Feral]) {
+/// Sample a per-line vibe, evenly, from `rng`.
+pub fn sample_vibe<R: Rng + ?Sized>(rng: &mut R) -> Vibe {
+    match [Vibe::Clean, Vibe::Feral].choose(rng) {
         Some(Vibe::Feral) => Vibe::Feral,
         _ => Vibe::Clean,
     }
@@ -41,31 +40,35 @@ pub(crate) const COMPLIANT_WORD: &[&[u8]] = &[
     b"workers",
 ];
 
-/// Aberrant identifier segments: empty, whitespace, NUL, embedded delimiters,
-/// invalid UTF-8, message-type prefixes.
+/// Aberrant identifier segments: whitespace, NUL, ill-formed and non-conforming
+/// UTF-8, and exotic-but-valid Unicode. The Datadog Agent forwards non-UTF-8 and
+/// non-conforming characters as-is, so these stay strange yet accepted. This pool
+/// omits the framing breakers `:` `|` `,` `#` `@`, the message-type prefixes, and
+/// the empty segment — the tokens the Agent actually rejects.
 pub(crate) const ABERRANT_WORD: &[&[u8]] = &[
-    b"",
     b" ",
     b"\t",
     b"\0",
-    b"a:b",
-    b"a|b",
-    b"a,b",
-    b"#hash",
-    b"@at",
-    b"_sc",
-    b"_e{1,1}",
-    b"\x80",
-    b"\xc3",
-    b"\xed\xa0\x80",
-    b"\xc0\x80",
-    b"\xff\xfe",
-    b"emoji\xf0\x9f\x92\xa9",
+    b"\x80",                // lone continuation byte
+    b"\xc3",                // truncated two-byte lead
+    b"\xed\xa0\x80",        // UTF-16 surrogate, ill-formed UTF-8
+    b"\xc0\x80",            // overlong NUL
+    b"\xff\xfe",            // non-character bytes
+    "café".as_bytes(),      // non-conforming but valid UTF-8
+    "Ωμέγα".as_bytes(),     // Greek
+    "日本語".as_bytes(),    // CJK
+    "🦆".as_bytes(),        // emoji, non-ASCII multi-byte
+    "a\u{0301}".as_bytes(), // combining acute accent
+    "\u{200d}".as_bytes(),  // zero-width joiner
+    "\u{202e}".as_bytes(),  // right-to-left override
+    "\u{feff}".as_bytes(),  // byte-order mark / zero-width no-break space
 ];
 
-/// Values that break number parsers, including long encodings and unicode that
-/// looks numeric: infinity, fullwidth and Arabic-Indic digits.
-pub(crate) const ABERRANT_VALUES: &[&[u8]] = &[
+/// Strange-but-`ParseFloat`-valid metric values: signed zeros, infinities, NaN,
+/// hex-float, underscore, bare-dot forms, a `:`-packed run, and cursed-long but
+/// exact encodings. Anything that fails `ParseFloat` stays out so a whole feral
+/// line reads clean. The unparseable curses live in name-like fields instead.
+pub(crate) const ABERRANT_VALUE: &[&[u8]] = &[
     b"0",
     b"-0",
     b"inf",
@@ -73,32 +76,28 @@ pub(crate) const ABERRANT_VALUES: &[&[u8]] = &[
     b"+inf",
     b"nan",
     b"infinity",
-    b"1e999999",
-    b"-1e999999",
     b"0x1p4",
     b"1_000",
-    b".",
-    b"+",
-    b"-",
     b"1.",
     b".5",
     b"1:2:3:4:5",
     b"00000000000000000000000000000000000000000000000000000001.5",
     b"3.141592653589793115997963468544185161590576171875000000000000000000000000",
-    "\u{221e}".as_bytes(),
-    "-\u{221e}".as_bytes(),
-    "\u{ff11}\u{ff12}\u{ff13}".as_bytes(),
-    "\u{0664}\u{0662}".as_bytes(),
 ];
 
 /// Unix-timestamp payloads (the `d:` / `T` fields).
 pub(crate) const COMPLIANT_TS: &[&[u8]] = &[b"1700000000", b"1", b"1609459200"];
 
+/// Strange-but-parseable unix timestamps: leading plus, leading zeros, and the
+/// `i64::MAX` boundary. Base-10 `ParseInt`, always `> 0`, so safe even at the
+/// strict metric `T` site.
+pub(crate) const ABERRANT_TS: &[&[u8]] = &[b"+1700000000", b"0000001700000000", b"9223372036854775807"];
+
 // NOTE `host` is excluded. `DogStatsD` promotes a `host` tag to the metric host
 // resource, emitting varying `host` instances plays hell with Pyld17
 // host-consistency check.
 const COMPLIANT_TAG_KEYS: &[&[u8]] = &[b"env", b"service", b"region", b"version", b"team", b"shard"];
-const ABERRANT_TAG_KEYS: &[&[u8]] = &[b"", b" ", b":", b",", b"#", b"\0", b"\x80"];
+const ABERRANT_TAG_KEYS: &[&[u8]] = &[b" ", b"\0", b"\x80", b"\xc3", "café".as_bytes(), "🦆".as_bytes()];
 const COMPLIANT_TAG_VALUES: &[&[u8]] = &[
     b"prod",
     b"staging",
@@ -109,7 +108,15 @@ const COMPLIANT_TAG_VALUES: &[&[u8]] = &[
     b"web01",
     b"0",
 ];
-const ABERRANT_TAG_VALUES: &[&[u8]] = &[b"", b",", b"|", b":", b"\xff", b"\xed\xa0\x80", b"a,b"];
+const ABERRANT_TAG_VALUES: &[&[u8]] = &[
+    b"",
+    b":",
+    b"\xff",
+    b"\xed\xa0\x80",
+    "café".as_bytes(),
+    "🦆".as_bytes(),
+    "\u{202e}".as_bytes(),
+];
 
 /// Compact, or a cursed-but-equivalent padded encoding.
 #[derive(Clone, Copy)]
@@ -118,15 +125,17 @@ enum Form {
     Expanded,
 }
 
-/// Extend `buf` with one item. Clean draws from `compliant`; feral chooses
-/// between compliant and aberrant — a choice, never a coin flip.
-pub(crate) fn extend_choice(buf: &mut Vec<u8>, vibe: Vibe, compliant: &[&[u8]], aberrant: &[&[u8]]) {
+/// Extend `buf` with one item sampled from `rng`. Clean draws from `compliant`;
+/// feral chooses between compliant and aberrant.
+pub(crate) fn extend_choice<R: Rng + ?Sized>(
+    rng: &mut R, buf: &mut Vec<u8>, vibe: Vibe, compliant: &[&[u8]], aberrant: &[&[u8]],
+) {
     let pools: &[&[&[u8]]] = match vibe {
         Vibe::Clean => &[compliant],
         Vibe::Feral => &[compliant, aberrant],
     };
-    if let Some(&pool) = random_choice(pools) {
-        if let Some(&item) = random_choice(pool) {
+    if let Some(&pool) = pools.choose(rng) {
+        if let Some(&item) = pool.choose(rng) {
             buf.extend_from_slice(item);
         }
     }
@@ -154,24 +163,32 @@ pub(crate) fn write_segments<R: Rng + ?Sized>(
     let count = sample_count(rng, vibe);
     for i in 0..count {
         if i > 0 {
-            if let Some(&sep) = random_choice(separators) {
+            if let Some(&sep) = separators.choose(rng) {
                 buf.push(sep);
             }
         }
-        extend_choice(buf, vibe, compliant, aberrant);
+        extend_choice(rng, buf, vibe, compliant, aberrant);
     }
 }
 
-/// An identifier (name, host, key, source) built from word segments.
+/// An identifier (name, host, key, source) built from word segments. Always at
+/// least one segment: a zero-segment count would yield an empty identifier, and
+/// the Agent rejects an empty metric name.
 pub(crate) fn write_words<R: Rng + ?Sized>(rng: &mut R, buf: &mut Vec<u8>, vibe: Vibe) {
+    let start = buf.len();
     write_segments(rng, buf, vibe, COMPLIANT_WORD, ABERRANT_WORD, NAME_SEPARATORS);
+    if buf.len() == start {
+        extend_choice(rng, buf, vibe, COMPLIANT_WORD, ABERRANT_WORD);
+    }
 }
 
-/// Append `|<prefix><item>`, the item chosen for the vibe.
-pub(crate) fn write_field(buf: &mut Vec<u8>, vibe: Vibe, prefix: &[u8], compliant: &[&[u8]], aberrant: &[&[u8]]) {
+/// Append `|<prefix><item>`, the item chosen from `rng` for the vibe.
+pub(crate) fn write_field<R: Rng + ?Sized>(
+    rng: &mut R, buf: &mut Vec<u8>, vibe: Vibe, prefix: &[u8], compliant: &[&[u8]], aberrant: &[&[u8]],
+) {
     buf.push(b'|');
     buf.extend_from_slice(prefix);
-    extend_choice(buf, vibe, compliant, aberrant);
+    extend_choice(rng, buf, vibe, compliant, aberrant);
 }
 
 /// A vibe-sampled count of `key:value` tags joined by ','. Feral can sample a
@@ -202,7 +219,7 @@ pub(crate) fn write_tags<R: Rng + ?Sized>(rng: &mut R, buf: &mut Vec<u8>, vibe: 
 /// Write `digits` to `buf` as-is, or padded with equivalent leading zeros (and
 /// trailing zeros when there is a fractional part). Same value, cursed encoding.
 pub(crate) fn write_number<R: Rng + ?Sized>(rng: &mut R, buf: &mut Vec<u8>, digits: &[u8]) {
-    match random_choice(&[Form::Compact, Form::Expanded]) {
+    match [Form::Compact, Form::Expanded].choose(rng) {
         Some(Form::Expanded) => {
             let (sign, rest) = match digits.first() {
                 Some(&(b'-' | b'+')) => (&digits[..1], &digits[1..]),

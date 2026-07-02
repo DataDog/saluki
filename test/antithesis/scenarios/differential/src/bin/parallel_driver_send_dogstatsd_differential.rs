@@ -10,7 +10,7 @@ mod unix_driver {
 
     use antithesis_sdk::prelude::*;
     use clap::Parser;
-    use harness::driver::{self, Batch};
+    use harness::driver;
     use serde_json::json;
 
     #[derive(Debug, Parser)]
@@ -54,7 +54,7 @@ mod unix_driver {
         };
 
         // Agent first, ADP second: `stats.sent` and `stats.max_packed` are indexed in this order.
-        let batch = Batch::sample();
+        let batch = driver::sample();
         let stats = driver::run(batch, vec![agent_socket, adp_socket])?;
         let received = stats.received;
         let agent_sent = stats.sent[0];

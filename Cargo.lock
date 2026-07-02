@@ -1904,6 +1904,7 @@ dependencies = [
  "itoa",
  "libc",
  "num-traits",
+ "proptest",
  "rand 0.10.1",
  "ryu",
  "serde",

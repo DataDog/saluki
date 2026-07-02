@@ -25,6 +25,9 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
 
+[dev-dependencies]
+proptest = { workspace = true }
+
 [lints.clippy]
 all = "deny"
 complexity = "deny"
