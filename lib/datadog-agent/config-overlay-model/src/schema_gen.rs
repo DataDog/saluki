@@ -33,6 +33,10 @@ pub struct FieldInfo {
     pub env_vars: Vec<String>,
     /// Default value serialised as a JSON literal, or `None` if the schema omits one.
     pub default: Option<String>,
+    /// Whether the schema marks this field as `format: duration`. Duration values are transmitted
+    /// by the Datadog Agent as integer nanoseconds, while the schema default is a Go duration
+    /// string (for example, `10s`), so equality checks must normalize both sides.
+    pub is_duration: bool,
 }
 
 /// Load and flatten the schema at `schema_path` into a `yaml_path → FieldInfo` map.
@@ -108,6 +112,7 @@ fn parse_setting(path_parts: &[&str], value: &Value) -> (String, FieldInfo) {
 
     let value_type = parse_value_type(value);
     let default = value.get("default").and_then(yaml_value_to_json_str);
+    let is_duration = value.get("format").and_then(|v| v.as_str()) == Some("duration");
 
     (
         yaml_path,
@@ -115,6 +120,7 @@ fn parse_setting(path_parts: &[&str], value: &Value) -> (String, FieldInfo) {
             value_type,
             env_vars,
             default,
+            is_duration,
         },
     )
 }

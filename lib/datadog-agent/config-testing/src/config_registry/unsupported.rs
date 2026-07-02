@@ -5,17 +5,6 @@ use super::schema;
 use super::*;
 
 crate::declare_annotations! {
-    /// `dogstatsd_pipe_name`-Windows named pipe path
-    DOGSTATSD_PIPE_NAME = SalukiAnnotation {
-        schema: &schema::DOGSTATSD_PIPE_NAME,
-        support_level: SupportLevel::Incompatible(Severity::Medium),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
-    };
     /// `dogstatsd_stats_buffer`-Internal stats buffer size
     DOGSTATSD_STATS_BUFFER = SalukiAnnotation {
         schema: &schema::DOGSTATSD_STATS_BUFFER,
@@ -52,17 +41,6 @@ crate::declare_annotations! {
     /// `dogstatsd_telemetry_enabled_listener_id`-Per-listener telemetry tagging
     DOGSTATSD_TELEMETRY_ENABLED_LISTENER_ID = SalukiAnnotation {
         schema: &schema::DOGSTATSD_TELEMETRY_ENABLED_LISTENER_ID,
-        support_level: SupportLevel::Incompatible(Severity::Medium),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
-    };
-    /// `dogstatsd_windows_pipe_security_descriptor`-Windows named pipe ACL descriptor
-    DOGSTATSD_WINDOWS_PIPE_SECURITY_DESCRIPTOR = SalukiAnnotation {
-        schema: &schema::DOGSTATSD_WINDOWS_PIPE_SECURITY_DESCRIPTOR,
         support_level: SupportLevel::Incompatible(Severity::Medium),
         additional_yaml_paths: &[],
         env_var_override: None,
@@ -206,17 +184,6 @@ crate::declare_annotations! {
     /// `telemetry.dogstatsd.listeners_latency_buckets`-Histogram buckets: listener processing latency
     TELEMETRY_DOGSTATSD_LISTENERS_LATENCY_BUCKETS = SalukiAnnotation {
         schema: &schema::TELEMETRY_DOGSTATSD_LISTENERS_LATENCY_BUCKETS,
-        support_level: SupportLevel::Incompatible(Severity::Low),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
-    };
-    /// `telemetry.dogstatsd_origin`-Per-origin processed-metrics telemetry
-    TELEMETRY_DOGSTATSD_ORIGIN = SalukiAnnotation {
-        schema: &schema::TELEMETRY_DOGSTATSD_ORIGIN,
         support_level: SupportLevel::Incompatible(Severity::Low),
         additional_yaml_paths: &[],
         env_var_override: None,

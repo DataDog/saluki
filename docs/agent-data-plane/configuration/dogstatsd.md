@@ -24,12 +24,9 @@ If you find an error on this page, please [open an issue].
 The following settings are not yet supported in ADP but are planned with GitHub issue links for
 tracking.
 
-| Config Key                                   | Description                            | Issue   |
-| -------------------------------------------- | -------------------------------------- | ------- |
-| `dogstatsd_pipe_name`                        | Windows named pipe path                | [#1466] |
-| `dogstatsd_windows_pipe_security_descriptor` | Windows named pipe ACL descriptor      | [#1466] |
-| `telemetry.dogstatsd_origin`                 | Per-origin processed-metrics telemetry | [#1679] |
-| `tls_handshake_timeout`                      | HTTP TLS handshake timeout             | [#178]  |
+| Config Key              | Description                | Issue  |
+| ----------------------- | -------------------------- | ------ |
+| `tls_handshake_timeout` | HTTP TLS handshake timeout | [#178] |
 
 <!-- section:unsupported-not-planned -->
 ### Not Planned
@@ -617,6 +614,7 @@ compressed wire payload bytes.
 | `dogstatsd_origin_detection`                                   | Enable UDS origin detection                        |
 | `dogstatsd_origin_detection_client`                            | Honor client origin proto fields                   |
 | `dogstatsd_origin_optout_enabled`                              | Allow clients to opt out origin                    |
+| `dogstatsd_pipe_name`                                          | Windows named pipe path                            |
 | `dogstatsd_port`                                               | UDP listen port                                    |
 | `dogstatsd_so_rcvbuf`                                          | Socket receive buffer size                         |
 | `dogstatsd_socket`                                             | UDS datagram socket path                           |
@@ -625,6 +623,7 @@ compressed wire payload bytes.
 | `dogstatsd_string_interner_size`                               | String interner capacity                           |
 | `dogstatsd_tag_cardinality`                                    | Default tag cardinality level                      |
 | `dogstatsd_tags`                                               | Extra tags added to all DSD data                   |
+| `dogstatsd_windows_pipe_security_descriptor`                   | Windows named pipe ACL descriptor                  |
 | `enable_payloads.events`                                       | Allow sending event payloads                       |
 | `enable_payloads.series`                                       | Allow sending series payloads                      |
 | `enable_payloads.service_checks`                               | Allow sending service check payloads               |
@@ -701,6 +700,7 @@ compressed wire payload bytes.
 | `statsd_metric_namespace_blacklist`                            | Prefixes exempt from namespace                     |
 | `syslog_rfc`                                                   | Use RFC-style syslog header                        |
 | `syslog_uri`                                                   | Syslog destination URI                             |
+| `telemetry.dogstatsd_origin`                                   | Per-origin processed-metrics telemetry             |
 | `use_proxy_for_cloud_metadata`                                 | Proxy cloud metadata endpoints                     |
 | `use_v2_api.series`                                            | Send series via V2 protobuf endpoint               |
 | `use_v3_api.series.enabled`                                    | Global V3 series mode                              |
@@ -721,7 +721,6 @@ compressed wire payload bytes.
 [#1363]: https://github.com/DataDog/saluki/issues/1363
 [#1365]: https://github.com/DataDog/saluki/issues/1365
 [#1381]: https://github.com/DataDog/saluki/issues/1381
-[#1466]: https://github.com/DataDog/saluki/issues/1466
 [#1679]: https://github.com/DataDog/saluki/issues/1679
 [#1681]: https://github.com/DataDog/saluki/issues/1681
 [#1687]: https://github.com/DataDog/saluki/issues/1687

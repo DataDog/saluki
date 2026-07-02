@@ -1000,13 +1000,13 @@ inventory:
     documentation: "ADP decodes inline."
 
   dogstatsd_pipe_name:
-    support: none
-    severity: medium
-    planned: true
+    support: full
     pipelines: [dogstatsd]
     description: "Windows named pipe path"
-    documentation: "ADP targets Linux for initial GA; Windows support will follow."
-    issue: "#1466"
+    test_support:
+      used_by: [DogStatsDConfiguration]
+      additional_attributes:
+        config_registry_filename: dogstatsd.rs
 
   dogstatsd_pipeline_autoadjust:
     support: none
@@ -1172,13 +1172,13 @@ inventory:
     documentation: "Not feasible to thread listener identity through ADP's async decode pipeline."
 
   dogstatsd_windows_pipe_security_descriptor:
-    support: none
-    severity: medium
-    planned: true
+    support: full
     pipelines: [dogstatsd]
     description: "Windows named pipe ACL descriptor"
-    documentation: "Windows support is deferred but planned."
-    issue: "#1466"
+    test_support:
+      used_by: [DogStatsDConfiguration]
+      additional_attributes:
+        config_registry_filename: dogstatsd.rs
 
   dogstatsd_workers_count:
     support: none
@@ -2254,13 +2254,13 @@ inventory:
     issue: "#1679"
 
   telemetry.dogstatsd_origin:
-    support: none
-    planned: true
+    support: full
     pipelines: [dogstatsd]
     description: "Per-origin processed-metrics telemetry"
-    severity: low
-    documentation: "Not currently supported because the `origin` label is derived from container identities and can create unbounded telemetry cardinality over time."
-    issue: "#1679"
+    test_support:
+      used_by: [DogStatsDConfiguration]
+      additional_attributes:
+        config_registry_filename: dogstatsd.rs
 
   tls_handshake_timeout:
     support: none

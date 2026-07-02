@@ -1185,6 +1185,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_underscore_fallback_on_get_multi_segment_key() {
+        // A single-underscore Agent-style env var (e.g. `DD_DATA_PLANE_API_LISTEN_ADDRESS`, which
+        // `for_tests` simulates with the `TEST_` prefix) produces a flat figment key. A deeply
+        // nested `get`/`try_get_typed` query must still resolve it via the dot-to-underscore
+        // fallback, so callers don't need double-underscore env vars for these keys.
+        let (cfg, _) = ConfigurationLoader::for_tests(
+            Some(serde_json::json!({})),
+            Some(&[(
+                "DATA_PLANE_API_LISTEN_ADDRESS".to_string(),
+                "tcp://0.0.0.0:55100".to_string(),
+            )]),
+            false,
+        )
+        .await;
+        cfg.ready().await;
+
+        assert_eq!(
+            cfg.try_get_typed::<String>("data_plane.api_listen_address").unwrap(),
+            Some("tcp://0.0.0.0:55100".to_string()),
+        );
+    }
+
+    #[tokio::test]
     async fn test_static_configuration_ready_and_subscribe() {
         let (cfg, maybe_sender) = ConfigurationLoader::for_tests(Some(serde_json::json!({})), None, false).await;
         assert!(maybe_sender.is_none());

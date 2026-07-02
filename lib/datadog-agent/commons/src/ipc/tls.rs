@@ -15,6 +15,7 @@ use rustls::{
 };
 use rustls_pki_types::{pem::PemObject as _, PrivateKeyDer};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
+use saluki_tls::{ensure_client_config_fips_compliant, ensure_server_config_fips_compliant};
 
 const DEFAULT_CERT_READ_TIMEOUT: Duration = Duration::from_secs(20);
 const DEFAULT_CERT_READ_INTERVAL: Duration = Duration::from_millis(100);
@@ -91,7 +92,7 @@ pub async fn build_ipc_client_ipc_tls_config<P: AsRef<Path>>(cert_path: P) -> Re
         crypto_provider,
     ));
 
-    ClientConfig::builder_with_protocol_versions(&[&TLS13])
+    let config = ClientConfig::builder_with_protocol_versions(&[&TLS13])
         .dangerous()
         .with_custom_certificate_verifier(agent_cert_verifier)
         .with_client_auth_cert(vec![parsed_cert], parsed_key)
@@ -100,7 +101,11 @@ pub async fn build_ipc_client_ipc_tls_config<P: AsRef<Path>>(cert_path: P) -> Re
                 "Failed to build client TLS configuration from certificate file '{}'.",
                 cert_path.as_ref().display()
             )
-        })
+        })?;
+
+    ensure_client_config_fips_compliant(&config)?;
+
+    Ok(config)
 }
 
 /// Builds a server TLS configuration suitable for IPC usage with the Datadog Agent.
@@ -121,7 +126,7 @@ pub async fn build_ipc_server_tls_config<P: AsRef<Path>>(cert_path: P) -> Result
     )
     .await?;
 
-    ServerConfig::builder()
+    let mut config = ServerConfig::builder()
         .with_no_client_auth()
         .with_single_cert(vec![parsed_cert], parsed_key)
         .with_error_context(|| {
@@ -129,7 +134,11 @@ pub async fn build_ipc_server_tls_config<P: AsRef<Path>>(cert_path: P) -> Result
                 "Failed to build server TLS configuration from certificate file '{}'.",
                 cert_path.as_ref().display()
             )
-        })
+        })?;
+
+    ensure_server_config_fips_compliant(&mut config)?;
+
+    Ok(config)
 }
 
 /// Reads and parses a certificate file from the given path with retry behavior.

@@ -253,6 +253,11 @@ impl MetricsRegistry {
         Counter::from_arc(handle)
     }
 
+    fn remove_counter(&self, key: &Key) -> Option<Arc<Handle<CounterInner>>> {
+        let mut maps = self.maps.lock().unwrap();
+        maps.counters.remove(key)
+    }
+
     /// Returns a handle to the gauge for `key`, creating it at `level` if it doesn't yet exist.
     fn get_or_create_gauge(&self, key: &Key, level: Level) -> Gauge {
         let mut maps = self.maps.lock().unwrap();
@@ -381,6 +386,55 @@ impl Recorder for MetricsRecorder {
             .registry
             .get_or_create_histogram(&prefixed_key, *metadata.level())
     }
+}
+
+/// Deletes an internal counter from the metrics registry.
+///
+/// If the counter exists and metrics snapshots are being consumed, this sends any pending counter
+/// delta before the eviction update so downstream consumers do not lose the final increment.
+pub fn delete_counter(key: Key) -> bool {
+    let Some(state) = RECEIVER_STATE.get() else {
+        return false;
+    };
+
+    let prefixed_key = Key::from_parts(format!("{}.{}", state.metrics_prefix, key.name()), key.labels());
+    let Some(snapshot) = delete_counter_from_state(state, &prefixed_key) else {
+        return false;
+    };
+
+    if state.flush_tx.receiver_count() > 0 {
+        let _ = state.flush_tx.send(Arc::new(snapshot));
+    }
+
+    true
+}
+
+fn delete_counter_from_state(state: &State, prefixed_key: &Key) -> Option<MetricsSnapshot> {
+    let handle = state.registry.remove_counter(prefixed_key)?;
+    let delta = handle.consume();
+    let context = context_from_key(prefixed_key);
+    let current_level = *state.current_level.lock().unwrap();
+
+    let mut snapshot = MetricsSnapshot {
+        upserts: Vec::new(),
+        evictions: vec![context.clone()],
+    };
+    if delta > 0 && handle.level() >= current_level {
+        snapshot
+            .upserts
+            .push(Event::Metric(Metric::counter(context, delta as f64)));
+    }
+
+    Some(snapshot)
+}
+
+fn context_from_key(key: &Key) -> Context {
+    let tags = key
+        .labels()
+        .map(|l| Tag::from(format!("{}:{}", l.key(), l.value())))
+        .collect::<TagSet>();
+
+    Context::from_parts(key.name().to_string(), tags)
 }
 
 /// Internal metrics stream
@@ -706,7 +760,13 @@ impl Supervisable for MetricsFlusherWorker {
 
 #[cfg(test)]
 mod tests {
+    use metrics::Label;
+    use saluki_common::collections::FastHashSet;
+
     use super::*;
+
+    const HIGH_CARDINALITY_COUNTER_NAME: &str = "high_cardinality_counter";
+    const HIGH_CARDINALITY_COUNTERS: usize = 64;
 
     // We keep a live receiver in each test so `flush_once` observes a listener and emits updates.
     fn make_state(idle_evict_intervals: u32) -> (Arc<State>, Receiver<SharedMetricsSnapshot>) {
@@ -734,6 +794,11 @@ mod tests {
             .get_or_create_counter(&Key::from_name(name), Level::TRACE)
     }
 
+    fn register_counter_with_origin(state: &State, name: &'static str, origin: &str) -> Counter {
+        let key = Key::from_parts(name, vec![Label::new("origin", origin.to_string())]);
+        state.registry.get_or_create_counter(&key, Level::TRACE)
+    }
+
     fn register_gauge(state: &State, name: &'static str) -> Gauge {
         state.registry.get_or_create_gauge(&Key::from_name(name), Level::TRACE)
     }
@@ -746,6 +811,10 @@ mod tests {
             .unwrap()
             .counters
             .contains_key(&Key::from_name(name))
+    }
+
+    fn counter_count(state: &State) -> usize {
+        state.registry.maps.lock().unwrap().counters.len()
     }
 
     fn gauge_present(state: &State, name: &'static str) -> bool {
@@ -771,6 +840,92 @@ mod tests {
             .iter()
             .flat_map(|snapshot| snapshot.evictions.iter().map(|ctx| ctx.name().to_string()))
             .collect()
+    }
+
+    fn metric_count(state: &AggregatedMetricsState, name: &str) -> usize {
+        let mut count = 0;
+        state.visit_metrics(|context, _| {
+            if context.name() == name {
+                count += 1;
+            }
+        });
+        count
+    }
+
+    #[test]
+    fn delete_counter_from_state_emits_pending_delta_before_eviction() {
+        let (state, _rx) = make_state(IDLE_EVICT_INTERVALS);
+        let key = Key::from_parts(
+            "deleted_counter",
+            vec![Label::new("origin", "container_id://deleted".to_string())],
+        );
+
+        let counter = state.registry.get_or_create_counter(&key, Level::TRACE);
+        counter.increment(7);
+        drop(counter);
+
+        let snapshot = delete_counter_from_state(&state, &key).expect("counter should be deleted");
+
+        assert!(!state.registry.maps.lock().unwrap().counters.contains_key(&key));
+        assert_eq!(snapshot.evictions.len(), 1);
+        assert_eq!(snapshot.evictions[0].name(), "deleted_counter");
+        assert!(snapshot.evictions[0].tags().has_tag("origin:container_id://deleted"));
+
+        assert_eq!(snapshot.upserts.len(), 1);
+        let Event::Metric(metric) = &snapshot.upserts[0] else {
+            panic!("delete should emit the pending counter delta");
+        };
+        assert_eq!(metric.context(), &snapshot.evictions[0]);
+        let MetricValues::Counter(points) = metric.values() else {
+            panic!("delete should emit a counter metric");
+        };
+        assert_eq!(points.into_iter().map(|(_, value)| value).sum::<f64>(), 7.0);
+    }
+
+    #[tokio::test]
+    async fn evicts_high_cardinality_counters_from_registry_and_aggregated_state() {
+        let (state, mut rx) = make_state(IDLE_EVICT_INTERVALS);
+        let mut resolver = resolver();
+        let mut flush_state = FlushState::default();
+        let agg_processor = AggregatedMetricsProcessor;
+        let agg_state = agg_processor.build_initial_state();
+        let mut expected_eviction_tags = FastHashSet::default();
+        let mut observed_eviction_tags = FastHashSet::default();
+
+        for index in 0..HIGH_CARDINALITY_COUNTERS {
+            let origin = format!("entity://source-{index}");
+            expected_eviction_tags.insert(format!("origin:{origin}"));
+
+            let counter = register_counter_with_origin(&state, HIGH_CARDINALITY_COUNTER_NAME, &origin);
+            counter.increment(1);
+            drop(counter);
+        }
+
+        assert_eq!(counter_count(&state), HIGH_CARDINALITY_COUNTERS);
+
+        for _ in 0..IDLE_EVICT_INTERVALS {
+            flush_once(&state, &mut resolver, &mut flush_state);
+
+            for update in drain(&mut rx) {
+                for context in &update.evictions {
+                    if context.name() != HIGH_CARDINALITY_COUNTER_NAME {
+                        continue;
+                    }
+
+                    for tag in &expected_eviction_tags {
+                        if context.tags().has_tag(tag) {
+                            observed_eviction_tags.insert(tag.clone());
+                        }
+                    }
+                }
+
+                agg_processor.process(update, &agg_state);
+            }
+        }
+
+        assert_eq!(counter_count(&state), 0);
+        assert_eq!(metric_count(&agg_state, HIGH_CARDINALITY_COUNTER_NAME), 0);
+        assert_eq!(observed_eviction_tags, expected_eviction_tags);
     }
 
     #[tokio::test]

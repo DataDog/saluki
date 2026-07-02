@@ -253,6 +253,47 @@ impl ComponentRegistryHandle {
         ResourceAPIHandler::from_state(Arc::clone(&self.inner))
     }
 
+    /// Returns a JSON snapshot of the current memory bounds and live usage for all registered components.
+    ///
+    /// Each component appears as a key in the returned JSON object with `minimum_required_bytes`,
+    /// `firm_limit_bytes`, and `actual_live_bytes` fields. This produces the same data as the `/memory/status`
+    /// HTTP endpoint but is collected directly from the in-process registry for use outside of the HTTP handler
+    /// path (for example, when building a diagnostic artifact).
+    pub fn memory_snapshot_json(&self) -> String {
+        use std::collections::BTreeMap;
+
+        use crate::{ResourceGroupRegistry, ResourceStatsSnapshot};
+
+        #[derive(serde::Serialize)]
+        struct ComponentUsage {
+            minimum_required_bytes: usize,
+            firm_limit_bytes: usize,
+            actual_live_bytes: usize,
+        }
+
+        let empty_snapshot = ResourceStatsSnapshot::empty();
+        let mut component_usage: BTreeMap<String, ComponentUsage> = BTreeMap::new();
+        let mut inner = self.inner.lock().unwrap();
+
+        ResourceGroupRegistry::global().visit_resource_groups(|component_name, component_stats| {
+            let component_meta = inner.get_or_create(component_name);
+            let component_meta = component_meta.lock().unwrap();
+            let bounds = component_meta.self_bounds();
+            let stats_snapshot = component_stats.snapshot_delta(&empty_snapshot);
+
+            component_usage.insert(
+                component_name.to_string(),
+                ComponentUsage {
+                    minimum_required_bytes: bounds.total_minimum_required_bytes(),
+                    firm_limit_bytes: bounds.total_firm_limit_bytes(),
+                    actual_live_bytes: stats_snapshot.live_bytes(),
+                },
+            );
+        });
+
+        serde_json::to_string_pretty(&component_usage).unwrap_or_else(|e| format!("{{\"error\": \"{e}\"}}"))
+    }
+
     /// Gets the total minimum required bytes for all components in the registry.
     ///
     /// See [`ComponentRegistry::as_bounds`] for more details.

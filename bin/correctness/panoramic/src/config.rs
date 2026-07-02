@@ -251,6 +251,15 @@ pub enum ActionConfig {
         #[serde(default = "default_action_timeout")]
         timeout: HumanDuration,
     },
+
+    /// Run a command inside the target environment.
+    TargetExec {
+        /// Command and arguments to run in the target environment.
+        command: Vec<String>,
+        /// Timeout for waiting for the command to succeed.
+        #[serde(default = "default_action_timeout")]
+        timeout: HumanDuration,
+    },
 }
 
 fn default_action_timeout() -> HumanDuration {
@@ -405,6 +414,11 @@ impl ActionConfig {
                     crate::dynamic_vars::resolve_placeholders(s, vars);
                 }
             }
+            ActionConfig::TargetExec { command, .. } => {
+                for arg in command {
+                    crate::dynamic_vars::resolve_placeholders(arg, vars);
+                }
+            }
         }
     }
 
@@ -419,6 +433,11 @@ impl ActionConfig {
                 crate::dynamic_vars::find_unresolved(endpoint, &mut out);
                 if let serde_json::Value::String(s) = value {
                     crate::dynamic_vars::find_unresolved(s, &mut out);
+                }
+            }
+            ActionConfig::TargetExec { command, .. } => {
+                for arg in command {
+                    crate::dynamic_vars::find_unresolved(arg, &mut out);
                 }
             }
         }
@@ -1013,6 +1032,24 @@ mod tests {
         assert_eq!(container, "/etc/config.yaml");
 
         assert!(parse_file_spec("nocolon").is_err());
+    }
+
+    #[test]
+    fn test_target_exec_action_deserializes_command() {
+        let action: ActionConfig = serde_yaml::from_str(
+            r#"
+action: target_exec
+command: ["pwsh", "-File", "C:\\test\\send.ps1"]
+timeout: 12s
+"#,
+        )
+        .unwrap();
+
+        let ActionConfig::TargetExec { command, timeout } = action else {
+            panic!("expected target_exec action");
+        };
+        assert_eq!(command, vec!["pwsh", "-File", "C:\\test\\send.ps1"]);
+        assert_eq!(timeout.0, Duration::from_secs(12));
     }
 
     #[test]
