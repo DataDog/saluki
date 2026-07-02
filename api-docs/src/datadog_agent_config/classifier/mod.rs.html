@@ -139,27 +139,39 @@
 <a href=#139 id=139 data-nosnippet>139</a>    </span>Unrecognized,
 <a href=#140 id=140 data-nosnippet>140</a>}
 <a href=#141 id=141 data-nosnippet>141</a>
-<a href=#142 id=142 data-nosnippet>142</a><span class="doccomment">/// Slim per-key data generated at build time for the classifier.
+<a href=#142 id=142 data-nosnippet>142</a><span class="doccomment">/// The default value for a config key, as resolved at build time from the Agent schema.
 <a href=#143 id=143 data-nosnippet>143</a>///
-<a href=#144 id=144 data-nosnippet>144</a>/// Carries only what the classifier needs: enough to look up a key, determine its support level,
-<a href=#145 id=145 data-nosnippet>145</a>/// check whether a value is the default, and report which pipelines are affected.
-<a href=#146 id=146 data-nosnippet>146</a></span><span class="kw">pub struct </span>ClassifierEntry {
-<a href=#147 id=147 data-nosnippet>147</a>    <span class="doccomment">/// Canonical dot-separated YAML path.
-<a href=#148 id=148 data-nosnippet>148</a>    </span><span class="kw">pub </span>yaml_path: <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str,
-<a href=#149 id=149 data-nosnippet>149</a>    <span class="doccomment">/// Additional YAML paths (aliases) that resolve to this key.
-<a href=#150 id=150 data-nosnippet>150</a>    </span><span class="kw">pub </span>aliases: <span class="kw-2">&amp;</span><span class="lifetime">'static </span>[<span class="kw-2">&amp;</span><span class="lifetime">'static </span>str],
-<a href=#151 id=151 data-nosnippet>151</a>    <span class="doccomment">/// How well saluki supports this key.
-<a href=#152 id=152 data-nosnippet>152</a>    </span><span class="kw">pub </span>support_level: SupportLevel,
-<a href=#153 id=153 data-nosnippet>153</a>    <span class="doccomment">/// Which pipelines this key affects.
-<a href=#154 id=154 data-nosnippet>154</a>    </span><span class="kw">pub </span>pipeline_affinity: PipelineAffinity,
-<a href=#155 id=155 data-nosnippet>155</a>    <span class="doccomment">/// JSON-encoded default value from the Agent schema, if present.
-<a href=#156 id=156 data-nosnippet>156</a>    </span><span class="kw">pub </span>default: <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span><span class="lifetime">'static </span>str&gt;,
-<a href=#157 id=157 data-nosnippet>157</a>    <span class="doccomment">/// Whether this key holds a `format: duration` value. The Agent sends durations as integer
-<a href=#158 id=158 data-nosnippet>158</a>    /// nanoseconds while `default` is a Go duration string, so the default check normalizes both
-<a href=#159 id=159 data-nosnippet>159</a>    /// sides before comparing.
-<a href=#160 id=160 data-nosnippet>160</a>    </span><span class="kw">pub </span>is_duration: bool,
-<a href=#161 id=161 data-nosnippet>161</a>}
-<a href=#162 id=162 data-nosnippet>162</a>
-<a href=#163 id=163 data-nosnippet>163</a><span class="kw">mod </span>classifier_data;
-<a href=#164 id=164 data-nosnippet>164</a><span class="kw">use </span>classifier_data::CLASSIFIER_ENTRIES;
+<a href=#144 id=144 data-nosnippet>144</a>/// Durations are normalized to nanoseconds during codegen (the build fails if a `format:
+<a href=#145 id=145 data-nosnippet>145</a>/// duration` default isn't a valid Go duration), so the runtime default check never has to parse a
+<a href=#146 id=146 data-nosnippet>146</a>/// schema default. Other keys keep their JSON-literal default and are compared structurally.
+<a href=#147 id=147 data-nosnippet>147</a></span><span class="attr">#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+<a href=#148 id=148 data-nosnippet>148</a></span><span class="kw">pub enum </span>DefaultValue {
+<a href=#149 id=149 data-nosnippet>149</a>    <span class="doccomment">/// The schema declares no default for this key.
+<a href=#150 id=150 data-nosnippet>150</a>    </span>Missing,
+<a href=#151 id=151 data-nosnippet>151</a>    <span class="doccomment">/// A JSON-encoded default value (for example, `"\"tlsv1.2\""` or `"1"`).
+<a href=#152 id=152 data-nosnippet>152</a>    </span>Json(<span class="kw-2">&amp;</span><span class="lifetime">'static </span>str),
+<a href=#153 id=153 data-nosnippet>153</a>    <span class="doccomment">/// A `format: duration` default, already parsed to nanoseconds. The Agent transmits durations
+<a href=#154 id=154 data-nosnippet>154</a>    /// as integer nanoseconds, so the incoming value is normalized the same way before comparing.
+<a href=#155 id=155 data-nosnippet>155</a>    </span>DurationNanos(u64),
+<a href=#156 id=156 data-nosnippet>156</a>}
+<a href=#157 id=157 data-nosnippet>157</a>
+<a href=#158 id=158 data-nosnippet>158</a><span class="doccomment">/// Slim per-key data generated at build time for the classifier.
+<a href=#159 id=159 data-nosnippet>159</a>///
+<a href=#160 id=160 data-nosnippet>160</a>/// Carries only what the classifier needs: enough to look up a key, determine its support level,
+<a href=#161 id=161 data-nosnippet>161</a>/// check whether a value is the default, and report which pipelines are affected.
+<a href=#162 id=162 data-nosnippet>162</a></span><span class="kw">pub struct </span>ClassifierEntry {
+<a href=#163 id=163 data-nosnippet>163</a>    <span class="doccomment">/// Canonical dot-separated YAML path.
+<a href=#164 id=164 data-nosnippet>164</a>    </span><span class="kw">pub </span>yaml_path: <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str,
+<a href=#165 id=165 data-nosnippet>165</a>    <span class="doccomment">/// Additional YAML paths (aliases) that resolve to this key.
+<a href=#166 id=166 data-nosnippet>166</a>    </span><span class="kw">pub </span>aliases: <span class="kw-2">&amp;</span><span class="lifetime">'static </span>[<span class="kw-2">&amp;</span><span class="lifetime">'static </span>str],
+<a href=#167 id=167 data-nosnippet>167</a>    <span class="doccomment">/// How well saluki supports this key.
+<a href=#168 id=168 data-nosnippet>168</a>    </span><span class="kw">pub </span>support_level: SupportLevel,
+<a href=#169 id=169 data-nosnippet>169</a>    <span class="doccomment">/// Which pipelines this key affects.
+<a href=#170 id=170 data-nosnippet>170</a>    </span><span class="kw">pub </span>pipeline_affinity: PipelineAffinity,
+<a href=#171 id=171 data-nosnippet>171</a>    <span class="doccomment">/// Default value from the Agent schema (normalized at build time).
+<a href=#172 id=172 data-nosnippet>172</a>    </span><span class="kw">pub </span>default: DefaultValue,
+<a href=#173 id=173 data-nosnippet>173</a>}
+<a href=#174 id=174 data-nosnippet>174</a>
+<a href=#175 id=175 data-nosnippet>175</a><span class="kw">mod </span>classifier_data;
+<a href=#176 id=176 data-nosnippet>176</a><span class="kw">use </span>classifier_data::CLASSIFIER_ENTRIES;
 </code></pre></div></section></main></body></html>
