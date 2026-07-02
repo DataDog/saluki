@@ -675,9 +675,11 @@ where
 fn build_health_handle(
     health_registry: &HealthRegistry, topology_name: &str, component_context: &ComponentContext,
 ) -> Result<Health, GenericError> {
+    // Compose the registered name on top of `health_component_root` so the topology-name root lives in exactly one
+    // place; `TopologyReady` derives its match prefix from the same helper, and the two must stay in sync.
     let maybe_handle = health_registry.register_component(format!(
-        "topology.{}.{}s.{}",
-        topology_name,
+        "{}.{}s.{}",
+        super::health_component_root(topology_name),
         component_context.component_type().as_str(),
         component_context.component_id()
     ));
