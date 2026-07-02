@@ -73,6 +73,10 @@ pub enum Payload {
     #[serde(rename = "dogstatsd")]
     DogStatsD(Box<lading_payload::dogstatsd::Config>),
 
+    /// Static payload bytes embedded directly in the config.
+    #[serde(rename = "static")]
+    Static(String),
+
     /// OpenTelemetry-encoded metrics.
     #[serde(rename = "opentelemetry_metrics")]
     OpenTelemetryMetrics(lading_payload::opentelemetry::metric::Config),
@@ -87,6 +91,7 @@ impl Payload {
     pub fn name(&self) -> &'static str {
         match self {
             Self::DogStatsD(_) => "DogStatsD",
+            Self::Static(_) => "Static",
             Self::OpenTelemetryMetrics(_) => "OpenTelemetry Metrics",
             Self::OpenTelemetryTraces(_) => "OpenTelemetry Traces",
         }
@@ -109,6 +114,13 @@ impl CorpusBlueprint {
             Payload::DogStatsD(config) => config
                 .valid()
                 .map_err(|e| generic_error!("Invalid DogStatsD payload configuration: {}", e)),
+            Payload::Static(payload) => {
+                if payload.is_empty() {
+                    Err(generic_error!("Invalid static payload: payload must not be empty"))
+                } else {
+                    Ok(())
+                }
+            }
             Payload::OpenTelemetryMetrics(config) => config
                 .valid()
                 .map_err(|e| generic_error!("Invalid OpenTelemetry Metrics payload configuration: {}", e)),
