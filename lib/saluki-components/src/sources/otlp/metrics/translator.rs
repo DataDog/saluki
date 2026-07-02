@@ -419,14 +419,12 @@ impl OtlpMetricsTranslator {
         let attribute_tags = self.attribute_translator.tags_from_attributes(&resource.attributes);
 
         // TODO: https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator.go#L736-L753
-        let host = if let Some(Source {
-            kind: SourceKind::HostnameKind,
-            identifier,
-        }) = &source
-        {
-            MetaString::from(identifier.as_str())
-        } else {
-            self.default_hostname.clone()
+        let host = match source {
+            Some(Source {
+                kind: SourceKind::HostnameKind,
+                identifier,
+            }) => MetaString::from(identifier),
+            _ => self.default_hostname.clone(),
         };
 
         for scope_metrics in resource_metrics.scope_metrics {
