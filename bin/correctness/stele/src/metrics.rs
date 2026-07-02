@@ -685,9 +685,18 @@ fn parse_dict_strings(data: &[u8]) -> Result<Vec<String>, GenericError> {
 
 /// Parse tagsets from the `dictTagsets` array using the tag dictionary.
 ///
-/// Each tagset in `dict_tagsets` is encoded as: length, then that many delta-encoded tag indices.
+/// Each tagset in `dict_tagsets` is encoded as: length, then that many sorted-then-delta-encoded
+/// entries. Each decoded entry is one of:
+///
+/// - A positive value: a 1-based index into the tag-string dictionary.
+/// - A negative value `-N`: a prefix reference to the previously-interned tagset with 1-based ID
+///   `N`, whose (already fully-resolved) tags are included in this one. The Agent emits these when
+///   it splits a metric's composite tags into two groups and prefix-compresses the second group
+///   against the first (see `internTags` in the Agent's `iterable_series_v3.go`). Because the
+///   referenced tagset is always interned before the tagset that references it, a single forward
+///   pass can resolve the reference against the tagsets parsed so far.
 fn parse_tagsets(dict_tagsets: &[i64], tags_dict: &[String]) -> Result<Vec<Vec<String>>, GenericError> {
-    let mut tagsets = Vec::new();
+    let mut tagsets: Vec<Vec<String>> = Vec::new();
     let mut offset = 0;
     while offset < dict_tagsets.len() {
         let count = i64_to_usize(dict_tagsets[offset], "tagset length")?;
@@ -696,21 +705,37 @@ fn parse_tagsets(dict_tagsets: &[i64], tags_dict: &[String]) -> Result<Vec<Vec<S
             return Err(generic_error!("Tagset extends past end of dictTagsets array"));
         }
 
-        // Delta-decode the tag indices within this tagset.
-        let mut tag_indices: Vec<i64> = dict_tagsets[offset..offset + count].to_vec();
-        delta_decode(&mut tag_indices);
+        // Delta-decode the entries within this tagset.
+        let mut entries: Vec<i64> = dict_tagsets[offset..offset + count].to_vec();
+        delta_decode(&mut entries);
 
-        // Resolve tag indices (1-based) to tag strings.
         let mut tags = Vec::with_capacity(count);
-        for &idx in &tag_indices {
-            let idx = i64_to_usize(idx, "tag index")?;
-            if idx == 0 {
-                continue;
+        for &entry in &entries {
+            match entry.cmp(&0) {
+                std::cmp::Ordering::Less => {
+                    // Prefix reference to a previously-interned tagset (1-based ID = -entry).
+                    let prefix_id = i64_to_usize(-entry, "tagset prefix reference")?;
+                    let prefix_idx = prefix_id
+                        .checked_sub(1)
+                        .ok_or_else(|| generic_error!("Invalid zero tagset prefix reference"))?;
+                    let prefix_tags = tagsets.get(prefix_idx).ok_or_else(|| {
+                        generic_error!(
+                            "Invalid tagset prefix reference {} (only {} tagsets parsed so far)",
+                            prefix_id,
+                            tagsets.len()
+                        )
+                    })?;
+                    tags.extend(prefix_tags.iter().cloned());
+                }
+                std::cmp::Ordering::Equal => continue,
+                std::cmp::Ordering::Greater => {
+                    let idx = i64_to_usize(entry, "tag index")?;
+                    let tag = tags_dict
+                        .get(idx - 1)
+                        .ok_or_else(|| generic_error!("Invalid tag index {} (dict size {})", idx, tags_dict.len()))?;
+                    tags.push(tag.clone());
+                }
             }
-            let tag = tags_dict
-                .get(idx - 1)
-                .ok_or_else(|| generic_error!("Invalid tag index {} (dict size {})", idx, tags_dict.len()))?;
-            tags.push(tag.clone());
         }
         tagsets.push(tags);
         offset += count;
@@ -1010,5 +1035,43 @@ mod tests {
             bytes.extend_from_slice(s.as_bytes());
         }
         bytes
+    }
+
+    #[test]
+    fn parse_tagsets_resolves_positive_indices() {
+        // Two independent tagsets, each a length followed by sorted+delta-encoded 1-based tag
+        // indices. Tagset 1: [a:1]. Tagset 2: [a:1, b:2] -> indices [1, 2] -> deltas [1, 1].
+        let tags_dict = vec!["a:1".to_string(), "b:2".to_string(), "c:3".to_string()];
+        let dict_tagsets = vec![1, 1, /* tagset 1 */ 2, 1, 1 /* tagset 2 */];
+        let tagsets = parse_tagsets(&dict_tagsets, &tags_dict).expect("parse should succeed");
+        assert_eq!(
+            tagsets,
+            vec![vec!["a:1".to_string()], vec!["a:1".to_string(), "b:2".to_string()]]
+        );
+    }
+
+    #[test]
+    fn parse_tagsets_resolves_negative_prefix_reference() {
+        // The Agent prefix-compresses composite tags: tagset 2 references tagset 1 (id 1) via a
+        // negative `-1` entry plus its own tag `b:2` (index 2). The buffer `[-1, 2]` is sorted
+        // then delta-encoded to `[-1, 3]`.
+        let tags_dict = vec!["a:1".to_string(), "b:2".to_string()];
+        let dict_tagsets = vec![
+            1, 1, // tagset 1 (id 1): [a:1]
+            2, -1, 3, // tagset 2 (id 2): prefix ref to id 1, then b:2
+        ];
+        let tagsets = parse_tagsets(&dict_tagsets, &tags_dict).expect("parse should succeed");
+        assert_eq!(tagsets.len(), 2);
+        assert_eq!(tagsets[0], vec!["a:1".to_string()]);
+        // Tagset 2 resolves the prefix (a:1) and adds its own tag (b:2).
+        assert_eq!(tagsets[1], vec!["a:1".to_string(), "b:2".to_string()]);
+    }
+
+    #[test]
+    fn parse_tagsets_rejects_forward_prefix_reference() {
+        // A prefix reference to a tagset that hasn't been parsed yet is invalid.
+        let tags_dict = vec!["a:1".to_string()];
+        let dict_tagsets = vec![1, -5];
+        assert!(parse_tagsets(&dict_tagsets, &tags_dict).is_err());
     }
 }
