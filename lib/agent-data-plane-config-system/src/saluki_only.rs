@@ -11,10 +11,6 @@
 //! [`seed`]: SalukiOnly::seed
 // TODO: consider using derive macros on these for inventory management
 
-// TODO: remove once ConfigurationSystem seeds the config; until then this source is only exercised
-// by tests.
-#![allow(dead_code)]
-
 use std::time::Duration;
 
 use agent_data_plane_config::control::ListenAddress;
