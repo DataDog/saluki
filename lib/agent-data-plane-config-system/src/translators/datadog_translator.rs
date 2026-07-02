@@ -521,6 +521,10 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         self.config.control.logging.syslog_uri = value;
     }
 
+    fn consume_telemetry_dogstatsd_origin(&mut self, value: bool) {
+        self.config.domains.dogstatsd.telemetry.origin_breakdown = value;
+    }
+
     fn consume_data_plane_log_file(&mut self, value: String) {
         self.config.control.logging.file = value;
     }

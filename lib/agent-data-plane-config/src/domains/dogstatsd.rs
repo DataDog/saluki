@@ -38,6 +38,9 @@ pub struct Domain {
     /// Extra tags added to every metric.
     pub tags: Vec<String>,
 
+    /// Telemetry emitted by the DogStatsD source.
+    pub telemetry: Telemetry,
+
     /// Debug logging for the DogStatsD source.
     pub debug_log: DebugLog,
 }
@@ -135,6 +138,13 @@ pub enum OriginTagCardinality {
     Orchestrator,
     High,
     None,
+}
+
+/// Telemetry emitted by the DogStatsD source.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct Telemetry {
+    /// Whether processed-metric telemetry is broken down by detected origin.
+    pub origin_breakdown: bool,
 }
 
 /// Context cache sizing and sample-rate floor.

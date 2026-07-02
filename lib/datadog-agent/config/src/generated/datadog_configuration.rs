@@ -382,6 +382,9 @@ pub struct DatadogConfiguration {
     pub syslog_uri: String,
 
     #[serde(default)]
+    pub telemetry: DatadogConfigurationTelemetry,
+
+    #[serde(default)]
     pub use_proxy_for_cloud_metadata: bool,
 
     #[serde(default)]
@@ -525,6 +528,7 @@ impl Default for DatadogConfiguration {
             statsd_metric_namespace_blacklist: defaults::datadog_configuration_statsd_metric_namespace_blacklist(),
             syslog_rfc: Default::default(),
             syslog_uri: Default::default(),
+            telemetry: Default::default(),
             use_proxy_for_cloud_metadata: Default::default(),
             use_v2_api: Default::default(),
             use_v3_api: Default::default(),
@@ -1458,6 +1462,20 @@ impl Default for DatadogConfigurationSerializerExperimentalUseV3ApiSketches {
         Self {
             endpoints: Default::default(),
             validate: Default::default(),
+        }
+    }
+}
+
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+pub struct DatadogConfigurationTelemetry {
+    #[serde(default)]
+    pub dogstatsd_origin: bool,
+}
+
+impl Default for DatadogConfigurationTelemetry {
+    fn default() -> Self {
+        Self {
+            dogstatsd_origin: Default::default(),
         }
     }
 }

@@ -59,6 +59,7 @@ mod tests {
             "dogstatsd_port": 9125,
             "dogstatsd_tag_cardinality": "high",
             "expected_tags_duration": 15.0,
+            "telemetry": { "dogstatsd_origin": true },
         }))
         .expect("datadog source deserializes");
 
@@ -79,6 +80,8 @@ mod tests {
         );
         // Driven seconds(f64) -> Duration.
         assert_eq!(config.shared.tags.expected_tags_duration, Duration::from_secs_f64(15.0));
+        // Driven bool in a nested Datadog section.
+        assert!(config.domains.dogstatsd.telemetry.origin_breakdown);
         // Raw endpoint inputs: carried through without resolution (see #1965).
         assert_eq!(config.shared.endpoints.api_key, "abc");
         assert_eq!(
