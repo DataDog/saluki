@@ -16,8 +16,8 @@ use saluki_common::{
 ///
 /// If a tag is seen more than once, it will be ignored and not included in the overall hash. This function allocates a
 /// hash set in order to track which tags have already been hashed, so it's preferable to allocate a single
-/// [`PrehashedHashSet`] and use it with [`hash_context_with_seen`] in order to amortize the cost of allocating the hash
-/// set.
+/// [`PrehashedHashSet`] and use it with [`hash_context_with_host_and_seen`] in order to amortize the cost of allocating
+/// the hash set.
 ///
 /// Returns a hash that uniquely identifies the combination of name, tags, and origin of the value.
 pub fn hash_context<I, I2, T, T2>(name: &str, tags: I, origin_tags: I2) -> (ContextKey, TagSetKey)
@@ -31,7 +31,22 @@ where
     hash_context_with_host_and_seen(name, "", tags, origin_tags, &mut seen)
 }
 
-/// Hashes a metric context with an explicit host dimension.
+/// Hashes a metric context with an explicit host dimension, using a provided set to track duplicate tags.
+///
+/// Takes a metric name, host, an iterator of tags, and an iterator of origin tags, and returns a tuple containing a
+/// unique hash key for the overall context, and a unique hash key for the non-origin tags by themselves. The host is
+/// considered part of overall context identity, but not part of the non-origin tag set.
+///
+/// All tags are hashed in an order-oblivious (XOR) manner, which allows tags to be hashed in any order while still
+/// resulting in the same overall hash. This function is _not_ oblivious to the actual tag values themselves, though, so
+/// differences such as case (lower vs upper) or leading/trailing whitespace will influence the resulting hash. The host
+/// and metric name are order-dependent scalar context fields, not tags.
+///
+/// If a tag is seen more than once, it will be ignored and not included in the overall hash. This function requires the
+/// caller to provide the hash set used for tracking duplicates, and is more efficient than [`hash_context`] which
+/// allocates a new hash set each time.
+///
+/// Returns a hash that uniquely identifies the combination of name, host, tags, and origin of the value.
 pub(super) fn hash_context_with_host_and_seen<I, I2, T, T2>(
     name: &str, host: &str, tags: I, origin_tags: I2, seen: &mut PrehashedHashSet<u64>,
 ) -> (ContextKey, TagSetKey)
