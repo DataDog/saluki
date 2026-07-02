@@ -72,6 +72,7 @@ fn evaluate_series(target: Target, ms: &MetricSeries, now_secs: i64) {
     series::type_in_domain(target, ms);
     series::tag_prefix(target, ms);
     series::series_point_count(target, ms);
+    series::points_non_empty(target, ms);
     series::origin(target, ms);
     resource::resource_count(target, ms);
     resource::host_name_length(target, ms);

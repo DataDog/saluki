@@ -53,6 +53,7 @@ per-org caps with defaults 100 and 500 respectively.
 | Pyld22 | Bytes | Content-Length | `Content-Length` absent or value equals body byte count |
 | Pyld23 | MetricSeries | Tag Length | each tag `<= 200` bytes (`MaxTagLength`) |
 | Pyld24 | MetricSeries | Tag Set Size | total tag bytes per series `<= 100 KiB` (`MaxTagSetSize`) |
+| Pyld25 | MetricSeries | Points Non-Empty | a flushed `COUNT` or `GAUGE` series carries at least one point |
 
 ### Differential context capture
 
