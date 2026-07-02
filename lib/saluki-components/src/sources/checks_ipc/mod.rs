@@ -1,4 +1,4 @@
-use std::sync::{Arc, LazyLock};
+use std::sync::LazyLock;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -183,8 +183,11 @@ fn check_data_to_event(check_data: Data) -> Option<Event> {
             let metric_type = MetricType::try_from(r#type).ok()?;
 
             let tags = tags.into_iter().map(Tag::from).collect::<TagSet>();
-            let context = Context::from_parts(name, tags.into_shared());
-            let mut metric = match metric_type {
+            let mut context = Context::from_parts(name, tags.into_shared());
+            if !hostname.is_empty() {
+                context = context.with_host(Some(hostname.into()));
+            }
+            let metric = match metric_type {
                 MetricType::Counter => Metric::counter(context, (timestamp, value)),
                 MetricType::Gauge => Metric::gauge(context, (timestamp, value)),
                 MetricType::Rate => {
@@ -200,9 +203,6 @@ fn check_data_to_event(check_data: Data) -> Option<Event> {
                     return None;
                 }
             };
-            if !hostname.is_empty() {
-                metric.metadata_mut().set_hostname(Arc::from(hostname));
-            }
             Some(Event::Metric(metric))
         }
         Data::Log(log) => {
@@ -593,7 +593,7 @@ mod tests {
         let Event::Metric(m) = event else {
             panic!("expected Metric event");
         };
-        assert_eq!(m.metadata().hostname(), Some("host-a"));
+        assert_eq!(m.context().host(), Some("host-a"));
     }
 
     #[test]
@@ -603,7 +603,7 @@ mod tests {
         let Event::Metric(m) = event else {
             panic!("expected Metric event");
         };
-        assert_eq!(m.metadata().hostname(), None);
+        assert_eq!(m.context().host(), None);
     }
 
     #[test]

@@ -1547,7 +1547,7 @@ fn write_metric_to_v3(
 
     // Resources - extract host and, for series, promoted resource tags.
     let mut resources = Vec::new();
-    if let Some(host) = metric.metadata().hostname().filter(|host| !host.is_empty()) {
+    if let Some(host) = metric.context().host().filter(|host| !host.is_empty()) {
         resources.push(("host", host));
     }
     if !is_sketch {
@@ -1570,7 +1570,7 @@ fn write_metric_to_v3(
             }
         }
         if let Some(device) = device_resource {
-            let device_idx = usize::from(metric.metadata().hostname().is_some_and(|host| !host.is_empty()));
+            let device_idx = usize::from(metric.context().host().is_some_and(|host| !host.is_empty()));
             resources.insert(device_idx, ("device", device));
         }
     }
@@ -1752,7 +1752,7 @@ fn content_encoding_for_scheme(compression_scheme: CompressionScheme) -> Option<
 
 #[cfg(test)]
 mod tests {
-    use std::{io::Cursor, sync::Arc};
+    use std::io::Cursor;
 
     use bytes::Bytes;
     use saluki_context::{
@@ -2423,7 +2423,8 @@ serializer_experimental_use_v3_api:
                 "dd.internal.resource:malformed",
             ],
         );
-        let metadata = MetricMetadata::default().with_hostname(Some(Arc::from("host-a")));
+        let context = context.with_host(Some(MetaString::from_static("host-a")));
+        let metadata = MetricMetadata::default();
         let metric = Metric::from_parts(context, MetricValues::gauge([1.0_f64]), metadata);
 
         let payload = encode_v3_metrics_batch(&[metric], &SharedTagSet::default())
@@ -2454,7 +2455,8 @@ serializer_experimental_use_v3_api:
             "device:switch1",
             "dd.internal.resource:container:container-a",
         ]));
-        let metadata = MetricMetadata::default().with_hostname(Some(Arc::from("")));
+        let context = context.with_host(Some(MetaString::empty()));
+        let metadata = MetricMetadata::default();
         let metric = Metric::from_parts(context, MetricValues::gauge([1.0_f64]), metadata);
 
         let payload = encode_v3_metrics_batch(&[metric], &additional_tags)
@@ -2484,7 +2486,8 @@ serializer_experimental_use_v3_api:
             "sketch.resources",
             &["env:prod", "device:switch1", "dd.internal.resource:pod:pod-a"],
         );
-        let metadata = MetricMetadata::default().with_hostname(Some(Arc::from("host-a")));
+        let context = context.with_host(Some(MetaString::from_static("host-a")));
+        let metadata = MetricMetadata::default();
         let metric = Metric::from_parts(context, MetricValues::histogram([1.0_f64]), metadata);
 
         let payload = encode_v3_metrics_batch(&[metric], &SharedTagSet::default())

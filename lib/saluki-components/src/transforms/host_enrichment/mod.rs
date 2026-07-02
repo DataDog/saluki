@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use async_trait::async_trait;
 use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{components::transforms::*, topology::EventsBuffer};
@@ -9,6 +7,7 @@ use saluki_core::{
 };
 use saluki_env::{EnvironmentProvider, HostProvider};
 use saluki_error::GenericError;
+use stringtheory::MetaString;
 
 /// Host Enrichment synchronous transform.
 ///
@@ -55,7 +54,7 @@ impl<E> MemoryBounds for HostEnrichmentConfiguration<E> {
 }
 
 pub struct HostEnrichment {
-    hostname: Arc<str>,
+    hostname: MetaString,
 }
 
 impl HostEnrichment {
@@ -69,15 +68,15 @@ impl HostEnrichment {
                 .host()
                 .get_hostname()
                 .await
-                .map(Arc::from)
+                .map(MetaString::from)
                 .map_err(Into::into)?,
         })
     }
 
     fn enrich_metric(&self, metric: &mut Metric) {
         // Only add the hostname if it's not already present.
-        if metric.metadata().hostname().is_none() {
-            metric.metadata_mut().set_hostname(self.hostname.clone());
+        if metric.context().host().is_none() {
+            *metric.context_mut() = metric.context().with_host(Some(self.hostname.clone()));
         }
     }
 

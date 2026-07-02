@@ -27,7 +27,7 @@ impl Context {
         Self {
             inner: Arc::new(ContextInner {
                 name: MetaString::from_static(name),
-                host: MetaString::empty(),
+                host: None,
                 tags,
                 origin_tags,
                 key,
@@ -49,7 +49,7 @@ impl Context {
         Self {
             inner: Arc::new(ContextInner {
                 name: MetaString::from_static(name),
-                host: MetaString::empty(),
+                host: None,
                 tags: tag_set,
                 origin_tags,
                 key,
@@ -67,7 +67,7 @@ impl Context {
         Self {
             inner: Arc::new(ContextInner {
                 name,
-                host: MetaString::empty(),
+                host: None,
                 tags,
                 origin_tags,
                 key,
@@ -83,7 +83,7 @@ impl Context {
         let host = self.inner.host.clone();
         let tags = self.inner.tags.clone();
         let origin_tags = self.inner.origin_tags.clone();
-        let key = ContextInner::calculate_key(&name, &host, &tags, &origin_tags);
+        let key = ContextInner::calculate_key(&name, host.as_deref(), &tags, &origin_tags);
 
         Self {
             inner: Arc::new(ContextInner {
@@ -105,7 +105,7 @@ impl Context {
         let host = self.inner.host.clone();
         let tags = tags.into();
         let origin_tags = self.inner.origin_tags.clone();
-        let key = ContextInner::calculate_key(&name, &host, &tags, &origin_tags);
+        let key = ContextInner::calculate_key(&name, host.as_deref(), &tags, &origin_tags);
 
         Self {
             inner: Arc::new(ContextInner {
@@ -127,7 +127,7 @@ impl Context {
         let host = self.inner.host.clone();
         let tags = self.inner.tags.clone();
         let origin_tags = origin_tags.into();
-        let key = ContextInner::calculate_key(&name, &host, &tags, &origin_tags);
+        let key = ContextInner::calculate_key(&name, host.as_deref(), &tags, &origin_tags);
 
         Self {
             inner: Arc::new(ContextInner {
@@ -150,7 +150,7 @@ impl Context {
         let host = self.inner.host.clone();
         let tags = tags.into();
         let origin_tags = origin_tags.into();
-        let key = ContextInner::calculate_key(&name, &host, &tags, &origin_tags);
+        let key = ContextInner::calculate_key(&name, host.as_deref(), &tags, &origin_tags);
 
         Self {
             inner: Arc::new(ContextInner {
@@ -178,9 +178,29 @@ impl Context {
         &self.inner.name
     }
 
-    /// Returns the host of this context.
-    pub fn host(&self) -> &MetaString {
-        &self.inner.host
+    /// Returns the host of this context, if one has been set.
+    pub fn host(&self) -> Option<&str> {
+        self.inner.host.as_deref()
+    }
+
+    /// Clones this context, and uses the given host for the cloned context.
+    pub fn with_host<S: Into<Option<MetaString>>>(&self, host: S) -> Self {
+        let name = self.inner.name.clone();
+        let host = host.into();
+        let tags = self.inner.tags.clone();
+        let origin_tags = self.inner.origin_tags.clone();
+        let key = ContextInner::calculate_key(&name, host.as_deref(), &tags, &origin_tags);
+
+        Self {
+            inner: Arc::new(ContextInner {
+                name,
+                host,
+                tags,
+                origin_tags,
+                key,
+                active_count: Gauge::noop(),
+            }),
+        }
     }
 
     /// Returns the instrumented tags of this context.
@@ -265,7 +285,7 @@ impl Context {
     /// estimate.
     pub fn size_of(&self) -> usize {
         let name_size = self.inner.name.len();
-        let host_size = self.inner.host.len();
+        let host_size = self.inner.host.as_ref().map_or(0, |host| host.len());
         let tags_size = self.inner.tags.size_of();
         let origin_tags_size = self.inner.origin_tags.size_of();
 
@@ -415,7 +435,7 @@ impl Drop for TagSetMutView<'_, '_> {
 pub(super) struct ContextInner {
     key: ContextKey,
     name: MetaString,
-    host: MetaString,
+    host: Option<MetaString>,
     tags: TagSet,
     origin_tags: TagSet,
     active_count: Gauge,
@@ -423,7 +443,8 @@ pub(super) struct ContextInner {
 
 impl ContextInner {
     pub fn from_parts(
-        key: ContextKey, name: MetaString, host: MetaString, tags: TagSet, origin_tags: TagSet, active_count: Gauge,
+        key: ContextKey, name: MetaString, host: Option<MetaString>, tags: TagSet, origin_tags: TagSet,
+        active_count: Gauge,
     ) -> Self {
         Self {
             key,
@@ -435,18 +456,19 @@ impl ContextInner {
         }
     }
 
-    fn calculate_key(name: &str, host: &str, tags: &TagSet, origin_tags: &TagSet) -> ContextKey {
+    fn calculate_key(name: &str, host: Option<&str>, tags: &TagSet, origin_tags: &TagSet) -> ContextKey {
         let mut seen = PrehashedHashSet::default();
         let (key, _) = hash_context_with_host_and_seen(name, host, tags, origin_tags, &mut seen);
         key
     }
 
     fn recalculate_key(&mut self) {
-        self.key = Self::calculate_key(&self.name, &self.host, &self.tags, &self.origin_tags);
+        self.key = Self::calculate_key(&self.name, self.host.as_deref(), &self.tags, &self.origin_tags);
     }
 
     fn recalculate_key_with_seen(&mut self, seen: &mut PrehashedHashSet<u64>) {
-        let (key, _) = hash_context_with_host_and_seen(&self.name, &self.host, &self.tags, &self.origin_tags, seen);
+        let (key, _) =
+            hash_context_with_host_and_seen(&self.name, self.host.as_deref(), &self.tags, &self.origin_tags, seen);
         self.key = key;
     }
 }
@@ -571,7 +593,7 @@ mod tests {
         let context = Context::from_inner(ContextInner {
             key,
             name: MetaString::from_static(SIZE_OF_CONTEXT_NAME),
-            host: MetaString::empty(),
+            host: None,
             tags: tags.clone(),
             origin_tags: origin_tags.clone(),
             active_count: Gauge::noop(),
@@ -666,7 +688,7 @@ mod tests {
         Context::from_inner(ContextInner {
             key,
             name: MetaString::from_static(name),
-            host: MetaString::empty(),
+            host: None,
             tags: tag_set(tags),
             origin_tags: tag_set(origin_tags),
             active_count: Gauge::noop(),
@@ -678,11 +700,11 @@ mod tests {
     ) -> Context {
         let tags = tag_set(tags);
         let origin_tags = tag_set(origin_tags);
-        let key = ContextInner::calculate_key(name, host, &tags, &origin_tags);
+        let key = ContextInner::calculate_key(name, Some(host), &tags, &origin_tags);
         Context::from_inner(ContextInner {
             key,
             name: MetaString::from_static(name),
-            host: MetaString::from_static(host),
+            host: Some(MetaString::from_static(host)),
             tags,
             origin_tags,
             active_count: Gauge::noop(),
@@ -699,8 +721,8 @@ mod tests {
         assert_ne!(host_a, host_b);
         assert_ne!(host_a, no_host);
         assert_eq!(host_a, host_a_again);
-        assert_eq!(host_a.host(), "host-a");
-        assert_eq!(no_host.host(), "");
+        assert_eq!(host_a.host(), Some("host-a"));
+        assert_eq!(no_host.host(), None);
     }
 
     #[test]
@@ -744,12 +766,12 @@ mod tests {
         let mut tag_mutated = context_with_host("metric", "host-a", &["env:prod"], &["origin:a"]);
         tag_mutated.mutate_tags(|tags| tags.insert_tag(Tag::from("service:web")));
         assert_eq!(tag_mutated, expected_with_tag);
-        assert_eq!(tag_mutated.host(), "host-a");
+        assert_eq!(tag_mutated.host(), Some("host-a"));
 
         let mut origin_mutated = context_with_host("metric", "host-a", &["env:prod"], &["origin:a"]);
         origin_mutated.mutate_origin_tags(|tags| tags.insert_tag(Tag::from("origin:b")));
         assert_eq!(origin_mutated, expected_with_origin);
-        assert_eq!(origin_mutated.host(), "host-a");
+        assert_eq!(origin_mutated.host(), Some("host-a"));
     }
 
     #[test]
@@ -769,7 +791,7 @@ mod tests {
 
         assert_eq!(ctx, context_with_host("metric", "host-a", &["env:prod"], &["origin:a"]));
         assert_ne!(ctx, context_with_origin("metric", &["env:prod"], &["origin:a"]));
-        assert_eq!(ctx.host(), "host-a");
+        assert_eq!(ctx.host(), Some("host-a"));
     }
 
     // --- TagSetMutView ---
