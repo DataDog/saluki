@@ -65,7 +65,7 @@ pub fn generate(overlay: &SchemaOverlay, schema_path: &Path, manifest_dir: &Path
     out.push_str("#![allow(missing_docs)]\n\n");
     out.push_str(&body);
 
-    let path = manifest_dir.join("src/generated.rs");
+    let path = manifest_dir.join("src/generated/datadog_configuration.rs");
     let existing = std::fs::read_to_string(&path).unwrap_or_default();
     if existing != out {
         std::fs::write(&path, out).unwrap_or_else(|e| panic!("cannot write {}: {}", path.display(), e));
@@ -140,11 +140,34 @@ fn prune(properties: &Map<String, Value>, prefix: &str, supported: &HashSet<Stri
                     leaf.insert((*keyword).to_string(), value.clone());
                 }
             }
+            fix_invalid_default(&path, &mut leaf);
             out.insert(name.clone(), Value::Object(leaf));
         }
     }
 
     out
+}
+
+/// Repairs individual leaves whose vendored schema `default` is invalid for its declared `type`.
+///
+/// The Datadog schema is occasionally self-inconsistent: it declares a key `type: number` but writes
+/// the default as a Go-duration string (for example `0s`). YAML parses `0s` as a string, and typify
+/// refuses to coerce a string into a number, so codegen panics. Downstream we treat these keys as
+/// numbers (the model stores a `Duration` built from a seconds value), so we rewrite the bad default
+/// to its numeric equivalent.
+///
+/// Each rule matches on the dotted key, its declared `type`, and the exact broken default literal,
+/// and only fires when all three agree. Keep this list tiny and explicit: if upstream fixes or
+/// changes one of these keys, the rule stops matching and codegen fails loudly rather than silently
+/// mis-defaulting.
+fn fix_invalid_default(path: &str, leaf: &mut Map<String, Value>) {
+    let ty = leaf.get("type").and_then(Value::as_str);
+    let default = leaf.get("default").and_then(Value::as_str);
+    // `expected_tags_duration` is a duration; `0s` is zero, i.e. 0 seconds. Add an arm here (and
+    // switch to a `match`) if another key needs the same treatment.
+    if let ("expected_tags_duration", Some("number"), Some("0s")) = (path, ty, default) {
+        leaf.insert("default".into(), Value::from(0.0));
+    }
 }
 
 /// Run typify over the pruned schema and pretty-print the generated module body.
@@ -176,6 +199,8 @@ fn render(pruned_schema: Value, aliases: &HashMap<String, Vec<String>>) -> Strin
     let mut shortener = PathShortener::default();
     shortener.visit_file_mut(&mut file);
 
+    materialize_sections(&mut file);
+
     let rendered = blank_lines_between_fields(&prettyplease::unparse(&file));
     let rendered = blank_lines_between_items(&rendered);
 
@@ -185,6 +210,63 @@ fn render(pruned_schema: Value, aliases: &HashMap<String, Vec<String>>) -> Strin
     }
     body.push_str(&rendered);
     body
+}
+
+/// Make nested-section fields non-optional with `#[serde(default)]`.
+///
+/// typify renders each non-required object property as `Option<SectionStruct>`. Every section
+/// struct derives `Default`, so dropping the `Option` and defaulting an absent section materializes
+/// it (recursively applying leaf defaults). This lets the witness driver navigate sections directly
+/// (`config.a.b.leaf`) without unwrapping or synthesizing defaults at the call site; defaults live
+/// here, in the data model. Optional scalar leaves (`Option<String>`, etc.) are left untouched.
+fn materialize_sections(file: &mut syn::File) {
+    for item in &mut file.items {
+        let Item::Struct(s) = item else { continue };
+        let syn::Fields::Named(fields) = &mut s.fields else {
+            continue;
+        };
+        for field in &mut fields.named {
+            let Some(inner) = option_section_inner(&field.ty) else {
+                continue;
+            };
+            field.ty = inner;
+            // Replace the field's serde attributes: the original carried
+            // `skip_serializing_if = "Option::is_none"`, invalid once the field is no longer an
+            // `Option`. A bare `#[serde(default)]` is all a section field needs.
+            field.attrs.retain(|attr| !attr.path().is_ident("serde"));
+            field.attrs.push(parse_quote!(#[serde(default)]));
+        }
+    }
+}
+
+/// If `ty` is `Option<DatadogConfiguration...>` (a nested section), return the inner section type.
+fn option_section_inner(ty: &syn::Type) -> Option<syn::Type> {
+    let syn::Type::Path(tp) = ty else { return None };
+    let last = tp.path.segments.last()?;
+    if last.ident != "Option" {
+        return None;
+    }
+    let syn::PathArguments::AngleBracketed(args) = &last.arguments else {
+        return None;
+    };
+    let syn::GenericArgument::Type(inner) = args.args.first()? else {
+        return None;
+    };
+    let syn::Type::Path(inner_path) = inner else {
+        return None;
+    };
+    if inner_path
+        .path
+        .segments
+        .last()?
+        .ident
+        .to_string()
+        .starts_with("DatadogConfiguration")
+    {
+        Some(inner.clone())
+    } else {
+        None
+    }
 }
 
 /// Add `#[serde(alias = "...")]` attributes to fields that have `additional_yaml_paths` in the

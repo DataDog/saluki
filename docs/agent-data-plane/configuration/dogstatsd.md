@@ -558,6 +558,10 @@ compressed wire payload bytes.
 | `agent_ipc.grpc_max_message_size`                              | Max inbound gRPC message size for IPC client       |
 | `allow_arbitrary_tags`                                         | Relax backend tag validation via HTTP header       |
 | `api_key`                                                      | API key for endpoint auth                          |
+| `apm_config.compute_stats_by_span_kind`                        | Compute APM stats per span kind                    |
+| `apm_config.enable_rare_sampler`                               | Enable the APM rare-span sampler                   |
+| `apm_config.error_tracking_standalone.enabled`                 | Enable Error Tracking standalone                   |
+| `apm_config.errors_per_second`                                 | APM error-span sampling rate (per sec)             |
 | `apm_config.obfuscation.credit_cards.enabled`                  | apm_config.obfuscation.credit_cards.enabled        |
 | `apm_config.obfuscation.credit_cards.keep_values`              | apm_config.obfuscation.credit_cards.keep_values    |
 | `apm_config.obfuscation.credit_cards.luhn`                     | apm_config.obfuscation.credit_cards.luhn           |
@@ -578,6 +582,11 @@ compressed wire payload bytes.
 | `apm_config.obfuscation.redis.remove_all_args`                 | apm_config.obfuscation.redis.remove_all_args       |
 | `apm_config.obfuscation.valkey.enabled`                        | apm_config.obfuscation.valkey.enabled              |
 | `apm_config.obfuscation.valkey.remove_all_args`                | apm_config.obfuscation.valkey.remove_all_args      |
+| `apm_config.peer_tags`                                         | Extra peer tags for stats aggregation              |
+| `apm_config.peer_tags_aggregation`                             | Aggregate APM stats by peer tags                   |
+| `apm_config.probabilistic_sampler.enabled`                     | Enable APM probabilistic sampler                   |
+| `apm_config.probabilistic_sampler.sampling_percentage`         | Probabilistic sampler percentage                   |
+| `apm_config.target_traces_per_second`                          | Target sampled traces per second                   |
 | `autoscaling.failover.enabled`                                 | Enable autoscaling failover metric routing         |
 | `autoscaling.failover.metrics`                                 | Metric names forwarded to DCA for failover         |
 | `bind_host`                                                    | Global listen host fallback                        |
@@ -590,14 +599,20 @@ compressed wire payload bytes.
 | `cri_query_timeout`                                            | CRI container runtime query timeout (s)            |
 | `data_plane.api_listen_address`                                | Unprivileged API listen address                    |
 | `data_plane.dogstatsd.aggregator_tag_filter_cache_capacity`    | Tag-filter deduplication cache size                |
+| `data_plane.dogstatsd.enabled`                                 | Enable the DogStatsD pipeline                      |
+| `data_plane.enabled`                                           | Enable the data plane                              |
 | `data_plane.log_file`                                          | ADP log file path                                  |
+| `data_plane.otlp.enabled`                                      | Enable the OTLP pipeline                           |
+| `data_plane.otlp.proxy.enabled`                                | Enable OTLP proxy to Core Agent                    |
 | `data_plane.otlp.proxy.logs.enabled`                           | Proxy OTLP logs to Core Agent                      |
 | `data_plane.otlp.proxy.metrics.enabled`                        | Proxy OTLP metrics to Core Agent                   |
+| `data_plane.otlp.proxy.receiver.protocols.grpc.endpoint`       | OTLP proxy gRPC receiver endpoint                  |
 | `data_plane.otlp.proxy.traces.enabled`                         | Proxy OTLP traces to Core Agent                    |
 | `data_plane.remote_agent_enabled`                              | Enable remote agent mode                           |
 | `data_plane.secure_api_listen_address`                         | Privileged API listen address                      |
 | `data_plane.use_new_config_stream_endpoint`                    | Use new config stream endpoint                     |
 | `dd_url`                                                       | Override intake endpoint URL                       |
+| `disable_file_logging`                                         | Disable writing logs to a file                     |
 | `dogstatsd_buffer_size`                                        | Receive buffer size (bytes)                        |
 | `dogstatsd_capture_depth`                                      | Traffic capture channel depth                      |
 | `dogstatsd_capture_path`                                       | Traffic capture file location                      |
@@ -605,6 +620,7 @@ compressed wire payload bytes.
 | `dogstatsd_disable_verbose_logs`                               | Suppress noisy parse error logs                    |
 | `dogstatsd_entity_id_precedence`                               | Entity ID over auto-detection                      |
 | `dogstatsd_eol_required`                                       | Require newline-terminated messages                |
+| `dogstatsd_expiry_seconds`                                     | Counter value expiry (seconds)                     |
 | `dogstatsd_flush_incomplete_buckets`                           | Flush open buckets on shutdown                     |
 | `dogstatsd_log_file`                                           | DSD dedicated log file path                        |
 | `dogstatsd_log_file_max_rolls`                                 | DSD log file max roll count                        |
@@ -629,6 +645,7 @@ compressed wire payload bytes.
 | `enable_payloads.service_checks`                               | Allow sending service check payloads               |
 | `enable_payloads.sketches`                                     | Allow sending sketch payloads                      |
 | `env`                                                          | Agent environment name                             |
+| `expected_tags_duration`                                       | How long startup host tags are attached            |
 | `forwarder_backoff_base`                                       | Retry backoff base (secs)                          |
 | `forwarder_backoff_factor`                                     | Retry backoff jitter factor                        |
 | `forwarder_backoff_max`                                        | Retry backoff ceiling (secs)                       |
@@ -649,10 +666,17 @@ compressed wire payload bytes.
 | `histogram_aggregates`                                         | Histogram aggregate statistics                     |
 | `histogram_copy_to_distribution`                               | Copy histograms to distributions                   |
 | `histogram_copy_to_distribution_prefix`                        | Prefix for hist-to-dist copies                     |
+| `histogram_percentiles`                                        | Histogram percentile aggregates                    |
+| `log_file_max_rolls`                                           | Max rolled log files to retain                     |
+| `log_file_max_size`                                            | Max log file size before rolling                   |
+| `log_format_json`                                              | Emit logs as JSON                                  |
 | `log_format_rfc3339`                                           | Use RFC 3339 timestamps in log output              |
 | `log_payloads`                                                 | Debug-log decoded payload contents before encoding |
+| `log_to_console`                                               | Write logs to the console                          |
+| `log_to_syslog`                                                | Write logs to syslog                               |
 | `metric_filterlist`                                            | Metric name blocklist                              |
 | `metric_filterlist_match_prefix`                               | Blocklist uses prefix matching                     |
+| `metric_tag_filterlist`                                        | Per-metric tag allow/deny filter list              |
 | `multi_region_failover.api_key`                                | API key for the failover-region endpoint           |
 | `multi_region_failover.dd_url`                                 | Failover intake URL                                |
 | `multi_region_failover.failover_metrics`                       | Enable metrics forwarding to failover region       |

@@ -197,6 +197,34 @@ inventory:
       additional_attributes:
         config_registry_filename: forwarder.rs
 
+  apm_config.compute_stats_by_span_kind:
+    support: full
+    pipelines: [traces]
+    description: "Compute APM stats per span kind"
+    test_support:
+      used_by: [NO_SMOKE]
+
+  apm_config.enable_rare_sampler:
+    support: full
+    pipelines: [traces]
+    description: "Enable the APM rare-span sampler"
+    test_support:
+      used_by: [NO_SMOKE]
+
+  apm_config.error_tracking_standalone.enabled:
+    support: full
+    pipelines: [traces]
+    description: "Enable Error Tracking standalone"
+    test_support:
+      used_by: [NO_SMOKE]
+
+  apm_config.errors_per_second:
+    support: full
+    pipelines: [traces]
+    description: "APM error-span sampling rate (per sec)"
+    test_support:
+      used_by: [NO_SMOKE]
+
   apm_config.obfuscation.credit_cards.enabled:
     support: full
     pipelines: [traces]
@@ -384,6 +412,41 @@ inventory:
       additional_attributes:
         config_registry_filename: trace_obfuscation.rs
 
+  apm_config.peer_tags:
+    support: full
+    pipelines: [traces]
+    description: "Extra peer tags for stats aggregation"
+    test_support:
+      used_by: [NO_SMOKE]
+
+  apm_config.peer_tags_aggregation:
+    support: full
+    pipelines: [traces]
+    description: "Aggregate APM stats by peer tags"
+    test_support:
+      used_by: [NO_SMOKE]
+
+  apm_config.probabilistic_sampler.enabled:
+    support: full
+    pipelines: [traces]
+    description: "Enable APM probabilistic sampler"
+    test_support:
+      used_by: [NO_SMOKE]
+
+  apm_config.probabilistic_sampler.sampling_percentage:
+    support: full
+    pipelines: [traces]
+    description: "Probabilistic sampler percentage"
+    test_support:
+      used_by: [NO_SMOKE]
+
+  apm_config.target_traces_per_second:
+    support: full
+    pipelines: [traces]
+    description: "Target sampled traces per second"
+    test_support:
+      used_by: [NO_SMOKE]
+
   autoscaling.failover.enabled:
     support: full
     pipelines: [checks, dogstatsd, otlp]
@@ -512,6 +575,20 @@ inventory:
       additional_attributes:
         config_registry_filename: tag_filterlist.rs
 
+  data_plane.dogstatsd.enabled:
+    support: full
+    pipelines: [cross_cutting]
+    description: "Enable the DogStatsD pipeline"
+    test_support:
+      used_by: [NO_SMOKE]
+
+  data_plane.enabled:
+    support: full
+    pipelines: [cross_cutting]
+    description: "Enable the data plane"
+    test_support:
+      used_by: [NO_SMOKE]
+
   data_plane.log_file:
     support: full
     pipelines: [cross_cutting]
@@ -524,6 +601,20 @@ inventory:
       used_by: [get_typed]
       additional_attributes:
         config_registry_filename: data_plane.rs
+
+  data_plane.otlp.enabled:
+    support: full
+    pipelines: [cross_cutting]
+    description: "Enable the OTLP pipeline"
+    test_support:
+      used_by: [NO_SMOKE]
+
+  data_plane.otlp.proxy.enabled:
+    support: full
+    pipelines: [otlp]
+    description: "Enable OTLP proxy to Core Agent"
+    test_support:
+      used_by: [NO_SMOKE]
 
   data_plane.otlp.proxy.logs.enabled:
     support: full
@@ -542,6 +633,13 @@ inventory:
       used_by: [get_typed]
       additional_attributes:
         config_registry_filename: data_plane.rs
+
+  data_plane.otlp.proxy.receiver.protocols.grpc.endpoint:
+    support: full
+    pipelines: [otlp]
+    description: "OTLP proxy gRPC receiver endpoint"
+    test_support:
+      used_by: [NO_SMOKE]
 
   data_plane.otlp.proxy.traces.enabled:
     support: full
@@ -618,6 +716,13 @@ inventory:
       used_by: [ForwarderConfiguration]
       additional_attributes:
         config_registry_filename: forwarder.rs
+
+  disable_file_logging:
+    support: full
+    pipelines: [cross_cutting]
+    description: "Disable writing logs to a file"
+    test_support:
+      used_by: [NO_SMOKE]
 
   dogstatsd_buffer_size:
     support: full
@@ -707,6 +812,13 @@ inventory:
     description: "Bind address for experimental HTTP DSD listener"
     documentation: "Experimental HTTP/H2C DogStatsD ingestion endpoint; not needed for ADP."
     issue: "#1682"
+
+  dogstatsd_expiry_seconds:
+    support: full
+    pipelines: [dogstatsd]
+    description: "Counter value expiry (seconds)"
+    test_support:
+      used_by: [NO_SMOKE]
 
   dogstatsd_flush_incomplete_buckets:
     support: full
@@ -1253,6 +1365,13 @@ inventory:
       additional_attributes:
         config_registry_filename: encoders.rs
 
+  expected_tags_duration:
+    support: full
+    pipelines: [cross_cutting]
+    description: "How long startup host tags are attached"
+    test_support:
+      used_by: [NO_SMOKE]
+
   forwarder_apikey_validation_interval:
     support: partial
     pipelines: [cross_cutting]
@@ -1570,6 +1689,34 @@ inventory:
       additional_attributes:
         config_registry_filename: aggregate.rs
 
+  histogram_percentiles:
+    support: full
+    pipelines: [checks, dogstatsd]
+    description: "Histogram percentile aggregates"
+    test_support:
+      used_by: [NO_SMOKE]
+
+  log_file_max_rolls:
+    support: full
+    pipelines: [cross_cutting]
+    description: "Max rolled log files to retain"
+    test_support:
+      used_by: [NO_SMOKE]
+
+  log_file_max_size:
+    support: full
+    pipelines: [cross_cutting]
+    description: "Max log file size before rolling"
+    test_support:
+      used_by: [NO_SMOKE]
+
+  log_format_json:
+    support: full
+    pipelines: [cross_cutting]
+    description: "Emit logs as JSON"
+    test_support:
+      used_by: [NO_SMOKE]
+
   log_format_rfc3339:
     support: full
     pipelines: [cross_cutting]
@@ -1624,6 +1771,20 @@ inventory:
       additional_attributes:
         config_registry_filename: encoders.rs
 
+  log_to_console:
+    support: full
+    pipelines: [cross_cutting]
+    description: "Write logs to the console"
+    test_support:
+      used_by: [NO_SMOKE]
+
+  log_to_syslog:
+    support: full
+    pipelines: [cross_cutting]
+    description: "Write logs to syslog"
+    test_support:
+      used_by: [NO_SMOKE]
+
   logging_frequency:
     support: none
     severity: low
@@ -1649,6 +1810,15 @@ inventory:
       used_by: [DogStatsDPrefixFilterConfiguration]
       additional_attributes:
         config_registry_filename: dogstatsd_prefix_filter.rs
+
+  metric_tag_filterlist:
+    support: full
+    pipelines: [dogstatsd]
+    description: "Per-metric tag allow/deny filter list"
+    test_support:
+      used_by: [TagFilterlistConfiguration]
+      additional_attributes:
+        config_registry_filename: tag_filterlist.rs
 
   min_tls_version:
     support: partial
@@ -2540,7 +2710,6 @@ excluded:
   apm_config.apm_non_local_traffic: "ignored in initial audit 2026-04-23"
   apm_config.bucket_size_seconds: "ignored in initial audit 2026-04-23"
   apm_config.client_stats_flush_interval: "ignored in initial audit 2026-04-23"
-  apm_config.compute_stats_by_span_kind: "ignored in initial audit 2026-04-23"
   apm_config.connection_limit: "ignored in initial audit 2026-04-23"
   apm_config.connection_reset_interval: "ignored in initial audit 2026-04-23"
   apm_config.dd_agent_bin: "ignored in initial audit 2026-04-23"
@@ -2557,11 +2726,8 @@ excluded:
   apm_config.decoders: "ignored in initial audit 2026-04-23"
   apm_config.disable_rare_sampler: "ignored in initial audit 2026-04-23"
   apm_config.enable_container_tags_buffer: "ignored in initial audit 2026-04-23"
-  apm_config.enable_rare_sampler: "ignored in initial audit 2026-04-23"
   apm_config.enabled: "ignored in initial audit 2026-04-23"
   apm_config.env: "ignored in initial audit 2026-04-23"
-  apm_config.error_tracking_standalone.enabled: "ignored in initial audit 2026-04-23"
-  apm_config.errors_per_second: "ignored in initial audit 2026-04-23"
   apm_config.extra_sample_rate: "ignored in initial audit 2026-04-23"
   apm_config.features: "ignored in initial audit 2026-04-23"
   apm_config.filter_tags.reject: "ignored in initial audit 2026-04-23"
@@ -2603,11 +2769,7 @@ excluded:
   apm_config.obfuscation.sql_exec_plan_normalize.keep_values: "ignored in initial audit 2026-04-23"
   apm_config.obfuscation.sql_exec_plan_normalize.obfuscate_sql_values: "ignored in initial audit 2026-04-23"
   apm_config.peer_service_aggregation: "ignored in initial audit 2026-04-23"
-  apm_config.peer_tags: "ignored in initial audit 2026-04-23"
-  apm_config.peer_tags_aggregation: "ignored in initial audit 2026-04-23"
-  apm_config.probabilistic_sampler.enabled: "ignored in initial audit 2026-04-23"
   apm_config.probabilistic_sampler.hash_seed: "ignored in initial audit 2026-04-23"
-  apm_config.probabilistic_sampler.sampling_percentage: "ignored in initial audit 2026-04-23"
   apm_config.profiling_additional_endpoints: "ignored in initial audit 2026-04-23"
   apm_config.profiling_dd_url: "ignored in initial audit 2026-04-23"
   apm_config.profiling_max_request_bytes: "2026-06-10 APM trace/profiling pipeline feature (comp/trace); ADP does not run the trace agent."
@@ -2629,7 +2791,6 @@ excluded:
   apm_config.symdb_api_key: "ignored in initial audit 2026-04-23"
   apm_config.symdb_dd_url: "ignored in initial audit 2026-04-23"
   apm_config.sync_flushing: "ignored in initial audit 2026-04-23"
-  apm_config.target_traces_per_second: "ignored in initial audit 2026-04-23"
   apm_config.telemetry.additional_endpoints: "ignored in initial audit 2026-04-23"
   apm_config.telemetry.dd_url: "ignored in initial audit 2026-04-23"
   apm_config.telemetry.enabled: "ignored in initial audit 2026-04-23"
@@ -2917,11 +3078,6 @@ excluded:
   data_observability.forwarder.use_compression: "ignored in initial audit 2026-04-23"
   data_observability.forwarder.use_v2_api: "ignored in initial audit 2026-04-23"
   data_observability.forwarder.zstd_compression_level: "ignored in initial audit 2026-04-23"
-  data_plane.dogstatsd.enabled: "ignored in second bulk edit 2026-05-06"
-  data_plane.enabled: "ignored in second bulk edit 2026-05-06"
-  data_plane.otlp.enabled: "ignored in initial audit 2026-04-23"
-  data_plane.otlp.proxy.enabled: "ignored in initial audit 2026-04-23"
-  data_plane.otlp.proxy.receiver.protocols.grpc.endpoint: "ignored in initial audit 2026-04-23"
   data_streams.forwarder.additional_endpoints: "ignored in initial audit 2026-04-23"
   data_streams.forwarder.batch_max_concurrent_send: "ignored in initial audit 2026-04-23"
   data_streams.forwarder.batch_max_content_size: "ignored in initial audit 2026-04-23"
@@ -3026,7 +3182,6 @@ excluded:
   delegated_auth.provider: "ignored in initial audit 2026-04-23"
   delegated_auth.refresh_interval_mins: "ignored in initial audit 2026-04-23"
   disable_cluster_name_tag_key: "ignored in initial audit 2026-04-23"
-  disable_file_logging: "ignored in initial audit 2026-04-23"
   disable_py3_validation: "ignored in initial audit 2026-04-23"
   disable_unsafe_yaml: "ignored in initial audit 2026-04-23"
   disk_check.use_core_loader: "ignored in initial audit 2026-04-23"
@@ -3034,7 +3189,6 @@ excluded:
   docker_env_as_tags: "ignored in initial audit 2026-04-23"
   docker_labels_as_tags: "ignored in initial audit 2026-04-23"
   docker_query_timeout: "ignored in initial audit 2026-04-23"
-  dogstatsd_expiry_seconds: "ignored in second bulk edit 2026-05-06"
   ec2_imdsv2_transition_payload_enabled: "ignored in initial audit 2026-04-23"
   ec2_metadata_timeout: "ignored in initial audit 2026-04-23"
   ec2_metadata_token_lifetime: "ignored in initial audit 2026-04-23"
@@ -3097,7 +3251,6 @@ excluded:
   exclude_ec2_tags: "ignored in initial audit 2026-04-23"
   exclude_gce_tags: "ignored in initial audit 2026-04-23"
   exclude_pause_container: "ignored in initial audit 2026-04-23"
-  expected_tags_duration: "ignored in second bulk edit 2026-05-06"
   expvar_port: "ignored in initial audit 2026-04-23"
   external_metrics.aggregator: "ignored in initial audit 2026-04-23"
   external_metrics_provider.api_key: "ignored in initial audit 2026-04-23"
@@ -3181,7 +3334,6 @@ excluded:
   health_platform.invalidconfig_check.enabled: "2026-06-10 Health platform subsystem; sibling keys excluded in Apr 2026 audit."
   health_platform.persist_on_kubernetes: "ignored in initial audit 2026-04-23"
   health_port: "ignored in initial audit 2026-04-23"
-  histogram_percentiles: "ignored in second bulk edit 2026-05-06"
   host_aliases: "ignored in initial audit 2026-04-23"
   hostname: "ignored in second bulk edit 2026-05-06"
   hostname_drift_initial_delay: "ignored in initial audit 2026-04-23"
@@ -3353,11 +3505,6 @@ excluded:
   log_all_goroutines_when_unhealthy: "ignored in initial audit 2026-04-23"
   log_enabled: "ignored in initial audit 2026-04-23"
   log_file: "ignored in second bulk edit 2026-05-06"
-  log_file_max_rolls: "ignored in second bulk edit 2026-05-06"
-  log_file_max_size: "ignored in second bulk edit 2026-05-06"
-  log_format_json: "ignored in second bulk edit 2026-05-06"
-  log_to_console: "ignored in second bulk edit 2026-05-06"
-  log_to_syslog: "ignored in second bulk edit 2026-05-06"
   logon_duration.enabled: "ignored in initial audit 2026-04-23"
   logs_config.add_logsource_tag: "ignored in initial audit 2026-04-23"
   logs_config.additional_endpoints: "ignored in initial audit 2026-04-23"
@@ -3478,7 +3625,6 @@ excluded:
   metadata_ip_resolution_from_hostname: "ignored in initial audit 2026-04-23"
   metadata_provider_stop_timeout: "ignored in initial audit 2026-04-23"
   metadata_providers: "ignored in initial audit 2026-04-23"
-  metric_tag_filterlist: "ignored in second bulk edit 2026-05-06"
   metric_tag_filterlist_adp_only: "2026-06-10 Gate controlling whether tag filtering applies only when ADP is enabled; full-agent-only key, ADP always applies filtering unconditionally."
   metrics_port: "ignored in initial audit 2026-04-23"
   multi_region_failover.failover_apm: "ignored in initial audit 2026-04-23"

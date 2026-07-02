@@ -160,5 +160,4 @@ pub struct ClassifierEntry {
     pub is_duration: bool,
 }
 
-mod classifier_data;
-use classifier_data::CLASSIFIER_ENTRIES;
+use crate::generated::classifier_data::CLASSIFIER_ENTRIES;

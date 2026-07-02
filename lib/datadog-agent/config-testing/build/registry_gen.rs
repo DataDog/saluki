@@ -31,6 +31,7 @@ use std::path::Path;
 
 use datadog_agent_config_overlay_model::saluki_keys::{SalukiKey, SALUKI_KEYS};
 use datadog_agent_config_overlay_model::schema_gen::{self, FieldInfo};
+use datadog_agent_config_overlay_model::smoke_test_support::ConfigurationStruct;
 use datadog_agent_config_overlay_model::{
     FullSupport, KnownEntry, PartialSupport, Pipeline, PipelineAffinity, SchemaOverlay, Severity, TestSupport,
     ValueType,
@@ -421,6 +422,16 @@ fn generate_subsystem_files(
             KnownEntry::Partial(p) => SupportedRef::Partial(p),
             _ => continue,
         };
+        // Fields not supported by smoke testing
+        let used_by = &supported_ref.test_support().used_by;
+        if used_by.contains(&ConfigurationStruct::NoSmoke) {
+            assert!(
+                used_by.len() == 1,
+                "key '{}': NO_SMOKE must be the sole used_by entry",
+                yaml_path
+            );
+            continue;
+        }
         let filename = supported_ref
             .test_support()
             .additional_attributes
