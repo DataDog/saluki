@@ -4,6 +4,7 @@ use crate::assertions::{AssertionContext, AssertionResult};
 use crate::config::ActionConfig;
 
 mod core_agent_config_set;
+mod target_exec;
 
 const DEFAULT_CORE_AGENT_CONFIG_ENDPOINT_TEMPLATE: &str = "https://localhost:55001/agent/config/{key}";
 
@@ -34,6 +35,9 @@ pub fn create_action(config: &ActionConfig) -> Result<Box<dyn Action>, GenericEr
             endpoint.clone(),
             timeout.0,
         ))),
+        ActionConfig::TargetExec { command, timeout } => {
+            Ok(Box::new(target_exec::TargetExecAction::new(command.clone(), timeout.0)))
+        }
     }
 }
 

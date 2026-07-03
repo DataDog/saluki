@@ -1,0 +1,77 @@
+type: integration
+name: "dogstatsd-named-pipe-windows"
+description: "Verifies Windows DogStatsD named-pipe intake accepts client writes and decodes frames"
+timeout: 120s
+runtimes: [windows]
+
+env:
+  DD_API_KEY: "00000000000000000000000000000000"
+  DD_HOSTNAME: "integration-test-dsd-named-pipe"
+  DD_DATA_PLANE_ENABLED: "true"
+  DD_DATA_PLANE_STANDALONE_MODE: "false"
+  DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+  DD_DOGSTATSD_PORT: "0"
+  DD_DOGSTATSD_PIPE_NAME: "datadog-dogstatsd-integration"
+  DD_DOGSTATSD_EOL_REQUIRED: "named_pipe"
+
+procedure:
+  - assertion: log_contains
+    pattern: 'listen_addr:"npipe://datadog-dogstatsd-integration"'
+    timeout: 30s
+  - action: target_exec
+    command:
+      - "pwsh"
+      - "-NoProfile"
+      - "-NonInteractive"
+      - "-Command"
+      - |
+        $ErrorActionPreference = "Stop"
+        Set-StrictMode -Version 3.0
+        function Send-NamedPipePayload([string] $Payload) {
+          $pipe = [System.IO.Pipes.NamedPipeClientStream]::new(
+            ".",
+            "datadog-dogstatsd-integration",
+            [System.IO.Pipes.PipeDirection]::Out
+          )
+          try {
+            $pipe.Connect(30000)
+            $bytes = [System.Text.Encoding]::UTF8.GetBytes($Payload)
+            $pipe.Write($bytes, 0, $bytes.Length)
+            $pipe.Flush()
+          } finally {
+            $pipe.Dispose()
+          }
+        }
+
+        Send-NamedPipePayload "integration.named_pipe.invalid`n"
+        Send-NamedPipePayload "integration.named_pipe.with_eol.invalid`n"
+        Send-NamedPipePayload "integration.named_pipe.no_eol.invalid"
+        Send-NamedPipePayload "integration.named_pipe.multi_one.invalid`nintegration.named_pipe.multi_two.invalid`n"
+        Send-NamedPipePayload ("x" * 10000)
+        Send-NamedPipePayload "integration.named_pipe.after_oversize.invalid`n"
+    timeout: 30s
+  - assertion: log_contains
+    pattern: "integration.named_pipe.invalid"
+    timeout: 30s
+  - assertion: log_contains
+    pattern: "integration.named_pipe.with_eol.invalid"
+    timeout: 30s
+  - assertion: log_not_contains
+    pattern: "integration.named_pipe.no_eol.invalid"
+    during: 10s
+  - assertion: log_contains
+    pattern: "integration.named_pipe.multi_one.invalid"
+    timeout: 30s
+  - assertion: log_contains
+    pattern: "integration.named_pipe.multi_two.invalid"
+    timeout: 30s
+  - assertion: log_contains
+    pattern: "integration.named_pipe.after_oversize.invalid"
+    timeout: 30s
+  - parallel:
+      - assertion: process_stable_for
+        duration: 10s
+      - assertion: log_not_contains
+        pattern: "panic|PANIC"
+        regex: true
+        during: 10s

@@ -270,6 +270,7 @@ pub(super) fn build_metrics(
         ListenAddress::Udp(_) => "udp",
         ListenAddress::Unix(_) => "unix",
         ListenAddress::Unixgram(_) => "unixgram",
+        ListenAddress::NamedPipe { .. } => "named_pipe",
     };
 
     Metrics {

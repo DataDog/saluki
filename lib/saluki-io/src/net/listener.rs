@@ -1,10 +1,22 @@
 //! Network listeners.
 use std::{collections::VecDeque, future::pending, io, net::SocketAddr, num::NonZeroUsize};
+#[cfg(windows)]
+use std::{ffi::c_void, mem, ptr};
 
 use snafu::{ResultExt as _, Snafu};
 use socket2::SockRef;
+#[cfg(windows)]
+use tokio::net::windows::named_pipe::{NamedPipeServer, ServerOptions};
 use tokio::net::{TcpListener, UdpSocket as TokioUdpSocket};
 use tracing::warn;
+#[cfg(windows)]
+use windows_sys::Win32::{
+    Foundation::{LocalFree, FALSE, HLOCAL},
+    Security::{
+        Authorization::{ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1},
+        SECURITY_ATTRIBUTES,
+    },
+};
 
 #[cfg(target_os = "linux")]
 use super::unix::socket_reuseport_supported;
@@ -87,6 +99,13 @@ enum ListenerInner {
     Unixgram(Option<tokio::net::UnixDatagram>),
     #[cfg(unix)]
     Unix(tokio::net::UnixListener),
+    #[cfg(windows)]
+    NamedPipe {
+        server: NamedPipeServer,
+        path: String,
+        security_descriptor: String,
+        input_buffer_size: Option<u32>,
+    },
 }
 
 /// A network listener.
@@ -204,6 +223,32 @@ impl Listener {
                     reason: "Unix listen addresses are not supported on this platform",
                 });
             }
+            #[cfg(windows)]
+            ListenAddress::NamedPipe {
+                name: _,
+                security_descriptor,
+                input_buffer_size,
+            } => {
+                let path = listen_address
+                    .as_windows_named_pipe_path()
+                    .expect("named pipe address should produce a named pipe path");
+                create_named_pipe_server(&path, security_descriptor, *input_buffer_size, true)
+                    .map(|server| ListenerInner::NamedPipe {
+                        server,
+                        path,
+                        security_descriptor: security_descriptor.clone(),
+                        input_buffer_size: *input_buffer_size,
+                    })
+                    .context(FailedToBind {
+                        address: listen_address.clone(),
+                    })?
+            }
+            #[cfg(not(windows))]
+            ListenAddress::NamedPipe { .. } => {
+                return Err(ListenerError::InvalidConfiguration {
+                    reason: "Named pipe listen addresses are not supported on this platform",
+                });
+            }
         };
 
         Ok(Self {
@@ -239,6 +284,8 @@ impl Listener {
             ListenerInner::Unixgram(_) => 1,
             #[cfg(unix)]
             ListenerInner::Unix(_) => 1,
+            #[cfg(windows)]
+            ListenerInner::NamedPipe { .. } => 1,
         }
     }
 
@@ -298,6 +345,89 @@ impl Listener {
                     })?;
                     Ok(socket.into())
                 }),
+            #[cfg(windows)]
+            ListenerInner::NamedPipe {
+                server,
+                path,
+                security_descriptor,
+                input_buffer_size,
+            } => {
+                server.connect().await.context(FailedToAccept {
+                    address: self.listen_address.clone(),
+                })?;
+                let connected = mem::replace(
+                    server,
+                    create_named_pipe_server(path, security_descriptor, *input_buffer_size, false).context(
+                        FailedToBind {
+                            address: self.listen_address.clone(),
+                        },
+                    )?,
+                );
+                Ok(connected.into())
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+fn create_named_pipe_server(
+    path: &str, security_descriptor: &str, input_buffer_size: Option<u32>, first_instance: bool,
+) -> io::Result<NamedPipeServer> {
+    let mut options = ServerOptions::new();
+    options.first_pipe_instance(first_instance).out_buffer_size(0);
+    if let Some(input_buffer_size) = input_buffer_size {
+        options.in_buffer_size(input_buffer_size);
+    }
+
+    let mut security_attributes = NamedPipeSecurityAttributes::from_sddl(security_descriptor)?;
+    unsafe { options.create_with_security_attributes_raw(path, security_attributes.as_mut_ptr()) }
+}
+
+#[cfg(windows)]
+struct NamedPipeSecurityAttributes {
+    descriptor: *mut c_void,
+    attributes: SECURITY_ATTRIBUTES,
+}
+
+#[cfg(windows)]
+impl NamedPipeSecurityAttributes {
+    fn from_sddl(sddl: &str) -> io::Result<Self> {
+        let mut descriptor = ptr::null_mut();
+        let wide_sddl: Vec<u16> = sddl.encode_utf16().chain(std::iter::once(0)).collect();
+        let ok = unsafe {
+            ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                wide_sddl.as_ptr(),
+                SDDL_REVISION_1 as u32,
+                &mut descriptor,
+                ptr::null_mut(),
+            )
+        };
+        if ok == FALSE {
+            return Err(io::Error::last_os_error());
+        }
+
+        Ok(Self {
+            descriptor,
+            attributes: SECURITY_ATTRIBUTES {
+                nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+                lpSecurityDescriptor: descriptor,
+                bInheritHandle: FALSE,
+            },
+        })
+    }
+
+    fn as_mut_ptr(&mut self) -> *mut c_void {
+        (&mut self.attributes as *mut SECURITY_ATTRIBUTES).cast()
+    }
+}
+
+#[cfg(windows)]
+impl Drop for NamedPipeSecurityAttributes {
+    fn drop(&mut self) {
+        if !self.descriptor.is_null() {
+            unsafe {
+                let _ = LocalFree(self.descriptor as HLOCAL);
+            }
         }
     }
 }
@@ -499,6 +629,21 @@ mod tests {
 
     const REQUESTED_RECV_BUFFER_SIZE: usize = 131_072;
     const TEST_PACKET: &[u8] = b"hello";
+
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn named_pipe_listener_is_unsupported_on_non_windows() {
+        let address = ListenAddress::named_pipe("datadog-dogstatsd", "D:AI(A;;GA;;;WD)");
+
+        let err = match Listener::from_listen_address(address, None).await {
+            Ok(_) => panic!("named pipes should be unsupported on non-Windows"),
+            Err(err) => err,
+        };
+
+        assert!(err
+            .to_string()
+            .contains("Named pipe listen addresses are not supported"));
+    }
 
     #[tokio::test]
     async fn zero_receive_buffer_size_preserves_udp_default() {

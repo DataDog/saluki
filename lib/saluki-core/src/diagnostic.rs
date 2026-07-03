@@ -5,7 +5,7 @@ use std::sync::Arc;
 /// A handle for exposing diagnostics from a component.
 ///
 ///
-/// Components assert a handle where artifact name is suitable, but not guaranteed, to be   
+/// Components assert a handle where artifact name is suitable, but not guaranteed, to be
 /// used a filename
 ///
 /// # Example:

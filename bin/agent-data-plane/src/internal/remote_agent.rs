@@ -576,7 +576,7 @@ impl FlareProvider for RemoteAgentImpl {
             .session_id_middleware(async || {
                 let mut files: HashMap<String, Vec<u8>> = HashMap::new();
 
-                // Grab and collect all asserted diagnostic handles 
+                // Grab and collect all asserted diagnostic handles
                 if let Some(dataspace) = self.dataspace.get() {
                     let handles = dataspace.current_values::<DiagnosticHandle>(IdentifierFilter::all());
                     let total_handles = handles.len();
@@ -633,7 +633,7 @@ impl FlareProvider for RemoteAgentImpl {
 
                 // Tokio task dump (Linux-only).
                 //
-                // Wrapped in an explicit timeout because `Handle::dump()` 
+                // Wrapped in an explicit timeout because `Handle::dump()`
                 // may never resolve if a runtime worker is blocked for
                 // more than 250ms
                 #[cfg(target_os = "linux")]

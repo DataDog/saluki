@@ -187,6 +187,15 @@ const fn default_true() -> bool {
     true
 }
 
+/// Returns the core Agent default SDDL applied to DogStatsD Windows named pipes.
+const fn default_windows_pipe_security_descriptor() -> &'static str {
+    "D:AI(A;;GA;;;WD)"
+}
+
+fn default_windows_pipe_security_descriptor_string() -> String {
+    default_windows_pipe_security_descriptor().to_string()
+}
+
 /// Controls which payload types are forwarded to the backend.
 #[derive(Deserialize)]
 #[cfg_attr(test, derive(PartialEq, serde::Serialize))]
@@ -370,6 +379,27 @@ pub struct DogStatsDConfiguration {
     #[serde(rename = "dogstatsd_stream_log_too_big", default)]
     stream_log_too_big: bool,
 
+    /// The Windows named pipe name to listen on.
+    ///
+    /// If set, ADP listens for DogStatsD stream traffic on `\\.\pipe\<name>` on Windows.
+    /// The listener is unsupported on non-Windows platforms.
+    ///
+    /// Defaults to unset.
+    #[serde(rename = "dogstatsd_pipe_name", default)]
+    #[serde_as(as = "NoneAsEmptyString")]
+    pipe_name: Option<String>,
+
+    /// Windows named pipe security descriptor.
+    ///
+    /// This SDDL descriptor is applied when creating the named pipe listener.
+    ///
+    /// Defaults to `D:AI(A;;GA;;;WD)`.
+    #[serde(
+        rename = "dogstatsd_windows_pipe_security_descriptor",
+        default = "default_windows_pipe_security_descriptor_string"
+    )]
+    windows_pipe_security_descriptor: String,
+
     /// Whether ADP lowers DogStatsD parse-failure logs to debug level.
     ///
     /// When set to `true`, invalid metrics, events, and service checks still increment decode-failure telemetry, but
@@ -382,8 +412,7 @@ pub struct DogStatsDConfiguration {
 
     /// Listener types that require DogStatsD messages to be newline-terminated.
     ///
-    /// Valid values are `udp`, `uds`, and `named_pipe`. ADP accepts `named_pipe` for compatibility, but it has no effect
-    /// until named pipe listeners are supported. Invalid values are ignored.
+    /// Valid values are `udp`, `uds`, and `named_pipe`. Invalid values are ignored.
     ///
     /// Enable this when DogStatsD clients must reject packets or stream frames that don't end with a newline.
     ///
@@ -610,6 +639,7 @@ pub struct DogStatsDConfiguration {
 struct EolRequired {
     udp: bool,
     uds: bool,
+    named_pipe: bool,
 }
 
 impl EolRequired {
@@ -620,7 +650,7 @@ impl EolRequired {
             match value.as_str() {
                 "udp" => eol_required.udp = true,
                 "uds" => eol_required.uds = true,
-                "named_pipe" => {}
+                "named_pipe" => eol_required.named_pipe = true,
                 _ => warn!(
                     value,
                     "Invalid dogstatsd_eol_required value. Expected 'udp', 'uds', or 'named_pipe'."
@@ -636,6 +666,7 @@ impl EolRequired {
             ListenAddress::Udp(_) => self.udp,
             ListenAddress::Tcp(_) => false,
             ListenAddress::Unixgram(_) | ListenAddress::Unix(_) => self.uds,
+            ListenAddress::NamedPipe { .. } => self.named_pipe,
         }
     }
 }
@@ -857,6 +888,14 @@ impl DogStatsDConfiguration {
 
         if let Some(socket_stream_path) = &self.socket_stream_path {
             addresses.push(ListenAddress::Unix(socket_stream_path.into()));
+        }
+
+        if let Some(pipe_name) = &self.pipe_name {
+            addresses.push(ListenAddress::named_pipe_with_input_buffer_size(
+                pipe_name,
+                &self.windows_pipe_security_descriptor,
+                self.buffer_size as u32,
+            ));
         }
 
         addresses
@@ -1388,6 +1427,13 @@ async fn drive_stream(
                         bytes_read
                     );
 
+                    if should_drop_oversized_named_pipe_frame(&listen_addr, io_buffer) {
+                        metrics.framing_errors().increment(1);
+                        debug!(%listen_addr, %peer_addr, "DogStatsD named pipe frame exceeded the configured buffer size. Dropping frame.");
+                        io_buffer.clear();
+                        continue 'read;
+                    }
+
                     'frame: loop {
                         let frame_result = framer.next_frame(io_buffer, reached_eof);
                         let completed_outer_frames = framer.take_completed_outer_frames();
@@ -1400,6 +1446,9 @@ async fn drive_stream(
 
                         match frame_result {
                             Ok(Some(frame)) => {
+                                if matches!(listen_addr, ListenAddress::NamedPipe { .. }) {
+                                    metrics.packet_receive_success().increment(1);
+                                }
                                 trace!(%listen_addr, %peer_addr, ?frame, "Decoded frame.");
                                 if let Some(forwarder) = &packet_forwarder {
                                     forwarder.forward(frame.clone()).await;
@@ -1498,6 +1547,12 @@ async fn drive_stream(
     metrics.connections_active().decrement(1);
 
     debug!(%listen_addr, "Stream handler stopped.");
+}
+
+fn should_drop_oversized_named_pipe_frame(listen_addr: &ListenAddress, buffer: &BytesBuffer) -> bool {
+    matches!(listen_addr, ListenAddress::NamedPipe { .. })
+        && buffer.remaining_mut() == 0
+        && memchr::memchr(b'\n', buffer.chunk()).is_none()
 }
 
 fn should_warn_stream_log_too_big(listen_addr: &ListenAddress, error: &FramingError, stream_log_too_big: bool) -> bool {
@@ -1962,14 +2017,19 @@ mod tests {
         time::Duration,
     };
 
-    use bytes::Bytes;
+    use bytes::{BufMut as _, Bytes};
     use bytesize::ByteSize;
     use metrics::{Key, Label};
     use saluki_config::ConfigurationLoader;
     use saluki_context::{origin::RawOrigin, ContextResolverBuilder, TagsResolverBuilder};
-    use saluki_core::{components::ComponentContext, pooling::ObjectPool as _, topology::ComponentId};
+    use saluki_core::{
+        components::ComponentContext,
+        pooling::{helpers::get_pooled_object_via_builder, ObjectPool as _},
+        topology::ComponentId,
+    };
     use saluki_env::workload::{CaptureEntityResolver, EntityId};
     use saluki_io::{
+        buf::{BytesBuffer, FixedSizeVec},
         deser::codec::dogstatsd::{DogStatsDCodec, DogStatsDCodecConfiguration, ParsedPacket},
         net::{ConnectionAddress, ListenAddress, ProcessCredentials, ProcessIdentity},
     };
@@ -1979,7 +2039,7 @@ mod tests {
     use tokio::{net::UdpSocket, sync::mpsc, time::timeout};
 
     use super::{
-        build_io_buffer_pool, default_buffer_size,
+        build_io_buffer_pool, default_buffer_size, default_windows_pipe_security_descriptor,
         filters::EnablePayloadsFilter,
         forwarder::{
             ConnectedPacketForwarder, ForwardPacket, PacketForwarder, PacketForwarderTarget, FORWARDER_QUEUE_CAPACITY,
@@ -2205,6 +2265,56 @@ mod tests {
 
     fn tcp_listen_address() -> ListenAddress {
         ListenAddress::Tcp(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 8125)))
+    }
+
+    fn named_pipe_listen_address() -> ListenAddress {
+        ListenAddress::named_pipe_with_input_buffer_size(
+            "datadog-dogstatsd",
+            default_windows_pipe_security_descriptor(),
+            default_buffer_size() as u32,
+        )
+    }
+
+    #[test]
+    fn build_addresses_includes_named_pipe_when_configured() {
+        let config = deser_config(
+            r#"{
+                "dogstatsd_port": 0,
+                "dogstatsd_pipe_name": "datadog-dogstatsd"
+            }"#,
+        );
+
+        let addresses = config.build_addresses(None);
+
+        assert_eq!(addresses, vec![named_pipe_listen_address()]);
+    }
+
+    #[test]
+    fn build_addresses_uses_dogstatsd_buffer_size_for_named_pipe_input_buffer() {
+        let config = deser_config(
+            r#"{
+                "dogstatsd_port": 0,
+                "dogstatsd_pipe_name": "datadog-dogstatsd",
+                "dogstatsd_buffer_size": 16384
+            }"#,
+        );
+
+        let addresses = config.build_addresses(None);
+
+        let [ListenAddress::NamedPipe { input_buffer_size, .. }] = addresses.as_slice() else {
+            panic!("expected only a named pipe listen address, got {addresses:?}");
+        };
+        assert_eq!(*input_buffer_size, Some(16_384));
+    }
+
+    #[test]
+    fn eol_required_matches_named_pipe_listener_type() {
+        let config = deser_config(r#"{"dogstatsd_eol_required": ["named_pipe"]}"#);
+        let eol_required = config.eol_required();
+
+        assert!(eol_required.for_listener(&named_pipe_listen_address()));
+        assert!(!eol_required.for_listener(&udp_listen_address()));
+        assert!(!eol_required.for_listener(&tcp_listen_address()));
     }
 
     #[test]
@@ -2592,8 +2702,45 @@ mod tests {
     }
 
     #[test]
-    fn stream_log_too_big_only_warns_for_enabled_unix_invalid_frames() {
+    fn drops_full_named_pipe_buffer_without_newline() {
+        let named_pipe_stream = named_pipe_listen_address();
+        let mut buffer = get_pooled_object_via_builder::<_, BytesBuffer>(|| FixedSizeVec::with_capacity(8));
+        buffer.put_slice(b"12345678");
+
+        assert!(super::should_drop_oversized_named_pipe_frame(
+            &named_pipe_stream,
+            &buffer
+        ));
+    }
+
+    #[test]
+    fn keeps_named_pipe_partial_frame_when_buffer_has_capacity() {
+        let named_pipe_stream = named_pipe_listen_address();
+        let mut buffer = get_pooled_object_via_builder::<_, BytesBuffer>(|| FixedSizeVec::with_capacity(9));
+        buffer.put_slice(b"12345678");
+
+        assert!(!super::should_drop_oversized_named_pipe_frame(
+            &named_pipe_stream,
+            &buffer
+        ));
+    }
+
+    #[test]
+    fn keeps_full_named_pipe_buffer_with_newline() {
+        let named_pipe_stream = named_pipe_listen_address();
+        let mut buffer = get_pooled_object_via_builder::<_, BytesBuffer>(|| FixedSizeVec::with_capacity(8));
+        buffer.put_slice(b"1234567\n");
+
+        assert!(!super::should_drop_oversized_named_pipe_frame(
+            &named_pipe_stream,
+            &buffer
+        ));
+    }
+
+    #[test]
+    fn stream_log_too_big_warns_for_enabled_length_delimited_stream_invalid_frames() {
         let uds_stream = ListenAddress::Unix("/tmp/dsd-stream.sock".into());
+        let named_pipe_stream = named_pipe_listen_address();
         let tcp_stream = ListenAddress::Tcp(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 8125)));
         let error = saluki_io::deser::framing::FramingError::InvalidFrame {
             frame_len: 8193,
@@ -2602,6 +2749,7 @@ mod tests {
 
         assert!(super::should_warn_stream_log_too_big(&uds_stream, &error, true));
         assert!(!super::should_warn_stream_log_too_big(&uds_stream, &error, false));
+        assert!(!super::should_warn_stream_log_too_big(&named_pipe_stream, &error, true));
         assert!(!super::should_warn_stream_log_too_big(&tcp_stream, &error, true));
     }
 
