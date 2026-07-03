@@ -16,6 +16,8 @@ yarn.lock
 /.vitepress/
 docs/.vitepress/dist
 docs/.vitepress/cache
+docs/public/adp-topology/current.json
+docs/public/adp-topology/current.mmd
 node_modules/
 # Fuzzing artifacts and coverage
 fuzz/artifacts/

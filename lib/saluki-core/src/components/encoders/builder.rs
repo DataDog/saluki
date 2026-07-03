@@ -17,6 +17,11 @@ use crate::{
 /// encoder.
 #[async_trait]
 pub trait EncoderBuilder: MemoryBounds {
+    /// Returns the Rust type name for this builder.
+    fn rust_type(&self) -> &'static str {
+        std::any::type_name::<Self>()
+    }
+
     /// Data types allowed as input payloads to this encoder.
     fn input_event_type(&self) -> EventType;
 

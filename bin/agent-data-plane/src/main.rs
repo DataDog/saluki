@@ -62,6 +62,14 @@ async fn main() -> Result<(), GenericError> {
     let bootstrap_config_path = cli.config_file.unwrap_or_else(PlatformSettings::get_config_file_path);
     let bootstrap_config = load_bootstrap_config(&bootstrap_config_path)?.bootstrap_generic();
 
+    let action = match cli.action {
+        Action::Debug(cmd) => match handle_debug_topology_command_if_requested(&bootstrap_config, cmd).await? {
+            Some(cmd) => Action::Debug(cmd),
+            None => return Ok(()),
+        },
+        action => action,
+    };
+
     // Translate the bootstrap configuration into ADP's logging configuration, applying ADP-specific rules
     // (per-subagent log file key, never sharing a file with the Core Agent).
     let bootstrap_logging_config = LoggingConfigurationTranslator::translate(&bootstrap_config)
@@ -94,7 +102,7 @@ async fn main() -> Result<(), GenericError> {
     // subcommand actually drives it (it is added as a child of the internal supervisor inside
     // `handle_run_command`). All other subcommands drop it on entry.
     let maybe_exit_code = run_inner(
-        cli.action,
+        action,
         started,
         bootstrap_config,
         &mut bootstrap_guard,

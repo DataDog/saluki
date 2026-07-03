@@ -54,6 +54,42 @@ impl Default for EventType {
     }
 }
 
+impl EventType {
+    /// Returns stable lowercase names for the event signals represented by this type.
+    ///
+    /// Names are returned in the same order used by the `Display` implementation. If the bitmask is empty, an empty
+    /// vector is returned.
+    pub fn signal_names(&self) -> Vec<&'static str> {
+        let mut signals = Vec::new();
+
+        if self.contains(Self::Metric) {
+            signals.push("metrics");
+        }
+
+        if self.contains(Self::EventD) {
+            signals.push("events");
+        }
+
+        if self.contains(Self::ServiceCheck) {
+            signals.push("service_checks");
+        }
+
+        if self.contains(Self::Log) {
+            signals.push("logs");
+        }
+
+        if self.contains(Self::Trace) {
+            signals.push("traces");
+        }
+
+        if self.contains(Self::TraceStats) {
+            signals.push("trace_stats");
+        }
+
+        signals
+    }
+}
+
 impl fmt::Display for EventType {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let mut types = Vec::new();
@@ -251,6 +287,15 @@ impl Event {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn signal_names_returns_stable_names_for_bitmask() {
+        assert_eq!(EventType::Metric.signal_names(), vec!["metrics"]);
+        assert_eq!(
+            (EventType::Metric | EventType::Log | EventType::TraceStats).signal_names(),
+            vec!["metrics", "logs", "trace_stats"]
+        );
+    }
 
     #[test]
     #[ignore = "only used to get struct sizes for core event data types"]

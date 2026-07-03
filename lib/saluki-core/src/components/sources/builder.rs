@@ -11,6 +11,11 @@ use crate::{components::ComponentContext, data_model::event::EventType, topology
 /// the built source, such as the event outputs exposed by the source.
 #[async_trait]
 pub trait SourceBuilder: MemoryBounds {
+    /// Returns the Rust type name for this builder.
+    fn rust_type(&self) -> &'static str {
+        std::any::type_name::<Self>()
+    }
+
     /// Event outputs exposed by this source.
     fn outputs(&self) -> &[OutputDefinition<EventType>];
 

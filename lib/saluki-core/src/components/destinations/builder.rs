@@ -11,6 +11,11 @@ use crate::{components::ComponentContext, data_model::event::EventType};
 /// aspects of the built destination, such as the data types allowed for input events.
 #[async_trait]
 pub trait DestinationBuilder: MemoryBounds {
+    /// Returns the Rust type name for this builder.
+    fn rust_type(&self) -> &'static str {
+        std::any::type_name::<Self>()
+    }
+
     /// Event types allowed as input events to this destination.
     fn input_event_type(&self) -> EventType;
 

@@ -11,6 +11,11 @@ use crate::{components::ComponentContext, data_model::payload::PayloadType, topo
 /// the built relay, such as the payload types emitted.
 #[async_trait]
 pub trait RelayBuilder: MemoryBounds {
+    /// Returns the Rust type name for this builder.
+    fn rust_type(&self) -> &'static str {
+        std::any::type_name::<Self>()
+    }
+
     /// Payload outputs exposed by this source.
     fn outputs(&self) -> &[OutputDefinition<PayloadType>];
 

@@ -11,7 +11,7 @@ use tracing::{error, info};
 use super::{
     built::{BuiltTopology, WorkerPoolConfiguration},
     graph::{Graph, GraphError},
-    ComponentId, RegisteredComponent,
+    ComponentId, RegisteredComponent, TopologySnapshot,
 };
 use crate::{
     components::{
@@ -123,6 +123,32 @@ impl TopologyBlueprint {
             .expect("topology blueprint mutex poisoned")
             .as_mut()
             .expect("topology blueprint already initialized")
+    }
+
+    /// Returns a read-only snapshot of the topology graph.
+    ///
+    /// The snapshot is intended for diagnostics and documentation tooling. It validates the graph before exporting so
+    /// callers see the same topology-shape errors that would prevent the blueprint from running.
+    ///
+    /// # Errors
+    ///
+    /// If the topology graph is invalid, an error is returned.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the blueprint mutex is poisoned.
+    pub fn snapshot(&self) -> Result<TopologySnapshot, GenericError> {
+        let guard = self.build_state.lock().expect("topology blueprint mutex poisoned");
+        let state = guard
+            .as_ref()
+            .ok_or_else(|| generic_error!("Topology has already been initialized and cannot be snapshotted."))?;
+
+        state
+            .graph
+            .validate()
+            .error_context("Failed to validate topology graph before snapshot.")?;
+
+        Ok(state.graph.snapshot())
     }
 
     /// Sets the capacity of interconnects in the topology.
@@ -1018,6 +1044,22 @@ mod tests {
         }
         pairs.sort();
         pairs
+    }
+
+    #[test]
+    fn snapshot_validates_the_blueprint_graph() {
+        let component_registry = ComponentRegistry::default();
+        let mut blueprint = TopologyBlueprint::new("test", &component_registry);
+        blueprint
+            .add_source("in", TestSourceBuilder::default_output(EventType::Metric))
+            .expect("should not fail to add source");
+
+        let error = blueprint
+            .snapshot()
+            .expect_err("disconnected graph should not snapshot");
+
+        let error = format!("{error:?}");
+        assert!(error.contains("disconnected components"), "unexpected error: {error}");
     }
 
     #[test]
