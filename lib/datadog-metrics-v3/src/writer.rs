@@ -7,6 +7,8 @@ use std::fmt;
 
 use protobuf::CodedOutputStream;
 
+use super::interner::Interner;
+use super::types::{value_type_for_values, V3MetricType, V3ValueType};
 use crate::constants::{
     DICT_NAME_STR_FIELD_NUMBER, DICT_ORIGIN_INFO_FIELD_NUMBER, DICT_RESOURCE_LEN_FIELD_NUMBER,
     DICT_RESOURCE_NAME_FIELD_NUMBER, DICT_RESOURCE_STR_FIELD_NUMBER, DICT_RESOURCE_TYPE_FIELD_NUMBER,
@@ -17,9 +19,6 @@ use crate::constants::{
     TYPES_FIELD_NUMBER, UNIT_REFS_FIELD_NUMBER, VALS_FLOAT32_FIELD_NUMBER, VALS_FLOAT64_FIELD_NUMBER,
     VALS_SINT64_FIELD_NUMBER,
 };
-
-use super::interner::Interner;
-use super::types::{value_type_for_values, V3MetricType, V3ValueType};
 
 /// Error encountered while encoding a V3 payload.
 #[derive(Debug)]

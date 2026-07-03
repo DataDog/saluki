@@ -49,6 +49,7 @@ impl<K: Eq + Hash> Interner<K> {
     }
 
     /// Returns the number of interned values.
+    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.index.len()
     }
