@@ -1585,7 +1585,7 @@ fn write_metric_to_v3(
                 subproduct,
                 product_detail,
             } => {
-                builder.set_origin(*product, *subproduct, *product_detail);
+                builder.set_origin(*product, *subproduct, *product_detail, false);
             }
         }
     }

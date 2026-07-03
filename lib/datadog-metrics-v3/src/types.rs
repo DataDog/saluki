@@ -1,14 +1,8 @@
-//! V3 payload type definitions.
-
-/// Metric should not be indexed by the backend (agent_hidden metrics).
-pub const FLAG_NO_INDEX: u64 = 0x100;
-
-/// Metric carries a unit; the `unit_refs` column is populated for this metric.
-pub const FLAG_HAS_UNIT: u64 = 0x200;
+//! V3 payload type definitions and protocol buffer field numbers.
 
 /// V3 metric type values.
 ///
-/// These match the `metricType` enum in `payload_v3.proto`.
+/// These match the `metricType` enum in `intake_v3.proto`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum V3MetricType {
@@ -20,7 +14,7 @@ pub enum V3MetricType {
 
 impl V3MetricType {
     /// Returns the numeric value for encoding in the types column.
-    pub fn as_u64(self) -> u64 {
+    pub const fn as_u64(self) -> u64 {
         self as u64
     }
 }
@@ -34,10 +28,13 @@ impl V3MetricType {
 pub enum V3ValueType {
     /// Value is zero, not stored explicitly.
     Zero = 0x00,
+
     /// Value is stored in vals_sint64.
     Sint64 = 0x10,
+
     /// Value is stored in vals_float32.
     Float32 = 0x20,
+
     /// Value is stored in vals_float64.
     Float64 = 0x30,
 }
@@ -51,11 +48,11 @@ impl V3ValueType {
 
 /// Intermediate point classification for value type compaction.
 ///
-/// Provides finer-grained classification than [`V3ValueType`] to avoid precision
-/// loss when combining different value types. In particular, it distinguishes small
-/// integers (that fit losslessly in f32) from large integers (that don't), so that
-/// mixing a large integer with a Float32 value correctly escalates to Float64 rather
-/// than silently truncating the integer.
+/// This provides finer-grained classification than [`V3ValueType`] to avoid
+/// precision loss when combining different value types. In particular, it
+/// distinguishes small integers (that fit losslessly in f32) from large integers
+/// (that don't), so that mixing a large integer with a Float32 value correctly
+/// escalates to Float64 rather than silently truncating the integer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(u8)]
 pub enum PointKind {
@@ -67,7 +64,7 @@ pub enum PointKind {
     Int48 = 2,
     /// Fractional value exactly representable as f32.
     Float32 = 3,
-    /// Everything else — requires full f64 precision.
+    /// Everything else - requires full f64 precision.
     Float64 = 4,
 }
 
@@ -75,11 +72,13 @@ pub enum PointKind {
 const F32_INT_MAX: i64 = 1 << 24;
 
 impl PointKind {
+    /// Classifies a single f64 value.
     fn for_value(v: f64) -> Self {
         if v == 0.0 {
             return Self::Zero;
         }
 
+        // Varint range that fits in 7 bytes or less (49 bits).
         const VARINT_WIDTH: i32 = 7 * 7 - 1;
         const MAX_INT: i64 = 1 << VARINT_WIDTH;
         const MIN_INT: i64 = -MAX_INT;
@@ -101,9 +100,9 @@ impl PointKind {
 
     /// Combines two point kinds into the smallest kind that can represent both.
     ///
-    /// `Int48 + Float32 = Float64` (and vice versa), because large integers lose
-    /// precision in f32 and fractional values can't be stored as sint64. All other
-    /// combinations are `max(self, other)`.
+    /// This is `max(self, other)` in all cases **except**:
+    /// - `Int48 + Float32 = Float64` (and vice versa), because large integers
+    ///   lose precision in f32, and fractional values can't be stored as sint64.
     fn union(self, other: Self) -> Self {
         match (self, other) {
             (Self::Int48, Self::Float32) | (Self::Float32, Self::Int48) => Self::Float64,
@@ -111,6 +110,7 @@ impl PointKind {
         }
     }
 
+    /// Converts to the wire-format value type.
     fn to_value_type(self) -> V3ValueType {
         match self {
             Self::Zero => V3ValueType::Zero,
@@ -123,9 +123,8 @@ impl PointKind {
 
 /// Determines the best [`V3ValueType`] for a set of f64 values.
 ///
-/// Uses [`PointKind`] internally to avoid precision loss when mixing large integers
-/// with fractional float32 values — a case where the simpler per-value approach
-/// would silently truncate the integer.
+/// Uses [`PointKind`] internally to avoid precision loss when mixing
+/// large integers with fractional float32 values.
 pub fn value_type_for_values(values: impl Iterator<Item = f64>) -> V3ValueType {
     let mut kind = PointKind::Zero;
     for v in values {

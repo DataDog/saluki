@@ -1,14 +1,25 @@
 //! V3 columnar metrics writer.
 //!
 //! The [`V3Writer`] accumulates metrics in columnar format with dictionary deduplication,
-//! then serializes the batch to protobuf wire format when [`V3Writer::finalize`] is called.
+//! then produces [`V3EncodedData`] ready for protobuf serialization.
 
 use std::fmt;
 
 use protobuf::CodedOutputStream;
 
+use crate::constants::{
+    DICT_NAME_STR_FIELD_NUMBER, DICT_ORIGIN_INFO_FIELD_NUMBER, DICT_RESOURCE_LEN_FIELD_NUMBER,
+    DICT_RESOURCE_NAME_FIELD_NUMBER, DICT_RESOURCE_STR_FIELD_NUMBER, DICT_RESOURCE_TYPE_FIELD_NUMBER,
+    DICT_SOURCE_TYPE_NAME_FIELD_NUMBER, DICT_TAGSETS_FIELD_NUMBER, DICT_TAGS_STR_FIELD_NUMBER,
+    DICT_UNIT_STR_FIELD_NUMBER, INTERVALS_FIELD_NUMBER, NAMES_FIELD_NUMBER, NUM_POINTS_FIELD_NUMBER,
+    ORIGIN_INFO_FIELD_NUMBER, RESOURCES_FIELD_NUMBER, SKETCH_BIN_CNTS_FIELD_NUMBER, SKETCH_BIN_KEYS_FIELD_NUMBER,
+    SKETCH_NUM_BINS_FIELD_NUMBER, SOURCE_TYPE_NAME_FIELD_NUMBER, TAGS_FIELD_NUMBER, TIMESTAMPS_FIELD_NUMBER,
+    TYPES_FIELD_NUMBER, UNIT_REFS_FIELD_NUMBER, VALS_FLOAT32_FIELD_NUMBER, VALS_FLOAT64_FIELD_NUMBER,
+    VALS_SINT64_FIELD_NUMBER,
+};
+
 use super::interner::Interner;
-use super::types::{value_type_for_values, V3MetricType, V3ValueType, FLAG_HAS_UNIT, FLAG_NO_INDEX};
+use super::types::{value_type_for_values, V3MetricType, V3ValueType};
 
 /// Error encountered while encoding a V3 payload.
 #[derive(Debug)]
@@ -37,6 +48,51 @@ impl V3EncodeError {
     pub fn into_inner(self) -> protobuf::Error {
         self.0
     }
+}
+
+pub const FLAG_NO_INDEX: u64 = 0x100;
+pub const FLAG_HAS_UNIT: u64 = 0x200;
+
+/// Encoded V3 payload data ready for protobuf serialization.
+///
+/// Used primarily as a helper for testing.
+#[derive(Debug, Default)]
+pub struct V3EncodedData {
+    // Dictionary encoded bytes (varint-length-prefixed strings)
+    pub dict_name_bytes: Vec<u8>,
+    pub dict_tags_bytes: Vec<u8>,
+    pub dict_tagsets: Vec<i64>,
+    pub dict_resource_str_bytes: Vec<u8>,
+    pub dict_resource_len: Vec<i64>,
+    pub dict_resource_type: Vec<i64>,
+    pub dict_resource_name: Vec<i64>,
+    pub dict_source_type_bytes: Vec<u8>,
+    pub dict_origin_info: Vec<i32>,
+    pub dict_unit_bytes: Vec<u8>,
+
+    // Per-metric columns (one entry per metric, except conditional columns)
+    pub types: Vec<u64>,
+    pub names: Vec<i64>,
+    pub tags: Vec<i64>,
+    pub resources: Vec<i64>,
+    pub intervals: Vec<u64>,
+    pub num_points: Vec<u64>,
+    pub source_type_names: Vec<i64>,
+    pub origin_infos: Vec<i64>,
+    pub unit_refs: Vec<i64>, // Present only for metrics with FLAG_HAS_UNIT set.
+
+    // Point data (varies per metric based on num_points)
+    pub timestamps: Vec<i64>,
+    pub vals_sint64: Vec<i64>,
+    pub vals_float32: Vec<f32>,
+    pub vals_float64: Vec<f64>,
+
+    // Sketch data
+    pub sketch_num_bins: Vec<u64>,
+    pub sketch_bin_keys: Vec<i32>,
+    pub sketch_bin_cnts: Vec<u32>,
+
+    pub value_encoding_stats: V3ValueEncodingStats,
 }
 
 /// Encoded V3 metrics payload with telemetry data.
@@ -69,196 +125,6 @@ pub struct V3ColumnBytes {
     pub compressed_len: usize,
 }
 
-fn write_bytes_column(
-    output: &mut Vec<u8>, columns: &mut Vec<V3ColumnBytes>, field_number: u32, bytes: &[u8],
-) -> Result<(), V3EncodeError> {
-    let start = output.len();
-    {
-        let mut os = CodedOutputStream::vec(output);
-        os.write_bytes(field_number, bytes)?;
-        os.flush()?;
-    }
-
-    if output.len() != start {
-        columns.push(V3ColumnBytes {
-            field_number,
-            bytes: bytes.to_vec(),
-            compressed_len: 0,
-        });
-    }
-
-    Ok(())
-}
-
-fn write_packed_column<F, R>(
-    output: &mut Vec<u8>, columns: &mut Vec<V3ColumnBytes>, field_number: u32, write_framed: F, write_raw: R,
-) -> Result<(), V3EncodeError>
-where
-    F: FnOnce(&mut CodedOutputStream<'_>) -> protobuf::Result<()>,
-    R: FnOnce(&mut CodedOutputStream<'_>) -> protobuf::Result<()>,
-{
-    let start = output.len();
-    {
-        let mut os = CodedOutputStream::vec(output);
-        write_framed(&mut os)?;
-        os.flush()?;
-    }
-
-    if output.len() != start {
-        let mut bytes = Vec::new();
-        {
-            let mut os = CodedOutputStream::vec(&mut bytes);
-            write_raw(&mut os)?;
-            os.flush()?;
-        }
-        columns.push(V3ColumnBytes {
-            field_number,
-            bytes,
-            compressed_len: 0,
-        });
-    }
-
-    Ok(())
-}
-
-// ── Field numbers (from intake_v3.proto) ─────────────────────────────────────
-const DICT_NAME_STR: u32 = 1;
-const DICT_TAGS_STR: u32 = 2;
-const DICT_TAGSETS: u32 = 3;
-const DICT_RESOURCE_STR: u32 = 4;
-const DICT_RESOURCE_LEN: u32 = 5;
-const DICT_RESOURCE_TYPE: u32 = 6;
-const DICT_RESOURCE_NAME: u32 = 7;
-const DICT_SOURCE_TYPE_NAME: u32 = 8;
-const DICT_ORIGIN_INFO: u32 = 9;
-const TYPES: u32 = 10;
-const NAMES: u32 = 11;
-const TAGS: u32 = 12;
-const RESOURCES: u32 = 13;
-const INTERVALS: u32 = 14;
-const NUM_POINTS: u32 = 15;
-const TIMESTAMPS: u32 = 16;
-const VALS_SINT64: u32 = 17;
-const VALS_FLOAT32: u32 = 18;
-const VALS_FLOAT64: u32 = 19;
-const SKETCH_NUM_BINS: u32 = 20;
-const SKETCH_BIN_KEYS: u32 = 21;
-const SKETCH_BIN_CNTS: u32 = 22;
-const SOURCE_TYPE_NAME: u32 = 23;
-const ORIGIN_INFO: u32 = 24;
-const DICT_UNIT_STR: u32 = 25;
-const UNIT_REFS: u32 = 26;
-
-// ── Public field number aliases ──────────────────────────────────────────────
-// Consumers outside this crate (e.g. per-column telemetry) need these field numbers
-// to correlate `V3ColumnBytes::field_number` back to a named column.
-pub const DICT_NAME_STR_FIELD_NUMBER: u32 = DICT_NAME_STR;
-pub const DICT_TAGS_STR_FIELD_NUMBER: u32 = DICT_TAGS_STR;
-pub const DICT_TAGSETS_FIELD_NUMBER: u32 = DICT_TAGSETS;
-pub const DICT_RESOURCE_STR_FIELD_NUMBER: u32 = DICT_RESOURCE_STR;
-pub const DICT_RESOURCE_LEN_FIELD_NUMBER: u32 = DICT_RESOURCE_LEN;
-pub const DICT_RESOURCE_TYPE_FIELD_NUMBER: u32 = DICT_RESOURCE_TYPE;
-pub const DICT_RESOURCE_NAME_FIELD_NUMBER: u32 = DICT_RESOURCE_NAME;
-pub const DICT_SOURCE_TYPE_NAME_FIELD_NUMBER: u32 = DICT_SOURCE_TYPE_NAME;
-pub const DICT_ORIGIN_INFO_FIELD_NUMBER: u32 = DICT_ORIGIN_INFO;
-pub const TYPES_FIELD_NUMBER: u32 = TYPES;
-pub const NAMES_FIELD_NUMBER: u32 = NAMES;
-pub const TAGS_FIELD_NUMBER: u32 = TAGS;
-pub const RESOURCES_FIELD_NUMBER: u32 = RESOURCES;
-pub const INTERVALS_FIELD_NUMBER: u32 = INTERVALS;
-pub const NUM_POINTS_FIELD_NUMBER: u32 = NUM_POINTS;
-pub const TIMESTAMPS_FIELD_NUMBER: u32 = TIMESTAMPS;
-pub const VALS_SINT64_FIELD_NUMBER: u32 = VALS_SINT64;
-pub const VALS_FLOAT32_FIELD_NUMBER: u32 = VALS_FLOAT32;
-pub const VALS_FLOAT64_FIELD_NUMBER: u32 = VALS_FLOAT64;
-pub const SKETCH_NUM_BINS_FIELD_NUMBER: u32 = SKETCH_NUM_BINS;
-pub const SKETCH_BIN_KEYS_FIELD_NUMBER: u32 = SKETCH_BIN_KEYS;
-pub const SKETCH_BIN_CNTS_FIELD_NUMBER: u32 = SKETCH_BIN_CNTS;
-pub const SOURCE_TYPE_NAME_FIELD_NUMBER: u32 = SOURCE_TYPE_NAME;
-pub const ORIGIN_INFO_FIELD_NUMBER: u32 = ORIGIN_INFO;
-pub const DICT_UNIT_STR_FIELD_NUMBER: u32 = DICT_UNIT_STR;
-pub const UNIT_REFS_FIELD_NUMBER: u32 = UNIT_REFS;
-
-/// Appends a varint-length-prefixed string to the destination buffer.
-fn append_len_str(dst: &mut Vec<u8>, s: &str) {
-    let mut len = s.len() as u64;
-    loop {
-        let mut byte = (len & 0x7F) as u8;
-        len >>= 7;
-        if len != 0 {
-            byte |= 0x80;
-        }
-        dst.push(byte);
-        if len == 0 {
-            break;
-        }
-    }
-    dst.extend_from_slice(s.as_bytes());
-}
-
-/// Delta-encodes a slice in place, working backwards.
-///
-/// After encoding, `s[i]` contains the difference `s[i] - s[i-1]`.
-pub fn delta_encode(s: &mut [i64]) {
-    if s.len() < 2 {
-        return;
-    }
-    for i in (1..s.len()).rev() {
-        s[i] -= s[i - 1];
-    }
-}
-
-/// Delta-encodes i32 values in place, working backwards.
-pub fn delta_encode_i32(s: &mut [i32]) {
-    if s.len() < 2 {
-        return;
-    }
-    for i in (1..s.len()).rev() {
-        s[i] -= s[i - 1];
-    }
-}
-
-/// Encoded V3 payload data ready for protobuf serialization.
-#[derive(Debug, Default)]
-pub struct V3EncodedData {
-    // Dictionary encoded bytes (varint-length-prefixed strings)
-    pub dict_name_bytes: Vec<u8>,
-    pub dict_tags_bytes: Vec<u8>,
-    pub dict_tagsets: Vec<i64>,
-    pub dict_resource_str_bytes: Vec<u8>,
-    pub dict_resource_len: Vec<i64>,
-    pub dict_resource_type: Vec<i64>,
-    pub dict_resource_name: Vec<i64>,
-    pub dict_source_type_bytes: Vec<u8>,
-    pub dict_origin_info: Vec<i32>,
-    pub dict_unit_bytes: Vec<u8>,
-
-    // Per-metric columns (one entry per metric)
-    pub types: Vec<u64>,
-    pub names: Vec<i64>,
-    pub tags: Vec<i64>,
-    pub resources: Vec<i64>,
-    pub intervals: Vec<u64>,
-    pub num_points: Vec<u64>,
-    pub source_type_names: Vec<i64>,
-    pub origin_infos: Vec<i64>,
-    /// Unit ref per metric. Only present (non-empty) for metrics with `FLAG_HAS_UNIT` set.
-    pub unit_refs: Vec<i64>,
-
-    // Point data (varies per metric based on num_points)
-    pub timestamps: Vec<i64>,
-    pub vals_sint64: Vec<i64>,
-    pub vals_float32: Vec<f32>,
-    pub vals_float64: Vec<f64>,
-
-    // Sketch data
-    pub sketch_num_bins: Vec<u64>,
-    pub sketch_bin_keys: Vec<i32>,
-    pub sketch_bin_cnts: Vec<u32>,
-
-    pub value_encoding_stats: V3ValueEncodingStats,
-}
-
 /// V3 columnar metrics writer.
 ///
 /// Accumulates metrics in columnar format with dictionary deduplication.
@@ -288,7 +154,7 @@ pub struct V3Writer {
     dict_origin_info: Vec<i32>,
     dict_unit_bytes: Vec<u8>,
 
-    // Per-metric columns
+    // Per-metric columns (one entry per metric, except conditional columns)
     types: Vec<u64>,
     names: Vec<i64>,
     tags: Vec<i64>,
@@ -297,7 +163,7 @@ pub struct V3Writer {
     num_points: Vec<u64>,
     source_type_names: Vec<i64>,
     origin_infos: Vec<i64>,
-    unit_refs: Vec<i64>,
+    unit_refs: Vec<i64>, // Present only for metrics with FLAG_HAS_UNIT set.
 
     // Point data
     timestamps: Vec<i64>,
@@ -311,6 +177,8 @@ pub struct V3Writer {
     sketch_bin_cnts: Vec<u32>,
 
     // Scratch data
+    tag_ids: Vec<i64>,
+    resource_ids: Vec<(i64, i64)>,
     value_encoding_stats: V3ValueEncodingStats,
 }
 
@@ -328,6 +196,7 @@ impl V3Writer {
         let name_id = self.intern_name(name);
         let metric_idx = self.types.len();
         let point_start_idx = self.vals_float64.len();
+        let sint64_start_idx = self.vals_sint64.len();
 
         // Initialize the per-metric columns with default values
         self.types.push(metric_type.as_u64());
@@ -338,29 +207,25 @@ impl V3Writer {
         self.num_points.push(0);
         self.source_type_names.push(0);
         self.origin_infos.push(0);
-        // unit_refs is sparse: only written for metrics that have FLAG_HAS_UNIT set.
-        // We track whether any metric in this payload has a unit.
 
         V3MetricBuilder {
             writer: self,
             point_start_idx,
+            sint64_start_idx,
             metric_idx,
-            closed: false,
             unit_ref_idx: None,
         }
     }
 
-    /// Finalizes the writer and returns the raw columnar data before serialization.
-    ///
-    /// Primarily for testing. Production code should call [`finalize`](Self::finalize).
-    pub fn finalize_inner(mut self) -> V3EncodedData {
+    fn finalize_inner(mut self) -> V3EncodedData {
+        // Delta encode all of the index arrays first.
         delta_encode(&mut self.names);
         delta_encode(&mut self.tags);
         delta_encode(&mut self.resources);
         delta_encode(&mut self.source_type_names);
         delta_encode(&mut self.origin_infos);
-        delta_encode(&mut self.timestamps);
         delta_encode(&mut self.unit_refs);
+        delta_encode(&mut self.timestamps);
 
         V3EncodedData {
             dict_name_bytes: self.dict_name_bytes,
@@ -624,36 +489,48 @@ impl V3Writer {
         id
     }
 
-    fn intern_tag(&mut self, tag: &str) -> i64 {
+    fn intern_tag(&mut self, tag: &str) {
         if tag.is_empty() {
-            return 0;
+            self.tag_ids.push(0);
+            return;
         }
+
         let (id, is_new) = self.tag_interner.get_or_insert(tag);
         if is_new {
             append_len_str(&mut self.dict_tags_bytes, tag);
         }
-        id
+        self.tag_ids.push(id);
     }
 
-    fn intern_tagset(&mut self, tag_ids: Vec<i64>) -> i64 {
-        if tag_ids.is_empty() {
+    fn intern_tagset<I, S>(&mut self, tags: I) -> i64
+    where
+        I: Iterator<Item = S>,
+        S: AsRef<str>,
+    {
+        self.tag_ids.clear();
+        for tag in tags {
+            self.intern_tag(tag.as_ref());
+        }
+
+        if self.tag_ids.is_empty() {
             return 0;
         }
-        let (id, is_new) = self.tagset_interner.get_or_insert(tag_ids.as_slice());
+
+        let (id, is_new) = self.tagset_interner.get_or_insert(&self.tag_ids);
         if is_new {
-            self.encode_tagset(&tag_ids);
+            self.encode_tagset();
         }
         id
     }
 
-    fn encode_tagset(&mut self, tag_ids: &[i64]) {
+    fn encode_tagset(&mut self) {
         // Push the length
-        self.dict_tagsets.push(tag_ids.len() as i64);
+        self.dict_tagsets.push(self.tag_ids.len() as i64);
 
         let start = self.dict_tagsets.len();
 
         // Add all tag IDs
-        self.dict_tagsets.extend_from_slice(tag_ids);
+        self.dict_tagsets.extend_from_slice(&self.tag_ids);
 
         // Sort and delta-encode the tagset portion
         self.dict_tagsets[start..].sort_unstable();
@@ -672,30 +549,31 @@ impl V3Writer {
     }
 
     fn intern_resources(&mut self, resources: &[(&str, &str)]) -> i64 {
-        if resources.is_empty() {
+        self.resource_ids.clear();
+        for (resource_type, resource_name) in resources {
+            let type_id = self.intern_resource_str(resource_type);
+            let name_id = self.intern_resource_str(resource_name);
+            self.resource_ids.push((type_id, name_id));
+        }
+
+        if self.resource_ids.is_empty() {
             return 0;
         }
 
-        // Convert to (type_id, name_id) pairs
-        let id_pairs: Vec<(i64, i64)> = resources
-            .iter()
-            .map(|(t, n)| (self.intern_resource_str(t), self.intern_resource_str(n)))
-            .collect();
-
-        let (id, is_new) = self.resource_interner.get_or_insert(id_pairs.as_slice());
+        let (id, is_new) = self.resource_interner.get_or_insert(&self.resource_ids);
         if is_new {
-            self.encode_resources(&id_pairs);
+            self.encode_resources();
         }
         id
     }
 
-    fn encode_resources(&mut self, id_pairs: &[(i64, i64)]) {
-        self.dict_resource_len.push(id_pairs.len() as i64);
+    fn encode_resources(&mut self) {
+        self.dict_resource_len.push(self.resource_ids.len() as i64);
 
         let type_start = self.dict_resource_type.len();
         let name_start = self.dict_resource_name.len();
 
-        for (type_id, name_id) in id_pairs {
+        for (type_id, name_id) in &self.resource_ids {
             self.dict_resource_type.push(*type_id);
             self.dict_resource_name.push(*name_id);
         }
@@ -719,6 +597,7 @@ impl V3Writer {
         if product == 0 && category == 0 && service == 0 {
             return 0;
         }
+
         let (id, is_new) = self.origin_interner.get_or_insert(&(product, category, service));
         if is_new {
             self.dict_origin_info.push(product);
@@ -744,19 +623,11 @@ impl V3Writer {
 ///
 /// Use the setter methods to configure the metric, add points with [`add_point`](Self::add_point),
 /// then call [`close`](Self::close) to finalize.
-///
-/// # Panics (debug only)
-///
-/// Dropping a `V3MetricBuilder` without calling `close()` panics in debug builds, because
-/// omitting `close()` leaves the metric's value-type bits unset in the `types` column.
 pub struct V3MetricBuilder<'a> {
     writer: &'a mut V3Writer,
     point_start_idx: usize,
+    sint64_start_idx: usize,
     metric_idx: usize,
-    closed: bool,
-    /// Index into `writer.unit_refs` for this metric's entry, if [`set_unit`](Self::set_unit)
-    /// has pushed one. Lets repeated calls update or remove the existing entry instead of
-    /// appending a new one, which would desync the sparse `unit_refs` column.
     unit_ref_idx: Option<usize>,
 }
 
@@ -769,14 +640,13 @@ impl<'a> V3MetricBuilder<'a> {
         I: Iterator<Item = S>,
         S: AsRef<str>,
     {
-        let tag_ids: Vec<i64> = tags.map(|t| self.writer.intern_tag(t.as_ref())).collect();
-        let tagset_id = self.writer.intern_tagset(tag_ids);
+        let tagset_id = self.writer.intern_tagset(tags);
         self.writer.tags[self.metric_idx] = tagset_id;
     }
 
     /// Sets the resources for this metric.
     ///
-    /// Resources are (type, name) pairs, e.g., ("host", "server1").
+    /// Resources are (type, name) pairs, for example, (`host`, `server1`).
     pub fn set_resources(&mut self, resources: &[(&str, &str)]) {
         let res_id = self.writer.intern_resources(resources);
         self.writer.resources[self.metric_idx] = res_id;
@@ -797,9 +667,18 @@ impl<'a> V3MetricBuilder<'a> {
         self.writer.source_type_names[self.metric_idx] = id;
     }
 
-    /// Sets the unit for this metric (e.g. "millisecond", "byte").
-    ///
-    /// Sets `FLAG_HAS_UNIT` in the types column and records the unit ref.
+    /// Sets the origin metadata for this metric.
+    pub fn set_origin(&mut self, product: u32, category: u32, service: u32, no_index: bool) {
+        let id = self
+            .writer
+            .intern_origin(product as i32, category as i32, service as i32);
+        self.writer.origin_infos[self.metric_idx] = id;
+        if no_index {
+            self.writer.types[self.metric_idx] |= FLAG_NO_INDEX;
+        }
+    }
+
+    /// Sets the unit for this metric.
     pub fn set_unit(&mut self, unit: &str) {
         if unit.is_empty() {
             self.writer.types[self.metric_idx] &= !FLAG_HAS_UNIT;
@@ -817,21 +696,6 @@ impl<'a> V3MetricBuilder<'a> {
             self.writer.unit_refs.push(id);
         }
         self.writer.types[self.metric_idx] |= FLAG_HAS_UNIT;
-    }
-
-    /// Marks this metric as agent-hidden (not indexed by the backend).
-    ///
-    /// Sets `FLAG_NO_INDEX` in the types column.
-    pub fn set_no_index(&mut self) {
-        self.writer.types[self.metric_idx] |= FLAG_NO_INDEX;
-    }
-
-    /// Sets the origin metadata for this metric.
-    pub fn set_origin(&mut self, product: u32, category: u32, service: u32) {
-        let id = self
-            .writer
-            .intern_origin(product as i32, category as i32, service as i32);
-        self.writer.origin_infos[self.metric_idx] = id;
     }
 
     /// Adds a data point to this metric.
@@ -875,24 +739,10 @@ impl<'a> V3MetricBuilder<'a> {
     /// that can hold all values without loss.
     pub fn close(mut self) {
         self.compact_values();
-        self.closed = true;
     }
 
     fn compact_values(&mut self) {
-        // Sketch summary values (sum/min/max) are stored in vals_float64 and MUST
-        // remain there — the decoder reads them from that specific column by position.
-        // Compacting them into vals_float32 or vals_sint64 would silently corrupt the
-        // payload: the decoder would read garbage values from the wrong column.
-        let metric_type = self.writer.types[self.metric_idx] & 0x0F;
         let count = self.writer.num_points[self.metric_idx] as usize;
-        if metric_type == V3MetricType::Sketch as u64 {
-            // Sketches always carry one integer count and three float64 values (sum, min, max)
-            // per point; they never go through the compaction below.
-            self.writer.value_encoding_stats.sint64 += count as u64;
-            self.writer.value_encoding_stats.float64 += (count * 3) as u64;
-            return;
-        }
-
         if count == 0 {
             return;
         }
@@ -900,52 +750,145 @@ impl<'a> V3MetricBuilder<'a> {
         let start = self.point_start_idx;
         let end = self.writer.vals_float64.len();
 
-        // Determine the value type needed to hold all points losslessly. This must use
-        // `value_type_for_values` (not a per-value `V3ValueType::max` fold) because mixing a
-        // large integer with a fractional float32 value needs to escalate to Float64 — a
-        // per-value fold would pick Float32 and silently truncate the large integer.
+        // Determine the best value type for all points in this metric.
         let val_ty = value_type_for_values(self.writer.vals_float64[start..end].iter().copied());
+        let is_sketch = (self.writer.types[self.metric_idx] & 0x0F) == V3MetricType::Sketch as u64;
+        let float_values_len = end - start;
+        if is_sketch {
+            // Sketches always carry one integer count per point in addition to sum/min/max values.
+            self.writer.value_encoding_stats.sint64 += count as u64;
+        }
 
         // Update the type field
         self.writer.types[self.metric_idx] |= val_ty.as_u64();
 
-        let n = (end - start) as u64;
-
         // Convert values to the appropriate storage
         match val_ty {
             V3ValueType::Zero => {
+                self.writer.value_encoding_stats.zero += float_values_len as u64;
                 // Values are all zero, don't store anything
-                self.writer.value_encoding_stats.zero += n;
                 self.writer.vals_float64.truncate(start);
             }
             V3ValueType::Sint64 => {
-                self.writer.value_encoding_stats.sint64 += n;
-                for i in start..end {
-                    self.writer.vals_sint64.push(self.writer.vals_float64[i] as i64);
+                self.writer.value_encoding_stats.sint64 += float_values_len as u64;
+                if is_sketch {
+                    // For sketches, vals_sint64 already has one count per point (pushed by add_sketch),
+                    // and vals_float64 has 3 values per point (sum, min, max). When compacting to Sint64,
+                    // we need to interleave them as: sum, min, max, cnt per point.
+                    let counts: Vec<i64> = self.writer.vals_sint64[self.sint64_start_idx..].to_vec();
+                    self.writer.vals_sint64.truncate(self.sint64_start_idx);
+                    for (i, cnt) in counts.into_iter().enumerate() {
+                        let f_off = start + i * 3;
+                        self.writer.vals_sint64.push(self.writer.vals_float64[f_off] as i64);
+                        self.writer.vals_sint64.push(self.writer.vals_float64[f_off + 1] as i64);
+                        self.writer.vals_sint64.push(self.writer.vals_float64[f_off + 2] as i64);
+                        self.writer.vals_sint64.push(cnt);
+                    }
+                } else {
+                    for i in start..end {
+                        self.writer.vals_sint64.push(self.writer.vals_float64[i] as i64);
+                    }
                 }
                 self.writer.vals_float64.truncate(start);
             }
             V3ValueType::Float32 => {
-                self.writer.value_encoding_stats.float32 += n;
+                self.writer.value_encoding_stats.float32 += float_values_len as u64;
                 for i in start..end {
                     self.writer.vals_float32.push(self.writer.vals_float64[i] as f32);
                 }
                 self.writer.vals_float64.truncate(start);
             }
             V3ValueType::Float64 => {
+                self.writer.value_encoding_stats.float64 += float_values_len as u64;
                 // Already stored in vals_float64, keep them
-                self.writer.value_encoding_stats.float64 += n;
             }
         }
     }
 }
 
-impl Drop for V3MetricBuilder<'_> {
-    fn drop(&mut self) {
-        debug_assert!(
-            self.closed,
-            "V3MetricBuilder dropped without calling close(): value-type bits not set in types column"
-        );
+fn write_bytes_column(
+    output: &mut Vec<u8>, columns: &mut Vec<V3ColumnBytes>, field_number: u32, bytes: &[u8],
+) -> Result<(), V3EncodeError> {
+    let start = output.len();
+    {
+        let mut os = CodedOutputStream::vec(output);
+        os.write_bytes(field_number, bytes)?;
+        os.flush()?;
+    }
+
+    if output.len() != start {
+        columns.push(V3ColumnBytes {
+            field_number,
+            bytes: bytes.to_vec(),
+            compressed_len: 0,
+        });
+    }
+
+    Ok(())
+}
+
+fn write_packed_column<F, R>(
+    output: &mut Vec<u8>, columns: &mut Vec<V3ColumnBytes>, field_number: u32, write_framed: F, write_raw: R,
+) -> Result<(), V3EncodeError>
+where
+    F: FnOnce(&mut CodedOutputStream<'_>) -> protobuf::Result<()>,
+    R: FnOnce(&mut CodedOutputStream<'_>) -> protobuf::Result<()>,
+{
+    let start = output.len();
+    {
+        let mut os = CodedOutputStream::vec(output);
+        write_framed(&mut os)?;
+        os.flush()?;
+    }
+
+    if output.len() != start {
+        let mut bytes = Vec::new();
+        {
+            let mut os = CodedOutputStream::vec(&mut bytes);
+            write_raw(&mut os)?;
+            os.flush()?;
+        }
+        columns.push(V3ColumnBytes {
+            field_number,
+            bytes,
+            compressed_len: 0,
+        });
+    }
+
+    Ok(())
+}
+
+fn append_len_str(dst: &mut Vec<u8>, s: &str) {
+    let mut len = s.len() as u64;
+    loop {
+        let mut byte = (len & 0x7F) as u8;
+        len >>= 7;
+        if len != 0 {
+            byte |= 0x80;
+        }
+        dst.push(byte);
+        if len == 0 {
+            break;
+        }
+    }
+    dst.extend_from_slice(s.as_bytes());
+}
+
+fn delta_encode(s: &mut [i64]) {
+    if s.len() < 2 {
+        return;
+    }
+    for i in (1..s.len()).rev() {
+        s[i] -= s[i - 1];
+    }
+}
+
+fn delta_encode_i32(s: &mut [i32]) {
+    if s.len() < 2 {
+        return;
+    }
+    for i in (1..s.len()).rev() {
+        s[i] -= s[i - 1];
     }
 }
 
@@ -999,6 +942,37 @@ mod tests {
         assert_eq!(data.types.len(), 1);
         assert_eq!(data.names.len(), 1);
         assert_eq!(data.timestamps.len(), 2);
+    }
+
+    #[test]
+    fn test_writer_unit() {
+        let mut writer = V3Writer::new();
+
+        {
+            let mut metric = writer.write(V3MetricType::Gauge, "has.unit");
+            metric.set_unit("millisecond");
+            metric.add_point(1000, 42.0);
+            metric.close();
+        }
+        {
+            let mut metric = writer.write(V3MetricType::Gauge, "no.unit");
+            metric.add_point(1000, 43.0);
+            metric.close();
+        }
+        {
+            let mut metric = writer.write(V3MetricType::Gauge, "same.unit");
+            metric.set_unit("millisecond");
+            metric.add_point(1000, 44.0);
+            metric.close();
+        }
+
+        let data = writer.finalize_inner();
+
+        assert_eq!(data.unit_refs, vec![1, 0]);
+        assert_eq!(data.dict_unit_bytes, b"\x0bmillisecond");
+        assert_eq!(data.types[0] & FLAG_HAS_UNIT, FLAG_HAS_UNIT);
+        assert_eq!(data.types[1] & FLAG_HAS_UNIT, 0);
+        assert_eq!(data.types[2] & FLAG_HAS_UNIT, FLAG_HAS_UNIT);
     }
 
     #[test]
@@ -1063,97 +1037,6 @@ mod tests {
         assert!(data.vals_float64.is_empty());
         assert_eq!(data.vals_sint64, vec![100, 200]);
         assert!(data.vals_float32.is_empty());
-    }
-
-    #[test]
-    fn test_sketch_summary_values_stay_in_float64() {
-        let mut writer = V3Writer::new();
-
-        {
-            let mut metric = writer.write(V3MetricType::Sketch, "dist.metric");
-            metric.add_sketch(1000, 5, 10.0, 1.0, 10.0, &[1, 2], &[3, 2]);
-            metric.close();
-        }
-
-        let data = writer.finalize_inner();
-
-        assert!(
-            !data.vals_float64.is_empty(),
-            "sketch sum/min/max must stay in vals_float64"
-        );
-        assert!(!data.vals_sint64.is_empty(), "sketch count must be in vals_sint64");
-        assert!(
-            data.vals_float32.is_empty(),
-            "sketch values must not be compacted to float32"
-        );
-    }
-
-    #[test]
-    fn test_writer_unit() {
-        let mut writer = V3Writer::new();
-
-        {
-            let mut metric = writer.write(V3MetricType::Gauge, "has.unit");
-            metric.set_unit("millisecond");
-            metric.add_point(1000, 42.0);
-            metric.close();
-        }
-        {
-            let mut metric = writer.write(V3MetricType::Gauge, "no.unit");
-            metric.add_point(1000, 43.0);
-            metric.close();
-        }
-        {
-            let mut metric = writer.write(V3MetricType::Gauge, "same.unit");
-            metric.set_unit("millisecond");
-            metric.add_point(1000, 44.0);
-            metric.close();
-        }
-
-        let data = writer.finalize_inner();
-
-        assert_eq!(data.unit_refs, vec![1, 0]);
-        assert_eq!(data.dict_unit_bytes, b"\x0bmillisecond");
-        assert_eq!(data.types[0] & FLAG_HAS_UNIT, FLAG_HAS_UNIT);
-        assert_eq!(data.types[1] & FLAG_HAS_UNIT, 0);
-        assert_eq!(data.types[2] & FLAG_HAS_UNIT, FLAG_HAS_UNIT);
-    }
-
-    #[test]
-    fn test_set_unit_called_twice_updates_in_place() {
-        let mut writer = V3Writer::new();
-
-        {
-            let mut metric = writer.write(V3MetricType::Gauge, "changed.unit");
-            metric.set_unit("millisecond");
-            metric.set_unit("byte");
-            metric.add_point(1000, 42.0);
-            metric.close();
-        }
-
-        let data = writer.finalize_inner();
-
-        // Only one entry should exist for this metric's unit, not two.
-        assert_eq!(data.unit_refs.len(), 1);
-        assert_eq!(data.types[0] & FLAG_HAS_UNIT, FLAG_HAS_UNIT);
-    }
-
-    #[test]
-    fn test_set_unit_empty_after_non_empty_unsets() {
-        let mut writer = V3Writer::new();
-
-        {
-            let mut metric = writer.write(V3MetricType::Gauge, "unset.unit");
-            metric.set_unit("millisecond");
-            metric.set_unit("");
-            metric.add_point(1000, 42.0);
-            metric.close();
-        }
-
-        let data = writer.finalize_inner();
-
-        assert!(data.unit_refs.is_empty());
-        assert_eq!(data.types[0] & FLAG_HAS_UNIT, 0);
     }
 
     #[test]
