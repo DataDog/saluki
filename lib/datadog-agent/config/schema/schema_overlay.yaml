@@ -147,8 +147,7 @@ inventory:
       Support is partial because ADP does not apply this timeout only to an aggregator component.
       Shutdown is coordinated by the Saluki topology: sources stop first, downstream inputs close,
       and the aggregate transform performs its final flush when its input stream ends. Whether open
-      aggregation windows are included is controlled by `aggregate_flush_open_windows`, also aliased
-      as `dogstatsd_flush_incomplete_buckets`.
+      aggregation windows are included is controlled by `dogstatsd_flush_incomplete_buckets`.
     issue: "#1681"
     test_support:
       used_by: [get_typed]
@@ -826,7 +825,6 @@ inventory:
     description: "Flush open buckets on shutdown"
     test_support:
       used_by: [AggregateConfiguration]
-      additional_yaml_paths: [aggregate_flush_open_windows]
       additional_attributes:
         config_registry_filename: aggregate.rs
 
