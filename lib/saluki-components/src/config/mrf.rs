@@ -1,6 +1,6 @@
 //! Multi-region failover configuration.
 
-use saluki_config::GenericConfiguration;
+use agent_data_plane_config::domains::multi_region_failover::Domain;
 use saluki_error::GenericError;
 
 const MRF_METRICS_ENDPOINT_PREFIX: &str = "https://app.mrf.";
@@ -17,19 +17,15 @@ pub struct MrfConfiguration {
 }
 
 impl MrfConfiguration {
-    /// Creates a new `MrfConfiguration` from the given configuration.
-    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
+    /// Creates a new `MrfConfiguration` from the resolved multi-region failover configuration.
+    pub fn from_configuration(config: &Domain) -> Result<Self, GenericError> {
         Ok(Self {
-            enabled: config.try_get_typed("multi_region_failover.enabled")?.unwrap_or(false),
-            failover_metrics: config
-                .try_get_typed("multi_region_failover.failover_metrics")?
-                .unwrap_or(false),
-            metric_allowlist: config
-                .try_get_typed("multi_region_failover.metric_allowlist")?
-                .unwrap_or_default(),
-            api_key: get_non_empty_string(config, "multi_region_failover.api_key")?,
-            site: get_non_empty_string(config, "multi_region_failover.site")?,
-            dd_url: get_non_empty_string(config, "multi_region_failover.dd_url")?,
+            enabled: config.enabled,
+            failover_metrics: config.failover_metrics,
+            metric_allowlist: config.metric_allowlist.clone(),
+            api_key: config.api_key.clone(),
+            site: config.site.clone(),
+            dd_url: config.dd_url.clone(),
         })
     }
 
@@ -86,37 +82,24 @@ impl MrfConfiguration {
     }
 }
 
-fn get_non_empty_string(config: &GenericConfiguration, key: &str) -> Result<Option<String>, GenericError> {
-    Ok(config
-        .try_get_typed::<String>(key)?
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty()))
-}
-
 #[cfg(test)]
 mod tests {
-    use saluki_config::ConfigurationLoader;
-    use serde_json::json;
-
     use super::*;
 
-    async fn mrf_config_from(value: serde_json::Value) -> MrfConfiguration {
-        let (config, _) = ConfigurationLoader::for_tests(Some(value), None, false).await;
-        MrfConfiguration::from_configuration(&config).expect("MRF configuration should deserialize")
+    fn mrf_config_from(config: Domain) -> MrfConfiguration {
+        MrfConfiguration::from_configuration(&config).expect("MRF configuration should build")
     }
 
-    #[tokio::test]
-    async fn parses_mrf_configuration_keys() {
-        let config = mrf_config_from(json!({
-            "multi_region_failover": {
-                "enabled": true,
-                "failover_metrics": true,
-                "metric_allowlist": ["first.metric", "second.metric"],
-                "api_key": "mrf-api-key",
-                "site": "datadoghq.eu"
-            }
-        }))
-        .await;
+    #[test]
+    fn builds_from_model_configuration() {
+        let config = mrf_config_from(Domain {
+            enabled: true,
+            failover_metrics: true,
+            metric_allowlist: vec!["first.metric".to_string(), "second.metric".to_string()],
+            api_key: Some("mrf-api-key".to_string()),
+            site: Some("datadoghq.eu".to_string()),
+            ..Default::default()
+        });
 
         assert!(config.is_metrics_forwarding_requested());
         assert_eq!(config.metric_allowlist(), ["first.metric", "second.metric"]);
@@ -127,54 +110,45 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn metrics_endpoint_override_requires_api_key_and_endpoint() {
-        let missing_api_key = mrf_config_from(json!({
-            "multi_region_failover": {
-                "enabled": true,
-                "failover_metrics": true,
-                "site": "datadoghq.eu"
-            }
-        }))
-        .await;
+    #[test]
+    fn metrics_endpoint_override_requires_api_key_and_endpoint() {
+        let missing_api_key = mrf_config_from(Domain {
+            enabled: true,
+            failover_metrics: true,
+            site: Some("datadoghq.eu".to_string()),
+            ..Default::default()
+        });
         assert_eq!(missing_api_key.metrics_endpoint_override(), None);
 
-        let missing_endpoint = mrf_config_from(json!({
-            "multi_region_failover": {
-                "enabled": true,
-                "failover_metrics": true,
-                "api_key": "mrf-api-key"
-            }
-        }))
-        .await;
+        let missing_endpoint = mrf_config_from(Domain {
+            enabled: true,
+            failover_metrics: true,
+            api_key: Some("mrf-api-key".to_string()),
+            ..Default::default()
+        });
         assert_eq!(missing_endpoint.metrics_endpoint_override(), None);
 
-        let ready = mrf_config_from(json!({
-            "multi_region_failover": {
-                "enabled": true,
-                "failover_metrics": true,
-                "api_key": "mrf-api-key",
-                "dd_url": "https://mrf.example.com"
-            }
-        }))
-        .await;
+        let ready = mrf_config_from(Domain {
+            enabled: true,
+            failover_metrics: true,
+            api_key: Some("mrf-api-key".to_string()),
+            dd_url: Some("https://mrf.example.com".to_string()),
+            ..Default::default()
+        });
         assert_eq!(
             ready.metrics_endpoint_override(),
             Some(("https://mrf.example.com".to_string(), "mrf-api-key".to_string()))
         );
     }
 
-    #[tokio::test]
-    async fn metrics_endpoint_override_does_not_require_failover_metrics() {
-        let config = mrf_config_from(json!({
-            "multi_region_failover": {
-                "enabled": true,
-                "failover_metrics": false,
-                "api_key": "mrf-api-key",
-                "dd_url": "https://mrf.example.com"
-            }
-        }))
-        .await;
+    #[test]
+    fn metrics_endpoint_override_does_not_require_failover_metrics() {
+        let config = mrf_config_from(Domain {
+            enabled: true,
+            api_key: Some("mrf-api-key".to_string()),
+            dd_url: Some("https://mrf.example.com".to_string()),
+            ..Default::default()
+        });
 
         assert!(!config.is_metrics_forwarding_requested());
         assert_eq!(
@@ -183,15 +157,13 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn dd_url_takes_precedence_over_site() {
-        let config = mrf_config_from(json!({
-            "multi_region_failover": {
-                "site": "datadoghq.eu",
-                "dd_url": "https://custom-mrf.example.com"
-            }
-        }))
-        .await;
+    #[test]
+    fn dd_url_takes_precedence_over_site() {
+        let config = mrf_config_from(Domain {
+            site: Some("datadoghq.eu".to_string()),
+            dd_url: Some("https://custom-mrf.example.com".to_string()),
+            ..Default::default()
+        });
 
         assert_eq!(
             config.metrics_endpoint_url().as_deref(),
