@@ -1,6 +1,6 @@
 //! Traces domain: APM trace processing (env, sampling, obfuscation) plus OTLP trace ingestion.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// Resolved traces configuration.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
@@ -213,7 +213,8 @@ pub struct SqlObfuscation {
 
 /// Error-handling mode for OTTL condition/statement evaluation, shared by the OTTL filter and
 /// transform processors.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum OttlErrorMode {
     /// Log evaluation errors and continue.
     Ignore,
