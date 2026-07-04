@@ -284,18 +284,18 @@ pub struct OtlpConfigTraces {
 
 /// The `ottl_filter_config` object: OTTL span-drop filter.
 #[derive(Clone, Debug, Default, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct OttlFilterConfig {
     /// Evaluation error handling mode (`ottl_filter_config.error_mode`: `ignore` / `silent` /
     /// `propagate`).
-    pub error_mode: Option<String>,
+    pub error_mode: Option<OttlErrorMode>,
     /// OTTL trace filters (`ottl_filter_config.traces.*`).
     pub traces: OttlFilterTraces,
 }
 
 /// `ottl_filter_config.traces.*`.
 #[derive(Clone, Debug, Default, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct OttlFilterTraces {
     /// OTTL span-drop conditions (`ottl_filter_config.traces.span`).
     pub span: Vec<String>,
@@ -312,9 +312,7 @@ pub struct OttlTransformConfig {
     pub trace_statements: Vec<String>,
 }
 
-/// Parses an OTTL error mode string, defaulting to the model default (`Propagate`) when absent or
-/// unrecognized.
-fn parse_ottl_error_mode(mode: Option<String>) -> OttlErrorMode {
+fn parse_ottl_transform_error_mode(mode: Option<String>) -> OttlErrorMode {
     match mode.as_deref() {
         Some("ignore") => OttlErrorMode::Ignore,
         Some("silent") => OttlErrorMode::Silent,
@@ -473,13 +471,13 @@ impl SalukiOnly {
         }
         if let Some(filter) = &self.ottl_filter_config {
             traces.ottl_filter = OttlFilter {
-                error_mode: parse_ottl_error_mode(filter.error_mode.clone()),
+                error_mode: filter.error_mode.unwrap_or_default(),
                 span_conditions: filter.traces.span.clone(),
             };
         }
         if let Some(transform) = &self.ottl_transform_config {
             traces.ottl_transform = OttlTransform {
-                error_mode: parse_ottl_error_mode(transform.error_mode.clone()),
+                error_mode: parse_ottl_transform_error_mode(transform.error_mode.clone()),
                 trace_statements: transform.trace_statements.clone(),
             };
         }
@@ -642,6 +640,20 @@ mod tests {
 
         // domains.checks
         assert_eq!(config.domains.checks.ipc_endpoint.0, "localhost:5006");
+    }
+
+    #[test]
+    fn ottl_filter_config_rejects_unknown_fields_and_values() {
+        for value in [
+            json!({ "ottl_filter_config": { "error_mode": "ignroe" } }),
+            json!({ "ottl_filter_config": { "unknown": true } }),
+            json!({ "ottl_filter_config": { "traces": { "spanevent": [] } } }),
+        ] {
+            assert!(
+                serde_json::from_value::<SalukiOnly>(value).is_err(),
+                "invalid OTTL filter configuration must fail deserialization"
+            );
+        }
     }
 
     /// `memory_limit` is a byte size the source may express as a bare integer (bytes) or a suffixed
