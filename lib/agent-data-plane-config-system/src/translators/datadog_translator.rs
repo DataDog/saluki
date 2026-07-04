@@ -22,7 +22,7 @@ use agent_data_plane_config::control::ListenAddress;
 use agent_data_plane_config::domains::dogstatsd::{
     FilterAction, MapperProfile, MetricMapping, MetricTagFilterEntry, OriginTagCardinality,
 };
-use agent_data_plane_config::shared::ForwarderHttpProtocol;
+use agent_data_plane_config::shared::{ForwarderHttpProtocol, ZSTD_DEFAULT_OVERRIDE};
 use agent_data_plane_config::SalukiConfiguration;
 use bytesize::ByteSize;
 use datadog_agent_config::{drive, DatadogConfigWitness, DatadogConfiguration, TranslateError, TranslateErrors};
@@ -952,7 +952,19 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_serializer_zstd_compressor_level(&mut self, value: i64) {
-        self.config.shared.endpoints.compression.zstd_compressor_level = value as i32;
+        // TODO: The core Agent streams a fully resolved config, so its schema default for
+        // `serializer_zstd_compressor_level` arrives here as a concrete value rather than being
+        // absent. When the incoming level matches that Agent default we swap in ADP's intended
+        // level; without this the Agent default would silently override it. We compare against the
+        // schema-generated default, so an operator who deliberately sets exactly the Agent default is
+        // indistinguishable from the default itself and also gets overridden. Removing that ambiguity
+        // needs per-value source tracking (user-set vs Agent default), which is follow-up work.
+        let agent_default = DatadogConfiguration::default().serializer_zstd_compressor_level;
+        self.config.shared.endpoints.compression.zstd_compressor_level = if value == agent_default {
+            ZSTD_DEFAULT_OVERRIDE
+        } else {
+            value as i32
+        };
     }
 
     fn consume_site(&mut self, value: String) {

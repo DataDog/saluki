@@ -118,6 +118,14 @@ pub struct Tls {
     pub sslkeylogfile: String,
 }
 
+/// zstd compression level ADP substitutes when the core Agent supplies its own schema default. ADP
+/// compresses harder than the Agent, whose schema default for `serializer_zstd_compressor_level` is
+/// lower. Because the Agent streams a fully resolved config, that default arrives as a concrete
+/// value; when the incoming level is exactly the Agent default, the translator swaps in this level
+/// so the Agent default does not quietly lower ADP's compression. Any other value is treated as an
+/// explicit choice and left untouched.
+pub const ZSTD_DEFAULT_OVERRIDE: i32 = 3;
+
 /// Payload compression settings applied before transmission.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Compression {

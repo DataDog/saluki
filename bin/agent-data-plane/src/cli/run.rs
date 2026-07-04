@@ -412,7 +412,7 @@ async fn create_topology(
     }
 
     if dp_config.events_pipeline_required() {
-        add_baseline_events_pipeline_to_blueprint(&mut blueprint, config).await?;
+        add_baseline_events_pipeline_to_blueprint(&mut blueprint, config_system).await?;
     }
 
     if dp_config.service_checks_pipeline_required() {
@@ -599,11 +599,15 @@ async fn add_baseline_logs_pipeline_to_blueprint(
 }
 
 async fn add_baseline_events_pipeline_to_blueprint(
-    blueprint: &mut TopologyBlueprint, config: &GenericConfiguration,
+    blueprint: &mut TopologyBlueprint, config_system: &ConfigurationSystem,
 ) -> Result<(), GenericError> {
-    let dd_events_config = DatadogEventsConfiguration::from_configuration(config)
-        .map(BufferedIncrementalConfiguration::from_encoder_builder)
-        .error_context("Failed to configure Datadog Events encoder.")?;
+    let saluki = config_system.config();
+    let dd_events_config = DatadogEventsConfiguration::from_configuration(
+        &saluki.shared.metrics_encoding,
+        &saluki.shared.endpoints.compression,
+    )
+    .map(BufferedIncrementalConfiguration::from_encoder_builder)
+    .error_context("Failed to configure Datadog Events encoder.")?;
 
     blueprint
         .add_encoder("dd_events_encode", dd_events_config)?
