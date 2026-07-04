@@ -15,7 +15,7 @@
 //!
 //! # The one invariant (read before adding or debugging a value)
 //!
-//! This struct's shape mirrors the source key hierarchy exactly. Each field is populated by plain
+//! This struct mirrors the source key hierarchy exactly. Each field is populated by plain
 //! serde from the merged map, so its path here must equal the real config-key path, with no
 //! `rename` and (aside from a documented multi-key `alias`) nothing papering over a mismatch:
 //!
@@ -34,7 +34,7 @@
 //!    type coerces the source form (durations are [`DurationString`], not `Duration`), and that
 //!    `seed` copies it to the model destination the component reads.
 //! 2. Value arrives wrong only when the key is absent: the default bug is not here. The default
-//!    lives in the model struct's `Default` in `agent-data-plane-config`, because these fields are
+//!    lives in the model `Default` in `agent-data-plane-config`, because these fields are
 //!    `Option<T>` and `seed` writes only when set. Fix the model `Default`, not this struct.
 //! 3. Then add or extend the round-trip test below (set the real key, assert the model field). A
 //!    missing test is why a silent transport failure was not caught.
@@ -49,6 +49,7 @@ use std::time::Duration;
 use agent_data_plane_config::control::ListenAddress;
 use agent_data_plane_config::domains::traces::{OttlErrorMode, OttlFilter, OttlTransform};
 use agent_data_plane_config::SalukiConfiguration;
+use bytesize::ByteSize;
 use saluki_config::DurationString;
 use serde::Deserialize;
 
@@ -68,8 +69,10 @@ pub struct SalukiOnly {
     pub remote_agent_string_interner_size_bytes: Option<usize>,
     /// Checks IPC endpoint (`checks_ipc_endpoint`).
     pub checks_ipc_endpoint: Option<String>,
-    /// Process memory limit, a byte-size string such as `512MB` (`memory_limit`).
-    pub memory_limit: Option<String>,
+    /// Process memory limit (`memory_limit`), given as a bare integer number of bytes or a
+    /// byte-size string such as `512MB`. `ByteSize` accepts both forms, so a numeric value does not
+    /// fail the load.
+    pub memory_limit: Option<ByteSize>,
     /// Memory-accounting slop fraction (`memory_slop_factor`).
     pub memory_slop_factor: Option<f64>,
     /// Encoder flush timeout, in seconds (`flush_timeout_secs`).
@@ -337,8 +340,8 @@ impl SalukiOnly {
         if let Some(v) = self.data_plane.checks.enabled {
             config.control.checks = v;
         }
-        if let Some(v) = self.memory_limit.clone() {
-            config.control.memory_limit = v;
+        if let Some(v) = self.memory_limit {
+            config.control.memory_limit = v.as_u64();
         }
         if let Some(v) = self.memory_slop_factor {
             config.control.memory_slop_factor = v;
@@ -575,7 +578,7 @@ mod tests {
         assert_eq!(config.control.stop_timeout, 45);
         assert!(config.control.standalone_mode);
         assert!(config.control.checks);
-        assert_eq!(config.control.memory_limit, "512MB");
+        assert_eq!(config.control.memory_limit, ByteSize::mb(512).as_u64());
         assert_eq!(config.control.memory_slop_factor, 0.3);
         assert_eq!(config.control.ipc.remote_agent_string_interner_size_bytes, 4096);
 
@@ -641,9 +644,25 @@ mod tests {
         assert_eq!(config.domains.checks.ipc_endpoint.0, "localhost:5006");
     }
 
+    /// `memory_limit` is a byte size the source may express as a bare integer (bytes) or a suffixed
+    /// string. Both must deserialize to the same byte count; a bare integer previously failed the
+    /// whole config load.
+    #[test]
+    fn memory_limit_accepts_a_bare_integer_or_a_string() {
+        for (value, expected) in [
+            (json!({ "memory_limit": 1 }), 1),
+            (json!({ "memory_limit": "512MB" }), ByteSize::mb(512).as_u64()),
+        ] {
+            let saluki_only: SalukiOnly = serde_json::from_value(value).expect("memory_limit deserializes");
+            let mut config = SalukiConfiguration::default();
+            saluki_only.seed(&mut config);
+            assert_eq!(config.control.memory_limit, expected);
+        }
+    }
+
     /// An absent key leaves the model default in place (the common case). `seed` writes only present
     /// options, so this exercises the `Option`-in-source / default-in-model split. A wrong value
-    /// here means the model struct's `Default` is wrong, not this struct.
+    /// here means the model `Default` is wrong, not this struct.
     #[test]
     fn absent_keys_leave_model_defaults() {
         let saluki_only: SalukiOnly = serde_json::from_value(json!({})).expect("empty source deserializes");
