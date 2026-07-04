@@ -4,7 +4,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use agent_data_plane_config_system::ConfigurationSystem;
+use agent_data_plane_config_system::{ConfigurationSystem, EnvOverlayMode};
 use argh::FromArgs;
 use datadog_agent_commons::platform::PlatformSettings;
 use datadog_agent_config::classifier::{ConfigClassifier, Pipeline, PipelineAffinity, Severity, SupportLevel};
@@ -170,7 +170,12 @@ pub async fn handle_run_command(
 
     // Translate the resolved configuration into the ADP-native model and keep it current as the
     // Datadog Agent streams updates. The privileged `/config/internal` endpoint serves it.
-    let config_system = ConfigurationSystem::load(config.clone()).error_context("Failed to load configuration.")?;
+    //
+    // The Datadog Agent config stream is authoritative; environment variables only fill keys the
+    // Agent did not supply, matching the legacy per-key lookup precedence. This also restores flat
+    // env-var reachability for nested keys, which the whole-struct typed deserialize otherwise drops.
+    let config_system = ConfigurationSystem::load(config.clone(), EnvOverlayMode::Fallback)
+        .error_context("Failed to load configuration.")?;
 
     // Create the internal supervisor which drives our control plane and internal observability.
     let mut internal_supervisor = create_internal_supervisor(

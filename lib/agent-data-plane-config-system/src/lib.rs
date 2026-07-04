@@ -17,4 +17,5 @@ mod saluki_only;
 mod system;
 mod translators;
 
+pub use datadog_agent_config::EnvOverlayMode;
 pub use system::{ConfigurationSystem, ConfigurationSystemError};

@@ -1,8 +1,29 @@
-//! [`SalukiOnly`]: the parsed Saluki-schema-only source input, plus [`seed`].
+//! [`SalukiOnly`]: the parsed source values absent from the Datadog Agent schema, plus [`seed`].
 //!
-//! Saluki-schema-only keys are fields that cannot arrive by deserializing Datadog configuration,
-//! because they do not exist in the Datadog configuration schema. These structs derive
-//! `Deserialize`: the source adapter, not the model crate, owns source deserialization.
+//! # Ownership doctrine
+//!
+//! A key's home is decided solely by membership in the vendored Datadog schema. The key name and
+//! prefix are irrelevant: `data_plane.*`, `dogstatsd_*`, and every other namespace can contain
+//! either kind of key.
+//!
+//! - A key present in the Datadog schema is witnessed by `DatadogConfiguration` and driven into
+//!   the model. It must not also have a `SalukiOnly` field, serde alias, or `seed` path.
+//! - A key absent from the Datadog schema is seeded here and copied into the model by [`seed`].
+//!
+//! A second SalukiOnly spelling for a Datadog key is not a compatibility feature. It is a duplicate
+//! source of truth and a bug; remove it. Removing that duplicate cannot affect customers because
+//! the Datadog-schema path remains authoritative.
+//!
+//! This source shares the merged `datadog.yaml` / `DD_*` input with `DatadogConfiguration`
+//! (at least for now, see to-do list below).
+//!
+//! Datadog schema keys can have environment variable aliases that differ from the canonical key
+//! name, however in `SalukiOnly` configuration, we want to err on the side of simplicity. Thus, a
+//! dotted path like `foo.bar` is reached by an algorithmic transformation at `DD_FOO_BAR` and no
+//! look-up tables or aliases are used.
+//!
+//! For a concrete example: `data_plane.standalone_mode` is reached by
+//! `DD_DATA_PLANE_STANDALONE_MODE` and cannot be reached by some other alias.
 //!
 //! [`seed`] copies each present Saluki-only value into its destination in a `SalukiConfiguration`.
 //! It and the Datadog `drive` write disjoint fields, so the two writers never contend for the same
@@ -10,6 +31,8 @@
 //!
 //! [`seed`]: SalukiOnly::seed
 // TODO: consider using derive macros on these for inventory management
+// TODO: consider separating these into their own namespace, SALUKI_* and saluki.yaml
+// TODO: consider not loading these into the same map as Datadog schema configuration
 
 use std::time::Duration;
 
@@ -18,11 +41,10 @@ use agent_data_plane_config::domains::traces::{OttlErrorMode, OttlFilter, OttlTr
 use agent_data_plane_config::SalukiConfiguration;
 use serde::Deserialize;
 
-/// The parsed Saluki-schema-only configuration, grouped by subsystem.
+/// The Saluki-schema-only configuration, grouped by subsystem.
 ///
-/// Parsed from `SALUKI_*` / `saluki.yaml`. Every field is `#[serde(default)]`: a deployment may set
-/// no Saluki-only keys at all, so each subsystem group falls back to its defaults independently when
-/// its keys are absent.
+/// These are configurable knobs not available in the Datadog schema. Thus, these cannot arrive
+/// from the Datadog agent and must be set by other means.
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct SalukiOnly {

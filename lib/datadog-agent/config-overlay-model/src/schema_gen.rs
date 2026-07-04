@@ -25,13 +25,28 @@ pub enum FieldType {
     Unknown,
 }
 
+/// How a config field is reachable through an environment variable.
+///
+/// Mirrors the Datadog Agent's `bindEnv`: a setting either has no env var, uses the standard
+/// `DD_` + `UPPER(dotted_path)` name derived from its key, or declares explicit names that
+/// replace that derived default. The distinction matters to codegen: the standard name is
+/// computable from the path, an overridden name is not, and a field with no env var must never be
+/// treated as env-reachable.
+pub enum EnvBinding {
+    /// The field carries a `no-env` tag: no environment variable maps to it.
+    None,
+    /// No explicit env vars are declared, so the Agent derives `DD_` + `UPPER(dotted_path)`.
+    Standard,
+    /// The schema declares explicit environment variable names, which replace the derived default. Non-empty.
+    Overridden(Vec<String>),
+}
+
 /// Parsed metadata for a single config field.
 pub struct FieldInfo {
     /// Resolved value type (see [`FieldType`]).
     pub value_type: FieldType,
-    /// Environment variable names that map to this field. Empty when the field carries a
-    /// `no-env` tag.
-    pub env_vars: Vec<String>,
+    /// How the field is reachable through an environment variable (see [`EnvBinding`]).
+    pub env: EnvBinding,
     /// Default value serialised as a JSON literal, or `None` if the schema omits one.
     pub default: Option<String>,
 }
@@ -97,14 +112,19 @@ fn parse_setting(path_parts: &[&str], value: &Value) -> (String, FieldInfo) {
         .map(|tags| tags.iter().any(|t| t.as_str() == Some("no-env")))
         .unwrap_or(false);
 
-    let env_vars: Vec<String> = if has_no_env_tag {
-        Vec::new()
+    let explicit_env_vars: Vec<String> = value
+        .get("env_vars")
+        .and_then(|v| v.as_sequence())
+        .map(|seq| seq.iter().filter_map(|v| v.as_str()).map(|s| s.to_string()).collect())
+        .unwrap_or_default();
+
+    // A `no-env` tag wins over any declared names: the field is not env-reachable at all.
+    let env = if has_no_env_tag {
+        EnvBinding::None
+    } else if explicit_env_vars.is_empty() {
+        EnvBinding::Standard
     } else {
-        value
-            .get("env_vars")
-            .and_then(|v| v.as_sequence())
-            .map(|seq| seq.iter().filter_map(|v| v.as_str()).map(|s| s.to_string()).collect())
-            .unwrap_or_default()
+        EnvBinding::Overridden(explicit_env_vars)
     };
 
     let value_type = parse_value_type(value);
@@ -114,7 +134,7 @@ fn parse_setting(path_parts: &[&str], value: &Value) -> (String, FieldInfo) {
         yaml_path,
         FieldInfo {
             value_type,
-            env_vars,
+            env,
             default,
         },
     )
@@ -227,11 +247,14 @@ pub fn generate_schema_rs(schema_map: &IndexMap<String, FieldInfo>, dir: &Path) 
             .unwrap();
         }
 
-        let env_vars_lit = if info.env_vars.is_empty() {
-            "&[]".to_string()
-        } else {
-            let items: Vec<String> = info.env_vars.iter().map(|e| format!("\"{}\"", escape_str(e))).collect();
-            format!("&[{}]", items.join(", "))
+        // The emitted `SchemaEntry.env_vars` carries only explicit names, matching prior output:
+        // standard (derived) and no-env fields both serialise to `&[]`.
+        let env_vars_lit = match &info.env {
+            EnvBinding::Overridden(vars) => {
+                let items: Vec<String> = vars.iter().map(|e| format!("\"{}\"", escape_str(e))).collect();
+                format!("&[{}]", items.join(", "))
+            }
+            EnvBinding::None | EnvBinding::Standard => "&[]".to_string(),
         };
 
         let default_lit = match &info.default {

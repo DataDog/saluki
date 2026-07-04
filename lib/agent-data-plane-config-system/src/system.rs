@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use agent_data_plane_config::{Live, SalukiConfiguration};
 use arc_swap::ArcSwap;
-use datadog_agent_config::{DatadogConfiguration, TranslateErrors};
+use datadog_agent_config::{apply_env_overlay, DatadogConfiguration, EnvOverlayMode, TranslateErrors};
 use saluki_config::dynamic::ConfigChangeEvent;
 use saluki_config::{ConfigurationError, GenericConfiguration};
 use serde::Deserialize;
@@ -66,8 +66,8 @@ impl ConfigurationSystem {
     /// # Errors
     ///
     /// Returns an error if the raw map cannot be deserialized into the source models.
-    pub fn load(raw_map: GenericConfiguration) -> Result<Self, ConfigurationSystemError> {
-        let (datadog, saluki_only) = deserialize_sources(&raw_map)?;
+    pub fn load(raw_map: GenericConfiguration, env_overlay: EnvOverlayMode) -> Result<Self, ConfigurationSystemError> {
+        let (datadog, saluki_only) = deserialize_sources(&raw_map, env_overlay)?;
         let (config, errors) = translate(&datadog, &saluki_only);
 
         // Startup and runtime take opposite stances on translation errors. Startup is the strict
@@ -91,7 +91,13 @@ impl ConfigurationSystem {
         // event contents and re-reads the whole committed map, so it only exists when updates can
         // arrive; a static map has no sender and needs no task.
         if let Some(rx) = raw_map.subscribe_for_updates() {
-            spawn_router(rx, raw_map.clone(), Arc::clone(&current), Arc::clone(&tick));
+            spawn_router(
+                rx,
+                raw_map.clone(),
+                Arc::clone(&current),
+                Arc::clone(&tick),
+                env_overlay,
+            );
         }
 
         Ok(Self { raw_map, current, tick })
@@ -128,9 +134,9 @@ impl ConfigurationSystem {
 /// Spawns the task that keeps `current` up to date as `raw_map` commits updates.
 fn spawn_router(
     rx: broadcast::Receiver<ConfigChangeEvent>, raw_map: GenericConfiguration,
-    current: Arc<ArcSwap<SalukiConfiguration>>, tick: Arc<watch::Sender<()>>,
+    current: Arc<ArcSwap<SalukiConfiguration>>, tick: Arc<watch::Sender<()>>, env_overlay: EnvOverlayMode,
 ) {
-    tokio::spawn(router_loop(rx, raw_map, current, tick));
+    tokio::spawn(router_loop(rx, raw_map, current, tick, env_overlay));
 }
 
 /// Re-translates the committed source map whenever it changes and stores the result.
@@ -141,7 +147,7 @@ fn spawn_router(
 /// task ends when the source map's sender is gone, since no further updates can arrive.
 async fn router_loop(
     mut rx: broadcast::Receiver<ConfigChangeEvent>, raw_map: GenericConfiguration,
-    current: Arc<ArcSwap<SalukiConfiguration>>, tick: Arc<watch::Sender<()>>,
+    current: Arc<ArcSwap<SalukiConfiguration>>, tick: Arc<watch::Sender<()>>, env_overlay: EnvOverlayMode,
 ) {
     loop {
         match rx.recv().await {
@@ -158,7 +164,7 @@ async fn router_loop(
                 Err(broadcast::error::TryRecvError::Closed) => break,
             }
         }
-        apply(&current, &raw_map, &tick);
+        apply(&current, &raw_map, &tick, env_overlay);
     }
 }
 
@@ -168,8 +174,11 @@ async fn router_loop(
 /// that cannot be deserialized retains the current configuration (no partial value is recoverable).
 /// A translation error does not: the invalid value keeps its default, the complete config is stored
 /// and logged, and later valid updates still take effect, so one bad value never wedges the system.
-fn apply(current: &ArcSwap<SalukiConfiguration>, raw_map: &GenericConfiguration, tick: &watch::Sender<()>) {
-    let (datadog, saluki_only) = match deserialize_sources(raw_map) {
+fn apply(
+    current: &ArcSwap<SalukiConfiguration>, raw_map: &GenericConfiguration, tick: &watch::Sender<()>,
+    env_overlay: EnvOverlayMode,
+) {
+    let (datadog, saluki_only) = match deserialize_sources(raw_map, env_overlay) {
         Ok(sources) => sources,
         Err(e) => {
             warn!(error = %e, "Rejecting configuration update: sources could not be deserialized. Retaining current configuration.");
@@ -197,12 +206,19 @@ fn apply(current: &ArcSwap<SalukiConfiguration>, raw_map: &GenericConfiguration,
 /// plain strings), so nothing is lost.
 ///
 /// Transitional: this seam goes away when `GenericConfiguration` is eliminated.
+///
+/// Environment variables reach the merged value as flat keys (`autoscaling_failover_enabled`), which
+/// the nested `DatadogConfiguration` deserializer never reads. `apply_env_overlay` relocates those
+/// flat keys into their nested slots per `env_overlay` before the Datadog deserialize. It is applied
+/// only to the Datadog input: `SalukiOnly` deserializes from the untouched value, so its keys are
+/// out of scope here.
 fn deserialize_sources(
-    raw_map: &GenericConfiguration,
+    raw_map: &GenericConfiguration, env_overlay: EnvOverlayMode,
 ) -> Result<(DatadogConfiguration, SalukiOnly), ConfigurationSystemError> {
-    let merged = raw_map.as_typed::<serde_json::Value>()?;
-    let datadog = DatadogConfiguration::deserialize(&merged)?;
+    let mut merged = raw_map.as_typed::<serde_json::Value>()?;
     let saluki_only = SalukiOnly::deserialize(&merged)?;
+    apply_env_overlay(&mut merged, env_overlay);
+    let datadog = DatadogConfiguration::deserialize(&merged)?;
     Ok((datadog, saluki_only))
 }
 
@@ -227,7 +243,7 @@ mod tests {
 
     use agent_data_plane_config::domains::dogstatsd::OriginTagCardinality;
     use agent_data_plane_config::{Live, SalukiConfiguration};
-    use datadog_agent_config::DatadogConfiguration;
+    use datadog_agent_config::{DatadogConfiguration, EnvOverlayMode};
     use saluki_config::dynamic::ConfigUpdate;
     use saluki_config::ConfigurationLoader;
     use serde_json::json;
@@ -270,11 +286,48 @@ mod tests {
         )
         .await;
 
-        let system = ConfigurationSystem::load(raw_map).expect("system builds");
+        let system = ConfigurationSystem::load(raw_map, EnvOverlayMode::Fallback).expect("system builds");
         let config = system.config();
 
         assert_eq!(config.control.logging.level, "warn");
         assert_eq!(config.domains.dogstatsd.listeners.port, 9125);
+    }
+
+    #[tokio::test]
+    async fn flat_env_key_overlays_onto_nested_datadog_slot() {
+        // A flat, underscore-joined key (the shape an environment variable produces) is relocated
+        // into the nested `autoscaling.failover.*` slot the Datadog deserializer reads. The string
+        // list is split on whitespace.
+        let (raw_map, _) = ConfigurationLoader::for_tests(
+            Some(json!({
+                "autoscaling_failover_enabled": true,
+                "autoscaling_failover_metrics": "container.memory.usage container.cpu.usage",
+            })),
+            None,
+            false,
+        )
+        .await;
+
+        let system = ConfigurationSystem::load(raw_map, EnvOverlayMode::Fallback).expect("system builds");
+        let config = system.config();
+
+        assert!(config.shared.autoscaling_failover.enabled);
+        assert_eq!(
+            config.shared.autoscaling_failover.metrics,
+            vec!["container.memory.usage".to_string(), "container.cpu.usage".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn disabled_overlay_leaves_flat_env_key_unread() {
+        // With the overlay disabled, the flat key is never relocated, so the nested deserializer
+        // does not see it and the field keeps its default.
+        let (raw_map, _) =
+            ConfigurationLoader::for_tests(Some(json!({ "autoscaling_failover_enabled": true })), None, false).await;
+
+        let system = ConfigurationSystem::load(raw_map, EnvOverlayMode::Disabled).expect("system builds");
+
+        assert!(!system.config().shared.autoscaling_failover.enabled);
     }
 
     #[tokio::test]
@@ -284,7 +337,7 @@ mod tests {
         let (raw_map, _) =
             ConfigurationLoader::for_tests(Some(json!({ "dogstatsd_tag_cardinality": "bogus" })), None, false).await;
 
-        let result = ConfigurationSystem::load(raw_map);
+        let result = ConfigurationSystem::load(raw_map, EnvOverlayMode::Fallback);
 
         assert!(matches!(result, Err(ConfigurationSystemError::Translate { .. })));
     }
@@ -301,7 +354,7 @@ mod tests {
         sender.send(ConfigUpdate::Snapshot(json!({}))).await.unwrap();
         raw_map.ready().await;
 
-        let system = ConfigurationSystem::load(raw_map.clone()).expect("system builds");
+        let system = ConfigurationSystem::load(raw_map.clone(), EnvOverlayMode::Fallback).expect("system builds");
         assert_eq!(
             system.config().domains.dogstatsd.origin.tag_cardinality,
             OriginTagCardinality::High
@@ -333,7 +386,7 @@ mod tests {
         sender.send(ConfigUpdate::Snapshot(json!({}))).await.unwrap();
         raw_map.ready().await;
 
-        let system = ConfigurationSystem::load(raw_map.clone()).expect("system builds");
+        let system = ConfigurationSystem::load(raw_map.clone(), EnvOverlayMode::Fallback).expect("system builds");
 
         let burst = [
             "warn", "error", "debug", "trace", "info", "warn", "error", "debug", "trace", "info", "warn", "error",
@@ -393,7 +446,7 @@ mod tests {
         sender.send(ConfigUpdate::Snapshot(json!({}))).await.unwrap();
         raw_map.ready().await;
 
-        let system = ConfigurationSystem::load(raw_map.clone()).expect("system builds");
+        let system = ConfigurationSystem::load(raw_map.clone(), EnvOverlayMode::Fallback).expect("system builds");
         let mut view = system.live(|c| &c.domains.dogstatsd.debug_log);
         assert!(!view.current().metrics_stats_enable);
 
@@ -423,7 +476,7 @@ mod tests {
         sender.send(ConfigUpdate::Snapshot(json!({}))).await.unwrap();
         raw_map.ready().await;
 
-        let system = ConfigurationSystem::load(raw_map.clone()).expect("system builds");
+        let system = ConfigurationSystem::load(raw_map.clone(), EnvOverlayMode::Fallback).expect("system builds");
         let mut stats = system.live(|c| &c.domains.dogstatsd.debug_log.metrics_stats_enable);
         assert!(!stats.current());
 
@@ -458,7 +511,7 @@ mod tests {
         let (raw_map, _) =
             ConfigurationLoader::for_tests(Some(json!({ "dogstatsd_metrics_stats_enable": true })), None, false).await;
 
-        let system = ConfigurationSystem::load(raw_map).expect("system builds");
+        let system = ConfigurationSystem::load(raw_map, EnvOverlayMode::Fallback).expect("system builds");
         let config = system.config();
 
         assert_eq!(
