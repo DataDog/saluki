@@ -12,10 +12,12 @@
 //! - adding missing samplers (priority, nopriority)
 //! - add error tracking standalone mode
 
+use std::time::Duration;
+
+use agent_data_plane_config::domains::traces::Domain as TracesConfiguration;
 use async_trait::async_trait;
 use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_common::collections::FastHashMap;
-use saluki_config::GenericConfiguration;
 use saluki_core::{
     components::{transforms::*, ComponentContext},
     data_model::event::{
@@ -39,10 +41,9 @@ mod signature;
 
 use self::probabilistic::PROB_RATE_KEY;
 use crate::common::datadog::{
-    apm::ApmConfig, sample_by_rate, DECISION_MAKER_MANUAL, DECISION_MAKER_PROBABILISTIC, OTEL_TRACE_ID_META_KEY,
+    sample_by_rate, DECISION_MAKER_MANUAL, DECISION_MAKER_PROBABILISTIC, OTEL_TRACE_ID_META_KEY,
     SAMPLING_PRIORITY_METRIC_KEY, TAG_DECISION_MAKER,
 };
-use crate::common::otlp::config::TracesConfig;
 
 // Sampling priority constants (matching datadog-agent)
 const PRIORITY_AUTO_DROP: i32 = 0;
@@ -68,19 +69,36 @@ fn normalize_sampling_rate(rate: f64) -> f64 {
 /// Configuration for the trace sampler transform.
 #[derive(Debug)]
 pub struct TraceSamplerConfiguration {
-    apm_config: ApmConfig,
+    sampling_rate: f64,
+    error_sampling_enabled: bool,
+    error_tracking_standalone: bool,
+    probabilistic_sampler_enabled: bool,
     otlp_sampling_rate: f64,
+    errors_per_second: f64,
+    default_env: MetaString,
+    target_traces_per_second: f64,
+    rare_sampler_enabled: bool,
+    rare_sampler_tps: f64,
+    rare_sampler_cooldown_period: Duration,
+    rare_sampler_cardinality: usize,
 }
 
 impl TraceSamplerConfiguration {
-    /// Creates a new `TraceSamplerConfiguration` from the given configuration.
-    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        let apm_config = ApmConfig::from_configuration(config)?;
-        let otlp_traces: TracesConfig = config.try_get_typed("otlp_config.traces")?.unwrap_or_default();
-        let otlp_sampling_rate = normalize_sampling_rate(otlp_traces.probabilistic_sampler.sampling_percentage / 100.0);
+    /// Creates a new `TraceSamplerConfiguration` from the resolved traces configuration.
+    pub fn from_configuration(config: &TracesConfiguration) -> Result<Self, GenericError> {
         Ok(Self {
-            apm_config,
-            otlp_sampling_rate,
+            sampling_rate: config.probabilistic_sampler.sampling_percentage / 100.0,
+            error_sampling_enabled: config.error_sampling_enabled,
+            error_tracking_standalone: config.error_tracking_standalone_enabled,
+            probabilistic_sampler_enabled: config.probabilistic_sampler.enabled,
+            otlp_sampling_rate: normalize_sampling_rate(config.otlp.probabilistic_sampler_sampling_percentage / 100.0),
+            errors_per_second: config.errors_per_second,
+            default_env: MetaString::from(config.default_env.clone()),
+            target_traces_per_second: config.target_traces_per_second,
+            rare_sampler_enabled: config.enable_rare_sampler,
+            rare_sampler_tps: config.rare_sampler.tps,
+            rare_sampler_cooldown_period: Duration::from_secs_f64(config.rare_sampler.cooldown),
+            rare_sampler_cardinality: config.rare_sampler.cardinality,
         })
     }
 }
@@ -91,26 +109,26 @@ impl SynchronousTransformBuilder for TraceSamplerConfiguration {
         // TODO: Need to support remote configuration changing these at runtime
         // See https://github.com/DataDog/saluki/issues/1326
         let sampler = TraceSampler {
-            sampling_rate: self.apm_config.probabilistic_sampler_sampling_percentage() / 100.0,
-            error_sampling_enabled: self.apm_config.error_sampling_enabled(),
-            error_tracking_standalone: self.apm_config.error_tracking_standalone_enabled(),
-            probabilistic_sampler_enabled: self.apm_config.probabilistic_sampler_enabled(),
+            sampling_rate: self.sampling_rate,
+            error_sampling_enabled: self.error_sampling_enabled,
+            error_tracking_standalone: self.error_tracking_standalone,
+            probabilistic_sampler_enabled: self.probabilistic_sampler_enabled,
             otlp_sampling_rate: self.otlp_sampling_rate,
-            error_sampler: errors::ErrorsSampler::new(self.apm_config.errors_per_second(), ERROR_SAMPLE_RATE),
+            error_sampler: errors::ErrorsSampler::new(self.errors_per_second, ERROR_SAMPLE_RATE),
             priority_sampler: priority_sampler::PrioritySampler::new(
-                self.apm_config.default_env().clone(),
+                self.default_env.clone(),
                 ERROR_SAMPLE_RATE,
-                self.apm_config.target_traces_per_second(),
+                self.target_traces_per_second,
             ),
             no_priority_sampler: score_sampler::NoPrioritySampler::new(
-                self.apm_config.target_traces_per_second(),
+                self.target_traces_per_second,
                 ERROR_SAMPLE_RATE,
             ),
             rare_sampler: rare_sampler::RareSampler::new(
-                self.apm_config.rare_sampler_enabled(),
-                self.apm_config.rare_sampler_tps(),
-                std::time::Duration::from_secs_f64(self.apm_config.rare_sampler_cooldown_period_secs()),
-                self.apm_config.rare_sampler_cardinality(),
+                self.rare_sampler_enabled,
+                self.rare_sampler_tps,
+                self.rare_sampler_cooldown_period,
+                self.rare_sampler_cardinality,
             ),
         };
 
@@ -556,6 +574,49 @@ mod tests {
     const PRIORITY_USER_DROP: i32 = -1;
 
     use super::*;
+    fn trace_configuration() -> TracesConfiguration {
+        TracesConfiguration {
+            default_env: "agent-env".to_string(),
+            error_sampling_enabled: true,
+            error_tracking_standalone_enabled: false,
+            errors_per_second: 10.0,
+            target_traces_per_second: 10.0,
+            enable_rare_sampler: true,
+            rare_sampler: agent_data_plane_config::domains::traces::RareSampler {
+                cardinality: 200,
+                cooldown: 300.0,
+                tps: 5.0,
+            },
+            probabilistic_sampler: agent_data_plane_config::domains::traces::ProbabilisticSampler {
+                enabled: true,
+                sampling_percentage: 25.0,
+            },
+            otlp: agent_data_plane_config::domains::traces::OtlpTraces {
+                probabilistic_sampler_sampling_percentage: 50.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn configuration_maps_model_fields() {
+        let config =
+            TraceSamplerConfiguration::from_configuration(&trace_configuration()).expect("configuration builds");
+
+        assert_eq!(config.sampling_rate, 0.25);
+        assert!(config.error_sampling_enabled);
+        assert!(config.probabilistic_sampler_enabled);
+        assert_eq!(config.otlp_sampling_rate, 0.5);
+        assert_eq!(config.errors_per_second, 10.0);
+        assert_eq!(config.default_env, MetaString::from("agent-env"));
+        assert_eq!(config.target_traces_per_second, 10.0);
+        assert!(config.rare_sampler_enabled);
+        assert_eq!(config.rare_sampler_tps, 5.0);
+        assert_eq!(config.rare_sampler_cooldown_period, std::time::Duration::from_secs(300));
+        assert_eq!(config.rare_sampler_cardinality, 200);
+    }
+
     fn create_test_sampler() -> TraceSampler {
         TraceSampler {
             sampling_rate: 1.0,

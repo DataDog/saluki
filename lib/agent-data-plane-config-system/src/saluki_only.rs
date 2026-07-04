@@ -52,8 +52,9 @@
 //!    type coerces the source form (durations are [`DurationString`], not `Duration`), and that
 //!    `seed` copies it to the model destination the component reads.
 //! 2. Value arrives wrong only when the key is absent: the default bug is not here. The default
-//!    lives in the model `Default` in `agent-data-plane-config`, because these fields are
-//!    `Option<T>` and `seed` writes only when set. Fix the model `Default`, not this struct.
+//!    lives in the shared model default in `agent-data-plane-config`, and required values are
+//!    copied by `seed` even when they were absent from the source. Fix the shared default, not this
+//!    struct.
 //! 3. Then add or extend the round-trip test below (set the real key, assert the model field). A
 //!    missing test is why a silent transport failure was not caught.
 //!
@@ -75,7 +76,10 @@
 use std::time::Duration;
 
 use agent_data_plane_config::control::ListenAddress;
-use agent_data_plane_config::domains::traces::{OttlErrorMode, OttlFilter, OttlTransform};
+use agent_data_plane_config::domains::traces::{
+    default_error_sampling_enabled, default_rare_sampler_cardinality, default_rare_sampler_cooldown,
+    default_rare_sampler_tps, default_trace_environment, OttlErrorMode, OttlFilter, OttlTransform,
+};
 use agent_data_plane_config::SalukiConfiguration;
 use bytesize::ByteSize;
 use saluki_config::DurationString;
@@ -85,8 +89,9 @@ use serde::Deserialize;
 ///
 /// Flat keys are top-level fields; nested keys live on matching nested sub-structs. Every field is
 /// `#[serde(default)]` and `Option`-typed (or an empty collection), so a deployment may set no
-/// Saluki-only keys at all and each falls back to its model default. Deserialized from the same
-/// merged map as the Datadog source model, so unknown (Datadog) keys are ignored.
+/// Saluki-only keys at all and each falls back to its model default. Required values with
+/// component defaults use the shared default from `agent-data-plane-config`. Deserialized from the
+/// same merged map as the Datadog source model, so unknown (Datadog) keys are ignored.
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct SalukiOnly {
@@ -213,29 +218,55 @@ pub struct DataPlaneMetricsV3Series {
 
 /// `apm_config.*` Saluki-only knobs. (The Datadog Agent publishes many other `apm_config.*` keys;
 /// those are witnessed and ignored here.)
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(default)]
 pub struct ApmConfig {
     /// Default trace environment (`apm_config.default_env`).
-    pub default_env: Option<String>,
+    #[serde(default = "default_trace_environment")]
+    pub default_env: String,
     /// Whether error sampling is enabled (`apm_config.error_sampling_enabled`).
-    pub error_sampling_enabled: Option<bool>,
+    #[serde(default = "default_error_sampling_enabled")]
+    pub error_sampling_enabled: bool,
     /// Rare sampler tuning (`apm_config.rare_sampler.*`).
     pub rare_sampler: ApmRareSampler,
     /// SQL obfuscation knobs (`apm_config.obfuscation.*`).
     pub obfuscation: ApmObfuscation,
 }
 
+impl Default for ApmConfig {
+    fn default() -> Self {
+        Self {
+            default_env: default_trace_environment(),
+            error_sampling_enabled: default_error_sampling_enabled(),
+            rare_sampler: ApmRareSampler::default(),
+            obfuscation: ApmObfuscation::default(),
+        }
+    }
+}
+
 /// `apm_config.rare_sampler.*`.
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(default)]
 pub struct ApmRareSampler {
     /// Tracked-signature cardinality (`apm_config.rare_sampler.cardinality`).
-    pub cardinality: Option<usize>,
+    #[serde(default = "default_rare_sampler_cardinality")]
+    pub cardinality: usize,
     /// Cooldown between rare-sample emissions (`apm_config.rare_sampler.cooldown`).
-    pub cooldown: Option<f64>,
+    #[serde(default = "default_rare_sampler_cooldown")]
+    pub cooldown: f64,
     /// Rare-sample traces-per-second budget (`apm_config.rare_sampler.tps`).
-    pub tps: Option<f64>,
+    #[serde(default = "default_rare_sampler_tps")]
+    pub tps: f64,
+}
+
+impl Default for ApmRareSampler {
+    fn default() -> Self {
+        Self {
+            cardinality: default_rare_sampler_cardinality(),
+            cooldown: default_rare_sampler_cooldown(),
+            tps: default_rare_sampler_tps(),
+        }
+    }
 }
 
 /// `apm_config.obfuscation.*`.
@@ -458,21 +489,11 @@ impl SalukiOnly {
 
         // domains.traces
         let traces = &mut config.domains.traces;
-        if let Some(v) = self.apm_config.default_env.clone() {
-            traces.default_env = v;
-        }
-        if let Some(v) = self.apm_config.error_sampling_enabled {
-            traces.error_sampling_enabled = v;
-        }
-        if let Some(v) = self.apm_config.rare_sampler.cardinality {
-            traces.rare_sampler.cardinality = v;
-        }
-        if let Some(v) = self.apm_config.rare_sampler.cooldown {
-            traces.rare_sampler.cooldown = v;
-        }
-        if let Some(v) = self.apm_config.rare_sampler.tps {
-            traces.rare_sampler.tps = v;
-        }
+        traces.default_env = self.apm_config.default_env.clone();
+        traces.error_sampling_enabled = self.apm_config.error_sampling_enabled;
+        traces.rare_sampler.cardinality = self.apm_config.rare_sampler.cardinality;
+        traces.rare_sampler.cooldown = self.apm_config.rare_sampler.cooldown;
+        traces.rare_sampler.tps = self.apm_config.rare_sampler.tps;
         if let Some(v) = self.apm_config.obfuscation.sql.dbms.clone() {
             traces.obfuscation.sql.dbms = v;
         }
@@ -700,9 +721,9 @@ mod tests {
         }
     }
 
-    /// An absent key leaves the model default in place (the common case). `seed` writes only present
-    /// options, so this exercises the `Option`-in-source / default-in-model split. A wrong value
-    /// here means the model `Default` is wrong, not this struct.
+    /// An absent key leaves the model default in place (the common case). Required Saluki-only
+    /// values are deserialized from their shared defaults and seeded into the model. A wrong value
+    /// here means the shared default is wrong, not this struct.
     #[test]
     fn absent_keys_leave_model_defaults() {
         let saluki_only: SalukiOnly = serde_json::from_value(json!({})).expect("empty source deserializes");
@@ -714,5 +735,12 @@ mod tests {
         assert_eq!(agg.context_limit, 1_000_000);
         assert_eq!(agg.flush_interval, Duration::from_secs(15));
         assert_eq!(agg.passthrough_idle_flush_timeout, Duration::from_secs(1));
+
+        let traces = &config.domains.traces;
+        assert_eq!(traces.default_env, default_trace_environment());
+        assert_eq!(traces.error_sampling_enabled, default_error_sampling_enabled());
+        assert_eq!(traces.rare_sampler.cardinality, default_rare_sampler_cardinality());
+        assert_eq!(traces.rare_sampler.cooldown, default_rare_sampler_cooldown());
+        assert_eq!(traces.rare_sampler.tps, default_rare_sampler_tps());
     }
 }
