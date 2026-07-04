@@ -871,6 +871,25 @@ mod tests {
     use super::config::HistogramStatistic;
     use super::*;
 
+    /// The histogram statistics the Datadog Agent computes by default, for aggregation-state tests
+    /// that need a representative configuration.
+    fn default_hist_config() -> HistogramConfiguration {
+        HistogramConfiguration::from_statistics(
+            &[
+                HistogramStatistic::Maximum,
+                HistogramStatistic::Median,
+                HistogramStatistic::Average,
+                HistogramStatistic::Count,
+                HistogramStatistic::Percentile {
+                    q: 0.95,
+                    suffix: "95percentile".into(),
+                },
+            ],
+            false,
+            String::new(),
+        )
+    }
+
     const BUCKET_WIDTH_SECS: NonZeroU64 = NonZeroU64::new(10).expect("not zero");
     const BUCKET_WIDTH: Duration = Duration::from_secs(BUCKET_WIDTH_SECS.get());
     const COUNTER_EXPIRE_SECS: u64 = 20;
@@ -1070,7 +1089,7 @@ mod tests {
             BUCKET_WIDTH_SECS,
             2,
             COUNTER_EXPIRE,
-            HistogramConfiguration::default(),
+            default_hist_config(),
             Telemetry::noop(),
         );
 
@@ -1120,7 +1139,7 @@ mod tests {
             BUCKET_WIDTH_SECS,
             2,
             COUNTER_EXPIRE,
-            HistogramConfiguration::default(),
+            default_hist_config(),
             Telemetry::noop(),
         );
 
@@ -1175,7 +1194,7 @@ mod tests {
             BUCKET_WIDTH_SECS,
             10,
             COUNTER_EXPIRE,
-            HistogramConfiguration::default(),
+            default_hist_config(),
             Telemetry::noop(),
         );
 
@@ -1224,7 +1243,7 @@ mod tests {
             BUCKET_WIDTH_SECS,
             10,
             COUNTER_EXPIRE,
-            HistogramConfiguration::default(),
+            default_hist_config(),
             Telemetry::noop(),
         );
 
@@ -1338,7 +1357,7 @@ mod tests {
             BUCKET_WIDTH_SECS,
             10,
             COUNTER_EXPIRE,
-            HistogramConfiguration::default(),
+            default_hist_config(),
             Telemetry::noop(),
         );
 
@@ -1405,7 +1424,7 @@ mod tests {
             BUCKET_WIDTH_SECS,
             10,
             COUNTER_EXPIRE,
-            HistogramConfiguration::default(),
+            default_hist_config(),
             Telemetry::noop(),
         );
 
@@ -1462,13 +1481,7 @@ mod tests {
         let builder = MetricsBuilder::default();
         let telemetry = Telemetry::new(&builder);
 
-        let mut state = AggregationState::new(
-            BUCKET_WIDTH_SECS,
-            2,
-            COUNTER_EXPIRE,
-            HistogramConfiguration::default(),
-            telemetry,
-        );
+        let mut state = AggregationState::new(BUCKET_WIDTH_SECS, 2, COUNTER_EXPIRE, default_hist_config(), telemetry);
 
         // Make sure our telemetry is registered at default values.
         assert_eq!(recorder.gauge("aggregate_active_contexts"), Some(0.0));

@@ -150,25 +150,6 @@ impl HistogramConfiguration {
     }
 }
 
-impl Default for HistogramConfiguration {
-    fn default() -> Self {
-        Self {
-            statistics: vec![
-                HistogramStatistic::Maximum,
-                HistogramStatistic::Median,
-                HistogramStatistic::Average,
-                HistogramStatistic::Count,
-                HistogramStatistic::Percentile {
-                    q: 0.95,
-                    suffix: "95percentile".into(),
-                },
-            ],
-            copy_to_distribution: false,
-            copy_to_distribution_prefix: "".into(),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
