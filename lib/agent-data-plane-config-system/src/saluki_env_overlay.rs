@@ -18,11 +18,20 @@ use std::sync::OnceLock;
 
 use datadog_agent_config::EnvOverlayMode;
 use serde::de::value::{Error as ValueError, StrDeserializer};
-use serde::de::{DeserializeSeed, Deserializer, IntoDeserializer, MapAccess, SeqAccess, Visitor};
+use serde::de::{
+    DeserializeSeed, Deserializer, EnumAccess, IntoDeserializer, MapAccess, SeqAccess, VariantAccess, Visitor,
+};
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
 use crate::saluki_only::SalukiOnly;
+
+/// Enum types in `SalukiOnly` that deserialize from a single scalar value, so the tracer records
+/// them as leaves instead of descending. Serde exposes an enum's shape but not whether it is
+/// scalar-like or data-carrying, so each such type is named here by hand. Add a type in the same
+/// commit that gives `SalukiOnly` a field of it; otherwise discovery fails with instructions and the
+/// `every_saluki_only_type_is_classified` test goes red.
+const ENUM_LEAF_TYPES: &[&str] = &["OttlErrorMode"];
 
 /// Relocates flat environment-variable keys in `merged` into the nested slots `SalukiOnly` reads,
 /// according to `mode`.
@@ -107,10 +116,11 @@ fn set_at_path(root: &mut Map<String, Value>, path: &[&str], value: Value) {
 // deserializes nothing. It records the field path serde asks for at each leaf, descending through
 // nested structs and through `Option<T>` as `Some(T)` so optional sub-structs stay visible.
 //
-// The one trap: some leaf types are scalar-like but their serde form is not a plain scalar
-// (`DurationString` and `ByteSize` deserialize through `deserialize_any`). The recorder must treat
-// those as leaves; descending into them would invent bogus segments. Everything that is not a
-// struct is therefore a leaf, which lands those types correctly without naming them.
+// The one trap: some leaf types are scalar-like but their serde form is not a plain scalar. Types
+// that deserialize through `deserialize_any` (`DurationString`, `ByteSize`) are recorded as leaves
+// structurally. Enums cannot be told apart from data-carrying ones by serde, so each scalar-like
+// enum is named in `ENUM_LEAF_TYPES`; an enum absent from that list fails discovery with
+// instructions rather than being silently mis-traced.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// The canonical leaf paths of `SalukiOnly`, discovered once and cached (they are fixed at compile
@@ -174,8 +184,9 @@ impl PathRecorder<'_, '_> {
 // `PathRecorder` records a leaf at every scalar (and scalar-like) method, descends at `option` and
 // `newtype_struct`, and recurses at `struct`. The visited value is thrown away, so each leaf feeds
 // the visitor a throwaway of the right shape purely to let deserialization complete. `deserialize_any`
-// is a leaf: it is where `DurationString` and `ByteSize` land. `tuple`, `tuple_struct`, and `enum`
-// are unused by `SalukiOnly` and fail loudly if that ever changes.
+// is a leaf: it is where `DurationString` and `ByteSize` land. An `enum` is a leaf when its type is
+// listed in `ENUM_LEAF_TYPES`, and otherwise fails loudly with instructions. `tuple` and
+// `tuple_struct` are unused by `SalukiOnly` and fail loudly if that ever changes.
 macro_rules! record_scalar {
     ($method:ident, $visit:ident, $dummy:expr) => {
         fn $method<V>(mut self, visitor: V) -> Result<V::Value, Self::Error>
@@ -279,12 +290,18 @@ impl<'de> Deserializer<'de> for PathRecorder<'_, '_> {
     }
 
     fn deserialize_enum<V>(
-        self, _name: &'static str, _variants: &'static [&'static str], _visitor: V,
+        mut self, name: &'static str, variants: &'static [&'static str], visitor: V,
     ) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        Err(unsupported("enum"))
+        if !ENUM_LEAF_TYPES.contains(&name) {
+            return Err(unclassified_enum(name));
+        }
+        self.record_leaf();
+        visitor.visit_enum(LeafEnumAccess {
+            variant: variants.first().copied().unwrap_or_default(),
+        })
     }
 
     fn deserialize_struct<V>(
@@ -318,6 +335,65 @@ impl<'de> Deserializer<'de> for PathRecorder<'_, '_> {
 
 fn unsupported(kind: &str) -> ValueError {
     serde::de::Error::custom(format!("SalukiOnly env tracer does not support {kind} leaves"))
+}
+
+fn unclassified_enum(name: &str) -> ValueError {
+    serde::de::Error::custom(format!(
+        "SalukiOnly env tracer cannot classify enum type `{name}`. A config enum deserializes from a \
+         single scalar value, so it is a leaf: add \"{name}\" to ENUM_LEAF_TYPES in \
+         lib/agent-data-plane-config-system/src/saluki_env_overlay.rs (see the \"Adding a Saluki-only \
+         value\" note in saluki_only.rs)."
+    ))
+}
+
+/// Completes tracing of a whitelisted scalar-like enum by presenting its first variant as a unit
+/// variant. The traced value is discarded, so the concrete variant is irrelevant.
+struct LeafEnumAccess {
+    variant: &'static str,
+}
+
+impl<'de> EnumAccess<'de> for LeafEnumAccess {
+    type Error = ValueError;
+    type Variant = LeafVariantAccess;
+
+    fn variant_seed<V>(self, seed: V) -> Result<(V::Value, Self::Variant), Self::Error>
+    where
+        V: DeserializeSeed<'de>,
+    {
+        let key: StrDeserializer<'_, ValueError> = self.variant.into_deserializer();
+        Ok((seed.deserialize(key)?, LeafVariantAccess))
+    }
+}
+
+struct LeafVariantAccess;
+
+impl<'de> VariantAccess<'de> for LeafVariantAccess {
+    type Error = ValueError;
+
+    fn unit_variant(self) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    fn newtype_variant_seed<T>(self, _seed: T) -> Result<T::Value, Self::Error>
+    where
+        T: DeserializeSeed<'de>,
+    {
+        Err(unsupported("newtype enum variant"))
+    }
+
+    fn tuple_variant<V>(self, _len: usize, _visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        Err(unsupported("tuple enum variant"))
+    }
+
+    fn struct_variant<V>(self, _fields: &'static [&'static str], _visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        Err(unsupported("struct enum variant"))
+    }
 }
 
 /// Feeds every field name to the derived struct visitor in turn, so serde requests each field's
@@ -419,6 +495,14 @@ mod tests {
     fn tracer_descends_through_optional_struct() {
         assert!(has_path(&["ottl_filter_config", "error_mode"]));
         assert!(has_path(&["ottl_filter_config", "traces", "span"]));
+    }
+
+    /// Guard: forces leaf-path discovery, which fails with instructions if `SalukiOnly` grows a
+    /// field of a type the tracer cannot classify (typically a new enum missing from
+    /// [`ENUM_LEAF_TYPES`]). If this test starts panicking, read the panic message.
+    #[test]
+    fn every_saluki_only_type_is_classified() {
+        assert!(!leaf_paths().is_empty(), "discovery yielded no leaves");
     }
 
     fn assert_unsplit_leaf(field: &str) {
