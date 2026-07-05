@@ -124,8 +124,8 @@ pub trait DatadogConfigWitness {
     fn consume_forwarder_recovery_interval(&mut self, value: i64);
     fn consume_forwarder_recovery_reset(&mut self, value: bool);
     fn consume_forwarder_retry_queue_capacity_time_interval_sec(&mut self, value: i64);
-    fn consume_forwarder_retry_queue_max_size(&mut self, value: i64);
-    fn consume_forwarder_retry_queue_payloads_max_size(&mut self, value: i64);
+    fn consume_forwarder_retry_queue_max_size(&mut self, value: Option<i64>);
+    fn consume_forwarder_retry_queue_payloads_max_size(&mut self, value: Option<i64>);
     fn consume_forwarder_stop_timeout(&mut self, value: i64);
     fn consume_forwarder_storage_max_disk_ratio(&mut self, value: f64);
     fn consume_forwarder_storage_max_size_in_bytes(&mut self, value: i64);

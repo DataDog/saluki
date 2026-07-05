@@ -1565,6 +1565,8 @@ inventory:
     support: full
     pipelines: [cross_cutting]
     description: "Retry queue max size (deprecated)"
+    documentation: "Deprecated fallback for `forwarder_retry_queue_payloads_max_size`. ADP owns the effective 15 MiB default and the deprecated-key precedence in `RetryConfiguration::queue_max_size_bytes()`, so this is generated as an absence-aware Option: unset must stay `None` or the fallback could never fire."
+    saluki_overrides_default: true
     test_support:
       used_by: [ForwarderConfiguration]
       value_type_override: integer
@@ -1575,6 +1577,8 @@ inventory:
     support: full
     pipelines: [cross_cutting]
     description: "Retry queue max size (bytes)"
+    documentation: "ADP owns the effective 15 MiB default and the deprecated-key precedence in `RetryConfiguration::queue_max_size_bytes()`, so this is generated as an absence-aware Option: when unset it must stay `None` so the deprecated `forwarder_retry_queue_max_size` fallback can still win."
+    saluki_overrides_default: true
     test_support:
       used_by: [ForwarderConfiguration]
       value_type_override: integer
