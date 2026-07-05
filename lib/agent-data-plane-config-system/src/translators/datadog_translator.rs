@@ -1091,13 +1091,28 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_use_v3_api_series_endpoints(&mut self, value: ::serde_json::Map<String, ::serde_json::Value>) {
-        self.config.shared.metrics_encoding.v3_series_mode.endpoint_modes = value
-            .into_iter()
-            .map(|(endpoint, mode)| {
-                let mode = mode.as_str().map(str::to_string).unwrap_or_else(|| mode.to_string());
-                (endpoint, mode)
-            })
-            .collect();
+        // The old `V3SeriesModeValue` deserializer accepted only strings and booleans as endpoint
+        // mode values; every other JSON kind failed deserialization and rejected the config. This
+        // path receives untyped values, so reproduce that domain here: keep strings as-is, normalize
+        // booleans to `"true"`/`"false"`, and reject anything else. A bad entry must not empty the
+        // whole map (startup rejects the config on the recorded error, but a runtime update stores
+        // what translated), so keep every valid entry and record the errors alongside them.
+        let mut endpoint_modes = HashMap::with_capacity(value.len());
+        for (endpoint, mode) in value {
+            match mode {
+                ::serde_json::Value::String(mode) => {
+                    endpoint_modes.insert(endpoint, mode);
+                }
+                ::serde_json::Value::Bool(mode) => {
+                    endpoint_modes.insert(endpoint, mode.to_string());
+                }
+                other => self.record_error(TranslateError::new_with_message(
+                    "use_v3_api.series.endpoints",
+                    format!("endpoint `{endpoint}` mode must be a string or boolean, got {other}"),
+                )),
+            }
+        }
+        self.config.shared.metrics_encoding.v3_series_mode.endpoint_modes = endpoint_modes;
     }
 
     fn consume_vector_metrics_enabled(&mut self, value: bool) {
@@ -1292,5 +1307,117 @@ mod tests {
 
         // The error is still surfaced, so startup's strict gate rejects the config.
         assert!(errors.is_some(), "an unknown action must record a translation error");
+    }
+
+    #[test]
+    fn v3_series_endpoint_modes_preserve_strings_and_normalize_bools() {
+        // Strings pass through unchanged and booleans normalize to `"true"`/`"false"`, matching the
+        // old `V3SeriesModeValue` deserializer's accepted domain.
+        let datadog: DatadogConfiguration = serde_json::from_value(json!({
+            "use_v3_api": {
+                "series": {
+                    "endpoints": {
+                        "https://app.datadoghq.com": "datadog_only",
+                        "https://true.example.com": true,
+                        "https://false.example.com": false,
+                    }
+                }
+            },
+        }))
+        .expect("datadog source deserializes");
+
+        let (config, errors) = DatadogTranslator::new(&datadog, SalukiConfiguration::default()).translate();
+        assert!(errors.is_none(), "valid endpoint modes must not record errors");
+
+        let modes = &config.shared.metrics_encoding.v3_series_mode.endpoint_modes;
+        assert_eq!(
+            modes.get("https://app.datadoghq.com").map(String::as_str),
+            Some("datadog_only")
+        );
+        assert_eq!(modes.get("https://true.example.com").map(String::as_str), Some("true"));
+        assert_eq!(
+            modes.get("https://false.example.com").map(String::as_str),
+            Some("false")
+        );
+    }
+
+    #[test]
+    fn v3_series_endpoint_mode_number_is_rejected() {
+        // A numeric mode used to fail deserialization; it must now record an error rather than being
+        // stringified into a valid-looking mode.
+        let datadog: DatadogConfiguration = serde_json::from_value(json!({
+            "use_v3_api": { "series": { "endpoints": { "https://app.datadoghq.com": 1 } } },
+        }))
+        .expect("datadog source deserializes");
+
+        let (config, errors) = DatadogTranslator::new(&datadog, SalukiConfiguration::default()).translate();
+
+        assert!(
+            errors.is_some(),
+            "a numeric endpoint mode must record a translation error"
+        );
+        assert!(
+            config.shared.metrics_encoding.v3_series_mode.endpoint_modes.is_empty(),
+            "an invalid mode must not be stringified into the map"
+        );
+    }
+
+    #[test]
+    fn v3_series_endpoint_mode_null_and_object_are_rejected() {
+        // Cover other invalid JSON kinds beyond numbers: null and object values are rejected too.
+        let datadog: DatadogConfiguration = serde_json::from_value(json!({
+            "use_v3_api": {
+                "series": {
+                    "endpoints": {
+                        "https://null.example.com": null,
+                        "https://object.example.com": { "nested": true },
+                    }
+                }
+            },
+        }))
+        .expect("datadog source deserializes");
+
+        let (config, errors) = DatadogTranslator::new(&datadog, SalukiConfiguration::default()).translate();
+
+        assert!(
+            errors.is_some(),
+            "null and object endpoint modes must record translation errors"
+        );
+        assert!(
+            config.shared.metrics_encoding.v3_series_mode.endpoint_modes.is_empty(),
+            "invalid modes must not be stringified into the map"
+        );
+    }
+
+    #[test]
+    fn v3_series_endpoint_modes_keep_valid_entries_when_one_is_invalid() {
+        // A single bad entry must not empty the whole map: startup rejects the config on the recorded
+        // error, but a runtime update keeps the valid entries while omitting the malformed one.
+        let datadog: DatadogConfiguration = serde_json::from_value(json!({
+            "use_v3_api": {
+                "series": {
+                    "endpoints": {
+                        "https://good.example.com": "datadog_only",
+                        "https://bad.example.com": 1,
+                    }
+                }
+            },
+        }))
+        .expect("datadog source deserializes");
+
+        let (config, errors) = DatadogTranslator::new(&datadog, SalukiConfiguration::default()).translate();
+
+        assert!(errors.is_some(), "the invalid entry must record a translation error");
+
+        let modes = &config.shared.metrics_encoding.v3_series_mode.endpoint_modes;
+        assert_eq!(
+            modes.get("https://good.example.com").map(String::as_str),
+            Some("datadog_only"),
+            "the valid entry must survive alongside the invalid one"
+        );
+        assert!(
+            !modes.contains_key("https://bad.example.com"),
+            "the invalid entry must be omitted from the map"
+        );
     }
 }

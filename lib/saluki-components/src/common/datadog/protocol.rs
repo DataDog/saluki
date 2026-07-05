@@ -305,3 +305,35 @@ impl Default for UseV3ApiSeriesConfig {
         }
     }
 }
+
+impl From<&agent_data_plane_config::shared::V3ApiSettings> for V3ApiSettings {
+    fn from(settings: &agent_data_plane_config::shared::V3ApiSettings) -> Self {
+        Self {
+            endpoints: settings.endpoints.clone(),
+            validate: settings.validate,
+            use_beta: settings.use_beta,
+            beta_route: settings.beta_route.clone(),
+            shadow_sample_rate: settings.shadow_sample_rate,
+            shadow_sites: settings.shadow_sites.clone(),
+        }
+    }
+}
+
+impl From<&agent_data_plane_config::shared::V3ApiEncoding> for V3ApiConfig {
+    fn from(encoding: &agent_data_plane_config::shared::V3ApiEncoding) -> Self {
+        Self {
+            series: (&encoding.series).into(),
+            sketches: (&encoding.sketches).into(),
+            compression_level: encoding.compression_level,
+        }
+    }
+}
+
+impl From<&agent_data_plane_config::shared::V3SeriesMode> for UseV3ApiSeriesConfig {
+    fn from(mode: &agent_data_plane_config::shared::V3SeriesMode) -> Self {
+        Self {
+            enabled: mode.mode.clone(),
+            endpoints: mode.endpoint_modes.clone(),
+        }
+    }
+}

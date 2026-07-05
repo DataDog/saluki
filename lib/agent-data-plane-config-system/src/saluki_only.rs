@@ -799,10 +799,14 @@ mod tests {
         assert_eq!(agg.flush_interval, Duration::from_secs(15));
         assert_eq!(agg.passthrough_idle_flush_timeout, Duration::from_secs(1));
 
+        let metrics_encoding = &config.shared.metrics_encoding;
         assert_eq!(
-            config.shared.metrics_encoding.flush_timeout,
+            metrics_encoding.flush_timeout,
             Duration::from_secs(default_encoder_flush_timeout_secs())
         );
+        assert_eq!(metrics_encoding.max_metrics_per_payload, 10_000);
+
+        assert_eq!(config.domains.checks.ipc_endpoint.0, "tcp://0.0.0.0:5105");
 
         let traces = &config.domains.traces;
         assert_eq!(traces.default_env, default_trace_environment());
