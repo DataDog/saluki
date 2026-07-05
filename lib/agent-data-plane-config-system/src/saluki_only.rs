@@ -136,14 +136,18 @@ pub struct SalukiOnly {
     pub dogstatsd_cached_contexts_limit: Option<usize>,
     /// Maximum cached tagsets (`dogstatsd_cached_tagsets_limit`).
     pub dogstatsd_cached_tagsets_limit: Option<usize>,
-    /// Explicit byte budget for the context interner (`dogstatsd_string_interner_size_bytes`).
-    pub dogstatsd_string_interner_size_bytes: Option<u64>,
+    /// Explicit byte budget for the context interner (`dogstatsd_string_interner_size_bytes`), given
+    /// as a bare integer number of bytes or a byte-size string such as `2MiB`. `ByteSize` accepts both
+    /// forms.
+    pub dogstatsd_string_interner_size_bytes: Option<ByteSize>,
     /// Whether to allow heap allocations for contexts (`dogstatsd_allow_context_heap_allocs`).
     pub dogstatsd_allow_context_heap_allocs: Option<bool>,
     /// Floor for metric sample rates (`dogstatsd_minimum_sample_rate`).
     pub dogstatsd_minimum_sample_rate: Option<f64>,
-    /// Mapper string interner entry count (`dogstatsd_mapper_string_interner_size`).
-    pub dogstatsd_mapper_string_interner_size: Option<u64>,
+    /// Mapper string interner byte budget (`dogstatsd_mapper_string_interner_size`), given as a
+    /// bare integer number of bytes or a byte-size string such as `64KiB`. `ByteSize` accepts both
+    /// forms.
+    pub dogstatsd_mapper_string_interner_size: Option<ByteSize>,
 
     // ── aggregation keys (all top-level) ──────────────────────────────────────
     /// Aggregation window size, in seconds (`aggregate_window_duration_seconds`).
@@ -491,7 +495,7 @@ impl SalukiOnly {
             dsd.contexts.cached_tagsets_limit = v;
         }
         if let Some(v) = self.dogstatsd_string_interner_size_bytes {
-            dsd.contexts.string_interner_size_bytes = Some(v);
+            dsd.contexts.string_interner_size_bytes = Some(v.as_u64());
         }
         if let Some(v) = self.dogstatsd_allow_context_heap_allocs {
             dsd.contexts.allow_context_heap_allocs = v;
@@ -500,7 +504,7 @@ impl SalukiOnly {
             dsd.contexts.minimum_sample_rate = v;
         }
         if let Some(v) = self.dogstatsd_mapper_string_interner_size {
-            dsd.mapper.string_interner_size = v;
+            dsd.mapper.string_interner_size = v.as_u64();
         }
         if let Some(v) = self.aggregate_window_duration_seconds {
             dsd.aggregation.window_duration_seconds = v;
@@ -722,6 +726,45 @@ mod tests {
         assert_eq!(config.domains.checks.ipc_endpoint.0, "localhost:5006");
     }
 
+    /// `dogstatsd_mapper_string_interner_size` is a byte size the source may express as a bare
+    /// integer (bytes) or a suffixed string. Both must deserialize to the same byte count.
+    #[test]
+    fn mapper_string_interner_size_accepts_a_bare_integer_or_a_string() {
+        for (value, expected) in [
+            (json!({ "dogstatsd_mapper_string_interner_size": 2048 }), 2048),
+            (
+                json!({ "dogstatsd_mapper_string_interner_size": "64KiB" }),
+                ByteSize::kib(64).as_u64(),
+            ),
+        ] {
+            let saluki_only: SalukiOnly = serde_json::from_value(value).expect("interner size deserializes");
+            let mut config = SalukiConfiguration::default();
+            saluki_only.seed(&mut config);
+            assert_eq!(config.domains.dogstatsd.mapper.string_interner_size, expected);
+        }
+    }
+
+    /// `dogstatsd_string_interner_size_bytes` is a byte size the source may express as a bare
+    /// integer (bytes) or a suffixed string. Both must deserialize to the same byte count.
+    #[test]
+    fn dogstatsd_string_interner_size_bytes_accepts_a_bare_integer_or_a_string() {
+        for (value, expected) in [
+            (json!({ "dogstatsd_string_interner_size_bytes": 1048576 }), 1_048_576),
+            (
+                json!({ "dogstatsd_string_interner_size_bytes": "2MiB" }),
+                ByteSize::mib(2).as_u64(),
+            ),
+        ] {
+            let saluki_only: SalukiOnly = serde_json::from_value(value).expect("interner size deserializes");
+            let mut config = SalukiConfiguration::default();
+            saluki_only.seed(&mut config);
+            assert_eq!(
+                config.domains.dogstatsd.contexts.string_interner_size_bytes,
+                Some(expected)
+            );
+        }
+    }
+
     #[test]
     fn ottl_filter_config_rejects_unknown_fields_and_values() {
         for value in [
@@ -793,7 +836,17 @@ mod tests {
         let mut config = SalukiConfiguration::default();
         saluki_only.seed(&mut config);
 
-        let agg = &config.domains.dogstatsd.aggregation;
+        let dsd = &config.domains.dogstatsd;
+        assert_eq!(dsd.listeners.buffer_count, 128);
+        assert_eq!(dsd.listeners.buffer_count_max, 256);
+        assert!(dsd.listeners.permissive_decoding);
+        assert_eq!(dsd.contexts.cached_contexts_limit, 500_000);
+        assert_eq!(dsd.contexts.cached_tagsets_limit, 500_000);
+        assert!(dsd.contexts.allow_context_heap_allocs);
+        assert_eq!(dsd.contexts.minimum_sample_rate, 0.000000003845);
+        assert_eq!(dsd.mapper.string_interner_size, 65_536);
+
+        let agg = &dsd.aggregation;
         assert_eq!(agg.window_duration_seconds, 10);
         assert_eq!(agg.context_limit, 1_000_000);
         assert_eq!(agg.flush_interval, Duration::from_secs(15));

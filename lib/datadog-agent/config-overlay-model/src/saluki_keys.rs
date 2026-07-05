@@ -520,10 +520,10 @@ pub static SALUKI_KEYS: &[SalukiKey] = &[
     // ── dogstatsd_mapper.rs ──────────────────────────────────────────────────
     SalukiKey {
         yaml_path: "dogstatsd_mapper_string_interner_size",
-        description: "Mapper string interner capacity",
+        description: "Mapper string interner byte budget",
         default: "",
         documentation: None,
-        value_type: "ValueType::Integer",
+        value_type: "ValueType::String",
         schema_default: None,
         env_vars: &[],
         env_var_override: None,

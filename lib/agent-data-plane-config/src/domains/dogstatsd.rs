@@ -46,7 +46,7 @@ pub struct Domain {
 }
 
 /// Source listeners and packet-decoding options.
-#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Listeners {
     /// UDP port DogStatsD listens on.
     pub port: u16,
@@ -114,6 +114,39 @@ pub struct Listeners {
     pub forward_port: u16,
 }
 
+impl Default for Listeners {
+    fn default() -> Self {
+        Self {
+            // Saluki-schema-only knobs whose defaults are not published by the Datadog Agent schema,
+            // so they are seeded only when set; absent that, these values stand and must match what
+            // the DogStatsD source expects.
+            buffer_count: 128,
+            buffer_count_max: 256,
+            permissive_decoding: true,
+            // Datadog-schema and unset-by-default knobs: the witness driver overwrites the former,
+            // and the latter are genuinely zero/empty/None when unset.
+            port: 0,
+            tcp_port: 0,
+            socket: None,
+            stream_socket: None,
+            pipe_name: None,
+            windows_pipe_security_descriptor: String::new(),
+            non_local_traffic: false,
+            bind_host: None,
+            so_rcvbuf: 0,
+            buffer_size: 0,
+            autoscale_udp_listeners: false,
+            provider_kind: String::new(),
+            capture_path: PathBuf::new(),
+            capture_depth: 0,
+            eol_required: Vec::new(),
+            stream_log_too_big: false,
+            forward_host: None,
+            forward_port: 0,
+        }
+    }
+}
+
 /// Origin detection and tag cardinality.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct OriginDetection {
@@ -153,8 +186,15 @@ pub struct Telemetry {
     pub origin_breakdown: bool,
 }
 
+/// The default floor for DogStatsD metric sample rates. (not in Datadog Agent config schema)
+///
+/// Roughly 260M samples; sample rates below this are clamped to bound tracked-sample memory growth.
+const fn default_minimum_sample_rate() -> f64 {
+    0.000000003845
+}
+
 /// Context cache sizing and sample-rate floor.
-#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Contexts {
     /// Maximum number of metric contexts held in the cache. (not in Datadog Agent config schema)
     pub cached_contexts_limit: usize,
@@ -176,6 +216,24 @@ pub struct Contexts {
     /// Lowest sample rate accepted before a metric is rejected. (not in Datadog Agent config
     /// schema)
     pub minimum_sample_rate: f64,
+}
+
+impl Default for Contexts {
+    fn default() -> Self {
+        Self {
+            // Saluki-schema-only knobs: not published by the Datadog Agent schema, so they are
+            // seeded only when set; absent that, these values stand and must match what the
+            // DogStatsD source expects.
+            cached_contexts_limit: 500_000,
+            cached_tagsets_limit: 500_000,
+            allow_context_heap_allocs: true,
+            minimum_sample_rate: default_minimum_sample_rate(),
+            // Datadog-schema knob: overwritten by the witness driver.
+            string_interner_size: 0,
+            // Unset by default; `None` selects the entry-count-derived interner size.
+            string_interner_size_bytes: None,
+        }
+    }
 }
 
 /// Metric aggregation window and flush behavior.
@@ -232,8 +290,15 @@ impl Default for Aggregation {
     }
 }
 
+/// The default byte budget for the mapper's string interner. (not in Datadog Agent config schema)
+///
+/// 64 KiB, matching the DogStatsD mapper's prior default.
+const fn default_mapper_string_interner_size() -> u64 {
+    65_536
+}
+
 /// DogStatsD metric mapper.
-#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Mapper {
     /// Mapper profiles that rewrite matching metric names and tags.
     pub profiles: Vec<MapperProfile>,
@@ -241,8 +306,21 @@ pub struct Mapper {
     /// Number of mapper match results cached.
     pub cache_size: usize,
 
-    /// Number of entries the mapper's string interner holds. (not in Datadog Agent config schema)
+    /// Byte budget for the mapper's string interner. (not in Datadog Agent config schema)
     pub string_interner_size: u64,
+}
+
+impl Default for Mapper {
+    fn default() -> Self {
+        Self {
+            // Datadog-schema knobs: overwritten by the witness driver.
+            profiles: Vec::new(),
+            cache_size: 0,
+            // Saluki-schema-only knob: seeded only when set; absent that, this value stands and
+            // must be non-zero, as the mapper rejects a zero-sized interner.
+            string_interner_size: default_mapper_string_interner_size(),
+        }
+    }
 }
 
 /// One mapper profile: a name, a metric prefix, and the mappings under it.

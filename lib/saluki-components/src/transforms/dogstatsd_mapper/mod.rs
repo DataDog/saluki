@@ -1,14 +1,13 @@
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
-use std::str::FromStr;
 use std::sync::LazyLock;
 use std::time::Duration;
 
+use agent_data_plane_config::domains::dogstatsd::{Mapper as MapperConfig, MapperProfile};
 use async_trait::async_trait;
 use bytesize::ByteSize;
 use regex::Regex;
 use saluki_common::cache::{Cache, CacheBuilder};
-use saluki_config::GenericConfiguration;
 use saluki_context::tags::SharedTagSet;
 use saluki_context::tags::TagSet;
 use saluki_context::{Context, ContextResolver, ContextResolverBuilder};
@@ -21,8 +20,6 @@ use saluki_core::{
     topology::EventsBuffer,
 };
 use saluki_error::{generic_error, ErrorContext, GenericError};
-use serde::{Deserialize, Serialize};
-use serde_with::{serde_as, DisplayFromStr, PickFirst};
 use stringtheory::MetaString;
 
 const MATCH_TYPE_WILDCARD: &str = "wildcard";
@@ -31,156 +28,106 @@ const MATCH_TYPE_REGEX: &str = "regex";
 static ALLOWED_WILDCARD_MATCH_PATTERN: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^[a-zA-Z0-9\-_*.]+$").expect("Invalid regex in ALLOWED_WILDCARD_MATCH_PATTERN"));
 
-const fn default_context_string_interner_size() -> ByteSize {
-    ByteSize::kib(64)
-}
-
-const fn default_dogstatsd_mapper_cache_size() -> usize {
-    1000
-}
 /// DogStatsD mapper transform.
-#[serde_as]
-#[derive(Deserialize)]
-#[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
 pub struct DogStatsDMapperConfiguration {
     /// Total size of the string interner used for contexts, in bytes.
     ///
     /// This controls the amount of memory that will be pre-allocated for the purpose
     /// of interning mapped metric names and tags, which can help to avoid unnecessary
     /// allocations and allocator fragmentation.
-    #[serde(
-        rename = "dogstatsd_mapper_string_interner_size",
-        default = "default_context_string_interner_size"
-    )]
     context_string_interner_bytes: ByteSize,
 
     /// Maximum number of mapped results to cache.
     ///
     /// When enabled, mapped metrics will be cached by name to avoid repeat evaluation of the configured mapper rules.
-    ///
     /// When set to `0`, the cache is disabled.
-    ///
-    /// Defaults to `1000`.
-    #[serde(
-        rename = "dogstatsd_mapper_cache_size",
-        default = "default_dogstatsd_mapper_cache_size"
-    )]
     cache_size: usize,
 
-    /// Configuration related to metric mapping.
-    #[serde_as(as = "PickFirst<(DisplayFromStr, _)>")]
-    #[serde(default)]
-    dogstatsd_mapper_profiles: MapperProfileConfigs,
+    /// Metric-name mapping profiles.
+    profiles: Vec<MapperProfile>,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
-struct MappingProfileConfig {
-    name: String,
-    prefix: String,
-    mappings: Vec<MetricMappingConfig>,
-}
-#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
-struct MapperProfileConfigs(pub Vec<MappingProfileConfig>);
-
-impl FromStr for MapperProfileConfigs {
-    type Err = serde_json::Error;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let profiles: Vec<MappingProfileConfig> = serde_json::from_str(s)?;
-        Ok(MapperProfileConfigs(profiles))
-    }
-}
-
-#[cfg(test)]
-impl std::fmt::Display for MapperProfileConfigs {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", serde_json::to_string(&self.0).unwrap_or_default())
-    }
-}
-
-impl MapperProfileConfigs {
-    fn build(
-        &self, context: ComponentContext, context_string_interner_bytes: ByteSize, cache_size: usize,
-    ) -> Result<MetricMapper, GenericError> {
-        let mut profiles = Vec::with_capacity(self.0.len());
-        for (i, config_profile) in self.0.iter().enumerate() {
-            if config_profile.name.is_empty() {
-                return Err(generic_error!("missing profile name"));
-            }
-            if config_profile.prefix.is_empty() {
-                return Err(generic_error!("missing prefix for profile: {}", config_profile.name));
-            }
-
-            let mut profile = MappingProfile {
-                prefix: config_profile.prefix.clone(),
-                mappings: Vec::with_capacity(config_profile.mappings.len()),
-            };
-
-            for mapping in &config_profile.mappings {
-                let match_type = match mapping.match_type.as_str() {
-                    // Default to wildcard when not set.
-                    "" => MATCH_TYPE_WILDCARD,
-                    MATCH_TYPE_WILDCARD => MATCH_TYPE_WILDCARD,
-                    MATCH_TYPE_REGEX => MATCH_TYPE_REGEX,
-                    unknown => {
-                        return Err(generic_error!(
-                            "profile: {}, mapping num {}: invalid match type `{}`, expected `wildcard` or `regex`",
-                            config_profile.name,
-                            i,
-                            unknown,
-                        ))
-                    }
-                };
-                if mapping.name.is_empty() {
-                    return Err(generic_error!(
-                        "profile: {}, mapping num {}: name is required",
-                        config_profile.name,
-                        i
-                    ));
-                }
-                if mapping.metric_match.is_empty() {
-                    return Err(generic_error!(
-                        "profile: {}, mapping num {}: match is required",
-                        config_profile.name,
-                        i
-                    ));
-                }
-                let regex = build_regex(&mapping.metric_match, match_type)?;
-                profile.mappings.push(MetricMapping {
-                    name: mapping.name.clone(),
-                    tags: mapping.tags.clone(),
-                    regex,
-                });
-            }
-            profiles.push(profile);
+fn build_metric_mapper(
+    profiles: &[MapperProfile], context: ComponentContext, context_string_interner_bytes: ByteSize, cache_size: usize,
+) -> Result<MetricMapper, GenericError> {
+    let mut built_profiles = Vec::with_capacity(profiles.len());
+    for (i, config_profile) in profiles.iter().enumerate() {
+        if config_profile.name.is_empty() {
+            return Err(generic_error!("missing profile name"));
+        }
+        if config_profile.prefix.is_empty() {
+            return Err(generic_error!("missing prefix for profile: {}", config_profile.name));
         }
 
-        let context_string_interner_size = NonZeroUsize::new(context_string_interner_bytes.as_u64() as usize)
-            .ok_or_else(|| generic_error!("context_string_interner_size must be greater than 0"))
-            .unwrap();
-
-        let context_resolver =
-            ContextResolverBuilder::from_name(format!("{}/dsd_mapper/primary", context.component_id()))
-                .expect("resolver name is not empty")
-                .with_interner_capacity_bytes(context_string_interner_size)
-                .with_idle_context_expiration(Duration::from_secs(30))
-                .build();
-
-        let cache = match NonZeroUsize::new(cache_size) {
-            Some(capacity) => Some(
-                CacheBuilder::from_identifier(format!("{}/dsd_mapper/result_cache", context.component_id()))?
-                    .with_capacity(capacity)
-                    .build(),
-            ),
-            None => None,
+        let mut profile = MappingProfile {
+            prefix: config_profile.prefix.clone(),
+            mappings: Vec::with_capacity(config_profile.mappings.len()),
         };
 
-        Ok(MetricMapper {
-            context_resolver,
-            profiles,
-            cache,
-        })
+        for mapping in &config_profile.mappings {
+            let match_type = match mapping.match_type.as_str() {
+                // Default to wildcard when not set.
+                "" => MATCH_TYPE_WILDCARD,
+                MATCH_TYPE_WILDCARD => MATCH_TYPE_WILDCARD,
+                MATCH_TYPE_REGEX => MATCH_TYPE_REGEX,
+                unknown => {
+                    return Err(generic_error!(
+                        "profile: {}, mapping num {}: invalid match type `{}`, expected `wildcard` or `regex`",
+                        config_profile.name,
+                        i,
+                        unknown,
+                    ))
+                }
+            };
+            if mapping.name.is_empty() {
+                return Err(generic_error!(
+                    "profile: {}, mapping num {}: name is required",
+                    config_profile.name,
+                    i
+                ));
+            }
+            if mapping.metric_match.is_empty() {
+                return Err(generic_error!(
+                    "profile: {}, mapping num {}: match is required",
+                    config_profile.name,
+                    i
+                ));
+            }
+            let regex = build_regex(&mapping.metric_match, match_type)?;
+            profile.mappings.push(MetricMapping {
+                name: mapping.name.clone(),
+                tags: mapping.tags.clone(),
+                regex,
+            });
+        }
+        built_profiles.push(profile);
     }
+    let profiles = built_profiles;
+
+    let context_string_interner_size = NonZeroUsize::new(context_string_interner_bytes.as_u64() as usize)
+        .ok_or_else(|| generic_error!("context_string_interner_size must be greater than 0"))
+        .unwrap();
+
+    let context_resolver = ContextResolverBuilder::from_name(format!("{}/dsd_mapper/primary", context.component_id()))
+        .expect("resolver name is not empty")
+        .with_interner_capacity_bytes(context_string_interner_size)
+        .with_idle_context_expiration(Duration::from_secs(30))
+        .build();
+
+    let cache = match NonZeroUsize::new(cache_size) {
+        Some(capacity) => Some(
+            CacheBuilder::from_identifier(format!("{}/dsd_mapper/result_cache", context.component_id()))?
+                .with_capacity(capacity)
+                .build(),
+        ),
+        None => None,
+    };
+
+    Ok(MetricMapper {
+        context_resolver,
+        profiles,
+        cache,
+    })
 }
 
 fn build_regex(match_re: &str, match_type: &str) -> Result<Regex, GenericError> {
@@ -212,24 +159,6 @@ fn build_regex(match_re: &str, match_type: &str) -> Result<Regex, GenericError> 
             final_pattern, match_type
         )
     })
-}
-
-#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
-struct MetricMappingConfig {
-    // The metric name to extract groups from with the Wildcard or Regex match logic.
-    #[serde(rename = "match")]
-    metric_match: String,
-
-    // The type of match to apply to the `metric_match`. Either wildcard or regex.
-    #[serde(default)]
-    match_type: String,
-
-    // The new metric name to send to Datadog with the tags defined in the same group.
-    name: String,
-
-    // Map with the tag key and tag values collected from the `match_type` to inline.
-    #[serde(default)]
-    tags: HashMap<String, String>,
 }
 
 struct MappingProfile {
@@ -353,18 +282,25 @@ impl MetricMapper {
 }
 
 impl DogStatsDMapperConfiguration {
-    /// Creates a new `DogstatsDMapperConfiguration` from the given configuration.
-    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        Ok(config.as_typed()?)
+    /// Creates a new `DogStatsDMapperConfiguration` from the resolved mapper configuration.
+    pub fn from_configuration(mapper: &MapperConfig) -> Result<Self, GenericError> {
+        Ok(Self {
+            context_string_interner_bytes: ByteSize::b(mapper.string_interner_size),
+            cache_size: mapper.cache_size,
+            profiles: mapper.profiles.clone(),
+        })
     }
 }
 
 #[async_trait]
 impl SynchronousTransformBuilder for DogStatsDMapperConfiguration {
     async fn build(&self, context: ComponentContext) -> Result<Box<dyn SynchronousTransform + Send>, GenericError> {
-        let metric_mapper =
-            self.dogstatsd_mapper_profiles
-                .build(context, self.context_string_interner_bytes, self.cache_size)?;
+        let metric_mapper = build_metric_mapper(
+            &self.profiles,
+            context,
+            self.context_string_interner_bytes,
+            self.cache_size,
+        )?;
         Ok(Box::new(DogStatsDMapper { metric_mapper }))
     }
 }
@@ -405,6 +341,9 @@ impl SynchronousTransform for DogStatsDMapper {
 #[cfg(test)]
 mod tests {
 
+    use std::collections::HashMap;
+
+    use agent_data_plane_config::domains::dogstatsd::{MapperProfile, MetricMapping as ModelMetricMapping};
     use bytesize::ByteSize;
     use saluki_context::{Context, ContextResolverBuilder};
     use saluki_core::{
@@ -412,9 +351,52 @@ mod tests {
         topology::ComponentId,
     };
     use saluki_error::GenericError;
+    use serde::Deserialize;
     use serde_json::{json, Value};
 
-    use super::{MapperProfileConfigs, MetricMapper};
+    use super::{build_metric_mapper, MetricMapper};
+
+    /// Test-only deserialization shim mirroring the source shape of `dogstatsd_mapper_profiles`, so
+    /// the mapper tests can drive the builder from JSON. The production path receives already-typed
+    /// [`MapperProfile`] values from the configuration layer.
+    #[derive(Deserialize)]
+    struct TestMappingProfile {
+        name: String,
+        prefix: String,
+        mappings: Vec<TestMetricMapping>,
+    }
+
+    #[derive(Deserialize)]
+    struct TestMetricMapping {
+        #[serde(rename = "match")]
+        metric_match: String,
+        #[serde(default)]
+        match_type: String,
+        name: String,
+        #[serde(default)]
+        tags: HashMap<String, String>,
+    }
+
+    fn profiles_from_json(json_data: Value) -> Result<Vec<MapperProfile>, GenericError> {
+        let shims: Vec<TestMappingProfile> = serde_json::from_value(json_data)?;
+        Ok(shims
+            .into_iter()
+            .map(|profile| MapperProfile {
+                name: profile.name,
+                prefix: profile.prefix,
+                mappings: profile
+                    .mappings
+                    .into_iter()
+                    .map(|mapping| ModelMetricMapping {
+                        metric_match: mapping.metric_match,
+                        match_type: mapping.match_type,
+                        name: mapping.name,
+                        tags: mapping.tags,
+                    })
+                    .collect(),
+            })
+            .collect())
+    }
 
     fn counter_metric(name: &'static str, tags: &[&'static str]) -> Metric {
         let context = Context::from_static_parts(name, tags);
@@ -430,9 +412,9 @@ mod tests {
             &SubsystemIdentifier::from_segments(["test"]),
             ComponentId::try_from("test_mapper").unwrap(),
         );
-        let mpc: MapperProfileConfigs = serde_json::from_value(json_data)?;
+        let profiles = profiles_from_json(json_data)?;
         let context_string_interner_bytes = ByteSize::kib(64);
-        mpc.build(context, context_string_interner_bytes, cache_size)
+        build_metric_mapper(&profiles, context, context_string_interner_bytes, cache_size)
     }
 
     fn assert_tags(context: &Context, expected_tags: &[&str]) {
@@ -1206,31 +1188,5 @@ mod tests {
             Some(1),
             "flood of identical names should populate exactly one cache entry"
         );
-    }
-}
-
-#[cfg(test)]
-mod config_smoke {
-    use datadog_agent_config_testing::config_registry::structs;
-    use datadog_agent_config_testing::run_config_smoke_tests;
-    use serde_json::json;
-
-    use super::DogStatsDMapperConfiguration;
-    use crate::config::{DatadogRemapper, KEY_ALIASES};
-
-    #[tokio::test]
-    async fn smoke_test() {
-        run_config_smoke_tests(
-            structs::DOGSTATSD_MAPPER_CONFIGURATION,
-            &[],
-            json!({}),
-            |cfg| {
-                cfg.as_typed::<DogStatsDMapperConfiguration>()
-                    .expect("DogStatsDMapperConfiguration should deserialize")
-            },
-            KEY_ALIASES,
-            DatadogRemapper::new,
-        )
-        .await
     }
 }

@@ -431,7 +431,7 @@ The following settings are specific to ADP and have no equivalent in the core ag
 | `dogstatsd_buffer_count`                                        | Baseline receive buffers                   | 128     |
 | `dogstatsd_cached_contexts_limit`                               | Max cached metric contexts                 |         |
 | `dogstatsd_cached_tagsets_limit`                                | Max cached tagsets                         |         |
-| `dogstatsd_mapper_string_interner_size`                         | Mapper string interner capacity            |         |
+| `dogstatsd_mapper_string_interner_size`                         | Mapper string interner byte budget         |         |
 | `dogstatsd_minimum_sample_rate`                                 | Floor for metric sample rates              |         |
 | `dogstatsd_permissive_decoding`                                 | Relaxes decoder strictness                 | true    |
 | `dogstatsd_string_interner_size_bytes`                          | Explicit byte budget for context interner  |         |

@@ -1,12 +1,12 @@
 use std::sync::Arc;
 
+use agent_data_plane_config::domains::dogstatsd::{OriginDetection, OriginTagCardinality as ModelOriginTagCardinality};
 use saluki_context::{
     origin::{OriginTagCardinality, OriginTagsResolver, RawOrigin},
     tags::SharedTagSet,
 };
 use saluki_env::{workload::origin::ResolvedOrigin, WorkloadProvider};
 use saluki_io::deser::codec::dogstatsd::{EventPacket, MetricPacket, ServiceCheckPacket};
-use serde::Deserialize;
 use tracing::trace;
 
 use super::{replay::CapturedTaggerHandle, tags::WellKnownTags};
@@ -25,10 +25,12 @@ fn captured_process_id_from_replay(process_id: u32) -> Option<u32> {
     }
 }
 
+#[cfg(test)]
 const fn default_tag_cardinality() -> OriginTagCardinality {
     OriginTagCardinality::Low
 }
 
+#[cfg(test)]
 const fn default_origin_detection_optout() -> bool {
     true
 }
@@ -38,15 +40,14 @@ const fn default_origin_detection_optout() -> bool {
 /// Origin enrichment controls the when and how of enriching metrics ingested via DogStatsD based on various sources of
 /// "origin" information, such as specific metric tags or UDS socket credentials. Enrichment involves adding additional
 /// metric tags that describe the origin of the metric, such as the Kubernetes pod or container.
-#[derive(Clone, Deserialize)]
-#[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
+#[derive(Clone)]
+#[cfg_attr(test, derive(Debug, PartialEq))]
 pub struct OriginEnrichmentConfiguration {
     /// Whether or not to enable origin detection.
     ///
     /// If disabled, no origin tags will be added to events even if the origin information is detected.
     ///
     /// Defaults to `false`.
-    #[serde(rename = "dogstatsd_origin_detection", default)]
     enabled: bool,
 
     /// Whether or not a client-provided entity ID should take precedence over automatically detected origin metadata.
@@ -55,11 +56,9 @@ pub struct OriginEnrichmentConfiguration {
     /// this to `true` will cause the origin process ID to be ignored.
     ///
     /// Defaults to `false`.
-    #[serde(rename = "dogstatsd_entity_id_precedence", default)]
     entity_id_precedence: bool,
 
     /// The default cardinality of tags to enrich metrics with.
-    #[serde(rename = "dogstatsd_tag_cardinality", default = "default_tag_cardinality")]
     tag_cardinality: OriginTagCardinality,
 
     /// Whether or not to use the unified origin detection behavior.
@@ -74,7 +73,6 @@ pub struct OriginEnrichmentConfiguration {
     ///
     /// [1]: if an entity ID was detected via Origin Detection, it's only used if either no client-provided entity ID
     ///      was present or if `entity_id_precedence` is set to `false`.
-    #[serde(rename = "origin_detection_unified", default)]
     origin_detection_unified: bool,
 
     /// Whether or not to opt out of origin detection for DogStatsD metrics.
@@ -83,10 +81,6 @@ pub struct OriginEnrichmentConfiguration {
     /// skipped. This is only applicable to DogStatsD metrics when unified origin detection behavior isn't enabled.
     ///
     /// Defaults to `true`.
-    #[serde(
-        rename = "dogstatsd_origin_optout_enabled",
-        default = "default_origin_detection_optout"
-    )]
     origin_detection_optout: bool,
 
     /// Whether or not to parse client-provided origin fields from DogStatsD payloads.
@@ -95,10 +89,10 @@ pub struct OriginEnrichmentConfiguration {
     /// parsed and used for origin enrichment.
     ///
     /// Defaults to `false`.
-    #[serde(rename = "dogstatsd_origin_detection_client", default)]
     pub(super) origin_detection_client: bool,
 }
 
+#[cfg(test)]
 impl Default for OriginEnrichmentConfiguration {
     fn default() -> Self {
         Self {
@@ -113,8 +107,29 @@ impl Default for OriginEnrichmentConfiguration {
 }
 
 impl OriginEnrichmentConfiguration {
+    /// Builds the origin enrichment configuration from the resolved origin-detection model.
+    pub(super) fn from_model(origin: &OriginDetection) -> Self {
+        Self {
+            enabled: origin.detection,
+            entity_id_precedence: origin.entity_id_precedence,
+            tag_cardinality: model_tag_cardinality(origin.tag_cardinality),
+            origin_detection_unified: origin.unified,
+            origin_detection_optout: origin.optout_enabled,
+            origin_detection_client: origin.detection_client,
+        }
+    }
+
     pub(super) const fn enabled(&self) -> bool {
         self.enabled
+    }
+}
+
+fn model_tag_cardinality(cardinality: ModelOriginTagCardinality) -> OriginTagCardinality {
+    match cardinality {
+        ModelOriginTagCardinality::Low => OriginTagCardinality::Low,
+        ModelOriginTagCardinality::Orchestrator => OriginTagCardinality::Orchestrator,
+        ModelOriginTagCardinality::High => OriginTagCardinality::High,
+        ModelOriginTagCardinality::None => OriginTagCardinality::None,
     }
 }
 

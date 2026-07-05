@@ -66,6 +66,23 @@ impl<'a> DatadogTranslator<'a> {
     fn record_error(&mut self, error: TranslateError) {
         self.errors.push(error);
     }
+
+    fn checked_integer_conversion<T>(&mut self, key: &'static str, value: i64) -> Option<T>
+    where
+        T: TryFrom<i64>,
+        T::Error: std::fmt::Display,
+    {
+        match T::try_from(value) {
+            Ok(value) => Some(value),
+            Err(error) => {
+                self.record_error(TranslateError::new_with_message(
+                    key,
+                    format!("invalid value `{value}`: {error}"),
+                ));
+                None
+            }
+        }
+    }
 }
 
 /// Default primary intake URL that the Core Agent sends for `dd_url`.
@@ -145,7 +162,6 @@ fn parse_mapper_profile(key: &str, raw: serde_json::Value) -> Result<MapperProfi
     struct RawProfile {
         name: String,
         prefix: String,
-        #[serde(default)]
         mappings: Vec<RawMapping>,
     }
 
@@ -480,11 +496,15 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_dogstatsd_buffer_size(&mut self, value: i64) {
-        self.config.domains.dogstatsd.listeners.buffer_size = value.max(0) as usize;
+        if let Some(value) = self.checked_integer_conversion("dogstatsd_buffer_size", value) {
+            self.config.domains.dogstatsd.listeners.buffer_size = value;
+        }
     }
 
     fn consume_dogstatsd_capture_depth(&mut self, value: i64) {
-        self.config.domains.dogstatsd.listeners.capture_depth = value.max(0) as usize;
+        if let Some(value) = self.checked_integer_conversion("dogstatsd_capture_depth", value) {
+            self.config.domains.dogstatsd.listeners.capture_depth = value;
+        }
     }
 
     fn consume_dogstatsd_capture_path(&mut self, value: String) {
@@ -492,7 +512,9 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_dogstatsd_context_expiry_seconds(&mut self, value: i64) {
-        self.config.domains.dogstatsd.aggregation.context_expiry_seconds = value.max(0) as u64;
+        if let Some(value) = self.checked_integer_conversion("dogstatsd_context_expiry_seconds", value) {
+            self.config.domains.dogstatsd.aggregation.context_expiry_seconds = value;
+        }
     }
 
     fn consume_dogstatsd_disable_verbose_logs(&mut self, value: bool) {
@@ -535,7 +557,9 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_dogstatsd_mapper_cache_size(&mut self, value: i64) {
-        self.config.domains.dogstatsd.mapper.cache_size = value.max(0) as usize;
+        if let Some(value) = self.checked_integer_conversion("dogstatsd_mapper_cache_size", value) {
+            self.config.domains.dogstatsd.mapper.cache_size = value;
+        }
     }
 
     fn consume_dogstatsd_mapper_profiles(&mut self, value: Vec<serde_json::Value>) {
@@ -581,11 +605,15 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_dogstatsd_port(&mut self, value: i64) {
-        self.config.domains.dogstatsd.listeners.port = to_port(value);
+        if let Some(value) = self.checked_integer_conversion("dogstatsd_port", value) {
+            self.config.domains.dogstatsd.listeners.port = value;
+        }
     }
 
     fn consume_dogstatsd_so_rcvbuf(&mut self, value: i64) {
-        self.config.domains.dogstatsd.listeners.so_rcvbuf = value.max(0) as usize;
+        if let Some(value) = self.checked_integer_conversion("dogstatsd_so_rcvbuf", value) {
+            self.config.domains.dogstatsd.listeners.so_rcvbuf = value;
+        }
     }
 
     fn consume_dogstatsd_socket(&mut self, value: Option<String>) {
@@ -601,7 +629,9 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_dogstatsd_string_interner_size(&mut self, value: i64) {
-        self.config.domains.dogstatsd.contexts.string_interner_size = value.max(0) as u64;
+        if let Some(value) = self.checked_integer_conversion("dogstatsd_string_interner_size", value) {
+            self.config.domains.dogstatsd.contexts.string_interner_size = value;
+        }
     }
 
     fn consume_dogstatsd_tag_cardinality(&mut self, value: String) {
@@ -1042,7 +1072,9 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_statsd_forward_port(&mut self, value: i64) {
-        self.config.domains.dogstatsd.listeners.forward_port = to_port(value);
+        if let Some(value) = self.checked_integer_conversion("statsd_forward_port", value) {
+            self.config.domains.dogstatsd.listeners.forward_port = value;
+        }
     }
 
     fn consume_statsd_metric_blocklist(&mut self, value: Vec<String>) {

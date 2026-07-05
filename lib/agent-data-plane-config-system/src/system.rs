@@ -234,8 +234,42 @@ fn deserialize_sources(raw_map: &GenericConfiguration, env_overlay: EnvOverlayMo
     saluki_env_overlay::apply(&mut merged, env_overlay);
     let saluki = SalukiOnly::deserialize(&merged)?;
     apply_env_overlay(&mut merged, env_overlay);
+    normalize_datadog_input_forms(&mut merged);
     let datadog = DatadogConfiguration::deserialize(&merged)?;
     Ok(Sources { datadog, saluki })
+}
+
+/// Coerces the handful of Datadog keys whose accepted input shapes are wider than the generated
+/// `DatadogConfiguration` deserializer allows, restoring the alternate scalar forms the deleted
+/// component serde used to accept. Env-var-sourced values land in `merged` as flat string keys, so
+/// running here (after `apply_env_overlay`, before `DatadogConfiguration::deserialize`) catches the
+/// env-var forms too. Scoped to the specific keys below; not a general coercion framework.
+fn normalize_datadog_input_forms(merged: &mut serde_json::Value) {
+    let Some(object) = merged.as_object_mut() else {
+        return;
+    };
+
+    // `dogstatsd_eol_required` is a `Vec<String>` in the schema, but the Agent passes list-typed env
+    // vars as a single space-separated string. Split it into an array (matching
+    // `deserialize_space_separated_or_seq`: split on any run of whitespace, dropping empty tokens).
+    if let Some(value @ serde_json::Value::String(_)) = object.get_mut("dogstatsd_eol_required") {
+        let tokens = value
+            .as_str()
+            .expect("value matched String")
+            .split_whitespace()
+            .map(|token| serde_json::Value::String(token.to_owned()))
+            .collect();
+        *value = serde_json::Value::Array(tokens);
+    }
+
+    // `dogstatsd_mapper_profiles` is a `Vec<Value>` in the schema, but the Agent passes it as a JSON
+    // string when set via env var. Parse the string into the array the translator expects. If it is
+    // not valid JSON, leave the string in place so the downstream deserializer surfaces the error.
+    if let Some(value @ serde_json::Value::String(_)) = object.get_mut("dogstatsd_mapper_profiles") {
+        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(value.as_str().expect("value matched String")) {
+            *value = parsed;
+        }
+    }
 }
 
 /// Translates the Datadog and Saluki-only sources into one [`SalukiConfiguration`], returning every
@@ -381,6 +415,212 @@ mod tests {
         let result = ConfigurationSystem::load(raw_map, EnvOverlayMode::Fallback).await;
 
         assert!(matches!(result, Err(Error::Translate { .. })));
+    }
+
+    #[tokio::test]
+    async fn dogstatsd_unsigned_values_reject_negative_startup_input() {
+        let keys = [
+            "dogstatsd_buffer_size",
+            "dogstatsd_capture_depth",
+            "dogstatsd_context_expiry_seconds",
+            "dogstatsd_mapper_cache_size",
+            "dogstatsd_port",
+            "dogstatsd_so_rcvbuf",
+            "dogstatsd_string_interner_size",
+            "statsd_forward_port",
+        ];
+
+        for key in keys {
+            let mut values = serde_json::Map::new();
+            values.insert(key.to_string(), json!(-1));
+            let (raw_map, _) =
+                ConfigurationLoader::for_tests(Some(serde_json::Value::Object(values)), None, false).await;
+
+            let result = ConfigurationSystem::load(raw_map, EnvOverlayMode::Fallback).await;
+            let Err(error) = result else {
+                panic!("negative `{key}` should fail startup translation");
+            };
+            let message = error.to_string();
+            assert!(matches!(error, Error::Translate { .. }));
+            assert!(message.contains(key), "error should identify `{key}`: {message}");
+            assert!(
+                message.contains("-1"),
+                "error should include the invalid value: {message}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn dogstatsd_ports_reject_values_above_u16_max() {
+        for key in ["dogstatsd_port", "statsd_forward_port"] {
+            let mut values = serde_json::Map::new();
+            values.insert(key.to_string(), json!(u16::MAX as u64 + 1));
+            let (raw_map, _) =
+                ConfigurationLoader::for_tests(Some(serde_json::Value::Object(values)), None, false).await;
+
+            let result = ConfigurationSystem::load(raw_map, EnvOverlayMode::Fallback).await;
+            let Err(error) = result else {
+                panic!("out-of-range `{key}` should fail startup translation");
+            };
+            let message = error.to_string();
+            assert!(matches!(error, Error::Translate { .. }));
+            assert!(message.contains(key), "error should identify `{key}`: {message}");
+            assert!(
+                message.contains("65536"),
+                "error should include the invalid value: {message}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn dogstatsd_numeric_boundary_values_translate() {
+        let (raw_map, _) = ConfigurationLoader::for_tests(
+            Some(json!({
+                "dogstatsd_buffer_size": 0,
+                "dogstatsd_capture_depth": 0,
+                "dogstatsd_context_expiry_seconds": 0,
+                "dogstatsd_mapper_cache_size": 0,
+                "dogstatsd_port": u16::MAX,
+                "dogstatsd_so_rcvbuf": 0,
+                "dogstatsd_string_interner_size": 0,
+                "statsd_forward_port": u16::MAX,
+            })),
+            None,
+            false,
+        )
+        .await;
+
+        let system = ConfigurationSystem::load(raw_map, EnvOverlayMode::Fallback)
+            .await
+            .expect("boundary values translate");
+        let dogstatsd = &system.config().domains.dogstatsd;
+        assert_eq!(dogstatsd.listeners.buffer_size, 0);
+        assert_eq!(dogstatsd.listeners.capture_depth, 0);
+        assert_eq!(dogstatsd.aggregation.context_expiry_seconds, 0);
+        assert_eq!(dogstatsd.mapper.cache_size, 0);
+        assert_eq!(dogstatsd.listeners.port, u16::MAX);
+        assert_eq!(dogstatsd.listeners.so_rcvbuf, 0);
+        assert_eq!(dogstatsd.contexts.string_interner_size, 0);
+        assert_eq!(dogstatsd.listeners.forward_port, u16::MAX);
+    }
+
+    #[tokio::test]
+    async fn mapper_profile_missing_mappings_fails_startup_translation() {
+        let (raw_map, _) = ConfigurationLoader::for_tests(
+            Some(json!({
+                "dogstatsd_mapper_profiles": [{ "name": "p", "prefix": "x" }],
+            })),
+            None,
+            false,
+        )
+        .await;
+
+        let result = ConfigurationSystem::load(raw_map, EnvOverlayMode::Fallback).await;
+        let Err(error) = result else {
+            panic!("a mapper profile without `mappings` should fail startup translation");
+        };
+        let message = error.to_string();
+        assert!(matches!(error, Error::Translate { .. }));
+        assert!(message.contains("dogstatsd_mapper_profiles"));
+        assert!(message.contains("missing field `mappings`"));
+    }
+
+    #[tokio::test]
+    async fn mapper_profile_explicit_empty_mappings_is_valid() {
+        let (raw_map, _) = ConfigurationLoader::for_tests(
+            Some(json!({
+                "dogstatsd_mapper_profiles": [{ "name": "p", "prefix": "x", "mappings": [] }],
+            })),
+            None,
+            false,
+        )
+        .await;
+
+        let system = ConfigurationSystem::load(raw_map, EnvOverlayMode::Fallback)
+            .await
+            .expect("empty mappings translate");
+        let profiles = &system.config().domains.dogstatsd.mapper.profiles;
+        assert_eq!(profiles.len(), 1);
+        assert_eq!(profiles[0].name, "p");
+        assert_eq!(profiles[0].prefix, "x");
+        assert!(profiles[0].mappings.is_empty());
+    }
+
+    /// `dogstatsd_eol_required` accepts a space-separated string (the Agent's list-typed env-var
+    /// form) as well as a native array, both landing on `listeners.eol_required`.
+    #[tokio::test]
+    async fn eol_required_accepts_space_separated_string_or_array() {
+        for value in [json!("udp uds"), json!(["udp", "uds"])] {
+            let (raw_map, _) =
+                ConfigurationLoader::for_tests(Some(json!({ "dogstatsd_eol_required": value })), None, false).await;
+
+            let system = ConfigurationSystem::load(raw_map, EnvOverlayMode::Fallback)
+                .await
+                .expect("eol_required translates");
+            assert_eq!(
+                system.config().domains.dogstatsd.listeners.eol_required,
+                vec!["udp", "uds"]
+            );
+        }
+    }
+
+    /// `dogstatsd_mapper_profiles` accepts a JSON string (the Agent's env-var form) as well as a
+    /// native array, both landing on `mapper.profiles`.
+    #[tokio::test]
+    async fn mapper_profiles_accepts_json_string_or_array() {
+        for value in [
+            json!("[{\"name\":\"p\",\"prefix\":\"x\",\"mappings\":[]}]"),
+            json!([{ "name": "p", "prefix": "x", "mappings": [] }]),
+        ] {
+            let (raw_map, _) =
+                ConfigurationLoader::for_tests(Some(json!({ "dogstatsd_mapper_profiles": value })), None, false).await;
+
+            let system = ConfigurationSystem::load(raw_map, EnvOverlayMode::Fallback)
+                .await
+                .expect("mapper profiles translate");
+            let profiles = &system.config().domains.dogstatsd.mapper.profiles;
+            assert_eq!(profiles.len(), 1);
+            assert_eq!(profiles[0].name, "p");
+            assert_eq!(profiles[0].prefix, "x");
+        }
+    }
+
+    #[tokio::test]
+    async fn mapper_profile_other_required_fields_remain_required() {
+        let cases = [
+            (json!({ "prefix": "x", "mappings": [] }), "missing field `name`"),
+            (json!({ "name": "p", "mappings": [] }), "missing field `prefix`"),
+            (
+                json!({
+                    "name": "p",
+                    "prefix": "x",
+                    "mappings": [{ "name": "mapped" }],
+                }),
+                "missing field `match`",
+            ),
+            (
+                json!({
+                    "name": "p",
+                    "prefix": "x",
+                    "mappings": [{ "match": "x.*" }],
+                }),
+                "missing field `name`",
+            ),
+        ];
+
+        for (profile, expected) in cases {
+            let (raw_map, _) =
+                ConfigurationLoader::for_tests(Some(json!({ "dogstatsd_mapper_profiles": [profile] })), None, false)
+                    .await;
+
+            let result = ConfigurationSystem::load(raw_map, EnvOverlayMode::Fallback).await;
+            let Err(error) = result else {
+                panic!("mapper profile should fail with {expected}");
+            };
+            let message = error.to_string();
+            assert!(matches!(error, Error::Translate { .. }));
+            assert!(message.contains(expected), "expected `{expected}` in: {message}");
+        }
     }
 
     #[tokio::test]

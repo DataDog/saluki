@@ -6,7 +6,8 @@ pub use self::checks_ipc::ChecksIPCConfiguration;
 mod dogstatsd;
 pub use self::dogstatsd::{
     DogStatsDCaptureAPIHandler, DogStatsDConfiguration, DogStatsDReplayAPIHandler, DogStatsDReplayControl,
-    ReplaySession, TimestampResolution, TrafficCaptureReader, DEFAULT_REPLAY_LOOPS, REPLAY_CREDENTIALS_GID,
+    ReplaySession, TimestampResolution, TrafficCaptureReader, DEFAULT_REPLAY_LOOPS, DOGSTATSD_CAPTURE_DIR,
+    REPLAY_CREDENTIALS_GID,
 };
 
 mod heartbeat;
