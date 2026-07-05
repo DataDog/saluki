@@ -164,18 +164,24 @@ pub async fn handle_run_command(
     let (env_provider, maybe_env_supervisor) =
         ADPEnvironmentProvider::from_configuration(&config, &dp_config, &component_registry, &health_registry).await?;
 
-    // Create the blueprint for our primary topology.
-    let (mut blueprint, control_surfaces) =
-        create_topology(&config, &dp_config, &env_provider, &component_registry).await?;
-
-    // Translate the resolved configuration into the ADP-native model and keep it current as the
+    // Translate the resolved configuration into the ADP-typed model and keep it current as the
     // Datadog Agent streams updates. The privileged `/config/internal` endpoint serves it.
+    //
+    // Ownership of loading bootstrap configuration and initiating the remote agent config stream
+    // might be better homed in the configuration system, but that will have to be follow-up work.
+    // For now, it is important that the configuration system be loaded after the first full
+    // snapshot has been received from the remote agent. Once it has been loaded it is more
+    // forgiving about subsequent config updates that it receives from the stream.
     //
     // The Datadog Agent config stream is authoritative; environment variables only fill keys the
     // Agent did not supply, matching the legacy per-key lookup precedence. This also restores flat
     // env-var reachability for nested keys, which the whole-struct typed deserialize otherwise drops.
-    let config_system = ConfigurationSystem::load(config.clone(), EnvOverlayMode::Fallback)
+    let config_sys = ConfigurationSystem::load(config.clone(), EnvOverlayMode::Fallback)
         .error_context("Failed to load configuration.")?;
+
+    // Create the blueprint for our primary topology.
+    let (mut blueprint, control_surfaces) =
+        create_topology(&config, &config_sys, &dp_config, &env_provider, &component_registry).await?;
 
     // Create the internal supervisor which drives our control plane and internal observability.
     let mut internal_supervisor = create_internal_supervisor(
@@ -186,7 +192,7 @@ pub async fn handle_run_command(
         control_surfaces,
         ra_bootstrap,
         bootstrap_guard.logging().controller(),
-        config_system.current_handle(),
+        config_sys.current_handle(),
     )
     .await
     .error_context("Failed to create internal supervisor.")?;
@@ -369,8 +375,8 @@ fn is_a_pipeline_affected(active_pipelines: &HashSet<Pipeline>, pipeline_affinit
 }
 
 async fn create_topology(
-    config: &GenericConfiguration, dp_config: &DataPlaneConfiguration, env_provider: &ADPEnvironmentProvider,
-    component_registry: &ComponentRegistry,
+    config: &GenericConfiguration, config_system: &ConfigurationSystem, dp_config: &DataPlaneConfiguration,
+    env_provider: &ADPEnvironmentProvider, component_registry: &ComponentRegistry,
 ) -> Result<(TopologyBlueprint, TopologyControlSurfaces), GenericError> {
     let mut blueprint = TopologyBlueprint::new("primary", component_registry);
     blueprint.with_shutdown_timeout(dp_config.stop_timeout());
@@ -428,7 +434,8 @@ async fn create_topology(
     }
 
     if dp_config.dogstatsd().enabled() {
-        let dsd_control_surface = add_dsd_pipeline_to_blueprint(&mut blueprint, config, env_provider).await?;
+        let dsd_control_surface =
+            add_dsd_pipeline_to_blueprint(&mut blueprint, config, config_system, env_provider).await?;
         control_surfaces.attach_dogstatsd(dsd_control_surface);
     }
 
@@ -666,7 +673,10 @@ async fn add_baseline_traces_pipeline_to_blueprint(
 }
 
 async fn add_dsd_pipeline_to_blueprint(
-    blueprint: &mut TopologyBlueprint, config: &GenericConfiguration, env_provider: &ADPEnvironmentProvider,
+    blueprint: &mut TopologyBlueprint, config: &GenericConfiguration,
+    // Threaded in ready for the typed-config component cutover (aggregate/debug-log); unused until
+    // those components read from it, hence the leading underscore.
+    _config_system: &ConfigurationSystem, env_provider: &ADPEnvironmentProvider,
 ) -> Result<DogStatsDControlSurface, GenericError> {
     // We're creating the "front half" of the DogStatsD pipeline, which deals solely with accepting DogStatsD payloads,
     // and enriching/processing them in DSD-specific ways, relevant to how the Datadog Agent is expected to behave.

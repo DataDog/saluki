@@ -58,9 +58,8 @@ pub struct ControlConfiguration {
     /// schema)
     pub stop_timeout: u64,
 
-    /// Process memory ceiling as a byte-size string such as `512MB`. (not in Datadog Agent config
-    /// schema)
-    pub memory_limit: String,
+    /// Process memory ceiling, in bytes. (not in Datadog Agent config schema)
+    pub memory_limit: u64,
 
     /// Fraction of the memory limit held back as headroom during memory accounting. (not in Datadog
     /// Agent config schema)
