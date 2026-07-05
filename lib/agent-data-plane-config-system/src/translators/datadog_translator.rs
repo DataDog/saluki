@@ -828,11 +828,11 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_multi_region_failover_api_key(&mut self, value: String) {
-        self.config.domains.multi_region_failover.api_key = non_empty(value);
+        self.config.domains.multi_region_failover.api_key = non_empty(value.trim().to_string());
     }
 
     fn consume_multi_region_failover_dd_url(&mut self, value: String) {
-        self.config.domains.multi_region_failover.dd_url = non_empty(value);
+        self.config.domains.multi_region_failover.dd_url = non_empty(value.trim().to_string());
     }
 
     fn consume_multi_region_failover_enabled(&mut self, value: bool) {
@@ -848,7 +848,7 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_multi_region_failover_site(&mut self, value: String) {
-        self.config.domains.multi_region_failover.site = non_empty(value);
+        self.config.domains.multi_region_failover.site = non_empty(value.trim().to_string());
     }
 
     fn consume_no_proxy_nonexact_match(&mut self, value: bool) {
@@ -1121,6 +1121,11 @@ mod tests {
             "dogstatsd_port": 9125,
             "dogstatsd_tag_cardinality": "high",
             "expected_tags_duration": "15s",
+            "multi_region_failover": {
+                "api_key": " mrf-key ",
+                "dd_url": " https://mrf.example.com ",
+                "site": " datadoghq.eu "
+            },
             "telemetry": { "dogstatsd_origin": true },
         }))
         .expect("datadog source deserializes");
@@ -1153,6 +1158,15 @@ mod tests {
         assert_eq!(
             config.shared.endpoints.dd_url.as_deref(),
             Some("https://custom.example.com")
+        );
+        assert_eq!(config.domains.multi_region_failover.api_key.as_deref(), Some("mrf-key"));
+        assert_eq!(
+            config.domains.multi_region_failover.dd_url.as_deref(),
+            Some("https://mrf.example.com")
+        );
+        assert_eq!(
+            config.domains.multi_region_failover.site.as_deref(),
+            Some("datadoghq.eu")
         );
         // Seeded Saluki-only field.
         assert_eq!(config.domains.dogstatsd.listeners.tcp_port, 8126);

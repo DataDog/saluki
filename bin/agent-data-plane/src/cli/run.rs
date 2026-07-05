@@ -508,7 +508,7 @@ async fn add_baseline_metrics_pipeline_to_blueprint(
         // Metrics, then forwarding.
         .connect_components_in_order(["metrics_enrich", "dd_metrics_encode", "dd_out"])?;
 
-    add_mrf_metrics_pipeline_to_blueprint(blueprint, config)?;
+    add_mrf_metrics_pipeline_to_blueprint(blueprint, config, config_system)?;
     let saluki = config_system.config();
     add_autoscaling_failover_metrics_pipeline_to_blueprint(blueprint, config, &saluki.shared.autoscaling_failover)?;
 
@@ -516,9 +516,10 @@ async fn add_baseline_metrics_pipeline_to_blueprint(
 }
 
 fn add_mrf_metrics_pipeline_to_blueprint(
-    blueprint: &mut TopologyBlueprint, config: &GenericConfiguration,
+    blueprint: &mut TopologyBlueprint, config: &GenericConfiguration, config_system: &ConfigurationSystem,
 ) -> Result<(), GenericError> {
-    let mrf_config = MrfConfiguration::from_configuration(config)
+    let saluki = config_system.config();
+    let mrf_config = MrfConfiguration::from_configuration(&saluki.domains.multi_region_failover)
         .error_context("Failed to configure Multi-Region Failover metrics pipeline.")?;
 
     let Some((mrf_dd_url, mrf_api_key)) = mrf_config.metrics_endpoint_override() else {
