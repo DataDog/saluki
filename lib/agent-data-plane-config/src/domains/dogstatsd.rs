@@ -191,8 +191,7 @@ pub struct Aggregation {
     /// How often aggregated metrics are flushed. (not in Datadog Agent config schema)
     pub flush_interval: Duration,
 
-    /// Whether windows that are still open are flushed on shutdown. (not in Datadog Agent config
-    /// schema)
+    /// Whether windows that are still open are flushed on shutdown.
     pub flush_open_windows: bool,
 
     /// How long the no-aggregation passthrough waits before flushing while idle. (not in Datadog
@@ -204,9 +203,6 @@ pub struct Aggregation {
 
     /// How long, in seconds, a context is retained after its last update before expiring.
     pub context_expiry_seconds: u64,
-
-    /// Whether incomplete aggregation buckets are flushed rather than discarded.
-    pub flush_incomplete_buckets: bool,
 
     /// Whether metrics bypass aggregation and are forwarded directly.
     pub no_aggregation_pipeline: bool,
@@ -225,12 +221,11 @@ impl Default for Aggregation {
             context_limit: 1_000_000,
             flush_interval: Duration::from_secs(15),
             passthrough_idle_flush_timeout: Duration::from_secs(1),
-            flush_open_windows: false,
             // Datadog-schema knobs: always written by the witness driver, so these values are
             // placeholders that never survive translation.
+            flush_open_windows: false,
             counter_expiry_seconds: None,
             context_expiry_seconds: 0,
-            flush_incomplete_buckets: false,
             no_aggregation_pipeline: false,
             aggregator_tag_filter_cache_capacity: 0,
         }

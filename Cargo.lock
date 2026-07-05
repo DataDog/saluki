@@ -4433,6 +4433,7 @@ dependencies = [
 name = "saluki-components"
 version = "0.1.0"
 dependencies = [
+ "agent-data-plane-config",
  "arc-swap",
  "async-trait",
  "axum",

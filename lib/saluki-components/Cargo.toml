@@ -13,6 +13,7 @@ default = []
 fips = ["saluki-io/fips"]
 
 [dependencies]
+agent-data-plane-config = { workspace = true }
 arc-swap = { workspace = true }
 async-trait = { workspace = true }
 axum = { workspace = true }

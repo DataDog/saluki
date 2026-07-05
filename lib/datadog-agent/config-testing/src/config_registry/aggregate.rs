@@ -28,14 +28,6 @@ static AGGREGATE_CONTEXT_LIMIT_SCHEMA: SchemaEntry = SchemaEntry {
     default: None,
 };
 
-static COUNTER_EXPIRY_SECONDS_SCHEMA: SchemaEntry = SchemaEntry {
-    schema: Schema::Saluki,
-    yaml_path: "counter_expiry_seconds",
-    env_vars: &[],
-    value_type: ValueType::Integer,
-    default: None,
-};
-
 static AGGREGATE_PASSTHROUGH_IDLE_FLUSH_TIMEOUT_SCHEMA: SchemaEntry = SchemaEntry {
     schema: Schema::Saluki,
     yaml_path: "aggregate_passthrough_idle_flush_timeout",
@@ -82,18 +74,7 @@ crate::declare_annotations! {
     DOGSTATSD_FLUSH_INCOMPLETE_BUCKETS = SalukiAnnotation {
         schema: &schema::DOGSTATSD_FLUSH_INCOMPLETE_BUCKETS,
         support_level: SupportLevel::Full,
-        additional_yaml_paths: &["aggregate_flush_open_windows"],
-        env_var_override: None,
-        used_by: &[structs::AGGREGATE_CONFIGURATION],
-        value_type_override: None,
-        test_json: None,
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD, Pipeline::Checks]),
-    };
-    /// `counter_expiry_seconds`
-    COUNTER_EXPIRY_SECONDS = SalukiAnnotation {
-        schema: &COUNTER_EXPIRY_SECONDS_SCHEMA,
-        support_level: SupportLevel::Full,
-        additional_yaml_paths: &["dogstatsd_expiry_seconds"],
+        additional_yaml_paths: &[],
         env_var_override: None,
         used_by: &[structs::AGGREGATE_CONFIGURATION],
         value_type_override: None,
