@@ -18,7 +18,7 @@ const RESOLVER_CACHE_EXPIRATION: Duration = Duration::from_secs(30);
 pub fn build_context_resolver(
     config: &OtlpConfiguration, context: &ComponentContext, maybe_origin_tags_resolver: Option<OtlpOriginTagResolver>,
 ) -> Result<ContextResolver, GenericError> {
-    let context_string_interner_size = NonZeroUsize::new(config.context_string_interner_bytes.as_u64() as usize)
+    let context_string_interner_size = NonZeroUsize::new(config.context_string_interner_bytes as usize)
         .ok_or_else(|| generic_error!("context_string_interner_size must be greater than 0"))?;
 
     let cached_contexts_limit = config.cached_contexts_limit;

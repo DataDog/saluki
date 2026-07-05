@@ -53,6 +53,21 @@ pub const OTLP_LOGS_GRPC_SERVICE_PATH: MetaString =
 pub const OTLP_TRACES_GRPC_SERVICE_PATH: MetaString =
     MetaString::from_static("/opentelemetry.proto.collector.trace.v1.TraceService/Export");
 
+/// grpc-go's built-in maximum receive message size, in MiB, applied when the configured value is 0.
+const OTLP_GRPC_DEFAULT_MAX_RECV_MSG_SIZE_MIB: u64 = 4;
+
+/// Converts an OTLP gRPC `max_recv_msg_size_mib` setting into a byte count for the server.
+///
+/// A value of 0 selects grpc-go's built-in 4 MiB limit, mirroring the Datadog Agent's OTLP receiver.
+pub fn grpc_max_recv_msg_size_bytes(max_recv_msg_size_mib: u64) -> usize {
+    let mib = if max_recv_msg_size_mib == 0 {
+        OTLP_GRPC_DEFAULT_MAX_RECV_MSG_SIZE_MIB
+    } else {
+        max_recv_msg_size_mib
+    };
+    (mib * 1024 * 1024) as usize
+}
+
 #[derive(Clone)]
 pub struct Metrics {
     metrics_received: Counter,

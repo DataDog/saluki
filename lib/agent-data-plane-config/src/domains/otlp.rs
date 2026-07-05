@@ -3,6 +3,33 @@
 
 use serde::Serialize;
 
+/// Default transport for the OTLP HTTP receiver. (not in the Datadog Agent config schema)
+pub fn default_otlp_http_receiver_transport() -> String {
+    "tcp".to_owned()
+}
+
+/// Default byte budget for the OTLP metric context string interner (2 MiB). (not in the Datadog
+/// Agent config schema)
+pub const fn default_otlp_context_string_interner_size() -> u64 {
+    2 * 1024 * 1024
+}
+
+/// Default maximum number of cached OTLP metric contexts. (not in the Datadog Agent config schema)
+pub const fn default_otlp_cached_contexts_limit() -> usize {
+    500_000
+}
+
+/// Default maximum number of cached OTLP tagsets. (not in the Datadog Agent config schema)
+pub const fn default_otlp_cached_tagsets_limit() -> usize {
+    500_000
+}
+
+/// Default for whether OTLP metric contexts may be heap-allocated when the interner is full. (not in
+/// the Datadog Agent config schema)
+pub const fn default_otlp_allow_context_heap_allocs() -> bool {
+    true
+}
+
 /// Resolved OTLP configuration.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Domain {
@@ -46,7 +73,7 @@ pub struct GrpcReceiver {
 }
 
 /// OTLP HTTP receiver.
-#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct HttpReceiver {
     /// Address the HTTP receiver listens on.
     pub endpoint: String,
@@ -54,6 +81,18 @@ pub struct HttpReceiver {
     /// Transport the HTTP receiver binds (for example, `tcp` or `unix`). (not in Datadog Agent
     /// config schema)
     pub transport: String,
+}
+
+impl Default for HttpReceiver {
+    fn default() -> Self {
+        Self {
+            // Witnessed key: overwritten by the Datadog driver, so this is a placeholder.
+            endpoint: String::default(),
+            // Saluki-schema-only key: seeded, so this default must match what the OTLP components
+            // expect when the key is absent.
+            transport: default_otlp_http_receiver_transport(),
+        }
+    }
 }
 
 /// OTLP proxy gating: which signals the proxy forwards, and the proxy receiver endpoint.
@@ -76,7 +115,10 @@ pub struct Proxy {
 }
 
 /// OTLP context cache sizing.
-#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+///
+/// Every field here is a Saluki-schema-only knob (seeded), so the defaults below must match what the
+/// OTLP source expects when the keys are absent.
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Contexts {
     /// Whether contexts may be heap-allocated when the interner is full. (not in Datadog Agent
     /// config schema)
@@ -88,6 +130,17 @@ pub struct Contexts {
     /// Maximum number of tagsets held in the cache. (not in Datadog Agent config schema)
     pub cached_tagsets_limit: usize,
 
-    /// Number of entries the context string interner holds. (not in Datadog Agent config schema)
+    /// Byte budget of the context string interner. (not in Datadog Agent config schema)
     pub string_interner_size: u64,
+}
+
+impl Default for Contexts {
+    fn default() -> Self {
+        Self {
+            allow_context_heap_allocs: default_otlp_allow_context_heap_allocs(),
+            cached_contexts_limit: default_otlp_cached_contexts_limit(),
+            cached_tagsets_limit: default_otlp_cached_tagsets_limit(),
+            string_interner_size: default_otlp_context_string_interner_size(),
+        }
+    }
 }

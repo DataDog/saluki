@@ -27,6 +27,18 @@ pub const fn default_rare_sampler_cardinality() -> usize {
     200
 }
 
+/// Default byte budget for the OTLP trace context string interner (512 KiB). (not in the Datadog
+/// Agent config schema)
+pub const fn default_otlp_traces_string_interner_size() -> u64 {
+    512 * 1024
+}
+
+/// Default for whether top-level spans are computed from span kind on OTLP traces. (not in the
+/// Datadog Agent config schema)
+pub const fn default_otlp_traces_enable_compute_top_level_by_span_kind() -> bool {
+    true
+}
+
 /// Resolved traces configuration.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Domain {
@@ -139,7 +151,7 @@ pub struct ProbabilisticSampler {
 }
 
 /// OTLP trace ingestion specifics.
-#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct OtlpTraces {
     /// Whether OTLP trace ingestion is enabled.
     pub enabled: bool,
@@ -150,8 +162,7 @@ pub struct OtlpTraces {
     /// Percentage of OTLP traces the probabilistic sampler keeps.
     pub probabilistic_sampler_sampling_percentage: f64,
 
-    /// Number of entries the OTLP trace context interner holds. (not in Datadog Agent config
-    /// schema)
+    /// Byte budget of the OTLP trace context interner. (not in Datadog Agent config schema)
     pub string_interner_size: u64,
 
     /// Whether top-level spans are computed from span kind on OTLP traces. (not in Datadog Agent
@@ -161,6 +172,22 @@ pub struct OtlpTraces {
     /// Whether spans missing intake-required fields are ingested rather than rejected. (not in
     /// Datadog Agent config schema)
     pub ignore_missing_datadog_fields: bool,
+}
+
+impl Default for OtlpTraces {
+    fn default() -> Self {
+        Self {
+            // Witnessed keys: overwritten by the Datadog driver, so these are placeholders.
+            enabled: false,
+            internal_port: 0,
+            probabilistic_sampler_sampling_percentage: 0.0,
+            // Saluki-schema-only keys: seeded, so these defaults must match what the OTLP trace
+            // components expect when the keys are absent.
+            string_interner_size: default_otlp_traces_string_interner_size(),
+            enable_compute_top_level_by_span_kind: default_otlp_traces_enable_compute_top_level_by_span_kind(),
+            ignore_missing_datadog_fields: false,
+        }
+    }
 }
 
 /// Trace obfuscation, one group per supported subsystem.
