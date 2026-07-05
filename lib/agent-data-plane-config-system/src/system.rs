@@ -13,6 +13,7 @@ use snafu::Snafu;
 use tokio::sync::{broadcast, watch};
 use tracing::{debug, warn};
 
+use crate::saluki_env_overlay;
 use crate::saluki_only::SalukiOnly;
 use crate::translators::DatadogTranslator;
 
@@ -208,14 +209,15 @@ fn apply(
 /// Transitional: this seam goes away when `GenericConfiguration` is eliminated.
 ///
 /// Environment variables reach the merged value as flat keys (`autoscaling_failover_enabled`), which
-/// the nested `DatadogConfiguration` deserializer never reads. `apply_env_overlay` relocates those
-/// flat keys into their nested slots per `env_overlay` before the Datadog deserialize. It is applied
-/// only to the Datadog input: `SalukiOnly` deserializes from the untouched value, so its keys are
-/// out of scope here.
+/// neither nested source reads. Each source has its own overlay applied before its deserialize, per
+/// `env_overlay`: `saluki_env_overlay::apply` for the Saluki-only keys and
+/// `apply_env_overlay` for the Datadog keys. The two cover disjoint key sets, so relocating one
+/// source's keys is inert for the other.
 fn deserialize_sources(
     raw_map: &GenericConfiguration, env_overlay: EnvOverlayMode,
 ) -> Result<(DatadogConfiguration, SalukiOnly), ConfigurationSystemError> {
     let mut merged = raw_map.as_typed::<serde_json::Value>()?;
+    saluki_env_overlay::apply(&mut merged, env_overlay);
     let saluki_only = SalukiOnly::deserialize(&merged)?;
     apply_env_overlay(&mut merged, env_overlay);
     let datadog = DatadogConfiguration::deserialize(&merged)?;
@@ -316,6 +318,24 @@ mod tests {
             config.shared.autoscaling_failover.metrics,
             vec!["container.memory.usage".to_string(), "container.cpu.usage".to_string()]
         );
+    }
+
+    #[tokio::test]
+    async fn saluki_only_dotted_env_key_seeds_the_model() {
+        // A dotted Saluki-only key set only by environment variable arrives as the flat figment key
+        // `data_plane_standalone_mode`, which the nested `SalukiOnly` never reads. The overlay must
+        // relocate it so it seeds `control.standalone_mode`.
+        let (raw_map, _) = ConfigurationLoader::for_tests(
+            None,
+            Some(&[("DATA_PLANE_STANDALONE_MODE".to_string(), "true".to_string())]),
+            false,
+        )
+        .await;
+        raw_map.ready().await;
+
+        let system = ConfigurationSystem::load(raw_map, EnvOverlayMode::Fallback).expect("system builds");
+
+        assert!(system.config().control.standalone_mode);
     }
 
     #[tokio::test]

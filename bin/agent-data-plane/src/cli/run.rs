@@ -673,10 +673,12 @@ async fn add_baseline_traces_pipeline_to_blueprint(
 }
 
 async fn add_dsd_pipeline_to_blueprint(
-    blueprint: &mut TopologyBlueprint, config: &GenericConfiguration,
+    blueprint: &mut TopologyBlueprint,
+    config: &GenericConfiguration,
     // Threaded in ready for the typed-config component cutover (aggregate/debug-log); unused until
     // those components read from it, hence the leading underscore.
-    _config_system: &ConfigurationSystem, env_provider: &ADPEnvironmentProvider,
+    _config_system: &ConfigurationSystem,
+    env_provider: &ADPEnvironmentProvider,
 ) -> Result<DogStatsDControlSurface, GenericError> {
     // We're creating the "front half" of the DogStatsD pipeline, which deals solely with accepting DogStatsD payloads,
     // and enriching/processing them in DSD-specific ways, relevant to how the Datadog Agent is expected to behave.
