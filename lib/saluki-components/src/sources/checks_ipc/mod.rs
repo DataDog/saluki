@@ -1,6 +1,7 @@
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
+use agent_data_plane_config::domains::checks::Domain;
 use async_trait::async_trait;
 use datadog_protos::checks::{
     check_data::Data,
@@ -13,7 +14,6 @@ use datadog_protos::checks::{
 };
 use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_common::task::HandleExt as _;
-use saluki_config::GenericConfiguration;
 use saluki_context::tags::{Tag, TagSet};
 use saluki_context::Context;
 use saluki_core::data_model::event::eventd::{AlertType, EventD, Priority};
@@ -28,7 +28,6 @@ use saluki_core::{
 };
 use saluki_error::{generic_error, GenericError};
 use saluki_io::net::ListenAddress;
-use serde::Deserialize;
 use stringtheory::MetaString;
 use tokio::sync::mpsc;
 use tokio::{pin, select};
@@ -36,21 +35,19 @@ use tonic::transport::Server;
 use tonic::{Response, Status};
 use tracing::{debug, trace, warn};
 
-const fn default_grpc_endpoint() -> ListenAddress {
-    ListenAddress::any_tcp(5105)
-}
-
 /// Checks IPC source.
-#[derive(Debug, Deserialize)]
+#[derive(Debug)]
 pub struct ChecksIPCConfiguration {
-    #[serde(rename = "checks_ipc_endpoint", default = "default_grpc_endpoint")]
     grpc_endpoint: ListenAddress,
 }
 
 impl ChecksIPCConfiguration {
-    /// Creates a new `ChecksIPCConfiguration` from the given configuration.
-    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        Ok(config.as_typed()?)
+    /// Creates a new `ChecksIPCConfiguration` from the resolved checks configuration.
+    pub fn from_configuration(checks: &Domain) -> Result<Self, GenericError> {
+        let grpc_endpoint = ListenAddress::try_from(checks.ipc_endpoint.0.clone())
+            .map_err(|e| generic_error!("Invalid checks_ipc_endpoint '{}': {}", checks.ipc_endpoint.0, e))?;
+
+        Ok(Self { grpc_endpoint })
     }
 }
 

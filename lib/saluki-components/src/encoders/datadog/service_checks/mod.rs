@@ -1,8 +1,7 @@
+use agent_data_plane_config::shared::{Compression, MetricsEncoding};
 use async_trait::async_trait;
-use facet::Facet;
 use http::{uri::PathAndQuery, HeaderValue, Method, Uri};
 use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
-use saluki_config::GenericConfiguration;
 use saluki_core::{
     components::{encoders::*, ComponentContext},
     data_model::{
@@ -15,7 +14,6 @@ use saluki_core::{
 use saluki_error::{ErrorContext as _, GenericError};
 use saluki_io::compression::CompressionScheme;
 use saluki_metrics::MetricsBuilder;
-use serde::Deserialize;
 use tracing::{debug, error, warn};
 
 use crate::common::datadog::{
@@ -26,36 +24,14 @@ use crate::common::datadog::{
     DEFAULT_SERIALIZER_COMPRESSED_SIZE_LIMIT, DEFAULT_SERIALIZER_UNCOMPRESSED_SIZE_LIMIT,
 };
 
-const DEFAULT_SERIALIZER_COMPRESSOR_KIND: &str = "zstd";
 const MAX_SERVICE_CHECKS_PER_PAYLOAD: usize = 100;
 
 static CONTENT_TYPE_JSON: HeaderValue = HeaderValue::from_static("application/json");
 
-fn default_serializer_compressor_kind() -> String {
-    DEFAULT_SERIALIZER_COMPRESSOR_KIND.to_owned()
-}
-
-const fn default_zstd_compressor_level() -> i32 {
-    3
-}
-
-const fn default_max_payload_size() -> usize {
-    DEFAULT_SERIALIZER_COMPRESSED_SIZE_LIMIT
-}
-
-const fn default_max_uncompressed_payload_size() -> usize {
-    DEFAULT_SERIALIZER_UNCOMPRESSED_SIZE_LIMIT
-}
-
-const fn default_log_payloads() -> bool {
-    false
-}
-
 /// Datadog Service Checks incremental encoder.
 ///
 /// Generates Datadog Service Checks payloads for the Datadog platform.
-#[derive(Deserialize, Facet)]
-#[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
+#[cfg_attr(test, derive(Debug, PartialEq))]
 pub struct DatadogServiceChecksConfiguration {
     /// Maximum compressed size, in bytes, of a service check payload.
     ///
@@ -64,8 +40,6 @@ pub struct DatadogServiceChecksConfiguration {
     /// payloads that intake may reject. If set to `0`, every non-empty compressed payload exceeds the limit and is
     /// dropped during flush.
     ///
-    /// Defaults to 2,621,440 bytes.
-    #[serde(rename = "serializer_max_payload_size", default = "default_max_payload_size")]
     max_payload_size: usize,
 
     /// Maximum uncompressed size, in bytes, of a service check payload.
@@ -75,44 +49,32 @@ pub struct DatadogServiceChecksConfiguration {
     /// payloads that intake may reject. Values smaller than the minimum endpoint framing size prevent the request
     /// builder from starting.
     ///
-    /// Defaults to 4,194,304 bytes.
-    #[serde(
-        rename = "serializer_max_uncompressed_payload_size",
-        default = "default_max_uncompressed_payload_size"
-    )]
     max_uncompressed_payload_size: usize,
 
     /// Compression kind to use for the request payloads.
-    ///
-    /// Defaults to `zstd`.
-    #[serde(
-        rename = "serializer_compressor_kind",
-        default = "default_serializer_compressor_kind"
-    )]
     compressor_kind: String,
 
     /// Compressor level to use when the compressor kind is `zstd`.
-    ///
-    /// Defaults to 3.
-    #[serde(
-        rename = "serializer_zstd_compressor_level",
-        default = "default_zstd_compressor_level"
-    )]
     zstd_compressor_level: i32,
 
     /// Whether to log service check payload contents before encoding.
     ///
     /// This logs decoded service check objects, not the encoded HTTP body.
-    ///
-    /// Defaults to `false`.
-    #[serde(default = "default_log_payloads")]
     log_payloads: bool,
 }
 
 impl DatadogServiceChecksConfiguration {
-    /// Creates a new `DatadogServiceChecksConfiguration` from the given configuration.
-    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        Ok(config.as_typed()?)
+    /// Creates a new `DatadogServiceChecksConfiguration` from the shared typed configuration.
+    pub fn from_configuration(
+        metrics_encoding: &MetricsEncoding, compression: &Compression,
+    ) -> Result<Self, GenericError> {
+        Ok(Self {
+            max_payload_size: metrics_encoding.max_payload_size,
+            max_uncompressed_payload_size: metrics_encoding.max_uncompressed_payload_size,
+            compressor_kind: compression.compressor_kind.clone(),
+            zstd_compressor_level: compression.zstd_compressor_level,
+            log_payloads: metrics_encoding.log_payloads,
+        })
     }
 }
 
@@ -278,27 +240,32 @@ impl EndpointEncoder for ServiceChecksEndpointEncoder {
 }
 
 #[cfg(test)]
-mod config_smoke {
-    use datadog_agent_config_testing::config_registry::structs;
-    use datadog_agent_config_testing::run_config_smoke_tests;
-    use serde_json::json;
+mod tests {
+    use agent_data_plane_config::shared::{Compression, MetricsEncoding};
 
     use super::DatadogServiceChecksConfiguration;
-    use crate::config::{DatadogRemapper, KEY_ALIASES};
 
-    #[tokio::test]
-    async fn smoke_test() {
-        run_config_smoke_tests(
-            structs::DATADOG_SERVICE_CHECKS_CONFIGURATION,
-            &[],
-            json!({}),
-            |cfg| {
-                cfg.as_typed::<DatadogServiceChecksConfiguration>()
-                    .expect("DatadogServiceChecksConfiguration should deserialize")
-            },
-            KEY_ALIASES,
-            DatadogRemapper::new,
-        )
-        .await
+    #[test]
+    fn from_configuration_reads_typed_shared_values() {
+        let metrics_encoding = MetricsEncoding {
+            max_payload_size: 123,
+            max_uncompressed_payload_size: 456,
+            log_payloads: true,
+            ..Default::default()
+        };
+
+        let compression = Compression {
+            compressor_kind: "gzip".to_owned(),
+            zstd_compressor_level: 7,
+        };
+
+        let config = DatadogServiceChecksConfiguration::from_configuration(&metrics_encoding, &compression)
+            .expect("typed configuration should be accepted");
+
+        assert_eq!(config.max_payload_size, 123);
+        assert_eq!(config.max_uncompressed_payload_size, 456);
+        assert_eq!(config.compressor_kind, "gzip");
+        assert_eq!(config.zstd_compressor_level, 7);
+        assert!(config.log_payloads);
     }
 }

@@ -4,7 +4,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use agent_data_plane_config::shared::Compression;
+use agent_data_plane_config::shared::{Compression, Endpoints, MetricsEncoding};
 use agent_data_plane_config_system::{ConfigurationSystem, EnvOverlayMode};
 use argh::FromArgs;
 use datadog_agent_commons::platform::PlatformSettings;
@@ -424,7 +424,7 @@ async fn create_topology(
     }
 
     if dp_config.service_checks_pipeline_required() {
-        add_baseline_service_checks_pipeline_to_blueprint(&mut blueprint, config).await?;
+        add_baseline_service_checks_pipeline_to_blueprint(&mut blueprint, config_system).await?;
     }
 
     if dp_config.traces_pipeline_required() {
@@ -433,7 +433,7 @@ async fn create_topology(
 
     // Now we move on to our actual data pipelines.
     if dp_config.checks().enabled() {
-        add_checks_pipeline_to_blueprint(&mut blueprint, config).await?;
+        add_checks_pipeline_to_blueprint(&mut blueprint, config_system).await?;
     }
 
     if dp_config.dogstatsd().enabled() {
@@ -450,9 +450,10 @@ async fn create_topology(
 }
 
 async fn add_checks_pipeline_to_blueprint(
-    blueprint: &mut TopologyBlueprint, config: &GenericConfiguration,
+    blueprint: &mut TopologyBlueprint, config_system: &ConfigurationSystem,
 ) -> Result<(), GenericError> {
-    let checks_config = ChecksIPCConfiguration::from_configuration(config)?;
+    let saluki = config_system.config();
+    let checks_config = ChecksIPCConfiguration::from_configuration(&saluki.domains.checks)?;
 
     blueprint
         .add_source("checks_ipc_in", checks_config)?
@@ -480,8 +481,10 @@ async fn add_baseline_metrics_pipeline_to_blueprint(
         }
     }
 
-    let dd_metrics_config = DatadogMetricsConfiguration::from_configuration(config)
-        .error_context("Failed to configure Datadog Metrics encoder.")?;
+    let saluki = config_system.config();
+    let dd_metrics_config =
+        DatadogMetricsConfiguration::from_configuration(&saluki.shared.metrics_encoding, &saluki.shared.endpoints)
+            .error_context("Failed to configure Datadog Metrics encoder.")?;
 
     blueprint
         // Components.
@@ -497,6 +500,8 @@ async fn add_baseline_metrics_pipeline_to_blueprint(
         config,
         &saluki.shared.autoscaling_failover,
         &saluki.shared.cluster_agent,
+        &saluki.shared.metrics_encoding,
+        &saluki.shared.endpoints,
     )?;
 
     Ok(())
@@ -522,9 +527,13 @@ fn add_mrf_metrics_pipeline_to_blueprint(
         return Ok(());
     };
 
-    let mrf_gateway_config = MrfMetricsGatewayConfiguration::new(mrf_config.clone(), config.clone());
-    let mrf_metrics_config = DatadogMetricsConfiguration::from_configuration(config)
-        .error_context("Failed to configure Multi-Region Failover Datadog Metrics encoder.")?;
+    let mrf_gateway_config = MrfMetricsGatewayConfiguration::new(
+        mrf_config.clone(),
+        config_system.live(|c| &c.domains.multi_region_failover),
+    );
+    let mrf_metrics_config =
+        DatadogMetricsConfiguration::from_configuration(&saluki.shared.metrics_encoding, &saluki.shared.endpoints)
+            .error_context("Failed to configure Multi-Region Failover Datadog Metrics encoder.")?;
 
     let mrf_forwarder_config = DatadogForwarderConfiguration::from_configuration(config)
         .map(|config| {
@@ -553,7 +562,8 @@ fn add_mrf_metrics_pipeline_to_blueprint(
 fn add_autoscaling_failover_metrics_pipeline_to_blueprint(
     blueprint: &mut TopologyBlueprint, config: &GenericConfiguration,
     autoscaling_failover: &agent_data_plane_config::shared::AutoscalingFailover,
-    cluster_agent: &agent_data_plane_config::shared::ClusterAgent,
+    cluster_agent: &agent_data_plane_config::shared::ClusterAgent, metrics_encoding: &MetricsEncoding,
+    endpoints: &Endpoints,
 ) -> Result<(), GenericError> {
     let af_config = AutoscalingFailoverConfiguration::from_configuration(autoscaling_failover)
         .error_context("Failed to configure autoscaling failover metrics pipeline.")?;
@@ -578,7 +588,7 @@ fn add_autoscaling_failover_metrics_pipeline_to_blueprint(
     }
 
     let af_gateway_config = AutoscalingFailoverGatewayConfiguration::new(af_config);
-    let af_metrics_config = DatadogMetricsConfiguration::from_configuration(config)
+    let af_metrics_config = DatadogMetricsConfiguration::from_configuration(metrics_encoding, endpoints)
         .error_context("Failed to configure autoscaling failover metrics encoder.")?;
     let cluster_agent_forwarder_config =
         ClusterAgentForwarderConfiguration::from_configuration(config, ca_url, ca_token)
@@ -634,11 +644,15 @@ async fn add_baseline_events_pipeline_to_blueprint(
 }
 
 async fn add_baseline_service_checks_pipeline_to_blueprint(
-    blueprint: &mut TopologyBlueprint, config: &GenericConfiguration,
+    blueprint: &mut TopologyBlueprint, config_system: &ConfigurationSystem,
 ) -> Result<(), GenericError> {
-    let dd_service_checks_config = DatadogServiceChecksConfiguration::from_configuration(config)
-        .map(BufferedIncrementalConfiguration::from_encoder_builder)
-        .error_context("Failed to configure Datadog Service Checks encoder.")?;
+    let saluki = config_system.config();
+    let dd_service_checks_config = DatadogServiceChecksConfiguration::from_configuration(
+        &saluki.shared.metrics_encoding,
+        &saluki.shared.endpoints.compression,
+    )
+    .map(BufferedIncrementalConfiguration::from_encoder_builder)
+    .error_context("Failed to configure Datadog Service Checks encoder.")?;
 
     blueprint
         .add_encoder("dd_service_checks_encode", dd_service_checks_config)?

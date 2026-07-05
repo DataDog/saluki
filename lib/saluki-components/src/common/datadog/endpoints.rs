@@ -364,10 +364,6 @@ struct APIKeys(#[serde_as(as = "OneOrMany<_>")] Vec<String>);
 struct MappedAPIKeys(HashMap<String, APIKeys>);
 
 impl MappedAPIKeys {
-    fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-
     fn mappings(&self) -> impl Iterator<Item = (&str, &APIKeys)> {
         self.0.iter().map(|(k, v)| (k.as_str(), v))
     }
@@ -398,11 +394,6 @@ impl std::fmt::Display for MappedAPIKeys {
 pub(crate) struct AdditionalEndpoints(#[serde_as(as = "PickFirst<(DisplayFromStr, _)>")] MappedAPIKeys);
 
 impl AdditionalEndpoints {
-    /// Returns true if no additional endpoints are configured.
-    pub(crate) fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-
     /// Returns the resolved endpoints from the additional endpoint configuration.
     ///
     /// This will generate a [`ResolvedEndpoint`] for each unique endpoint/API key pair, assigning
