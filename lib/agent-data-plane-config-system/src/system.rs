@@ -220,8 +220,42 @@ fn deserialize_sources(
     saluki_env_overlay::apply(&mut merged, env_overlay);
     let saluki_only = SalukiOnly::deserialize(&merged)?;
     apply_env_overlay(&mut merged, env_overlay);
+    normalize_datadog_input_forms(&mut merged);
     let datadog = DatadogConfiguration::deserialize(&merged)?;
     Ok((datadog, saluki_only))
+}
+
+/// Coerces the handful of Datadog keys whose accepted input shapes are wider than the generated
+/// `DatadogConfiguration` deserializer allows, restoring the alternate scalar forms the deleted
+/// component serde used to accept. Env-var-sourced values land in `merged` as flat string keys, so
+/// running here (after `apply_env_overlay`, before `DatadogConfiguration::deserialize`) catches the
+/// env-var forms too. Scoped to the specific keys below; not a general coercion framework.
+fn normalize_datadog_input_forms(merged: &mut serde_json::Value) {
+    let Some(object) = merged.as_object_mut() else {
+        return;
+    };
+
+    // `dogstatsd_eol_required` is a `Vec<String>` in the schema, but the Agent passes list-typed env
+    // vars as a single space-separated string. Split it into an array (matching
+    // `deserialize_space_separated_or_seq`: split on any run of whitespace, dropping empty tokens).
+    if let Some(value @ serde_json::Value::String(_)) = object.get_mut("dogstatsd_eol_required") {
+        let tokens = value
+            .as_str()
+            .expect("value matched String")
+            .split_whitespace()
+            .map(|token| serde_json::Value::String(token.to_owned()))
+            .collect();
+        *value = serde_json::Value::Array(tokens);
+    }
+
+    // `dogstatsd_mapper_profiles` is a `Vec<Value>` in the schema, but the Agent passes it as a JSON
+    // string when set via env var. Parse the string into the array the translator expects. If it is
+    // not valid JSON, leave the string in place so the downstream deserializer surfaces the error.
+    if let Some(value @ serde_json::Value::String(_)) = object.get_mut("dogstatsd_mapper_profiles") {
+        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(value.as_str().expect("value matched String")) {
+            *value = parsed;
+        }
+    }
 }
 
 /// Translates the Datadog and Saluki-only sources into one [`SalukiConfiguration`], returning every
@@ -486,6 +520,42 @@ mod tests {
         assert_eq!(profiles[0].name, "p");
         assert_eq!(profiles[0].prefix, "x");
         assert!(profiles[0].mappings.is_empty());
+    }
+
+    /// `dogstatsd_eol_required` accepts a space-separated string (the Agent's list-typed env-var
+    /// form) as well as a native array, both landing on `listeners.eol_required`.
+    #[tokio::test]
+    async fn eol_required_accepts_space_separated_string_or_array() {
+        for value in [json!("udp uds"), json!(["udp", "uds"])] {
+            let (raw_map, _) =
+                ConfigurationLoader::for_tests(Some(json!({ "dogstatsd_eol_required": value })), None, false).await;
+
+            let system = ConfigurationSystem::load(raw_map, EnvOverlayMode::Fallback).expect("eol_required translates");
+            assert_eq!(
+                system.config().domains.dogstatsd.listeners.eol_required,
+                vec!["udp", "uds"]
+            );
+        }
+    }
+
+    /// `dogstatsd_mapper_profiles` accepts a JSON string (the Agent's env-var form) as well as a
+    /// native array, both landing on `mapper.profiles`.
+    #[tokio::test]
+    async fn mapper_profiles_accepts_json_string_or_array() {
+        for value in [
+            json!("[{\"name\":\"p\",\"prefix\":\"x\",\"mappings\":[]}]"),
+            json!([{ "name": "p", "prefix": "x", "mappings": [] }]),
+        ] {
+            let (raw_map, _) =
+                ConfigurationLoader::for_tests(Some(json!({ "dogstatsd_mapper_profiles": value })), None, false).await;
+
+            let system =
+                ConfigurationSystem::load(raw_map, EnvOverlayMode::Fallback).expect("mapper profiles translate");
+            let profiles = &system.config().domains.dogstatsd.mapper.profiles;
+            assert_eq!(profiles.len(), 1);
+            assert_eq!(profiles[0].name, "p");
+            assert_eq!(profiles[0].prefix, "x");
+        }
     }
 
     #[tokio::test]
