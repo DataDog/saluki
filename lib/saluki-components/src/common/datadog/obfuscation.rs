@@ -1,5 +1,6 @@
 //! Obfuscation configuration types.
 
+use agent_data_plane_config::domains::traces as model;
 use facet::Facet;
 use saluki_config::deserialize_space_separated_or_seq;
 use serde::Deserialize;
@@ -146,6 +147,56 @@ pub struct SqlObfuscationConfig {
     /// Whether to treat "$func$" dollar-quoted strings specially (PostgreSQL).
     #[serde(default, rename = "apm_obfuscation_sql_dollar_quoted_func")]
     pub(crate) dollar_quoted_func: bool,
+}
+
+impl From<&model::Obfuscation> for ObfuscationConfig {
+    fn from(obfuscation: &model::Obfuscation) -> Self {
+        Self {
+            credit_cards: CreditCardObfuscationConfig {
+                enabled: obfuscation.credit_cards.enabled,
+                luhn: obfuscation.credit_cards.luhn,
+                keep_values: obfuscation.credit_cards.keep_values.clone(),
+            },
+            http: HttpObfuscationConfig {
+                remove_query_string: obfuscation.http.remove_query_string,
+                remove_path_digits: obfuscation.http.remove_paths_with_digits,
+            },
+            memcached: MemcachedObfuscationConfig {
+                enabled: obfuscation.memcached.enabled,
+                keep_command: obfuscation.memcached.keep_command,
+            },
+            redis: RedisObfuscationConfig {
+                enabled: obfuscation.redis.enabled,
+                remove_all_args: obfuscation.redis.remove_all_args,
+            },
+            valkey: ValkeyObfuscationConfig {
+                enabled: obfuscation.valkey.enabled,
+                remove_all_args: obfuscation.valkey.remove_all_args,
+            },
+            sql: SqlObfuscationConfig {
+                dbms: obfuscation.sql.dbms.clone(),
+                table_names: obfuscation.sql.table_names,
+                replace_digits: obfuscation.sql.replace_digits,
+                keep_sql_alias: obfuscation.sql.keep_sql_alias,
+                dollar_quoted_func: obfuscation.sql.dollar_quoted_func,
+            },
+            mongo: MongoObfuscationConfig {
+                enabled: obfuscation.mongodb.enabled,
+                keep_values: obfuscation.mongodb.keep_values.clone(),
+                obfuscate_sql_values: obfuscation.mongodb.obfuscate_sql_values.clone(),
+            },
+            es: EsObfuscationConfig {
+                enabled: obfuscation.elasticsearch.enabled,
+                keep_values: obfuscation.elasticsearch.keep_values.clone(),
+                obfuscate_sql_values: obfuscation.elasticsearch.obfuscate_sql_values.clone(),
+            },
+            open_search: OpenSearchObfuscationConfig {
+                enabled: obfuscation.opensearch.enabled,
+                keep_values: obfuscation.opensearch.keep_values.clone(),
+                obfuscate_sql_values: obfuscation.opensearch.obfuscate_sql_values.clone(),
+            },
+        }
+    }
 }
 
 impl SqlObfuscationConfig {

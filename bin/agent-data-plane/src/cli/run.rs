@@ -669,12 +669,16 @@ async fn add_baseline_traces_pipeline_to_blueprint(
     blueprint: &mut TopologyBlueprint, config: &GenericConfiguration, config_system: &ConfigurationSystem,
     env_provider: &ADPEnvironmentProvider,
 ) -> Result<(), GenericError> {
-    let dd_traces_config = DatadogTraceConfiguration::from_configuration(config)
-        .error_context("Failed to configure Datadog Traces encoder.")?
-        .with_environment_provider(env_provider.clone())
-        .await?;
-    let trace_obfuscation_config = TraceObfuscationConfiguration::from_apm_configuration(config)?;
     let saluki = config_system.config();
+    let dd_traces_config = DatadogTraceConfiguration::from_configuration(
+        &saluki.domains.traces,
+        &saluki.shared.metrics_encoding,
+        &saluki.shared.endpoints.compression,
+    )
+    .error_context("Failed to configure Datadog Traces encoder.")?
+    .with_environment_provider(env_provider.clone())
+    .await?;
+    let trace_obfuscation_config = TraceObfuscationConfiguration::from_configuration(&saluki.domains.traces)?;
     let trace_sampler_config = TraceSamplerConfiguration::from_configuration(&saluki.domains.traces)
         .error_context("Failed to configure Trace Sampler transform.")?;
     let ottl_filter_config = OttlFilterConfiguration::from_configuration(&saluki.domains.traces.ottl_filter)
@@ -687,14 +691,17 @@ async fn add_baseline_traces_pipeline_to_blueprint(
         .with_transform_builder("apm_onboarding", ApmOnboardingConfiguration)
         .with_transform_builder("trace_obfuscation", trace_obfuscation_config)
         .with_transform_builder("trace_sampler", trace_sampler_config);
-    let apm_stats_transform_config = ApmStatsTransformConfiguration::from_configuration(config)
+    let apm_stats_transform_config = ApmStatsTransformConfiguration::from_configuration(&saluki.domains.traces)
         .error_context("Failed to configure APM Stats transform.")?
         .with_environment_provider(env_provider.clone())
         .await?;
-    let dd_apm_stats_encoder = DatadogApmStatsEncoderConfiguration::from_configuration(config)
-        .error_context("Failed to configure Datadog APM Stats encoder.")?
-        .with_environment_provider(env_provider.clone())
-        .await?;
+    let dd_apm_stats_encoder = DatadogApmStatsEncoderConfiguration::from_configuration(
+        &saluki.domains.traces,
+        &saluki.shared.metrics_encoding,
+    )
+    .error_context("Failed to configure Datadog APM Stats encoder.")?
+    .with_environment_provider(env_provider.clone())
+    .await?;
 
     blueprint
         .add_transform("traces_enrich", dd_traces_enrich_config)?

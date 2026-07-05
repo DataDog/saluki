@@ -7,8 +7,8 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+use agent_data_plane_config::domains::traces::Domain as TracesConfiguration;
 use async_trait::async_trait;
-use saluki_config::GenericConfiguration;
 use saluki_context::{origin::OriginTagCardinality, tags::TagSet};
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
@@ -28,7 +28,7 @@ use stringtheory::MetaString;
 use tokio::{select, time::interval};
 use tracing::{debug, error};
 
-use crate::common::{datadog::apm::ApmConfig, otlp::util::extract_container_tags_from_attributes_map};
+use crate::common::otlp::util::extract_container_tags_from_attributes_map;
 
 mod aggregation;
 pub(crate) use self::aggregation::{process_tags_hash, PayloadAggregationKey};
@@ -55,17 +55,26 @@ const MAX_STATS_GROUPS_PER_EVENT: usize = 4000;
 /// Aggregates incoming `Trace` events into time-bucketed statistics, emitting
 /// `TraceStats` events.
 pub struct ApmStatsTransformConfiguration {
-    apm_config: ApmConfig,
+    compute_stats_by_span_kind: bool,
+    peer_tags_aggregation: bool,
+    peer_tags: Vec<MetaString>,
+    default_env: MetaString,
     default_hostname: Option<String>,
     workload_provider: Option<Arc<dyn WorkloadProvider + Send + Sync>>,
 }
 
 impl ApmStatsTransformConfiguration {
-    /// Creates a new `ApmStatsTransformConfiguration` from the given configuration.
-    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        let apm_config = ApmConfig::from_configuration(config)?;
+    /// Creates a new `ApmStatsTransformConfiguration` from the resolved traces configuration.
+    pub fn from_configuration(traces: &TracesConfiguration) -> Result<Self, GenericError> {
         Ok(Self {
-            apm_config,
+            compute_stats_by_span_kind: traces.compute_stats_by_span_kind,
+            peer_tags_aggregation: traces.peer_tags_aggregation,
+            peer_tags: traces
+                .peer_tags
+                .iter()
+                .map(|tag| MetaString::from(tag.as_str()))
+                .collect(),
+            default_env: MetaString::from(traces.default_env.clone()),
             default_hostname: None,
             workload_provider: None,
         })
@@ -96,24 +105,18 @@ impl ApmStatsTransformConfiguration {
 #[async_trait]
 impl TransformBuilder for ApmStatsTransformConfiguration {
     async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Transform + Send>, GenericError> {
-        let mut apm_config = self.apm_config.clone();
-
-        if let Some(hostname) = &self.default_hostname {
-            apm_config.set_hostname_if_empty(hostname.as_str());
-        }
-
         let concentrator = SpanConcentrator::new(
-            apm_config.compute_stats_by_span_kind(),
-            apm_config.peer_tags_aggregation(),
-            apm_config.peer_tags(),
+            self.compute_stats_by_span_kind,
+            self.peer_tags_aggregation,
+            &self.peer_tags,
             now_nanos(),
         );
 
         Ok(Box::new(ApmStats {
             concentrator,
             flush_interval: DEFAULT_FLUSH_INTERVAL,
-            agent_env: apm_config.default_env().clone(),
-            agent_hostname: apm_config.hostname().clone(),
+            agent_env: self.default_env.clone(),
+            agent_hostname: MetaString::from(self.default_hostname.clone().unwrap_or_default()),
             workload_provider: self.workload_provider.clone(),
         }))
     }
@@ -513,6 +516,27 @@ mod tests {
     use super::aggregation::BUCKET_DURATION_NS;
     use super::span_concentrator::METRIC_PARTIAL_VERSION;
     use super::*;
+
+    #[test]
+    fn configuration_maps_model_fields() {
+        let traces = TracesConfiguration {
+            compute_stats_by_span_kind: true,
+            peer_tags_aggregation: true,
+            peer_tags: vec!["db.instance".to_string(), "db.system".to_string()],
+            default_env: "staging".to_string(),
+            ..Default::default()
+        };
+
+        let config = ApmStatsTransformConfiguration::from_configuration(&traces).expect("configuration builds");
+
+        assert!(config.compute_stats_by_span_kind);
+        assert!(config.peer_tags_aggregation);
+        assert_eq!(
+            config.peer_tags,
+            vec![MetaString::from("db.instance"), MetaString::from("db.system")]
+        );
+        assert_eq!(config.default_env, MetaString::from("staging"));
+    }
 
     /// Helper to align timestamp to bucket boundary
     fn align_ts(ts: u64, bsize: u64) -> u64 {

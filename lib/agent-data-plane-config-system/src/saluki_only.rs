@@ -85,6 +85,7 @@ use agent_data_plane_config::domains::traces::{
     default_otlp_traces_string_interner_size, default_rare_sampler_cardinality, default_rare_sampler_cooldown,
     default_rare_sampler_tps, default_trace_environment, OttlErrorMode, OttlFilter, OttlTransform,
 };
+use agent_data_plane_config::shared::default_encoder_flush_timeout_secs;
 use agent_data_plane_config::SalukiConfiguration;
 use bytesize::ByteSize;
 use saluki_config::DurationString;
@@ -113,8 +114,10 @@ pub struct SalukiOnly {
     pub memory_limit: Option<ByteSize>,
     /// Memory-accounting slop fraction (`memory_slop_factor`).
     pub memory_slop_factor: Option<f64>,
-    /// Encoder flush timeout, in seconds (`flush_timeout_secs`).
-    pub flush_timeout_secs: Option<u64>,
+    /// Encoder flush timeout, in seconds (`flush_timeout_secs`). Shared by the metrics, trace, and
+    /// APM stats encoders.
+    #[serde(default = "default_encoder_flush_timeout_secs")]
+    pub flush_timeout_secs: u64,
     /// Maximum metrics per payload (`serializer_max_metrics_per_payload`).
     pub serializer_max_metrics_per_payload: Option<usize>,
 
@@ -456,9 +459,7 @@ impl SalukiOnly {
         if let Some(v) = self.metrics_level.clone() {
             config.shared.metrics_level = v;
         }
-        if let Some(v) = self.flush_timeout_secs {
-            config.shared.metrics_encoding.flush_timeout = Duration::from_secs(v);
-        }
+        config.shared.metrics_encoding.flush_timeout = Duration::from_secs(self.flush_timeout_secs);
         if let Some(v) = self.serializer_max_metrics_per_payload {
             config.shared.metrics_encoding.max_metrics_per_payload = v;
         }
@@ -797,6 +798,11 @@ mod tests {
         assert_eq!(agg.context_limit, 1_000_000);
         assert_eq!(agg.flush_interval, Duration::from_secs(15));
         assert_eq!(agg.passthrough_idle_flush_timeout, Duration::from_secs(1));
+
+        assert_eq!(
+            config.shared.metrics_encoding.flush_timeout,
+            Duration::from_secs(default_encoder_flush_timeout_secs())
+        );
 
         let traces = &config.domains.traces;
         assert_eq!(traces.default_env, default_trace_environment());
