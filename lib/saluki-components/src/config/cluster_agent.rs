@@ -217,6 +217,24 @@ mod tests {
     }
 
     #[test]
+    fn empty_kubernetes_service_name_suppresses_service_discovery() {
+        let config = cluster_agent_config_from(ClusterAgent {
+            enabled: true,
+            url: None,
+            auth_token: Some("secret-token".to_string()),
+            kubernetes_service_name: Some(String::new()),
+        });
+
+        assert_eq!(
+            config.endpoint_and_token_with_env(env_lookup(&[
+                ("DATADOG_CLUSTER_AGENT_SERVICE_HOST", "127.0.0.1"),
+                ("DATADOG_CLUSTER_AGENT_SERVICE_PORT", "443"),
+            ])),
+            None
+        );
+    }
+
+    #[test]
     fn endpoint_and_token_resolves_configured_kubernetes_service_env() {
         let config = cluster_agent_config_from(ClusterAgent {
             enabled: true,

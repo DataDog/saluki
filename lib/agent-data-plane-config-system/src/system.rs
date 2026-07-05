@@ -594,9 +594,7 @@ mod tests {
     }
 
     #[test]
-    fn cluster_agent_connection_values_are_trimmed_and_emptied() {
-        // The Cluster Agent connection settings are normalized in the config layer: surrounding
-        // whitespace is trimmed, and a value that is empty (or whitespace-only) becomes `None`.
+    fn cluster_agent_connection_values_are_trimmed() {
         let datadog: DatadogConfiguration = serde_json::from_value(json!({
             "cluster_agent": {
                 "enabled": true,
@@ -615,8 +613,23 @@ mod tests {
         assert!(cluster_agent.enabled);
         assert_eq!(cluster_agent.url.as_deref(), Some("https://cluster-agent.example.com"));
         assert_eq!(cluster_agent.auth_token.as_deref(), Some("secret-token"));
-        // Whitespace-only collapses to "unset".
-        assert_eq!(cluster_agent.kubernetes_service_name, None);
+        assert_eq!(cluster_agent.kubernetes_service_name.as_deref(), Some(""));
+    }
+
+    #[test]
+    fn cluster_agent_empty_kubernetes_service_name_is_preserved() {
+        let datadog: DatadogConfiguration = serde_json::from_value(json!({
+            "cluster_agent": {
+                "kubernetes_service_name": "",
+            },
+        }))
+        .expect("datadog source deserializes");
+        let saluki_only = SalukiOnly::default();
+
+        let (config, errors) = translate(&datadog, &saluki_only);
+        assert!(errors.is_none(), "translation of a valid map records no error");
+
+        assert_eq!(config.shared.cluster_agent.kubernetes_service_name.as_deref(), Some(""));
     }
 
     #[test]

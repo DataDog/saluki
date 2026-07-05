@@ -76,10 +76,6 @@ fn non_empty(s: String) -> Option<String> {
 }
 
 /// Trims surrounding whitespace and returns `Some` only when characters remain.
-///
-/// Used for connection settings (endpoint URLs, auth tokens, service names) where trailing
-/// whitespace would corrupt the value at the point of use, so normalization belongs here rather
-/// than in each consumer.
 fn trimmed_non_empty(s: String) -> Option<String> {
     let trimmed = s.trim();
     if trimmed.is_empty() {
@@ -362,7 +358,7 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_cluster_agent_kubernetes_service_name(&mut self, value: String) {
-        self.config.shared.cluster_agent.kubernetes_service_name = trimmed_non_empty(value);
+        self.config.shared.cluster_agent.kubernetes_service_name = Some(value.trim().to_string());
     }
 
     fn consume_cluster_agent_url(&mut self, value: String) {
