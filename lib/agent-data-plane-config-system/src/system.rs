@@ -256,6 +256,28 @@ fn normalize_datadog_input_forms(merged: &mut serde_json::Value) {
             *value = parsed;
         }
     }
+
+    // `additional_endpoints` is a `HashMap<String, Vec<String>>` in the schema, but the deleted
+    // component serde accepted two wider shapes the generated deserializer rejects: the whole value
+    // as a JSON string (the form an env var produces, for example
+    // `DD_ADDITIONAL_ENDPOINTS='{"https://app.datadoghq.com":["key"]}'`), and a bare string in place
+    // of a one-element key list for a host. Restore both so dual-shipping config keeps deserializing.
+    // First parse the JSON-string form into the object the deserializer expects; if it is not valid
+    // JSON, leave the string in place so the downstream deserializer surfaces the error.
+    if let Some(value @ serde_json::Value::String(_)) = object.get_mut("additional_endpoints") {
+        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(value.as_str().expect("value matched String")) {
+            *value = parsed;
+        }
+    }
+    // Then wrap any bare-string host value into a one-element array (matching the old `OneOrMany`).
+    if let Some(serde_json::Value::Object(map)) = object.get_mut("additional_endpoints") {
+        for keys in map.values_mut() {
+            if matches!(keys, serde_json::Value::String(_)) {
+                let single = std::mem::take(keys);
+                *keys = serde_json::Value::Array(vec![single]);
+            }
+        }
+    }
 }
 
 /// Translates the Datadog and Saluki-only sources into one [`SalukiConfiguration`], returning every
@@ -555,6 +577,35 @@ mod tests {
             assert_eq!(profiles.len(), 1);
             assert_eq!(profiles[0].name, "p");
             assert_eq!(profiles[0].prefix, "x");
+        }
+    }
+
+    /// `additional_endpoints` accepts a JSON string (the Agent's env-var form) and a bare string in
+    /// place of a one-element key list, as well as the native map-of-lists, all landing on
+    /// `shared.endpoints.additional_endpoints`.
+    #[tokio::test]
+    async fn additional_endpoints_accepts_json_string_scalar_or_map() {
+        let expected: std::collections::HashMap<String, Vec<String>> =
+            [("https://app.datadoghq.com".to_string(), vec!["key".to_string()])]
+                .into_iter()
+                .collect();
+
+        for value in [
+            // Env-var form: the whole map arrives as a JSON string.
+            json!("{\"https://app.datadoghq.com\":[\"key\"]}"),
+            // Env-var form with a bare string value in place of a one-element key list.
+            json!("{\"https://app.datadoghq.com\":\"key\"}"),
+            // Native map with a bare string in place of a one-element key list.
+            json!({ "https://app.datadoghq.com": "key" }),
+            // Native map of key lists.
+            json!({ "https://app.datadoghq.com": ["key"] }),
+        ] {
+            let (raw_map, _) =
+                ConfigurationLoader::for_tests(Some(json!({ "additional_endpoints": value })), None, false).await;
+
+            let system =
+                ConfigurationSystem::load(raw_map, EnvOverlayMode::Fallback).expect("additional_endpoints translates");
+            assert_eq!(system.config().shared.endpoints.additional_endpoints, expected);
         }
     }
 
