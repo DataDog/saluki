@@ -218,9 +218,24 @@ pub struct GlobalTags {
     pub expected_tags_duration: Duration,
 }
 
-/// Metrics-encoder settings reused across the metrics-emitting pipelines (DogStatsD, checks, and
-/// OTLP): histogram settings, payload limits, and the encoder flush timeout.
-#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+/// Default encoder flush timeout, in seconds, applied when `flush_timeout_secs` is unset.
+pub const DEFAULT_ENCODER_FLUSH_TIMEOUT_SECS: u64 = 2;
+
+/// Default encoder flush timeout, applied when `flush_timeout_secs` is unset. Shared by the
+/// metrics, trace, and APM stats encoders.
+pub const fn default_encoder_flush_timeout() -> Duration {
+    Duration::from_secs(DEFAULT_ENCODER_FLUSH_TIMEOUT_SECS)
+}
+
+/// Default encoder flush timeout, in seconds, as read from the `flush_timeout_secs` source key.
+pub const fn default_encoder_flush_timeout_secs() -> u64 {
+    DEFAULT_ENCODER_FLUSH_TIMEOUT_SECS
+}
+
+/// Encoder settings reused across the payload-emitting pipelines (metrics for DogStatsD, checks,
+/// and OTLP, plus traces and APM stats): histogram settings, payload limits, and the encoder flush
+/// timeout.
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct MetricsEncoding {
     /// How long the encoder waits before flushing a partially filled payload. (not in Datadog Agent
     /// config schema)
@@ -262,6 +277,26 @@ pub struct MetricsEncoding {
     /// ADP-only safety gate that authorizes V3 series (`data_plane.metrics.v3.series.enabled`, not
     /// in the Datadog Agent config schema).
     pub v3_series_enabled: bool,
+}
+
+impl Default for MetricsEncoding {
+    fn default() -> Self {
+        Self {
+            flush_timeout: default_encoder_flush_timeout(),
+            max_metrics_per_payload: 0,
+            max_payload_size: 0,
+            max_series_payload_size: 0,
+            max_series_points_per_payload: 0,
+            max_series_uncompressed_payload_size: 0,
+            max_uncompressed_payload_size: 0,
+            use_v2_series_api: false,
+            log_payloads: false,
+            histogram: HistogramEncoding::default(),
+            v3_api: V3ApiEncoding::default(),
+            v3_series_mode: V3SeriesMode::default(),
+            v3_series_enabled: false,
+        }
+    }
 }
 
 /// V3 metrics-intake protocol settings for the series and sketches payloads

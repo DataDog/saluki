@@ -1,4 +1,3 @@
-pub mod apm;
 pub mod config;
 pub mod endpoints;
 pub mod io;
