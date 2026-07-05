@@ -762,8 +762,9 @@ async fn add_dsd_pipeline_to_blueprint(
         HostEnrichmentConfiguration::from_environment_provider(env_provider.clone()),
     );
     let dsd_debug_log_config = DogStatsDDebugLogConfiguration::from_configuration(
-        config,
+        &saluki.domains.dogstatsd.debug_log,
         PlatformSettings::get_default_dogstatsd_log_file_path(),
+        config_system.live(|c| &c.domains.dogstatsd.debug_log),
     )
     .error_context("Failed to configure DogStatsD debug log destination.")?;
     let dsd_stats_config = DogStatsDStatisticsConfiguration::new();
