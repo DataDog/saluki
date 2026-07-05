@@ -2,8 +2,33 @@
 
 use serde::{Deserialize, Serialize};
 
+/// The default environment applied when a trace has no explicit environment.
+pub fn default_trace_environment() -> String {
+    "none".to_owned()
+}
+
+/// Whether error spans are sampled independently of the base sampler by default.
+pub const fn default_error_sampling_enabled() -> bool {
+    true
+}
+
+/// The default target for rare-span traces per second.
+pub const fn default_rare_sampler_tps() -> f64 {
+    5.0
+}
+
+/// The default rare-sampler cooldown, in seconds.
+pub const fn default_rare_sampler_cooldown() -> f64 {
+    300.0
+}
+
+/// The default rare-sampler signature cardinality.
+pub const fn default_rare_sampler_cardinality() -> usize {
+    200
+}
+
 /// Resolved traces configuration.
-#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Domain {
     /// Environment tag applied to traces.
     pub env: String,
@@ -56,8 +81,31 @@ pub struct Domain {
     pub ottl_transform: OttlTransform,
 }
 
+impl Default for Domain {
+    fn default() -> Self {
+        Self {
+            env: String::default(),
+            default_env: default_trace_environment(),
+            compute_stats_by_span_kind: false,
+            peer_tags: Vec::default(),
+            peer_tags_aggregation: false,
+            error_sampling_enabled: default_error_sampling_enabled(),
+            error_tracking_standalone_enabled: false,
+            errors_per_second: 0.0,
+            target_traces_per_second: 0.0,
+            enable_rare_sampler: false,
+            rare_sampler: RareSampler::default(),
+            probabilistic_sampler: ProbabilisticSampler::default(),
+            obfuscation: Obfuscation::default(),
+            otlp: OtlpTraces::default(),
+            ottl_filter: OttlFilter::default(),
+            ottl_transform: OttlTransform::default(),
+        }
+    }
+}
+
 /// Rare-span sampler.
-#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct RareSampler {
     /// Maximum number of distinct span signatures tracked. (not in Datadog Agent config schema)
     pub cardinality: usize,
@@ -68,6 +116,16 @@ pub struct RareSampler {
 
     /// Target rare-span traces sampled per second. (not in Datadog Agent config schema)
     pub tps: f64,
+}
+
+impl Default for RareSampler {
+    fn default() -> Self {
+        Self {
+            cardinality: default_rare_sampler_cardinality(),
+            cooldown: default_rare_sampler_cooldown(),
+            tps: default_rare_sampler_tps(),
+        }
+    }
 }
 
 /// APM probabilistic sampler.

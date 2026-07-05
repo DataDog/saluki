@@ -650,9 +650,9 @@ async fn add_baseline_traces_pipeline_to_blueprint(
         .with_environment_provider(env_provider.clone())
         .await?;
     let trace_obfuscation_config = TraceObfuscationConfiguration::from_apm_configuration(config)?;
-    let trace_sampler_config = TraceSamplerConfiguration::from_configuration(config)
-        .error_context("Failed to configure Trace Sampler transform.")?;
     let saluki = config_system.config();
+    let trace_sampler_config = TraceSamplerConfiguration::from_configuration(&saluki.domains.traces)
+        .error_context("Failed to configure Trace Sampler transform.")?;
     let ottl_filter_config = OttlFilterConfiguration::from_configuration(&saluki.domains.traces.ottl_filter)
         .error_context("Failed to configure OTTL filter processor.")?;
     let ottl_transform_config = OttlTransformConfiguration::from_configuration(config)
