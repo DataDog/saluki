@@ -37,6 +37,8 @@ of software projects, in addition to making them harder to maintain and debug ov
   - `schema_overlay.yaml` is a hand-edited file for our inventory of supported Datadog config
   - The Datadog config schema is vendored under `lib/datadog-agent/config/schema/core`
   - See `.claude/skills/config-management/SKILL.md`
+  - See the config ingest system and model at `lib/agent-data-plane-config` and
+    `lib/agent-data-plane-config-system`
 
 ## Building and Testing
 
