@@ -4,7 +4,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use agent_data_plane_config::shared::{Compression, Endpoints, MetricsEncoding};
+use agent_data_plane_config::shared::Compression;
 use agent_data_plane_config_system::{ConfigurationSystem, EnvOverlayMode};
 use argh::FromArgs;
 use datadog_agent_commons::platform::PlatformSettings;
@@ -417,8 +417,10 @@ async fn create_topology(
         || dp_config.service_checks_pipeline_required()
         || dp_config.traces_pipeline_required()
     {
-        let dd_forwarder_config = DatadogForwarderConfiguration::from_configuration(config)
-            .error_context("Failed to configure Datadog forwarder.")?;
+        let saluki = config_system.config();
+        let dd_forwarder_config =
+            DatadogForwarderConfiguration::from_model(&saluki.shared, Some(config_system.live(|c| c)))
+                .error_context("Failed to configure Datadog forwarder.")?;
         blueprint.add_forwarder("dd_out", dd_forwarder_config)?;
     }
 
@@ -512,22 +514,15 @@ async fn add_baseline_metrics_pipeline_to_blueprint(
         // Metrics, then forwarding.
         .connect_components_in_order(["metrics_enrich", "dd_metrics_encode", "dd_out"])?;
 
-    add_mrf_metrics_pipeline_to_blueprint(blueprint, config, config_system)?;
+    add_mrf_metrics_pipeline_to_blueprint(blueprint, config_system)?;
     let saluki = config_system.config();
-    add_autoscaling_failover_metrics_pipeline_to_blueprint(
-        blueprint,
-        config,
-        &saluki.shared.autoscaling_failover,
-        &saluki.shared.cluster_agent,
-        &saluki.shared.metrics_encoding,
-        &saluki.shared.endpoints,
-    )?;
+    add_autoscaling_failover_metrics_pipeline_to_blueprint(blueprint, &saluki.shared)?;
 
     Ok(())
 }
 
 fn add_mrf_metrics_pipeline_to_blueprint(
-    blueprint: &mut TopologyBlueprint, config: &GenericConfiguration, config_system: &ConfigurationSystem,
+    blueprint: &mut TopologyBlueprint, config_system: &ConfigurationSystem,
 ) -> Result<(), GenericError> {
     let saluki = config_system.config();
     let mrf_config = MrfConfiguration::from_configuration(&saluki.domains.multi_region_failover)
@@ -554,15 +549,10 @@ fn add_mrf_metrics_pipeline_to_blueprint(
         DatadogMetricsConfiguration::from_configuration(&saluki.shared.metrics_encoding, &saluki.shared.endpoints)
             .error_context("Failed to configure Multi-Region Failover Datadog Metrics encoder.")?;
 
-    let mrf_forwarder_config = DatadogForwarderConfiguration::from_configuration(config)
-        .map(|config| {
-            config.with_endpoint_override_and_api_key_refresh_config_path(
-                mrf_dd_url,
-                mrf_api_key,
-                "multi_region_failover.api_key",
-            )
-        })
-        .error_context("Failed to configure Multi-Region Failover Datadog forwarder.")?;
+    let mrf_forwarder_config =
+        DatadogForwarderConfiguration::from_model(&saluki.shared, Some(config_system.live(|c| c)))
+            .map(|config| config.with_multi_region_failover_endpoint_override(mrf_dd_url, mrf_api_key))
+            .error_context("Failed to configure Multi-Region Failover Datadog forwarder.")?;
 
     blueprint
         .add_transform("mrf_metrics_gateway", mrf_gateway_config)?
@@ -579,14 +569,11 @@ fn add_mrf_metrics_pipeline_to_blueprint(
 }
 
 fn add_autoscaling_failover_metrics_pipeline_to_blueprint(
-    blueprint: &mut TopologyBlueprint, config: &GenericConfiguration,
-    autoscaling_failover: &agent_data_plane_config::shared::AutoscalingFailover,
-    cluster_agent: &agent_data_plane_config::shared::ClusterAgent, metrics_encoding: &MetricsEncoding,
-    endpoints: &Endpoints,
+    blueprint: &mut TopologyBlueprint, shared: &agent_data_plane_config::shared::SharedConfiguration,
 ) -> Result<(), GenericError> {
-    let af_config = AutoscalingFailoverConfiguration::from_configuration(autoscaling_failover)
+    let af_config = AutoscalingFailoverConfiguration::from_configuration(&shared.autoscaling_failover)
         .error_context("Failed to configure autoscaling failover metrics pipeline.")?;
-    let ca_config = ClusterAgentConfiguration::from_configuration(cluster_agent)
+    let ca_config = ClusterAgentConfiguration::from_configuration(&shared.cluster_agent)
         .error_context("Failed to configure Cluster Agent metrics forwarding.")?;
 
     let Some((ca_url, ca_token)) = ca_config.endpoint_and_token() else {
@@ -607,10 +594,11 @@ fn add_autoscaling_failover_metrics_pipeline_to_blueprint(
     }
 
     let af_gateway_config = AutoscalingFailoverGatewayConfiguration::new(af_config);
-    let af_metrics_config = DatadogMetricsConfiguration::from_configuration(metrics_encoding, endpoints)
-        .error_context("Failed to configure autoscaling failover metrics encoder.")?;
+    let af_metrics_config =
+        DatadogMetricsConfiguration::from_configuration(&shared.metrics_encoding, &shared.endpoints)
+            .error_context("Failed to configure autoscaling failover metrics encoder.")?;
     let cluster_agent_forwarder_config =
-        ClusterAgentForwarderConfiguration::from_configuration(config, ca_url, ca_token)
+        ClusterAgentForwarderConfiguration::from_configuration(shared, ca_url, ca_token)
             .error_context("Failed to configure Cluster Agent forwarder.")?;
 
     blueprint

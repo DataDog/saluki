@@ -1,7 +1,7 @@
+use agent_data_plane_config::{shared::SharedConfiguration, Live, SalukiConfiguration};
 use async_trait::async_trait;
 use http::Uri;
 use saluki_common::buf::FrozenChunkedBytesBuffer;
-use saluki_config::GenericConfiguration;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
 use saluki_core::{
     components::{forwarders::*, ComponentContext},
@@ -16,6 +16,7 @@ use tracing::debug;
 
 use crate::common::datadog::{
     config::ForwarderConfiguration,
+    endpoints::ApiKeyRefresh,
     io::TransactionForwarder,
     protocol::MetricsPayloadInfo,
     telemetry::ComponentTelemetry,
@@ -36,32 +37,29 @@ pub struct DatadogForwarderConfiguration {
     /// See [`ForwarderConfiguration`] for more information about the available settings.
     forwarder_config: ForwarderConfiguration,
 
-    configuration: Option<GenericConfiguration>,
+    live: Option<Live<SalukiConfiguration>>,
 }
 
 impl DatadogForwarderConfiguration {
-    /// Creates a new `DatadogForwarderConfiguration` from the given configuration.
-    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        let forwarder_config = ForwarderConfiguration::from_configuration(config)?;
-        Ok(Self {
-            forwarder_config,
-            configuration: Some(config.clone()),
-        })
+    /// Creates a new `DatadogForwarderConfiguration` from the shared configuration model.
+    ///
+    /// The optional live view lets resolved endpoints refresh their API keys at runtime.
+    pub fn from_model(
+        shared: &SharedConfiguration, live: Option<Live<SalukiConfiguration>>,
+    ) -> Result<Self, GenericError> {
+        let forwarder_config = ForwarderConfiguration::from_model(shared)?;
+        Ok(Self { forwarder_config, live })
     }
 
-    /// Overrides the default endpoint and refreshes its API key from the given config path.
-    ///
-    /// This is for override endpoints whose API key does not refresh from the top-level `api_key`
-    /// config path, such as Multi-Region Failover.
-    pub fn with_endpoint_override_and_api_key_refresh_config_path(
-        mut self, dd_url: String, api_key: String, api_key_refresh_config_path: &'static str,
-    ) -> Self {
-        self.apply_endpoint_override(dd_url, api_key, api_key_refresh_config_path);
+    /// Overrides the default endpoint with the Multi-Region Failover endpoint, refreshing its API
+    /// key from the Multi-Region Failover model field rather than the shared primary `api_key`.
+    pub fn with_multi_region_failover_endpoint_override(mut self, dd_url: String, api_key: String) -> Self {
+        self.apply_endpoint_override(dd_url, api_key, ApiKeyRefresh::MultiRegionFailover);
 
         self
     }
 
-    fn apply_endpoint_override(&mut self, dd_url: String, api_key: String, api_key_refresh_config_path: &'static str) {
+    fn apply_endpoint_override(&mut self, dd_url: String, api_key: String, api_key_refresh: ApiKeyRefresh) {
         // Clear any existing additional endpoints, and set the new DD URL and API key.
         //
         // This ensures that the only endpoint we'll send to is this one.
@@ -69,7 +67,7 @@ impl DatadogForwarderConfiguration {
         endpoint.clear_additional_endpoints();
         endpoint.set_dd_url(dd_url);
         endpoint.set_api_key(api_key);
-        endpoint.set_api_key_refresh_config_path(api_key_refresh_config_path);
+        endpoint.set_api_key_refresh(api_key_refresh);
         self.forwarder_config.clear_opw_metrics_endpoint();
     }
 }
@@ -86,7 +84,7 @@ impl ForwarderBuilder for DatadogForwarderConfiguration {
         let forwarder = TransactionForwarder::from_config(
             context,
             self.forwarder_config.clone(),
-            self.configuration.clone(),
+            self.live.clone(),
             get_dd_endpoint_name,
             telemetry.clone(),
             metrics_builder,
@@ -204,42 +202,37 @@ fn get_dd_endpoint_name(uri: &Uri) -> Option<MetaString> {
 
 #[cfg(test)]
 mod tests {
-    use saluki_config::ConfigurationLoader;
-    use serde_json::json;
+    use std::sync::Arc;
+
+    use arc_swap::ArcSwap;
+    use tokio::sync::watch;
 
     use super::*;
 
+    fn config_with_keys(primary: &str, mrf: &str) -> SalukiConfiguration {
+        let mut config = SalukiConfiguration::default();
+        config.shared.endpoints.api_key = primary.to_string();
+        config.domains.multi_region_failover.api_key = Some(mrf.to_string());
+        config
+    }
+
     #[tokio::test]
     async fn endpoint_override_refreshes_from_mrf_api_key() {
-        let (generic_config, sender) = ConfigurationLoader::for_tests(
-            Some(json!({
-                "api_key": "primary-api-key",
-                "multi_region_failover": {
-                    "api_key": "mrf-api-key"
-                }
-            })),
-            None,
-            true,
-        )
-        .await;
-        let sender = sender.expect("dynamic sender should exist");
-        sender
-            .send(saluki_config::dynamic::ConfigUpdate::Snapshot(json!({})))
-            .await
-            .expect("initial dynamic snapshot should be sent");
-        generic_config.ready().await;
+        let initial = config_with_keys("primary-api-key", "mrf-api-key");
+        let cell = Arc::new(ArcSwap::from_pointee(initial.clone()));
+        let (tx, rx) = watch::channel(());
+        let live = Live::dynamic(Arc::clone(&cell), rx, |c| c);
 
-        let config = DatadogForwarderConfiguration::from_configuration(&generic_config)
-            .expect("DatadogForwarderConfiguration should parse")
-            .with_endpoint_override_and_api_key_refresh_config_path(
+        let config = DatadogForwarderConfiguration::from_model(&initial.shared, Some(live.clone()))
+            .expect("DatadogForwarderConfiguration should build")
+            .with_multi_region_failover_endpoint_override(
                 "http://mrf.example.test".to_string(),
                 "mrf-api-key".to_string(),
-                "multi_region_failover.api_key",
             );
 
         let mut endpoints = config
             .forwarder_config
-            .build_routable_endpoints(config.configuration.clone())
+            .build_routable_endpoints(Some(live))
             .expect("endpoint should resolve");
 
         assert_eq!(endpoints.len(), 1);
@@ -248,31 +241,13 @@ mod tests {
         assert!(endpoint.has_configuration());
         assert_eq!(endpoint.api_key(), "mrf-api-key");
 
-        sender
-            .send(saluki_config::dynamic::ConfigUpdate::Partial {
-                key: "api_key".to_string(),
-                value: json!("rotated-primary-api-key"),
-            })
-            .await
-            .expect("primary API key update should be sent");
-        sender
-            .send(saluki_config::dynamic::ConfigUpdate::Partial {
-                key: "multi_region_failover.api_key".to_string(),
-                value: json!("rotated-mrf-api-key"),
-            })
-            .await
-            .expect("MRF API key update should be sent");
+        // Rotating the primary key must not affect the override; rotating the MRF key must.
+        cell.store(Arc::new(config_with_keys(
+            "rotated-primary-api-key",
+            "rotated-mrf-api-key",
+        )));
+        tx.send(()).expect("live cell should have a receiver");
 
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        loop {
-            if endpoint.api_key() == "rotated-mrf-api-key" {
-                break;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "timed out waiting for endpoint override to refresh from MRF API key"
-            );
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
+        assert_eq!(endpoint.api_key(), "rotated-mrf-api-key");
     }
 }

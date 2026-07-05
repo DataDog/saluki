@@ -240,11 +240,11 @@ pub struct DatadogConfiguration {
     #[serde(default = "defaults::default_u64::<i64, 900>")]
     pub forwarder_retry_queue_capacity_time_interval_sec: i64,
 
-    #[serde(default)]
-    pub forwarder_retry_queue_max_size: i64,
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    pub forwarder_retry_queue_max_size: Option<i64>,
 
-    #[serde(default = "defaults::default_u64::<i64, 15728640>")]
-    pub forwarder_retry_queue_payloads_max_size: i64,
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    pub forwarder_retry_queue_payloads_max_size: Option<i64>,
 
     #[serde(default = "defaults::default_u64::<i64, 2>")]
     pub forwarder_stop_timeout: i64,
@@ -334,6 +334,15 @@ pub struct DatadogConfiguration {
 
     #[serde(default)]
     pub proxy: Proxy,
+
+    #[serde(default = "defaults::datadog_configuration_run_path")]
+    pub run_path: String,
+
+    #[serde(default)]
+    pub secret_backend_command: String,
+
+    #[serde(default)]
+    pub secret_refresh_on_api_key_failure_interval: i64,
 
     #[serde(default = "defaults::datadog_configuration_serializer_compressor_kind")]
     pub serializer_compressor_kind: String,
@@ -487,10 +496,7 @@ impl Default for DatadogConfiguration {
                 900,
             >(),
             forwarder_retry_queue_max_size: Default::default(),
-            forwarder_retry_queue_payloads_max_size: defaults::default_u64::<
-                i64,
-                15728640,
-            >(),
+            forwarder_retry_queue_payloads_max_size: Default::default(),
             forwarder_stop_timeout: defaults::default_u64::<i64, 2>(),
             forwarder_storage_max_disk_ratio: defaults::datadog_configuration_forwarder_storage_max_disk_ratio(),
             forwarder_storage_max_size_in_bytes: Default::default(),
@@ -519,6 +525,9 @@ impl Default for DatadogConfiguration {
             otlp_config: Default::default(),
             provider_kind: Default::default(),
             proxy: Default::default(),
+            run_path: defaults::datadog_configuration_run_path(),
+            secret_backend_command: Default::default(),
+            secret_refresh_on_api_key_failure_interval: Default::default(),
             serializer_compressor_kind: defaults::datadog_configuration_serializer_compressor_kind(),
             serializer_experimental_use_v3_api: Default::default(),
             serializer_max_payload_size: defaults::default_u64::<i64, 2621440>(),
@@ -1660,6 +1669,9 @@ pub mod defaults {
     }
     pub(super) fn datadog_configuration_min_tls_version() -> String {
         "tlsv1.2".to_string()
+    }
+    pub(super) fn datadog_configuration_run_path() -> String {
+        "${run_path}".to_string()
     }
     pub(super) fn datadog_configuration_serializer_compressor_kind() -> String {
         "zstd".to_string()

@@ -1565,6 +1565,8 @@ inventory:
     support: full
     pipelines: [cross_cutting]
     description: "Retry queue max size (deprecated)"
+    documentation: "Deprecated fallback for `forwarder_retry_queue_payloads_max_size`. ADP owns the effective 15 MiB default and the deprecated-key precedence in `RetryConfiguration::queue_max_size_bytes()`, so this is generated as an absence-aware Option: unset must stay `None` or the fallback could never fire."
+    saluki_overrides_default: true
     test_support:
       used_by: [ForwarderConfiguration]
       value_type_override: integer
@@ -1575,6 +1577,8 @@ inventory:
     support: full
     pipelines: [cross_cutting]
     description: "Retry queue max size (bytes)"
+    documentation: "ADP owns the effective 15 MiB default and the deprecated-key precedence in `RetryConfiguration::queue_max_size_bytes()`, so this is generated as an absence-aware Option: when unset it must stay `None` so the deprecated `forwarder_retry_queue_max_size` fallback can still win."
+    saluki_overrides_default: true
     test_support:
       used_by: [ForwarderConfiguration]
       value_type_override: integer
@@ -2107,6 +2111,27 @@ inventory:
       env_var_override: [DD_PROXY_NO_PROXY]
       additional_attributes:
         config_registry_filename: proxy.rs
+
+  run_path:
+    support: full
+    pipelines: [cross_cutting]
+    description: "Runtime directory for on-disk state"
+    test_support:
+      used_by: [NO_SMOKE]
+
+  secret_backend_command:
+    support: full
+    pipelines: [cross_cutting]
+    description: "Path to the secrets backend command"
+    test_support:
+      used_by: [NO_SMOKE]
+
+  secret_refresh_on_api_key_failure_interval:
+    support: full
+    pipelines: [cross_cutting]
+    description: "Secret refresh interval on API key failure"
+    test_support:
+      used_by: [NO_SMOKE]
 
   serializer_compressor_kind:
     support: full
@@ -4017,7 +4042,6 @@ excluded:
   reverse_dns_enrichment.rate_limiter.recovery_intervals: "ignored in initial audit 2026-04-23"
   reverse_dns_enrichment.rate_limiter.throttle_error_threshold: "ignored in initial audit 2026-04-23"
   reverse_dns_enrichment.workers: "ignored in initial audit 2026-04-23"
-  run_path: "ignored in second bulk edit 2026-05-06"
   runtime_security_config.activity_dump.remote_storage.endpoints.additional_endpoints: "ignored in initial audit 2026-04-23"
   runtime_security_config.activity_dump.remote_storage.endpoints.batch_max_concurrent_send: "ignored in initial audit 2026-04-23"
   runtime_security_config.activity_dump.remote_storage.endpoints.batch_max_content_size: "ignored in initial audit 2026-04-23"
@@ -4120,7 +4144,6 @@ excluded:
   secret_allowed_k8s_namespace: "ignored in initial audit 2026-04-23"
   secret_audit_file_max_size: "ignored in initial audit 2026-04-23"
   secret_backend_arguments: "ignored in initial audit 2026-04-23"
-  secret_backend_command: "ignored in second bulk edit 2026-05-06"
   secret_backend_command_allow_group_exec_perm: "ignored in initial audit 2026-04-23"
   secret_backend_config: "ignored in initial audit 2026-04-23"
   secret_backend_output_max_size: "ignored in initial audit 2026-04-23"
@@ -4130,7 +4153,6 @@ excluded:
   secret_backend_type: "ignored in initial audit 2026-04-23"
   secret_image_to_handle: "ignored in initial audit 2026-04-23"
   secret_refresh_interval: "ignored in initial audit 2026-04-23"
-  secret_refresh_on_api_key_failure_interval: "ignored in initial audit 2026-04-23"
   secret_refresh_scatter: "ignored in initial audit 2026-04-23"
   secret_scope_integration_to_their_k8s_namespace: "ignored in initial audit 2026-04-23"
   security_agent.cmd_port: "ignored in initial audit 2026-04-23"

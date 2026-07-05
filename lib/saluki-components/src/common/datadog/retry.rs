@@ -4,64 +4,22 @@ use std::{
     time::Duration,
 };
 
-use facet::Facet;
+use agent_data_plane_config::{
+    shared::{Forwarder, Secrets},
+    Live, SalukiConfiguration,
+};
 use http::StatusCode;
-use saluki_config::GenericConfiguration;
 use saluki_io::net::util::retry::{
     DefaultHttpRetryPolicy, ExponentialBackoff, HttpRetryPredicate, StandardHttpClassifier,
 };
-use serde::Deserialize;
-use tracing::debug;
 
 const FORWARDER_RETRY_QUEUE_PAYLOADS_MAX_SIZE_BYTES: u64 = 15 * 1024 * 1024;
-const FORWARDER_FLUSH_TO_DISK_MEM_RATIO: f64 = 0.5;
 const RETRY_TXN_DIR: &str = "transactions_to_retry";
-const RETRY_QUEUE_CAPACITY_DEFAULT_HISTORY_DURATION_SECS: u64 = 15 * 60;
 const RETRY_QUEUE_CAPACITY_MIN_HISTORY_DURATION_SECS: u64 = 10;
 
-const fn default_request_backoff_factor() -> f64 {
-    2.0
-}
-
-const fn default_request_backoff_base() -> f64 {
-    2.0
-}
-
-const fn default_request_backoff_max() -> f64 {
-    64.0
-}
-
-const fn default_request_recovery_error_decrease_factor() -> u32 {
-    2
-}
-
-const fn default_request_recovery_reset() -> bool {
-    false
-}
-
-const fn default_storage_max_size_bytes() -> u64 {
-    0
-}
-
-const fn default_flush_to_disk_mem_ratio() -> f64 {
-    FORWARDER_FLUSH_TO_DISK_MEM_RATIO
-}
-
-const fn default_storage_max_disk_ratio() -> f64 {
-    0.8
-}
-
-const fn default_outdated_file_in_days() -> u32 {
-    10
-}
-
-const fn default_retry_queue_capacity_time_interval_secs() -> u64 {
-    RETRY_QUEUE_CAPACITY_DEFAULT_HISTORY_DURATION_SECS
-}
-
 /// Datadog Agent-specific forwarder retry configuration.
-#[derive(Clone, Deserialize, Facet)]
-#[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
+#[derive(Clone)]
+#[cfg_attr(test, derive(Debug, PartialEq))]
 pub struct RetryConfiguration {
     /// The minimum backoff factor to use when retrying requests.
     ///
@@ -70,19 +28,16 @@ pub struct RetryConfiguration {
     /// backoff duration using a purely exponential growth strategy.
     ///
     /// Defaults to 2.
-    #[serde(default = "default_request_backoff_factor", rename = "forwarder_backoff_factor")]
     backoff_factor: f64,
 
     /// The base growth rate of the backoff duration when retrying requests, in seconds.
     ///
     /// Defaults to 2 seconds.
-    #[serde(default = "default_request_backoff_base", rename = "forwarder_backoff_base")]
     backoff_base: f64,
 
     /// The upper bound of the backoff duration when retrying requests, in seconds.
     ///
     /// Defaults to 64 seconds.
-    #[serde(default = "default_request_backoff_max", rename = "forwarder_backoff_max")]
     backoff_max: f64,
 
     /// The amount to decrease the error count by when a request is successful.
@@ -94,37 +49,26 @@ pub struct RetryConfiguration {
     /// period of time when downstream services are flapping.
     ///
     /// Defaults to 2.
-    #[serde(
-        default = "default_request_recovery_error_decrease_factor",
-        rename = "forwarder_recovery_interval"
-    )]
     recovery_error_decrease_factor: u32,
 
     /// Whether or not a successful request should completely reset the error count.
     ///
     /// Defaults to `false`.
-    #[serde(default = "default_request_recovery_reset", rename = "forwarder_recovery_reset")]
     recovery_reset: bool,
 
     /// The maximum in-memory size of the retry queue, in bytes.
     ///
     /// Defaults to 15MiB.
-    #[serde(rename = "forwarder_retry_queue_payloads_max_size")]
     retry_queue_payloads_max_size: Option<u64>,
 
     /// The maximum in-memory size of the retry queue, in bytes. (deprecated)
     ///
     /// Defaults to 0.
-    #[serde(rename = "forwarder_retry_queue_max_size")]
     retry_queue_max_size: Option<u64>,
 
     /// The maximum size of the retry queue on disk, in bytes.
     ///
     /// Defaults to 0 (disabled).
-    #[serde(
-        rename = "forwarder_storage_max_size_in_bytes",
-        default = "default_storage_max_size_bytes"
-    )]
     storage_max_size_bytes: u64,
 
     /// The ratio of in-memory retry queue bytes to flush to disk when the queue is full.
@@ -135,16 +79,11 @@ pub struct RetryConfiguration {
     /// disk to make room for the new transaction.
     ///
     /// Defaults to 0.5.
-    #[serde(
-        default = "default_flush_to_disk_mem_ratio",
-        rename = "forwarder_flush_to_disk_mem_ratio"
-    )]
     flush_to_disk_mem_ratio: f64,
 
     /// The path to the directory where the retry queue will be stored on disk.
     ///
     /// Defaults to `/opt/datadog-agent/run/transactions_to_retry`.
-    #[serde(default, rename = "forwarder_storage_path")]
     storage_path: PathBuf,
 
     /// The maximum disk usage ratio for storing transactions on disk.
@@ -154,10 +93,6 @@ pub struct RetryConfiguration {
     /// `0.8` means the Agent can store transactions on disk until `forwarder_storage_max_size_in_bytes`
     /// is reached or when the disk mount for `forwarder_storage_path` exceeds 80% of the disk capacity,
     /// whichever is lower.
-    #[serde(
-        default = "default_storage_max_disk_ratio",
-        rename = "forwarder_storage_max_disk_ratio"
-    )]
     storage_max_disk_ratio: f64,
 
     /// Maximum age in days for retry files on disk before they are deleted at startup.
@@ -168,10 +103,6 @@ pub struct RetryConfiguration {
     /// behind after long outages.
     ///
     /// Defaults to 10.
-    #[serde(
-        default = "default_outdated_file_in_days",
-        rename = "forwarder_outdated_file_in_days"
-    )]
     outdated_file_in_days: u32,
 
     /// The time window used to estimate retry queue capacity, in seconds.
@@ -179,33 +110,34 @@ pub struct RetryConfiguration {
     /// ADP records incoming transaction payload bytes over this window and uses that rate to estimate how many seconds
     /// of data the retry queue can buffer. The default value is 900 seconds. Values below 10 seconds are clamped to 10
     /// seconds, matching the fixed retry queue capacity bucket size.
-    #[serde(
-        default = "default_retry_queue_capacity_time_interval_secs",
-        rename = "forwarder_retry_queue_capacity_time_interval_sec"
-    )]
     capacity_time_interval_secs: u64,
 }
 
 impl RetryConfiguration {
-    pub(super) fn fix_empty_storage_path(&mut self, config: &GenericConfiguration) {
-        // If `forwarder_storage_path` is empty, try setting it to a default path based on `run_path`.
-        if self.storage_path.parent().is_none() {
-            let storage_path = match config.try_get_typed::<PathBuf>("run_path") {
-                Ok(Some(mut run_path)) => {
-                    run_path.push(RETRY_TXN_DIR);
-                    run_path
-                }
-                Ok(None) => {
-                    debug!("`forwarder_storage_path` and `run_path` were empty. Cannot calculate default storage path for forwarder.");
-                    return;
-                }
-                Err(e) => {
-                    debug!(error = %e, "Failed to read `run_path` from configuration. Cannot calculate default storage path for forwarder.");
-                    return;
-                }
-            };
+    /// Builds retry configuration from the shared forwarder model.
+    ///
+    /// When the model carries no explicit storage path, the retry-queue directory is derived from
+    /// `run_path`; if `run_path` is also empty the path is left empty and disk persistence stays off.
+    pub(crate) fn from_model(forwarder: &Forwarder, run_path: &Path) -> Self {
+        let mut storage_path = forwarder.storage_path.clone();
+        if storage_path.parent().is_none() && !run_path.as_os_str().is_empty() {
+            storage_path = run_path.join(RETRY_TXN_DIR);
+        }
 
-            self.storage_path = storage_path;
+        Self {
+            backoff_factor: forwarder.backoff_factor,
+            backoff_base: forwarder.backoff_base,
+            backoff_max: forwarder.backoff_max,
+            recovery_error_decrease_factor: forwarder.recovery_interval,
+            recovery_reset: forwarder.recovery_reset,
+            retry_queue_payloads_max_size: forwarder.retry_queue_payloads_max_size,
+            retry_queue_max_size: forwarder.retry_queue_max_size,
+            storage_max_size_bytes: forwarder.storage_max_size_in_bytes,
+            flush_to_disk_mem_ratio: forwarder.flush_to_disk_mem_ratio,
+            storage_path,
+            storage_max_disk_ratio: forwarder.storage_max_disk_ratio,
+            outdated_file_in_days: forwarder.outdated_file_in_days,
+            capacity_time_interval_secs: forwarder.retry_queue_capacity_time_interval_sec,
         }
     }
 
@@ -255,12 +187,12 @@ impl RetryConfiguration {
 
     /// Creates a new [`DefaultHttpRetryPolicy`] based on the forwarder configuration.
     ///
-    /// If a [`GenericConfiguration`] is supplied, the policy captures it and checks whether
-    /// secrets management is active on every 403 Forbidden response. This allows the retry gate to
-    /// pick up runtime changes pushed via the config stream without rebuilding the service. When no
-    /// configuration is supplied, 403 responses retain their default non-retriable behavior.
+    /// If a live configuration view is supplied, the policy captures it and checks whether secrets
+    /// management is active on every 403 Forbidden response. This allows the retry gate to pick up
+    /// runtime changes pushed via the config stream without rebuilding the service. When no view is
+    /// supplied, 403 responses retain their default non-retriable behavior.
     pub fn to_default_http_retry_policy<B: 'static>(
-        &self, live_config: Option<GenericConfiguration>,
+        &self, live: Option<Live<SalukiConfiguration>>,
     ) -> DefaultHttpRetryPolicy<B> {
         let retry_backoff = ExponentialBackoff::with_jitter(
             Duration::from_secs_f64(self.backoff_base),
@@ -268,9 +200,12 @@ impl RetryConfiguration {
             self.backoff_factor,
         );
 
-        let classifier = if let Some(config) = live_config {
+        let classifier = if let Some(live) = live {
+            // Only the secrets settings gate 403 retries, so project once to a `Live<Secrets>` view
+            // rather than cloning the whole `SalukiConfiguration` on every 403 classification.
+            let secrets = live.project(|config| &config.shared.secrets);
             let gate: HttpRetryPredicate<B> =
-                Arc::new(move |response| response.status() == StatusCode::FORBIDDEN && secrets_in_use(&config));
+                Arc::new(move |response| response.status() == StatusCode::FORBIDDEN && secrets_in_use(&secrets));
             StandardHttpClassifier::new().with_predicate(gate)
         } else {
             StandardHttpClassifier::new()
@@ -282,16 +217,18 @@ impl RetryConfiguration {
     }
 }
 
-fn secrets_in_use(config: &GenericConfiguration) -> bool {
-    matches!(config.try_get_typed::<u64>("secret_refresh_on_api_key_failure_interval"), Ok(Some(value)) if value > 0)
-        || matches!(config.try_get_typed::<String>("secret_backend_command"), Ok(Some(value)) if !value.trim().is_empty())
+fn secrets_in_use(live: &Live<Secrets>) -> bool {
+    let secrets = live.current();
+    secrets.refresh_on_api_key_failure_interval > 0 || !secrets.backend_command.trim().is_empty()
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use arc_swap::ArcSwap;
     use http::{Request, Response};
-    use saluki_config::ConfigurationLoader;
-    use serde_json::json;
+    use tokio::sync::watch;
     use tower::retry::Policy;
 
     use super::*;
@@ -314,12 +251,21 @@ mod tests {
 
     fn test_retry_config() -> RetryConfiguration {
         // Use small backoffs so that any returned `Sleep` futures are cheap; we never await them, but build them.
-        serde_json::from_value(json!({
-            "forwarder_backoff_base": 0.001,
-            "forwarder_backoff_max": 0.01,
-            "forwarder_backoff_factor": 2.0,
-        }))
-        .expect("RetryConfiguration should deserialize")
+        RetryConfiguration::from_model(
+            &Forwarder {
+                backoff_base: 0.001,
+                backoff_max: 0.01,
+                backoff_factor: 2.0,
+                ..Default::default()
+            },
+            Path::new(""),
+        )
+    }
+
+    fn config_with_secrets(backend_command: &str) -> SalukiConfiguration {
+        let mut config = SalukiConfiguration::default();
+        config.shared.secrets.backend_command = backend_command.to_string();
+        config
     }
 
     fn would_retry(policy: &mut DefaultHttpRetryPolicy, mut response: TestResponse) -> bool {
@@ -327,167 +273,122 @@ mod tests {
         Policy::<TestRequest, Response<()>, BoxError>::retry(policy, &mut request, &mut response).is_some()
     }
 
-    #[tokio::test]
-    async fn fix_empty_storage_path_sets_path_from_run_path() {
-        const RUN_PATH: &str = "/my/little/run_path";
-
-        // Create a base configuration with only `run_path` set.
-        let base_config_values = json!({ "run_path": RUN_PATH });
-        let (config, _) = ConfigurationLoader::for_tests(Some(base_config_values), None, false).await;
-
-        // Read our retry configuration, and make sure we start out with the expected empty `storage_path`.
-        let mut retry_config: RetryConfiguration = config.as_typed().expect("should deserialize");
-        assert_eq!(retry_config.storage_path(), PathBuf::new());
-
-        // Try to fix up the empty storage path, and make sure the updated storage path is based on the `run_path` we
-        // set on our base configuration.
-        retry_config.fix_empty_storage_path(&config);
-
-        let expected = PathBuf::from(RUN_PATH).join(RETRY_TXN_DIR);
-        assert_eq!(expected, retry_config.storage_path());
-    }
-
-    #[tokio::test]
-    async fn fix_empty_storage_path_does_nothing_when_path_already_set() {
-        const RUN_PATH: &str = "/my/little/run_path";
-        const FORWARDER_STORAGE_PATH: &str = "/custom/path/to/storage";
-
-        // Create a base configuration with both `run_path` and `forwarder_storage_path` set.
-        let base_config_values = json!({ "run_path": RUN_PATH, "forwarder_storage_path": FORWARDER_STORAGE_PATH });
-        let (config, _) = ConfigurationLoader::for_tests(Some(base_config_values), None, false).await;
-
-        // Read our retry configuration, and make sure we see the storage path that we initially set.
-        let mut retry_config: RetryConfiguration = config.as_typed().expect("should deserialize");
-
-        let initial_storage_path = retry_config.storage_path().to_path_buf();
-        assert_eq!(initial_storage_path, PathBuf::from(FORWARDER_STORAGE_PATH));
-
-        // Try to fix up the storage path, and make sure nothing changes since it's not actually empty.
-        retry_config.fix_empty_storage_path(&config);
-        assert_eq!(initial_storage_path, retry_config.storage_path());
-    }
-
-    #[tokio::test]
-    async fn fix_empty_storage_path_does_nothing_when_run_path_missing() {
-        // Create a base configuration for _no_ values set.
-        let (config, _) = ConfigurationLoader::for_tests(None, None, false).await;
-
-        // Read our retry configuration, and make sure we start out with the expected empty `storage_path`.
-        let mut retry_config: RetryConfiguration = config.as_typed().expect("should deserialize");
-        assert_eq!(retry_config.storage_path(), PathBuf::new());
-
-        // Try to fix up the empty storage path, and make sure the storage path is still empty: when we have no
-        // `run_path` set, we can't actually construct a valid path.
-        retry_config.fix_empty_storage_path(&config);
-
-        assert_eq!(PathBuf::new(), retry_config.storage_path());
-    }
-
-    #[tokio::test]
-    async fn queue_max_size_bytes_fallback_behavior() {
-        const OVERRIDE_FALLBACK_SIZE_BYTES: u64 = 1024;
-        const OVERRIDE_PRIMARY_SIZE_BYTES: u64 = 2048;
-
-        // When neither field is set, returns the default (15 MiB).
-        let (config, _) = ConfigurationLoader::for_tests(None, None, false).await;
-        let retry_config: RetryConfiguration = config.as_typed().expect("should deserialize");
+    #[test]
+    fn from_model_sets_storage_path_from_run_path() {
+        let retry = RetryConfiguration::from_model(&Forwarder::default(), Path::new("/my/little/run_path"));
         assert_eq!(
-            retry_config.queue_max_size_bytes(),
+            retry.storage_path(),
+            PathBuf::from("/my/little/run_path").join(RETRY_TXN_DIR)
+        );
+    }
+
+    #[test]
+    fn from_model_keeps_explicit_storage_path() {
+        let forwarder = Forwarder {
+            storage_path: PathBuf::from("/custom/path/to/storage"),
+            ..Default::default()
+        };
+        let retry = RetryConfiguration::from_model(&forwarder, Path::new("/my/little/run_path"));
+        assert_eq!(retry.storage_path(), PathBuf::from("/custom/path/to/storage"));
+    }
+
+    #[test]
+    fn from_model_leaves_storage_path_empty_when_run_path_missing() {
+        let retry = RetryConfiguration::from_model(&Forwarder::default(), Path::new(""));
+        assert_eq!(retry.storage_path(), PathBuf::new());
+    }
+
+    #[test]
+    fn queue_max_size_bytes_fallback_behavior() {
+        // When neither field is set, returns the default (15 MiB).
+        let retry = RetryConfiguration::from_model(&Forwarder::default(), Path::new(""));
+        assert_eq!(
+            retry.queue_max_size_bytes(),
             FORWARDER_RETRY_QUEUE_PAYLOADS_MAX_SIZE_BYTES
         );
 
         // When only the deprecated field is set, uses it.
-        let values = json!({ "forwarder_retry_queue_max_size": OVERRIDE_FALLBACK_SIZE_BYTES });
-        let (config, _) = ConfigurationLoader::for_tests(Some(values), None, false).await;
-        let retry_config: RetryConfiguration = config.as_typed().expect("should deserialize");
-        assert_eq!(retry_config.queue_max_size_bytes(), OVERRIDE_FALLBACK_SIZE_BYTES);
+        let forwarder = Forwarder {
+            retry_queue_max_size: Some(1024),
+            ..Default::default()
+        };
+        assert_eq!(
+            RetryConfiguration::from_model(&forwarder, Path::new("")).queue_max_size_bytes(),
+            1024
+        );
 
         // When both fields are set, the newer field takes priority.
-        let values = json!({
-            "forwarder_retry_queue_payloads_max_size": OVERRIDE_PRIMARY_SIZE_BYTES,
-            "forwarder_retry_queue_max_size": OVERRIDE_FALLBACK_SIZE_BYTES,
-        });
-        let (config, _) = ConfigurationLoader::for_tests(Some(values), None, false).await;
-        let retry_config: RetryConfiguration = config.as_typed().expect("should deserialize");
-        assert_eq!(retry_config.queue_max_size_bytes(), OVERRIDE_PRIMARY_SIZE_BYTES);
-    }
-
-    #[tokio::test]
-    async fn flush_to_disk_mem_ratio_uses_agent_default() {
-        let (config, _) = ConfigurationLoader::for_tests(None, None, false).await;
-        let retry_config: RetryConfiguration = config.as_typed().expect("should deserialize");
+        let forwarder = Forwarder {
+            retry_queue_payloads_max_size: Some(2048),
+            retry_queue_max_size: Some(1024),
+            ..Default::default()
+        };
         assert_eq!(
-            retry_config.flush_to_disk_mem_ratio(),
-            FORWARDER_FLUSH_TO_DISK_MEM_RATIO
+            RetryConfiguration::from_model(&forwarder, Path::new("")).queue_max_size_bytes(),
+            2048
         );
     }
 
-    #[tokio::test]
-    async fn capacity_time_interval_secs_uses_default_override_and_minimum() {
-        let (config, _) = ConfigurationLoader::for_tests(None, None, false).await;
-        let retry_config: RetryConfiguration = config.as_typed().expect("should deserialize");
+    #[test]
+    fn flush_to_disk_mem_ratio_passthrough() {
+        let forwarder = Forwarder {
+            flush_to_disk_mem_ratio: 0.25,
+            ..Default::default()
+        };
         assert_eq!(
-            retry_config.capacity_time_interval_secs(),
-            RETRY_QUEUE_CAPACITY_DEFAULT_HISTORY_DURATION_SECS
+            RetryConfiguration::from_model(&forwarder, Path::new("")).flush_to_disk_mem_ratio(),
+            0.25
+        );
+    }
+
+    #[test]
+    fn capacity_time_interval_secs_clamps_to_minimum() {
+        let forwarder = Forwarder {
+            retry_queue_capacity_time_interval_sec: 60,
+            ..Default::default()
+        };
+        assert_eq!(
+            RetryConfiguration::from_model(&forwarder, Path::new("")).capacity_time_interval_secs(),
+            60
         );
 
-        let values = json!({ "forwarder_retry_queue_capacity_time_interval_sec": 60 });
-        let (config, _) = ConfigurationLoader::for_tests(Some(values), None, false).await;
-        let retry_config: RetryConfiguration = config.as_typed().expect("should deserialize");
-        assert_eq!(retry_config.capacity_time_interval_secs(), 60);
-
-        let values = json!({ "forwarder_retry_queue_capacity_time_interval_sec": 1 });
-        let (config, _) = ConfigurationLoader::for_tests(Some(values), None, false).await;
-        let retry_config: RetryConfiguration = config.as_typed().expect("should deserialize");
+        let forwarder = Forwarder {
+            retry_queue_capacity_time_interval_sec: 1,
+            ..Default::default()
+        };
         assert_eq!(
-            retry_config.capacity_time_interval_secs(),
+            RetryConfiguration::from_model(&forwarder, Path::new("")).capacity_time_interval_secs(),
             RETRY_QUEUE_CAPACITY_MIN_HISTORY_DURATION_SECS
         );
     }
 
     #[tokio::test]
-    async fn flush_to_disk_mem_ratio_can_be_overridden() {
-        const OVERRIDE_RATIO: f64 = 0.25;
-
-        let values = json!({ "forwarder_flush_to_disk_mem_ratio": OVERRIDE_RATIO });
-        let (config, _) = ConfigurationLoader::for_tests(Some(values), None, false).await;
-        let retry_config: RetryConfiguration = config.as_typed().expect("should deserialize");
-        assert_eq!(retry_config.flush_to_disk_mem_ratio(), OVERRIDE_RATIO);
-    }
-
-    #[tokio::test]
     async fn policy_without_config_does_not_retry_403() {
-        let retry_config = test_retry_config();
-        let mut policy = retry_config.to_default_http_retry_policy(None);
+        let mut policy = test_retry_config().to_default_http_retry_policy(None);
 
         assert!(!would_retry(&mut policy, ok_response(StatusCode::FORBIDDEN)));
     }
 
     #[tokio::test]
     async fn policy_with_config_but_no_secrets_does_not_retry_403() {
-        let (config, _) = ConfigurationLoader::for_tests(None, None, false).await;
-        let retry_config = test_retry_config();
-        let mut policy = retry_config.to_default_http_retry_policy(Some(config));
+        let live = Live::fixed(SalukiConfiguration::default());
+        let mut policy = test_retry_config().to_default_http_retry_policy(Some(live));
 
         assert!(!would_retry(&mut policy, ok_response(StatusCode::FORBIDDEN)));
     }
 
     #[tokio::test]
     async fn policy_with_secrets_retries_403() {
-        let values = json!({ "secret_backend_command": "/bin/true" });
-        let (config, _) = ConfigurationLoader::for_tests(Some(values), None, false).await;
-        let retry_config = test_retry_config();
-        let mut policy = retry_config.to_default_http_retry_policy(Some(config));
+        let live = Live::fixed(config_with_secrets("/bin/true"));
+        let mut policy = test_retry_config().to_default_http_retry_policy(Some(live));
 
         assert!(would_retry(&mut policy, ok_response(StatusCode::FORBIDDEN)));
     }
 
     #[tokio::test]
     async fn policy_secrets_does_not_affect_other_status_codes() {
-        let values = json!({ "secret_backend_command": "/bin/true" });
-        let (config, _) = ConfigurationLoader::for_tests(Some(values), None, false).await;
-        let retry_config = test_retry_config();
-        let mut policy = retry_config.to_default_http_retry_policy(Some(config));
+        let live = Live::fixed(config_with_secrets("/bin/true"));
+        let mut policy = test_retry_config().to_default_http_retry_policy(Some(live));
 
         assert!(!would_retry(&mut policy, ok_response(StatusCode::OK)));
         assert!(!would_retry(&mut policy, ok_response(StatusCode::BAD_REQUEST)));
@@ -499,41 +400,21 @@ mod tests {
 
     #[tokio::test]
     async fn policy_403_gate_reflects_dynamic_secrets_config_change() {
-        use std::time::Duration as StdDuration;
+        // The gate reads the live view on every 403, so storing a new configuration flips it without
+        // rebuilding the policy.
+        let cell = Arc::new(ArcSwap::from_pointee(SalukiConfiguration::default()));
+        let (tx, rx) = watch::channel(());
+        let live = Live::dynamic(Arc::clone(&cell), rx, |c| c);
 
-        use saluki_config::dynamic::ConfigUpdate;
-
-        let (config, sender) = ConfigurationLoader::for_tests(Some(json!({})), None, true).await;
-        let sender = sender.expect("dynamic configuration sender should be present");
-
-        // Apply an empty initial snapshot and wait for readiness.
-        sender
-            .send(ConfigUpdate::Snapshot(json!({})))
-            .await
-            .expect("should send initial snapshot");
-        config.ready().await;
-
-        let retry_config = test_retry_config();
-        let mut policy = retry_config.to_default_http_retry_policy(Some(config.clone()));
+        let mut policy = test_retry_config().to_default_http_retry_policy(Some(live));
 
         // Before secrets are configured, 403 must not be retried.
         assert!(!would_retry(&mut policy, ok_response(StatusCode::FORBIDDEN)));
 
-        // Push a config update that enables secrets management.
-        let mut watcher = config.watch_for_updates("secret_backend_command");
-        sender
-            .send(ConfigUpdate::Partial {
-                key: "secret_backend_command".to_string(),
-                value: json!("/bin/true"),
-            })
-            .await
-            .expect("should send partial update");
+        // Enabling secrets management through the live view flips the gate on.
+        cell.store(Arc::new(config_with_secrets("/bin/true")));
+        tx.send(()).expect("live cell should have a receiver");
 
-        tokio::time::timeout(StdDuration::from_secs(2), watcher.changed::<String>())
-            .await
-            .expect("timed out waiting for secret_backend_command update");
-
-        // The same policy instance must now retry 403 because the predicate reads the live cached secrets flag.
         assert!(would_retry(&mut policy, ok_response(StatusCode::FORBIDDEN)));
     }
 }
