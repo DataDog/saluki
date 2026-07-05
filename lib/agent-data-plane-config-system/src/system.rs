@@ -622,4 +622,59 @@ mod tests {
         // Seeded Saluki-only field.
         assert_eq!(config.domains.dogstatsd.listeners.tcp_port, 8126);
     }
+
+    #[test]
+    fn cluster_agent_connection_values_are_trimmed() {
+        let datadog: DatadogConfiguration = serde_json::from_value(json!({
+            "cluster_agent": {
+                "enabled": true,
+                "url": "  https://cluster-agent.example.com  ",
+                "auth_token": " secret-token ",
+                "kubernetes_service_name": "   ",
+            },
+        }))
+        .expect("datadog source deserializes");
+        let saluki_only = SalukiOnly::default();
+
+        let (config, errors) = translate(&datadog, &saluki_only);
+        assert!(errors.is_none(), "translation of a valid map records no error");
+
+        let cluster_agent = &config.shared.cluster_agent;
+        assert!(cluster_agent.enabled);
+        assert_eq!(cluster_agent.url.as_deref(), Some("https://cluster-agent.example.com"));
+        assert_eq!(cluster_agent.auth_token.as_deref(), Some("secret-token"));
+        assert_eq!(cluster_agent.kubernetes_service_name.as_deref(), Some(""));
+    }
+
+    #[test]
+    fn cluster_agent_empty_kubernetes_service_name_is_preserved() {
+        let datadog: DatadogConfiguration = serde_json::from_value(json!({
+            "cluster_agent": {
+                "kubernetes_service_name": "",
+            },
+        }))
+        .expect("datadog source deserializes");
+        let saluki_only = SalukiOnly::default();
+
+        let (config, errors) = translate(&datadog, &saluki_only);
+        assert!(errors.is_none(), "translation of a valid map records no error");
+
+        assert_eq!(config.shared.cluster_agent.kubernetes_service_name.as_deref(), Some(""));
+    }
+
+    #[test]
+    fn cluster_agent_kubernetes_service_name_defaults_from_schema() {
+        // When the key is absent, the Datadog schema default flows in via `drive`.
+        let datadog = DatadogConfiguration::default();
+        let saluki_only = SalukiOnly::default();
+
+        let (config, errors) = translate(&datadog, &saluki_only);
+        assert!(errors.is_none(), "translation of a valid map records no error");
+
+        assert!(!config.shared.cluster_agent.enabled);
+        assert_eq!(
+            config.shared.cluster_agent.kubernetes_service_name.as_deref(),
+            Some("datadog-cluster-agent")
+        );
+    }
 }
