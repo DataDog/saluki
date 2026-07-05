@@ -2,9 +2,9 @@
 
 use std::collections::HashSet;
 
+use agent_data_plane_config::{domains::multi_region_failover::Domain, Live};
 use async_trait::async_trait;
 use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
-use saluki_config::GenericConfiguration;
 use saluki_core::{
     components::{
         transforms::{Transform, TransformBuilder, TransformContext},
@@ -28,21 +28,18 @@ use crate::config::MrfConfiguration;
 /// - When MRF is enabled with no allowlist, all events are forwarded.
 /// - When MRF is enabled with an allowlist, only matching events are forwarded.
 ///
-/// The transform reads static MRF configuration from a snapshot taken at build time, and watches
-/// `multi_region_failover.failover_metrics` and `multi_region_failover.metric_allowlist` for
-/// dynamic updates.
+/// The transform reads static MRF configuration from a snapshot taken at build time, and watches the
+/// multi-region failover domain for dynamic updates to `failover_metrics` and `metric_allowlist`.
 pub struct MrfMetricsGatewayConfiguration {
     mrf_config: MrfConfiguration,
-    configuration: GenericConfiguration,
+    live: Live<Domain>,
 }
 
 impl MrfMetricsGatewayConfiguration {
-    /// Creates a new `MrfMetricsGatewayConfiguration` from the given [`MrfConfiguration`].
-    pub fn new(mrf_config: MrfConfiguration, configuration: GenericConfiguration) -> Self {
-        Self {
-            mrf_config,
-            configuration,
-        }
+    /// Creates a new `MrfMetricsGatewayConfiguration` from the given [`MrfConfiguration`] and a live
+    /// view of the multi-region failover domain.
+    pub fn new(mrf_config: MrfConfiguration, live: Live<Domain>) -> Self {
+        Self { mrf_config, live }
     }
 }
 
@@ -61,18 +58,14 @@ enum GatewayMode {
 pub struct MrfMetricsGateway {
     mrf_config: MrfConfiguration,
     mode: GatewayMode,
-    configuration: GenericConfiguration,
+    live: Live<Domain>,
 }
 
 impl MrfMetricsGateway {
-    fn new(mrf_config: MrfConfiguration, configuration: GenericConfiguration) -> Self {
+    fn new(mrf_config: MrfConfiguration, live: Live<Domain>) -> Self {
         let mode = Self::mode_for_config(&mrf_config);
 
-        Self {
-            mrf_config,
-            mode,
-            configuration,
-        }
+        Self { mrf_config, mode, live }
     }
 
     fn mode_for_config(mrf_config: &MrfConfiguration) -> GatewayMode {
@@ -87,13 +80,11 @@ impl MrfMetricsGateway {
         }
     }
 
-    fn update_failover_metrics(&mut self, failover_metrics: bool) {
-        self.mrf_config.set_failover_metrics(failover_metrics);
-        self.mode = Self::mode_for_config(&self.mrf_config);
-    }
-
-    fn update_metric_allowlist(&mut self, metric_allowlist: Vec<String>) {
-        self.mrf_config.set_metric_allowlist(metric_allowlist);
+    /// Re-derives the routing mode from the current multi-region failover domain, tracking runtime
+    /// changes to `failover_metrics` and `metric_allowlist`.
+    fn apply_domain(&mut self, domain: &Domain) {
+        self.mrf_config.set_failover_metrics(domain.failover_metrics);
+        self.mrf_config.set_metric_allowlist(domain.metric_allowlist.clone());
         self.mode = Self::mode_for_config(&self.mrf_config);
     }
 
@@ -134,7 +125,7 @@ impl TransformBuilder for MrfMetricsGatewayConfiguration {
     async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Transform + Send>, GenericError> {
         Ok(Box::new(MrfMetricsGateway::new(
             self.mrf_config.clone(),
-            self.configuration.clone(),
+            self.live.clone(),
         )))
     }
 
@@ -173,12 +164,7 @@ impl MemoryBounds for MrfMetricsGatewayConfiguration {
 impl Transform for MrfMetricsGateway {
     async fn run(mut self: Box<Self>, mut context: TransformContext) -> Result<(), GenericError> {
         let mut health = context.take_health_handle();
-        let mut failover_metrics_watcher = self
-            .configuration
-            .watch_for_updates("multi_region_failover.failover_metrics");
-        let mut metric_allowlist_watcher = self
-            .configuration
-            .watch_for_updates("multi_region_failover.metric_allowlist");
+        let mut live = self.live.clone();
 
         health.mark_ready();
         debug!(mode = ?self.mode, "MRF metrics gateway transform started.");
@@ -197,15 +183,10 @@ impl Transform for MrfMetricsGateway {
                         break;
                     }
                 },
-                (_, maybe_failover_metrics) = failover_metrics_watcher.changed::<bool>() => {
-                    if let Some(failover_metrics) = maybe_failover_metrics {
-                        self.update_failover_metrics(failover_metrics);
-                    }
-                },
-                (_, maybe_metric_allowlist) = metric_allowlist_watcher.changed::<Vec<String>>() => {
-                    if let Some(metric_allowlist) = maybe_metric_allowlist {
-                        self.update_metric_allowlist(metric_allowlist);
-                    }
+                _ = live.changed() => {
+                    let domain = live.current();
+                    self.apply_domain(&domain);
+                    debug!(mode = ?self.mode, "Updated MRF metrics gateway routing from live configuration.");
                 },
             }
         }
@@ -217,121 +198,113 @@ impl Transform for MrfMetricsGateway {
 
 #[cfg(test)]
 mod tests {
-    use agent_data_plane_config::domains::multi_region_failover::Domain;
-    use saluki_config::{dynamic::ConfigUpdate, ConfigurationLoader};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use agent_data_plane_config::{domains::multi_region_failover::Domain, Live, SalukiConfiguration};
+    use arc_swap::ArcSwap;
     use saluki_core::data_model::event::{metric::Metric, Event};
-    use serde_json::json;
+    use tokio::sync::watch;
 
     use super::*;
 
-    async fn dynamic_gateway_from_config(
-        value: serde_json::Value, mrf_domain: Domain,
-    ) -> (MrfMetricsGateway, tokio::sync::mpsc::Sender<ConfigUpdate>) {
-        let (config, sender) = ConfigurationLoader::for_tests(Some(value), None, true).await;
-        let sender = sender.expect("dynamic sender should exist");
-        sender
-            .send(ConfigUpdate::Snapshot(json!({})))
-            .await
-            .expect("initial dynamic snapshot should be sent");
-        config.ready().await;
+    /// A [`Live`] view over the multi-region failover domain, backed by a cell the test can flip,
+    /// mirroring how the config system drives runtime updates.
+    fn drivable_live(domain: Domain) -> (Arc<ArcSwap<SalukiConfiguration>>, watch::Sender<()>, Live<Domain>) {
+        let mut config = SalukiConfiguration::default();
+        config.domains.multi_region_failover = domain;
 
-        let mrf_config = MrfConfiguration::from_configuration(&mrf_domain).expect("MRF configuration should build");
-        (MrfMetricsGateway::new(mrf_config, config), sender)
+        let cell = Arc::new(ArcSwap::from_pointee(config));
+        let (tx, rx) = watch::channel(());
+        let live = Live::dynamic(Arc::clone(&cell), rx, |c| &c.domains.multi_region_failover);
+        (cell, tx, live)
+    }
+
+    fn store_domain(cell: &ArcSwap<SalukiConfiguration>, tx: &watch::Sender<()>, domain: Domain) {
+        let mut config = SalukiConfiguration::default();
+        config.domains.multi_region_failover = domain;
+        cell.store(Arc::new(config));
+        tx.send(()).expect("live cell should have a receiver");
+    }
+
+    fn gateway_from(domain: Domain, live: Live<Domain>) -> MrfMetricsGateway {
+        let mrf_config = MrfConfiguration::from_configuration(&domain).expect("MRF configuration should build");
+        MrfMetricsGateway::new(mrf_config, live)
     }
 
     #[tokio::test]
     async fn failover_metrics_dynamic_update_toggles_forwarding() {
-        let (mut gw, sender) = dynamic_gateway_from_config(
-            json!({
-                "multi_region_failover": {
-                    "enabled": true,
-                    "failover_metrics": false,
-                    "api_key": "mrf-api-key",
-                    "dd_url": "https://mrf.example.com"
-                }
-            }),
-            Domain {
-                enabled: true,
-                api_key: Some("mrf-api-key".to_string()),
-                dd_url: Some("https://mrf.example.com".to_string()),
-                ..Default::default()
-            },
-        )
-        .await;
-        let mut watcher = gw
-            .configuration
-            .watch_for_updates("multi_region_failover.failover_metrics");
+        let base = Domain {
+            enabled: true,
+            failover_metrics: false,
+            api_key: Some("mrf-api-key".to_string()),
+            dd_url: Some("https://mrf.example.com".to_string()),
+            ..Default::default()
+        };
+        let (cell, tx, live) = drivable_live(base.clone());
+        let mut gw = gateway_from(base.clone(), live);
 
         assert!(!gw.should_forward(&Event::Metric(Metric::counter("any.metric", 1.0))));
 
-        sender
-            .send(ConfigUpdate::Partial {
-                key: "multi_region_failover.failover_metrics".to_string(),
-                value: json!(true),
-            })
+        store_domain(
+            &cell,
+            &tx,
+            Domain {
+                failover_metrics: true,
+                ..base.clone()
+            },
+        );
+        tokio::time::timeout(Duration::from_secs(2), gw.live.changed())
             .await
-            .expect("dynamic update should be sent");
-        let (_, maybe_failover_metrics) =
-            tokio::time::timeout(std::time::Duration::from_secs(2), watcher.changed::<bool>())
-                .await
-                .expect("failover metrics update should be received");
-        gw.update_failover_metrics(maybe_failover_metrics.expect("update should have a new value"));
+            .expect("live view should observe the enabled update");
+        let domain = gw.live.current();
+        gw.apply_domain(&domain);
         assert!(gw.should_forward(&Event::Metric(Metric::counter("any.metric", 1.0))));
 
-        sender
-            .send(ConfigUpdate::Partial {
-                key: "multi_region_failover.failover_metrics".to_string(),
-                value: json!(false),
-            })
+        store_domain(
+            &cell,
+            &tx,
+            Domain {
+                failover_metrics: false,
+                ..base.clone()
+            },
+        );
+        tokio::time::timeout(Duration::from_secs(2), gw.live.changed())
             .await
-            .expect("dynamic update should be sent");
-        let (_, maybe_failover_metrics) =
-            tokio::time::timeout(std::time::Duration::from_secs(2), watcher.changed::<bool>())
-                .await
-                .expect("failover metrics update should be received");
-        gw.update_failover_metrics(maybe_failover_metrics.expect("update should have a new value"));
+            .expect("live view should observe the disabled update");
+        let domain = gw.live.current();
+        gw.apply_domain(&domain);
         assert!(!gw.should_forward(&Event::Metric(Metric::counter("any.metric", 1.0))));
     }
 
     #[tokio::test]
     async fn metric_allowlist_dynamic_update_changes_filtering() {
-        let (mut gw, sender) = dynamic_gateway_from_config(
-            json!({
-                "multi_region_failover": {
-                    "enabled": true,
-                    "failover_metrics": true,
-                    "api_key": "mrf-api-key",
-                    "dd_url": "https://mrf.example.com"
-                }
-            }),
-            Domain {
-                enabled: true,
-                failover_metrics: true,
-                api_key: Some("mrf-api-key".to_string()),
-                dd_url: Some("https://mrf.example.com".to_string()),
-                ..Default::default()
-            },
-        )
-        .await;
-        let mut watcher = gw
-            .configuration
-            .watch_for_updates("multi_region_failover.metric_allowlist");
+        let base = Domain {
+            enabled: true,
+            failover_metrics: true,
+            api_key: Some("mrf-api-key".to_string()),
+            dd_url: Some("https://mrf.example.com".to_string()),
+            ..Default::default()
+        };
+        let (cell, tx, live) = drivable_live(base.clone());
+        let mut gw = gateway_from(base.clone(), live);
 
         assert!(gw.should_forward(&Event::Metric(Metric::counter("allowed.metric", 1.0))));
         assert!(gw.should_forward(&Event::Metric(Metric::counter("also.allowed", 1.0))));
 
-        sender
-            .send(ConfigUpdate::Partial {
-                key: "multi_region_failover.metric_allowlist".to_string(),
-                value: json!(["also.allowed"]),
-            })
+        store_domain(
+            &cell,
+            &tx,
+            Domain {
+                metric_allowlist: vec!["also.allowed".to_string()],
+                ..base.clone()
+            },
+        );
+        tokio::time::timeout(Duration::from_secs(2), gw.live.changed())
             .await
-            .expect("dynamic update should be sent");
-        let (_, maybe_metric_allowlist) =
-            tokio::time::timeout(std::time::Duration::from_secs(2), watcher.changed::<Vec<String>>())
-                .await
-                .expect("metric allowlist update should be received");
-        gw.update_metric_allowlist(maybe_metric_allowlist.expect("update should have a new value"));
+            .expect("live view should observe the allowlist update");
+        let domain = gw.live.current();
+        gw.apply_domain(&domain);
 
         assert!(!gw.should_forward(&Event::Metric(Metric::counter("allowed.metric", 1.0))));
         assert!(gw.should_forward(&Event::Metric(Metric::counter("also.allowed", 1.0))));

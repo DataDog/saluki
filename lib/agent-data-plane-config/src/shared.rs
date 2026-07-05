@@ -282,8 +282,13 @@ pub struct MetricsEncoding {
 impl Default for MetricsEncoding {
     fn default() -> Self {
         Self {
+            // Saluki-schema-only knobs: the Datadog Agent schema does not publish these, so they are
+            // seeded only when set; absent that, these defaults stand and must match what the
+            // metrics encoder expects.
             flush_timeout: default_encoder_flush_timeout(),
-            max_metrics_per_payload: 0,
+            max_metrics_per_payload: 10_000,
+            // Datadog-schema knobs: always written by the witness driver, so these values are
+            // placeholders that never survive translation.
             max_payload_size: 0,
             max_series_payload_size: 0,
             max_series_points_per_payload: 0,
