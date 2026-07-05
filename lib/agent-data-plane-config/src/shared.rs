@@ -30,10 +30,6 @@ pub struct SharedConfiguration {
     /// Runtime directory for on-disk state, used to derive the forwarder's retry-queue storage path
     /// when no explicit path is configured.
     pub run_path: PathBuf,
-
-    /// Verbosity of the internal telemetry emitted about the runtime itself. (not in Datadog Agent
-    /// config schema)
-    pub metrics_level: String,
 }
 
 /// Secrets-management settings that gate forwarder API-key refresh behavior.

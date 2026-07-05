@@ -102,8 +102,6 @@ use serde::Deserialize;
 #[serde(default)]
 pub struct SalukiOnly {
     // ── top-level scalar keys ────────────────────────────────────────────────
-    /// Internal-telemetry verbosity (`metrics_level`).
-    pub metrics_level: Option<String>,
     /// Remote-agent IPC string interner byte budget (`remote_agent_string_interner_size_bytes`).
     pub remote_agent_string_interner_size_bytes: Option<usize>,
     /// Checks IPC endpoint (`checks_ipc_endpoint`).
@@ -460,9 +458,6 @@ impl SalukiOnly {
         }
 
         // shared
-        if let Some(v) = self.metrics_level.clone() {
-            config.shared.metrics_level = v;
-        }
         config.shared.metrics_encoding.flush_timeout = Duration::from_secs(self.flush_timeout_secs);
         if let Some(v) = self.serializer_max_metrics_per_payload {
             config.shared.metrics_encoding.max_metrics_per_payload = v;
@@ -587,7 +582,6 @@ mod tests {
     fn every_saluki_only_key_transports_to_the_model() {
         let map = json!({
             // top-level scalars
-            "metrics_level": "debug",
             "remote_agent_string_interner_size_bytes": 4096,
             "checks_ipc_endpoint": "localhost:5006",
             "memory_limit": "512MB",
@@ -665,7 +659,6 @@ mod tests {
         assert_eq!(config.control.ipc.remote_agent_string_interner_size_bytes, 4096);
 
         // shared
-        assert_eq!(config.shared.metrics_level, "debug");
         assert_eq!(config.shared.metrics_encoding.flush_timeout, Duration::from_secs(7));
         assert_eq!(config.shared.metrics_encoding.max_metrics_per_payload, 999);
         assert!(config.shared.metrics_encoding.v3_series_enabled);
