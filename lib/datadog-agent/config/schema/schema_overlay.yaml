@@ -1982,6 +1982,8 @@ inventory:
     support: full
     pipelines: [otlp]
     description: "otlp_config.logs.enabled"
+    documentation: "ADP enables OTLP logs by default (true) where the Agent schema defaults to false; the native OTLP source has always accepted logs unless explicitly disabled. Generated as an absence-aware Option so an explicit `false` still wins."
+    saluki_overrides_default: true
     test_support:
       used_by: [OtlpConfiguration]
       test_json: "false"
@@ -2001,6 +2003,8 @@ inventory:
     support: full
     pipelines: [otlp]
     description: "otlp_config.receiver.protocols.grpc.endpoint"
+    documentation: "ADP binds the OTLP/gRPC receiver on 0.0.0.0:4317 by default where the Agent schema defaults to localhost:4317; ADP runs as a sidecar and must accept remote OTLP clients. Generated as an absence-aware Option so an explicit endpoint still wins."
+    saluki_overrides_default: true
     test_support:
       used_by: [OtlpRelayConfiguration, OtlpConfiguration]
       additional_attributes:
@@ -2029,6 +2033,8 @@ inventory:
     support: full
     pipelines: [otlp]
     description: "otlp_config.receiver.protocols.http.endpoint"
+    documentation: "ADP binds the OTLP/HTTP receiver on 0.0.0.0:4318 by default where the Agent schema defaults to localhost:4318; ADP runs as a sidecar and must accept remote OTLP clients. Generated as an absence-aware Option so an explicit endpoint still wins."
+    saluki_overrides_default: true
     test_support:
       used_by: [OtlpRelayConfiguration, OtlpConfiguration]
       additional_attributes:

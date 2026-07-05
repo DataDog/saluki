@@ -549,6 +549,82 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn empty_config_preserves_otlp_receiver_effective_defaults() {
+        // Regression (PR #1989): the OTLP receiver keys are witnessed against the vendored Datadog
+        // schema, whose defaults (localhost:4317/4318, logs disabled) diverge from ADP's historical
+        // effective defaults. With the keys flagged `saluki_overrides_default`, an empty raw config
+        // must resolve to ADP's defaults, not the Agent's.
+        let (raw_map, _) = ConfigurationLoader::for_tests(Some(json!({})), None, false).await;
+
+        let system = ConfigurationSystem::load(raw_map, EnvOverlayMode::Fallback).expect("system builds");
+        let receiver = &system.config().domains.otlp.receiver;
+
+        assert!(receiver.logs_enabled, "OTLP logs default to enabled");
+        assert_eq!(receiver.grpc.endpoint, "0.0.0.0:4317");
+        assert_eq!(receiver.http.endpoint, "0.0.0.0:4318");
+    }
+
+    #[tokio::test]
+    async fn explicit_otlp_logs_enabled_false_is_preserved() {
+        // An explicit `false` must still win over the ADP default: the flagged key is generated as
+        // an absence-aware Option, so a present value round-trips.
+        let (raw_map, _) = ConfigurationLoader::for_tests(
+            Some(json!({ "otlp_config": { "logs": { "enabled": false } } })),
+            None,
+            false,
+        )
+        .await;
+
+        let system = ConfigurationSystem::load(raw_map, EnvOverlayMode::Fallback).expect("system builds");
+
+        assert!(!system.config().domains.otlp.receiver.logs_enabled);
+    }
+
+    #[tokio::test]
+    async fn explicit_otlp_receiver_endpoints_pass_through() {
+        // Explicit endpoints must pass through unchanged for both native and proxy modes (both read
+        // these same model fields).
+        let (raw_map, _) = ConfigurationLoader::for_tests(
+            Some(json!({
+                "otlp_config": {
+                    "receiver": {
+                        "protocols": {
+                            "grpc": { "endpoint": "10.0.0.1:5317" },
+                            "http": { "endpoint": "10.0.0.1:5318" },
+                        }
+                    }
+                }
+            })),
+            None,
+            false,
+        )
+        .await;
+
+        let system = ConfigurationSystem::load(raw_map, EnvOverlayMode::Fallback).expect("system builds");
+        let receiver = &system.config().domains.otlp.receiver;
+
+        assert_eq!(receiver.grpc.endpoint, "10.0.0.1:5317");
+        assert_eq!(receiver.http.endpoint, "10.0.0.1:5318");
+    }
+
+    #[tokio::test]
+    async fn otlp_logs_enabled_env_var_is_honored() {
+        // The environment-variable form (DD_OTLP_CONFIG_LOGS_ENABLED, here under the TEST_ prefix)
+        // must still reach the flagged key and win over the ADP default.
+        let (raw_map, _) = ConfigurationLoader::for_tests(
+            None,
+            Some(&[("OTLP_CONFIG_LOGS_ENABLED".to_string(), "false".to_string())]),
+            false,
+        )
+        .await;
+        raw_map.ready().await;
+
+        let system = ConfigurationSystem::load(raw_map, EnvOverlayMode::Fallback).expect("system builds");
+
+        assert!(!system.config().domains.otlp.receiver.logs_enabled);
+    }
+
     #[test]
     fn translate_small_map_through_witness_and_seed() {
         // A small raw Datadog source map exercising a scalar conversion, an enum parse, a

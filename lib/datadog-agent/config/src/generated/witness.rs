@@ -158,12 +158,12 @@ pub trait DatadogConfigWitness {
     fn consume_observability_pipelines_worker_metrics_url(&mut self, value: String);
     fn consume_observability_pipelines_worker_metrics_use_v3_api_series(&mut self, value: bool);
     fn consume_origin_detection_unified(&mut self, value: bool);
-    fn consume_otlp_config_logs_enabled(&mut self, value: bool);
+    fn consume_otlp_config_logs_enabled(&mut self, value: Option<bool>);
     fn consume_otlp_config_metrics_enabled(&mut self, value: bool);
-    fn consume_otlp_config_receiver_protocols_grpc_endpoint(&mut self, value: String);
+    fn consume_otlp_config_receiver_protocols_grpc_endpoint(&mut self, value: Option<String>);
     fn consume_otlp_config_receiver_protocols_grpc_max_recv_msg_size_mib(&mut self, value: i64);
     fn consume_otlp_config_receiver_protocols_grpc_transport(&mut self, value: String);
-    fn consume_otlp_config_receiver_protocols_http_endpoint(&mut self, value: String);
+    fn consume_otlp_config_receiver_protocols_http_endpoint(&mut self, value: Option<String>);
     fn consume_otlp_config_traces_enabled(&mut self, value: bool);
     fn consume_otlp_config_traces_internal_port(&mut self, value: i64);
     fn consume_otlp_config_traces_probabilistic_sampler_sampling_percentage(&mut self, value: f64);

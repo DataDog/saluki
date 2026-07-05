@@ -8,6 +8,32 @@ pub fn default_otlp_http_receiver_transport() -> String {
     "tcp".to_owned()
 }
 
+/// Default endpoint for the OTLP/gRPC receiver. ADP binds all interfaces so remote OTLP clients can
+/// connect, diverging from the Datadog Agent schema default of `localhost:4317`. The key
+/// (`otlp_config.receiver.protocols.grpc.endpoint`) is witnessed and flagged
+/// `saluki_overrides_default` in the overlay, so the translator applies this default only when the
+/// key is absent.
+pub fn default_otlp_grpc_receiver_endpoint() -> String {
+    "0.0.0.0:4317".to_owned()
+}
+
+/// Default endpoint for the OTLP/HTTP receiver. ADP binds all interfaces so remote OTLP clients can
+/// connect, diverging from the Datadog Agent schema default of `localhost:4318`. The key
+/// (`otlp_config.receiver.protocols.http.endpoint`) is witnessed and flagged
+/// `saluki_overrides_default` in the overlay, so the translator applies this default only when the
+/// key is absent.
+pub fn default_otlp_http_receiver_endpoint() -> String {
+    "0.0.0.0:4318".to_owned()
+}
+
+/// Default for whether the OTLP receiver accepts logs. ADP accepts OTLP logs by default, diverging
+/// from the Datadog Agent schema default of `false`. The key (`otlp_config.logs.enabled`) is
+/// witnessed and flagged `saluki_overrides_default` in the overlay, so the translator applies this
+/// default only when the key is absent.
+pub const fn default_otlp_receiver_logs_enabled() -> bool {
+    true
+}
+
 /// Default byte budget for the OTLP metric context string interner (2 MiB). (not in the Datadog
 /// Agent config schema)
 pub const fn default_otlp_context_string_interner_size() -> u64 {
@@ -44,7 +70,7 @@ pub struct Domain {
 }
 
 /// OTLP receiver transports and per-signal activation.
-#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Receiver {
     /// Whether the receiver accepts OTLP logs.
     pub logs_enabled: bool,
@@ -59,8 +85,24 @@ pub struct Receiver {
     pub http: HttpReceiver,
 }
 
+impl Default for Receiver {
+    fn default() -> Self {
+        Self {
+            // Witnessed key flagged `saluki_overrides_default`: the driver overwrites this only when
+            // `otlp_config.logs.enabled` is set, so this default is the effective value for an unset
+            // key.
+            logs_enabled: default_otlp_receiver_logs_enabled(),
+            // Witnessed key: always overwritten by the driver (schema default `true`), so this is a
+            // placeholder.
+            metrics_enabled: bool::default(),
+            grpc: GrpcReceiver::default(),
+            http: HttpReceiver::default(),
+        }
+    }
+}
+
 /// OTLP gRPC receiver.
-#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct GrpcReceiver {
     /// Address the gRPC receiver listens on.
     pub endpoint: String,
@@ -70,6 +112,19 @@ pub struct GrpcReceiver {
 
     /// Transport the gRPC receiver binds (for example, `tcp` or `unix`).
     pub transport: String,
+}
+
+impl Default for GrpcReceiver {
+    fn default() -> Self {
+        Self {
+            // Witnessed key flagged `saluki_overrides_default`: the driver overwrites this only when
+            // the endpoint is set, so this default is the effective value for an unset key.
+            endpoint: default_otlp_grpc_receiver_endpoint(),
+            // Witnessed keys: always overwritten by the driver, so these are placeholders.
+            max_recv_msg_size_mib: u64::default(),
+            transport: String::default(),
+        }
+    }
 }
 
 /// OTLP HTTP receiver.
@@ -86,8 +141,9 @@ pub struct HttpReceiver {
 impl Default for HttpReceiver {
     fn default() -> Self {
         Self {
-            // Witnessed key: overwritten by the Datadog driver, so this is a placeholder.
-            endpoint: String::default(),
+            // Witnessed key flagged `saluki_overrides_default`: the driver overwrites this only when
+            // the endpoint is set, so this default is the effective value for an unset key.
+            endpoint: default_otlp_http_receiver_endpoint(),
             // Saluki-schema-only key: seeded, so this default must match what the OTLP components
             // expect when the key is absent.
             transport: default_otlp_http_receiver_transport(),

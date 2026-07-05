@@ -59,6 +59,14 @@ pub struct FullSupport {
     /// GitHub issue tracking number.
     #[serde(default)]
     pub issue: Option<String>,
+    /// When true, the generated Datadog deserializer renders this witnessed key as an absence-aware
+    /// `Option<T>` instead of baking in the schema `default`. ADP then supplies the effective
+    /// default from the typed model's `Default`, so an unset key falls back to ADP's chosen value
+    /// while any operator-set value (including one equal to the Agent default) round-trips
+    /// unchanged. Use this only when ADP intentionally diverges from the Agent's schema default for
+    /// a key it fully owns.
+    #[serde(default)]
+    pub saluki_overrides_default: bool,
     /// Fields to support the `config_registry` and configuration smoke tests.
     pub test_support: TestSupport,
 }
@@ -79,6 +87,9 @@ pub struct PartialSupport {
     /// GitHub issue tracking number.
     #[serde(default)]
     pub issue: Option<String>,
+    /// See [`FullSupport::saluki_overrides_default`].
+    #[serde(default)]
+    pub saluki_overrides_default: bool,
     /// Fields to support the `config_registry` and configuration smoke tests.
     pub test_support: TestSupport,
 }
