@@ -430,7 +430,7 @@ async fn create_topology(
     }
 
     if dp_config.traces_pipeline_required() {
-        add_baseline_traces_pipeline_to_blueprint(&mut blueprint, config, config_system, env_provider).await?;
+        add_baseline_traces_pipeline_to_blueprint(&mut blueprint, config_system, env_provider).await?;
     }
 
     // Now we move on to our actual data pipelines.
@@ -650,8 +650,7 @@ async fn add_baseline_service_checks_pipeline_to_blueprint(
 }
 
 async fn add_baseline_traces_pipeline_to_blueprint(
-    blueprint: &mut TopologyBlueprint, config: &GenericConfiguration, config_system: &ConfigurationSystem,
-    env_provider: &ADPEnvironmentProvider,
+    blueprint: &mut TopologyBlueprint, config_system: &ConfigurationSystem, env_provider: &ADPEnvironmentProvider,
 ) -> Result<(), GenericError> {
     let saluki = config_system.config();
     let dd_traces_config = DatadogTraceConfiguration::from_configuration(
@@ -667,7 +666,7 @@ async fn add_baseline_traces_pipeline_to_blueprint(
         .error_context("Failed to configure Trace Sampler transform.")?;
     let ottl_filter_config = OttlFilterConfiguration::from_configuration(&saluki.domains.traces.ottl_filter)
         .error_context("Failed to configure OTTL filter processor.")?;
-    let ottl_transform_config = OttlTransformConfiguration::from_configuration(config)
+    let ottl_transform_config = OttlTransformConfiguration::from_configuration(&saluki.domains.traces.ottl_transform)
         .error_context("Failed to configure OTTL transform processor.")?;
     let dd_traces_enrich_config = ChainedConfiguration::default()
         .with_transform_builder("ottl_filter", ottl_filter_config)
