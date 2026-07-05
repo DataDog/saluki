@@ -42,11 +42,15 @@ pub(crate) struct DatadogTranslator<'a> {
 }
 
 impl<'a> DatadogTranslator<'a> {
-    /// Creates a translator that will read from `datadog`.
-    pub(crate) fn new(datadog: &'a DatadogConfiguration) -> Self {
+    /// Creates a translator that overlays `datadog` onto `base`.
+    ///
+    /// `base` is the lowest-precedence starting point (defaults plus any Saluki-only seed); the
+    /// Datadog drive overlays its schema fields on top and is authoritative for every field it
+    /// owns.
+    pub(crate) fn new(datadog: &'a DatadogConfiguration, base: SalukiConfiguration) -> Self {
         Self {
             datadog,
-            config: SalukiConfiguration::default(),
+            config: base,
             errors: Vec::new(),
         }
     }
@@ -499,7 +503,7 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_dogstatsd_flush_incomplete_buckets(&mut self, value: bool) {
-        self.config.domains.dogstatsd.aggregation.flush_incomplete_buckets = value;
+        self.config.domains.dogstatsd.aggregation.flush_open_windows = value;
     }
 
     fn consume_dogstatsd_log_file(&mut self, value: String) {
@@ -1127,6 +1131,7 @@ mod tests {
         dogstatsd::OriginTagCardinality,
         otlp::{CumulativeMonotonicMode, InitialCumulativeMonotonicValue},
     };
+    use agent_data_plane_config::SalukiConfiguration;
     use datadog_agent_config::DatadogConfiguration;
     use serde_json::json;
 
@@ -1153,8 +1158,10 @@ mod tests {
         }))
         .expect("saluki-only source deserializes");
 
-        let (mut config, errors) = DatadogTranslator::new(&datadog).translate();
-        saluki_only.seed(&mut config);
+        // Seed builds the base; the Datadog drive overlays and is authoritative.
+        let mut base = SalukiConfiguration::default();
+        saluki_only.seed(&mut base);
+        let (config, errors) = DatadogTranslator::new(&datadog, base).translate();
         assert!(errors.is_none());
 
         // Driven scalar conversion: i64 -> u16.
@@ -1188,7 +1195,7 @@ mod tests {
             "dd_url": "https://app.datadoghq.com",
         }))
         .expect("datadog source deserializes");
-        let (config, errors) = DatadogTranslator::new(&defaulted).translate();
+        let (config, errors) = DatadogTranslator::new(&defaulted, SalukiConfiguration::default()).translate();
         assert!(errors.is_none());
         assert_eq!(config.shared.endpoints.dd_url, None);
         assert_eq!(config.shared.endpoints.site.as_deref(), Some("datadoghq.eu"));
@@ -1198,7 +1205,7 @@ mod tests {
             "dd_url": "https://proxy.internal.example.com:3128",
         }))
         .expect("datadog source deserializes");
-        let (config, errors) = DatadogTranslator::new(&overridden).translate();
+        let (config, errors) = DatadogTranslator::new(&overridden, SalukiConfiguration::default()).translate();
         assert!(errors.is_none());
         assert_eq!(
             config.shared.endpoints.dd_url.as_deref(),
@@ -1214,7 +1221,7 @@ mod tests {
 
         // Neither key set: both arrive at their schema defaults and must be dropped to `None`.
         let defaulted: DatadogConfiguration = serde_json::from_value(json!({})).expect("datadog source deserializes");
-        let (config, errors) = DatadogTranslator::new(&defaulted).translate();
+        let (config, errors) = DatadogTranslator::new(&defaulted, SalukiConfiguration::default()).translate();
         assert!(errors.is_none());
         assert_eq!(config.shared.endpoints.forwarder.retry_queue_payloads_max_size, None);
         assert_eq!(config.shared.endpoints.forwarder.retry_queue_max_size, None);
@@ -1225,7 +1232,7 @@ mod tests {
             "forwarder_retry_queue_max_size": 42,
         }))
         .expect("datadog source deserializes");
-        let (config, errors) = DatadogTranslator::new(&deprecated_only).translate();
+        let (config, errors) = DatadogTranslator::new(&deprecated_only, SalukiConfiguration::default()).translate();
         assert!(errors.is_none());
         assert_eq!(config.shared.endpoints.forwarder.retry_queue_max_size, Some(42));
         assert_eq!(config.shared.endpoints.forwarder.retry_queue_payloads_max_size, None);
@@ -1235,7 +1242,7 @@ mod tests {
             "forwarder_retry_queue_payloads_max_size": 1024,
         }))
         .expect("datadog source deserializes");
-        let (config, errors) = DatadogTranslator::new(&payloads_only).translate();
+        let (config, errors) = DatadogTranslator::new(&payloads_only, SalukiConfiguration::default()).translate();
         assert!(errors.is_none());
         assert_eq!(
             config.shared.endpoints.forwarder.retry_queue_payloads_max_size,
@@ -1261,7 +1268,7 @@ mod tests {
         }))
         .expect("datadog source deserializes");
 
-        let (config, errors) = DatadogTranslator::new(&datadog).translate();
+        let (config, errors) = DatadogTranslator::new(&datadog, SalukiConfiguration::default()).translate();
 
         let entries = &config.domains.dogstatsd.tag_filterlist;
         assert_eq!(entries.len(), 3, "a bad action must not drop the other entries");
@@ -1291,7 +1298,7 @@ mod tests {
         }))
         .expect("datadog source deserializes");
 
-        let (config, errors) = DatadogTranslator::new(&datadog).translate();
+        let (config, errors) = DatadogTranslator::new(&datadog, SalukiConfiguration::default()).translate();
 
         assert!(errors.is_none());
         assert_eq!(
@@ -1313,7 +1320,7 @@ mod tests {
         }))
         .expect("datadog source deserializes");
 
-        let (config, errors) = DatadogTranslator::new(&datadog).translate();
+        let (config, errors) = DatadogTranslator::new(&datadog, SalukiConfiguration::default()).translate();
 
         assert_eq!(
             config.domains.otlp.metrics.sums.cumulative_monotonic_mode,
@@ -1346,7 +1353,7 @@ mod tests {
             }))
             .expect("datadog source deserializes");
 
-            let (config, errors) = DatadogTranslator::new(&datadog).translate();
+            let (config, errors) = DatadogTranslator::new(&datadog, SalukiConfiguration::default()).translate();
 
             assert!(errors.is_none());
             assert_eq!(
@@ -1369,7 +1376,7 @@ mod tests {
         }))
         .expect("datadog source deserializes");
 
-        let (config, errors) = DatadogTranslator::new(&datadog).translate();
+        let (config, errors) = DatadogTranslator::new(&datadog, SalukiConfiguration::default()).translate();
 
         assert_eq!(
             config.domains.otlp.metrics.sums.initial_cumulative_monotonic_value,

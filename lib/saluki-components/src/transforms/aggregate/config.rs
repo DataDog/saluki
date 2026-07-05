@@ -1,5 +1,6 @@
+use agent_data_plane_config::shared::HistogramEncoding;
 use saluki_core::data_model::event::metric::HistogramSummary;
-use serde::Deserialize;
+use saluki_error::{generic_error, GenericError};
 use stringtheory::MetaString;
 
 /// A histogram statistic to calculate.
@@ -73,57 +74,8 @@ impl HistogramStatistic {
     }
 }
 
-#[derive(Deserialize)]
-#[serde(default)]
-struct RawHistogramConfiguration {
-    /// Aggregates to calculate over histograms.
-    ///
-    /// Available aggregates: `count`, `sum`, `min`, `max`, `average`, and `median`
-    ///
-    /// The metric name generated for each aggregate will be in the form of `<original metric name>.<aggregate>`.
-    histogram_aggregates: Vec<String>,
-
-    /// Percentiles to calculate over histograms.
-    ///
-    /// Percentiles are expressed in quantile form: 95% becomes 0.95, and so on. Any floating-point number between
-    /// 0.0 and 1.0 (inclusive) is allowed, but values that extend beyond two decimal places are rounded to the nearest
-    /// whole percentile to match the Datadog Agent.
-    ///
-    /// The metric name generated for each percentile will be in the form of `<original metric
-    /// name>.<stripped_q>percentile`, where `stripped_q` represents the quantile multiplied by 100. For example, a
-    /// percentile of 0.95 would be represented as `95percentile`, while a percentile of 0.05 would be represented as
-    /// `5percentile`.
-    histogram_percentiles: Vec<String>,
-
-    /// Whether to copy histograms to distributions.
-    ///
-    /// Emits a copy of each histogram as a distribution, potentially with
-    /// a prefixed version of the histogram's name, based on the value of
-    /// `copy_histogram_to_distribution_prefix`.
-    ///
-    /// Defaults to `false`.
-    histogram_copy_to_distribution: bool,
-
-    /// Prefix to append to the name of distributions copied from histograms.
-    ///
-    /// Defaults to an empty string (no prefixing).
-    histogram_copy_to_distribution_prefix: String,
-}
-
-impl Default for RawHistogramConfiguration {
-    fn default() -> Self {
-        Self {
-            histogram_aggregates: vec!["max".into(), "median".into(), "avg".into(), "count".into()],
-            histogram_percentiles: vec!["0.95".into()],
-            histogram_copy_to_distribution: false,
-            histogram_copy_to_distribution_prefix: "".into(),
-        }
-    }
-}
-
-#[derive(Clone, Deserialize)]
+#[derive(Clone)]
 #[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
-#[serde(try_from = "RawHistogramConfiguration")]
 pub struct HistogramConfiguration {
     statistics: Vec<HistogramStatistic>,
     copy_to_distribution: bool,
@@ -156,34 +108,15 @@ impl HistogramConfiguration {
     pub fn copy_to_distribution_prefix(&self) -> &str {
         &self.copy_to_distribution_prefix
     }
-}
 
-impl Default for HistogramConfiguration {
-    fn default() -> Self {
-        Self {
-            statistics: vec![
-                HistogramStatistic::Maximum,
-                HistogramStatistic::Median,
-                HistogramStatistic::Average,
-                HistogramStatistic::Count,
-                HistogramStatistic::Percentile {
-                    q: 0.95,
-                    suffix: "95percentile".into(),
-                },
-            ],
-            copy_to_distribution: false,
-            copy_to_distribution_prefix: "".into(),
-        }
-    }
-}
-
-impl TryFrom<RawHistogramConfiguration> for HistogramConfiguration {
-    type Error = String;
-
-    fn try_from(raw: RawHistogramConfiguration) -> Result<Self, Self::Error> {
+    /// Builds a histogram configuration from the shared histogram encoding settings.
+    ///
+    /// Unknown aggregates or out-of-range percentiles are rejected. Percentiles that extend beyond
+    /// two decimal places are rounded to the nearest whole percentile to match the Datadog Agent.
+    pub fn from_encoding(encoding: &HistogramEncoding) -> Result<Self, GenericError> {
         let mut statistics = Vec::new();
 
-        for aggregate in raw.histogram_aggregates {
+        for aggregate in &encoding.aggregates {
             match aggregate.as_str() {
                 "count" => statistics.push(HistogramStatistic::Count),
                 "sum" => statistics.push(HistogramStatistic::Sum),
@@ -191,16 +124,16 @@ impl TryFrom<RawHistogramConfiguration> for HistogramConfiguration {
                 "max" => statistics.push(HistogramStatistic::Maximum),
                 "avg" => statistics.push(HistogramStatistic::Average),
                 "median" => statistics.push(HistogramStatistic::Median),
-                _ => return Err(format!("Unknown histogram aggregate: {}", aggregate)),
+                _ => return Err(generic_error!("Unknown histogram aggregate: {}", aggregate)),
             }
         }
 
-        for faux_percentile in raw.histogram_percentiles {
+        for faux_percentile in &encoding.percentiles {
             let quantile = faux_percentile
                 .parse::<f64>()
-                .map_err(|_| format!("Invalid percentile: {}", faux_percentile))?;
+                .map_err(|_| generic_error!("Invalid percentile: {}", faux_percentile))?;
             if !(0.0..=1.0).contains(&quantile) {
-                return Err(format!("Percentile out of range: {}", faux_percentile));
+                return Err(generic_error!("Percentile out of range: {}", faux_percentile));
             }
 
             let percentile = (quantile * 100.0 + 0.5) as u32;
@@ -211,8 +144,8 @@ impl TryFrom<RawHistogramConfiguration> for HistogramConfiguration {
 
         Ok(Self {
             statistics,
-            copy_to_distribution: raw.histogram_copy_to_distribution,
-            copy_to_distribution_prefix: raw.histogram_copy_to_distribution_prefix,
+            copy_to_distribution: encoding.copy_to_distribution,
+            copy_to_distribution_prefix: encoding.copy_to_distribution_prefix.clone(),
         })
     }
 }
@@ -223,14 +156,14 @@ mod tests {
 
     #[test]
     fn percentile_suffixes_match_agent_rounding() {
-        let raw = RawHistogramConfiguration {
-            histogram_aggregates: Vec::new(),
-            histogram_percentiles: vec!["0.299".to_string(), "0.73".to_string()],
-            histogram_copy_to_distribution: false,
-            histogram_copy_to_distribution_prefix: String::new(),
+        let encoding = HistogramEncoding {
+            aggregates: Vec::new(),
+            percentiles: vec!["0.299".to_string(), "0.73".to_string()],
+            copy_to_distribution: false,
+            copy_to_distribution_prefix: String::new(),
         };
 
-        let config = HistogramConfiguration::try_from(raw).unwrap();
+        let config = HistogramConfiguration::from_encoding(&encoding).unwrap();
 
         assert_eq!(
             config.statistics(),
