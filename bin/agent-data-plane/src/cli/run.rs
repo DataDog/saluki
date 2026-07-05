@@ -491,7 +491,8 @@ async fn add_baseline_metrics_pipeline_to_blueprint(
         .connect_components_in_order(["metrics_enrich", "dd_metrics_encode", "dd_out"])?;
 
     add_mrf_metrics_pipeline_to_blueprint(blueprint, config, config_system)?;
-    add_autoscaling_failover_metrics_pipeline_to_blueprint(blueprint, config)?;
+    let saluki = config_system.config();
+    add_autoscaling_failover_metrics_pipeline_to_blueprint(blueprint, config, &saluki.shared.autoscaling_failover)?;
 
     Ok(())
 }
@@ -546,8 +547,9 @@ fn add_mrf_metrics_pipeline_to_blueprint(
 
 fn add_autoscaling_failover_metrics_pipeline_to_blueprint(
     blueprint: &mut TopologyBlueprint, config: &GenericConfiguration,
+    autoscaling_failover: &agent_data_plane_config::shared::AutoscalingFailover,
 ) -> Result<(), GenericError> {
-    let af_config = AutoscalingFailoverConfiguration::from_configuration(config)
+    let af_config = AutoscalingFailoverConfiguration::from_configuration(autoscaling_failover)
         .error_context("Failed to configure autoscaling failover metrics pipeline.")?;
     let ca_config = ClusterAgentConfiguration::from_configuration(config)
         .error_context("Failed to configure Cluster Agent metrics forwarding.")?;
