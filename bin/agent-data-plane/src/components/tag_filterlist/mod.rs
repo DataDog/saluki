@@ -10,12 +10,15 @@ mod telemetry;
 
 use std::{num::NonZeroUsize, time::Duration};
 
+use agent_data_plane_config::{
+    domains::dogstatsd::{FilterAction, MetricTagFilterEntry},
+    Live,
+};
 use async_trait::async_trait;
 use foldhash::fast::RandomState as FoldHashState;
 use hashbrown::{HashMap, HashSet};
 use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_common::cache::{Cache, CacheBuilder};
-use saluki_config::GenericConfiguration;
 use saluki_context::{tags::Tag, Context, TagSetMutViewState};
 use saluki_core::{
     components::{
@@ -31,63 +34,13 @@ use saluki_core::{
 };
 use saluki_error::GenericError;
 use saluki_metrics::MetricsBuilder;
-use serde::{de::Deserializer, Deserialize};
 use tokio::select;
-use tracing::{debug, error, warn};
-
-use crate::components::dogstatsd_filterlist::METRIC_TAG_FILTERLIST_CONFIG_KEY;
+use tracing::{debug, error};
 
 const CONTEXT_CACHE_TTI: Duration = Duration::from_secs(30);
 const CONTEXT_CACHE_EXPIRATION_INTERVAL: Duration = Duration::from_secs(1);
 
-fn default_context_cache_capacity() -> usize {
-    100_000
-}
-
 use self::telemetry::Telemetry;
-
-/// Action applied to the configured tag list: keep only listed tags, or remove listed tags.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub enum FilterAction {
-    /// Keep only the tags whose key appears in the configured list.
-    Include,
-    /// Remove the tags whose key appears in the configured list.
-    #[default]
-    Exclude,
-}
-
-impl<'de> Deserialize<'de> for FilterAction {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let raw = Option::<String>::deserialize(deserializer)?;
-
-        match raw.as_deref() {
-            Some("include") => Ok(Self::Include),
-            Some("exclude") | None | Some("") => Ok(Self::Exclude),
-            Some(other) => {
-                warn!(
-                    action = %other,
-                    "`metric_tag_filterlist.*.action` should be either `include` or `exclude`; defaulting to `exclude`."
-                );
-                Ok(Self::Exclude)
-            }
-        }
-    }
-}
-
-/// A single metric tag filter entry.
-#[derive(Clone, Debug, Deserialize)]
-pub struct MetricTagFilterEntry {
-    /// The exact metric name this entry applies to.
-    pub metric_name: String,
-    /// Whether to include or exclude the listed tags.
-    #[serde(default)]
-    pub action: FilterAction,
-    /// Tag key names to include or exclude.
-    pub tags: Vec<String>,
-}
 
 /// Compiled filter table: metric name → (`is_exclude`, set of tag key names).
 pub type CompiledFilters = HashMap<String, (bool, HashSet<String, FoldHashState>), FoldHashState>;
@@ -145,35 +98,29 @@ pub fn compile_filters(entries: &[MetricTagFilterEntry]) -> CompiledFilters {
 /// Metric Tag Filterlist transform.
 ///
 /// Removes or retains specific tags from distribution metrics based on per-metric configuration.
-/// Configuration is read from `metric_tag_filterlist` and supports runtime updates via Remote Config.
-#[derive(Deserialize)]
+/// The filter entries are tracked through `live` so runtime updates rebuild the compiled table.
 pub struct TagFilterlistConfiguration {
-    #[serde(default, rename = "metric_tag_filterlist")]
-    entries: Vec<MetricTagFilterEntry>,
-
     /// Maximum number of entries in the per-context deduplication cache used by the tag filter.
     ///
-    /// Configured via `data_plane.dogstatsd.aggregator_tag_filter_cache_capacity` in the agent config
-    /// stream. High-throughput deployments with many unique metric contexts may benefit from
-    /// increasing this value to reduce cache churn.
-    ///
-    /// Defaults to 100,000.
-    #[serde(skip)]
+    /// High-throughput deployments with many unique metric contexts may benefit from a larger cache
+    /// to reduce churn.
     context_cache_capacity: usize,
 
-    #[serde(skip)]
-    configuration: Option<GenericConfiguration>,
+    /// Live view of the per-metric tag filter entries.
+    live: Live<Vec<MetricTagFilterEntry>>,
 }
 
 impl TagFilterlistConfiguration {
-    /// Creates a new `TagFilterlistConfiguration` from the given configuration.
-    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        let mut typed: Self = config.as_typed()?;
-        typed.context_cache_capacity = config
-            .try_get_typed("data_plane.dogstatsd.aggregator_tag_filter_cache_capacity")?
-            .unwrap_or_else(default_context_cache_capacity);
-        typed.configuration = Some(config.clone());
-        Ok(typed)
+    /// Creates a new `TagFilterlistConfiguration` from the resolved settings.
+    ///
+    /// The deduplication-cache capacity is read once; the filter entries are tracked through `live`.
+    pub fn from_configuration(
+        context_cache_capacity: usize, live: Live<Vec<MetricTagFilterEntry>>,
+    ) -> Result<Self, GenericError> {
+        Ok(Self {
+            context_cache_capacity,
+            live,
+        })
     }
 }
 
@@ -191,15 +138,12 @@ impl TransformBuilder for TagFilterlistConfiguration {
     async fn build(&self, context: ComponentContext) -> Result<Box<dyn Transform + Send>, GenericError> {
         let metrics_builder = MetricsBuilder::from_component_context(&context);
         let telemetry = Telemetry::new(&metrics_builder);
-        let filters = compile_filters(&self.entries);
+        let filters = compile_filters(&self.live.current());
         telemetry.set_size(filters.len());
 
         Ok(Box::new(TagFilterlist {
             filters,
-            configuration: self
-                .configuration
-                .clone()
-                .expect("configuration must be set via from_configuration"),
+            live: self.live.clone(),
             telemetry,
             context_cache: build_context_cache(self.context_cache_capacity),
             context_cache_capacity: self.context_cache_capacity,
@@ -219,10 +163,20 @@ impl MemoryBounds for TagFilterlistConfiguration {
 
 struct TagFilterlist {
     filters: CompiledFilters,
-    configuration: GenericConfiguration,
+    live: Live<Vec<MetricTagFilterEntry>>,
     telemetry: Telemetry,
     context_cache: Cache<Context, Option<(Context, usize)>>,
     context_cache_capacity: usize,
+}
+
+impl TagFilterlist {
+    /// Rebuilds the compiled filter table from updated entries and resets the deduplication cache.
+    fn apply_update(&mut self, entries: &[MetricTagFilterEntry]) {
+        self.filters = compile_filters(entries);
+        self.context_cache = build_context_cache(self.context_cache_capacity);
+        self.telemetry.set_size(self.filters.len());
+        self.telemetry.increment_updates();
+    }
 }
 
 fn build_context_cache(capacity: usize) -> Cache<Context, Option<(Context, usize)>> {
@@ -241,7 +195,7 @@ impl Transform for TagFilterlist {
         let mut health = context.take_health_handle();
         health.mark_ready();
 
-        let mut watcher = self.configuration.watch_for_updates(METRIC_TAG_FILTERLIST_CONFIG_KEY);
+        let mut live = self.live.clone();
 
         let mut view_state = TagSetMutViewState::default();
 
@@ -293,11 +247,9 @@ impl Transform for TagFilterlist {
                     }
                     None => break,
                 },
-                (_, new_entries) = watcher.changed::<Vec<MetricTagFilterEntry>>() => {
-                    self.filters = compile_filters(new_entries.as_deref().unwrap_or(&[]));
-                    self.context_cache = build_context_cache(self.context_cache_capacity);
-                    self.telemetry.set_size(self.filters.len());
-                    self.telemetry.increment_updates();
+                _ = live.changed() => {
+                    let entries = live.current();
+                    self.apply_update(&entries);
                     debug!(rules_loaded = self.filters.len(), "Updated metric tag filterlist.");
                 },
             }
@@ -343,16 +295,56 @@ pub fn filter_metric_tags(
 
 #[cfg(test)]
 mod tests {
-    use saluki_config::{dynamic::ConfigUpdate, ConfigurationLoader};
+    use std::{sync::Arc, time::Duration};
+
+    use agent_data_plane_config::SalukiConfiguration;
+    use arc_swap::ArcSwap;
     use saluki_context::{
         tags::{Tag, TagSet},
         Context, TagSetMutViewState,
     };
     use saluki_core::data_model::event::metric::Metric;
     use saluki_metrics::{test::TestRecorder, MetricsBuilder};
-    use serde_json::json;
+    use tokio::sync::watch;
 
     use super::*;
+
+    /// A [`Live`] view backed by a cell the test can flip, mirroring how the config system drives
+    /// runtime updates to the tag-filterlist slice.
+    fn drivable_live(
+        entries: Vec<MetricTagFilterEntry>,
+    ) -> (
+        Arc<ArcSwap<SalukiConfiguration>>,
+        watch::Sender<()>,
+        Live<Vec<MetricTagFilterEntry>>,
+    ) {
+        let cell = Arc::new(ArcSwap::from_pointee(config_with(entries)));
+        let (tx, rx) = watch::channel(());
+        let live = Live::dynamic(Arc::clone(&cell), rx, |c| &c.domains.dogstatsd.tag_filterlist);
+        (cell, tx, live)
+    }
+
+    fn config_with(entries: Vec<MetricTagFilterEntry>) -> SalukiConfiguration {
+        let mut config = SalukiConfiguration::default();
+        config.domains.dogstatsd.tag_filterlist = entries;
+        config
+    }
+
+    fn store_entries(cell: &ArcSwap<SalukiConfiguration>, tx: &watch::Sender<()>, entries: Vec<MetricTagFilterEntry>) {
+        cell.store(Arc::new(config_with(entries)));
+        tx.send(()).expect("live cell should have a receiver");
+    }
+
+    fn tag_filterlist_transform(live: Live<Vec<MetricTagFilterEntry>>) -> TagFilterlist {
+        let capacity = 100;
+        TagFilterlist {
+            filters: compile_filters(&live.current()),
+            live: live.clone(),
+            telemetry: Telemetry::new(&MetricsBuilder::default()),
+            context_cache: build_context_cache(capacity),
+            context_cache_capacity: capacity,
+        }
+    }
 
     fn distribution_metric(name: &'static str, tags: &[&'static str]) -> Metric {
         let context = Context::from_static_parts(name, tags);
@@ -653,29 +645,6 @@ mod tests {
     }
 
     #[test]
-    fn missing_action_defaults_to_exclude() {
-        let entry: MetricTagFilterEntry = serde_json::from_value(json!({
-            "metric_name": "my.dist",
-            "tags": ["env"]
-        }))
-        .unwrap();
-
-        assert_eq!(entry.action, FilterAction::Exclude);
-    }
-
-    #[test]
-    fn invalid_action_defaults_to_exclude() {
-        let entry: MetricTagFilterEntry = serde_json::from_value(json!({
-            "metric_name": "my.dist",
-            "action": "invalid",
-            "tags": ["env"]
-        }))
-        .unwrap();
-
-        assert_eq!(entry.action, FilterAction::Exclude);
-    }
-
-    #[test]
     fn origin_tags_preserved_after_filtering() {
         let context = Context::from_static_parts("my.dist", &["env:prod", "host:h1"]);
         let tag_set: TagSet = [Tag::from("service:web")].into_iter().collect();
@@ -867,128 +836,76 @@ mod tests {
         assert_eq!(recorder.counter("tag_filterlist_updates_total"), Some(2));
     }
 
+    // A runtime update through the live view rebuilds the compiled filter table.
     #[tokio::test]
-    async fn dynamic_update_partial_replaces_filter() {
-        let (cfg, sender) = ConfigurationLoader::for_tests(Some(serde_json::json!({})), None, true).await;
-        let sender = sender.expect("sender should exist");
-        sender
-            .send(ConfigUpdate::Snapshot(serde_json::json!({})))
+    async fn dynamic_update_applies_and_clears_filter() {
+        let (cell, tx, live) = drivable_live(Vec::new());
+        let mut filter = tag_filterlist_transform(live.clone());
+        let mut live = live;
+
+        // No rules yet, so the metric passes through untouched.
+        let mut metric = distribution_metric("my.dist", &["env:prod", "host:h1", "service:web"]);
+        let mut state = TagSetMutViewState::default();
+        filter_metric_tags(&mut metric, &mut state, &filter.filters);
+        assert_eq!(tag_names(&metric), vec!["env:prod", "host:h1", "service:web"]);
+
+        // Push an exclude rule and let the live view carry it to the transform.
+        store_entries(
+            &cell,
+            &tx,
+            vec![MetricTagFilterEntry {
+                metric_name: "my.dist".to_string(),
+                action: FilterAction::Exclude,
+                tags: vec!["host".to_string()],
+            }],
+        );
+        tokio::time::timeout(Duration::from_secs(2), live.changed())
             .await
-            .unwrap();
-        cfg.ready().await;
-
-        let mut watcher = cfg.watch_for_updates("metric_tag_filterlist");
-
-        sender
-            .send(ConfigUpdate::Partial {
-                key: "metric_tag_filterlist".to_string(),
-                value: serde_json::json!([
-                    { "metric_name": "my.dist", "action": "exclude", "tags": ["host"] }
-                ]),
-            })
-            .await
-            .unwrap();
-
-        let (_, new_entries) = tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            watcher.changed::<Vec<MetricTagFilterEntry>>(),
-        )
-        .await
-        .expect("timed out waiting for metric_tag_filterlist update");
-
-        let filters = compile_filters(new_entries.as_deref().unwrap_or(&[]));
+            .expect("timed out waiting for metric_tag_filterlist update");
+        filter.apply_update(&live.current());
 
         let mut metric = distribution_metric("my.dist", &["env:prod", "host:h1", "service:web"]);
         let mut state = TagSetMutViewState::default();
-        filter_metric_tags(&mut metric, &mut state, &filters);
+        filter_metric_tags(&mut metric, &mut state, &filter.filters);
         assert_eq!(tag_names(&metric), vec!["env:prod", "service:web"]);
-    }
 
-    #[tokio::test]
-    async fn dynamic_update_to_empty_clears_filter() {
-        let (cfg, sender) = ConfigurationLoader::for_tests(Some(serde_json::json!({})), None, true).await;
-        let sender = sender.expect("sender should exist");
-        sender
-            .send(ConfigUpdate::Snapshot(serde_json::json!({})))
+        // Clearing the entries removes all filtering again.
+        store_entries(&cell, &tx, Vec::new());
+        tokio::time::timeout(Duration::from_secs(2), live.changed())
             .await
-            .unwrap();
-        cfg.ready().await;
+            .expect("timed out waiting for cleared metric_tag_filterlist update");
+        filter.apply_update(&live.current());
 
-        let mut watcher = cfg.watch_for_updates("metric_tag_filterlist");
-
-        sender
-            .send(ConfigUpdate::Partial {
-                key: "metric_tag_filterlist".to_string(),
-                value: serde_json::json!([
-                    { "metric_name": "my.dist", "action": "exclude", "tags": ["env"] }
-                ]),
-            })
-            .await
-            .unwrap();
-
-        let _ = tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            watcher.changed::<Vec<MetricTagFilterEntry>>(),
-        )
-        .await
-        .expect("timed out waiting for initial metric_tag_filterlist update");
-
-        sender
-            .send(ConfigUpdate::Partial {
-                key: "metric_tag_filterlist".to_string(),
-                value: serde_json::json!([]),
-            })
-            .await
-            .unwrap();
-
-        let (_, new_entries) = tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            watcher.changed::<Vec<MetricTagFilterEntry>>(),
-        )
-        .await
-        .expect("timed out waiting for cleared metric_tag_filterlist update");
-
-        let filters = compile_filters(new_entries.as_deref().unwrap_or(&[]));
-
-        let mut metric = distribution_metric("my.dist", &["env:prod", "service:web"]);
+        let mut metric = distribution_metric("my.dist", &["env:prod", "host:h1", "service:web"]);
         let mut state = TagSetMutViewState::default();
-        filter_metric_tags(&mut metric, &mut state, &filters);
-        assert_eq!(tag_names(&metric), vec!["env:prod", "service:web"]);
+        filter_metric_tags(&mut metric, &mut state, &filter.filters);
+        assert_eq!(tag_names(&metric), vec!["env:prod", "host:h1", "service:web"]);
     }
 
+    // An include rule keeps only the listed tags after a live update.
     #[tokio::test]
-    async fn dynamic_update_snapshot_applies_filter() {
-        let (cfg, sender) = ConfigurationLoader::for_tests(Some(serde_json::json!({})), None, true).await;
-        let sender = sender.expect("sender should exist");
-        sender
-            .send(ConfigUpdate::Snapshot(serde_json::json!({})))
+    async fn dynamic_update_snapshot_applies_include_filter() {
+        let (cell, tx, live) = drivable_live(Vec::new());
+        let mut filter = tag_filterlist_transform(live.clone());
+        let mut live = live;
+
+        store_entries(
+            &cell,
+            &tx,
+            vec![MetricTagFilterEntry {
+                metric_name: "my.dist".to_string(),
+                action: FilterAction::Include,
+                tags: vec!["service".to_string()],
+            }],
+        );
+        tokio::time::timeout(Duration::from_secs(2), live.changed())
             .await
-            .unwrap();
-        cfg.ready().await;
-
-        let mut watcher = cfg.watch_for_updates("metric_tag_filterlist");
-
-        sender
-            .send(ConfigUpdate::Snapshot(serde_json::json!({
-                "metric_tag_filterlist": [
-                    { "metric_name": "my.dist", "action": "include", "tags": ["service"] }
-                ]
-            })))
-            .await
-            .unwrap();
-
-        let (_, new_entries) = tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            watcher.changed::<Vec<MetricTagFilterEntry>>(),
-        )
-        .await
-        .expect("timed out waiting for metric_tag_filterlist update");
-
-        let filters = compile_filters(new_entries.as_deref().unwrap_or(&[]));
+            .expect("timed out waiting for metric_tag_filterlist update");
+        filter.apply_update(&live.current());
 
         let mut metric = distribution_metric("my.dist", &["env:prod", "service:web", "host:h1"]);
         let mut state = TagSetMutViewState::default();
-        filter_metric_tags(&mut metric, &mut state, &filters);
+        filter_metric_tags(&mut metric, &mut state, &filter.filters);
         assert_eq!(tag_names(&metric), vec!["service:web"]);
     }
 

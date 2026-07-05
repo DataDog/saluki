@@ -766,19 +766,32 @@ async fn add_dsd_pipeline_to_blueprint(
         .error_context("Failed to configure DogStatsD source.")?
         .with_workload_provider(env_provider.workload().clone())
         .with_capture_entity_resolver(env_provider.workload().clone());
-    let dsd_prefix_filter_configuration = DogStatsDPrefixFilterConfiguration::from_configuration(config)?;
+    let dsd_prefix_filter_configuration = DogStatsDPrefixFilterConfiguration::from_configuration(
+        &saluki.domains.dogstatsd.prefix_filter,
+        config_system.live(|c| &c.domains.dogstatsd.prefix_filter),
+    )?;
     let dsd_mapper_config = DogStatsDMapperConfiguration::from_configuration(&saluki.domains.dogstatsd.mapper)?;
     let dsd_enrich_config =
         ChainedConfiguration::default().with_transform_builder("dogstatsd_mapper", dsd_mapper_config);
-    let dsd_tag_filterlist_config = TagFilterlistConfiguration::from_configuration(config)
-        .error_context("Failed to configure metric tag filterlist transform.")?;
+    let dsd_tag_filterlist_config = TagFilterlistConfiguration::from_configuration(
+        saluki
+            .domains
+            .dogstatsd
+            .aggregation
+            .aggregator_tag_filter_cache_capacity,
+        config_system.live(|c| &c.domains.dogstatsd.tag_filterlist),
+    )
+    .error_context("Failed to configure metric tag filterlist transform.")?;
     let dsd_agg_config = AggregateConfiguration::from_configuration(
         &saluki.domains.dogstatsd.aggregation,
         &saluki.shared.metrics_encoding.histogram,
     )
     .error_context("Failed to configure aggregate transform.")?;
-    let dsd_post_agg_filter_config = DogStatsDPostAggregateFilterConfiguration::from_configuration(config)
-        .error_context("Failed to configure DogStatsD post-aggregate filter transform.")?;
+    let dsd_post_agg_filter_config = DogStatsDPostAggregateFilterConfiguration::from_configuration(
+        &saluki.shared.metrics_encoding.histogram,
+        config_system.live(|c| &c.domains.dogstatsd.prefix_filter),
+    )
+    .error_context("Failed to configure DogStatsD post-aggregate filter transform.")?;
     let events_enrich_config = ChainedConfiguration::default().with_transform_builder(
         "host_enrichment",
         HostEnrichmentConfiguration::from_environment_provider(env_provider.clone()),
