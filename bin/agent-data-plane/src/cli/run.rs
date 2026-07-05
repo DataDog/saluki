@@ -738,12 +738,27 @@ async fn add_dsd_pipeline_to_blueprint(
 
     let saluki = config_system.config();
     // `run_path` is deliberately not modeled, so read it from the raw config to derive the default
-    // DogStatsD capture directory (used only when `dogstatsd_capture_path` is unset).
-    let default_dsd_capture_path = config
-        .try_get_typed::<PathBuf>("run_path")
-        .ok()
-        .flatten()
-        .map(|run_path| run_path.join(DOGSTATSD_CAPTURE_DIR));
+    // DogStatsD capture directory only when `dogstatsd_capture_path` is unset.
+    let default_dsd_capture_path = if saluki.domains.dogstatsd.listeners.capture_path.as_os_str().is_empty() {
+        match config.try_get_typed::<PathBuf>("run_path") {
+            Ok(Some(run_path)) => Some(run_path.join(DOGSTATSD_CAPTURE_DIR)),
+            Ok(None) => {
+                debug!(
+                    "`dogstatsd_capture_path` and `run_path` were empty. Default DogStatsD capture path is unavailable."
+                );
+                None
+            }
+            Err(error) => {
+                debug!(
+                    error = %error,
+                    "Failed to read `run_path` from configuration. Default DogStatsD capture path is unavailable."
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
     let dsd_config = DogStatsDConfiguration::from_configuration(&saluki.domains.dogstatsd, default_dsd_capture_path)
         .error_context("Failed to configure DogStatsD source.")?
         .with_workload_provider(env_provider.workload().clone())
