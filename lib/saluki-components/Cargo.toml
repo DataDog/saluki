@@ -66,7 +66,6 @@ saluki-metrics = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_with = { workspace = true, features = ["alloc"] }
-serde_yaml = { workspace = true }
 simdutf8 = { workspace = true }
 smallvec = { workspace = true }
 snafu = { workspace = true }
