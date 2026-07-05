@@ -241,14 +241,15 @@ fn deserialize_sources(raw_map: &GenericConfiguration, env_overlay: EnvOverlayMo
 /// Translates the Datadog and Saluki-only sources into one [`SalukiConfiguration`], returning every
 /// error recorded while converting an individual Datadog value.
 ///
-/// The Datadog `drive` feeds every supported key to a `DatadogTranslator`; a value that cannot be
-/// converted leaves its field at the model default and records an error. The Saluki-only values
-/// then seed their disjoint destinations, which cannot fail. The returned configuration is always
-/// complete: every valid value is present, and every invalid one holds its default.
+/// The Saluki-only values seed the base first (defaults plus any Saluki-only knob). The Datadog
+/// `drive` then overlays every supported key and is authoritative for every field it owns: a value
+/// that cannot be converted leaves its field at the base value and records an error. The returned
+/// configuration is always complete: every valid value is present, and every invalid one holds its
+/// default.
 fn translate(datadog: &DatadogConfiguration, saluki: &SalukiOnly) -> (SalukiConfiguration, Option<TranslateErrors>) {
-    let (mut config, errors) = DatadogTranslator::new(datadog).translate();
-    saluki.seed(&mut config);
-    (config, errors)
+    let mut base = SalukiConfiguration::default();
+    saluki.seed(&mut base);
+    DatadogTranslator::new(datadog, base).translate()
 }
 
 #[cfg(test)]

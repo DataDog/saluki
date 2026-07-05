@@ -134,8 +134,6 @@ pub struct SalukiOnly {
     pub aggregate_context_limit: Option<usize>,
     /// Aggregator flush period (`aggregate_flush_interval`).
     pub aggregate_flush_interval: Option<DurationString>,
-    /// Whether open aggregation windows are flushed (`aggregate_flush_open_windows`).
-    pub aggregate_flush_open_windows: Option<bool>,
     /// Passthrough idle flush delay (`aggregate_passthrough_idle_flush_timeout`).
     pub aggregate_passthrough_idle_flush_timeout: Option<DurationString>,
 
@@ -350,8 +348,10 @@ fn parse_ottl_error_mode(mode: Option<String>) -> OttlErrorMode {
 impl SalukiOnly {
     /// Copies each present Saluki-only value into its destination in `config`.
     ///
-    /// Absent values leave the field at its model default. The Datadog `drive` writes a disjoint set
-    /// of fields, so it does not matter whether `seed` runs before or after the drive.
+    /// Absent values leave the field at its model default. `seed` builds the low-precedence base;
+    /// the Datadog `drive` runs afterward and is authoritative, so a Saluki-only field must be a
+    /// field the Datadog schema does not own (a key published by the Agent belongs to the witness,
+    /// not here).
     pub(crate) fn seed(&self, config: &mut SalukiConfiguration) {
         // control
         if let Some(v) = self.data_plane.stop_timeout {
@@ -430,9 +430,6 @@ impl SalukiOnly {
         }
         if let Some(v) = self.aggregate_flush_interval {
             dsd.aggregation.flush_interval = v.as_duration();
-        }
-        if let Some(v) = self.aggregate_flush_open_windows {
-            dsd.aggregation.flush_open_windows = v;
         }
         if let Some(v) = self.aggregate_passthrough_idle_flush_timeout {
             dsd.aggregation.passthrough_idle_flush_timeout = v.as_duration();
@@ -554,7 +551,6 @@ mod tests {
             "aggregate_window_duration_seconds": 30,
             "aggregate_context_limit": 250000,
             "aggregate_flush_interval": "20s",
-            "aggregate_flush_open_windows": true,
             "aggregate_passthrough_idle_flush_timeout": "2s",
             // otlp metric contexts
             "otlp_allow_context_heap_allocs": true,
@@ -631,7 +627,6 @@ mod tests {
         assert_eq!(dsd.aggregation.window_duration_seconds, 30);
         assert_eq!(dsd.aggregation.context_limit, 250_000);
         assert_eq!(dsd.aggregation.flush_interval, Duration::from_secs(20));
-        assert!(dsd.aggregation.flush_open_windows);
         assert_eq!(dsd.aggregation.passthrough_idle_flush_timeout, Duration::from_secs(2));
 
         // domains.otlp

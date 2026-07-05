@@ -691,11 +691,7 @@ async fn add_baseline_traces_pipeline_to_blueprint(
 }
 
 async fn add_dsd_pipeline_to_blueprint(
-    blueprint: &mut TopologyBlueprint,
-    config: &GenericConfiguration,
-    // Threaded in ready for the typed-config component cutover (aggregate/debug-log); unused until
-    // those components read from it, hence the leading underscore.
-    _config_system: &ConfigurationSystem,
+    blueprint: &mut TopologyBlueprint, config: &GenericConfiguration, config_system: &ConfigurationSystem,
     env_provider: &ADPEnvironmentProvider,
 ) -> Result<DogStatsDControlSurface, GenericError> {
     // We're creating the "front half" of the DogStatsD pipeline, which deals solely with accepting DogStatsD payloads,
@@ -749,8 +745,12 @@ async fn add_dsd_pipeline_to_blueprint(
         ChainedConfiguration::default().with_transform_builder("dogstatsd_mapper", dsd_mapper_config);
     let dsd_tag_filterlist_config = TagFilterlistConfiguration::from_configuration(config)
         .error_context("Failed to configure metric tag filterlist transform.")?;
-    let dsd_agg_config =
-        AggregateConfiguration::from_configuration(config).error_context("Failed to configure aggregate transform.")?;
+    let saluki = config_system.config();
+    let dsd_agg_config = AggregateConfiguration::from_configuration(
+        &saluki.domains.dogstatsd.aggregation,
+        &saluki.shared.metrics_encoding.histogram,
+    )
+    .error_context("Failed to configure aggregate transform.")?;
     let dsd_post_agg_filter_config = DogStatsDPostAggregateFilterConfiguration::from_configuration(config)
         .error_context("Failed to configure DogStatsD post-aggregate filter transform.")?;
     let events_enrich_config = ChainedConfiguration::default().with_transform_builder(
