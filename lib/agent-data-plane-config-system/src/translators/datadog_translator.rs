@@ -75,6 +75,20 @@ fn non_empty(s: String) -> Option<String> {
     }
 }
 
+/// Trims surrounding whitespace and returns `Some` only when characters remain.
+///
+/// Used for connection settings (endpoint URLs, auth tokens, service names) where trailing
+/// whitespace would corrupt the value at the point of use, so normalization belongs here rather
+/// than in each consumer.
+fn trimmed_non_empty(s: String) -> Option<String> {
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
 /// Clamps a raw `i64` port into the `u16` range.
 fn to_port(value: i64) -> u16 {
     value.clamp(0, u16::MAX as i64) as u16
@@ -340,7 +354,7 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_cluster_agent_auth_token(&mut self, value: String) {
-        self.config.shared.cluster_agent.auth_token = non_empty(value);
+        self.config.shared.cluster_agent.auth_token = trimmed_non_empty(value);
     }
 
     fn consume_cluster_agent_enabled(&mut self, value: bool) {
@@ -348,11 +362,11 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_cluster_agent_kubernetes_service_name(&mut self, value: String) {
-        self.config.shared.cluster_agent.kubernetes_service_name = non_empty(value);
+        self.config.shared.cluster_agent.kubernetes_service_name = trimmed_non_empty(value);
     }
 
     fn consume_cluster_agent_url(&mut self, value: String) {
-        self.config.shared.cluster_agent.url = non_empty(value);
+        self.config.shared.cluster_agent.url = trimmed_non_empty(value);
     }
 
     fn consume_cmd_port(&mut self, value: i64) {

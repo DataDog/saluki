@@ -2,7 +2,7 @@
 
 use std::net::IpAddr;
 
-use saluki_config::GenericConfiguration;
+use agent_data_plane_config::shared::ClusterAgent;
 use saluki_error::GenericError;
 
 const DEFAULT_CLUSTER_AGENT_KUBERNETES_SERVICE_NAME: &str = "datadog-cluster-agent";
@@ -17,13 +17,13 @@ pub struct ClusterAgentConfiguration {
 }
 
 impl ClusterAgentConfiguration {
-    /// Creates a new `ClusterAgentConfiguration` from the given configuration.
-    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
+    /// Builds a `ClusterAgentConfiguration` from the translated Cluster Agent settings.
+    pub fn from_configuration(config: &ClusterAgent) -> Result<Self, GenericError> {
         Ok(Self {
-            enabled: config.try_get_typed("cluster_agent.enabled")?.unwrap_or(false),
-            url: get_non_empty_string(config, "cluster_agent.url")?,
-            kubernetes_service_name: get_trimmed_string(config, "cluster_agent.kubernetes_service_name")?,
-            auth_token: get_non_empty_string(config, "cluster_agent.auth_token")?,
+            enabled: config.enabled,
+            url: config.url.clone(),
+            kubernetes_service_name: config.kubernetes_service_name.clone(),
+            auth_token: config.auth_token.clone(),
         })
     }
 
@@ -63,16 +63,6 @@ impl ClusterAgentConfiguration {
 
         resolve_kubernetes_service_endpoint(service_name, env_lookup)
     }
-}
-
-fn get_non_empty_string(config: &GenericConfiguration, key: &str) -> Result<Option<String>, GenericError> {
-    Ok(get_trimmed_string(config, key)?.filter(|value| !value.is_empty()))
-}
-
-fn get_trimmed_string(config: &GenericConfiguration, key: &str) -> Result<Option<String>, GenericError> {
-    Ok(config
-        .try_get_typed::<String>(key)?
-        .map(|value| value.trim().to_string()))
 }
 
 fn normalize_cluster_agent_url(url: &str) -> Option<String> {
@@ -116,67 +106,56 @@ fn join_host_port(host: &str, port: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use saluki_config::ConfigurationLoader;
-    use serde_json::json;
-
     use super::*;
 
-    async fn cluster_agent_config_from(value: serde_json::Value) -> ClusterAgentConfiguration {
-        let (config, _) = ConfigurationLoader::for_tests(Some(value), None, false).await;
-        ClusterAgentConfiguration::from_configuration(&config).expect("Cluster Agent configuration should deserialize")
+    fn cluster_agent_config_from(config: ClusterAgent) -> ClusterAgentConfiguration {
+        ClusterAgentConfiguration::from_configuration(&config).expect("Cluster Agent configuration should build")
     }
 
-    #[tokio::test]
-    async fn endpoint_and_token_requires_enabled_cluster_agent() {
-        let config = cluster_agent_config_from(json!({
-            "cluster_agent": {
-                "enabled": false,
-                "url": "https://cluster-agent.example.com",
-                "auth_token": "secret-token"
-            }
-        }))
-        .await;
+    #[test]
+    fn endpoint_and_token_requires_enabled_cluster_agent() {
+        let config = cluster_agent_config_from(ClusterAgent {
+            enabled: false,
+            url: Some("https://cluster-agent.example.com".to_string()),
+            auth_token: Some("secret-token".to_string()),
+            kubernetes_service_name: None,
+        });
 
         assert_eq!(config.endpoint_and_token_with_env(env_lookup(&[])), None);
     }
 
-    #[tokio::test]
-    async fn endpoint_and_token_requires_resolvable_endpoint() {
-        let config = cluster_agent_config_from(json!({
-            "cluster_agent": {
-                "enabled": true,
-                "auth_token": "secret-token"
-            }
-        }))
-        .await;
+    #[test]
+    fn endpoint_and_token_requires_resolvable_endpoint() {
+        let config = cluster_agent_config_from(ClusterAgent {
+            enabled: true,
+            url: None,
+            auth_token: Some("secret-token".to_string()),
+            kubernetes_service_name: None,
+        });
 
         assert_eq!(config.endpoint_and_token_with_env(env_lookup(&[])), None);
     }
 
-    #[tokio::test]
-    async fn endpoint_and_token_requires_https_url() {
-        let config = cluster_agent_config_from(json!({
-            "cluster_agent": {
-                "enabled": true,
-                "url": "http://cluster-agent.example.com",
-                "auth_token": "secret-token"
-            }
-        }))
-        .await;
+    #[test]
+    fn endpoint_and_token_requires_https_url() {
+        let config = cluster_agent_config_from(ClusterAgent {
+            enabled: true,
+            url: Some("http://cluster-agent.example.com".to_string()),
+            auth_token: Some("secret-token".to_string()),
+            kubernetes_service_name: None,
+        });
 
         assert_eq!(config.endpoint_and_token(), None);
     }
 
-    #[tokio::test]
-    async fn endpoint_and_token_adds_https_scheme_to_url() {
-        let config = cluster_agent_config_from(json!({
-            "cluster_agent": {
-                "enabled": true,
-                "url": "cluster-agent.example.com:5005",
-                "auth_token": "secret-token"
-            }
-        }))
-        .await;
+    #[test]
+    fn endpoint_and_token_adds_https_scheme_to_url() {
+        let config = cluster_agent_config_from(ClusterAgent {
+            enabled: true,
+            url: Some("cluster-agent.example.com:5005".to_string()),
+            auth_token: Some("secret-token".to_string()),
+            kubernetes_service_name: None,
+        });
 
         assert_eq!(
             config.endpoint_and_token(),
@@ -187,30 +166,28 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn endpoint_and_token_requires_non_empty_token() {
-        let config = cluster_agent_config_from(json!({
-            "cluster_agent": {
-                "enabled": true,
-                "url": "https://cluster-agent.example.com",
-                "auth_token": "  "
-            }
-        }))
-        .await;
+    #[test]
+    fn endpoint_and_token_requires_non_empty_token() {
+        // The config layer normalizes a whitespace-only `auth_token` to `None`; the component then
+        // has no bearer token and forwarding cannot be configured.
+        let config = cluster_agent_config_from(ClusterAgent {
+            enabled: true,
+            url: Some("https://cluster-agent.example.com".to_string()),
+            auth_token: None,
+            kubernetes_service_name: None,
+        });
 
         assert_eq!(config.endpoint_and_token(), None);
     }
 
-    #[tokio::test]
-    async fn endpoint_and_token_returns_https_url_and_token() {
-        let config = cluster_agent_config_from(json!({
-            "cluster_agent": {
-                "enabled": true,
-                "url": " https://cluster-agent.example.com ",
-                "auth_token": " secret-token "
-            }
-        }))
-        .await;
+    #[test]
+    fn endpoint_and_token_returns_https_url_and_token() {
+        let config = cluster_agent_config_from(ClusterAgent {
+            enabled: true,
+            url: Some("https://cluster-agent.example.com".to_string()),
+            auth_token: Some("secret-token".to_string()),
+            kubernetes_service_name: None,
+        });
 
         assert_eq!(
             config.endpoint_and_token(),
@@ -221,15 +198,14 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn endpoint_and_token_resolves_default_kubernetes_service_env() {
-        let config = cluster_agent_config_from(json!({
-            "cluster_agent": {
-                "enabled": true,
-                "auth_token": "secret-token"
-            }
-        }))
-        .await;
+    #[test]
+    fn endpoint_and_token_resolves_default_kubernetes_service_env() {
+        let config = cluster_agent_config_from(ClusterAgent {
+            enabled: true,
+            url: None,
+            auth_token: Some("secret-token".to_string()),
+            kubernetes_service_name: None,
+        });
 
         assert_eq!(
             config.endpoint_and_token_with_env(env_lookup(&[
@@ -240,16 +216,14 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn endpoint_and_token_resolves_configured_kubernetes_service_env() {
-        let config = cluster_agent_config_from(json!({
-            "cluster_agent": {
-                "enabled": true,
-                "kubernetes_service_name": "custom-cluster-agent",
-                "auth_token": "secret-token"
-            }
-        }))
-        .await;
+    #[test]
+    fn endpoint_and_token_resolves_configured_kubernetes_service_env() {
+        let config = cluster_agent_config_from(ClusterAgent {
+            enabled: true,
+            url: None,
+            auth_token: Some("secret-token".to_string()),
+            kubernetes_service_name: Some("custom-cluster-agent".to_string()),
+        });
 
         assert_eq!(
             config.endpoint_and_token_with_env(env_lookup(&[
@@ -260,15 +234,14 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn endpoint_and_token_wraps_kubernetes_service_ipv6_host() {
-        let config = cluster_agent_config_from(json!({
-            "cluster_agent": {
-                "enabled": true,
-                "auth_token": "secret-token"
-            }
-        }))
-        .await;
+    #[test]
+    fn endpoint_and_token_wraps_kubernetes_service_ipv6_host() {
+        let config = cluster_agent_config_from(ClusterAgent {
+            enabled: true,
+            url: None,
+            auth_token: Some("secret-token".to_string()),
+            kubernetes_service_name: None,
+        });
 
         assert_eq!(
             config.endpoint_and_token_with_env(env_lookup(&[
@@ -282,17 +255,14 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn endpoint_and_token_prefers_configured_url_over_kubernetes_service_env() {
-        let config = cluster_agent_config_from(json!({
-            "cluster_agent": {
-                "enabled": true,
-                "url": "https://configured-cluster-agent.example.com",
-                "kubernetes_service_name": "custom-cluster-agent",
-                "auth_token": "secret-token"
-            }
-        }))
-        .await;
+    #[test]
+    fn endpoint_and_token_prefers_configured_url_over_kubernetes_service_env() {
+        let config = cluster_agent_config_from(ClusterAgent {
+            enabled: true,
+            url: Some("https://configured-cluster-agent.example.com".to_string()),
+            auth_token: Some("secret-token".to_string()),
+            kubernetes_service_name: Some("custom-cluster-agent".to_string()),
+        });
 
         assert_eq!(
             config.endpoint_and_token_with_env(env_lookup(&[
