@@ -132,6 +132,28 @@ impl ConfigurationSystem {
     }
 }
 
+/// Translates a raw source map into a one-shot [`SalukiConfiguration`] snapshot.
+///
+/// Unlike [`ConfigurationSystem::load`], this builds no update-tracking system and does not gate
+/// startup: translation errors are logged and the affected fields keep their defaults, mirroring the
+/// runtime update path. Consumers that need a typed view before the configuration system exists (for
+/// example, bootstrap-phase logging, which is set up before the first authoritative Agent snapshot
+/// arrives) translate their raw source map through this.
+///
+/// # Errors
+///
+/// Returns an error if the raw map cannot be deserialized into the source models.
+pub fn translate_snapshot(
+    raw_map: &GenericConfiguration, env_overlay: EnvOverlayMode,
+) -> Result<SalukiConfiguration, ConfigurationSystemError> {
+    let (datadog, saluki_only) = deserialize_sources(raw_map, env_overlay)?;
+    let (config, errors) = translate(&datadog, &saluki_only);
+    if let Some(errors) = errors {
+        warn!(%errors, "Snapshot translation had errors; invalid values kept their defaults.");
+    }
+    Ok(config)
+}
+
 /// Spawns the task that keeps `current` up to date as `raw_map` commits updates.
 fn spawn_router(
     rx: broadcast::Receiver<ConfigChangeEvent>, raw_map: GenericConfiguration,

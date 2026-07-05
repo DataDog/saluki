@@ -1454,4 +1454,78 @@ mod tests {
             Some(2048)
         );
     }
+
+    #[test]
+    fn logging_defaults_come_from_the_schema() {
+        // An empty source resolves the logging model to the vendored schema defaults via `drive`.
+        let datadog = DatadogConfiguration::default();
+
+        let (config, errors) = DatadogTranslator::new(&datadog, SalukiConfiguration::default()).translate();
+        assert!(errors.is_none());
+
+        let logging = &config.control.logging;
+        assert_eq!(logging.level, "info");
+        assert!(!logging.format_json);
+        assert!(!logging.format_rfc3339);
+        assert!(logging.to_console);
+        assert!(!logging.to_syslog);
+        assert!(!logging.syslog_rfc);
+        assert_eq!(logging.syslog_uri, "");
+        assert_eq!(logging.file, "/var/log/datadog/agent-data-plane.log");
+        assert!(!logging.disable_file_logging);
+        assert_eq!(logging.file_max_rolls, 1);
+        // `10Mb` parses as 10 decimal megabytes.
+        assert_eq!(logging.file_max_size, 10_000_000);
+    }
+
+    #[test]
+    fn logging_values_are_driven_from_the_source() {
+        // The Datadog log-file byte-size string parses into a byte count on the model; the remaining
+        // logging keys copy through. `data_plane.log_file` is the per-subagent destination.
+        let datadog: DatadogConfiguration = serde_json::from_value(json!({
+            "log_level": "debug",
+            "log_format_json": true,
+            "log_to_console": false,
+            "log_to_syslog": true,
+            "syslog_rfc": true,
+            "syslog_uri": "udp://127.0.0.1:1514",
+            "log_file_max_size": "64kB",
+            "log_file_max_rolls": 5,
+            "disable_file_logging": true,
+            "data_plane": { "log_file": "/tmp/adp.log" },
+        }))
+        .expect("datadog source deserializes");
+
+        let (config, errors) = DatadogTranslator::new(&datadog, SalukiConfiguration::default()).translate();
+        assert!(errors.is_none());
+
+        let logging = &config.control.logging;
+        assert_eq!(logging.level, "debug");
+        assert!(logging.format_json);
+        assert!(!logging.to_console);
+        assert!(logging.to_syslog);
+        assert!(logging.syslog_rfc);
+        assert_eq!(logging.syslog_uri, "udp://127.0.0.1:1514");
+        assert_eq!(logging.file, "/tmp/adp.log");
+        assert!(logging.disable_file_logging);
+        assert_eq!(logging.file_max_rolls, 5);
+        assert_eq!(logging.file_max_size, 64_000);
+    }
+
+    #[test]
+    fn log_file_max_size_invalid_records_error_and_keeps_default() {
+        // An unparseable byte-size string records a translation error (so a strict startup rejects
+        // it) while the field keeps its seeded default (so a lenient runtime update keeps running).
+        let datadog: DatadogConfiguration = serde_json::from_value(json!({
+            "log_file_max_size": "not-a-size",
+        }))
+        .expect("datadog source deserializes");
+
+        let (config, errors) = DatadogTranslator::new(&datadog, SalukiConfiguration::default()).translate();
+        assert!(
+            errors.is_some(),
+            "an unparseable byte size must record a translation error"
+        );
+        assert_eq!(config.control.logging.file_max_size, 0);
+    }
 }

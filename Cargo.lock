@@ -63,7 +63,6 @@ dependencies = [
  "saluki-metrics",
  "serde",
  "serde_json",
- "serde_with",
  "stringtheory",
  "tikv-jemallocator",
  "tokio",

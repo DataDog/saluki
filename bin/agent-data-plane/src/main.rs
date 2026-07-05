@@ -8,6 +8,7 @@
 use std::path::Path;
 use std::time::Instant;
 
+use agent_data_plane_config_system::EnvOverlayMode;
 // Pull in the Antithesis coverage-instrumentation runtime shim only when
 // building for antithesis. Load-baring: equired to avoid the shim being dropped
 // as unused.
@@ -63,8 +64,12 @@ async fn main() -> Result<(), GenericError> {
     let bootstrap_config = load_bootstrap_config(&bootstrap_config_path)?.bootstrap_generic();
 
     // Translate the bootstrap configuration into ADP's logging configuration, applying ADP-specific rules
-    // (per-subagent log file key, never sharing a file with the Core Agent).
-    let bootstrap_logging_config = LoggingConfigurationTranslator::translate(&bootstrap_config)
+    // (per-subagent log file key, never sharing a file with the Core Agent). The configuration system does not exist
+    // yet at this point, so translate a one-shot typed snapshot of the bootstrap configuration to read the model from.
+    let bootstrap_saluki_config =
+        agent_data_plane_config_system::translate_snapshot(&bootstrap_config, EnvOverlayMode::Fallback)
+            .error_context("Failed to translate bootstrap configuration during bootstrap phase.")?;
+    let bootstrap_logging_config = LoggingConfigurationTranslator::translate(&bootstrap_saluki_config.control.logging)
         .error_context("Failed to translate logging configuration during bootstrap phase.")?;
 
     let metrics_default_level = parse_metrics_level(&bootstrap_config)?;

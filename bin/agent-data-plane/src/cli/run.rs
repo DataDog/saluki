@@ -124,8 +124,12 @@ pub async fn handle_run_command(
 
             // Now that the Datadog Agent has supplied its authoritative configuration, reload the logging subsystem
             // so its destinations, format, and level reflect what the Agent specifies rather than the bootstrap-phase
-            // defaults.
-            match LoggingConfigurationTranslator::translate(&dynamic_config) {
+            // defaults. The configuration system is not built until after this point, so translate a one-shot typed
+            // snapshot of the dynamic configuration to read the logging model from.
+            match agent_data_plane_config_system::translate_snapshot(&dynamic_config, EnvOverlayMode::Fallback)
+                .error_context("Failed to translate dynamic configuration for logging reload.")
+                .and_then(|saluki| LoggingConfigurationTranslator::translate(&saluki.control.logging))
+            {
                 Ok(logging_config) => {
                     if let Err(e) = bootstrap_guard.logging_mut().reload(logging_config).await {
                         warn!(
@@ -193,7 +197,7 @@ pub async fn handle_run_command(
         control_surfaces,
         ra_bootstrap,
         bootstrap_guard.logging().controller(),
-        config_sys.current_handle(),
+        &config_sys,
     )
     .await
     .error_context("Failed to create internal supervisor.")?;

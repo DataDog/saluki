@@ -19,4 +19,4 @@ mod system;
 mod translators;
 
 pub use datadog_agent_config::EnvOverlayMode;
-pub use system::{ConfigurationSystem, ConfigurationSystemError};
+pub use system::{translate_snapshot, ConfigurationSystem, ConfigurationSystemError};

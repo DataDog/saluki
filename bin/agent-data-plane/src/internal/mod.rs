@@ -1,7 +1,4 @@
-use std::sync::Arc;
-
-use agent_data_plane_config::SalukiConfiguration;
-use arc_swap::ArcSwap;
+use agent_data_plane_config_system::ConfigurationSystem;
 use resource_accounting::ComponentRegistry;
 use saluki_app::logging::LoggingOverrideController;
 use saluki_config::GenericConfiguration;
@@ -44,7 +41,7 @@ pub async fn create_internal_supervisor(
     config: &GenericConfiguration, dp_config: &DataPlaneConfiguration, component_registry: &ComponentRegistry,
     health_registry: HealthRegistry, control_surfaces: TopologyControlSurfaces,
     ra_bootstrap: Option<RemoteAgentBootstrap>, logging_controller: LoggingOverrideController,
-    current_config: Arc<ArcSwap<SalukiConfiguration>>,
+    config_system: &ConfigurationSystem,
 ) -> Result<Supervisor, GenericError> {
     // The root supervisor runs in ambient mode (caller's runtime) since its children each have their own
     // dedicated runtimes. The default restart strategy (one-for-one, 1 restart per 5s) applies to the child
@@ -61,7 +58,7 @@ pub async fn create_internal_supervisor(
             control_surfaces,
             ra_bootstrap,
             logging_controller,
-            current_config,
+            config_system,
         )
         .await?,
     );
