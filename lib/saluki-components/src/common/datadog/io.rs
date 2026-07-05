@@ -13,6 +13,7 @@ use std::{
     time::Duration,
 };
 
+use agent_data_plane_config::{Live, SalukiConfiguration};
 use bytes::Buf;
 use futures::FutureExt as _;
 use http::{Request, Uri};
@@ -22,7 +23,6 @@ use hyper::{body::Incoming, Response};
 use saluki_common::{
     collections::FastHashMap, hash::hash_single_stable, task::spawn_traced_named, time::get_unix_timestamp,
 };
-use saluki_config::GenericConfiguration;
 use saluki_core::components::ComponentContext;
 use saluki_error::{generic_error, GenericError};
 use saluki_io::net::{
@@ -106,7 +106,7 @@ where
 pub struct TransactionForwarder<B> {
     context: ComponentContext,
     config: ForwarderConfiguration,
-    live_config: Option<GenericConfiguration>,
+    live_config: Option<Live<SalukiConfiguration>>,
     telemetry: ComponentTelemetry,
     metrics_builder: MetricsBuilder,
     client: HttpClient,
@@ -179,7 +179,7 @@ where
 {
     /// Creates a new `TransactionForwarder` instance from the given configuration.
     pub fn from_config<F>(
-        context: ComponentContext, config: ForwarderConfiguration, live_config: Option<GenericConfiguration>,
+        context: ComponentContext, config: ForwarderConfiguration, live_config: Option<Live<SalukiConfiguration>>,
         endpoint_name: F, telemetry: ComponentTelemetry, metrics_builder: MetricsBuilder,
     ) -> Result<Self, GenericError>
     where
@@ -198,7 +198,7 @@ where
 
     /// Creates a new `TransactionForwarder` with a custom endpoint request mapper.
     pub(crate) fn from_config_with_endpoint_request_mapper<F>(
-        context: ComponentContext, config: ForwarderConfiguration, live_config: Option<GenericConfiguration>,
+        context: ComponentContext, config: ForwarderConfiguration, live_config: Option<Live<SalukiConfiguration>>,
         endpoint_name: F, telemetry: ComponentTelemetry, metrics_builder: MetricsBuilder,
         endpoint_request_mapper_factory: EndpointRequestMapperFactory<B>,
     ) -> Result<Self, GenericError>
@@ -221,8 +221,9 @@ where
         if let Some(path) = config.ssl_key_log_file_path() {
             client_builder = client_builder.with_tls_config(|builder| builder.with_key_log_file(path));
         }
-        if let Some(proxy) = config.proxy() {
-            client_builder = client_builder.with_proxies(proxy.build()?);
+        let proxies = config.proxy().build()?;
+        if !proxies.is_empty() {
+            client_builder = client_builder.with_proxies(proxies);
         }
 
         if config.connection_reset_interval() > Duration::ZERO {
@@ -306,7 +307,7 @@ where
 #[allow(clippy::too_many_arguments)]
 async fn run_io_loop<B>(
     mut transactions_rx: mpsc::Receiver<Transaction<B>>, io_shutdown_tx: oneshot::Sender<()>,
-    context: ComponentContext, config: ForwarderConfiguration, live_config: Option<GenericConfiguration>,
+    context: ComponentContext, config: ForwarderConfiguration, live_config: Option<Live<SalukiConfiguration>>,
     service: HttpClient, telemetry: ComponentTelemetry, metrics_builder: MetricsBuilder,
     endpoint_name: Arc<EndpointNameFn>, resolved_endpoints: Vec<RoutableEndpoint>,
     endpoint_request_mapper_factory: EndpointRequestMapperFactory<B>,
@@ -442,7 +443,7 @@ fn track_transaction_input_for_endpoint(
 #[allow(clippy::too_many_arguments)]
 async fn run_endpoint_io_loop<B>(
     mut txns_rx: mpsc::Receiver<Transaction<B>>, task_barrier: Arc<Barrier>, context: ComponentContext,
-    config: ForwarderConfiguration, live_config: Option<GenericConfiguration>, service: HttpClient,
+    config: ForwarderConfiguration, live_config: Option<Live<SalukiConfiguration>>, service: HttpClient,
     telemetry: ComponentTelemetry, txnq_telemetry: TransactionQueueTelemetry, endpoint_name: Arc<EndpointNameFn>,
     route: EndpointRoute, endpoint: ResolvedEndpoint, endpoint_request_mapper_factory: EndpointRequestMapperFactory<B>,
 ) where
@@ -960,11 +961,13 @@ impl<T: Retryable> PendingTransactions<T> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::sync::{
         atomic::{AtomicUsize, Ordering},
         Arc, OnceLock,
     };
 
+    use agent_data_plane_config::shared::SharedConfiguration;
     use bytes::Bytes;
     use http::StatusCode;
     use http_body_util::Empty;
@@ -975,11 +978,9 @@ mod tests {
         RootCertStore, ServerConfig,
     };
     use saluki_common::buf::FrozenChunkedBytesBuffer;
-    use saluki_config::ConfigurationLoader;
     use saluki_core::{observability::ComponentMetricsExt as _, topology::ComponentId};
     use saluki_io::net::client::http::TlsMinimumVersion;
     use saluki_metrics::test::TestRecorder;
-    use serde_json::json;
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
         net::TcpListener,
@@ -1004,8 +1005,18 @@ mod tests {
         is_metrics_request_uri(&uri(path), METRICS_SERIES_V3_BETA_PATH)
     }
 
-    fn forwarder_config_from_value(value: serde_json::Value) -> ForwarderConfiguration {
-        serde_json::from_value(value).expect("ForwarderConfiguration should deserialize")
+    fn forwarder_config_from(configure: impl FnOnce(&mut SharedConfiguration)) -> ForwarderConfiguration {
+        let mut shared = SharedConfiguration::default();
+        configure(&mut shared);
+        ForwarderConfiguration::from_model(&shared).expect("forwarder config should build")
+    }
+
+    fn additional_endpoints(entries: &[(&str, &[&str])]) -> AdditionalEndpoints {
+        let map: HashMap<String, Vec<String>> = entries
+            .iter()
+            .map(|(url, keys)| (url.to_string(), keys.iter().map(|k| k.to_string()).collect()))
+            .collect();
+        AdditionalEndpoints::from_model(&map)
     }
 
     #[test]
@@ -1057,13 +1068,10 @@ mod tests {
     fn retry_queue_id_uses_raw_additional_endpoint_url() {
         let context =
             ComponentContext::forwarder(ComponentId::try_from("test_forwarder").expect("component ID should be valid"));
-        let additional: AdditionalEndpoints = serde_yaml::from_str(
-            r#"
-app.datadoghq.com: [key-a]
-https://app.datadoghq.com: [key-b]
-"#,
-        )
-        .expect("additional endpoints should deserialize");
+        let additional = additional_endpoints(&[
+            ("app.datadoghq.com", &["key-a"]),
+            ("https://app.datadoghq.com", &["key-b"]),
+        ]);
         let endpoints = additional.resolved_endpoints(None).expect("endpoints should resolve");
 
         assert_eq!(endpoints.len(), 2);
@@ -1079,12 +1087,7 @@ https://app.datadoghq.com: [key-b]
     fn retry_queue_id_uses_additional_endpoint_api_key_index() {
         let context =
             ComponentContext::forwarder(ComponentId::try_from("test_forwarder").expect("component ID should be valid"));
-        let additional: AdditionalEndpoints = serde_yaml::from_str(
-            r#"
-app.datadoghq.com: [key-a, key-b]
-"#,
-        )
-        .expect("additional endpoints should deserialize");
+        let additional = additional_endpoints(&[("app.datadoghq.com", &["key-a", "key-b"])]);
         let endpoints = additional.resolved_endpoints(None).expect("endpoints should resolve");
 
         assert_eq!(endpoints.len(), 2);
@@ -1303,7 +1306,7 @@ app.datadoghq.com: [key-a, key-b]
 
     #[test]
     fn tls_certificate_validation_enabled_by_default() {
-        let config = forwarder_config_from_value(serde_json::json!({ "api_key": "test-api-key" }));
+        let config = forwarder_config_from(|_| {});
 
         assert_eq!(
             TlsCertificateValidation::from_forwarder_config(&config),
@@ -1313,10 +1316,7 @@ app.datadoghq.com: [key-a, key-b]
 
     #[test]
     fn tls_certificate_validation_disabled_when_skip_ssl_validation_enabled() {
-        let config = forwarder_config_from_value(serde_json::json!({
-            "api_key": "test-api-key",
-            "skip_ssl_validation": true,
-        }));
+        let config = forwarder_config_from(|shared| shared.endpoints.tls.skip_ssl_validation = true);
 
         assert_eq!(
             TlsCertificateValidation::from_forwarder_config(&config),
@@ -1495,29 +1495,30 @@ app.datadoghq.com: [key-a, key-b]
     }
 
     fn build_test_forwarder(
-        forwarder_url: &str, live_config: Option<GenericConfiguration>,
+        forwarder_url: &str, live_config: Option<Live<SalukiConfiguration>>,
     ) -> TransactionForwarder<FrozenChunkedBytesBuffer> {
         // The HTTP client builder requires the process-wide TLS crypto provider to be initialized, even when the
         // forwarder is pointed at a plain HTTP endpoint.
         init_tls_crypto_provider();
 
         // Tight timeouts and small backoffs keep the test under a couple seconds even with retries.
-        let value = serde_json::json!({
-            "api_key": "test-api-key",
-            "dd_url": forwarder_url,
-            "forwarder_timeout": 1u64,
-            "forwarder_max_concurrent_requests": 1usize,
-            "forwarder_high_prio_buffer_size": 4usize,
-            "forwarder_backoff_base": 0.001,
-            "forwarder_backoff_max": 0.01,
-            "forwarder_backoff_factor": 2.0,
-            "forwarder_recovery_interval": 1u32,
-            "forwarder_recovery_reset": false,
+        let forwarder_config = forwarder_config_from(|shared| {
+            let endpoints = &mut shared.endpoints;
+            endpoints.api_key = "test-api-key".to_string();
+            endpoints.dd_url = Some(forwarder_url.to_string());
+            endpoints.forwarder.timeout = 1;
+            endpoints.forwarder.max_concurrent_requests = 1;
+            endpoints.forwarder.high_prio_buffer_size = 4;
+            endpoints.forwarder.backoff_base = 0.001;
+            endpoints.forwarder.backoff_max = 0.01;
+            endpoints.forwarder.backoff_factor = 2.0;
+            endpoints.forwarder.recovery_interval = 1;
+            endpoints.forwarder.recovery_reset = false;
+            endpoints.forwarder.apikey_validation_interval = 60;
             // The HTTP client builder otherwise requires the process-wide default root certificate store to be
             // populated. We are talking to a plain HTTP endpoint anyway, so disable validation to skip that path.
-            "skip_ssl_validation": true,
+            endpoints.tls.skip_ssl_validation = true;
         });
-        let forwarder_config = forwarder_config_from_value(value);
         let context =
             ComponentContext::forwarder(ComponentId::try_from("test_forwarder").expect("component ID should be valid"));
         let metrics_builder = MetricsBuilder::from_component_context(&context);
@@ -1547,9 +1548,10 @@ app.datadoghq.com: [key-a, key-b]
         Transaction::from_original(TxnMetadata::from_event_and_data_point_count(1, 0), request)
     }
 
-    async fn config_with(values: serde_json::Value) -> GenericConfiguration {
-        let (config, _) = ConfigurationLoader::for_tests(Some(values), None, false).await;
-        config
+    fn live_with_secrets(backend_command: &str) -> Live<SalukiConfiguration> {
+        let mut config = SalukiConfiguration::default();
+        config.shared.secrets.backend_command = backend_command.to_string();
+        Live::fixed(config)
     }
 
     async fn wait_for_count_at_least(counter: &Arc<AtomicUsize>, target: usize, deadline: Duration) -> usize {
@@ -1571,8 +1573,7 @@ app.datadoghq.com: [key-a, key-b]
         // The server returns 403 to the first request and 200 to every subsequent request; the forwarder must drive
         // at least one retry to observe the second request.
         let (server_url, counter) = start_recording_http_server(vec![StatusCode::FORBIDDEN, StatusCode::OK]).await;
-        let live_config = config_with(json!({ "secret_backend_command": "/bin/true" })).await;
-        let forwarder = build_test_forwarder(&server_url, Some(live_config));
+        let forwarder = build_test_forwarder(&server_url, Some(live_with_secrets("/bin/true")));
 
         let handle = forwarder.spawn().await;
         handle

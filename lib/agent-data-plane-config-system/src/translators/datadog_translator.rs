@@ -943,6 +943,18 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         self.config.shared.endpoints.proxy.no_proxy = value;
     }
 
+    fn consume_run_path(&mut self, value: String) {
+        self.config.shared.run_path = PathBuf::from(value);
+    }
+
+    fn consume_secret_backend_command(&mut self, value: String) {
+        self.config.shared.secrets.backend_command = value;
+    }
+
+    fn consume_secret_refresh_on_api_key_failure_interval(&mut self, value: i64) {
+        self.config.shared.secrets.refresh_on_api_key_failure_interval = value.max(0) as u64;
+    }
+
     fn consume_serializer_compressor_kind(&mut self, value: String) {
         self.config.shared.endpoints.compression.compressor_kind = value;
     }

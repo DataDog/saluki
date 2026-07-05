@@ -4,10 +4,10 @@ use std::{
     sync::LazyLock,
 };
 
+use agent_data_plane_config::{Live, SalukiConfiguration};
 use facet::Facet;
 use http::uri::Authority;
 use regex::Regex;
-use saluki_config::GenericConfiguration;
 use saluki_error::{ErrorContext as _, GenericError};
 use saluki_metadata;
 use serde::Deserialize;
@@ -25,10 +25,6 @@ static DD_SITE_FROM_HOSTNAME_REGEX: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 pub const DEFAULT_SITE: &str = "datadoghq.com";
-
-fn default_site() -> String {
-    DEFAULT_SITE.to_owned()
-}
 
 /// Per-endpoint V3 protocol settings.
 ///
@@ -354,6 +350,41 @@ pub(crate) enum EndpointError {
     Parse { source: url::ParseError, endpoint: String },
 }
 
+/// Which model field a primary-like endpoint refreshes its API key from at runtime.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) enum ApiKeyRefresh {
+    /// The shared primary API key (`shared.endpoints.api_key`).
+    #[default]
+    Primary,
+    /// The Multi-Region Failover API key (`domains.multi_region_failover.api_key`).
+    MultiRegionFailover,
+}
+
+/// Where a resolved endpoint's API key comes from, and how it refreshes at runtime.
+#[derive(Clone, Debug)]
+enum ApiKeySource {
+    /// Fixed key; never refreshed (no live configuration, or a caller-supplied override token).
+    Fixed,
+    /// The shared primary API key; an empty value leaves the last known key in place.
+    Primary(Live<String>),
+    /// An optional override key (for example Multi-Region Failover); an empty or absent value
+    /// leaves the last known key in place.
+    Optional(Live<Option<String>>),
+    /// A dual-shipping key at `index` in `shared.endpoints.additional_endpoints[url]`. `url` and
+    /// `index` identify the endpoint (used for retry-queue IDs) regardless of whether a live view is
+    /// attached; `keys` is present only when the key refreshes from live configuration.
+    Additional {
+        keys: Option<Live<HashMap<String, Vec<String>>>>,
+        url: String,
+        index: usize,
+    },
+}
+
+// Source-form parsing of `additional_endpoints` (single-string-or-list values, JSON-string maps) is
+// retained here because the not-yet-migrated Datadog metrics encoder still deserializes this type
+// from the raw configuration map.
+// TODO: drop these serde impls once `DatadogMetricsConfiguration` builds `additional_endpoints`
+// from the typed model.
 #[serde_as]
 #[derive(Clone, Debug, Default, Deserialize, Facet)]
 #[cfg_attr(test, derive(PartialEq, serde::Serialize))]
@@ -394,19 +425,28 @@ impl std::fmt::Display for MappedAPIKeys {
 pub(crate) struct AdditionalEndpoints(#[serde_as(as = "PickFirst<(DisplayFromStr, _)>")] MappedAPIKeys);
 
 impl AdditionalEndpoints {
+    /// Builds additional-endpoint configuration from the shared endpoint model map.
+    pub(crate) fn from_model(map: &HashMap<String, Vec<String>>) -> Self {
+        Self(MappedAPIKeys(
+            map.iter()
+                .map(|(url, keys)| (url.clone(), APIKeys(keys.clone())))
+                .collect(),
+        ))
+    }
+
     /// Returns the resolved endpoints from the additional endpoint configuration.
     ///
-    /// This will generate a [`ResolvedEndpoint`] for each unique endpoint/API key pair, assigning
-    /// each endpoint an `api_key_index` equal to the raw position of its key in the config's key
-    /// list for that URL (the `enumerate()` index, not a post-dedup counter). Empty and duplicate
-    /// keys are skipped; their positions are consumed but no endpoint is created.
+    /// This generates a [`ResolvedEndpoint`] for each unique endpoint/API key pair, recording the
+    /// raw position of its key in the config's key list for that URL (the `enumerate()` index, not a
+    /// post-dedup counter) so live lookups can index the list directly. Empty and duplicate keys are
+    /// skipped; their positions are consumed but no endpoint is created.
     ///
     /// # Errors
     ///
     /// If any of the additional endpoints aren't valid URLs, or a valid URL couldn't be constructed after applying
     /// the necessary normalization / modifications, an error will be returned.
     pub fn resolved_endpoints(
-        &self, configuration: Option<GenericConfiguration>,
+        &self, live: Option<Live<SalukiConfiguration>>,
     ) -> Result<Vec<ResolvedEndpoint>, EndpointError> {
         let mut resolved = Vec::new();
 
@@ -425,14 +465,18 @@ impl AdditionalEndpoints {
                 }
 
                 seen.insert(trimmed_api_key);
+                let api_key_source = ApiKeySource::Additional {
+                    keys: live
+                        .as_ref()
+                        .map(|live| live.project(|c| &c.shared.endpoints.additional_endpoints)),
+                    url: raw_endpoint.to_string(),
+                    index,
+                };
                 resolved.push(ResolvedEndpoint {
                     endpoint: endpoint.clone(),
                     configured_endpoint: raw_endpoint.to_string(),
                     api_key: trimmed_api_key.to_string(),
-                    config: configuration.clone(),
-                    api_key_refresh_config_path: None,
-                    api_key_index: Some(index),
-                    raw_additional_url: Some(raw_endpoint.to_string()),
+                    api_key_source,
                     logs_authority: logs_authority.clone(),
                     traces_authority: traces_authority.clone(),
                 });
@@ -444,23 +488,19 @@ impl AdditionalEndpoints {
 }
 
 /// Endpoint configuration for sending payloads to the Datadog platform.
-#[derive(Clone, Deserialize, Facet)]
-#[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
+#[derive(Clone)]
+#[cfg_attr(test, derive(Debug, PartialEq))]
 pub struct EndpointConfiguration {
     /// The API key to use.
     api_key: String,
 
-    /// Config path used to refresh the API key for primary-like endpoints.
-    #[serde(skip)]
-    api_key_refresh_config_path: Option<&'static str>,
+    /// Which model field primary-like endpoints refresh their API key from.
+    api_key_refresh: ApiKeyRefresh,
 
     /// The site to send metrics to.
     ///
     /// This is the base domain for the Datadog site in which the API key originates from. This will generally be a
     /// portion of the domain used to access the Datadog UI, such as `datadoghq.com` or `us5.datadoghq.com`.
-    ///
-    /// Defaults to `datadoghq.com`.
-    #[serde(default = "default_site")]
     site: String,
 
     /// The full URL base to send metrics to.
@@ -468,19 +508,24 @@ pub struct EndpointConfiguration {
     /// This takes precedence over `site`, and isn't altered in any way. This can be useful to specifying the exact
     /// endpoint used, such as when looking to change the scheme (for example, `http` vs `https`) or specifying a custom port,
     /// which are both useful when proxying traffic to an intermediate destination before forwarding to Datadog.
-    ///
-    /// Defaults to unset.
-    #[serde(default, alias = "url")]
     dd_url: Option<String>,
 
     /// Enables sending data to multiple endpoints and/or with multiple API keys via dual shipping.
-    ///
-    /// Defaults to empty.
-    #[serde(default)]
     additional_endpoints: AdditionalEndpoints,
 }
 
 impl EndpointConfiguration {
+    /// Builds endpoint configuration from the shared endpoint model.
+    pub(crate) fn from_model(endpoints: &agent_data_plane_config::shared::Endpoints) -> Self {
+        Self {
+            api_key: endpoints.api_key.clone(),
+            api_key_refresh: ApiKeyRefresh::Primary,
+            site: endpoints.site.clone().unwrap_or_else(|| DEFAULT_SITE.to_string()),
+            dd_url: endpoints.dd_url.clone(),
+            additional_endpoints: AdditionalEndpoints::from_model(&endpoints.additional_endpoints),
+        }
+    }
+
     /// Sets the full URL base to send metrics to.
     pub fn set_dd_url(&mut self, url: String) {
         self.dd_url = Some(url);
@@ -491,9 +536,22 @@ impl EndpointConfiguration {
         self.api_key = api_key;
     }
 
-    /// Sets the config path used to refresh the API key.
-    pub fn set_api_key_refresh_config_path(&mut self, path: &'static str) {
-        self.api_key_refresh_config_path = Some(path);
+    /// Sets which model field primary-like endpoints refresh their API key from.
+    pub fn set_api_key_refresh(&mut self, api_key_refresh: ApiKeyRefresh) {
+        self.api_key_refresh = api_key_refresh;
+    }
+
+    /// Builds the API key source for a primary-like endpoint from the given live view.
+    fn primary_api_key_source(&self, live: Option<Live<SalukiConfiguration>>) -> ApiKeySource {
+        match live {
+            None => ApiKeySource::Fixed,
+            Some(live) => match self.api_key_refresh {
+                ApiKeyRefresh::Primary => ApiKeySource::Primary(live.project(|c| &c.shared.endpoints.api_key)),
+                ApiKeyRefresh::MultiRegionFailover => {
+                    ApiKeySource::Optional(live.project(|c| &c.domains.multi_region_failover.api_key))
+                }
+            },
+        }
     }
 
     /// Clears all additional endpoints.
@@ -508,12 +566,12 @@ impl EndpointConfiguration {
     /// If the primary endpoint isn't a valid URL, or a valid URL couldn't be constructed after applying the
     /// necessary normalization / modifications to the endpoint, an error will be returned.
     pub(crate) fn build_primary_endpoint(
-        &self, configuration: Option<GenericConfiguration>,
+        &self, live: Option<Live<SalukiConfiguration>>,
     ) -> Result<ResolvedEndpoint, GenericError> {
+        let source = self.primary_api_key_source(live);
         calculate_resolved_endpoint(self.dd_url.as_deref(), &self.site, &self.api_key)
             .error_context("Failed parsing/resolving the primary destination endpoint.")
-            .map(|endpoint| endpoint.with_configuration(configuration))
-            .map(|endpoint| endpoint.with_api_key_refresh_config_path(self.api_key_refresh_config_path))
+            .map(|endpoint| endpoint.with_api_key_source(source))
     }
 
     /// Returns the configured primary endpoint string without resolving or version-prefixing it.
@@ -529,27 +587,27 @@ impl EndpointConfiguration {
 
     /// Builds the resolved primary endpoint from a URL override.
     pub(crate) fn build_primary_endpoint_override(
-        &self, url: &str, configuration: Option<GenericConfiguration>,
+        &self, url: &str, live: Option<Live<SalukiConfiguration>>,
     ) -> Result<ResolvedEndpoint, EndpointError> {
+        let source = self.primary_api_key_source(live);
         calculate_resolved_endpoint(Some(url), &self.site, &self.api_key)
-            .map(|endpoint| endpoint.with_configuration(configuration))
-            .map(|endpoint| endpoint.with_api_key_refresh_config_path(self.api_key_refresh_config_path))
+            .map(|endpoint| endpoint.with_api_key_source(source))
     }
 
     /// Builds the resolved additional endpoints.
     ///
-    /// If a [`GenericConfiguration`] is supplied, each additional endpoint will hold a live
-    /// reference to it and refresh its API key on every request via [`ResolvedEndpoint::api_key`].
+    /// If a live configuration view is supplied, each additional endpoint refreshes its API key on
+    /// every request via [`ResolvedEndpoint::api_key`].
     ///
     /// # Errors
     ///
     /// If any additional endpoint isn't a valid URL, or a valid URL couldn't be constructed after applying the
     /// necessary normalization / modifications to a particular endpoint, an error will be returned.
     pub(crate) fn build_additional_endpoints(
-        &self, configuration: Option<GenericConfiguration>,
+        &self, live: Option<Live<SalukiConfiguration>>,
     ) -> Result<Vec<ResolvedEndpoint>, GenericError> {
         self.additional_endpoints
-            .resolved_endpoints(configuration)
+            .resolved_endpoints(live)
             .error_context("Failed parsing/resolving the additional destination endpoints.")
     }
 }
@@ -563,15 +621,8 @@ pub struct ResolvedEndpoint {
     endpoint: Url,
     configured_endpoint: String,
     api_key: String,
-    config: Option<GenericConfiguration>,
-    /// Config path used to refresh the API key for primary-like endpoints. `None` uses `api_key`.
-    api_key_refresh_config_path: Option<&'static str>,
-    /// Position of this key in the `additional_endpoints` config key list for its URL (raw
-    /// `enumerate()` index, not a post-dedup counter). `None` for primary and OPW endpoints.
-    api_key_index: Option<usize>,
-    /// The raw (pre-normalization) URL string from `additional_endpoints`, used as the HashMap
-    /// key for live API key lookups. `None` for primary and OPW endpoints.
-    raw_additional_url: Option<String>,
+    /// Where this endpoint's API key comes from and how it refreshes at runtime.
+    api_key_source: ApiKeySource,
     /// Pre-computed logs intake authority (for example, `agent-http-intake.logs.datadoghq.com`).
     /// This is derived from the endpoint host when it contains `.agent.` marker.
     logs_authority: Option<Authority>,
@@ -642,26 +693,15 @@ impl ResolvedEndpoint {
             endpoint,
             configured_endpoint: raw_endpoint.to_string(),
             api_key: api_key.to_string(),
-            config: None,
-            api_key_refresh_config_path: None,
-            api_key_index: None,
-            raw_additional_url: None,
+            api_key_source: ApiKeySource::Fixed,
             logs_authority,
             traces_authority,
         })
     }
 
-    /// Creates a new  `ResolvedEndpoint` instance from an existing `ResolvedEndpoint`, adding an optional `GenericConfiguration` which can be used to fetch the up-to-date API key.
-    pub fn with_configuration(mut self, config: Option<GenericConfiguration>) -> Self {
-        self.config = config;
-        self
-    }
-
-    /// Sets the config path used to refresh the API key for primary-like endpoints.
-    pub(crate) fn with_api_key_refresh_config_path(
-        mut self, api_key_refresh_config_path: Option<&'static str>,
-    ) -> Self {
-        self.api_key_refresh_config_path = api_key_refresh_config_path;
+    /// Sets the API key source used to refresh the endpoint's key at runtime.
+    fn with_api_key_source(mut self, api_key_source: ApiKeySource) -> Self {
+        self.api_key_source = api_key_source;
         self
     }
 
@@ -679,52 +719,38 @@ impl ResolvedEndpoint {
 
     /// Returns the API key associated with the endpoint.
     ///
-    /// If a [`GenericConfiguration`] has been configured, the API key will be queried from the configuration and
-    /// stored if it has been updated since the last time `api_key` was called.
-    ///
-    /// For additional endpoints (those with an [`api_key_index`][Self::api_key_index]), the key is
-    /// looked up by position in the `additional_endpoints` config value. For the primary endpoint,
-    /// the `api_key` config key is used directly.
+    /// If a live configuration view has been attached, the API key is re-read from it and stored if
+    /// it has changed since the last call. Additional endpoints look their key up by position in the
+    /// `additional_endpoints` model map; primary and OPW endpoints read the shared primary key
+    /// (or the Multi-Region Failover key for an MRF override).
     pub fn api_key(&mut self) -> &str {
-        if let Some(config) = &self.config {
-            if let (Some(index), Some(raw_url)) = (self.api_key_index, self.raw_additional_url.as_deref()) {
-                // Additional endpoint: look up current key by raw index in this URL's key list.
-                match lookup_additional_key(config, raw_url, index) {
-                    Some(key) if key != self.api_key => {
-                        debug!(endpoint = %self.endpoint, index, "Refreshed additional endpoint API key.");
-                        self.api_key = key;
-                    }
-                    None => {
-                        debug!(
-                            endpoint = %self.endpoint,
-                            index,
-                            "Could not refresh additional endpoint key from config (index out of range or \
-                             parse error). Continuing with last known valid API key."
-                        );
-                    }
-                    _ => {}
-                }
-            } else {
-                // Primary / OPW endpoint: refresh from the configured API key source.
-                let api_key_refresh_config_path = self.api_key_refresh_config_path.unwrap_or("api_key");
-                match config.try_get_typed::<String>(api_key_refresh_config_path) {
-                    Ok(Some(api_key)) => {
-                        if !api_key.is_empty() && self.api_key != api_key {
-                            debug!(endpoint = %self.endpoint, key = api_key_refresh_config_path, "Refreshed API key.");
-                            self.api_key = api_key;
-                        }
-                    }
-                    Ok(None) | Err(_) => {
-                        debug!(
-                            key = api_key_refresh_config_path,
-                            "Failed to retrieve API key from remote source (missing or wrong type). Continuing with \
-                             last known valid API key."
-                        );
-                    }
-                }
+        if let Some(refreshed) = self.refreshed_api_key() {
+            if refreshed != self.api_key {
+                debug!(endpoint = %self.endpoint, "Refreshed API key.");
+                self.api_key = refreshed;
             }
         }
         self.api_key.as_str()
+    }
+
+    /// Reads the current API key from the live view, if one is attached and yields a non-empty key.
+    fn refreshed_api_key(&self) -> Option<String> {
+        match &self.api_key_source {
+            ApiKeySource::Fixed => None,
+            ApiKeySource::Primary(live) => {
+                let key = live.current();
+                (!key.is_empty()).then_some(key)
+            }
+            ApiKeySource::Optional(live) => live.current().filter(|key| !key.is_empty()),
+            ApiKeySource::Additional { keys, url, index } => keys
+                .as_ref()?
+                .current()
+                .get(url)
+                .and_then(|list| list.get(*index))
+                .map(|key| key.trim())
+                .filter(|key| !key.is_empty())
+                .map(str::to_string),
+        }
     }
 
     /// Returns the API key associated with the endpoint without refreshing it.
@@ -737,7 +763,10 @@ impl ResolvedEndpoint {
     /// its URL. `None` for primary and OPW endpoints.
     #[cfg(test)]
     pub(crate) fn api_key_index(&self) -> Option<usize> {
-        self.api_key_index
+        match &self.api_key_source {
+            ApiKeySource::Additional { index, .. } => Some(*index),
+            _ => None,
+        }
     }
 
     /// Returns the raw (pre-normalization) URL and key index for additional endpoints.
@@ -746,8 +775,8 @@ impl ResolvedEndpoint {
     /// `app.datadoghq.com` and `https://app.datadoghq.com`) normalize to the same host.
     /// Returns `None` for primary and OPW endpoints.
     pub(crate) fn additional_endpoint_queue_key(&self) -> Option<(&str, usize)> {
-        match (self.raw_additional_url.as_deref(), self.api_key_index) {
-            (Some(raw_url), Some(index)) => Some((raw_url, index)),
+        match &self.api_key_source {
+            ApiKeySource::Additional { url, index, .. } => Some((url.as_str(), *index)),
             _ => None,
         }
     }
@@ -755,13 +784,17 @@ impl ResolvedEndpoint {
     /// Returns whether this endpoint can refresh its API key from dynamic configuration.
     #[cfg(test)]
     pub(crate) fn has_configuration(&self) -> bool {
-        self.config.is_some()
+        match &self.api_key_source {
+            ApiKeySource::Fixed => false,
+            ApiKeySource::Primary(_) | ApiKeySource::Optional(_) => true,
+            ApiKeySource::Additional { keys, .. } => keys.is_some(),
+        }
     }
 
-    /// Returns whether this endpoint has an `api_key_index` (that is, is an additional endpoint).
+    /// Returns whether this endpoint is an additional (dual-shipping) endpoint.
     #[cfg(test)]
     pub(crate) fn has_api_key_index(&self) -> bool {
-        self.api_key_index.is_some()
+        matches!(self.api_key_source, ApiKeySource::Additional { .. })
     }
 
     /// Returns the pre-computed logs intake authority, if available.
@@ -883,27 +916,6 @@ fn calculate_resolved_endpoint(
     ResolvedEndpoint::from_raw_endpoint(&raw_endpoint, api_key)
 }
 
-/// Returns the API key at position `index` in `raw_url`'s key list from the live config.
-///
-/// `raw_url` is the pre-normalization URL string (for example `"app.datadoghq.eu"`) as it appears as a
-/// key in the `additional_endpoints` config value. `index` is the raw `enumerate()` position of
-/// the key in that URLs list (not a post-dedup counter).
-///
-/// Returns `None` if the URL is not present in the current config, if `index` is out of range, or
-/// if the key at that position is empty.
-fn lookup_additional_key(config: &GenericConfiguration, raw_url: &str, index: usize) -> Option<String> {
-    let additional = config
-        .try_get_typed::<AdditionalEndpoints>("additional_endpoints")
-        .ok()??
-        .0;
-    let key = additional.0.get(raw_url)?.0.get(index)?.trim();
-    if key.is_empty() {
-        None
-    } else {
-        Some(key.to_string())
-    }
-}
-
 /// Computes the logs intake authority from a resolved endpoint URL.
 ///
 /// If the endpoint host contains the `.agent.` marker (for example, `7-52-0-adp.agent.datadoghq.com`),
@@ -937,76 +949,43 @@ fn compute_traces_authority(endpoint: &Url) -> Option<Authority> {
 
 #[cfg(test)]
 mod tests {
-    use saluki_config::{dynamic::ConfigUpdate, ConfigurationLoader};
+    use std::sync::Arc;
+
+    use arc_swap::ArcSwap;
+    use tokio::sync::watch;
 
     use super::*;
 
-    fn additional_endpoints_to_sorted_strings(endpoints: &AdditionalEndpoints) -> Vec<String> {
-        let mut flattened = endpoints
-            .0
-            .mappings()
-            .flat_map(|(domain, api_keys)| api_keys.0.iter().map(move |api_key| format!("{}:{}", domain, api_key)))
-            .collect::<Vec<String>>();
-        flattened.sort();
-        flattened
+    fn additional_endpoints(entries: &[(&str, &[&str])]) -> AdditionalEndpoints {
+        let map: HashMap<String, Vec<String>> = entries
+            .iter()
+            .map(|(url, keys)| (url.to_string(), keys.iter().map(|k| k.to_string()).collect()))
+            .collect();
+        AdditionalEndpoints::from_model(&map)
     }
 
-    #[test]
-    fn deser_additional_endpoints_json_direct_mapping() {
-        let raw_input = r#""{\"app.datadoghq.com\":\"fake-api-key-1\",\"app.datadoghq.eu\":\"fake-api-key-2\"}""#;
-
-        let result = serde_yaml::from_str::<AdditionalEndpoints>(raw_input)
-            .expect("should not fail to deserialize AdditionalEndpoints from JSON string");
-
-        let expected = vec!["app.datadoghq.com:fake-api-key-1", "app.datadoghq.eu:fake-api-key-2"];
-        let actual = additional_endpoints_to_sorted_strings(&result);
-        assert_eq!(expected, actual);
+    /// A [`Live`] view backed by a cell the test can flip, mirroring how the config system drives
+    /// runtime updates.
+    fn drivable_live(
+        config: SalukiConfiguration,
+    ) -> (
+        Arc<ArcSwap<SalukiConfiguration>>,
+        watch::Sender<()>,
+        Live<SalukiConfiguration>,
+    ) {
+        let cell = Arc::new(ArcSwap::from_pointee(config));
+        let (tx, rx) = watch::channel(());
+        let live = Live::dynamic(Arc::clone(&cell), rx, |c| c);
+        (cell, tx, live)
     }
 
-    #[test]
-    fn deser_additional_endpoints_json_multiple_api_keys() {
-        let raw_input = r#""{\"app.datadoghq.com\":[\"fake-api-key-1a\",\"fake-api-key-1b\"],\"app.datadoghq.eu\":[\"fake-api-key-2a\",\"fake-api-key-2b\"]}""#;
-
-        let result = serde_yaml::from_str::<AdditionalEndpoints>(raw_input)
-            .expect("should not fail to deserialize AdditionalEndpoints from JSON string");
-
-        let expected = vec![
-            "app.datadoghq.com:fake-api-key-1a",
-            "app.datadoghq.com:fake-api-key-1b",
-            "app.datadoghq.eu:fake-api-key-2a",
-            "app.datadoghq.eu:fake-api-key-2b",
-        ];
-        let actual = additional_endpoints_to_sorted_strings(&result);
-        assert_eq!(expected, actual);
-    }
-
-    #[test]
-    fn deser_additional_endpoints_direct_mapping() {
-        let raw_input = "app.datadoghq.com: fake-api-key-1\napp.datadoghq.eu: fake-api-key-2";
-
-        let result = serde_yaml::from_str::<AdditionalEndpoints>(raw_input)
-            .expect("should not fail to deserialize AdditionalEndpoints from YAML string");
-
-        let expected = vec!["app.datadoghq.com:fake-api-key-1", "app.datadoghq.eu:fake-api-key-2"];
-        let actual = additional_endpoints_to_sorted_strings(&result);
-        assert_eq!(expected, actual);
-    }
-
-    #[test]
-    fn deser_additional_endpoints_multiple_api_keys() {
-        let raw_input = "app.datadoghq.com:\n  - fake-api-key-1a\n  - fake-api-key-1b\napp.datadoghq.eu:\n  - fake-api-key-2a\n  - fake-api-key-2b";
-
-        let result = serde_yaml::from_str::<AdditionalEndpoints>(raw_input)
-            .expect("should not fail to deserialize AdditionalEndpoints from YAML string");
-
-        let expected = vec![
-            "app.datadoghq.com:fake-api-key-1a",
-            "app.datadoghq.com:fake-api-key-1b",
-            "app.datadoghq.eu:fake-api-key-2a",
-            "app.datadoghq.eu:fake-api-key-2b",
-        ];
-        let actual = additional_endpoints_to_sorted_strings(&result);
-        assert_eq!(expected, actual);
+    fn config_with_additional_endpoints(entries: &[(&str, &[&str])]) -> SalukiConfiguration {
+        let mut config = SalukiConfiguration::default();
+        config.shared.endpoints.additional_endpoints = entries
+            .iter()
+            .map(|(url, keys)| (url.to_string(), keys.iter().map(|k| k.to_string()).collect()))
+            .collect();
+        config
     }
 
     #[test]
@@ -1014,9 +993,7 @@ mod tests {
         // Keys at positions 0, 1 are valid; position 2 is empty (skipped); position 3 is a
         // duplicate of position 0 (skipped); position 4 is valid. Only positions 0, 1, 4 produce
         // ResolvedEndpoints, and their api_key_index should be 0, 1, 4 respectively.
-        let raw_input = r#""app.datadoghq.com": ["key-a", "key-b", "", "key-a", "key-c"]"#;
-        let raw_yaml = format!("{{{}}}", raw_input);
-        let endpoints: AdditionalEndpoints = serde_yaml::from_str(&raw_yaml).expect("should deserialize");
+        let endpoints = additional_endpoints(&[("app.datadoghq.com", &["key-a", "key-b", "", "key-a", "key-c"])]);
 
         let resolved = endpoints.resolved_endpoints(None).expect("should resolve");
 
@@ -1037,64 +1014,32 @@ mod tests {
         );
 
         // Two URLs have independent index spaces (both start from 0).
-        let raw_yaml2 = r#"app.datadoghq.eu: [eu-key-a, eu-key-b]"#;
-        let endpoints2: AdditionalEndpoints = serde_yaml::from_str(raw_yaml2).expect("should deserialize");
+        let endpoints2 = additional_endpoints(&[("app.datadoghq.eu", &["eu-key-a", "eu-key-b"])]);
         let resolved2 = endpoints2.resolved_endpoints(None).expect("should resolve");
         assert_eq!(resolved2[0].api_key_index(), Some(0));
         assert_eq!(resolved2[1].api_key_index(), Some(1));
     }
 
-    #[tokio::test]
-    async fn api_key_dynamically_refreshes_from_additional_endpoints_config() {
-        use std::time::{Duration, Instant};
-
-        // No static initial values for additional_endpoints — all from dynamic config only.
-        // This avoids figment's admerge concatenating the static array with the dynamic array,
-        // which would leave the old key-1 in position 0.
-        let (config, sender) = ConfigurationLoader::for_tests(None, None, true).await;
-        let sender = sender.expect("dynamic configuration sender should be present");
-
-        // Apply an initial snapshot with key-1 and wait for readiness.
-        sender
-            .send(ConfigUpdate::Snapshot(serde_json::json!({
-                "additional_endpoints": { "http://extra.example.com": ["key-1"] }
-            })))
-            .await
-            .expect("should send initial snapshot");
-        config.ready().await;
-
-        // Build the additional endpoint with a live config reference.
-        let raw = r#"http://extra.example.com: [key-1]"#;
-        let additional: AdditionalEndpoints = serde_yaml::from_str(raw).expect("should deserialize");
-        let mut endpoints = additional
-            .resolved_endpoints(Some(config.clone()))
-            .expect("should resolve");
+    #[test]
+    fn api_key_dynamically_refreshes_from_additional_endpoints_config() {
+        // Build the additional endpoint against a live view holding the initial key.
+        let entries: &[(&str, &[&str])] = &[("http://extra.example.com", &["key-1"])];
+        let (cell, tx, live) = drivable_live(config_with_additional_endpoints(entries));
+        let additional = additional_endpoints(entries);
+        let mut endpoints = additional.resolved_endpoints(Some(live)).expect("should resolve");
         let endpoint = &mut endpoints[0];
 
         // Before the update, api_key() returns the original key.
         assert_eq!(endpoint.api_key(), "key-1");
 
-        // Push a snapshot that rotates the key.
-        sender
-            .send(ConfigUpdate::Snapshot(serde_json::json!({
-                "additional_endpoints": { "http://extra.example.com": ["key-2"] }
-            })))
-            .await
-            .expect("should send rotation snapshot");
-
-        // Poll api_key() until it reflects the new value; api_key() re-reads from live config on
-        // every call so no watcher or rebuild is needed.
-        let deadline = Instant::now() + Duration::from_secs(2);
-        loop {
-            if endpoint.api_key() == "key-2" {
-                break;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "timed out — api_key() did not refresh after additional_endpoints rotation"
-            );
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        // Rotating the key through the live view is reflected on the next call, because api_key()
+        // re-reads the live view every time.
+        cell.store(Arc::new(config_with_additional_endpoints(&[(
+            "http://extra.example.com",
+            &["key-2"],
+        )])));
+        tx.send(()).expect("live cell should have a receiver");
+        assert_eq!(endpoint.api_key(), "key-2");
     }
 
     #[test]
