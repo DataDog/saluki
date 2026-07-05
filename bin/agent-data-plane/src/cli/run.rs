@@ -28,7 +28,7 @@ use saluki_components::{
     },
     forwarders::{ClusterAgentForwarderConfiguration, DatadogForwarderConfiguration, OtlpForwarderConfiguration},
     relays::otlp::OtlpRelayConfiguration,
-    sources::{ChecksIPCConfiguration, DogStatsDConfiguration, OtlpConfiguration},
+    sources::{ChecksIPCConfiguration, DogStatsDConfiguration, OtlpConfiguration, DOGSTATSD_CAPTURE_DIR},
     transforms::{
         AggregateConfiguration, ApmStatsTransformConfiguration, AutoscalingFailoverGatewayConfiguration,
         ChainedConfiguration, DogStatsDMapperConfiguration, HostEnrichmentConfiguration,
@@ -750,17 +750,39 @@ async fn add_dsd_pipeline_to_blueprint(
     //    │    (destination)    │    │                       (Datadog Platform)                        │
     //    └─────────────────────┘    └ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┘
 
-    let dsd_config = DogStatsDConfiguration::from_configuration(config)
+    let saluki = config_system.config();
+    // `run_path` is deliberately not modeled, so read it from the raw config to derive the default
+    // DogStatsD capture directory only when `dogstatsd_capture_path` is unset.
+    let default_dsd_capture_path = if saluki.domains.dogstatsd.listeners.capture_path.as_os_str().is_empty() {
+        match config.try_get_typed::<PathBuf>("run_path") {
+            Ok(Some(run_path)) => Some(run_path.join(DOGSTATSD_CAPTURE_DIR)),
+            Ok(None) => {
+                debug!(
+                    "`dogstatsd_capture_path` and `run_path` were empty. Default DogStatsD capture path is unavailable."
+                );
+                None
+            }
+            Err(error) => {
+                debug!(
+                    error = %error,
+                    "Failed to read `run_path` from configuration. Default DogStatsD capture path is unavailable."
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let dsd_config = DogStatsDConfiguration::from_configuration(&saluki.domains.dogstatsd, default_dsd_capture_path)
         .error_context("Failed to configure DogStatsD source.")?
         .with_workload_provider(env_provider.workload().clone())
         .with_capture_entity_resolver(env_provider.workload().clone());
     let dsd_prefix_filter_configuration = DogStatsDPrefixFilterConfiguration::from_configuration(config)?;
-    let dsd_mapper_config = DogStatsDMapperConfiguration::from_configuration(config)?;
+    let dsd_mapper_config = DogStatsDMapperConfiguration::from_configuration(&saluki.domains.dogstatsd.mapper)?;
     let dsd_enrich_config =
         ChainedConfiguration::default().with_transform_builder("dogstatsd_mapper", dsd_mapper_config);
     let dsd_tag_filterlist_config = TagFilterlistConfiguration::from_configuration(config)
         .error_context("Failed to configure metric tag filterlist transform.")?;
-    let saluki = config_system.config();
     let dsd_agg_config = AggregateConfiguration::from_configuration(
         &saluki.domains.dogstatsd.aggregation,
         &saluki.shared.metrics_encoding.histogram,
