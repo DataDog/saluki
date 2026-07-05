@@ -13,7 +13,6 @@ use stringtheory::interning::GenericMapInterner;
 use stringtheory::MetaString;
 
 use crate::common::datadog::SAMPLING_PRIORITY_METRIC_KEY;
-use crate::common::otlp::config::TracesConfig;
 use crate::common::otlp::traces::transform::{
     bytes_to_hex_lowercase, get_otel_container_id, get_otel_env, get_otel_version, otel_span_to_dd_span,
     otlp_value_to_string,
@@ -165,17 +164,21 @@ struct TraceEntry {
 }
 
 pub struct OtlpTracesTranslator {
-    config: TracesConfig,
+    ignore_missing_datadog_fields: bool,
+    enable_compute_top_level_by_span_kind: bool,
     interner: GenericMapInterner,
     string_builder: StringBuilder<GenericMapInterner>,
 }
 
 impl OtlpTracesTranslator {
-    pub fn new(config: TracesConfig, interner_size: NonZeroUsize) -> Self {
+    pub fn new(
+        ignore_missing_datadog_fields: bool, enable_compute_top_level_by_span_kind: bool, interner_size: NonZeroUsize,
+    ) -> Self {
         let interner = GenericMapInterner::new(interner_size);
         let string_builder = StringBuilder::new().with_interner(interner.clone());
         Self {
-            config,
+            ignore_missing_datadog_fields,
+            enable_compute_top_level_by_span_kind,
             interner,
             string_builder,
         }
@@ -183,8 +186,8 @@ impl OtlpTracesTranslator {
 
     pub fn translate_spans(&mut self, resource_spans: ResourceSpans, metrics: &Metrics) -> impl Iterator<Item = Event> {
         let resource: OtlpResource = resource_spans.resource.unwrap_or_default();
-        let ignore_missing_fields = self.config.ignore_missing_datadog_fields;
-        let compute_top_level = self.config.enable_otlp_compute_top_level_by_span_kind;
+        let ignore_missing_fields = self.ignore_missing_datadog_fields;
+        let compute_top_level = self.enable_compute_top_level_by_span_kind;
         let interner = &self.interner;
         let string_builder = &mut self.string_builder;
 

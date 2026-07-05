@@ -845,16 +845,24 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         self.config.domains.dogstatsd.origin.unified = value;
     }
 
-    fn consume_otlp_config_logs_enabled(&mut self, value: bool) {
-        self.config.domains.otlp.receiver.logs_enabled = value;
+    fn consume_otlp_config_logs_enabled(&mut self, value: Option<bool>) {
+        // Flagged `saluki_overrides_default`: absent (`None`) keeps the model default (ADP enables
+        // OTLP logs); an explicit value wins, so `Some(false)` still disables logs.
+        if let Some(value) = value {
+            self.config.domains.otlp.receiver.logs_enabled = value;
+        }
     }
 
     fn consume_otlp_config_metrics_enabled(&mut self, value: bool) {
         self.config.domains.otlp.receiver.metrics_enabled = value;
     }
 
-    fn consume_otlp_config_receiver_protocols_grpc_endpoint(&mut self, value: String) {
-        self.config.domains.otlp.receiver.grpc.endpoint = value;
+    fn consume_otlp_config_receiver_protocols_grpc_endpoint(&mut self, value: Option<String>) {
+        // Flagged `saluki_overrides_default`: absent (`None`) keeps the model default (ADP binds all
+        // interfaces); an explicit endpoint wins.
+        if let Some(value) = value {
+            self.config.domains.otlp.receiver.grpc.endpoint = value;
+        }
     }
 
     fn consume_otlp_config_receiver_protocols_grpc_max_recv_msg_size_mib(&mut self, value: i64) {
@@ -865,8 +873,12 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         self.config.domains.otlp.receiver.grpc.transport = value;
     }
 
-    fn consume_otlp_config_receiver_protocols_http_endpoint(&mut self, value: String) {
-        self.config.domains.otlp.receiver.http.endpoint = value;
+    fn consume_otlp_config_receiver_protocols_http_endpoint(&mut self, value: Option<String>) {
+        // Flagged `saluki_overrides_default`: absent (`None`) keeps the model default (ADP binds all
+        // interfaces); an explicit endpoint wins.
+        if let Some(value) = value {
+            self.config.domains.otlp.receiver.http.endpoint = value;
+        }
     }
 
     fn consume_otlp_config_traces_enabled(&mut self, value: bool) {

@@ -1,183 +1,15 @@
 //! Shared OTLP receiver configuration.
 
 use bytesize::ByteSize;
-use facet::Facet;
-use saluki_config::GenericConfiguration;
-use saluki_error::GenericError;
 use serde::Deserialize;
-
-fn default_grpc_endpoint() -> String {
-    "0.0.0.0:4317".to_string()
-}
-
-fn default_http_endpoint() -> String {
-    "0.0.0.0:4318".to_string()
-}
-
-fn default_transport() -> String {
-    "tcp".to_string()
-}
-
-fn default_max_recv_msg_size_mib() -> u64 {
-    4
-}
 
 pub(crate) const fn default_traces_string_interner_size() -> ByteSize {
     ByteSize::kib(512)
 }
 
-/// Receiver configuration for OTLP endpoints.
-///
-/// This follows the Datadog Agent `otlp_config.receiver` structure.
-#[derive(Deserialize, Debug, Default, Facet)]
-#[cfg_attr(test, derive(PartialEq, serde::Serialize))]
-pub struct Receiver {
-    /// Protocol-specific receiver configuration.
-    #[serde(default)]
-    pub protocols: Protocols,
-}
-
-/// Protocol configuration for OTLP receiver.
-#[derive(Deserialize, Debug, Default, Facet)]
-#[cfg_attr(test, derive(PartialEq, serde::Serialize))]
-pub struct Protocols {
-    /// gRPC protocol configuration.
-    #[serde(default)]
-    pub grpc: GrpcConfig,
-
-    /// HTTP protocol configuration.
-    #[serde(default)]
-    pub http: HttpConfig,
-}
-
-/// gRPC receiver configuration.
-#[derive(Deserialize, Debug, Facet)]
-#[cfg_attr(test, derive(PartialEq, serde::Serialize))]
-pub struct GrpcConfig {
-    /// The gRPC endpoint to listen on for OTLP requests.
-    ///
-    /// Defaults to `0.0.0.0:4317`.
-    #[serde(default = "default_grpc_endpoint")]
-    pub endpoint: String,
-
-    /// The transport protocol to use for the gRPC listener.
-    ///
-    /// Defaults to `tcp`.
-    #[serde(default = "default_transport")]
-    pub transport: String,
-
-    /// Maximum size (in MiB) of a gRPC message that can be received.
-    ///
-    /// Defaults to 4 MiB.
-    #[serde(default = "default_max_recv_msg_size_mib", rename = "max_recv_msg_size_mib")]
-    pub max_recv_msg_size_mib: u64,
-}
-
-/// HTTP receiver configuration.
-#[derive(Deserialize, Debug, Facet)]
-#[cfg_attr(test, derive(PartialEq, serde::Serialize))]
-pub struct HttpConfig {
-    /// The HTTP endpoint to listen on for OTLP requests.
-    ///
-    /// Defaults to `0.0.0.0:4318`.
-    #[serde(default = "default_http_endpoint")]
-    pub endpoint: String,
-
-    /// The transport protocol to use for the HTTP listener.
-    ///
-    /// Defaults to `tcp`.
-    #[serde(default = "default_transport")]
-    pub transport: String,
-}
-
-impl Default for GrpcConfig {
-    fn default() -> Self {
-        Self {
-            endpoint: default_grpc_endpoint(),
-            transport: default_transport(),
-            max_recv_msg_size_mib: default_max_recv_msg_size_mib(),
-        }
-    }
-}
-
-impl Default for HttpConfig {
-    fn default() -> Self {
-        Self {
-            endpoint: default_http_endpoint(),
-            transport: default_transport(),
-        }
-    }
-}
-
-/// OTLP configuration.
-///
-/// This mirrors the Agent's `otlp_config` and contains configuration for
-/// the OTLP receiver as well as signal-specific settings (metrics, logs, traces).
-#[derive(Deserialize, Debug, Default)]
-#[cfg_attr(test, derive(PartialEq, serde::Serialize))]
-pub struct OtlpConfig {
-    /// OTLP receiver configuration.
-    #[serde(default)]
-    pub receiver: Receiver,
-
-    /// Metrics-specific OTLP configuration.
-    #[serde(default)]
-    pub metrics: MetricsConfig,
-
-    /// Logs-specific OTLP configuration.
-    #[serde(default)]
-    pub logs: LogsConfig,
-
-    /// Traces-specific OTLP configuration.
-    #[serde(default)]
-    pub traces: TracesConfig,
-}
-
-/// Configuration for OTLP logs processing.
-#[derive(Deserialize, Debug)]
-#[cfg_attr(test, derive(PartialEq, serde::Serialize))]
-pub struct LogsConfig {
-    /// Whether to enable OTLP logs support.
-    ///
-    /// Defaults to `true`.
-    #[serde(default = "default_logs_enabled")]
-    pub enabled: bool,
-}
-
-fn default_logs_enabled() -> bool {
-    true
-}
-
-impl Default for LogsConfig {
-    fn default() -> Self {
-        Self {
-            enabled: default_logs_enabled(),
-        }
-    }
-}
-
-/// Configuration for OTLP metrics processing.
-#[derive(Deserialize, Debug)]
-#[cfg_attr(test, derive(PartialEq, serde::Serialize))]
-pub struct MetricsConfig {
-    /// Whether to enable OTLP metrics support.
-    ///
-    /// Defaults to `true`.
-    #[serde(default = "default_metrics_enabled")]
-    pub enabled: bool,
-}
-
-fn default_metrics_enabled() -> bool {
-    true
-}
-
-impl Default for MetricsConfig {
-    fn default() -> Self {
-        Self {
-            enabled: default_metrics_enabled(),
-        }
-    }
-}
+// TODO: `TracesConfig` is the last raw-map OTLP config struct. It survives here for the Datadog
+// trace encoder (`DatadogTraceConfiguration`); remove it when that component migrates to the typed
+// `SalukiConfiguration` model.
 
 /// Configuration for OTLP traces processing.
 ///
@@ -188,6 +20,8 @@ pub struct TracesConfig {
     /// Whether to enable OTLP traces support.
     ///
     /// Defaults to `true`.
+    // TODO: unread until the Datadog trace encoder migrates to the typed model (see the module TODO).
+    #[allow(unused)]
     #[serde(default = "default_traces_enabled")]
     pub enabled: bool,
 
@@ -208,6 +42,8 @@ pub struct TracesConfig {
     /// in the Agent's `apm_config.features`.
     ///
     /// Defaults to `true`.
+    // TODO: unread until the Datadog trace encoder migrates to the typed model (see the module TODO).
+    #[allow(unused)]
     #[serde(default = "default_enable_otlp_compute_top_level_by_span_kind")]
     pub enable_otlp_compute_top_level_by_span_kind: bool,
 
@@ -220,6 +56,8 @@ pub struct TracesConfig {
     /// Total size of the string interner used for OTLP traces.
     ///
     /// Defaults to 512 KiB.
+    // TODO: unread until the Datadog trace encoder migrates to the typed model (see the module TODO).
+    #[allow(unused)]
     #[serde(rename = "string_interner_size", default = "default_traces_string_interner_size")]
     pub string_interner_bytes: ByteSize,
 
@@ -268,24 +106,6 @@ const fn default_enable_otlp_compute_top_level_by_span_kind() -> bool {
 
 fn default_traces_enabled() -> bool {
     true
-}
-
-impl TracesConfig {
-    /// Applies env var overrides for keys whose `DD_`-stripped flat form can't reach the nested
-    /// struct through normal serde deserialization.
-    ///
-    /// `DD_OTLP_CONFIG_TRACES_PROBABILISTIC_SAMPLER_SAMPLING_PERCENTAGE` strips to flat Figment key
-    /// `otlp_config_traces_probabilistic_sampler_sampling_percentage`. KEY_ALIASES ensures YAML and
-    /// env var land on the same key, but a nested struct can't see a flat key—so we read it
-    /// explicitly and override.
-    pub(crate) fn apply_env_overrides(&mut self, config: &GenericConfiguration) -> Result<(), GenericError> {
-        if let Some(pct) =
-            config.try_get_typed::<f64>("otlp_config_traces_probabilistic_sampler_sampling_percentage")?
-        {
-            self.probabilistic_sampler.sampling_percentage = pct;
-        }
-        Ok(())
-    }
 }
 
 impl Default for TracesConfig {

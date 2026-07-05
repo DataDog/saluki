@@ -3,9 +3,10 @@ use std::sync::Arc;
 use std::sync::LazyLock;
 use std::time::Duration;
 
+use agent_data_plane_config::domains::otlp::Domain as OtlpDomain;
+use agent_data_plane_config::domains::traces::OtlpTraces;
 use async_trait::async_trait;
 use axum::body::Bytes;
-use bytesize::ByteSize;
 use otlp_protos::opentelemetry::proto::collector::logs::v1::ExportLogsServiceRequest;
 use otlp_protos::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest;
 use otlp_protos::opentelemetry::proto::collector::trace::v1::ExportTraceServiceRequest;
@@ -16,7 +17,6 @@ use prost::Message;
 use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_common::sync::shutdown::{ShutdownCoordinator, ShutdownHandle};
 use saluki_common::task::HandleExt as _;
-use saluki_config::GenericConfiguration;
 use saluki_context::ContextResolver;
 use saluki_core::topology::interconnect::BufferedDispatcher;
 use saluki_core::{
@@ -31,15 +31,13 @@ use saluki_env::WorkloadProvider;
 use saluki_error::ErrorContext as _;
 use saluki_error::{generic_error, GenericError};
 use saluki_io::net::ListenAddress;
-use serde::Deserialize;
 use tokio::pin;
 use tokio::select;
 use tokio::sync::mpsc;
 use tokio::time::{interval, MissedTickBehavior};
 use tracing::{debug, error};
 
-use crate::common::otlp::config::OtlpConfig;
-use crate::common::otlp::{build_metrics, Metrics, OtlpHandler, OtlpServerBuilder};
+use crate::common::otlp::{build_metrics, grpc_max_recv_msg_size_bytes, Metrics, OtlpHandler, OtlpServerBuilder};
 
 mod logs;
 mod metrics;
@@ -50,87 +48,52 @@ use self::resolver::build_context_resolver;
 use crate::common::otlp::origin::OtlpOriginTagResolver;
 use crate::common::otlp::traces::translator::OtlpTracesTranslator;
 
-const fn default_context_string_interner_size() -> ByteSize {
-    ByteSize::mib(2)
-}
-
-const fn default_cached_contexts_limit() -> usize {
-    500_000
-}
-
-const fn default_cached_tagsets_limit() -> usize {
-    500_000
-}
-
-const fn default_allow_context_heap_allocations() -> bool {
-    true
-}
-
 /// Configuration for the OTLP source.
-#[derive(Deserialize, Default)]
-#[cfg_attr(test, derive(derive_where::DeriveWhere, serde::Serialize))]
-#[cfg_attr(test, derive_where(PartialEq))]
 pub struct OtlpConfiguration {
-    otlp_config: OtlpConfig,
+    // Receiver per-signal activation and endpoints.
+    metrics_enabled: bool,
+    logs_enabled: bool,
+    traces_enabled: bool,
+    grpc_endpoint: String,
+    grpc_transport: String,
+    grpc_max_recv_msg_size_mib: u64,
+    http_endpoint: String,
 
-    /// Total size of the string interner used for contexts.
-    ///
-    /// This controls the amount of memory that can be used to intern metric names and tags. If the interner is full,
-    /// metrics with contexts that haven't already been resolved may or may not be dropped, depending on the value of
-    /// `allow_context_heap_allocations`.
-    #[serde(
-        rename = "otlp_string_interner_size",
-        default = "default_context_string_interner_size"
-    )]
-    context_string_interner_bytes: ByteSize,
-
-    /// The maximum number of cached contexts to allow.
-    ///
-    /// This is the maximum number of resolved contexts that can be cached at any given time. This limit doesn't affect
-    /// the total number of contexts that can be _alive_ at any given time, which is dependent on the interner capacity
-    /// and whether or not heap allocations are allowed.
-    ///
-    /// Defaults to 500,000.
-    #[serde(rename = "otlp_cached_contexts_limit", default = "default_cached_contexts_limit")]
+    // Metric context resolver sizing.
+    context_string_interner_bytes: u64,
     cached_contexts_limit: usize,
-
-    /// The maximum number of cached tagsets to allow.
-    ///
-    /// This is the maximum number of resolved tagsets that can be cached at any given time. This limit doesn't affect
-    /// the total number of tagsets that can be _alive_ at any given time, which is dependent on the interner capacity
-    /// and whether or not heap allocations are allowed.
-    ///
-    /// Defaults to 500,000.
-    #[serde(rename = "otlp_cached_tagsets_limit", default = "default_cached_tagsets_limit")]
     cached_tagsets_limit: usize,
-
-    /// Whether or not to allow heap allocations when resolving contexts.
-    ///
-    /// When resolving contexts during parsing, the metric name and tags are interned to reduce memory usage. The
-    /// interner has a fixed size, however, which means some strings can fail to be interned if the interner is full.
-    /// When set to `true`, we allow these strings to be allocated on the heap like normal, but this can lead to
-    /// increased (unbounded) memory usage. When set to `false`, if the metric name and all of its tags can't be
-    /// interned, the metric is skipped.
-    ///
-    /// Defaults to `true`.
-    #[serde(
-        rename = "otlp_allow_context_heap_allocs",
-        default = "default_allow_context_heap_allocations"
-    )]
     allow_context_heap_allocations: bool,
 
+    // OTLP trace ingestion.
+    traces_string_interner_bytes: u64,
+    traces_ignore_missing_datadog_fields: bool,
+    traces_enable_compute_top_level_by_span_kind: bool,
+
     /// Workload provider to utilize for origin detection/enrichment.
-    #[serde(skip)]
-    #[cfg_attr(test, derive_where(skip))]
     workload_provider: Option<Arc<dyn WorkloadProvider + Send + Sync>>,
 }
 
 impl OtlpConfiguration {
-    /// Creates a new `OTLPConfiguration` from the given configuration.
-    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        let mut cfg: Self = config.as_typed()?;
-        cfg.otlp_config.traces.apply_env_overrides(config)?;
-        Ok(cfg)
+    /// Creates a new `OtlpConfiguration` from the resolved OTLP configuration.
+    pub fn from_configuration(otlp: &OtlpDomain, traces_otlp: &OtlpTraces) -> Result<Self, GenericError> {
+        Ok(Self {
+            metrics_enabled: otlp.receiver.metrics_enabled,
+            logs_enabled: otlp.receiver.logs_enabled,
+            traces_enabled: traces_otlp.enabled,
+            grpc_endpoint: otlp.receiver.grpc.endpoint.clone(),
+            grpc_transport: otlp.receiver.grpc.transport.clone(),
+            grpc_max_recv_msg_size_mib: otlp.receiver.grpc.max_recv_msg_size_mib,
+            http_endpoint: otlp.receiver.http.endpoint.clone(),
+            context_string_interner_bytes: otlp.contexts.string_interner_size,
+            cached_contexts_limit: otlp.contexts.cached_contexts_limit,
+            cached_tagsets_limit: otlp.contexts.cached_tagsets_limit,
+            allow_context_heap_allocations: otlp.contexts.allow_context_heap_allocs,
+            traces_string_interner_bytes: traces_otlp.string_interner_size,
+            traces_ignore_missing_datadog_fields: traces_otlp.ignore_missing_datadog_fields,
+            traces_enable_compute_top_level_by_span_kind: traces_otlp.enable_compute_top_level_by_span_kind,
+            workload_provider: None,
+        })
     }
 
     /// Sets the workload provider to use for configuring origin detection/enrichment.
@@ -162,16 +125,13 @@ impl SourceBuilder for OtlpConfiguration {
     }
 
     async fn build(&self, context: ComponentContext) -> Result<Box<dyn Source + Send>, GenericError> {
-        if !self.otlp_config.metrics.enabled && !self.otlp_config.logs.enabled && !self.otlp_config.traces.enabled {
+        if !self.metrics_enabled && !self.logs_enabled && !self.traces_enabled {
             return Err(generic_error!(
                 "OTLP metrics, logs and traces support is disabled. Please enable at least one of them."
             ));
         }
 
-        let grpc_listen_str = format!(
-            "{}://{}",
-            self.otlp_config.receiver.protocols.grpc.transport, self.otlp_config.receiver.protocols.grpc.endpoint
-        );
+        let grpc_listen_str = format!("{}://{}", self.grpc_transport, self.grpc_endpoint);
         let grpc_endpoint = ListenAddress::try_from(grpc_listen_str.as_str())
             .map_err(|e| generic_error!("Invalid gRPC endpoint address '{}': {}", grpc_listen_str, e))?;
 
@@ -180,7 +140,7 @@ impl SourceBuilder for OtlpConfiguration {
             return Err(generic_error!("Only 'tcp' transport is supported for OTLP gRPC"));
         }
 
-        let http_endpoint_str = &self.otlp_config.receiver.protocols.http.endpoint;
+        let http_endpoint_str = &self.http_endpoint;
         let http_socket_addr = http_endpoint_str
             .to_socket_addrs()
             .map_err(|e| generic_error!("Invalid HTTP endpoint address '{}': {}", http_endpoint_str, e))?
@@ -193,12 +153,14 @@ impl SourceBuilder for OtlpConfiguration {
         let metrics_translator_config = metrics::config::OtlpMetricsTranslatorConfig::default()
             .with_remapping(true)
             .with_quantiles(true);
-        let traces_interner_size =
-            std::num::NonZeroUsize::new(self.otlp_config.traces.string_interner_bytes.as_u64() as usize)
-                .ok_or_else(|| generic_error!("otlp_config.traces.string_interner_size must be greater than 0"))?;
-        let traces_translator = OtlpTracesTranslator::new(self.otlp_config.traces.clone(), traces_interner_size);
-        let grpc_max_recv_msg_size_bytes =
-            self.otlp_config.receiver.protocols.grpc.max_recv_msg_size_mib as usize * 1024 * 1024;
+        let traces_interner_size = std::num::NonZeroUsize::new(self.traces_string_interner_bytes as usize)
+            .ok_or_else(|| generic_error!("otlp_config.traces.string_interner_size must be greater than 0"))?;
+        let traces_translator = OtlpTracesTranslator::new(
+            self.traces_ignore_missing_datadog_fields,
+            self.traces_enable_compute_top_level_by_span_kind,
+            traces_interner_size,
+        );
+        let grpc_max_recv_msg_size_bytes = grpc_max_recv_msg_size_bytes(self.grpc_max_recv_msg_size_mib);
         let metrics = build_metrics(&context);
 
         Ok(Box::new(Otlp {
@@ -490,24 +452,60 @@ async fn run_converter(
 }
 
 #[cfg(test)]
-mod config_smoke {
-    use datadog_agent_config_testing::config_registry::structs;
-    use datadog_agent_config_testing::run_config_smoke_tests;
-    use serde_json::json;
+mod tests {
+    use agent_data_plane_config::domains::{otlp, traces};
 
-    use super::OtlpConfiguration;
-    use crate::config::{DatadogRemapper, KEY_ALIASES};
+    use super::*;
 
-    #[tokio::test]
-    async fn smoke_test() {
-        run_config_smoke_tests(
-            structs::OTLP_CONFIGURATION,
-            &[],
-            json!({ "otlp_config": {} }),
-            |cfg| OtlpConfiguration::from_configuration(&cfg).expect("OtlpConfiguration should deserialize"),
-            KEY_ALIASES,
-            DatadogRemapper::new,
-        )
-        .await
+    #[test]
+    fn from_configuration_maps_the_resolved_model() {
+        let otlp = otlp::Domain {
+            receiver: otlp::Receiver {
+                metrics_enabled: true,
+                logs_enabled: false,
+                grpc: otlp::GrpcReceiver {
+                    endpoint: "0.0.0.0:4317".to_string(),
+                    transport: "tcp".to_string(),
+                    max_recv_msg_size_mib: 8,
+                },
+                http: otlp::HttpReceiver {
+                    endpoint: "0.0.0.0:4318".to_string(),
+                    transport: "tcp".to_string(),
+                },
+            },
+            contexts: otlp::Contexts {
+                string_interner_size: 1024,
+                cached_contexts_limit: 111,
+                cached_tagsets_limit: 222,
+                allow_context_heap_allocs: false,
+            },
+            ..Default::default()
+        };
+
+        let traces_otlp = traces::OtlpTraces {
+            enabled: true,
+            string_interner_size: 2048,
+            ignore_missing_datadog_fields: true,
+            enable_compute_top_level_by_span_kind: false,
+            ..Default::default()
+        };
+
+        let config = OtlpConfiguration::from_configuration(&otlp, &traces_otlp).expect("builds from model");
+
+        assert!(config.metrics_enabled);
+        assert!(!config.logs_enabled);
+        assert!(config.traces_enabled);
+        assert_eq!(config.grpc_endpoint, "0.0.0.0:4317");
+        assert_eq!(config.grpc_transport, "tcp");
+        assert_eq!(config.grpc_max_recv_msg_size_mib, 8);
+        assert_eq!(config.http_endpoint, "0.0.0.0:4318");
+        assert_eq!(config.context_string_interner_bytes, 1024);
+        assert_eq!(config.cached_contexts_limit, 111);
+        assert_eq!(config.cached_tagsets_limit, 222);
+        assert!(!config.allow_context_heap_allocations);
+        assert_eq!(config.traces_string_interner_bytes, 2048);
+        assert!(config.traces_ignore_missing_datadog_fields);
+        assert!(!config.traces_enable_compute_top_level_by_span_kind);
+        assert!(config.workload_provider.is_none());
     }
 }

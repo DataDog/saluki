@@ -40,6 +40,7 @@ pub fn generate(
     overlay: &SchemaOverlay, schema_path: &Path, schema_map: &IndexMap<String, FieldInfo>, manifest_dir: &Path,
 ) {
     let supported = supported_keys(overlay);
+    let override_default = override_default_keys(overlay);
 
     // Load the schema with all `$ref` files inlined (apm_config, multi_region_failover, ...).
     // Without $ref resolution those subsystem keys are silently absent and the witness driver
@@ -56,7 +57,15 @@ pub fn generate(
     // counts every emitted leaf so we can reject a duration whose name is ambiguous (see below).
     let mut durations: BTreeMap<String, u64> = BTreeMap::new();
     let mut leaf_names: BTreeMap<String, usize> = BTreeMap::new();
-    let pruned_properties = prune(properties, "", &supported, schema_map, &mut durations, &mut leaf_names);
+    let pruned_properties = prune(
+        properties,
+        "",
+        &supported,
+        &override_default,
+        schema_map,
+        &mut durations,
+        &mut leaf_names,
+    );
 
     // `durationize` matches duration fields by name and `duration_defaults` names its functions the
     // same way, so a duration leaf that shares its name with any other field is unresolvable. Fail
@@ -127,13 +136,33 @@ fn supported_keys(overlay: &SchemaOverlay) -> HashSet<String> {
         .collect()
 }
 
+/// Collect the dotted paths of supported entries flagged `saluki_overrides_default`.
+///
+/// For these keys the schema `default` is omitted from the pruned leaf, so typify emits an
+/// absence-aware `Option<T>` rather than a concrete field defaulted to the Agent value. The
+/// translator then supplies ADP's effective default when the key is absent (a `None`) while any
+/// operator-set value round-trips as `Some`. The classifier is unaffected: it reads the schema
+/// default from `schema_map`, not from this pruned copy.
+fn override_default_keys(overlay: &SchemaOverlay) -> HashSet<String> {
+    overlay
+        .inventory
+        .iter()
+        .filter(|(_, entry)| match entry {
+            KnownEntry::Full(f) => f.saluki_overrides_default,
+            KnownEntry::Partial(p) => p.saluki_overrides_default,
+            _ => false,
+        })
+        .map(|(key, _)| key.clone())
+        .collect()
+}
+
 /// Recursively project the schema's `properties` onto the supported key set.
 ///
 /// Section nodes are kept only when they contain at least one supported descendant. Leaf settings
 /// are kept only when their dotted path is supported, carrying just the JSON Schema keywords typify
 /// understands.
 fn prune(
-    properties: &Map<String, Value>, prefix: &str, supported: &HashSet<String>,
+    properties: &Map<String, Value>, prefix: &str, supported: &HashSet<String>, override_default: &HashSet<String>,
     schema_map: &IndexMap<String, FieldInfo>, durations: &mut BTreeMap<String, u64>,
     leaf_names: &mut BTreeMap<String, usize>,
 ) -> Map<String, Value> {
@@ -147,7 +176,15 @@ fn prune(
         };
 
         if let Some(child_props) = node.get("properties").and_then(Value::as_object) {
-            let pruned_children = prune(child_props, &path, supported, schema_map, durations, leaf_names);
+            let pruned_children = prune(
+                child_props,
+                &path,
+                supported,
+                override_default,
+                schema_map,
+                durations,
+                leaf_names,
+            );
             if pruned_children.is_empty() {
                 continue;
             }
@@ -183,7 +220,13 @@ fn prune(
                 leaf.insert("type".into(), Value::String("integer".into()));
                 leaf.insert("default".into(), Value::from(nanos));
             } else {
+                // A key flagged `saluki_overrides_default` drops its schema `default` here so typify
+                // renders it as `Option<T>`; ADP owns the effective default downstream.
+                let drop_default = override_default.contains(&path);
                 for keyword in LEAF_KEYWORDS {
+                    if *keyword == "default" && drop_default {
+                        continue;
+                    }
                     if let Some(value) = node.get(*keyword) {
                         leaf.insert((*keyword).to_string(), value.clone());
                     }

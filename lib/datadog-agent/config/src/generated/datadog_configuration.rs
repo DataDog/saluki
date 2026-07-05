@@ -1238,8 +1238,8 @@ impl Default for OtlpConfig {
 
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
 pub struct OtlpConfigLogs {
-    #[serde(default)]
-    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    pub enabled: Option<bool>,
 }
 
 impl Default for OtlpConfigLogs {
@@ -1298,10 +1298,8 @@ impl Default for OtlpConfigReceiverProtocols {
 
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
 pub struct OtlpConfigReceiverProtocolsGrpc {
-    #[serde(
-        default = "defaults::datadog_configuration_otlp_config_receiver_protocols_grpc_endpoint"
-    )]
-    pub endpoint: String,
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    pub endpoint: Option<String>,
 
     #[serde(default)]
     pub max_recv_msg_size_mib: i64,
@@ -1315,7 +1313,7 @@ pub struct OtlpConfigReceiverProtocolsGrpc {
 impl Default for OtlpConfigReceiverProtocolsGrpc {
     fn default() -> Self {
         Self {
-            endpoint: defaults::datadog_configuration_otlp_config_receiver_protocols_grpc_endpoint(),
+            endpoint: Default::default(),
             max_recv_msg_size_mib: Default::default(),
             transport: defaults::datadog_configuration_otlp_config_receiver_protocols_grpc_transport(),
         }
@@ -1324,16 +1322,14 @@ impl Default for OtlpConfigReceiverProtocolsGrpc {
 
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
 pub struct OtlpConfigReceiverProtocolsHttp {
-    #[serde(
-        default = "defaults::datadog_configuration_otlp_config_receiver_protocols_http_endpoint"
-    )]
-    pub endpoint: String,
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    pub endpoint: Option<String>,
 }
 
 impl Default for OtlpConfigReceiverProtocolsHttp {
     fn default() -> Self {
         Self {
-            endpoint: defaults::datadog_configuration_otlp_config_receiver_protocols_http_endpoint(),
+            endpoint: Default::default(),
         }
     }
 }
@@ -1704,14 +1700,8 @@ pub mod defaults {
     pub(super) fn datadog_configuration_data_plane_otlp_proxy_receiver_protocols_grpc_endpoint() -> String {
         "127.0.0.1:4319".to_string()
     }
-    pub(super) fn datadog_configuration_otlp_config_receiver_protocols_grpc_endpoint() -> String {
-        "localhost:4317".to_string()
-    }
     pub(super) fn datadog_configuration_otlp_config_receiver_protocols_grpc_transport() -> String {
         "tcp".to_string()
-    }
-    pub(super) fn datadog_configuration_otlp_config_receiver_protocols_http_endpoint() -> String {
-        "localhost:4318".to_string()
     }
     pub(super) fn datadog_configuration_otlp_config_traces_probabilistic_sampler_sampling_percentage() -> f64 {
         100_f64

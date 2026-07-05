@@ -1,68 +1,59 @@
 use std::sync::LazyLock;
 
+use agent_data_plane_config::domains::otlp::Domain as OtlpConfiguration;
 use async_trait::async_trait;
 use axum::body::Bytes;
-use facet::Facet;
 use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_common::buf::FrozenChunkedBytesBuffer;
-use saluki_config::GenericConfiguration;
 use saluki_core::components::relays::{Relay, RelayBuilder, RelayContext};
 use saluki_core::components::ComponentContext;
 use saluki_core::data_model::payload::{GrpcPayload, Payload, PayloadMetadata, PayloadType};
 use saluki_core::topology::OutputDefinition;
-use saluki_error::{ErrorContext as _, GenericError};
+use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_io::net::ListenAddress;
-use serde::Deserialize;
 use stringtheory::MetaString;
 use tokio::sync::mpsc;
 use tokio::{pin, select};
 use tracing::{debug, error};
 
-use crate::common::otlp::config::Receiver;
 use crate::common::otlp::{
-    build_metrics, Metrics, OtlpHandler, OtlpServerBuilder, OTLP_LOGS_GRPC_SERVICE_PATH,
+    build_metrics, grpc_max_recv_msg_size_bytes, Metrics, OtlpHandler, OtlpServerBuilder, OTLP_LOGS_GRPC_SERVICE_PATH,
     OTLP_METRICS_GRPC_SERVICE_PATH, OTLP_TRACES_GRPC_SERVICE_PATH,
 };
 
 /// Configuration for the OTLP relay.
-#[derive(Deserialize, Default, Facet)]
-#[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
 pub struct OtlpRelayConfiguration {
-    #[serde(default)]
-    otlp_config: OtlpRelayConfig,
-}
-
-/// OTLP configuration for the relay.
-#[derive(Deserialize, Default, Facet)]
-#[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
-pub struct OtlpRelayConfig {
-    #[serde(default)]
-    receiver: Receiver,
+    http_endpoint: ListenAddress,
+    grpc_endpoint: ListenAddress,
+    grpc_max_recv_msg_size_bytes: usize,
 }
 
 impl OtlpRelayConfiguration {
-    /// Creates a new `OtlpRelayConfiguration` from the given generic configuration.
-    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        config.as_typed().map_err(Into::into)
+    /// Creates a new `OtlpRelayConfiguration` from the resolved OTLP configuration.
+    pub fn from_configuration(otlp: &OtlpConfiguration) -> Result<Self, GenericError> {
+        let http_endpoint =
+            parse_receiver_endpoint(&otlp.receiver.http.transport, &otlp.receiver.http.endpoint, "HTTP")?;
+        let grpc_endpoint =
+            parse_receiver_endpoint(&otlp.receiver.grpc.transport, &otlp.receiver.grpc.endpoint, "gRPC")?;
+        Ok(Self {
+            http_endpoint,
+            grpc_endpoint,
+            grpc_max_recv_msg_size_bytes: grpc_max_recv_msg_size_bytes(otlp.receiver.grpc.max_recv_msg_size_mib),
+        })
     }
+}
 
-    fn http_endpoint(&self) -> ListenAddress {
-        let transport = &self.otlp_config.receiver.protocols.http.transport;
-        let endpoint = &self.otlp_config.receiver.protocols.http.endpoint;
-        let address = format!("{}://{}", transport, endpoint);
-        ListenAddress::try_from(address).expect("valid HTTP endpoint")
-    }
-
-    fn grpc_endpoint(&self) -> ListenAddress {
-        let transport = &self.otlp_config.receiver.protocols.grpc.transport;
-        let endpoint = &self.otlp_config.receiver.protocols.grpc.endpoint;
-        let address = format!("{}://{}", transport, endpoint);
-        ListenAddress::try_from(address).expect("valid gRPC endpoint")
-    }
-
-    fn grpc_max_recv_msg_size_bytes(&self) -> usize {
-        (self.otlp_config.receiver.protocols.grpc.max_recv_msg_size_mib * 1024 * 1024) as usize
-    }
+fn parse_receiver_endpoint(transport: &str, endpoint: &str, protocol: &str) -> Result<ListenAddress, GenericError> {
+    let address = format!("{}://{}", transport, endpoint);
+    ListenAddress::try_from(address).map_err(|e| {
+        generic_error!(
+            "Invalid OTLP {} receiver endpoint '{}://{}': {}",
+            protocol,
+            transport,
+            endpoint,
+            e
+        )
+    })
 }
 
 impl MemoryBounds for OtlpRelayConfiguration {
@@ -84,9 +75,9 @@ impl RelayBuilder for OtlpRelayConfiguration {
 
     async fn build(&self, context: ComponentContext) -> Result<Box<dyn Relay + Send>, GenericError> {
         Ok(Box::new(OtlpRelay {
-            http_endpoint: self.http_endpoint(),
-            grpc_endpoint: self.grpc_endpoint(),
-            grpc_max_recv_msg_size_bytes: self.grpc_max_recv_msg_size_bytes(),
+            http_endpoint: self.http_endpoint.clone(),
+            grpc_endpoint: self.grpc_endpoint.clone(),
+            grpc_max_recv_msg_size_bytes: self.grpc_max_recv_msg_size_bytes,
             metrics: build_metrics(&context),
         }))
     }
@@ -265,27 +256,40 @@ impl OtlpHandler for RelayHandler {
 }
 
 #[cfg(test)]
-mod config_smoke {
-    use datadog_agent_config_testing::config_registry::structs;
-    use datadog_agent_config_testing::run_config_smoke_tests;
-    use serde_json::json;
+mod tests {
+    use agent_data_plane_config::domains::otlp;
 
-    use super::OtlpRelayConfiguration;
-    use crate::config::{DatadogRemapper, KEY_ALIASES};
+    use super::*;
 
-    #[tokio::test]
-    async fn smoke_test() {
-        run_config_smoke_tests(
-            structs::OTLP_RELAY_CONFIGURATION,
-            &[],
-            json!({}),
-            |cfg| {
-                cfg.as_typed::<OtlpRelayConfiguration>()
-                    .expect("OtlpRelayConfiguration should deserialize")
+    fn receiver_model(max_recv_msg_size_mib: u64) -> otlp::Domain {
+        otlp::Domain {
+            receiver: otlp::Receiver {
+                grpc: otlp::GrpcReceiver {
+                    endpoint: "0.0.0.0:4317".to_string(),
+                    transport: "tcp".to_string(),
+                    max_recv_msg_size_mib,
+                },
+                http: otlp::HttpReceiver {
+                    endpoint: "0.0.0.0:4318".to_string(),
+                    transport: "tcp".to_string(),
+                },
+                ..Default::default()
             },
-            KEY_ALIASES,
-            DatadogRemapper::new,
-        )
-        .await
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn from_configuration_parses_endpoints_and_max_recv_size() {
+        let config = OtlpRelayConfiguration::from_configuration(&receiver_model(8)).expect("builds from model");
+        assert_eq!(config.grpc_max_recv_msg_size_bytes, 8 * 1024 * 1024);
+        assert!(matches!(config.grpc_endpoint, ListenAddress::Tcp(_)));
+        assert!(matches!(config.http_endpoint, ListenAddress::Tcp(_)));
+    }
+
+    #[test]
+    fn zero_max_recv_size_falls_back_to_the_grpc_default() {
+        let config = OtlpRelayConfiguration::from_configuration(&receiver_model(0)).expect("builds from model");
+        assert_eq!(config.grpc_max_recv_msg_size_bytes, 4 * 1024 * 1024);
     }
 }
