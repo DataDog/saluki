@@ -944,6 +944,14 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_run_path(&mut self, value: String) {
+        // The vendored schema default is the literal template `${run_path}`, which Saluki does not
+        // expand. Treat that placeholder (as well as empty or whitespace-only values) as unset,
+        // leaving `run_path` as the empty default so the forwarder does not derive a bogus
+        // `${run_path}/transactions_to_retry` storage path.
+        let trimmed = value.trim();
+        if trimmed.is_empty() || trimmed == "${run_path}" {
+            return;
+        }
         self.config.shared.run_path = PathBuf::from(value);
     }
 
@@ -1361,5 +1369,46 @@ mod tests {
             !modes.contains_key("https://bad.example.com"),
             "the invalid entry must be omitted from the map"
         );
+    }
+
+    #[test]
+    fn run_path_schema_default_placeholder_leaves_run_path_unset() {
+        // The vendored schema default for `run_path` is the literal template `${run_path}`. Saluki
+        // does not expand templates, so this must not propagate; `run_path` stays empty (unset).
+        let datadog: DatadogConfiguration = serde_json::from_value(json!({
+            "run_path": "${run_path}",
+        }))
+        .expect("datadog source deserializes");
+
+        let (config, errors) = DatadogTranslator::new(&datadog, SalukiConfiguration::default()).translate();
+        assert!(errors.is_none());
+        assert_eq!(config.shared.run_path, std::path::PathBuf::new());
+    }
+
+    #[test]
+    fn run_path_explicit_value_is_preserved() {
+        let datadog: DatadogConfiguration = serde_json::from_value(json!({
+            "run_path": "/opt/datadog-agent/run",
+        }))
+        .expect("datadog source deserializes");
+
+        let (config, errors) = DatadogTranslator::new(&datadog, SalukiConfiguration::default()).translate();
+        assert!(errors.is_none());
+        assert_eq!(
+            config.shared.run_path,
+            std::path::PathBuf::from("/opt/datadog-agent/run")
+        );
+    }
+
+    #[test]
+    fn run_path_whitespace_only_value_leaves_run_path_unset() {
+        let datadog: DatadogConfiguration = serde_json::from_value(json!({
+            "run_path": "   ",
+        }))
+        .expect("datadog source deserializes");
+
+        let (config, errors) = DatadogTranslator::new(&datadog, SalukiConfiguration::default()).translate();
+        assert!(errors.is_none());
+        assert_eq!(config.shared.run_path, std::path::PathBuf::new());
     }
 }

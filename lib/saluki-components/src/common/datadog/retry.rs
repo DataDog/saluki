@@ -4,7 +4,10 @@ use std::{
     time::Duration,
 };
 
-use agent_data_plane_config::{shared::Forwarder, Live, SalukiConfiguration};
+use agent_data_plane_config::{
+    shared::{Forwarder, Secrets},
+    Live, SalukiConfiguration,
+};
 use http::StatusCode;
 use saluki_io::net::util::retry::{
     DefaultHttpRetryPolicy, ExponentialBackoff, HttpRetryPredicate, StandardHttpClassifier,
@@ -198,8 +201,11 @@ impl RetryConfiguration {
         );
 
         let classifier = if let Some(live) = live {
+            // Only the secrets settings gate 403 retries, so project once to a `Live<Secrets>` view
+            // rather than cloning the whole `SalukiConfiguration` on every 403 classification.
+            let secrets = live.project(|config| &config.shared.secrets);
             let gate: HttpRetryPredicate<B> =
-                Arc::new(move |response| response.status() == StatusCode::FORBIDDEN && secrets_in_use(&live));
+                Arc::new(move |response| response.status() == StatusCode::FORBIDDEN && secrets_in_use(&secrets));
             StandardHttpClassifier::new().with_predicate(gate)
         } else {
             StandardHttpClassifier::new()
@@ -211,9 +217,8 @@ impl RetryConfiguration {
     }
 }
 
-fn secrets_in_use(live: &Live<SalukiConfiguration>) -> bool {
-    let config = live.current();
-    let secrets = &config.shared.secrets;
+fn secrets_in_use(live: &Live<Secrets>) -> bool {
+    let secrets = live.current();
     secrets.refresh_on_api_key_failure_interval > 0 || !secrets.backend_command.trim().is_empty()
 }
 
