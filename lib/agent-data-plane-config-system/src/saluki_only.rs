@@ -76,8 +76,13 @@
 use std::time::Duration;
 
 use agent_data_plane_config::control::ListenAddress;
+use agent_data_plane_config::domains::otlp::{
+    default_otlp_allow_context_heap_allocs, default_otlp_cached_contexts_limit, default_otlp_cached_tagsets_limit,
+    default_otlp_context_string_interner_size, default_otlp_http_receiver_transport,
+};
 use agent_data_plane_config::domains::traces::{
-    default_error_sampling_enabled, default_rare_sampler_cardinality, default_rare_sampler_cooldown,
+    default_error_sampling_enabled, default_otlp_traces_enable_compute_top_level_by_span_kind,
+    default_otlp_traces_string_interner_size, default_rare_sampler_cardinality, default_rare_sampler_cooldown,
     default_rare_sampler_tps, default_trace_environment, OttlErrorMode, OttlFilter, OttlTransform,
 };
 use agent_data_plane_config::SalukiConfiguration;
@@ -149,13 +154,18 @@ pub struct SalukiOnly {
 
     // ── OTLP metric context keys (all top-level) ──────────────────────────────
     /// Whether to allow heap allocations for OTLP contexts (`otlp_allow_context_heap_allocs`).
-    pub otlp_allow_context_heap_allocs: Option<bool>,
+    #[serde(default = "default_otlp_allow_context_heap_allocs")]
+    pub otlp_allow_context_heap_allocs: bool,
     /// Maximum cached OTLP metric contexts (`otlp_cached_contexts_limit`).
-    pub otlp_cached_contexts_limit: Option<usize>,
+    #[serde(default = "default_otlp_cached_contexts_limit")]
+    pub otlp_cached_contexts_limit: usize,
     /// Maximum cached OTLP tagsets (`otlp_cached_tagsets_limit`).
-    pub otlp_cached_tagsets_limit: Option<usize>,
-    /// OTLP context interner entry count (`otlp_string_interner_size`).
-    pub otlp_string_interner_size: Option<u64>,
+    #[serde(default = "default_otlp_cached_tagsets_limit")]
+    pub otlp_cached_tagsets_limit: usize,
+    /// OTLP context interner byte budget (`otlp_string_interner_size`), given as a bare integer
+    /// number of bytes or a byte-size string such as `2MB`.
+    #[serde(default = "default_otlp_context_string_interner_size_bytes")]
+    pub otlp_string_interner_size: ByteSize,
 
     // ── nested sections ───────────────────────────────────────────────────────
     /// Cross-cutting data-plane knobs (`data_plane.*`).
@@ -321,24 +331,59 @@ pub struct OtlpConfigReceiverProtocols {
 }
 
 /// `otlp_config.receiver.protocols.http.*`.
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(default)]
 pub struct OtlpConfigReceiverProtocolsHttp {
     /// OTLP HTTP receiver transport (`otlp_config.receiver.protocols.http.transport`).
-    pub transport: Option<String>,
+    #[serde(default = "default_otlp_http_receiver_transport")]
+    pub transport: String,
+}
+
+impl Default for OtlpConfigReceiverProtocolsHttp {
+    fn default() -> Self {
+        Self {
+            transport: default_otlp_http_receiver_transport(),
+        }
+    }
 }
 
 /// `otlp_config.traces.*`.
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(default)]
 pub struct OtlpConfigTraces {
-    /// OTLP trace context interner entry count (`otlp_config.traces.string_interner_size`).
-    pub string_interner_size: Option<u64>,
+    /// OTLP trace context interner byte budget (`otlp_config.traces.string_interner_size`), given as
+    /// a bare integer number of bytes or a byte-size string such as `512KB`.
+    #[serde(default = "default_otlp_traces_string_interner_size_bytes")]
+    pub string_interner_size: ByteSize,
     /// Compute top-level spans by span kind
     /// (`otlp_config.traces.enable_otlp_compute_top_level_by_span_kind`).
-    pub enable_otlp_compute_top_level_by_span_kind: Option<bool>,
+    #[serde(default = "default_otlp_traces_enable_compute_top_level_by_span_kind")]
+    pub enable_otlp_compute_top_level_by_span_kind: bool,
     /// Ignore missing Datadog fields on OTLP spans (`otlp_config.traces.ignore_missing_datadog_fields`).
-    pub ignore_missing_datadog_fields: Option<bool>,
+    #[serde(default)]
+    pub ignore_missing_datadog_fields: bool,
+}
+
+impl Default for OtlpConfigTraces {
+    fn default() -> Self {
+        Self {
+            string_interner_size: default_otlp_traces_string_interner_size_bytes(),
+            enable_otlp_compute_top_level_by_span_kind: default_otlp_traces_enable_compute_top_level_by_span_kind(),
+            ignore_missing_datadog_fields: false,
+        }
+    }
+}
+
+/// The OTLP metric context interner byte budget as a [`ByteSize`], for `SalukiOnly` serde defaults.
+/// The single numeric source is the model-side [`default_otlp_context_string_interner_size`].
+fn default_otlp_context_string_interner_size_bytes() -> ByteSize {
+    ByteSize::b(default_otlp_context_string_interner_size())
+}
+
+/// The OTLP trace context interner byte budget as a [`ByteSize`], for `SalukiOnly` serde defaults.
+/// The single numeric source is the model-side [`default_otlp_traces_string_interner_size`].
+fn default_otlp_traces_string_interner_size_bytes() -> ByteSize {
+    ByteSize::b(default_otlp_traces_string_interner_size())
 }
 
 /// The `ottl_filter_config` object: OTTL span-drop filter.
@@ -471,21 +516,11 @@ impl SalukiOnly {
 
         // domains.otlp
         let otlp = &mut config.domains.otlp;
-        if let Some(v) = self.otlp_allow_context_heap_allocs {
-            otlp.contexts.allow_context_heap_allocs = v;
-        }
-        if let Some(v) = self.otlp_cached_contexts_limit {
-            otlp.contexts.cached_contexts_limit = v;
-        }
-        if let Some(v) = self.otlp_cached_tagsets_limit {
-            otlp.contexts.cached_tagsets_limit = v;
-        }
-        if let Some(v) = self.otlp_string_interner_size {
-            otlp.contexts.string_interner_size = v;
-        }
-        if let Some(v) = self.otlp_config.receiver.protocols.http.transport.clone() {
-            otlp.receiver.http.transport = v;
-        }
+        otlp.contexts.allow_context_heap_allocs = self.otlp_allow_context_heap_allocs;
+        otlp.contexts.cached_contexts_limit = self.otlp_cached_contexts_limit;
+        otlp.contexts.cached_tagsets_limit = self.otlp_cached_tagsets_limit;
+        otlp.contexts.string_interner_size = self.otlp_string_interner_size.as_u64();
+        otlp.receiver.http.transport = self.otlp_config.receiver.protocols.http.transport.clone();
 
         // domains.traces
         let traces = &mut config.domains.traces;
@@ -509,15 +544,10 @@ impl SalukiOnly {
         if let Some(v) = self.apm_config.obfuscation.sql.table_names {
             traces.obfuscation.sql.table_names = v;
         }
-        if let Some(v) = self.otlp_config.traces.string_interner_size {
-            traces.otlp.string_interner_size = v;
-        }
-        if let Some(v) = self.otlp_config.traces.enable_otlp_compute_top_level_by_span_kind {
-            traces.otlp.enable_compute_top_level_by_span_kind = v;
-        }
-        if let Some(v) = self.otlp_config.traces.ignore_missing_datadog_fields {
-            traces.otlp.ignore_missing_datadog_fields = v;
-        }
+        traces.otlp.string_interner_size = self.otlp_config.traces.string_interner_size.as_u64();
+        traces.otlp.enable_compute_top_level_by_span_kind =
+            self.otlp_config.traces.enable_otlp_compute_top_level_by_span_kind;
+        traces.otlp.ignore_missing_datadog_fields = self.otlp_config.traces.ignore_missing_datadog_fields;
         if let Some(filter) = &self.ottl_filter_config {
             traces.ottl_filter = OttlFilter {
                 error_mode: filter.error_mode.unwrap_or_default(),
@@ -705,6 +735,38 @@ mod tests {
         }
     }
 
+    /// The OTLP interner-size keys are byte sizes the source may express as a bare integer (bytes)
+    /// or a suffixed string. Both forms must reach the same byte count in the model.
+    #[test]
+    fn otlp_interner_sizes_accept_a_bare_integer_or_a_string() {
+        for (value, expected) in [
+            (json!({ "otlp_string_interner_size": 4096 }), 4096),
+            (json!({ "otlp_string_interner_size": "2MB" }), ByteSize::mb(2).as_u64()),
+        ] {
+            let saluki_only: SalukiOnly =
+                serde_json::from_value(value).expect("otlp_string_interner_size deserializes");
+            let mut config = SalukiConfiguration::default();
+            saluki_only.seed(&mut config);
+            assert_eq!(config.domains.otlp.contexts.string_interner_size, expected);
+        }
+        for (value, expected) in [
+            (
+                json!({ "otlp_config": { "traces": { "string_interner_size": 8192 } } }),
+                8192,
+            ),
+            (
+                json!({ "otlp_config": { "traces": { "string_interner_size": "1MB" } } }),
+                ByteSize::mb(1).as_u64(),
+            ),
+        ] {
+            let saluki_only: SalukiOnly =
+                serde_json::from_value(value).expect("otlp_config.traces.string_interner_size deserializes");
+            let mut config = SalukiConfiguration::default();
+            saluki_only.seed(&mut config);
+            assert_eq!(config.domains.traces.otlp.string_interner_size, expected);
+        }
+    }
+
     /// `memory_limit` is a byte size the source may express as a bare integer (bytes) or a suffixed
     /// string. Both must deserialize to the same byte count; a bare integer previously failed the
     /// whole config load.
@@ -742,5 +804,24 @@ mod tests {
         assert_eq!(traces.rare_sampler.cardinality, default_rare_sampler_cardinality());
         assert_eq!(traces.rare_sampler.cooldown, default_rare_sampler_cooldown());
         assert_eq!(traces.rare_sampler.tps, default_rare_sampler_tps());
+
+        let otlp = &config.domains.otlp;
+        assert!(otlp.contexts.allow_context_heap_allocs);
+        assert_eq!(
+            otlp.contexts.cached_contexts_limit,
+            default_otlp_cached_contexts_limit()
+        );
+        assert_eq!(otlp.contexts.cached_tagsets_limit, default_otlp_cached_tagsets_limit());
+        assert_eq!(
+            otlp.contexts.string_interner_size,
+            default_otlp_context_string_interner_size()
+        );
+        assert_eq!(otlp.receiver.http.transport, default_otlp_http_receiver_transport());
+        assert_eq!(
+            traces.otlp.string_interner_size,
+            default_otlp_traces_string_interner_size()
+        );
+        assert!(traces.otlp.enable_compute_top_level_by_span_kind);
+        assert!(!traces.otlp.ignore_missing_datadog_fields);
     }
 }

@@ -456,7 +456,7 @@ async fn create_topology(
     }
 
     if dp_config.otlp().enabled() {
-        add_otlp_pipeline_to_blueprint(&mut blueprint, config, dp_config, env_provider).await?;
+        add_otlp_pipeline_to_blueprint(&mut blueprint, config_system, dp_config, env_provider).await?;
     }
 
     Ok((blueprint, control_surfaces))
@@ -837,9 +837,10 @@ async fn add_dsd_pipeline_to_blueprint(
 }
 
 async fn add_otlp_pipeline_to_blueprint(
-    blueprint: &mut TopologyBlueprint, config: &GenericConfiguration, dp_config: &DataPlaneConfiguration,
+    blueprint: &mut TopologyBlueprint, config_system: &ConfigurationSystem, dp_config: &DataPlaneConfiguration,
     env_provider: &ADPEnvironmentProvider,
 ) -> Result<(), GenericError> {
+    let saluki = config_system.config();
     if dp_config.otlp().proxy().enabled() {
         let core_agent_otlp_grpc_endpoint = dp_config.otlp().proxy().core_agent_otlp_grpc_endpoint().to_string();
         let proxy_metrics = dp_config.otlp().proxy().proxy_metrics();
@@ -854,11 +855,11 @@ async fn add_otlp_pipeline_to_blueprint(
             "OTLP proxy mode enabled. Select OTLP payloads will be proxied to the Core Agent."
         );
 
-        let otlp_relay_config = OtlpRelayConfiguration::from_configuration(config)?;
-        let otlp_decoder_config = OtlpDecoderConfiguration::from_configuration(config)?;
+        let otlp_relay_config = OtlpRelayConfiguration::from_configuration(&saluki.domains.otlp)?;
+        let otlp_decoder_config = OtlpDecoderConfiguration::from_configuration(&saluki.domains.traces.otlp)?;
 
         let local_agent_otlp_forwarder_config =
-            OtlpForwarderConfiguration::from_configuration(config, core_agent_otlp_grpc_endpoint)?;
+            OtlpForwarderConfiguration::from_configuration(&saluki.domains.traces.otlp, core_agent_otlp_grpc_endpoint)?;
 
         blueprint
             // Components.
@@ -883,7 +884,7 @@ async fn add_otlp_pipeline_to_blueprint(
             .get_hostname()
             .await
             .error_context("Failed to get default hostname for OTLP source.")?;
-        let otlp_config = OtlpConfiguration::from_configuration(config)?
+        let otlp_config = OtlpConfiguration::from_configuration(&saluki.domains.otlp, &saluki.domains.traces.otlp)?
             .with_default_hostname(default_hostname)
             .with_workload_provider(env_provider.workload().clone());
 
